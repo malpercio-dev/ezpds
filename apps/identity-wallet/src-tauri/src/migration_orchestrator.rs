@@ -51,7 +51,7 @@ pub struct OutboundMigrationState {
     pub dest_pds_url: String,
     /// Destination server DID (from `describeServer`, used as `aud` for `getServiceAuth`)
     pub dest_did: String,
-    /// Handle (preserved from source; extracted from `plc_doc.also_known_as`)
+    /// Preferred source login identifier (handle when known, otherwise the DID)
     pub handle: String,
     /// Full-session Bearer client for the source PDS (set after `authenticate_migration_source`).
     /// Wrapped in Arc to allow cloning out of the Mutex without holding the lock
@@ -72,7 +72,7 @@ pub struct OutboundMigrationState {
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PreparedMigration {
-    /// Handle of the identity being migrated (from the source DID doc's `alsoKnownAs`).
+    /// Preferred source login identifier (handle from `alsoKnownAs`, otherwise the DID).
     pub handle: String,
     /// Source PDS base URL (the account's current PDS, resolved via `discover_pds`).
     pub source_pds_url: String,
@@ -198,7 +198,7 @@ pub(crate) fn ensure_phase_did<'a>(
 
 /// Resolve destination + source PDS and store migration state at phase Resolved.
 ///
-/// 1. discover_pds(did) → source_pds_url + handle (from also_known_as, strip "at://")
+/// 1. discover_pds(did) → source_pds_url + preferred login identifier (handle, then DID)
 /// 2. describe_server(dest_pds_url) → dest_did (map PdsUnreachable → DESTINATION_UNREACHABLE)
 /// 3. store fresh OutboundMigrationState at phase Resolved (in-memory only; app kill restarts)
 #[tauri::command]
@@ -246,14 +246,10 @@ async fn prepare_migration_impl(
         }
     })?;
 
-    // Extract handle from also_known_as (format: at://handle). A DID document with no at:// entry
-    // is a data problem (unusable identity), not a network error — surface it as such.
-    let handle = extract_handle_from_also_known_as(&plc_doc.also_known_as).ok_or_else(|| {
-        tracing::error!(did = %did, "no at:// handle in also_known_as");
-        MigrationError::AccountCreationFailed {
-            message: "source DID document has no at:// handle in alsoKnownAs".into(),
-        }
-    })?;
+    // Prefer the human-readable handle for the source login. An at:// URI may legally use a DID
+    // as its authority, so do not mistake `at://did:...` for a handle. createSession accepts the
+    // DID directly, which is the safe fallback when the document has no usable handle.
+    let handle = preferred_login_identifier(&plc_doc.also_known_as, did);
 
     // 2. Describe destination server
     let dest_describe = pds_client
@@ -1307,10 +1303,16 @@ where
 fn extract_handle_from_also_known_as(also_known_as: &[String]) -> Option<String> {
     for entry in also_known_as {
         if let Some(handle) = entry.strip_prefix("at://") {
-            return Some(handle.to_string());
+            if !handle.starts_with("did:") {
+                return Some(handle.to_string());
+            }
         }
     }
     None
+}
+
+fn preferred_login_identifier(also_known_as: &[String], did: &str) -> String {
+    extract_handle_from_also_known_as(also_known_as).unwrap_or_else(|| did.to_string())
 }
 
 // ── Tests ──────────────────────────────────────────────────────────────────
@@ -1915,7 +1917,7 @@ mod tests {
         assert_eq!(result, None);
     }
 
-    // Only non-at:// entries present → None (prepare_migration maps this to AccountCreationFailed).
+    // Only non-at:// entries present → None.
     #[test]
     fn test_extract_handle_from_also_known_as_no_at_uri() {
         let entries = vec![
@@ -1924,6 +1926,29 @@ mod tests {
         ];
         let result = extract_handle_from_also_known_as(&entries);
         assert_eq!(result, None);
+    }
+
+    #[test]
+    fn test_preferred_login_identifier_skips_did_alias_for_handle() {
+        let entries = vec![
+            "at://did:plc:abc123".to_string(),
+            "at://alice.test".to_string(),
+        ];
+
+        assert_eq!(
+            preferred_login_identifier(&entries, "did:plc:abc123"),
+            "alice.test"
+        );
+    }
+
+    #[test]
+    fn test_preferred_login_identifier_falls_back_to_did() {
+        let entries = vec!["at://did:plc:abc123".to_string()];
+
+        assert_eq!(
+            preferred_login_identifier(&entries, "did:plc:abc123"),
+            "did:plc:abc123"
+        );
     }
 
     // ── Task 1 tests: transfer_repo ────────────────────────────────────────
