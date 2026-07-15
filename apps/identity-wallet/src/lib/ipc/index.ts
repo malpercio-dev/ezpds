@@ -15,6 +15,7 @@ export * from './claim';
 export * from './identity';
 export * from './monitor';
 export * from './recovery';
+export * from './removal';
 export * from './migration';
 export * from './handle-change';
 export * from './agents';

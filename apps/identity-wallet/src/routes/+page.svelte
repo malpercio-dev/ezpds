@@ -37,6 +37,7 @@
   import MyAgentsScreen from '$lib/components/home/MyAgentsScreen.svelte';
   import AgentClaimApprovalScreen from '$lib/components/home/AgentClaimApprovalScreen.svelte';
   import SettingsScreen from '$lib/components/home/SettingsScreen.svelte';
+  import RemoveIdentityScreen from '$lib/components/home/RemoveIdentityScreen.svelte';
   import { createAccount, registerCreatedIdentity, listIdentities, checkIdentityStatus, isCodedError, type CreateAccountError, type OAuthError, type IdentityInfo, type VerifiedClaimOp, type ClaimResult, type UnauthorizedChange } from '$lib/ipc';
   import { normalizePlcDocToW3c, extractHandle } from '$lib/did-doc-utils';
   import IdentityListHome from '$lib/components/home/IdentityListHome.svelte';
@@ -72,6 +73,7 @@
     | 'home'
     | 'identity_detail'
     | 'change_handle'
+    | 'remove_identity'
     | 'alert_detail'
     | 'recovery_override'
     | 'my_agents'
@@ -482,6 +484,20 @@
             goTo('migration_start');
           }
         : undefined}
+      onremove={() => goTo('remove_identity')}
+    />
+
+  {:else if step === 'remove_identity'}
+    <RemoveIdentityScreen
+      did={selectedDid ?? ''}
+      handle={selectedDidDoc ? (extractHandle(selectedDidDoc) ?? undefined) : undefined}
+      onback={() => goTo('identity_detail')}
+      oncomplete={(wasLast) => {
+        selectedDid = null;
+        selectedDidDoc = null;
+        selectedDeviceKeyIsRoot = null;
+        goTo(wasLast ? 'mode_select' : 'home');
+      }}
     />
 
   {:else if step === 'change_handle'}

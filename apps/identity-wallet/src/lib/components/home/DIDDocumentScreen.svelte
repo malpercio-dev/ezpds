@@ -7,6 +7,7 @@
     onback,
     onmigrate,
     onchangehandle,
+    onremove,
   }: {
     didDoc: Record<string, unknown>;
     onback: () => void;
@@ -16,6 +17,8 @@
     /** Only passed for a wallet-custodied did:plc (device key in the rotation set) —
      *  gates the sovereign change-handle entry point (device-key-signed alsoKnownAs op). */
     onchangehandle?: () => void;
+    /** Opens the permanent-removal flow (delete on PDS + tombstone DID + local wipe). */
+    onremove?: () => void;
   } = $props();
 
   // A did:web identity has no PLC machinery (ADR-0003): no rotation-key hierarchy, no public audit
@@ -149,6 +152,10 @@
 
   {#if onmigrate}
     <button class="migrate" onclick={onmigrate}>Migrate to another PDS</button>
+  {/if}
+
+  {#if onremove}
+    <button class="remove" onclick={onremove}>Remove this identity…</button>
   {/if}
 </div>
 
@@ -341,6 +348,22 @@
     font-size: var(--text-label);
     font-weight: var(--weight-semibold);
     color: var(--color-accent);
+    cursor: pointer;
+    text-align: center;
+  }
+
+  /* Destructive, irreversible action — critical color paired with explicit
+     "Remove" text + the trailing ellipsis signalling a further confirmation step
+     (status never by color alone, per the design brief). */
+  .remove {
+    background: var(--color-surface);
+    border: 1px solid var(--color-critical);
+    border-radius: var(--radius-md);
+    padding: 10px var(--space-md);
+    font-family: var(--font-sans);
+    font-size: var(--text-label);
+    font-weight: var(--weight-semibold);
+    color: var(--color-critical);
     cursor: pointer;
     text-align: center;
   }

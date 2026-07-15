@@ -159,6 +159,32 @@ struct SignedPlcOp {
     verification_methods: CanonicalMap<String>,
 }
 
+// A did:plc tombstone op has a different, smaller field set than a genesis/rotation op:
+// exactly `{ type: "plc_tombstone", prev: <cid>, sig: <b64url> }` — no rotationKeys,
+// verificationMethods, alsoKnownAs, or services. Its `prev` is always a non-null CID string
+// (a tombstone never opens a DID's log), so it is typed `String`, not `Option<String>`.
+//
+// DAG-CBOR canonical key order (by UTF-8 byte length, then bytewise):
+//   UnsignedPlcTombstoneOp: "prev" (4) < "type" (4)  ("prev" < "type" bytewise)
+//   SignedPlcTombstoneOp:   "sig" (3) < "prev" (4) < "type" (4)
+// Field declaration order below matches, so ciborium emits canonical bytes.
+
+#[derive(Serialize)]
+struct UnsignedPlcTombstoneOp {
+    prev: String,
+    #[serde(rename = "type")]
+    op_type: String,
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SignedPlcTombstoneOp {
+    sig: String,
+    prev: String,
+    #[serde(rename = "type")]
+    op_type: String,
+}
+
 // ── CID computation ─────────────────────────────────────────────────────────
 
 /// CIDv1 prefix for dag-cbor + sha-256: version(1) + codec(0x71) + hash(0x12) + length(0x20).
@@ -464,6 +490,79 @@ where
     })
 }
 
+/// Build and sign a did:plc **tombstone** operation with an external signing callback.
+///
+/// A tombstone permanently retires a DID: after plc.directory accepts it, the DID resolves to a
+/// tombstone and can no longer be updated. It chains onto the DID's current head via `prev` and is
+/// signed by any key in that head op's `rotationKeys` (the wallet signs with its device key, which
+/// sits at `rotationKeys[0]`).
+///
+/// The signed op is exactly `{ "type": "plc_tombstone", "prev": <prev_cid>, "sig": <b64url> }` —
+/// no rotationKeys/verificationMethods/alsoKnownAs/services, unlike genesis and rotation ops.
+///
+/// # Parameters
+/// - `prev_cid`: The CID of the DID's current head operation (from [`compute_cid`] or the newest
+///   non-nullified audit-log entry).
+/// - `sign`: Callback receiving CBOR-encoded unsigned op bytes; must return raw 64-byte r‖s P-256
+///   ECDSA signature bytes (big-endian, low-S canonical). The signature covers the **unsigned**
+///   CBOR (`prev` + `type` only); `sig` is excluded by the unsigned/signed struct split.
+///
+/// # Errors
+/// Returns `CryptoError::PlcOperation` if `sign` returns `Err`, returns a non-64-byte or high-S
+/// signature, or if serialization fails.
+pub fn build_did_plc_tombstone_op<F>(
+    prev_cid: &str,
+    sign: F,
+) -> Result<SignedPlcOperation, CryptoError>
+where
+    F: FnOnce(&[u8]) -> Result<Vec<u8>, CryptoError>,
+{
+    let unsigned_op = UnsignedPlcTombstoneOp {
+        prev: prev_cid.to_string(),
+        op_type: "plc_tombstone".to_string(),
+    };
+
+    // CBOR-encode the unsigned operation.
+    let mut unsigned_cbor = Vec::new();
+    into_writer(&unsigned_op, &mut unsigned_cbor)
+        .map_err(|e| CryptoError::PlcOperation(format!("cbor encode unsigned tombstone: {e}")))?;
+
+    // Sign the CBOR bytes.
+    let sig_bytes = sign(&unsigned_cbor)?;
+    if sig_bytes.len() != 64 {
+        return Err(CryptoError::PlcOperation(format!(
+            "signing callback returned {} bytes, expected 64",
+            sig_bytes.len()
+        )));
+    }
+    // Reject a non-canonical high-S callback signature (see genesis builder).
+    ensure_low_s_callback_signature(&sig_bytes)?;
+    let sig_str = URL_SAFE_NO_PAD.encode(&sig_bytes);
+
+    // Build the signed operation.
+    let signed_op = SignedPlcTombstoneOp {
+        sig: sig_str,
+        prev: prev_cid.to_string(),
+        op_type: "plc_tombstone".to_string(),
+    };
+
+    // CBOR-encode the signed operation to compute CID.
+    let mut signed_cbor = Vec::new();
+    into_writer(&signed_op, &mut signed_cbor)
+        .map_err(|e| CryptoError::PlcOperation(format!("cbor encode signed tombstone: {e}")))?;
+
+    let cid = compute_cid(&signed_cbor)?;
+
+    // JSON-serialize the signed operation.
+    let signed_op_json = serde_json::to_string(&signed_op)
+        .map_err(|e| CryptoError::PlcOperation(format!("json serialize signed tombstone: {e}")))?;
+
+    Ok(SignedPlcOperation {
+        cid,
+        signed_op_json,
+    })
+}
+
 /// The result of verifying a signed PLC operation (genesis or rotation).
 ///
 /// Returned by [`verify_plc_operation`]. Fields are extracted from the verified
@@ -596,6 +695,97 @@ pub fn verify_plc_operation(
 
     Err(CryptoError::PlcOperation(format!(
         "no authorized rotation key verified the signature: {}",
+        key_errors.join("; ")
+    )))
+}
+
+/// The result of verifying a signed did:plc tombstone operation.
+///
+/// Returned by [`verify_plc_tombstone_op`]. A tombstone carries no identity state, so only its
+/// own CID and the `prev` it chains onto are exposed.
+#[non_exhaustive]
+#[derive(Debug)]
+pub struct VerifiedTombstoneOp {
+    /// The CID of this tombstone operation.
+    pub cid: String,
+    /// The `prev` CID this tombstone chains onto (the DID's head at tombstone time).
+    pub prev: String,
+}
+
+/// Verify a signed did:plc **tombstone** operation.
+///
+/// This is a dedicated verifier rather than a branch of [`verify_plc_operation`]: that function
+/// (and [`verify_genesis_op`]) deliberately reject any op whose `type` is not `"plc_operation"`,
+/// and a tombstone also has a different, smaller field set. Overloading them would either weaken
+/// that rejection or misparse the tombstone.
+///
+/// Parses `signed_op_json` as a tombstone (rejecting unknown fields), reconstructs the unsigned
+/// CBOR, and verifies the ECDSA-SHA256 signature against each key in `authorized_rotation_keys`
+/// until one succeeds.
+///
+/// # Caller obligation
+/// `authorized_rotation_keys` must be the **previous** (head) operation's `rotationKeys` — the same
+/// contract as [`verify_plc_operation`] for a rotation op. This function only checks that one of the
+/// provided keys signed the tombstone.
+///
+/// # Errors
+/// Returns `CryptoError::PlcOperation` if the JSON is not a well-formed tombstone, if `type` is not
+/// `"plc_tombstone"`, or if no authorized key verifies the signature.
+pub fn verify_plc_tombstone_op(
+    signed_op_json: &str,
+    authorized_rotation_keys: &[DidKeyUri],
+) -> Result<VerifiedTombstoneOp, CryptoError> {
+    if authorized_rotation_keys.is_empty() {
+        return Err(CryptoError::PlcOperation(
+            "authorized_rotation_keys must not be empty".to_string(),
+        ));
+    }
+
+    // Parse the signed tombstone, rejecting unknown fields (a rotation/genesis op's extra fields
+    // must not be silently accepted here).
+    let signed_op: SignedPlcTombstoneOp = serde_json::from_str(signed_op_json)
+        .map_err(|e| CryptoError::PlcOperation(format!("invalid signed tombstone JSON: {e}")))?;
+
+    if signed_op.op_type != "plc_tombstone" {
+        return Err(CryptoError::PlcOperation(format!(
+            "expected type 'plc_tombstone', got '{}'",
+            signed_op.op_type
+        )));
+    }
+
+    let sig_bytes = URL_SAFE_NO_PAD
+        .decode(&signed_op.sig)
+        .map_err(|e| CryptoError::PlcOperation(format!("invalid sig base64url: {e}")))?;
+
+    // Reconstruct the unsigned operation.
+    let unsigned_op = UnsignedPlcTombstoneOp {
+        prev: signed_op.prev.clone(),
+        op_type: signed_op.op_type.clone(),
+    };
+    let mut unsigned_cbor = Vec::new();
+    into_writer(&unsigned_op, &mut unsigned_cbor)
+        .map_err(|e| CryptoError::PlcOperation(format!("cbor encode unsigned tombstone: {e}")))?;
+
+    let mut key_errors: Vec<String> = Vec::new();
+    for (i, key) in authorized_rotation_keys.iter().enumerate() {
+        match verify_signature_with_key(key, &unsigned_cbor, &sig_bytes) {
+            Ok(()) => {
+                let mut signed_cbor = Vec::new();
+                into_writer(&signed_op, &mut signed_cbor).map_err(|e| {
+                    CryptoError::PlcOperation(format!("cbor encode signed tombstone: {e}"))
+                })?;
+                let cid = compute_cid(&signed_cbor)?;
+                return Ok(VerifiedTombstoneOp {
+                    cid,
+                    prev: signed_op.prev,
+                });
+            }
+            Err(e) => key_errors.push(format!("key[{i}]: {e}")),
+        }
+    }
+
+    Err(CryptoError::PlcOperation(format!(
+        "no authorized rotation key verified the tombstone signature: {}",
         key_errors.join("; ")
     )))
 }
@@ -2256,6 +2446,187 @@ mod tests {
         assert!(
             matches!(result, Err(CryptoError::PlcOperation(ref msg)) if msg.contains("high-S")),
             "high-S callback signature must be rejected at build time, got: {result:?}"
+        );
+    }
+
+    // ── build/verify_did_plc_tombstone_op tests ─────────────────────────────
+
+    /// A tombstone built by the device (rotation) key round-trips through the dedicated verifier.
+    #[test]
+    fn build_tombstone_round_trips() {
+        let (signing_key, private_key_bytes, _genesis, prev_cid) = make_genesis_for_rotation();
+        let sk = SigningKey::from_bytes(&private_key_bytes.into()).expect("valid key");
+
+        let tombstone = build_did_plc_tombstone_op(&prev_cid, |data| {
+            let sig: Signature = Signer::sign(&sk, data);
+            let sig = sig.normalize_s().unwrap_or(sig);
+            Ok(sig.to_bytes().to_vec())
+        })
+        .expect("build tombstone");
+
+        // The signed JSON is exactly { type, prev, sig } with type == "plc_tombstone".
+        let v: serde_json::Value =
+            serde_json::from_str(&tombstone.signed_op_json).expect("valid JSON");
+        assert_eq!(v["type"], "plc_tombstone");
+        assert_eq!(v["prev"], prev_cid);
+        assert!(v["sig"].is_string(), "sig present");
+        assert!(
+            v.get("rotationKeys").is_none(),
+            "no rotationKeys on a tombstone"
+        );
+
+        let verified = verify_plc_tombstone_op(
+            &tombstone.signed_op_json,
+            std::slice::from_ref(&signing_key),
+        )
+        .expect("verify tombstone");
+        assert_eq!(verified.cid, tombstone.cid, "CID must match builder CID");
+        assert_eq!(verified.prev, prev_cid, "prev must chain onto the head");
+    }
+
+    /// A tombstone signed by one key does not verify against a different rotation key.
+    #[test]
+    fn verify_tombstone_rejects_wrong_key() {
+        let (_signing_key, private_key_bytes, _genesis, prev_cid) = make_genesis_for_rotation();
+        let sk = SigningKey::from_bytes(&private_key_bytes.into()).expect("valid key");
+        let tombstone = build_did_plc_tombstone_op(&prev_cid, |data| {
+            let sig: Signature = Signer::sign(&sk, data);
+            let sig = sig.normalize_s().unwrap_or(sig);
+            Ok(sig.to_bytes().to_vec())
+        })
+        .expect("build tombstone");
+
+        let wrong = generate_p256_keypair().expect("wrong keypair");
+        let result = verify_plc_tombstone_op(&tombstone.signed_op_json, &[wrong.key_id]);
+        assert!(
+            matches!(result, Err(CryptoError::PlcOperation(_))),
+            "wrong key must fail, got: {result:?}"
+        );
+    }
+
+    /// Pin DAG-CBOR canonical key ordering: unsigned is `prev`-before-`type`; signed leads with
+    /// `sig`. A wrong order would derive a different CID and be rejected by plc.directory.
+    #[test]
+    fn tombstone_cbor_key_order_is_canonical() {
+        let unsigned = UnsignedPlcTombstoneOp {
+            prev: "bafyprev".to_string(),
+            op_type: "plc_tombstone".to_string(),
+        };
+        let mut cbor = Vec::new();
+        into_writer(&unsigned, &mut cbor).expect("encode unsigned");
+        // map(2) header, then first key must be text(4) "prev".
+        assert_eq!(cbor[0], 0xA2, "unsigned tombstone is a 2-entry CBOR map");
+        assert_eq!(
+            &cbor[1..6],
+            &[0x64, b'p', b'r', b'e', b'v'],
+            "first unsigned key must be 'prev' (prev < type)"
+        );
+
+        let signed = SignedPlcTombstoneOp {
+            sig: "AA".to_string(),
+            prev: "bafyprev".to_string(),
+            op_type: "plc_tombstone".to_string(),
+        };
+        let mut cbor = Vec::new();
+        into_writer(&signed, &mut cbor).expect("encode signed");
+        // map(3) header, then first key must be text(3) "sig".
+        assert_eq!(cbor[0], 0xA3, "signed tombstone is a 3-entry CBOR map");
+        assert_eq!(
+            &cbor[1..5],
+            &[0x63, b's', b'i', b'g'],
+            "first signed key must be 'sig' (shortest)"
+        );
+    }
+
+    /// A high-S callback signature is rejected at build time (same guard as the other builders).
+    #[test]
+    fn tombstone_high_s_signature_rejected_at_build() {
+        let (_signing_key, private_key_bytes, _genesis, prev_cid) = make_genesis_for_rotation();
+        let sk = SigningKey::from_bytes(&private_key_bytes.into()).expect("valid key");
+        let result = build_did_plc_tombstone_op(&prev_cid, |data| {
+            let sig: Signature = Signer::sign(&sk, data);
+            let low = sig.normalize_s().unwrap_or(sig);
+            let high = Signature::from_scalars(low.r().to_bytes(), (-*low.s()).to_bytes())
+                .expect("high-S twin");
+            Ok(high.to_bytes().to_vec())
+        });
+        assert!(
+            matches!(result, Err(CryptoError::PlcOperation(ref msg)) if msg.contains("high-S")),
+            "high-S callback signature must be rejected, got: {result:?}"
+        );
+    }
+
+    /// A wrong-length signature hits the length guard.
+    #[test]
+    fn tombstone_wrong_length_signature_returns_error() {
+        let result = build_did_plc_tombstone_op("bafyprev", |_| Ok(vec![0u8; 32]));
+        assert!(
+            matches!(result, Err(CryptoError::PlcOperation(ref msg)) if msg.contains("expected 64")),
+            "wrong-length signature must fail, got: {result:?}"
+        );
+    }
+
+    /// A signing-callback error propagates unchanged.
+    #[test]
+    fn tombstone_signing_error_propagates() {
+        let result = build_did_plc_tombstone_op("bafyprev", |_| {
+            Err(CryptoError::PlcOperation("SE unavailable".to_string()))
+        });
+        assert!(
+            matches!(result, Err(CryptoError::PlcOperation(msg)) if msg.contains("SE unavailable")),
+            "signing error must propagate"
+        );
+    }
+
+    /// verify_plc_tombstone_op rejects an empty authorized-key list before any crypto work.
+    #[test]
+    fn verify_tombstone_rejects_empty_key_list() {
+        let result = verify_plc_tombstone_op("{}", &[]);
+        assert!(
+            matches!(result, Err(CryptoError::PlcOperation(ref msg)) if msg.contains("must not be empty")),
+            "empty key list must fail"
+        );
+    }
+
+    /// Regression guard: a GENUINELY-built tombstone (not a hand-edited type field) is still
+    /// rejected by the plc_operation and genesis verifiers, and a real rotation op is rejected by
+    /// the tombstone verifier. This defends the type-segregation with real ops on both sides.
+    #[test]
+    fn tombstone_and_operation_verifiers_do_not_cross_accept() {
+        let (signing_key, private_key_bytes, genesis, prev_cid) = make_genesis_for_rotation();
+        let sk = SigningKey::from_bytes(&private_key_bytes.into()).expect("valid key");
+        let tombstone = build_did_plc_tombstone_op(&prev_cid, |data| {
+            let sig: Signature = Signer::sign(&sk, data);
+            let sig = sig.normalize_s().unwrap_or(sig);
+            Ok(sig.to_bytes().to_vec())
+        })
+        .expect("build tombstone");
+
+        // A real tombstone is not a plc_operation and not a genesis op.
+        assert!(
+            matches!(
+                verify_plc_operation(
+                    &tombstone.signed_op_json,
+                    std::slice::from_ref(&signing_key)
+                ),
+                Err(CryptoError::PlcOperation(_))
+            ),
+            "verify_plc_operation must reject a real tombstone"
+        );
+        assert!(
+            matches!(
+                verify_genesis_op(&tombstone.signed_op_json, &signing_key),
+                Err(CryptoError::PlcOperation(_))
+            ),
+            "verify_genesis_op must reject a real tombstone"
+        );
+        // Conversely, a real genesis (plc_operation) is rejected by the tombstone verifier.
+        assert!(
+            matches!(
+                verify_plc_tombstone_op(&genesis.signed_op_json, &[signing_key]),
+                Err(CryptoError::PlcOperation(_))
+            ),
+            "verify_plc_tombstone_op must reject a real plc_operation"
         );
     }
 
