@@ -1,0 +1,26 @@
+meta {
+  name: Revoke Sovereign Child Agent Capability
+  type: http
+  seq: 109
+}
+
+post {
+  url: {{baseUrl}}/agent/child/revoke
+  body: json
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{sessionToken}}
+}
+
+body:json {
+  {
+    "did": "{{childDid}}"
+  }
+}
+
+docs {
+  Revokes only the child's delegated assertion lifecycle. The wallet-held PLC recovery key and
+  the child's account/repo remain intact.
+}

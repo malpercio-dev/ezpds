@@ -14,6 +14,7 @@ use super::is_unique_violation;
 type IdentitySqlRow = (
     String,
     Option<String>,
+    Option<String>,
     String,
     Option<String>,
     Option<String>,
@@ -46,6 +47,7 @@ pub(crate) enum RegistrationType {
     IdentityAssertion,
     ServiceAuth,
     Anonymous,
+    Child,
 }
 
 impl RegistrationType {
@@ -54,6 +56,7 @@ impl RegistrationType {
             RegistrationType::IdentityAssertion => "identity_assertion",
             RegistrationType::ServiceAuth => "service_auth",
             RegistrationType::Anonymous => "anonymous",
+            RegistrationType::Child => "child",
         }
     }
 
@@ -62,6 +65,7 @@ impl RegistrationType {
             "identity_assertion" => RegistrationType::IdentityAssertion,
             "service_auth" => RegistrationType::ServiceAuth,
             "anonymous" => RegistrationType::Anonymous,
+            "child" => RegistrationType::Child,
             _ => RegistrationType::Anonymous,
         }
     }
@@ -129,6 +133,8 @@ pub(crate) struct AgentIdentityRow {
     /// The owning account DID, or `None` for an unclaimed `anonymous` registration (V038): an
     /// anonymous identity has no owning account until a later claim ceremony binds one.
     pub(crate) did: Option<String>,
+    /// Local account that provisioned this sovereign child, if this is a child registration.
+    pub(crate) parent_did: Option<String>,
     pub(crate) registration_type: RegistrationType,
     pub(crate) issuer: Option<String>,
     pub(crate) subject: Option<String>,
@@ -149,6 +155,7 @@ pub(crate) struct NewAgentIdentity<'a> {
     pub(crate) id: &'a str,
     /// The owning account DID, or `None` for an unclaimed `anonymous` registration (V038).
     pub(crate) did: Option<&'a str>,
+    pub(crate) parent_did: Option<&'a str>,
     pub(crate) registration_type: RegistrationType,
     pub(crate) issuer: Option<&'a str>,
     pub(crate) subject: Option<&'a str>,
@@ -210,13 +217,14 @@ where
 {
     let result = sqlx::query(
         "INSERT INTO agent_identities \
-         (id, did, registration_type, issuer, subject, email, scopes, identity_assertion, \
+         (id, did, parent_did, registration_type, issuer, subject, email, scopes, identity_assertion, \
           assertion_expires_at, pre_claim_scopes, claim_token, claim_token_expires_at, \
           created_at, updated_at) \
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'))",
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'))",
     )
     .bind(identity.id)
     .bind(identity.did)
+    .bind(identity.parent_did)
     .bind(identity.registration_type.as_str())
     .bind(identity.issuer)
     .bind(identity.subject)
@@ -251,6 +259,50 @@ pub(crate) async fn get_agent_identity(
     fetch_identity_by(db, "id", id).await
 }
 
+/// List sovereign children provisioned by a local parent, newest first.
+pub(crate) async fn list_children_of_parent(
+    db: &sqlx::SqlitePool,
+    parent_did: &str,
+) -> Result<Vec<AgentIdentityRow>, ApiError> {
+    let rows = sqlx::query_as::<_, IdentitySqlRow>(
+        "SELECT id, did, parent_did, registration_type, issuer, subject, email, scopes, \
+                identity_assertion, assertion_expires_at, pre_claim_scopes, claim_token, \
+                claim_token_expires_at, status, created_at, updated_at \
+         FROM agent_identities WHERE parent_did = ? ORDER BY created_at DESC, id DESC",
+    )
+    .bind(parent_did)
+    .fetch_all(db)
+    .await
+    .map_err(|e| {
+        tracing::error!(error = %e, "DB error listing child identities");
+        ApiError::new(ErrorCode::InternalError, "failed to list child identities")
+    })?;
+    Ok(rows.into_iter().map(into_identity_row).collect())
+}
+
+/// Fetch a child only when it belongs to the named parent.
+pub(crate) async fn get_child_of_parent(
+    db: &sqlx::SqlitePool,
+    child_did: &str,
+    parent_did: &str,
+) -> Result<Option<AgentIdentityRow>, ApiError> {
+    let row = sqlx::query_as::<_, IdentitySqlRow>(
+        "SELECT id, did, parent_did, registration_type, issuer, subject, email, scopes, \
+                identity_assertion, assertion_expires_at, pre_claim_scopes, claim_token, \
+                claim_token_expires_at, status, created_at, updated_at \
+         FROM agent_identities WHERE did = ? AND parent_did = ? AND registration_type = 'child'",
+    )
+    .bind(child_did)
+    .bind(parent_did)
+    .fetch_optional(db)
+    .await
+    .map_err(|e| {
+        tracing::error!(error = %e, "DB error fetching child identity");
+        ApiError::new(ErrorCode::InternalError, "failed to load child identity")
+    })?;
+    Ok(row.map(into_identity_row))
+}
+
 /// Fetch an agent identity by one-time claim token.
 pub(crate) async fn get_agent_identity_by_claim_token(
     db: &sqlx::SqlitePool,
@@ -269,7 +321,7 @@ pub(crate) async fn get_agent_identity_by_issuer_subject(
     subject: &str,
 ) -> Result<Option<AgentIdentityRow>, ApiError> {
     let row = sqlx::query_as::<_, IdentitySqlRow>(
-        "SELECT id, did, registration_type, issuer, subject, email, scopes, identity_assertion, \
+        "SELECT id, did, parent_did, registration_type, issuer, subject, email, scopes, identity_assertion, \
                 assertion_expires_at, pre_claim_scopes, claim_token, claim_token_expires_at, \
                 status, created_at, updated_at \
          FROM agent_identities WHERE issuer = ? AND subject = ?",
@@ -292,13 +344,13 @@ async fn fetch_identity_by(
 ) -> Result<Option<AgentIdentityRow>, ApiError> {
     let sql = match column {
         "id" => {
-            "SELECT id, did, registration_type, issuer, subject, email, scopes, identity_assertion, \
+            "SELECT id, did, parent_did, registration_type, issuer, subject, email, scopes, identity_assertion, \
                     assertion_expires_at, pre_claim_scopes, claim_token, claim_token_expires_at, \
                     status, created_at, updated_at \
              FROM agent_identities WHERE id = ?"
         }
         "claim_token" => {
-            "SELECT id, did, registration_type, issuer, subject, email, scopes, identity_assertion, \
+            "SELECT id, did, parent_did, registration_type, issuer, subject, email, scopes, identity_assertion, \
                     assertion_expires_at, pre_claim_scopes, claim_token, claim_token_expires_at, \
                     status, created_at, updated_at \
              FROM agent_identities WHERE claim_token = ?"
@@ -674,6 +726,7 @@ fn into_identity_row(row: IdentitySqlRow) -> AgentIdentityRow {
     let (
         id,
         did,
+        parent_did,
         registration_type,
         issuer,
         subject,
@@ -692,6 +745,7 @@ fn into_identity_row(row: IdentitySqlRow) -> AgentIdentityRow {
     AgentIdentityRow {
         id,
         did,
+        parent_did,
         registration_type: RegistrationType::from_string(registration_type),
         issuer,
         subject,
@@ -750,6 +804,7 @@ mod tests {
         NewAgentIdentity {
             id,
             did: Some(did),
+            parent_did: None,
             registration_type: RegistrationType::Anonymous,
             issuer: None,
             subject: None,

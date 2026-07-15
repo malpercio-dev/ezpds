@@ -161,6 +161,7 @@ mod tests {
         agent_auth::insert_agent_identity(
             db,
             &NewAgentIdentity {
+                parent_did: None,
                 id,
                 did: None,
                 registration_type: RegistrationType::Anonymous,

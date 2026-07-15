@@ -35,6 +35,21 @@ pub async fn resolve_handle(
     Ok(row.map(|(did,)| did))
 }
 
+/// Return the canonical local handle bound to a DID.
+pub async fn get_handle_by_did(
+    db: &sqlx::SqlitePool,
+    did: &str,
+) -> Result<Option<String>, ApiError> {
+    sqlx::query_scalar("SELECT handle FROM handles WHERE did = ? ORDER BY created_at LIMIT 1")
+        .bind(did)
+        .fetch_optional(db)
+        .await
+        .map_err(|e| {
+            tracing::error!(error = %e, did = %did, "failed to query handle by DID");
+            ApiError::new(ErrorCode::InternalError, "handle lookup failed")
+        })
+}
+
 /// Insert a new handle → DID binding. A UNIQUE violation on the handle is reported as
 /// [`InsertHandleOutcome::HandleTaken`] rather than an error, so the caller can map it to a 409.
 pub async fn insert_handle(
