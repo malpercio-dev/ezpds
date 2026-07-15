@@ -12,6 +12,7 @@ pub mod pds_client;
 pub mod plc_monitor;
 pub mod recovery;
 pub mod session_provider;
+pub mod source_login;
 pub mod sovereign_session;
 
 use crypto::{build_did_plc_genesis_op_with_external_signer, CryptoError, DidKeyUri};
