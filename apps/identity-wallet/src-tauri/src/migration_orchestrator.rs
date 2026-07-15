@@ -51,7 +51,7 @@ pub struct OutboundMigrationState {
     pub dest_pds_url: String,
     /// Destination server DID (from `describeServer`, used as `aud` for `getServiceAuth`)
     pub dest_did: String,
-    /// Handle (preserved from source; extracted from `plc_doc.also_known_as`)
+    /// Preferred source login identifier (handle when known, otherwise the DID)
     pub handle: String,
     /// Full-session Bearer client for the source PDS (set after `authenticate_migration_source`).
     /// Wrapped in Arc to allow cloning out of the Mutex without holding the lock
@@ -72,7 +72,7 @@ pub struct OutboundMigrationState {
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PreparedMigration {
-    /// Handle of the identity being migrated (from the source DID doc's `alsoKnownAs`).
+    /// Preferred source login identifier (handle from `alsoKnownAs`, otherwise the DID).
     pub handle: String,
     /// Source PDS base URL (the account's current PDS, resolved via `discover_pds`).
     pub source_pds_url: String,
@@ -198,7 +198,7 @@ pub(crate) fn ensure_phase_did<'a>(
 
 /// Resolve destination + source PDS and store migration state at phase Resolved.
 ///
-/// 1. discover_pds(did) → source_pds_url + handle (from also_known_as, strip "at://")
+/// 1. discover_pds(did) → source_pds_url + preferred login identifier (handle, then DID)
 /// 2. describe_server(dest_pds_url) → dest_did (map PdsUnreachable → DESTINATION_UNREACHABLE)
 /// 3. store fresh OutboundMigrationState at phase Resolved (in-memory only; app kill restarts)
 #[tauri::command]
@@ -246,14 +246,10 @@ async fn prepare_migration_impl(
         }
     })?;
 
-    // Extract handle from also_known_as (format: at://handle). A DID document with no at:// entry
-    // is a data problem (unusable identity), not a network error — surface it as such.
-    let handle = extract_handle_from_also_known_as(&plc_doc.also_known_as).ok_or_else(|| {
-        tracing::error!(did = %did, "no at:// handle in also_known_as");
-        MigrationError::AccountCreationFailed {
-            message: "source DID document has no at:// handle in alsoKnownAs".into(),
-        }
-    })?;
+    // Prefer the human-readable handle for the source login. An at:// URI may legally use a DID
+    // as its authority, so do not mistake `at://did:...` for a handle. createSession accepts the
+    // DID directly, which is the safe fallback when the document has no usable handle.
+    let handle = preferred_login_identifier(&plc_doc.also_known_as, did);
 
     // 2. Describe destination server
     let dest_describe = pds_client
@@ -370,6 +366,10 @@ pub async fn authenticate_migration_source(
 /// `OAuthClient`. Extracted so it can be exercised without Tauri's `State` wrapper (twin of
 /// `claim::authenticate_source_pds_impl`).
 ///
+/// The `createSession` body + account-match guard are shared with the claim flow in
+/// `source_login::authenticate_source_password`; this wrapper only maps the neutral
+/// `SourceLoginError` into the migration's `MigrationError` contract.
+///
 /// `expected_did` is the DID being migrated: the session the PDS returns MUST be for that account,
 /// or the caller signed in to the wrong one and we refuse to bind those credentials to this
 /// migration.
@@ -381,60 +381,33 @@ pub(crate) async fn authenticate_migration_source_impl(
     password: &str,
     auth_factor_token: Option<&str>,
 ) -> Result<OAuthClient, MigrationError> {
-    let session = pds_client
-        .create_session(source_pds_url, identifier, password, auth_factor_token)
-        .await
-        .map_err(|e| match e {
-            crate::pds_client::PdsClientError::AuthFactorTokenRequired => {
-                tracing::info!("source account has email 2FA; a code was sent");
-                MigrationError::TwoFactorRequired
-            }
-            crate::pds_client::PdsClientError::InvalidCredentials { message } => {
-                tracing::warn!(detail = %message, "source createSession rejected the password");
-                MigrationError::SourceAuthFailed {
-                    message: "The PDS did not accept that password.".to_string(),
-                }
-            }
-            crate::pds_client::PdsClientError::InsecurePdsUrl { url } => {
-                tracing::error!(pds_url = %url, "refusing password login to a non-HTTPS PDS");
-                MigrationError::InsecureSourceUrl
-            }
-            // A rate limit or other server rejection during the password login must keep its real
-            // reason too — a 429 here is not a connectivity problem.
-            crate::pds_client::PdsClientError::RateLimited { retry_after, .. } => {
-                MigrationError::RateLimited { retry_after }
-            }
-            crate::pds_client::PdsClientError::XrpcError { message, .. } => {
-                MigrationError::ServerError { message }
-            }
-            other => MigrationError::NetworkError {
-                message: format!("createSession failed: {}", other),
-            },
-        })?;
-
-    // The session must be for the account being migrated. A mismatch means the user signed in to a
-    // different account (or a hostile PDS returned someone else's session) — refuse to bind those
-    // credentials to this migration rather than transfer against the wrong identity.
-    if session.did != expected_did {
-        tracing::warn!(
-            expected = %expected_did,
-            got = %session.did,
-            "source session DID does not match the migration"
-        );
-        return Err(MigrationError::AccountMismatch);
-    }
-
-    OAuthClient::new_bearer(
-        session.access_jwt,
-        session.refresh_jwt,
-        source_pds_url.to_string(),
+    crate::source_login::authenticate_source_password(
+        pds_client,
+        source_pds_url,
+        expected_did,
+        identifier,
+        password,
+        auth_factor_token,
     )
-    .map_err(|e| {
-        tracing::error!(error = %e, "failed to build Bearer client from source session");
-        MigrationError::NetworkError {
-            message: "failed to build source session client".to_string(),
+    .await
+    .map_err(MigrationError::from)
+}
+
+/// Map the neutral source-login error into the migration's frontend-facing enum. The variants line
+/// up one-to-one with what `authenticate_migration_source_impl` used to produce inline.
+impl From<crate::source_login::SourceLoginError> for MigrationError {
+    fn from(e: crate::source_login::SourceLoginError) -> Self {
+        use crate::source_login::SourceLoginError as S;
+        match e {
+            S::TwoFactorRequired => MigrationError::TwoFactorRequired,
+            S::SourceAuthFailed { message } => MigrationError::SourceAuthFailed { message },
+            S::AccountMismatch => MigrationError::AccountMismatch,
+            S::InsecureSourceUrl => MigrationError::InsecureSourceUrl,
+            S::RateLimited { retry_after } => MigrationError::RateLimited { retry_after },
+            S::ServerError { message } => MigrationError::ServerError { message },
+            S::NetworkError { message } => MigrationError::NetworkError { message },
         }
-    })
+    }
 }
 
 // ── Task 6: create_destination_account ──────────────────────────────────────
@@ -1307,10 +1280,16 @@ where
 fn extract_handle_from_also_known_as(also_known_as: &[String]) -> Option<String> {
     for entry in also_known_as {
         if let Some(handle) = entry.strip_prefix("at://") {
-            return Some(handle.to_string());
+            if !handle.starts_with("did:") {
+                return Some(handle.to_string());
+            }
         }
     }
     None
+}
+
+fn preferred_login_identifier(also_known_as: &[String], did: &str) -> String {
+    extract_handle_from_also_known_as(also_known_as).unwrap_or_else(|| did.to_string())
 }
 
 // ── Tests ──────────────────────────────────────────────────────────────────
@@ -1483,168 +1462,54 @@ mod tests {
         ));
     }
 
-    // ── authenticate_migration_source_impl tests (mirror claim::authenticate_source_pds_impl) ──
+    // ── source-login error mapping ──────────────────────────────────────────────
 
-    /// Build a Bearer-session JWT with a future `exp` so `new_bearer` derives a live expiry.
-    fn future_exp_jwt() -> String {
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_secs();
-        make_bearer_jwt(now + 3600)
-    }
+    /// The shared `createSession` body + account-match guard now live in `source_login`, tested
+    /// once there against a mock PDS. What remains migration-specific is the
+    /// `From<SourceLoginError>` mapping into `MigrationError`; this unit test pins that contract so
+    /// a variant can't silently remap. `authenticate_migration_source_impl` is a thin
+    /// `.map_err(MigrationError::from)` over the shared core, so the mapping is the only
+    /// migration-owned behavior left to cover.
+    #[test]
+    fn test_source_login_error_maps_to_migration_error() {
+        use crate::source_login::SourceLoginError as S;
 
-    /// Happy path: a 200 `createSession` yields a full-session Bearer client bound to the source PDS.
-    #[tokio::test]
-    async fn test_authenticate_migration_source_impl_success() {
-        crate::keychain::clear_for_test();
-        let server = MockServer::start();
-        let access_for_body = future_exp_jwt();
-        server.mock(move |when, then| {
-            when.method(httpmock::Method::POST)
-                .path("/xrpc/com.atproto.server.createSession");
-            then.status(200).json_body(serde_json::json!({
-                "accessJwt": access_for_body,
-                "refreshJwt": "refresh_jwt",
-                "did": "did:plc:test",
-                "handle": "alice.example.com",
-            }));
-        });
-
-        let pds_client = crate::pds_client::PdsClient::new();
-        let result = authenticate_migration_source_impl(
-            &pds_client,
-            &server.base_url(),
-            "did:plc:test",
-            "alice.example.com",
-            "hunter2",
-            None,
-        )
-        .await;
-        assert!(
-            result.is_ok(),
-            "createSession 200 must build a Bearer client"
-        );
-    }
-
-    /// A 200 whose `did` differs from the migrating DID must be refused (wrong-account guard),
-    /// never bound as the source session for the identity being migrated.
-    #[tokio::test]
-    async fn test_authenticate_migration_source_impl_account_mismatch() {
-        crate::keychain::clear_for_test();
-        let server = MockServer::start();
-        let access_for_body = future_exp_jwt();
-        server.mock(move |when, then| {
-            when.method(httpmock::Method::POST)
-                .path("/xrpc/com.atproto.server.createSession");
-            then.status(200).json_body(serde_json::json!({
-                "accessJwt": access_for_body,
-                "refreshJwt": "refresh_jwt",
-                "did": "did:plc:someone-else",
-                "handle": "mallory.example.com",
-            }));
-        });
-
-        let pds_client = crate::pds_client::PdsClient::new();
-        let result = authenticate_migration_source_impl(
-            &pds_client,
-            &server.base_url(),
-            "did:plc:test",
-            "alice.example.com",
-            "hunter2",
-            None,
-        )
-        .await;
-        assert!(
-            matches!(result, Err(MigrationError::AccountMismatch)),
-            "a session for a different DID must be refused, got: {:?}",
-            result.err()
-        );
-    }
-
-    /// The password must never be sent to a non-HTTPS, non-loopback PDS — refused before any
-    /// network call, so no mock server is needed.
-    #[tokio::test]
-    async fn test_authenticate_migration_source_impl_rejects_insecure_url() {
-        crate::keychain::clear_for_test();
-        let pds_client = crate::pds_client::PdsClient::new();
-        let result = authenticate_migration_source_impl(
-            &pds_client,
-            "http://pds.example.com",
-            "did:plc:test",
-            "alice.example.com",
-            "hunter2",
-            None,
-        )
-        .await;
-        assert!(
-            matches!(result, Err(MigrationError::InsecureSourceUrl)),
-            "a non-HTTPS PDS URL must be refused, got: {:?}",
-            result.err()
-        );
-    }
-
-    /// A 401 `createSession` (wrong password) surfaces as SourceAuthFailed, never NetworkError.
-    #[tokio::test]
-    async fn test_authenticate_migration_source_impl_wrong_password() {
-        crate::keychain::clear_for_test();
-        let server = MockServer::start();
-        server.mock(|when, then| {
-            when.method(httpmock::Method::POST)
-                .path("/xrpc/com.atproto.server.createSession");
-            then.status(401).json_body(serde_json::json!({
-                "error": "AuthenticationRequired",
-                "message": "Invalid identifier or password"
-            }));
-        });
-
-        let pds_client = crate::pds_client::PdsClient::new();
-        let result = authenticate_migration_source_impl(
-            &pds_client,
-            &server.base_url(),
-            "did:plc:test",
-            "alice.example.com",
-            "wrong",
-            None,
-        )
-        .await;
-        assert!(
-            matches!(result, Err(MigrationError::SourceAuthFailed { .. })),
-            "a 401 must surface as SourceAuthFailed, got: {:?}",
-            result.err()
-        );
-    }
-
-    /// An email-2FA account answers a token-less attempt with `AuthFactorTokenRequired`, which must
-    /// surface as `TwoFactorRequired` (prompt for a code), NOT `SourceAuthFailed` (wrong password).
-    #[tokio::test]
-    async fn test_authenticate_migration_source_impl_two_factor_required() {
-        crate::keychain::clear_for_test();
-        let server = MockServer::start();
-        server.mock(|when, then| {
-            when.method(httpmock::Method::POST)
-                .path("/xrpc/com.atproto.server.createSession");
-            then.status(401).json_body(serde_json::json!({
-                "error": "AuthFactorTokenRequired",
-                "message": "A sign in code has been sent to your email address"
-            }));
-        });
-
-        let pds_client = crate::pds_client::PdsClient::new();
-        let result = authenticate_migration_source_impl(
-            &pds_client,
-            &server.base_url(),
-            "did:plc:test",
-            "alice.example.com",
-            "correct-password",
-            None,
-        )
-        .await;
-        assert!(
-            matches!(result, Err(MigrationError::TwoFactorRequired)),
-            "AuthFactorTokenRequired must surface as TwoFactorRequired, got: {:?}",
-            result.err()
-        );
+        assert!(matches!(
+            MigrationError::from(S::TwoFactorRequired),
+            MigrationError::TwoFactorRequired
+        ));
+        assert!(matches!(
+            MigrationError::from(S::AccountMismatch),
+            MigrationError::AccountMismatch
+        ));
+        assert!(matches!(
+            MigrationError::from(S::InsecureSourceUrl),
+            MigrationError::InsecureSourceUrl
+        ));
+        assert!(matches!(
+            MigrationError::from(S::SourceAuthFailed {
+                message: "The PDS did not accept that password.".to_string()
+            }),
+            MigrationError::SourceAuthFailed { message } if message == "The PDS did not accept that password."
+        ));
+        assert!(matches!(
+            MigrationError::from(S::RateLimited {
+                retry_after: Some("120".to_string())
+            }),
+            MigrationError::RateLimited { retry_after: Some(r) } if r == "120"
+        ));
+        assert!(matches!(
+            MigrationError::from(S::ServerError {
+                message: "handle is required".to_string()
+            }),
+            MigrationError::ServerError { message } if message == "handle is required"
+        ));
+        assert!(matches!(
+            MigrationError::from(S::NetworkError {
+                message: "connection refused".to_string()
+            }),
+            MigrationError::NetworkError { message } if message == "connection refused"
+        ));
     }
 
     // Serialization of the password-login error variants (frontend switches on these codes).
@@ -1915,7 +1780,7 @@ mod tests {
         assert_eq!(result, None);
     }
 
-    // Only non-at:// entries present → None (prepare_migration maps this to AccountCreationFailed).
+    // Only non-at:// entries present → None.
     #[test]
     fn test_extract_handle_from_also_known_as_no_at_uri() {
         let entries = vec![
@@ -1924,6 +1789,29 @@ mod tests {
         ];
         let result = extract_handle_from_also_known_as(&entries);
         assert_eq!(result, None);
+    }
+
+    #[test]
+    fn test_preferred_login_identifier_skips_did_alias_for_handle() {
+        let entries = vec![
+            "at://did:plc:abc123".to_string(),
+            "at://alice.test".to_string(),
+        ];
+
+        assert_eq!(
+            preferred_login_identifier(&entries, "did:plc:abc123"),
+            "alice.test"
+        );
+    }
+
+    #[test]
+    fn test_preferred_login_identifier_falls_back_to_did() {
+        let entries = vec!["at://did:plc:abc123".to_string()];
+
+        assert_eq!(
+            preferred_login_identifier(&entries, "did:plc:abc123"),
+            "did:plc:abc123"
+        );
     }
 
     // ── Task 1 tests: transfer_repo ────────────────────────────────────────
