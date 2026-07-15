@@ -42,6 +42,8 @@ jobs:
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
+          # The changelog gate compares HEAD with the pull request's base commit.
+          fetch-depth: 0
           # Read-only gate — never pushes — so don't leave the token in .git/config.
           persist-credentials: false
 
@@ -76,6 +78,10 @@ jobs:
       - run: cargo binstall -y --locked cargo-audit cargo-deny@0.16.4 && cargo audit --version && cargo deny --version
 
       - name: CI gate (fmt, lock-check, clippy, test, audit, deny)
+        env:
+          # Empty on push/schedule runs: fragment validity is still checked, while the
+          # presence rule is evaluated only for pull requests with a trustworthy base.
+          CHANGELOG_BASE_REF: ${{ github.event.pull_request.base.sha }}
         run: just ci-pds
 
   verify-release:
