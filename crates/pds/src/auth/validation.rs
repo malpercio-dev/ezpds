@@ -15,12 +15,11 @@ use common::{ApiError, ErrorCode};
 
 use crate::app::FailedLoginStore;
 
-/// Returns `true` if `did` has the `did:` method prefix required by ATProto.
+/// Returns `true` if `did` satisfies ATProto's general DID syntax profile.
 ///
-/// This is the minimal syntactic gate used before any repo lookup; full DID
-/// method validation is performed downstream when the DID is resolved.
+/// DID-method-specific validation remains layered on top when the DID is resolved.
 pub fn is_valid_did(did: &str) -> bool {
-    did.starts_with("did:")
+    crate::identity::did::is_valid_did(did)
 }
 
 /// Maximum allowed length for a device public key string.

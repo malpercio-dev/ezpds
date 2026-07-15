@@ -100,7 +100,7 @@ pub async fn reserve_signing_key(
 }
 
 fn validate_did(did: &str) -> Result<(), ApiError> {
-    if is_valid_did_syntax(did) {
+    if crate::auth::validation::is_valid_did(did) {
         return Ok(());
     }
 
@@ -108,50 +108,6 @@ fn validate_did(did: &str) -> Result<(), ApiError> {
         ErrorCode::InvalidRequest,
         "did must be a valid DID string",
     ))
-}
-
-fn is_valid_did_syntax(did: &str) -> bool {
-    let Some(rest) = did.strip_prefix("did:") else {
-        return false;
-    };
-    let Some((method, method_specific_id)) = rest.split_once(':') else {
-        return false;
-    };
-    if method.is_empty()
-        || method_specific_id.is_empty()
-        || !method
-            .bytes()
-            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit())
-    {
-        return false;
-    }
-
-    let mut bytes = method_specific_id.bytes().peekable();
-    let mut ended_with_separator = true;
-    while let Some(byte) = bytes.next() {
-        match byte {
-            b'a'..=b'z' | b'A'..=b'Z' | b'0'..=b'9' | b'.' | b'-' | b'_' => {
-                ended_with_separator = false;
-            }
-            b':' => {
-                ended_with_separator = true;
-            }
-            b'%' => {
-                let Some(high) = bytes.next() else {
-                    return false;
-                };
-                let Some(low) = bytes.next() else {
-                    return false;
-                };
-                if !high.is_ascii_hexdigit() || !low.is_ascii_hexdigit() {
-                    return false;
-                }
-                ended_with_separator = false;
-            }
-            _ => return false,
-        }
-    }
-    !ended_with_separator
 }
 
 fn check_anonymous_reservation_limit(
