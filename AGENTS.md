@@ -18,7 +18,7 @@ Last verified: 2026-07-13
 - `cargo clippy --workspace -- -D warnings` - Lint (warnings as errors)
 - `cargo fmt --all --check` - Check formatting
 - `just bruno-check` - Verify route ⇄ Bruno-collection parity (scripts/bruno-parity.sh)
-- `just font-check` - Verify the four vendored font copies haven't drifted (scripts/font-parity.sh; same-named font files must be byte-identical across copies)
+- `just font-check` - Verify the five vendored font copies haven't drifted (scripts/font-parity.sh; same-named font files must be byte-identical across copies)
 - `just cap-check` - Verify the Tauri IPC capability allowlists stay minimal (scripts/capability-check.sh; no `core:default`, mobile schema, withGlobalTauri off — the static half of the least-privilege boundary in docs/security/tauri-ipc-boundary.md)
 - `just ios-paths-check` - Verify the iOS workflows' `paths:` filters match the apps' cargo dependency graph exactly (scripts/ios-paths-check.sh; an unwatched app dependency or an entry re-widened to `crates/**` both fail — keeps pure-PDS changes from triggering the macOS lanes)
 - `just ios-template-check` - Verify the forked XcodeGen iOS project template (scripts/ios/project.yml, rendered on every `cargo tauri ios init` via `bundle > iOS > template`) is in lockstep with the workflows' tauri-cli pin, still carries every workaround, and is referenced by both apps (scripts/ios-template-check.sh; Linux-runnable)

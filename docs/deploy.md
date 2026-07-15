@@ -188,6 +188,71 @@ docker build -t obsign-marketing sites/marketing
 docker run --rm -p 8080:8080 obsign-marketing   # then open http://localhost:8080
 ```
 
+## Documentation site (static)
+
+The documentation site (`sites/docs/`, the Obsign user + Custos operator surfaces
+built with Astro Starlight) deploys as **another Railway service in the same
+project** as the PDS — grouped together, but built and routed independently,
+exactly like the marketing site above. There is no Rust, no database, and no
+secrets. Unlike the zero-build marketing site, Starlight compiles to static HTML,
+so the build has a Node stage; the runtime image is still just Caddy serving the
+generated `dist/`.
+
+### Config as code
+
+Everything build-related is committed under `sites/docs/`:
+
+| File | Role |
+|------|------|
+| `Dockerfile` | Two stages: `node:22-alpine` runs `pnpm install --frozen-lockfile && pnpm build`; `caddy:2-alpine` copies the generated `dist/` into `/srv`. |
+| `Caddyfile` | Serves `/srv` on `$PORT`, gzip/zstd, clean URLs, immutable caching for fingerprinted `/_astro/*` and `/pagefind/*` assets and short revalidation for HTML, plus `nosniff`/`Referrer-Policy`. |
+| `railway.toml` | Dockerfile builder + `healthcheckPath = "/"` (Caddy returns 200 at the root). |
+
+### The critical setting: Root Directory
+
+The repo-root `railway.toml` is **PDS-specific** — it builds the `pds` binary and
+health-checks `/xrpc/_health`. The docs service must **not** inherit it. In the
+service's settings:
+
+- **Root Directory** = `sites/docs`. This scopes Railway's build context *and* its
+  config lookup to that subtree, so it uses `sites/docs/{Dockerfile,railway.toml}`
+  and never the root `railway.toml`. This is the whole isolation mechanism — the
+  same one the marketing service relies on.
+- **Watch Paths** = `sites/docs/**`, so PDS-only changes don't rebuild the docs.
+  Watch Paths are matched against **repo-root-relative** paths, so keep the
+  `sites/docs/` prefix even though Root Directory is already set. (Optionally also
+  add an *ignore* path of `sites/docs/**` to the **PDS** service so a docs edit
+  doesn't redeploy the PDS.)
+- **Wait for CI** — optional. `just ci-pds` doesn't compile these files, so waiting
+  adds no real safety; harmless if you'd rather keep all services uniformly gated.
+- **No volume, no environment variables.** Railway injects `PORT`; Caddy binds it.
+
+### Domain: `docs.obsign.org`
+
+`obsign.org` + `*.obsign.org` are already Railway custom domains on the **PDS**
+service (DNS at Cloudflare), and the wildcard means `docs.obsign.org` currently
+resolves to the PDS. To route it to the docs service instead:
+
+1. In the **docs** service → Settings → Networking, add the custom domain
+   `docs.obsign.org`. An **exact** hostname on one service takes routing priority
+   over a **wildcard** (`*.obsign.org`) on another, so this steals just `docs`
+   without touching the wildcard, the PDS, or the marketing site's `about`.
+2. DNS: the `*.obsign.org` wildcard already covers `docs` at the DNS layer, so no
+   new Cloudflare record is strictly required. Adding an explicit `docs` CNAME
+   (matching the wildcard's orange/grey-cloud mode) is clearer and avoids surprises
+   if the wildcard is ever narrowed.
+3. Verify: `curl -I https://docs.obsign.org/` returns Caddy's 200 (not the PDS),
+   and `https://docs.obsign.org/operator/` loads the operator surface. If it still
+   hits the PDS, the exact domain didn't register on the docs service — re-check
+   step 1.
+
+### Local check
+
+```sh
+docker build -t obsign-docs sites/docs
+docker run --rm -p 8080:8080 obsign-docs   # then open http://localhost:8080
+```
+
 ## Colmena / NixOS oci-containers Deployment
 
 For self-hosted NixOS with colmena, use `nixosModules.default` from the flake:

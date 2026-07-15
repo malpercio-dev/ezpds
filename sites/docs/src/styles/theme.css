@@ -1,0 +1,237 @@
+/*
+ * ezpds documentation sites — forked token layer.
+ *
+ * Two audience-scoped design registers, mapped onto Starlight's CSS variable
+ * scale. They are NOT cross-applied (root AGENTS.md → Design Context):
+ *
+ *   • Default / User surface  → Obsign, "The Sealed Credential" (archival white,
+ *     sealing-wax gold + aubergine, Public Sans working voice, Libre Caslon
+ *     Display signet, JetBrains Mono for literals). Shown in light and dark.
+ *   • .register-custos / Operator surface → the admin companion's "Brass Console"
+ *     (cool-slate dark ground, lifted brass accent, monospace-forward). Dark by
+ *     design — the register does not have a light appearance.
+ *
+ * Values are FORKED from the two live app token layers and their marketing fork:
+ *   apps/identity-wallet/src/lib/styles/tokens.css   (Obsign)
+ *   apps/admin-companion/src/lib/styles/tokens.css   (Brass Console)
+ *   sites/marketing/assets/css/site.css              (the existing web fork)
+ * They must not drift from those files; when a brief changes, re-fork.
+ *
+ * The Custos register is scoped to the operator subtree by the PageFrame
+ * override (src/components/PageFrame.astro), which adds `.register-custos` to a
+ * wrapper around the whole page frame for `operator/*` routes. The compound
+ * selectors below give it higher specificity than the theme-qualified Obsign
+ * blocks, so the operator register wins regardless of the light/dark toggle.
+ *
+ * Accessibility bar (held from the marketing site): WCAG 2.2 AAA text targets,
+ * self-hosted fonts (no runtime CDN), status never signalled by color alone
+ * (Starlight asides pair icon + title + color), visible focus ring, and
+ * prefers-reduced-motion honored.
+ */
+
+/* ── Self-hosted brand fonts (no runtime CDN) ─────────────────────────── */
+@font-face {
+  font-family: 'Public Sans';
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url('../fonts/PublicSans-Regular.woff2') format('woff2');
+}
+@font-face {
+  font-family: 'Public Sans';
+  font-style: normal;
+  font-weight: 500;
+  font-display: swap;
+  src: url('../fonts/PublicSans-Medium.woff2') format('woff2');
+}
+@font-face {
+  font-family: 'Public Sans';
+  font-style: normal;
+  font-weight: 600;
+  font-display: swap;
+  src: url('../fonts/PublicSans-SemiBold.woff2') format('woff2');
+}
+@font-face {
+  font-family: 'Public Sans';
+  font-style: normal;
+  font-weight: 700;
+  font-display: swap;
+  src: url('../fonts/PublicSans-Bold.woff2') format('woff2');
+}
+@font-face {
+  font-family: 'JetBrains Mono';
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url('../fonts/JetBrainsMono-Regular.woff2') format('woff2');
+}
+@font-face {
+  font-family: 'JetBrains Mono';
+  font-style: normal;
+  font-weight: 500;
+  font-display: swap;
+  src: url('../fonts/JetBrainsMono-Medium.woff2') format('woff2');
+}
+@font-face {
+  font-family: 'Libre Caslon Display';
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url('../fonts/LibreCaslonDisplay-Regular.ttf') format('truetype');
+}
+
+/* ── Fonts wired into Starlight's font variables ──────────────────────── */
+:root {
+  --sl-font:
+    'Public Sans', system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  --sl-font-mono: 'JetBrains Mono', ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
+}
+
+/* ── Obsign (dark) — Starlight's default `:root` is dark ───────────────── */
+:root {
+  --sl-color-white: oklch(0.96 0.02 80); /* headings / highest contrast */
+  --sl-color-gray-1: oklch(0.92 0.02 80);
+  --sl-color-gray-2: oklch(0.86 0.012 78); /* body text */
+  --sl-color-gray-3: oklch(0.66 0.01 70);
+  --sl-color-gray-4: oklch(0.5 0.01 65);
+  --sl-color-gray-5: oklch(0.34 0.012 60);
+  --sl-color-gray-6: oklch(0.22 0.013 60); /* nav / sidebar surface */
+  --sl-color-black: oklch(0.18 0.012 60); /* page ground */
+
+  /* Sealing-wax gold reads as the accent on the dark ground (matches the seal). */
+  --sl-color-accent-low: oklch(0.32 0.07 70);
+  --sl-color-accent: oklch(0.78 0.1 80);
+  --sl-color-accent-high: oklch(0.88 0.09 82);
+
+  --sl-color-bg-inline-code: oklch(0.26 0.013 60);
+}
+
+/* ── Obsign (light) — the archival-white register ─────────────────────── */
+:root[data-theme='light'],
+[data-theme='light'] ::backdrop {
+  --sl-color-white: oklch(0.23 0.012 60); /* ink — headings */
+  --sl-color-gray-1: oklch(0.28 0.012 60);
+  --sl-color-gray-2: oklch(0.31 0.012 60); /* ink-soft — body text (AAA on white) */
+  --sl-color-gray-3: oklch(0.42 0.012 60); /* muted */
+  --sl-color-gray-4: oklch(0.55 0.01 62);
+  --sl-color-gray-5: oklch(0.78 0.006 75);
+  --sl-color-gray-6: oklch(0.955 0.005 75); /* nav / sidebar surface */
+  --sl-color-gray-7: oklch(0.975 0.004 75);
+  --sl-color-black: oklch(1 0 0); /* page ground — archival white */
+
+  /* Aubergine is the link/accent on white — darker than gold, so it clears AAA. */
+  --sl-color-accent-low: oklch(0.92 0.045 330);
+  --sl-color-accent: oklch(0.34 0.1 330);
+  --sl-color-accent-high: oklch(0.26 0.09 330);
+
+  --sl-color-bg-inline-code: oklch(0.955 0.005 75);
+}
+
+/*
+ * The signet: the site title wears Libre Caslon Display on the Obsign surface —
+ * a once-per-screen serif moment, exactly as the wallet uses it.
+ */
+:root:not(:has(.register-custos)) .site-title {
+  font-family: 'Libre Caslon Display', Georgia, 'Times New Roman', serif;
+  font-weight: 400;
+  letter-spacing: 0.01em;
+}
+
+/* ── Brass Console (Custos) — operator surface, dark by design ─────────── */
+/*
+ * This scopes to a wrapper element (not `:root`), so — unlike the Obsign blocks
+ * above, which sit on `:root` alongside Starlight's own declarations — it must
+ * ALSO re-declare Starlight's SEMANTIC variables (`--sl-color-bg`,
+ * `--sl-color-text`, hairlines, aside hues, …). Starlight computes those at
+ * `:root` (e.g. `--sl-color-bg: var(--sl-color-black)`), and a custom property's
+ * `var()` is resolved on the element where it is DECLARED — so overriding only
+ * the raw scale here would not recompute the semantics. Re-declaring them in
+ * this scope re-resolves them against the custos scale below.
+ */
+:root .register-custos,
+:root[data-theme='light'] .register-custos,
+:root[data-theme='dark'] .register-custos {
+  /* Raw scale — cool slate, forked from the Brass Console token layer. */
+  --sl-color-white: oklch(0.95 0.006 250); /* headings */
+  --sl-color-gray-1: oklch(0.9 0.007 250);
+  --sl-color-gray-2: oklch(0.82 0.008 250); /* body text (AAA on the slate ground) */
+  --sl-color-gray-3: oklch(0.73 0.01 250); /* muted */
+  --sl-color-gray-4: oklch(0.55 0.012 250);
+  --sl-color-gray-5: oklch(0.34 0.012 250); /* hairline */
+  --sl-color-gray-6: oklch(0.22 0.014 250); /* nav / sidebar surface */
+  --sl-color-gray-7: oklch(0.26 0.015 250);
+  --sl-color-black: oklch(0.18 0.012 250); /* cool-slate ground */
+
+  /* Lifted brass accent on the slate ground. */
+  --sl-color-accent-low: oklch(0.3 0.06 70);
+  --sl-color-accent: oklch(0.78 0.12 82);
+  --sl-color-accent-high: oklch(0.86 0.11 84);
+
+  /* Re-resolved semantics (see the note above). */
+  --sl-color-text: var(--sl-color-gray-2);
+  --sl-color-text-accent: var(--sl-color-accent-high);
+  --sl-color-text-invert: var(--sl-color-black);
+  --sl-color-bg: var(--sl-color-black);
+  --sl-color-bg-nav: var(--sl-color-gray-6);
+  --sl-color-bg-sidebar: var(--sl-color-gray-6);
+  --sl-color-bg-inline-code: var(--sl-color-gray-5);
+  --sl-color-bg-accent: var(--sl-color-accent-high);
+  --sl-color-hairline-light: var(--sl-color-gray-5);
+  --sl-color-hairline: var(--sl-color-gray-6);
+  --sl-color-hairline-shade: var(--sl-color-black);
+  --sl-color-backdrop-overlay: oklch(0.18 0.012 250 / 0.66);
+
+  /* Aside hues: force the dark-surface variants (Starlight's `:root` values),
+     so notes/tips/cautions/dangers stay legible on the slate ground even when
+     the page is otherwise rendered in the light theme. Status is still carried
+     by icon + title, never color alone. */
+  --sl-color-orange-low: hsl(41, 39%, 22%);
+  --sl-color-orange: hsl(41, 82%, 63%);
+  --sl-color-orange-high: hsl(41, 82%, 87%);
+  --sl-color-green-low: hsl(101, 39%, 22%);
+  --sl-color-green: hsl(101, 82%, 63%);
+  --sl-color-green-high: hsl(101, 82%, 80%);
+  --sl-color-blue-low: hsl(234, 54%, 24%);
+  --sl-color-blue: hsl(234, 90%, 72%);
+  --sl-color-blue-high: hsl(234, 100%, 87%);
+  --sl-color-purple-low: hsl(281, 39%, 22%);
+  --sl-color-purple: hsl(281, 82%, 63%);
+  --sl-color-purple-high: hsl(281, 82%, 89%);
+  --sl-color-red-low: hsl(339, 39%, 22%);
+  --sl-color-red: hsl(339, 82%, 63%);
+  --sl-color-red-high: hsl(339, 82%, 87%);
+
+  background: var(--sl-color-bg);
+  color: var(--sl-color-text);
+}
+
+/*
+ * Monospace-forward: on the Brass Console, headings and the site title speak in
+ * JetBrains Mono — the prompt is the display voice (admin-companion DESIGN.md).
+ */
+.register-custos :is(h1, h2, h3, h4, h5, h6),
+.register-custos .site-title {
+  font-family: 'JetBrains Mono', ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
+  font-weight: 500;
+  letter-spacing: 0.01em;
+}
+
+/* ── Held invariants ──────────────────────────────────────────────────── */
+
+/* Visible focus ring on every interactive element — a security feature, never
+   removed. Aubergine on the light Obsign ground, brass on the dark grounds. */
+:where(a, button, input, select, summary, [tabindex]):focus-visible {
+  outline: 2px solid var(--sl-color-accent);
+  outline-offset: 2px;
+}
+
+/* Motion is state only, and only when the reader allows it. */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    transition-duration: 0.01ms !important;
+    animation-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
