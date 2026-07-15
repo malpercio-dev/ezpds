@@ -1,0 +1,26 @@
+{
+  "name": "ezpds-mcp-sidecar",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "description": "Credential-forwarding Streamable-HTTP MCP sidecar: reuses the ezpds-mcp tool surface, terminates only the MCP transport, authenticates each caller via OAuth against Custos, and forwards the caller's token per request while caching nothing durable.",
+  "engines": {
+    "node": ">=22.21"
+  },
+  "bin": {
+    "custos-mcp-sidecar": "./bin/custos-mcp-sidecar"
+  },
+  "scripts": {
+    "start": "node --disable-warning=ExperimentalWarning src/server.ts",
+    "check": "tsc --noEmit",
+    "test": "node test/run.ts"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.29.0",
+    "zod": "^3.25.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.15.0",
+    "typescript": "^5.8.0"
+  }
+}

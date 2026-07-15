@@ -28,6 +28,7 @@ Last verified: 2026-07-13
 - `just docs-screenshots` / `just docs-screenshots-check` - Regenerate (or drift-check) the docs sites' app imagery by Playwright-driving each mobile app's **browser test harness** (`VITE_HARNESS=fake`) across its named scenarios — happy + error/rare states — into `sites/docs/public/screenshots/`. Deterministic (frozen clock, no network) and Linux-runnable (no macOS/Tauri). Tooling in `tools/screenshots/`; the `-check` visual-diff is NOT part of `just ci` (cross-runner font rendering can differ). See `tools/screenshots/README.md`.
 - `just interop-setup` / `just interop <args>` - Install deps for and run the interop CLI (`tools/interop/`) against a live deployment
 - `just mcp-setup` / `just mcp <args>` / `just mcp-test` - Install deps for, run, and test the Custos MCP server (`tools/mcp/`); `mcp-test` runs the auth.md agent-auth conformance suite against a hermetic locally spawned PDS (not part of `just ci` — needs node/pnpm like the interop CLI)
+- `just mcp-sidecar-setup` / `just mcp-sidecar <args>` / `just mcp-sidecar-test` - Install deps for, run, and test the credential-forwarding **Streamable-HTTP MCP sidecar** (`tools/mcp-sidecar/`, the hosted Custos tier); `mcp-sidecar-test` is hermetic and self-contained (stub PDS on loopback — no cargo build, no live network), also not part of `just ci`. The sidecar single-sources the `tools/mcp` tool surface and forwards the caller's credential (ADR-0024)
 
 ## CI/CD
 
@@ -65,6 +66,7 @@ Release flow: `just set-version X.Y.Z` (PR) → merge → `just release` (cuts/p
 - `sites/marketing/` - Static marketing site for Obsign + Custos (zero-build HTML/CSS; design derivation documented in its README)
 - `tools/interop/` - Node/pnpm interop CLI exercising a live deployment (staging by default) end-to-end against the real ATProto network (see its README)
 - `tools/mcp/` - Custos MCP: first-party MCP stdio server (Node/TypeScript, pnpm) that self-onboards to a Custos PDS via the auth.md agent flow and exposes it as tools; its `pnpm test` conformance suite spawns a hermetic local PDS (see its README)
+- `tools/mcp-sidecar/` - Credential-forwarding **Streamable-HTTP** MCP sidecar (`mcp.obsign.org`, the hosted Custos tier): single-sources the `tools/mcp` tool surface, swaps stdio → HTTP and the singleton session → a per-caller in-memory map, and forwards the caller's OAuth bearer per request while caching nothing durable (ADR-0023/0024). Deploys as a third Railway service; its `pnpm test` suite is hermetic (stub PDS on loopback). See its README
 - `tools/screenshots/` - Playwright-driven docs screenshots (`just docs-screenshots`): boots each mobile app's browser harness in fake mode and captures deterministic per-scenario PNGs (happy + error/rare states) into `sites/docs/public/screenshots/`, so docs imagery can't go stale (see its README)
 - `docs/` - Specs, design plans, implementation plans, and `docs/architecture/` (living architecture docs + the ADR log in `docs/architecture/decisions/`). Plans for landed/superseded work live in `docs/archive/` — when a plan's work ships, move its design/test/implementation triad there together (see `docs/archive/README.md`)
 

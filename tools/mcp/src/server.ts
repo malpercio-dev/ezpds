@@ -66,7 +66,10 @@ async function main(): Promise<void> {
   }
 
   const server = new McpServer({ name: 'custos-mcp', version: '0.1.0' });
-  registerTools(server, session);
+  // The stdio server is single-user: every tool call runs as the one onboarded
+  // session. (The sidecar instead resolves a per-caller session from the
+  // request's authenticated identity.)
+  registerTools(server, () => session);
   await server.connect(new StdioServerTransport());
   log(`MCP server connected (PDS: ${url})`);
 }
