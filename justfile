@@ -67,6 +67,15 @@ lock-check:
 bruno-check:
     scripts/bruno-parity.sh
 
+# Validate changelog fragment names/content and, when CHANGELOG_BASE_REF (or an explicit
+# argument) identifies a PR base, require a fragment for changes to shipped surfaces.
+changelog-check base="":
+    scripts/changelog-check.sh {{base}}
+
+# Hermetic regression coverage for the fragment gate and set-version roll-up.
+changelog-test:
+    scripts/changelog-test.sh
+
 # Verify parity across the four vendored font copies (identity-wallet, admin-companion,
 # PDS assets, marketing site): a font file bundled under the same name in more than one
 # copy must be byte-identical everywhere, so a re-fetch or re-optimization of one copy
@@ -137,7 +146,7 @@ mcp-test:
 # Adding a check here covers `just ci` (macOS/full) and `just ci-pds` (Linux) at once —
 # the old design re-stated all twelve checks in each, so a gate added to one and
 # forgotten in the other was a silent gap.
-checks: fmt-check lock-check bruno-check font-check cap-check ios-paths-check swift-rs-check ios-template-check
+checks: fmt-check lock-check bruno-check changelog-check changelog-test font-check cap-check ios-paths-check swift-rs-check ios-template-check
 
 # Run the full CI pipeline locally (all crates; use on macOS where the iOS app builds)
 ci: checks clippy test audit deny
