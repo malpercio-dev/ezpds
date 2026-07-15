@@ -21,7 +21,7 @@ function apiReference() {
   const unique = [...new Set(routes)].sort();
   if (unique.length === 0) throw new Error('no routes found in crates/pds/src/app.rs');
   return frontmatter('HTTP & XRPC API', 'Generated route reference for the Custos server.') + stamp
-    + 'Every path registered by the server is listed here. Authentication, request bodies, and response semantics remain review-maintained prose.\n\n'
+    + 'Every path registered by the server is listed here. For `/xrpc/` endpoints, use the namespace after `/xrpc/` to find the request, response, and authentication schema in the [AT Protocol Lexicon reference](https://docs.bsky.app/docs/api/at-protocol-xrpc-api). Custos-specific endpoints are explained in the operator workflows elsewhere in this documentation; this generated inventory is the complete route-coverage index.\n\n'
     + '| Registered path | Family |\n| --- | --- |\n'
     + unique.map((route) => `| \`${esc(route)}\` | ${route.startsWith('/xrpc/') ? 'AT Protocol XRPC' : 'Custos HTTP'} |`).join('\n') + '\n';
 }
@@ -52,12 +52,22 @@ function configReference() {
   if (fields.length === 0) throw new Error('no public configuration fields found');
   const env = [...new Set([...source.matchAll(/env\.get\("([A-Z][A-Z0-9_]+)"\)/g)].map((match) => match[1]))].sort();
   if (!env.includes('EZPDS_DATA_DIR')) throw new Error('environment override registry could not be extracted');
+  const sectionByType = new Map(fields.filter(({ structName }) => structName === 'Config').map(({ name, type }) => [type, name]));
+  const envByPath = new Map();
+  for (const match of source.matchAll(/env\.get\("([A-Z][A-Z0-9_]+)"\)/g)) {
+    const block = source.slice(match.index, source.indexOf('\n    if let Some', match.index + 1));
+    const assignment = block.match(/raw\.([A-Za-z0-9_.]+)\s*=/)?.[1];
+    if (assignment) envByPath.set(assignment, [...(envByPath.get(assignment) ?? []), match[1]]);
+  }
+  const pathFor = ({ structName, name }) => structName === 'Config' ? name : `${sectionByType.get(structName) ?? structName}.${name}`;
+  const mappedEnv = new Set([...envByPath.values()].flat());
+  const standaloneEnv = env.filter((name) => !mappedEnv.has(name));
   return frontmatter('Configuration reference', 'Generated TOML fields and environment controls for Custos operators.') + stamp
-    + 'Fields come from the validated Rust configuration types. Environment names come from the override loader; nested TOML fields use their containing table. Sensitive values are named but never rendered.\n\n'
-    + '## TOML fields\n\n| Table/type | Field | Rust type | Source description |\n| --- | --- | --- | --- |\n'
-    + fields.map(({ structName, name, type, docs }) => `| \`${structName}\` | \`${name}\` | \`${esc(type)}\` | ${esc(docs)} |`).join('\n')
-    + '\n\n## Environment variables\n\n'
-    + env.map((name) => `- \`${name}\``).join('\n') + '\n\n'
+    + 'Fields come from the validated Rust configuration types. Environment overrides come from the loader and are shown beside the TOML value they replace. A dash means that field has no direct environment override. Sensitive values are named but never rendered.\n\n'
+    + '## TOML fields and overrides\n\n| TOML key | Environment override | Rust type | Source description |\n| --- | --- | --- | --- |\n'
+    + fields.map((field) => { const path = pathFor(field); const overrides = envByPath.get(path) ?? []; return `| \`${path}\` | ${overrides.length ? overrides.map((name) => `\`${name}\``).join(', ') : '—'} | \`${esc(field.type)}\` | ${esc(field.docs)} |`; }).join('\n')
+    + '\n\n## Process-level environment variables\n\n'
+    + standaloneEnv.map((name) => `- \`${name}\``).join('\n') + (standaloneEnv.length ? '\n' : '')
     + '- `EZPDS_CONFIG` — path to the TOML configuration file (CLI source).\n';
 }
 
