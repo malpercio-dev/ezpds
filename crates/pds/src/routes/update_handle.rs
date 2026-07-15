@@ -14,9 +14,12 @@
 //   4. For handles on external domains (not in available_user_domains), verify
 //      resolution via the resolveHandle chain (local DB → DNS TXT → HTTP well-known);
 //      PDS-served handles skip this — the PDS is authoritative
-//   5. Atomically swap handles in a transaction:
-//      DELETE old handle(s) for this DID, INSERT new handle
-//   6. Update DID document alsoKnownAs to reflect the new handle set
+//   5. For a PDS-custodied did:plc (the PDS key is rotationKeys[0]), build and sign
+//      an alsoKnownAs-only PLC operation. Wallet-sovereign identities are left for
+//      the device-key-signed wallet flow.
+//   6. Atomically swap handles in a transaction. For the custodied path, keep the
+//      transaction open until plc.directory accepts the operation, then update the
+//      cached DID document in the same transaction.
 //   7. Emit #identity firehose frame with the new handle
 //   8. Return 200 (empty JSON object)
 //
@@ -32,7 +35,14 @@ use crate::auth::extractors::AuthenticatedUser;
 use crate::auth::jwt::AuthScope;
 use crate::auth::oauth_scopes;
 use crate::db::dids::{fetch_also_known_as, update_also_known_as};
+use crate::db::repo_keys::get_signing_key_by_did;
+use crate::identity::plc::{build_did_document_from_op, fetch_current_plc_state};
 use common::{ApiError, ErrorCode};
+
+struct CustodiedPlcUpdate {
+    signed_operation: String,
+    did_document: serde_json::Value,
+}
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -122,7 +132,14 @@ pub async fn update_handle_handler(
         }
     }
 
+    let plc_update = prepare_custodied_plc_update(&state, did, &payload.handle).await?;
+
     // DELETE old + INSERT new share one transaction so the swap commits or rolls back together.
+    // On the PDS-custodied path, plc.directory must accept the authoritative change before this
+    // transaction commits. The remote call deliberately happens while this writer transaction
+    // reserves the new handle: posting first would let a concurrent claimant win the handle before
+    // our local commit, leaving the PLC document changed but local resolution unchanged. A failed
+    // POST drops the transaction and restores the old local handle.
     {
         let mut tx = state.db.begin().await.map_err(|e| {
             tracing::error!(error = %e, "failed to begin transaction for handle swap");
@@ -159,21 +176,51 @@ pub async fn update_handle_handler(
                 ApiError::new(ErrorCode::InternalError, "failed to update handles")
             })?;
 
+        if let Some(plc_update) = &plc_update {
+            crate::identity::genesis::post_to_plc_directory(
+                &state.http_client,
+                &state.config.plc_directory_url,
+                did,
+                &plc_update.signed_operation,
+            )
+            .await?;
+
+            sqlx::query(
+                "INSERT INTO did_documents (did, document, created_at, updated_at) \
+                 VALUES (?, ?, datetime('now'), datetime('now')) \
+                 ON CONFLICT(did) DO UPDATE SET \
+                    document = excluded.document, updated_at = datetime('now')",
+            )
+            .bind(did)
+            .bind(plc_update.did_document.to_string())
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| {
+                tracing::error!(error = %e, did = %did, "failed to cache submitted handle PLC operation");
+                ApiError::new(ErrorCode::InternalError, "failed to update DID document")
+            })?;
+        }
+
         tx.commit().await.map_err(|e| {
             tracing::error!(error = %e, "failed to commit handle swap transaction");
             ApiError::new(ErrorCode::InternalError, "failed to update handles")
         })?;
     }
 
-    let also_known_as = fetch_also_known_as(&state.db, did).await?;
+    if plc_update.is_none() {
+        // Wallet-sovereign and did:web accounts keep the existing local behavior. For did:plc,
+        // the wallet follows this allocation call with a device-key-signed alsoKnownAs operation;
+        // the PDS must not sign with its lower-priority key and manufacture an authorization alert.
+        let also_known_as = fetch_also_known_as(&state.db, did).await?;
 
-    if let Err(e) = update_also_known_as(&state.db, did, &also_known_as).await {
-        tracing::error!(
-            error = %e,
-            did = %did,
-            handle = %payload.handle,
-            "failed to update DID document alsoKnownAs after handle change"
-        );
+        if let Err(e) = update_also_known_as(&state.db, did, &also_known_as).await {
+            tracing::error!(
+                error = %e,
+                did = %did,
+                handle = %payload.handle,
+                "failed to update DID document alsoKnownAs after handle change"
+            );
+        }
     }
 
     if let Err(e) = state
@@ -190,6 +237,90 @@ pub async fn update_handle_handler(
     }
 
     Ok(Json(UpdateHandleResponse {}))
+}
+
+/// Build an alsoKnownAs-only PLC update when Custos owns the DID's root rotation key.
+///
+/// A Custos-held key lower in the rotation list is deliberately insufficient: `rotationKeys[0]`
+/// is the custody signal used by the wallet. Signing such an identity from the PDS would bypass the
+/// device-key approval boundary even though plc.directory would accept the signature.
+async fn prepare_custodied_plc_update(
+    state: &AppState,
+    did: &str,
+    handle: &str,
+) -> Result<Option<CustodiedPlcUpdate>, ApiError> {
+    if !did.starts_with("did:plc:") {
+        return Ok(None);
+    }
+
+    let signing_key = get_signing_key_by_did(&state.db, did).await.map_err(|e| {
+        tracing::error!(error = %e, did = %did, "failed to load account signing key");
+        ApiError::new(ErrorCode::InternalError, "failed to load account keys")
+    })?;
+    let Some(signing_key) = signing_key else {
+        return Ok(None);
+    };
+
+    // Custody cannot be classified from did_documents: that table stores the rendered W3C DID
+    // document, which intentionally omits PLC rotationKeys. Fetch the authoritative audit-log head
+    // before deciding whether the locally-held key is the root key or a lower-priority key retained
+    // by a wallet-sovereign identity.
+    let current =
+        fetch_current_plc_state(&state.http_client, &state.config.plc_directory_url, did).await?;
+
+    if current.rotation_keys.first() != Some(&signing_key.key_id) {
+        return Ok(None);
+    }
+
+    let master_key: &[u8; 32] = state
+        .config
+        .signing_key_master_key
+        .as_ref()
+        .map(|key| &*key.0)
+        .ok_or_else(|| {
+            ApiError::new(
+                ErrorCode::ServiceUnavailable,
+                "signing key master key not configured",
+            )
+        })?;
+    let private_key = crypto::decrypt_private_key(&signing_key.private_key_encrypted, master_key)
+        .map_err(|e| {
+        tracing::error!(error = %e, did = %did, "failed to decrypt account signing key");
+        ApiError::new(ErrorCode::InternalError, "failed to prepare signing key")
+    })?;
+    let signer = repo_engine::CommitSigner::from_bytes(&private_key).map_err(|e| {
+        tracing::error!(error = %e, did = %did, "invalid account signing key bytes");
+        ApiError::new(ErrorCode::InternalError, "failed to prepare signing key")
+    })?;
+
+    let also_known_as = vec![format!("at://{handle}")];
+    if current.also_known_as == also_known_as {
+        return Ok(None);
+    }
+
+    let signed = crypto::build_did_plc_rotation_op(
+        &current.cid,
+        current.rotation_keys,
+        current.verification_methods.clone(),
+        also_known_as.clone(),
+        current.services.clone(),
+        |bytes| Ok(signer.sign(bytes)),
+    )
+    .map_err(|e| {
+        tracing::error!(error = %e, did = %did, "failed to build handle PLC operation");
+        ApiError::new(ErrorCode::InternalError, "failed to sign PLC operation")
+    })?;
+    let did_document = build_did_document_from_op(
+        did,
+        &current.verification_methods,
+        &also_known_as,
+        &current.services,
+    )?;
+
+    Ok(Some(CustodiedPlcUpdate {
+        signed_operation: signed.signed_op_json,
+        did_document,
+    }))
 }
 
 /// Resolve a handle to a DID using the same three-step chain as `resolveHandle`:
@@ -259,10 +390,15 @@ mod tests {
     };
     use tower::ServiceExt;
     use uuid::Uuid;
+    use wiremock::{
+        matchers::{method, path},
+        Mock, MockServer, ResponseTemplate,
+    };
 
     use crate::app::{app, test_state, AppState};
     use crate::identity::dns::{DnsError, TxtResolver};
     use crate::identity::well_known::{WellKnownError, WellKnownResolver};
+    use crate::routes::test_utils::{seed_account_with_signing_key, state_with_master_key};
 
     // ── Test doubles ──────────────────────────────────────────────────────────
 
@@ -316,10 +452,26 @@ mod tests {
         access_jwt: String,
     }
 
-    /// Insert a promoted account and session, returns the DID + access JWT.
-    async fn insert_account_and_session(db: &sqlx::SqlitePool, handle: &str) -> TestSession {
+    async fn insert_session(db: &sqlx::SqlitePool, did: &str) -> String {
         use crate::auth::token::generate_token;
 
+        let token = generate_token();
+        sqlx::query(
+            "INSERT INTO sessions (id, did, device_id, token_hash, created_at, expires_at) \
+             VALUES (?, ?, NULL, ?, datetime('now'), datetime('now', '+1 year'))",
+        )
+        .bind(Uuid::new_v4().to_string())
+        .bind(did)
+        .bind(&token.hash)
+        .execute(db)
+        .await
+        .expect("insert session");
+
+        super::super::test_utils::access_jwt(&[0x42u8; 32], did)
+    }
+
+    /// Insert a promoted account and session, returns the DID + access JWT.
+    async fn insert_account_and_session(db: &sqlx::SqlitePool, handle: &str) -> TestSession {
         let did = format!(
             "did:plc:{}",
             &Uuid::new_v4().to_string().replace('-', "")[..24]
@@ -342,22 +494,66 @@ mod tests {
             .await
             .expect("insert handle");
 
-        // Create a session and mint an access JWT.
-        let token = generate_token();
-        sqlx::query(
-            "INSERT INTO sessions (id, did, device_id, token_hash, created_at, expires_at) \
-             VALUES (?, ?, NULL, ?, datetime('now'), datetime('now', '+1 year'))",
-        )
-        .bind(Uuid::new_v4().to_string())
-        .bind(&did)
-        .bind(&token.hash)
-        .execute(db)
-        .await
-        .expect("insert session");
-
-        let access_jwt = super::super::test_utils::access_jwt(&[0x42u8; 32], &did);
+        let access_jwt = insert_session(db, &did).await;
 
         TestSession { did, access_jwt }
+    }
+
+    async fn state_with_plc(plc_url: String) -> AppState {
+        let base = state_with_master_key().await;
+        let mut config = (*base.config).clone();
+        config.plc_directory_url = plc_url;
+        AppState {
+            config: Arc::new(config),
+            ..base
+        }
+    }
+
+    async fn mount_audit_log(
+        plc: &MockServer,
+        did: &str,
+        old_handle: &str,
+        rotation_keys: Vec<String>,
+        signing_key: &str,
+        endpoint: &str,
+    ) {
+        Mock::given(method("GET"))
+            .and(path(format!("/{did}/log/audit")))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(serde_json::json!([{
+                    "did": did,
+                    "cid": "bafyHandleHead",
+                    "createdAt": "2026-07-15T00:00:00Z",
+                    "nullified": false,
+                    "operation": {
+                        "type": "plc_operation",
+                        "prev": null,
+                        "rotationKeys": rotation_keys,
+                        "verificationMethods": { "atproto": signing_key },
+                        "alsoKnownAs": [format!("at://{old_handle}")],
+                        "services": {
+                            "atproto_pds": {
+                                "type": "AtprotoPersonalDataServer",
+                                "endpoint": endpoint
+                            }
+                        }
+                    }
+                }])),
+            )
+            .mount(plc)
+            .await;
+    }
+
+    async fn seed_cached_did(db: &sqlx::SqlitePool, did: &str, handle: &str) {
+        sqlx::query(
+            "INSERT INTO did_documents (did, document, created_at, updated_at) \
+             VALUES (?, ?, datetime('now'), datetime('now'))",
+        )
+        .bind(did)
+        .bind(serde_json::json!({"id": did, "alsoKnownAs": [format!("at://{handle}")]}).to_string())
+        .execute(db)
+        .await
+        .unwrap();
     }
 
     fn update_handle_request(jwt: &str, handle: &str) -> Request<Body> {
@@ -457,6 +653,191 @@ mod tests {
         assert_eq!(identity.handle.as_deref(), Some(new_handle.as_str()));
         assert_eq!(identity.seq, frontier + 1);
         drop(firehose);
+    }
+
+    #[tokio::test]
+    async fn pds_custodied_account_submits_plc_op_and_updates_cache() {
+        let plc = MockServer::start().await;
+        let state = state_with_plc(plc.uri()).await;
+        let db = state.db.clone();
+        let did = "did:plc:updatehandlecustodied111";
+        let old_handle = format!("alice.{}", state.config.available_user_domains[0]);
+        let new_handle = format!("bob.{}", state.config.available_user_domains[0]);
+        let key_id = seed_account_with_signing_key(&db, did, &old_handle).await;
+        // Deliberately leave did_documents empty: the accepted operation must populate a missing
+        // cache row as well as update an existing one.
+        let jwt = insert_session(&db, did).await;
+        mount_audit_log(
+            &plc,
+            did,
+            &old_handle,
+            vec![key_id.clone()],
+            &key_id,
+            &state.config.public_url,
+        )
+        .await;
+        Mock::given(method("POST"))
+            .and(path(format!("/{did}")))
+            .respond_with(ResponseTemplate::new(200))
+            .expect(1)
+            .mount(&plc)
+            .await;
+
+        let response = app(state)
+            .oneshot(update_handle_request(&jwt, &new_handle))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let requests = plc.received_requests().await.unwrap();
+        let post = requests
+            .iter()
+            .find(|request| request.method.as_str() == "POST")
+            .expect("PLC operation submitted");
+        let operation: serde_json::Value = serde_json::from_slice(&post.body).unwrap();
+        assert_eq!(
+            operation["alsoKnownAs"],
+            serde_json::json!([format!("at://{new_handle}")])
+        );
+        crypto::verify_plc_operation(&operation.to_string(), &[crypto::DidKeyUri(key_id)])
+            .expect("PLC operation is signed by the custodied root key");
+
+        let cached: String = sqlx::query_scalar("SELECT document FROM did_documents WHERE did = ?")
+            .bind(did)
+            .fetch_one(&db)
+            .await
+            .unwrap();
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&cached).unwrap()["alsoKnownAs"],
+            serde_json::json!([format!("at://{new_handle}")])
+        );
+    }
+
+    #[tokio::test]
+    async fn wallet_sovereign_account_is_not_signed_by_pds_key() {
+        let plc = MockServer::start().await;
+        let state = state_with_plc(plc.uri()).await;
+        let db = state.db.clone();
+        let did = "did:plc:updatehandlesovereign111";
+        let old_handle = format!("alice.{}", state.config.available_user_domains[0]);
+        let new_handle = format!("bob.{}", state.config.available_user_domains[0]);
+        let key_id = seed_account_with_signing_key(&db, did, &old_handle).await;
+        seed_cached_did(&db, did, &old_handle).await;
+        let jwt = insert_session(&db, did).await;
+        mount_audit_log(
+            &plc,
+            did,
+            &old_handle,
+            vec!["did:key:zWalletRoot".to_string(), key_id.clone()],
+            &key_id,
+            &state.config.public_url,
+        )
+        .await;
+        Mock::given(method("POST"))
+            .and(path(format!("/{did}")))
+            .respond_with(ResponseTemplate::new(500))
+            .expect(0)
+            .mount(&plc)
+            .await;
+
+        let response = app(state)
+            .oneshot(update_handle_request(&jwt, &new_handle))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            crate::db::handles::resolve_handle(&db, &new_handle)
+                .await
+                .unwrap()
+                .as_deref(),
+            Some(did)
+        );
+    }
+
+    #[tokio::test]
+    async fn custodied_account_skips_plc_op_when_authoritative_handle_matches() {
+        let plc = MockServer::start().await;
+        let state = state_with_plc(plc.uri()).await;
+        let db = state.db.clone();
+        let did = "did:plc:updatehandlecurrent111111";
+        let handle = format!("alice.{}", state.config.available_user_domains[0]);
+        let key_id = seed_account_with_signing_key(&db, did, &handle).await;
+        seed_cached_did(&db, did, &handle).await;
+        let jwt = insert_session(&db, did).await;
+        mount_audit_log(
+            &plc,
+            did,
+            &handle,
+            vec![key_id.clone()],
+            &key_id,
+            &state.config.public_url,
+        )
+        .await;
+        Mock::given(method("POST"))
+            .and(path(format!("/{did}")))
+            .respond_with(ResponseTemplate::new(500))
+            .expect(0)
+            .mount(&plc)
+            .await;
+
+        let response = app(state)
+            .oneshot(update_handle_request(&jwt, &handle))
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            crate::db::handles::resolve_handle(&db, &handle)
+                .await
+                .unwrap()
+                .as_deref(),
+            Some(did)
+        );
+    }
+
+    #[tokio::test]
+    async fn plc_failure_rolls_back_custodied_handle_swap() {
+        let plc = MockServer::start().await;
+        let state = state_with_plc(plc.uri()).await;
+        let db = state.db.clone();
+        let did = "did:plc:updatehandlefailure11111";
+        let old_handle = format!("alice.{}", state.config.available_user_domains[0]);
+        let new_handle = format!("bob.{}", state.config.available_user_domains[0]);
+        let key_id = seed_account_with_signing_key(&db, did, &old_handle).await;
+        seed_cached_did(&db, did, &old_handle).await;
+        let jwt = insert_session(&db, did).await;
+        mount_audit_log(
+            &plc,
+            did,
+            &old_handle,
+            vec![key_id.clone()],
+            &key_id,
+            &state.config.public_url,
+        )
+        .await;
+        Mock::given(method("POST"))
+            .and(path(format!("/{did}")))
+            .respond_with(ResponseTemplate::new(503))
+            .expect(1)
+            .mount(&plc)
+            .await;
+
+        let response = app(state)
+            .oneshot(update_handle_request(&jwt, &new_handle))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
+        assert_eq!(
+            crate::db::handles::resolve_handle(&db, &old_handle)
+                .await
+                .unwrap()
+                .as_deref(),
+            Some(did)
+        );
+        assert!(crate::db::handles::resolve_handle(&db, &new_handle)
+            .await
+            .unwrap()
+            .is_none());
     }
 
     /// Changing to the same handle (no-op) returns 200 and still emits #identity.
