@@ -434,6 +434,10 @@ pub async fn authenticate_source_pds(
 /// Testable core: run `createSession` against the source PDS and build a full-session Bearer
 /// `OAuthClient`. Extracted so it can be exercised without Tauri's `State` wrapper.
 ///
+/// The `createSession` body + account-match guard are shared with the outbound migration in
+/// `source_login::authenticate_source_password`; this wrapper only maps the neutral
+/// `SourceLoginError` into the claim flow's `ClaimError` contract.
+///
 /// `expected_did` is the DID being claimed: the session the PDS returns MUST be for that account,
 /// or the caller signed in to the wrong one and we refuse to bind those credentials to this claim.
 pub(crate) async fn authenticate_source_pds_impl(
@@ -444,57 +448,33 @@ pub(crate) async fn authenticate_source_pds_impl(
     password: &str,
     auth_factor_token: Option<&str>,
 ) -> Result<OAuthClient, ClaimError> {
-    let session = pds_client
-        .create_session(pds_url, identifier, password, auth_factor_token)
-        .await
-        .map_err(|e| match e {
-            crate::pds_client::PdsClientError::AuthFactorTokenRequired => {
-                tracing::info!("source account has email 2FA; a code was sent");
-                ClaimError::TwoFactorRequired
-            }
-            crate::pds_client::PdsClientError::InvalidCredentials { message } => {
-                tracing::warn!(detail = %message, "source createSession rejected the password");
-                ClaimError::SourceAuthFailed {
-                    message: "The PDS did not accept that password.".to_string(),
-                }
-            }
-            crate::pds_client::PdsClientError::InsecurePdsUrl { url } => {
-                tracing::error!(pds_url = %url, "refusing password login to a non-HTTPS PDS");
-                ClaimError::InsecureSourceUrl
-            }
-            // A rate limit or other server rejection during the password login must keep its real
-            // reason too — a 429 here is not a connectivity problem.
-            crate::pds_client::PdsClientError::RateLimited { retry_after, .. } => {
-                ClaimError::RateLimited { retry_after }
-            }
-            crate::pds_client::PdsClientError::XrpcError { message, .. } => {
-                ClaimError::ServerError { message }
-            }
-            other => ClaimError::NetworkError {
-                message: format!("createSession failed: {}", other),
-            },
-        })?;
-
-    // The session must be for the account being claimed. A mismatch means the user signed in to a
-    // different account (or a hostile PDS returned someone else's session) — refuse to bind those
-    // credentials to this claim rather than sign a PLC op against the wrong identity.
-    if session.did != expected_did {
-        tracing::warn!(
-            expected = %expected_did,
-            got = %session.did,
-            "source session DID does not match the claim"
-        );
-        return Err(ClaimError::AccountMismatch);
-    }
-
-    OAuthClient::new_bearer(session.access_jwt, session.refresh_jwt, pds_url.to_string()).map_err(
-        |e| {
-            tracing::error!(error = %e, "failed to build Bearer client from source session");
-            ClaimError::NetworkError {
-                message: "failed to build source session client".to_string(),
-            }
-        },
+    crate::source_login::authenticate_source_password(
+        pds_client,
+        pds_url,
+        expected_did,
+        identifier,
+        password,
+        auth_factor_token,
     )
+    .await
+    .map_err(ClaimError::from)
+}
+
+/// Map the neutral source-login error into the claim flow's frontend-facing enum. The variants line
+/// up one-to-one with what `authenticate_source_pds_impl` used to produce inline.
+impl From<crate::source_login::SourceLoginError> for ClaimError {
+    fn from(e: crate::source_login::SourceLoginError) -> Self {
+        use crate::source_login::SourceLoginError as S;
+        match e {
+            S::TwoFactorRequired => ClaimError::TwoFactorRequired,
+            S::SourceAuthFailed { message } => ClaimError::SourceAuthFailed { message },
+            S::AccountMismatch => ClaimError::AccountMismatch,
+            S::InsecureSourceUrl => ClaimError::InsecureSourceUrl,
+            S::RateLimited { retry_after } => ClaimError::RateLimited { retry_after },
+            S::ServerError { message } => ClaimError::ServerError { message },
+            S::NetworkError { message } => ClaimError::NetworkError { message },
+        }
+    }
 }
 
 /// Request email verification for the PLC operation.
@@ -1665,167 +1645,51 @@ mod tests {
         format!("{}.{}.sig", header, payload)
     }
 
-    /// Happy path: a 200 `createSession` yields a full-session Bearer client bound to the PDS URL.
-    #[tokio::test]
-    async fn test_authenticate_source_pds_impl_success() {
-        crate::keychain::clear_for_test();
-        use httpmock::MockServer;
+    /// The shared `createSession` body + account-match guard now live in `source_login`, tested
+    /// once there against a mock PDS. What remains claim-specific is the `From<SourceLoginError>`
+    /// mapping into `ClaimError`; these unit tests pin that contract so a variant can't silently
+    /// remap. `authenticate_source_pds_impl` is a thin `.map_err(ClaimError::from)` over the shared
+    /// core, so the mapping is the only claim-owned behavior left to cover.
+    #[test]
+    fn test_source_login_error_maps_to_claim_error() {
+        use crate::source_login::SourceLoginError as S;
 
-        let server = MockServer::start();
-        let access_jwt = future_exp_jwt();
-        let access_for_body = access_jwt.clone();
-        server.mock(move |when, then| {
-            when.method(httpmock::Method::POST)
-                .path("/xrpc/com.atproto.server.createSession");
-            then.status(200).json_body(serde_json::json!({
-                "accessJwt": access_for_body,
-                "refreshJwt": "refresh_jwt",
-                "did": "did:plc:test",
-                "handle": "alice.example.com",
-            }));
-        });
-
-        let pds_client = crate::pds_client::PdsClient::new();
-        let result = authenticate_source_pds_impl(
-            &pds_client,
-            &server.base_url(),
-            "did:plc:test",
-            "alice.example.com",
-            "hunter2",
-            None,
-        )
-        .await;
-        assert!(
-            result.is_ok(),
-            "createSession 200 must build a Bearer client"
-        );
-    }
-
-    /// A 200 whose `did` differs from the claim's DID must be refused (wrong-account guard), never
-    /// bound as a session for the claimed identity.
-    #[tokio::test]
-    async fn test_authenticate_source_pds_impl_did_mismatch() {
-        crate::keychain::clear_for_test();
-        use httpmock::MockServer;
-
-        let server = MockServer::start();
-        let access_jwt = future_exp_jwt();
-        let access_for_body = access_jwt.clone();
-        server.mock(move |when, then| {
-            when.method(httpmock::Method::POST)
-                .path("/xrpc/com.atproto.server.createSession");
-            then.status(200).json_body(serde_json::json!({
-                "accessJwt": access_for_body,
-                "refreshJwt": "refresh_jwt",
-                "did": "did:plc:someone-else",
-                "handle": "mallory.example.com",
-            }));
-        });
-
-        let pds_client = crate::pds_client::PdsClient::new();
-        let result = authenticate_source_pds_impl(
-            &pds_client,
-            &server.base_url(),
-            "did:plc:test",
-            "alice.example.com",
-            "hunter2",
-            None,
-        )
-        .await;
-        assert!(
-            matches!(result, Err(ClaimError::AccountMismatch)),
-            "a session for a different DID must be refused, got: {:?}",
-            result.err()
-        );
-    }
-
-    /// The password must never be sent to a non-HTTPS, non-loopback PDS — refused before any
-    /// network call, so no mock server is needed.
-    #[tokio::test]
-    async fn test_authenticate_source_pds_impl_rejects_insecure_url() {
-        crate::keychain::clear_for_test();
-        let pds_client = crate::pds_client::PdsClient::new();
-        let result = authenticate_source_pds_impl(
-            &pds_client,
-            "http://pds.example.com",
-            "did:plc:test",
-            "alice.example.com",
-            "hunter2",
-            None,
-        )
-        .await;
-        assert!(
-            matches!(result, Err(ClaimError::InsecureSourceUrl)),
-            "a non-HTTPS PDS URL must be refused, got: {:?}",
-            result.err()
-        );
-    }
-
-    /// A 401 `createSession` (wrong password) surfaces as SourceAuthFailed, never NetworkError.
-    #[tokio::test]
-    async fn test_authenticate_source_pds_impl_wrong_password() {
-        crate::keychain::clear_for_test();
-        use httpmock::MockServer;
-
-        let server = MockServer::start();
-        server.mock(|when, then| {
-            when.method(httpmock::Method::POST)
-                .path("/xrpc/com.atproto.server.createSession");
-            then.status(401).json_body(serde_json::json!({
-                "error": "AuthenticationRequired",
-                "message": "Invalid identifier or password"
-            }));
-        });
-
-        let pds_client = crate::pds_client::PdsClient::new();
-        let result = authenticate_source_pds_impl(
-            &pds_client,
-            &server.base_url(),
-            "did:plc:test",
-            "alice.example.com",
-            "wrong",
-            None,
-        )
-        .await;
-        assert!(
-            matches!(result, Err(ClaimError::SourceAuthFailed { .. })),
-            "a 401 must surface as SourceAuthFailed, got: {:?}",
-            result.err()
-        );
-    }
-
-    /// An email-2FA account answers a token-less attempt with `AuthFactorTokenRequired`, which must
-    /// surface as `TwoFactorRequired` (prompt for a code), NOT `SourceAuthFailed` (wrong password).
-    #[tokio::test]
-    async fn test_authenticate_source_pds_impl_two_factor_required() {
-        crate::keychain::clear_for_test();
-        use httpmock::MockServer;
-
-        let server = MockServer::start();
-        server.mock(|when, then| {
-            when.method(httpmock::Method::POST)
-                .path("/xrpc/com.atproto.server.createSession");
-            then.status(401).json_body(serde_json::json!({
-                "error": "AuthFactorTokenRequired",
-                "message": "A sign in code has been sent to your email address"
-            }));
-        });
-
-        let pds_client = crate::pds_client::PdsClient::new();
-        let result = authenticate_source_pds_impl(
-            &pds_client,
-            &server.base_url(),
-            "did:plc:test",
-            "alice.example.com",
-            "correct-password",
-            None,
-        )
-        .await;
-        assert!(
-            matches!(result, Err(ClaimError::TwoFactorRequired)),
-            "AuthFactorTokenRequired must surface as TwoFactorRequired, got: {:?}",
-            result.err()
-        );
+        assert!(matches!(
+            ClaimError::from(S::TwoFactorRequired),
+            ClaimError::TwoFactorRequired
+        ));
+        assert!(matches!(
+            ClaimError::from(S::AccountMismatch),
+            ClaimError::AccountMismatch
+        ));
+        assert!(matches!(
+            ClaimError::from(S::InsecureSourceUrl),
+            ClaimError::InsecureSourceUrl
+        ));
+        assert!(matches!(
+            ClaimError::from(S::SourceAuthFailed {
+                message: "The PDS did not accept that password.".to_string()
+            }),
+            ClaimError::SourceAuthFailed { message } if message == "The PDS did not accept that password."
+        ));
+        assert!(matches!(
+            ClaimError::from(S::RateLimited {
+                retry_after: Some("120".to_string())
+            }),
+            ClaimError::RateLimited { retry_after: Some(r) } if r == "120"
+        ));
+        assert!(matches!(
+            ClaimError::from(S::ServerError {
+                message: "handle is required".to_string()
+            }),
+            ClaimError::ServerError { message } if message == "handle is required"
+        ));
+        assert!(matches!(
+            ClaimError::from(S::NetworkError {
+                message: "connection refused".to_string()
+            }),
+            ClaimError::NetworkError { message } if message == "connection refused"
+        ));
     }
 
     // ── request_claim_verification tests ──────────────────────────────────────
