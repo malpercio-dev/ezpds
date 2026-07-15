@@ -52,7 +52,24 @@ shipped_files="$(printf '%s\n' "$changed_files" | awk '
   /^apps\/[^\/]+\/static\// || /^apps\/[^\/]+\/tauri\.conf\.json$/ { print; next }
 ')"
 
+# A release roll-up (`just set-version`) legitimately consumes every fragment while it bumps
+# the workspace version and touches Cargo.toml/Cargo.lock — so it changes shipped surfaces
+# yet cannot carry a fragment. Recognize that exact shape (the [workspace.package] version
+# line changed AND a new dated release heading was added to CHANGELOG.md) and waive the
+# presence requirement. Both signals are required, so a plain CHANGELOG.md edit can never
+# be used to smuggle a real feature past the gate.
+is_release_rollup() {
+  git diff "${base_ref}...HEAD" -- Cargo.toml \
+    | grep -qE '^\+version = "[0-9]+\.[0-9]+\.[0-9]+"$' || return 1
+  git diff "${base_ref}...HEAD" -- CHANGELOG.md \
+    | grep -qE '^\+## \[[0-9]+\.[0-9]+\.[0-9]+\] - [0-9]{4}-[0-9]{2}-[0-9]{2}$' || return 1
+}
+
 if [ -n "$shipped_files" ] && [ "$fragment_count" -eq 0 ]; then
+  if is_release_rollup; then
+    echo "✓ release roll-up detected (workspace version bump + new CHANGELOG.md section); fragment presence not required"
+    exit 0
+  fi
   echo "✗ this change touches shipped surfaces but has no changelog.d/<id>.<type>.md fragment:" >&2
   while IFS= read -r shipped_file; do
     printf '  %s\n' "$shipped_file" >&2

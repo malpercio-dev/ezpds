@@ -79,4 +79,12 @@ test ! -e changelog.d/mm-358.added.md
 test ! -e changelog.d/mm-358.fixed.md
 test -e changelog.d/README.md
 
+# The release roll-up commit changes shipped surfaces (Cargo.toml/Cargo.lock) yet carries no
+# fragment, because set-version just consumed them all. The gate must recognize this shape and
+# pass — otherwise every release PR fails the very gate the release just satisfied.
+git add -A
+git commit -qm 'release: set version 1.1.0'
+scripts/changelog-check.sh "$base" >"$tmp/rollup.out" 2>&1
+grep -q 'release roll-up detected' "$tmp/rollup.out"
+
 echo "✓ changelog gate and release roll-up behavior"
