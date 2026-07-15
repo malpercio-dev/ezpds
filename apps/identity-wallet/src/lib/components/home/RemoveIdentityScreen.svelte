@@ -163,7 +163,14 @@
     }
   }
 
-  /** Errors that mean deleteAccount already succeeded — only the tombstone/wipe is left. */
+  /**
+   * Errors that mean deleteAccount already succeeded — only the tombstone/wipe is left, so the
+   * UI offers the tombstone-only retry. Deliberately excludes RATE_LIMITED and NETWORK_ERROR:
+   * those are the *deletion* stage's codes (a transport failure there leaves the outcome
+   * unknown, not confirmed-deleted), so they must re-prompt rather than enter the retry path.
+   * The backend folds every post-delete PLC transport failure into PLC_DIRECTORY_ERROR, so the
+   * two stages' codes are disjoint.
+   */
   function isPostDeleteFailure(raw: unknown): boolean {
     if (!isCodedError(raw)) return false;
     const code = (raw as RemovalError).code;
@@ -172,9 +179,7 @@
       code === 'TOMBSTONE_SIGNING_FAILED' ||
       code === 'INVALID_AUDIT_LOG' ||
       code === 'LOCAL_WIPE_FAILED' ||
-      code === 'IDENTITY_NOT_FOUND' ||
-      code === 'RATE_LIMITED' ||
-      code === 'NETWORK_ERROR'
+      code === 'IDENTITY_NOT_FOUND'
     );
   }
 </script>

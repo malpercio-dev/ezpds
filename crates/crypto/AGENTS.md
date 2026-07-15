@@ -123,6 +123,7 @@ where F: FnOnce(&[u8]) -> Result<Vec<u8>, CryptoError>
 - Errors: propagates any `CryptoError` from the callback, or `CryptoError::PlcOperation` for serialization failures
 
 **`build_did_plc_tombstone_op`**
+
 ```rust
 pub fn build_did_plc_tombstone_op<F>(
     prev_cid: &str,                 // CID of the DID's current head op (newest non-nullified)
@@ -130,18 +131,21 @@ pub fn build_did_plc_tombstone_op<F>(
 ) -> Result<SignedPlcOperation, CryptoError>
 where F: FnOnce(&[u8]) -> Result<Vec<u8>, CryptoError>
 ```
+
 - Builds and signs a did:plc **tombstone** op — exactly `{ "type": "plc_tombstone", "prev": <cid>, "sig": <b64url> }`, no rotationKeys/verificationMethods/alsoKnownAs/services (a different, smaller field set than genesis/rotation ops). Permanently retires the DID once plc.directory accepts it.
 - Same external-signer-callback shape as the other builders (raw 64-byte r‖s P-256 ECDSA, low-S canonical; the sig covers the **unsigned** CBOR = `prev` + `type` only). Signed with any key in the head op's `rotationKeys` (the wallet uses its device key at `rotationKeys[0]`).
 - Returns `SignedPlcOperation { cid, signed_op_json }`; `signed_op_json` is ready to POST to plc.directory.
 - Errors: propagates any `CryptoError` from the callback, or `CryptoError::PlcOperation` for a non-64-byte/high-S signature or a serialization failure
 
 **`verify_plc_tombstone_op`**
+
 ```rust
 pub fn verify_plc_tombstone_op(
     signed_op_json: &str,                       // JSON-encoded signed tombstone op
     authorized_rotation_keys: &[DidKeyUri],     // the PREVIOUS (head) op's rotationKeys
 ) -> Result<VerifiedTombstoneOp, CryptoError>
 ```
+
 - Dedicated tombstone verifier (a tombstone's `type != "plc_operation"` and its field set differ, so it is verified separately from `verify_plc_operation`/`verify_genesis_op`, which both reject any non-`plc_operation` type). Parses (rejecting unknown fields), requires `type == "plc_tombstone"`, reconstructs the unsigned CBOR, and tries each authorized key (dual-curve, low-S enforced) until one verifies
 - Caller obligation: `authorized_rotation_keys` are the previous op's `rotationKeys` (same contract as `verify_plc_operation` for a rotation op)
 - Returns `VerifiedTombstoneOp { cid, prev }`

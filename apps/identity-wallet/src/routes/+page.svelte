@@ -484,7 +484,9 @@
             goTo('migration_start');
           }
         : undefined}
-      onremove={() => goTo('remove_identity')}
+      onremove={selectedDid?.startsWith('did:plc:')
+        ? () => goTo('remove_identity')
+        : undefined}
     />
 
   {:else if step === 'remove_identity'}

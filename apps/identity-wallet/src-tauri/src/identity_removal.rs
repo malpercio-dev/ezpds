@@ -157,7 +157,7 @@ where
 async fn tombstone_and_wipe(pds_client: &PdsClient, did: &str) -> Result<String, RemovalError> {
     let store = IdentityStore;
 
-    // 1. Fetch the current audit log and take the newest non-nullified op's CID as `prev`.
+    // 1. Fetch + parse the audit log and locate the head (newest non-nullified) operation.
     let audit_log_json =
         pds_client
             .fetch_audit_log(did)
@@ -169,14 +169,38 @@ async fn tombstone_and_wipe(pds_client: &PdsClient, did: &str) -> Result<String,
         crypto::parse_audit_log(&audit_log_json).map_err(|e| RemovalError::InvalidAuditLog {
             message: format!("failed to parse audit log: {e}"),
         })?;
-    let prev_cid = audit_log
+    let head = audit_log
         .iter()
         .rev()
         .find(|e| !e.nullified)
-        .map(|e| e.cid.clone())
         .ok_or_else(|| RemovalError::InvalidAuditLog {
             message: "audit log has no non-nullified operation to chain onto".to_string(),
         })?;
+    let head_cid = head.cid.clone();
+
+    // Idempotent resume: if the DID is already tombstoned (its head IS a tombstone), the
+    // submit already landed on plc.directory — only the local wipe remains. Submitting a
+    // second tombstone would be rejected (a retired DID accepts no further ops), so a resume
+    // after a wipe-only failure must skip straight to the wipe. This is what makes
+    // `tombstone_identity` safe to call after a partial success.
+    let head_is_tombstone =
+        head.operation.get("type").and_then(|t| t.as_str()) == Some("plc_tombstone");
+    if head_is_tombstone {
+        wipe_local(&store, did)?;
+        return Ok(head_cid);
+    }
+
+    // The tombstone chains onto the head and must be signed by one of the head op's
+    // `rotationKeys`. Verifying against those (not merely the local device key) is what
+    // proves the wallet's key is still a *current* rotation key — the exact authorization
+    // plc.directory will enforce — so a device key that is no longer in the rotation set
+    // (e.g. after a migrate-away) fails fast locally instead of after the network round trip.
+    let head_rotation_keys = extract_rotation_keys(&head.operation);
+    if head_rotation_keys.is_empty() {
+        return Err(RemovalError::InvalidAuditLog {
+            message: "head operation has no rotationKeys to authorize the tombstone".to_string(),
+        });
+    }
 
     // 2. Obtain the per-DID device-key signing closure (rotationKeys[0]).
     let sign = crate::identity_store::per_did_sign_closure(did).map_err(|e| match e {
@@ -188,30 +212,19 @@ async fn tombstone_and_wipe(pds_client: &PdsClient, did: &str) -> Result<String,
         }
     })?;
 
-    // 3. Build + sign the tombstone.
-    let tombstone = crypto::build_did_plc_tombstone_op(&prev_cid, sign).map_err(|e| {
+    // 3. Build + sign the tombstone (prev = the head CID).
+    let tombstone = crypto::build_did_plc_tombstone_op(&head_cid, sign).map_err(|e| {
         RemovalError::TombstoneSigningFailed {
             message: format!("failed to build tombstone: {e}"),
         }
     })?;
 
-    // 3b. Cheap local self-check: a mis-signed op turns into a local error here rather
-    //     than a plc.directory 4xx after the network round trip. The device key is the
-    //     authorized signer (it is rotationKeys[0] of the head op).
-    let device_pub =
-        store
-            .get_or_create_device_key(did)
-            .map_err(|e| RemovalError::IdentityNotFound {
-                message: format!("failed to load device key: {e}"),
-            })?;
-    let device_key_uri = crypto::DidKeyUri(device_pub.key_id.clone());
-    crypto::verify_plc_tombstone_op(
-        &tombstone.signed_op_json,
-        std::slice::from_ref(&device_key_uri),
-    )
-    .map_err(|e| RemovalError::TombstoneSigningFailed {
-        message: format!("tombstone self-verification failed: {e}"),
-    })?;
+    // 3b. Local self-check against the head op's authorized rotation keys (see above).
+    crypto::verify_plc_tombstone_op(&tombstone.signed_op_json, &head_rotation_keys).map_err(
+        |e| RemovalError::TombstoneSigningFailed {
+            message: format!("tombstone self-verification failed: {e}"),
+        },
+    )?;
 
     let op_value: serde_json::Value =
         serde_json::from_str(&tombstone.signed_op_json).map_err(|e| {
@@ -221,39 +234,51 @@ async fn tombstone_and_wipe(pds_client: &PdsClient, did: &str) -> Result<String,
         })?;
 
     // 4. Submit to plc.directory, THEN (only on success) 5. wipe local material.
+    //    Every failure in this function is post-delete (the account is already gone when
+    //    `confirm_identity_removal` calls us), so PLC-submit transport/rate-limit failures
+    //    fold into `PlcDirectoryError` rather than the bare `NetworkError`/`RateLimited` the
+    //    deletion stage uses — that keeps the two stages' error codes disjoint, so the UI
+    //    only enters the tombstone-retry path for genuinely post-delete failures.
     let did_owned = did.to_string();
     submit_then_wipe(
         async {
             pds_client
                 .post_plc_operation(&did_owned, &op_value)
                 .await
-                .map_err(|e| match e {
-                    PdsClientError::RateLimited { retry_after, .. } => {
-                        RemovalError::RateLimited { retry_after }
-                    }
-                    PdsClientError::NetworkError { message } => {
-                        RemovalError::NetworkError { message }
-                    }
-                    other => RemovalError::PlcDirectoryError {
-                        message: other.to_string(),
-                    },
+                .map_err(|e| RemovalError::PlcDirectoryError {
+                    message: format!("plc.directory rejected the tombstone: {e}"),
                 })
         },
-        || {
-            // `remove_identity` is best-effort and idempotent; a missing managed-dids
-            // entry (already removed by a prior partial run) is success, not failure.
-            match store.remove_identity(&did_owned) {
-                Ok(()) => Ok(()),
-                Err(crate::identity_store::IdentityStoreError::IdentityNotFound) => Ok(()),
-                Err(e) => Err(RemovalError::LocalWipeFailed {
-                    message: format!("failed to wipe local identity material: {e}"),
-                }),
-            }
-        },
+        || wipe_local(&store, &did_owned),
     )
     .await?;
 
     Ok(tombstone.cid)
+}
+
+/// Extract a PLC operation's `rotationKeys` as typed did:key URIs (empty if absent/malformed).
+fn extract_rotation_keys(operation: &serde_json::Value) -> Vec<crypto::DidKeyUri> {
+    operation
+        .get("rotationKeys")
+        .and_then(|v| v.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|v| v.as_str().map(|s| crypto::DidKeyUri(s.to_string())))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// Wipe the DID's local Keychain material. Best-effort and idempotent: a missing
+/// managed-dids entry (already removed by a prior partial run) is success, not failure.
+fn wipe_local(store: &IdentityStore, did: &str) -> Result<(), RemovalError> {
+    match store.remove_identity(did) {
+        Ok(()) => Ok(()),
+        Err(crate::identity_store::IdentityStoreError::IdentityNotFound) => Ok(()),
+        Err(e) => Err(RemovalError::LocalWipeFailed {
+            message: format!("failed to wipe local identity material: {e}"),
+        }),
+    }
 }
 
 /// Compute the `RemovalOutcome` after a successful `tombstone_and_wipe`.
@@ -329,7 +354,9 @@ pub async fn confirm_identity_removal(
 ///
 /// Used when `confirm_identity_removal` deleted the account but the tombstone or wipe
 /// failed: the single-use deletion token is already spent, so re-running `confirm`
-/// would 401 at `deleteAccount`. This retries only the tombstone + wipe.
+/// would 401 at `deleteAccount`. `tombstone_and_wipe` is idempotent — if the tombstone
+/// already landed (the DID's head is a tombstone), it does a wipe-only retry rather than
+/// submitting a second, doomed operation; otherwise it completes the tombstone + wipe.
 #[tauri::command]
 pub async fn tombstone_identity(
     state: tauri::State<'_, crate::oauth::AppState>,
@@ -475,7 +502,7 @@ mod tests {
         assert!(matches!(
             map_delete_account_error(PdsClientError::XrpcError {
                 status: 400,
-                error: "InvalidToken".to_string(),
+                error: Some("InvalidToken".to_string()),
                 message: "expired".to_string(),
             }),
             RemovalError::InvalidToken
@@ -484,7 +511,7 @@ mod tests {
         assert!(matches!(
             map_delete_account_error(PdsClientError::XrpcError {
                 status: 500,
-                error: "InternalError".to_string(),
+                error: Some("InternalError".to_string()),
                 message: "oops".to_string(),
             }),
             RemovalError::AccountDeleteFailed { .. }

@@ -209,6 +209,26 @@ pub fn compute_cid(signed_op_cbor: &[u8]) -> Result<String, CryptoError> {
     Ok(format!("b{encoded}"))
 }
 
+/// Whether `cid` is a well-formed CIDv1 (dag-cbor, sha-256) multibase base32lower string — the
+/// exact shape [`compute_cid`] emits and plc.directory requires for a `prev` pointer.
+///
+/// Used to reject an empty or malformed `prev` before a tombstone is built or accepted: a
+/// tombstone's `prev` is a required non-null CID, and the builder/verifier otherwise take an
+/// arbitrary `String`, so this is the guard that keeps a garbage `prev` from producing an op
+/// plc.directory would reject.
+fn is_valid_cidv1_dag_cbor_sha256(cid: &str) -> bool {
+    let Some(body) = cid.strip_prefix('b') else {
+        return false;
+    };
+    let Ok(encoding) = base32_lowercase() else {
+        return false;
+    };
+    let Ok(bytes) = encoding.decode(body.as_bytes()) else {
+        return false;
+    };
+    bytes.len() == 36 && bytes.starts_with(&CIDV1_DAG_CBOR_SHA256_PREFIX)
+}
+
 // ── Public API ───────────────────────────────────────────────────────────────
 
 /// The result of building a signed PLC operation (genesis or rotation).
@@ -517,6 +537,14 @@ pub fn build_did_plc_tombstone_op<F>(
 where
     F: FnOnce(&[u8]) -> Result<Vec<u8>, CryptoError>,
 {
+    // A tombstone's `prev` is a required non-null CID; reject a malformed one up front rather
+    // than build an op plc.directory will refuse.
+    if !is_valid_cidv1_dag_cbor_sha256(prev_cid) {
+        return Err(CryptoError::PlcOperation(format!(
+            "tombstone prev is not a valid CIDv1 (dag-cbor, sha-256): {prev_cid:?}"
+        )));
+    }
+
     let unsigned_op = UnsignedPlcTombstoneOp {
         prev: prev_cid.to_string(),
         op_type: "plc_tombstone".to_string(),
@@ -750,6 +778,14 @@ pub fn verify_plc_tombstone_op(
         return Err(CryptoError::PlcOperation(format!(
             "expected type 'plc_tombstone', got '{}'",
             signed_op.op_type
+        )));
+    }
+
+    // Reject a malformed `prev` before any crypto work — the same guard the builder applies.
+    if !is_valid_cidv1_dag_cbor_sha256(&signed_op.prev) {
+        return Err(CryptoError::PlcOperation(format!(
+            "tombstone prev is not a valid CIDv1 (dag-cbor, sha-256): {:?}",
+            signed_op.prev
         )));
     }
 
@@ -2559,7 +2595,7 @@ mod tests {
     /// A wrong-length signature hits the length guard.
     #[test]
     fn tombstone_wrong_length_signature_returns_error() {
-        let result = build_did_plc_tombstone_op("bafyprev", |_| Ok(vec![0u8; 32]));
+        let result = build_did_plc_tombstone_op(GOLDEN_PREV_CID, |_| Ok(vec![0u8; 32]));
         assert!(
             matches!(result, Err(CryptoError::PlcOperation(ref msg)) if msg.contains("expected 64")),
             "wrong-length signature must fail, got: {result:?}"
@@ -2569,12 +2605,57 @@ mod tests {
     /// A signing-callback error propagates unchanged.
     #[test]
     fn tombstone_signing_error_propagates() {
-        let result = build_did_plc_tombstone_op("bafyprev", |_| {
+        let result = build_did_plc_tombstone_op(GOLDEN_PREV_CID, |_| {
             Err(CryptoError::PlcOperation("SE unavailable".to_string()))
         });
         assert!(
             matches!(result, Err(CryptoError::PlcOperation(msg)) if msg.contains("SE unavailable")),
             "signing error must propagate"
+        );
+    }
+
+    /// A malformed or empty `prev` is rejected by the builder before any signing happens.
+    #[test]
+    fn tombstone_builder_rejects_malformed_prev() {
+        for bad in ["", "notacid", "bafyprev", "zNotBase32Multibase"] {
+            let result = build_did_plc_tombstone_op(bad, |_| {
+                panic!("sign must not be called for an invalid prev");
+            });
+            assert!(
+                matches!(result, Err(CryptoError::PlcOperation(ref msg)) if msg.contains("prev")),
+                "malformed prev {bad:?} must be rejected, got: {result:?}"
+            );
+        }
+        // A real CIDv1 dag-cbor/sha-256 string passes the guard (and then fails later for other
+        // reasons only if the signature is bad — here the closure is never reached because the
+        // guard is first, so use a valid signer to prove acceptance end to end elsewhere).
+        assert!(is_valid_cidv1_dag_cbor_sha256(GOLDEN_PREV_CID));
+    }
+
+    /// The verifier likewise rejects a tombstone whose `prev` is malformed, before the signature
+    /// check, so a hand-crafted op with a garbage prev never certifies.
+    #[test]
+    fn verify_tombstone_rejects_malformed_prev() {
+        let (_signing_key, private_key_bytes, _genesis, prev_cid) = make_genesis_for_rotation();
+        let sk = SigningKey::from_bytes(&private_key_bytes.into()).expect("valid key");
+        let tombstone = build_did_plc_tombstone_op(&prev_cid, |data| {
+            let sig: Signature = Signer::sign(&sk, data);
+            let sig = sig.normalize_s().unwrap_or(sig);
+            Ok(sig.to_bytes().to_vec())
+        })
+        .expect("build tombstone");
+
+        // Tamper `prev` to an empty string; any authorized key is irrelevant — the prev guard fires first.
+        let mut v: serde_json::Value =
+            serde_json::from_str(&tombstone.signed_op_json).expect("valid JSON");
+        v["prev"] = serde_json::json!("");
+        let tampered = serde_json::to_string(&v).expect("re-serialize");
+
+        let wrong = generate_p256_keypair().expect("keypair");
+        let result = verify_plc_tombstone_op(&tampered, &[wrong.key_id]);
+        assert!(
+            matches!(result, Err(CryptoError::PlcOperation(ref msg)) if msg.contains("prev")),
+            "malformed prev must be rejected by the verifier, got: {result:?}"
         );
     }
 
