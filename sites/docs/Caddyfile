@@ -1,0 +1,32 @@
+{
+	# Railway terminates TLS at its edge (with Cloudflare in front of that), so
+	# Caddy serves plain HTTP on $PORT — no on-box certificates.
+	auto_https off
+	admin off
+}
+
+# Railway injects $PORT; default to 8080 for local `docker run`.
+:{$PORT:8080} {
+	root * /srv
+	encode zstd gzip
+
+	# Astro fingerprints hashed build assets (JS, CSS, and the self-hosted fonts)
+	# under /_astro/, so they are content-addressed and safe to cache forever.
+	# Pagefind's search index is likewise versioned per build. Everything else
+	# (HTML) is revalidated so a content edit goes live promptly.
+	@immutable path /_astro/* /pagefind/*
+	header @immutable Cache-Control "public, max-age=31536000, immutable"
+	@revalidate not path /_astro/* /pagefind/*
+	header @revalidate Cache-Control "public, max-age=300, must-revalidate"
+
+	header {
+		-Server
+		X-Content-Type-Options nosniff
+		Referrer-Policy strict-origin-when-cross-origin
+	}
+
+	# Clean URLs: Astro emits directory-style pages (`/user/` → user/index.html),
+	# so resolve a bare path to its directory index or its .html file.
+	try_files {path} {path}/ {path}.html
+	file_server
+}

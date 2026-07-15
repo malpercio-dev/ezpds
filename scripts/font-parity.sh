@@ -1,13 +1,14 @@
 #!/usr/bin/env bash
 # Verify parity across the bundled font copies.
 #
-# The brand fonts are deliberately vendored FOUR times — each surface must be
+# The brand fonts are deliberately vendored FIVE times — each surface must be
 # self-contained (the Tauri apps load from disk with no web server; the PDS embeds
-# its assets; the marketing site is zero-build static):
+# its assets; the marketing and docs sites bundle their own copies):
 #   apps/identity-wallet/static/fonts   (Obsign wallet)
 #   apps/admin-companion/static/fonts   (Brass Console — JetBrains Mono subset only)
 #   crates/pds/assets/fonts             (PDS landing page, embedded)
 #   sites/marketing/assets/fonts        (static marketing site)
+#   sites/docs/src/fonts                (Astro Starlight docs site — bundled by Vite)
 #
 # Each copy may bundle a SUBSET of the families (admin-companion ships only the
 # mono), but any font file that appears in more than one copy under the same name
@@ -28,6 +29,7 @@ FONT_DIRS=(
   "apps/admin-companion/static/fonts"
   "crates/pds/assets/fonts"
   "sites/marketing/assets/fonts"
+  "sites/docs/src/fonts"
 )
 
 # Every directory must exist — a moved/renamed copy must update this list, not

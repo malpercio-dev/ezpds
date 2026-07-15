@@ -76,10 +76,10 @@ changelog-check base="":
 changelog-test:
     scripts/changelog-test.sh
 
-# Verify parity across the four vendored font copies (identity-wallet, admin-companion,
-# PDS assets, marketing site): a font file bundled under the same name in more than one
-# copy must be byte-identical everywhere, so a re-fetch or re-optimization of one copy
-# cannot silently fork the brand type. Each copy may bundle a subset of the families.
+# Verify parity across the five vendored font copies (identity-wallet, admin-companion,
+# PDS assets, marketing site, docs site): a font file bundled under the same name in more
+# than one copy must be byte-identical everywhere, so a re-fetch or re-optimization of one
+# copy cannot silently fork the brand type. Each copy may bundle a subset of the families.
 font-check:
     scripts/font-parity.sh
 

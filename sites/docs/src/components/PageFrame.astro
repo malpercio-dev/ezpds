@@ -1,0 +1,41 @@
+---
+/*
+ * PageFrame override — scopes the design register to the route.
+ *
+ * The docs site carries two registers that must never cross-apply (root
+ * AGENTS.md → Design Context): Obsign for the user surface, the Brass Console
+ * for the operator surface. Rather than duplicate the whole layout, this wraps
+ * Starlight's default PageFrame in a `.register-custos` element for `operator/*`
+ * routes, so the forked token layer in src/styles/theme.css takes over the
+ * entire frame (header, sidebar, and content) for those pages only.
+ *
+ * The wrapper paints the register background and inherits its CSS custom
+ * properties to every descendant — including the position:fixed header, which
+ * still inherits through the DOM tree. The user surface keeps Starlight's
+ * default `:root` scale (the Obsign fork), so no wrapper class is applied there.
+ */
+import Default from '@astrojs/starlight/components/PageFrame.astro';
+
+const { id } = Astro.locals.starlightRoute;
+const isOperator = id === 'operator' || id.startsWith('operator/');
+---
+
+<div class:list={['register-frame', { 'register-custos': isOperator }]}>
+  <Default>
+    <slot name="header" slot="header" />
+    <slot name="sidebar" slot="sidebar" />
+    <slot />
+  </Default>
+</div>
+
+<style>
+  /* Transparent to layout on the user surface (Starlight's body owns the
+     background there); the operator wrapper paints its own slate ground via the
+     `background` set on `.register-custos` in the forked token layer. */
+  .register-frame:not(.register-custos) {
+    display: contents;
+  }
+  .register-custos {
+    min-height: 100vh;
+  }
+</style>
