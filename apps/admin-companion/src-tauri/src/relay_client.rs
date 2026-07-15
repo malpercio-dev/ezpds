@@ -724,6 +724,55 @@ pub async fn revoke_account_credentials(
     parse_success::<RevokedCredentials>(response).await
 }
 
+// ── Account repair ──────────────────────────────────────────────────────────
+
+#[derive(Serialize)]
+struct SetAccountEmailBody<'a> {
+    email: &'a str,
+}
+
+pub fn build_set_account_email_request(
+    pairing: &Pairing,
+    did: &str,
+    email: &str,
+    timestamp: i64,
+    nonce: &str,
+) -> Result<SignedRequest, RelayClientError> {
+    let path = format!("/v1/admin/accounts/{did}/email");
+    let body =
+        serde_json::to_vec(&SetAccountEmailBody { email }).expect("SetAccountEmailBody serializes");
+    build_signed_request(pairing, "POST", &path, &body, timestamp, nonce)
+}
+
+pub async fn set_account_email(
+    pairing_id: &str,
+    did: &str,
+    email: &str,
+) -> Result<RepairedEmail, RelayClientError> {
+    let pairing = resolve_pairing(pairing_id)?;
+    let signed = build_set_account_email_request(&pairing, did, email, unix_now(), &fresh_nonce())?;
+    parse_success::<RepairedEmail>(send(signed).await?).await
+}
+
+pub fn build_issue_reset_token_request(
+    pairing: &Pairing,
+    did: &str,
+    timestamp: i64,
+    nonce: &str,
+) -> Result<SignedRequest, RelayClientError> {
+    let path = format!("/v1/admin/accounts/{did}/reset-token");
+    build_signed_request(pairing, "POST", &path, b"", timestamp, nonce)
+}
+
+pub async fn issue_reset_token(
+    pairing_id: &str,
+    did: &str,
+) -> Result<IssuedResetToken, RelayClientError> {
+    let pairing = resolve_pairing(pairing_id)?;
+    let signed = build_issue_reset_token_request(&pairing, did, unix_now(), &fresh_nonce())?;
+    parse_success::<IssuedResetToken>(send(signed).await?).await
+}
+
 // ── Server health (operator readout) ─────────────────────────────────────────
 
 /// Build the signed server-health readout (`GET /v1/admin/health`). No params, no
@@ -981,6 +1030,22 @@ pub struct RevokedCredentials {
     pub oauth_tokens_revoked: i64,
     pub oauth_codes_revoked: i64,
     pub transfer_device_tokens_revoked: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RepairedEmail {
+    pub did: String,
+    pub email: String,
+    pub email_confirmed: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct IssuedResetToken {
+    pub did: String,
+    pub token: String,
+    pub expires_in: u32,
 }
 
 /// A page of the relay's account list — the response shape of `GET /v1/admin/accounts`
@@ -2404,6 +2469,57 @@ mod tests {
             .is_err(),
             "a credential-sweep signature must be bound to its account's path"
         );
+    }
+
+    #[test]
+    fn signed_account_repair_requests_bind_path_and_exact_body() {
+        keychain::clear_for_test();
+        let key = device_key::get_or_create().expect("device key");
+        let pairing = test_pairing("device-xyz", "https://relay.example");
+
+        let email = build_set_account_email_request(
+            &pairing,
+            "did:plc:abc123",
+            "correct@example.com",
+            1_700_000_000,
+            "nonce-email",
+        )
+        .expect("build email repair");
+        let email_path = "/v1/admin/accounts/did:plc:abc123/email";
+        assert_eq!(email.url, format!("https://relay.example{email_path}"));
+        assert_eq!(email.body, br#"{"email":"correct@example.com"}"#);
+        let email_sign_string = signing::request_sign_string(
+            "POST",
+            email_path,
+            1_700_000_000,
+            "nonce-email",
+            &email.body,
+        );
+        verify_p256_signature(
+            &DidKeyUri(key.key_id.clone()),
+            email_sign_string.as_bytes(),
+            &decode_sig(header(&email, signing::ADMIN_SIGNATURE_HEADER)),
+        )
+        .expect("the relay must accept the exact email-repair body signature");
+
+        let token = build_issue_reset_token_request(
+            &pairing,
+            "did:plc:abc123",
+            1_700_000_000,
+            "nonce-token",
+        )
+        .expect("build reset-token issuance");
+        let token_path = "/v1/admin/accounts/did:plc:abc123/reset-token";
+        assert_eq!(token.url, format!("https://relay.example{token_path}"));
+        assert!(token.body.is_empty());
+        let token_sign_string =
+            signing::request_sign_string("POST", token_path, 1_700_000_000, "nonce-token", b"");
+        verify_p256_signature(
+            &DidKeyUri(key.key_id),
+            token_sign_string.as_bytes(),
+            &decode_sig(header(&token, signing::ADMIN_SIGNATURE_HEADER)),
+        )
+        .expect("the relay must accept the reset-token signature");
     }
 
     // Pins the relay's post-sweep wire shape by value (`RevokeCredentialsResponse` in

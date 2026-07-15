@@ -202,4 +202,8 @@ pub(super) static MIGRATIONS: &[Migration] = &[
         version: 45,
         sql: include_str!("migrations/V045__normalize_account_emails.sql"),
     },
+    Migration {
+        version: 46,
+        sql: include_str!("migrations/V046__operator_account_audit.sql"),
+    },
 ];

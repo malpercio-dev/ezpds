@@ -1,0 +1,25 @@
+meta {
+  name: Repair Account Email
+  type: http
+  seq: 86
+}
+
+post {
+  url: {{baseUrl}}/v1/admin/accounts/{{did}}/email
+  body: json
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{adminToken}}
+}
+
+body:json {
+  { "email": "corrected@example.com" }
+}
+
+docs {
+  # POST /v1/admin/accounts/{id}/email
+
+  Correct an account email, reset confirmation state, and append a durable operator audit event.
+}

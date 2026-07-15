@@ -491,6 +491,33 @@ export function revokeAccountCredentials(
   return invoke<RevokedCredentials>('revoke_account_credentials', { pairingId, did });
 }
 
+export interface RepairedEmail {
+  did: string;
+  email: string;
+  emailConfirmed: false;
+}
+
+export function setAccountEmail(
+  pairingId: string,
+  did: string,
+  email: string,
+): Promise<RepairedEmail> {
+  return invoke<RepairedEmail>('set_account_email', { pairingId, did, email });
+}
+
+export interface IssuedResetToken {
+  did: string;
+  token: string;
+  expiresIn: number;
+}
+
+export function issueResetToken(
+  pairingId: string,
+  did: string,
+): Promise<IssuedResetToken> {
+  return invoke<IssuedResetToken>('issue_reset_token', { pairingId, did });
+}
+
 /** Whether the biometric (user-presence) gate on signing actions is enabled (default on). */
 export function biometricEnabled(): Promise<boolean> {
   return invoke<boolean>('biometric_enabled');

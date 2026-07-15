@@ -5,27 +5,35 @@
   import {
     getAccountUsage,
     getAccountStorage,
+    setAccountEmail,
+    issueResetToken,
     type Pairing,
     type PairingsState,
     type AccountUsage,
     type AccountStorage,
+    type RepairedEmail,
+    type IssuedResetToken,
   } from '$lib/ipc';
   import { serverIdentity } from '$lib/server-identity';
   import { formatBytes, formatPct } from '$lib/format';
   import { loadPinnedPairing, pinnedHref } from '$lib/pinned-pairing';
   import { classifyRelayError, type ErrorView } from '$lib/errors';
+  import { createArmedAction } from '$lib/armed-action.svelte';
   import ScreenShell from '$lib/components/ui/ScreenShell.svelte';
   import StatusChip from '$lib/components/ui/StatusChip.svelte';
   import Button from '$lib/components/ui/Button.svelte';
   import ErrorState from '$lib/components/ui/ErrorState.svelte';
   import PinnedPairingGate from '$lib/components/ui/PinnedPairingGate.svelte';
+  import TextField from '$lib/components/ui/TextField.svelte';
+  import CodeOutput from '$lib/components/ui/CodeOutput.svelte';
 
-  // The account-detail screen: the read-only inspection home for ONE account on ONE
-  // relay — identity facts plus the usage/storage readout. Reached from the accounts
+  // The account-detail screen: inspection and repair for ONE account on ONE relay —
+  // identity facts, usage/storage, email correction, and reset-token issuance. Reached from the accounts
   // list (`?server=…&did=…`) and pinned to a single pairing at entry (see
   // $lib/pinned-pairing) like Devices/Moderation. Nothing here signs: destructive work
   // (takedown/restore, credential revocation) lives one hop deeper on the moderation
-  // screen, reached from here with the same pin + DID.
+  // screen, reached from here with the same pin + DID. Repair writes use the shared
+  // arm → biometric gate → signed request flow and stay bound to this pinned target.
 
   // Usage/storage readouts for the account. Both metrics land together or the panel
   // reports one error.
@@ -38,6 +46,11 @@
   let pairing = $state<Pairing | null>(null);
   let did = $state<string | null>(null);
   let metricsView = $state<MetricsView>({ kind: 'loading' });
+  let email = $state('');
+  let repairedEmail = $state<RepairedEmail | null>(null);
+  let resetToken = $state<IssuedResetToken | null>(null);
+  const emailRepair = createArmedAction();
+  const tokenIssue = createArmedAction();
 
   onMount(async () => {
     const resolved = await loadPinnedPairing(page.url.searchParams);
@@ -48,6 +61,22 @@
   });
 
   const identity = $derived(pairing ? serverIdentity(pairing) : null);
+  const normalizedEmail = $derived(email.trim().toLowerCase());
+  const emailLooksValid = $derived(/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(normalizedEmail));
+
+  // The address the operator reviewed when they armed the confirm. If the field drifts
+  // from it, auto-disarm — a second tap must never sign a value the operator didn't review
+  // (the same stale-target guard the Moderation screen applies to a drifted DID lookup).
+  let armedEmail = $state<string | null>(null);
+  function armEmailRepair() {
+    armedEmail = normalizedEmail;
+    emailRepair.arm();
+  }
+  $effect(() => {
+    if (emailRepair.armed && !emailRepair.writing && normalizedEmail !== armedEmail) {
+      emailRepair.disarm();
+    }
+  });
 
   /** Fetch usage + storage for the account. Reads only — no biometric gate. */
   async function loadMetrics(target: string) {
@@ -67,6 +96,39 @@
   function openModeration() {
     if (!pairing || !did) return;
     void goto(pinnedHref('/moderation', pairing.id, { did }));
+  }
+
+  async function confirmEmailRepair() {
+    if (!pairing || !did || !emailLooksValid || armedEmail === null) return;
+    const target = did;
+    const pinned = pairing;
+    // Bind to the exact address the operator reviewed at arm time — never the live field.
+    // The precondition re-checks it synchronously (the armed-action controller runs it
+    // before the biometric await), so a fast edit-then-confirm can't slip a drifted value
+    // past the auto-disarm effect, which fires only on the next tick.
+    const address = armedEmail;
+    await emailRepair.confirm({
+      reason: 'Correct an account email on this server',
+      deniedHint: 'Confirm with Face ID to correct this account email.',
+      precondition: () => did === target && normalizedEmail === address && !tokenIssue.writing,
+      run: async () => {
+        repairedEmail = await setAccountEmail(pinned.id, target, address);
+      },
+    });
+  }
+
+  async function confirmTokenIssue() {
+    if (!pairing || !did) return;
+    const target = did;
+    const pinned = pairing;
+    await tokenIssue.confirm({
+      reason: 'Issue a password reset token for an account',
+      deniedHint: 'Confirm with Face ID to issue this reset token.',
+      precondition: () => did === target && !emailRepair.writing,
+      run: async () => {
+        resetToken = await issueResetToken(pinned.id, target);
+      },
+    });
   }
 </script>
 
@@ -151,6 +213,52 @@
       </p>
       <Button variant="secondary" onclick={openModeration}>Take down or restore</Button>
     </section>
+
+    <section class="panel" aria-labelledby="email-repair-label">
+      <span id="email-repair-label" class="label">Email repair</span>
+      <p class="note">Replace the stored address and mark it unconfirmed. The server records the operator and both addresses in its audit trail.</p>
+      <TextField
+        label="Correct email"
+        type="email"
+        bind:value={email}
+        placeholder="account@example.com"
+        error={email !== '' && !emailLooksValid ? 'Enter a complete email address.' : undefined}
+      />
+      {#if !emailRepair.armed}
+        <Button variant="secondary" disabled={!emailLooksValid || tokenIssue.writing} onclick={armEmailRepair}>Review email change</Button>
+      {:else}
+        <div class="confirm" role="group" aria-label="Confirm email repair">
+          <p class="note">Set <span class="literal">{did}</span> to <span class="literal">{normalizedEmail}</span> and reset confirmation?</p>
+          <Button variant="primary" loading={emailRepair.writing} onclick={confirmEmailRepair}>Confirm email repair</Button>
+          <Button variant="secondary" disabled={emailRepair.writing} onclick={emailRepair.disarm}>Cancel</Button>
+        </div>
+      {/if}
+      {#if repairedEmail}
+        <p class="result" role="status">● updated · {repairedEmail.email} · unconfirmed</p>
+      {/if}
+      {#if emailRepair.error}<ErrorState view={emailRepair.error} server={identity} onretry={confirmEmailRepair} />{/if}
+      {#if emailRepair.gateHint}<p class="note" role="status">○ {emailRepair.gateHint}</p>{/if}
+    </section>
+
+    <section class="panel" aria-labelledby="reset-token-label">
+      <span id="reset-token-label" class="label">Credential issuance</span>
+      <p class="note">Mint a single-use password-reset token valid for one hour. Deliver it out of band; the operator never chooses or sees the new password. Only an account that already uses a password can be issued one — a passwordless (key-sovereign) account is recovered through its escrowed key share, not a reset.</p>
+      {#if !tokenIssue.armed}
+        <Button variant="secondary" disabled={emailRepair.writing} onclick={tokenIssue.arm}>Issue reset token</Button>
+      {:else}
+        <div class="confirm" role="group" aria-label="Confirm reset token issuance">
+          <p class="note">Issue a reset token for <span class="literal">{did}</span>? The issuance is audit-logged, but the plaintext token is not.</p>
+          <Button variant="primary" loading={tokenIssue.writing} onclick={confirmTokenIssue}>Confirm token issuance</Button>
+          <Button variant="secondary" disabled={tokenIssue.writing} onclick={tokenIssue.disarm}>Cancel</Button>
+        </div>
+      {/if}
+      {#if resetToken}
+        <CodeOutput value={resetToken.token} label="Password reset token" />
+        <p class="result" role="status">● issued · expires in 1 hour · single use</p>
+      {/if}
+      {#if tokenIssue.error}<ErrorState view={tokenIssue.error} server={identity} onretry={confirmTokenIssue} />{/if}
+      {#if tokenIssue.gateHint}<p class="note" role="status">○ {tokenIssue.gateHint}</p>{/if}
+    </section>
   {/if}
     {/snippet}
   </PinnedPairingGate>
@@ -189,6 +297,26 @@
     font-family: var(--font-mono);
     font-size: var(--text-data);
     color: var(--color-ink-soft);
+  }
+  .confirm {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-sm);
+    padding: var(--space-sm);
+    background: var(--color-surface-raised);
+    border: var(--border-hairline) solid var(--color-line);
+    border-radius: var(--radius-md);
+  }
+  .literal {
+    font-family: var(--font-mono);
+    overflow-wrap: anywhere;
+  }
+  .result {
+    margin: 0;
+    font-family: var(--font-mono);
+    font-size: var(--text-data);
+    color: var(--color-safe);
+    overflow-wrap: anywhere;
   }
   /* The fact sheet: aligned label/value pairs, the legibility of a good `ls -l`. */
   .facts {

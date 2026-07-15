@@ -1,0 +1,22 @@
+meta {
+  name: Issue Account Reset Token
+  type: http
+  seq: 87
+}
+
+post {
+  url: {{baseUrl}}/v1/admin/accounts/{{did}}/reset-token
+  body: none
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{adminToken}}
+}
+
+docs {
+  # POST /v1/admin/accounts/{id}/reset-token
+
+  Mint a single-use, one-hour password-reset token for out-of-band delivery. The plaintext is
+  returned once and is never stored or audit-logged.
+}
