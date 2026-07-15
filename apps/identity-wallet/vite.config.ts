@@ -19,6 +19,19 @@ export default defineConfig({
           port: 5173,
         }
       : undefined,
+    // Browser-harness proxy mode: forward same-origin /__pds/* to the hermetic local PDS
+    // (VITE_HARNESS_PDS_URL, printed by `just harness-pds`). Server-side, so the browser
+    // makes no cross-origin request — no CORS changes land in the PDS (browser-harness.AC3.5).
+    proxy: process.env.VITE_HARNESS_PDS_URL
+      ? {
+          '/__pds': {
+            target: process.env.VITE_HARNESS_PDS_URL,
+            changeOrigin: true,
+            secure: false,
+            rewrite: (p) => p.replace(/^\/__pds/, ''),
+          },
+        }
+      : undefined,
   },
   // Expose VITE_* and TAURI_ENV_* environment variables to the frontend
   envPrefix: ['VITE_', 'TAURI_ENV_'],

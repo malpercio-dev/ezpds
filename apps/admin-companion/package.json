@@ -6,10 +6,13 @@
   "packageManager": "pnpm@9.15.9",
   "scripts": {
     "dev": "vite dev",
+    "dev:harness": "VITE_HARNESS=fake vite dev",
+    "dev:harness:proxy": "VITE_HARNESS=proxy vite dev",
     "build": "vite build",
     "preview": "vite preview",
     "check": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json",
     "check:watch": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json --watch",
+    "check:harness-absence": "node scripts/check-harness-absence.mjs",
     "test": "vitest run"
   },
   "dependencies": {

@@ -1,7 +1,7 @@
 # Admin Companion (operator console) Mobile App
 
 Last verified: 2026-07-10
-Last updated: 2026-07-14 (extracted the copy-paste route patterns into shared `$lib` helpers — see Frontend contracts; removed the dead `sign_with_device_key` IPC command — no frontend caller; `relay_client.rs` calls `device_key::sign` directly)
+Last updated: 2026-07-15 (added the Browser test harness section — mockIPC fake + PDS-proxy mode, MM-324)
 
 ## Purpose
 
@@ -14,6 +14,46 @@ and the design plan [docs/archive/design-plans/2026-06-26-admin-companion-app.md
 
 The relay side (pairing/auth/device endpoints, Phases 1–5) is already shipped. This
 app is built across Phases 6–8.
+
+## Browser test harness (drive the app without a simulator)
+
+The whole frontend runs in a plain desktop browser under `vite dev`; the harness
+intercepts the Tauri `invoke()` seam with the official `mockIPC` so an agent can reach
+every operator screen and reproduce any state without a Mac/Xcode/simulator. Mirrors the
+identity-wallet harness exactly (same `window.__harness` API shape). Design + acceptance
+criteria: [docs/design-plans/2026-07-12-browser-harness.md](../../docs/design-plans/2026-07-12-browser-harness.md).
+
+**Start it** (or use the `.claude/launch.json` config `admin-harness` / `admin-harness-proxy`):
+- **Fake mode** (default, no backend): `pnpm --dir apps/admin-companion dev:harness` → http://localhost:5174.
+- **Proxy mode** (real signed operator requests against a hermetic local PDS): `cargo build -p pds`,
+  then `just harness-pds` (prints URL + admin token), then
+  `VITE_HARNESS_PDS_URL=<url> VITE_HARNESS_ADMIN_TOKEN=<token> pnpm --dir apps/admin-companion dev:harness:proxy`.
+  Proxy mode starts **unpaired** by default — pair for real from the Pair screen (the
+  harness mints the pairing code via the admin API and self-signs the registration).
+- Plain `pnpm dev` never activates the harness (double-gated on `import.meta.env.DEV && VITE_HARNESS`);
+  `pnpm check:harness-absence` proves it is tree-shaken out of production builds.
+
+**`window.__harness` console API:** `.scenario(name)` (presets: `unpaired`, `single-relay`,
+`multi-relay`, `degraded-health`; `.scenarios` lists them), `.failNext(command, error)`
+(e.g. `window.__harness.failNext('generate_claim_code', { code: 'NOT_PAIRED' })`),
+`.emit(event, payload)` (kept for parity — this app subscribes to no Tauri events),
+`.state()` (read-only snapshot), `.mode`.
+
+**Biometric gate:** the plugin is allowed to resolve in the browser (`plugin:biometric|authenticate`),
+so signing actions proceed. To exercise the disabled path, set it off via the Settings
+toggle / `set_biometric_enabled(false)` (outcome `skipped`); to force a denial, use
+`window.__harness.failNext('plugin:biometric|authenticate', {})`. Do **not** try to drive
+QR-scan pairing in the browser — barcode scanning is out of scope; use the Pair screen's
+manual-entry fields (fake) or auto-mint (proxy).
+
+**Proxy mode is real for the signed-request surface** — `pair_device`, `generate_claim_code`,
+and `list_admin_devices` sign the canonical envelopes (`src/lib/harness/proxy/signing.ts`,
+byte-for-byte the Rust `signing.rs`) with a real WebCrypto P-256 key, and the relay's
+`require_admin` accepts them. Every other command falls through to the fake.
+
+**Fake handler coverage is enforced:** every command in `$lib/ipc.ts` must have a handler in
+`src/lib/harness/registry.ts` or `registry.test.ts` fails. Harness code lives in
+`src/lib/harness/`, activated by `src/hooks.client.ts`.
 
 ## Current status (Phase 8 — operator screens + biometric/share)
 
