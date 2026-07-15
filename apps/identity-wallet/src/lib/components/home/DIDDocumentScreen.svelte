@@ -6,12 +6,16 @@
     didDoc,
     onback,
     onmigrate,
+    onchangehandle,
   }: {
     didDoc: Record<string, unknown>;
     onback: () => void;
     /** Only passed when the device key is the DID's root rotation key — gates the
      *  wallet-authorized outbound migration entry point (ADR-0002 path 1). */
     onmigrate?: () => void;
+    /** Only passed for a wallet-custodied did:plc (device key in the rotation set) —
+     *  gates the sovereign change-handle entry point (device-key-signed alsoKnownAs op). */
+    onchangehandle?: () => void;
   } = $props();
 
   // A did:web identity has no PLC machinery (ADR-0003): no rotation-key hierarchy, no public audit
@@ -137,6 +141,10 @@
 
   {#if showRaw}
     <pre class="raw">{rawJson}</pre>
+  {/if}
+
+  {#if onchangehandle}
+    <button class="action" onclick={onchangehandle}>Change handle</button>
   {/if}
 
   {#if onmigrate}
@@ -323,7 +331,8 @@
     margin: 0;
   }
 
-  .migrate {
+  .migrate,
+  .action {
     background: var(--color-surface);
     border: 1px solid var(--color-line);
     border-radius: var(--radius-md);

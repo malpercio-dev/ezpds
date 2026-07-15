@@ -31,13 +31,14 @@
   import MigrationReviewScreen from '$lib/components/onboarding/MigrationReviewScreen.svelte';
   import MigrationSuccessScreen from '$lib/components/onboarding/MigrationSuccessScreen.svelte';
   import DIDDocumentScreen from '$lib/components/home/DIDDocumentScreen.svelte';
+  import ChangeHandleScreen from '$lib/components/home/ChangeHandleScreen.svelte';
   import AlertDetailScreen from '$lib/components/home/AlertDetailScreen.svelte';
   import RecoveryOverrideScreen from '$lib/components/home/RecoveryOverrideScreen.svelte';
   import MyAgentsScreen from '$lib/components/home/MyAgentsScreen.svelte';
   import AgentClaimApprovalScreen from '$lib/components/home/AgentClaimApprovalScreen.svelte';
   import SettingsScreen from '$lib/components/home/SettingsScreen.svelte';
   import { createAccount, registerCreatedIdentity, listIdentities, checkIdentityStatus, isCodedError, type CreateAccountError, type OAuthError, type IdentityInfo, type VerifiedClaimOp, type ClaimResult, type UnauthorizedChange } from '$lib/ipc';
-  import { normalizePlcDocToW3c } from '$lib/did-doc-utils';
+  import { normalizePlcDocToW3c, extractHandle } from '$lib/did-doc-utils';
   import IdentityListHome from '$lib/components/home/IdentityListHome.svelte';
   import OnboardingShell from '$lib/components/ui/OnboardingShell.svelte';
   import SealEmblem from '$lib/components/ui/SealEmblem.svelte';
@@ -70,6 +71,7 @@
     | 'authenticating'
     | 'home'
     | 'identity_detail'
+    | 'change_handle'
     | 'alert_detail'
     | 'recovery_override'
     | 'my_agents'
@@ -468,6 +470,9 @@
     <DIDDocumentScreen
       didDoc={selectedDidDoc ? normalizePlcDocToW3c(selectedDidDoc) : {}}
       onback={() => goTo('home')}
+      onchangehandle={selectedDeviceKeyIsRoot === true && selectedDid?.startsWith('did:plc:')
+        ? () => goTo('change_handle')
+        : undefined}
       onmigrate={selectedDeviceKeyIsRoot === true
         ? () => {
             migrationDid = selectedDid ?? '';
@@ -476,6 +481,14 @@
             goTo('migration_start');
           }
         : undefined}
+    />
+
+  {:else if step === 'change_handle'}
+    <ChangeHandleScreen
+      did={selectedDid ?? ''}
+      currentHandle={selectedDidDoc ? extractHandle(selectedDidDoc) : null}
+      onback={() => goTo('identity_detail')}
+      ondone={() => goTo('home')}
     />
 
   {:else if step === 'migration_start'}
