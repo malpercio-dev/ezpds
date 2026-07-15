@@ -35,6 +35,12 @@ export function redactValue(value: unknown): unknown {
   if (typeof value === 'string') return redact(value);
   if (Array.isArray(value)) return value.map(redactValue);
   if (value && typeof value === 'object') {
+    // Only recurse into plain objects. `Date`, `Buffer`, `Error`, and other
+    // class instances are returned as-is — recursing would flatten a Date to
+    // `{}` or explode a Buffer into a per-byte dictionary, degrading log
+    // fidelity (they serialize correctly on their own).
+    const proto = Object.getPrototypeOf(value);
+    if (proto !== Object.prototype && proto !== null) return value;
     const out: Record<string, unknown> = {};
     for (const [key, v] of Object.entries(value)) {
       if (/^(authorization|token|access_?token|assertion|bearer)$/i.test(key)) {

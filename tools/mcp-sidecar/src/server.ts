@@ -69,16 +69,55 @@ export function authFromRequest(authorization: string | undefined): AuthInfo | u
 function protectedResourceMetadata(config: SidecarConfig): Record<string, unknown> {
   return {
     resource: config.publicOrigin,
-    authorization_servers: [config.pdsOrigin],
+    // The client must reach the PUBLIC Custos URL, never the private forwarding
+    // origin (which is unroutable from outside the Railway network).
+    authorization_servers: [config.authServerOrigin],
   };
 }
+
+// MCP JSON-RPC messages are tiny; a generous ceiling still stops an
+// unauthenticated client from streaming an unbounded body into memory.
+const MAX_BODY_BYTES = 1024 * 1024;
+
+// Bounds on the live-transport map: a hard cap plus idle expiry, so an
+// abandoned MCP session cannot pin memory indefinitely.
+const MAX_TRANSPORTS = 1024;
+const TRANSPORT_IDLE_MS = 10 * 60_000;
+
+/** Thrown by `readBody` when a request body exceeds `MAX_BODY_BYTES`. */
+class PayloadTooLargeError extends Error {}
 
 function readBody(req: http.IncomingMessage): Promise<string> {
   return new Promise((resolve, reject) => {
     const chunks: Buffer[] = [];
-    req.on('data', (chunk) => chunks.push(chunk as Buffer));
-    req.on('end', () => resolve(Buffer.concat(chunks).toString('utf8')));
-    req.on('error', reject);
+    let total = 0;
+    let settled = false;
+    req.on('data', (chunk: Buffer) => {
+      if (settled) return;
+      total += chunk.length;
+      if (total > MAX_BODY_BYTES) {
+        // Stop buffering immediately (memory stays bounded) and reject; the
+        // caller sends 413. We do NOT destroy the socket here — that would reset
+        // the connection before the 413 response can flush.
+        settled = true;
+        chunks.length = 0;
+        reject(new PayloadTooLargeError());
+        return;
+      }
+      chunks.push(chunk);
+    });
+    req.on('end', () => {
+      if (!settled) {
+        settled = true;
+        resolve(Buffer.concat(chunks).toString('utf8'));
+      }
+    });
+    req.on('error', (err) => {
+      if (!settled) {
+        settled = true;
+        reject(err);
+      }
+    });
   });
 }
 
@@ -99,17 +138,32 @@ export function createSidecar(config: SidecarConfig): {
 } {
   const registry = new SessionRegistry({ pdsOrigin: config.pdsOrigin });
 
-  // One transport (and MCP server) per live MCP session, keyed by the
-  // session id the transport assigns on initialize. All of them share the one
-  // registry, so per-caller forwarding sessions are process-wide.
-  const transports = new Map<string, StreamableHTTPServerTransport>();
+  // One transport (and MCP server) per live MCP session, keyed by the session
+  // id the transport assigns on initialize. Bounded and idle-expired so an
+  // abandoned client (one that never sends DELETE) cannot grow the map without
+  // limit. All transports share the one registry.
+  const transports = new Map<string, { transport: StreamableHTTPServerTransport; lastActivity: number }>();
+
+  function sweepIdleTransports(now: number): void {
+    for (const [id, entry] of transports) {
+      if (now - entry.lastActivity > TRANSPORT_IDLE_MS) {
+        transports.delete(id);
+        void entry.transport.close();
+      }
+    }
+  }
+
+  function touch(id: string, now: number): void {
+    const entry = transports.get(id);
+    if (entry) entry.lastActivity = now;
+  }
 
   function newTransport(): StreamableHTTPServerTransport {
     const transport: StreamableHTTPServerTransport = new StreamableHTTPServerTransport({
       sessionIdGenerator: () => randomUUID(),
       enableJsonResponse: true,
       onsessioninitialized: (id) => {
-        transports.set(id, transport);
+        transports.set(id, { transport, lastActivity: Date.now() });
       },
     });
     transport.onclose = () => {
@@ -149,15 +203,28 @@ export function createSidecar(config: SidecarConfig): {
     }
 
     // Attach the caller's forwarded credential so the transport threads it into
-    // each tool call's `extra.authInfo`.
+    // each tool call's `extra.authInfo`. It is bound per request only — the
+    // registry mints a fresh, request-scoped session and stores no credential.
     const auth = authFromRequest(req.headers['authorization']);
     (req as http.IncomingMessage & { auth?: AuthInfo }).auth = auth;
 
+    const now = Date.now();
+    sweepIdleTransports(now);
     const sessionId = req.headers['mcp-session-id'];
-    const existing = typeof sessionId === 'string' ? transports.get(sessionId) : undefined;
+    const existing = typeof sessionId === 'string' ? transports.get(sessionId)?.transport : undefined;
+    if (typeof sessionId === 'string') touch(sessionId, now);
 
     if (req.method === 'POST') {
-      const raw = await readBody(req);
+      let raw: string;
+      try {
+        raw = await readBody(req);
+      } catch (err) {
+        if (err instanceof PayloadTooLargeError) {
+          sendJson(res, 413, { error: 'request body too large' });
+          return;
+        }
+        throw err;
+      }
       let body: unknown;
       try {
         body = raw ? JSON.parse(raw) : undefined;
@@ -165,19 +232,17 @@ export function createSidecar(config: SidecarConfig): {
         sendJson(res, 400, { error: 'invalid JSON body' });
         return;
       }
+      if (!existing && isInitializeRequest(body) && transports.size >= MAX_TRANSPORTS) {
+        // At capacity: refuse new sessions rather than allocate past the bound.
+        sendJson(res, 503, { error: 'sidecar at session capacity; retry shortly' });
+        return;
+      }
       const transport = existing ?? (isInitializeRequest(body) ? newTransport() : undefined);
       if (!transport) {
         sendJson(res, 400, { error: 'no valid MCP session; send an initialize request first' });
         return;
       }
-      try {
-        await transport.handleRequest(req, res, body);
-      } finally {
-        // The request has resolved (with JSON responses the tool has already
-        // run): drop the forwarded token so nothing lingers in memory between
-        // requests (ADR-0024).
-        registry.release(auth);
-      }
+      await transport.handleRequest(req, res, body);
       return;
     }
 
@@ -186,11 +251,7 @@ export function createSidecar(config: SidecarConfig): {
       sendJson(res, 400, { error: 'unknown or missing MCP session id' });
       return;
     }
-    try {
-      await existing.handleRequest(req, res);
-    } finally {
-      registry.release(auth);
-    }
+    await existing.handleRequest(req, res);
   }
 
   return { server, registry };

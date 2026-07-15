@@ -15,6 +15,13 @@
 export interface SidecarConfig {
   /** Where the sidecar forwards XRPC calls to (private network in prod). */
   pdsOrigin: string;
+  /**
+   * The public Custos authorization-server origin advertised to MCP clients in
+   * the protected-resource metadata. Distinct from `pdsOrigin`: the client
+   * completes OAuth against this reachable public URL (`https://obsign.org`),
+   * never the private `*.railway.internal` address the sidecar forwards to.
+   */
+  authServerOrigin: string;
   /** The sidecar's own public origin — the OAuth resource identifier. */
   publicOrigin: string;
   /** TCP port to listen on. Railway injects PORT; default 8080 for local runs. */
@@ -59,6 +66,15 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): SidecarConfig 
     ? trimTrailingSlash(new URL(publicOriginRaw).toString())
     : pdsOrigin;
 
+  // The authorization server clients reach is Custos's PUBLIC URL, never the
+  // private forwarding address. It defaults to the PDS origin only when that
+  // origin is already public (local single-host runs); a co-located deployment
+  // whose PDS origin is `*.railway.internal` MUST set this to `https://obsign.org`.
+  const authServerRaw = env.MCP_SIDECAR_AUTH_SERVER_ORIGIN?.trim();
+  const authServerOrigin = authServerRaw
+    ? trimTrailingSlash(new URL(authServerRaw).toString())
+    : pdsOrigin;
+
   const rawPort = env.PORT ?? env.MCP_SIDECAR_PORT;
   const port = rawPort ? Number(rawPort) : 8080;
   if (!Number.isInteger(port) || port <= 0 || port > 65535) {
@@ -67,6 +83,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): SidecarConfig 
 
   return {
     pdsOrigin,
+    authServerOrigin,
     publicOrigin,
     port,
     mcpPath: env.MCP_SIDECAR_PATH ?? '/mcp',

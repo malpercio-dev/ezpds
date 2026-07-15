@@ -32,6 +32,17 @@ test('AC2.7: public origin defaults to the PDS origin for local single-host runs
     MCP_SIDECAR_PDS_ORIGIN: 'http://127.0.0.1:8080',
   } as NodeJS.ProcessEnv);
   assert.equal(config.publicOrigin, 'http://127.0.0.1:8080');
+  assert.equal(config.authServerOrigin, 'http://127.0.0.1:8080', 'AS defaults to the PDS origin locally');
+});
+
+test('AC2.7: the public authorization-server origin is distinct from the private PDS origin', () => {
+  const config = loadConfig({
+    MCP_SIDECAR_PDS_ORIGIN: 'http://pds.railway.internal:8080',
+    MCP_SIDECAR_PUBLIC_ORIGIN: 'https://mcp.obsign.org',
+    MCP_SIDECAR_AUTH_SERVER_ORIGIN: 'https://obsign.org',
+  } as NodeJS.ProcessEnv);
+  assert.equal(config.authServerOrigin, 'https://obsign.org');
+  assert.notEqual(config.authServerOrigin, config.pdsOrigin, 'never the private forwarding address');
 });
 
 test('AC2.7: a malformed PDS origin is rejected', () => {

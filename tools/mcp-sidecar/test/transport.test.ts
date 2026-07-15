@@ -15,8 +15,9 @@ let sidecar: RunningSidecar;
 before(async () => {
   pds = await startStubPds();
   sidecar = await startSidecar({
-    MCP_SIDECAR_PDS_ORIGIN: pds.url,
+    MCP_SIDECAR_PDS_ORIGIN: pds.url, // stands in for the private forwarding origin
     MCP_SIDECAR_PUBLIC_ORIGIN: 'https://mcp.obsign.org',
+    MCP_SIDECAR_AUTH_SERVER_ORIGIN: 'https://obsign.org', // the public Custos AS
   });
 });
 
@@ -44,10 +45,23 @@ test('AC2.1: the sidecar serves the shared tool surface over Streamable HTTP', a
   }
 });
 
-test('AC2.1: the protected-resource metadata names Custos as the authorization server', async () => {
+test('AC2.1: the protected-resource metadata names the PUBLIC Custos AS, not the private origin', async () => {
   const res = await fetch(`${sidecar.url}/.well-known/oauth-protected-resource`);
   assert.equal(res.status, 200);
   const body = (await res.json()) as { resource: string; authorization_servers: string[] };
   assert.equal(body.resource, 'https://mcp.obsign.org');
-  assert.deepEqual(body.authorization_servers, [pds.url]);
+  assert.deepEqual(body.authorization_servers, ['https://obsign.org']);
+  assert.ok(
+    !body.authorization_servers.includes(pds.url),
+    'the private forwarding origin is never advertised to clients',
+  );
+});
+
+test('the request body is bounded (oversized payloads are refused with 413)', async () => {
+  const res = await fetch(`${sidecar.url}/mcp`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: 'x'.repeat(1024 * 1024 + 1024), // just over the 1 MiB ceiling
+  });
+  assert.equal(res.status, 413);
 });

@@ -12,7 +12,6 @@ import {
   startSidecar,
   connectClient,
   fakeToken,
-  callerSubjectOf,
   type StubPds,
   type RunningSidecar,
 } from './support.ts';
@@ -66,16 +65,21 @@ test('AC2.2: no credential file is written under any state dir', () => {
   assert.ok(!fs.existsSync(stateDir), 'the sidecar wrote no credential cache directory');
 });
 
-test('AC2.5: no token lingers in memory after the request resolves', async () => {
+test('AC2.5: the registry retains caller identity but no credential', async () => {
   const client = await connectClient(sidecar.url, token);
   try {
     pds.respondWith(200, { uri: `at://${CALLER_DID}/app.bsky.feed.post/def`, cid: 'bafy2' });
     await client.callTool({ name: 'create_post', arguments: { text: 'second post' } });
-    // Let the sidecar's post-request `release` run.
-    await new Promise((r) => setTimeout(r, 50));
-    const session = sidecar.registry.peek(callerSubjectOf(token));
-    assert.ok(session, 'the caller session object is retained for identity/reuse');
-    assert.equal(session.hasBoundToken(), false, 'but it holds no token between requests');
+    // The caller is tracked for eviction/metrics, but the registry stores no
+    // credential — the forwarding session is request-scoped and unreachable
+    // once the call resolves. `size()` is the only state it exposes; there is no
+    // API that could hand back a retained token (ADR-0024).
+    assert.equal(sidecar.registry.size(), 1, 'caller tracked');
+    assert.equal(
+      typeof (sidecar.registry as unknown as { peek?: unknown }).peek,
+      'undefined',
+      'the registry exposes no accessor that could return a stored token',
+    );
   } finally {
     await client.close();
   }

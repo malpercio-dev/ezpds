@@ -54,6 +54,7 @@ Configuration is environment variables only:
 |---|---|---|
 | `MCP_SIDECAR_PDS_ORIGIN` | yes | Where the sidecar forwards XRPC calls. In the co-located tier this is the PDS's **private** Railway address (`http://pds.railway.internal:PORT`), never the public domain. Parse **fails loudly** if unset. |
 | `MCP_SIDECAR_PUBLIC_ORIGIN` | prod | The sidecar's own public origin (`https://mcp.obsign.org`), advertised as the OAuth resource identifier. Defaults to the PDS origin for local single-host runs. |
+| `MCP_SIDECAR_AUTH_SERVER_ORIGIN` | prod | The **public** Custos authorization-server origin (`https://obsign.org`) advertised to clients in the protected-resource metadata — never the private `*.railway.internal` forwarding address. Defaults to the PDS origin for local single-host runs. |
 | `PORT` | no | Listen port (Railway injects it; default 8080). |
 | `MCP_SIDECAR_PATH` | no | MCP endpoint path (default `/mcp`). |
 | `CUSTOS_MCP_ALLOW_DESTRUCTIVE` | no | Same gate as the stdio server: `1` lists `put_record`/`delete_record`. |

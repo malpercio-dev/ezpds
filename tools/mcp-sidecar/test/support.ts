@@ -12,10 +12,6 @@ import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/
 import { createSidecar } from '../src/server.ts';
 import { loadConfig } from '../src/config.ts';
 import type { SessionRegistry } from '../src/registry.ts';
-import { callerSubject } from '../src/session.ts';
-
-/** Re-exported so tests can derive the registry key for a token. */
-export const callerSubjectOf = callerSubject;
 
 /** A recorded inbound request to the stub PDS. */
 export interface CapturedRequest {

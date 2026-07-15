@@ -28,8 +28,10 @@ WORKDIR /app
 # the sidecar runs TypeScript natively, so nothing is compiled here.
 COPY tools/mcp/package.json tools/mcp/pnpm-lock.yaml ./tools/mcp/
 COPY tools/mcp-sidecar/package.json tools/mcp-sidecar/pnpm-lock.yaml ./tools/mcp-sidecar/
-RUN cd tools/mcp && pnpm install --prod --frozen-lockfile
-RUN cd tools/mcp-sidecar && pnpm install --prod --frozen-lockfile
+WORKDIR /app/tools/mcp
+RUN pnpm install --prod --frozen-lockfile
+WORKDIR /app/tools/mcp-sidecar
+RUN pnpm install --prod --frozen-lockfile
 
 # ── Runtime stage ────────────────────────────────────────────────────────
 FROM node:22-alpine AS runtime
@@ -51,6 +53,12 @@ WORKDIR /app/tools/mcp-sidecar
 
 # Documentation only; the actual listen port comes from $PORT at runtime.
 EXPOSE 8080
+
+# Liveness probe on the credential-free health route (Railway also health-checks
+# via railway.toml; this makes a plain `docker run` self-report too). Node 22 has
+# a global fetch, so no extra tooling is needed in the image.
+HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
+  CMD node -e "fetch('http://127.0.0.1:'+(process.env.PORT||8080)+'/').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
 
 # The sidecar holds no durable secret (ADR-0024): no volume, no state dir.
 CMD ["node", "--disable-warning=ExperimentalWarning", "src/server.ts"]

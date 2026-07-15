@@ -293,9 +293,13 @@ wiring than the Root-Directory trick:
 - **Wait for CI** — optional, same reasoning as the static sites: `just ci-pds` does not run the
   sidecar's Node suite, so waiting adds no real safety; harmless if you'd rather gate uniformly.
 - **Environment:** `MCP_SIDECAR_PDS_ORIGIN` = the PDS's private address
-  (`http://<pds-service>.railway.internal:<port>`) and `MCP_SIDECAR_PUBLIC_ORIGIN` =
-  `https://mcp.obsign.org`. `MCP_SIDECAR_PDS_ORIGIN` is **required** — the sidecar parse-fails
-  loudly rather than defaulting to a public URL. **No volume, no secret.** Railway injects `PORT`.
+  (`http://<pds-service>.railway.internal:<port>`), `MCP_SIDECAR_PUBLIC_ORIGIN` =
+  `https://mcp.obsign.org` (the OAuth resource identifier), and
+  `MCP_SIDECAR_AUTH_SERVER_ORIGIN` = `https://obsign.org` (the **public** Custos
+  authorization server advertised to clients — never the private forwarding
+  address, which is unreachable from outside the Railway network).
+  `MCP_SIDECAR_PDS_ORIGIN` is **required** — the sidecar parse-fails loudly rather
+  than defaulting to a public URL. **No volume, no secret.** Railway injects `PORT`.
 
 ### Domain: `mcp.obsign.org`
 
