@@ -430,6 +430,7 @@
 
   {:else if step === 'authenticating'}
     <AuthenticatingScreen
+      handle={form.registeredHandle}
       onresolved={() => goTo('home')}
       onfailed={(err) => {
         authError = err;

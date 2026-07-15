@@ -29,9 +29,15 @@ export type OAuthError =
  *
  * An in-app session is required because iOS Safari will not auto-launch the app from a
  * server-side redirect to a custom URL scheme.
+ *
+ * `loginHint` (optional) pre-populates the authorize page's identifier field. The create flow
+ * passes the handle it just registered so the user doesn't retype it — the server renders it into
+ * the identifier `<input>` (`value="…" autocomplete="username"`).
  */
-export const startOAuthFlow = async (): Promise<void> => {
-  const prepared = await invoke<{ authUrl: string; callbackScheme: string }>('prepare_oauth_flow');
+export const startOAuthFlow = async (loginHint?: string): Promise<void> => {
+  const prepared = await invoke<{ authUrl: string; callbackScheme: string }>('prepare_oauth_flow', {
+    loginHint: loginHint ?? null,
+  });
   let callbackUrl: string;
   try {
     callbackUrl = await invoke<string>('plugin:auth-session|start', {

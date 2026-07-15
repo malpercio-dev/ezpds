@@ -144,9 +144,13 @@ pub(super) fn render_consent_page(
             html_escape(value)
         ));
     }
+    // autocapitalize/autocorrect/spellcheck are all disabled: handles and DIDs are
+    // case-sensitive, lowercase identifiers, so iOS's default first-letter capitalization
+    // (and autocorrect) would silently mangle a typed identifier and break sign-in.
     html.push_str(&format!(
         "      <input type=\"text\" name=\"identifier\" placeholder=\"alice.bsky.social or did:plc:…\" \
-         autocomplete=\"username\" value=\"{}\" class=\"field mono\" />\n",
+         autocomplete=\"username\" autocapitalize=\"none\" autocorrect=\"off\" spellcheck=\"false\" \
+         value=\"{}\" class=\"field mono\" />\n",
         html_escape(login_hint.unwrap_or(""))
     ));
     html.push_str(
@@ -431,6 +435,45 @@ mod tests {
         assert!(
             checkbox_count >= 2,
             "expected a checkbox per non-atproto scope token, found {checkbox_count}"
+        );
+    }
+
+    /// The identifier field must disable iOS auto-capitalization/autocorrect/spellcheck —
+    /// handles and DIDs are case-sensitive lowercase strings, and a capitalized first letter
+    /// silently breaks sign-in.
+    #[test]
+    fn identifier_input_disables_autocapitalization() {
+        let html = render_consent_page(
+            "Test App",
+            "https://app.example.com/client-metadata.json",
+            "https://app.example.com/callback",
+            "challenge",
+            "S256",
+            "state",
+            "atproto",
+            "code",
+            "https://pds.example.com",
+            None,
+            None,
+        );
+
+        // Isolate the identifier input so the attribute assertions can't match another element.
+        let input = html
+            .split("name=\"identifier\"")
+            .nth(1)
+            .and_then(|rest| rest.split("/>").next())
+            .expect("identifier input present");
+        assert!(
+            input.contains("autocapitalize=\"none\""),
+            "identifier input must set autocapitalize=none"
+        );
+        assert!(
+            input.contains("autocorrect=\"off\""),
+            "identifier input must set autocorrect=off"
+        );
+        assert!(
+            input.contains("spellcheck=\"false\""),
+            "identifier input must set spellcheck=false"
         );
     }
 }
