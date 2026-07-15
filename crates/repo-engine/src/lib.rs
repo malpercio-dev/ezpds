@@ -2,6 +2,7 @@
 // Thin domain wrapper over atrium-repo.
 // Functional Core — no HTTP, no DB schema ownership, no process-level state.
 
+pub mod at_uri;
 pub mod car_export;
 pub mod car_import;
 pub mod genesis;
@@ -14,6 +15,7 @@ pub mod signer;
 pub use atrium_repo::blockstore::{AsyncBlockStoreRead, AsyncBlockStoreWrite};
 
 // Re-export the primary types callers need.
+pub use at_uri::{AtUri, AtUriError};
 pub use atrium_repo::mst::Tree;
 pub use atrium_repo::repo::{CommitBuilder, RepoBuilder, Repository};
 pub use atrium_repo::Cid;
