@@ -16,5 +16,6 @@ export * from './identity';
 export * from './monitor';
 export * from './recovery';
 export * from './migration';
+export * from './handle-change';
 export * from './agents';
 export { isCodedError } from './errors';

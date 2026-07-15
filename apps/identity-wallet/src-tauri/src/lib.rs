@@ -1,6 +1,7 @@
 pub mod agents;
 pub mod claim;
 pub mod device_key;
+pub mod handle_change;
 pub mod http;
 pub mod identity_store;
 pub mod keychain;
@@ -1160,6 +1161,8 @@ pub fn run() {
             migration_orchestrator::finalize_migration,
             sovereign_session::sovereign_login,
             session_provider::ensure_identity_session,
+            handle_change::change_handle_cmd,
+            handle_change::get_identity_handle_domains,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

@@ -68,7 +68,7 @@ pub struct PlcGenesisOp {
 //   "verificationMethods"  → 19 bytes
 
 /// A service entry in a PLC operation's `services` map.
-#[derive(Serialize, Deserialize, Clone, Debug)]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 pub struct PlcService {
     /// Service type, e.g. `"AtprotoPersonalDataServer"`.
     #[serde(rename = "type")]
