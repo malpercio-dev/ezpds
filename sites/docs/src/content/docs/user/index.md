@@ -8,8 +8,7 @@ identity. It is **cryptographic, not custodial**: the keys that prove who you ar
 live with you, not with a server you have to trust.
 
 This surface is written for people _using_ Obsign. If you run the server side,
-head to [Running Custos](/operator/) instead — a different audience, a different
-register.
+head to [Running Custos](/operator/) instead.
 
 ## What you can do here
 

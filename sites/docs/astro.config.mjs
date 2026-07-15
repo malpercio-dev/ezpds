@@ -46,6 +46,7 @@ export default defineConfig({
             { label: 'Overview', slug: 'operator' },
             { label: 'Running a relay', slug: 'operator/running-a-relay' },
             { label: 'Configuration', slug: 'operator/configuration' },
+            { label: 'Backups & restore', slug: 'operator/backups' },
             { label: 'Moderation', slug: 'operator/moderation' },
           ],
         },

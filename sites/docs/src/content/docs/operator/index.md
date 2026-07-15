@@ -8,7 +8,7 @@ that manages it. This surface reports the literal truth of what the machine is
 doing — it does not hide the machinery.
 
 If you are _using_ an identity rather than running a server, you want
-[Using Obsign](/user/) instead — a different audience, a different register.
+[Using Obsign](/user/) instead.
 
 ## What you run
 

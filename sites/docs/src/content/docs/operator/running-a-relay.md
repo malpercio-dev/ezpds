@@ -27,7 +27,8 @@ colored dot. A degraded server tells you _what_ degraded.
 ## What you are responsible for
 
 - **Durability** — the SQLite database is the identity store. Back it up.
-  Production uses Litestream; see the repository's `docs/deploy.md`.
+  Production streams continuous backups to object storage with Litestream — see
+  [Backups & restore](/operator/backups/).
 - **Availability** — users' clients reach your server to read and write. Health
   checks and restart policy are your safety net.
 - **You can't lock anyone in** — you hold the lower-precedence rotation key
