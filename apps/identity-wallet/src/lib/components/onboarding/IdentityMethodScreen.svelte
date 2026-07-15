@@ -4,24 +4,56 @@
   let { onplc, onweb, onback }: { onplc: () => void; onweb: () => void; onback: () => void } = $props();
 </script>
 
-<OnboardingShell title="Choose how your identity is anchored" subtitle="This determines who can recover it and how changes are verified." {onback}>
-  <div class="choices">
-    <button class="choice" onclick={onplc}>
-      <strong>Cryptographic identity</strong>
-      <span>did:plc · Escrowed-key recovery with a 72-hour override window.</span>
+<OnboardingShell
+  title="Create your identity"
+  subtitle="Custos anchors your identity with a key held on this device. If anyone else tries to change it, you get a 72-hour window to reverse it."
+  {onback}
+>
+  <Button onclick={onplc}>Create identity</Button>
+
+  <div class="advanced">
+    <button type="button" class="advanced-link" onclick={onweb}>
+      Advanced: anchor to a domain you control (did:web)
     </button>
-    <button class="choice" onclick={onweb}>
-      <strong>Your domain</strong>
-      <span>did:web · Your domain is your identity; recovery is domain control plus escrowed keys.</span>
-    </button>
+    <p class="advanced-note">
+      For people who already run a domain and want it to be their identity. Recovery
+      then depends on controlling that domain as well as your device key.
+    </p>
   </div>
-  <Button variant="secondary" onclick={onback}>Cancel</Button>
 </OnboardingShell>
 
 <style>
-  .choices { display: grid; gap: var(--space-sm); width: 100%; text-align: left; }
-  .choice { display: grid; gap: var(--space-xs); width: 100%; padding: var(--space-md); border: 1px solid var(--color-line); border-radius: var(--radius-lg); background: var(--color-surface); color: var(--color-ink); font: inherit; cursor: pointer; }
-  .choice:focus-visible { outline: 2px solid var(--color-accent); outline-offset: 2px; }
-  .choice strong { font-size: var(--text-title); }
-  .choice span { line-height: var(--leading-body); }
+  /* The default path is did:plc on Custos — the single primary (sealing-wax gold)
+     action. did:web is deliberately demoted to a quiet aubergine "reveal the
+     machinery" link below a hairline, one tap away for advanced users only. */
+  .advanced {
+    width: 100%;
+    padding-top: var(--space-md);
+    border-top: 1px solid var(--color-line);
+    text-align: left;
+  }
+  .advanced-link {
+    display: inline-block;
+    min-height: 44px;
+    padding: var(--space-xs) 0;
+    background: none;
+    border: none;
+    color: var(--color-accent);
+    font: inherit;
+    font-weight: var(--weight-medium);
+    text-decoration: underline;
+    text-underline-offset: 2px;
+    cursor: pointer;
+  }
+  .advanced-link:focus-visible {
+    outline: 2px solid var(--color-accent);
+    outline-offset: 2px;
+    border-radius: var(--radius-sm);
+  }
+  .advanced-note {
+    margin: var(--space-xs) 0 0;
+    color: var(--color-muted);
+    font-size: var(--text-label);
+    line-height: var(--leading-body);
+  }
 </style>
