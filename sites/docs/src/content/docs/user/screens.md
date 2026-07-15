@@ -20,32 +20,50 @@ device photos.
 
 The first launch offers to create a new identity or move an existing one in.
 
-![Obsign welcome screen with "Add an identity" and "Move an identity" options](/screenshots/wallet/welcome.png)
+<figure>
+  <img src="/screenshots/wallet/welcome.png" alt="Obsign welcome screen with 'Add an identity' and 'Move an identity' options" width="280" />
+  <figcaption>First launch: create a new identity, or move one you already have.</figcaption>
+</figure>
 
 ## Your identities
 
 The home surface lists your seals with tamper monitoring shown live at the top.
 
-![Obsign home screen showing one identity and an "All identities secure" banner](/screenshots/wallet/home.png)
+<figure>
+  <img src="/screenshots/wallet/home.png" alt="Obsign home screen showing one identity and an 'All identities secure' banner" width="280" />
+  <figcaption>The home surface, with monitoring shown live at the top.</figcaption>
+</figure>
 
 A single wallet can hold several identities; the root-key badge is tracked per identity.
 
-![Obsign home screen with two identities, one marked "Root key" and one "Not root"](/screenshots/wallet/home-multi.png)
+<figure>
+  <img src="/screenshots/wallet/home-multi.png" alt="Obsign home screen with two identities, one marked 'Root key' and one 'Not root'" width="280" />
+  <figcaption>Several identities in one wallet; the root-key badge is per identity.</figcaption>
+</figure>
 
 Tapping an identity opens its DID document, decoded.
 
-![Obsign identity detail showing the decoded DID document](/screenshots/wallet/identity-detail.png)
+<figure>
+  <img src="/screenshots/wallet/identity-detail.png" alt="Obsign identity detail showing the decoded DID document" width="280" />
+  <figcaption>An identity's DID document — identifier, handle, verification keys, services.</figcaption>
+</figure>
 
 ## Agents
 
 Agents you have authorised to act on your behalf are listed under **My agents**, each
 with its permissions and full activity record.
 
-![Obsign "My agents" screen showing a connected agent](/screenshots/wallet/agents.png)
+<figure>
+  <img src="/screenshots/wallet/agents.png" alt="Obsign 'My agents' screen showing a connected agent" width="280" />
+  <figcaption>The agents you've approved, with their permissions and activity record.</figcaption>
+</figure>
 
 ## Settings
 
-![Obsign settings screen with the appearance control](/screenshots/wallet/settings.png)
+<figure>
+  <img src="/screenshots/wallet/settings.png" alt="Obsign settings screen with the appearance control" width="280" />
+  <figcaption>Appearance and app settings.</figcaption>
+</figure>
 
 ## When something is wrong
 
@@ -53,12 +71,21 @@ If Obsign detects an unauthorised change to your identity's public record, the h
 surface raises an alert — status is always shown with text and an icon, never colour
 alone.
 
-![Obsign home screen showing a tamper alert banner](/screenshots/wallet/home-alert.png)
+<figure>
+  <img src="/screenshots/wallet/home-alert.png" alt="Obsign home screen showing a tamper alert banner" width="280" />
+  <figcaption>A tamper alert on the home surface — text and icon, not colour alone.</figcaption>
+</figure>
 
 Opening the alert shows the change and a live countdown of the 72-hour recovery window.
 
-![Obsign alert detail with a recovery-window countdown](/screenshots/wallet/alert-detail.png)
+<figure>
+  <img src="/screenshots/wallet/alert-detail.png" alt="Obsign alert detail with a recovery-window countdown" width="280" />
+  <figcaption>The alert detail, with a live recovery-window countdown.</figcaption>
+</figure>
 
 Local failures are surfaced inline with a way to retry, never a dead end.
 
-![Obsign home screen showing an inline "Failed to load identities" error with a Try again button](/screenshots/wallet/home-load-error.png)
+<figure>
+  <img src="/screenshots/wallet/home-load-error.png" alt="Obsign home screen showing an inline 'Failed to load identities' error with a Try again button" width="280" />
+  <figcaption>An injected local failure surfaces inline with a retry, never a dead end.</figcaption>
+</figure>

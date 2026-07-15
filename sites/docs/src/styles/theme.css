@@ -235,3 +235,32 @@
     scroll-behavior: auto !important;
   }
 }
+
+/* ── Screenshot figures ───────────────────────────────────────────────────
+ * Inline app screenshots (from `just docs-screenshots`) read as phone renders:
+ * a constrained, framed image with a muted caption. Centered on wide viewports,
+ * full-width on narrow ones. The frame + caption keep them legible as figures,
+ * not as inline content the prose flows around. */
+.sl-markdown-content figure {
+  margin: 1.75rem auto;
+  max-width: 22rem;
+  text-align: center;
+}
+
+.sl-markdown-content figure img {
+  display: block;
+  width: 100%;
+  height: auto;
+  margin-inline: auto;
+  border: 1px solid var(--sl-color-gray-5);
+  border-radius: 0.75rem;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.08);
+}
+
+.sl-markdown-content figure figcaption {
+  margin-top: 0.6rem;
+  font-size: var(--sl-text-sm);
+  line-height: 1.4;
+  color: var(--sl-color-gray-3);
+  text-align: center;
+}

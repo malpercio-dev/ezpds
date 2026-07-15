@@ -21,50 +21,74 @@ diagrams, not pixel-exact device photos.
 The console opens on the active relay, ready to mint a single-use, device-signed account
 claim code.
 
-![Custos console home screen for minting an account claim code](/screenshots/admin/home.png)
+<figure>
+  <img src="/screenshots/admin/home.png" alt="Custos console home screen for minting an account claim code" width="280" />
+  <figcaption>Mint a single-use, device-signed account claim code for the active relay.</figcaption>
+</figure>
 
 Before any relay is paired, the console asks you to pair this operator device.
 
-![Custos console home screen before pairing, offering "Pair this device"](/screenshots/admin/home-unpaired.png)
+<figure>
+  <img src="/screenshots/admin/home-unpaired.png" alt="Custos console home screen before pairing, offering 'Pair this device'" width="280" />
+  <figcaption>Before pairing: no relay is bound to this operator device yet.</figcaption>
+</figure>
 
 ## Pairing
 
 Pair a device with a relay by QR or manual entry.
 
-![Custos console pair screen with QR and manual entry](/screenshots/admin/pair.png)
+<figure>
+  <img src="/screenshots/admin/pair.png" alt="Custos console pair screen with QR and manual entry" width="280" />
+  <figcaption>Pair with a relay by QR or manual entry.</figcaption>
+</figure>
 
 ## Accounts
 
 Every account on one relay, searchable by handle or DID, with a per-row blob-quota
 readout.
 
-![Custos console accounts list with search and per-row quota bars](/screenshots/admin/accounts.png)
+<figure>
+  <img src="/screenshots/admin/accounts.png" alt="Custos console accounts list with search and per-row quota bars" width="280" />
+  <figcaption>Every account on one relay, searchable, with per-row blob quota.</figcaption>
+</figure>
 
 ## Claim codes
 
 The claim-code inventory splits live credentials from terminal history.
 
-![Custos console claim-code inventory](/screenshots/admin/codes.png)
+<figure>
+  <img src="/screenshots/admin/codes.png" alt="Custos console claim-code inventory" width="280" />
+  <figcaption>Outstanding claim codes and their terminal history.</figcaption>
+</figure>
 
 ## Devices
 
 Every admin device registered on one relay — active and revoked — with a remote revoke
 for a lost device.
 
-![Custos console devices list with remote revoke](/screenshots/admin/devices.png)
+<figure>
+  <img src="/screenshots/admin/devices.png" alt="Custos console devices list with remote revoke" width="280" />
+  <figcaption>Admin devices on one relay, with remote revoke for a lost device.</figcaption>
+</figure>
 
 ## Moderation
 
 Account takedown and restore, then credential revocation — each an armed, biometric-gated
 destructive action.
 
-![Custos console moderation screen for account takedown and restore](/screenshots/admin/moderation.png)
+<figure>
+  <img src="/screenshots/admin/moderation.png" alt="Custos console moderation screen for account takedown and restore" width="280" />
+  <figcaption>Account takedown/restore and credential revocation, each armed and gated.</figcaption>
+</figure>
 
 ## Transfers
 
 In-flight device transfers an operator can watch and cancel.
 
-![Custos console transfers list](/screenshots/admin/transfers.png)
+<figure>
+  <img src="/screenshots/admin/transfers.png" alt="Custos console transfers list" width="280" />
+  <figcaption>In-flight device transfers an operator can watch and cancel.</figcaption>
+</figure>
 
 ## Server status
 
@@ -72,15 +96,24 @@ One relay's health as it reports it — version and uptime, account counts, blob
 totals, firehose state, and background-sweep last-runs. Facts only; nothing here is a
 verdict.
 
-![Custos console server status readout](/screenshots/admin/status.png)
+<figure>
+  <img src="/screenshots/admin/status.png" alt="Custos console server status readout" width="280" />
+  <figcaption>One relay's health as it reports it — facts only.</figcaption>
+</figure>
 
 On a degraded relay, stale background sweeps are flagged with a trailing glyph — status is
 never signalled by colour alone.
 
-![Custos console server status for a degraded relay with stale-sweep glyphs](/screenshots/admin/status-degraded.png)
+<figure>
+  <img src="/screenshots/admin/status-degraded.png" alt="Custos console server status for a degraded relay with stale-sweep glyphs" width="280" />
+  <figcaption>A degraded relay: stale sweeps flagged by glyph, never colour alone.</figcaption>
+</figure>
 
 ## Settings
 
 Per-relay pairings, the global admin key, and the biometric toggle.
 
-![Custos console settings with per-relay pairings](/screenshots/admin/settings.png)
+<figure>
+  <img src="/screenshots/admin/settings.png" alt="Custos console settings with per-relay pairings" width="280" />
+  <figcaption>Per-relay pairings, the global admin key, and the biometric toggle.</figcaption>
+</figure>
