@@ -17,25 +17,31 @@ No single share reveals anything on its own.
 It is the balance between "one lost device locks me out forever" and "one leaked
 secret is game over."
 
-## Setting it up
+## Where the three shares live
 
-1. In Obsign, choose **Set up recovery**.
-2. Obsign generates three shares on your device.
-3. Distribute them to places that will not all fail together — for example your
-   device keychain, a trusted person, and offline storage.
+Backup is **built into creating your identity** — there is no separate menu
+option to turn it on. Right after your identity is created, Obsign shows the
+**Back up your recovery key** step, and the three shares already have their homes:
 
-:::caution[Do not co-locate shares]
-Two shares in the same place is the same as one share for a thief and one point
-of failure for you. Spread them across independent failure domains.
+- **Share 1 of 3** — saved to your **iCloud Keychain** automatically.
+- **Share 2 of 3** — held in your **server's escrow**.
+- **Share 3 of 3** — **you** save this one. Obsign shows it as text and a QR code
+  with a Copy button; keep it somewhere durable.
+
+You confirm you've saved Share 3 before you can continue. Obsign already holds two
+shares for you (iCloud + your server), so saving Share 3 anywhere independent of
+your phone gives you a second, self-controlled path back in.
+
+:::tip[Good homes for Share 3]
+Save it to a password manager (1Password, Bitwarden, …), print it and store it
+somewhere safe, or write it down and keep it **separate from your device**. Do not
+leave it only on the phone that also holds Share 1.
 :::
 
 ## Recovering with two shares
 
-When you need to recover, bring any two shares back together in Obsign. It
-reconstructs the secret **on your device** and re-seals your identity key locally.
-The shares never travel to a server.
-
-:::tip
-Test recovery once, deliberately, before you are relying on it — the same way you
-would test a fire alarm rather than assume it works.
-:::
+When you need to recover, Obsign brings any two shares back together and
+reconstructs the recovery key **on your device**. In the common case that means
+your iCloud Share 1 plus either your server's Share 2 or the Share 3 you saved —
+any two of the three is enough, and no single share ever reveals anything on its
+own.

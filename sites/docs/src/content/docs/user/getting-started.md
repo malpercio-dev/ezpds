@@ -3,26 +3,35 @@ title: Getting started
 description: Create a new identity or bring an existing one into Obsign.
 ---
 
-There are two ways to begin: create a brand-new identity, or bring one you
-already have.
+When you open Obsign, you're offered two options:
 
-## Create a new identity
+- **Add an identity** — create a brand-new identity.
+- **Move an identity to another PDS** — bring an identity you already have onto a
+  server you control (see [Migrating your identity](/user/migration/)).
 
-1. Open Obsign and choose **Create identity**.
-2. Pick a handle on an available domain.
+If you already have identities in the wallet, tap **Add an identity** at the
+bottom of your identity list to reach the same screen.
+
+## Add an identity
+
+1. Open Obsign and choose **Add an identity**.
+2. Follow the prompts to pick a handle on an available domain and set up your
+   account.
 3. Obsign generates your identity key **on your device** and seals it. The key
    never leaves your device unencrypted.
-4. Set up recovery before you post anything — see
+4. As part of setup, Obsign walks you through **backing up your recovery key** and
+   won't let you finish until you've saved your share — see
    [2-of-3 Shamir backup](/user/backup/).
 
 :::tip
-Do the backup step _first_. Recovery you set up before you need it is the whole
-point; recovery you set up after losing a device is too late.
+Backup isn't a separate step you do later — it's built into adding your identity,
+which is exactly the right time. Save your share somewhere durable when Obsign
+prompts you, not after you've lost a device.
 :::
 
-## Bring an existing identity
+## Move an identity to another PDS
 
-If you already have an ATProtocol account, you can migrate it into a server you
+If you already have an ATProtocol identity, you can move it to a server you
 control without losing your handle or history. That flow has its own page:
 [Migrating your identity](/user/migration/).
 

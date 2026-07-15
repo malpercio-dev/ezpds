@@ -40,6 +40,8 @@ contest a change. Because your key is `rotationKeys[0]` (see
    is reversed within the window.
 
 :::tip
-The countdown is shown as a time remaining, not just a color. If you have backup
-set up, an override needs only your device — no scramble to reassemble anything.
+The countdown is shown as a time remaining, not just a color. An override is
+signed by the identity key already on your device — no share to reassemble and no
+scramble in the moment. (Your [Shamir backup](/user/backup/) is the separate
+safety net for getting a key back onto a _new_ device.)
 :::
