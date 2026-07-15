@@ -1,11 +1,53 @@
 # Obsign (identity-wallet) Mobile App
 
 Last verified: 2026-07-08
-Last updated: 2026-07-14
+Last updated: 2026-07-15
 
 ## Purpose
 
 Tauri v2 iOS application — SvelteKit 2 + Svelte 5 frontend running in a native WKWebView, communicating with a Rust backend exclusively through Tauri's IPC bridge. First frontend code in the repository.
+
+## Browser test harness (drive the app without a simulator)
+
+The whole frontend runs in a plain desktop browser under `vite dev` — the only thing the
+browser lacks is the Tauri `invoke()` seam, which the harness intercepts with Tauri's
+official `mockIPC`. This lets an agent (or a human) reach every screen and reproduce any
+state, including rare error states, without a Mac/Xcode/simulator. Design + acceptance
+criteria: [docs/design-plans/2026-07-12-browser-harness.md](../../docs/design-plans/2026-07-12-browser-harness.md).
+
+**Start it** (or use the `.claude/launch.json` config `wallet-harness` / `wallet-harness-proxy`):
+- **Fake mode** (default, no backend needed): `pnpm --dir apps/identity-wallet dev:harness` → http://localhost:5173.
+- **Proxy mode** (real thin-HTTP calls against a hermetic local PDS): in one terminal
+  `cargo build -p pds` then `just harness-pds` (prints the URL + admin token); in another,
+  `VITE_HARNESS_PDS_URL=<url> VITE_HARNESS_ADMIN_TOKEN=<token> pnpm --dir apps/identity-wallet dev:harness:proxy`.
+- Plain `pnpm dev` never activates the harness (double-gated on `import.meta.env.DEV && VITE_HARNESS`);
+  `pnpm check:harness-absence` proves it is tree-shaken out of production builds.
+
+**`window.__harness` console API** (both modes):
+- `.scenario(name)` — switch preset and reload (persists across reload). Presets:
+  `fresh-install`, `one-identity`, `multi-identity`, `alert-active`, `migration-in-flight`,
+  `agent-connected`. `.scenarios` lists them.
+- `.failNext(command, error)` — make the next call of `command` reject with a typed error,
+  e.g. `window.__harness.failNext('create_account', { code: 'EXPIRED_CODE' })`.
+- `.emit(event, payload)` — deliver a Tauri event to live `listen()` subscribers;
+  `window.__harness.emit('auth_ready')` simulates the OAuth deep-link return.
+- `.state()` — a read-only snapshot of the fake store. `.mode` is `'fake'` or `'proxy'`.
+
+**Proxy mode is real only for the thin-HTTP subset** — `create_account` (mints + redeems a
+real claim code, POSTs `/v1/accounts/mobile`) and `get_available_user_domains`
+(describeServer). By the honest boundary, these stay **faked even in proxy mode** (heavy
+Rust logic with no thin-HTTP form): the DID ceremony (`perform_did_ceremony`,
+`*_did_web_ceremony`), OAuth completion (`prepare/complete_oauth_flow`), the migration
+transfer legs (`transfer_repo`/`transfer_blobs`/…, `finalize_migration`), recovery/claim
+PLC ops, and the agent surfaces (which need a real post-ceremony session the faked
+ceremony never mints). Fidelity the browser can never cover: real Keychain/Secure-Enclave,
+the biometric prompt, ASWebAuthenticationSession, WKWebView rendering, safe-area insets,
+camera/QR — those stay simulator/device concerns.
+
+**Fake handler coverage is enforced:** every command in `$lib/ipc` must have a handler in
+`src/lib/harness/registry.ts` or `registry.test.ts` fails (`pnpm test`). Harness code lives
+in `src/lib/harness/` (`install`/`registry`/`state`/`scenarios`/`control` + `proxy/`),
+activated by `src/hooks.client.ts`.
 
 ## Contracts
 

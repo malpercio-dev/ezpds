@@ -1,0 +1,29 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "wallet-harness",
+      "runtimeExecutable": "pnpm",
+      "runtimeArgs": ["--dir", "apps/identity-wallet", "dev:harness"],
+      "port": 5173
+    },
+    {
+      "name": "admin-harness",
+      "runtimeExecutable": "pnpm",
+      "runtimeArgs": ["--dir", "apps/admin-companion", "dev:harness"],
+      "port": 5174
+    },
+    {
+      "name": "wallet-harness-proxy",
+      "runtimeExecutable": "pnpm",
+      "runtimeArgs": ["--dir", "apps/identity-wallet", "dev:harness:proxy"],
+      "port": 5173
+    },
+    {
+      "name": "admin-harness-proxy",
+      "runtimeExecutable": "pnpm",
+      "runtimeArgs": ["--dir", "apps/admin-companion", "dev:harness:proxy"],
+      "port": 5174
+    }
+  ]
+}
