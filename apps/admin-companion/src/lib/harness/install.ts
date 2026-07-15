@@ -24,7 +24,10 @@ const scenarioFromEnv = (import.meta.env.VITE_HARNESS_SCENARIO as string | undef
 
 export async function installHarness(modeRaw: string): Promise<void> {
   const mode: 'fake' | 'proxy' = modeRaw === 'proxy' ? 'proxy' : 'fake';
-  const scenarioName = initialScenario(scenarioFromEnv);
+  // Proxy mode starts unpaired by default so the operator pairs with the real PDS
+  // (a fake single-relay's device id wouldn't be one the PDS knows). A sticky
+  // sessionStorage choice or VITE_HARNESS_SCENARIO still wins.
+  const scenarioName = initialScenario(mode === 'proxy' ? 'unpaired' : scenarioFromEnv);
 
   const state: AdminState = buildScenario(scenarioName);
   const failNext = new Map<string, unknown>();
