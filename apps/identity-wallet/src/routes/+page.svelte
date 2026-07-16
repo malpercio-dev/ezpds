@@ -164,7 +164,7 @@
     // interrupted before the tombstone + local wipe finished (e.g. iOS killed the app
     // mid-flow), the identity still exists locally but its account is gone. Route straight
     // to the removal screen, which resumes the tombstone-only retry rather than the request
-    // flow — the latter would fail against the already-deleted account (MM-389).
+    // flow — the latter would fail against the already-deleted account.
     let resumingRemoval = false;
     try {
       const pending = await listPendingRemovals();

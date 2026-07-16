@@ -34,23 +34,37 @@ use crate::session_provider::{SessionError, SessionProvider, UnlockReason};
 /// the already-deleted account).
 const PENDING_REMOVALS_ACCOUNT: &str = "pending-removals";
 
-/// Load the set of DIDs with a pending post-delete removal.
+/// Load the set of DIDs with a pending post-delete removal, propagating a genuine
+/// Keychain read failure.
 ///
-/// Best-effort by design: a missing entry, a Keychain read error, or corrupt JSON
-/// all read as an empty set. The marker is a safety net, so a decoding failure must
-/// never surface as an error (least of all one that could block app launch).
-fn load_pending_removals() -> Vec<String> {
+/// A missing entry is an empty set, and corrupt JSON reads as empty (the marker is a
+/// best-effort payload — a decode failure must not wedge the flow). But a real
+/// Keychain security/IO error is returned, NOT swallowed: the mutators
+/// (`mark_removal_pending` / `clear_removal_pending`) do a read-modify-write, so
+/// silently treating a transient read failure as "empty" would let the subsequent
+/// save overwrite the Keychain and drop any *other* DIDs' pending markers.
+fn load_pending_removals_strict() -> Result<Vec<String>, crate::keychain::KeychainError> {
     match crate::keychain::get_item(PENDING_REMOVALS_ACCOUNT) {
-        Ok(bytes) => serde_json::from_slice::<Vec<String>>(&bytes).unwrap_or_else(|e| {
+        Ok(bytes) => Ok(serde_json::from_slice::<Vec<String>>(&bytes).unwrap_or_else(|e| {
             tracing::warn!(error = %e, "pending-removals Keychain entry is not valid JSON; treating as empty");
             Vec::new()
-        }),
-        Err(e) if crate::keychain::is_not_found(&e) => Vec::new(),
-        Err(e) => {
-            tracing::warn!(error = %e, "Keychain error loading pending-removals; treating as empty");
-            Vec::new()
-        }
+        })),
+        Err(e) if crate::keychain::is_not_found(&e) => Ok(Vec::new()),
+        Err(e) => Err(e),
     }
+}
+
+/// Best-effort read of the pending-removal set for the infallible launch check.
+///
+/// Any Keychain trouble reads as an empty set — `list_pending_removals` is called
+/// unconditionally on every launch and must never surface an error that could block it.
+/// Read-modify-write callers must use [`load_pending_removals_strict`] instead, so a
+/// transient read failure cannot clobber unrelated markers.
+fn load_pending_removals() -> Vec<String> {
+    load_pending_removals_strict().unwrap_or_else(|e| {
+        tracing::warn!(error = %e, "Keychain error loading pending-removals; treating as empty");
+        Vec::new()
+    })
 }
 
 /// Persist the pending-removals set. An empty set deletes the entry entirely so the
@@ -73,7 +87,7 @@ fn save_pending_removals(dids: &[String]) -> Result<(), crate::keychain::Keychai
 /// Called the instant `deleteAccount` succeeds, before the tombstone network round
 /// trip — the step iOS is most likely to interrupt by backgrounding the app.
 fn mark_removal_pending(did: &str) -> Result<(), crate::keychain::KeychainError> {
-    let mut dids = load_pending_removals();
+    let mut dids = load_pending_removals_strict()?;
     if !dids.iter().any(|d| d == did) {
         dids.push(did.to_string());
         save_pending_removals(&dids)?;
@@ -83,7 +97,7 @@ fn mark_removal_pending(did: &str) -> Result<(), crate::keychain::KeychainError>
 
 /// Clear `did`'s pending-removal marker once the tombstone + wipe have completed.
 fn clear_removal_pending(did: &str) -> Result<(), crate::keychain::KeychainError> {
-    let mut dids = load_pending_removals();
+    let mut dids = load_pending_removals_strict()?;
     let before = dids.len();
     dids.retain(|d| d != did);
     if dids.len() != before {
