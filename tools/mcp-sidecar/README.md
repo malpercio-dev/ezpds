@@ -119,8 +119,15 @@ It needs a built `pds` (`cargo build -p pds`, or point `CUSTOS_MCP_TEST_PDS_BIN`
 deps installed in `tools/mcp` too (`just mcp-setup`); the node-only CI lane
 (`.github/workflows/mcp-check.yml`) runs the scaffold half only. Still fully offline.
 
-The live staging pass (real OAuth handshake, post visible in a Bluesky client) is HV-2/HV-3
-in [`docs/test-plans/2026-07-15-MM-356.md`](../../docs/test-plans/2026-07-15-MM-356.md).
+**Live** (`test/live/`) — the HV-2 driver for a deployed sidecar
+([`docs/test-plans/2026-07-15-MM-356.md`](../../docs/test-plans/2026-07-15-MM-356.md)):
+`hv2-create-post.mjs` runs the whole pass against real deployments (ephemeral parent →
+mint child, genesis to the **real** plc.directory → forwarded token → `create_post`
+through the deployed sidecar → attribution + plc read-backs; usage in its header —
+credentials ride env only), and `hv2-cleanup.mjs` retires the artifacts afterwards.
+First staging pass: 2026-07-16 (PR #292). HV-3 (the MCP-spec OAuth handshake) remains
+open — the driver exchanges the child capability directly rather than walking the
+protected-resource metadata.
 
 ## Deploy
 
