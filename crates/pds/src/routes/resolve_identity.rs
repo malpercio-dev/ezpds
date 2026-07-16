@@ -17,6 +17,7 @@ use crate::identity::resolution::{
     resolve_did_document, resolve_did_document_force_refresh, resolve_handle_to_did,
     verified_handle_for_did, verified_handle_for_identifier, INVALID_HANDLE,
 };
+use crate::lexicon::LexiconInput;
 
 #[derive(Deserialize)]
 pub struct ResolveDidQuery {
@@ -66,7 +67,7 @@ pub async fn resolve_identity_handler(
 
 pub async fn refresh_identity_handler(
     State(state): State<AppState>,
-    Json(payload): Json<RefreshIdentityRequest>,
+    LexiconInput(payload): LexiconInput<RefreshIdentityRequest>,
 ) -> Result<Json<IdentityInfoResponse>, ApiError> {
     // Snapshot the currently-cached DID document *before* the force-refresh rewrites it, so we can
     // tell whether this refresh actually changed anything.

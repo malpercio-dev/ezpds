@@ -8,6 +8,7 @@ use axum::response::IntoResponse;
 use serde::{Deserialize, Serialize};
 
 use crate::app::AppState;
+use crate::lexicon::LexiconInput;
 use common::{ApiError, ErrorCode};
 
 #[derive(Deserialize)]
@@ -58,7 +59,7 @@ pub async fn put_record(
     method: Method,
     uri: Uri,
     headers: axum::http::HeaderMap,
-    axum::Json(body): axum::Json<PutRecordBody>,
+    LexiconInput(body): LexiconInput<PutRecordBody>,
 ) -> Result<impl IntoResponse, ApiError> {
     // Resolve the at-identifier (DID or handle) to a DID before the ownership check and write.
     let did = crate::record_write::resolve_repo_did(&state, &body.repo).await?;

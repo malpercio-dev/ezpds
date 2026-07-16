@@ -25,6 +25,7 @@ use crate::auth::extractors::AuthenticatedUser;
 use crate::auth::jwt::AuthScope;
 use crate::auth::oauth_scopes;
 use crate::identity::plc::{build_did_document_from_op, ensure_did_plc, fetch_current_plc_state};
+use crate::lexicon::LexiconInput;
 
 #[derive(Deserialize)]
 pub struct SubmitPlcOperationRequest {
@@ -37,7 +38,7 @@ pub struct SubmitPlcOperationResponse {}
 pub async fn submit_plc_operation(
     user: AuthenticatedUser,
     State(state): State<AppState>,
-    Json(request): Json<SubmitPlcOperationRequest>,
+    LexiconInput(request): LexiconInput<SubmitPlcOperationRequest>,
 ) -> Result<Json<SubmitPlcOperationResponse>, ApiError> {
     if user.scope != AuthScope::Access {
         return Err(ApiError::new(

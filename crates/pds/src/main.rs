@@ -21,6 +21,7 @@ mod firehose;
 mod firehose_gc;
 mod identity;
 mod iroh_tunnel;
+mod lexicon;
 mod metrics;
 mod no_input;
 mod platform;

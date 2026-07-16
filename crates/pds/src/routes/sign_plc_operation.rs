@@ -34,6 +34,7 @@ use crate::db::repo_keys::get_signing_key_by_did;
 use crate::identity::plc::{
     ensure_did_plc, fetch_current_plc_state, parse_services, parse_verification_methods,
 };
+use crate::lexicon::LexiconInput;
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -58,7 +59,7 @@ pub struct SignPlcOperationResponse {
 pub async fn sign_plc_operation(
     user: AuthenticatedUser,
     State(state): State<AppState>,
-    Json(request): Json<SignPlcOperationRequest>,
+    LexiconInput(request): LexiconInput<SignPlcOperationRequest>,
 ) -> Result<Json<SignPlcOperationResponse>, ApiError> {
     if user.scope != AuthScope::Access {
         return Err(ApiError::new(

@@ -8,6 +8,7 @@ use axum::response::IntoResponse;
 use serde::{Deserialize, Serialize};
 
 use crate::app::AppState;
+use crate::lexicon::LexiconInput;
 use common::{ApiError, ErrorCode};
 
 #[derive(Deserialize)]
@@ -36,14 +37,15 @@ pub struct CreateRecordResponse {
 
 /// POST /xrpc/com.atproto.repo.createRecord
 ///
-/// Create a new record in the repository. If `rkey` is not provided (or is empty),
-/// a TID is auto-generated. Returns 409 if the rkey already exists.
+/// Create a new record in the repository. If `rkey` is not provided, a TID is auto-generated
+/// (an explicit empty string is rejected by the lexicon layer, matching the reference PDS).
+/// Returns 409 if the rkey already exists.
 pub async fn create_record(
     State(state): State<AppState>,
     method: Method,
     uri: Uri,
     headers: HeaderMap,
-    axum::Json(body): axum::Json<CreateRecordBody>,
+    LexiconInput(body): LexiconInput<CreateRecordBody>,
 ) -> Result<impl IntoResponse, ApiError> {
     // Resolve the at-identifier (DID or handle) to a DID before the ownership check and write.
     let did = crate::record_write::resolve_repo_did(&state, &body.repo).await?;
@@ -513,12 +515,11 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn create_record_empty_rkey_generates_tid() {
+    async fn create_record_absent_rkey_generates_tid() {
         let (state, did) = setup_account_with_repo().await;
         let token = access_jwt(&state.jwt_secret, &did);
         let app = crate::app::app(state);
 
-        // Explicit empty string should be treated as "absent".
         let request = Request::builder()
             .method(http::Method::POST)
             .uri("/xrpc/com.atproto.repo.createRecord")
@@ -528,8 +529,7 @@ mod tests {
                 serde_json::to_string(&serde_json::json!({
                     "repo": did,
                     "collection": "app.bsky.feed.post",
-                    "rkey": "",
-                    "record": {"text": "empty rkey"}
+                    "record": {"text": "absent rkey"}
                 }))
                 .unwrap(),
             ))
@@ -547,6 +547,45 @@ mod tests {
         let parts: Vec<&str> = resp.uri.split('/').collect();
         let auto_rkey = parts.last().unwrap();
         assert_eq!(auto_rkey.len(), 13);
+    }
+
+    /// An explicit empty-string rkey used to be treated as "absent" — a Custos-only leniency.
+    /// The lexicon layer now rejects it like the reference PDS (`record-key` format, ≥1 char).
+    #[tokio::test]
+    async fn create_record_empty_rkey_returns_400() {
+        let (state, did) = setup_account_with_repo().await;
+        let token = access_jwt(&state.jwt_secret, &did);
+        let app = crate::app::app(state);
+
+        let request = Request::builder()
+            .method(http::Method::POST)
+            .uri("/xrpc/com.atproto.repo.createRecord")
+            .header("Content-Type", "application/json")
+            .header("Authorization", format!("Bearer {token}"))
+            .body(Body::from(
+                serde_json::to_string(&serde_json::json!({
+                    "repo": did,
+                    "collection": "app.bsky.feed.post",
+                    "rkey": "",
+                    "record": {"text": "empty rkey"}
+                }))
+                .unwrap(),
+            ))
+            .unwrap();
+
+        let response = app.oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let body: serde_json::Value = serde_json::from_slice(
+            &axum::body::to_bytes(response.into_body(), usize::MAX)
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(body["error"]["code"], "InvalidRequest");
+        assert_eq!(
+            body["error"]["message"],
+            "Input/rkey must be a valid Record Key"
+        );
     }
 
     #[tokio::test]
