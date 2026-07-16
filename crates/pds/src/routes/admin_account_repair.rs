@@ -80,6 +80,31 @@ pub async fn set_account_email(
     let Some(previous) = previous else {
         return ApiError::new(ErrorCode::NotFound, "account not found").into_response();
     };
+    // Reject an email already held by another account or reserved by a pending signup — the
+    // `accounts` UNIQUE index alone misses the `pending_accounts` case, which would only surface
+    // later as a promotion collision. Excludes this DID so re-setting the same address is allowed.
+    let email_conflict: i64 = match sqlx::query_scalar(
+        "SELECT CAST(
+             (EXISTS(SELECT 1 FROM accounts WHERE email = ? AND did != ?)
+              OR EXISTS(SELECT 1 FROM pending_accounts WHERE email = ?))
+         AS INTEGER)",
+    )
+    .bind(&email)
+    .bind(&did)
+    .bind(&email)
+    .fetch_one(&mut *tx)
+    .await
+    {
+        Ok(value) => value,
+        Err(error) => return db_error(error, "check email uniqueness").into_response(),
+    };
+    if email_conflict != 0 {
+        return ApiError::new(
+            ErrorCode::InvalidRequest,
+            "this email address is already in use",
+        )
+        .into_response();
+    }
     if let Err(error) = sqlx::query(
         "UPDATE accounts SET email = ?, email_confirmed_at = NULL, updated_at = datetime('now') WHERE did = ?",
     )

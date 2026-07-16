@@ -32,7 +32,7 @@ use crate::no_input::NoInputBody;
 pub async fn request_plc_operation_signature(
     user: AuthenticatedUser,
     State(state): State<AppState>,
-    // No lexicon input; reject a spurious body with 400 like the reference PDS (MM-291).
+    // No lexicon input; reject a spurious body with 400 like the reference PDS.
     _: NoInputBody,
 ) -> Result<StatusCode, ApiError> {
     // Signing a PLC operation is a full-account action; app-password/refresh scopes are refused.
@@ -130,7 +130,7 @@ mod tests {
     }
 
     /// The lexicon defines no input; a spurious body is rejected with 400, matching the reference
-    /// PDS (the MM-291 divergence this route concealed).
+    /// PDS (the input-strictness divergence this route previously concealed).
     #[tokio::test]
     async fn non_empty_body_returns_400() {
         let state = test_state().await;

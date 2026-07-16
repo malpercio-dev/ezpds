@@ -121,6 +121,31 @@ font-check:
 cap-check:
     scripts/capability-check.sh
 
+# Fail if Rust source carries a Linear ticket / AC reference in a comment (AGENTS.md hard
+# rule — traceability belongs in docs/, not `.rs`). #227 swept these out; #266 put sixteen
+# back a day later. This is the forcing function so that regression can't recur silently.
+ticket-ref-check:
+    scripts/ticket-ref-check.sh
+
+# Freeze the access-token binding seam: every access-token verification must go through
+# auth::extractors::authenticate_access (the RFC 9449 scheme<->cnf.jkt enforcement). A route
+# or guard calling auth::jwt::verify_access_token directly skips it — the MM-386 downgrade.
+# Fails on any NEW direct call; guards.rs is baselined as the known-live MM-386 offender.
+auth-seam-check:
+    scripts/auth-seam-check.sh
+
+# Guard the caller-influenced identity fetch against SSRF: resolveHandle's well-known
+# fallback fetches a caller-controlled host, so it must use the SSRF-hardened HTTP client.
+# Fails on a novel/un-hardened wiring; the plain-client wiring is baselined as MM-387.
+ssrf-client-check:
+    scripts/ssrf-client-check.sh
+
+# Prove scripts/gc.sh never targets the real main working tree for pruning when run from a
+# secondary worktree (the normal agent workflow) — regression guard for MM-390. Spins up a
+# throwaway worktree, runs gc.sh dry-run from it, asserts the main checkout is skipped.
+gc-guard-check:
+    scripts/gc-guard-check.sh
+
 # Verify the iOS workflows' `paths:` trigger filters match the apps' real dependency
 # graph (cargo metadata), both directions: every in-repo crate an app links is watched
 # (a new workspace-crate dependency can't ship without widening the filters), and no
@@ -200,7 +225,7 @@ mcp-sidecar-test:
 # Adding a check here covers `just ci` (macOS/full) and `just ci-pds` (Linux) at once —
 # the old design re-stated all twelve checks in each, so a gate added to one and
 # forgotten in the other was a silent gap.
-checks: fmt-check lock-check bruno-check docs-check changelog-check changelog-test font-check cap-check ios-paths-check swift-rs-check ios-template-check
+checks: fmt-check lock-check bruno-check docs-check changelog-check changelog-test font-check cap-check ticket-ref-check auth-seam-check ssrf-client-check gc-guard-check ios-paths-check swift-rs-check ios-template-check
 
 # Run the full CI pipeline locally (all crates; use on macOS where the iOS app builds)
 ci: checks clippy test audit deny

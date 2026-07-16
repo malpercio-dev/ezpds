@@ -2,6 +2,8 @@
 
 Tracking issue: [MM-324](https://linear.app/malpercio/issue/MM-324/browser-test-harness-for-the-mobile-apps-mock-ipc-fake-pds-proxy-mode)
 
+Status: **landed** — the mock-IPC fake + PDS-proxy harness shipped in #283 (MM-324).
+
 ## Summary
 
 Both mobile apps' frontends already run fine under a plain browser dev server — Svelte doesn't need Tauri to render. The only thing that breaks is the seam where each frontend calls into native Rust code. This design closes that gap by intercepting calls at that single seam, using Tauri's own `mockIPC` test utility, rather than by rewriting or aliasing any app code. A small activation file (`hooks.client.ts`) checks a dev-only environment flag and, only then, swaps in one of two handler sets: a stateful in-memory "fake" that models each app's domain objects (identities, pairings, claim codes, etc.) in plain TypeScript and is driven at runtime through a `window.__harness` console API (switch scenarios, force a specific command to fail, deliver an event) — or a "proxy" mode that forwards the subset of commands that are thin HTTP wrappers to a real, hermetically-spawned local PDS, using a real WebCrypto keypair for signatures. Commands that embed substantial Rust-side logic (repo migration, DID ceremony internals, OAuth) stay faked even in proxy mode, since re-implementing them in TypeScript would be its own maintenance burden with limited payoff.

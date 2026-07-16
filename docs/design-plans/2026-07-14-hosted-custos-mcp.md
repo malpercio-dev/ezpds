@@ -1,6 +1,6 @@
 # Design plan: a first-party *hosted* Custos MCP
 
-**Status: design / exploration — captures a design session, not yet committed to a wave slot.**
+**Status: in progress — the credential-forwarding sidecar scaffold shipped in #288 (MM-369); the broader MM-356 hosted-tier work is still in flight (see `docs/implementation-plans/2026-07-15-MM-356/`). Stays here until that epic lands.**
 Written to durably record where a "hosted MCP alongside obsign.org" conversation landed. Verdict
 up front: the interesting product is **not** "the same stdio server, but we run it" — it's a
 reframing where the agent becomes its **own sovereign identity** (own handle, recovery key in the

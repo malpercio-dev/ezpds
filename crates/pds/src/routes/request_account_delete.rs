@@ -30,7 +30,7 @@ use crate::no_input::NoInputBody;
 pub async fn request_account_delete(
     user: AuthenticatedUser,
     State(state): State<AppState>,
-    // No lexicon input; reject a spurious body with 400 like the reference PDS (MM-291).
+    // No lexicon input; reject a spurious body with 400 like the reference PDS.
     _: NoInputBody,
 ) -> Result<StatusCode, ApiError> {
     // Deleting an account is a full-account action; app-password/refresh scopes are refused.
@@ -123,7 +123,7 @@ mod tests {
         assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
     }
 
-    /// No lexicon input: a spurious body is rejected with 400 (reference-PDS parity, MM-291) and
+    /// No lexicon input: a spurious body is rejected with 400 (reference-PDS parity) and
     /// no token is minted.
     #[tokio::test]
     async fn non_empty_body_returns_400() {

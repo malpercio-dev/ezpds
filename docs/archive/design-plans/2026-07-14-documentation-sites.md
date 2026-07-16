@@ -2,6 +2,8 @@
 
 Tracking issue: [MM-357](https://linear.app/malpercio/issue/MM-357)
 
+Status: **landed** — the Astro Starlight docs sites + independent Railway deploy shipped in #276 (MM-359), and the generated reference pages in #280 (MM-360).
+
 ## Summary
 
 The repo already ships a static marketing site (`sites/marketing/`) split into two

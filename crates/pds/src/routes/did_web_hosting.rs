@@ -1,6 +1,6 @@
 // pattern: Imperative Shell
 //
-// Custos-managed did:web hosting control surface (MM-279), account-owner authed:
+// Custos-managed did:web hosting control surface, account-owner authed:
 //
 //   POST /v1/did-web/hosting   — opt in/out of having Custos serve `.well-known/did.json`
 //   POST /v1/did-web/document  — authenticated direct edit of the served DID document

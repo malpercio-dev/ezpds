@@ -28,7 +28,13 @@ APPLY=0
 [ "${1:-}" = "--apply" ] && APPLY=1
 
 cd "$(git rev-parse --show-toplevel)"
-MAIN_WT="$(pwd -P)"
+# The real main working tree — NOT the invoking worktree. `git rev-parse --show-toplevel`
+# returns whichever worktree ran this script, so deriving MAIN_WT from cwd would "protect"
+# the caller and leave git's actual main checkout eligible for pruning (its branch is `main`,
+# so is_merged is trivially true). The first `worktree` entry of the porcelain listing is
+# always the main working tree; parse it exactly as flush_wt parses each entry, so the
+# equality check below compares like against like.
+MAIN_WT="$(git worktree list --porcelain | awk '/^worktree / && !found {print substr($0, 10); found=1}')"
 
 if [ "$APPLY" -eq 1 ]; then
   echo "== gc: APPLY mode — removing merged worktrees and branches =="

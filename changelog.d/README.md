@@ -24,6 +24,9 @@ The CI gate requires a fragment when a pull request changes a deployable surface
 - server or shared runtime source under `crates/*/src/`, plus PDS runtime assets;
 - either mobile app's frontend, native runtime source, static assets, or Tauri config;
 - the public marketing site;
+- the deployed MCP surfaces — the stdio Custos MCP server (`tools/mcp/src/`) and the
+  credential-forwarding sidecar (`tools/mcp-sidecar/src/`, plus its image/config), which
+  ships as a Railway service and re-exports the stdio server's tool surface;
 - workspace runtime dependency manifests, the production image/config, or the NixOS
   runtime module.
 

@@ -7,9 +7,9 @@ happy paths plus error/rare states — to capture deterministic PNGs into
 UI and cannot go stale silently.
 
 This implements Phase 4 (docs.AC4) of
-[docs/design-plans/2026-07-14-documentation-sites.md](../../docs/design-plans/2026-07-14-documentation-sites.md).
+[docs/archive/design-plans/2026-07-14-documentation-sites.md](../../docs/archive/design-plans/2026-07-14-documentation-sites.md).
 It reuses the browser harness from
-[docs/design-plans/2026-07-12-browser-harness.md](../../docs/design-plans/2026-07-12-browser-harness.md)
+[docs/archive/design-plans/2026-07-12-browser-harness.md](../../docs/archive/design-plans/2026-07-12-browser-harness.md)
 (MM-324) — the same `window.__harness.scenario(...)` / `failNext(...)` control surface.
 
 ## Run it

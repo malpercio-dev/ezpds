@@ -21,7 +21,7 @@ The whole frontend runs in a plain desktop browser under `vite dev`; the harness
 intercepts the Tauri `invoke()` seam with the official `mockIPC` so an agent can reach
 every operator screen and reproduce any state without a Mac/Xcode/simulator. Mirrors the
 identity-wallet harness exactly (same `window.__harness` API shape). Design + acceptance
-criteria: [docs/design-plans/2026-07-12-browser-harness.md](../../docs/design-plans/2026-07-12-browser-harness.md).
+criteria: [docs/archive/design-plans/2026-07-12-browser-harness.md](../../docs/archive/design-plans/2026-07-12-browser-harness.md).
 
 **Start it** (or use the `.claude/launch.json` config `admin-harness` / `admin-harness-proxy`):
 - **Fake mode** (default, no backend): `pnpm --dir apps/admin-companion dev:harness` → http://localhost:5174.

@@ -16,8 +16,8 @@
 // So this module is a THIRD allowlist, the mirror image of migration's: alsoKnownAs
 // MAY change; rotationKeys, verificationMethods, and services must NOT.
 //
-// The flow is fully passwordless end to end (MM-306 sovereign login + MM-353 session
-// lifecycle supply the full-access session; the biometric gate lives in the frontend,
+// The flow is fully passwordless end to end (sovereign login + the per-DID session
+// provider supply the full-access session; the biometric gate lives in the frontend,
 // in front of the Secure-Enclave signing):
 //   1. Resolve a full-access session for the DID via SessionProvider.
 //   2. `com.atproto.identity.updateHandle` on the hosting PDS — the PDS arbitrates
@@ -599,7 +599,7 @@ async fn call_update_handle(
 
 /// Drive the full sovereign change-handle flow for a wallet-custodied did:plc.
 ///
-/// 1. Resolve a full-access session for the DID (MM-353 provider — restore / refresh,
+/// 1. Resolve a full-access session for the DID (the per-DID session provider — restore / refresh,
 ///    or `SessionLocked` if a passwordless unlock is needed first).
 /// 2. `updateHandle` on the hosting PDS (validates + allocates the served domain).
 /// 3. Build + device-key-sign the alsoKnownAs PLC op and POST it to plc.directory.
@@ -620,7 +620,7 @@ pub async fn change_handle(
         }
     })?;
 
-    // 1. Full-access session (the MM-353 seam). NEEDS_UNLOCK surfaces distinctly so
+    // 1. Full-access session (the per-DID session-provider seam). NEEDS_UNLOCK surfaces distinctly so
     //    the frontend can run the biometric sovereign login and retry.
     let session = SessionProvider
         .full_access_client(pds_client, &IdentityStore, did, now)

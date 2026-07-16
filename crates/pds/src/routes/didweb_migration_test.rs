@@ -1,6 +1,6 @@
 // pattern: Imperative Shell
 //
-// End-to-end migration choreography for a `did:web` identity (MM-278): moving the operator's
+// End-to-end migration choreography for a `did:web` identity: moving the operator's
 // primary account, `did:web:malpercio.dev`, onto Custos. The differentiator from the did:plc
 // canonical test (`outbound_migration_test.rs`) is that Custos does NOT serve the DID document —
 // the operator controls `malpercio.dev`'s web hosting independently, so `.well-known/did.json`

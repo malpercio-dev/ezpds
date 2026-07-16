@@ -1,6 +1,6 @@
 # PDS Crate Module Reorganization
 
-Status: **planned** — captured from the 2026-07-13 codebase-organization review.
+Status: **landed** — the AppState/state.rs, identity/, firehose/, auth/, and oauth_token splits shipped across #241/#259/#246/#253/#256 (2026-07-13..14).
 Tracked in Linear: [MM-325](https://linear.app/malpercio/issue/MM-325) (sweeps/),
 [MM-326](https://linear.app/malpercio/issue/MM-326) (identity/),
 [MM-327](https://linear.app/malpercio/issue/MM-327) (proxy guard split),

@@ -45,7 +45,7 @@ pub struct RefreshSessionResponse {
 pub async fn refresh_session(
     State(state): State<AppState>,
     headers: HeaderMap,
-    // No lexicon input; reject a spurious body with 400 like the reference PDS (MM-291).
+    // No lexicon input; reject a spurious body with 400 like the reference PDS.
     _: NoInputBody,
 ) -> Result<(StatusCode, Json<RefreshSessionResponse>), ApiError> {
     // --- Extract and verify the refresh JWT ---
@@ -353,8 +353,8 @@ mod tests {
         assert_eq!(json["handle"], "alice.test.example.com");
     }
 
-    /// The lexicon defines no input; a spurious body is rejected with 400 (reference-PDS parity,
-    /// MM-291), leaving the refresh token unrotated.
+    /// The lexicon defines no input; a spurious body is rejected with 400 (reference-PDS parity),
+    /// leaving the refresh token unrotated.
     #[tokio::test]
     async fn non_empty_body_returns_400() {
         let state = test_state().await;

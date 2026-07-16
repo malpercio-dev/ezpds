@@ -5,8 +5,8 @@
 // `validate_input`, the single place asserting "this request body conforms to the procedure's
 // declared lexicon input". The reference PDS gets this uniformity from `@atproto/xrpc-server`'s
 // `validateInput` running on every route; Custos historically hand-parsed each body with a
-// bespoke serde struct, so strictness drifted route by route and concealed client bugs (MM-291,
-// and the systematic gap MM-364). Handlers consume this through the `LexiconInput` axum
+// bespoke serde struct, so strictness drifted route by route and concealed client bugs — a
+// per-route inconsistency this module removes. Handlers consume this through the `LexiconInput` axum
 // extractor (`extractor.rs`), or through `validate_procedure_body` where the raw body bytes are
 // also needed for signature verification.
 //
