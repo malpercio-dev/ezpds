@@ -52,6 +52,42 @@ test('AC2.7: a malformed PDS origin is rejected', () => {
   );
 });
 
+test('AC2.7: a scheme-less origin fails loudly at startup, not on the first forwarded call', () => {
+  // `new URL('pds.railway.internal:8080')` PARSES — the host becomes the scheme —
+  // so without an explicit http(s) check this Railway-dashboard mistake only
+  // surfaces later as an illegible "unknown scheme" fetch failure (found live
+  // on staging during MM-370's HV-2 pass).
+  assert.throws(
+    () => loadConfig({ MCP_SIDECAR_PDS_ORIGIN: 'pds.railway.internal:8080' } as NodeJS.ProcessEnv),
+    /must be an http:\/\/ or https:\/\/ URL/,
+  );
+  assert.throws(
+    () =>
+      loadConfig({
+        MCP_SIDECAR_PDS_ORIGIN: 'http://pds.railway.internal:8080',
+        MCP_SIDECAR_PUBLIC_ORIGIN: 'mcp.obsign.org:443',
+      } as NodeJS.ProcessEnv),
+    /MCP_SIDECAR_PUBLIC_ORIGIN must be an http:\/\/ or https:\/\/ URL/,
+  );
+  assert.throws(
+    () =>
+      loadConfig({
+        MCP_SIDECAR_PDS_ORIGIN: 'http://pds.railway.internal:8080',
+        MCP_SIDECAR_AUTH_SERVER_ORIGIN: 'obsign.org:443',
+      } as NodeJS.ProcessEnv),
+    /MCP_SIDECAR_AUTH_SERVER_ORIGIN must be an http:\/\/ or https:\/\/ URL/,
+  );
+  // A scheme-less value with NO port doesn't even parse as a URL — also refused.
+  assert.throws(
+    () =>
+      loadConfig({
+        MCP_SIDECAR_PDS_ORIGIN: 'http://pds.railway.internal:8080',
+        MCP_SIDECAR_PUBLIC_ORIGIN: 'mcp.obsign.org',
+      } as NodeJS.ProcessEnv),
+    /MCP_SIDECAR_PUBLIC_ORIGIN is not a valid URL/,
+  );
+});
+
 test('AC2.7: a non-numeric port is rejected', () => {
   assert.throws(
     () =>
