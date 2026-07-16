@@ -17,9 +17,9 @@
 //   5. For a PDS-custodied did:plc (the PDS key is rotationKeys[0]), build and sign
 //      an alsoKnownAs-only PLC operation. Wallet-sovereign identities are left for
 //      the device-key-signed wallet flow.
-//   6. Atomically swap handles in a transaction. For the custodied path, keep the
-//      transaction open until plc.directory accepts the operation, then update the
-//      cached DID document in the same transaction.
+//   6. For the custodied path, submit the operation to plc.directory *before* opening any
+//      transaction (the single-connection pool must never be held across a network call), then
+//      atomically swap handles and cache the updated DID document in one short transaction.
 //   7. Emit #identity firehose frame with the new handle
 //   8. Return 200 (empty JSON object)
 //
@@ -135,12 +135,31 @@ pub async fn update_handle_handler(
 
     let plc_update = prepare_custodied_plc_update(&state, did, &payload.handle).await?;
 
-    // DELETE old + INSERT new share one transaction so the swap commits or rolls back together.
-    // On the PDS-custodied path, plc.directory must accept the authoritative change before this
-    // transaction commits. The remote call deliberately happens while this writer transaction
-    // reserves the new handle: posting first would let a concurrent claimant win the handle before
-    // our local commit, leaving the PLC document changed but local resolution unchanged. A failed
-    // POST drops the transaction and restores the old local handle.
+    // On the PDS-custodied path, submit the authoritative change to plc.directory *before* opening
+    // the handle-swap transaction. This crate's pool is single-connection, so awaiting the remote
+    // POST (up to the `http_client` timeout) while a transaction held the connection would stall
+    // every other request in the process on the connection acquire — the same head-of-line reason
+    // the firehose/activateAccount paths build their CARs before opening their tx. Publishing before
+    // the local swap deliberately accepts a brief window where plc.directory is ahead of local
+    // resolution: for a did:plc account plc.directory is authoritative, so a re-resolve reconciles
+    // local to it. The reverse ordering (local committed, PLC not yet) is the unsafe one — a
+    // re-resolve would then silently revert the user's handle change. A failed POST returns here
+    // before any local mutation, leaving the old handle intact.
+    if let Some(plc_update) = &plc_update {
+        crate::identity::genesis::post_to_plc_directory(
+            &state.http_client,
+            &state.config.plc_directory_url,
+            did,
+            &plc_update.signed_operation,
+        )
+        .await?;
+    }
+
+    // DELETE old + INSERT new (+ cache the submitted PLC doc) share one short transaction so the
+    // swap commits or rolls back together while the connection is held only for local writes. The
+    // INSERT's UNIQUE constraint still rejects a concurrent claimant (→ HANDLE_TAKEN), so two DIDs
+    // can never both resolve the handle locally — the concurrent-claimant safety property is
+    // preserved without holding the connection across the network POST above.
     {
         let mut tx = state.db.begin().await.map_err(|e| {
             tracing::error!(error = %e, "failed to begin transaction for handle swap");
@@ -178,14 +197,6 @@ pub async fn update_handle_handler(
             })?;
 
         if let Some(plc_update) = &plc_update {
-            crate::identity::genesis::post_to_plc_directory(
-                &state.http_client,
-                &state.config.plc_directory_url,
-                did,
-                &plc_update.signed_operation,
-            )
-            .await?;
-
             sqlx::query(
                 "INSERT INTO did_documents (did, document, created_at, updated_at) \
                  VALUES (?, ?, datetime('now'), datetime('now')) \
