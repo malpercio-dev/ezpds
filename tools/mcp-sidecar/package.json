@@ -13,7 +13,8 @@
   "scripts": {
     "start": "node --disable-warning=ExperimentalWarning src/server.ts",
     "check": "tsc --noEmit",
-    "test": "node test/run.ts"
+    "test": "node test/run.ts",
+    "test:e2e": "node test/run-e2e.ts"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.29.0",
@@ -21,6 +22,7 @@
   },
   "devDependencies": {
     "@types/node": "^22.15.0",
+    "ezpds-interop": "file:../interop",
     "typescript": "^5.8.0"
   }
 }
