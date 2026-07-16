@@ -9,6 +9,7 @@ use serde::Deserialize;
 
 use crate::app::AppState;
 use crate::db::blocks::SqliteBlockStore;
+use crate::lexicon::LexiconInput;
 use common::{ApiError, ErrorCode};
 use repo_engine::Repository;
 
@@ -36,7 +37,7 @@ pub async fn delete_record(
     method: Method,
     uri: Uri,
     headers: axum::http::HeaderMap,
-    axum::Json(body): axum::Json<DeleteRecordBody>,
+    LexiconInput(body): LexiconInput<DeleteRecordBody>,
 ) -> Result<impl IntoResponse, ApiError> {
     // Resolve the at-identifier (DID or handle) to a DID before the ownership check and write.
     let did = crate::record_write::resolve_repo_did(&state, &body.repo).await?;

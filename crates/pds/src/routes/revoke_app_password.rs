@@ -6,7 +6,7 @@
 //
 // Implements: POST /xrpc/com.atproto.server.revokeAppPassword
 
-use axum::{extract::State, http::StatusCode, response::Json};
+use axum::{extract::State, http::StatusCode};
 use serde::Deserialize;
 
 use common::{ApiError, ErrorCode};
@@ -14,6 +14,7 @@ use common::{ApiError, ErrorCode};
 use crate::app::AppState;
 use crate::auth::extractors::AuthenticatedUser;
 use crate::auth::jwt::AuthScope;
+use crate::lexicon::LexiconInput;
 
 #[derive(Deserialize)]
 pub struct RevokeAppPasswordRequest {
@@ -30,7 +31,7 @@ pub struct RevokeAppPasswordRequest {
 pub async fn revoke_app_password(
     user: AuthenticatedUser,
     State(state): State<AppState>,
-    Json(payload): Json<RevokeAppPasswordRequest>,
+    LexiconInput(payload): LexiconInput<RevokeAppPasswordRequest>,
 ) -> Result<StatusCode, ApiError> {
     if user.scope != AuthScope::Access {
         return Err(ApiError::new(

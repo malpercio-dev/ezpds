@@ -16,6 +16,7 @@ use crate::app::AppState;
 use crate::auth::password::hash_password;
 use crate::auth::token::hash_bearer_token;
 use crate::db::password_reset::{get_reset_token, mark_reset_token_used, update_password_hash};
+use crate::lexicon::LexiconInput;
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -30,7 +31,7 @@ pub struct ResetPasswordRequest {
 /// and atomically marks the token used and updates `accounts.password_hash`.
 pub async fn reset_password(
     State(state): State<AppState>,
-    axum::Json(payload): axum::Json<ResetPasswordRequest>,
+    LexiconInput(payload): LexiconInput<ResetPasswordRequest>,
 ) -> Result<StatusCode, ApiError> {
     let token_hash = hash_bearer_token(&payload.token)
         .map_err(|_| ApiError::new(ErrorCode::InvalidToken, "invalid reset token"))?;

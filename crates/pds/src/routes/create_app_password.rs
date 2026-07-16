@@ -17,6 +17,7 @@ use crate::auth::extractors::AuthenticatedUser;
 use crate::auth::jwt::AuthScope;
 use crate::auth::password::hash_password;
 use crate::db::app_passwords::{insert_app_password, InsertOutcome};
+use crate::lexicon::LexiconInput;
 
 /// Maximum accepted app-password name length (characters). A generous bound that rejects
 /// obviously abusive input without constraining normal use.
@@ -73,7 +74,7 @@ fn generate_app_password() -> String {
 pub async fn create_app_password(
     user: AuthenticatedUser,
     State(state): State<AppState>,
-    Json(payload): Json<CreateAppPasswordRequest>,
+    LexiconInput(payload): LexiconInput<CreateAppPasswordRequest>,
 ) -> Result<Json<CreateAppPasswordResponse>, ApiError> {
     if user.scope != AuthScope::Access {
         return Err(ApiError::new(

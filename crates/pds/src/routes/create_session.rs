@@ -19,6 +19,7 @@ use crate::auth::password::{verify_password, VerifyResult};
 use crate::auth::rate_limit::{clear_failures, is_rate_limited, record_failure};
 use crate::db::accounts::resolve_identifier;
 use crate::db::app_passwords::list_verify_candidates;
+use crate::lexicon::LexiconInput;
 use crate::session_issuer::{issue_session, SessionKind};
 
 // ── Request / Response types ─────────────────────────────────────────────────
@@ -79,7 +80,7 @@ async fn match_app_password(
 /// Issues a short-lived HS256 access JWT and a 90-day refresh JWT.
 pub async fn create_session(
     State(state): State<AppState>,
-    Json(payload): Json<CreateSessionRequest>,
+    LexiconInput(payload): LexiconInput<CreateSessionRequest>,
 ) -> Result<(StatusCode, Json<CreateSessionResponse>), ApiError> {
     // --- Rate limit gate ---
     // Check before any DB work to shed load on targeted accounts.

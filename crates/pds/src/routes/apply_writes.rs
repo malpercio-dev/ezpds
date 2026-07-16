@@ -9,6 +9,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::app::AppState;
 use crate::db::blocks::SqliteBlockStore;
+use crate::lexicon::LexiconInput;
 use common::{ApiError, ErrorCode};
 use repo_engine::{Repository, WriteOp};
 
@@ -102,7 +103,7 @@ pub async fn apply_writes(
     method: Method,
     uri: Uri,
     headers: HeaderMap,
-    axum::Json(body): axum::Json<ApplyWritesBody>,
+    LexiconInput(body): LexiconInput<ApplyWritesBody>,
 ) -> Result<impl IntoResponse, ApiError> {
     // Resolve the at-identifier (DID or handle) to a DID before the ownership check and write.
     let did = crate::record_write::resolve_repo_did(&state, &body.repo).await?;
@@ -865,7 +866,9 @@ mod tests {
         let app = crate::app::app(state);
         let body = serde_json::json!({
             "repo": did,
-            "swapCommit": "bafyreialwaysdifferentcommitcidthatwillnevermatch00000000000",
+            // A well-formed CID (the lexicon layer validates the `cid` format) that can never
+            // match the repo's actual commit.
+            "swapCommit": "bafyreidfayvfuwqa7qlnopdjiqrxzs6blmoeu4rujcjtnci5beludirz2a",
             "writes": [create_item("k1", "hi")],
         });
         let resp = app.oneshot(apply_req(body, Some(&token))).await.unwrap();

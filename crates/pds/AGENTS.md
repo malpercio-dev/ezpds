@@ -41,6 +41,7 @@ src/
   uniqueness.rs    — email/handle pre-flight uniqueness DB checks, shared by the account-creation routes
   platform.rs      — device `Platform` enum, shared by the device-registration routes
   request_host.rs  — `request_host` (Functional Core): resolve the client-addressed host (`X-Forwarded-Host` → `Host` → `:authority`) for the Host-keyed public routes (`.well-known/atproto-did`, `.well-known/did.json`); lives outside `routes/` so both handlers share it without a route-to-route import
+  lexicon/         — vendored `com.atproto.*` lexicon documents (`crates/pds/lexicons/`, pinned upstream — see its README) compiled into a registry, plus the reference-parity XRPC **input validation layer** (MM-364): `LexiconInput<T>` (mod `extractor.rs`, Imperative Shell) replaces bare `axum::Json<T>` on every natively-handled JSON procedure, running presence → Content-Type → JSON parse → lexicon-schema checks with `@atproto/xrpc-server`/`@atproto/lexicon`'s byte-identical 400 `InvalidRequest` messages (`Input must have the property "x"`, `Input/handle must be a valid handle`, …) before serde sees the body; `validate_procedure_body` is the same pipeline as a plain call for handlers that also need the raw bytes (admin-signed `updateSubjectStatus`). Schema parsing (`schema.rs`) is strict — unknown keys/def types/string formats and dangling refs fail the registry tests — so re-vendoring can't silently skip a constraint and drift laxer than the reference. String formats dispatch to the fixture-tested validators (`repo_engine::{datetime,at_uri,records}`, `identity::{did,handle}`)
   no_input.rs      — `NoInputBody`: shared axum `FromRequest` extractor guarding XRPC procedures whose lexicon defines no `input`. Rejects any non-empty request body with a 400 `InvalidRequest` ("A request body was provided when none was expected"), byte-for-byte the reference PDS message. Extract it *last* (it consumes the body). Lives outside `routes/` (like `request_host.rs`) so every no-input handler shares one guard — `activateAccount`, `refreshSession`, `deleteSession`, `requestAccountDelete`, `requestEmailConfirmation`, `requestEmailUpdate`, `requestPlcOperationSignature` — instead of the strictness drifting route to route (MM-291: Custos leniency was the wallet's blind spot against bsky.social)
   read_after_write/— buffered AppView response munge path for read-after-write: merges requester's unindexed records, rev-faithful selection via atproto-repo-rev, fallback ladder, Atproto-Upstream-Lag header
   auth/            — authentication primitives + route guards (HTTP-aware, no DB schema ownership)
@@ -478,8 +479,11 @@ must be tightened (explicit origin allowlist + credentials handling) in the same
 1. Create `src/routes/<name>.rs` with `// pattern: Imperative Shell` at the top.
 2. If the handler needs shared auth logic → add to `auth/` (pure) or use an existing extractor.
 3. If the handler needs a new DB query → add to the appropriate `db/` submodule.
-4. Register in `src/app.rs` router.
-5. Add a `.bru` file in `bruno/` (see root AGENTS.md).
+4. If it's an XRPC procedure: a JSON input body is parsed with `LexiconInput<T>` (never bare
+   `axum::Json<T>`) after vendoring its lexicon document (`crates/pds/lexicons/README.md`); a
+   no-input procedure takes `NoInputBody` instead. Both must be the handler's final extractor.
+5. Register in `src/app.rs` router.
+6. Add a `.bru` file in `bruno/` (see root AGENTS.md).
 
 ## Adding a New DB Query
 
