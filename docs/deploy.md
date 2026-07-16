@@ -412,6 +412,29 @@ ghcr.io/your-org/PDS@sha256:abc123...
 
 The primary CI/CD path (GitHub Actions gate → native Railway deploys, above) needs none of this. For the colmena/NixOS path, publish to GHCR and pin the image by digest in the NixOS module.
 
+## Rotating the Master Key
+
+`EZPDS_SIGNING_KEY_MASTER_KEY` can be rotated with the offline `pds rewrap-master-key`
+subcommand, which decrypts every KEK-wrapped secret in the SQLite DB with the old key and
+re-encrypts it under the new one in a single atomic transaction (no key material changes —
+no PLC op, no firehose event; minutes-scale on a small DB). The server must be stopped
+(the DB pool is single-connection). Old/new keys are read from environment variables only,
+never CLI arguments:
+
+```bash
+# 1. Stop the service (or run against a Litestream restore).
+# 2. Re-wrap (same EZPDS_DATABASE_URL / config the server uses):
+EZPDS_REWRAP_OLD_MASTER_KEY=<current-64-hex> \
+EZPDS_REWRAP_NEW_MASTER_KEY=$(openssl rand -hex 32) \
+pds rewrap-master-key
+# 3. Set EZPDS_SIGNING_KEY_MASTER_KEY to the new key.
+# 4. Start the service.
+```
+
+A wrong old key (or a re-run after a completed rotation — diagnosed distinctly) aborts
+with no writes, so the DB is always uniformly under exactly one key. Each completed
+rotation bumps a `kek_generation` counter in `server_metadata`.
+
 ## Security Posture
 
 The PDS image is hardened with:

@@ -13,6 +13,7 @@ pub mod firehose_seq;
 pub mod handles;
 pub mod iroh_identity;
 pub mod jwt_secret;
+pub mod kek;
 mod migrations;
 pub mod oauth;
 pub mod password_reset;
