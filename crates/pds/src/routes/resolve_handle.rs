@@ -353,6 +353,32 @@ mod tests {
     // ── HTTP well-known fallback ───────────────────────────────────────────────
 
     #[tokio::test]
+    async fn ip_literal_is_rejected_before_network_resolution() {
+        let last_name = Arc::new(Mutex::new(None));
+        let state = AppState {
+            txt_resolver: Some(Arc::new(CapturingTxtResolver {
+                last_name: last_name.clone(),
+            })),
+            ..test_state().await
+        };
+
+        let response = app(state)
+            .oneshot(resolve_handle_request("169.254.169.254"))
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        assert!(last_name.lock().unwrap().is_none());
+        let body: serde_json::Value = serde_json::from_slice(
+            &axum::body::to_bytes(response.into_body(), usize::MAX)
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(body["error"]["code"], "INVALID_HANDLE");
+    }
+
+    #[tokio::test]
     async fn well_known_fallback_resolves_did() {
         let did = "did:plc:wellknownuser12345678901234";
         let state = state_with_well_known(test_state().await, Some(did.to_string()));

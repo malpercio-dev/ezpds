@@ -101,10 +101,10 @@ impl reqwest::dns::Resolve for SsrfResolver {
 
 /// Build the shared HTTP client used for every fetch to a caller-influenced target — the
 /// `atproto-proxy` header target (`routes::service_proxy`), a did:web document
-/// (`identity::resolution`), and a Lexicon-authority permission-set record
-/// (`auth::permission_sets`). Built once and stored in [`AppState::hardened_http_client`], so all
-/// four SSRF-guarded call sites share one connection pool + TLS context instead of constructing a
-/// fresh client (and handshaking anew) per request.
+/// (`identity::resolution`), a handle's HTTP well-known endpoint (`identity::well_known`), and a
+/// Lexicon-authority permission-set record (`auth::permission_sets`). Built once and stored in
+/// [`AppState::hardened_http_client`], so all SSRF-guarded call sites share one connection pool +
+/// TLS context instead of constructing a fresh client (and handshaking anew) per request.
 ///
 /// Three hardenings, all always on:
 ///   * **Redirects disabled** — a [`validate_proxy_endpoint`] check only inspects the *first* URL,

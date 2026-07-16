@@ -237,9 +237,10 @@ async fn run() -> anyhow::Result<()> {
         .expect("failed to build HTTP client");
 
     // Shared, pooled client for every SSRF-guarded fetch to a caller-influenced target
-    // (atproto-proxy header target, did:web document, Lexicon-authority permission-set record):
-    // redirects disabled + a DNS resolver that re-checks the public-address allowlist at connect
-    // time. `false` (never `allow_loopback`) in production.
+    // (atproto-proxy header target, did:web document, handle well-known endpoint,
+    // Lexicon-authority permission-set record): redirects disabled + a DNS resolver that
+    // re-checks the public-address allowlist at connect time. `false` (never `allow_loopback`) in
+    // production.
     let hardened_http_client = identity::proxy::build_hardened_client(false)
         .expect("failed to build hardened HTTP client");
 
@@ -260,7 +261,7 @@ async fn run() -> anyhow::Result<()> {
 
     let well_known_resolver: Option<Arc<dyn identity::well_known::WellKnownResolver>> =
         Some(Arc::new(identity::well_known::HttpWellKnownResolver::new(
-            http_client.clone(),
+            hardened_http_client.clone(),
         )));
 
     // Dynamic-trust JWKS cache for the auth.md `identity_assertion` flow: reuses the shared HTTP
