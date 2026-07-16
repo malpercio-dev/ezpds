@@ -15,6 +15,41 @@ itself through the PDS's own [auth.md](https://github.com/workos/auth.md) agent 
 Every action the agent takes is attributed to its registration and visible to the account
 owner — that is the point.
 
+## Two supported modes — and which one this is
+
+Custos supports **two attribution models**, chosen **independently** of who hosts the process.
+This stdio server is one of them; the credential-forwarding [`tools/mcp-sidecar/`](../mcp-sidecar)
+is the other. Neither is a fallback for the other — they answer two different questions:
+
+- **Attribution** — does the agent act **as you** (writes into *your* repo; its actions carry
+  *your* identity) or **as itself** (its own DID, repo, and handle — a named bot you own)?
+- **Hosting** — who runs the process: **you** (self-host) or the **operator** (hosted)?
+
+|                        | **Acts as you** (delegate)                                                                 | **Acts as itself** (sovereign child)                          |
+|------------------------|--------------------------------------------------------------------------------------------|---------------------------------------------------------------|
+| **Self-hosted**        | ✅ **this stdio server** — you hold your own credential on your own machine, so acting *as you* is exactly right | ✅ fine — you just prefer a separate named identity            |
+| **Hosted** (operator)  | ⚠️ only safe with strict credential-**forwarding** (operator holds nothing durable); never with server-side custody | ✅ **the hosted default** — even a durable bot credential can't act as you |
+
+**This server sits in the top-left cell, and that cell is first-class, not a power-user
+afterthought.** Self-hosting so the agent acts *directly on your behalf* is a supported,
+encouraged mode. The only **forbidden** combination is *hosted + acts-as-you + durable custody*
+(an operator holding a credential that can act as you) — everything else is a legitimate choice.
+
+**The honest tradeoff** (yours to make, not ours to make for you): an agent that acts *as you*
+posts under *your* attribution — the audit trail reads "you did this" — which is what you want
+when the agent should *be* you (draft your real posts, manage your actual presence). A
+[sovereign child identity](../mcp-sidecar) is preferable when you'd rather the agent's actions
+stay **distinguishable** from your own. Same rigor either way; different attribution.
+
+Decisions recorded in
+[ADR-0023](../../docs/architecture/decisions/0023-sovereign-child-agent-identities.md)
+(sovereign child identities — keeps acts-as-you first-class and the self-host default) and
+[ADR-0024](../../docs/architecture/decisions/0024-hosted-agent-credential-forwarding.md)
+(the hosted tier forwards credentials, holds nothing durable). Full reasoning:
+[design plan §1](../../docs/design-plans/2026-07-14-hosted-custos-mcp.md) (the attribution ×
+hosting matrix). For the hosted, sovereign-child sibling, see
+[`tools/mcp-sidecar/README.md`](../mcp-sidecar/README.md).
+
 ## Ground rules (read first)
 
 - **The agent acts as you.** Tools write to your real repository on whatever PDS you point
