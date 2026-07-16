@@ -7,10 +7,9 @@
 # resolutions and disables redirects. Wiring the plain `http_client` there is the MM-387 reflected
 # SSRF. This guard freezes the resolver's client so a mis-wiring can't land unnoticed.
 #
-# MM-387 is currently live: the resolver is still on the plain `http_client` (baselined below). The
-# guard stays green while that exact known state holds, FAILS on any other/novel client wiring, and
-# turns fully clean the moment the fix rewires it to `hardened_http_client` (delete the baseline
-# branch then).
+# The resolver must be constructed with `hardened_http_client`; any other client — including the
+# plain `http_client` — hard-fails. (Wiring the plain client here was the MM-387 reflected SSRF,
+# fixed upstream; this guard now fails on a regression back to a non-hardened client.)
 #
 # Portable bash + awk only.
 set -euo pipefail
@@ -27,9 +26,6 @@ arg="$(awk '
 case "$arg" in
   hardened_http_client.clone*|hardened_http_client\)*|hardened_http_client)
     echo "✓ well-known handle resolver uses the SSRF-hardened HTTP client"
-    exit 0 ;;
-  http_client.clone*|http_client\)*|http_client)
-    echo "⚠ ssrf-client: well-known resolver still on the plain http_client (MM-387, known-live; baselined)"
     exit 0 ;;
   "")
     echo "✗ could not find HttpWellKnownResolver::new(...) in $main — did the wiring move?" >&2

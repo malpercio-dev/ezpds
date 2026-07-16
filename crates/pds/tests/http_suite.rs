@@ -438,7 +438,7 @@ async fn http_golden_path_suite() {
     })
     .await;
 
-    // 9c. Lexicon input validation parity (MM-364): every natively-handled JSON procedure now
+    // 9c. Lexicon input validation parity: every natively-handled JSON procedure now
     //     runs its request body through the vendored `com.atproto.*` lexicon before the handler,
     //     so a missing required field, a format violation, or a wrong/absent Content-Type gets
     //     the reference PDS's 400 InvalidRequest envelope (previously axum's bare `Json`

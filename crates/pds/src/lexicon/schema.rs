@@ -16,8 +16,8 @@
 //    allowlist and every `type` against the constructs this validator implements. If a future
 //    re-vendoring introduces a constraint we don't enforce (say `minLength` or a new string
 //    format), parsing fails — surfaced by the registry unit tests — instead of the constraint
-//    being silently skipped and Custos drifting laxer than the reference again (the MM-291
-//    failure mode this module exists to prevent).
+//    being silently skipped and Custos drifting laxer than the reference again — the
+//    input-strictness failure mode this module exists to prevent.
 
 use std::fmt;
 
