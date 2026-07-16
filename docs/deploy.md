@@ -347,7 +347,11 @@ wiring than the Root-Directory trick:
   authorization server advertised to clients — never the private forwarding
   address, which is unreachable from outside the Railway network).
   `MCP_SIDECAR_PDS_ORIGIN` is **required** — the sidecar parse-fails loudly rather
-  than defaulting to a public URL. **No volume, no secret.** Railway injects `PORT`.
+  than defaulting to a public URL. All three origins must carry an explicit
+  `http://`/`https://` scheme: a bare `pds.railway.internal:8080` technically
+  *parses* as a URL (the host becomes the scheme), so the sidecar refuses it at
+  startup rather than failing illegibly on the first forwarded call.
+  **No volume, no secret.** Railway injects `PORT`.
 
 ### Domain: `mcp.obsign.org`
 

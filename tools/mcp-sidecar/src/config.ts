@@ -34,6 +34,29 @@ function trimTrailingSlash(url: string): string {
   return url.replace(/\/+$/, '');
 }
 
+/**
+ * Parse an origin env value, requiring an http(s) scheme. A bare
+ * `host.railway.internal:8080` (the natural Railway-dashboard mistake) is a
+ * *valid* URL whose scheme is the hostname — it would sail through `new URL`
+ * and only surface later as an illegible "unknown scheme" on the first
+ * forwarded call, so it must be refused at startup instead.
+ */
+function parseHttpOrigin(name: string, value: string): string {
+  let parsed: URL;
+  try {
+    parsed = new URL(value);
+  } catch {
+    throw new Error(`${name} is not a valid URL: ${JSON.stringify(value)}`);
+  }
+  if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+    throw new Error(
+      `${name} must be an http:// or https:// URL, got ${JSON.stringify(value)} — ` +
+        'a bare host:port is missing its scheme (e.g. http://pds.railway.internal:8080).',
+    );
+  }
+  return trimTrailingSlash(parsed.toString());
+}
+
 function requireOrigin(env: NodeJS.ProcessEnv, name: string): string {
   const value = env[name];
   if (!value || !value.trim()) {
@@ -43,13 +66,7 @@ function requireOrigin(env: NodeJS.ProcessEnv, name: string): string {
         '(e.g. http://pds.railway.internal:8080). See docs/deploy.md → "MCP sidecar".',
     );
   }
-  let parsed: URL;
-  try {
-    parsed = new URL(value);
-  } catch {
-    throw new Error(`${name} is not a valid URL: ${JSON.stringify(value)}`);
-  }
-  return trimTrailingSlash(parsed.toString());
+  return parseHttpOrigin(name, value);
 }
 
 /**
@@ -63,7 +80,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): SidecarConfig 
   // runs; a real deployment sets it to the sidecar's own domain.
   const publicOriginRaw = env.MCP_SIDECAR_PUBLIC_ORIGIN?.trim();
   const publicOrigin = publicOriginRaw
-    ? trimTrailingSlash(new URL(publicOriginRaw).toString())
+    ? parseHttpOrigin('MCP_SIDECAR_PUBLIC_ORIGIN', publicOriginRaw)
     : pdsOrigin;
 
   // The authorization server clients reach is Custos's PUBLIC URL, never the
@@ -72,7 +89,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): SidecarConfig 
   // whose PDS origin is `*.railway.internal` MUST set this to `https://obsign.org`.
   const authServerRaw = env.MCP_SIDECAR_AUTH_SERVER_ORIGIN?.trim();
   const authServerOrigin = authServerRaw
-    ? trimTrailingSlash(new URL(authServerRaw).toString())
+    ? parseHttpOrigin('MCP_SIDECAR_AUTH_SERVER_ORIGIN', authServerRaw)
     : pdsOrigin;
 
   const rawPort = env.PORT ?? env.MCP_SIDECAR_PORT;

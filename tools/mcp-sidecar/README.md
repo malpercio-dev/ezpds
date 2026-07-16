@@ -83,7 +83,9 @@ the sidecar's job is forwarding, not onboarding.
 
 ## Test suite
 
-`pnpm test` (or `just mcp-sidecar-test`) is **hermetic and self-contained** — unlike the stdio
+Two halves; `just mcp-sidecar-test` runs both.
+
+**Scaffold** (`pnpm test`) is **hermetic and self-contained** — unlike the stdio
 conformance suite it needs no `cargo build` and no TLS proxy. It drives the sidecar over its
 real HTTP transport with an MCP `StreamableHTTPClientTransport` client and a lightweight **stub
 PDS** on loopback that records inbound requests (headers included), covering:
@@ -98,9 +100,34 @@ PDS** on loopback that records inbound requests (headers included), covering:
 - **transport** — a real MCP client lists the same tool names the stdio server exposes.
 - **config** — an unset PDS origin is rejected; a private+public origin pair parses.
 
-The `create_post` end-to-end against real staging (attributed to the child agent) and the live
-OAuth-handshake / no-durable-secret checks are the next slice ([MM-370](https://linear.app/malpercio/issue/MM-370),
-HV-2/HV-3/HV-4).
+**End-to-end** (`pnpm test:e2e`, the [MM-370](https://linear.app/malpercio/issue/MM-370)
+acceptance suite) composes the whole hosted path against a **hermetic real PDS** — the
+`tools/mcp` harness spawns the `pds` binary (mock `plc.directory`, throwaway TLS), a parent
+account is provisioned through the full wallet ceremony, a **sovereign child** is minted via
+`POST /agent/child` with a fixture-held ("wallet") rotation key, and the child's jwt-bearer
+token is forwarded through the sidecar by a real MCP HTTP client:
+
+- **create_post** — publishes to the **child's** repo, attributed to the child DID; the
+  parent's repo is untouched; the audit trail attributes the write to the child registration.
+- **scope** — a capability minted under narrowed `[agent_auth] granted_scopes` gets a
+  legible, scope-naming `403 InsufficientScope` relay (never a stack trace).
+- **revocation** — after `POST /agent/child/revoke`, the caller's next token exchange fails
+  `access_denied` legibly and no partial write lands (an already-issued access token rides
+  out its 5-minute TTL by design — revocation is enforced at the exchange boundary).
+
+It needs a built `pds` (`cargo build -p pds`, or point `CUSTOS_MCP_TEST_PDS_BIN` at one) and
+deps installed in `tools/mcp` too (`just mcp-setup`); the node-only CI lane
+(`.github/workflows/mcp-check.yml`) runs the scaffold half only. Still fully offline.
+
+**Live** (`test/live/`) — the HV-2 driver for a deployed sidecar
+([`docs/test-plans/2026-07-15-MM-356.md`](../../docs/test-plans/2026-07-15-MM-356.md)):
+`hv2-create-post.mjs` runs the whole pass against real deployments (ephemeral parent →
+mint child, genesis to the **real** plc.directory → forwarded token → `create_post`
+through the deployed sidecar → attribution + plc read-backs; usage in its header —
+credentials ride env only), and `hv2-cleanup.mjs` retires the artifacts afterwards.
+First staging pass: 2026-07-16 (PR #292). HV-3 (the MCP-spec OAuth handshake) remains
+open — the driver exchanges the child capability directly rather than walking the
+protected-resource metadata.
 
 ## Deploy
 

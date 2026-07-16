@@ -185,11 +185,16 @@ mcp-sidecar-setup:
 mcp-sidecar *args:
     tools/mcp-sidecar/bin/custos-mcp-sidecar {{args}}
 
-# Run the sidecar scaffold suite: per-caller registry, credential forwarding,
-# in-memory-only sessions, redaction, transport, and config parsing. Hermetic
-# (stub PDS on loopback — no cargo build, no live network). See its README.
+# Run both sidecar suites: the scaffold half (per-caller registry, credential
+# forwarding, in-memory-only sessions, redaction, transport, config — stub PDS on
+# loopback, node-only, what mcp-check.yml runs in CI) and the MM-370 end-to-end
+# half, which spawns the real `pds` binary via the tools/mcp harness (built here
+# first; plc.directory mocked, nothing touches the live network) and drives
+# mint-child → forwarded token → create_post through the sidecar exactly as a
+# real MCP client would. Needs `just mcp-setup` once. See its README.
 mcp-sidecar-test:
-    cd tools/mcp-sidecar && pnpm test
+    cargo build -p pds
+    cd tools/mcp-sidecar && pnpm test && pnpm test:e2e
 
 # Shared gate list both `ci` variants run before their clippy/test/audit/deny tail.
 # Adding a check here covers `just ci` (macOS/full) and `just ci-pds` (Linux) at once —
