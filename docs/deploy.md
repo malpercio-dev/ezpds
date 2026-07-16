@@ -99,16 +99,28 @@ Each environment has its own secrets (distinct master key, admin token, user-dom
 
 ### Release-time documentation pass
 
-Every release also refreshes the documentation surfaces, and the order matters —
-the changelog rolls up first, *then* the *derived* docs and screenshots regenerate
-under the parity gates, *then* the *hand-authored* prose gets a review pass, so
-every artifact is generated from the post-roll state. Do all three inside the
-**same `set-version` PR** (step 1 of the production flow above), in this order:
+Every release also refreshes the documentation surfaces, and the **order** is the
+invariant — the changelog rolls up first, *then* the *derived* docs and
+screenshots regenerate under the parity gates, *then* the *hand-authored* prose
+gets a review pass, so every artifact is generated from the post-roll, version-bumped
+state. That order can be executed two ways:
+
+- **Manually**, folding all three steps into the **same `set-version` PR** (step 1
+  of the production flow above); or
+- **Via the release-docs Claude Code Routine**, which runs steps 2–3 as a **separate
+  follow-on PR after the `set-version` PR has rolled the changelog**. The Routine
+  never runs `set-version` itself (it only drafts any missing `changelog.d/`
+  fragments); running it after the version bump is what keeps the regenerated
+  version stamp and rolled changelog consistent. See
+  [operations/release-docs-routine.md](operations/release-docs-routine.md).
+
+Either way, the steps run in this order:
 
 1. **Roll the changelog.** `just set-version X.Y.Z` folds the per-PR
    `changelog.d/` fragments into a dated `## [X.Y.Z]` section of `CHANGELOG.md`
    and clears the directory (this is step 1 of the production flow above). Do this
-   first, before regenerating docs, so the changelog is in its rolled-up state.
+   first, before regenerating docs, so the changelog is rolled up and the version
+   is bumped. This is a human step — the Routine leaves it to you.
 2. **Regenerate derived docs + screenshots (gates green).**
    - `just docs-generate` — regenerate the generated reference pages (HTTP/XRPC
      routes, operator config/env, both apps' IPC surface, version stamp).

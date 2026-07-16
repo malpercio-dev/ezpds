@@ -166,9 +166,9 @@ Releases are cut from tags and promoted to production deliberately — full runb
 in [`docs/deploy.md`](docs/deploy.md). The short version:
 
 ```bash
-just set-version X.Y.Z   # bump the workspace version + roll changelog.d/ into CHANGELOG.md (in a PR)
-just release             # cut & push the vX.Y.Z tag from main (does not deploy)
-just deploy-production   # advance the production branch to that tag → Railway deploys
+just set-version X.Y.Z       # bump the workspace version + roll changelog.d/ into CHANGELOG.md (in a PR)
+just release                 # cut & push the vX.Y.Z tag from main (does not deploy)
+just deploy-production vX.Y.Z # advance the production branch to that tag → Railway deploys
 ```
 
 Each release also gets a **docs/marketing review pass** (regenerate the derived
