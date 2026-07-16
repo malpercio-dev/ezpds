@@ -34,7 +34,7 @@ cd "$(git rev-parse --show-toplevel)"
 # so is_merged is trivially true). The first `worktree` entry of the porcelain listing is
 # always the main working tree; parse it exactly as flush_wt parses each entry, so the
 # equality check below compares like against like.
-MAIN_WT="$(git worktree list --porcelain | awk '/^worktree /{print substr($0, 10); exit}')"
+MAIN_WT="$(git worktree list --porcelain | awk '/^worktree / && !found {print substr($0, 10); found=1}')"
 
 if [ "$APPLY" -eq 1 ]; then
   echo "== gc: APPLY mode — removing merged worktrees and branches =="

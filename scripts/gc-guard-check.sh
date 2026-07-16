@@ -11,7 +11,7 @@ set -euo pipefail
 
 cd "$(dirname "$0")/.."
 
-main_wt="$(git worktree list --porcelain | awk '/^worktree /{print substr($0, 10); exit}')"
+main_wt="$(git worktree list --porcelain | awk '/^worktree / && !found {print substr($0, 10); found=1}')"
 gc_script="$(pwd)/scripts/gc.sh"
 
 tmp="$(mktemp -d)"
@@ -28,7 +28,15 @@ trap cleanup EXIT
 git worktree add -q -b "$branch" "$wt" HEAD
 
 # Run gc.sh (dry-run — no --apply) FROM the secondary worktree; that is the buggy invocation.
-out="$(cd "$wt" && bash "$gc_script" 2>/dev/null || true)"
+# Capture its exit status instead of discarding it: a crashed gc.sh (syntax error, etc.) would
+# yield empty output that the awk check below reads as "main not evaluated" and pass silently. A
+# non-zero exit OR empty output is a guard failure, not a green run.
+rc=0
+out="$(cd "$wt" && bash "$gc_script" 2>/dev/null)" || rc=$?
+if [ "$rc" -ne 0 ] || [ -z "$out" ]; then
+  echo "✗ gc.sh did not run cleanly (exit $rc, $(printf '%s' "$out" | wc -l | tr -d ' ') lines) — cannot validate the guard" >&2
+  exit 1
+fi
 
 # A correct gc.sh SKIPS the main working tree — it emits no KEEP/PRUNE line for it at all. The bug
 # is that it evaluates main like any other worktree; whether that surfaces as PRUNE or (on a dirty
