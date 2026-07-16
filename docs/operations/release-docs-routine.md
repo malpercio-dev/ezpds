@@ -77,22 +77,30 @@ version in the first line.
 
 ```text
 You are performing the release-time docs/marketing review pass for ezpds,
-release range <vLast>..HEAD, target version <X.Y.Z>. This is Phase 5 of
+release range <vLast>..<rc>, target version <X.Y.Z>. <vLast> is the last released
+tag; <rc> is the explicit release-candidate ref being cut for <X.Y.Z> — the SHA
+or tag you are releasing, NOT the literal "HEAD" of your working branch (that is
+a fresh branch off origin/main and would give the wrong diff). If only "HEAD" was
+supplied, resolve <rc> to the tip of origin/main and pin it to a SHA up front, so
+every command below reads the same release-candidate state. This is Phase 5 of
 docs/design-plans/2026-07-14-documentation-sites.md (docs.AC6). Your output is a
 single pull request for a human to review — you draft, a human decides.
 
 Work on a fresh branch from origin/main named claude/release-docs-<X.Y.Z>.
 
 1. Understand what shipped.
-   - Read the commit log and diff for the range: `git log --oneline <vLast>..HEAD`
-     and `git diff <vLast>..HEAD --stat`, then read the diffs of shipped surfaces
+   - Read the commit log and diff for the range: `git log --oneline <vLast>..<rc>`
+     and `git diff <vLast>..<rc> --stat`, then read the diffs of shipped surfaces
      (crates/*/src, both apps' frontends/native/config, sites/marketing,
      runtime manifests/Dockerfile/NixOS module).
-   - Read the merged Linear issues for the release. Use the Linear MCP:
-     `linear_wave_status` (team MM, label_prefix "Wave") for the current wave's
-     Done tally, and `list_issues` filtered by the relevant Wave label to read the
-     titles/descriptions of what merged. These are the human-facing "why" behind
-     the diff.
+   - Read the Linear issues that shipped IN THIS RANGE — not every open Wave
+     issue. Derive the set from the range first: collect the `MM-###` identifiers
+     referenced by the merged commits/PRs in `git log <vLast>..<rc>`, then read
+     each with the Linear MCP (`get_issue`) for the human-facing "why" behind the
+     diff. Use `linear_wave_status` (team MM, label_prefix "Wave") and Wave-label
+     `list_issues` only as SUPPLEMENTAL context; do not treat a Done issue as
+     shipped in this release unless its change is actually in the range, or
+     completed work from other releases will skew the notes and marketing copy.
 
 2. Regenerate the derived docs and screenshots.
    - `just docs-generate`  (reference pages: routes, operator config, IPC, version)
@@ -129,9 +137,15 @@ Work on a fresh branch from origin/main named claude/release-docs-<X.Y.Z>.
      prose edit you drafted with a one-line rationale, so the reviewer can accept
      or override each independently. Note explicitly that `just set-version`,
      `just release`, and `just deploy-production` are the human's to run.
-   - The PR must be green on docs-check and the changelog gate before you hand it
-     off. If a gate is red, fix it or, if you cannot, say so plainly in the PR
-     body and stop rather than papering over it.
+   - Run and record all three gates in the PR body before handoff:
+     `just docs-check`, `just changelog-check`, and `just docs-screenshots-check`.
+     `docs-check` and `changelog-check` ride CI, so the PR must be green on both.
+     `docs-screenshots-check` is NOT part of `just ci` (cross-runner font
+     rendering differs), so run it here where the baselines were generated and
+     paste its result — a red screenshot diff means an intended UI change (commit
+     the regenerated PNGs) or an unexpected one (investigate). If any gate is red,
+     fix it or, if you cannot, say so plainly in the PR body and stop rather than
+     papering over it.
 
 Guardrails: you draft, a human reviews and authors the final call. Never run
 set-version/release/deploy-production, never force-push over others' work, never

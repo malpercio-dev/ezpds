@@ -99,25 +99,30 @@ Each environment has its own secrets (distinct master key, admin token, user-dom
 
 ### Release-time documentation pass
 
-Every release also refreshes the documentation surfaces, in this order — the
-changelog rolls up, the *derived* docs and screenshots regenerate under the parity
-gates, and the *hand-authored* prose gets a review pass. Run these against the
-release candidate **before** step 1 above (or fold them into the same
-`set-version` PR):
+Every release also refreshes the documentation surfaces, and the order matters —
+the changelog rolls up first, *then* the *derived* docs and screenshots regenerate
+under the parity gates, *then* the *hand-authored* prose gets a review pass, so
+every artifact is generated from the post-roll state. Do all three inside the
+**same `set-version` PR** (step 1 of the production flow above), in this order:
 
 1. **Roll the changelog.** `just set-version X.Y.Z` folds the per-PR
    `changelog.d/` fragments into a dated `## [X.Y.Z]` section of `CHANGELOG.md`
-   and clears the directory (this is step 1 of the production flow above).
+   and clears the directory (this is step 1 of the production flow above). Do this
+   first, before regenerating docs, so the changelog is in its rolled-up state.
 2. **Regenerate derived docs + screenshots (gates green).**
    - `just docs-generate` — regenerate the generated reference pages (HTTP/XRPC
      routes, operator config/env, both apps' IPC surface, version stamp).
    - `just docs-screenshots` — regenerate the harness-driven app imagery
      (per-scenario PNGs, happy paths plus error/rare states).
-   - Confirm the parity gates pass: `just docs-check` (part of `just ci`/`ci-pds`)
-     for reference coverage, and `just docs-screenshots-check` for the image
-     visual-diff (not in `just ci` — run it where the baselines were generated).
-     A red `docs-check` means a shipped route/config field/command has no doc
-     entry; fix the source or reference, never edit generated pages by hand.
+   - Confirm all three parity gates pass and record them: `just docs-check`
+     (reference coverage) and `just changelog-check` (fragment discipline), both
+     part of `just ci`/`ci-pds` and enforced on the PR; and
+     `just docs-screenshots-check` (image visual-diff), which is **not** in
+     `just ci` — cross-runner font rendering differs, so run it where the
+     baselines were generated. A red `docs-check` means a shipped
+     route/config field/command has no doc entry; fix the source or reference,
+     never edit generated pages by hand. A red screenshot diff is an intended UI
+     change (commit the regenerated PNGs) or an unexpected one (investigate).
 3. **Docs/marketing review pass.** Decide which hand-authored guides
    (`sites/docs/`) and marketing pages (`sites/marketing/`) need edits for what
    shipped in the release range, and draft them. This step is automatable as a
