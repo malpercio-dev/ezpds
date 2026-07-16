@@ -18,7 +18,7 @@
 
 use axum::{
     extract::State,
-    http::{HeaderMap, StatusCode},
+    http::{HeaderMap, Method, StatusCode, Uri},
     response::{IntoResponse, Response},
     Json,
 };
@@ -215,10 +215,12 @@ struct ClaimConfirmResponse {
 /// `POST /agent/identity/claim/confirm` — the account owner confirms a claim (full-access authed).
 pub async fn post_agent_claim_confirm(
     State(state): State<AppState>,
+    method: Method,
+    uri: Uri,
     headers: HeaderMap,
     Json(req): Json<ClaimConfirmRequest>,
 ) -> Response {
-    match confirm(&headers, &state, &req).await {
+    match confirm(&headers, &method, &uri, &state, &req).await {
         Ok(response) => response,
         Err(err) => err.into_response(),
     }
@@ -226,6 +228,8 @@ pub async fn post_agent_claim_confirm(
 
 async fn confirm(
     headers: &HeaderMap,
+    method: &Method,
+    uri: &Uri,
     state: &AppState,
     req: &ClaimConfirmRequest,
 ) -> Result<Response, AgentAuthError> {
@@ -234,7 +238,7 @@ async fn confirm(
     // surface (Obsign confirms with its opaque session token, so a JWT-only gate strands the
     // ceremony at its last step). App-password scopes are below this trust bar, and an
     // agent-derived token must never confirm a claim — least of all its own.
-    let caller_did = authenticate_account_owner(headers, state)
+    let caller_did = authenticate_account_owner(headers, method, uri, state)
         .await
         .map_err(|err| match err {
             OwnerAuthError::AgentDerived => AgentAuthError::new(

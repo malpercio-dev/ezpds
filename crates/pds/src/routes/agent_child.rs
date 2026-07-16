@@ -4,7 +4,11 @@
 // wallet-signed PLC genesis operation; the server stores the public DID document and its separate
 // repo-signing key, then issues a revocable, scope-clamped agent assertion.
 
-use axum::{extract::State, http::HeaderMap, Json};
+use axum::{
+    extract::State,
+    http::{HeaderMap, Method, Uri},
+    Json,
+};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
@@ -79,10 +83,12 @@ fn owner_error(error: OwnerAuthError) -> ApiError {
 
 pub async fn mint_child(
     State(state): State<AppState>,
+    method: Method,
+    uri: Uri,
     headers: HeaderMap,
     Json(request): Json<MintChildRequest>,
 ) -> Result<Json<MintChildResponse>, ApiError> {
-    let parent_did = authenticate_account_owner(&headers, &state)
+    let parent_did = authenticate_account_owner(&headers, &method, &uri, &state)
         .await
         .map_err(owner_error)?;
     if !crate::db::accounts::account_exists(&state.db, &parent_did).await? {
@@ -566,9 +572,11 @@ async fn finalize_child(state: &AppState, prepared: &PreparedChild) -> Result<()
 
 pub async fn list_children(
     State(state): State<AppState>,
+    method: Method,
+    uri: Uri,
     headers: HeaderMap,
 ) -> Result<Json<ChildListResponse>, ApiError> {
-    let parent = authenticate_account_owner(&headers, &state)
+    let parent = authenticate_account_owner(&headers, &method, &uri, &state)
         .await
         .map_err(owner_error)?;
     let rows = list_children_of_parent(&state.db, &parent).await?;
@@ -591,10 +599,12 @@ pub async fn list_children(
 
 pub async fn revoke_child(
     State(state): State<AppState>,
+    method: Method,
+    uri: Uri,
     headers: HeaderMap,
     Json(request): Json<RevokeChildRequest>,
 ) -> Result<Json<RevokeChildResponse>, ApiError> {
-    let parent = authenticate_account_owner(&headers, &state)
+    let parent = authenticate_account_owner(&headers, &method, &uri, &state)
         .await
         .map_err(owner_error)?;
     let child = get_child_of_parent(&state.db, &request.did, &parent)
@@ -623,7 +633,9 @@ mod tests {
 
     use super::*;
     use crate::app::app;
-    use crate::routes::test_utils::{access_jwt, seed_account_with_repo, test_master_key};
+    use crate::routes::test_utils::{
+        access_jwt, cnf_bound_access_jwt, seed_account_with_repo, test_master_key, DpopProofKey,
+    };
 
     async fn state_with_plc() -> (AppState, MockServer) {
         let plc = MockServer::start().await;
@@ -828,6 +840,40 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn mint_child_dpop_bound_token_as_bearer_returns_401() {
+        // A DPoP-bound access token (cnf.jkt present) presented as plain `Bearer` with no proof is
+        // the RFC 9449 binding downgrade — a captured token replayed without its key. The owner
+        // guard behind child minting must reject it exactly as the AuthenticatedUser extractor and
+        // the repo-write handlers do; nothing may be provisioned under the victim's DID.
+        let state = state().await;
+        let parent = "did:plc:downgradeparent111111";
+        seed_account_with_repo(&state.db, parent).await;
+        let dpop_key = DpopProofKey::generate();
+        let token = cnf_bound_access_jwt(&state.jwt_secret, parent, &dpop_key.thumbprint());
+
+        let response = app(state.clone())
+            .oneshot(request(
+                "/agent/child",
+                Some(&token),
+                serde_json::json!({"handle": "stolen-bot.example.com", "plcOp": {}}),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(
+            response.status(),
+            StatusCode::UNAUTHORIZED,
+            "a cnf.jkt-bound token presented as plain Bearer must be rejected on mintChild"
+        );
+        let count: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM agent_identities WHERE registration_type = 'child'",
+        )
+        .fetch_one(&state.db)
+        .await
+        .unwrap();
+        assert_eq!(count, 0);
     }
 
     #[tokio::test]

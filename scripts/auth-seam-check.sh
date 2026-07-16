@@ -12,9 +12,6 @@
 #   auth/jwt.rs                     — the definition
 #   auth/extractors.rs              — authenticate_access, THE binding-enforcing seam
 #   routes/oauth_token/jwt_bearer.rs — test-only call (#[cfg(test)])
-# Baselined known-live bug (delete this exception when the fix lands):
-#   auth/guards.rs                  — MM-386: authenticate_account_owner must route through
-#                                     authenticate_access instead of verify_access_token
 #
 # Portable bash + git grep only.
 set -euo pipefail
@@ -25,15 +22,11 @@ cd "$(dirname "$0")/.."
 calls="$(git grep -nE 'verify_access_token\(' -- '*.rs' ':(exclude)wt/' | grep -vE 'fn verify_access_token' || true)"
 
 fail=0
-baselined=0
 while IFS= read -r line; do
   [ -z "$line" ] && continue
   file="${line%%:*}"
   case "$file" in
     crates/pds/src/auth/jwt.rs|crates/pds/src/auth/extractors.rs|crates/pds/src/routes/oauth_token/jwt_bearer.rs)
-      continue ;;
-    crates/pds/src/auth/guards.rs)
-      baselined=1
       continue ;;
     *)
       echo "✗ direct verify_access_token call outside the authenticate_access seam: $line" >&2
@@ -48,7 +41,4 @@ if [ "$fail" -ne 0 ]; then
   exit 1
 fi
 
-if [ "$baselined" -ne 0 ]; then
-  echo "⚠ auth-seam: guards.rs still calls verify_access_token directly (MM-386, known-live; baselined)"
-fi
 echo "✓ access-token verification confined to the authenticate_access seam"
