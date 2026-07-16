@@ -1,6 +1,6 @@
 # PDS Deployment
 
-**Last verified:** 2026-07-12
+**Last verified:** 2026-07-16
 
 ## Overview
 
@@ -96,6 +96,54 @@ Each environment has its own secrets (distinct master key, admin token, user-dom
 1. `just set-version X.Y.Z` in a reviewed PR; merge it → staging deploys.
 2. `just release` from `main` cuts and pushes the annotated `vX.Y.Z` tag (does **not** deploy).
 3. `just deploy-production vX.Y.Z` advances the `production` branch to that tag and pushes it. Railway sees the new tip, CI re-runs (gate + `verify-release`), and the production service deploys once it is green. Omit the tag to promote the latest; roll back to an older tag with `FORCE=1 just deploy-production vX.Y.Z`.
+
+### Release-time documentation pass
+
+Every release also refreshes the documentation surfaces, and the **order** is the
+invariant — the changelog rolls up first, *then* the *derived* docs and
+screenshots regenerate under the parity gates, *then* the *hand-authored* prose
+gets a review pass, so every artifact is generated from the post-roll, version-bumped
+state. That order can be executed two ways:
+
+- **Manually**, folding all three steps into the **same `set-version` PR** (step 1
+  of the production flow above); or
+- **Via the release-docs Claude Code Routine**, which runs steps 2–3 as a **separate
+  follow-on PR after the `set-version` PR has rolled the changelog**. The Routine
+  never runs `set-version` itself (it only drafts any missing `changelog.d/`
+  fragments); running it after the version bump is what keeps the regenerated
+  version stamp and rolled changelog consistent. See
+  [operations/release-docs-routine.md](operations/release-docs-routine.md).
+
+Either way, the steps run in this order:
+
+1. **Roll the changelog.** `just set-version X.Y.Z` folds the per-PR
+   `changelog.d/` fragments into a dated `## [X.Y.Z]` section of `CHANGELOG.md`
+   and clears the directory (this is step 1 of the production flow above). Do this
+   first, before regenerating docs, so the changelog is rolled up and the version
+   is bumped. This is a human step — the Routine leaves it to you.
+2. **Regenerate derived docs + screenshots (gates green).**
+   - `just docs-generate` — regenerate the generated reference pages (HTTP/XRPC
+     routes, operator config/env, both apps' IPC surface, version stamp).
+   - `just docs-screenshots` — regenerate the harness-driven app imagery
+     (per-scenario PNGs, happy paths plus error/rare states).
+   - Confirm all three parity gates pass and record them: `just docs-check`
+     (reference coverage) and `just changelog-check` (fragment discipline), both
+     part of `just ci`/`ci-pds` and enforced on the PR; and
+     `just docs-screenshots-check` (image visual-diff), which is **not** in
+     `just ci` — cross-runner font rendering differs, so run it where the
+     baselines were generated. A red `docs-check` means a shipped
+     route/config field/command has no doc entry; fix the source or reference,
+     never edit generated pages by hand. A red screenshot diff is an intended UI
+     change (commit the regenerated PNGs) or an unexpected one (investigate).
+3. **Docs/marketing review pass.** Decide which hand-authored guides
+   (`sites/docs/`) and marketing pages (`sites/marketing/`) need edits for what
+   shipped in the release range, and draft them. This step is automatable as a
+   **Claude Code Routine** that regenerates the derived docs + screenshots, reads
+   the release diff and the merged Linear issues, drafts changelog/doc/marketing
+   prose, and opens a PR that rides `docs-check` + the changelog gate for a human
+   to review rather than author from scratch. See
+   [operations/release-docs-routine.md](operations/release-docs-routine.md) for
+   the Routine's setup and prompt.
 
 ### Backup & rollback
 
