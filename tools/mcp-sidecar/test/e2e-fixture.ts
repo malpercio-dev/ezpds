@@ -170,6 +170,35 @@ async function exchangeAssertion(baseUrl: string, assertion: string): Promise<st
 }
 
 /**
+ * Best-effort teardown: every step is attempted even when an earlier one
+ * throws, so a failing `sidecar.close()` can never leak the pds child process
+ * (which would wedge `node --test` waiting on the open handle).
+ */
+async function teardown(
+  sidecar: RunningSidecar | undefined,
+  pds: SpawnedPds | undefined,
+  plc: { close: () => void },
+  dir: string,
+): Promise<void> {
+  try {
+    await sidecar?.close();
+  } catch {
+    // teardown is best-effort by design
+  }
+  try {
+    pds?.stop();
+  } catch {
+    // ditto
+  }
+  try {
+    plc.close();
+  } catch {
+    // ditto
+  }
+  fs.rmSync(dir, { recursive: true, force: true });
+}
+
+/**
  * Stand the whole path up. `grantedScopes` narrows the PDS's
  * `[agent_auth] granted_scopes` via a pds.toml in the spawn dir (there is no env
  * override for it); the minted child's capability is clamped to exactly that set
@@ -207,18 +236,10 @@ export async function startE2eFixture(
       sidecar,
       exchangeChildToken: () => exchangeAssertion(running.pds.baseUrl, child.identityAssertion),
       connect: (token?: string) => connectClient(running.sidecar.url, token),
-      close: async () => {
-        await running.sidecar.close();
-        running.pds.stop();
-        plc.close();
-        fs.rmSync(dir, { recursive: true, force: true });
-      },
+      close: () => teardown(running.sidecar, running.pds, plc, dir),
     };
   } catch (err) {
-    await sidecar?.close();
-    pds?.stop();
-    plc.close();
-    fs.rmSync(dir, { recursive: true, force: true });
+    await teardown(sidecar, pds, plc, dir);
     throw err;
   }
 }

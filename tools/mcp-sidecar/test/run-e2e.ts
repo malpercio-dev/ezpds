@@ -21,32 +21,38 @@ const tlsDir = fs.mkdtempSync(path.join(os.tmpdir(), 'custos-sidecar-tls-'));
 const keyFile = path.join(tlsDir, 'key.pem');
 const certFile = path.join(tlsDir, 'cert.pem');
 
-const openssl = spawnSync(
-  'openssl',
-  [
-    'req', '-x509', '-newkey', 'ec', '-pkeyopt', 'ec_paramgen_curve:P-256',
-    '-keyout', keyFile, '-out', certFile, '-days', '7', '-nodes',
-    '-subj', '/CN=custos-mcp-sidecar-e2e',
-    '-addext', 'subjectAltName=IP:127.0.0.1,DNS:localhost',
-  ],
-  { stdio: ['ignore', 'ignore', 'inherit'] },
-);
-if (openssl.status !== 0) {
-  console.error('failed to generate the test TLS certificate (is openssl installed?)');
-  process.exit(1);
+// The throwaway TLS dir is removed on every exit path (openssl failure
+// included), so the exit code is decided inside try and applied after finally.
+let status = 1;
+try {
+  const openssl = spawnSync(
+    'openssl',
+    [
+      'req', '-x509', '-newkey', 'ec', '-pkeyopt', 'ec_paramgen_curve:P-256',
+      '-keyout', keyFile, '-out', certFile, '-days', '7', '-nodes',
+      '-subj', '/CN=custos-mcp-sidecar-e2e',
+      '-addext', 'subjectAltName=IP:127.0.0.1,DNS:localhost',
+    ],
+    { stdio: ['ignore', 'ignore', 'inherit'] },
+  );
+  if (openssl.status !== 0) {
+    console.error('failed to generate the test TLS certificate (is openssl installed?)');
+  } else {
+    const result = spawnSync(
+      process.execPath,
+      ['--disable-warning=ExperimentalWarning', '--test', ...files],
+      {
+        stdio: 'inherit',
+        env: {
+          ...process.env,
+          NODE_EXTRA_CA_CERTS: certFile,
+          CUSTOS_MCP_TEST_TLS_DIR: tlsDir,
+        },
+      },
+    );
+    status = result.status ?? 1;
+  }
+} finally {
+  fs.rmSync(tlsDir, { recursive: true, force: true });
 }
-
-const result = spawnSync(
-  process.execPath,
-  ['--disable-warning=ExperimentalWarning', '--test', ...files],
-  {
-    stdio: 'inherit',
-    env: {
-      ...process.env,
-      NODE_EXTRA_CA_CERTS: certFile,
-      CUSTOS_MCP_TEST_TLS_DIR: tlsDir,
-    },
-  },
-);
-fs.rmSync(tlsDir, { recursive: true, force: true });
-process.exit(result.status ?? 1);
+process.exit(status);
