@@ -427,9 +427,9 @@ pub async fn confirm_identity_removal(
     // here on, only the tombstone + local wipe remain. Persist a durable marker BEFORE the
     // tombstone's network round trip so that if iOS kills/suspends the app mid-tombstone,
     // the next launch resumes via `tombstone_identity` rather than the request flow (which
-    // would fail against the deleted account — MM-389). A marker-write failure is logged but
-    // never blocks the removal: the account is already deleted, so aborting here would only
-    // strand the identity harder.
+    // would fail against the deleted account). A marker-write failure is logged but never
+    // blocks the removal: the account is already deleted, so aborting here would only strand
+    // the identity harder.
     if let Err(e) = mark_removal_pending(&did) {
         tracing::warn!(did = %did, error = %e, "failed to persist pending-removal marker after deleteAccount");
     }
@@ -623,7 +623,7 @@ mod tests {
 
     // ── Pending-removal marker lifecycle ──────────────────────────────────────
     //
-    // The marker is the MM-389 recovery hook: `deleteAccount` succeeding but the
+    // The marker is the post-delete recovery hook: `deleteAccount` succeeding but the
     // tombstone/wipe not finishing must leave a durable, resumable trace.
 
     #[test]
