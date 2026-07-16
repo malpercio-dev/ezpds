@@ -783,6 +783,54 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn parent_reads_child_audit_trail_foreign_account_cannot() {
+        let state = state().await;
+        let parent = "did:plc:parentchildaudit111111";
+        seed_account_with_repo(&state.db, parent).await;
+        let repo_key = reserve(&state.db).await;
+        let handle = "audited-writer.example.com";
+        let op = genesis(handle, &state.config.public_url, &repo_key.key_id.0);
+        let token = access_jwt(&[0x42; 32], parent);
+
+        let response = app(state.clone())
+            .oneshot(request(
+                "/agent/child",
+                Some(&token),
+                serde_json::json!({"handle": handle, "plcOp": op}),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let minted: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        let registration_id = minted["registrationId"].as_str().unwrap().to_string();
+
+        // The child's own tokens are agent-derived and never pass the owner guard, so the
+        // parent is the only party that can read the child's audit trail.
+        let response = app(state.clone())
+            .oneshot(get_request(
+                &format!("/v1/agents/{registration_id}/audit"),
+                &token,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+
+        // A foreign account still sees the uniform 404 (no existence oracle).
+        let foreign = access_jwt(&[0x42; 32], "did:plc:someoneelse1111111");
+        let response = app(state.clone())
+            .oneshot(get_request(
+                &format!("/v1/agents/{registration_id}/audit"),
+                &foreign,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
     async fn caller_without_local_parent_cannot_mint() {
         let state = state().await;
         let repo_key = reserve(&state.db).await;

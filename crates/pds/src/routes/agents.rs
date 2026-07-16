@@ -121,8 +121,11 @@ async fn authenticate_owner(headers: &HeaderMap, state: &AppState) -> Result<Str
         })
 }
 
-/// Load a registration and require it to be bound to `did`. Unknown and foreign registrations are
-/// the same uniform 404 (no cross-account existence oracle).
+/// Load a registration and require `did` to own it — as the account it acts as, or as the
+/// parent of a sovereign child (the parent provisions, revokes, and audits its children; the
+/// child's own tokens are agent-derived and never pass the owner guard, so without the parent
+/// arm a child's audit trail would be readable by no one). Unknown and foreign registrations
+/// are the same uniform 404 (no cross-account existence oracle).
 async fn owned_identity(
     state: &AppState,
     registration_id: &str,
@@ -132,7 +135,8 @@ async fn owned_identity(
     let identity = get_agent_identity(&state.db, registration_id)
         .await?
         .ok_or_else(not_found)?;
-    if identity.did.as_deref() != Some(did) {
+    let owner = identity.did.as_deref() == Some(did) || identity.parent_did.as_deref() == Some(did);
+    if !owner {
         return Err(not_found());
     }
     Ok(identity)
