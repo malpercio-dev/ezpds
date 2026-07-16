@@ -38,7 +38,7 @@
   import AgentClaimApprovalScreen from '$lib/components/home/AgentClaimApprovalScreen.svelte';
   import SettingsScreen from '$lib/components/home/SettingsScreen.svelte';
   import RemoveIdentityScreen from '$lib/components/home/RemoveIdentityScreen.svelte';
-  import { createAccount, registerCreatedIdentity, listIdentities, checkIdentityStatus, isCodedError, type CreateAccountError, type OAuthError, type IdentityInfo, type VerifiedClaimOp, type ClaimResult, type UnauthorizedChange } from '$lib/ipc';
+  import { createAccount, registerCreatedIdentity, listIdentities, listPendingRemovals, getStoredDidDoc, checkIdentityStatus, isCodedError, type CreateAccountError, type OAuthError, type IdentityInfo, type VerifiedClaimOp, type ClaimResult, type UnauthorizedChange } from '$lib/ipc';
   import { normalizePlcDocToW3c, extractHandle } from '$lib/did-doc-utils';
   import IdentityListHome from '$lib/components/home/IdentityListHome.svelte';
   import OnboardingShell from '$lib/components/ui/OnboardingShell.svelte';
@@ -160,15 +160,43 @@
   }
 
   onMount(async () => {
-    // If the user has claimed identities, skip to home.
+    // Resume a stranded removal first. If a prior removal deleted the PDS account but was
+    // interrupted before the tombstone + local wipe finished (e.g. iOS killed the app
+    // mid-flow), the identity still exists locally but its account is gone. Route straight
+    // to the removal screen, which resumes the tombstone-only retry rather than the request
+    // flow — the latter would fail against the already-deleted account (MM-389).
+    let resumingRemoval = false;
     try {
-      const identities = await listIdentities();
-      if (identities.length > 0) {
-        step = 'home';
+      const pending = await listPendingRemovals();
+      if (pending.length > 0) {
+        const did = pending[0];
+        selectedDid = did;
+        try {
+          selectedDidDoc = await getStoredDidDoc(did);
+        } catch {
+          // The DID doc may already be gone (a wipe that outran its marker clear); the
+          // removal screen still resumes correctly from the marker alone.
+          selectedDidDoc = null;
+        }
+        selectedDeviceKeyIsRoot = null;
+        step = 'remove_identity';
+        resumingRemoval = true;
       }
     } catch (e) {
-      console.error('listIdentities failed on mount:', e);
-      // First launch (empty Keychain) or Keychain error — continue to mode_select
+      console.warn('listPendingRemovals failed on mount:', e);
+    }
+
+    // If the user has claimed identities, skip to home (unless we're resuming a removal).
+    if (!resumingRemoval) {
+      try {
+        const identities = await listIdentities();
+        if (identities.length > 0) {
+          step = 'home';
+        }
+      } catch (e) {
+        console.error('listIdentities failed on mount:', e);
+        // First launch (empty Keychain) or Keychain error — continue to mode_select
+      }
     }
 
     // Legacy users (PDS URL configured but no managed-dids) stay at mode_select.

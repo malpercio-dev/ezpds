@@ -97,6 +97,7 @@ export type CommandName =
   | 'request_identity_removal'
   | 'confirm_identity_removal'
   | 'tombstone_identity'
+  | 'list_pending_removals'
   // migration.ts
   | 'build_did_web_migration_document_cmd'
   | 'submit_did_web_migration_document_cmd'
@@ -352,6 +353,9 @@ export function buildRegistry(state: WalletState): Registry {
     request_identity_removal: () => null,
     confirm_identity_removal: (args): RemovalOutcome => removeIdentity(state, didArg(args)),
     tombstone_identity: (args): RemovalOutcome => removeIdentity(state, didArg(args)),
+    // The fake removes an identity synchronously, so it never strands one mid-flow —
+    // there is nothing to reconcile on launch. Real backend markers are covered by Rust.
+    list_pending_removals: (): string[] => [],
 
     // ── migration ────────────────────────────────────────────────────────────
     build_did_web_migration_document_cmd: (args): DidWebMigrationDocument => {
