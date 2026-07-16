@@ -37,6 +37,7 @@ use crate::auth::oauth_scopes;
 use crate::db::dids::{fetch_also_known_as, update_also_known_as};
 use crate::db::repo_keys::get_signing_key_by_did;
 use crate::identity::plc::{build_did_document_from_op, fetch_current_plc_state};
+use crate::lexicon::LexiconInput;
 use common::{ApiError, ErrorCode};
 
 struct CustodiedPlcUpdate {
@@ -56,7 +57,7 @@ pub struct UpdateHandleResponse {}
 pub async fn update_handle_handler(
     user: AuthenticatedUser,
     State(state): State<AppState>,
-    Json(payload): Json<UpdateHandleRequest>,
+    LexiconInput(payload): LexiconInput<UpdateHandleRequest>,
 ) -> Result<Json<UpdateHandleResponse>, ApiError> {
     let did = &user.did;
 
@@ -1047,7 +1048,13 @@ mod tests {
                 .unwrap(),
         )
         .unwrap();
-        assert_eq!(body["error"]["code"], "INVALID_HANDLE");
+        // A structurally invalid handle is now caught by the lexicon input layer (before the
+        // handler's own domain-policy checks), with the reference PDS's message shape.
+        assert_eq!(body["error"]["code"], "InvalidRequest");
+        assert_eq!(
+            body["error"]["message"],
+            "Input/handle must be a valid handle"
+        );
     }
 
     // ── Auth failures ──────────────────────────────────────────────────────────

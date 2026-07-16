@@ -7,7 +7,7 @@
 //
 // Implements: POST /xrpc/com.atproto.server.deactivateAccount
 
-use axum::{body::Bytes, extract::State, http::StatusCode};
+use axum::{extract::State, http::StatusCode};
 use serde::Deserialize;
 
 use common::{ApiError, ErrorCode};
@@ -17,45 +17,18 @@ use crate::auth::extractors::AuthenticatedUser;
 use crate::auth::jwt::AuthScope;
 use crate::auth::oauth_scopes;
 use crate::db::accounts::{deactivate_account, AccountStateChange};
+use crate::lexicon::LexiconInput;
 
 /// The non-active status reported on the firehose `#account` event for a deactivation.
 const STATUS_DEACTIVATED: &str = "deactivated";
 
 #[derive(Deserialize)]
-struct DeactivateAccountBody {
-    /// Optional RFC 3339 instant after which the account should be permanently deleted. Stored
-    /// verbatim once validated; the reaper that acts on it is a separate concern (not yet built).
+pub struct DeactivateAccountBody {
+    /// Optional instant after which the account should be permanently deleted, stored verbatim.
+    /// The lexicon layer has already asserted it is a strict atproto datetime; the reaper that
+    /// acts on it is a separate concern.
     #[serde(rename = "deleteAfter")]
     delete_after: Option<String>,
-}
-
-/// Parse the optional request body of `deactivateAccount`.
-///
-/// The body is optional: an empty (or whitespace-only) body means "no scheduled deletion" and
-/// yields `None`. A present body must be valid JSON; a present `deleteAfter` must be an RFC 3339
-/// datetime. Anything else is a 400 so a malformed `deleteAfter` is never silently dropped.
-fn parse_optional_delete_after(body: &[u8]) -> Result<Option<String>, ApiError> {
-    if body.iter().all(u8::is_ascii_whitespace) {
-        return Ok(None);
-    }
-
-    let parsed: DeactivateAccountBody = serde_json::from_slice(body).map_err(|e| {
-        ApiError::new(
-            ErrorCode::InvalidRequest,
-            format!("invalid request body: {e}"),
-        )
-    })?;
-
-    if let Some(delete_after) = &parsed.delete_after {
-        chrono::DateTime::parse_from_rfc3339(delete_after).map_err(|_| {
-            ApiError::new(
-                ErrorCode::InvalidRequest,
-                "deleteAfter must be an RFC 3339 datetime",
-            )
-        })?;
-    }
-
-    Ok(parsed.delete_after)
 }
 
 /// POST /xrpc/com.atproto.server.deactivateAccount
@@ -70,7 +43,7 @@ fn parse_optional_delete_after(body: &[u8]) -> Result<Option<String>, ApiError> 
 pub async fn deactivate_account_handler(
     user: AuthenticatedUser,
     State(state): State<AppState>,
-    body: Bytes,
+    LexiconInput(body): LexiconInput<DeactivateAccountBody>,
 ) -> Result<StatusCode, ApiError> {
     if user.scope != AuthScope::Access {
         return Err(ApiError::new(
@@ -80,7 +53,7 @@ pub async fn deactivate_account_handler(
     }
     oauth_scopes::require_account(&user.scope_claim, "status", "manage")?;
 
-    let delete_after = parse_optional_delete_after(&body)?;
+    let delete_after = body.delete_after;
 
     // Open a transaction so the status transition and its firehose `#account` event (if any)
     // commit atomically — a durable status change must never end up without a corresponding

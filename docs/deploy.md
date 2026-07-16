@@ -1,6 +1,6 @@
 # PDS Deployment
 
-**Last verified:** 2026-07-12
+**Last verified:** 2026-07-16
 
 ## Overview
 
@@ -96,6 +96,54 @@ Each environment has its own secrets (distinct master key, admin token, user-dom
 1. `just set-version X.Y.Z` in a reviewed PR; merge it → staging deploys.
 2. `just release` from `main` cuts and pushes the annotated `vX.Y.Z` tag (does **not** deploy).
 3. `just deploy-production vX.Y.Z` advances the `production` branch to that tag and pushes it. Railway sees the new tip, CI re-runs (gate + `verify-release`), and the production service deploys once it is green. Omit the tag to promote the latest; roll back to an older tag with `FORCE=1 just deploy-production vX.Y.Z`.
+
+### Release-time documentation pass
+
+Every release also refreshes the documentation surfaces, and the **order** is the
+invariant — the changelog rolls up first, *then* the *derived* docs and
+screenshots regenerate under the parity gates, *then* the *hand-authored* prose
+gets a review pass, so every artifact is generated from the post-roll, version-bumped
+state. That order can be executed two ways:
+
+- **Manually**, folding all three steps into the **same `set-version` PR** (step 1
+  of the production flow above); or
+- **Via the release-docs Claude Code Routine**, which runs steps 2–3 as a **separate
+  follow-on PR after the `set-version` PR has rolled the changelog**. The Routine
+  never runs `set-version` itself (it only drafts any missing `changelog.d/`
+  fragments); running it after the version bump is what keeps the regenerated
+  version stamp and rolled changelog consistent. See
+  [operations/release-docs-routine.md](operations/release-docs-routine.md).
+
+Either way, the steps run in this order:
+
+1. **Roll the changelog.** `just set-version X.Y.Z` folds the per-PR
+   `changelog.d/` fragments into a dated `## [X.Y.Z]` section of `CHANGELOG.md`
+   and clears the directory (this is step 1 of the production flow above). Do this
+   first, before regenerating docs, so the changelog is rolled up and the version
+   is bumped. This is a human step — the Routine leaves it to you.
+2. **Regenerate derived docs + screenshots (gates green).**
+   - `just docs-generate` — regenerate the generated reference pages (HTTP/XRPC
+     routes, operator config/env, both apps' IPC surface, version stamp).
+   - `just docs-screenshots` — regenerate the harness-driven app imagery
+     (per-scenario PNGs, happy paths plus error/rare states).
+   - Confirm all three parity gates pass and record them: `just docs-check`
+     (reference coverage) and `just changelog-check` (fragment discipline), both
+     part of `just ci`/`ci-pds` and enforced on the PR; and
+     `just docs-screenshots-check` (image visual-diff), which is **not** in
+     `just ci` — cross-runner font rendering differs, so run it where the
+     baselines were generated. A red `docs-check` means a shipped
+     route/config field/command has no doc entry; fix the source or reference,
+     never edit generated pages by hand. A red screenshot diff is an intended UI
+     change (commit the regenerated PNGs) or an unexpected one (investigate).
+3. **Docs/marketing review pass.** Decide which hand-authored guides
+   (`sites/docs/`) and marketing pages (`sites/marketing/`) need edits for what
+   shipped in the release range, and draft them. This step is automatable as a
+   **Claude Code Routine** that regenerates the derived docs + screenshots, reads
+   the release diff and the merged Linear issues, drafts changelog/doc/marketing
+   prose, and opens a PR that rides `docs-check` + the changelog gate for a human
+   to review rather than author from scratch. See
+   [operations/release-docs-routine.md](operations/release-docs-routine.md) for
+   the Routine's setup and prompt.
 
 ### Backup & rollback
 
@@ -363,6 +411,29 @@ ghcr.io/your-org/PDS@sha256:abc123...
 ```
 
 The primary CI/CD path (GitHub Actions gate → native Railway deploys, above) needs none of this. For the colmena/NixOS path, publish to GHCR and pin the image by digest in the NixOS module.
+
+## Rotating the Master Key
+
+`EZPDS_SIGNING_KEY_MASTER_KEY` can be rotated with the offline `pds rewrap-master-key`
+subcommand, which decrypts every KEK-wrapped secret in the SQLite DB with the old key and
+re-encrypts it under the new one in a single atomic transaction (no key material changes —
+no PLC op, no firehose event; minutes-scale on a small DB). The server must be stopped
+(the DB pool is single-connection). Old/new keys are read from environment variables only,
+never CLI arguments:
+
+```bash
+# 1. Stop the service (or run against a Litestream restore).
+# 2. Re-wrap (same EZPDS_DATABASE_URL / config the server uses):
+EZPDS_REWRAP_OLD_MASTER_KEY=<current-64-hex> \
+EZPDS_REWRAP_NEW_MASTER_KEY=$(openssl rand -hex 32) \
+pds rewrap-master-key
+# 3. Set EZPDS_SIGNING_KEY_MASTER_KEY to the new key.
+# 4. Start the service.
+```
+
+A wrong old key (or a re-run after a completed rotation — diagnosed distinctly) aborts
+with no writes, so the DB is always uniformly under exactly one key. Each completed
+rotation bumps a `kek_generation` counter in `server_metadata`.
 
 ## Security Posture
 

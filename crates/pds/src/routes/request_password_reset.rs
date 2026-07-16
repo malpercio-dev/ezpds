@@ -13,6 +13,7 @@ use crate::app::AppState;
 use crate::auth::token::generate_token;
 use crate::db::accounts::resolve_by_email;
 use crate::db::password_reset::insert_reset_token;
+use crate::lexicon::LexiconInput;
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -29,7 +30,7 @@ pub struct RequestPasswordResetRequest {
 /// still return 200 so the response never reveals whether the address exists.
 pub async fn request_password_reset(
     State(state): State<AppState>,
-    axum::Json(payload): axum::Json<RequestPasswordResetRequest>,
+    LexiconInput(payload): LexiconInput<RequestPasswordResetRequest>,
 ) -> StatusCode {
     // --- Look up account by email ---
     // Generate and discard a token on all non-found paths to equalize work with the

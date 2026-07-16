@@ -560,13 +560,15 @@ async fn didweb_account_migrates_onto_custos_without_custos_serving_did_json() {
         "the operator's post"
     );
 
-    // 9. The old PDS deactivates now the transfer is complete.
+    // 9. The old PDS deactivates now the transfer is complete. The body is the wallet's real
+    //    `{}` — the lexicon layer, like the reference PDS, requires a body on a procedure that
+    //    declares an input.
     let deactivate_resp = old_app
-        .oneshot(bearer(
+        .oneshot(bearer_json(
             "POST",
             "/xrpc/com.atproto.server.deactivateAccount".to_string(),
             Some(&old_token),
-            Body::empty(),
+            serde_json::json!({}),
         ))
         .await
         .unwrap();

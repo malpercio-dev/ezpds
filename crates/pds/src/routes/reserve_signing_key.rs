@@ -21,6 +21,7 @@ use crate::auth::validation::lock_failed_login_attempts;
 use crate::db::repo_keys::{
     get_reserved_repo_key_by_did, insert_reserved_repo_key, RepoSigningKey,
 };
+use crate::lexicon::LexiconInput;
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -39,7 +40,7 @@ const ANONYMOUS_RESERVE_SIGNING_KEY_LIMIT: &str = "reserveSigningKey:<anonymous>
 pub async fn reserve_signing_key(
     State(state): State<AppState>,
     remote_addr: Result<ConnectInfo<SocketAddr>, ExtensionRejection>,
-    Json(request): Json<ReserveSigningKeyRequest>,
+    LexiconInput(request): LexiconInput<ReserveSigningKeyRequest>,
 ) -> Result<Json<ReserveSigningKeyResponse>, ApiError> {
     // axum 0.8 dropped the blanket `Option<T>` extractor; `Result` keeps the same
     // "absent under `oneshot` test harnesses" tolerance ConnectInfo needs here.

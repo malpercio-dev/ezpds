@@ -34,6 +34,7 @@ use crate::db::repo_keys::{
     get_reserved_repo_key_by_did, get_reserved_repo_key_by_id, insert_did_signing_key,
     RepoSigningKey,
 };
+use crate::lexicon::LexiconInput;
 use crate::session_issuer::{
     issue_session, issue_session_in_transaction, IssuedSession, SessionKind,
 };
@@ -86,7 +87,7 @@ pub struct CreateAccountResponse {
 pub async fn create_account(
     State(state): State<AppState>,
     headers: HeaderMap,
-    Json(payload): Json<CreateAccountRequest>,
+    LexiconInput(payload): LexiconInput<CreateAccountRequest>,
 ) -> Result<Json<CreateAccountResponse>, ApiError> {
     match payload
         .did
