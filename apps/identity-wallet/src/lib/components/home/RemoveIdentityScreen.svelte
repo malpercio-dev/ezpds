@@ -1,8 +1,10 @@
 <script lang="ts">
+  import { onMount } from 'svelte';
   import {
     requestIdentityRemoval,
     confirmIdentityRemoval,
     tombstoneIdentity,
+    listPendingRemovals,
     sovereignLogin,
     isCodedError,
     type RemovalError,
@@ -39,6 +41,22 @@
   let password = $state('');
 
   let canConfirm = $derived(code.trim().length > 0 && password.length > 0);
+
+  // If a prior attempt already deleted the PDS account but was interrupted before the
+  // tombstone + wipe finished (the app was killed mid-flow), the account is gone and the
+  // single-use email code is spent — the request flow would fail. Resume straight to the
+  // tombstone-only retry instead. Checked on every mount so this self-corrects no matter
+  // how the screen was reached (launch reconciliation or manual navigation).
+  onMount(async () => {
+    try {
+      const pending = await listPendingRemovals();
+      if (pending.includes(did) && phase === 'warn') {
+        phase = 'tombstone_retry';
+      }
+    } catch (e) {
+      console.warn('listPendingRemovals failed:', e);
+    }
+  });
 
   // Hold-to-remove: a deliberate, irreversible confirmation gesture (matches the
   // recovery-override screen), gated by biometrics before anything is sent.

@@ -25,6 +25,98 @@ use crate::identity_store::{IdentityStore, PerDidSignError};
 use crate::pds_client::{PdsClient, PdsClientError};
 use crate::session_provider::{SessionError, SessionProvider, UnlockReason};
 
+/// Keychain account holding the durable "removal in progress (post-delete)" index:
+/// a JSON array of DIDs whose PDS account was deleted but whose tombstone + local
+/// wipe has not yet completed. This is the recovery marker that makes a removal
+/// interrupted after `deleteAccount` (e.g. iOS killing the app mid-tombstone)
+/// resumable — on launch the UI reconciles any listed DID straight to the
+/// tombstone-only retry rather than the full request flow (which would fail against
+/// the already-deleted account).
+const PENDING_REMOVALS_ACCOUNT: &str = "pending-removals";
+
+/// Load the set of DIDs with a pending post-delete removal, propagating a genuine
+/// Keychain read failure.
+///
+/// A missing entry is an empty set, and corrupt JSON reads as empty (the marker is a
+/// best-effort payload — a decode failure must not wedge the flow). But a real
+/// Keychain security/IO error is returned, NOT swallowed: the mutators
+/// (`mark_removal_pending` / `clear_removal_pending`) do a read-modify-write, so
+/// silently treating a transient read failure as "empty" would let the subsequent
+/// save overwrite the Keychain and drop any *other* DIDs' pending markers.
+fn load_pending_removals_strict() -> Result<Vec<String>, crate::keychain::KeychainError> {
+    match crate::keychain::get_item(PENDING_REMOVALS_ACCOUNT) {
+        Ok(bytes) => Ok(serde_json::from_slice::<Vec<String>>(&bytes).unwrap_or_else(|e| {
+            tracing::warn!(error = %e, "pending-removals Keychain entry is not valid JSON; treating as empty");
+            Vec::new()
+        })),
+        Err(e) if crate::keychain::is_not_found(&e) => Ok(Vec::new()),
+        Err(e) => Err(e),
+    }
+}
+
+/// Best-effort read of the pending-removal set for the infallible launch check.
+///
+/// Any Keychain trouble reads as an empty set — `list_pending_removals` is called
+/// unconditionally on every launch and must never surface an error that could block it.
+/// Read-modify-write callers must use [`load_pending_removals_strict`] instead, so a
+/// transient read failure cannot clobber unrelated markers.
+fn load_pending_removals() -> Vec<String> {
+    load_pending_removals_strict().unwrap_or_else(|e| {
+        tracing::warn!(error = %e, "Keychain error loading pending-removals; treating as empty");
+        Vec::new()
+    })
+}
+
+/// Persist the pending-removals set. An empty set deletes the entry entirely so the
+/// Keychain never carries a stale `[]`.
+fn save_pending_removals(dids: &[String]) -> Result<(), crate::keychain::KeychainError> {
+    if dids.is_empty() {
+        return match crate::keychain::delete_item(PENDING_REMOVALS_ACCOUNT) {
+            Ok(()) => Ok(()),
+            Err(e) if crate::keychain::is_not_found(&e) => Ok(()),
+            Err(e) => Err(e),
+        };
+    }
+    // Vec<String> → JSON is infallible; unwrap keeps the signature Keychain-only.
+    let json = serde_json::to_vec(dids).expect("Vec<String> always serializes to JSON");
+    crate::keychain::store_item(PENDING_REMOVALS_ACCOUNT, &json)
+}
+
+/// Mark `did` as having a pending post-delete removal (idempotent).
+///
+/// Called the instant `deleteAccount` succeeds, before the tombstone network round
+/// trip — the step iOS is most likely to interrupt by backgrounding the app.
+fn mark_removal_pending(did: &str) -> Result<(), crate::keychain::KeychainError> {
+    let mut dids = load_pending_removals_strict()?;
+    if !dids.iter().any(|d| d == did) {
+        dids.push(did.to_string());
+        save_pending_removals(&dids)?;
+    }
+    Ok(())
+}
+
+/// Clear `did`'s pending-removal marker once the tombstone + wipe have completed.
+fn clear_removal_pending(did: &str) -> Result<(), crate::keychain::KeychainError> {
+    let mut dids = load_pending_removals_strict()?;
+    let before = dids.len();
+    dids.retain(|d| d != did);
+    if dids.len() != before {
+        save_pending_removals(&dids)?;
+    }
+    Ok(())
+}
+
+/// Best-effort clear of the pending-removal marker after a successful removal.
+///
+/// A failure here is non-fatal: the removal already succeeded, and a lingering marker
+/// only re-offers the (now idempotent, wipe-only) tombstone retry on the next launch,
+/// which clears it. Never fail the removal over marker cleanup.
+fn clear_removal_pending_best_effort(did: &str) {
+    if let Err(e) = clear_removal_pending(did) {
+        tracing::warn!(did = did, error = %e, "failed to clear pending-removal marker after removal");
+    }
+}
+
 /// Errors from the identity-removal flow.
 ///
 /// Serializes as `{ "code": "SCREAMING_SNAKE_CASE", ... }` to match the other wallet
@@ -345,8 +437,20 @@ pub async fn confirm_identity_removal(
         .await
         .map_err(map_delete_account_error)?;
 
+    // The account is now permanently gone and the single-use email code is spent — from
+    // here on, only the tombstone + local wipe remain. Persist a durable marker BEFORE the
+    // tombstone's network round trip so that if iOS kills/suspends the app mid-tombstone,
+    // the next launch resumes via `tombstone_identity` rather than the request flow (which
+    // would fail against the deleted account). A marker-write failure is logged but never
+    // blocks the removal: the account is already deleted, so aborting here would only strand
+    // the identity harder.
+    if let Err(e) = mark_removal_pending(&did) {
+        tracing::warn!(did = %did, error = %e, "failed to persist pending-removal marker after deleteAccount");
+    }
+
     // 2 + 3. Tombstone the did:plc, then wipe local material.
     let tombstone_cid = tombstone_and_wipe(state.pds_client(), &did).await?;
+    clear_removal_pending_best_effort(&did);
     removal_outcome(tombstone_cid)
 }
 
@@ -363,7 +467,20 @@ pub async fn tombstone_identity(
     did: String,
 ) -> Result<RemovalOutcome, RemovalError> {
     let tombstone_cid = tombstone_and_wipe(state.pds_client(), &did).await?;
+    clear_removal_pending_best_effort(&did);
     removal_outcome(tombstone_cid)
+}
+
+/// Tauri command: list DIDs with a pending post-delete removal.
+///
+/// Backs the launch-time reconciliation: if a removal deleted the PDS account but was
+/// interrupted before the tombstone + wipe finished, the DID stays listed here so the UI
+/// can resume it (idempotent `tombstone_identity`) instead of re-entering the request
+/// flow. Infallible — any Keychain/decoding trouble reads as an empty list, so it can be
+/// called unconditionally on every launch.
+#[tauri::command]
+pub fn list_pending_removals() -> Vec<String> {
+    load_pending_removals()
 }
 
 /// Resolve the PDS base URL for `did`: the stored token record first, then live
@@ -516,5 +633,55 @@ mod tests {
             }),
             RemovalError::AccountDeleteFailed { .. }
         ));
+    }
+
+    // ── Pending-removal marker lifecycle ──────────────────────────────────────
+    //
+    // The marker is the post-delete recovery hook: `deleteAccount` succeeding but the
+    // tombstone/wipe not finishing must leave a durable, resumable trace.
+
+    #[test]
+    fn pending_removal_marker_round_trip() {
+        crate::keychain::clear_for_test();
+        assert!(load_pending_removals().is_empty());
+
+        mark_removal_pending("did:plc:alice").unwrap();
+        assert_eq!(load_pending_removals(), vec!["did:plc:alice".to_string()]);
+
+        // Idempotent: marking the same DID twice does not duplicate it.
+        mark_removal_pending("did:plc:alice").unwrap();
+        assert_eq!(load_pending_removals(), vec!["did:plc:alice".to_string()]);
+
+        mark_removal_pending("did:plc:bob").unwrap();
+        assert_eq!(
+            load_pending_removals(),
+            vec!["did:plc:alice".to_string(), "did:plc:bob".to_string()]
+        );
+
+        clear_removal_pending("did:plc:alice").unwrap();
+        assert_eq!(load_pending_removals(), vec!["did:plc:bob".to_string()]);
+
+        // Clearing the last DID empties the set (and removes the backing entry).
+        clear_removal_pending("did:plc:bob").unwrap();
+        assert!(load_pending_removals().is_empty());
+    }
+
+    #[test]
+    fn clearing_absent_marker_is_a_noop() {
+        crate::keychain::clear_for_test();
+        // Never marked — clearing must not error and must leave the set empty.
+        clear_removal_pending("did:plc:ghost").unwrap();
+        assert!(load_pending_removals().is_empty());
+        clear_removal_pending_best_effort("did:plc:ghost");
+        assert!(load_pending_removals().is_empty());
+    }
+
+    #[test]
+    fn corrupt_marker_entry_reads_as_empty() {
+        crate::keychain::clear_for_test();
+        // A non-JSON blob must never surface as an error — the marker is a best-effort
+        // safety net, and `list_pending_removals` is called unconditionally on launch.
+        crate::keychain::store_item(PENDING_REMOVALS_ACCOUNT, b"not json").unwrap();
+        assert!(load_pending_removals().is_empty());
     }
 }

@@ -40,6 +40,7 @@ Source: `apps/identity-wallet/src/lib/ipc/`
 | `get_stored_did_doc` | App command |
 | `list_agents` | App command |
 | `list_identities` | App command |
+| `list_pending_removals` | App command |
 | `perform_did_ceremony` | App command |
 | `plugin:auth-session|start` | Tauri plugin |
 | `plugin:sharesheet|share_text` | Tauri plugin |

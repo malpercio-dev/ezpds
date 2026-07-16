@@ -1149,6 +1149,7 @@ pub fn run() {
             identity_removal::request_identity_removal,
             identity_removal::confirm_identity_removal,
             identity_removal::tombstone_identity,
+            identity_removal::list_pending_removals,
             migrate::detect_migration_path_cmd,
             migrate::build_migration_op_cmd,
             migrate::submit_migration_op_cmd,

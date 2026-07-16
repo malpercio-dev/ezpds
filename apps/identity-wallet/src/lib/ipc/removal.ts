@@ -74,3 +74,12 @@ export const confirmIdentityRemoval = (
  */
 export const tombstoneIdentity = (did: string): Promise<RemovalOutcome> =>
   invoke('tombstone_identity', { did });
+
+/**
+ * List DIDs with a pending post-delete removal — the PDS account was deleted but the
+ * tombstone + local wipe never finished (e.g. iOS killed the app mid-flow). The launch
+ * path reconciles each straight to {@link tombstoneIdentity} rather than the request
+ * flow, which would fail against the already-deleted account. Infallible: any Keychain
+ * trouble resolves to an empty list, so it is safe to call unconditionally on launch.
+ */
+export const listPendingRemovals = (): Promise<string[]> => invoke('list_pending_removals');
