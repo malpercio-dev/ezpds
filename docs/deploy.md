@@ -1,6 +1,6 @@
 # PDS Deployment
 
-**Last verified:** 2026-07-12
+**Last verified:** 2026-07-16
 
 ## Overview
 
@@ -96,6 +96,37 @@ Each environment has its own secrets (distinct master key, admin token, user-dom
 1. `just set-version X.Y.Z` in a reviewed PR; merge it → staging deploys.
 2. `just release` from `main` cuts and pushes the annotated `vX.Y.Z` tag (does **not** deploy).
 3. `just deploy-production vX.Y.Z` advances the `production` branch to that tag and pushes it. Railway sees the new tip, CI re-runs (gate + `verify-release`), and the production service deploys once it is green. Omit the tag to promote the latest; roll back to an older tag with `FORCE=1 just deploy-production vX.Y.Z`.
+
+### Release-time documentation pass
+
+Every release also refreshes the documentation surfaces, in this order — the
+changelog rolls up, the *derived* docs and screenshots regenerate under the parity
+gates, and the *hand-authored* prose gets a review pass. Run these against the
+release candidate **before** step 1 above (or fold them into the same
+`set-version` PR):
+
+1. **Roll the changelog.** `just set-version X.Y.Z` folds the per-PR
+   `changelog.d/` fragments into a dated `## [X.Y.Z]` section of `CHANGELOG.md`
+   and clears the directory (this is step 1 of the production flow above).
+2. **Regenerate derived docs + screenshots (gates green).**
+   - `just docs-generate` — regenerate the generated reference pages (HTTP/XRPC
+     routes, operator config/env, both apps' IPC surface, version stamp).
+   - `just docs-screenshots` — regenerate the harness-driven app imagery
+     (per-scenario PNGs, happy paths plus error/rare states).
+   - Confirm the parity gates pass: `just docs-check` (part of `just ci`/`ci-pds`)
+     for reference coverage, and `just docs-screenshots-check` for the image
+     visual-diff (not in `just ci` — run it where the baselines were generated).
+     A red `docs-check` means a shipped route/config field/command has no doc
+     entry; fix the source or reference, never edit generated pages by hand.
+3. **Docs/marketing review pass.** Decide which hand-authored guides
+   (`sites/docs/`) and marketing pages (`sites/marketing/`) need edits for what
+   shipped in the release range, and draft them. This step is automatable as a
+   **Claude Code Routine** that regenerates the derived docs + screenshots, reads
+   the release diff and the merged Linear issues, drafts changelog/doc/marketing
+   prose, and opens a PR that rides `docs-check` + the changelog gate for a human
+   to review rather than author from scratch. See
+   [operations/release-docs-routine.md](operations/release-docs-routine.md) for
+   the Routine's setup and prompt.
 
 ### Backup & rollback
 
