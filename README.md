@@ -160,6 +160,24 @@ just nix-check   # Validate NixOS module / flake structure
 docker build -t pds .    # or: just docker-build
 ```
 
+### Releasing
+
+Releases are cut from tags and promoted to production deliberately — full runbook
+in [`docs/deploy.md`](docs/deploy.md). The short version:
+
+```bash
+just set-version X.Y.Z   # bump the workspace version + roll changelog.d/ into CHANGELOG.md (in a PR)
+just release             # cut & push the vX.Y.Z tag from main (does not deploy)
+just deploy-production   # advance the production branch to that tag → Railway deploys
+```
+
+Each release also gets a **docs/marketing review pass** (regenerate the derived
+docs + screenshots under the parity gates, then review the hand-authored prose).
+That pass is automatable: kick off the **release-docs Claude Code Routine** with a
+release range (`vLast..<rc>`) and it opens a PR with regenerated docs, fresh
+screenshots, and drafted prose for a human to review. Setup and the exact prompt
+live in [`docs/operations/release-docs-routine.md`](docs/operations/release-docs-routine.md).
+
 ## Configuration
 
 The PDS is configured via a TOML file (default: `pds.toml`). See [`pds.dev.toml`](pds.dev.toml) for a full example.
