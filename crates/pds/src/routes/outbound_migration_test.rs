@@ -448,11 +448,11 @@ async fn wallet_authorized_outbound_migration_transfers_repo_and_blobs_to_a_peer
     let mut source_firehose = source_state.firehose.subscribe();
     let deactivate_resp = source_app
         .clone()
-        .oneshot(bearer(
+        .oneshot(bearer_json(
             "POST",
             "/xrpc/com.atproto.server.deactivateAccount".to_string(),
             Some(&source_token),
-            Body::empty(),
+            serde_json::json!({}),
         ))
         .await
         .unwrap();

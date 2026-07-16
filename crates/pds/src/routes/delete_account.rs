@@ -14,7 +14,7 @@
 // the firehose frame, and on-disk blob reclamation — lives in `account_delete::purge_account`,
 // shared with the scheduled-deletion reaper.
 
-use axum::{extract::State, http::StatusCode, response::Json};
+use axum::{extract::State, http::StatusCode};
 use serde::Deserialize;
 
 use common::{ApiError, ErrorCode};
@@ -25,6 +25,7 @@ use crate::auth::password::{verify_password, VerifyResult};
 use crate::auth::token::hash_bearer_token;
 use crate::db::account_deletion_tokens::consume_account_deletion_token;
 use crate::db::accounts::account_password_hash;
+use crate::lexicon::LexiconInput;
 
 #[derive(Deserialize)]
 pub struct DeleteAccountRequest {
@@ -56,7 +57,7 @@ fn invalid_credentials() -> ApiError {
 /// to verify against.
 pub async fn delete_account_handler(
     State(state): State<AppState>,
-    Json(payload): Json<DeleteAccountRequest>,
+    LexiconInput(payload): LexiconInput<DeleteAccountRequest>,
 ) -> Result<StatusCode, ApiError> {
     if payload.did.trim().is_empty()
         || payload.password.is_empty()

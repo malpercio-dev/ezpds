@@ -24,6 +24,7 @@ use crate::auth::oauth_scopes;
 use crate::auth::token::hash_bearer_token;
 use crate::db::accounts::{get_session_account, set_email_confirmed};
 use crate::db::email_tokens::{consume_email_token, EmailTokenPurpose};
+use crate::lexicon::LexiconInput;
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -35,7 +36,7 @@ pub struct ConfirmEmailRequest {
 pub async fn confirm_email(
     user: AuthenticatedUser,
     State(state): State<AppState>,
-    axum::Json(payload): axum::Json<ConfirmEmailRequest>,
+    LexiconInput(payload): LexiconInput<ConfirmEmailRequest>,
 ) -> Result<StatusCode, ApiError> {
     if user.scope != AuthScope::Access {
         return Err(ApiError::new(

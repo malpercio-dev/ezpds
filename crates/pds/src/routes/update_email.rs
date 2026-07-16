@@ -23,6 +23,7 @@ use crate::auth::oauth_scopes;
 use crate::auth::token::hash_bearer_token;
 use crate::db::accounts::{get_session_account, update_account_email, EmailUpdateOutcome};
 use crate::db::email_tokens::{consume_email_token, EmailTokenPurpose};
+use crate::lexicon::LexiconInput;
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -35,7 +36,7 @@ pub struct UpdateEmailRequest {
 pub async fn update_email(
     user: AuthenticatedUser,
     State(state): State<AppState>,
-    axum::Json(payload): axum::Json<UpdateEmailRequest>,
+    LexiconInput(payload): LexiconInput<UpdateEmailRequest>,
 ) -> Result<StatusCode, ApiError> {
     if user.scope != AuthScope::Access {
         return Err(ApiError::new(

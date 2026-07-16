@@ -155,8 +155,23 @@ pub async fn create_invite_code(
     body: Bytes,
 ) -> Result<Json<CreateInviteCodeResponse>, Response> {
     require_admin_json(method.as_str(), uri.path(), &headers, &body, &state).await?;
-    let Json(payload) =
-        Json::<CreateInviteCodeRequest>::from_bytes(&body).map_err(IntoResponse::into_response)?;
+
+    // Lexicon input validation runs after auth (matching the reference PDS's order) and as a
+    // plain call rather than the `LexiconInput` extractor, because the admin-device signature
+    // above must verify over the raw body bytes.
+    let validated = crate::lexicon::validate_procedure_body(
+        "com.atproto.server.createInviteCode",
+        &headers,
+        &body,
+    )
+    .map_err(IntoResponse::into_response)?;
+    let payload: CreateInviteCodeRequest = serde_json::from_value(validated).map_err(|e| {
+        ApiError::new(
+            ErrorCode::InvalidRequest,
+            format!("invalid request body: {e}"),
+        )
+        .into_response()
+    })?;
 
     create_invite_code_inner(&state, payload)
         .await
@@ -188,8 +203,22 @@ pub async fn create_invite_codes(
     body: Bytes,
 ) -> Result<Json<CreateInviteCodesResponse>, Response> {
     require_admin_json(method.as_str(), uri.path(), &headers, &body, &state).await?;
-    let Json(payload) =
-        Json::<CreateInviteCodesRequest>::from_bytes(&body).map_err(IntoResponse::into_response)?;
+
+    // Same post-auth lexicon validation as `create_invite_code` (the signature covers the
+    // raw bytes, so the extractor can't be used here either).
+    let validated = crate::lexicon::validate_procedure_body(
+        "com.atproto.server.createInviteCodes",
+        &headers,
+        &body,
+    )
+    .map_err(IntoResponse::into_response)?;
+    let payload: CreateInviteCodesRequest = serde_json::from_value(validated).map_err(|e| {
+        ApiError::new(
+            ErrorCode::InvalidRequest,
+            format!("invalid request body: {e}"),
+        )
+        .into_response()
+    })?;
 
     create_invite_codes_inner(&state, payload)
         .await

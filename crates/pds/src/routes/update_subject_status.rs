@@ -88,7 +88,16 @@ pub async fn update_subject_status(
 ) -> Result<Json<UpdateSubjectStatusResponse>, Response> {
     let actor = require_admin_json(method.as_str(), uri.path(), &headers, &body, &state).await?;
 
-    let payload: UpdateSubjectStatusBody = serde_json::from_slice(&body).map_err(|e| {
+    // Lexicon input validation runs after auth (matching the reference PDS's order) and as a
+    // plain call rather than the `LexiconInput` extractor, because the admin-device signature
+    // above must verify over the raw body bytes.
+    let validated = crate::lexicon::validate_procedure_body(
+        "com.atproto.admin.updateSubjectStatus",
+        &headers,
+        &body,
+    )
+    .map_err(IntoResponse::into_response)?;
+    let payload: UpdateSubjectStatusBody = serde_json::from_value(validated).map_err(|e| {
         ApiError::new(
             ErrorCode::InvalidRequest,
             format!("invalid request body: {e}"),

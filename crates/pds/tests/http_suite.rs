@@ -438,6 +438,90 @@ async fn http_golden_path_suite() {
     })
     .await;
 
+    // 9c. Lexicon input validation parity (MM-364): every natively-handled JSON procedure now
+    //     runs its request body through the vendored `com.atproto.*` lexicon before the handler,
+    //     so a missing required field, a format violation, or a wrong/absent Content-Type gets
+    //     the reference PDS's 400 InvalidRequest envelope (previously axum's bare `Json`
+    //     extractor answered 422/415 with a plain-text body). Message shapes are asserted
+    //     byte-for-byte against `@atproto/lexicon` / `@atproto/xrpc-server`.
+    step("lexicon input validation parity", || async {
+        let expect_invalid_request = |resp: reqwest::Response, expected_message: &'static str| async move {
+            let status = resp.status();
+            let body: serde_json::Value = resp.json().await.expect("error json");
+            assert_eq!(status.as_u16(), 400, "expected 400, got {status}: {body}");
+            assert_eq!(
+                body["error"]["code"], "InvalidRequest",
+                "expected InvalidRequest: {body}"
+            );
+            assert_eq!(
+                body["error"]["message"], expected_message,
+                "reference-parity message mismatch: {body}"
+            );
+        };
+
+        // Missing required field, named in lexicon declaration order.
+        let resp = h
+            .http
+            .post(h.url("/xrpc/com.atproto.server.createSession"))
+            .json(&json!({"identifier": "someone.example.com"}))
+            .send()
+            .await
+            .expect("createSession request");
+        expect_invalid_request(resp, "Input must have the property \"password\"").await;
+
+        // String-format violation, path-prefixed.
+        let resp = h
+            .http
+            .post(h.url("/xrpc/com.atproto.repo.createRecord"))
+            .bearer_auth(&token)
+            .json(&json!({"repo": did, "collection": "not-an-nsid", "record": {"text": "x"}}))
+            .send()
+            .await
+            .expect("createRecord request");
+        expect_invalid_request(resp, "Input/collection must be a valid nsid").await;
+
+        // Closed union: an unknown $type is rejected, printing the fully-qualified refs.
+        let resp = h
+            .http
+            .post(h.url("/xrpc/com.atproto.repo.applyWrites"))
+            .bearer_auth(&token)
+            .json(&json!({
+                "repo": did,
+                "writes": [{"$type": "com.atproto.repo.applyWrites#upsert"}],
+            }))
+            .send()
+            .await
+            .expect("applyWrites request");
+        expect_invalid_request(
+            resp,
+            "Input/writes/0 $type must be one of lex:com.atproto.repo.applyWrites#create, \
+             lex:com.atproto.repo.applyWrites#update, lex:com.atproto.repo.applyWrites#delete",
+        )
+        .await;
+
+        // A body with the wrong Content-Type is a 400 (bare `Json` used to answer 415).
+        let resp = h
+            .http
+            .post(h.url("/xrpc/com.atproto.server.createSession"))
+            .header("Content-Type", "text/plain")
+            .body(r#"{"identifier":"someone.example.com","password":"hunter2"}"#)
+            .send()
+            .await
+            .expect("wrong-content-type request");
+        expect_invalid_request(resp, "Wrong request encoding (Content-Type): text/plain").await;
+
+        // A procedure that declares an input requires a body (reqwest sends neither a body nor
+        // a Content-Length header here — the reference's "missing" body presence).
+        let resp = h
+            .http
+            .post(h.url("/xrpc/com.atproto.server.createSession"))
+            .send()
+            .await
+            .expect("missing-body request");
+        expect_invalid_request(resp, "A request body is expected but none was provided").await;
+    })
+    .await;
+
     // 10. deactivateAccount → subsequent createRecord is 403; getRepoStatus reflects deactivated;
     //     then re-deactivate with a `deleteAfter` already in the past and poll until the reaper
     //     (running every second via EZPDS_ACCOUNTS_DELETION_REAPER_INTERVAL_SECS in the harness)
