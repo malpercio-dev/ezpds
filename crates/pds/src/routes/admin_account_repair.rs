@@ -99,8 +99,11 @@ pub async fn set_account_email(
         Err(error) => return db_error(error, "check email uniqueness").into_response(),
     };
     if email_conflict != 0 {
-        return ApiError::new(ErrorCode::InvalidRequest, "this email address is already in use")
-            .into_response();
+        return ApiError::new(
+            ErrorCode::InvalidRequest,
+            "this email address is already in use",
+        )
+        .into_response();
     }
     if let Err(error) = sqlx::query(
         "UPDATE accounts SET email = ?, email_confirmed_at = NULL, updated_at = datetime('now') WHERE did = ?",
