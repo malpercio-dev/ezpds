@@ -16,6 +16,19 @@ use super::did::is_valid_did;
 #[error("HTTP well-known error: {0}")]
 pub struct WellKnownError(pub String);
 
+impl WellKnownError {
+    fn from_error(error: &(dyn std::error::Error + 'static)) -> Self {
+        let mut message = error.to_string();
+        let mut source = error.source();
+        while let Some(error) = source {
+            message.push_str(": ");
+            message.push_str(&error.to_string());
+            source = error.source();
+        }
+        Self(message)
+    }
+}
+
 /// Upper bound on the `.well-known/atproto-did` response body. A valid DID is well under this;
 /// the endpoint host is caller-controlled (the handle being resolved), so its response is not
 /// trusted to be bounded — without this, a malicious host could stream an unbounded body to
@@ -63,7 +76,7 @@ impl WellKnownResolver for HttpWellKnownResolver {
                 .get(&url)
                 .send()
                 .await
-                .map_err(|e| WellKnownError(e.to_string()))?;
+                .map_err(|e| WellKnownError::from_error(&e))?;
             if !resp.status().is_success() {
                 return Ok(None);
             }
@@ -115,10 +128,13 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn hardened_client_rejects_private_ip_target() {
+    async fn hardened_client_rejects_private_hostname_target() {
         let client = crate::identity::proxy::build_hardened_client(false).unwrap();
         let resolver = HttpWellKnownResolver::new(client);
 
-        resolver.resolve("127.0.0.1").await.unwrap_err();
+        let error = resolver.resolve("localhost").await.unwrap_err();
+        assert!(error
+            .to_string()
+            .contains("refusing to connect to \"localhost\": it resolves to a non-public address"));
     }
 }
