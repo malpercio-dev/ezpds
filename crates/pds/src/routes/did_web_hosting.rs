@@ -15,7 +15,11 @@
 // OAuth/XRPC token; agent-derived and app-password credentials refused) — the same owner guard the
 // `/v1/agents` surface uses. These live on the same-origin `/v1/*` surface (no permissive CORS).
 
-use axum::{extract::State, http::HeaderMap, Json};
+use axum::{
+    extract::State,
+    http::{HeaderMap, Method, Uri},
+    Json,
+};
 use serde::{Deserialize, Serialize};
 
 use crate::app::AppState;
@@ -27,8 +31,13 @@ use common::{ApiError, ErrorCode};
 
 /// Authenticate the account owner and map the neutral rejection into this surface's vocabulary.
 /// Mirrors `agents.rs`'s wrapper (routes may not import one another).
-async fn authenticate_owner(headers: &HeaderMap, state: &AppState) -> Result<String, ApiError> {
-    authenticate_account_owner(headers, state)
+async fn authenticate_owner(
+    headers: &HeaderMap,
+    method: &Method,
+    uri: &Uri,
+    state: &AppState,
+) -> Result<String, ApiError> {
+    authenticate_account_owner(headers, method, uri, state)
         .await
         .map_err(|err| match err {
             OwnerAuthError::Unauthenticated(e) => e,
@@ -70,10 +79,12 @@ pub struct SetHostingResponse {
 
 pub async fn set_did_web_hosting_handler(
     State(state): State<AppState>,
+    method: Method,
+    uri: Uri,
     headers: HeaderMap,
     Json(payload): Json<SetHostingRequest>,
 ) -> Result<Json<SetHostingResponse>, ApiError> {
-    let did = authenticate_owner(&headers, &state).await?;
+    let did = authenticate_owner(&headers, &method, &uri, &state).await?;
     require_did_web(&did)?;
 
     // Enabling requires something to serve: a stored DID document must already exist (populated by
@@ -111,10 +122,12 @@ pub struct UpdateDocumentResponse {}
 
 pub async fn update_did_web_document_handler(
     State(state): State<AppState>,
+    method: Method,
+    uri: Uri,
     headers: HeaderMap,
     Json(payload): Json<UpdateDocumentRequest>,
 ) -> Result<Json<UpdateDocumentResponse>, ApiError> {
-    let did = authenticate_owner(&headers, &state).await?;
+    let did = authenticate_owner(&headers, &method, &uri, &state).await?;
     require_did_web(&did)?;
 
     // Only edit the document Custos actually serves: hosting must be enabled. This keeps the stored
@@ -177,6 +190,7 @@ mod tests {
 
     use crate::app::{app, test_state, AppState};
     use crate::auth::token::generate_token;
+    use crate::routes::test_utils::{cnf_bound_access_jwt, DpopProofKey};
 
     struct TestOwner {
         did: String,
@@ -398,6 +412,67 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn dpop_bound_token_as_bearer_returns_401() {
+        // A DPoP-bound access token (cnf.jkt present) presented as plain `Bearer` with no proof is
+        // the RFC 9449 binding downgrade — a captured token replayed without its key. The owner
+        // guard's OAuth arm must reject it exactly as the AuthenticatedUser extractor does.
+        let state = test_state().await;
+        let owner = seed_did_web_owner(&state, "downgrade.example.com", false).await;
+        let dpop_key = DpopProofKey::generate();
+        let token = cnf_bound_access_jwt(&state.jwt_secret, &owner.did, &dpop_key.thumbprint());
+        let db = state.db.clone();
+
+        let response = app(state)
+            .oneshot(post(
+                "/v1/did-web/hosting",
+                &token,
+                serde_json::json!({ "enabled": true }),
+            ))
+            .await
+            .unwrap();
+
+        assert_eq!(
+            response.status(),
+            StatusCode::UNAUTHORIZED,
+            "a cnf.jkt-bound token presented as plain Bearer must be rejected on owner surfaces"
+        );
+        assert!(hosting_col(&db, &owner.did).await.is_none());
+    }
+
+    #[tokio::test]
+    async fn valid_dpop_bound_request_succeeds() {
+        // The positive counterpart: the same bound token under the DPoP scheme with a valid proof
+        // whose htm/htu match this request is accepted — proving the handlers thread the request
+        // method/URI into proof validation correctly.
+        let state = test_state().await;
+        let owner = seed_did_web_owner(&state, "dpopok.example.com", false).await;
+        let dpop_key = DpopProofKey::generate();
+        let token = cnf_bound_access_jwt(&state.jwt_secret, &owner.did, &dpop_key.thumbprint());
+        let htu = format!("{}/v1/did-web/hosting", state.config.public_url);
+        let proof = dpop_key.proof("POST", &htu, &token);
+        let db = state.db.clone();
+
+        let response = app(state)
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/v1/did-web/hosting")
+                    .header("Authorization", format!("DPoP {token}"))
+                    .header("DPoP", proof)
+                    .header("Content-Type", "application/json")
+                    .body(Body::from(
+                        serde_json::json!({ "enabled": true }).to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        assert!(hosting_col(&db, &owner.did).await.is_some());
     }
 
     #[tokio::test]

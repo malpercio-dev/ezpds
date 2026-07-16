@@ -4,7 +4,7 @@
 // headers and query the database. Pure helpers it builds on live in `auth/`.
 
 use axum::{
-    http::{HeaderMap, StatusCode},
+    http::{HeaderMap, Method, StatusCode, Uri},
     response::{IntoResponse, Response},
 };
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
@@ -592,27 +592,31 @@ pub enum OwnerAuthError {
 /// token first (`sessions` table — what Obsign holds after the create flow), then a full-access
 /// OAuth/XRPC access token. The same dual-credential posture as `transfer/complete`. Returns the
 /// caller's DID.
+///
+/// The access-token arm routes through `auth::extractors::authenticate_access` — the single
+/// binding-enforcing seam — so a DPoP-bound token (`cnf.jkt` present) presented as plain `Bearer`
+/// with no proof is rejected here exactly as on the extractor and the repo-write handlers
+/// (RFC 9449 §7.1), never silently downgraded. That is why the request `method` and `uri` are
+/// threaded in: a DPoP proof's `htm`/`htu` bind it to this specific request.
 pub async fn authenticate_account_owner(
     headers: &HeaderMap,
+    method: &Method,
+    uri: &Uri,
     state: &AppState,
 ) -> Result<String, OwnerAuthError> {
     if let Ok(session) = require_session(headers, &state.db).await {
         return Ok(session.did);
     }
 
-    let token =
-        crate::auth::extract_bearer_token(headers).map_err(OwnerAuthError::Unauthenticated)?;
-    let claims = crate::auth::jwt::verify_access_token(token, state)
+    let user = crate::auth::extractors::authenticate_access(headers, method, uri, state)
         .map_err(OwnerAuthError::Unauthenticated)?;
-    if claims.registration_id.is_some() {
+    if user.registration_id.is_some() {
         return Err(OwnerAuthError::AgentDerived);
     }
-    let scope =
-        crate::auth::jwt::parse_scope(&claims.scope).map_err(OwnerAuthError::Unauthenticated)?;
-    if scope != crate::auth::jwt::AuthScope::Access {
+    if user.scope != crate::auth::jwt::AuthScope::Access {
         return Err(OwnerAuthError::NotFullAccess);
     }
-    Ok(claims.sub)
+    Ok(user.did)
 }
 
 #[cfg(test)]

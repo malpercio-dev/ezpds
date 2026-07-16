@@ -15,7 +15,7 @@
 // endpoint is not an existence oracle for other accounts' registration ids.
 
 use axum::extract::{Path, Query, State};
-use axum::http::HeaderMap;
+use axum::http::{HeaderMap, Method, Uri};
 use axum::Json;
 use common::{ApiError, ErrorCode};
 use serde::{Deserialize, Serialize};
@@ -105,8 +105,13 @@ pub struct AuditQuery {
 /// The credential logic is `auth::guards::authenticate_account_owner`, shared with the claim
 /// ceremony's confirm gate (`agent_claim.rs` — routes may not import one another); this wrapper
 /// maps its neutral rejection into this surface's XRPC vocabulary.
-async fn authenticate_owner(headers: &HeaderMap, state: &AppState) -> Result<String, ApiError> {
-    authenticate_account_owner(headers, state)
+async fn authenticate_owner(
+    headers: &HeaderMap,
+    method: &Method,
+    uri: &Uri,
+    state: &AppState,
+) -> Result<String, ApiError> {
+    authenticate_account_owner(headers, method, uri, state)
         .await
         .map_err(|err| match err {
             OwnerAuthError::Unauthenticated(e) => e,
@@ -151,9 +156,11 @@ fn rfc3339(sqlite: &str) -> String {
 
 pub async fn list_agents(
     State(state): State<AppState>,
+    method: Method,
+    uri: Uri,
     headers: HeaderMap,
 ) -> Result<Json<ListAgentsResponse>, ApiError> {
-    let did = authenticate_owner(&headers, &state).await?;
+    let did = authenticate_owner(&headers, &method, &uri, &state).await?;
     let rows = list_agent_identities_for_did(&state.db, &did).await?;
     let agents = rows
         .into_iter()
@@ -177,9 +184,11 @@ pub async fn list_agents(
 pub async fn revoke_agent(
     State(state): State<AppState>,
     Path(registration_id): Path<String>,
+    method: Method,
+    uri: Uri,
     headers: HeaderMap,
 ) -> Result<Json<RevokeAgentResponse>, ApiError> {
-    let did = authenticate_owner(&headers, &state).await?;
+    let did = authenticate_owner(&headers, &method, &uri, &state).await?;
     owned_identity(&state, &registration_id, &did).await?;
 
     // The status flip and its audit row commit atomically; the `status != 'revoked'` guard in
@@ -217,9 +226,11 @@ pub async fn agent_audit_log(
     State(state): State<AppState>,
     Path(registration_id): Path<String>,
     Query(query): Query<AuditQuery>,
+    method: Method,
+    uri: Uri,
     headers: HeaderMap,
 ) -> Result<Json<AuditListResponse>, ApiError> {
-    let did = authenticate_owner(&headers, &state).await?;
+    let did = authenticate_owner(&headers, &method, &uri, &state).await?;
     owned_identity(&state, &registration_id, &did).await?;
 
     let limit = query
@@ -295,10 +306,12 @@ pub struct ClaimPreviewResponse {
 /// budget: it validates a guessable 6-digit code, so it is the same guessing surface.
 pub async fn claim_preview(
     State(state): State<AppState>,
+    method: Method,
+    uri: Uri,
     headers: HeaderMap,
     Json(request): Json<ClaimPreviewRequest>,
 ) -> Result<Json<ClaimPreviewResponse>, ApiError> {
-    let did = authenticate_owner(&headers, &state).await?;
+    let did = authenticate_owner(&headers, &method, &uri, &state).await?;
     let not_found = || ApiError::new(ErrorCode::NotFound, "unknown or expired code");
 
     let user_code = request

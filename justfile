@@ -130,7 +130,7 @@ ticket-ref-check:
 # Freeze the access-token binding seam: every access-token verification must go through
 # auth::extractors::authenticate_access (the RFC 9449 scheme<->cnf.jkt enforcement). A route
 # or guard calling auth::jwt::verify_access_token directly skips it — the MM-386 downgrade.
-# Fails on any NEW direct call; guards.rs is baselined as the known-live MM-386 offender.
+# Fails on any direct call outside the blessed seam (or a test).
 auth-seam-check:
     scripts/auth-seam-check.sh
 
