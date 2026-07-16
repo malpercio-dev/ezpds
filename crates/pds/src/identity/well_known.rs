@@ -9,6 +9,8 @@
 use std::future::Future;
 use std::pin::Pin;
 
+use super::did::is_valid_did;
+
 /// Error returned by a [`WellKnownResolver`] operation.
 #[derive(Debug, thiserror::Error)]
 #[error("HTTP well-known error: {0}")]
@@ -78,8 +80,45 @@ impl WellKnownResolver for HttpWellKnownResolver {
                     ));
                 }
             }
-            let text = String::from_utf8(body).map_err(|e| WellKnownError(e.to_string()))?;
-            Ok(Some(text.trim().to_string()))
+            Ok(Some(parse_well_known_body(body)?))
         })
+    }
+}
+
+fn parse_well_known_body(body: Vec<u8>) -> Result<String, WellKnownError> {
+    let text = String::from_utf8(body).map_err(|e| WellKnownError(e.to_string()))?;
+    let did = text.trim();
+    if !is_valid_did(did) {
+        return Err(WellKnownError(
+            "well-known response is not a syntactically valid DID".to_string(),
+        ));
+    }
+    Ok(did.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn rejects_body_that_is_not_a_valid_did() {
+        let error = parse_well_known_body(b"internal service response".to_vec()).unwrap_err();
+        assert!(error.to_string().contains("not a syntactically valid DID"));
+    }
+
+    #[test]
+    fn accepts_trimmed_valid_did() {
+        assert_eq!(
+            parse_well_known_body(b"\n did:plc:abc123 \r\n".to_vec()).unwrap(),
+            "did:plc:abc123"
+        );
+    }
+
+    #[tokio::test]
+    async fn hardened_client_rejects_private_ip_target() {
+        let client = crate::identity::proxy::build_hardened_client(false).unwrap();
+        let resolver = HttpWellKnownResolver::new(client);
+
+        resolver.resolve("127.0.0.1").await.unwrap_err();
     }
 }

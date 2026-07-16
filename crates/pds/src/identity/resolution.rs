@@ -25,6 +25,9 @@ pub async fn resolve_handle_to_did(
     state: &AppState,
     handle: &str,
 ) -> Result<Option<String>, ApiError> {
+    super::handle::validate_handle_structure(handle)
+        .map_err(|message| ApiError::new(ErrorCode::InvalidHandle, message))?;
+
     let row: Option<(String,)> = sqlx::query_as("SELECT did FROM handles WHERE handle = ?")
         .bind(handle)
         .fetch_optional(&state.db)
