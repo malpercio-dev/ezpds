@@ -3,7 +3,7 @@
 // Both wallet source-login paths — the claim flow (`claim::authenticate_source_pds`) and the
 // outbound migration (`migration_orchestrator::authenticate_migration_source`) — open a full
 // session against the account's *current* PDS with a password `createSession` and wrap it in a
-// Bearer `OAuthClient` (ADR-0021/MM-289/MM-302). A spec-strict PDS (bsky.social) gates the
+// Bearer `OAuthClient` (ADR-0021). A spec-strict PDS (bsky.social) gates the
 // operations that follow — PLC/identity ops for the claim, minting the source's
 // `com.atproto.server.createAccount` service-auth token for the migration — behind a full session;
 // the atproto OAuth ceiling for a third-party client is `transition:generic`, which those

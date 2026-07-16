@@ -34,7 +34,7 @@ pub struct RequestEmailUpdateResponse {
 pub async fn request_email_update(
     user: AuthenticatedUser,
     State(state): State<AppState>,
-    // No lexicon input; reject a spurious body with 400 like the reference PDS (MM-291).
+    // No lexicon input; reject a spurious body with 400 like the reference PDS.
     _: NoInputBody,
 ) -> Result<Json<RequestEmailUpdateResponse>, ApiError> {
     if user.scope != AuthScope::Access {
@@ -165,7 +165,7 @@ mod tests {
         assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
     }
 
-    /// No lexicon input: a spurious body is rejected with 400 (reference-PDS parity, MM-291) and
+    /// No lexicon input: a spurious body is rejected with 400 (reference-PDS parity) and
     /// no token is minted.
     #[tokio::test]
     async fn non_empty_body_returns_400() {

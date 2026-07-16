@@ -389,11 +389,11 @@ async fn http_golden_path_suite() {
     })
     .await;
 
-    // 9b. No-input strictness parity (MM-291): a no-input XRPC procedure rejects a spurious body
+    // 9b. No-input strictness parity: a no-input XRPC procedure rejects a spurious body
     //     with 400 InvalidRequest, matching the reference PDS. The wallet develops against Custos,
     //     so this is where Custos's strictness backstops the wallet. Uses `activateAccount` (the
     //     account is still active here, so an empty-body call would be a 200 no-op) and
-    //     `requestPlcOperationSignature` (the exact route MM-291 flagged) as representatives, and
+    //     `requestPlcOperationSignature` as representatives, and
     //     confirms the same call with no body still succeeds.
     step("no-input procedures reject a body", || async {
         for path in [

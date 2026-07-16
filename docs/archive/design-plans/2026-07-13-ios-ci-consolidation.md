@@ -1,6 +1,6 @@
 # iOS CI Lane Consolidation
 
-Status: **planned** — captured from the 2026-07-13 tooling review.
+Status: **landed** — the reusable TestFlight workflow + composite setup action shipped in #236.
 Tracked in Linear: [MM-348](https://linear.app/malpercio/issue/MM-348).
 Related: [MM-347](https://linear.app/malpercio/issue/MM-347) (justfile restructure,
 which the ios-* recipe dedup overlaps).

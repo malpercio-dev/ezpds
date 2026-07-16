@@ -4,7 +4,7 @@
 // `input`. The reference PDS (via `@atproto/xrpc-server`'s `validateInput`) rejects any request
 // carrying a body on a no-input procedure with a 400 `InvalidRequest` — "A request body was
 // provided when none was expected". Custos historically accepted spurious bodies on most of these
-// routes, and that leniency concealed a wallet interop bug (MM-291): the wallet sent empty `{}`
+// routes, and that leniency concealed a wallet interop bug: the wallet sent empty `{}`
 // payloads to no-input procedures that bsky.social rejected but Custos silently accepted. Because
 // the wallet develops against Custos, Custos's leniency is the wallet's blind spot — matching the
 // reference's strictness turns Custos into test coverage for the wallet.
@@ -104,7 +104,7 @@ mod tests {
 
     #[tokio::test]
     async fn empty_json_object_is_rejected() {
-        // The exact MM-291 shape: the wallet's spurious empty `{}`.
+        // The exact shape from the wallet interop bug: the spurious empty `{}`.
         let err = extract(Body::from("{}"))
             .await
             .expect_err("an empty JSON object is still a body");

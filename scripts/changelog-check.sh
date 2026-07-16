@@ -50,6 +50,8 @@ shipped_files="$(printf '%s\n' "$changed_files" | awk '
   /^crates\/[^\/]+\/src\// || /^crates\/pds\/assets\// { print; next }
   /^apps\/[^\/]+\/src\// || /^apps\/[^\/]+\/src-tauri\/src\// { print; next }
   /^apps\/[^\/]+\/static\// || /^apps\/[^\/]+\/tauri\.conf\.json$/ { print; next }
+  /^tools\/mcp\/src\// { print; next }
+  /^tools\/mcp-sidecar\/src\// || /^tools\/mcp-sidecar\/Dockerfile$/ || /^tools\/mcp-sidecar\/railway\.toml$/ { print; next }
 ')"
 
 # A release roll-up (`just set-version`) legitimately consumes every fragment while it bumps

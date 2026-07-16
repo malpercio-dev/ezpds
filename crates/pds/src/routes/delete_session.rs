@@ -29,7 +29,7 @@ use crate::no_input::NoInputBody;
 pub async fn delete_session(
     State(state): State<AppState>,
     headers: HeaderMap,
-    // No lexicon input; reject a spurious body with 400 like the reference PDS (MM-291).
+    // No lexicon input; reject a spurious body with 400 like the reference PDS.
     _: NoInputBody,
 ) -> Result<StatusCode, ApiError> {
     // --- Extract and verify the refresh JWT (expiry allowed) ---
@@ -188,8 +188,8 @@ mod tests {
         assert_eq!(response.status(), StatusCode::OK);
     }
 
-    /// The lexicon defines no input; a spurious body is rejected with 400 (reference-PDS parity,
-    /// MM-291) — the reference validates input before auth, so this holds regardless of the token.
+    /// The lexicon defines no input; a spurious body is rejected with 400 (reference-PDS parity).
+    /// The reference validates input before auth, so this holds regardless of the token.
     #[tokio::test]
     async fn non_empty_body_returns_400() {
         let state = test_state().await;

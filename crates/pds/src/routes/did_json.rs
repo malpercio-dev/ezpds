@@ -5,7 +5,7 @@
 // Returns: 200 application/did+json with the stored DID document, or 404 if the host is not an
 //          opted-in Custos-hosted did:web account
 //
-// This is the serving half of Custos-managed did:web hosting (MM-279): the operator (and, later,
+// This is the serving half of Custos-managed did:web hosting: the operator (and, later,
 // any user-owned domain) can route `https://{host}/.well-known/did.json` here so the DID document
 // is served by Custos instead of a standalone web server. Host-keyed exactly like
 // `atproto_did.rs`'s `.well-known/atproto-did`; the opt-in gate lives in

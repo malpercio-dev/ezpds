@@ -93,7 +93,7 @@ function startMockPlc() {
 
 /** TLS-terminating loopback proxy in front of a plain-http upstream (the pds). */
 function startTlsProxy(tls, upstreamPort) {
-  return new Promise((resolve) => {
+  return new Promise((resolve, reject) => {
     const server = https.createServer(tls, (req, res) => {
       const upstream = http.request(
         { host: '127.0.0.1', port: upstreamPort, path: req.url, method: req.method, headers: req.headers },
@@ -107,6 +107,18 @@ function startTlsProxy(tls, upstreamPort) {
         res.end(`proxy error: ${err.message}`);
       });
       req.pipe(upstream);
+    });
+    server.on('error', (err) => {
+      if (err.code === 'EADDRINUSE') {
+        reject(
+          new Error(
+            `harness TLS port ${TLS_PORT} is already in use — stop the process holding it, ` +
+              `or set EZPDS_HARNESS_PDS_PORT to a free port.`
+          )
+        );
+      } else {
+        reject(err);
+      }
     });
     server.listen(TLS_PORT, '127.0.0.1', () => resolve({ close: () => server.close() }));
   });

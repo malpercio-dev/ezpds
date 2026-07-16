@@ -12,7 +12,7 @@ deployed as a single static site with global search:
 This is the *published*, audience-facing documentation. The repository's internal
 `docs/` tree (specs, ADRs, design plans) is the raw material these pages are
 written from and is deliberately **not** published here. Design plan:
-[`docs/design-plans/2026-07-14-documentation-sites.md`](../../docs/design-plans/2026-07-14-documentation-sites.md).
+[`docs/archive/design-plans/2026-07-14-documentation-sites.md`](../../docs/archive/design-plans/2026-07-14-documentation-sites.md).
 
 ## Two registers, not cross-applied
 

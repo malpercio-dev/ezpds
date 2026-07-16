@@ -1,6 +1,6 @@
 # Comment Hygiene Audit
 
-Status: **planned** — captured from the 2026-07-13 codebase review.
+Status: **landed** — the comment-hygiene rewrites shipped across #227/#237/#238/#240/#223/#224 (2026-07-12..13).
 Tracked in Linear: [MM-337](https://linear.app/malpercio/issue/MM-337) (ticket/AC/Phase refs),
 [MM-338](https://linear.app/malpercio/issue/MM-338) (temporal narration),
 [MM-339](https://linear.app/malpercio/issue/MM-339) (stale comments),
