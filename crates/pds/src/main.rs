@@ -29,6 +29,7 @@ mod read_after_write;
 mod record_write;
 mod repo_rev;
 mod request_host;
+mod rewrap;
 mod routes;
 mod session_issuer;
 mod state;
@@ -65,6 +66,20 @@ struct Cli {
     /// Path to pds.toml config file
     #[arg(long, env = "EZPDS_CONFIG")]
     config: Option<PathBuf>,
+    #[command(subcommand)]
+    command: Option<Command>,
+}
+
+#[derive(clap::Subcommand)]
+enum Command {
+    /// Re-encrypt every KEK-wrapped secret under a new master key (offline
+    /// maintenance; the server must be stopped — the DB pool is
+    /// single-connection). Reads the old and new 64-hex-char keys from the
+    /// EZPDS_REWRAP_OLD_MASTER_KEY and EZPDS_REWRAP_NEW_MASTER_KEY environment
+    /// variables (env-only, so key material never appears in process listings
+    /// or shell history). On success, set EZPDS_SIGNING_KEY_MASTER_KEY to the
+    /// new key before restarting the server.
+    RewrapMasterKey,
 }
 
 #[tokio::main]
@@ -75,33 +90,78 @@ async fn main() {
     }
 }
 
+/// Load config: if an explicit path is given via --config or EZPDS_CONFIG, error if missing.
+/// Otherwise, tolerate a missing default pds.toml and load from env only.
+fn load_config_auto(config_path: Option<PathBuf>) -> anyhow::Result<common::Config> {
+    if let Some(config_path) = config_path {
+        // Explicit config file: must exist
+        common::load_config(&config_path)
+            .with_context(|| format!("failed to load config from {}", config_path.display()))
+    } else {
+        // Default pds.toml: tolerate absence, load from env only
+        let default_path = PathBuf::from("pds.toml");
+        match common::load_config(&default_path) {
+            Ok(cfg) => Ok(cfg),
+            Err(common::ConfigError::Io { .. }) => {
+                // File not found: load from env only
+                let env = common::collect_ezpds_env()
+                    .context("failed to collect environment variables")?;
+                common::load_config_from_env_only(&env)
+                    .context("failed to load config from environment variables")
+            }
+            Err(e) => Err(e).context("failed to load config from pds.toml"),
+        }
+    }
+}
+
+/// Read and validate a 64-hex-char master key from an environment variable.
+fn rewrap_key_from_env(var: &'static str) -> anyhow::Result<zeroize::Zeroizing<[u8; 32]>> {
+    let value = std::env::var(var)
+        .map_err(|_| anyhow::anyhow!("{var} must be set (64 hex characters, 32 bytes)"))?;
+    Ok(zeroize::Zeroizing::new(common::parse_hex_32(var, &value)?))
+}
+
+/// The `rewrap-master-key` subcommand: open the DB named by the ordinary
+/// config (env/pds.toml), apply pending migrations so every wrapped table
+/// exists, and re-encrypt all KEK-wrapped secrets old→new in one transaction.
+async fn run_rewrap(config_path: Option<PathBuf>) -> anyhow::Result<()> {
+    let old_key = rewrap_key_from_env("EZPDS_REWRAP_OLD_MASTER_KEY")?;
+    let new_key = rewrap_key_from_env("EZPDS_REWRAP_NEW_MASTER_KEY")?;
+
+    let config = load_config_auto(config_path)?;
+    let db_url = to_sqlite_url(&config.database_url);
+    let pool = db::open_pool(&db_url)
+        .await
+        .with_context(|| format!("failed to open database at {}", config.database_url))?;
+    db::run_migrations(&pool)
+        .await
+        .with_context(|| "failed to run database migrations")?;
+
+    let report = rewrap::rewrap_master_key(&pool, &old_key, &new_key).await?;
+
+    println!(
+        "master-key re-wrap complete (KEK generation {}):",
+        report.kek_generation
+    );
+    for (table, count) in &report.families {
+        println!("  {table}: {count} row(s) re-encrypted");
+    }
+    println!("  total: {} row(s)", report.total());
+    println!("next: set EZPDS_SIGNING_KEY_MASTER_KEY to the new key, then start the server");
+    Ok(())
+}
+
 async fn run() -> anyhow::Result<()> {
     // Captured before any startup work (config load, migrations, key setup) so the health
     // endpoint's uptime reflects process start, not listen start.
     let started_at = std::time::Instant::now();
     let cli = Cli::parse();
 
-    // Load config: if an explicit path is given via --config or EZPDS_CONFIG, error if missing.
-    // Otherwise, tolerate a missing default pds.toml and load from env only.
-    let mut config = if let Some(config_path) = cli.config {
-        // Explicit config file: must exist
-        common::load_config(&config_path)
-            .with_context(|| format!("failed to load config from {}", config_path.display()))?
-    } else {
-        // Default pds.toml: tolerate absence, load from env only
-        let default_path = PathBuf::from("pds.toml");
-        match common::load_config(&default_path) {
-            Ok(cfg) => cfg,
-            Err(common::ConfigError::Io { .. }) => {
-                // File not found: load from env only
-                let env = common::collect_ezpds_env()
-                    .context("failed to collect environment variables")?;
-                common::load_config_from_env_only(&env)
-                    .context("failed to load config from environment variables")?
-            }
-            Err(e) => return Err(e).context("failed to load config from pds.toml"),
-        }
-    };
+    if let Some(Command::RewrapMasterKey) = cli.command {
+        return run_rewrap(cli.config).await;
+    }
+
+    let mut config = load_config_auto(cli.config)?;
 
     // Initialize tracing after config is loaded so telemetry settings can be applied.
     // Any config parse error surfaces via eprintln (the error propagation above); tracing

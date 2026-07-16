@@ -1047,7 +1047,12 @@ pub enum ConfigError {
 
 /// Parse a 64-character hex string into a 32-byte array.
 /// Returns a human-readable error string on failure.
-fn parse_hex_32(var_name: &str, value: &str) -> Result<[u8; 32], ConfigError> {
+///
+/// Public because it is the single validation path for every 32-byte key the
+/// system accepts from an environment variable — `EZPDS_SIGNING_KEY_MASTER_KEY`
+/// here, and the old/new key pair read by the pds `rewrap-master-key`
+/// maintenance subcommand. `var_name` is only used in error messages.
+pub fn parse_hex_32(var_name: &str, value: &str) -> Result<[u8; 32], ConfigError> {
     if value.len() != 64 {
         return Err(ConfigError::Invalid(format!(
             "{var_name} must be exactly 64 hex characters (32 bytes), got {} characters",
