@@ -300,6 +300,13 @@ passwordless Phase 1 should not ship before them.
   hardcoded in `split_secret`'s signature and every holder story. Social-recovery-style
   n>3 (friends as holders) is attractive later; the share envelope's `set_id`/`index`
   design should not preclude it (1 byte of index allows 255 shares — fine).
+- **did:web identities.** A did:web account has no PLC `rotationKeys`; its control model
+  is domain/hosting control, so the recovery-rotation-key design doesn't map. The re-key
+  migration (MM-411) skips did:web; whether share-based recovery has a did:web analogue
+  (e.g. an escrowed verification key in the served document) is unexplored.
+- **Version-skew transition.** The server deploys ahead of the TestFlight wallet fleet,
+  so `/v1/dids` runs dual-mode (legacy server-side generation for old-shaped requests)
+  until adoption allows removing the legacy path — captured in MM-407.
 - **Seed-derived vs independent recovery key for rotation ops.** Deriving via HKDF makes
   reconstruction verifiable against the DID doc with no extra stored state — chosen
   here. The cost: the seed *is* the key; share-set rotation is therefore also key
