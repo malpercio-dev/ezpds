@@ -80,21 +80,33 @@
   });
   let holdFill = $derived(hold.state.progress);
 
-  // A separate hold gesture for the local-only "forget" confirmation, so its own progress
-  // and canStart guard stay independent of the delete-and-tombstone hold above.
+  // A separate hold gesture for the "forget" confirmation, so its own progress and canStart
+  // guard stay independent of the delete-and-tombstone hold above.
   const forgetHold = useHoldGesture({
     durationMs: HOLD_MS,
     oncomplete: () => {
       forgetHold.state.progress = 1;
-      forgetLocally();
+      confirmForget();
     },
     canStart: () => phase === 'forget_confirm',
   });
   let forgetHoldFill = $derived(forgetHold.state.progress);
 
-  /** Enter the local-only escape hatch from any stuck state. */
+  // Advanced escape-hatch options, revealed behind a disclosure. `alsoTombstone` upgrades the
+  // local-only wipe into a full network retirement (sign + publish a did:plc tombstone) for an
+  // advanced user who is certain they want to torch the identity everywhere, not just here.
+  let showAdvanced = $state(false);
+  let alsoTombstone = $state(false);
+
+  // The message shown during the `working` step — set by each path so it tells the literal truth
+  // (a local-only forget must not claim it is "deleting your account").
+  let workingMessage = $state('Removing identity…');
+
+  /** Enter the escape hatch from any stuck state, resetting its advanced options. */
   function startForget() {
     error = null;
+    showAdvanced = false;
+    alsoTombstone = false;
     phase = 'forget_confirm';
   }
 
@@ -170,6 +182,7 @@
       return; // gate declined — nothing sent.
     }
 
+    workingMessage = 'Deleting your account and retiring the identity…';
     phase = 'working';
     try {
       const outcome: RemovalOutcome = await confirmIdentityRemoval(did, password, code.trim());
@@ -197,6 +210,7 @@
     } catch {
       return;
     }
+    workingMessage = 'Retiring the identity on the network…';
     phase = 'working';
     try {
       const outcome: RemovalOutcome = await tombstoneIdentity(did);
@@ -209,26 +223,44 @@
   }
 
   /**
-   * Escape hatch: forget the identity from this device only, no network step. For an
-   * account that no longer exists on its PDS (deleted elsewhere / migrated away), the
-   * server-side delete can never succeed — the PDS answers an absent account with the same
-   * opaque 401 as a wrong password, so it can't be auto-treated as done. This wipes local
-   * material without deleting a server account or retiring the DID. Biometric-gated.
+   * Escape hatch: remove an identity whose PDS account no longer exists (deleted elsewhere /
+   * migrated away), where the server-side delete can never succeed — the PDS answers an absent
+   * account with the same opaque 401 as a wrong password, so it can't be auto-treated as done.
+   *
+   * Two variants, chosen by the advanced `alsoTombstone` toggle:
+   * - default: wipe local material only, no network step (`forgetIdentityLocally`).
+   * - advanced: also sign + publish a did:plc tombstone to retire the identity network-wide
+   *   (`tombstoneIdentity`, which tombstones then wipes; idempotent if already tombstoned, and
+   *   it fails cleanly if this device no longer holds a rotation key — e.g. after migrating away).
+   *
+   * Biometric-gated either way.
    */
-  async function forgetLocally() {
+  async function confirmForget() {
     error = null;
     try {
-      await authenticateBiometric('Remove this identity from this device');
+      await authenticateBiometric(
+        alsoTombstone
+          ? 'Retire this identity on the network and remove it'
+          : 'Remove this identity from this device',
+      );
     } catch {
       forgetHold.state.progress = 0;
       return; // gate declined — nothing wiped.
     }
+    workingMessage = alsoTombstone
+      ? 'Retiring the identity on the network…'
+      : 'Removing this identity from this device…';
     phase = 'working';
     try {
-      const wasLast = await forgetIdentityLocally(did);
-      oncomplete(wasLast);
+      if (alsoTombstone) {
+        const outcome: RemovalOutcome = await tombstoneIdentity(did);
+        oncomplete(outcome.wasLastIdentity);
+      } else {
+        const wasLast = await forgetIdentityLocally(did);
+        oncomplete(wasLast);
+      }
     } catch (raw: unknown) {
-      console.error('forgetIdentityLocally failed:', raw);
+      console.error('confirmForget failed:', raw);
       forgetHold.state.progress = 0;
       error = messageFor(raw);
       phase = 'forget_confirm';
@@ -327,7 +359,7 @@
     {:else if phase === 'working'}
       <div class="loading">
         <Spinner size={32} label="Removing identity" />
-        <p class="loading-text">Deleting your account and retiring the identity…</p>
+        <p class="loading-text">{workingMessage}</p>
       </div>
     {:else if phase === 'tombstone_retry'}
       <div class="hero">
@@ -339,7 +371,9 @@
       </div>
     {:else if phase === 'forget_confirm'}
       <div class="hero">
-        <h1 class="hero-title">Remove from this device only</h1>
+        <h1 class="hero-title">
+          {alsoTombstone ? 'Retire and remove this identity' : 'Remove from this device only'}
+        </h1>
         <p class="hero-sub">
           Use this if this identity's account no longer exists on its server — for example it was
           already deleted, or you migrated it elsewhere.
@@ -347,12 +381,43 @@
       </div>
       <ul class="consequences">
         <li><strong>Erases this identity's keys</strong> from this device.</li>
-        <li><strong>Does not delete a server account</strong> or retire the identity on the network.</li>
+        {#if alsoTombstone}
+          <li>
+            <strong>Retires the identity on the network</strong> by tombstoning its DID — it can
+            never be reactivated or migrated.
+          </li>
+        {:else}
+          <li>
+            <strong>Does not delete a server account</strong> or retire the identity on the network.
+          </li>
+        {/if}
       </ul>
       <p class="note danger-note">
-        If this identity is still active anywhere, removing its keys here may permanently end your
-        ability to control it. This can't be undone.
+        {#if alsoTombstone}
+          Tombstoning is permanent and network-wide. Only continue if you are certain you want to
+          destroy this identity everywhere — it cannot be undone.
+        {:else}
+          If this identity is still active anywhere, removing its keys here may permanently end your
+          ability to control it. This can't be undone.
+        {/if}
       </p>
+
+      <button class="toggle" onclick={() => { showAdvanced = !showAdvanced; }}>
+        {showAdvanced ? 'Hide advanced options' : 'Advanced options'}
+      </button>
+      {#if showAdvanced}
+        <label class="advanced-check">
+          <input type="checkbox" bind:checked={alsoTombstone} />
+          <span class="check-body">
+            <span class="check-title">Also retire this identity on the network</span>
+            <span class="check-desc">
+              Sign and publish a did:plc tombstone so the identity is permanently retired
+              everywhere, not just on this device. Requires this device to still hold one of the
+              identity's rotation keys.
+            </span>
+          </span>
+        </label>
+      {/if}
     {/if}
 
     {#if error}
@@ -402,10 +467,14 @@
         onpointercancel={forgetHold.end}
         onkeydown={forgetHold.keydown}
         onkeyup={forgetHold.keyup}
-        aria-label="Press and hold to remove this identity from this device"
+        aria-label={alsoTombstone
+          ? 'Press and hold to retire this identity on the network and remove it'
+          : 'Press and hold to remove this identity from this device'}
       >
         <span class="hold-fill" style="transform: scaleX({forgetHoldFill})"></span>
-        <span class="hold-label">Hold to remove from device</span>
+        <span class="hold-label">
+          {alsoTombstone ? 'Hold to retire & remove' : 'Hold to remove from device'}
+        </span>
       </button>
       <p class="hint">Press and hold — this can't be undone</p>
       <Button variant="secondary" onclick={() => { error = null; phase = 'warn'; }}>Back</Button>
@@ -633,5 +702,53 @@
 
   .danger-note {
     color: var(--color-critical);
+  }
+
+  /* Advanced disclosure — the "reveal the machinery" toggle, matching DIDDocumentScreen. */
+  .toggle {
+    background: var(--color-surface);
+    border: 1px solid var(--color-line);
+    border-radius: var(--radius-md);
+    padding: 10px var(--space-md);
+    font-family: var(--font-sans);
+    font-size: var(--text-label);
+    font-weight: var(--weight-medium);
+    color: var(--color-ink);
+    cursor: pointer;
+    text-align: center;
+  }
+
+  .advanced-check {
+    display: flex;
+    align-items: flex-start;
+    gap: var(--space-sm);
+    padding: var(--space-md);
+    border: 1px solid var(--color-line);
+    border-radius: var(--radius-md);
+    background: var(--color-surface-sunk);
+    cursor: pointer;
+  }
+  .advanced-check input[type='checkbox'] {
+    margin-top: 2px;
+    width: 20px;
+    height: 20px;
+    flex-shrink: 0;
+    accent-color: var(--color-critical-solid);
+    cursor: pointer;
+  }
+  .check-body {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-xs);
+  }
+  .check-title {
+    font-size: var(--text-body);
+    font-weight: var(--weight-semibold);
+    color: var(--color-ink);
+  }
+  .check-desc {
+    font-size: var(--text-label);
+    line-height: 1.5;
+    color: var(--color-ink-soft);
   }
 </style>
