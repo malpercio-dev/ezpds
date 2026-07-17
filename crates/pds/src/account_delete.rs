@@ -48,6 +48,18 @@ pub enum PurgeOutcome {
 ///   registration carry a NULL `did` but still pin the identity row via the FK
 /// * `sovereign_session_nonces` before `accounts` (each replay row is FK-owned by its DID)
 ///
+/// The two sovereign-child-agent tables (V047/V049) are scoped by *different* DID columns and so
+/// are keyed deliberately:
+///
+/// * `agent_child_provisionings` is keyed `WHERE child_did = ?`: a minted child's provisioning row
+///   FK-references `accounts(did)` on `child_did`, so deleting a child account without first
+///   removing this row is a foreign-key violation. A no-op for a non-child account (only children
+///   have a provisioning row).
+/// * `agent_child_deletions` is keyed `WHERE parent_did = ?` — never `child_did`. It is the durable
+///   child-deletion tombstone that must *survive* a child's purge to keep the parent's audit view
+///   alive, so it carries no FK on `child_did`; it is anchored to `parent_did` and reclaimed only
+///   when the *parent* is deleted. A no-op for a child (a child authors no deletions).
+///
 /// `did_documents` and `reserved_signing_keys` carry the DID with no FK to `accounts`, but are
 /// scoped by `did` so removing this account's rows is correct. `repo_seq` (the durable firehose
 /// log) is deliberately **excluded**: it is a shared, densely-sequenced log and punching per-DID
@@ -71,6 +83,8 @@ const DELETE_BY_DID: &[&str] = &[
     "DELETE FROM agent_audit_events WHERE registration_id IN (SELECT id FROM agent_identities WHERE did = ?)",
     "DELETE FROM agent_claim_attempts WHERE identity_id IN (SELECT id FROM agent_identities WHERE did = ?)",
     "DELETE FROM agent_identities WHERE did = ?",
+    "DELETE FROM agent_child_provisionings WHERE child_did = ?",
+    "DELETE FROM agent_child_deletions WHERE parent_did = ?",
     "DELETE FROM transfer_audit_events WHERE did = ?",
     "DELETE FROM transfers WHERE did = ?",
     "DELETE FROM transfer_devices WHERE did = ?",
@@ -486,6 +500,62 @@ mod tests {
             "the shared physical row must remain"
         );
         assert!(file.exists(), "the shared blob file must remain on disk");
+    }
+
+    /// Purging a sovereign child must remove its `agent_child_provisionings` row (FK-ordered ahead
+    /// of the `accounts` delete, or the constraint fails) while its `agent_child_deletions`
+    /// tombstone — keyed to the parent — survives, so the parent's deletion audit outlives the
+    /// child.
+    #[tokio::test]
+    async fn purge_child_removes_provisioning_and_keeps_parent_tombstone() {
+        let (state, _dir) = purge_state().await;
+        let parent = "did:plc:tombstoneparent";
+        let child = "did:plc:tombstonechild";
+        seed_account_with_repo(&state.db, parent).await;
+        seed_account_with_repo(&state.db, child).await;
+
+        // The child's durable provisioning row (FK to accounts on both child_did and parent_did).
+        sqlx::query(
+            "INSERT INTO agent_child_provisionings \
+             (child_did, parent_did, handle, registration_id, signed_op, scopes, \
+              identity_assertion, assertion_expires_at, genesis_car, sync_car, created_at, updated_at) \
+             VALUES (?, ?, 'child.example.com', 'reg_tomb', 'op', '[]', 'jwt', \
+                     '2099-01-01T00:00:00Z', ?, ?, datetime('now'), datetime('now'))",
+        )
+        .bind(child)
+        .bind(parent)
+        .bind(Vec::<u8>::new())
+        .bind(Vec::<u8>::new())
+        .execute(&state.db)
+        .await
+        .unwrap();
+        // The parent's deletion tombstone for this child.
+        sqlx::query(
+            "INSERT INTO agent_child_deletions \
+             (child_did, parent_did, handle, registration_id, scheduled_at, delete_after) \
+             VALUES (?, ?, 'child.example.com', 'reg_tomb', datetime('now'), '2099-01-01T00:00:00Z')",
+        )
+        .bind(child)
+        .bind(parent)
+        .execute(&state.db)
+        .await
+        .unwrap();
+
+        assert_eq!(
+            purge_account(&state, child).await.unwrap(),
+            PurgeOutcome::Deleted
+        );
+        assert_eq!(row_count(&state.db, "accounts", "did", child).await, 0);
+        assert_eq!(
+            row_count(&state.db, "agent_child_provisionings", "child_did", child).await,
+            0,
+            "the child's provisioning row must be purged (FK-ordered before the account row)"
+        );
+        assert_eq!(
+            row_count(&state.db, "agent_child_deletions", "parent_did", parent).await,
+            1,
+            "the parent's deletion tombstone must survive the child's purge"
+        );
     }
 
     #[tokio::test]

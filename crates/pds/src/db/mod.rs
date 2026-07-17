@@ -3,6 +3,7 @@ pub mod accounts;
 pub mod admin_devices;
 pub mod agent_audit;
 pub mod agent_auth;
+pub mod agent_child_deletions;
 pub mod app_passwords;
 pub mod blobs;
 pub mod blocks;
