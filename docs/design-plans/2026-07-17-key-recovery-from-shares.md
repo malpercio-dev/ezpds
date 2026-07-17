@@ -1,6 +1,15 @@
 # Key Recovery from Shamir Shares — With and Without Escrow Assistance
 
-Status: **design exploration** — not yet scheduled into a wave. Captures the
+Status: **accepted for implementation** — tracked in Linear as
+[MM-405](https://linear.app/malpercio/issue/MM-405) (epic), with children
+[MM-406](https://linear.app/malpercio/issue/MM-406) (crypto primitives),
+[MM-407](https://linear.app/malpercio/issue/MM-407) (ceremony inversion + ordering ADR),
+[MM-408](https://linear.app/malpercio/issue/MM-408) (escrow storage; absorbs MM-378),
+[MM-409](https://linear.app/malpercio/issue/MM-409) (escrow release flow),
+[MM-410](https://linear.app/malpercio/issue/MM-410) (wallet recovery ceremony),
+[MM-411](https://linear.app/malpercio/issue/MM-411) (existing-account re-key), and
+[MM-412](https://linear.app/malpercio/issue/MM-412) (docs truth-up, immediately
+actionable). MM-405 blocks MM-312 (passwordless). Captures the
 recovery-ceremony discussion of 2026-07-17 (capture-before-close). Builds on
 [ADR-0001](../architecture/decisions/0001-client-held-rotation-key-custody.md),
 [ADR-0002](../architecture/decisions/0002-wallet-authorized-account-migration.md), and the
@@ -234,6 +243,27 @@ rewrite Keychain Share 1, walk the user through saving the new Share 3 (reusing
 `ShamirBackupScreen`). Until re-key, the account's real safety net is unchanged from
 today: the device key itself. Old shares are voided by the re-key, not merely rotated —
 which is the honest framing, since they never protected anything.
+
+## Implementation seams (verified 2026-07-17)
+
+A pre-scheduling pass over the actual code confirmed the design lands on friendly seams:
+
+- **The genesis builder is the only hard-coded constraint.**
+  `build_did_plc_genesis_op[_with_external_signer]` fixes
+  `rotation_keys: vec![rotation_key, signing_key]`; a multi-key variant is needed
+  (MM-406). The server's `verify_and_validate_genesis_op` only pins `rotationKeys[0]`
+  and non-emptiness — a third key already passes validation unchanged.
+- **PLC's cap is 1–5 rotation *keys*** (not rotation operations). The proposed layout
+  spends 3 of 5 slots, deliberately leaving headroom for a second device or
+  successor-key arrangement; k-of-n growth stays inside the one recovery key.
+- **Sovereign session needs zero changes** for the recovery-key bootstrap:
+  `/v1/sessions/sovereign` already verifies against the authoritative current PLC
+  `rotationKeys`, any key qualifying.
+- **Established patterns cover the new server surface:** the OTP reuses the hashed
+  single-use 1-hour token envelope (V014/V033/V034/V036); the release pair shares one
+  per-endpoint IP limiter instance (the agent claim-pair precedent); the audit trail
+  copies `agent_audit_events` (V040, append-only); the escrow ciphertext registers as a
+  new `SecretFamily` variant so `rewrap-master-key` covers it (absorbing MM-378).
 
 ## Suggested phasing (when scheduled)
 
