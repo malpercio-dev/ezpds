@@ -36,11 +36,13 @@ pub enum SecretFamily {
     JwtSigningSecret,
     /// The persistent Iroh node Ed25519 secret key (`iroh_identity`, V022).
     IrohIdentity,
+    /// PDS-held Shamir escrow shares (`accounts.recovery_share`, V010).
+    RecoveryShares,
 }
 
 impl SecretFamily {
     /// Every KEK-wrapped column in the schema, in sweep order.
-    pub const ALL: [SecretFamily; 7] = [
+    pub const ALL: [SecretFamily; 8] = [
         SecretFamily::SigningKeys,
         SecretFamily::ReservedSigningKeys,
         SecretFamily::PendingAccounts,
@@ -48,6 +50,7 @@ impl SecretFamily {
         SecretFamily::OauthSigningKey,
         SecretFamily::JwtSigningSecret,
         SecretFamily::IrohIdentity,
+        SecretFamily::RecoveryShares,
     ];
 
     /// The owning table name, for reporting and error messages.
@@ -60,6 +63,7 @@ impl SecretFamily {
             SecretFamily::OauthSigningKey => "oauth_signing_key",
             SecretFamily::JwtSigningSecret => "jwt_signing_secret",
             SecretFamily::IrohIdentity => "iroh_identity",
+            SecretFamily::RecoveryShares => "accounts.recovery_share",
         }
     }
 
@@ -85,6 +89,9 @@ impl SecretFamily {
             }
             SecretFamily::JwtSigningSecret => "SELECT id, secret_encrypted FROM jwt_signing_secret",
             SecretFamily::IrohIdentity => "SELECT id, secret_key_encrypted FROM iroh_identity",
+            SecretFamily::RecoveryShares => {
+                "SELECT did, recovery_share FROM accounts WHERE recovery_share IS NOT NULL"
+            }
         }
     }
 
@@ -112,6 +119,7 @@ impl SecretFamily {
             SecretFamily::IrohIdentity => {
                 "UPDATE iroh_identity SET secret_key_encrypted = ? WHERE id = ?"
             }
+            SecretFamily::RecoveryShares => "UPDATE accounts SET recovery_share = ? WHERE did = ?",
         }
     }
 }

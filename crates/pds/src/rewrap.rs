@@ -4,7 +4,7 @@
 //! old master key and re-encrypt it under a new one, in one transaction.
 //!
 //! This changes no underlying key material — the same P-256 repo keys, OAuth
-//! key, JWT secret, and Iroh identity come back out; only the AES-256-GCM
+//! key, JWT secret, Iroh identity, and recovery shares come back out; only the AES-256-GCM
 //! envelope around each one is replaced. No PLC operation, no firehose event,
 //! no network effect. It exists so the operator can rotate
 //! `EZPDS_SIGNING_KEY_MASTER_KEY` (proactively, or after suspected exposure of
@@ -148,6 +148,11 @@ mod tests {
         .execute(pool)
         .await
         .unwrap();
+        sqlx::query("UPDATE accounts SET recovery_share = ? WHERE did = 'did:plc:rewraptest'")
+            .bind(enc(&pt("accounts.recovery_share"), key))
+            .execute(pool)
+            .await
+            .unwrap();
         sqlx::query(
             "INSERT INTO signing_keys \
              (id, did, key_type, public_key, private_key_encrypted, created_at) \
