@@ -9,6 +9,15 @@ summary live in
 [deploy.md → Master-Key (KEK) Backup and Disaster Recovery](../deploy.md#master-key-kek-backup-and-disaster-recovery);
 this is the full incident checklist with concrete step ordering.
 
+This is the canonical, engineering-detail version (source paths, migration
+versions). An operator-facing rewrite — same procedure, without the code
+spelunking — is published on the docs site:
+[docs.obsign.org/operator/master-key-runbook](https://docs.obsign.org/operator/master-key-runbook/)
+([source](../../sites/docs/src/content/docs/operator/master-key-runbook.md)).
+The golden rule and the quick-reference ordering below are pinned identical
+between the two copies by `just runbook-parity-check` (part of `just ci`) —
+edit both together if you change either.
+
 `EZPDS_SIGNING_KEY_MASTER_KEY` is a 32-byte AES-256-GCM key, supplied **env-only**
 (64 hex chars). Setting it in a TOML config file is deliberately rejected — a
 sentinel field in [`crates/common/src/config.rs`](../../crates/common/src/config.rs)
