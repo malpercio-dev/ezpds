@@ -54,6 +54,61 @@ control over your infrastructure, not custody over their identity — keep that
 distinction clear when you communicate an action.
 :::
 
+## Labeler watching — flagged accounts
+
+Custos can watch ATProto **labelers** (moderation services) and flag any hosted
+account they label. Flagged accounts float to the top of the console's account
+list with an explicit `⚑` indicator per label — the label value, the labeler,
+and when it was applied — and the Home screen shows a flagged-accounts notice
+for the active server. This turns the account list from a neutral roster into a
+spam/abuse triage view: if a labeler your network trusts flags one of your
+accounts, you see it on your next glance at the console.
+
+Watching is **off by default** — you choose which labelers' judgment reorders
+your console. The recommended starting point is Bluesky's moderation service:
+
+```bash
+# Environment form: comma-separated labeler DIDs, each watching every label value.
+EZPDS_LABELER_WATCHED=did:plc:ar7c4by46qjdydhdevvrndac
+```
+
+or, in `pds.toml`, with an optional per-labeler watchlist (empty or omitted
+`labels` means every label from that labeler counts):
+
+```toml
+[labeler]
+poll_interval_secs = 900 # default: 15 minutes
+
+[[labeler.watched]]
+did = "did:plc:ar7c4by46qjdydhdevvrndac" # Bluesky Moderation
+labels = ["spam", "!hide", "!warn"]      # omit to watch every label
+
+[[labeler.watched]]
+did = "did:web:some-other-labeler.example" # any labeler works, not just Bluesky's
+```
+
+How it works: a background pass polls each watched labeler's
+`com.atproto.label.queryLabels` for your hosted accounts (the labeler's query
+endpoint is resolved from its DID document), honoring label negations and
+expiry, and reconciles the flagged state the console reads. The first pass runs
+at startup, then every `poll_interval_secs`. The health readout reports the
+watcher's last completed pass, so a stale pass is visible on the Status screen.
+
+Two things worth knowing before you enable it:
+
+- **Each poll discloses your hosted-account DIDs to the watched labeler** (they
+  arrive as the query's `uriPatterns`). Hosted DIDs are already publicly
+  enumerable via `com.atproto.sync.listRepos`, but watching a labeler does
+  establish a recurring outbound relationship with it — which is why this is an
+  explicit opt-in rather than a default.
+- **A flag is the labeler's opinion, not a verdict.** Flagging changes only the
+  sort order and the indicator; it takes no action against the account. Takedown
+  and credential revocation remain your deliberate, gated decisions above.
+
+Removing a labeler from the config (or disabling watching entirely) clears its
+flags on the next pass or restart — flagged state never outlives the
+configuration that produced it.
+
 ## Accountability
 
 Moderation actions are shown with their subject, the operator device that signed
