@@ -1,7 +1,7 @@
 # Admin Companion (operator console) Mobile App
 
 Last verified: 2026-07-10
-Last updated: 2026-07-15 (added the Browser test harness section — mockIPC fake + PDS-proxy mode, MM-324)
+Last updated: 2026-07-17 (documented the MM-281 relay-status readout — `get_relay_status`/`request_crawl` IPC + the Home relay-status block)
 
 ## Purpose
 
@@ -147,11 +147,18 @@ share sheet, and server-side self-revoke (Phase 8). Wired:
   `RELAY_REJECTED` 409, unknown → 404),
   `revoke_account_credentials(pairing_id, did)` (signed account-wide credential sweep; repeat
   sweeps are idempotent 200s of zero counts, unknown DID → `RELAY_REJECTED` 404),
+  `get_relay_status(pairing_id)` (signed federation-health read from `GET /v1/admin/relay-status`:
+  whether the upstream relay is reachable/crawling us, its cursor, and the signed gap behind our
+  head — verdict-free; the ok/warn/behind thresholds live in the pure, unit-tested
+  `relay-status.ts`, not the endpoint) / `request_crawl(pairing_id)` (signed re-invite via
+  `POST /v1/admin/request-crawl`, bypassing the auto-notify rate limit; reports each relay's outcome),
   `biometric_enabled`, `set_biometric_enabled` (plus Phase 6's `get_or_create_device_key`).
   `pairing_state` is gone — superseded by `list_pairings`.
 - **Screens**: **Pair** (`src/routes/pair/` — QR/manual + required nickname, reachable while
   paired), **Home** (`src/routes/+page.svelte` — biometric-gated claim code for the *active*
-  server, tappable identity block → inline switcher, explicit-pick state when no active pairing),
+  server, tappable identity block → inline switcher, explicit-pick state when no active pairing,
+  plus a relay-status block — reachable / crawling / behind-by-N / not-seen as text + icon, never
+  color alone, polling every 15s with a biometric-gated "Request crawl" action),
   **Settings** (`src/routes/settings/` — per-server list with per-entry rename / revoke-on-server /
   forget-locally / view-devices link, global admin key display, biometric toggle, all revokes
   biometric-gated), **Devices** (`src/routes/devices/` — the loss-response screen: every

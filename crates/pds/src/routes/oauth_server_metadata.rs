@@ -21,6 +21,10 @@ use crate::app::AppState;
 /// - `scopes_supported`: the AT Protocol scopes this server recognises.
 /// - `dpop_signing_alg_values_supported`: signals that DPoP (RFC 9449) is required.
 /// - `token_endpoint_auth_methods_supported`: public clients + private_key_jwt per spec §1.2.
+/// - `token_endpoint_auth_signing_alg_values_supported`: the JWS algs accepted for a
+///   `private_key_jwt` client-assertion. AT Protocol clients sign these with ES256, and the
+///   atproto OAuth metadata validator rejects a server that advertises `private_key_jwt`
+///   without this field including `ES256` — omitting it breaks discovery for every client.
 /// - `require_pushed_authorization_requests`: PAR is mandatory per AT Protocol OAuth spec.
 /// - `agent_auth`: advertises the auth.md agent-registration discovery surface.
 #[derive(Serialize)]
@@ -35,6 +39,7 @@ struct OAuthServerMetadata {
     response_types_supported: Vec<String>,
     grant_types_supported: Vec<String>,
     token_endpoint_auth_methods_supported: Vec<String>,
+    token_endpoint_auth_signing_alg_values_supported: Vec<String>,
     revocation_endpoint_auth_methods_supported: Vec<String>,
     code_challenge_methods_supported: Vec<String>,
     dpop_signing_alg_values_supported: Vec<String>,
@@ -82,6 +87,7 @@ pub async fn oauth_server_metadata(State(state): State<AppState>) -> impl IntoRe
             "none".to_string(),
             "private_key_jwt".to_string(),
         ],
+        token_endpoint_auth_signing_alg_values_supported: vec!["ES256".to_string()],
         revocation_endpoint_auth_methods_supported: vec![
             "none".to_string(),
             "private_key_jwt".to_string(),
@@ -315,6 +321,23 @@ mod tests {
         assert!(
             methods.contains(&"private_key_jwt"),
             "must support private_key_jwt per AT Protocol OAuth spec §1.2"
+        );
+    }
+
+    #[tokio::test]
+    async fn token_endpoint_auth_signing_alg_includes_es256() {
+        // A server advertising `private_key_jwt` must also advertise the JWS algs it accepts
+        // for the client assertion; the atproto OAuth metadata validator rejects the server
+        // (e.g. tangled.org login) with "token_endpoint_auth_signing_alg_values_supported must
+        // include 'ES256'" if this field is absent or omits ES256.
+        let json = metadata_json().await;
+        assert!(
+            json["token_endpoint_auth_signing_alg_values_supported"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|v| v == "ES256"),
+            "must include ES256 when private_key_jwt is a supported token-endpoint auth method"
         );
     }
 

@@ -209,18 +209,32 @@ pub struct AccountsConfig {
     /// would panic `tokio::time::interval`).
     #[serde(default = "default_deletion_reaper_interval_secs")]
     pub deletion_reaper_interval_secs: u64,
+
+    /// Grace window, in seconds, between a parent scheduling a sovereign child agent's deletion
+    /// (`POST /agent/child/delete`) and the reaper permanently purging it. The child is
+    /// deactivated immediately (so relays stop serving its repo) but the irreversible byte-purge
+    /// waits this long, giving an undo window. Default: 86400 (24 hours). `0` means the next
+    /// reaper tick purges. Unlike `deletion_reaper_interval_secs` this is not a `tokio::time`
+    /// period, so a zero value is allowed.
+    #[serde(default = "default_child_deletion_grace_secs")]
+    pub child_deletion_grace_secs: u64,
 }
 
 impl Default for AccountsConfig {
     fn default() -> Self {
         Self {
             deletion_reaper_interval_secs: default_deletion_reaper_interval_secs(),
+            child_deletion_grace_secs: default_child_deletion_grace_secs(),
         }
     }
 }
 
 fn default_deletion_reaper_interval_secs() -> u64 {
     60 * 60 // 1 hour
+}
+
+fn default_child_deletion_grace_secs() -> u64 {
+    24 * 60 * 60 // 24 hours
 }
 
 /// Clock-skew tolerance for admin device signed-request timestamps, in seconds: a request's
@@ -1271,6 +1285,10 @@ pub(crate) fn apply_env_overrides(
     if let Some(v) = env.get("EZPDS_ACCOUNTS_DELETION_REAPER_INTERVAL_SECS") {
         raw.accounts.deletion_reaper_interval_secs =
             parse_u64("EZPDS_ACCOUNTS_DELETION_REAPER_INTERVAL_SECS", v)?;
+    }
+    if let Some(v) = env.get("EZPDS_ACCOUNTS_CHILD_DELETION_GRACE_SECS") {
+        raw.accounts.child_deletion_grace_secs =
+            parse_u64("EZPDS_ACCOUNTS_CHILD_DELETION_GRACE_SECS", v)?;
     }
     if let Some(v) = env.get("EZPDS_ADMIN_DEVICES_NONCE_SWEEP_INTERVAL_SECS") {
         raw.admin_devices.nonce_sweep_interval_secs =

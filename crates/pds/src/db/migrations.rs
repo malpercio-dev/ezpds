@@ -214,4 +214,12 @@ pub(super) static MIGRATIONS: &[Migration] = &[
         version: 48,
         sql: include_str!("migrations/V048__signing_key_status.sql"),
     },
+    Migration {
+        version: 49,
+        sql: include_str!("migrations/V049__agent_child_deletions.sql"),
+    },
+    Migration {
+        version: 50,
+        sql: include_str!("migrations/V050__recovery_escrow.sql"),
+    },
 ];

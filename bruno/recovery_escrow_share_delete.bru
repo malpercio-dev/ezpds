@@ -1,0 +1,43 @@
+meta {
+  name: Opt out of recovery-share escrow (DELETE /v1/recovery/escrow-share)
+  type: http
+  seq: 122
+}
+
+delete {
+  url: {{baseUrl}}/v1/recovery/escrow-share
+  body: none
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{sessionToken}}
+}
+
+vars:pre-request {
+  baseUrl: http://localhost:8080
+}
+
+docs {
+  # DELETE /v1/recovery/escrow-share
+
+  Opt the account out of escrow entirely: delete the PDS-held Share 2. After this, Shares 1 + 3
+  (iCloud Keychain + the user's own copy) are the only recovery path — Custos can no longer
+  assist.
+
+  Authenticate as the account owner (wallet session token or full-access OAuth/XRPC token;
+  agent-derived and app-password credentials are refused).
+
+  Idempotent: deleting when no share is escrowed is a 200 no-op. Only a real deletion appends a
+  `deleted` audit event — the repeat call adds none.
+
+  ## Response (200)
+
+  ```json
+  { "status": "deleted" }
+  ```
+
+  ## Errors
+
+  - `401` / `403` — missing/invalid credential, or an agent-derived/app-password token
+}

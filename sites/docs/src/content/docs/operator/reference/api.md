@@ -15,6 +15,7 @@ Every path registered by the server is listed here. For `/xrpc/` endpoints, use 
 | `/.well-known/oauth-authorization-server` | Custos HTTP |
 | `/.well-known/oauth-protected-resource` | Custos HTTP |
 | `/agent/child` | Custos HTTP |
+| `/agent/child/delete` | Custos HTTP |
 | `/agent/child/revoke` | Custos HTTP |
 | `/agent/event/notify` | Custos HTTP |
 | `/agent/identity` | Custos HTTP |
@@ -61,6 +62,7 @@ Every path registered by the server is listed here. For `/xrpc/` endpoints, use 
 | `/v1/handles` | Custos HTTP |
 | `/v1/handles/{handle}` | Custos HTTP |
 | `/v1/pds/keys` | Custos HTTP |
+| `/v1/recovery/escrow-share` | Custos HTTP |
 | `/v1/repo-keys/rotation` | Custos HTTP |
 | `/v1/repo-keys/rotation/complete` | Custos HTTP |
 | `/v1/repo-signing-key` | Custos HTTP |

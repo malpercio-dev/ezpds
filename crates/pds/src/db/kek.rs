@@ -36,13 +36,19 @@ pub enum SecretFamily {
     JwtSigningSecret,
     /// The persistent Iroh node Ed25519 secret key (`iroh_identity`, V022).
     IrohIdentity,
-    /// PDS-held Shamir escrow shares (`accounts.recovery_share`, V010).
+    /// PDS-held Shamir escrow shares, legacy server-generated model
+    /// (`accounts.recovery_share`, V010).
     RecoveryShares,
+    /// PDS-held Shamir Share 2 envelopes, client-generated model
+    /// (`recovery_escrow`, V050). The wrapped plaintext is the 42-byte v2
+    /// share envelope, not a 32-byte scalar — the re-wrap sweep handles both
+    /// via the generic-length `crypto::{encrypt,decrypt}_secret_bytes` pair.
+    RecoveryEscrow,
 }
 
 impl SecretFamily {
     /// Every KEK-wrapped column in the schema, in sweep order.
-    pub const ALL: [SecretFamily; 8] = [
+    pub const ALL: [SecretFamily; 9] = [
         SecretFamily::SigningKeys,
         SecretFamily::ReservedSigningKeys,
         SecretFamily::PendingAccounts,
@@ -51,6 +57,7 @@ impl SecretFamily {
         SecretFamily::JwtSigningSecret,
         SecretFamily::IrohIdentity,
         SecretFamily::RecoveryShares,
+        SecretFamily::RecoveryEscrow,
     ];
 
     /// The owning table name, for reporting and error messages.
@@ -64,6 +71,7 @@ impl SecretFamily {
             SecretFamily::JwtSigningSecret => "jwt_signing_secret",
             SecretFamily::IrohIdentity => "iroh_identity",
             SecretFamily::RecoveryShares => "accounts.recovery_share",
+            SecretFamily::RecoveryEscrow => "recovery_escrow",
         }
     }
 
@@ -92,6 +100,7 @@ impl SecretFamily {
             SecretFamily::RecoveryShares => {
                 "SELECT did, recovery_share FROM accounts WHERE recovery_share IS NOT NULL"
             }
+            SecretFamily::RecoveryEscrow => "SELECT did, share_encrypted FROM recovery_escrow",
         }
     }
 
@@ -120,12 +129,17 @@ impl SecretFamily {
                 "UPDATE iroh_identity SET secret_key_encrypted = ? WHERE id = ?"
             }
             SecretFamily::RecoveryShares => "UPDATE accounts SET recovery_share = ? WHERE did = ?",
+            SecretFamily::RecoveryEscrow => {
+                "UPDATE recovery_escrow SET share_encrypted = ? WHERE did = ?"
+            }
         }
     }
 }
 
-/// One KEK-wrapped row: its primary key and the stored ciphertext
-/// (80-char base64 per `crypto::encrypt_private_key`).
+/// One KEK-wrapped row: its primary key and the stored ciphertext — the
+/// shared `base64(nonce || ciphertext || tag)` envelope of
+/// `crypto::encrypt_secret_bytes` (80 base64 chars for the 32-byte key
+/// columns; longer for `recovery_escrow`'s 42-byte share envelopes).
 #[derive(Debug, Clone)]
 pub struct WrappedSecretRow {
     pub id: String,

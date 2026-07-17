@@ -2,7 +2,7 @@
 
 use axum::{
     http::Request,
-    routing::{delete, get, post},
+    routing::{delete, get, post, put},
     Router,
 };
 use opentelemetry::propagation::Extractor;
@@ -22,7 +22,7 @@ use crate::routes::admin_relay_status::relay_status;
 use crate::routes::admin_request_crawl::request_crawl;
 use crate::routes::admin_revoke_credentials::revoke_account_credentials;
 use crate::routes::admin_transfers::{cancel_admin_transfer, list_admin_transfers};
-use crate::routes::agent_child::{list_children, mint_child, revoke_child};
+use crate::routes::agent_child::{delete_child, list_children, mint_child, revoke_child};
 use crate::routes::agent_claim::{post_agent_claim, post_agent_claim_confirm};
 use crate::routes::agent_event::post_agent_event;
 use crate::routes::agent_identity::post_agent_identity;
@@ -85,6 +85,7 @@ use crate::routes::oauth_token::post_token;
 use crate::routes::provisioning_session::create_provisioning_session;
 use crate::routes::put_preferences::put_preferences_handler;
 use crate::routes::put_record::put_record;
+use crate::routes::recovery_escrow::{delete_escrow_share_handler, put_escrow_share};
 use crate::routes::refresh_session::refresh_session;
 use crate::routes::register_device::register_device;
 use crate::routes::repo_key_rotation::{begin_repo_key_rotation, complete_repo_key_rotation};
@@ -241,6 +242,7 @@ pub fn app(state: AppState) -> Router {
         .route("/agent/identity", post(post_agent_identity))
         .route("/agent/child", get(list_children).post(mint_child))
         .route("/agent/child/revoke", post(revoke_child))
+        .route("/agent/child/delete", post(delete_child))
         .route("/agent/identity/claim", post(post_agent_claim))
         .route(
             "/agent/identity/claim/confirm",
@@ -465,6 +467,10 @@ pub fn app(state: AppState) -> Router {
         .route(
             "/v1/did-web/document",
             post(update_did_web_document_handler),
+        )
+        .route(
+            "/v1/recovery/escrow-share",
+            put(put_escrow_share).delete(delete_escrow_share_handler),
         )
         .route("/v1/repo-keys/rotation", post(begin_repo_key_rotation))
         .route(

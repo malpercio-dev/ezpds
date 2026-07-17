@@ -18,10 +18,12 @@ use crate::app::AppState;
 use crate::auth::agent_assertion::{mint_identity_assertion, scopes_to_json};
 use crate::auth::guards::{authenticate_account_owner, OwnerAuthError};
 use crate::auth::password::hash_password;
+use crate::db::accounts::{deactivate_account, AccountStateChange};
 use crate::db::agent_auth::{
     get_child_of_parent, insert_agent_identity, list_children_of_parent, revoke_agent_identity,
     AgentIdentityStatus, InsertAgentIdentityOutcome, NewAgentIdentity, RegistrationType,
 };
+use crate::db::agent_child_deletions::upsert_child_deletion;
 use crate::db::is_unique_violation;
 use crate::db::repo_keys::{get_reserved_repo_key_by_id, insert_did_signing_key, RepoSigningKey};
 
@@ -70,6 +72,25 @@ pub struct RevokeChildResponse {
     did: String,
     status: &'static str,
 }
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DeleteChildRequest {
+    did: String,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DeleteChildResponse {
+    did: String,
+    status: &'static str,
+    /// The instant after which the scheduled-deletion reaper permanently purges the child.
+    delete_after: String,
+}
+
+/// The non-active status reported on the firehose `#account` event when a child's deletion is
+/// scheduled: the child is deactivated (so relays stop serving its repo) ahead of the purge.
+const STATUS_DEACTIVATED: &str = "deactivated";
 
 fn owner_error(error: OwnerAuthError) -> ApiError {
     match error {
@@ -617,6 +638,116 @@ pub async fn revoke_child(
     }))
 }
 
+/// POST /agent/child/delete
+///
+/// Permanently retires a sovereign child's *hosting*. Revocation (`/agent/child/revoke`) kills only
+/// the delegated capability and keeps the identity (ADR-0023 custody ladder); this goes further and
+/// schedules the account/repo/handle/blobs for permanent deletion. It reuses the deactivate +
+/// `delete_after` + reaper pipeline: the child is revoked and deactivated *now* (so relays stop
+/// serving its repo at once via an `#account` deactivated frame), a durable deletion tombstone is
+/// recorded, and the scheduled-deletion reaper permanently purges the child once the grace window
+/// (`accounts.child_deletion_grace_secs`) elapses — emitting `#account status="deleted"` and
+/// removing all local data through the same `purge_account` transaction as `deleteAccount`.
+///
+/// Delete *implies* revoke, so a parent can retire a child in one call whether or not it was
+/// already revoked, and a repeat call is idempotent (the tombstone upserts and the deactivation
+/// refreshes `delete_after`). Ownership is enforced exactly like `revoke_child`: an unknown or
+/// foreign child DID is a uniform 404, and agent-derived credentials never pass the owner guard.
+///
+/// The did:plc identity is untouched — ezpds holds no rotation key, so a full identity retirement is
+/// delete-on-PDS (here) plus a wallet-driven PLC tombstone (see `account_delete.rs`'s doctrine).
+pub async fn delete_child(
+    State(state): State<AppState>,
+    method: Method,
+    uri: Uri,
+    headers: HeaderMap,
+    Json(request): Json<DeleteChildRequest>,
+) -> Result<Json<DeleteChildResponse>, ApiError> {
+    let parent = authenticate_account_owner(&headers, &method, &uri, &state)
+        .await
+        .map_err(owner_error)?;
+    let child = get_child_of_parent(&state.db, &request.did, &parent)
+        .await?
+        .ok_or_else(|| ApiError::new(ErrorCode::NotFound, "child agent not found"))?;
+
+    // The tombstone carries the handle because the `handles` row is purged with the child.
+    let handle = crate::db::handles::get_handle_by_did(&state.db, &request.did)
+        .await?
+        .unwrap_or_default();
+    let grace = i64::try_from(state.config.accounts.child_deletion_grace_secs).unwrap_or(i64::MAX);
+    let delete_after = (chrono::Utc::now() + chrono::Duration::seconds(grace))
+        .to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
+
+    // One transaction under the sequencer lock (acquired before the transaction per
+    // `Firehose::lock_emit`): revoke the capability, deactivate + schedule the account, and record
+    // the durable tombstone together, staging the `#account` frame only on a real transition so the
+    // status change can never land without its firehose row.
+    let emit_guard = state.firehose.lock_emit().await;
+    let mut tx = state.db.begin().await.map_err(|_| {
+        ApiError::new(
+            ErrorCode::InternalError,
+            "failed to schedule child deletion",
+        )
+    })?;
+
+    revoke_agent_identity(&mut *tx, &child.id).await?;
+    let change = deactivate_account(&mut tx, &request.did, Some(&delete_after)).await?;
+    upsert_child_deletion(
+        &mut *tx,
+        &request.did,
+        &parent,
+        &handle,
+        &child.id,
+        &delete_after,
+    )
+    .await?;
+
+    let pending = match change {
+        // A child freshly transitioned active → deactivated: announce it so relays stop serving.
+        AccountStateChange::Changed => Some(
+            emit_guard
+                .stage_account(
+                    &mut tx,
+                    request.did.clone(),
+                    false,
+                    Some(STATUS_DEACTIVATED.to_string()),
+                )
+                .await
+                .map_err(|_| {
+                    ApiError::new(
+                        ErrorCode::InternalError,
+                        "failed to schedule child deletion",
+                    )
+                })?,
+        ),
+        // Already deactivated (e.g. a re-delete, or a child mid-provisioning): the reschedule
+        // refreshed `delete_after` without a status change, so no new frame is emitted.
+        AccountStateChange::Unchanged => None,
+        // The owner guard + `get_child_of_parent` already proved the child account exists.
+        AccountStateChange::NotFound => {
+            tx.rollback().await.ok();
+            return Err(ApiError::new(ErrorCode::NotFound, "child agent not found"));
+        }
+    };
+
+    tx.commit().await.map_err(|_| {
+        ApiError::new(
+            ErrorCode::InternalError,
+            "failed to schedule child deletion",
+        )
+    })?;
+    if let Some(pending) = pending {
+        pending.finish();
+    }
+
+    tracing::info!(child = %request.did, parent = %parent, %delete_after, "child deletion scheduled");
+    Ok(Json(DeleteChildResponse {
+        did: request.did,
+        status: "deletion_scheduled",
+        delete_after,
+    }))
+}
+
 #[cfg(test)]
 mod tests {
     use std::sync::Arc;
@@ -633,8 +764,10 @@ mod tests {
 
     use super::*;
     use crate::app::app;
+    use crate::firehose::FirehoseEvent;
     use crate::routes::test_utils::{
-        access_jwt, cnf_bound_access_jwt, seed_account_with_repo, test_master_key, DpopProofKey,
+        access_jwt, agent_jwt, cnf_bound_access_jwt, seed_account_with_repo, test_master_key,
+        DpopProofKey,
     };
 
     async fn state_with_plc() -> (AppState, MockServer) {
@@ -712,6 +845,44 @@ mod tests {
         )
         .unwrap();
         serde_json::from_str(&op.signed_op_json).unwrap()
+    }
+
+    /// A `state()` whose child-deletion grace window is overridden — `0` makes the next reaper run
+    /// purge, a large value keeps a scheduled child parked in its window.
+    async fn state_with_grace(grace_secs: u64) -> AppState {
+        let base = state().await;
+        let mut config = (*base.config).clone();
+        config.accounts.child_deletion_grace_secs = grace_secs;
+        AppState {
+            config: Arc::new(config),
+            ..base
+        }
+    }
+
+    /// Mint a sovereign child of `parent` and return its DID. Reserves a fresh repo key and drives
+    /// the real `POST /agent/child` path so the child has an account, repo, handle, provisioning
+    /// row, and a claimed capability — exactly what a delete must later unwind.
+    async fn mint_child_for(state: &AppState, handle: &str, token: &str) -> String {
+        let repo_key = reserve(&state.db).await;
+        let op = genesis(handle, &state.config.public_url, &repo_key.key_id.0);
+        let response = app(state.clone())
+            .oneshot(request(
+                "/agent/child",
+                Some(token),
+                serde_json::json!({"handle": handle, "plcOp": op}),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(
+            response.status(),
+            StatusCode::OK,
+            "child mint should succeed"
+        );
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let minted: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        minted["did"].as_str().unwrap().to_string()
     }
 
     #[tokio::test]
@@ -981,5 +1152,216 @@ mod tests {
             .await
             .unwrap()
             .is_some());
+    }
+
+    #[tokio::test]
+    async fn parent_deletes_child_then_reaper_purges_and_tombstone_survives() {
+        // grace = 0 → the child is due the moment it is scheduled, so one reaper pass purges it.
+        let state = state_with_grace(0).await;
+        let parent = "did:plc:parentchilddelete1111";
+        seed_account_with_repo(&state.db, parent).await;
+        let token = access_jwt(&[0x42; 32], parent);
+        let handle = "deletable-writer.example.com";
+        let child = mint_child_for(&state, handle, &token).await;
+
+        // Subscribe *after* the mint so only the delete/purge frames are observed.
+        let mut rx = state.firehose.subscribe();
+        let response = app(state.clone())
+            .oneshot(request(
+                "/agent/child/delete",
+                Some(&token),
+                serde_json::json!({"did": child}),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let scheduled: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(scheduled["status"], "deletion_scheduled");
+        assert!(scheduled["deleteAfter"].as_str().is_some());
+
+        // The capability is revoked, the account is deactivated + scheduled, and the durable
+        // tombstone is recorded — all in the one scheduling call.
+        let row = get_child_of_parent(&state.db, &child, parent)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(row.status, AgentIdentityStatus::Revoked);
+        let (deactivated, delete_after): (Option<String>, Option<String>) =
+            sqlx::query_as("SELECT deactivated_at, delete_after FROM accounts WHERE did = ?")
+                .bind(&child)
+                .fetch_one(&state.db)
+                .await
+                .unwrap();
+        assert!(deactivated.is_some(), "child must be deactivated");
+        assert!(
+            delete_after.is_some(),
+            "child must be scheduled for deletion"
+        );
+        let tombstones =
+            crate::db::agent_child_deletions::list_child_deletions_of_parent(&state.db, parent)
+                .await
+                .unwrap();
+        assert_eq!(tombstones.len(), 1);
+        assert_eq!(tombstones[0].child_did, child);
+        assert_eq!(tombstones[0].handle, handle);
+
+        // Deactivation announces the repo is no longer served, ahead of the physical purge.
+        let FirehoseEvent::Account(event) = rx.try_recv().unwrap() else {
+            panic!("expected an #account firehose event for the deactivation");
+        };
+        assert_eq!(event.did, child);
+        assert!(!event.active);
+        assert_eq!(event.status.as_deref(), Some("deactivated"));
+
+        // The reaper permanently purges the child (account/repo/handle gone) and emits #account
+        // deleted — the FK-ordered purge also drops the provisioning row without a constraint error.
+        let stats = crate::account_reaper::run_account_reaper(&state).await;
+        assert_eq!(stats.deleted, 1);
+        assert!(!crate::db::accounts::account_exists(&state.db, &child)
+            .await
+            .unwrap());
+        let provisioning: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM agent_child_provisionings WHERE child_did = ?",
+        )
+        .bind(&child)
+        .fetch_one(&state.db)
+        .await
+        .unwrap();
+        assert_eq!(
+            provisioning, 0,
+            "the child's provisioning row must be purged"
+        );
+
+        // The deletion stays auditable after the fact: the tombstone outlives the purged child.
+        let after =
+            crate::db::agent_child_deletions::list_child_deletions_of_parent(&state.db, parent)
+                .await
+                .unwrap();
+        assert_eq!(
+            after.len(),
+            1,
+            "the deletion tombstone must survive the child's purge"
+        );
+
+        let FirehoseEvent::Account(event) = rx.try_recv().unwrap() else {
+            panic!("expected an #account firehose event for the deletion");
+        };
+        assert_eq!(event.did, child);
+        assert!(!event.active);
+        assert_eq!(event.status.as_deref(), Some("deleted"));
+    }
+
+    #[tokio::test]
+    async fn foreign_account_cannot_delete_child_uniform_404() {
+        let state = state_with_grace(0).await;
+        let parent = "did:plc:parentchilddelforeign";
+        seed_account_with_repo(&state.db, parent).await;
+        let token = access_jwt(&[0x42; 32], parent);
+        let child = mint_child_for(&state, "foreign-target.example.com", &token).await;
+
+        let foreign = access_jwt(&[0x42; 32], "did:plc:someoneelse2222222");
+        let response = app(state.clone())
+            .oneshot(request(
+                "/agent/child/delete",
+                Some(&foreign),
+                serde_json::json!({"did": child}),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+
+        // The child is untouched: still active, capability intact, nothing scheduled.
+        assert!(crate::db::accounts::account_exists(&state.db, &child)
+            .await
+            .unwrap());
+        assert_eq!(
+            get_child_of_parent(&state.db, &child, parent)
+                .await
+                .unwrap()
+                .unwrap()
+                .status,
+            AgentIdentityStatus::Claimed
+        );
+    }
+
+    #[tokio::test]
+    async fn agent_derived_token_cannot_delete_child() {
+        let state = state_with_grace(0).await;
+        let parent = "did:plc:parentagentrefuse111";
+        seed_account_with_repo(&state.db, parent).await;
+        let owner = access_jwt(&[0x42; 32], parent);
+        let child = mint_child_for(&state, "agent-refuse.example.com", &owner).await;
+
+        // A child's own agent-derived token (a `registration_id` claim) is exactly the credential a
+        // revoked child would try to act with; the owner guard must refuse it so a child can never
+        // delete itself or a sibling.
+        let agent = agent_jwt(&[0x42; 32], &child, "com.atproto.access", "reg_impostor");
+        let response = app(state.clone())
+            .oneshot(request(
+                "/agent/child/delete",
+                Some(&agent),
+                serde_json::json!({"did": child}),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+        assert!(crate::db::accounts::account_exists(&state.db, &child)
+            .await
+            .unwrap());
+        assert_eq!(
+            get_child_of_parent(&state.db, &child, parent)
+                .await
+                .unwrap()
+                .unwrap()
+                .status,
+            AgentIdentityStatus::Claimed
+        );
+    }
+
+    #[tokio::test]
+    async fn deleting_a_child_twice_is_idempotent() {
+        // A non-zero grace keeps the child parked so both calls exercise the schedule path.
+        let state = state_with_grace(3600).await;
+        let parent = "did:plc:parentdelidempotent1";
+        seed_account_with_repo(&state.db, parent).await;
+        let token = access_jwt(&[0x42; 32], parent);
+        let child = mint_child_for(&state, "idem-target.example.com", &token).await;
+
+        let first = app(state.clone())
+            .oneshot(request(
+                "/agent/child/delete",
+                Some(&token),
+                serde_json::json!({"did": child}),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(first.status(), StatusCode::OK);
+
+        // Subscribe after the first schedule: the second call is an already-deactivated no-op and
+        // must not emit a second #account frame.
+        let mut rx = state.firehose.subscribe();
+        let second = app(state.clone())
+            .oneshot(request(
+                "/agent/child/delete",
+                Some(&token),
+                serde_json::json!({"did": child}),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(second.status(), StatusCode::OK);
+        assert!(
+            rx.try_recv().is_err(),
+            "re-deleting an already-scheduled child must not emit a second #account event"
+        );
+
+        // Still exactly one tombstone (the upsert collapses on child_did).
+        let tombstones =
+            crate::db::agent_child_deletions::list_child_deletions_of_parent(&state.db, parent)
+                .await
+                .unwrap();
+        assert_eq!(tombstones.len(), 1);
     }
 }

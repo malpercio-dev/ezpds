@@ -1,0 +1,63 @@
+meta {
+  name: Deposit or replace the escrowed recovery share (PUT /v1/recovery/escrow-share)
+  type: http
+  seq: 121
+}
+
+put {
+  url: {{baseUrl}}/v1/recovery/escrow-share
+  body: json
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{sessionToken}}
+}
+
+body:json {
+  {
+    "share": "EIAAAAABAWLFOVXGIYLSPFPWG2LQNBSXE5DFPB2F6MRQGIZDAMBQGAYTAMBQGAYTAAAA"
+  }
+}
+
+vars:pre-request {
+  baseUrl: http://localhost:8080
+}
+
+docs {
+  # PUT /v1/recovery/escrow-share
+
+  Store or replace the account's escrowed Shamir Share 2 — the one share Custos holds in the
+  2-of-3 recovery split. Used by the DID ceremony (initial deposit), the share-rotation epilogue
+  after a recovery, and the old-account re-key migration.
+
+  Authenticate as the account owner (wallet session token or full-access OAuth/XRPC token;
+  agent-derived and app-password credentials are refused).
+
+  The `share` value is the base32-encoded v2 share envelope produced by the wallet's client-side
+  split (version + set id + index + payload + checksum). The server validates the envelope
+  structurally and requires index 2 (Custos never holds any other share), then stores only its
+  AES-256-GCM master-KEK wrapping — a raw DB dump never exposes even the single
+  information-theoretically useless share. Each call appends a `deposited` or `rotated` audit
+  event; a replacement also clears any in-flight escrow-release state.
+
+  ## Request
+
+  ```json
+  { "share": "<base32 v2 share envelope>" }
+  ```
+
+  ## Response (200)
+
+  ```json
+  { "status": "deposited" }
+  ```
+
+  `"deposited"` for the account's first escrow, `"rotated"` for a replacement.
+
+  ## Errors
+
+  - `400` — malformed share envelope (bad base32 / version / checksum), or an index other than 2
+  - `401` / `403` — missing/invalid credential, or an agent-derived/app-password token
+  - `503` — no signing-key master key configured on the server
+}
