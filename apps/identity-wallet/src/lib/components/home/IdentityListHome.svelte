@@ -370,7 +370,7 @@
   .monitor-body {
     display: flex;
     flex-direction: column;
-    gap: 2px;
+    gap: var(--space-3xs);
     min-width: 0;
   }
   .monitor-t {
@@ -481,7 +481,7 @@
     min-width: 0;
     display: flex;
     flex-direction: column;
-    gap: 3px;
+    gap: var(--space-2xs);
   }
   .handle {
     font-size: var(--text-title);

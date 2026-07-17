@@ -49,7 +49,7 @@
   .diff-body {
     display: flex;
     flex-direction: column;
-    gap: 2px;
+    gap: var(--space-3xs);
     min-width: 0;
   }
   .diff-t {

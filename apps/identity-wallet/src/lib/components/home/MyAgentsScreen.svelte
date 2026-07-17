@@ -176,7 +176,7 @@
     min-width: 0;
     display: flex;
     flex-direction: column;
-    gap: 3px;
+    gap: var(--space-2xs);
   }
   .name {
     font-size: var(--text-title);

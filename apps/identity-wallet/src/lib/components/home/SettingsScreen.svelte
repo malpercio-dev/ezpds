@@ -141,7 +141,7 @@
   .group-head {
     display: flex;
     flex-direction: column;
-    gap: 3px;
+    gap: var(--space-2xs);
   }
   .group-title {
     font-family: var(--font-sans);
@@ -158,11 +158,11 @@
 
   .segmented {
     display: flex;
-    gap: 3px;
+    gap: var(--space-2xs);
     background: var(--color-surface-sunk);
     border: 1px solid var(--color-line);
     border-radius: var(--radius-md);
-    padding: 3px;
+    padding: var(--space-2xs);
   }
   .segment {
     flex: 1;

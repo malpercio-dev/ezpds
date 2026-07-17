@@ -51,7 +51,7 @@
     align-self: flex-start;
     display: inline-flex;
     align-items: center;
-    gap: 3px;
+    gap: var(--space-2xs);
     background: none;
     border: none;
     color: var(--color-accent);
