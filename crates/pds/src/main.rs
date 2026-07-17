@@ -28,6 +28,7 @@ mod platform;
 mod rate_limit;
 mod read_after_write;
 mod record_write;
+mod recovery_share;
 mod repo_rev;
 mod request_host;
 mod rewrap;
@@ -139,6 +140,10 @@ async fn run_rewrap(config_path: Option<PathBuf>) -> anyhow::Result<()> {
         .await
         .with_context(|| "failed to run database migrations")?;
 
+    recovery_share::migrate_plaintext_rows(&pool, Some(&old_key))
+        .await
+        .with_context(|| "failed to KEK-wrap legacy recovery shares with the old master key")?;
+
     let report = rewrap::rewrap_master_key(&pool, &old_key, &new_key).await?;
 
     println!(
@@ -220,6 +225,19 @@ async fn run() -> anyhow::Result<()> {
                 config.database_url
             )
         })?;
+
+    let migrated_recovery_shares = recovery_share::migrate_plaintext_rows(
+        &pool,
+        config.signing_key_master_key.as_ref().map(|s| &*s.0),
+    )
+    .await
+    .with_context(|| "failed to KEK-wrap legacy recovery shares")?;
+    if migrated_recovery_shares > 0 {
+        tracing::info!(
+            count = migrated_recovery_shares,
+            "KEK-wrapped legacy recovery shares"
+        );
+    }
 
     let oauth_signing_keypair = auth::load_or_create_oauth_signing_key(
         &pool,

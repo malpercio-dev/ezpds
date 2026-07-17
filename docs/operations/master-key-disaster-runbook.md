@@ -20,7 +20,7 @@ variable.
 
 The authoritative inventory is `SecretFamily::ALL` in
 [`crates/pds/src/db/kek.rs`](../../crates/pds/src/db/kek.rs) — the single list the
-re-wrap tool iterates. There are **seven** KEK-wrapped families:
+re-wrap tool iterates. There are **eight** KEK-wrapped storage families:
 
 | Secret | Table(s) / column | Migration | Recovery class |
 | -- | -- | -- | -- |
@@ -31,10 +31,7 @@ re-wrap tool iterates. There are **seven** KEK-wrapped families:
 | OAuth ES256 signing key | `oauth_signing_key` | V012 | Easy — drop row, re-mint |
 | JWT HS256 secret | `jwt_signing_secret` | V015 | Easy — drop row, re-mint |
 | Iroh Ed25519 node key | `iroh_identity` | V022 | Easy — drop row, re-mint |
-
-**Not KEK-wrapped** (survives KEK loss): Shamir Share 2 in
-`accounts.recovery_share` (base32, V010). See
-[A note on escrow Shamir shares](#a-note-on-escrow-shamir-shares) below.
+| PDS-held Shamir Share 2 | `accounts.recovery_share` | V010 | **Hard** — requires the original KEK |
 
 The three "easy" secrets are **self-healing**: delete the single row, and
 `load_or_create_*` in
@@ -92,6 +89,9 @@ Set a **fresh** KEK, then recover each secret family:
    the PDS generates a fresh repo key, the account's wallet signs a PLC op
    repointing `verificationMethods.atproto` + `rotationKeys[1]`, and the PDS cuts
    over to the new key. Prioritize active accounts.
+3. **Escrow Shamir shares** — **permanently undecryptable.** There is no
+   server-side re-mint because a replacement would no longer be one of the
+   shares issued to the user. Recovery must use the user's Share 1 and Share 3.
 
 > **Takeaway:** a lost KEK is *nearly as bad as a compromised one*, purely because
 > of the repo keys. Loss and compromise share the same hard recovery path
@@ -176,22 +176,16 @@ repo-key rotation.
 ## A note on escrow Shamir shares
 
 `accounts.recovery_share` (Share 2 of each user's 2-of-3 recovery split, added in
-V010) is stored **base32 plaintext, not KEK-wrapped**, so a DB dump exposes it
-directly. Two consequences:
+V010) is stored in the same AES-256-GCM envelope as the other KEK-protected
+secrets. Legacy base32 rows are wrapped transactionally before the server starts;
+new account promotion writes only ciphertext. Two consequences:
 
-- **On KEK loss**, the shares **survive** — they don't depend on the KEK.
-- **On DB exposure**, Share 2 leaks — but Shamir 2-of-3 is *information-theoretically*
-  secure at a single share, so this stays **sub-threshold**: the recovery secret is
-  not reconstructable from Share 2 alone (an attacker still needs Share 1 from
-  iCloud Keychain or Share 3 from the user's manual backup). It erodes the margin
-  but does not, by itself, reconstruct anything.
-
-Whether to KEK-wrap this share at rest is a tracked defense-in-depth follow-up:
-wrapping upgrades a *DB-only* leak (no env-var exposure) from one-share-exposed to
-zero, at the cost of coupling escrow recovery to KEK availability (a wrapped share
-becomes undecryptable on KEK loss). That tradeoff becomes acceptable once the
-golden rule above is in force, since irrecoverable KEK loss stops being a live
-risk.
+- **On DB exposure without the KEK**, no Shamir share is exposed.
+- **On KEK loss**, Share 2 becomes undecryptable. The user can still reconstruct
+  with Shares 1 and 3, but the PDS-held recovery path is unavailable. This is why
+  the golden rule — back up the KEK separately from the DB — is mandatory.
+- **On full KEK + DB compromise**, Share 2 is exposed. It remains sub-threshold
+  by itself, but the incident must account for it as attacker-known material.
 
 ---
 
