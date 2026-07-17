@@ -49,6 +49,23 @@ Each asset has a distinct risk profile and recovery strategy:
 
 **2. Shamir Key Recovery Model**
 
+> **⚠️ Superseded model — do not implement from §§2, 4 as written.** These
+> sections predate both the passwordless-auth work and the as-built schema. Three
+> claims are wrong today: (a) the split input is described as the DID/root signing
+> key, but the onboarding ceremony splits a server-generated random secret bound
+> to nothing (not any rotation key); (b) Share 2 is described as "HSM-wrapped" and
+> released "after account authentication (email + password)" — it is AES-256-GCM
+> KEK-wrapped in `accounts.recovery_share`, and password auth is not the intended
+> gate for a key-sovereign account; (c) the §4.1 ceremony "reconstruct[s the] DID
+> key" and (§4.4) has "the PDS reconstruct rotation key from 2 shares" — no such
+> reconstruction ceremony exists, and the PDS must never reconstruct the user's
+> key. The accepted design reconstructs a *seed* client-side that derives a
+> separate recovery rotation key, with escrow release gated by an emailed OTP (not
+> a password) and an optional delay. See
+> [Key recovery from Shamir shares](design-plans/2026-07-17-key-recovery-from-shares.md)
+> (authoritative) and
+> [identity-and-key-custody.md](architecture/identity-and-key-custody.md).
+
 The DID signing key is split into three shares using Shamir's Secret Sharing (2-of-3 threshold). Any two shares are sufficient to reconstruct the key; no single share reveals any information about the key.
 
 **2.1 Share Distribution**

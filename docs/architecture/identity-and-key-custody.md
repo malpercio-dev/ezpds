@@ -1,6 +1,6 @@
 # Identity and Key Custody
 
-Last verified: 2026-07-02
+Last verified: 2026-07-17
 
 Reference sheet for how an ezpds identity is represented and who holds the keys
 that control it. The custody model described here is ezpds's core
@@ -43,6 +43,15 @@ See the genesis-op builder for where this ordering is set:
 places `rotation_key` (device key) at index 0 and `signing_key` (PDS key) at
 index 1.
 
+> **Planned change (not yet shipped).** The accepted
+> [key-recovery redesign](../design-plans/2026-07-17-key-recovery-from-shares.md)
+> inserts a **derived recovery key** at `rotationKeys[1]`, moving the PDS key to
+> `[2]` (`[device, recovery, PDS]`) so the reconstructed recovery seed becomes an
+> identity controller plc.directory already recognizes. The genesis builder can
+> already emit that ordering (`build_did_plc_genesis_op_multi_rotation`), but the
+> `POST /v1/dids` ceremony still writes the two-key layout above — see the
+> as-built caveat under *Where keys live* before relying on a recovery slot.
+
 ## Where keys live (wallet)
 
 Managed by the Obsign identity-wallet app
@@ -56,19 +65,33 @@ Managed by the Obsign identity-wallet app
   (`"{did}:device-key"`, …) so the wallet can hold multiple identities. The
   create flow signs the genesis op with the *global* device key before the DID
   exists, then `adopt_global_device_key` aliases the per-DID slot to it.
-- **Shamir recovery shares** — the crypto crate splits the device key 2-of-3
-  ([`split_secret`/`combine_shares`](../../crates/crypto/AGENTS.md)), matching
+- **Shamir recovery shares** — at onboarding the `POST /v1/dids` ceremony
+  ([`create_did.rs`](../../crates/pds/src/routes/create_did.rs)) generates a
+  fresh random 32-byte secret **server-side** and splits it 2-of-3
+  ([`split_secret`](../../crates/crypto/AGENTS.md)), distributing the shares per
   the mapping in ADR-0001:
-  - **Share 1 → iCloud Keychain** — the `POST /v1/dids` ceremony returns it and
-    the app stores it under `recovery-share-1` (auto-backed-up by iCloud).
-  - **Share 2 → PDS escrow** — retained server-side; the ceremony response
-    returns only Shares 1 and 3, so the PDS holds Share 2 and never exposes it
-    to the client.
+  - **Share 1 → iCloud Keychain** — the ceremony returns it and the app stores it
+    under `recovery-share-1` (auto-backed-up by iCloud).
+  - **Share 2 → PDS escrow** — retained server-side (KEK-wrapped in
+    `accounts.recovery_share`); the ceremony response returns only Shares 1 and 3,
+    so the PDS holds Share 2 and never exposes it to the client.
   - **Share 3 → the user** — returned by the ceremony for manual/offline backup.
 
-  Share *generation* runs during the DID ceremony; the full 2-of-3 recovery
-  *ceremony* (reconstruction) is future work (see
-  [`../data-migration-spec.md`](../data-migration-spec.md), v1.0).
+  **As-built caveat (verified 2026-07-17).** The split secret is today a
+  standalone random value: it is **not** the device key (a Secure-Enclave key is
+  non-extractable and could never be the split input) and it does **not** yet
+  appear in the DID's `rotationKeys`, so reconstructing it recovers a random
+  number rather than identity-controlling authority. Share *generation* runs at
+  onboarding, but the 2-of-3 reconstruction *ceremony* does not exist yet — until
+  it does, the live safety net for device-key loss is the device key's own
+  72-hour override supremacy (see *What the custody model buys us* below), not
+  share reconstruction. The accepted redesign — bind the seed to a derived
+  recovery rotation key, move generation client-side, and build both
+  escrow-assisted and escrow-free recovery ceremonies — is specified in
+  [Key recovery from Shamir shares](../design-plans/2026-07-17-key-recovery-from-shares.md).
+  Its crypto primitives (`derive_recovery_keypair`, the versioned share envelope,
+  the multi-rotation genesis builder) have shipped; the ceremony inversion has
+  not.
 
 ## What the custody model buys us
 
