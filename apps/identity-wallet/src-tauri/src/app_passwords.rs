@@ -73,6 +73,10 @@ fn map_session_error(error: SessionError) -> AppPasswordsError {
             message: "identity not found".to_string(),
         },
         SessionError::Offline { message } => AppPasswordsError::NetworkError { message },
+        SessionError::ServerFailure { status } => AppPasswordsError::ServerError {
+            status,
+            message: format!("session request failed with status {status}"),
+        },
         other => AppPasswordsError::NetworkError {
             message: other.to_string(),
         },
@@ -190,6 +194,15 @@ mod tests {
         assert!(matches!(
             err,
             AppPasswordsError::RateLimited { retry_after: Some(ref s) } if s == "30"
+        ));
+    }
+
+    #[test]
+    fn session_server_failure_keeps_its_status() {
+        let err = map_session_error(SessionError::ServerFailure { status: 503 });
+        assert!(matches!(
+            err,
+            AppPasswordsError::ServerError { status: 503, .. }
         ));
     }
 

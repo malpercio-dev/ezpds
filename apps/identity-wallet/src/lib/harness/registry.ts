@@ -539,8 +539,11 @@ export function buildRegistry(state: WalletState): Registry {
     },
 
     // ── app passwords ("Sign in to Bluesky and other apps") ──────────────────
-    list_app_passwords: (args): AppPasswordEntry[] =>
-      findIdentity(state, didArg(args))?.appPasswords ?? [],
+    list_app_passwords: (args): AppPasswordEntry[] => {
+      const identity = findIdentity(state, didArg(args));
+      if (!identity) throw { code: 'IDENTITY_NOT_FOUND', message: 'identity not found' };
+      return identity.appPasswords;
+    },
     create_app_password: (args): AppPasswordCreated => {
       const identity = findIdentity(state, didArg(args));
       if (!identity) throw { code: 'IDENTITY_NOT_FOUND', message: 'identity not found' };
@@ -555,10 +558,9 @@ export function buildRegistry(state: WalletState): Registry {
     },
     revoke_app_password: (args) => {
       const identity = findIdentity(state, didArg(args));
-      if (identity) {
-        const name = String(args.name ?? '');
-        identity.appPasswords = identity.appPasswords.filter((p) => p.name !== name);
-      }
+      if (!identity) throw { code: 'IDENTITY_NOT_FOUND', message: 'identity not found' };
+      const name = String(args.name ?? '');
+      identity.appPasswords = identity.appPasswords.filter((p) => p.name !== name);
       return null;
     },
 
