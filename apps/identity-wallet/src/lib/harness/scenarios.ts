@@ -11,6 +11,7 @@ import {
   emptyWalletState,
   seedAgent,
   seedAlert,
+  seedAppPassword,
   seedIdentity,
   upsertIdentity,
   type WalletState,
@@ -23,7 +24,8 @@ export type ScenarioName =
   | 'multi-identity'
   | 'alert-active'
   | 'migration-in-flight'
-  | 'agent-connected';
+  | 'agent-connected'
+  | 'app-password-minted';
 
 /** The default scenario when `VITE_HARNESS` is set with no explicit choice. */
 export const DEFAULT_SCENARIO: ScenarioName = 'one-identity';
@@ -86,6 +88,20 @@ export const scenarios: Record<ScenarioName, () => WalletState> = {
     state.pdsUrl = DEFAULT_PDS_URL;
     const identity = seedIdentity({ handle: 'alice.harness.pds.local' });
     identity.agents = [seedAgent(identity.did, identity.did)];
+    upsertIdentity(state, identity);
+    return state;
+  },
+
+  'app-password-minted': () => {
+    const state = emptyWalletState();
+    state.pdsUrl = DEFAULT_PDS_URL;
+    const identity = seedIdentity({ handle: 'alice.harness.pds.local' });
+    // One plain credential and one privileged (chat-capable) one, so the list
+    // screen's privilege badge and per-entry revoke are both reachable.
+    identity.appPasswords = [
+      seedAppPassword('Bluesky app'),
+      seedAppPassword('Chat client', true),
+    ];
     upsertIdentity(state, identity);
     return state;
   },

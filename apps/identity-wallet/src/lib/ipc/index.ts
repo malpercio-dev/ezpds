@@ -19,4 +19,5 @@ export * from './removal';
 export * from './migration';
 export * from './handle-change';
 export * from './agents';
+export * from './app-passwords';
 export { isCodedError } from './errors';

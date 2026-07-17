@@ -188,7 +188,7 @@ pub struct RemovalOutcome {
 fn map_delete_account_error(e: PdsClientError) -> RemovalError {
     match e {
         PdsClientError::Unauthorized { .. } => RemovalError::InvalidToken,
-        PdsClientError::XrpcError { status, .. } if status == 400 => RemovalError::InvalidToken,
+        PdsClientError::XrpcError { status: 400, .. } => RemovalError::InvalidToken,
         PdsClientError::RateLimited { retry_after, .. } => {
             RemovalError::RateLimited { retry_after }
         }
