@@ -150,6 +150,10 @@ removed_br=0
 while IFS= read -r b; do
   [ -z "$b" ] && continue
   [ "$b" = "$current" ] && continue
+  # Never delete the baseline every merged-test compares against: main is trivially
+  # an ancestor of itself, so once the checkout sits on another branch (and main is
+  # therefore neither current nor checked out anywhere) it would read as DELETE.
+  [ "$b" = "main" ] && continue
   if printf '%s\n' "$checked_out" | grep -qxF "$b"; then
     echo "  KEEP  $b — checked out in a worktree"
     continue
