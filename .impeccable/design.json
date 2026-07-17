@@ -1,6 +1,6 @@
 {
   "schemaVersion": 2,
-  "generatedAt": "2026-06-23T12:00:00Z",
+  "generatedAt": "2026-07-17T13:17:13Z",
   "title": "Design System: Obsign",
   "extensions": {
     "colorMeta": {
@@ -171,7 +171,7 @@
     "dos": [
       "Do treat gold as a wax seal — matte, dry, editorial (oklch(0.46 0.105 62)). Authenticity, sovereignty, an official stamp.",
       "Do keep the page pure white (oklch(1 0 0)) and let the seal and type carry the brand.",
-      "Do hold WCAG 2.2 AAA — Archival Ink body on white is ~13:1; verify every text-on-color pairing.",
+      "Do hold WCAG 2.2 AAA in both appearances — Archival Ink body on white is ~16.9:1, night ink on the dark ground ~16.7:1; verify every text-on-color pairing, light and dark. Measure, don't estimate: rasterize the OKLCH value to sRGB and run the WCAG formula (calibrate your method against #767676 on white, which must return exactly 4.54:1). Eyeballed OKLCH ratios drift badly — every figure in this file was once wrong by 3–11 points.",
       "Do signal status with color and an icon and a text label and position — always all four.",
       "Do keep Critical and Expired visually distinct: alarm-red that acts vs. ashen-slate that's closed.",
       "Do set every DID, key, CID, and signature in JetBrains Mono — verifiable character by character.",
