@@ -54,6 +54,7 @@ jsonwebtoken = { workspace = true }
 p256 = { workspace = true }
 argon2 = { workspace = true }
 chrono = { workspace = true }
+unicode-segmentation = { workspace = true }
 # Firehose frame encoding (com.atproto.sync.subscribeRepos): DAG-CBOR with CID tag-42
 # links. ipld-core's serde feature is what makes `repo_engine::Cid` serialize as tag 42;
 # serde_bytes is required for the CBOR byte-string `blocks` field.

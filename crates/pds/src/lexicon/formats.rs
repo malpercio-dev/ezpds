@@ -27,8 +27,10 @@ pub(super) fn validate_format(format: StringFormat, value: &str) -> Result<(), &
         StringFormat::Datetime => repo_engine::is_valid_datetime(value),
         StringFormat::Did => crate::identity::did::is_valid_did(value),
         StringFormat::Handle => is_valid_handle(value),
+        StringFormat::Language => is_valid_language(value),
         StringFormat::Nsid => repo_engine::validate_collection(value).is_ok(),
         StringFormat::RecordKey => is_valid_record_key(value),
+        StringFormat::Uri => is_valid_uri(value),
     };
     if ok {
         return Ok(());
@@ -41,9 +43,48 @@ pub(super) fn validate_format(format: StringFormat, value: &str) -> Result<(), &
         StringFormat::Datetime => "must be an valid atproto datetime (both RFC-3339 and ISO-8601)",
         StringFormat::Did => "must be a valid did",
         StringFormat::Handle => "must be a valid handle",
+        StringFormat::Language => "must be a well-formed BCP 47 language tag",
         StringFormat::Nsid => "must be a valid nsid",
         StringFormat::RecordKey => "must be a valid Record Key",
+        StringFormat::Uri => "must be a uri",
     })
+}
+
+/// Syntactic BCP 47 check for the lexicon `language` format: one or more `-`-separated subtags of
+/// 1–8 alphanumerics, the first alphabetic. Deliberately permissive (structure, not registry
+/// membership) — the reference rejects only structurally malformed tags on the write path.
+fn is_valid_language(value: &str) -> bool {
+    if value.is_empty() {
+        return false;
+    }
+    let mut subtags = value.split('-');
+    let Some(first) = subtags.next() else {
+        return false;
+    };
+    let subtag_ok = |t: &str, alpha_only: bool| {
+        !t.is_empty()
+            && t.len() <= 8
+            && t.bytes()
+                .all(|b| b.is_ascii_alphanumeric() && (!alpha_only || b.is_ascii_alphabetic()))
+    };
+    subtag_ok(first, true) && subtags.all(|t| subtag_ok(t, false))
+}
+
+/// Structural check for the lexicon `uri` format: a scheme (`[a-z][a-z0-9+.-]*:`) followed by a
+/// non-empty, whitespace-free remainder. Mirrors `@atproto/lexicon`'s permissive URI check.
+fn is_valid_uri(value: &str) -> bool {
+    let Some(colon) = value.find(':') else {
+        return false;
+    };
+    if colon == 0 || value.len() == colon + 1 {
+        return false;
+    }
+    let scheme = &value[..colon];
+    let mut scheme_bytes = scheme.bytes();
+    let head_ok = scheme_bytes.next().is_some_and(|b| b.is_ascii_alphabetic());
+    let tail_ok =
+        scheme_bytes.all(|b| b.is_ascii_alphanumeric() || matches!(b, b'+' | b'.' | b'-'));
+    head_ok && tail_ok && !value.chars().any(char::is_whitespace)
 }
 
 /// Structural handle syntax only — the lexicon `handle` format is pure syntax
@@ -55,13 +96,25 @@ fn is_valid_handle(value: &str) -> bool {
 
 /// Record-key syntax per `@atproto/syntax`'s `ensureValidRecordKey`: 1–512 chars of
 /// `[A-Za-z0-9._~:-]`, and not the path-traversal literals `.` / `..`.
-fn is_valid_record_key(value: &str) -> bool {
+pub(super) fn is_valid_record_key(value: &str) -> bool {
     if value.is_empty() || value.len() > 512 || value == "." || value == ".." {
         return false;
     }
     value
         .bytes()
         .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'~' | b':' | b'-'))
+}
+
+/// TID syntax per `@atproto/syntax`'s `ensureValidTid`: exactly 13 chars from the base32-sortable
+/// alphabet, with the high bit clear (first char in `[234567abcdefghij]`).
+pub(super) fn is_valid_tid(value: &str) -> bool {
+    const ALPHABET: &str = "234567abcdefghijklmnopqrstuvwxyz";
+    if value.len() != 13 {
+        return false;
+    }
+    let mut chars = value.chars();
+    let first = chars.next().expect("length checked above");
+    "234567abcdefghij".contains(first) && value.chars().all(|c| ALPHABET.contains(c))
 }
 
 #[cfg(test)]

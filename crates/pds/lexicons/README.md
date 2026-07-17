@@ -1,15 +1,25 @@
 # Vendored lexicon documents
 
-Byte-identical copies of `com.atproto.*` lexicon JSON documents from the reference
-implementation, vendored so Custos can validate XRPC request bodies against the same schemas
-the reference PDS enforces (`crates/pds/src/lexicon/` — see MM-364).
+Byte-identical copies of `com.atproto.*` and `app.bsky.*` lexicon JSON documents from the
+reference implementation, vendored so Custos can validate XRPC request bodies and repo-write
+records against the same schemas the reference PDS enforces (`crates/pds/src/lexicon/` — see
+MM-364 for the input layer, MM-399 for the `validate`-flag record layer).
 
 - **Source:** <https://github.com/bluesky-social/atproto>, `lexicons/` tree
-- **Pinned at:** tag `@atproto/pds@0.5.18` (retrieved 2026-07-16)
-- **Scope:** only the documents needed by the natively-handled JSON-input procedures (plus the
-  documents their refs reach: `com.atproto.admin.defs`, `com.atproto.repo.strongRef`).
-  Proxied namespaces (`app.bsky.*`, `chat.bsky.*`, `com.atproto.moderation.*`) are validated
-  upstream and are deliberately not vendored.
+- **Pinned at:** tag `@atproto/pds@0.5.18` (retrieved 2026-07-16; the `app.bsky.*` record set 2026-07-17)
+- **Scope:**
+  - **Input procedures:** the `com.atproto.*` documents needed by the natively-handled JSON-input
+    procedures (plus the documents their input refs reach: `com.atproto.admin.defs`,
+    `com.atproto.repo.strongRef`).
+  - **Record validation (MM-399):** the `app.bsky.*` **record** lexicons worth validating on repo
+    writes (`feed.post`/`like`/`repost`, `graph.follow`/`block`/`list`/`listitem`/`listblock`,
+    `actor.profile`) plus only the `object`/`string`/`token` defs their record schemas transitively
+    reach (`embed.*`, `richtext.facet`, `com.atproto.label.defs`). The AppView **view/output** defs
+    those same documents also declare are *not* validation roots, so an unresolvable ref buried in
+    one of them is never reached and is deliberately left un-vendored — the record-reachable closure
+    is much smaller than the full `app.bsky` graph.
+  - Proxied namespaces (the rest of `app.bsky.*`, `chat.bsky.*`, `com.atproto.moderation.*`) are
+    validated upstream and are deliberately not vendored.
 
 ## Adding or updating a document
 
@@ -21,7 +31,7 @@ the reference PDS enforces (`crates/pds/src/lexicon/` — see MM-364).
    ```
 
 2. Add it to `LEXICON_SOURCES` in `crates/pds/src/lexicon/mod.rs` (also vendor anything its
-   input schema `ref`s/`union`s reach).
+   input schema or, for a record, its `record` body `ref`s/`union`s reach).
 3. `cargo test -p pds --bins lexicon` — the registry parser rejects any construct the validator
    doesn't implement (unknown keys, def types, string formats) and any dangling ref, so an
    unsupported document fails loudly here instead of validating laxer than the reference.

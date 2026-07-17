@@ -582,6 +582,14 @@ pub fn put_record_request(
     body["repo"] = serde_json::json!(did);
     body["collection"] = serde_json::json!(collection);
     body["rkey"] = serde_json::json!(rkey);
+    // Seed writes skip `validate`-flag record validation unless a caller opts in: these helpers
+    // exist to plant *a* record for read/GC/sync/migration tests, not to exercise
+    // `assertValidRecord` (that lives in the lexicon unit tests, the write-route tests, and
+    // `tests/http_suite.rs`). Without this a bare `{"text": …}` post — missing the required
+    // `createdAt` — would now 400, and every such fixture would have to carry a full valid record.
+    if body.get("validate").is_none() {
+        body["validate"] = serde_json::json!(false);
+    }
     let mut b = axum::http::Request::builder()
         .method(axum::http::Method::POST)
         .uri("/xrpc/com.atproto.repo.putRecord")

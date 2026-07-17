@@ -33,4 +33,13 @@ docs {
   Optional optimistic-concurrency body field (add alongside "record"):
   - "swapCommit": "<cid>" — only create if the repo head matches this commit CID, else 409 InvalidSwap.
   createRecord's lexicon defines no "swapRecord" (create-only already requires the key to be absent).
+
+  Record validation (MM-399, assertValidRecord parity). Optional "validate" body flag:
+  - absent (default): validate the record against a known (vendored) lexicon and reject an invalid
+    one; an unknown collection stays writable. The response carries "validationStatus":
+    "valid" | "unknown".
+  - true: require the record to validate against a known lexicon (an unknown collection → 400).
+  - false: skip validation entirely (no "validationStatus" in the response).
+  The record "$type" must equal "collection", and the rkey must satisfy the lexicon's key rule
+  (app.bsky.feed.post uses "tid", so the body above omits "rkey" and the server generates one).
 }

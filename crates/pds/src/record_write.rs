@@ -193,7 +193,8 @@ pub async fn write_record(
     record: &serde_json::Value,
     create_only: bool,
     swap: &SwapCheck,
-) -> Result<repo_engine::Cid, ApiError> {
+    validate: Option<bool>,
+) -> Result<(repo_engine::Cid, Option<crate::lexicon::RecordValidation>), ApiError> {
     // Validate DID format.
     if !crate::auth::validation::is_valid_did(did) {
         return Err(ApiError::new(ErrorCode::InvalidClaim, "invalid DID format"));
@@ -219,10 +220,19 @@ pub async fn write_record(
     }
 
     // Reject malformed self-describing record formats (top-level `createdAt` datetime, any
-    // `at://` AT-URI) before any repo mutation — the reference PDS rejects these for a lexicon
-    // it knows; Custos applies the schema-free half without vendoring app lexicons.
+    // `at://` AT-URI) before any repo mutation. This schema-free gate still runs for lexicons
+    // Custos doesn't vendor; for a vendored (known) lexicon the schema check below subsumes it.
     crate::auth::validation::validate_record_formats(record)
         .map_err(|message| ApiError::new(ErrorCode::InvalidRequest, message))?;
+
+    // `validate`-flag record validation (`assertValidRecord` parity): reject an invalid record of
+    // a known lexicon by default, require validity when `validate: true`, skip when
+    // `validate: false`, and report `validationStatus` for the response. Runs after the ownership
+    // check so it can't be used to probe a repo the caller doesn't own.
+    let (collection, rkey) = split_record_path(mst_key);
+    let validation_status = crate::lexicon::registry()
+        .validate_record(&collection, &rkey, record, validate)
+        .map_err(record_validation_error)?;
 
     // Serialize this repo's whole logical write (root read → commit → GC) against concurrent
     // writers — see [`RepoWriteLocks`]. Held until this function returns, past the GC pass.
@@ -348,7 +358,7 @@ pub async fn write_record(
     // both the previous and new block sets are still present (the diff CAR is computed against
     // them) — call this before GC.
     let new_rev = repo.commit().rev().as_str().to_string();
-    let (collection, rkey) = split_record_path(mst_key);
+    // `collection`/`rkey` were split for record validation above; reuse them for the firehose op.
     let op = crate::firehose::RepoOp {
         action: if existed {
             crate::firehose::OpAction::Update
@@ -378,7 +388,25 @@ pub async fn write_record(
     // `commit_repo_write` reclaims this commit's superseded blocks incrementally (see its
     // post-commit GC); no separate full-repo reachability sweep runs on the write path.
 
-    Ok(record_cid)
+    Ok((record_cid, validation_status))
+}
+
+/// Map a lexicon record-validation error to an `ApiError`: an `Invalid` record is a client-facing
+/// 400 `InvalidRequest` (the reference's `InvalidRecordError` → `InvalidRequest`), a `Lexicon`
+/// inconsistency (unreachable — registry-build-checked) a 500. Shared with `apply_writes`.
+pub(crate) fn record_validation_error(e: crate::lexicon::ValidationError) -> ApiError {
+    match e {
+        crate::lexicon::ValidationError::Invalid(message) => {
+            ApiError::new(ErrorCode::InvalidRequest, message)
+        }
+        crate::lexicon::ValidationError::Lexicon(message) => {
+            tracing::error!(error = %message, "vendored lexicon set is inconsistent");
+            ApiError::new(
+                ErrorCode::InternalError,
+                "server lexicon configuration error",
+            )
+        }
+    }
 }
 
 /// Advance the repo root (optimistic-concurrency CAS) and, while both the previous and new block
