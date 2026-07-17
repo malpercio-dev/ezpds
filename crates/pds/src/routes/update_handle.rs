@@ -729,6 +729,72 @@ mod tests {
         );
     }
 
+    /// After plc.directory accepts the custodied op, a failure to refresh the did_documents cache
+    /// must not roll back the committed handle swap: the request still succeeds and the new handle
+    /// resolves locally. A BEFORE INSERT trigger fails only the cache write (auth still reads the
+    /// table), matching the non-fatal posture in submit_plc_operation.rs.
+    #[tokio::test]
+    async fn custodied_cache_write_failure_is_non_fatal() {
+        let plc = MockServer::start().await;
+        let state = state_with_plc(plc.uri()).await;
+        let db = state.db.clone();
+        let did = "did:plc:updatehandlecachefail11";
+        let old_handle = format!("alice.{}", state.config.available_user_domains[0]);
+        let new_handle = format!("bob.{}", state.config.available_user_domains[0]);
+        let key_id = seed_account_with_signing_key(&db, did, &old_handle).await;
+        let jwt = insert_session(&db, did).await;
+        mount_audit_log(
+            &plc,
+            did,
+            &old_handle,
+            vec![key_id.clone()],
+            &key_id,
+            &state.config.public_url,
+        )
+        .await;
+        Mock::given(method("POST"))
+            .and(path(format!("/{did}")))
+            .respond_with(ResponseTemplate::new(200))
+            .expect(1)
+            .mount(&plc)
+            .await;
+
+        // Force only the in-transaction cache refresh to fail, leaving the auth path's
+        // did_documents reads intact.
+        sqlx::query(
+            "CREATE TRIGGER fail_did_doc_insert BEFORE INSERT ON did_documents \
+             BEGIN SELECT RAISE(ABORT, 'cache write forced to fail'); END",
+        )
+        .execute(&db)
+        .await
+        .unwrap();
+
+        let response = app(state)
+            .oneshot(update_handle_request(&jwt, &new_handle))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+
+        // The handle swap committed despite the cache-write failure.
+        assert_eq!(
+            crate::db::handles::resolve_handle(&db, &new_handle)
+                .await
+                .unwrap()
+                .as_deref(),
+            Some(did)
+        );
+        assert!(crate::db::handles::resolve_handle(&db, &old_handle)
+            .await
+            .unwrap()
+            .is_none());
+
+        // The authoritative PLC operation was still submitted.
+        let requests = plc.received_requests().await.unwrap();
+        assert!(requests
+            .iter()
+            .any(|request| request.method.as_str() == "POST"));
+    }
+
     #[tokio::test]
     async fn wallet_sovereign_account_is_not_signed_by_pds_key() {
         let plc = MockServer::start().await;
