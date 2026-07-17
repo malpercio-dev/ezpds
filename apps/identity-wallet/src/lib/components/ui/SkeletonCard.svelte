@@ -15,10 +15,10 @@
 </div>
 
 <style>
-  /* The card box metrics (gap, padding, seal size, line height) are copied verbatim from the
-     MyAgentsScreen / IdentityListHome cards this placeholder stands in for, so the shimmer and
-     the loaded card occupy the same box and the list doesn't jump on load. They intentionally
-     track those siblings rather than the space scale; a scale-wide card re-spacing would move
+  /* This placeholder must occupy the same box as the MyAgentsScreen / IdentityListHome cards it
+     stands in for, so the list doesn't jump on load. The padding is var(--space-md), the same
+     token those cards now use — moved in lockstep. The remaining metrics (gap, seal size, line
+     height) still track the cards' off-scale values verbatim; retuning them means moving
      placeholder and card together. */
   .skel {
     display: flex;
@@ -27,7 +27,7 @@
     background: var(--color-bg);
     border: 1px solid var(--color-line);
     border-radius: var(--radius-xl);
-    padding: 15px;
+    padding: var(--space-md);
   }
   .skel-seal {
     width: 52px;
