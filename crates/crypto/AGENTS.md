@@ -34,6 +34,15 @@ pub fn decrypt_private_key(&str, &[u8; 32]) -> Result<Zeroizing<[u8; 32]>, Crypt
 - Decrypts a base64-encoded ciphertext with a master key
 - Returns opaque `CryptoError::Decryption` on all failure modes (no oracle)
 
+**`encrypt_secret_bytes`** / **`decrypt_secret_bytes`**
+```rust
+pub fn encrypt_secret_bytes(&[u8], &[u8; 32]) -> Result<String, CryptoError>
+pub fn decrypt_secret_bytes(&str, &[u8; 32]) -> Result<Zeroizing<Vec<u8>>, CryptoError>
+```
+- The generic-length form of `encrypt_private_key`/`decrypt_private_key`, sharing the **identical** storage envelope — `base64(nonce(12) || ciphertext || tag(16))` — so a column wrapped by either encryptor decrypts with `decrypt_secret_bytes` (and a 32-byte plaintext round-trips through any combination of the four; test-pinned). `encrypt_private_key` delegates to `encrypt_secret_bytes` internally.
+- Exists for KEK-wrapped secrets that are not 32-byte key scalars — the PDS's escrowed 42-byte Shamir share envelope, and the `rewrap-master-key` sweep which re-wraps every `SecretFamily` column through this pair regardless of plaintext length
+- Same properties as the fixed-length pair: fresh nonce per call, opaque `CryptoError::Decryption` on all failure modes (a truncated storage blob shorter than nonce + tag is refused before decryption)
+
 **`derive_recovery_keypair`**
 ```rust
 pub fn derive_recovery_keypair(seed: &[u8; 32]) -> Result<P256Keypair, CryptoError>

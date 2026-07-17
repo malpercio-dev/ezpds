@@ -63,13 +63,16 @@ pub async fn rewrap_master_key(
         let rows = list_wrapped_secrets(&mut *tx, family).await?;
         let mut rewrapped = 0u64;
         for row in rows {
-            let plaintext = match crypto::decrypt_private_key(&row.ciphertext, old_key) {
+            // The generic-length decrypt/encrypt pair shares the fixed-length envelope, so
+            // 32-byte key scalars and longer secrets (the 42-byte escrow share envelope)
+            // re-wrap through one code path.
+            let plaintext = match crypto::decrypt_secret_bytes(&row.ciphertext, old_key) {
                 Ok(p) => p,
                 Err(e) => {
                     // Distinguish "wrong old key" from "rotation already done":
                     // a blob that decrypts under the NEW key means a prior run
                     // committed and the operator is re-running with stale keys.
-                    if crypto::decrypt_private_key(&row.ciphertext, new_key).is_ok() {
+                    if crypto::decrypt_secret_bytes(&row.ciphertext, new_key).is_ok() {
                         anyhow::bail!(
                             "{} row {} is already encrypted under the NEW key — a previous \
                              rotation appears to have completed; no changes were made",
@@ -85,7 +88,7 @@ pub async fn rewrap_master_key(
                     );
                 }
             };
-            let reencrypted = crypto::encrypt_private_key(&plaintext, new_key)
+            let reencrypted = crypto::encrypt_secret_bytes(&plaintext, new_key)
                 .map_err(|e| anyhow::anyhow!("re-encryption failed: {e}"))?;
             update_wrapped_secret(&mut *tx, family, &row.id, &reencrypted).await?;
             rewrapped += 1;
@@ -118,16 +121,24 @@ mod tests {
         pool
     }
 
-    fn enc(plaintext: &[u8; 32], key: &[u8; 32]) -> String {
-        crypto::encrypt_private_key(plaintext, key).unwrap()
+    fn enc(plaintext: &[u8], key: &[u8; 32]) -> String {
+        crypto::encrypt_secret_bytes(plaintext, key).unwrap()
     }
 
     /// Seed one row in every KEK-wrapped table, each wrapping a distinct
     /// plaintext under `key`. Returns the per-family plaintexts keyed by table.
-    async fn seed_all_families(pool: &SqlitePool, key: &[u8; 32]) -> Vec<(&'static str, [u8; 32])> {
+    /// `recovery_escrow` gets a 42-byte plaintext (a share envelope's length)
+    /// so the sweep's variable-length path is exercised; the key columns stay
+    /// 32 bytes.
+    async fn seed_all_families(pool: &SqlitePool, key: &[u8; 32]) -> Vec<(&'static str, Vec<u8>)> {
         let mut plaintexts = Vec::new();
         for (i, family) in SecretFamily::ALL.iter().enumerate() {
-            let mut p = [0u8; 32];
+            let len = if *family == SecretFamily::RecoveryEscrow {
+                42
+            } else {
+                32
+            };
+            let mut p = vec![0u8; len];
             p[0] = 0x40 + i as u8;
             plaintexts.push((family.table(), p));
         }
@@ -135,7 +146,7 @@ mod tests {
             plaintexts
                 .iter()
                 .find(|(t, _)| *t == table)
-                .map(|(_, p)| *p)
+                .map(|(_, p)| p.clone())
                 .unwrap()
         };
 
@@ -243,6 +254,15 @@ mod tests {
         .await
         .unwrap();
 
+        sqlx::query(
+            "INSERT INTO recovery_escrow (did, share_encrypted, created_at) \
+             VALUES ('did:plc:rewraptest', ?, datetime('now'))",
+        )
+        .bind(enc(&pt("recovery_escrow"), key))
+        .execute(pool)
+        .await
+        .unwrap();
+
         plaintexts
     }
 
@@ -250,7 +270,7 @@ mod tests {
     /// plaintext under `key` (and fails under `not_key`).
     async fn assert_all_under_key(
         pool: &SqlitePool,
-        plaintexts: &[(&'static str, [u8; 32])],
+        plaintexts: &[(&'static str, Vec<u8>)],
         key: &[u8; 32],
         not_key: &[u8; 32],
     ) {
@@ -265,9 +285,9 @@ mod tests {
             let expected = plaintexts
                 .iter()
                 .find(|(t, _)| *t == family.table())
-                .map(|(_, p)| *p)
+                .map(|(_, p)| p.clone())
                 .unwrap();
-            let decrypted = crypto::decrypt_private_key(&rows[0].ciphertext, key)
+            let decrypted = crypto::decrypt_secret_bytes(&rows[0].ciphertext, key)
                 .unwrap_or_else(|e| panic!("{} must decrypt under key: {e}", family.table()));
             assert_eq!(
                 *decrypted,
@@ -276,7 +296,7 @@ mod tests {
                 family.table()
             );
             assert!(
-                crypto::decrypt_private_key(&rows[0].ciphertext, not_key).is_err(),
+                crypto::decrypt_secret_bytes(&rows[0].ciphertext, not_key).is_err(),
                 "{} must not decrypt under the other key",
                 family.table()
             );

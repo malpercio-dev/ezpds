@@ -20,6 +20,8 @@ pub mod oauth;
 pub mod password_reset;
 pub mod plc_operation_tokens;
 pub mod preferences;
+pub mod recovery_audit;
+pub mod recovery_escrow;
 pub mod refresh_tokens;
 pub mod relay_signing_keys;
 pub mod repo_keys;

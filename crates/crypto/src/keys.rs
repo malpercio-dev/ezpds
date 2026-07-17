@@ -133,6 +133,72 @@ pub fn derive_recovery_keypair(seed: &[u8; 32]) -> Result<P256Keypair, CryptoErr
     ))
 }
 
+/// Encrypt an arbitrary-length secret using AES-256-GCM.
+///
+/// The generic-length form of [`encrypt_private_key`], sharing the identical storage
+/// envelope — `base64( nonce(12) || ciphertext+tag(16) )` — so a column wrapped with
+/// either function decrypts with [`decrypt_secret_bytes`]. Exists for secrets that are
+/// not 32-byte key scalars (e.g. a 42-byte Shamir share envelope). A fresh 12-byte
+/// nonce is generated from the OS RNG on every call, so two calls with the same input
+/// produce different output.
+pub fn encrypt_secret_bytes(
+    plaintext: &[u8],
+    master_key: &[u8; 32],
+) -> Result<String, CryptoError> {
+    let cipher = Aes256Gcm::new_from_slice(master_key.as_slice())
+        .map_err(|e| CryptoError::Encryption(format!("invalid master key length: {e}")))?;
+
+    let nonce = Aes256Gcm::generate_nonce(&mut OsRng);
+
+    // encrypt() appends the 16-byte authentication tag.
+    let ciphertext = cipher
+        .encrypt(&nonce, plaintext)
+        .map_err(|e| CryptoError::Encryption(format!("aes-gcm encryption failed: {e}")))?;
+
+    // Storage format: nonce(12) || ciphertext_with_tag(plaintext_len + 16).
+    let mut storage = Vec::with_capacity(12 + ciphertext.len());
+    storage.extend_from_slice(nonce.as_slice());
+    storage.extend_from_slice(&ciphertext);
+
+    Ok(BASE64.encode(&storage))
+}
+
+/// Decrypt a secret encrypted by [`encrypt_secret_bytes`] (or [`encrypt_private_key`] —
+/// the envelope is identical), returning the plaintext at whatever length it was.
+///
+/// Returns `CryptoError::Decryption` for any failure — malformed base64, truncated
+/// storage, or authentication tag mismatch. The caller cannot distinguish between
+/// these cases intentionally (no oracle).
+pub fn decrypt_secret_bytes(
+    encrypted: &str,
+    master_key: &[u8; 32],
+) -> Result<Zeroizing<Vec<u8>>, CryptoError> {
+    let storage = BASE64
+        .decode(encrypted)
+        .map_err(|e| CryptoError::Decryption(format!("invalid base64: {e}")))?;
+
+    // Minimum envelope: nonce(12) + tag(16) around an empty plaintext.
+    if storage.len() < 12 + 16 {
+        return Err(CryptoError::Decryption(format!(
+            "expected at least 28 bytes (nonce + tag), got {}",
+            storage.len()
+        )));
+    }
+
+    let nonce = Nonce::from_slice(&storage[..12]);
+    let ciphertext_with_tag = &storage[12..];
+
+    let cipher = Aes256Gcm::new_from_slice(master_key.as_slice())
+        .map_err(|e| CryptoError::Decryption(format!("invalid master key length: {e}")))?;
+
+    // Use decrypt() — NOT decrypt_in_place_detached — to avoid GHSA-423w-p2w9-r7vq.
+    // Tag is verified before plaintext is returned; wrapped in Zeroizing immediately.
+    cipher
+        .decrypt(nonce, ciphertext_with_tag)
+        .map(Zeroizing::new)
+        .map_err(|_| CryptoError::Decryption("authentication tag mismatch".to_string()))
+}
+
 /// Encrypt a 32-byte P-256 private key using AES-256-GCM.
 ///
 /// Returns `base64( nonce(12) || ciphertext+tag(48) )` — always 80 base64 chars.
@@ -142,22 +208,7 @@ pub fn encrypt_private_key(
     key_bytes: &[u8; 32],
     master_key: &[u8; 32],
 ) -> Result<String, CryptoError> {
-    let cipher = Aes256Gcm::new_from_slice(master_key.as_slice())
-        .map_err(|e| CryptoError::Encryption(format!("invalid master key length: {e}")))?;
-
-    let nonce = Aes256Gcm::generate_nonce(&mut OsRng);
-
-    // encrypt() appends the 16-byte authentication tag: output = 32 + 16 = 48 bytes.
-    let ciphertext = cipher
-        .encrypt(&nonce, key_bytes.as_slice())
-        .map_err(|e| CryptoError::Encryption(format!("aes-gcm encryption failed: {e}")))?;
-
-    // Storage format: nonce(12) || ciphertext_with_tag(48) = 60 bytes → 80 base64 chars.
-    let mut storage = Vec::with_capacity(12 + ciphertext.len());
-    storage.extend_from_slice(nonce.as_slice());
-    storage.extend_from_slice(&ciphertext);
-
-    Ok(BASE64.encode(&storage))
+    encrypt_secret_bytes(key_bytes.as_slice(), master_key)
 }
 
 /// Decrypt a private key encrypted by [`encrypt_private_key`].
@@ -322,6 +373,52 @@ mod tests {
             80,
             "base64(60 bytes) must be exactly 80 characters"
         );
+    }
+
+    /// The generic-length pair round-trips arbitrary lengths and shares the fixed-length
+    /// functions' envelope: a 32-byte secret wrapped by either encryptor decrypts with either
+    /// decryptor.
+    #[test]
+    fn secret_bytes_round_trip_and_envelope_compatibility() {
+        let master_key = [0xab_u8; 32];
+
+        for len in [0usize, 1, 32, 42, 100] {
+            let plaintext: Vec<u8> = (0..len).map(|i| i as u8).collect();
+            let encrypted = encrypt_secret_bytes(&plaintext, &master_key).unwrap();
+            let decrypted = decrypt_secret_bytes(&encrypted, &master_key).unwrap();
+            assert_eq!(*decrypted, plaintext, "length {len} must round-trip");
+            assert!(
+                decrypt_secret_bytes(&encrypted, &[0xcd_u8; 32]).is_err(),
+                "wrong key must fail"
+            );
+        }
+
+        let key32 = [0x42_u8; 32];
+        let via_fixed = encrypt_private_key(&key32, &master_key).unwrap();
+        assert_eq!(
+            decrypt_secret_bytes(&via_fixed, &master_key)
+                .unwrap()
+                .as_slice(),
+            key32.as_slice(),
+            "fixed-length ciphertext must decrypt via the generic decryptor"
+        );
+        let via_generic = encrypt_secret_bytes(&key32, &master_key).unwrap();
+        assert_eq!(
+            *decrypt_private_key(&via_generic, &master_key).unwrap(),
+            key32,
+            "generic 32-byte ciphertext must decrypt via the fixed-length decryptor"
+        );
+    }
+
+    /// Truncated generic-envelope storage (shorter than nonce + tag) is refused before decryption.
+    #[test]
+    fn decrypt_secret_bytes_truncated_storage_fails() {
+        let master_key = [0xab_u8; 32];
+        let short = BASE64.encode([0u8; 20]);
+        assert!(matches!(
+            decrypt_secret_bytes(&short, &master_key),
+            Err(CryptoError::Decryption(_))
+        ));
     }
 
     // ── Recovery keypair derivation ───────────────────────────────────────────

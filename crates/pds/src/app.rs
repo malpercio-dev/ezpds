@@ -2,7 +2,7 @@
 
 use axum::{
     http::Request,
-    routing::{delete, get, post},
+    routing::{delete, get, post, put},
     Router,
 };
 use opentelemetry::propagation::Extractor;
@@ -85,6 +85,7 @@ use crate::routes::oauth_token::post_token;
 use crate::routes::provisioning_session::create_provisioning_session;
 use crate::routes::put_preferences::put_preferences_handler;
 use crate::routes::put_record::put_record;
+use crate::routes::recovery_escrow::{delete_escrow_share_handler, put_escrow_share};
 use crate::routes::refresh_session::refresh_session;
 use crate::routes::register_device::register_device;
 use crate::routes::repo_key_rotation::{begin_repo_key_rotation, complete_repo_key_rotation};
@@ -466,6 +467,10 @@ pub fn app(state: AppState) -> Router {
         .route(
             "/v1/did-web/document",
             post(update_did_web_document_handler),
+        )
+        .route(
+            "/v1/recovery/escrow-share",
+            put(put_escrow_share).delete(delete_escrow_share_handler),
         )
         .route("/v1/repo-keys/rotation", post(begin_repo_key_rotation))
         .route(
