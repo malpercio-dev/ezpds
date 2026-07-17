@@ -109,6 +109,14 @@ pub struct Firehose {
     /// Counts broadcast frames into `firehose_events_total`. `None` for bare test
     /// constructions; `main.rs`/`test_state()` attach the shared handle before Arc-wrapping.
     metrics: Option<Arc<crate::metrics::Metrics>>,
+    /// Re-invites the relay via `requestCrawl` on **every** emission, not just repo commits.
+    /// `None` for bare test constructions and when no crawlers are configured; `main.rs` attaches
+    /// the shared notifier before Arc-wrapping. Making this the single fan-out choke point's job
+    /// means a relay that dropped its subscription is re-invited by the very `#account`/`#identity`/
+    /// `#sync` lifecycle frames that matter for migration visibility — the frames that, emitted to
+    /// no listener, can leave a migrated DID stuck AccountDeactivated on the network. Rate limiting
+    /// in the notifier collapses a commit burst into one notification per crawler per window.
+    crawlers: Option<Arc<crate::crawler::CrawlerNotifier>>,
 }
 
 impl Firehose {
@@ -130,6 +138,7 @@ impl Firehose {
             last_seq: AtomicU64::new(last),
             tx,
             metrics: None,
+            crawlers: None,
         })
     }
 
@@ -140,9 +149,17 @@ impl Firehose {
         self.metrics = Some(metrics);
     }
 
-    /// Broadcast one already-persisted event to live subscribers, counting it by frame type.
-    /// The send result is deliberately ignored: having no live subscribers is not an error
-    /// (the event is already durable and replayable).
+    /// Attach the shared crawler notifier so every broadcast re-invites the relay via
+    /// `requestCrawl`. Called before the firehose is Arc-wrapped into `AppState`; constructions
+    /// that never attach (bare unit tests, or a deployment with no crawlers configured) simply
+    /// never notify.
+    pub fn attach_crawlers(&mut self, crawlers: Arc<crate::crawler::CrawlerNotifier>) {
+        self.crawlers = Some(crawlers);
+    }
+
+    /// Broadcast one already-persisted event to live subscribers, counting it by frame type and
+    /// re-inviting the relay. The send result is deliberately ignored: having no live subscribers
+    /// is not an error (the event is already durable and replayable).
     fn broadcast(&self, event: FirehoseEvent) {
         if let Some(metrics) = &self.metrics {
             metrics.firehose_events.add(
@@ -154,6 +171,14 @@ impl Firehose {
             );
         }
         let _ = self.tx.send(event);
+        // Re-invite the relay on *every* frame, not just repo commits. `notify` is fire-and-forget
+        // (rate-limited, retrying, detached tasks) and never blocks this fan-out or the emit lock
+        // held above it. This is the load-bearing half of the fix: a relay that silently dropped
+        // its subscription while this PDS was quiet gets re-invited by the next lifecycle frame
+        // (`#account`/`#identity`/`#sync`) instead of only by a repo commit that may never come.
+        if let Some(crawlers) = &self.crawlers {
+            crawlers.notify();
+        }
     }
 
     /// Subscribe to the live event stream only (no replay). Each subscriber receives every
@@ -1478,5 +1503,61 @@ mod tests {
         })
         .await
         .expect("a staged commit and a concurrent plain emit must not deadlock");
+    }
+
+    /// The single fan-out choke point re-invites the relay on a **non-commit** lifecycle frame
+    /// (`#account`), the exact case a commit-only notifier missed — a quiet, migrated PDS whose
+    /// activation frames reached no listener.
+    #[tokio::test]
+    async fn broadcast_re_invites_crawlers_on_a_lifecycle_frame() {
+        use wiremock::matchers::{body_json, method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/xrpc/com.atproto.sync.requestCrawl"))
+            .and(body_json(
+                serde_json::json!({ "hostname": "pds.example.com" }),
+            ))
+            .respond_with(ResponseTemplate::new(200))
+            .expect(1..)
+            .mount(&server)
+            .await;
+
+        let client = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(5))
+            .build()
+            .expect("test http client");
+        let crawlers = Arc::new(crate::crawler::CrawlerNotifier::new(
+            client,
+            "pds.example.com".to_string(),
+            &[server.uri()],
+        ));
+
+        let mut fh = test_firehose().await;
+        fh.attach_crawlers(crawlers);
+
+        // An `#account` (active) frame — not a repo commit — must still re-invite the relay.
+        fh.emit_account("did:plc:quiet".to_string(), true, None)
+            .await
+            .unwrap();
+
+        // `notify` is fire-and-forget (a detached task POSTs the re-invitation), so poll the mock
+        // until it lands rather than asserting synchronously.
+        wait_for_crawl(&server).await;
+    }
+
+    /// Poll the mock relay until it has received at least one `requestCrawl`, bounded so a genuine
+    /// wiring failure fails the test instead of hanging.
+    async fn wait_for_crawl(server: &wiremock::MockServer) {
+        for _ in 0..100 {
+            if let Some(reqs) = server.received_requests().await {
+                if !reqs.is_empty() {
+                    return;
+                }
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+        panic!("crawler was not re-invited within the timeout");
     }
 }

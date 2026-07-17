@@ -2,11 +2,15 @@
 
 //! Outbound `com.atproto.sync.requestCrawl` notifications.
 //!
-//! After every repo commit the relay tells each configured crawler (a relay/BGS such as
-//! `bsky.network`) that new content is available, so the crawler pulls this PDS promptly
-//! rather than waiting for its next scheduled sweep. The relay holds a single
-//! `Arc<CrawlerNotifier>` in `AppState`; the firehose emit path calls [`CrawlerNotifier::notify`]
-//! once per commit.
+//! After every firehose emission — repo commits **and** the `#account`/`#identity`/`#sync`
+//! lifecycle frames — the PDS tells each configured crawler (a relay/BGS such as `bsky.network`)
+//! that it has new content, so the crawler pulls this PDS promptly rather than waiting for its next
+//! scheduled sweep. The PDS holds a single `Arc<CrawlerNotifier>` in `AppState`; the firehose's
+//! single fan-out choke point ([`Firehose::broadcast`](crate::firehose::Firehose)) calls
+//! [`CrawlerNotifier::notify`] once per broadcast frame, and `main.rs` fires one on startup so a
+//! fresh deploy re-invites any relay that dropped its subscription while this PDS was quiet.
+//! Notifying on the non-commit frames is the load-bearing property: a lifecycle frame emitted to no
+//! listener (an activation after a migration) is exactly what leaves a relay's view of a DID stale.
 //!
 //! **Fire-and-forget.** `notify` never blocks the commit: it picks the crawlers that are due
 //! (rate limiting), then spawns one detached task per crawler to POST the request with retry.
