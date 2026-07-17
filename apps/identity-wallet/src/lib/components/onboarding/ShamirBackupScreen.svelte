@@ -5,9 +5,17 @@
 
   let {
     share3,
+    share3Words = '',
     oncomplete,
   }: {
+    /** Machine form of Share 3 (base32 envelope) — the QR payload. */
     share3: string;
+    /**
+     * Share 3 as the BIP-39-style word phrase (same bytes) — the primary
+     * human-custody rendering. Empty on legacy did:web ceremonies, where the
+     * screen falls back to the machine form.
+     */
+    share3Words?: string;
     oncomplete: () => void;
   } = $props();
 
@@ -17,12 +25,18 @@
   let qrSvg = $state('');
   let qrFailed = $state(false);
 
-  // Format share as groups of 4 for readability (52 chars → 13 groups of 4).
-  // Mirrors hardware wallet recovery key display conventions.
+  // The word phrase is what a human writes down; copy mirrors what is displayed.
+  let words = $derived(share3Words.trim() === '' ? [] : share3Words.trim().split(/\s+/));
+  let copyText = $derived(words.length > 0 ? words.join(' ') : share3);
+
+  // Legacy fallback: format the machine share as groups of 4 for readability
+  // (mirrors hardware wallet recovery key display conventions).
   let formattedShare = $derived(share3.match(/.{1,4}/g)?.join(' ') ?? share3);
 
   onMount(async () => {
     try {
+      // The QR always carries the compact machine form — both forms encode the
+      // identical share envelope, and base32 keeps the QR in alphanumeric mode.
       qrSvg = await QRCode.toString(share3, {
         type: 'svg',
         width: 200,
@@ -36,7 +50,7 @@
 
   async function copyShare() {
     try {
-      await navigator.clipboard.writeText(share3);
+      await navigator.clipboard.writeText(copyText);
       copied = true;
       copyFailed = false;
       setTimeout(() => {
@@ -84,7 +98,15 @@
 
   <div class="part-block">
     <p class="part-label">Share 3 of 3 — save this yourself</p>
-    <code class="share-code">{formattedShare}</code>
+    {#if words.length > 0}
+      <ol class="word-grid" aria-label="Recovery share word phrase">
+        {#each words as word, i (i)}
+          <li class="word"><span class="word-index">{i + 1}</span>{word}</li>
+        {/each}
+      </ol>
+    {:else}
+      <code class="share-code">{formattedShare}</code>
+    {/if}
     <button class="copy-btn" onclick={copyShare}>
       {copied ? 'Copied!' : 'Copy'}
     </button>
@@ -188,6 +210,35 @@
     display: flex;
     flex-direction: column;
     gap: var(--space-sm);
+  }
+  .word-grid {
+    list-style: none;
+    margin: 0;
+    padding: var(--space-sm);
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: var(--space-2xs) var(--space-sm);
+    background: var(--color-bg);
+    border: 1px solid var(--color-line);
+    border-radius: var(--radius-md);
+  }
+  .word {
+    font-family: var(--font-mono);
+    font-size: var(--text-label);
+    color: var(--color-ink);
+    display: flex;
+    align-items: baseline;
+    gap: var(--space-2xs);
+    min-width: 0;
+    overflow-wrap: anywhere;
+  }
+  .word-index {
+    font-size: var(--text-label);
+    color: var(--color-muted);
+    min-width: 1.4em;
+    text-align: right;
+    flex-shrink: 0;
+    font-variant-numeric: tabular-nums;
   }
   .share-code {
     font-family: var(--font-mono);

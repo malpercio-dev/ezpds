@@ -7,10 +7,24 @@
 // plc.directory POST — so a build failure aborts cleanly, with no orphaned PLC registration
 // and no account without a repo.
 //
-// The derived DID and its 3 Shamir shares are pre-stored on the pending account before that
-// POST: a retry (pending_did already set) reuses the stored shares and skips plc.directory
-// instead of re-splitting the secret, which would orphan Share 2 from a prior attempt in
-// accounts.recovery_share.
+// The ceremony runs in one of two share-custody modes, inferred from the request shape:
+//
+// - **Client-share** (`recoveryKey` + `escrowShare` present, did:plc only): the wallet
+//   generated the recovery seed, derived the recovery rotation key, and split the seed
+//   client-side. The server receives exactly one share — the Share 2 envelope — verifies the
+//   declared recovery key appears in the op's `rotationKeys` (so the escrow deposit and the
+//   DID's public state cannot diverge), and stores the KEK-wrapped envelope in
+//   `recovery_escrow` atomically with promotion. No share material is returned and nothing
+//   lands in `pending_share_*`, so no DB snapshot or backup can ever hold two shares.
+// - **Legacy server-side** (neither field present): the pre-inversion path for wallet builds
+//   that predate client-side generation, kept for the fleet-update transition window and
+//   flagged in logs for adoption tracking. The derived DID and its 3 Shamir shares are
+//   pre-stored on the pending account before the plc.directory POST: a retry (pending_did
+//   already set) reuses the stored shares and skips plc.directory instead of re-splitting
+//   the secret, which would orphan Share 2 from a prior attempt in accounts.recovery_share.
+//
+// On the client-share path only the DID is pre-stored; retry idempotency of the share set is
+// the wallet's job (it stages the set locally until the ceremony is confirmed).
 //
 // Handles are NOT inserted here — that is POST /v1/handles' job (format validation +
 // optional DNS record creation), so a handle failure never has to unwind an already-
@@ -47,6 +61,13 @@ pub struct CreateDidRequest {
     /// Initial password, stored as an argon2id PHC string.
     /// Enables `createSession` for this account after promotion.
     pub password: String,
+    /// did:key of the wallet-derived recovery rotation key (client-share ceremony).
+    /// Must be present together with `escrow_share`, and must appear in the op's
+    /// `rotationKeys`.
+    pub recovery_key: Option<String>,
+    /// Share 2 of the wallet's client-side split, as a base32 v2 share envelope
+    /// (client-share ceremony). Must be present together with `recovery_key`.
+    pub escrow_share: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -57,10 +78,26 @@ pub struct CreateDidResponse {
     pub session_token: String,
     /// Share 1 of 3 — for storage in the user's iCloud Keychain.
     /// Base32-encoded (RFC 4648, no padding), 52 uppercase chars.
-    pub shamir_share_1: String,
+    /// Legacy server-side ceremony only; absent on the client-share path
+    /// (the wallet already holds every share it needs).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub shamir_share_1: Option<String>,
     /// Share 3 of 3 — for user-directed manual backup.
     /// Base32-encoded (RFC 4648, no padding), 52 uppercase chars.
-    pub shamir_share_3: String,
+    /// Legacy server-side ceremony only; absent on the client-share path.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub shamir_share_3: Option<String>,
+}
+
+/// How the promoted account's escrowed share material is sourced and stored —
+/// resolved from the request shape before any state is written.
+enum ShareCustody {
+    /// Client-share ceremony: the wallet split the seed; the server stores only the
+    /// deposited Share 2 envelope (already validated) in `recovery_escrow`.
+    ClientEscrow { envelope: crypto::ShareEnvelope },
+    /// Legacy pre-inversion ceremony: the server generates and splits the secret,
+    /// returning Shares 1 and 3 and keeping Share 2 in `accounts.recovery_share`.
+    ServerLegacy,
 }
 
 pub async fn create_did_handler(
@@ -97,6 +134,49 @@ pub async fn create_did_handler(
         ));
     }
 
+    // Resolve the share-custody mode from the request shape before any state is written.
+    // The two client-share fields travel together: a half-shaped request is a client bug
+    // and must fail loudly rather than silently falling back to server-side generation,
+    // which would strand the wallet's client-generated share set.
+    let custody = match (
+        payload.recovery_key.as_deref(),
+        payload.escrow_share.as_deref(),
+    ) {
+        (Some(_), Some(escrow_share)) => {
+            if payload.did_web_document.is_some() {
+                // A did:web document has no PLC rotationKeys for the recovery key to bind
+                // to; the recovery model for did:web identities is deliberately unscoped.
+                return Err(ApiError::new(
+                    ErrorCode::InvalidClaim,
+                    "the client-share ceremony applies to did:plc accounts only",
+                ));
+            }
+            // Structural validation before anything is stored — a malformed or corrupted
+            // share fails now, not at recovery time. Errors are reported by kind but never
+            // echo the submitted material.
+            let envelope = crypto::ShareEnvelope::decode_share(escrow_share).map_err(|e| {
+                ApiError::new(
+                    ErrorCode::InvalidClaim,
+                    format!("invalid escrow share: {e}"),
+                )
+            })?;
+            if envelope.index() != 2 {
+                return Err(ApiError::new(
+                    ErrorCode::InvalidClaim,
+                    "escrow holds Share 2 only; refusing a share with a different index",
+                ));
+            }
+            ShareCustody::ClientEscrow { envelope }
+        }
+        (None, None) => ShareCustody::ServerLegacy,
+        _ => {
+            return Err(ApiError::new(
+                ErrorCode::InvalidClaim,
+                "recoveryKey and escrowShare must be provided together",
+            ))
+        }
+    };
+
     // Phase 2: validate one method-specific ceremony, yielding the same method-agnostic
     // promotion inputs. did:web has no PLC operation: its already-published document is the
     // authority, so we resolve it externally and compare the JSON value before creating anything.
@@ -122,6 +202,19 @@ pub async fn create_did_handler(
                     ErrorCode::InvalidClaim,
                     "op verificationMethods.atproto does not match the issued repo signing key",
                 ));
+            }
+            // Client-share ceremony: the declared recovery key must actually appear in the
+            // op's rotationKeys, so the escrow deposit can never diverge from the DID's
+            // public state (an escrowed share whose derived key controls nothing would be a
+            // silent recovery dead end). Key count and ordering stay the wallet's choice —
+            // validation is deliberately permissive beyond membership.
+            if let Some(recovery_key) = payload.recovery_key.as_deref() {
+                if !verified.rotation_keys.iter().any(|key| key == recovery_key) {
+                    return Err(ApiError::new(
+                        ErrorCode::InvalidClaim,
+                        "declared recovery key does not appear in the op's rotationKeys",
+                    ));
+                }
             }
             let document = crate::identity::genesis::build_did_document(&verified)?;
             (verified.did, document, Some(signed_op_str))
@@ -205,11 +298,29 @@ pub async fn create_did_handler(
                 ApiError::new(ErrorCode::InternalError, "failed to build genesis repo")
             })?;
 
-    // Phase 3: Pre-store DID and Shamir shares for retry resilience, then POST to plc.directory.
-    // Shares are generated once and stored alongside pending_did so that retries return the
-    // same shares — preventing Share 2 from being orphaned in accounts.recovery_share.
-    let (skip_plc, share1, share2, share3) =
-        pre_store_did_and_shares(&state.db, &session.account_id, &did, &pending).await?;
+    // Phase 3: Pre-store the DID (and, on the legacy path, the Shamir shares) for retry
+    // resilience, then POST to plc.directory. Legacy shares are generated once and stored
+    // alongside pending_did so retries return the same shares — preventing Share 2 from
+    // being orphaned in accounts.recovery_share. The client-share path stores only the DID:
+    // the wallet stages its share set locally, so nothing share-shaped may touch the DB
+    // outside the escrow deposit at promotion.
+    let (skip_plc, legacy_shares) = match &custody {
+        ShareCustody::ClientEscrow { .. } => {
+            let skip_plc = pre_store_did(&state.db, &session.account_id, &did, &pending).await?;
+            (skip_plc, None)
+        }
+        ShareCustody::ServerLegacy => {
+            // Adoption tracking for the transition window: once this line goes quiet across
+            // the fleet, the legacy path (and pending_share_*) can be retired.
+            tracing::info!(
+                account_id = %session.account_id,
+                "legacy server-side share ceremony used (pre-client-share wallet build)"
+            );
+            let (skip_plc, s1, s2, s3) =
+                pre_store_did_and_shares(&state.db, &session.account_id, &did, &pending).await?;
+            (skip_plc, Some((s1, s2, s3)))
+        }
+    };
     check_already_promoted(&state.db, &did).await?;
     if !skip_plc && signed_op_str.is_some() {
         crate::identity::genesis::post_to_plc_directory(
@@ -224,11 +335,35 @@ pub async fn create_did_handler(
     // Phase 4: Build DID document, generate session, hash password, atomically promote.
     let session_token = generate_token();
     let password_hash = hash_password(&payload.password)?;
-    let recovery_share_encrypted =
-        crate::recovery_share::wrap(&share2, master_key).map_err(|e| {
-            tracing::error!(error = %e, "failed to wrap PDS recovery share");
-            ApiError::new(ErrorCode::InternalError, "failed to protect recovery share")
-        })?;
+    let deposit = match &custody {
+        ShareCustody::ClientEscrow { envelope } => {
+            // KEK-wrap the deposited envelope exactly as PUT /v1/recovery/escrow-share
+            // does — the shared SecretFamily ciphertext format, so rewrap-master-key
+            // covers this row like every other wrapped column.
+            let wrapped = crypto::encrypt_secret_bytes(envelope.to_bytes().as_slice(), master_key)
+                .map_err(|e| {
+                    tracing::error!(error = %e, "failed to wrap escrow share for promotion");
+                    ApiError::new(ErrorCode::InternalError, "failed to protect escrow share")
+                })?;
+            EscrowDeposit::ClientShare {
+                wrapped_envelope: wrapped,
+                set_id: envelope.set_id(),
+                version: envelope.version(),
+            }
+        }
+        ShareCustody::ServerLegacy => {
+            let (_, share2, _) = legacy_shares
+                .as_ref()
+                .expect("legacy path always carries its shares");
+            let wrapped = crate::recovery_share::wrap(share2, master_key).map_err(|e| {
+                tracing::error!(error = %e, "failed to wrap PDS recovery share");
+                ApiError::new(ErrorCode::InternalError, "failed to protect recovery share")
+            })?;
+            EscrowDeposit::Legacy {
+                recovery_share_encrypted: wrapped,
+            }
+        }
+    };
     promote_account(
         &state,
         &did,
@@ -236,7 +371,7 @@ pub async fn create_did_handler(
         &session.account_id,
         &did_document,
         &session_token.hash,
-        &recovery_share_encrypted,
+        &deposit,
         &password_hash,
         &repo_key,
         &genesis_root_str,
@@ -247,14 +382,32 @@ pub async fn create_did_handler(
     )
     .await?;
 
+    let (shamir_share_1, shamir_share_3) = match legacy_shares {
+        Some((share1, _, share3)) => (Some(share1), Some(share3)),
+        None => (None, None),
+    };
     Ok(Json(CreateDidResponse {
         did,
         did_document,
         status: "active",
         session_token: session_token.plaintext,
-        shamir_share_1: share1,
-        shamir_share_3: share3,
+        shamir_share_1,
+        shamir_share_3,
     }))
+}
+
+/// The escrow write `promote_account` performs inside the promotion transaction, resolved
+/// from [`ShareCustody`] once the master key is in hand.
+enum EscrowDeposit {
+    /// Legacy path: KEK-wrapped Share 2 lands in `accounts.recovery_share`.
+    Legacy { recovery_share_encrypted: String },
+    /// Client-share path: the KEK-wrapped Share 2 envelope lands in `recovery_escrow`
+    /// with a `deposited` audit event; `accounts.recovery_share` stays NULL.
+    ClientShare {
+        wrapped_envelope: String,
+        set_id: u32,
+        version: u8,
+    },
 }
 
 // ── Private helpers ───────────────────────────────────────────────────────────
@@ -387,6 +540,55 @@ async fn load_pending_account(
         pending_share_2: row.4,
         pending_share_3: row.5,
     })
+}
+
+/// Pre-store the DID alone for the client-share ceremony's retry resilience.
+///
+/// The client-share path never writes share material to the DB — the wallet stages its
+/// share set locally until the ceremony is confirmed — so only `pending_did` is recorded.
+/// A retry (pending_did already set) returns `skip_plc = true` after the same DID-mismatch
+/// guard as the legacy path; any `pending_share_*` values left by an earlier legacy-shaped
+/// attempt are simply ignored (they are deleted with the pending row at promotion).
+async fn pre_store_did(
+    db: &sqlx::SqlitePool,
+    account_id: &str,
+    did: &str,
+    pending: &PendingAccount,
+) -> Result<bool, ApiError> {
+    if let Some(pre_stored_did) = &pending.pending_did {
+        if did != pre_stored_did {
+            tracing::error!(
+                derived_did = %did,
+                stored_did = %pre_stored_did,
+                "retry path: derived DID does not match pre-stored DID; inputs may have changed"
+            );
+            return Err(ApiError::new(
+                ErrorCode::InternalError,
+                "DID mismatch: derived DID does not match pre-stored value",
+            ));
+        }
+        tracing::info!(did = %pre_stored_did, "retry detected: pending_did already set, skipping plc.directory");
+        return Ok(true);
+    }
+
+    let result = sqlx::query("UPDATE pending_accounts SET pending_did = ? WHERE id = ?")
+        .bind(did)
+        .bind(account_id)
+        .execute(db)
+        .await
+        .map_err(|e| {
+            tracing::error!(error = %e, "failed to pre-store pending DID");
+            ApiError::new(ErrorCode::InternalError, "failed to store pending DID")
+        })?;
+
+    if result.rows_affected() == 0 {
+        tracing::error!(account_id = %account_id, "pending account row vanished during DID pre-store");
+        return Err(ApiError::new(
+            ErrorCode::InternalError,
+            "account no longer exists",
+        ));
+    }
+    Ok(false)
 }
 
 /// Pre-store the DID and Shamir shares in pending_accounts for retry resilience (Step 7).
@@ -526,7 +728,10 @@ fn generate_recovery_shares() -> Result<(String, String, String), ApiError> {
 ///
 /// In a single transaction: INSERT accounts + did_documents + sessions, stage the genesis
 /// `#commit` firehose event, then DELETE pending_sessions + devices + pending_accounts.
-/// `recovery_share_encrypted` is KEK-wrapped Share 2 of the Shamir split.
+/// `deposit` decides where the escrowed share material lands: the legacy path binds
+/// KEK-wrapped Share 2 into `accounts.recovery_share`; the client-share path leaves that
+/// column NULL and inserts the wrapped Share 2 envelope into `recovery_escrow` (with its
+/// `deposited` audit event) in the same transaction.
 /// `password_hash` is the argon2id PHC string for the account's password set during the ceremony.
 #[allow(clippy::too_many_arguments)]
 async fn promote_account(
@@ -536,7 +741,7 @@ async fn promote_account(
     account_id: &str,
     did_document: &serde_json::Value,
     token_hash: &str,
-    recovery_share_encrypted: &str,
+    deposit: &EscrowDeposit,
     password_hash: &str,
     repo_key: &crate::db::repo_keys::RepoSigningKey,
     genesis_root: &str,
@@ -562,6 +767,12 @@ async fn promote_account(
         .inspect_err(|e| tracing::error!(error = %e, "failed to begin promotion transaction"))
         .map_err(|_| ApiError::new(ErrorCode::InternalError, "failed to begin transaction"))?;
 
+    let recovery_share_column = match deposit {
+        EscrowDeposit::Legacy {
+            recovery_share_encrypted,
+        } => Some(recovery_share_encrypted.as_str()),
+        EscrowDeposit::ClientShare { .. } => None,
+    };
     sqlx::query(
         "INSERT INTO accounts \
          (did, email, password_hash, recovery_share, repo_root_cid, repo_rev, created_at, updated_at) \
@@ -570,7 +781,7 @@ async fn promote_account(
     .bind(did)
     .bind(email)
     .bind(password_hash)
-    .bind(recovery_share_encrypted)
+    .bind(recovery_share_column)
     .bind(genesis_root)
     .bind(genesis_rev)
     .execute(&mut *tx)
@@ -583,6 +794,30 @@ async fn promote_account(
             ApiError::new(ErrorCode::InternalError, "failed to create account")
         }
     })?;
+
+    // Client-share ceremony: land the escrow deposit (and its audit event) atomically with
+    // the account it belongs to — the same rows PUT /v1/recovery/escrow-share would write,
+    // minus the possibility of the account existing shareless in between.
+    if let EscrowDeposit::ClientShare {
+        wrapped_envelope,
+        set_id,
+        version,
+    } = deposit
+    {
+        crate::db::recovery_escrow::insert_escrow_share(&mut *tx, did, wrapped_envelope)
+            .await
+            .inspect_err(|e| tracing::error!(error = %e, "failed to insert escrow share"))
+            .map_err(|_| ApiError::new(ErrorCode::InternalError, "failed to store escrow share"))?;
+        let detail = serde_json::json!({ "set_id": set_id, "version": version });
+        crate::db::recovery_audit::insert_recovery_audit_event(
+            &mut *tx,
+            &uuid::Uuid::new_v4().to_string(),
+            did,
+            crate::db::recovery_audit::RecoveryAuditEventType::Deposited,
+            Some(&detail.to_string()),
+        )
+        .await?;
+    }
 
     sqlx::query(
         "INSERT INTO did_documents (did, document, created_at, updated_at) \
@@ -2001,6 +2236,425 @@ mod tests {
             .unwrap();
         let body: serde_json::Value = serde_json::from_slice(&body_bytes).unwrap();
         assert_eq!(body["error"]["code"], "INVALID_CLAIM");
+    }
+
+    // ── Client-share ceremony (wallet-generated shares, single-share escrow) ──
+
+    /// Everything the wallet contributes to a client-share ceremony, generated the same
+    /// way the wallet does it: seed → envelope split → derived recovery key → a 3-key
+    /// genesis op `[device, recovery, PDS]` signed by the device key.
+    struct ClientShareCeremony {
+        rotation_key_public: String,
+        recovery_key_id: String,
+        signed_op: serde_json::Value,
+        envelopes: [crypto::ShareEnvelope; 3],
+    }
+
+    fn make_client_share_ceremony(
+        handle: &str,
+        public_url: &str,
+        atproto_key_did: &str,
+    ) -> ClientShareCeremony {
+        use crypto::{
+            build_did_plc_genesis_op_multi_rotation, derive_recovery_keypair,
+            generate_p256_keypair, split_secret_into_envelopes, DidKeyUri,
+        };
+        let seed: [u8; 32] = core::array::from_fn(|i| (i * 7 + 13) as u8);
+        let envelopes = split_secret_into_envelopes(&seed, 0xC0FFEE).expect("split");
+        let recovery = derive_recovery_keypair(&seed).expect("derive recovery keypair");
+
+        let device = generate_p256_keypair().expect("device keypair");
+        let device_private = *device.private_key_bytes;
+        let genesis_op = build_did_plc_genesis_op_multi_rotation(
+            &[
+                device.key_id.clone(),
+                recovery.key_id.clone(),
+                DidKeyUri(atproto_key_did.to_string()),
+            ],
+            &DidKeyUri(atproto_key_did.to_string()),
+            &device_private,
+            handle,
+            public_url,
+        )
+        .expect("multi-rotation genesis op");
+        ClientShareCeremony {
+            rotation_key_public: device.key_id.0,
+            recovery_key_id: recovery.key_id.0,
+            signed_op: serde_json::from_str(&genesis_op.signed_op_json).expect("valid JSON"),
+            envelopes,
+        }
+    }
+
+    /// Build a POST /v1/dids request carrying the client-share fields.
+    fn client_share_request(
+        session_token: &str,
+        ceremony: &ClientShareCeremony,
+        recovery_key: &str,
+        escrow_share: &str,
+    ) -> Request<Body> {
+        let body = serde_json::json!({
+            "rotationKeyPublic": ceremony.rotation_key_public,
+            "signedCreationOp": ceremony.signed_op,
+            "password": "test-password",
+            "recoveryKey": recovery_key,
+            "escrowShare": escrow_share,
+        });
+        Request::builder()
+            .method("POST")
+            .uri("/v1/dids")
+            .header("Authorization", format!("Bearer {session_token}"))
+            .header("Content-Type", "application/json")
+            .body(Body::from(body.to_string()))
+            .unwrap()
+    }
+
+    /// The full client-share happy path: promotion succeeds, the response carries no share
+    /// material, the DB holds exactly one share (the wrapped Share 2 envelope) and zero
+    /// pending_share_* data, and the escrowed envelope reconstructs to the seed whose
+    /// derived key sits at rotationKeys[1].
+    #[tokio::test]
+    async fn client_share_ceremony_promotes_without_returning_shares() {
+        let mock_server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path_regex(r"^/did:plc:[a-z2-7]+$"))
+            .respond_with(ResponseTemplate::new(200))
+            .expect(1)
+            .named("plc.directory genesis op")
+            .mount(&mock_server)
+            .await;
+
+        let state = test_state_for_did(mock_server.uri()).await;
+        let db = state.db.clone();
+        let setup = insert_test_data(&db).await;
+        let ceremony = make_client_share_ceremony(
+            &setup.handle,
+            &state.config.public_url,
+            &setup.repo_signing_key_id,
+        );
+        let escrow_share = ceremony.envelopes[1].encode_share();
+
+        let app = crate::app::app(state.clone());
+        let response = app
+            .oneshot(client_share_request(
+                &setup.session_token,
+                &ceremony,
+                &ceremony.recovery_key_id,
+                &escrow_share,
+            ))
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK, "expected 200 OK");
+        let body_bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let body: serde_json::Value = serde_json::from_slice(&body_bytes).unwrap();
+        let did = body["did"].as_str().expect("did present").to_string();
+
+        // The response must not return any share material on this path.
+        assert!(
+            body.get("shamir_share_1").is_none(),
+            "client-share response must not carry shamir_share_1"
+        );
+        assert!(
+            body.get("shamir_share_3").is_none(),
+            "client-share response must not carry shamir_share_3"
+        );
+
+        // The op's rotationKeys are [device, recovery, PDS], in that order.
+        let verified = crypto::verify_genesis_op(
+            &serde_json::to_string(&ceremony.signed_op).unwrap(),
+            &crypto::DidKeyUri(ceremony.rotation_key_public.clone()),
+        )
+        .unwrap();
+        assert_eq!(
+            verified.rotation_keys,
+            vec![
+                ceremony.rotation_key_public.clone(),
+                ceremony.recovery_key_id.clone(),
+                setup.repo_signing_key_id.clone(),
+            ],
+            "rotationKeys must be [device, recovery, PDS] in order"
+        );
+
+        // Server DB: exactly one share — the wrapped Share 2 envelope — and nothing legacy.
+        let recovery_share: Option<String> =
+            sqlx::query_scalar("SELECT recovery_share FROM accounts WHERE did = ?")
+                .bind(&did)
+                .fetch_one(&db)
+                .await
+                .unwrap();
+        assert!(
+            recovery_share.is_none(),
+            "accounts.recovery_share must stay NULL on the client-share path"
+        );
+        let escrow_encrypted: String =
+            sqlx::query_scalar("SELECT share_encrypted FROM recovery_escrow WHERE did = ?")
+                .bind(&did)
+                .fetch_one(&db)
+                .await
+                .expect("escrow row must exist");
+        let unwrapped = crypto::decrypt_secret_bytes(
+            &escrow_encrypted,
+            &crate::routes::test_utils::test_master_key(),
+        )
+        .expect("escrow ciphertext must unwrap under the configured KEK");
+        let stored_envelope = crypto::ShareEnvelope::from_bytes(&unwrapped).unwrap();
+        assert_eq!(stored_envelope.index(), 2);
+        assert_eq!(stored_envelope.set_id(), ceremony.envelopes[1].set_id());
+
+        // The pending row (and any pending_share_* columns with it) is gone.
+        let pending_count: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM pending_accounts WHERE id = ?")
+                .bind(&setup.account_id)
+                .fetch_one(&db)
+                .await
+                .unwrap();
+        assert_eq!(pending_count, 0, "pending_accounts row should be deleted");
+
+        // The deposit is audited atomically with promotion.
+        let events: Vec<String> = sqlx::query_scalar(
+            "SELECT event_type FROM recovery_audit_events WHERE did = ? ORDER BY rowid",
+        )
+        .bind(&did)
+        .fetch_all(&db)
+        .await
+        .unwrap();
+        assert_eq!(events, vec!["deposited"]);
+
+        // Recovery harness check: Shares 1 + 3 (the wallet's + the user's) reconstruct a
+        // seed whose derived public key is exactly rotationKeys[1].
+        let seed =
+            crypto::combine_envelopes(&ceremony.envelopes[0], &ceremony.envelopes[2]).unwrap();
+        let rederived = crypto::derive_recovery_keypair(&seed).unwrap();
+        assert_eq!(
+            rederived.key_id.0, verified.rotation_keys[1],
+            "derived recovery pubkey must match rotationKeys[1]"
+        );
+        // And the escrowed Share 2 combines with Share 1 to the same seed.
+        let stored_seed =
+            crypto::combine_envelopes(&ceremony.envelopes[0], &stored_envelope).unwrap();
+        assert_eq!(*stored_seed, *seed);
+    }
+
+    /// A client-share retry (pending_did already set, no pending shares) skips
+    /// plc.directory and still lands the escrow deposit at promotion.
+    #[tokio::test]
+    async fn client_share_retry_skips_plc_and_deposits_escrow() {
+        let mock_server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(200))
+            .expect(0)
+            .named("plc.directory should not be called")
+            .mount(&mock_server)
+            .await;
+
+        let state = test_state_for_did(mock_server.uri()).await;
+        let db = state.db.clone();
+        let setup = insert_test_data(&db).await;
+        let ceremony = make_client_share_ceremony(
+            &setup.handle,
+            &state.config.public_url,
+            &setup.repo_signing_key_id,
+        );
+
+        // Simulate a first attempt that reached the pre-store but died before promotion:
+        // pending_did set, pending_share_* untouched (the client-share path never writes them).
+        let verified = crypto::verify_genesis_op(
+            &serde_json::to_string(&ceremony.signed_op).unwrap(),
+            &crypto::DidKeyUri(ceremony.rotation_key_public.clone()),
+        )
+        .unwrap();
+        sqlx::query("UPDATE pending_accounts SET pending_did = ? WHERE id = ?")
+            .bind(&verified.did)
+            .bind(&setup.account_id)
+            .execute(&db)
+            .await
+            .unwrap();
+
+        let escrow_share = ceremony.envelopes[1].encode_share();
+        let response = crate::app::app(state)
+            .oneshot(client_share_request(
+                &setup.session_token,
+                &ceremony,
+                &ceremony.recovery_key_id,
+                &escrow_share,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK, "retry should return 200");
+
+        let escrow_count: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM recovery_escrow WHERE did = ?")
+                .bind(&verified.did)
+                .fetch_one(&db)
+                .await
+                .unwrap();
+        assert_eq!(escrow_count, 1, "the retry deposits exactly one escrow row");
+        // wiremock verifies expect(0) on drop
+    }
+
+    /// A declared recovery key that does not appear in the op's rotationKeys is refused —
+    /// the escrow deposit and the DID's public state must never diverge.
+    #[tokio::test]
+    async fn client_share_recovery_key_not_in_op_returns_400() {
+        let state = test_state_for_did("https://plc.directory".to_string()).await;
+        let db = state.db.clone();
+        let setup = insert_test_data(&db).await;
+        let ceremony = make_client_share_ceremony(
+            &setup.handle,
+            &state.config.public_url,
+            &setup.repo_signing_key_id,
+        );
+
+        // Declare a different (validly-formatted) recovery key than the op carries.
+        let unrelated = crypto::generate_p256_keypair().unwrap().key_id.0;
+        let escrow_share = ceremony.envelopes[1].encode_share();
+        let response = crate::app::app(state)
+            .oneshot(client_share_request(
+                &setup.session_token,
+                &ceremony,
+                &unrelated,
+                &escrow_share,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST, "expected 400");
+        let body_bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let body: serde_json::Value = serde_json::from_slice(&body_bytes).unwrap();
+        assert_eq!(body["error"]["code"], "INVALID_CLAIM");
+    }
+
+    /// The escrow slot holds Share 2 only — depositing Share 1 or 3 is refused before any
+    /// state is written.
+    #[tokio::test]
+    async fn client_share_wrong_index_escrow_share_returns_400() {
+        let state = test_state_for_did("https://plc.directory".to_string()).await;
+        let db = state.db.clone();
+        let setup = insert_test_data(&db).await;
+        let ceremony = make_client_share_ceremony(
+            &setup.handle,
+            &state.config.public_url,
+            &setup.repo_signing_key_id,
+        );
+
+        // Share 3 (the user's copy) must be refused by the escrow.
+        let share_3 = ceremony.envelopes[2].encode_share();
+        let response = crate::app::app(state)
+            .oneshot(client_share_request(
+                &setup.session_token,
+                &ceremony,
+                &ceremony.recovery_key_id,
+                &share_3,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST, "expected 400");
+    }
+
+    /// A malformed escrow share fails structural validation loudly.
+    #[tokio::test]
+    async fn client_share_malformed_escrow_share_returns_400() {
+        let state = test_state_for_did("https://plc.directory".to_string()).await;
+        let db = state.db.clone();
+        let setup = insert_test_data(&db).await;
+        let ceremony = make_client_share_ceremony(
+            &setup.handle,
+            &state.config.public_url,
+            &setup.repo_signing_key_id,
+        );
+
+        let response = crate::app::app(state)
+            .oneshot(client_share_request(
+                &setup.session_token,
+                &ceremony,
+                &ceremony.recovery_key_id,
+                "NOT-A-SHARE",
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST, "expected 400");
+    }
+
+    /// The client-share fields travel together: a half-shaped request (either field alone)
+    /// is a client bug and must not silently fall back to server-side generation.
+    #[tokio::test]
+    async fn client_share_half_shaped_request_returns_400() {
+        let state = test_state_for_did("https://plc.directory".to_string()).await;
+        let db = state.db.clone();
+        let setup = insert_test_data(&db).await;
+        let ceremony = make_client_share_ceremony(
+            &setup.handle,
+            &state.config.public_url,
+            &setup.repo_signing_key_id,
+        );
+        let escrow_share = ceremony.envelopes[1].encode_share().to_string();
+
+        for (recovery_key, escrow) in [
+            (Some(ceremony.recovery_key_id.clone()), None::<String>),
+            (None, Some(escrow_share)),
+        ] {
+            let mut body = serde_json::json!({
+                "rotationKeyPublic": ceremony.rotation_key_public,
+                "signedCreationOp": ceremony.signed_op,
+                "password": "test-password",
+            });
+            if let Some(rk) = recovery_key {
+                body["recoveryKey"] = serde_json::json!(rk);
+            }
+            if let Some(es) = escrow {
+                body["escrowShare"] = serde_json::json!(es);
+            }
+            let request = Request::builder()
+                .method("POST")
+                .uri("/v1/dids")
+                .header("Authorization", format!("Bearer {}", setup.session_token))
+                .header("Content-Type", "application/json")
+                .body(Body::from(body.to_string()))
+                .unwrap();
+            let response = crate::app::app(state.clone())
+                .oneshot(request)
+                .await
+                .unwrap();
+            assert_eq!(
+                response.status(),
+                StatusCode::BAD_REQUEST,
+                "half-shaped client-share request must be rejected"
+            );
+        }
+    }
+
+    /// The client-share ceremony is did:plc only — a did:web document alongside the new
+    /// fields is refused before any state is written.
+    #[tokio::test]
+    async fn client_share_with_did_web_document_returns_400() {
+        let state = test_state_for_did("https://plc.directory".to_string()).await;
+        let db = state.db.clone();
+        let setup = insert_test_data(&db).await;
+        let ceremony = make_client_share_ceremony(
+            &setup.handle,
+            &state.config.public_url,
+            &setup.repo_signing_key_id,
+        );
+
+        let body = serde_json::json!({
+            "rotationKeyPublic": ceremony.rotation_key_public,
+            "didWebDocument": "{}",
+            "password": "test-password",
+            "recoveryKey": ceremony.recovery_key_id,
+            "escrowShare": ceremony.envelopes[1].encode_share().to_string(),
+        });
+        let request = Request::builder()
+            .method("POST")
+            .uri("/v1/dids")
+            .header("Authorization", format!("Bearer {}", setup.session_token))
+            .header("Content-Type", "application/json")
+            .body(Body::from(body.to_string()))
+            .unwrap();
+        let response = crate::app::app(state).oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST, "expected 400");
     }
 
     // ── plc.directory error ───────────────────────────────────────────────────

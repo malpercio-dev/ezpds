@@ -55,11 +55,19 @@ export const createAccount = (
 export type DIDCeremonyResult = {
   did: string;
   /**
-   * Share 3 of 3 — the user's manual backup share.
-   * Base32-encoded (RFC 4648, no padding), 52 uppercase A-Z/2-7 characters.
-   * Share 1 has already been stored in iCloud Keychain by the Rust backend.
+   * Share 3 of 3 — the user's manual backup share, in machine form (base32 v2 share
+   * envelope; legacy did:web ceremonies still return the older bare-base32 form).
+   * Used for the QR rendering. Share 1 has already been stored in iCloud Keychain
+   * by the Rust backend.
    */
   share3: string;
+  /**
+   * Share 3 rendered as the BIP-39-style word phrase (the same envelope bytes) — the
+   * primary human-custody rendering on the backup screen. Empty string on the legacy
+   * did:web ceremony, whose share format predates the word rendering; the screen
+   * falls back to the machine form.
+   */
+  share3Words: string;
 };
 
 /**
@@ -74,6 +82,8 @@ export type DIDCeremonyError = {
     | 'KEY_NOT_FOUND'
     | 'PDS_KEY_FETCH_FAILED'
     | 'NO_PDS_SIGNING_KEY'
+    /** Client-side recovery seed generation / share split failed before any network call. */
+    | 'SHARE_GENERATION_FAILED'
     | 'SIGNING_FAILED'
     | 'DID_CREATION_FAILED'
     | 'KEYCHAIN_ERROR'
@@ -96,6 +106,23 @@ export const performDIDCeremony = (
   password: string,
 ): Promise<DIDCeremonyResult> =>
   invoke('perform_did_ceremony', { handle, password });
+
+/**
+ * Error returned by the `confirm_share_backup` Rust command.
+ * Serialized as `{ code: "SHARE_NOT_STORED" }` etc. by the Rust backend.
+ */
+export type ShareBackupError =
+  | { code: 'SHARE_NOT_STORED' }
+  | { code: 'KEYCHAIN_ERROR' };
+
+/**
+ * Confirm the user saved Share 3 and tear down the ceremony's Keychain staging slot
+ * (the seed's and Share 2's last local copy). The Rust side refuses (SHARE_NOT_STORED)
+ * if Share 1 is not durably stored yet — the staging material must outlive any state
+ * where it is the only home of the seed. Idempotent.
+ */
+export const confirmShareBackup = (): Promise<void> =>
+  invoke('confirm_share_backup');
 
 export type DidWebPreparation = {
   deviceKeyMultibase: string;

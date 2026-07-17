@@ -40,7 +40,7 @@
   import AgentClaimApprovalScreen from '$lib/components/home/AgentClaimApprovalScreen.svelte';
   import SettingsScreen from '$lib/components/home/SettingsScreen.svelte';
   import RemoveIdentityScreen from '$lib/components/home/RemoveIdentityScreen.svelte';
-  import { createAccount, registerCreatedIdentity, listIdentities, listPendingRemovals, getStoredDidDoc, checkIdentityStatus, isCodedError, type CreateAccountError, type OAuthError, type IdentityInfo, type VerifiedClaimOp, type ClaimResult, type UnauthorizedChange } from '$lib/ipc';
+  import { createAccount, confirmShareBackup, registerCreatedIdentity, listIdentities, listPendingRemovals, getStoredDidDoc, checkIdentityStatus, isCodedError, type CreateAccountError, type OAuthError, type IdentityInfo, type VerifiedClaimOp, type ClaimResult, type UnauthorizedChange } from '$lib/ipc';
   import { normalizePlcDocToW3c, extractHandle } from '$lib/did-doc-utils';
   import IdentityListHome from '$lib/components/home/IdentityListHome.svelte';
   import OnboardingShell from '$lib/components/ui/OnboardingShell.svelte';
@@ -103,7 +103,7 @@
   // home screen's "add" action), so the entry screen can offer a Back-to-home
   // affordance. Stays false on first launch, where there is no home to return to.
   let cameFromHome = $state(false);
-  let form = $state({ claimCode: '', email: '', handle: '', password: '', did: '', share3: '', registeredHandle: '', handleOrDid: '' });
+  let form = $state({ claimCode: '', email: '', handle: '', password: '', did: '', share3: '', share3Words: '', registeredHandle: '', handleOrDid: '' });
   let didWebHosting = $state<DidWebHosting>('self');
   let migrationHostingChosen = $state(false);
   let identityMethod = $state<'plc' | 'web'>('plc');
@@ -298,6 +298,18 @@
   // continue — the user keeps their identity and can refresh the card later.
   // (Strict alternative: surface the error and let the user retry before
   // advancing — see the accompanying notes.)
+  async function confirmBackupAndContinue() {
+    // Tear down the ceremony's Keychain staging slot (the seed's last local copy) now
+    // that the user has confirmed saving Share 3. Best-effort: a failure keeps the
+    // staging material (harmless, local-only) and never blocks onboarding.
+    try {
+      await confirmShareBackup();
+    } catch (e) {
+      console.warn('Ceremony staging cleanup failed (will retain staged shares):', e);
+    }
+    step = 'handle_registration';
+  }
+
   async function finishCreateFlow(handle: string) {
     form.registeredHandle = handle;
     try {
@@ -426,7 +438,7 @@
     <DIDCeremonyScreen
       handle={form.handle}
       password={form.password}
-      onsuccess={(result) => { form.did = result.did; form.share3 = result.share3; step = 'did_success'; }}
+      onsuccess={(result) => { form.did = result.did; form.share3 = result.share3; form.share3Words = result.share3Words; step = 'did_success'; }}
     />
   {:else if step === 'did_web_ceremony'}
     <DidWebCeremonyScreen
@@ -434,7 +446,7 @@
       handle={form.handle}
       password={form.password}
       hosting={didWebHosting}
-      onsuccess={(result) => { form.did = result.did; form.share3 = result.share3; step = 'did_success'; }}
+      onsuccess={(result) => { form.did = result.did; form.share3 = result.share3; form.share3Words = result.share3Words; step = 'did_success'; }}
       onback={() => goTo('password')}
     />
   {:else if step === 'did_success'}
@@ -445,7 +457,8 @@
   {:else if step === 'shamir_backup'}
     <ShamirBackupScreen
       share3={form.share3}
-      oncomplete={() => { step = 'handle_registration'; }}
+      share3Words={form.share3Words}
+      oncomplete={confirmBackupAndContinue}
     />
   {:else if step === 'handle_registration'}
     <HandleRegistrationScreen
