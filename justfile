@@ -127,6 +127,13 @@ cap-check:
 ticket-ref-check:
     scripts/ticket-ref-check.sh
 
+# Guard the master-key disaster runbook against drift between its canonical copy
+# (docs/operations/master-key-disaster-runbook.md) and its published, operator-facing
+# rewrite on the docs site (sites/docs/.../operator/master-key-runbook.md): the golden
+# rule and the quick-reference step ordering must read identical in both.
+runbook-parity-check:
+    scripts/runbook-parity-check.sh
+
 # Freeze the access-token binding seam: every access-token verification must go through
 # auth::extractors::authenticate_access (the RFC 9449 scheme<->cnf.jkt enforcement). A route
 # or guard calling auth::jwt::verify_access_token directly skips it — the MM-386 downgrade.
@@ -225,7 +232,7 @@ mcp-sidecar-test:
 # Adding a check here covers `just ci` (macOS/full) and `just ci-pds` (Linux) at once —
 # the old design re-stated all twelve checks in each, so a gate added to one and
 # forgotten in the other was a silent gap.
-checks: fmt-check lock-check bruno-check docs-check changelog-check changelog-test font-check cap-check ticket-ref-check auth-seam-check ssrf-client-check gc-guard-check ios-paths-check swift-rs-check ios-template-check
+checks: fmt-check lock-check bruno-check docs-check changelog-check changelog-test font-check cap-check ticket-ref-check runbook-parity-check auth-seam-check ssrf-client-check gc-guard-check ios-paths-check swift-rs-check ios-template-check
 
 # Run the full CI pipeline locally (all crates; use on macOS where the iOS app builds)
 ci: checks clippy test audit deny

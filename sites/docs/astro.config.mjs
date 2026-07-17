@@ -50,6 +50,7 @@ export default defineConfig({
             { label: 'Configuration', slug: 'operator/configuration' },
             { label: 'Backups & restore', slug: 'operator/backups' },
             { label: 'Moderation', slug: 'operator/moderation' },
+            { label: 'Master-key disaster runbook', slug: 'operator/master-key-runbook' },
             {
               label: 'Reference',
               items: [

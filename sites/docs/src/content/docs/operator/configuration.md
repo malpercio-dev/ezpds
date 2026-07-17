@@ -29,6 +29,10 @@ makes all existing secrets undecryptable — the server fails to load account re
 signing keys, and repo writes break. **Losing it is unrecoverable.** So: store it
 in a secret manager (agenix / sops / your platform's secret store) never in the
 repository or the image, and back it up.
+
+If it's already lost or you suspect it's compromised, stop and follow the
+[master-key disaster runbook](/operator/master-key-runbook/) rather than
+improvising — the recovery order matters.
 :::
 
 Rotation is supported, but only as a deliberate offline operation: the

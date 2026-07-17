@@ -37,6 +37,14 @@ image — the same discipline as the [master key](/operator/configuration/). Any
 with the replica has a full copy of your accounts' data.
 :::
 
+:::caution[The replica is only half the picture]
+This backup protects the *ciphertext*. It does **not** protect the
+[master key](/operator/configuration/) that decrypts it — back that up
+separately, in a different store than this replica. If the key is ever lost
+or compromised, follow the [master-key disaster runbook](/operator/master-key-runbook/)
+instead of restoring from here alone.
+:::
+
 ## Restoring
 
 To restore the database from the replica:
