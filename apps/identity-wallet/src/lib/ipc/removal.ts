@@ -83,3 +83,17 @@ export const tombstoneIdentity = (did: string): Promise<RemovalOutcome> =>
  * trouble resolves to an empty list, so it is safe to call unconditionally on launch.
  */
 export const listPendingRemovals = (): Promise<string[]> => invoke('list_pending_removals');
+
+/**
+ * Escape hatch — forget an identity from THIS device only, with no network step.
+ *
+ * For an identity whose PDS account no longer exists (deleted from another device, purged
+ * server-side, or migrated away), the normal delete flow can never complete: the PDS answers
+ * an already-gone account with the same opaque 401 as a wrong password, so it can't be
+ * treated as success. This wipes the DID's local Keychain material and clears any pending
+ * marker. It does NOT delete a server account or tombstone the did:plc — the identity may
+ * still be live elsewhere. Resolves to `wasLastIdentity` (like {@link RemovalOutcome}). MUST
+ * be gated behind {@link authenticateBiometric} by the caller.
+ */
+export const forgetIdentityLocally = (did: string): Promise<boolean> =>
+  invoke('forget_identity_locally', { did });

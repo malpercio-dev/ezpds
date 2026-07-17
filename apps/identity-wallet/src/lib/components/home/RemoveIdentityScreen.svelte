@@ -5,6 +5,7 @@
     confirmIdentityRemoval,
     tombstoneIdentity,
     listPendingRemovals,
+    forgetIdentityLocally,
     sovereignLogin,
     isCodedError,
     type RemovalError,
@@ -32,8 +33,16 @@
     oncomplete: (wasLast: boolean) => void;
   } = $props();
 
-  // warn → confirm (code + password) → (on partial failure) tombstone_retry
-  type Phase = 'warn' | 'requesting' | 'confirm' | 'working' | 'tombstone_retry';
+  // warn → confirm (code + password) → (on partial failure) tombstone_retry.
+  // forget_confirm is the local-only escape hatch, reachable whenever the server-side
+  // deletion can't proceed (the account no longer exists on its PDS).
+  type Phase =
+    | 'warn'
+    | 'requesting'
+    | 'confirm'
+    | 'working'
+    | 'tombstone_retry'
+    | 'forget_confirm';
   let phase = $state<Phase>('warn');
   let error = $state<string | null>(null);
 
@@ -70,6 +79,24 @@
     canStart: () => phase === 'confirm' && canConfirm,
   });
   let holdFill = $derived(hold.state.progress);
+
+  // A separate hold gesture for the local-only "forget" confirmation, so its own progress
+  // and canStart guard stay independent of the delete-and-tombstone hold above.
+  const forgetHold = useHoldGesture({
+    durationMs: HOLD_MS,
+    oncomplete: () => {
+      forgetHold.state.progress = 1;
+      forgetLocally();
+    },
+    canStart: () => phase === 'forget_confirm',
+  });
+  let forgetHoldFill = $derived(forgetHold.state.progress);
+
+  /** Enter the local-only escape hatch from any stuck state. */
+  function startForget() {
+    error = null;
+    phase = 'forget_confirm';
+  }
 
   /** Translate a typed RemovalError (or any throwable) into a display string. */
   function messageFor(raw: unknown): string {
@@ -182,6 +209,33 @@
   }
 
   /**
+   * Escape hatch: forget the identity from this device only, no network step. For an
+   * account that no longer exists on its PDS (deleted elsewhere / migrated away), the
+   * server-side delete can never succeed — the PDS answers an absent account with the same
+   * opaque 401 as a wrong password, so it can't be auto-treated as done. This wipes local
+   * material without deleting a server account or retiring the DID. Biometric-gated.
+   */
+  async function forgetLocally() {
+    error = null;
+    try {
+      await authenticateBiometric('Remove this identity from this device');
+    } catch {
+      forgetHold.state.progress = 0;
+      return; // gate declined — nothing wiped.
+    }
+    phase = 'working';
+    try {
+      const wasLast = await forgetIdentityLocally(did);
+      oncomplete(wasLast);
+    } catch (raw: unknown) {
+      console.error('forgetIdentityLocally failed:', raw);
+      forgetHold.state.progress = 0;
+      error = messageFor(raw);
+      phase = 'forget_confirm';
+    }
+  }
+
+  /**
    * Errors that mean deleteAccount already succeeded — only the tombstone/wipe is left, so the
    * UI offers the tombstone-only retry. Deliberately excludes RATE_LIMITED and NETWORK_ERROR:
    * those are the *deletion* stage's codes (a transport failure there leaves the outcome
@@ -283,6 +337,22 @@
           keys are still on this device — retry to complete removal.
         </p>
       </div>
+    {:else if phase === 'forget_confirm'}
+      <div class="hero">
+        <h1 class="hero-title">Remove from this device only</h1>
+        <p class="hero-sub">
+          Use this if this identity's account no longer exists on its server — for example it was
+          already deleted, or you migrated it elsewhere.
+        </p>
+      </div>
+      <ul class="consequences">
+        <li><strong>Erases this identity's keys</strong> from this device.</li>
+        <li><strong>Does not delete a server account</strong> or retire the identity on the network.</li>
+      </ul>
+      <p class="note danger-note">
+        If this identity is still active anywhere, removing its keys here may permanently end your
+        ability to control it. This can't be undone.
+      </p>
     {/if}
 
     {#if error}
@@ -296,6 +366,9 @@
     {#if phase === 'warn'}
       <Button variant="secondary" onclick={startRequest}>Continue</Button>
       <Button variant="secondary" onclick={onback}>Cancel</Button>
+      <button class="link-action" onclick={startForget}>
+        This account no longer exists on its server
+      </button>
     {:else if phase === 'confirm'}
       <button
         class="hold"
@@ -313,9 +386,29 @@
       </button>
       <p class="hint">Press and hold — this can't be undone</p>
       <Button variant="secondary" onclick={onback}>Cancel</Button>
+      <button class="link-action" onclick={startForget}>
+        This account no longer exists on its server
+      </button>
     {:else if phase === 'tombstone_retry'}
       <Button onclick={retryTombstone}>Retry</Button>
+      <button class="link-action" onclick={startForget}>Remove from this device instead</button>
       <Button variant="secondary" onclick={onback}>Close</Button>
+    {:else if phase === 'forget_confirm'}
+      <button
+        class="hold"
+        onpointerdown={forgetHold.start}
+        onpointerup={forgetHold.end}
+        onpointerleave={forgetHold.end}
+        onpointercancel={forgetHold.end}
+        onkeydown={forgetHold.keydown}
+        onkeyup={forgetHold.keyup}
+        aria-label="Press and hold to remove this identity from this device"
+      >
+        <span class="hold-fill" style="transform: scaleX({forgetHoldFill})"></span>
+        <span class="hold-label">Hold to remove from device</span>
+      </button>
+      <p class="hint">Press and hold — this can't be undone</p>
+      <Button variant="secondary" onclick={() => { error = null; phase = 'warn'; }}>Back</Button>
     {/if}
   </div>
 </div>
@@ -522,5 +615,23 @@
     font-size: var(--text-label);
     color: var(--color-muted);
     margin: 0;
+  }
+
+  /* Low-emphasis escape hatch into the local-only "forget" flow. */
+  .link-action {
+    background: none;
+    border: none;
+    color: var(--color-accent);
+    font-family: var(--font-sans);
+    font-size: var(--text-label);
+    font-weight: var(--weight-medium);
+    text-align: center;
+    cursor: pointer;
+    padding: var(--space-xs);
+    min-height: 44px;
+  }
+
+  .danger-note {
+    color: var(--color-critical);
   }
 </style>
