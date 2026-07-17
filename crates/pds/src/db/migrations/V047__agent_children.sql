@@ -1,8 +1,21 @@
 -- Sovereign child agents are full local accounts whose recovery authority belongs to the
 -- parent's wallet. The agent registration row is the durable ownership and capability link.
 
+-- Rebuilding `agent_identities` drops the old parent table, which implicit-deletes its rows
+-- while child FKs still reference the table name (the V038 constraint: `PRAGMA foreign_keys`
+-- can't toggle mid-transaction, `defer_foreign_keys` leaves an unbalanced deferred counter).
+-- So EVERY table referencing agent_identities (id) must be cycled through a temp stash —
+-- emptied before the parent swap and refilled after: `agent_claim_attempts` (V037) AND
+-- `agent_audit_events` (V040). The audit stash carries the original rowid explicitly
+-- (CREATE TABLE AS SELECT does not preserve it) because the audit trail's pagination
+-- cursors are rowid-based and rowid order must remain event order.
+
 CREATE TABLE agent_claim_attempts_stash AS SELECT * FROM agent_claim_attempts;
 DELETE FROM agent_claim_attempts;
+
+CREATE TABLE agent_audit_events_stash AS
+    SELECT rowid AS orig_rowid, * FROM agent_audit_events;
+DELETE FROM agent_audit_events;
 
 CREATE TABLE agent_identities_new (
     id                       TEXT NOT NULL,
@@ -44,6 +57,11 @@ DROP TABLE agent_identities;
 ALTER TABLE agent_identities_new RENAME TO agent_identities;
 INSERT INTO agent_claim_attempts SELECT * FROM agent_claim_attempts_stash;
 DROP TABLE agent_claim_attempts_stash;
+
+INSERT INTO agent_audit_events (rowid, id, registration_id, did, event_type, detail, created_at)
+    SELECT orig_rowid, id, registration_id, did, event_type, detail, created_at
+    FROM agent_audit_events_stash;
+DROP TABLE agent_audit_events_stash;
 
 CREATE INDEX idx_agent_identities_did ON agent_identities (did);
 CREATE INDEX idx_agent_identities_parent_did ON agent_identities (parent_did);
