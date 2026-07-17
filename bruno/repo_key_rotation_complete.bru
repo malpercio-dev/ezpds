@@ -1,0 +1,72 @@
+meta {
+  name: Complete repo signing-key rotation (POST /v1/repo-keys/rotation/complete)
+  type: http
+  seq: 120
+}
+
+post {
+  url: {{baseUrl}}/v1/repo-keys/rotation/complete
+  body: json
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{sessionToken}}
+}
+
+body:json {
+  {
+    "operation": {
+      "type": "plc_operation",
+      "prev": "bafyrei...",
+      "sig": "...",
+      "rotationKeys": ["did:key:zDeviceKey", "did:key:zStagedKey"],
+      "verificationMethods": { "atproto": "did:key:zStagedKey" },
+      "alsoKnownAs": ["at://alice.example.com"],
+      "services": {
+        "atproto_pds": {
+          "type": "AtprotoPersonalDataServer",
+          "endpoint": "https://pds.example.com"
+        }
+      }
+    }
+  }
+}
+
+vars:pre-request {
+  baseUrl: http://localhost:8080
+}
+
+docs {
+  # POST /v1/repo-keys/rotation/complete
+
+  Submit the wallet-signed PLC rotation operation and cut the account over to its staged
+  signing key. The operation must be signed by one of the DID's current rotation keys
+  (normally the wallet device key), chain onto the current PLC head, install exactly the
+  staged key as `verificationMethods.atproto` (and in `rotationKeys`), and leave `services`
+  unchanged — a rotation must not double as a migration.
+
+  Holding the account's repo write lock, the PDS POSTs the operation to plc.directory,
+  refreshes the cached DID document, promotes the staged key to active, and deletes the
+  retired key, so no commit is ever signed by a key absent from the DID document. Emits an
+  `#identity` firehose frame so relays re-resolve.
+
+  Retry-safe: an operation that already landed on plc.directory skips the submit and only
+  performs the local cutover; a repeat after a completed cutover returns 200.
+
+  Authenticate as the account owner (wallet session token or full-access OAuth/XRPC token;
+  agent-derived and app-password credentials refused). `did:plc` accounts only.
+
+  ## Response (200)
+
+  ```json
+  { "signingKey": "did:key:zStagedKey" }
+  ```
+
+  ## Errors
+
+  - `400` — not `did:plc`, no rotation in progress, unauthorized signer, stale `prev`,
+    wrong key installed, or a `services` change
+  - `401` / `403` — missing/invalid credential, or an agent-derived/app-password token
+  - `502`-class `PlcDirectoryError` — plc.directory unreachable or rejected the operation
+}

@@ -85,6 +85,7 @@ use crate::routes::put_preferences::put_preferences_handler;
 use crate::routes::put_record::put_record;
 use crate::routes::refresh_session::refresh_session;
 use crate::routes::register_device::register_device;
+use crate::routes::repo_key_rotation::{begin_repo_key_rotation, complete_repo_key_rotation};
 use crate::routes::request_account_delete::request_account_delete;
 use crate::routes::request_email_confirmation::request_email_confirmation;
 use crate::routes::request_email_update::request_email_update;
@@ -462,6 +463,11 @@ pub fn app(state: AppState) -> Router {
         .route(
             "/v1/did-web/document",
             post(update_did_web_document_handler),
+        )
+        .route("/v1/repo-keys/rotation", post(begin_repo_key_rotation))
+        .route(
+            "/v1/repo-keys/rotation/complete",
+            post(complete_repo_key_rotation),
         )
         .route("/v1/agents", get(list_agents))
         .route("/v1/agents/claim-preview", post(claim_preview))

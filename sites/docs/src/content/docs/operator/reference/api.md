@@ -59,6 +59,8 @@ Every path registered by the server is listed here. For `/xrpc/` endpoints, use 
 | `/v1/handles` | Custos HTTP |
 | `/v1/handles/{handle}` | Custos HTTP |
 | `/v1/pds/keys` | Custos HTTP |
+| `/v1/repo-keys/rotation` | Custos HTTP |
+| `/v1/repo-keys/rotation/complete` | Custos HTTP |
 | `/v1/repo-signing-key` | Custos HTTP |
 | `/v1/sessions/sovereign` | Custos HTTP |
 | `/v1/transfer/accept` | Custos HTTP |

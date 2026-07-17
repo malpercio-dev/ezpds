@@ -59,3 +59,4 @@ understand why the architecture is the way it is.
 | [0022](0022-did-web-for-user-owned-domains.md) | Accepted | `did:plc` remains the default; `did:web` may be minted or hosted only after proving control of a user-owned domain |
 | [0023](0023-sovereign-child-agent-identities.md) | Accepted | Agents may be sovereign child identities; hosted defaults to a child while self-hosted defaults to acts-as-you |
 | [0024](0024-hosted-agent-credential-forwarding.md) | Accepted | The hosted agent tier forwards each caller's credential and holds no durable user or agent secrets |
+| [0025](0025-wallet-driven-repo-key-rotation.md) | Accepted | Repo signing-key rotation is wallet-signed and PDS-submitted, with a staged key promoted under the repo write lock |

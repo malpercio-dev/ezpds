@@ -73,6 +73,7 @@ pub mod put_preferences;
 pub mod put_record;
 pub mod refresh_session;
 pub mod register_device;
+pub mod repo_key_rotation;
 pub mod request_account_delete;
 pub mod request_email_confirmation;
 pub mod request_email_update;

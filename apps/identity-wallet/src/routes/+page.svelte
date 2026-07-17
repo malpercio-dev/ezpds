@@ -32,6 +32,7 @@
   import MigrationSuccessScreen from '$lib/components/onboarding/MigrationSuccessScreen.svelte';
   import DIDDocumentScreen from '$lib/components/home/DIDDocumentScreen.svelte';
   import ChangeHandleScreen from '$lib/components/home/ChangeHandleScreen.svelte';
+  import RotateRepoKeyScreen from '$lib/components/home/RotateRepoKeyScreen.svelte';
   import AppPasswordsScreen from '$lib/components/home/AppPasswordsScreen.svelte';
   import AlertDetailScreen from '$lib/components/home/AlertDetailScreen.svelte';
   import RecoveryOverrideScreen from '$lib/components/home/RecoveryOverrideScreen.svelte';
@@ -74,6 +75,7 @@
     | 'home'
     | 'identity_detail'
     | 'change_handle'
+    | 'rotate_repo_key'
     | 'app_passwords'
     | 'remove_identity'
     | 'alert_detail'
@@ -511,6 +513,9 @@
       onchangehandle={selectedDeviceKeyIsRoot === true && selectedDid?.startsWith('did:plc:')
         ? () => goTo('change_handle')
         : undefined}
+      onrotatekey={selectedDeviceKeyIsRoot === true && selectedDid?.startsWith('did:plc:')
+        ? () => goTo('rotate_repo_key')
+        : undefined}
       onapppasswords={() => goTo('app_passwords')}
       onmigrate={selectedDeviceKeyIsRoot === true
         ? () => {
@@ -542,6 +547,13 @@
     <ChangeHandleScreen
       did={selectedDid ?? ''}
       currentHandle={selectedDidDoc ? extractHandle(selectedDidDoc) : null}
+      onback={() => goTo('identity_detail')}
+      ondone={() => goTo('home')}
+    />
+
+  {:else if step === 'rotate_repo_key'}
+    <RotateRepoKeyScreen
+      did={selectedDid ?? ''}
       onback={() => goTo('identity_detail')}
       ondone={() => goTo('home')}
     />

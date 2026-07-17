@@ -14,6 +14,7 @@ pub mod oauth_client;
 pub mod pds_client;
 pub mod plc_monitor;
 pub mod recovery;
+pub mod rotate_repo_key;
 pub mod session_provider;
 pub mod source_login;
 pub mod sovereign_session;
@@ -1149,6 +1150,8 @@ pub fn run() {
             app_passwords::revoke_app_password,
             plc_monitor::check_identity_status,
             recovery::build_recovery_override_cmd,
+            rotate_repo_key::build_repo_key_rotation_cmd,
+            rotate_repo_key::submit_repo_key_rotation_cmd,
             recovery::submit_recovery_override_cmd,
             identity_removal::request_identity_removal,
             identity_removal::confirm_identity_removal,

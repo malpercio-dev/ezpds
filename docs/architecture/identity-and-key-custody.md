@@ -86,6 +86,16 @@ facts rather than PDS policy promises:
    operation that repoints the DID at a new PDS, with no dependency on the old
    PDS's cooperation. This reframes account migration; see
    [ADR-0002](decisions/0002-wallet-authorized-account-migration.md).
+4. **Repo signing-key rotation.** The device key can authorize replacing the
+   PDS-held repo signing key (`verificationMethods.atproto` / `rotationKeys[1]`)
+   with a freshly generated one — the recovery mechanism when that key's
+   at-rest encryption is compromised or its master key is lost, since the PDS
+   key cannot re-authorize itself. The wallet composes and signs the key-swap
+   op (`rotate_repo_key.rs`, a fourth strict allowlist beside claim / migration /
+   handle change) and hands it to the PDS's `/v1/repo-keys/rotation` surface,
+   which submits it to plc.directory and cuts its commit signer over atomically
+   under the account's repo write lock; see
+   [ADR-0025](decisions/0025-wallet-driven-repo-key-rotation.md).
 
 ## Import ("claim") of an existing identity
 

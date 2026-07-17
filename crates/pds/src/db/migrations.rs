@@ -210,4 +210,8 @@ pub(super) static MIGRATIONS: &[Migration] = &[
         version: 47,
         sql: include_str!("migrations/V047__agent_children.sql"),
     },
+    Migration {
+        version: 48,
+        sql: include_str!("migrations/V048__signing_key_status.sql"),
+    },
 ];
