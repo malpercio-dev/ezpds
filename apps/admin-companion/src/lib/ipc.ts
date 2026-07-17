@@ -295,6 +295,74 @@ export function getServerHealth(pairingId: string): Promise<ServerHealth> {
   return invoke<ServerHealth>('get_server_health', { pairingId });
 }
 
+/** The relay's lifecycle status for us, as reported by `com.atproto.sync.getHostStatus`. */
+export type RelayHostStatus = 'active' | 'idle' | 'offline' | 'throttled' | 'banned';
+
+/**
+ * The relay-status readout — the response shape of `GET /v1/admin/relay-status`. Is the
+ * upstream relay actually crawling/indexing us? Literal facts only: the relay derives no
+ * ok/warn/behind verdict, so the gap thresholds live in the block that renders this.
+ */
+export interface RelayStatus {
+  /** The relay we queried (first configured crawler), bare host; null when none configured. */
+  relayHost: string | null;
+  /** Whether the relay answered at all. A `HostNotFound` still counts as reachable. */
+  reachable: boolean;
+  /** The relay's lifecycle status for us (verbatim; may be an unknown value from a newer relay). */
+  relayStatus: RelayHostStatus | (string & {}) | null;
+  /** The relay's cursor into our firehose seq-space; null when unavailable. */
+  relaySeq: number | null;
+  /** How many of our accounts the relay has indexed; null when unavailable. */
+  accountCount: number | null;
+  /** Our exact sequencer head (0 before the first event). */
+  pdsHeadSeq: number;
+  /** `pdsHeadSeq − relaySeq` (positive = relay behind); signed, null when `relaySeq` is unknown. */
+  gap: number | null;
+  /** The `sequenced_at` of our event at `relaySeq` ("caught up as of / not seen since T"). */
+  relayCursorAt: string | null;
+  /** A short reason when unreachable or not-crawled; null on success. */
+  detail: string | null;
+  /** When this readout polled the relay (RFC 3339). */
+  checkedAt: string;
+}
+
+/**
+ * Fetch the relay-status readout from the given pairing's relay via a signed request — the
+ * Home relay-status block's data source. Throws a {@link RelayClientError}.
+ */
+export function getRelayStatus(pairingId: string): Promise<RelayStatus> {
+  return invoke<RelayStatus>('get_relay_status', { pairingId });
+}
+
+/** One relay's outcome in a request-crawl action. */
+export interface RelayCrawlAttempt {
+  /** The crawler host (bare, scheme stripped) the request targeted. */
+  host: string;
+  /** Whether the crawler accepted the `requestCrawl`. */
+  accepted: boolean;
+  /** A short reason when `accepted` is false; null on success. */
+  detail: string | null;
+}
+
+/** The result of the request-crawl action — the response shape of `POST /v1/admin/request-crawl`. */
+export interface RequestCrawlResult {
+  /** How many relays the request was sent to. */
+  requested: number;
+  /** How many accepted the `requestCrawl`. */
+  accepted: number;
+  /** Per-relay outcomes, in configuration order. */
+  relays: RelayCrawlAttempt[];
+}
+
+/**
+ * Ask the given pairing's relay to crawl this PDS now via a signed request — the "Request
+ * crawl" action. This signs, so the caller must run the biometric gate first. Throws a
+ * {@link RelayClientError}.
+ */
+export function requestCrawl(pairingId: string): Promise<RequestCrawlResult> {
+  return invoke<RequestCrawlResult>('request_crawl', { pairingId });
+}
+
 /**
  * One account row of the relay's operator account list — the response shape of
  * `GET /v1/admin/accounts`. `status` is the derived lifecycle, always stated

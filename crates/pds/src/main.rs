@@ -29,6 +29,7 @@ mod rate_limit;
 mod read_after_write;
 mod record_write;
 mod recovery_share;
+mod relay_status;
 mod repo_rev;
 mod request_host;
 mod rewrap;

@@ -18,6 +18,8 @@ use crate::routes::admin_devices::{
 };
 use crate::routes::admin_health::admin_health;
 use crate::routes::admin_list_accounts::list_accounts;
+use crate::routes::admin_relay_status::relay_status;
+use crate::routes::admin_request_crawl::request_crawl;
 use crate::routes::admin_revoke_credentials::revoke_account_credentials;
 use crate::routes::admin_transfers::{cancel_admin_transfer, list_admin_transfers};
 use crate::routes::agent_child::{list_children, mint_child, revoke_child};
@@ -480,6 +482,8 @@ pub fn app(state: AppState) -> Router {
             post(issue_reset_token),
         )
         .route("/v1/admin/health", get(admin_health))
+        .route("/v1/admin/relay-status", get(relay_status))
+        .route("/v1/admin/request-crawl", post(request_crawl))
         .route(
             "/v1/admin/accounts/{id}/revoke-credentials",
             post(revoke_account_credentials),
