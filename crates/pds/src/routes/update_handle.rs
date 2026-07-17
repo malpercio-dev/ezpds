@@ -17,9 +17,9 @@
 //   5. For a PDS-custodied did:plc (the PDS key is rotationKeys[0]), build and sign
 //      an alsoKnownAs-only PLC operation. Wallet-sovereign identities are left for
 //      the device-key-signed wallet flow.
-//   6. Atomically swap handles in a transaction. For the custodied path, keep the
-//      transaction open until plc.directory accepts the operation, then update the
-//      cached DID document in the same transaction.
+//   6. For the custodied path, submit the operation to plc.directory *before* opening any
+//      transaction (the single-connection pool must never be held across a network call), then
+//      atomically swap handles and cache the updated DID document in one short transaction.
 //   7. Emit #identity firehose frame with the new handle
 //   8. Return 200 (empty JSON object)
 //
@@ -135,12 +135,31 @@ pub async fn update_handle_handler(
 
     let plc_update = prepare_custodied_plc_update(&state, did, &payload.handle).await?;
 
-    // DELETE old + INSERT new share one transaction so the swap commits or rolls back together.
-    // On the PDS-custodied path, plc.directory must accept the authoritative change before this
-    // transaction commits. The remote call deliberately happens while this writer transaction
-    // reserves the new handle: posting first would let a concurrent claimant win the handle before
-    // our local commit, leaving the PLC document changed but local resolution unchanged. A failed
-    // POST drops the transaction and restores the old local handle.
+    // On the PDS-custodied path, submit the authoritative change to plc.directory *before* opening
+    // the handle-swap transaction. This crate's pool is single-connection, so awaiting the remote
+    // POST (up to the `http_client` timeout) while a transaction held the connection would stall
+    // every other request in the process on the connection acquire — the same head-of-line reason
+    // the firehose/activateAccount paths build their CARs before opening their tx. Publishing before
+    // the local swap deliberately accepts a brief window where plc.directory is ahead of local
+    // resolution: for a did:plc account plc.directory is authoritative, so a re-resolve reconciles
+    // local to it. The reverse ordering (local committed, PLC not yet) is the unsafe one — a
+    // re-resolve would then silently revert the user's handle change. A failed POST returns here
+    // before any local mutation, leaving the old handle intact.
+    if let Some(plc_update) = &plc_update {
+        crate::identity::genesis::post_to_plc_directory(
+            &state.http_client,
+            &state.config.plc_directory_url,
+            did,
+            &plc_update.signed_operation,
+        )
+        .await?;
+    }
+
+    // DELETE old + INSERT new (+ cache the submitted PLC doc) share one short transaction so the
+    // swap commits or rolls back together while the connection is held only for local writes. The
+    // INSERT's UNIQUE constraint still rejects a concurrent claimant (→ HANDLE_TAKEN), so two DIDs
+    // can never both resolve the handle locally — the concurrent-claimant safety property is
+    // preserved without holding the connection across the network POST above.
     {
         let mut tx = state.db.begin().await.map_err(|e| {
             tracing::error!(error = %e, "failed to begin transaction for handle swap");
@@ -178,15 +197,12 @@ pub async fn update_handle_handler(
             })?;
 
         if let Some(plc_update) = &plc_update {
-            crate::identity::genesis::post_to_plc_directory(
-                &state.http_client,
-                &state.config.plc_directory_url,
-                did,
-                &plc_update.signed_operation,
-            )
-            .await?;
-
-            sqlx::query(
+            // The authoritative plc.directory POST has already succeeded above, so this is only a
+            // cache refresh: never let its failure roll back the committed handle swap (which would
+            // leave plc.directory ahead of a reverted local handle). A stale/missing cache row is
+            // reconciled by the next re-resolve, matching the non-fatal posture in
+            // submit_plc_operation.rs.
+            if let Err(e) = sqlx::query(
                 "INSERT INTO did_documents (did, document, created_at, updated_at) \
                  VALUES (?, ?, datetime('now'), datetime('now')) \
                  ON CONFLICT(did) DO UPDATE SET \
@@ -196,10 +212,9 @@ pub async fn update_handle_handler(
             .bind(plc_update.did_document.to_string())
             .execute(&mut *tx)
             .await
-            .map_err(|e| {
-                tracing::error!(error = %e, did = %did, "failed to cache submitted handle PLC operation");
-                ApiError::new(ErrorCode::InternalError, "failed to update DID document")
-            })?;
+            {
+                tracing::warn!(error = %e, did = %did, "failed to cache submitted handle PLC operation (non-fatal)");
+            }
         }
 
         tx.commit().await.map_err(|e| {
@@ -712,6 +727,72 @@ mod tests {
             serde_json::from_str::<serde_json::Value>(&cached).unwrap()["alsoKnownAs"],
             serde_json::json!([format!("at://{new_handle}")])
         );
+    }
+
+    /// After plc.directory accepts the custodied op, a failure to refresh the did_documents cache
+    /// must not roll back the committed handle swap: the request still succeeds and the new handle
+    /// resolves locally. A BEFORE INSERT trigger fails only the cache write (auth still reads the
+    /// table), matching the non-fatal posture in submit_plc_operation.rs.
+    #[tokio::test]
+    async fn custodied_cache_write_failure_is_non_fatal() {
+        let plc = MockServer::start().await;
+        let state = state_with_plc(plc.uri()).await;
+        let db = state.db.clone();
+        let did = "did:plc:updatehandlecachefail11";
+        let old_handle = format!("alice.{}", state.config.available_user_domains[0]);
+        let new_handle = format!("bob.{}", state.config.available_user_domains[0]);
+        let key_id = seed_account_with_signing_key(&db, did, &old_handle).await;
+        let jwt = insert_session(&db, did).await;
+        mount_audit_log(
+            &plc,
+            did,
+            &old_handle,
+            vec![key_id.clone()],
+            &key_id,
+            &state.config.public_url,
+        )
+        .await;
+        Mock::given(method("POST"))
+            .and(path(format!("/{did}")))
+            .respond_with(ResponseTemplate::new(200))
+            .expect(1)
+            .mount(&plc)
+            .await;
+
+        // Force only the in-transaction cache refresh to fail, leaving the auth path's
+        // did_documents reads intact.
+        sqlx::query(
+            "CREATE TRIGGER fail_did_doc_insert BEFORE INSERT ON did_documents \
+             BEGIN SELECT RAISE(ABORT, 'cache write forced to fail'); END",
+        )
+        .execute(&db)
+        .await
+        .unwrap();
+
+        let response = app(state)
+            .oneshot(update_handle_request(&jwt, &new_handle))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+
+        // The handle swap committed despite the cache-write failure.
+        assert_eq!(
+            crate::db::handles::resolve_handle(&db, &new_handle)
+                .await
+                .unwrap()
+                .as_deref(),
+            Some(did)
+        );
+        assert!(crate::db::handles::resolve_handle(&db, &old_handle)
+            .await
+            .unwrap()
+            .is_none());
+
+        // The authoritative PLC operation was still submitted.
+        let requests = plc.received_requests().await.unwrap();
+        assert!(requests
+            .iter()
+            .any(|request| request.method.as_str() == "POST"));
     }
 
     #[tokio::test]
