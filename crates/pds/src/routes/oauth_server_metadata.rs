@@ -26,6 +26,12 @@ use crate::app::AppState;
 ///   atproto OAuth metadata validator rejects a server that advertises `private_key_jwt`
 ///   without this field including `ES256` — omitting it breaks discovery for every client.
 /// - `require_pushed_authorization_requests`: PAR is mandatory per AT Protocol OAuth spec.
+/// - `authorization_response_iss_parameter_supported`: the AT Protocol OAuth metadata
+///   validator requires this to be `true` (the authorization endpoint returns the RFC 9207
+///   `iss` parameter in its responses, which `oauth_authorize.rs` emits).
+/// - `client_id_metadata_document_supported`: the AT Protocol OAuth metadata validator
+///   requires this to be `true` — clients are identified by a client-metadata-document URL
+///   rather than pre-registration (resolved in `auth::oauth_client_resolution`).
 /// - `agent_auth`: advertises the auth.md agent-registration discovery surface.
 #[derive(Serialize)]
 struct OAuthServerMetadata {
@@ -44,6 +50,8 @@ struct OAuthServerMetadata {
     code_challenge_methods_supported: Vec<String>,
     dpop_signing_alg_values_supported: Vec<String>,
     require_pushed_authorization_requests: bool,
+    authorization_response_iss_parameter_supported: bool,
+    client_id_metadata_document_supported: bool,
     agent_auth: AgentAuthMetadata,
 }
 
@@ -95,6 +103,8 @@ pub async fn oauth_server_metadata(State(state): State<AppState>) -> impl IntoRe
         code_challenge_methods_supported: vec!["S256".to_string()],
         dpop_signing_alg_values_supported: vec!["ES256".to_string()],
         require_pushed_authorization_requests: true,
+        authorization_response_iss_parameter_supported: true,
+        client_id_metadata_document_supported: true,
         agent_auth: AgentAuthMetadata {
             skill: format!("{base}/auth.md"),
             identity_endpoint: format!("{base}/agent/identity"),
@@ -365,6 +375,22 @@ mod tests {
     async fn par_is_required() {
         let json = metadata_json().await;
         assert_eq!(json["require_pushed_authorization_requests"], true);
+    }
+
+    #[tokio::test]
+    async fn authorization_response_iss_parameter_is_supported() {
+        // The atproto OAuth metadata validator requires this to be true; the authorization
+        // endpoint returns the RFC 9207 `iss` parameter to back the claim.
+        let json = metadata_json().await;
+        assert_eq!(json["authorization_response_iss_parameter_supported"], true);
+    }
+
+    #[tokio::test]
+    async fn client_id_metadata_document_is_supported() {
+        // The atproto OAuth metadata validator requires this to be true — clients are
+        // identified by a client-metadata-document URL rather than pre-registration.
+        let json = metadata_json().await;
+        assert_eq!(json["client_id_metadata_document_supported"], true);
     }
 
     #[tokio::test]
