@@ -6,6 +6,7 @@
   import Spinner from '$lib/components/ui/Spinner.svelte';
   import SkeletonCard from '$lib/components/ui/SkeletonCard.svelte';
   import { authenticateBiometric } from '$lib/biometric';
+  import { formatRateLimitMessage, formatServerErrorMessage } from '$lib/claim-errors';
   import { formatTimestamp } from '$lib/datetime';
   import {
     listAppPasswords,
@@ -63,13 +64,13 @@
       case 'DUPLICATE_NAME':
         return 'You already have an app password with this name. Pick a different one.';
       case 'RATE_LIMITED':
-        return 'Too many attempts. Please wait a moment and try again.';
+        return formatRateLimitMessage(err.retryAfter);
       case 'SESSION_LOCKED':
         return 'Couldn’t unlock this identity. Please try again.';
       case 'IDENTITY_NOT_FOUND':
         return 'This identity isn’t registered in the wallet.';
       case 'SERVER_ERROR':
-        return 'The server rejected the request. Please try again.';
+        return formatServerErrorMessage(err.message);
       case 'NETWORK_ERROR':
         return 'Couldn’t reach the server. Check your connection.';
       default:
@@ -267,6 +268,11 @@
             {copied ? 'Copied!' : copyFailed ? 'Failed' : 'Copy'}
           </button>
         </div>
+        {#if copyFailed}
+          <p class="reveal-copy-error" role="alert">
+            Copy failed — press and hold the password to select and copy it manually.
+          </p>
+        {/if}
         {#if created.privileged}
           <p class="reveal-priv">This password can also access your direct messages.</p>
         {/if}
@@ -279,6 +285,7 @@
           placeholder="Name — e.g. Bluesky on my iPhone"
           bind:value={name}
           error={createError ?? undefined}
+          oninput={() => (createError = null)}
         />
         <label class="priv">
           <input type="checkbox" bind:checked={privileged} />
@@ -463,6 +470,7 @@
     font-size: var(--text-title);
     font-weight: var(--weight-semibold);
     color: var(--color-ink);
+    overflow-wrap: anywhere;
     margin: 0;
   }
   .reveal-sub {
@@ -491,15 +499,23 @@
     -webkit-user-select: all;
   }
   .copy {
-    background: none;
-    border: 1px solid var(--color-line-strong);
+    background: var(--color-bg);
+    border: 1px solid var(--color-line);
     border-radius: var(--radius-md);
-    padding: var(--space-xs) var(--space-sm);
+    padding: var(--space-sm) var(--space-md);
+    min-height: 44px;
+    font-family: var(--font-sans);
     font-size: var(--text-label);
     font-weight: var(--weight-semibold);
-    color: var(--color-primary-deep);
+    color: var(--color-ink);
     cursor: pointer;
     flex-shrink: 0;
+  }
+  .reveal-copy-error {
+    font-size: var(--text-label);
+    color: var(--color-critical);
+    line-height: 1.45;
+    margin: 0;
   }
   .reveal-priv {
     font-size: var(--text-label);
@@ -579,7 +595,10 @@
   .revoke-link {
     background: none;
     border: none;
-    padding: var(--space-xs);
+    padding: var(--space-sm) var(--space-xs);
+    min-height: 44px;
+    min-width: 44px;
+    font-family: var(--font-sans);
     font-size: var(--text-label);
     font-weight: var(--weight-semibold);
     color: var(--color-critical);
@@ -598,6 +617,7 @@
     font-size: var(--text-label);
     color: var(--color-critical);
     line-height: 1.5;
+    overflow-wrap: anywhere;
     margin: 0;
   }
   .confirm-error {
