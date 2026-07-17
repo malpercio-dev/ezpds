@@ -1,0 +1,33 @@
+meta {
+  name: Delete Sovereign Child Agent
+  type: http
+  seq: 123
+}
+
+post {
+  url: {{baseUrl}}/agent/child/delete
+  body: json
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{sessionToken}}
+}
+
+body:json {
+  {
+    "did": "{{childDid}}"
+  }
+}
+
+docs {
+  Parent-authed permanent deletion of a sovereign child agent (MM-400). Implies revoke, then
+  deactivates the child and schedules it for purge after `accounts.child_deletion_grace_secs`
+  (the reaper emits `#account status="deleted"` and removes all local hosting). Ownership is
+  enforced exactly like revoke: an unknown or foreign child DID returns a uniform 404, and
+  agent-derived credentials are refused by the owner guard. The wallet-held recovery key and the
+  did:plc identity are untouched — a full identity retirement is delete-on-PDS plus a
+  wallet-driven PLC tombstone.
+
+  Response: { "did", "status": "deletion_scheduled", "deleteAfter": "<rfc3339>" }.
+}
