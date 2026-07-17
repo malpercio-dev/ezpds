@@ -73,6 +73,7 @@ pub mod oauth_token;
 pub mod provisioning_session;
 pub mod put_preferences;
 pub mod put_record;
+pub mod recovery_escrow;
 pub mod refresh_session;
 pub mod register_device;
 pub mod repo_key_rotation;

@@ -47,6 +47,8 @@ pub enum PurgeOutcome {
 ///   the identity rather than their own `did` column because pre-claim events on an anonymous
 ///   registration carry a NULL `did` but still pin the identity row via the FK
 /// * `sovereign_session_nonces` before `accounts` (each replay row is FK-owned by its DID)
+/// * `recovery_audit_events` and `recovery_escrow` before `accounts` (both FK-owned by the DID;
+///   no FK links the two, so their relative order is free)
 ///
 /// The two sovereign-child-agent tables (V047/V049) are scoped by *different* DID columns and so
 /// are keyed deliberately:
@@ -80,6 +82,8 @@ const DELETE_BY_DID: &[&str] = &[
     "DELETE FROM plc_operation_tokens WHERE did = ?",
     "DELETE FROM account_deletion_tokens WHERE did = ?",
     "DELETE FROM sovereign_session_nonces WHERE did = ?",
+    "DELETE FROM recovery_audit_events WHERE did = ?",
+    "DELETE FROM recovery_escrow WHERE did = ?",
     "DELETE FROM agent_audit_events WHERE registration_id IN (SELECT id FROM agent_identities WHERE did = ?)",
     "DELETE FROM agent_claim_attempts WHERE identity_id IN (SELECT id FROM agent_identities WHERE did = ?)",
     "DELETE FROM agent_identities WHERE did = ?",
@@ -337,6 +341,18 @@ mod tests {
         )
         .await
         .unwrap();
+        crate::db::recovery_escrow::insert_escrow_share(&state.db, did, "escrow-ciphertext")
+            .await
+            .unwrap();
+        crate::db::recovery_audit::insert_recovery_audit_event(
+            &state.db,
+            "evt_purge_escrow",
+            did,
+            crate::db::recovery_audit::RecoveryAuditEventType::Deposited,
+            None,
+        )
+        .await
+        .unwrap();
 
         let other_did = "did:plc:purge-other";
         seed_account_with_repo(&state.db, other_did).await;
@@ -369,6 +385,11 @@ mod tests {
         );
         assert_eq!(
             row_count(&state.db, "sovereign_session_nonces", "did", did).await,
+            0
+        );
+        assert_eq!(row_count(&state.db, "recovery_escrow", "did", did).await, 0);
+        assert_eq!(
+            row_count(&state.db, "recovery_audit_events", "did", did).await,
             0
         );
         let claim_attempts: i64 = sqlx::query_scalar(
