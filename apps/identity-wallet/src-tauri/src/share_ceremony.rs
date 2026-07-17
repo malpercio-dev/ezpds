@@ -365,6 +365,13 @@ mod tests {
             load_or_create(HANDLE, PDS),
             Err(ShareCeremonyError::StagingCorrupt(_))
         ));
+        // The envelope-validation failure path preserves the slot exactly like the
+        // JSON-corruption path — the record is never overwritten with fresh material.
+        assert_eq!(
+            keychain::get_item(STAGING_ACCOUNT).unwrap(),
+            tampered.as_bytes().to_vec(),
+            "the tampered staging record must be preserved for inspection/retry"
+        );
     }
 
     #[test]
