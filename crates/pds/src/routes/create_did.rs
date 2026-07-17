@@ -224,6 +224,11 @@ pub async fn create_did_handler(
     // Phase 4: Build DID document, generate session, hash password, atomically promote.
     let session_token = generate_token();
     let password_hash = hash_password(&payload.password)?;
+    let recovery_share_encrypted =
+        crate::recovery_share::wrap(&share2, master_key).map_err(|e| {
+            tracing::error!(error = %e, "failed to wrap PDS recovery share");
+            ApiError::new(ErrorCode::InternalError, "failed to protect recovery share")
+        })?;
     promote_account(
         &state,
         &did,
@@ -231,7 +236,7 @@ pub async fn create_did_handler(
         &session.account_id,
         &did_document,
         &session_token.hash,
-        &share2,
+        &recovery_share_encrypted,
         &password_hash,
         &repo_key,
         &genesis_root_str,
@@ -521,7 +526,7 @@ fn generate_recovery_shares() -> Result<(String, String, String), ApiError> {
 ///
 /// In a single transaction: INSERT accounts + did_documents + sessions, stage the genesis
 /// `#commit` firehose event, then DELETE pending_sessions + devices + pending_accounts.
-/// `recovery_share` is Share 2 of the Shamir split; stored for PDS-side custody.
+/// `recovery_share_encrypted` is KEK-wrapped Share 2 of the Shamir split.
 /// `password_hash` is the argon2id PHC string for the account's password set during the ceremony.
 #[allow(clippy::too_many_arguments)]
 async fn promote_account(
@@ -531,7 +536,7 @@ async fn promote_account(
     account_id: &str,
     did_document: &serde_json::Value,
     token_hash: &str,
-    recovery_share: &str,
+    recovery_share_encrypted: &str,
     password_hash: &str,
     repo_key: &crate::db::repo_keys::RepoSigningKey,
     genesis_root: &str,
@@ -565,7 +570,7 @@ async fn promote_account(
     .bind(did)
     .bind(email)
     .bind(password_hash)
-    .bind(recovery_share)
+    .bind(recovery_share_encrypted)
     .bind(genesis_root)
     .bind(genesis_rev)
     .execute(&mut *tx)
@@ -1180,10 +1185,24 @@ mod tests {
         let rs = recovery_share
             .as_deref()
             .expect("recovery_share should not be NULL — Share 2 must be stored for PDS custody");
-        assert_eq!(rs.len(), 52, "recovery_share should be 52 chars");
-        assert!(
-            rs.chars().all(|c| matches!(c, 'A'..='Z' | '2'..='7')),
-            "recovery_share should be valid BASE32 (A-Z, 2-7), got: {rs}"
+        assert_eq!(rs.len(), 80, "recovery_share should be KEK-wrapped");
+        let plaintext =
+            crate::recovery_share::unwrap(rs, &crate::routes::test_utils::test_master_key())
+                .expect("recovery_share should decrypt under the configured KEK");
+        let decode_share = |index, encoded: &str| {
+            let bytes = BASE32_NOPAD.decode(encoded.as_bytes()).unwrap();
+            crypto::ShamirShare {
+                index,
+                data: Zeroizing::new(bytes.try_into().unwrap()),
+            }
+        };
+        let share_1 = decode_share(1, share1);
+        let share_2 = decode_share(2, &plaintext);
+        let share_3 = decode_share(3, share3);
+        assert_eq!(
+            *crypto::combine_shares(&share_1, &share_2).unwrap(),
+            *crypto::combine_shares(&share_1, &share_3).unwrap(),
+            "the decrypted escrow share must reconstruct the ceremony secret"
         );
 
         // did_documents row exists with non-empty document
@@ -1280,18 +1299,18 @@ mod tests {
         // Pre-set pending_did and all three shares to simulate a retry scenario.
         // The retry branch in pre_store_did_and_shares requires all share columns to be
         // non-NULL; leaving them NULL would cause a 500 instead of 200.
-        let pre_share_1 = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
-        let pre_share_2 = "BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB";
-        let pre_share_3 = "CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC";
+        let pre_share_1 = BASE32_NOPAD.encode(&[0x11; 32]);
+        let pre_share_2 = BASE32_NOPAD.encode(&[0x22; 32]);
+        let pre_share_3 = BASE32_NOPAD.encode(&[0x33; 32]);
         sqlx::query(
             "UPDATE pending_accounts \
              SET pending_did = ?, pending_share_1 = ?, pending_share_2 = ?, pending_share_3 = ? \
              WHERE id = ?",
         )
         .bind(&verified.did)
-        .bind(pre_share_1)
-        .bind(pre_share_2)
-        .bind(pre_share_3)
+        .bind(&pre_share_1)
+        .bind(&pre_share_2)
+        .bind(&pre_share_3)
         .bind(&setup.account_id)
         .execute(&db)
         .await
@@ -1322,12 +1341,12 @@ mod tests {
         // must return the same shares so Share 2 in accounts.recovery_share stays consistent.
         assert_eq!(
             body["shamir_share_1"].as_str(),
-            Some(pre_share_1),
+            Some(pre_share_1.as_str()),
             "retry should return pre-stored share 1, not a new one"
         );
         assert_eq!(
             body["shamir_share_3"].as_str(),
-            Some(pre_share_3),
+            Some(pre_share_3.as_str()),
             "retry should return pre-stored share 3, not a new one"
         );
         // wiremock verifies expect(0) on mock_server drop
@@ -1750,9 +1769,9 @@ mod tests {
              WHERE id = ?",
         )
         .bind(&verified.did)
-        .bind("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA")
-        .bind("BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB")
-        .bind("CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC")
+        .bind(BASE32_NOPAD.encode(&[0x11; 32]))
+        .bind(BASE32_NOPAD.encode(&[0x22; 32]))
+        .bind(BASE32_NOPAD.encode(&[0x33; 32]))
         .bind(&setup.account_id)
         .execute(&db)
         .await
@@ -1856,9 +1875,9 @@ mod tests {
              WHERE id = ?",
         )
         .bind(&verified.did)
-        .bind("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA")
-        .bind("BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB")
-        .bind("CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC")
+        .bind(BASE32_NOPAD.encode(&[0x11; 32]))
+        .bind(BASE32_NOPAD.encode(&[0x22; 32]))
+        .bind(BASE32_NOPAD.encode(&[0x33; 32]))
         .bind(&setup.account_id)
         .execute(&db)
         .await

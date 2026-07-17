@@ -23,6 +23,8 @@ If you are _using_ an identity rather than running a server, you want
   surface that tunes a deployment.
 - **[Moderation](/operator/moderation/)** — takedown, restore, credential
   revocation, and account repair from the operator console.
+- **[Master-key disaster runbook](/operator/master-key-runbook/)** — what to
+  do if the KEK is lost or compromised.
 
 ## Which key you hold
 

@@ -1,7 +1,9 @@
 name: CI
 
 # The Linux half of CI — the PDS test gate (fmt, lock-check, clippy, test, audit, deny) via
-# `just ci-pds`. Replaces the retired tangled spindle workflows (pr/staging/release.yaml).
+# `just ci-pds`, plus the stdio MCP conformance suite (tools/mcp), which reuses the `pds`
+# binary this gate already builds. Replaces the retired tangled spindle workflows
+# (pr/staging/release.yaml).
 #
 # Deploys are now **native Railway GitHub integrations** — Railway connects to this repo
 # and builds the Dockerfile itself, so there is no `railway up` and no Railway token here:
@@ -38,7 +40,7 @@ jobs:
   gate:
     name: PDS gate (fmt, clippy, test, audit)
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 35
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
@@ -83,6 +85,34 @@ jobs:
           # presence rule is evaluated only for pull requests with a trustworthy base.
           CHANGELOG_BASE_REF: ${{ github.event.pull_request.base.sha }}
         run: just ci-pds
+
+      # The stdio MCP conformance suite (tools/mcp/test/conformance.test.ts) needs a built
+      # `pds` binary to spawn its hermetic PDS — `just ci-pds` above already produced one at
+      # target/debug/pds via `cargo test --workspace` (bin targets are built by `cargo test`
+      # by default), so point the suite at it instead of paying for a second `cargo build -p
+      # pds`. This is a Rust-only lane otherwise, so node/pnpm are set up here rather than at
+      # the top of the job.
+      - name: Install pnpm
+        uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
+        with:
+          version: 10.33.0
+
+      - name: Setup Node 22
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: tools/mcp/pnpm-lock.yaml
+
+      - name: Install deps (tools/mcp)
+        working-directory: tools/mcp
+        run: pnpm install --frozen-lockfile
+
+      - name: Stdio MCP conformance suite (tools/mcp)
+        working-directory: tools/mcp
+        env:
+          CUSTOS_MCP_TEST_PDS_BIN: ${{ github.workspace }}/target/debug/pds
+        run: pnpm test
 
   verify-release:
     name: Verify production tag matches workspace version

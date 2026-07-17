@@ -173,3 +173,9 @@ nothing touches the live network), provisions a real account by reusing the
 tool calls through the real MCP server, plus the scope-refusal, revocation, and
 agent-auth-disabled failure paths. The server half lives in
 `crates/pds/src/routes/agent_auth_test.rs`.
+
+It runs in CI as part of `.github/workflows/ci.yml`'s PDS gate, which points
+`CUSTOS_MCP_TEST_PDS_BIN` at the `pds` binary that gate already built via `cargo test`
+rather than building a second one. The path-filtered `.github/workflows/mcp-check.yml`
+lane is a separate, faster, secret-free check (type-checking plus the MCP sidecar's
+hermetic suite) that runs only on `tools/mcp/**`/`tools/mcp-sidecar/**` changes.

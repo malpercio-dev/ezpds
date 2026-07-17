@@ -1,6 +1,6 @@
 # Crypto Crate
 
-Last verified: 2026-07-13
+Last verified: 2026-07-17
 
 ## Purpose
 Provides cryptographic primitives for the ezpds workspace: P-256 key generation,
@@ -34,6 +34,15 @@ pub fn decrypt_private_key(&str, &[u8; 32]) -> Result<Zeroizing<[u8; 32]>, Crypt
 - Decrypts a base64-encoded ciphertext with a master key
 - Returns opaque `CryptoError::Decryption` on all failure modes (no oracle)
 
+**`derive_recovery_keypair`**
+```rust
+pub fn derive_recovery_keypair(seed: &[u8; 32]) -> Result<P256Keypair, CryptoError>
+```
+- Deterministically derives the recovery `P256Keypair` from a 32-byte recovery seed (the secret reconstructed from the Shamir shares). Same seed → same keypair, pinned by a golden test.
+- HKDF-SHA256 with fixed salt (`ezpds/recovery-seed/v1`) + `info` domain string, rejection-sampled into the P-256 scalar range `[1, n)` (a rejected candidate re-expands with an incremented counter appended to `info`; the first candidate succeeds with overwhelming probability)
+- The derived key's did:key sits in `rotationKeys` (recovery slot); it signs low-S like every other signer in the crate
+- Errors: `CryptoError::KeyGeneration` only if HKDF fails or the counter space is exhausted (practically impossible)
+
 **`split_secret`**
 ```rust
 pub fn split_secret(&[u8; 32]) -> Result<[ShamirShare; 3], CryptoError>
@@ -47,6 +56,41 @@ pub fn combine_shares(&ShamirShare, &ShamirShare) -> Result<Zeroizing<[u8; 32]>,
 ```
 - Reconstructs secret from 2 distinct shares (indices [1,3])
 - Returns `CryptoError::SecretReconstruction` if indices are duplicate or out of range
+
+**`split_secret_into_envelopes`**
+```rust
+pub fn split_secret_into_envelopes(&[u8; 32], set_id: u32) -> Result<[ShareEnvelope; 3], CryptoError>
+```
+- Same GF(2^8) split as `split_secret`, then wraps each share in a v2 [`ShareEnvelope`] tied to `set_id`
+- Caller supplies `set_id` (typically fresh random per split) so a generation's three shares can be told apart from a later re-split's
+
+**`combine_envelopes`**
+```rust
+pub fn combine_envelopes(&ShareEnvelope, &ShareEnvelope) -> Result<Zeroizing<[u8; 32]>, CryptoError>
+```
+- Reconstructs the secret from two envelopes; indices come from the envelopes, not caller bookkeeping
+- **Refuses mismatched `set_id` loudly** with `CryptoError::SecretReconstruction` — cross-generation shares must never reconstruct a silently-wrong seed. Distinct indices in [1,3] still required (via `combine_shares`).
+
+**`ShareEnvelope` (de)serialization** — the self-describing share transport (v2)
+```rust
+impl ShareEnvelope {
+    pub fn version(&self) -> u8;                                          // read-only metadata accessors
+    pub fn set_id(&self) -> u32;
+    pub fn index(&self) -> u8;
+    pub fn to_bytes(&self) -> Zeroizing<[u8; SHARE_ENVELOPE_LEN]>;        // 42 bytes
+    pub fn from_bytes(&[u8]) -> Result<ShareEnvelope, CryptoError>;
+    pub fn encode_share(&self) -> Zeroizing<String>;                     // uppercase base32 (QR-friendly)
+    pub fn decode_share(&str) -> Result<ShareEnvelope, CryptoError>;
+    pub fn encode_share_words(&self) -> Zeroizing<String>;              // BIP-39-style mnemonic
+    pub fn decode_share_words(&str) -> Result<ShareEnvelope, CryptoError>;
+}
+```
+- **Fields are private**; the only ways to obtain a `ShareEnvelope` are `split_secret_into_envelopes` (internally valid) or the validating `from_bytes`/`decode_share*`, so an in-hand envelope always satisfies the version/index/checksum invariants — a caller cannot forge one with a bad version or a mutated payload. Non-secret metadata is read via the `version()`/`set_id()`/`index()` accessors; the payload is never exposed.
+- Wire layout: `version(1B) || set_id(4B, big-endian) || index(1B) || payload(32B) || checksum(4B = SHA-256(preceding 38B)[..4])` = `SHARE_ENVELOPE_LEN` (42) bytes.
+- `encode_share`/`decode_share` use unpadded **uppercase** base32 (RFC 4648) — only QR alphanumeric-mode characters. Decode ignores whitespace and accepts lowercase. Shares 1/2 use this machine format. Encoded output (and the decode normalization buffer) is share material, so `encode_share`/`encode_share_words` return `Zeroizing<String>`.
+- `encode_share_words`/`decode_share_words` render the whole 42-byte envelope as a mnemonic (one word per byte, fixed 256-word list) for the human-custody Share 3; the phrase stays self-describing (carries version/set_id/index/checksum).
+- `from_bytes` rejects with **distinct** errors: `ShareVersion` (unsupported version, checked before checksum), `ShareChecksum` (body/checksum mismatch), `ShareFormat` (wrong length, index ∉ [1,3], bad base32/word). A corrupted share therefore fails at decode, before `combine_envelopes` (which also re-checks the version as defense-in-depth).
+- `Debug` for `ShareEnvelope` redacts the payload.
 
 **`build_did_plc_genesis_op`**
 ```rust
@@ -81,6 +125,30 @@ where F: FnOnce(&[u8]) -> Result<Vec<u8>, CryptoError>
 - Enables signing with non-extractable keys (e.g. Apple Secure Enclave)
 - Callback receives CBOR-encoded unsigned op bytes; must return raw 64-byte r||s P-256 ECDSA signature (big-endian, low-S canonical)
 - Errors: propagates any `CryptoError` returned by the callback, or `CryptoError::PlcOperation` for serialization failures
+
+**`build_did_plc_genesis_op_multi_rotation_with_external_signer`** / **`build_did_plc_genesis_op_multi_rotation`**
+```rust
+pub fn build_did_plc_genesis_op_multi_rotation_with_external_signer<F>(
+    rotation_keys: &[DidKeyUri],    // ordered, highest-priority first, e.g. [device, recovery, PDS]
+    signing_key: &DidKeyUri,        // PDS key → verificationMethods.atproto (need not be in rotation_keys)
+    handle: &str,
+    service_endpoint: &str,
+    sign: F,                        // callback: &[u8] -> Result<Vec<u8>, CryptoError>
+) -> Result<PlcGenesisOp, CryptoError>
+where F: FnOnce(&[u8]) -> Result<Vec<u8>, CryptoError>
+
+pub fn build_did_plc_genesis_op_multi_rotation(
+    rotation_keys: &[DidKeyUri],
+    signing_key: &DidKeyUri,
+    signing_private_key: &[u8; 32],  // private key for signing_key; op signed with it, low-S normalized
+    handle: &str,
+    service_endpoint: &str,
+) -> Result<PlcGenesisOp, CryptoError>
+```
+- Like the two-key builders but takes the **full ordered `rotationKeys` list** instead of hardcoding `[device, PDS]`. For key recovery the list is `[device, recovery, PDS]` — recovery in a middle slot so the device key stays highest-priority. `verificationMethods.atproto` is always the PDS `signing_key`, regardless of the rotation-key list.
+- The two-key `build_did_plc_genesis_op[_with_external_signer]` now delegate to the same internal core, so their output is byte-identical to before (guarded by the golden DID test).
+- Server-side note: `verify_and_validate_genesis_op` only pins `rotationKeys[0]`, so a 3-key op already passes validation — this is a builder-side capability.
+- Errors: `CryptoError::PlcOperation` if `rotation_keys` is empty **or longer than 5** (PLC's rotation-key cap), the callback errors, `signing_private_key` is an invalid P-256 scalar, or serialization fails.
 
 **`compute_cid`**
 ```rust
@@ -256,8 +324,14 @@ pub fn diff_audit_logs(cached: &[AuditEntry], current: &[AuditEntry]) -> Vec<Aud
 - `index`: u8 in [1, 3] (not secret)
 - `data`: `Zeroizing<[u8; 32]>` (zeroized on drop)
 
+**`ShareEnvelope`**
+- Self-describing v2 share transport (see the (de)serialization contract above)
+- **Private fields** — constructed only via `split_secret_into_envelopes` or the validating `from_bytes`/`decode_share*`: `version` (u8, `SHARE_ENVELOPE_VERSION` = 2), `set_id` (u32), `index` (u8 in [1,3]), `payload` (`Zeroizing<[u8; 32]>`, zeroized on drop). Non-secret metadata exposed via `version()`/`set_id()`/`index()`.
+- `Debug` redacts `payload`
+
 **`CryptoError`** variants:
-- `KeyGeneration`, `Encryption`, `Decryption`, `SecretSharing`, `SecretReconstruction`, `PlcOperation`, `SignatureVerification`
+- `KeyGeneration`, `Encryption`, `Decryption`, `SecretSharing`, `SecretReconstruction`, `ShareVersion`, `ShareChecksum`, `ShareFormat`, `PlcOperation`, `SignatureVerification`
+- The three `Share*` variants are the **distinct** share-envelope decode failures: `ShareVersion` (unsupported version), `ShareChecksum` (integrity check failed), `ShareFormat` (structural/encoding error)
 
 ### Format guarantees
 
@@ -268,7 +342,7 @@ pub fn diff_audit_logs(cached: &[AuditEntry], current: &[AuditEntry]) -> Vec<Aud
 - **secp256k1 is verify-only**: `SECP256K1_MULTICODEC_PREFIX` (`[0xe7, 0x01]`, `zQ3…`) exists for verifying ops signed by the reference ecosystem; nothing in this crate generates or signs with secp256k1 keys.
 
 ## Dependencies
-- **Uses**: p256 (ECDSA/key generation), k256 (secp256k1 ECDSA — verification only, for ops signed by the reference ecosystem), aes-gcm (AES-256-GCM), multibase (base58btc encoding), rand_core (OS RNG), base64 (storage encoding), zeroize (secret cleanup), ciborium (CBOR serialization for did:plc), data-encoding (base32-lowercase), sha2 (SHA-256), serde/serde_json (struct serialization)
+- **Uses**: p256 (ECDSA/key generation), k256 (secp256k1 ECDSA — verification only, for ops signed by the reference ecosystem), aes-gcm (AES-256-GCM), multibase (base58btc encoding), rand_core (OS RNG), base64 (storage encoding), zeroize (secret cleanup), ciborium (CBOR serialization for did:plc), data-encoding (base32-lowercase for DIDs; base32 uppercase for share envelopes), sha2 (SHA-256), hkdf (HKDF-SHA256 for recovery-key derivation), serde/serde_json (struct serialization)
 - **Used by**: `crates/pds/` (key generation, did:plc genesis building and verification in POST /v1/dids; sovereign-session canonical proof encoding and dual-curve verification; `crates/pds/src/plc_ops.rs` shares the interop PLC-signing surface's audit-log fetch + service parsing; `routes/sign_plc_operation.rs`/`routes/submit_plc_operation.rs` build/verify rotation ops via `build_did_plc_rotation_op`/`verify_plc_operation`), `apps/identity-wallet/` (external signer genesis op building in DID ceremony; shared sovereign-session encoder for the wallet client)
 
 ## Invariants
@@ -278,6 +352,8 @@ pub fn diff_audit_logs(cached: &[AuditEntry], current: &[AuditEntry]) -> Vec<Aud
 - `ShamirShare.data` is zeroized on drop -- callers must not copy share bytes into non-zeroizing storage
 - `split_secret` polynomial coefficients are fresh OS RNG per call; information-theoretic security (a single share reveals nothing)
 - `combine_shares` requires exactly 2 shares with distinct indices in [1, 3]; returns `CryptoError::SecretReconstruction` otherwise
+- **Share envelope v2 is self-describing and checksummed.** A `ShareEnvelope` carries its own version, `set_id`, index, and a 4-byte SHA-256 checksum, so a corrupted share fails at `from_bytes`/`decode_share*` (distinct `ShareVersion`/`ShareChecksum`/`ShareFormat` errors) before it can reach `combine_envelopes`, and `combine_envelopes` refuses shares whose `set_id` differs (cross-generation shares never reconstruct a silently-wrong seed). **Fields are private** and construction routes only through validated paths, so an in-hand envelope's invariants cannot be forged (a caller cannot set a bad version or mutate the payload); `combine_envelopes` also re-checks the version. The GF(2^8) split/combine core is shared with `split_secret`/`combine_shares` and unchanged. The Share-3 mnemonic and the base32 form encode the identical 42 bytes; the mnemonic uses a fixed 256-word list (one word per byte) whose length/uniqueness **and exact ordered mapping (SHA-256 golden digest)** are test-pinned — never reorder or replace an entry, as that invalidates every previously written human share. Encoded share strings (base32 + mnemonic) are returned in `Zeroizing<String>`, matching the crate's rule that share material never lands in non-zeroizing storage.
+- **`derive_recovery_keypair` is deterministic and pinned.** The HKDF salt (`ezpds/recovery-seed/v1`) + `info` domain string + rejection-sampling counter scheme is fixed by a golden test; changing any of it produces a different recovery key and orphans accounts whose `rotationKeys` already carry the old one. The `ShareEnvelope` `set_id` and this derivation are independent.
 - GF(2^8) arithmetic uses the AES irreducible polynomial (0x11b); secret bytes are always the first argument to `gf_mul` (non-branching position)
 - **did:plc tombstone op is `{type, prev, sig}` only, in canonical DAG-CBOR key order.** The tombstone structs carry no maps (unlike genesis/rotation ops), so they need no `CanonicalMap`; canonical ordering comes from serde field declaration order — unsigned is `prev`(4) before `type`(4) (`prev` < `type` bytewise), signed leads with `sig`(3). `prev` is a required non-null CID string (typed `String`, never CBOR null). Pinned by `tombstone_cbor_key_order_is_canonical`; `build_tombstone_round_trips` proves builder↔verifier byte-identity via the CID.
 - **did:plc op CBOR is canonical DAG-CBOR for any number of map entries.** The op structs wrap `services` / `verificationMethods` in an internal `CanonicalMap` that serializes keys length-first (DAG-CBOR order) instead of `BTreeMap`/`ciborium`'s bytewise order — bytewise would emit a non-canonical op for keys of differing length (e.g. `atproto_pds` + `atproto_labeler`) that plc.directory rejects. Cross-checked against `@ipld/dag-cbor` by the `golden_*` tests (genesis op bytes + derived DID, proving byte-identity transitively via the hash) and `rotation_op_with_multiple_services_encodes_canonically` (multi-service CID). Public APIs still take/return plain `BTreeMap<String, _>`; the canonical ordering is internal to the op encoder.
@@ -287,5 +363,6 @@ pub fn diff_audit_logs(cached: &[AuditEntry], current: &[AuditEntry]) -> Vec<Aud
 - `src/keys.rs` - P-256 key generation, AES-256-GCM encrypt/decrypt
 - `src/plc.rs` - did:plc genesis operation builder and verifier
 - `src/sovereign_session.rs` - canonical sovereign-session signed-envelope encoder and protocol constants
-- `src/shamir.rs` - Shamir Secret Sharing (split/combine, GF(2^8) arithmetic)
+- `src/shamir.rs` - Shamir Secret Sharing (split/combine, GF(2^8) arithmetic) + share envelope v2 (`ShareEnvelope`, base32/mnemonic encode-decode, `split_secret_into_envelopes`/`combine_envelopes`)
+- `src/mnemonic.rs` - BIP-39-style 256-word list + byte↔word encoding for the human-custody Share 3 (module-private; used by `shamir.rs`)
 - `src/error.rs` - CryptoError enum

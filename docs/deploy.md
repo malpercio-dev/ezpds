@@ -434,12 +434,14 @@ Three of the KEK-wrapped secrets — the OAuth signing key, the JWT secret, and 
 
 The per-account **repo signing keys are the hard part.** Each is published in the account's DID document, so a fresh value can only be installed by a PLC operation signed by a *current* rotation key — and the PDS's own key is exactly the one being replaced. Recovery is therefore **wallet-driven and per-account**: the user's wallet holds the higher-priority `rotationKeys[0]` and signs a PLC op repointing `verificationMethods.atproto` (and `rotationKeys[1]`) to a fresh PDS-generated key, through the `/v1/repo-keys/rotation` + `/complete` surface ([ADR-0025](architecture/decisions/0025-wallet-driven-repo-key-rotation.md), [identity-and-key-custody](architecture/identity-and-key-custody.md)). A lost or compromised KEK means every affected account must go through this rotation — prioritize active accounts — which is precisely why the golden rule matters.
 
+The PDS-held Shamir recovery share in `accounts.recovery_share` is also KEK-wrapped. A lost KEK makes Share 2 unavailable; it cannot be re-minted without invalidating the user's other shares. Recovery then requires the user's Share 1 and Share 3. A database-only leak, however, exposes no share plaintext.
+
 ### Recovery pointers
 
 - **Rotating a still-known KEK** (planned rotation, or re-wrapping the surviving blobs under a new key after a leak): use the offline `pds rewrap-master-key` subcommand — see [Rotating the Master Key](#rotating-the-master-key). Re-wrapping preserves the same key *material*; after a leak it is necessary hygiene but does **not** by itself replace keys the attacker already knows in the clear.
 - **Replacing repo signing-key material** (after loss or compromise): wallet-driven per-account rotation via `/v1/repo-keys/rotation` ([ADR-0025](architecture/decisions/0025-wallet-driven-repo-key-rotation.md)).
 - **A leaked KEK almost certainly means the rest of the env store leaked too.** Rotate `EZPDS_ADMIN_TOKEN` (the break-glass bearer credential — most urgent) and the mail-provider tokens (`EZPDS_EMAIL_*`) as well, not just the KEK, and audit the exposure path.
-- **Full operator step ordering for both the loss and the compromise scenario** — which rows to drop, and the order to rotate secrets in — lives in the [Master-Key (KEK) Disaster Runbook](operations/master-key-disaster-runbook.md). This section is the prevention-and-pointers summary; the runbook is the incident checklist.
+- **Full operator step ordering for both the loss and the compromise scenario** — which rows to drop, and the order to rotate secrets in — lives in the [Master-Key (KEK) Disaster Runbook](operations/master-key-disaster-runbook.md). This section is the prevention-and-pointers summary; the runbook is the incident checklist. An operator-facing rewrite of the same runbook, for operators who haven't cloned the repo, is published at [docs.obsign.org/operator/master-key-runbook](https://docs.obsign.org/operator/master-key-runbook/).
 
 ## Rotating the Master Key
 
