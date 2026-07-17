@@ -197,7 +197,12 @@ pub async fn update_handle_handler(
             })?;
 
         if let Some(plc_update) = &plc_update {
-            sqlx::query(
+            // The authoritative plc.directory POST has already succeeded above, so this is only a
+            // cache refresh: never let its failure roll back the committed handle swap (which would
+            // leave plc.directory ahead of a reverted local handle). A stale/missing cache row is
+            // reconciled by the next re-resolve, matching the non-fatal posture in
+            // submit_plc_operation.rs.
+            if let Err(e) = sqlx::query(
                 "INSERT INTO did_documents (did, document, created_at, updated_at) \
                  VALUES (?, ?, datetime('now'), datetime('now')) \
                  ON CONFLICT(did) DO UPDATE SET \
@@ -207,10 +212,9 @@ pub async fn update_handle_handler(
             .bind(plc_update.did_document.to_string())
             .execute(&mut *tx)
             .await
-            .map_err(|e| {
-                tracing::error!(error = %e, did = %did, "failed to cache submitted handle PLC operation");
-                ApiError::new(ErrorCode::InternalError, "failed to update DID document")
-            })?;
+            {
+                tracing::warn!(error = %e, did = %did, "failed to cache submitted handle PLC operation (non-fatal)");
+            }
         }
 
         tx.commit().await.map_err(|e| {
