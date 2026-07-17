@@ -170,7 +170,7 @@
     align-items: center;
     justify-content: center;
     gap: 6px;
-    min-height: 44px;
+    min-height: var(--size-tap-target);
     border: none;
     border-radius: var(--radius-sm);
     background: transparent;

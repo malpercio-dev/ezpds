@@ -76,12 +76,18 @@ rounded:
   lg: "12px"
   full: "9999px"
 spacing:
+  # 3xs/2xs are sub-xs micro-gaps for tight intra-component stacks. 1px borders
+  # and 2px focus-ring offsets are small-structural literals, not spacing.
+  3xs: "2px"
+  2xs: "3px"
   xs: "4px"
   sm: "8px"
   md: "16px"
   lg: "24px"
   xl: "32px"
   2xl: "48px"
+sizing:
+  tap-target: "44px" # minimum touch target — Apple HIG 44pt / WCAG 2.2 AAA (2.5.5)
 components:
   button-primary:
     backgroundColor: "{colors.primary}"

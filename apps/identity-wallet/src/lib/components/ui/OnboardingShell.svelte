@@ -60,7 +60,7 @@
     font-weight: var(--weight-medium);
     cursor: pointer;
     padding: var(--space-xs);
-    min-height: 44px;
+    min-height: var(--size-tap-target);
   }
 
   .content {

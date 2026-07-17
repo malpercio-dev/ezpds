@@ -34,7 +34,7 @@
   }
   .advanced-link {
     display: inline-block;
-    min-height: 44px;
+    min-height: var(--size-tap-target);
     padding: var(--space-xs) 0;
     background: none;
     border: none;
