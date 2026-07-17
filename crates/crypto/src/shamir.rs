@@ -133,14 +133,14 @@ const ENVELOPE_PREIMAGE_LEN: usize = SHARE_ENVELOPE_LEN - ENVELOPE_CHECKSUM_LEN;
 /// and is zeroized on drop.
 pub struct ShareEnvelope {
     /// Envelope format version. Always [`SHARE_ENVELOPE_VERSION`] for envelopes this crate builds.
-    pub version: u8,
+    version: u8,
     /// Identifies the split (generation) these three shares belong to. Shares with differing
     /// `set_id` values must never be combined.
-    pub set_id: u32,
+    set_id: u32,
     /// Share index in `[1, 3]`. Not secret.
-    pub index: u8,
+    index: u8,
     /// 32 bytes of Shamir share data. Zeroized on drop.
-    pub payload: Zeroizing<[u8; 32]>,
+    payload: Zeroizing<[u8; 32]>,
 }
 
 // Redacts the secret payload — a `ShareEnvelope` carries share material that must never land in a
@@ -157,6 +157,21 @@ impl std::fmt::Debug for ShareEnvelope {
 }
 
 impl ShareEnvelope {
+    /// Envelope format version (always [`SHARE_ENVELOPE_VERSION`] for envelopes this crate builds).
+    pub fn version(&self) -> u8 {
+        self.version
+    }
+
+    /// The split (generation) identifier these three shares share.
+    pub fn set_id(&self) -> u32 {
+        self.set_id
+    }
+
+    /// Share index in `[1, 3]`. Not secret.
+    pub fn index(&self) -> u8 {
+        self.index
+    }
+
     /// Wrap a raw [`ShamirShare`] into a versioned envelope tied to `set_id`.
     fn from_share(set_id: u32, share: &ShamirShare) -> Self {
         ShareEnvelope {
@@ -243,9 +258,10 @@ impl ShareEnvelope {
     /// Encode the envelope as an uppercase, unpadded base32 string (RFC 4648).
     ///
     /// Uppercase base32 uses only characters in QR codes' alphanumeric mode, keeping machine shares
-    /// (Shares 1 and 2) compact when rendered as a QR code.
-    pub fn encode_share(&self) -> String {
-        data_encoding::BASE32_NOPAD.encode(self.to_bytes().as_slice())
+    /// (Shares 1 and 2) compact when rendered as a QR code. The encoded form is share material, so
+    /// it is returned in a [`Zeroizing`] buffer that scrubs the heap allocation on drop.
+    pub fn encode_share(&self) -> Zeroizing<String> {
+        Zeroizing::new(data_encoding::BASE32_NOPAD.encode(self.to_bytes().as_slice()))
     }
 
     /// Decode a share from its base32 string form (as produced by [`encode_share`]).
@@ -256,11 +272,14 @@ impl ShareEnvelope {
     /// [`encode_share`]: ShareEnvelope::encode_share
     /// [`from_bytes`]: ShareEnvelope::from_bytes
     pub fn decode_share(encoded: &str) -> Result<Self, CryptoError> {
-        let normalized: String = encoded
-            .chars()
-            .filter(|c| !c.is_whitespace())
-            .collect::<String>()
-            .to_ascii_uppercase();
+        // The normalized copy is share material; keep it in zeroizing storage.
+        let normalized = Zeroizing::new(
+            encoded
+                .chars()
+                .filter(|c| !c.is_whitespace())
+                .collect::<String>()
+                .to_ascii_uppercase(),
+        );
         let bytes = data_encoding::BASE32_NOPAD
             .decode(normalized.as_bytes())
             .map_err(|e| CryptoError::ShareFormat(format!("invalid base32: {e}")))?;
@@ -270,8 +289,9 @@ impl ShareEnvelope {
     /// Render the envelope as a BIP-39-style mnemonic phrase for the human-custody share (Share 3).
     ///
     /// The whole 42-byte envelope — including its checksum — is encoded, so a phrase is
-    /// self-describing exactly like the base32 form and can be combined with a machine share.
-    pub fn encode_share_words(&self) -> String {
+    /// self-describing exactly like the base32 form and can be combined with a machine share. The
+    /// phrase is share material, so it is returned in a [`Zeroizing`] buffer.
+    pub fn encode_share_words(&self) -> Zeroizing<String> {
         bytes_to_words(self.to_bytes().as_slice())
     }
 
@@ -324,6 +344,15 @@ pub fn combine_envelopes(
     a: &ShareEnvelope,
     b: &ShareEnvelope,
 ) -> Result<Zeroizing<[u8; 32]>, CryptoError> {
+    // Envelopes are normally obtained through `decode_share*`, which enforce version/checksum, and
+    // fields are private so they cannot be mutated afterward. This is a defense-in-depth guard for
+    // any envelope built by another path in this crate.
+    if a.version != SHARE_ENVELOPE_VERSION || b.version != SHARE_ENVELOPE_VERSION {
+        return Err(CryptoError::ShareVersion(format!(
+            "unsupported envelope version(s) ({}, {}); expected {SHARE_ENVELOPE_VERSION}",
+            a.version, b.version
+        )));
+    }
     if a.set_id != b.set_id {
         return Err(CryptoError::SecretReconstruction(format!(
             "share set_id mismatch ({} != {}): these shares are from different generations and must not be combined",

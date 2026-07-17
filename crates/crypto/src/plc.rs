@@ -346,10 +346,12 @@ pub fn build_did_plc_genesis_op_multi_rotation_with_external_signer<F>(
 where
     F: FnOnce(&[u8]) -> Result<Vec<u8>, CryptoError>,
 {
-    if rotation_keys.is_empty() {
-        return Err(CryptoError::PlcOperation(
-            "rotation_keys must not be empty".to_string(),
-        ));
+    // PLC permits at most 5 rotation keys; a longer list builds an op plc.directory would reject.
+    if rotation_keys.is_empty() || rotation_keys.len() > 5 {
+        return Err(CryptoError::PlcOperation(format!(
+            "rotation_keys must contain between 1 and 5 keys, got {}",
+            rotation_keys.len()
+        )));
     }
     build_genesis_op_core(
         rotation_keys.iter().map(|k| k.0.clone()).collect(),
@@ -1751,6 +1753,35 @@ mod tests {
             |_| Ok((1u8..=64).collect()),
         );
         assert!(matches!(result, Err(CryptoError::PlcOperation(_))));
+    }
+
+    /// PLC caps rotationKeys at 5; a 6-key list must be rejected before building.
+    #[test]
+    fn multi_rotation_more_than_five_keys_is_error() {
+        let pds = generate_p256_keypair().expect("pds keypair");
+        let keys: Vec<DidKeyUri> = (0..6)
+            .map(|_| generate_p256_keypair().expect("keypair").key_id)
+            .collect();
+        let result = build_did_plc_genesis_op_multi_rotation_with_external_signer(
+            &keys,
+            &pds.key_id,
+            "alice.example.com",
+            "https://pds.example.com",
+            |_| Ok((1u8..=64).collect()),
+        );
+        assert!(
+            matches!(result, Err(CryptoError::PlcOperation(_))),
+            "6 rotation keys must be rejected, got {result:?}"
+        );
+        // 5 keys is the maximum and must still succeed.
+        let ok = build_did_plc_genesis_op_multi_rotation_with_external_signer(
+            &keys[..5],
+            &pds.key_id,
+            "alice.example.com",
+            "https://pds.example.com",
+            |_| Ok((1u8..=64).collect()),
+        );
+        assert!(ok.is_ok(), "5 rotation keys must be accepted, got {ok:?}");
     }
 
     /// The two-key builder is now a delegation to the shared core; its output must be byte-identical

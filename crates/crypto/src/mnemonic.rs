@@ -60,12 +60,17 @@ pub(crate) const WORDLIST: [&str; 256] = [
 ];
 
 /// Render arbitrary bytes as a space-separated mnemonic phrase (one word per byte).
-pub(crate) fn bytes_to_words(bytes: &[u8]) -> String {
-    bytes
-        .iter()
-        .map(|&b| WORDLIST[b as usize])
-        .collect::<Vec<_>>()
-        .join(" ")
+///
+/// The phrase encodes secret share material, so it is returned in a [`Zeroizing`] buffer that
+/// scrubs the heap allocation on drop.
+pub(crate) fn bytes_to_words(bytes: &[u8]) -> Zeroizing<String> {
+    Zeroizing::new(
+        bytes
+            .iter()
+            .map(|&b| WORDLIST[b as usize])
+            .collect::<Vec<_>>()
+            .join(" "),
+    )
 }
 
 /// Parse a mnemonic phrase back to its bytes.
@@ -91,6 +96,11 @@ mod tests {
     use super::*;
     use std::collections::HashSet;
 
+    /// SHA-256 (hex) of each word followed by `\n`, in order. Regenerate only on a deliberate,
+    /// coordinated wordlist change (which invalidates all prior human shares).
+    const WORDLIST_GOLDEN_DIGEST: &str =
+        "4749ec21e04de8b485afff6ab366e0285cc1544eb1216f1991793fbbf4f955fe";
+
     #[test]
     fn wordlist_has_256_entries() {
         assert_eq!(WORDLIST.len(), 256);
@@ -102,6 +112,28 @@ mod tests {
         for (i, w) in WORDLIST.iter().enumerate() {
             assert!(seen.insert(w), "duplicate mnemonic word {w:?} at index {i}");
         }
+    }
+
+    /// Pins the exact ordered word→byte mapping. Length + uniqueness + lowercase checks alone would
+    /// pass under a permutation or a single word swap, either of which silently changes the meaning
+    /// of every human share ever written. A digest over the ordered list catches both.
+    #[test]
+    fn wordlist_matches_golden_digest() {
+        use sha2::{Digest, Sha256};
+        let mut hasher = Sha256::new();
+        for w in WORDLIST {
+            hasher.update(w.as_bytes());
+            hasher.update(b"\n");
+        }
+        let hex: String = hasher
+            .finalize()
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect();
+        assert_eq!(
+            hex, WORDLIST_GOLDEN_DIGEST,
+            "the mnemonic word→byte mapping changed; this breaks every existing paper share"
+        );
     }
 
     #[test]

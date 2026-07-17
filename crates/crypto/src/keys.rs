@@ -120,10 +120,10 @@ pub fn derive_recovery_keypair(seed: &[u8; 32]) -> Result<P256Keypair, CryptoErr
         hk.expand(&info, okm.as_mut())
             .map_err(|e| CryptoError::KeyGeneration(format!("hkdf expand: {e}")))?;
 
-        // SecretKey::from_bytes rejects a zero scalar or one ≥ the curve order — exactly the
-        // rejection-sampling condition. On the near-certain success it returns the scalar in [1, n).
-        let field_bytes: p256::FieldBytes = (*okm).into();
-        if let Ok(secret_key) = SecretKey::from_bytes(&field_bytes) {
+        // SecretKey::from_slice rejects a zero scalar or one ≥ the curve order — exactly the
+        // rejection-sampling condition — and copies the bytes into its own zeroizing storage rather
+        // than a plain FieldBytes. On the near-certain success it returns the scalar in [1, n).
+        if let Ok(secret_key) = SecretKey::from_slice(okm.as_slice()) {
             return Ok(keypair_from_secret_key(&secret_key));
         }
     }
@@ -380,8 +380,7 @@ mod tests {
         use p256::ecdsa::{signature::Signer, Signature, SigningKey};
 
         let kp = derive_recovery_keypair(&GOLDEN_RECOVERY_SEED).unwrap();
-        let field_bytes: p256::FieldBytes = (*kp.private_key_bytes).into();
-        let signing_key = SigningKey::from_bytes(&field_bytes).unwrap();
+        let signing_key = SigningKey::from_slice(kp.private_key_bytes.as_slice()).unwrap();
 
         let message = b"recovery ceremony proof";
         let sig: Signature = signing_key.sign(message);
