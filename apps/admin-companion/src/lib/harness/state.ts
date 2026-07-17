@@ -16,6 +16,7 @@ import type {
   AdminDevice,
   AccountFlag,
   AccountListEntry,
+  AuditEventEntry,
   ClaimCodeEntry,
   TransferEntry,
   ServerHealth,
@@ -55,6 +56,8 @@ export interface FakeRelay {
   accounts: AccountListEntry[];
   claimCodes: ClaimCodeEntry[];
   transfers: TransferEntry[];
+  /** Server-wide admin audit log, newest first (matching the relay's ordering). */
+  auditEvents: AuditEventEntry[];
   health: ServerHealth;
   /** Per-account takedown state, keyed by DID. */
   takedowns: Record<string, boolean>;
@@ -224,6 +227,29 @@ export function makeTransfer(
   return base;
 }
 
+/** Build a fake server-wide admin audit event. */
+export function makeAuditEvent(
+  seed: string,
+  opts: {
+    actor: string;
+    action: string;
+    subject?: string | null;
+    outcome?: string;
+    detail?: Record<string, unknown> | null;
+    createdAt?: string;
+  }
+): AuditEventEntry {
+  return {
+    id: `audit-${hashToken(seed)}`,
+    actor: opts.actor,
+    action: opts.action,
+    subject: opts.subject ?? null,
+    outcome: opts.outcome ?? 'ok',
+    detail: opts.detail ?? null,
+    createdAt: opts.createdAt ?? FIXED_NOW,
+  };
+}
+
 function hashInt(seed: string): number {
   return parseInt(hashToken(seed).replace(/[^0-9]/g, '0').slice(0, 6), 10) || 0;
 }
@@ -275,6 +301,44 @@ export function seedRelay(opts: {
     transfers: opts.degraded
       ? [makeTransfer(`${seed}:t1`, 'accepted')]
       : [makeTransfer(`${seed}:t1`, 'pending')],
+    // Newest first, matching the relay: a mixed trail exercising every column the
+    // screen renders — device attribution, subjects, detail facts, and a no-subject
+    // server-wide action.
+    auditEvents: [
+      makeAuditEvent(`${seed}:a1`, {
+        actor: `device:${thisDevice.id}`,
+        action: 'claim_codes_minted',
+        detail: { count: 3, expiresInHours: 24 },
+        createdAt: '2026-07-15 11:45:00',
+      }),
+      makeAuditEvent(`${seed}:a2`, {
+        actor: 'master-token',
+        action: 'request_crawl',
+        detail: { requested: 1, accepted: 1 },
+        createdAt: '2026-07-15 10:30:00',
+      }),
+      makeAuditEvent(`${seed}:a3`, {
+        actor: `device:${thisDevice.id}`,
+        action: 'account_takedown',
+        subject: accounts[0]?.did ?? fakeAccountDid(`${seed}:acct0`),
+        detail: { resultingStatus: 'takendown' },
+        createdAt: '2026-07-15 09:20:00',
+      }),
+      makeAuditEvent(`${seed}:a4`, {
+        actor: 'master-token',
+        action: 'device_revoked',
+        subject: otherDevice.id,
+        outcome: 'revoked',
+        createdAt: '2026-07-14 18:05:00',
+      }),
+      makeAuditEvent(`${seed}:a5`, {
+        actor: 'pairing-code',
+        action: 'device_registered',
+        subject: thisDevice.id,
+        detail: { label: thisDevice.label, platform: 'ios' },
+        createdAt: '2026-07-14 09:00:00',
+      }),
+    ],
     health: healthyServer(accountCount, { degraded: opts.degraded, flagged: flaggedCount }),
     takedowns: {},
   };

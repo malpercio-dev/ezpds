@@ -1,7 +1,7 @@
 # Admin Companion (operator console) Mobile App
 
 Last verified: 2026-07-10
-Last updated: 2026-07-17 (documented the MM-281 relay-status readout — `get_relay_status`/`request_crawl` IPC + the Home relay-status block)
+Last updated: 2026-07-17 (documented the server-wide admin audit log — `list_audit` IPC + the Audit screen)
 
 ## Purpose
 
@@ -102,6 +102,11 @@ share sheet, and server-side self-revoke (Phase 8). Wired:
   `GET /v1/accounts/claim-codes` — bare path signed, pagination `cursor` appended to the URL
   only, like the moderation GET — and a signed `POST /v1/accounts/claim-codes/revoke` whose
   JSON body carries the code, so a revoke signature is bound to its code),
+  `list_audit` (the server-wide admin audit log: a signed `GET /v1/admin/audit` — bare path
+  signed, paging + exact-match `action`/`actor`/`subject` filter params appended to the URL only,
+  like the account listing — returning every privileged admin action newest-first, each
+  attributed to the credential that signed it; `AuditPage`/`AuditEventEntry` are by-value copies
+  of the wire shape pinned by a deserialization test),
   `list_transfers`/`cancel_transfer` (in-flight device-transfer visibility/interrupt: a signed
   `GET /v1/admin/transfers` — bare path signed, pagination `cursor` appended to the URL only —
   and a signed `POST /v1/admin/transfers/{id}/cancel` whose transfer id rides in the *path*, so
@@ -144,6 +149,8 @@ share sheet, and server-side self-revoke (Phase 8). Wired:
   `list_claim_codes(pairing_id, cursor?)` (signed inventory page: every minted code with its
   derived status, newest first) / `revoke_claim_code(pairing_id, code)` (signed revoke of a
   live code; already-revoked is idempotent 200, redeemed → `RELAY_REJECTED` 409, unknown → 404),
+  `list_audit(pairing_id, limit?, cursor?, action?, actor?, subject?)` (signed server-wide
+  admin-audit page read; an unknown `action` filter word → `RELAY_REJECTED` 400),
   `list_transfers(pairing_id, cursor?)` (signed in-flight device-transfer page: every planned
   swap that can still advance, newest first, never the code) / `cancel_transfer(pairing_id,
   transfer_id)` (signed operator interrupt; repeat is idempotent 200, completed/expired →
@@ -213,6 +220,19 @@ share sheet, and server-side self-revoke (Phase 8). Wired:
   Devices (`?server=<pairingId>`, else active); pages older codes via the relay cursor with a
   "Load older codes" button; a revoke reloads the inventory so rows report the relay's
   post-revoke truth, never an optimistic edit. Reached from Home's Codes button),
+  **Audit** (`src/routes/audit/` — the server-wide admin audit log on ONE relay: every
+  privileged admin action newest-first — takedowns, credential sweeps, code mints/revokes,
+  device pairings and revocations, transfer cancels, account repairs, crawl requests — each
+  row a mono action word + `time · actor → subject` line + a tone chip labeled with the
+  relay's outcome word (`src/lib/audit.ts`, Functional Core, unit-tested: `chipFor` maps
+  destructive actions to the critical tone / restore to safe / everything additive to info,
+  `summaryLine`, `detailEntries`; `AUDIT_ACTIONS` mirrors the relay's `AdminAuditAction`
+  vocabulary and must stay in lockstep). A horizontally-scrollable action-word filter row plus
+  per-event drill-in ("All actions by this actor" / "on this subject") drive the relay's
+  exact-match server-side filters; expandable rows carry the fact sheet including the `detail`
+  JSON. Pinned to a single pairing at entry like Devices (`?server=<pairingId>`, else active);
+  pages via the relay cursor (`createPagedList`); reads only, no biometric gate. Reached from
+  Home's Audit button and the Settings per-server panel's "View admin audit log"),
   **Status** (`src/routes/status/` — ONE relay's server-health readout off
   `GET /v1/admin/health`: version/uptime, account counts by lifecycle, blob/block totals,
   firehose state, and background-sweep last-runs as literal fact sheets. Pinned to a single

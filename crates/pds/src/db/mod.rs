@@ -1,6 +1,7 @@
 pub mod account_deletion_tokens;
 pub mod account_labels;
 pub mod accounts;
+pub mod admin_audit;
 pub mod admin_devices;
 pub mod agent_audit;
 pub mod agent_auth;

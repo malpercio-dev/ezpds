@@ -1,7 +1,9 @@
 // pattern: Imperative Shell
 //
 // Admin account repair: authenticate the operator, bind the target DID from the path,
-// then atomically apply the repair and append its durable audit event.
+// then atomically apply the repair and append its durable audit events — both the
+// account-scoped `operator_account_audit_events` row (V046, purged with the account) and
+// the server-wide `admin_audit_events` row (V052, FK-free so it outlives the account).
 
 use axum::body::Bytes;
 use axum::extract::{Path, State};
@@ -15,6 +17,7 @@ use common::{ApiError, ErrorCode};
 use crate::app::AppState;
 use crate::auth::guards::require_admin_json;
 use crate::auth::token::generate_token;
+use crate::db::admin_audit::{record_admin_audit_event, AdminAuditAction};
 
 #[derive(Deserialize)]
 pub struct SetEmailRequest {
@@ -126,11 +129,23 @@ pub async fn set_account_email(
     .bind(uuid::Uuid::new_v4().to_string())
     .bind(&did)
     .bind(actor.as_log_str().as_ref())
-    .bind(detail)
+    .bind(&detail)
     .execute(&mut *tx)
     .await
     {
         return db_error(error, "audit email repair").into_response();
+    }
+    if let Err(error) = record_admin_audit_event(
+        &mut *tx,
+        actor.as_log_str().as_ref(),
+        AdminAuditAction::EmailUpdated,
+        Some(&did),
+        "ok",
+        Some(&detail),
+    )
+    .await
+    {
+        return error.into_response();
     }
     if let Err(error) = tx.commit().await {
         return db_error(error, "commit email repair").into_response();
@@ -215,6 +230,18 @@ pub async fn issue_reset_token(
     .await
     {
         return db_error(error, "audit reset-token issuance").into_response();
+    }
+    if let Err(error) = record_admin_audit_event(
+        &mut *tx,
+        actor.as_log_str().as_ref(),
+        AdminAuditAction::ResetTokenIssued,
+        Some(&did),
+        "ok",
+        None,
+    )
+    .await
+    {
+        return error.into_response();
     }
     if let Err(error) = tx.commit().await {
         return db_error(error, "commit reset-token issuance").into_response();

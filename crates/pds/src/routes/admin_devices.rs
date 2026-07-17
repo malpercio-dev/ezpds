@@ -26,6 +26,10 @@ use common::{ApiError, ErrorCode};
 
 use crate::app::AppState;
 use crate::auth::guards;
+use crate::auth::guards::AdminActor;
+use crate::db::admin_audit::{
+    insert_admin_audit_event, record_admin_audit_event, AdminAuditAction,
+};
 use crate::db::admin_devices::{
     consume_pairing_code, get_device, get_pairing_code, insert_device, insert_pairing_code,
     list_devices, revoke_device, AdminDeviceRow, NewAdminDevice,
@@ -86,10 +90,25 @@ pub async fn mint_pairing_code(
         let code = generate_pairing_code();
         match insert_pairing_code(&state.db, &code, payload.expires_in_minutes).await {
             Ok(expires_at) => {
+                // Audit the mint — but never the code itself (it is a live enrollment
+                // bearer secret; the expiry is the useful mechanical fact).
+                let detail = serde_json::json!({
+                    "expiresInMinutes": payload.expires_in_minutes,
+                })
+                .to_string();
+                record_admin_audit_event(
+                    &state.db,
+                    AdminActor::MasterToken.as_log_str().as_ref(),
+                    AdminAuditAction::PairingCodeMinted,
+                    None,
+                    "ok",
+                    Some(&detail),
+                )
+                .await?;
                 return Ok(Json(PairingCodeResponse {
                     pairing_code: code,
                     expires_at: to_rfc3339_utc(&expires_at),
-                }))
+                }));
             }
             Err(e) if is_unique_violation(&e) => {
                 tracing::warn!(attempt, "pairing code collision; retrying");
@@ -237,6 +256,29 @@ pub async fn register_admin_device(
         ApiError::new(ErrorCode::InternalError, "registration failed")
     })?;
 
+    // Audit the enrollment atomically with it. The acting credential here is the consumed
+    // pairing code (minted by the master token), not an existing admin identity — recorded
+    // as the "pairing-code" actor class rather than a device id, since the new device is
+    // the *subject* of this event, not its author. Never the code value itself.
+    let audit_detail = serde_json::json!({
+        "label": payload.label.trim(),
+        "platform": payload.platform.trim(),
+    })
+    .to_string();
+    insert_admin_audit_event(
+        &mut *tx,
+        "pairing-code",
+        AdminAuditAction::DeviceRegistered,
+        Some(&device_id),
+        "ok",
+        Some(&audit_detail),
+    )
+    .await
+    .map_err(|e| {
+        tracing::error!(error = %e, "failed to audit admin device registration");
+        ApiError::new(ErrorCode::InternalError, "registration failed")
+    })?;
+
     tx.commit().await.map_err(|e| {
         tracing::error!(error = %e, "failed to commit device registration");
         ApiError::new(ErrorCode::InternalError, "registration failed")
@@ -351,17 +393,32 @@ pub async fn revoke_admin_device(
     headers: HeaderMap,
     body: Bytes,
 ) -> Result<Json<RevokeDeviceResponse>, Response> {
-    guards::require_admin(method.as_str(), uri.path(), &headers, &body, &state)
+    let actor = guards::require_admin(method.as_str(), uri.path(), &headers, &body, &state)
         .await
         .map_err(IntoResponse::into_response)?;
 
     // Stamp revoked_at (no-op if already revoked or unknown), then read back the row.
     // Reading after the update returns the authoritative post-revoke state and lets an
     // unknown id surface as a 404 rather than a silently-successful no-op.
-    revoke_device(&state.db, &id).await.map_err(|e| {
+    let transitioned = revoke_device(&state.db, &id).await.map_err(|e| {
         tracing::error!(error = %e, device_id = %id, "failed to revoke admin device");
         ApiError::new(ErrorCode::InternalError, "failed to revoke admin device").into_response()
     })?;
+    // Audit only a real transition — an idempotent repeat changed nothing. Recording who
+    // revoked which device is the point of this trail: with several paired devices, a
+    // device revoking a peer (or itself) must stay attributable.
+    if transitioned {
+        record_admin_audit_event(
+            &state.db,
+            actor.as_log_str().as_ref(),
+            AdminAuditAction::DeviceRevoked,
+            Some(&id),
+            "revoked",
+            None,
+        )
+        .await
+        .map_err(IntoResponse::into_response)?;
+    }
 
     let device = get_device(&state.db, &id)
         .await

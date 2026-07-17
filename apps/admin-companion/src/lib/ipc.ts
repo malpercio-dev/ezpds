@@ -497,6 +497,61 @@ export function revokeClaimCode(pairingId: string, code: string): Promise<Revoke
 }
 
 /**
+ * One server-wide admin audit event as the relay reports it: a privileged admin action
+ * attributed to the credential that signed it. `actor` is `master-token`, `device:<id>`,
+ * or `pairing-code` (device enrollment — the acting credential is the consumed pairing
+ * code). `subject` is the acted-on entity (account DID, admin-device id, transfer id,
+ * claim code), absent for server-wide actions; `detail` is a JSON object of mechanical
+ * facts (counts, resulting status), absent when the action carries none. `createdAt` is
+ * the relay's SQLite UTC datetime string.
+ */
+export interface AuditEventEntry {
+  id: string;
+  actor: string;
+  action: string;
+  subject: string | null;
+  outcome: string;
+  detail: Record<string, unknown> | null;
+  createdAt: string;
+}
+
+/** One audit-log page: newest-first events plus the cursor for the next page. */
+export interface AuditPage {
+  events: AuditEventEntry[];
+  /** Present when another page may exist; pass back to {@link listAudit}. */
+  cursor: string | null;
+}
+
+/** Optional filters for {@link listAudit}. */
+export interface ListAuditFilters {
+  limit?: number;
+  /** The `cursor` from the previous page. */
+  cursor?: string;
+  /** Exact-match action filter (one of the relay's action words); unknown → 400. */
+  action?: string;
+  /** Exact-match actor filter (`master-token`, `device:<id>`, `pairing-code`). */
+  actor?: string;
+  /** Exact-match subject filter (account DID, admin-device id, transfer id, code). */
+  subject?: string;
+}
+
+/**
+ * Page the server-wide admin audit log from the given pairing's relay via a signed
+ * request — every privileged admin action, newest first, attributed to the credential
+ * that signed it. Reads only, no biometric gate. Throws a {@link RelayClientError}.
+ */
+export function listAudit(pairingId: string, filters: ListAuditFilters = {}): Promise<AuditPage> {
+  return invoke<AuditPage>('list_audit', {
+    pairingId,
+    limit: filters.limit ?? null,
+    cursor: filters.cursor ?? null,
+    action: filters.action ?? null,
+    actor: filters.actor ?? null,
+    subject: filters.subject ?? null,
+  });
+}
+
+/**
  * One in-flight device transfer as the relay reports it — a planned device swap that
  * can still advance. `status` is the stored state-machine state; an `accepted` or
  * `completing` transfer means the target device already holds a working credential.

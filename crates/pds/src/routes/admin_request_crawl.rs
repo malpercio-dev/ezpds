@@ -14,8 +14,9 @@
 //! ([`crate::crawler::CrawlerNotifier::notify`]), this is an explicit, un-throttled action whose
 //! per-relay outcome is reported back so the operator sees whether each relay accepted.
 //!
-//! **Audit.** The acting admin is recorded on a structured log line. Until a durable server-wide
-//! admin audit log lands, this log line is the record of who triggered a crawl.
+//! **Audit.** The acting admin is recorded in the durable server-wide admin audit log
+//! (`admin_audit_events`, served at `GET /v1/admin/audit`) with the per-relay outcome tally,
+//! plus a structured log line.
 
 use axum::body::Bytes;
 use axum::extract::State;
@@ -28,6 +29,7 @@ use common::{ApiError, ErrorCode};
 use crate::app::AppState;
 use crate::auth::guards::require_admin;
 use crate::crawler::CrawlAttempt;
+use crate::db::admin_audit::{record_admin_audit_event, AdminAuditAction};
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -67,6 +69,21 @@ pub async fn request_crawl(
 
     let relays = state.crawlers.request_crawl_now().await;
     let accepted = relays.iter().filter(|attempt| attempt.accepted).count();
+
+    let audit_detail = serde_json::json!({
+        "requested": relays.len(),
+        "accepted": accepted,
+    })
+    .to_string();
+    record_admin_audit_event(
+        &state.db,
+        actor.as_log_str().as_ref(),
+        AdminAuditAction::RequestCrawl,
+        None,
+        "ok",
+        Some(&audit_detail),
+    )
+    .await?;
 
     Ok(Json(RequestCrawlResponse {
         requested: relays.len(),

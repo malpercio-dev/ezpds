@@ -15,7 +15,8 @@ use serde::{Deserialize, Serialize};
 use common::{ApiError, ErrorCode};
 
 use crate::app::AppState;
-use crate::auth::guards::require_admin_json;
+use crate::auth::guards::{require_admin_json, AdminActor};
+use crate::db::admin_audit::{record_admin_audit_event, AdminAuditAction};
 
 #[derive(Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -54,20 +55,21 @@ pub async fn create_signing_key(
     headers: HeaderMap,
     body: Bytes,
 ) -> Result<Json<CreateSigningKeyResponse>, Response> {
-    require_admin_json(method.as_str(), uri.path(), &headers, &body, &state).await?;
+    let actor = require_admin_json(method.as_str(), uri.path(), &headers, &body, &state).await?;
 
     // Validate the body shape (algorithm enum) using the same rejection semantics as
     // the former `Json` extractor: unknown variant / missing field → 422, null → 400.
     let _ =
         Json::<CreateSigningKeyRequest>::from_bytes(&body).map_err(IntoResponse::into_response)?;
 
-    create_signing_key_inner(&state)
+    create_signing_key_inner(&state, &actor)
         .await
         .map_err(IntoResponse::into_response)
 }
 
 async fn create_signing_key_inner(
     state: &AppState,
+    actor: &AdminActor,
 ) -> Result<Json<CreateSigningKeyResponse>, ApiError> {
     // --- Master key: return 503 if not configured ---
     let master_key: &[u8; 32] = state
@@ -104,6 +106,17 @@ async fn create_signing_key_inner(
         "p256",
         &keypair.public_key,
         &private_key_encrypted,
+    )
+    .await?;
+
+    // The key id is its public did:key URI — no secret material — so it is the subject.
+    record_admin_audit_event(
+        &state.db,
+        actor.as_log_str().as_ref(),
+        AdminAuditAction::SigningKeyCreated,
+        Some(&keypair.key_id.to_string()),
+        "ok",
+        None,
     )
     .await?;
 

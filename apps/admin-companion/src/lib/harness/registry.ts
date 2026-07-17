@@ -21,6 +21,7 @@ import type {
   RelayStatus,
   RequestCrawlResult,
   AccountList,
+  AuditPage,
   ClaimCodeInventory,
   RevokedClaimCode,
   TransferList,
@@ -65,6 +66,7 @@ export type CommandName =
   | 'list_accounts'
   | 'list_claim_codes'
   | 'revoke_claim_code'
+  | 'list_audit'
   | 'list_transfers'
   | 'cancel_transfer'
   | 'revoke_account_credentials'
@@ -264,6 +266,23 @@ export function buildRegistry(state: AdminState): Registry {
       entry!.status = 'revoked';
       entry!.revokedAt = '2026-07-15 12:00:00';
       return { code, status: 'revoked' };
+    },
+
+    list_audit: (args): AuditPage => {
+      const relay = requireRelay(state, String(args.pairingId ?? ''));
+      // Mirror the relay's exact-match filters (an unknown action word is a 400 there;
+      // the fake trusts the screen to only offer known words). No pagination — the
+      // seeded trail fits one page, so the cursor is always null.
+      const action = args.action == null ? null : String(args.action);
+      const actor = args.actor == null ? null : String(args.actor);
+      const subject = args.subject == null ? null : String(args.subject);
+      const events = relay.auditEvents.filter(
+        (event) =>
+          (action === null || event.action === action) &&
+          (actor === null || event.actor === actor) &&
+          (subject === null || event.subject === subject)
+      );
+      return { events, cursor: null };
     },
 
     list_transfers: (args): TransferList => ({

@@ -16,6 +16,7 @@ use common::{ApiError, ErrorCode};
 
 use crate::app::AppState;
 use crate::auth::guards::require_admin;
+use crate::db::admin_audit::{record_admin_audit_event, AdminAuditAction};
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -53,7 +54,7 @@ pub async fn revoke_account_credentials(
     body: Bytes,
 ) -> Result<Json<RevokeCredentialsResponse>, ApiError> {
     // Auth first so an unauthenticated caller cannot probe which DIDs exist.
-    require_admin(method.as_str(), uri.path(), &headers, &body, &state).await?;
+    let actor = require_admin(method.as_str(), uri.path(), &headers, &body, &state).await?;
 
     if !crate::db::accounts::account_exists(&state.db, &did).await? {
         return Err(ApiError::new(ErrorCode::NotFound, "account not found"));
@@ -113,6 +114,26 @@ pub async fn revoke_account_credentials(
     .await
     .map_err(map_err)?
     .rows_affected();
+
+    // Audit the sweep atomically with it: which admin credential swept whom, and the
+    // literal per-family counts the response reports.
+    let audit_detail = serde_json::json!({
+        "sessionsRevoked": sessions,
+        "appPasswordsRevoked": app_passwords,
+        "oauthTokensRevoked": oauth_tokens,
+        "oauthCodesRevoked": oauth_codes,
+        "transferDeviceTokensRevoked": transfer_devices,
+    })
+    .to_string();
+    record_admin_audit_event(
+        &mut *tx,
+        actor.as_log_str().as_ref(),
+        AdminAuditAction::CredentialsRevoked,
+        Some(&did),
+        "ok",
+        Some(&audit_detail),
+    )
+    .await?;
 
     tx.commit().await.map_err(map_err)?;
 
