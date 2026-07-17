@@ -118,10 +118,15 @@ pub struct LexiconDoc {
 }
 
 /// A top-level definition. Only the def types present in the vendored set are modeled; a new
-/// def type (query, record, subscription, …) fails parsing until support is added deliberately.
+/// def type (query, subscription, …) fails parsing until support is added deliberately.
 pub enum LexDef {
     Procedure(LexProcedure),
-    Object(LexObject),
+    /// A `record` def (`app.bsky.feed.post`, …): the record-key discipline plus the object
+    /// schema the record body must satisfy. Only ever the `main` def of a document.
+    Record(LexRecord),
+    /// Any other top-level def stored for cross-document `ref`/`union` resolution — an `object`
+    /// (`#replyRef`), a bare `string` def (`app.bsky.graph.defs#listPurpose`), a `token`, etc.
+    Schema(LexSchema),
 }
 
 pub struct LexProcedure {
@@ -132,6 +137,13 @@ pub struct LexProcedure {
 pub struct LexXrpcBody {
     pub encoding: String,
     pub schema: Option<LexSchema>,
+}
+
+/// A `record` definition: the `key` discipline (`tid`, `literal:self`, …) the record key must
+/// satisfy and the object `record` body schema, mirroring `@atproto/lexicon`'s record def.
+pub struct LexRecord {
+    pub key: String,
+    pub record: LexSchema,
 }
 
 pub struct LexObject {
@@ -147,12 +159,23 @@ pub enum LexSchema {
     Object(LexObject),
     String {
         format: Option<StringFormat>,
+        /// Minimum length in UTF-8 bytes (the reference counts `utf8Len`).
+        min_length: Option<u64>,
         /// Maximum length in UTF-8 bytes (the reference counts `utf8Len`, despite the error
         /// message saying "characters").
         max_length: Option<u64>,
+        /// Maximum length in extended grapheme clusters (`@atproto/lexicon`'s `graphemeLen`).
+        max_graphemes: Option<u64>,
+        has_default: bool,
     },
-    Boolean,
+    Boolean {
+        /// A `const` fixes the only accepted value (view flags like `notFound: true`).
+        const_value: Option<bool>,
+        has_default: bool,
+    },
     Integer {
+        minimum: Option<i64>,
+        maximum: Option<i64>,
         /// Whether the lexicon declares a `default`. The reference applies primitive defaults
         /// during validation, so an absent value with a default satisfies even a `required`
         /// property (`createInviteCodes.codeCount`); the default's value itself never matters
@@ -161,8 +184,20 @@ pub enum LexSchema {
     },
     /// `unknown`: any JSON object (the reference rejects non-objects).
     Unknown,
+    /// A `blob` ref. `accept`/`maxSize` are parsed but not enforced here: the reference checks
+    /// them against the *uploaded blob's* metadata at ingestion, not against the record schema.
+    Blob,
+    /// `bytes`: lex-JSON `{ "$bytes": "<base64>" }`. No length bounds are used by the vendored
+    /// record closure, so none are modeled.
+    Bytes,
+    /// A `token` def: a bare marker identifier. Nothing in the vendored record closure `ref`s a
+    /// token (they appear only as advisory `knownValues`), so a value is never validated against
+    /// one; it is modeled solely so the def parses and resolves.
+    Token,
     Array {
         items: Box<LexSchema>,
+        min_length: Option<u64>,
+        max_length: Option<u64>,
     },
     Ref {
         /// Fully qualified by the registry after parsing: `lex:<nsid>#<def>`.
@@ -180,7 +215,19 @@ impl LexSchema {
     /// Whether an absent value is filled by a declared `default` — which satisfies `required`,
     /// because the reference applies primitive defaults inside validation.
     pub fn has_default(&self) -> bool {
-        matches!(self, LexSchema::Integer { has_default: true })
+        matches!(
+            self,
+            LexSchema::Integer {
+                has_default: true,
+                ..
+            } | LexSchema::String {
+                has_default: true,
+                ..
+            } | LexSchema::Boolean {
+                has_default: true,
+                ..
+            }
+        )
     }
 }
 
@@ -194,8 +241,10 @@ pub enum StringFormat {
     Datetime,
     Did,
     Handle,
+    Language,
     Nsid,
     RecordKey,
+    Uri,
 }
 
 impl StringFormat {
@@ -207,8 +256,10 @@ impl StringFormat {
             "datetime" => Self::Datetime,
             "did" => Self::Did,
             "handle" => Self::Handle,
+            "language" => Self::Language,
             "nsid" => Self::Nsid,
             "record-key" => Self::RecordKey,
+            "uri" => Self::Uri,
             _ => return None,
         })
     }
@@ -287,6 +338,30 @@ impl<'a> Node<'a> {
             })
             .collect()
     }
+
+    /// An optional non-negative integer constraint (`maxLength`, `maxSize`, `maxGraphemes`, …).
+    fn u64_opt(&self, key: &str) -> Result<Option<u64>, String> {
+        match self.get(key) {
+            None => Ok(None),
+            Some(OrderedValue::Number(n)) => n
+                .as_u64()
+                .map(Some)
+                .ok_or_else(|| format!("{}: {key} must be a non-negative integer", self.context)),
+            Some(_) => Err(format!("{}: {key} must be a number", self.context)),
+        }
+    }
+
+    /// An optional signed integer constraint (`minimum`, `maximum`).
+    fn i64_opt(&self, key: &str) -> Result<Option<i64>, String> {
+        match self.get(key) {
+            None => Ok(None),
+            Some(OrderedValue::Number(n)) => n
+                .as_i64()
+                .map(Some)
+                .ok_or_else(|| format!("{}: {key} must be an integer", self.context)),
+            Some(_) => Err(format!("{}: {key} must be a number", self.context)),
+        }
+    }
 }
 
 /// Parse one vendored lexicon document from its JSON source.
@@ -340,11 +415,21 @@ fn parse_def(value: &OrderedValue, context: &str) -> Result<LexDef, String> {
             };
             Ok(LexDef::Procedure(LexProcedure { input }))
         }
-        "object" => Ok(LexDef::Object(parse_object(&node, context)?)),
-        other => Err(format!(
-            "{context}: unsupported definition type {other:?} \
-             (extend crates/pds/src/lexicon before vendoring this document)"
-        )),
+        "record" => {
+            node.check_keys(&["type", "description", "key", "record"])?;
+            let key = node.required_string("key")?.to_owned();
+            let record_value = node
+                .get("record")
+                .ok_or_else(|| format!("{context}: record def is missing `record`"))?;
+            let record = parse_schema(record_value, &format!("{context} record"))?;
+            if !matches!(record, LexSchema::Object(_)) {
+                return Err(format!("{context}: a record's `record` must be an object"));
+            }
+            Ok(LexDef::Record(LexRecord { key, record }))
+        }
+        // Every other top-level def (`object`, a bare `string`, a `token`, …) is a schema stored
+        // for `ref`/`union` resolution. `parse_schema` rejects any construct we don't implement.
+        _ => Ok(LexDef::Schema(parse_schema(value, context)?)),
     }
 }
 
@@ -376,8 +461,18 @@ fn parse_schema(value: &OrderedValue, context: &str) -> Result<LexSchema, String
         "object" => Ok(LexSchema::Object(parse_object(&node, context)?)),
         "string" => {
             // `knownValues` is advisory (the reference does not enforce it), so it is accepted
-            // and ignored rather than treated as an unimplemented constraint.
-            node.check_keys(&["type", "description", "format", "maxLength", "knownValues"])?;
+            // and ignored rather than treated as an unimplemented constraint. `default` is
+            // presence-only: an absent value with a default satisfies `required` (like `integer`).
+            node.check_keys(&[
+                "type",
+                "description",
+                "format",
+                "minLength",
+                "maxLength",
+                "maxGraphemes",
+                "knownValues",
+                "default",
+            ])?;
             let format = match node.string("format")? {
                 None => None,
                 Some(name) => Some(StringFormat::parse(name).ok_or_else(|| {
@@ -387,40 +482,66 @@ fn parse_schema(value: &OrderedValue, context: &str) -> Result<LexSchema, String
                     )
                 })?),
             };
-            let max_length =
-                match node.get("maxLength") {
-                    None => None,
-                    Some(OrderedValue::Number(n)) => Some(n.as_u64().ok_or_else(|| {
-                        format!("{context}: maxLength must be a positive integer")
-                    })?),
-                    Some(_) => return Err(format!("{context}: maxLength must be a number")),
-                };
-            Ok(LexSchema::String { format, max_length })
+            Ok(LexSchema::String {
+                format,
+                min_length: node.u64_opt("minLength")?,
+                max_length: node.u64_opt("maxLength")?,
+                max_graphemes: node.u64_opt("maxGraphemes")?,
+                has_default: node.get("default").is_some(),
+            })
         }
         "boolean" => {
-            node.check_keys(&["type", "description"])?;
-            Ok(LexSchema::Boolean)
+            node.check_keys(&["type", "description", "const", "default"])?;
+            let const_value = match node.get("const") {
+                None => None,
+                Some(OrderedValue::Bool(b)) => Some(*b),
+                Some(_) => return Err(format!("{context}: const must be a boolean")),
+            };
+            Ok(LexSchema::Boolean {
+                const_value,
+                has_default: node.get("default").is_some(),
+            })
         }
         "integer" => {
-            node.check_keys(&["type", "description", "default"])?;
+            node.check_keys(&["type", "description", "minimum", "maximum", "default"])?;
             let has_default = match node.get("default") {
                 None => false,
                 Some(OrderedValue::Number(n)) if n.is_i64() || n.is_u64() => true,
                 Some(_) => return Err(format!("{context}: default must be an integer")),
             };
-            Ok(LexSchema::Integer { has_default })
+            Ok(LexSchema::Integer {
+                minimum: node.i64_opt("minimum")?,
+                maximum: node.i64_opt("maximum")?,
+                has_default,
+            })
         }
         "unknown" => {
             node.check_keys(&["type", "description"])?;
             Ok(LexSchema::Unknown)
         }
+        "blob" => {
+            // `accept`/`maxSize` are validated against the uploaded blob's metadata at ingestion,
+            // not against the record schema, so they are accepted and ignored here.
+            node.check_keys(&["type", "description", "accept", "maxSize"])?;
+            Ok(LexSchema::Blob)
+        }
+        "bytes" => {
+            node.check_keys(&["type", "description", "minLength", "maxLength"])?;
+            Ok(LexSchema::Bytes)
+        }
+        "token" => {
+            node.check_keys(&["type", "description"])?;
+            Ok(LexSchema::Token)
+        }
         "array" => {
-            node.check_keys(&["type", "description", "items"])?;
+            node.check_keys(&["type", "description", "items", "minLength", "maxLength"])?;
             let items = node
                 .get("items")
                 .ok_or_else(|| format!("{context}: array is missing `items`"))?;
             Ok(LexSchema::Array {
                 items: Box::new(parse_schema(items, &format!("{context} items"))?),
+                min_length: node.u64_opt("minLength")?,
+                max_length: node.u64_opt("maxLength")?,
             })
         }
         "ref" => {

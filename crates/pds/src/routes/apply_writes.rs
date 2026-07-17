@@ -24,10 +24,9 @@ pub struct ApplyWritesBody {
     /// Optimistic concurrency: if present, the current repo commit must equal this CID.
     #[serde(default, rename = "swapCommit")]
     swap_commit: Option<String>,
-    /// Accepted for lexicon compatibility. v0.1 does not run lexicon schema validation,
-    /// so this flag has no effect.
+    /// `validate`: `true` requires every write's record to validate against a known lexicon,
+    /// `false` skips validation, absent validates known lexicons and leaves unknown ones writable.
     #[serde(default)]
-    #[allow(dead_code)]
     validate: Option<bool>,
 }
 
@@ -73,15 +72,15 @@ enum WriteResult {
     Create {
         uri: String,
         cid: String,
-        #[serde(rename = "validationStatus")]
-        validation_status: &'static str,
+        #[serde(rename = "validationStatus", skip_serializing_if = "Option::is_none")]
+        validation_status: Option<String>,
     },
     #[serde(rename = "com.atproto.repo.applyWrites#updateResult")]
     Update {
         uri: String,
         cid: String,
-        #[serde(rename = "validationStatus")]
-        validation_status: &'static str,
+        #[serde(rename = "validationStatus", skip_serializing_if = "Option::is_none")]
+        validation_status: Option<String>,
     },
     #[serde(rename = "com.atproto.repo.applyWrites#deleteResult")]
     Delete {},
@@ -147,6 +146,9 @@ pub async fn apply_writes(
     // Record values retained per write (cloned out before each value is moved into the engine
     // op) so the firehose `#commit` event can carry the value for creates/updates.
     let mut op_values: Vec<Option<serde_json::Value>> = Vec::with_capacity(body.writes.len());
+    // Per-write `validationStatus` (`None` for deletes and when `validate: false` skips it).
+    let mut statuses: Vec<Option<crate::lexicon::RecordValidation>> =
+        Vec::with_capacity(body.writes.len());
     for item in body.writes {
         let (kind, collection, rkey, value) = match item {
             WriteItem::Create {
@@ -174,10 +176,19 @@ pub async fn apply_writes(
         // Reject malformed self-describing record formats (top-level `createdAt` datetime, any
         // `at://` AT-URI) before any mutation, so one bad write fails the whole batch — same
         // schema-free ingestion gate as the single-record `record_write::write_record` path.
-        if let Some(value) = &value {
+        // Then run `validate`-flag record validation (`assertValidRecord` parity): an invalid
+        // record of a known lexicon fails the whole batch before any mutation, mirroring the
+        // reference's prepare-then-apply ordering. Deletes carry no record and no status.
+        let status = if let Some(value) = &value {
             crate::auth::validation::validate_record_formats(value)
                 .map_err(|message| ApiError::new(ErrorCode::InvalidRequest, message))?;
-        }
+            crate::lexicon::registry()
+                .validate_record(&collection, &rkey, value, body.validate)
+                .map_err(crate::record_write::record_validation_error)?
+        } else {
+            None
+        };
+        statuses.push(status);
 
         let repo_action = match kind {
             Kind::Create => crate::auth::oauth_scopes::RepoAction::Create,
@@ -364,19 +375,21 @@ pub async fn apply_writes(
     let results = kinds
         .iter()
         .zip(outcomes.iter())
-        .map(|(kind, outcome)| {
+        .zip(statuses.iter())
+        .map(|((kind, outcome), status)| {
             let uri = format!("at://{did}/{}", outcome.key);
             let cid = outcome.cid.map(|c| c.to_string()).unwrap_or_default();
+            let validation_status = status.map(|s| s.as_str().to_string());
             match kind {
                 Kind::Create => WriteResult::Create {
                     uri,
                     cid,
-                    validation_status: "unknown",
+                    validation_status,
                 },
                 Kind::Update => WriteResult::Update {
                     uri,
                     cid,
-                    validation_status: "unknown",
+                    validation_status,
                 },
                 Kind::Delete => WriteResult::Delete {},
             }
@@ -411,7 +424,14 @@ mod tests {
         (state, did)
     }
 
-    fn apply_req(body: serde_json::Value, token: Option<&str>) -> Request<Body> {
+    fn apply_req(mut body: serde_json::Value, token: Option<&str>) -> Request<Body> {
+        // These fixtures use readable non-TID rkeys (`k1`, `k2`) and minimal record values to
+        // exercise batch commit/rollback/firehose behavior, not `assertValidRecord`.
+        // Default them to `validate: false` so record validation doesn't reject them; the dedicated
+        // validation cases pass an explicit flag (and live in `tests/http_suite.rs`).
+        if body.get("validate").is_none() {
+            body["validate"] = serde_json::json!(false);
+        }
         let mut b = Request::builder()
             .method(http::Method::POST)
             .uri("/xrpc/com.atproto.repo.applyWrites")
@@ -480,7 +500,8 @@ mod tests {
         let proof = dpop_key.proof("POST", &htu, &token);
         let app = crate::app::app(state);
 
-        let body = serde_json::json!({ "repo": did, "writes": [create_item("k1", "hi")] });
+        // Seed a record to prove the DPoP path, not record schema (see apply_req).
+        let body = serde_json::json!({ "repo": did, "writes": [create_item("k1", "hi")], "validate": false });
         let request = Request::builder()
             .method(http::Method::POST)
             .uri("/xrpc/com.atproto.repo.applyWrites")

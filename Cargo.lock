@@ -5125,6 +5125,7 @@ dependencies = [
  "tracing",
  "tracing-opentelemetry",
  "tracing-subscriber",
+ "unicode-segmentation",
  "url",
  "urlencoding",
  "uuid",

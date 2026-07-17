@@ -32,6 +32,10 @@ pub struct PutRecordBody {
     /// absent-vs-null distinction that a plain `Option` would collapse.
     #[serde(default, rename = "swapRecord", deserialize_with = "double_option")]
     swap_record: Option<Option<String>>,
+    /// `validate`: `true` requires the record to validate against a known lexicon, `false` skips
+    /// validation, absent validates known lexicons and leaves unknown ones writable.
+    #[serde(default)]
+    validate: Option<bool>,
 }
 
 /// Deserialize a field so that an explicit JSON `null` becomes `Some(None)` while an omitted
@@ -48,6 +52,9 @@ where
 pub struct PutRecordResponse {
     uri: String,
     cid: String,
+    /// `valid` | `unknown`, per the record's lexicon (omitted when `validate: false` skipped it).
+    #[serde(rename = "validationStatus", skip_serializing_if = "Option::is_none")]
+    validation_status: Option<String>,
 }
 
 /// POST /xrpc/com.atproto.repo.putRecord
@@ -78,7 +85,7 @@ pub async fn put_record(
     };
 
     // Delegate to the shared write helper with create_only=false.
-    let record_cid = crate::record_write::write_record(
+    let (record_cid, validation_status) = crate::record_write::write_record(
         &state,
         &headers,
         &method,
@@ -88,6 +95,7 @@ pub async fn put_record(
         &body.record,
         false, // create_only=false: upsert semantics
         &swap,
+        body.validate,
     )
     .await?;
 
@@ -97,6 +105,7 @@ pub async fn put_record(
         axum::Json(PutRecordResponse {
             uri,
             cid: record_cid.to_string(),
+            validation_status: validation_status.map(|s| s.as_str().to_string()),
         }),
     ))
 }
@@ -197,6 +206,8 @@ mod tests {
         body["repo"] = serde_json::json!(did);
         body["collection"] = serde_json::json!("app.bsky.feed.post");
         body["rkey"] = serde_json::json!("dpopok");
+        // Seed a record to prove the DPoP path, not record schema (see put_record_request).
+        body["validate"] = serde_json::json!(false);
         let request = Request::builder()
             .method(http::Method::POST)
             .uri("/xrpc/com.atproto.repo.putRecord")

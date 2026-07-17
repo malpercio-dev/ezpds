@@ -120,6 +120,9 @@ urlencoding = "2"
 url = "2"
 subtle = "2"
 uuid = { version = "1", features = ["v4"] }
+# Unicode grapheme-cluster segmentation for lexicon `maxGraphemes` record validation (pds) —
+# the reference `@atproto/lexicon` counts extended grapheme clusters, not code points.
+unicode-segmentation = "1"
 
 # JWT (pds auth)
 jsonwebtoken = "9"

@@ -17,6 +17,7 @@ auth:bearer {
 body:json {
   {
     "repo": {{did}},
+    "validate": false,
     "writes": [
       {
         "$type": "com.atproto.repo.applyWrites#create",
@@ -57,4 +58,12 @@ docs {
   "repo" is an at-identifier: a DID or a registered handle (resolved to its
   owning DID before the write). An identifier that resolves to no account
   returns 400.
+
+  Record validation (MM-399, assertValidRecord parity). The optional "validate"
+  flag (top-level, as above) applies to every create/update in the batch: absent
+  validates known lexicons and rejects an invalid record; true requires validity;
+  false skips it. Each create/update result carries "validationStatus":
+  "valid" | "unknown" (omitted when "validate": false). This example sets
+  "validate": false because the demo rkey "applywrites1" is not a TID — the key
+  app.bsky.feed.post requires — so default validation would otherwise reject it.
 }

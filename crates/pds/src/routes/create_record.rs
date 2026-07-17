@@ -27,12 +27,19 @@ pub struct CreateRecordBody {
     /// require the target key to be absent.
     #[serde(default, rename = "swapCommit")]
     swap_commit: Option<String>,
+    /// `validate`: `true` requires the record to validate against a known lexicon, `false` skips
+    /// validation, absent validates known lexicons and leaves unknown ones writable.
+    #[serde(default)]
+    validate: Option<bool>,
 }
 
 #[derive(Serialize, Deserialize)]
 pub struct CreateRecordResponse {
     uri: String,
     cid: String,
+    /// `valid` | `unknown`, per the record's lexicon (omitted when `validate: false` skipped it).
+    #[serde(rename = "validationStatus", skip_serializing_if = "Option::is_none")]
+    validation_status: Option<String>,
 }
 
 /// POST /xrpc/com.atproto.repo.createRecord
@@ -70,7 +77,7 @@ pub async fn create_record(
     };
 
     // Delegate to the shared write helper with create_only=true.
-    let record_cid = crate::record_write::write_record(
+    let (record_cid, validation_status) = crate::record_write::write_record(
         &state,
         &headers,
         &method,
@@ -80,6 +87,7 @@ pub async fn create_record(
         &body.record,
         true, // create_only: reject if record already exists
         &swap,
+        body.validate,
     )
     .await?;
 
@@ -89,6 +97,7 @@ pub async fn create_record(
         axum::Json(CreateRecordResponse {
             uri,
             cid: record_cid.to_string(),
+            validation_status: validation_status.map(|s| s.as_str().to_string()),
         }),
     ))
 }
@@ -125,6 +134,7 @@ mod tests {
                 serde_json::to_string(&serde_json::json!({
                     "repo": did,
                     "collection": "app.bsky.feed.post",
+                    "validate": false,
                     "record": {"text": "hello"}
                 }))
                 .unwrap(),
@@ -150,6 +160,7 @@ mod tests {
                 serde_json::to_string(&serde_json::json!({
                     "repo": did,
                     "collection": "app.bsky.feed.post",
+                    "validate": false,
                     "record": {"text": "hello"}
                 }))
                 .unwrap(),
@@ -179,6 +190,7 @@ mod tests {
                 serde_json::to_string(&serde_json::json!({
                     "repo": did,
                     "collection": "app.bsky.feed.post",
+                    "validate": false,
                     "record": {"text": "must not land"}
                 }))
                 .unwrap(),
@@ -218,6 +230,7 @@ mod tests {
                 serde_json::to_string(&serde_json::json!({
                     "repo": did,
                     "collection": "app.bsky.feed.post",
+                    "validate": false,
                     "rkey": "dpopok",
                     "record": {"text": "written under dpop"}
                 }))
@@ -263,6 +276,7 @@ mod tests {
                 serde_json::to_string(&serde_json::json!({
                     "repo": did,
                     "collection": "app.bsky.feed.post",
+                    "validate": false,
                     "rkey": "shouldnotland",
                     "record": {"text": "hi"}
                 }))
@@ -309,6 +323,7 @@ mod tests {
                 serde_json::to_string(&serde_json::json!({
                     "repo": did,
                     "collection": "app.bsky.feed.post",
+                    "validate": false,
                     "rkey": "mykey1",
                     "record": record
                 }))
@@ -351,6 +366,7 @@ mod tests {
                 serde_json::to_string(&serde_json::json!({
                     "repo": "alice.example.com",
                     "collection": "app.bsky.feed.post",
+                    "validate": false,
                     "rkey": "viahandle",
                     "record": {"text": "hello via handle"}
                 }))
@@ -383,6 +399,7 @@ mod tests {
                 serde_json::to_string(&serde_json::json!({
                     "repo": "nobody.example.com",
                     "collection": "app.bsky.feed.post",
+                    "validate": false,
                     "record": {"text": "hello"}
                 }))
                 .unwrap(),
@@ -413,6 +430,7 @@ mod tests {
                 serde_json::to_string(&serde_json::json!({
                     "repo": did,
                     "collection": "app.bsky.feed.post",
+                    "validate": false,
                     "record": {"text": "should be rejected"}
                 }))
                 .unwrap(),
@@ -454,6 +472,7 @@ mod tests {
                 serde_json::to_string(&serde_json::json!({
                     "repo": did,
                     "collection": "app.bsky.feed.post",
+                    "validate": false,
                     "record": {"text": "should be rejected"}
                 }))
                 .unwrap(),
@@ -483,6 +502,7 @@ mod tests {
                 serde_json::to_string(&serde_json::json!({
                     "repo": did,
                     "collection": "app.bsky.feed.post",
+                    "validate": false,
                     "record": {"text": "auto rkey"}
                 }))
                 .unwrap(),
@@ -529,6 +549,7 @@ mod tests {
                 serde_json::to_string(&serde_json::json!({
                     "repo": did,
                     "collection": "app.bsky.feed.post",
+                    "validate": false,
                     "record": {"text": "absent rkey"}
                 }))
                 .unwrap(),
@@ -566,6 +587,7 @@ mod tests {
                 serde_json::to_string(&serde_json::json!({
                     "repo": did,
                     "collection": "app.bsky.feed.post",
+                    "validate": false,
                     "rkey": "",
                     "record": {"text": "empty rkey"}
                 }))
@@ -609,6 +631,7 @@ mod tests {
                 serde_json::to_string(&serde_json::json!({
                     "repo": did,
                     "collection": "app.bsky.feed.post",
+                    "validate": false,
                     "rkey": "duplicate1",
                     "record": record
                 }))
@@ -629,6 +652,7 @@ mod tests {
                 serde_json::to_string(&serde_json::json!({
                     "repo": did,
                     "collection": "app.bsky.feed.post",
+                    "validate": false,
                     "rkey": "duplicate1",
                     "record": {"text": "second version"}
                 }))
@@ -682,6 +706,7 @@ mod tests {
                 serde_json::to_string(&serde_json::json!({
                     "repo": did,
                     "collection": "app.bsky.feed.post",
+                    "validate": false,
                     "record": {"text": "hi", "createdAt": "2026-07-17 12:00:00"}
                 }))
                 .unwrap(),
@@ -738,6 +763,7 @@ mod tests {
                 serde_json::to_string(&serde_json::json!({
                     "repo": did,
                     "collection": "app.bsky.feed.like",
+                    "validate": false,
                     "rkey": "likevalid",
                     "record": {
                         "createdAt": "2026-07-17T12:00:00.123Z",
@@ -771,6 +797,7 @@ mod tests {
                 serde_json::to_string(&serde_json::json!({
                     "repo": did,
                     "collection": "app.bsky.feed.post",
+                    "validate": false,
                     "record": {"score": 1.5}
                 }))
                 .unwrap(),
@@ -796,6 +823,7 @@ mod tests {
                 serde_json::to_string(&serde_json::json!({
                     "repo": "did:plc:nonexistent",
                     "collection": "app.bsky.feed.post",
+                    "validate": false,
                     "record": {"text": "test"}
                 }))
                 .unwrap(),
@@ -827,6 +855,7 @@ mod tests {
                 serde_json::to_string(&serde_json::json!({
                     "repo": did,
                     "collection": "app.bsky.feed.post",
+                    "validate": false,
                     "rkey": "retrievable1",
                     "record": record
                 }))
@@ -880,6 +909,7 @@ mod tests {
                 serde_json::to_string(&serde_json::json!({
                     "repo": did,
                     "collection": "app.bsky.feed.post",
+                    "validate": false,
                     "rkey": "fire1",
                     "record": {"text": "to the firehose"}
                 }))
@@ -975,6 +1005,7 @@ mod tests {
                     serde_json::to_string(&serde_json::json!({
                         "repo": did,
                         "collection": "app.bsky.feed.post",
+                        "validate": false,
                         "rkey": rkey,
                         "record": {"text": rkey}
                     }))
@@ -1030,6 +1061,7 @@ mod tests {
                 serde_json::to_string(&serde_json::json!({
                     "repo": did,
                     "collection": "app.bsky.feed.post",
+                    "validate": false,
                     "rkey": "swapstale",
                     "record": {"text": "should not land"},
                     "swapCommit": bogus
@@ -1068,6 +1100,7 @@ mod tests {
                 serde_json::to_string(&serde_json::json!({
                     "repo": did,
                     "collection": "app.bsky.feed.post",
+                    "validate": false,
                     "rkey": "swapmatch",
                     "record": {"text": "lands"},
                     "swapCommit": head

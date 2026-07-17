@@ -1,18 +1,22 @@
 // pattern: Functional Core
 //
-// The lexicon registry: the vendored `com.atproto.*` lexicon documents (`crates/pds/lexicons/`,
-// pinned upstream — see the README there) compiled into the binary and parsed once, plus
-// `validate_input`, the single place asserting "this request body conforms to the procedure's
-// declared lexicon input". The reference PDS gets this uniformity from `@atproto/xrpc-server`'s
-// `validateInput` running on every route; Custos historically hand-parsed each body with a
-// bespoke serde struct, so strictness drifted route by route and concealed client bugs — a
-// per-route inconsistency this module removes. Handlers consume this through the `LexiconInput` axum
-// extractor (`extractor.rs`), or through `validate_procedure_body` where the raw body bytes are
-// also needed for signature verification.
+// The lexicon registry: the vendored `com.atproto.*` and `app.bsky.*` lexicon documents
+// (`crates/pds/lexicons/`, pinned upstream — see the README there) compiled into the binary and
+// parsed once, plus two validation entry points:
 //
-// Scope: input bodies of the natively-handled JSON procedures. Query-parameter validation,
-// output validation, and `validate`-flag record validation are deliberate non-goals for now —
-// vendoring the documents is the prerequisite step for all of them.
+//   * `validate_input` — the single place asserting "this request body conforms to the procedure's
+//     declared lexicon input". The reference PDS gets this uniformity from `@atproto/xrpc-server`'s
+//     `validateInput` running on every route; Custos historically hand-parsed each body with a
+//     bespoke serde struct, so strictness drifted route by route and concealed client bugs.
+//     Handlers consume it through the `LexiconInput` axum extractor (`extractor.rs`), or through
+//     `validate_procedure_body` where the raw body bytes are also needed for signature verification.
+//   * `validate_record` — `assertValidRecord`-parity validation for a repo write: reject an invalid
+//     record of a known (vendored) collection by default, honor the `validate` flag, enforce
+//     `$type`/collection agreement and the record-key discipline, and report `validationStatus`.
+//     The repo-write routes call it via `record_write::write_record` / `apply_writes`.
+//
+// Scope: input bodies of the natively-handled JSON procedures, plus the record bodies of the
+// vendored `app.bsky.*` record lexicons. Query-parameter and output validation remain non-goals.
 
 mod extractor;
 mod formats;
@@ -24,15 +28,37 @@ use std::sync::LazyLock;
 
 use serde_json::Value;
 
-use schema::{LexDef, LexSchema, LexXrpcBody};
+use schema::{LexDef, LexRecord, LexSchema, LexXrpcBody};
 
 pub use extractor::{validate_procedure_body, LexiconInput};
-pub use validate::ValidationError;
+pub use validate::{RecordValidation, ValidationError};
 
 /// The vendored lexicon documents. Adding a route with a JSON input body means vendoring its
 /// document (plus any documents its refs reach) and listing it here; the registry tests fail on
 /// unsupported constructs or dangling refs.
 static LEXICON_SOURCES: &[&str] = &[
+    // `app.bsky.*` record lexicons (+ the object/string/token defs their record schemas reach),
+    // vendored so repo writes run `validate`-flag record validation with `assertValidRecord`
+    // parity. Only the record-reachable closure is vendored (not the AppView view/output defs).
+    include_str!("../../lexicons/app/bsky/actor/profile.json"),
+    include_str!("../../lexicons/app/bsky/embed/defs.json"),
+    include_str!("../../lexicons/app/bsky/embed/external.json"),
+    include_str!("../../lexicons/app/bsky/embed/gallery.json"),
+    include_str!("../../lexicons/app/bsky/embed/images.json"),
+    include_str!("../../lexicons/app/bsky/embed/record.json"),
+    include_str!("../../lexicons/app/bsky/embed/recordWithMedia.json"),
+    include_str!("../../lexicons/app/bsky/embed/video.json"),
+    include_str!("../../lexicons/app/bsky/feed/like.json"),
+    include_str!("../../lexicons/app/bsky/feed/post.json"),
+    include_str!("../../lexicons/app/bsky/feed/repost.json"),
+    include_str!("../../lexicons/app/bsky/graph/block.json"),
+    include_str!("../../lexicons/app/bsky/graph/defs.json"),
+    include_str!("../../lexicons/app/bsky/graph/follow.json"),
+    include_str!("../../lexicons/app/bsky/graph/list.json"),
+    include_str!("../../lexicons/app/bsky/graph/listblock.json"),
+    include_str!("../../lexicons/app/bsky/graph/listitem.json"),
+    include_str!("../../lexicons/app/bsky/richtext/facet.json"),
+    include_str!("../../lexicons/com/atproto/label/defs.json"),
     include_str!("../../lexicons/com/atproto/admin/defs.json"),
     include_str!("../../lexicons/com/atproto/admin/updateSubjectStatus.json"),
     include_str!("../../lexicons/com/atproto/identity/refreshIdentity.json"),
@@ -71,10 +97,11 @@ impl InputDef {
     }
 }
 
-/// Parsed lexicons, keyed for validation: procedure inputs by NSID, referencable object
-/// definitions by fully-qualified `lex:<nsid>#<def>` URI.
+/// Parsed lexicons, keyed for validation: procedure inputs by NSID, `record` definitions by
+/// collection NSID, and referencable definitions by fully-qualified `lex:<nsid>#<def>` URI.
 pub struct Registry {
     inputs: HashMap<String, InputDef>,
+    records: HashMap<String, LexRecord>,
     defs: HashMap<String, LexSchema>,
 }
 
@@ -93,6 +120,7 @@ pub fn registry() -> &'static Registry {
 impl Registry {
     fn build(sources: &[&str]) -> Result<Self, String> {
         let mut inputs = HashMap::new();
+        let mut records = HashMap::new();
         let mut defs = HashMap::new();
 
         for source in sources {
@@ -114,8 +142,17 @@ impl Registry {
                             inputs.insert(doc.id.clone(), InputDef { encoding, schema });
                         }
                     }
-                    LexDef::Object(object) => {
-                        let mut schema = LexSchema::Object(object);
+                    LexDef::Record(mut record) => {
+                        if name != "main" {
+                            return Err(format!(
+                                "{}#{name}: a record must be the `main` definition",
+                                doc.id
+                            ));
+                        }
+                        qualify_refs(&mut record.record, &doc.id);
+                        records.insert(doc.id.clone(), record);
+                    }
+                    LexDef::Schema(mut schema) => {
                         qualify_refs(&mut schema, &doc.id);
                         defs.insert(format!("lex:{}#{name}", doc.id), schema);
                     }
@@ -123,7 +160,11 @@ impl Registry {
             }
         }
 
-        let registry = Registry { inputs, defs };
+        let registry = Registry {
+            inputs,
+            records,
+            defs,
+        };
         registry.check_refs()?;
         Ok(registry)
     }
@@ -139,7 +180,7 @@ impl Registry {
                     }
                     Ok(())
                 }
-                LexSchema::Array { items } => walk(registry, items),
+                LexSchema::Array { items, .. } => walk(registry, items),
                 LexSchema::Ref { target } => match registry.resolve(target) {
                     Some(resolved) => walk(registry, resolved),
                     None => Err(format!("dangling lexicon ref: {target}")),
@@ -156,15 +197,25 @@ impl Registry {
                     Ok(())
                 }
                 LexSchema::String { .. }
-                | LexSchema::Boolean
+                | LexSchema::Boolean { .. }
                 | LexSchema::Integer { .. }
-                | LexSchema::Unknown => Ok(()),
+                | LexSchema::Unknown
+                | LexSchema::Blob
+                | LexSchema::Bytes
+                | LexSchema::Token => Ok(()),
             }
         }
         for input in self.inputs.values() {
             if let Some(schema) = &input.schema {
                 walk(self, schema)?;
             }
+        }
+        // Record schemas are validation roots too: a dangling ref reachable from a record body
+        // must fail the build the same way an input's does. Only the record-reachable closure is
+        // walked — the vendored documents' AppView view/output defs are never validation roots, so
+        // an unresolvable ref buried in one of those (never reached at write time) is not vendored.
+        for record in self.records.values() {
+            walk(self, &record.record)?;
         }
         Ok(())
     }
@@ -184,6 +235,38 @@ impl Registry {
             Some(schema) => validate::validate(self, "Input", schema, body),
             None => Ok(()),
         }
+    }
+
+    /// Run `assertValidRecord`-parity validation for a repo write, mirroring the reference PDS's
+    /// `prepareWrite`/`validateRecord`. `collection` is the write's target NSID, `rkey` its record
+    /// key, `record` the record body, and `validate` the request's `validate` flag.
+    ///
+    /// Returns the per-write `validationStatus` on success (`None` only when `validate: false`,
+    /// which skips validation entirely). The reference's decision table:
+    ///
+    /// | `validate` | lexicon known | outcome |
+    /// |---|---|---|
+    /// | `Some(false)` | — | `Ok(None)` — skipped |
+    /// | `Some(true)` | no | `Err` — `Unknown lexicon type` |
+    /// | `Some(true)` | yes | validate; `Err` on failure, else `Valid` |
+    /// | `None` | no | `Ok(Some(Unknown))` — unknown collections stay writable |
+    /// | `None` | yes | validate; `Err` on failure, else `Valid` |
+    ///
+    /// A record whose `$type` is present but does not equal `collection` is rejected regardless of
+    /// the flag (`prepareWrite` computes `$type` before `validateRecord` runs).
+    pub fn validate_record(
+        &self,
+        collection: &str,
+        rkey: &str,
+        record: &Value,
+        validate: Option<bool>,
+    ) -> Result<Option<RecordValidation>, ValidationError> {
+        validate::validate_record(self, collection, rkey, record, validate)
+    }
+
+    /// The `record` definition for a collection, if one is vendored.
+    pub(super) fn record(&self, collection: &str) -> Option<&LexRecord> {
+        self.records.get(collection)
     }
 
     fn resolve(&self, lex_uri: &str) -> Option<&LexSchema> {
@@ -206,7 +289,7 @@ fn qualify_refs(schema: &mut LexSchema, base_id: &str) {
                 qualify_refs(property, base_id);
             }
         }
-        LexSchema::Array { items } => qualify_refs(items, base_id),
+        LexSchema::Array { items, .. } => qualify_refs(items, base_id),
         LexSchema::Ref { target } => *target = qualify(target, base_id),
         LexSchema::Union { refs, .. } => {
             for r in refs.iter_mut() {
@@ -214,9 +297,12 @@ fn qualify_refs(schema: &mut LexSchema, base_id: &str) {
             }
         }
         LexSchema::String { .. }
-        | LexSchema::Boolean
+        | LexSchema::Boolean { .. }
         | LexSchema::Integer { .. }
-        | LexSchema::Unknown => {}
+        | LexSchema::Unknown
+        | LexSchema::Blob
+        | LexSchema::Bytes
+        | LexSchema::Token => {}
     }
 }
 
@@ -233,6 +319,7 @@ fn qualify(reference: &str, base_id: &str) -> String {
 #[cfg(test)]
 mod tests {
     use serde_json::json;
+    use unicode_segmentation::UnicodeSegmentation;
 
     use super::*;
 
@@ -608,5 +695,180 @@ mod tests {
         expect_valid("com.atproto.server.deactivateAccount", json!({}));
         expect_valid("com.atproto.server.reserveSigningKey", json!({}));
         expect_valid("com.atproto.identity.signPlcOperation", json!({}));
+    }
+
+    // ── validate_record (assertValidRecord parity) ───────────────────────────
+
+    const TID: &str = "3jui7kd54zh2y";
+
+    fn record_result(
+        collection: &str,
+        rkey: &str,
+        record: Value,
+        validate: Option<bool>,
+    ) -> Result<Option<RecordValidation>, String> {
+        registry()
+            .validate_record(collection, rkey, &record, validate)
+            .map_err(|e| match e {
+                ValidationError::Invalid(m) => m,
+                ValidationError::Lexicon(m) => panic!("unexpected Lexicon error: {m}"),
+            })
+    }
+
+    fn valid_post() -> Value {
+        json!({"text": "hello", "createdAt": "2026-07-17T12:00:00Z"})
+    }
+
+    #[test]
+    fn valid_known_record_is_valid() {
+        assert_eq!(
+            record_result("app.bsky.feed.post", TID, valid_post(), None).unwrap(),
+            Some(RecordValidation::Valid)
+        );
+    }
+
+    #[test]
+    fn known_record_missing_required_field_is_rejected() {
+        // Missing the required `createdAt` (declared after `text`).
+        assert_eq!(
+            record_result("app.bsky.feed.post", TID, json!({"text": "hi"}), None).unwrap_err(),
+            "Invalid app.bsky.feed.post record: Record must have the property \"createdAt\""
+        );
+    }
+
+    #[test]
+    fn max_graphemes_counts_grapheme_clusters_not_bytes() {
+        // 301 ASCII chars: within maxLength (3000 bytes) but over maxGraphemes (300).
+        let mut record = valid_post();
+        record["text"] = json!("a".repeat(301));
+        assert_eq!(
+            record_result("app.bsky.feed.post", TID, record, None).unwrap_err(),
+            "Invalid app.bsky.feed.post record: Record/text must not be longer than 300 graphemes"
+        );
+        // A single family emoji is one grapheme cluster though it is many bytes/codepoints, so a
+        // 300-of-them text passes the grapheme bound (it is the byte bound it would blow, which we
+        // keep under here) — proving the counter is grapheme-based, not codepoint- or byte-based.
+        let family = "\u{1F468}\u{200D}\u{1F469}\u{200D}\u{1F467}"; // 👨‍👩‍👧
+        assert_eq!(family.graphemes(true).count(), 1);
+    }
+
+    #[test]
+    fn record_key_discipline_is_enforced() {
+        // app.bsky.feed.post uses `tid`: a non-TID key is rejected.
+        assert!(
+            record_result("app.bsky.feed.post", "notatid", valid_post(), None)
+                .unwrap_err()
+                .contains("Invalid record key for app.bsky.feed.post")
+        );
+        // app.bsky.actor.profile uses `literal:self`: only "self" is accepted.
+        let profile = json!({"displayName": "Alice"});
+        assert!(
+            record_result("app.bsky.actor.profile", "notself", profile.clone(), None)
+                .unwrap_err()
+                .contains("Invalid record key for app.bsky.actor.profile")
+        );
+        assert_eq!(
+            record_result("app.bsky.actor.profile", "self", profile, None).unwrap(),
+            Some(RecordValidation::Valid)
+        );
+    }
+
+    #[test]
+    fn type_mismatch_is_rejected_regardless_of_flag() {
+        let mut record = valid_post();
+        record["$type"] = json!("app.bsky.feed.like");
+        // Even with validate: false, a $type ≠ collection is rejected (prepareWrite computes it
+        // before validateRecord runs).
+        assert_eq!(
+            record_result("app.bsky.feed.post", TID, record, Some(false)).unwrap_err(),
+            "Invalid $type: expected app.bsky.feed.post, got app.bsky.feed.like"
+        );
+    }
+
+    #[test]
+    fn validate_flag_decision_table() {
+        let bad = json!({"text": "no timestamp"});
+        // validate: false skips entirely (no status), even for an invalid known record.
+        assert_eq!(
+            record_result("app.bsky.feed.post", TID, bad.clone(), Some(false)).unwrap(),
+            None
+        );
+        // validate: true on a known-but-invalid record still rejects.
+        assert!(record_result("app.bsky.feed.post", TID, bad, Some(true)).is_err());
+        // Unknown collection: default → unknown; validate: true → rejected.
+        let unknown = json!({"anything": true});
+        assert_eq!(
+            record_result("com.example.unknown", "k", unknown.clone(), None).unwrap(),
+            Some(RecordValidation::Unknown)
+        );
+        assert_eq!(
+            record_result("com.example.unknown", "k", unknown, Some(true)).unwrap_err(),
+            "Unknown lexicon type: com.example.unknown"
+        );
+    }
+
+    #[test]
+    fn embedded_blob_and_nested_refs_validate() {
+        // A post with an image embed exercises: union member resolution (embed.images), a nested
+        // array of objects (images), a `blob` ref (image), and a cross-document strongRef is not
+        // needed here. A well-formed typed blob passes; a malformed one is rejected.
+        let with_blob = |blob: Value| {
+            json!({
+                "text": "look",
+                "createdAt": "2026-07-17T12:00:00Z",
+                "embed": {
+                    "$type": "app.bsky.embed.images",
+                    "images": [{
+                        "alt": "a cat",
+                        "image": blob,
+                    }],
+                },
+            })
+        };
+        let good_blob = json!({
+            "$type": "blob",
+            "ref": {"$link": "bafyreidfayvfuwqa7qlnopdjiqrxzs6blmoeu4rujcjtnci5beludirz2a"},
+            "mimeType": "image/png",
+            "size": 1234,
+        });
+        assert_eq!(
+            record_result("app.bsky.feed.post", TID, with_blob(good_blob), None).unwrap(),
+            Some(RecordValidation::Valid)
+        );
+        // A blob whose ref isn't a CID is rejected, with the nested path.
+        let bad_blob =
+            json!({"$type": "blob", "ref": {"$link": "not-a-cid"}, "mimeType": "image/png"});
+        assert!(
+            record_result("app.bsky.feed.post", TID, with_blob(bad_blob), None)
+                .unwrap_err()
+                .contains("images/0/image must be a blob ref")
+        );
+    }
+
+    #[test]
+    fn like_requires_well_formed_subject() {
+        // app.bsky.feed.like: required subject (strongRef) + createdAt; the strongRef's `uri` is an
+        // at-uri and `cid` a cid — a bad at-uri is rejected at the nested path.
+        let like = |uri: &str| {
+            json!({
+                "subject": {"uri": uri, "cid": "bafyreidfayvfuwqa7qlnopdjiqrxzs6blmoeu4rujcjtnci5beludirz2a"},
+                "createdAt": "2026-07-17T12:00:00Z",
+            })
+        };
+        assert_eq!(
+            record_result(
+                "app.bsky.feed.like",
+                TID,
+                like("at://did:plc:abc123abc123abc123abc123/app.bsky.feed.post/3jui7kd54zh2y"),
+                None,
+            )
+            .unwrap(),
+            Some(RecordValidation::Valid)
+        );
+        assert!(
+            record_result("app.bsky.feed.like", TID, like("not a uri"), None)
+                .unwrap_err()
+                .contains("subject/uri must be a valid at-uri")
+        );
     }
 }

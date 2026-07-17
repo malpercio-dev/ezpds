@@ -179,6 +179,11 @@ async fn http_golden_path_suite() {
         let status = resp.status();
         let body: serde_json::Value = resp.json().await.expect("createRecord json");
         assert!(status.is_success(), "createRecord failed ({status}): {body}");
+        // A valid app.bsky.feed.post against a vendored lexicon reports validationStatus: valid.
+        assert_eq!(
+            body["validationStatus"], "valid",
+            "a known valid record reports validationStatus valid: {body}"
+        );
         let uri = body["uri"].as_str().expect("record uri").to_string();
         rkey = Some(uri.rsplit('/').next().expect("rkey in uri").to_string());
         created_uri = Some(uri);
@@ -519,6 +524,143 @@ async fn http_golden_path_suite() {
             .await
             .expect("missing-body request");
         expect_invalid_request(resp, "A request body is expected but none was provided").await;
+    })
+    .await;
+
+    // 9b. `validate`-flag record validation (`assertValidRecord` parity): a known-lexicon
+    //     record is validated by default, rejectable, skippable with `validate: false`, and
+    //     required with `validate: true`; the write reports `validationStatus`.
+    step("record validation parity", || async {
+        let create = |record: serde_json::Value, validate: Option<bool>| {
+            let mut body = json!({
+                "repo": did,
+                "collection": "app.bsky.feed.post",
+                "record": record,
+            });
+            if let Some(v) = validate {
+                body["validate"] = json!(v);
+            }
+            h.http
+                .post(h.url("/xrpc/com.atproto.repo.createRecord"))
+                .bearer_auth(&token)
+                .json(&body)
+        };
+
+        // Default: an invalid record of a KNOWN lexicon (missing required `createdAt`) is rejected.
+        let resp = create(json!({"text": "no timestamp"}), None)
+            .send()
+            .await
+            .expect("invalid-post request");
+        let status = resp.status();
+        let body: serde_json::Value = resp.json().await.expect("json");
+        assert_eq!(status.as_u16(), 400, "invalid known record rejected: {body}");
+        assert_eq!(body["error"]["code"], "InvalidRequest", "{body}");
+        assert!(
+            body["error"]["message"]
+                .as_str()
+                .is_some_and(|m| m.contains("Invalid app.bsky.feed.post record")),
+            "reference-shaped record error: {body}"
+        );
+
+        // `validate: false` skips validation — the same invalid record is accepted, no status.
+        let resp = create(json!({"text": "no timestamp"}), Some(false))
+            .send()
+            .await
+            .expect("validate-false request");
+        let status = resp.status();
+        let body: serde_json::Value = resp.json().await.expect("json");
+        assert!(status.is_success(), "validate:false accepts: {status} {body}");
+        assert!(
+            body.get("validationStatus").is_none(),
+            "validate:false omits validationStatus: {body}"
+        );
+
+        // Default on an UNKNOWN collection stays writable, flagged `unknown`.
+        let resp = h
+            .http
+            .post(h.url("/xrpc/com.atproto.repo.createRecord"))
+            .bearer_auth(&token)
+            .json(&json!({
+                "repo": did,
+                "collection": "com.example.unknown",
+                "record": {"anything": true},
+            }))
+            .send()
+            .await
+            .expect("unknown-collection request");
+        let status = resp.status();
+        let body: serde_json::Value = resp.json().await.expect("json");
+        assert!(status.is_success(), "unknown collection writable: {body}");
+        assert_eq!(
+            body["validationStatus"], "unknown",
+            "unknown collection reports validationStatus unknown: {body}"
+        );
+
+        // `validate: true` on an unknown collection is refused.
+        let resp = h
+            .http
+            .post(h.url("/xrpc/com.atproto.repo.createRecord"))
+            .bearer_auth(&token)
+            .json(&json!({
+                "repo": did,
+                "collection": "com.example.unknown",
+                "record": {"anything": true},
+                "validate": true,
+            }))
+            .send()
+            .await
+            .expect("validate-true unknown request");
+        let status = resp.status();
+        let body: serde_json::Value = resp.json().await.expect("json");
+        assert_eq!(status.as_u16(), 400, "validate:true unknown rejected: {body}");
+        assert!(
+            body["error"]["message"]
+                .as_str()
+                .is_some_and(|m| m.contains("Unknown lexicon type")),
+            "unknown-lexicon message: {body}"
+        );
+
+        // A record whose `$type` disagrees with the write's collection is rejected regardless.
+        let resp = create(
+            json!({"$type": "app.bsky.feed.like", "text": "x", "createdAt": "2026-07-07T00:00:00Z"}),
+            None,
+        )
+        .send()
+        .await
+        .expect("type-mismatch request");
+        let status = resp.status();
+        let body: serde_json::Value = resp.json().await.expect("json");
+        assert_eq!(status.as_u16(), 400, "$type mismatch rejected: {body}");
+        assert!(
+            body["error"]["message"]
+                .as_str()
+                .is_some_and(|m| m.contains("Invalid $type")),
+            "$type-mismatch message: {body}"
+        );
+
+        // applyWrites reports per-write validationStatus (a valid post → valid).
+        let resp = h
+            .http
+            .post(h.url("/xrpc/com.atproto.repo.applyWrites"))
+            .bearer_auth(&token)
+            .json(&json!({
+                "repo": did,
+                "writes": [{
+                    "$type": "com.atproto.repo.applyWrites#create",
+                    "collection": "app.bsky.feed.post",
+                    "value": {"text": "batch valid", "createdAt": "2026-07-07T00:00:00Z"},
+                }],
+            }))
+            .send()
+            .await
+            .expect("applyWrites valid request");
+        let status = resp.status();
+        let body: serde_json::Value = resp.json().await.expect("json");
+        assert!(status.is_success(), "applyWrites valid post: {body}");
+        assert_eq!(
+            body["results"][0]["validationStatus"], "valid",
+            "applyWrites reports per-write validationStatus: {body}"
+        );
     })
     .await;
 

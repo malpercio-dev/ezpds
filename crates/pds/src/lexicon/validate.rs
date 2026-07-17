@@ -17,10 +17,30 @@
 //   reference quirk (`utf8Len`) preserved for parity.
 
 use serde_json::Value;
+use unicode_segmentation::UnicodeSegmentation;
 
-use super::formats::validate_format;
+use super::formats::{is_valid_record_key, is_valid_tid, validate_format};
 use super::schema::{LexObject, LexSchema};
 use super::Registry;
+
+/// The `validationStatus` a repo write reports for a record (`applyWrites`/`createRecord`/
+/// `putRecord`), mirroring the reference PDS's `'valid' | 'unknown'`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RecordValidation {
+    /// The record validated against a vendored lexicon.
+    Valid,
+    /// The collection's lexicon is not vendored, so the record is accepted unvalidated.
+    Unknown,
+}
+
+impl RecordValidation {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            RecordValidation::Valid => "valid",
+            RecordValidation::Unknown => "unknown",
+        }
+    }
+}
 
 /// A failed input validation.
 pub enum ValidationError {
@@ -42,13 +62,31 @@ pub(super) fn validate(
 ) -> Result<(), ValidationError> {
     match schema {
         LexSchema::Object(object) => validate_object(registry, path, object, value),
-        LexSchema::String { format, max_length } => {
+        LexSchema::String {
+            format,
+            min_length,
+            max_length,
+            max_graphemes,
+            ..
+        } => {
             let Value::String(s) = value else {
                 return invalid(format!("{path} must be a string"));
             };
+            // Order mirrors `@atproto/lexicon`'s string validator: byte-length bounds, then the
+            // grapheme bound, then the format check.
             if let Some(max) = max_length {
                 if s.len() as u64 > *max {
                     return invalid(format!("{path} must not be longer than {max} characters"));
+                }
+            }
+            if let Some(min) = min_length {
+                if (s.len() as u64) < *min {
+                    return invalid(format!("{path} must not be shorter than {min} characters"));
+                }
+            }
+            if let Some(max) = max_graphemes {
+                if s.graphemes(true).count() as u64 > *max {
+                    return invalid(format!("{path} must not be longer than {max} graphemes"));
                 }
             }
             if let Some(format) = format {
@@ -58,23 +96,41 @@ pub(super) fn validate(
             }
             Ok(())
         }
-        LexSchema::Boolean => {
-            if value.is_boolean() {
-                Ok(())
-            } else {
-                invalid(format!("{path} must be a boolean"))
+        LexSchema::Boolean { const_value, .. } => {
+            let Value::Bool(b) = value else {
+                return invalid(format!("{path} must be a boolean"));
+            };
+            if let Some(expected) = const_value {
+                if b != expected {
+                    return invalid(format!("{path} must be {expected}"));
+                }
             }
+            Ok(())
         }
-        LexSchema::Integer { .. } => {
+        LexSchema::Integer {
+            minimum, maximum, ..
+        } => {
             // `Number.isInteger` in the reference: a float with a zero fraction is an integer.
             let is_integer = value.is_i64()
                 || value.is_u64()
                 || value.as_f64().is_some_and(|f| f.fract() == 0.0);
-            if is_integer {
-                Ok(())
-            } else {
-                invalid(format!("{path} must be an integer"))
+            if !is_integer {
+                return invalid(format!("{path} must be an integer"));
             }
+            let n = value.as_i64().or_else(|| value.as_f64().map(|f| f as i64));
+            if let Some(n) = n {
+                if let Some(max) = maximum {
+                    if n > *max {
+                        return invalid(format!("{path} can not be greater than {max}"));
+                    }
+                }
+                if let Some(min) = minimum {
+                    if n < *min {
+                        return invalid(format!("{path} can not be less than {min}"));
+                    }
+                }
+            }
+            Ok(())
         }
         LexSchema::Unknown => {
             if value.is_object() {
@@ -83,10 +139,29 @@ pub(super) fn validate(
                 invalid(format!("{path} must be an object"))
             }
         }
-        LexSchema::Array { items } => {
+        LexSchema::Blob => validate_blob(path, value),
+        LexSchema::Bytes => validate_bytes(path, value),
+        // No `ref`/`union` in the vendored record closure resolves to a `token`, so a value is
+        // never validated against one; if that ever changes, tighten this to the token id string.
+        LexSchema::Token => Ok(()),
+        LexSchema::Array {
+            items,
+            min_length,
+            max_length,
+        } => {
             let Value::Array(elements) = value else {
                 return invalid(format!("{path} must be an array"));
             };
+            if let Some(max) = max_length {
+                if elements.len() as u64 > *max {
+                    return invalid(format!("{path} must not have more than {max} elements"));
+                }
+            }
+            if let Some(min) = min_length {
+                if (elements.len() as u64) < *min {
+                    return invalid(format!("{path} must not have fewer than {min} elements"));
+                }
+            }
             for (i, element) in elements.iter().enumerate() {
                 validate(registry, &format!("{path}/{i}"), items, element)?;
             }
@@ -181,6 +256,131 @@ fn lex_uris_equal(a: &str, b: &str) -> bool {
 
 fn canonical_lex_uri(uri: &str) -> &str {
     uri.strip_suffix("#main").unwrap_or(uri)
+}
+
+/// `assertValidRecord`-parity record validation for a repo write. See
+/// [`Registry::validate_record`](super::Registry::validate_record) for the decision table.
+pub(super) fn validate_record(
+    registry: &Registry,
+    collection: &str,
+    rkey: &str,
+    record: &Value,
+    validate: Option<bool>,
+) -> Result<Option<RecordValidation>, ValidationError> {
+    // `prepareWrite` computes the record's `$type` before validation: an absent `$type` is
+    // treated as the collection, and a present one that differs is rejected regardless of the
+    // `validate` flag.
+    if let Some(ty) = record.get("$type") {
+        let matches = matches!(ty, Value::String(s) if s == collection);
+        if !matches {
+            let got = match ty {
+                Value::String(s) => s.clone(),
+                other => other.to_string(),
+            };
+            return Err(ValidationError::Invalid(format!(
+                "Invalid $type: expected {collection}, got {got}"
+            )));
+        }
+    }
+
+    if validate == Some(false) {
+        return Ok(None);
+    }
+
+    let Some(record_def) = registry.record(collection) else {
+        if validate == Some(true) {
+            return Err(ValidationError::Invalid(format!(
+                "Unknown lexicon type: {collection}"
+            )));
+        }
+        // Default validation leaves unknown collections writable, flagged `unknown`.
+        return Ok(Some(RecordValidation::Unknown));
+    };
+
+    validate_record_key(&record_def.key, rkey).map_err(|reason| {
+        ValidationError::Invalid(format!("Invalid record key for {collection}: {reason}"))
+    })?;
+
+    match self::validate(registry, "Record", &record_def.record, record) {
+        Ok(()) => Ok(Some(RecordValidation::Valid)),
+        Err(ValidationError::Invalid(message)) => Err(ValidationError::Invalid(format!(
+            "Invalid {collection} record: {message}"
+        ))),
+        Err(other) => Err(other),
+    }
+}
+
+/// Validate a record key against a `record` def's `key` discipline (`tid`, `literal:<value>`,
+/// `nsid`, `any`), mirroring `@atproto/lexicon`'s per-key-type key schema.
+fn validate_record_key(key: &str, rkey: &str) -> Result<(), String> {
+    if let Some(expected) = key.strip_prefix("literal:") {
+        return if rkey == expected {
+            Ok(())
+        } else {
+            Err(format!(
+                "record key must be the literal \"{expected}\", got \"{rkey}\""
+            ))
+        };
+    }
+    match key {
+        "tid" => {
+            if is_valid_tid(rkey) {
+                Ok(())
+            } else {
+                Err(format!("record key is not a valid TID: \"{rkey}\""))
+            }
+        }
+        "nsid" => {
+            if repo_engine::validate_collection(rkey).is_ok() {
+                Ok(())
+            } else {
+                Err(format!("record key is not a valid NSID: \"{rkey}\""))
+            }
+        }
+        "any" => {
+            if is_valid_record_key(rkey) {
+                Ok(())
+            } else {
+                Err(format!("record key syntax is invalid: \"{rkey}\""))
+            }
+        }
+        other => Err(format!("unsupported record key type: {other}")),
+    }
+}
+
+/// Validate a lex-JSON blob ref: the typed form `{ "$type": "blob", "ref": { "$link": "<cid>" },
+/// "mimeType": "…", "size": N }` or the legacy `{ "cid": "<cid>", "mimeType": "…" }`. Blob
+/// `accept`/`maxSize` are enforced against the uploaded blob's metadata elsewhere, not here.
+fn validate_blob(path: &str, value: &Value) -> Result<(), ValidationError> {
+    let Value::Object(map) = value else {
+        return invalid(format!("{path} must be a blob ref"));
+    };
+    let is_typed = map.get("$type").and_then(Value::as_str) == Some("blob");
+    let ok = if is_typed {
+        let link_is_cid = map
+            .get("ref")
+            .and_then(|r| r.get("$link"))
+            .and_then(Value::as_str)
+            .is_some_and(|cid| repo_engine::Cid::try_from(cid).is_ok());
+        link_is_cid && map.get("mimeType").and_then(Value::as_str).is_some()
+    } else {
+        map.get("cid").and_then(Value::as_str).is_some()
+            && map.get("mimeType").and_then(Value::as_str).is_some()
+    };
+    if ok {
+        Ok(())
+    } else {
+        invalid(format!("{path} must be a blob ref"))
+    }
+}
+
+/// Validate lex-JSON bytes: `{ "$bytes": "<base64>" }`.
+fn validate_bytes(path: &str, value: &Value) -> Result<(), ValidationError> {
+    if value.get("$bytes").and_then(Value::as_str).is_some() {
+        Ok(())
+    } else {
+        invalid(format!("{path} must be a byte array"))
+    }
 }
 
 fn invalid(message: String) -> Result<(), ValidationError> {
