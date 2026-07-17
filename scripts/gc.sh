@@ -8,7 +8,10 @@
 # SAFETY — only work that is provably already in `main` is ever removed:
 #   * A worktree is removed only if it is CLEAN (no uncommitted tracked changes)
 #     AND merged: its branch/HEAD is an ancestor of main (plain merge) OR every
-#     commit's patch is already in main (squash-merge, detected via `git cherry`).
+#     commit's patch is already in main (squash-merge, detected via `git cherry`)
+#     OR GitHub's merge record attests the tip belongs to a PR merged into main
+#     (squash merges whose landed diff drifted from the local commits; best-effort,
+#     needs gh + network — offline it degrades to KEEP, never to PRUNE).
 #   * A branch is deleted only if it is merged by the same test and is not the
 #     current branch. In-review branches (unmerged, still alive on origin) and
 #     anything with commits not represented in main are KEPT and reported.
@@ -47,13 +50,58 @@ if ! git fetch --prune origin >/dev/null 2>&1; then
   echo "warn: 'git fetch --prune' failed — using cached remote-tracking refs" >&2
 fi
 
-# Every commit on <ref> already in main? True for a plain-merge ancestor and for
-# a squash-merge (git cherry prints '+' only for commits whose patch is absent).
+# ---- GitHub squash-merge tier --------------------------------------------------
+# git cherry's patch-id test misses a squash merge whenever the landed diff differs
+# from the local commits' diffs — concurrent PRs touching the same files, review
+# fixups, or a conflict resolution against a newer base all change the patch-id.
+# GitHub records which PRs contain a commit, so as a last resort ask it whether the
+# tip is part of a PR that merged into main. That is still "provably in main", just
+# attested by the merge record instead of a patch-id. Best-effort like the fetch
+# above: no gh, no network, or a non-GitHub origin degrades to the local verdict.
+# Accept github.com and *.github.com — this repo's origin fetches through the
+# `mal.github.com` SSH host alias (dual-push GitHub/tangled setup), not the bare host.
+origin_url="$(git remote get-url origin 2>/dev/null || true)"
+case "$origin_url" in
+  git@github.com:*|git@*.github.com:*|ssh://git@github.com/*|https://github.com/*)
+    GH_REPO="${origin_url##*github.com[:/]}"; GH_REPO="${GH_REPO%.git}" ;;
+  *)
+    GH_REPO="" ;;
+esac
+gh_ok=""  # memoized preflight: "" = unchecked, 1 = usable, 0 = unusable (warned)
+gh_usable() {
+  if [ -z "$gh_ok" ]; then
+    if [ -n "$GH_REPO" ] && gh api "repos/$GH_REPO" --jq .id >/dev/null 2>&1; then
+      gh_ok=1
+    else
+      gh_ok=0
+      echo "warn: gh/GitHub unreachable — squash merges may be reported as NOT merged" >&2
+    fi
+  fi
+  [ "$gh_ok" = 1 ]
+}
+merged_pr=""
+merged_on_github() {
+  local tip="$1"
+  gh_usable || return 1
+  # A per-SHA failure (e.g. 404 for a never-pushed tip) is just "not merged".
+  merged_pr="$(gh api "repos/$GH_REPO/commits/$tip/pulls" \
+    --jq '[.[] | select(.merged_at != null and .base.ref == "main")][0].number // empty' \
+    2>/dev/null)" || return 1
+  [ -n "$merged_pr" ]
+}
+
+# Every commit on <ref> already in main? True for a plain-merge ancestor, for a
+# squash-merge (git cherry prints '+' only for commits whose patch is absent), and
+# for a squash-merge only GitHub's merge record can prove (see the tier above).
+# Sets merged_label so the report shows which test proved it.
 is_merged() {
   local ref="$1" tip
+  merged_label="merged"
   tip="$(git rev-parse --verify "$ref" 2>/dev/null)" || return 1
   git merge-base --is-ancestor "$tip" main 2>/dev/null && return 0
-  ! git cherry main "$tip" 2>/dev/null | grep -q '^+'
+  git cherry main "$tip" 2>/dev/null | grep -q '^+' || return 0
+  merged_on_github "$tip" || return 1
+  merged_label="merged (GitHub: PR #$merged_pr)"
 }
 
 # ---- Phase 1: worktrees --------------------------------------------------------
@@ -72,7 +120,7 @@ flush_wt() {
   if [ -n "$dirty" ]; then
     echo "  KEEP  $size  $wt_path $label — uncommitted changes"
   elif is_merged "$ref"; then
-    echo "  PRUNE $size  $wt_path $label — merged"
+    echo "  PRUNE $size  $wt_path $label — $merged_label"
     if [ "$APPLY" -eq 1 ]; then
       git worktree remove --force "$wt_path" && removed_wt=$((removed_wt+1))
     fi
@@ -107,7 +155,7 @@ while IFS= read -r b; do
     continue
   fi
   if is_merged "refs/heads/$b"; then
-    echo "  DELETE $b — merged"
+    echo "  DELETE $b — $merged_label"
     if [ "$APPLY" -eq 1 ]; then
       git branch -D "$b" >/dev/null && removed_br=$((removed_br+1))
     fi
