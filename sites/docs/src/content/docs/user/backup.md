@@ -40,8 +40,15 @@ leave it only on the phone that also holds Share 1.
 
 ## Recovering with two shares
 
-When you need to recover, Obsign brings any two shares back together and
-reconstructs the recovery key **on your device**. In the common case that means
-your iCloud Share 1 plus either your server's Share 2 or the Share 3 you saved —
-any two of the three is enough, and no single share ever reveals anything on its
-own.
+Reassembling two shares onto a **new** device is a ceremony Obsign is still
+building. Today the backup step creates and distributes your three shares; a
+future update will walk you through bringing any two of them back together on a
+new phone. When it ships, the common case will be your iCloud Share 1 plus either
+your server's Share 2 or the Share 3 you saved — any two of the three will be
+enough, and no single share ever reveals anything on its own.
+
+Until then, your live safety net is a different mechanism that already works:
+because your identity key sits on **this** device as the highest-priority key,
+you can [override an unexpected change](/user/recovery/) within a 72-hour window
+without reassembling any shares. Saving Share 3 durably still matters — it is
+what a future new-device recovery will draw on.

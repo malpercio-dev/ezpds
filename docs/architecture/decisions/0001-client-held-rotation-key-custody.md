@@ -54,10 +54,16 @@ external signer.
   (`signPlcOperation`, goat) can still operate on ezpds identities — required for
   interop and for the first-time import of a foreign identity.
 - **New failure mode: user key loss.** If the wallet device key is lost with no
-  other authorized key, the identity is unrecoverable. Mitigated by 2-of-3
-  Shamir splitting of the device key at onboarding (Share 1 → iCloud Keychain,
-  Share 2 → PDS escrow, Share 3 → user's choice) and by the PDS remaining a
-  lower-priority rotation key. Full 2-of-3 recovery ceremony is future work.
+  other authorized key, the identity is unrecoverable. A 2-of-3 Shamir split runs
+  at onboarding (Share 1 → iCloud Keychain, Share 2 → PDS escrow, Share 3 →
+  user's choice), and the PDS remains a lower-priority rotation key. **As built,
+  the split does not yet close this gap**: it splits a server-generated random
+  secret that is bound to nothing and absent from `rotationKeys`, and no
+  reconstruction ceremony exists — so the live mitigation for device-key loss is
+  presently only the device key's own 72-hour override supremacy. Binding the
+  seed to a derived recovery rotation key and building the reconstruction
+  ceremonies is designed in
+  [Key recovery from Shamir shares](../../design-plans/2026-07-17-key-recovery-from-shares.md).
 - **Signatures must be low-S normalized** on every path (plc.directory rejects
   high-S); both the Secure Enclave and software signing paths enforce this.
 
