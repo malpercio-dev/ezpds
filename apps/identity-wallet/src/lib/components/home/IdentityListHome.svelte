@@ -355,7 +355,7 @@
     align-items: center;
     gap: 13px;
     border-radius: var(--radius-lg);
-    padding: 15px 16px;
+    padding: var(--space-md);
   }
   .monitor-ic {
     width: 38px;
@@ -465,7 +465,7 @@
     background: var(--color-bg);
     border: 1px solid var(--color-line);
     border-radius: var(--radius-xl);
-    padding: 15px 14px 15px 15px;
+    padding: var(--space-md);
     width: 100%;
     text-align: left;
     cursor: pointer;
@@ -591,7 +591,7 @@
     background: var(--color-surface);
     border: 1px solid var(--color-line);
     border-radius: var(--radius-xl);
-    padding: 14px 15px;
+    padding: var(--space-md);
     width: 100%;
     text-align: left;
     cursor: pointer;
@@ -635,7 +635,7 @@
     background: transparent;
     border: 1.5px dashed var(--color-line);
     border-radius: var(--radius-xl);
-    padding: 16px 15px;
+    padding: var(--space-md);
     width: 100%;
     text-align: left;
     cursor: pointer;

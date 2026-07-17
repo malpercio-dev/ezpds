@@ -17,8 +17,9 @@ colors:
   bg: "oklch(1 0 0)"                     # pure white — the gold + aubergine carry the brand, not the surface
   surface: "oklch(0.975 0.004 75)"       # sealed parchment — cards, panels
   surface-sunk: "oklch(0.955 0.005 75)"  # inset / nested panels
-  ink: "oklch(0.23 0.012 60)"            # archival ink — body text (≈13:1 on bg, AAA)
-  muted: "oklch(0.42 0.012 60)"          # faded ink — secondary labels (≈5.6:1; AAA body uses ink)
+  ink: "oklch(0.23 0.012 60)"            # archival ink — body text (≈16.9:1 on bg, AAA)
+  ink-soft: "oklch(0.31 0.012 60)"       # soft ink — secondary prose on a dark card, where muted dips under 7:1 (≈13.2:1 on bg)
+  muted: "oklch(0.42 0.012 60)"          # faded ink — secondary labels (≈8.5:1 on bg; ≈6.3:1 on a DARK card — use ink-soft there)
   line: "oklch(0.90 0.004 75)"           # hairline — 1px borders & dividers (never a colored stripe)
   # — Status signal (deep text/icon tones; always paired with icon + label, never color alone) —
   safe: "oklch(0.40 0.10 150)"           # Verified green
@@ -160,8 +161,11 @@ A two-brand-color system — sealing-wax gold and aubergine — on pure-white ar
 - **Aubergine** (`oklch(0.34 0.10 330)`): the second brand voice and the color of *depth on demand*. Links, and the affordances that reveal cryptographic machinery (the "advanced / details" disclosures — DIDs, rotation keys, audit logs). A quiet nod to Proton's purple without copying it. Pressed state (`oklch(0.28 0.09 330)`).
 
 ### Neutral
-- **Archival Ink** (`oklch(0.23 0.012 60)`): body text and headings. ~13:1 on white — comfortably AAA. Carries a barely-there warmth toward the brand hue so it never reads as cold pure-black.
-- **Faded Ink** (`oklch(0.42 0.012 60)`): secondary labels and metadata (~5.6:1). Real body copy uses Archival Ink, not this, to hold the 7:1 AAA line.
+The neutrals are not independent greys — they are drawn from one warm ramp (hue 60 → 75, chroma tapering 0.012 → 0.004 as it lightens), which is why they never fight the gold: they are the gold's hue, drained. The **dark** appearance is essentially that ramp end to end — page, card, hairline, faint glyph and all three ink weights land on its stops. In **light**, the inks sit on the same ramp (Archival `0.23`, Faded `0.42`) while the page steps deliberately off it to pure white at chroma 0. That departure is the point, not an oversight: warmth is carried by the seal and the type, never by a tinted surface. When you need a new neutral, take another stop on the ramp rather than mixing a fresh hue — a grey borrowed from a foreign hue reads as dirt against the seal.
+
+- **Archival Ink** (`oklch(0.23 0.012 60)`): body text and headings. ~16.9:1 on white — comfortably AAA. Carries a barely-there warmth toward the brand hue so it never reads as cold pure-black.
+- **Soft Ink** (`oklch(0.31 0.012 60)`): the one step down from body ink, for secondary prose that sits on a **raised** surface. ~13.2:1 on the page, ~10.7:1 on a dark card. It exists for exactly one job: the dark-card case where Faded Ink falls under the 7:1 line. Don't reach for it on the page ground — that's Faded Ink's job, and using it there flattens the hierarchy.
+- **Faded Ink** (`oklch(0.42 0.012 60)`): secondary labels and metadata. It **does** clear the 7:1 AAA line on the page ground — ~8.5:1 by day, ~7.0:1 at night — and ~7.8:1 on a light card. The one place it doesn't: on a **dark card** it measures ~6.3:1, just under. So body-size prose on a dark raised surface takes Archival Ink or Soft Ink, not this. Body copy uses Archival Ink everywhere regardless — that's a **hierarchy** decision (secondary text must stay recessive), not a contrast floor. Don't "fix" Faded Ink by darkening it toward ink; that collapses the hierarchy it exists to express.
 - **Pure White** (`oklch(1 0 0)`): the page. No hidden warmth — the brand carries warmth, the surface does not.
 - **Sealed Parchment** (`oklch(0.975 0.004 75)`) / **Sunk Parchment** (`oklch(0.955 0.005 75)`): cards, panels, and inset regions — the second neutral layer, a hair warm.
 - **Hairline** (`oklch(0.90 0.004 75)`): 1px borders and dividers. Depth is a hairline and a tonal step, never a drop shadow at rest.
@@ -309,7 +313,7 @@ a wild blob would break the precision-and-restraint register.
 ### Do:
 - **Do** treat gold as a wax seal — matte, dry, editorial (`oklch(0.46 0.105 62)`). Authenticity, sovereignty, an official stamp.
 - **Do** keep the page pure white (`oklch(1 0 0)`) in the light appearance and let the seal and type carry the brand; in dark, the ground is the warm near-black of §2's Dark appearance.
-- **Do** hold WCAG 2.2 AAA in **both appearances** — Archival Ink body on white is ~13:1, night ink on the dark ground ~16:1; verify every text-on-color pairing, light and dark.
+- **Do** hold WCAG 2.2 AAA in **both appearances** — Archival Ink body on white is ~16.9:1, night ink on the dark ground ~16.7:1; verify every text-on-color pairing, light and dark. **Measure, don't estimate:** rasterize the OKLCH value to sRGB and run the WCAG formula (calibrate your method against `#767676` on white, which must return exactly 4.54:1). Eyeballed OKLCH ratios drift badly — every figure in this file was once wrong by 3–11 points.
 - **Do** signal status with color **and** an icon **and** a text label **and** position — always all four.
 - **Do** keep Critical and Expired visually distinct: alarm-red that acts vs. ashen-slate that's closed.
 - **Do** set every DID, key, CID, and signature in JetBrains Mono — the literal truth, verifiable character by character.

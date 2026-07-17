@@ -161,7 +161,7 @@
     background: var(--color-bg);
     border: 1px solid var(--color-line);
     border-radius: var(--radius-xl);
-    padding: 15px;
+    padding: var(--space-md);
     width: 100%;
     text-align: left;
     cursor: pointer;
@@ -232,7 +232,7 @@
     background: transparent;
     border: 1.5px dashed var(--color-line);
     border-radius: var(--radius-xl);
-    padding: 16px 15px;
+    padding: var(--space-md);
     width: 100%;
     text-align: left;
     cursor: pointer;

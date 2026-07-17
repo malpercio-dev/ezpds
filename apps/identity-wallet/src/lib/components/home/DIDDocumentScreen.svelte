@@ -221,7 +221,7 @@
   .didweb-body {
     display: flex;
     flex-direction: column;
-    gap: 4px;
+    gap: var(--space-xs);
     min-width: 0;
   }
   .didweb-t {
