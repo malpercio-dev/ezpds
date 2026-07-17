@@ -218,6 +218,12 @@ pub async fn write_record(
         ));
     }
 
+    // Reject malformed self-describing record formats (top-level `createdAt` datetime, any
+    // `at://` AT-URI) before any repo mutation — the reference PDS rejects these for a lexicon
+    // it knows; Custos applies the schema-free half without vendoring app lexicons.
+    crate::auth::validation::validate_record_formats(record)
+        .map_err(|message| ApiError::new(ErrorCode::InvalidRequest, message))?;
+
     // Serialize this repo's whole logical write (root read → commit → GC) against concurrent
     // writers — see [`RepoWriteLocks`]. Held until this function returns, past the GC pass.
     let _write_guard = state.repo_write_locks.lock(did).await;

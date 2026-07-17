@@ -666,6 +666,96 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn create_record_with_malformed_created_at_returns_400() {
+        // A malformed top-level `createdAt` is rejected on write, matching the reference PDS's
+        // datetime-format rejection for a known lexicon.
+        let (state, did) = setup_account_with_repo().await;
+        let token = access_jwt(&state.jwt_secret, &did);
+        let app = crate::app::app(state);
+
+        let request = Request::builder()
+            .method(http::Method::POST)
+            .uri("/xrpc/com.atproto.repo.createRecord")
+            .header("Content-Type", "application/json")
+            .header("Authorization", format!("Bearer {token}"))
+            .body(Body::from(
+                serde_json::to_string(&serde_json::json!({
+                    "repo": did,
+                    "collection": "app.bsky.feed.post",
+                    "record": {"text": "hi", "createdAt": "2026-07-17 12:00:00"}
+                }))
+                .unwrap(),
+            ))
+            .unwrap();
+
+        let response = app.oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn create_record_with_malformed_at_uri_returns_400() {
+        // A malformed `at://` value anywhere in the record is rejected — the scheme is
+        // self-describing, so it must parse as a valid AT-URI.
+        let (state, did) = setup_account_with_repo().await;
+        let token = access_jwt(&state.jwt_secret, &did);
+        let app = crate::app::app(state);
+
+        let request = Request::builder()
+            .method(http::Method::POST)
+            .uri("/xrpc/com.atproto.repo.createRecord")
+            .header("Content-Type", "application/json")
+            .header("Authorization", format!("Bearer {token}"))
+            .body(Body::from(
+                serde_json::to_string(&serde_json::json!({
+                    "repo": did,
+                    "collection": "app.bsky.feed.repost",
+                    "record": {
+                        "createdAt": "2026-07-17T12:00:00Z",
+                        "subject": {"uri": "at://bad authority/x", "cid": "bafyabc"}
+                    }
+                }))
+                .unwrap(),
+            ))
+            .unwrap();
+
+        let response = app.oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn create_record_with_valid_at_uri_subject_succeeds() {
+        // The positive counterpart: a well-formed `at://` subject must not be rejected.
+        let (state, did) = setup_account_with_repo().await;
+        let token = access_jwt(&state.jwt_secret, &did);
+        let app = crate::app::app(state);
+
+        let request = Request::builder()
+            .method(http::Method::POST)
+            .uri("/xrpc/com.atproto.repo.createRecord")
+            .header("Content-Type", "application/json")
+            .header("Authorization", format!("Bearer {token}"))
+            .body(Body::from(
+                serde_json::to_string(&serde_json::json!({
+                    "repo": did,
+                    "collection": "app.bsky.feed.like",
+                    "rkey": "likevalid",
+                    "record": {
+                        "createdAt": "2026-07-17T12:00:00.123Z",
+                        "subject": {
+                            "uri": "at://did:plc:someposter/app.bsky.feed.post/3jui7kd54zh2y",
+                            "cid": "bafyreidfayvfuwqa7qlnopdjiqrxzs6blmoeu4rujcjtnci5beludirz2a"
+                        }
+                    }
+                }))
+                .unwrap(),
+            ))
+            .unwrap();
+
+        let response = app.oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
     async fn create_record_with_float_returns_400() {
         let (state, did) = setup_account_with_repo().await;
         let token = access_jwt(&state.jwt_secret, &did);

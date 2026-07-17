@@ -171,6 +171,14 @@ pub async fn apply_writes(
             ApiError::new(ErrorCode::InvalidClaim, "invalid collection or record key")
         })?;
 
+        // Reject malformed self-describing record formats (top-level `createdAt` datetime, any
+        // `at://` AT-URI) before any mutation, so one bad write fails the whole batch — same
+        // schema-free ingestion gate as the single-record `record_write::write_record` path.
+        if let Some(value) = &value {
+            crate::auth::validation::validate_record_formats(value)
+                .map_err(|message| ApiError::new(ErrorCode::InvalidRequest, message))?;
+        }
+
         let repo_action = match kind {
             Kind::Create => crate::auth::oauth_scopes::RepoAction::Create,
             Kind::Update => crate::auth::oauth_scopes::RepoAction::Update,
@@ -578,6 +586,46 @@ mod tests {
         });
         let resp = app.oneshot(apply_req(body, Some(&token))).await.unwrap();
         assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn apply_writes_malformed_record_format_rejects_whole_batch() {
+        // A malformed `createdAt` in any one write fails the whole batch before any mutation,
+        // the same schema-free ingestion gate the single-record write path applies.
+        let (state, did) = setup().await;
+        let token = access_jwt(&state.jwt_secret, &did);
+        let db = state.db.clone();
+        let root_before = crate::db::accounts::get_repo_root_cid(&db, &did)
+            .await
+            .unwrap();
+        let app = crate::app::app(state);
+        let body = serde_json::json!({
+            "repo": did,
+            "writes": [
+                {
+                    "$type": "com.atproto.repo.applyWrites#create",
+                    "collection": "app.bsky.feed.post",
+                    "rkey": "good",
+                    "value": {"text": "ok", "createdAt": "2026-07-17T12:00:00Z"},
+                },
+                {
+                    "$type": "com.atproto.repo.applyWrites#create",
+                    "collection": "app.bsky.feed.post",
+                    "rkey": "bad",
+                    "value": {"text": "nope", "createdAt": "2026-07-17 12:00:00"},
+                },
+            ],
+        });
+        let resp = app.oneshot(apply_req(body, Some(&token))).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+        // Nothing in the batch landed: the repo root is unchanged.
+        let root_after = crate::db::accounts::get_repo_root_cid(&db, &did)
+            .await
+            .unwrap();
+        assert_eq!(
+            root_before, root_after,
+            "a rejected batch must not mutate the repo"
+        );
     }
 
     #[tokio::test]
