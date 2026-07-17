@@ -334,10 +334,21 @@ async fn run() -> anyhow::Result<()> {
             crawlers = ?config.crawlers.urls,
             "crawler notifications enabled"
         );
+        // Startup re-invitation: a fresh process (every deploy restarts the server) re-sends
+        // `requestCrawl` to every configured crawler so a relay that dropped its subscription while
+        // this PDS was quiet resubscribes at boot — a fresh deploy is exactly when a relay reconnect
+        // matters. Fire-and-forget (detached tasks, retried with backoff). The relay reconnects to
+        // this PDS's public URL and replays its retained log to heal any missed frames; if the POST
+        // races ahead of the listener binding below, the notifier's retries cover the brief window.
+        crawlers.notify();
+        tracing::info!("sent startup requestCrawl to configured crawlers");
     }
 
     // Seed the firehose sequencer from the persisted event log so `seq` continues monotonically
     // across restarts and cursor replay survives redeploys (the log is read back from `repo_seq`).
+    // Attach the crawler notifier so every firehose emission (not just repo commits) re-invites the
+    // relay — the `#account`/`#identity`/`#sync` lifecycle frames are precisely the ones a dropped
+    // subscription must not miss.
     let firehose = Arc::new({
         let mut f = firehose::Firehose::new(pool.clone())
             .await
@@ -347,6 +358,7 @@ async fn run() -> anyhow::Result<()> {
             })
             .with_context(|| "failed to initialise firehose sequencer from the event log")?;
         f.attach_metrics(metrics.clone());
+        f.attach_crawlers(crawlers.clone());
         f
     });
 

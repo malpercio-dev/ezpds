@@ -144,14 +144,26 @@ subscriber-facing WebSocket frame encoding lives in the `sync_subscribe_repos` h
 ### `crawler.rs`
 
 Outbound `com.atproto.sync.requestCrawl` notifier. `AppState.crawlers: Arc<CrawlerNotifier>`
-is shared by every handler; `record_write::commit_repo_write` calls `crawlers.notify()`
-once per commit, right after the firehose event is emitted. `notify` is fire-and-forget: it
-selects the crawlers outside their rate-limit window (one notification per crawler per 30s),
-then spawns a detached task per crawler that POSTs `{ "hostname": <PDS-host> }` to
-`<url>/xrpc/com.atproto.sync.requestCrawl`, retrying with exponential backoff up to 3 times.
-All outcomes are logged, never propagated — a commit never blocks on or fails because of a
-crawler. Configured via `[crawlers] urls = [...]` (default `["https://bsky.network"]`; empty
-disables) or `EZPDS_CRAWLERS`.
+is shared by every handler. The re-invitation fires from three places: **(1)** on startup
+(`main.rs` calls `crawlers.notify()` once when crawlers are configured — a fresh deploy is exactly
+when a dropped relay subscription must be re-invited); **(2)** on **every firehose emission**, via
+`Firehose::broadcast` (the single fan-out choke point), which the notifier is attached to at boot
+(`attach_crawlers`) — so `#commit` **and** the `#account`/`#identity`/`#sync` lifecycle frames all
+re-invite the relay, not just repo commits; **(3)** the same broadcast path covers `create_did.rs`/
+`create_account_xrpc.rs`/`agent_child.rs`, which additionally call `notify()` directly after their
+own commit path. `notify` is fire-and-forget: it selects the crawlers outside their rate-limit
+window (one notification per crawler per 30s), then spawns a detached task per crawler that POSTs
+`{ "hostname": <PDS-host> }` to `<url>/xrpc/com.atproto.sync.requestCrawl`, retrying with
+exponential backoff up to 3 times. All outcomes are logged, never propagated — an emission never
+blocks on or fails because of a crawler. Configured via `[crawlers] urls = [...]` (default
+`["https://bsky.network"]`; empty disables) or `EZPDS_CRAWLERS`.
+
+Why notify on non-commit frames matters: a relay can silently drop its subscription to a quiet
+PDS, and if the PDS only re-invited on commits, a post-migration `#account`(active)/`#sync` burst
+emitted while nobody was listening would leave the network's last word on the DID as the source
+PDS's deactivation — the DID stuck `AccountDeactivated` network-wide until a repo write happens to
+fire another `requestCrawl`. Emitting on the lifecycle frames closes that gap; the durable
+`repo_seq` log means the relay's replay heals everything once it reconnects (within retention).
 
 ### `rate_limit.rs`
 
