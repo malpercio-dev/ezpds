@@ -15,6 +15,7 @@ import type { UnauthorizedChange } from '$lib/ipc';
 import type {
   AgentSummary,
   AgentAuditEvent,
+  AppPasswordEntry,
 } from '$lib/ipc';
 
 /** A `did:key` multibase string that is stable for a given seed (not a real key). */
@@ -56,6 +57,8 @@ export interface FakeIdentity {
   alerts: UnauthorizedChange[];
   /** Agents bound to this identity ("My agents"). */
   agents: FakeAgent[];
+  /** App passwords minted for this identity (metadata only, like the real list route). */
+  appPasswords: AppPasswordEntry[];
 }
 
 /** Transient state for the multi-step import (claim) flow. */
@@ -163,6 +166,7 @@ export function seedIdentity(
     rotationKeys,
     alerts: [],
     agents: [],
+    appPasswords: [],
   };
 }
 
@@ -198,6 +202,25 @@ export function seedAgent(seed: string, did: string): FakeAgent {
       { id: `ev-${hashToken(seed)}-3`, eventType: 'token_exchanged', createdAt: now },
     ],
   };
+}
+
+/** Build a fake app-password entry (metadata only, mirroring the real list route). */
+export function seedAppPassword(name: string, privileged = false): AppPasswordEntry {
+  return {
+    name,
+    createdAt: '2026-07-15T12:00:00.000Z',
+    privileged,
+  };
+}
+
+/** The deterministic one-time secret the fake `create_app_password` returns for a name. */
+export function fakeAppPasswordSecret(name: string): string {
+  // hashToken yields 7 chars, so three rounds guarantee the full 16-char secret shape.
+  const token = `${hashToken(name)}${hashToken(`${name}:pad`)}${hashToken(`${name}:pad2`)}`.slice(
+    0,
+    16
+  );
+  return `${token.slice(0, 4)}-${token.slice(4, 8)}-${token.slice(8, 12)}-${token.slice(12, 16)}`;
 }
 
 /** Find a managed identity by DID, or undefined. */

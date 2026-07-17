@@ -1,4 +1,5 @@
 pub mod agents;
+pub mod app_passwords;
 pub mod claim;
 pub mod device_key;
 pub mod handle_change;
@@ -1143,6 +1144,9 @@ pub fn run() {
             agents::get_agent_audit,
             agents::preview_agent_claim,
             agents::confirm_agent_claim,
+            app_passwords::create_app_password,
+            app_passwords::list_app_passwords,
+            app_passwords::revoke_app_password,
             plc_monitor::check_identity_status,
             recovery::build_recovery_override_cmd,
             recovery::submit_recovery_override_cmd,

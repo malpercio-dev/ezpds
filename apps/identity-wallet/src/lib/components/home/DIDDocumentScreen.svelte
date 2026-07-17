@@ -7,6 +7,7 @@
     onback,
     onmigrate,
     onchangehandle,
+    onapppasswords,
     onremove,
   }: {
     didDoc: Record<string, unknown>;
@@ -17,6 +18,8 @@
     /** Only passed for a wallet-custodied did:plc (device key in the rotation set) —
      *  gates the sovereign change-handle entry point (device-key-signed alsoKnownAs op). */
     onchangehandle?: () => void;
+    /** Opens the app-password surface (sign the Bluesky app into this account). */
+    onapppasswords?: () => void;
     /** Opens the permanent-removal flow (delete on PDS + tombstone DID + local wipe). */
     onremove?: () => void;
   } = $props();
@@ -148,6 +151,10 @@
 
   {#if onchangehandle}
     <button class="action" onclick={onchangehandle}>Change handle</button>
+  {/if}
+
+  {#if onapppasswords}
+    <button class="action" onclick={onapppasswords}>Sign in to Bluesky and other apps</button>
   {/if}
 
   {#if onmigrate}

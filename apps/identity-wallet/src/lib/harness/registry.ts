@@ -31,6 +31,8 @@ import type {
   AgentAuditPage,
   AgentClaimPreview,
   AgentClaimConfirmation,
+  AppPasswordCreated,
+  AppPasswordEntry,
   RegisterHandleResult,
   CreateAccountResult,
   DIDCeremonyResult,
@@ -38,6 +40,7 @@ import type {
 } from '$lib/ipc';
 import {
   DEFAULT_PDS_URL,
+  fakeAppPasswordSecret,
   fakeDeviceKeyId,
   fakePlcDid,
   findIdentity,
@@ -123,6 +126,10 @@ export type CommandName =
   | 'get_agent_audit'
   | 'preview_agent_claim'
   | 'confirm_agent_claim'
+  // app-passwords.ts
+  | 'create_app_password'
+  | 'list_app_passwords'
+  | 'revoke_app_password'
   // biometric plugin (driven by $lib/biometric — resolves = allow the gate)
   | 'plugin:biometric|authenticate'
   | 'plugin:biometric|status';
@@ -529,6 +536,30 @@ export function buildRegistry(state: WalletState): Registry {
         });
       }
       return { registrationId, status: 'claimed', did: identity?.did ?? '' };
+    },
+
+    // ── app passwords ("Sign in to Bluesky and other apps") ──────────────────
+    list_app_passwords: (args): AppPasswordEntry[] =>
+      findIdentity(state, didArg(args))?.appPasswords ?? [],
+    create_app_password: (args): AppPasswordCreated => {
+      const identity = findIdentity(state, didArg(args));
+      if (!identity) throw { code: 'IDENTITY_NOT_FOUND', message: 'identity not found' };
+      const name = String(args.name ?? '');
+      const privileged = Boolean(args.privileged ?? false);
+      if (identity.appPasswords.some((p) => p.name === name)) {
+        throw { code: 'DUPLICATE_NAME' };
+      }
+      const entry = { name, createdAt: '2026-07-15T12:00:00.000Z', privileged };
+      identity.appPasswords.push(entry);
+      return { ...entry, password: fakeAppPasswordSecret(name) };
+    },
+    revoke_app_password: (args) => {
+      const identity = findIdentity(state, didArg(args));
+      if (identity) {
+        const name = String(args.name ?? '');
+        identity.appPasswords = identity.appPasswords.filter((p) => p.name !== name);
+      }
+      return null;
     },
 
     // ── biometric plugin (allow the gate) ────────────────────────────────────
