@@ -245,7 +245,7 @@
   .status-body {
     display: flex;
     flex-direction: column;
-    gap: 2px;
+    gap: var(--space-3xs);
   }
   .status-t {
     font-size: var(--text-title);
@@ -306,7 +306,7 @@
   .grant {
     display: flex;
     flex-direction: column;
-    gap: 3px;
+    gap: var(--space-2xs);
     background: var(--color-bg);
     border: 1px solid var(--color-line);
     border-radius: var(--radius-lg);
@@ -334,7 +334,7 @@
   .grant-warn-ic {
     color: var(--color-warning);
     flex-shrink: 0;
-    margin-top: 2px;
+    margin-top: var(--space-3xs);
   }
   .grant-warn {
     font-style: normal;
@@ -359,17 +359,18 @@
     border-bottom: none;
   }
   .entry-dot {
-    width: 8px;
-    height: 8px;
+    width: var(--space-sm);
+    height: var(--space-sm);
     border-radius: var(--radius-full);
     background: var(--color-line-strong);
     flex-shrink: 0;
+    /* Optically centres the dot on the first line of entry text; not a scale step. */
     margin-top: 7px;
   }
   .entry-body {
     display: flex;
     flex-direction: column;
-    gap: 2px;
+    gap: var(--space-3xs);
     min-width: 0;
   }
   .entry-t {

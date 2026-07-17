@@ -330,8 +330,8 @@
     display: inline-flex;
     align-items: center;
     justify-content: center;
-    width: 44px;
-    height: 44px;
+    width: var(--size-tap-target);
+    height: var(--size-tap-target);
     border-radius: var(--radius-full);
     background: var(--color-surface);
     border: 1px solid var(--color-line);
@@ -370,7 +370,7 @@
   .monitor-body {
     display: flex;
     flex-direction: column;
-    gap: 2px;
+    gap: var(--space-3xs);
     min-width: 0;
   }
   .monitor-t {
@@ -481,7 +481,7 @@
     min-width: 0;
     display: flex;
     flex-direction: column;
-    gap: 3px;
+    gap: var(--space-2xs);
   }
   .handle {
     font-size: var(--text-title);
@@ -555,7 +555,7 @@
     align-items: center;
     gap: var(--space-sm);
     width: 100%;
-    min-height: 44px;
+    min-height: var(--size-tap-target);
     padding: 10px 15px;
     background: var(--color-critical-surface);
     color: var(--color-critical);

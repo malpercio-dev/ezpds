@@ -119,7 +119,7 @@
   .row {
     display: flex;
     flex-direction: column;
-    gap: 2px;
+    gap: var(--space-3xs);
   }
   .k {
     font-size: var(--text-label);

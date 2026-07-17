@@ -345,7 +345,7 @@
   .grant-ic {
     color: var(--color-safe);
     flex-shrink: 0;
-    margin-top: 2px;
+    margin-top: var(--space-3xs);
   }
   .grant--elevated .grant-ic {
     color: var(--color-warning);
@@ -357,7 +357,7 @@
   .grant-body {
     display: flex;
     flex-direction: column;
-    gap: 3px;
+    gap: var(--space-2xs);
     min-width: 0;
   }
   .grant-t {
@@ -399,7 +399,7 @@
   .halt-body {
     display: flex;
     flex-direction: column;
-    gap: 3px;
+    gap: var(--space-2xs);
   }
   .halt-t {
     font-size: var(--text-body);

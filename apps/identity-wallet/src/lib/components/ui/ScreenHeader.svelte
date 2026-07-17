@@ -50,8 +50,8 @@
     display: inline-flex;
     align-items: center;
     justify-content: center;
-    width: 44px;
-    height: 44px;
+    width: var(--size-tap-target);
+    height: var(--size-tap-target);
     border-radius: var(--radius-full);
     background: var(--color-surface);
     border: 1px solid var(--color-line);

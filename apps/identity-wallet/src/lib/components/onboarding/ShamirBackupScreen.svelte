@@ -172,7 +172,7 @@
     font-size: var(--text-label);
     font-weight: var(--weight-semibold);
     color: var(--color-ink-soft);
-    margin: 0 0 2px;
+    margin: 0 0 var(--space-3xs);
   }
   .part-desc {
     font-size: var(--text-label);

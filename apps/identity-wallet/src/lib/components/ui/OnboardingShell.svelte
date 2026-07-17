@@ -51,7 +51,7 @@
     align-self: flex-start;
     display: inline-flex;
     align-items: center;
-    gap: 3px;
+    gap: var(--space-2xs);
     background: none;
     border: none;
     color: var(--color-accent);
@@ -60,7 +60,7 @@
     font-weight: var(--weight-medium);
     cursor: pointer;
     padding: var(--space-xs);
-    min-height: 44px;
+    min-height: var(--size-tap-target);
   }
 
   .content {

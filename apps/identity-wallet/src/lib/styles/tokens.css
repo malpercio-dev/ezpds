@@ -79,12 +79,23 @@
   --weight-bold: 700;
 
   /* ── Spacing (4px base) ───────────────────────────────────────── */
+  /* Sub-xs micro-gaps for tight intra-component stacks (a label over its
+     value, an icon nudged onto a text baseline). Hairline (1px) borders and
+     2px focus-ring offsets are NOT spacing — they stay as literal
+     small-structural values (see DESIGN.md). */
+  --space-3xs: 2px;
+  --space-2xs: 3px;
   --space-xs: 4px;
   --space-sm: 8px;
   --space-md: 16px;
   --space-lg: 24px;
   --space-xl: 32px;
   --space-2xl: 48px;
+
+  /* ── Sizing (interactive targets) ─────────────────────────────── */
+  /* Minimum touch-target edge — Apple HIG 44pt / WCAG 2.2 AAA (2.5.5). Used
+     for icon-only buttons and the invisible spacers that balance them. */
+  --size-tap-target: 44px;
 
   /* ── Radii ────────────────────────────────────────────────────── */
   --radius-sm: 4px;
