@@ -364,6 +364,102 @@ mod tests {
         );
     }
 
+    /// V047 rebuilds `agent_identities` for sovereign child agents. Like V038 it must cycle
+    /// every child table referencing the parent through a stash — including `agent_audit_events`
+    /// (V040), which a fresh-DB migration run never populates. This test exercises the
+    /// production upgrade path that shipped broken in v0.5.1: seed a populated
+    /// identity→claim-attempt→audit-event chain, apply V047, and confirm all child rows survive
+    /// with audit rowids (the pagination cursor) intact.
+    #[tokio::test]
+    async fn v047_rebuild_preserves_audit_events_and_claim_attempts() {
+        let pool = in_memory_pool().await;
+        apply_migrations_before(&pool, 47).await;
+
+        sqlx::query(
+            "INSERT INTO accounts (did, email, password_hash, created_at, updated_at) \
+             VALUES ('did:plc:v047owner', 'v047@example.com', 'hash', datetime('now'), datetime('now'))",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO agent_identities \
+             (id, did, registration_type, scopes, assertion_expires_at, created_at, updated_at) \
+             VALUES ('reg_v047', 'did:plc:v047owner', 'service_auth', '[]', \
+                     datetime('now', '+1 hour'), datetime('now'), datetime('now'))",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO agent_claim_attempts \
+             (id, identity_id, user_code, user_code_expires_at, created_at) \
+             VALUES ('cla_v047', 'reg_v047', '654321', datetime('now', '+10 minutes'), datetime('now'))",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        // Two audit events with the first later deleted, so the survivor sits at rowid 2 —
+        // proving the stash refill preserves absolute rowids (the audit pagination cursor),
+        // not just relative order.
+        for id in ["evt_v047_a", "evt_v047_b"] {
+            sqlx::query(
+                "INSERT INTO agent_audit_events \
+                 (id, registration_id, did, event_type, detail, created_at) \
+                 VALUES (?, 'reg_v047', 'did:plc:v047owner', 'registered', NULL, datetime('now'))",
+            )
+            .bind(id)
+            .execute(&pool)
+            .await
+            .unwrap();
+        }
+        sqlx::query("DELETE FROM agent_audit_events WHERE id = 'evt_v047_a'")
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        let v047 = MIGRATIONS.iter().find(|m| m.version == 47).unwrap();
+        let mut tx = pool.begin().await.unwrap();
+        sqlx::raw_sql(v047.sql)
+            .execute(&mut *tx)
+            .await
+            .expect("V047 must apply over a populated agent-auth schema");
+        tx.commit().await.unwrap();
+
+        let (attempts,): (i64,) = sqlx::query_as(
+            "SELECT COUNT(*) FROM agent_claim_attempts WHERE identity_id = 'reg_v047'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(attempts, 1, "claim attempt must survive the rebuild");
+
+        let (event_rowid,): (i64,) = sqlx::query_as(
+            "SELECT rowid FROM agent_audit_events WHERE id = 'evt_v047_b' \
+             AND registration_id = 'reg_v047'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(
+            event_rowid, 2,
+            "audit event must survive the rebuild with its original rowid"
+        );
+
+        // FK enforcement against the rebuilt parent is intact.
+        let orphan = sqlx::query(
+            "INSERT INTO agent_audit_events \
+             (id, registration_id, did, event_type, detail, created_at) \
+             VALUES ('evt_orphan', 'reg_missing', NULL, 'registered', NULL, datetime('now'))",
+        )
+        .execute(&pool)
+        .await;
+        assert!(
+            orphan.is_err(),
+            "audit events must still FK-check against the rebuilt agent_identities"
+        );
+    }
+
     /// schema_migrations records version=1 with a non-null applied_at.
     /// Verifies that version and timestamp fields are recorded correctly.
     #[tokio::test]
