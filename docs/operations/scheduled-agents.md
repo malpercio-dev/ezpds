@@ -8,6 +8,13 @@ rather than CI jobs — checks that need judgment (reading Linear state, weighin
 diff. A routine is a fresh, headless Claude Code session fired on a cron
 schedule.
 
+This page covers **machine-local** routines (created on one developer's
+machine). Cloud-hosted Claude Code Routines — which run unattended and survive
+any one machine — are documented in their own files:
+[`release-docs-routine.md`](release-docs-routine.md) (per-release
+docs/marketing pass) and [`dream-routine.md`](dream-routine.md) (nightly
+documentation-consolidation PR).
+
 **Why this file exists.** These routines are stored **outside the repository**,
 per-developer, at `~/.claude/scheduled-tasks/<taskId>/SKILL.md`. They are not
 version-controlled and do not sync between machines. If that directory is lost
