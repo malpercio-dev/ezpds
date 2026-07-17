@@ -1468,12 +1468,17 @@ mod tests {
             tree.root()
         }
 
-        /// Assert that inverting every ordering of `f`'s operations, using ONLY the blocks in
-        /// `store` (rooted at `root_after`), recovers exactly `expected_before` — the load-bearing
-        /// guarantee `blocksInProof` provides (per `commit-proofs.test.ts`): the declared proof set
-        /// is sufficient, on its own, to invert the operation and recover the pre-commit root.
+        /// Assert that inverting every ordering of `f`'s operations, using ONLY the blocks named
+        /// by `proof_cids` (rooted at `root_after`), recovers exactly `expected_before` — the
+        /// load-bearing guarantee `blocksInProof` provides (per `commit-proofs.test.ts`): the
+        /// declared proof set is sufficient, on its own, to invert the operation and recover the
+        /// pre-commit root. Each ordering gets its own fresh copy of exactly `proof_cids` (out of
+        /// `proof_store`, which already carries only those blocks) so a later ordering can never
+        /// pass by reading a node an earlier ordering's `invert` happened to write — every attempt
+        /// starts from the proof set alone, nothing more.
         async fn assert_inverts_to(
-            store: &mut MemoryBlockStore,
+            proof_store: &mut MemoryBlockStore,
+            proof_cids: &[Cid],
             root_after: Cid,
             leaf_cid: Cid,
             f: &CommitProofFixture,
@@ -1486,7 +1491,8 @@ mod tests {
                 .chain(f.dels.iter().map(|k| InvertStep::UndoDel(k)))
                 .collect();
             for order in permutations(&steps) {
-                let inverted = invert(store, root_after, leaf_cid, &order).await;
+                let mut order_store = copy_blocks(proof_store, proof_cids).await;
+                let inverted = invert(&mut order_store, root_after, leaf_cid, &order).await;
                 assert_eq!(
                     inverted, expected_before,
                     "[{}] inverting the proof-only store must recover rootBeforeCommit",
@@ -1506,7 +1512,15 @@ mod tests {
                 // be sufficient for OUR MST algorithm to invert the operation and recover
                 // rootBeforeCommit — the direct interop pin (no firehose plumbing involved yet).
                 let mut proof_only = copy_blocks(&mut bs, &proof_cids).await;
-                assert_inverts_to(&mut proof_only, root_after, leaf_cid, f, root_before).await;
+                assert_inverts_to(
+                    &mut proof_only,
+                    &proof_cids,
+                    root_after,
+                    leaf_cid,
+                    f,
+                    root_before,
+                )
+                .await;
 
                 // Round-trip a CAR of that same block set through the real firehose pipeline:
                 // persist via `Firehose::emit_commit`, reconstruct via `decode_stored_event` (as
@@ -1590,7 +1604,15 @@ mod tests {
                         "wire block bytes must hash to the declared CID {cid}"
                     );
                 }
-                assert_inverts_to(&mut wire_only, root_after, leaf_cid, f, root_before).await;
+                assert_inverts_to(
+                    &mut wire_only,
+                    &proof_cids,
+                    root_after,
+                    leaf_cid,
+                    f,
+                    root_before,
+                )
+                .await;
             }
         }
 
@@ -1608,7 +1630,15 @@ mod tests {
             let mut proof_only = copy_blocks(&mut bs, &proof_cids).await;
 
             // Wrong on purpose: the inverted root must equal `root_before`, never `root_after`.
-            assert_inverts_to(&mut proof_only, root_after, leaf_cid, f, root_after).await;
+            assert_inverts_to(
+                &mut proof_only,
+                &proof_cids,
+                root_after,
+                leaf_cid,
+                f,
+                root_after,
+            )
+            .await;
         }
     }
 }

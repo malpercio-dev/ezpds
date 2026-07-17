@@ -44,7 +44,7 @@ corrupt anything the proof needs end to end.
 
 **Documented divergence (MM-384 AC3):** this is the *only* file under upstream's `firehose/`
 directory as of the pinned commit — there is no reference *wire frame byte* vector (header +
-body DAG-CBOR bytes) for `#commit`, and none at all for `#account`/`#identity`/`#sync`. Those
+body DAG-CBOR bytes) for `#commit`, and none for `#account`/`#identity`/`#sync`. Those
 frame shapes (the `{op, t}` header discriminator, `#repoOp.path`/`cid`/`prev` layout, and each
 body's field set) are pinned only by this repo's own structural unit tests in
 `sync_subscribe_repos.rs`, not by an external interop vector. `atrium-repo` (the MST crate this
