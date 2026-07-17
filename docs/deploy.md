@@ -439,7 +439,7 @@ The per-account **repo signing keys are the hard part.** Each is published in th
 - **Rotating a still-known KEK** (planned rotation, or re-wrapping the surviving blobs under a new key after a leak): use the offline `pds rewrap-master-key` subcommand — see [Rotating the Master Key](#rotating-the-master-key). Re-wrapping preserves the same key *material*; after a leak it is necessary hygiene but does **not** by itself replace keys the attacker already knows in the clear.
 - **Replacing repo signing-key material** (after loss or compromise): wallet-driven per-account rotation via `/v1/repo-keys/rotation` ([ADR-0025](architecture/decisions/0025-wallet-driven-repo-key-rotation.md)).
 - **A leaked KEK almost certainly means the rest of the env store leaked too.** Rotate `EZPDS_ADMIN_TOKEN` (the break-glass bearer credential — most urgent) and the mail-provider tokens (`EZPDS_EMAIL_*`) as well, not just the KEK, and audit the exposure path.
-- **Full operator step ordering for both the loss and the compromise scenario** — which rows to drop, and the order to rotate secrets in — lives in the internal master-key disaster runbook (kept out of this public repo; ops-private). This section is the prevention-and-pointers summary; the runbook is the incident checklist.
+- **Full operator step ordering for both the loss and the compromise scenario** — which rows to drop, and the order to rotate secrets in — lives in the [Master-Key (KEK) Disaster Runbook](operations/master-key-disaster-runbook.md). This section is the prevention-and-pointers summary; the runbook is the incident checklist.
 
 ## Rotating the Master Key
 
