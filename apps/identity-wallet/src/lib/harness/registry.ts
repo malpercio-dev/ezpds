@@ -21,6 +21,7 @@ import type {
   SovereignLoginResult,
   IdentityStatus,
   SignedRecoveryOp,
+  SignedRotationOp,
   RemovalOutcome,
   SignedMigrationOp,
   MigrationPathDecision,
@@ -120,6 +121,9 @@ export type CommandName =
   // handle-change.ts
   | 'get_identity_handle_domains'
   | 'change_handle_cmd'
+  // rotation.ts
+  | 'build_repo_key_rotation_cmd'
+  | 'submit_repo_key_rotation_cmd'
   // agents.ts
   | 'list_agents'
   | 'revoke_agent'
@@ -487,6 +491,28 @@ export function buildRegistry(state: WalletState): Registry {
     change_handle_cmd: (args): ClaimResult => {
       const identity = findIdentity(state, didArg(args));
       if (identity) identity.handle = String(args.handle ?? identity.handle);
+      return identity ? claimResult(identity) : { updatedDidDoc: {} };
+    },
+
+    // ── rotate signing key ───────────────────────────────────────────────────
+    build_repo_key_rotation_cmd: (args): SignedRotationOp => {
+      const identity = findIdentity(state, didArg(args));
+      const oldKey = identity?.rotationKeys[1] ?? 'did:key:zharnessOldRepoKey';
+      return {
+        diff: {
+          addedKeys: ['did:key:zharnessRotatedRepoKey'],
+          removedKeys: [oldKey],
+          changedServices: [],
+          prevCid: 'bafyharnessprevcid',
+        },
+        signedOp: {},
+      };
+    },
+    submit_repo_key_rotation_cmd: (args): ClaimResult => {
+      const identity = findIdentity(state, didArg(args));
+      if (identity) {
+        identity.rotationKeys = [identity.rotationKeys[0], 'did:key:zharnessRotatedRepoKey'];
+      }
       return identity ? claimResult(identity) : { updatedDidDoc: {} };
     },
 

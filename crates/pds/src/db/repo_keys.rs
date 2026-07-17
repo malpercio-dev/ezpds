@@ -162,13 +162,16 @@ pub async fn get_reserved_repo_key_by_id(
 }
 
 /// Fetch the per-account signing key for a promoted DID (used to sign commits).
+///
+/// Only `'active'` rows are visible here: a `'staged'` rotation key must never
+/// sign a commit (or be advertised) before the DID document repoints at it.
 pub async fn get_signing_key_by_did(
     pool: &SqlitePool,
     did: &str,
 ) -> Result<Option<RepoSigningKey>, sqlx::Error> {
     let row: Option<(String, String, String)> = sqlx::query_as(
         "SELECT id, public_key, private_key_encrypted FROM signing_keys \
-         WHERE did = ? ORDER BY created_at DESC LIMIT 1",
+         WHERE did = ? AND status = 'active' ORDER BY created_at DESC LIMIT 1",
     )
     .bind(did)
     .fetch_optional(pool)
@@ -180,6 +183,93 @@ pub async fn get_signing_key_by_did(
             private_key_encrypted,
         },
     ))
+}
+
+/// Stage a freshly generated rotation key for `did`, replacing any prior staged
+/// key. Always a fresh insert (never reuse): in a compromise scenario a key
+/// staged before the rotation began must be assumed known to the attacker.
+///
+/// Single-table two-statement operation, so it owns its own transaction.
+pub async fn stage_rotation_key(
+    pool: &SqlitePool,
+    did: &str,
+    key: &RepoSigningKey,
+) -> Result<(), sqlx::Error> {
+    let mut tx = pool.begin().await?;
+    sqlx::query("DELETE FROM signing_keys WHERE did = ? AND status = 'staged'")
+        .bind(did)
+        .execute(&mut *tx)
+        .await?;
+    sqlx::query(
+        "INSERT INTO signing_keys \
+         (id, did, key_type, public_key, private_key_encrypted, created_at, status) \
+         VALUES (?, ?, 'p256', ?, ?, datetime('now'), 'staged')",
+    )
+    .bind(&key.key_id)
+    .bind(did)
+    .bind(&key.public_key)
+    .bind(&key.private_key_encrypted)
+    .execute(&mut *tx)
+    .await?;
+    tx.commit().await?;
+    Ok(())
+}
+
+/// Fetch the staged rotation key for `did`, if a rotation is in progress.
+pub async fn get_staged_signing_key(
+    pool: &SqlitePool,
+    did: &str,
+) -> Result<Option<RepoSigningKey>, sqlx::Error> {
+    let row: Option<(String, String, String)> = sqlx::query_as(
+        "SELECT id, public_key, private_key_encrypted FROM signing_keys \
+         WHERE did = ? AND status = 'staged' ORDER BY created_at DESC LIMIT 1",
+    )
+    .bind(did)
+    .fetch_optional(pool)
+    .await?;
+    Ok(row.map(
+        |(key_id, public_key, private_key_encrypted)| RepoSigningKey {
+            key_id,
+            public_key,
+            private_key_encrypted,
+        },
+    ))
+}
+
+/// Rotation cutover: promote the staged key to active and delete the retired
+/// active rows in one transaction. Deleting (rather than tombstoning) the old
+/// rows is deliberate — after a rotation the old private key is either
+/// compromised or lost, and commit verification only ever needs the public
+/// keys recorded in the DID document history.
+///
+/// Returns `false` when no staged row with `staged_key_id` exists (nothing is
+/// deleted in that case).
+pub async fn promote_staged_signing_key(
+    pool: &SqlitePool,
+    did: &str,
+    staged_key_id: &str,
+) -> Result<bool, sqlx::Error> {
+    let mut tx = pool.begin().await?;
+    let promoted = sqlx::query(
+        "UPDATE signing_keys SET status = 'active' \
+         WHERE did = ? AND id = ? AND status = 'staged'",
+    )
+    .bind(did)
+    .bind(staged_key_id)
+    .execute(&mut *tx)
+    .await?;
+    if promoted.rows_affected() != 1 {
+        // Nothing staged under that id — roll back rather than deleting the
+        // account's only active key.
+        return Ok(false);
+    }
+    sqlx::query("DELETE FROM signing_keys WHERE did = ? AND status = 'active' AND id != ?")
+        .bind(did)
+        .bind(staged_key_id)
+        .execute(&mut *tx)
+        .await?;
+    tx.commit().await?;
+    Ok(true)
 }
 
 #[cfg(test)]
@@ -318,5 +408,127 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(got, None);
+    }
+
+    fn other_key(suffix: &str) -> RepoSigningKey {
+        RepoSigningKey {
+            key_id: format!("did:key:zStaged{suffix}"),
+            public_key: format!("zStagedPublic{suffix}"),
+            private_key_encrypted: format!("c3RhZ2VkLWVuY3J5cHRlZC{suffix}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn staged_key_is_invisible_to_active_lookup() {
+        let pool = test_pool().await;
+        insert_account(&pool, "did:plc:rotator").await;
+        let active = sample_key();
+        insert_did_signing_key(&pool, "did:plc:rotator", &active)
+            .await
+            .unwrap();
+
+        let staged = other_key("A");
+        stage_rotation_key(&pool, "did:plc:rotator", &staged)
+            .await
+            .unwrap();
+
+        // The commit-signing lookup still sees the active key even though the
+        // staged row is newer.
+        let got = get_signing_key_by_did(&pool, "did:plc:rotator")
+            .await
+            .unwrap();
+        assert_eq!(got, Some(active));
+        let got_staged = get_staged_signing_key(&pool, "did:plc:rotator")
+            .await
+            .unwrap();
+        assert_eq!(got_staged, Some(staged));
+    }
+
+    #[tokio::test]
+    async fn staging_again_replaces_the_prior_staged_key() {
+        let pool = test_pool().await;
+        insert_account(&pool, "did:plc:restager").await;
+        insert_did_signing_key(&pool, "did:plc:restager", &sample_key())
+            .await
+            .unwrap();
+
+        let first = other_key("B");
+        stage_rotation_key(&pool, "did:plc:restager", &first)
+            .await
+            .unwrap();
+        let second = other_key("C");
+        stage_rotation_key(&pool, "did:plc:restager", &second)
+            .await
+            .unwrap();
+
+        let got = get_staged_signing_key(&pool, "did:plc:restager")
+            .await
+            .unwrap();
+        assert_eq!(got, Some(second));
+        // Exactly one staged row survives.
+        let staged_count: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM signing_keys WHERE did = ? AND status = 'staged'",
+        )
+        .bind("did:plc:restager")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(staged_count, 1);
+    }
+
+    #[tokio::test]
+    async fn promote_flips_staged_to_active_and_retires_the_old_key() {
+        let pool = test_pool().await;
+        insert_account(&pool, "did:plc:cutover").await;
+        insert_did_signing_key(&pool, "did:plc:cutover", &sample_key())
+            .await
+            .unwrap();
+        let staged = other_key("D");
+        stage_rotation_key(&pool, "did:plc:cutover", &staged)
+            .await
+            .unwrap();
+
+        let promoted = promote_staged_signing_key(&pool, "did:plc:cutover", &staged.key_id)
+            .await
+            .unwrap();
+        assert!(promoted);
+
+        // The staged key is now the (only) active key; the old row is gone.
+        let got = get_signing_key_by_did(&pool, "did:plc:cutover")
+            .await
+            .unwrap();
+        assert_eq!(got, Some(staged));
+        let total: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM signing_keys WHERE did = ?")
+            .bind("did:plc:cutover")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(total, 1);
+        assert_eq!(
+            get_staged_signing_key(&pool, "did:plc:cutover")
+                .await
+                .unwrap(),
+            None
+        );
+    }
+
+    #[tokio::test]
+    async fn promote_without_a_matching_staged_key_changes_nothing() {
+        let pool = test_pool().await;
+        insert_account(&pool, "did:plc:nostage").await;
+        let active = sample_key();
+        insert_did_signing_key(&pool, "did:plc:nostage", &active)
+            .await
+            .unwrap();
+
+        let promoted = promote_staged_signing_key(&pool, "did:plc:nostage", "did:key:zNoSuchKey")
+            .await
+            .unwrap();
+        assert!(!promoted);
+        // The active key is untouched.
+        let got = get_signing_key_by_did(&pool, "did:plc:nostage")
+            .await
+            .unwrap();
+        assert_eq!(got, Some(active));
     }
 }

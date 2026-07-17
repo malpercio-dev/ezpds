@@ -1,0 +1,47 @@
+meta {
+  name: Begin repo signing-key rotation (POST /v1/repo-keys/rotation)
+  type: http
+  seq: 119
+}
+
+post {
+  url: {{baseUrl}}/v1/repo-keys/rotation
+  body: none
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{sessionToken}}
+}
+
+vars:pre-request {
+  baseUrl: http://localhost:8080
+}
+
+docs {
+  # POST /v1/repo-keys/rotation
+
+  Stage a fresh per-account repo signing key for a wallet-driven rotation. Mints a new P-256
+  keypair, stores it encrypted as a `staged` `signing_keys` row, and returns its `did:key` id.
+  The staged key does not sign commits and is not advertised by `getRecommendedDidCredentials`
+  until the wallet-signed PLC rotation op lands via `/v1/repo-keys/rotation/complete`.
+
+  Calling again replaces any previously staged key with another fresh one — a rotation begun
+  after a suspected compromise must never reuse key material that predates it.
+
+  Authenticate as the account owner (wallet session token or full-access OAuth/XRPC token;
+  agent-derived and app-password credentials refused). `did:plc` accounts only.
+
+  ## Response (200)
+
+  ```json
+  { "signingKey": "did:key:zDn..." }
+  ```
+
+  ## Errors
+
+  - `400` — not a `did:plc` account
+  - `401` / `403` — missing/invalid credential, or an agent-derived/app-password token
+  - `404` — the account has no signing key to rotate
+  - `503` — signing-key master key not configured
+}

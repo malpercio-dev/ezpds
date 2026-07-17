@@ -7,6 +7,7 @@
     onback,
     onmigrate,
     onchangehandle,
+    onrotatekey,
     onapppasswords,
     onremove,
   }: {
@@ -18,6 +19,9 @@
     /** Only passed for a wallet-custodied did:plc (device key in the rotation set) —
      *  gates the sovereign change-handle entry point (device-key-signed alsoKnownAs op). */
     onchangehandle?: () => void;
+    /** Only passed for a wallet-custodied did:plc — gates the sovereign repo signing-key
+     *  rotation entry point (device-key-signed key-swap op via the hosting PDS). */
+    onrotatekey?: () => void;
     /** Opens the app-password surface (sign the Bluesky app into this account). */
     onapppasswords?: () => void;
     /** Opens the permanent-removal flow (delete on PDS + tombstone DID + local wipe). */
@@ -151,6 +155,10 @@
 
   {#if onchangehandle}
     <button class="action" onclick={onchangehandle}>Change handle</button>
+  {/if}
+
+  {#if onrotatekey}
+    <button class="action" onclick={onrotatekey}>Rotate signing key</button>
   {/if}
 
   {#if onapppasswords}
