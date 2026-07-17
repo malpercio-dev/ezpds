@@ -1,6 +1,6 @@
 # PDS Deployment
 
-**Last verified:** 2026-07-16
+**Last verified:** 2026-07-17
 
 ## Overview
 
@@ -14,7 +14,7 @@ The PDS container expects the following environment variables and mounts:
 - **`EZPDS_PUBLIC_URL`** (required) - Public HTTPS URL of the PDS (e.g., `https://PDS.example.com`)
 - **`EZPDS_AVAILABLE_USER_DOMAINS`** (required) - Comma-separated list of allowed handle domains (e.g., `example.com,example.bsky.social`)
 - **`EZPDS_RESERVED_HANDLES`** (optional, default `identitywallet,about`) - Comma-separated handle names (first DNS label) that may never be claimed under a served domain — infrastructure hostnames in the user-handle wildcard space (e.g. `identitywallet.obsign.org`, `about.obsign.org`). Compared case-insensitively. Set to an explicit empty value to reserve nothing.
-- **`EZPDS_SIGNING_KEY_MASTER_KEY`** (required) - 64-character hex string (32 bytes) for DID key derivation
+- **`EZPDS_SIGNING_KEY_MASTER_KEY`** (required) - 64-character hex string (32 bytes); the key-encryption key (KEK) that wraps every at-rest secret in the SQLite DB (the per-account repo signing keys plus the OAuth, JWT, and Iroh keys). **Back it up separately from the database backup** — losing it is a disaster distinct from losing the DB. See [Master-Key (KEK) Backup and Disaster Recovery](#master-key-kek-backup-and-disaster-recovery).
 - **`EZPDS_ADMIN_TOKEN`** (required) - Bearer token for admin-only endpoints (e.g., rotation key claiming)
 - **`EZPDS_DATA_DIR`** (optional, default `/data`) - Directory where `relay.db` is persisted. Set by the Dockerfile ENV; can be overridden if the data volume is mounted elsewhere. Must be writable by the container process.
 - **`PORT`** (optional, default `8080`) - Port to listen on inside the container
@@ -148,6 +148,8 @@ Either way, the steps run in this order:
 ### Backup & rollback
 
 When `LITESTREAM_S3_BUCKET` is set on the production environment — together with `LITESTREAM_S3_ENDPOINT` and `LITESTREAM_ACCESS_KEY_ID` / `LITESTREAM_SECRET_ACCESS_KEY` — the container runs the PDS under Litestream, which streams the SQLite WAL to object storage continuously and restores on boot, so a current restore point always exists before a promote. The replica is defined in `litestream.yml` with `force-path-style: false` (virtual-hosted-style, as Railway/Tigris-style buckets require). Staging/local leave these unset and run the PDS directly.
+
+The database backup protects the *ciphertext*; it does **not** protect the KEK that decrypts it. Back up `EZPDS_SIGNING_KEY_MASTER_KEY` separately, in a different store from the Litestream replica — see [Master-Key (KEK) Backup and Disaster Recovery](#master-key-kek-backup-and-disaster-recovery).
 
 Rollback: because migrations are **forward-only** (no down-path), redeploying a previous `v*` tag is safe only when the schema change was backward-compatible (expand-contract). Otherwise, roll back by restoring the database from the Litestream replica (`litestream restore`) to a pre-promote point. To inspect the replica **non-destructively** — restore a throwaway copy (latest state in the service container, point-in-time in the debug-kit sandbox) and query it with `sqlite3`, no rollback — see the [operator debug kit](operations/debug-kit.md#runbook-1--litestream-restore-and-inspect).
 
@@ -415,6 +417,29 @@ ghcr.io/your-org/PDS@sha256:abc123...
 ```
 
 The primary CI/CD path (GitHub Actions gate → native Railway deploys, above) needs none of this. For the colmena/NixOS path, publish to GHCR and pin the image by digest in the NixOS module.
+
+## Master-Key (KEK) Backup and Disaster Recovery
+
+`EZPDS_SIGNING_KEY_MASTER_KEY` is the key-encryption key (KEK) that wraps every at-rest secret in the SQLite DB, including each account's repo signing key (`verificationMethods.atproto` / `rotationKeys[1]`, which signs every commit). Losing or leaking the KEK is a disaster distinct from losing the database, and the two are recovered differently.
+
+### Golden rule: back up the KEK separately from the DB
+
+**Store the KEK in a secrets manager (or offline vault) that is separate from where the database backup lives.** Backing the KEK up *next to* the Litestream snapshot hands an attacker who reaches that one location both halves — the ciphertext and the key that decrypts it — which defeats the at-rest encryption entirely. Give the KEK the same backup rigor as the database, kept apart from it.
+
+This single practice is what turns a *lost* KEK from a catastrophe into a non-event: if the key is recoverable from its own backup, restore the env var and boot normally.
+
+### Why a lost or leaked KEK is serious
+
+Three of the KEK-wrapped secrets — the OAuth signing key, the JWT secret, and the Iroh node key — are **self-healing**: delete the single row and the loader (`crates/pds/src/auth/signing_key.rs`, `load_or_create_*`) re-mints a fresh one under the current KEK on next boot. The cost is bounded (sessions re-auth; the Iroh node id changes and devices re-resolve it via `GET /v1/devices/:id/pds`).
+
+The per-account **repo signing keys are the hard part.** Each is published in the account's DID document, so a fresh value can only be installed by a PLC operation signed by a *current* rotation key — and the PDS's own key is exactly the one being replaced. Recovery is therefore **wallet-driven and per-account**: the user's wallet holds the higher-priority `rotationKeys[0]` and signs a PLC op repointing `verificationMethods.atproto` (and `rotationKeys[1]`) to a fresh PDS-generated key, through the `/v1/repo-keys/rotation` + `/complete` surface ([ADR-0025](architecture/decisions/0025-wallet-driven-repo-key-rotation.md), [identity-and-key-custody](architecture/identity-and-key-custody.md)). A lost or compromised KEK means every affected account must go through this rotation — prioritize active accounts — which is precisely why the golden rule matters.
+
+### Recovery pointers
+
+- **Rotating a still-known KEK** (planned rotation, or re-wrapping the surviving blobs under a new key after a leak): use the offline `pds rewrap-master-key` subcommand — see [Rotating the Master Key](#rotating-the-master-key). Re-wrapping preserves the same key *material*; after a leak it is necessary hygiene but does **not** by itself replace keys the attacker already knows in the clear.
+- **Replacing repo signing-key material** (after loss or compromise): wallet-driven per-account rotation via `/v1/repo-keys/rotation` ([ADR-0025](architecture/decisions/0025-wallet-driven-repo-key-rotation.md)).
+- **A leaked KEK almost certainly means the rest of the env store leaked too.** Rotate `EZPDS_ADMIN_TOKEN` (the break-glass bearer credential — most urgent) and the mail-provider tokens (`EZPDS_EMAIL_*`) as well, not just the KEK, and audit the exposure path.
+- **Full operator step ordering for both the loss and the compromise scenario** — which rows to drop, and the order to rotate secrets in — lives in the internal master-key disaster runbook (kept out of this public repo; ops-private). This section is the prevention-and-pointers summary; the runbook is the incident checklist.
 
 ## Rotating the Master Key
 
