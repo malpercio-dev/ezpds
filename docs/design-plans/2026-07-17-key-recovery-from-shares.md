@@ -98,10 +98,23 @@ The 32-byte secret becomes a **recovery seed**. From it, derive a P-256 keypair
 (HKDF-SHA256 with a fixed domain-separation info string → scalar, rejection-sampled into
 the curve order), and place its `did:key` in the DID's `rotationKeys`:
 
-```
+> The derivation must be canonical so an independent implementation reconstructs the
+> identical key from the same seed. The exact byte layout — HKDF salt/IKM/`info`,
+> candidate scalar length and endianness, the retry-counter encoding and update rule for
+> rejection sampling, and the `1 ≤ k < n` acceptance range (P-256 order `n`) — is pinned
+> as golden test vectors in MM-406 (`derive_recovery_keypair`), not hand-specified here;
+> this doc fixes the *construction*, MM-406 fixes the *bytes*.
+
+```text
 rotationKeys: [ device key (SE),  recovery key (derived),  PDS key ]
                     [0]                  [1]                 [2]
 ```
+
+The PDS's own signing key keeps its existing dual role — it moves from `rotationKeys[1]`
+to `[2]`, but stays bound to `verificationMethods.atproto` and remains the repo-commit
+signer. Only its rotation-priority position changes; the recovery key is inserted above
+it, never in place of it. (The genesis builder work in MM-406 carries a round-trip test
+over the `[device, recovery, PDS]` ordering to pin exactly this.)
 
 Now reconstruction ⇒ a private key that plc.directory already recognizes as an identity
 controller. Two properties fall out for free:
@@ -140,8 +153,13 @@ The wallet's Rust core already links `crates/crypto`. The ceremony changes:
   (or an immediately-following authenticated `PUT`), and never sees the seed or the
   other shares.
 - Retry-resilience moves where the material now lives: the wallet persists the seed +
-  shares (Keychain, non-synced slot) until the ceremony is confirmed complete, then
-  zeroizes the seed and Share 2's local copy.
+  all shares in a **non-synced** Keychain staging slot until the ceremony is confirmed
+  complete. The teardown order is load-bearing — Share 1 must reach its **iCloud-synced**
+  Keychain slot (`recovery-share-1`) and that write must be verified, and Share 3
+  confirmation must be complete, *before* the seed and Share 2's local copy are zeroized.
+  The staging slot (non-synced, transient) and the Share 1 slot (synced, durable) are
+  deliberately different homes; losing the seed before Share 1 is durably synced would
+  strand recovery.
 
 This closes gap 2 structurally: reconstruction material never exists server-side, so no
 DB snapshot, backup, or hostile operator can ever hold two shares.
@@ -150,7 +168,7 @@ DB snapshot, backup, or hostile operator can ever hold two shares.
 
 Replace bare base32 with a self-describing envelope (still base32/QR-friendly):
 
-```
+```text
 version(1B) || set_id(4B) || index(1B) || payload(32B) || checksum(4B, SHA-256 prefix over the preceding bytes)
 ```
 
@@ -171,16 +189,23 @@ The common case: lost/dead phone, iCloud intact, Custos alive and honest.
 2. **Escrow release request.** `POST /v1/recovery/initiate` with handle/DID → server
    emails an OTP to the account address (always-200, no enumeration — the
    `requestPasswordReset` pattern; real delivery exists since MM-211).
-   `POST /v1/recovery/release` with the OTP → returns Share 2. Every step: tight
+   `POST /v1/recovery/release` with the OTP **opens a release** (it does not
+   immediately hand back the share when the delay is on — see step 3). Every step: tight
    per-IP rate limits, audit events, and a notification to the account email.
-3. **Release delay (default on, operator- and user-configurable).** The release sits
-   `pending` for a window (e.g. 24h) during which any authenticated session/device can
-   cancel — a push through the [notification relay](2026-07-10-notification-relay.md)
-   when that lands, email links meanwhile. Rationale: escrow release converts
-   "iCloud + mailbox compromise" into identity compromise; the delay plus the device
-   key's 72-hour override supremacy (ordering above) are the two backstops. A requester
-   who can't wait can skip the delay by proving possession of Share 3 — at which point
-   they hold two shares and never needed escrow.
+3. **Release delay (default on, operator- and user-configurable).** The release enters a
+   `pending` state for a window (e.g. 24h) during which any authenticated session/device
+   can cancel — a push through the [notification relay](2026-07-10-notification-relay.md)
+   when that lands, email links meanwhile. The state machine (detailed in MM-409) is:
+   the OTP is single-use and consumed by the opening `release` call, which returns
+   `{status: "pending", available_at}`; the client then **re-polls the same
+   `release` endpoint** (now authenticated by the opened release's own handle, not the
+   spent OTP), which returns `pending` until `available_at`, then the Share 2 envelope
+   once — with a zero-length delay collapsing this to a single call that returns the
+   share directly. Rationale: escrow release converts "iCloud + mailbox compromise" into
+   identity compromise; the delay plus the device key's 72-hour override supremacy
+   (ordering above) are the two backstops. A requester who can't wait can skip the delay
+   by proving possession of Share 3 — at which point they hold two shares and never
+   needed escrow.
 4. **Reconstruct + verify.** Combine Shares 1+2 → seed → derive keypair → compare the
    public key against plc.directory's current `rotationKeys`. Mismatch = wrong/stale
    shares, fail loudly before any signature.
@@ -232,6 +257,19 @@ append-only `recovery_audit_events` (modeled on `agent_audit_events`). The escro
 share is AES-256-GCM-wrapped under the master KEK and **registered in
 `SecretFamily::ALL`** so `rewrap-master-key` covers it (fixes gap 5).
 `account_delete::purge_account` deletes both tables' rows.
+
+The wrapping reuses the crate's existing `crypto::encrypt_private_key` envelope —
+`base64(nonce(12) ‖ ciphertext ‖ tag(16))` with a **fresh random nonce per call**
+(documented in `crates/crypto/AGENTS.md`), the same envelope every other `SecretFamily`
+column already uses — so nonce-uniqueness and tag storage come for free and
+`rewrap-master-key` discovers and rewrites the column exactly as it does the others (it
+decrypts every `SecretFamily::ALL` ciphertext under the old master key and re-encrypts
+under the new one in a single stopped-server transaction, never logging plaintext; a KEK
+version isn't stored per-row because the whole DB is at one `kek_generation`). Whether to
+additionally bind `(did, set_id, version)` as AES-GCM **AAD** — cheap tamper-evidence
+that an escrow row can't be transplanted between accounts — is an MM-408 implementation
+choice; the base envelope does not today, and adopting it for this column would be a
+deliberate divergence from the shared `encrypt_private_key` helper worth its own note.
 
 ### 7. Migrating existing accounts
 
