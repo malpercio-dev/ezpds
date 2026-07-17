@@ -41,6 +41,7 @@
   import SettingsScreen from '$lib/components/home/SettingsScreen.svelte';
   import RemoveIdentityScreen from '$lib/components/home/RemoveIdentityScreen.svelte';
   import { createAccount, confirmShareBackup, registerCreatedIdentity, listIdentities, listPendingRemovals, getStoredDidDoc, checkIdentityStatus, isCodedError, type CreateAccountError, type OAuthError, type IdentityInfo, type VerifiedClaimOp, type ClaimResult, type UnauthorizedChange } from '$lib/ipc';
+  import { authenticateBiometric } from '$lib/biometric';
   import { normalizePlcDocToW3c, extractHandle } from '$lib/did-doc-utils';
   import IdentityListHome from '$lib/components/home/IdentityListHome.svelte';
   import OnboardingShell from '$lib/components/ui/OnboardingShell.svelte';
@@ -298,14 +299,31 @@
   // continue — the user keeps their identity and can refresh the card later.
   // (Strict alternative: surface the error and let the user retry before
   // advancing — see the accompanying notes.)
+  let backupConfirmError = $state<string | null>(null);
+
   async function confirmBackupAndContinue() {
-    // Tear down the ceremony's Keychain staging slot (the seed's last local copy) now
-    // that the user has confirmed saving Share 3. Best-effort: a failure keeps the
-    // staging material (harmless, local-only) and never blocks onboarding.
+    backupConfirmError = null;
+    // The teardown destroys the last local copy of the recovery seed material, so it
+    // is gated on user presence like every other irreversible operation.
+    try {
+      await authenticateBiometric('Confirm you have saved your recovery share');
+    } catch (e) {
+      console.warn('Backup confirmation biometric gate rejected:', e);
+      backupConfirmError = 'Authentication was cancelled. Try again to finish your backup.';
+      return;
+    }
+    // Fail closed: advancing without a successful teardown would either violate the
+    // backup invariant (SHARE_NOT_STORED — Share 1 never reached its durable slot) or
+    // report completion while sensitive staging material is still retained.
     try {
       await confirmShareBackup();
     } catch (e) {
-      console.warn('Ceremony staging cleanup failed (will retain staged shares):', e);
+      console.error('Ceremony staging teardown failed:', e);
+      backupConfirmError =
+        isCodedError(e) && e.code === 'SHARE_NOT_STORED'
+          ? 'Your automatic iCloud share is not saved yet. Try again — if this keeps happening, reopen the app before continuing.'
+          : 'Could not finalize the backup. Check device storage and try again.';
+      return;
     }
     step = 'handle_registration';
   }
@@ -458,6 +476,7 @@
     <ShamirBackupScreen
       share3={form.share3}
       share3Words={form.share3Words}
+      confirmError={backupConfirmError}
       oncomplete={confirmBackupAndContinue}
     />
   {:else if step === 'handle_registration'}

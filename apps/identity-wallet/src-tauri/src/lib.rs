@@ -636,9 +636,21 @@ pub enum ShareBackupError {
 fn confirm_share_backup() -> Result<(), ShareBackupError> {
     match keychain::get_item("recovery-share-1") {
         Ok(bytes) if !bytes.is_empty() => {}
-        Ok(_) | Err(_) => {
+        Ok(_) => {
+            tracing::error!(
+                "confirm_share_backup: recovery share 1 is empty; keeping staging slot"
+            );
+            return Err(ShareBackupError::ShareNotStored);
+        }
+        Err(ref e) if keychain::is_not_found(e) => {
             tracing::error!("confirm_share_backup: recovery share 1 missing; keeping staging slot");
             return Err(ShareBackupError::ShareNotStored);
+        }
+        // An operational Keychain failure is not evidence the share is absent —
+        // report it as such so the caller can retry rather than re-run the ceremony.
+        Err(e) => {
+            tracing::error!(error = %e, "confirm_share_backup: keychain read failed; keeping staging slot");
+            return Err(ShareBackupError::KeychainError);
         }
     }
     share_ceremony::clear_staging().map_err(|e| {

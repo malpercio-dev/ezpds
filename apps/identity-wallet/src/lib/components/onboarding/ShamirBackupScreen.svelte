@@ -6,6 +6,7 @@
   let {
     share3,
     share3Words = '',
+    confirmError = null,
     oncomplete,
   }: {
     /** Machine form of Share 3 (base32 envelope) — the QR payload. */
@@ -16,6 +17,11 @@
      * screen falls back to the machine form.
      */
     share3Words?: string;
+    /**
+     * Failure from the parent's confirmation step (biometric gate or staging
+     * teardown). The user stays here and can retry via the same button.
+     */
+    confirmError?: string | null;
     oncomplete: () => void;
   } = $props();
 
@@ -140,6 +146,10 @@
 
   {#if !confirmed}
     <p class="warning" role="alert">You must save your recovery key before continuing.</p>
+  {/if}
+
+  {#if confirmError}
+    <p class="warning" role="alert">{confirmError}</p>
   {/if}
 
   <Button onclick={oncomplete} disabled={!confirmed}>I've saved my backup</Button>
