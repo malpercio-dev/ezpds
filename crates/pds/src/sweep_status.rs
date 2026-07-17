@@ -44,6 +44,9 @@ pub struct SweepSnapshot {
     pub account_reaper: Option<SweepRun>,
     pub agent_claim_sweep: Option<SweepRun>,
     pub admin_nonce_sweep: Option<SweepRun>,
+    /// The labeler watcher is a poller rather than a reclaimer, but shares the sweep
+    /// posture: `swept` counts label rows changed, and a stale pass is the alarm.
+    pub labeler_watch: Option<SweepRun>,
 }
 
 /// Shared readable sweep state; one lives in `AppState` for the process lifetime.
@@ -71,6 +74,10 @@ impl SweepStatus {
 
     pub fn record_admin_nonce_sweep(&self, run: SweepRun) {
         self.write().admin_nonce_sweep = Some(run);
+    }
+
+    pub fn record_labeler_watch(&self, run: SweepRun) {
+        self.write().labeler_watch = Some(run);
     }
 
     pub fn snapshot(&self) -> SweepSnapshot {

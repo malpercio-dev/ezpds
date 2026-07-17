@@ -169,6 +169,18 @@
       />
       <div class="divider"></div>
       <AccountRow
+        did="did:plc:spam111mmm222nnn333ooo444"
+        handle="eve.ezpds.example"
+        status="active"
+        quota="[▓░░░░] 12.00%"
+        flags={[
+          { val: 'spam', labelerDid: 'did:plc:ar7c4by46qjdydhdevvrndac', cts: '2026-07-14T08:00:00Z' },
+          { val: '!hide', labelerDid: 'did:plc:ar7c4by46qjdydhdevvrndac', cts: '2026-07-15T10:30:00Z' },
+        ]}
+        onclick={() => {}}
+      />
+      <div class="divider"></div>
+      <AccountRow
         did="did:plc:mno345pqr678stu901vwx234"
         handle={null}
         status="deactivated"

@@ -47,6 +47,10 @@ struct AccountCounts {
     deactivated: i64,
     suspended: i64,
     takendown: i64,
+    /// Accounts carrying at least one in-force label from a watched labeler
+    /// (`account_labels`). Orthogonal to the lifecycle buckets — a flagged account also
+    /// counts in exactly one of them — and always 0 when labeler watching is off.
+    flagged: i64,
 }
 
 #[derive(Serialize)]
@@ -81,6 +85,9 @@ struct SweepStates {
     account_reaper: Option<SweepState>,
     agent_claim_sweep: Option<SweepState>,
     admin_nonce_sweep: Option<SweepState>,
+    /// The labeler watcher's last completed poll pass (`swept` = label rows changed);
+    /// `null` while labeler watching is off, like an idle sweep.
+    labeler_watch: Option<SweepState>,
 }
 
 /// One sweep's last completed pass; `null` at the response level until the first pass
@@ -153,6 +160,13 @@ pub async fn admin_health(
         None => None,
     };
 
+    let flagged = crate::db::account_labels::count_flagged_accounts(&state.db)
+        .await
+        .map_err(|e| {
+            tracing::error!(error = %e, "failed to count flagged accounts");
+            ApiError::new(ErrorCode::InternalError, "failed to gather server stats")
+        })?;
+
     let sweeps = state.sweeps.snapshot();
 
     Ok(Json(HealthResponse {
@@ -164,6 +178,7 @@ pub async fn admin_health(
             deactivated: stats.accounts_deactivated,
             suspended: stats.accounts_suspended,
             takendown: stats.accounts_takendown,
+            flagged,
         },
         storage: StorageCounts {
             blob_count: stats.blob_count,
@@ -182,6 +197,7 @@ pub async fn admin_health(
             account_reaper: sweeps.account_reaper.map(SweepState::from),
             agent_claim_sweep: sweeps.agent_claim_sweep.map(SweepState::from),
             admin_nonce_sweep: sweeps.admin_nonce_sweep.map(SweepState::from),
+            labeler_watch: sweeps.labeler_watch.map(SweepState::from),
         },
     }))
 }
@@ -243,6 +259,7 @@ mod tests {
         assert!(json["uptimeSeconds"].is_u64());
         assert_eq!(json["accounts"]["total"], 0);
         assert_eq!(json["accounts"]["active"], 0);
+        assert_eq!(json["accounts"]["flagged"], 0);
         assert_eq!(json["storage"]["blobCount"], 0);
         assert_eq!(json["storage"]["blobBytes"], 0);
         assert_eq!(json["storage"]["blockCount"], 0);
@@ -259,6 +276,39 @@ mod tests {
         assert_eq!(json["sweeps"]["accountReaper"], serde_json::Value::Null);
         assert_eq!(json["sweeps"]["agentClaimSweep"], serde_json::Value::Null);
         assert_eq!(json["sweeps"]["adminNonceSweep"], serde_json::Value::Null);
+        assert_eq!(json["sweeps"]["labelerWatch"], serde_json::Value::Null);
+    }
+
+    #[tokio::test]
+    async fn health_reports_flagged_accounts_and_labeler_watch_pass() {
+        let state = test_state_with_admin_token().await;
+        sqlx::query(
+            "INSERT INTO accounts (did, email, password_hash, created_at, updated_at) \
+             VALUES ('did:plc:hf_one', 'hf@example.com', NULL, datetime('now'), datetime('now'))",
+        )
+        .execute(&state.db)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO account_labels (did, labeler_did, val, cts) \
+             VALUES ('did:plc:hf_one', 'did:plc:labeler', 'spam', '2026-01-01T00:00:00Z')",
+        )
+        .execute(&state.db)
+        .await
+        .unwrap();
+        state
+            .sweeps
+            .record_labeler_watch(crate::sweep_status::SweepRun {
+                completed_at: 1_760_000_000,
+                swept: 2,
+            });
+
+        let router = app(state);
+        let (status, json) = get_health(router, Some("test-admin-token")).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(json["accounts"]["flagged"], 1);
+        assert_eq!(json["sweeps"]["labelerWatch"]["completedAt"], 1_760_000_000);
+        assert_eq!(json["sweeps"]["labelerWatch"]["swept"], 2);
     }
 
     #[tokio::test]

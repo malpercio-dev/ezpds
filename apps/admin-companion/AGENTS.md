@@ -34,7 +34,7 @@ criteria: [docs/archive/design-plans/2026-07-12-browser-harness.md](../../docs/a
   `pnpm check:harness-absence` proves it is tree-shaken out of production builds.
 
 **`window.__harness` console API:** `.scenario(name)` (presets: `unpaired`, `single-relay`,
-`multi-relay`, `degraded-health`; `.scenarios` lists them), `.failNext(command, error)`
+`multi-relay`, `degraded-health`, `flagged-accounts`; `.scenarios` lists them), `.failNext(command, error)`
 (e.g. `window.__harness.failNext('generate_claim_code', { code: 'NOT_PAIRED' })`),
 `.emit(event, payload)` (kept for parity — this app subscribes to no Tauri events),
 `.state()` (read-only snapshot), `.mode`.
@@ -85,11 +85,14 @@ share sheet, and server-side self-revoke (Phase 8). Wired:
   deny-unknown-fields), `get_account_usage`/`get_account_storage` (signed GETs against
   `/v1/accounts/{did}/usage`/`…/storage` for an id-addressed pairing; the DID rides in the
   *path*, so it is inside the signed envelope — a metrics signature is bound to its account),
-  `list_accounts` (signed `GET /v1/admin/accounts` for an id-addressed pairing: DID-cursor
-  pagination + derived-status filter + handle/DID substring search; like the status lookup,
-  the BARE path is signed and the paging/filter query params are appended after signing, so
-  every page reuses the same envelope shape — `AccountList`/`AccountListEntry` are by-value
-  copies of the wire shape pinned by a deserialization test),
+  `list_accounts` (signed `GET /v1/admin/accounts` for an id-addressed pairing: flagged
+  accounts first then DID order, opaque-cursor pagination + derived-status filter +
+  handle/DID substring search, each row carrying its watched-labeler `flags` and the page
+  carrying `flaggedTotal`; like the status lookup, the BARE path is signed and the
+  paging/filter query params are appended after signing, so every page reuses the same
+  envelope shape — `AccountList`/`AccountListEntry`/`AccountFlag` are by-value copies of
+  the wire shape pinned by a deserialization test, with the flag fields `serde(default)`ed
+  so a pre-labeler-watching relay still parses),
   `get_server_health` (a signed `GET /v1/admin/health` for an id-addressed pairing — the
   Status screen's data source: version/uptime, account counts by lifecycle, blob/block
   totals, firehose state, and background-sweep last-runs as `ServerHealth`, a by-value
@@ -158,7 +161,11 @@ share sheet, and server-side self-revoke (Phase 8). Wired:
   paired), **Home** (`src/routes/+page.svelte` — biometric-gated claim code for the *active*
   server, tappable identity block → inline switcher, explicit-pick state when no active pairing,
   plus a relay-status block — reachable / crawling / behind-by-N / not-seen as text + icon, never
-  color alone, polling every 15s with a biometric-gated "Request crawl" action),
+  color alone, polling every 15s with a biometric-gated "Request crawl" action — and the
+  **in-app flagged-accounts badge**: a best-effort `get_server_health` read on load/switch
+  renders a tappable warning notice — `⚑ flagged` chip + literal count — when the active relay's
+  watched labelers flag any hosted account, opening the triage-sorted Accounts list; a failed
+  health read renders nothing),
   **Settings** (`src/routes/settings/` — per-server list with per-entry rename / revoke-on-server /
   forget-locally / view-devices link, global admin key display, biometric toggle, all revokes
   biometric-gated), **Devices** (`src/routes/devices/` — the loss-response screen: every
@@ -166,9 +173,13 @@ share sheet, and server-side self-revoke (Phase 8). Wired:
   lost device. Pinned to a single pairing at entry — `?server=<pairingId>` from Settings, else the
   active pairing — so a concurrent active switch on Home can't redirect what it shows or signs.
   The row whose relay id equals the pairing's `deviceId` is marked "this device" and its revoke
-  defers to Settings), **Accounts** (`src/routes/accounts/` — the per-account hub:
-  every account on ONE relay in DID order with search (handle/DID substring), derived-lifecycle
-  filter chips, cursor-paged "Load more", and a per-row monospace blob-quota readout
+  defers to Settings), **Accounts** (`src/routes/accounts/` — the per-account hub and
+  spam/abuse triage view: every account on ONE relay, **flagged accounts first** (any
+  in-force label from a relay-watched labeler; per-row `⚑ flagged: value · labeler · date`
+  lines in the warning tone — glyph + text + position, never color alone — plus a
+  filter-consistent `flaggedTotal` banner), then DID order, with search (handle/DID
+  substring), derived-lifecycle filter chips, cursor-paged "Load more", and a per-row
+  monospace blob-quota readout
   (`format.ts` `quotaBar`: `[▓▓░░░] 42.00%`, fill floors — a cell lights only when fully
   earned — with a ` !` glyph at ≥90%, never color alone) rendered by the `ui/AccountRow.svelte`
   primitive (DeviceRow's register + the quota line; lifecycle chip per row). Pinned to a single

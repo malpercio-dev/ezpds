@@ -12,7 +12,8 @@ export type ScenarioName =
   | 'unpaired'
   | 'single-relay'
   | 'multi-relay'
-  | 'degraded-health';
+  | 'degraded-health'
+  | 'flagged-accounts';
 
 /** The default scenario when `VITE_HARNESS` is set with no explicit choice. */
 export const DEFAULT_SCENARIO: ScenarioName = 'single-relay';
@@ -56,6 +57,22 @@ export const scenarios: Record<ScenarioName, () => AdminState> = {
       relayUrl: 'https://production.harness.relay',
       accounts: 9,
       degraded: true,
+    });
+    state.relays = [relay];
+    state.active = relay.pairingId;
+    return state;
+  },
+
+  // Labeler-watching triage view: two accounts flagged by the watched labeler, so the
+  // Accounts screen shows the flagged-first sort + per-row flag lines and Home shows
+  // the flagged notice.
+  'flagged-accounts': () => {
+    const state = emptyAdminState();
+    const relay = seedRelay({
+      nickname: 'production',
+      relayUrl: 'https://production.harness.relay',
+      accounts: 6,
+      flagged: 2,
     });
     state.relays = [relay];
     state.active = relay.pairingId;

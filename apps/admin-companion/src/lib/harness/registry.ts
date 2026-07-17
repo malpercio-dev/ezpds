@@ -29,6 +29,7 @@ import type {
   RepairedEmail,
   IssuedResetToken,
 } from '$lib/ipc';
+import { sortFlaggedFirst } from '$lib/flags';
 import {
   activeRelay,
   findRelay,
@@ -241,7 +242,13 @@ export function buildRegistry(state: AdminState): Registry {
       let rows = relay.accounts;
       if (status) rows = rows.filter((a) => a.status === status);
       if (q) rows = rows.filter((a) => a.did.toLowerCase().includes(q) || (a.handle ?? '').toLowerCase().includes(q));
-      return { accounts: rows, quotaBytes: 2_000_000_000, cursor: null };
+      // Mirror the relay's triage ordering + filter-consistent flagged count.
+      return {
+        accounts: sortFlaggedFirst(rows),
+        quotaBytes: 2_000_000_000,
+        flaggedTotal: rows.filter((a) => a.flags.length > 0).length,
+        cursor: null,
+      };
     },
 
     list_claim_codes: (args): ClaimCodeInventory => ({

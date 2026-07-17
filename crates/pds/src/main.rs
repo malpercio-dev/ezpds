@@ -21,6 +21,8 @@ mod firehose;
 mod firehose_gc;
 mod identity;
 mod iroh_tunnel;
+mod label_state;
+mod labeler_watch;
 mod lexicon;
 mod metrics;
 mod no_input;
@@ -516,6 +518,32 @@ async fn run() -> anyhow::Result<()> {
         max_age_secs = state.config.admin_devices.nonce_max_age_secs,
         "admin-nonce retention sweep started"
     );
+
+    // Spawn the labeler watcher when any labeler is watched. Each pass polls the watched
+    // labelers' label streams and reconciles the flagged state the operator listing reads;
+    // its first pass runs immediately (the flagged view should populate right after a
+    // deploy, and the pass only rebuilds a cache). With watching disabled, clear any
+    // previously persisted labels instead — flagged state must never outlive the
+    // configuration that produced it.
+    if state.config.labeler.watched.is_empty() {
+        match db::account_labels::delete_labels_for_unwatched(&state.db, &[]).await {
+            Ok(0) => {}
+            Ok(removed) => tracing::info!(
+                removed,
+                "labeler watching disabled; cleared previously persisted account labels"
+            ),
+            Err(e) => tracing::error!(error = %e, "failed to clear stale account labels"),
+        }
+    } else {
+        let watch_interval =
+            std::time::Duration::from_secs(state.config.labeler.poll_interval_secs);
+        let _labeler_watch = labeler_watch::spawn_labeler_watch(state.clone(), watch_interval);
+        tracing::info!(
+            watched = state.config.labeler.watched.len(),
+            interval_secs = state.config.labeler.poll_interval_secs,
+            "labeler watcher started"
+        );
+    }
 
     // Spawn the sovereign-session nonce retention sweep. The DID-scoped primary key enforces
     // anti-replay while the fixed retention window remains strictly longer than the signed

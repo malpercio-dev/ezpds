@@ -21,12 +21,15 @@
   import PinnedPairingGate from '$lib/components/ui/PinnedPairingGate.svelte';
 
   // The accounts screen: the hub for per-account operator work. Every account on ONE
-  // relay in DID order, searchable (handle/DID substring) and filterable by derived
-  // lifecycle, each row carrying the blob-quota readout so capacity scans across
-  // accounts. Pinned to a single pairing at entry (see $lib/pinned-pairing) like
-  // Devices/Moderation. Tapping a row hands the relay-confirmed DID to the
-  // account-detail screen (identity facts + usage/storage, with moderation one hop
-  // deeper) — replacing DID-pasting as the entry point for per-account work.
+  // relay — accounts flagged by a watched labeler first (the spam/abuse triage view),
+  // DID order within each group, exactly as the relay sorts them — searchable
+  // (handle/DID substring) and filterable by derived lifecycle, each row carrying the
+  // blob-quota readout so capacity scans across accounts, plus its ⚑ flag lines when a
+  // watched labeler has labeled it. Pinned to a single pairing at entry (see
+  // $lib/pinned-pairing) like Devices/Moderation. Tapping a row hands the
+  // relay-confirmed DID to the account-detail screen (identity facts + usage/storage,
+  // with moderation one hop deeper) — replacing DID-pasting as the entry point for
+  // per-account work.
 
   type StatusFilter = 'all' | AccountListEntry['status'];
   const FILTERS: { value: StatusFilter; label: string }[] = [
@@ -44,6 +47,7 @@
         kind: 'ready';
         accounts: AccountListEntry[];
         quotaBytes: number;
+        flaggedTotal: number;
         cursor: string | null;
       };
 
@@ -87,6 +91,7 @@
         kind: 'ready',
         accounts: pageResult.accounts,
         quotaBytes: pageResult.quotaBytes,
+        flaggedTotal: pageResult.flaggedTotal,
         cursor: pageResult.cursor,
       };
     } catch (e) {
@@ -110,6 +115,7 @@
         kind: 'ready',
         accounts: [...listView.accounts, ...pageResult.accounts],
         quotaBytes: pageResult.quotaBytes,
+        flaggedTotal: pageResult.flaggedTotal,
         cursor: pageResult.cursor,
       };
     } catch (e) {
@@ -146,8 +152,9 @@
   <PinnedPairingGate view={pairingsView} {pairing} resource="the account list always reads from a specific server.">
     {#snippet children()}
     <p class="lede">
-      Every account on this server, in DID order. Tap an account for its detail —
-      usage, storage, and moderation; the meter is each account's blob-storage quota.
+      Every account on this server — accounts flagged by a watched labeler first, then
+      DID order. Tap an account for its detail — usage, storage, and moderation; the
+      meter is each account's blob-storage quota.
     </p>
 
     <section class="panel" aria-labelledby="accounts-filter-label">
@@ -192,6 +199,17 @@
       </section>
     {:else}
       <section class="panel" aria-label="Accounts">
+        {#if listView.flaggedTotal > 0}
+          <!-- The triage banner: the filter-consistent flagged count, stated up front
+               because flagged rows sort first but can also sit on unloaded pages. -->
+          <p class="flagged-summary" role="status">
+            <StatusChip status="flagged" />
+            <span>
+              {listView.flaggedTotal} flagged
+              {listView.flaggedTotal === 1 ? 'account' : 'accounts'} — sorted first
+            </span>
+          </p>
+        {/if}
         <ul class="list">
           {#each listView.accounts as entry (entry.did)}
             <li>
@@ -200,6 +218,7 @@
                 handle={entry.handle}
                 status={entry.status}
                 quota={quotaBar(entry.quotaUsedPct)}
+                flags={entry.flags}
                 onclick={() => openAccount(entry)}
               />
             </li>
@@ -302,5 +321,14 @@
     font-family: var(--font-mono);
     font-size: var(--text-label);
     color: var(--color-muted);
+  }
+  .flagged-summary {
+    margin: 0;
+    display: flex;
+    align-items: center;
+    gap: var(--space-sm);
+    font-family: var(--font-mono);
+    font-size: var(--text-label);
+    color: var(--color-ink-soft);
   }
 </style>

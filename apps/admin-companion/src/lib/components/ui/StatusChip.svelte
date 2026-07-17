@@ -9,6 +9,7 @@
     | 'revoked'
     | 'error'
     | 'pending'
+    | 'flagged'
     | 'info';
 
   let {
@@ -26,6 +27,7 @@
     revoked: { tone: 'critical', glyph: '⊘', text: 'revoked' }, // ⊘
     error: { tone: 'critical', glyph: '!', text: 'error' },
     pending: { tone: 'warning', glyph: '◌', text: 'pending' }, // ◌
+    flagged: { tone: 'warning', glyph: '⚑', text: 'flagged' }, // ⚑ labeler flag
     info: { tone: 'info', glyph: '○', text: 'info' }, // ○
   };
 

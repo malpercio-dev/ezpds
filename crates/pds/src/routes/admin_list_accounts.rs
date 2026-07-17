@@ -2,7 +2,8 @@
 //
 // Gathers: admin credentials (master token or signed device request), pagination/filter
 //          query params, DB pool, config quota
-// Processes: admin auth → filtered cursor page of accounts with per-row blob storage
+// Processes: admin auth → filtered cursor page of accounts (flagged first) with per-row
+//            blob storage and in-force labeler flags
 // Returns: JSON account page on success; ApiError on all failure paths
 
 //! GET /v1/admin/accounts - Operator account listing/search with pagination.
@@ -48,6 +49,21 @@ pub struct AccountEntry {
     /// quota is 0). Carried per row so the console renders a capacity readout per account
     /// without a per-account storage round-trip.
     quota_used_pct: f64,
+    /// Labels currently in force on this account from watched labelers, newest first.
+    /// Empty for an unflagged account (and always empty when labeler watching is off).
+    flags: Vec<AccountFlag>,
+}
+
+/// One in-force label on an account, as observed from a watched labeler.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AccountFlag {
+    /// The label value (e.g. `spam`, `!hide`).
+    val: String,
+    /// DID of the labeler that applied the label.
+    labeler_did: String,
+    /// The labeler's label-creation timestamp.
+    cts: String,
 }
 
 #[derive(Serialize)]
@@ -58,16 +74,39 @@ pub struct ListAccountsResponse {
     /// configured value applies to every account in v0.1, so it is stated once here rather
     /// than repeated per row.
     quota_bytes: i64,
+    /// Accounts matching the current `status`/`q` filters that carry at least one flag —
+    /// the console's badge count, stated per response because flagged accounts may sit on
+    /// later pages.
+    flagged_total: i64,
     #[serde(skip_serializing_if = "Option::is_none")]
     cursor: Option<String>,
 }
 
-/// GET /v1/admin/accounts?limit=50&cursor=<did>&status=<lifecycle>&q=<term>
+/// Parse an opaque page cursor (`<0|1>:<did>` — the previous page's last row's flagged bit
+/// and DID; the sort key is two-dimensional, so both halves are needed to resume).
 ///
-/// Operator account listing/search in DID order with cursor pagination — the console's
-/// entry point for all per-account work, replacing pasted DIDs. Includes accounts in every
-/// lifecycle state (and those without a repo). Admin-authed: the master token **or** an
-/// active companion-app device's signed request ([`require_admin`]).
+/// A malformed cursor (including one minted before flagged-first ordering existed, which
+/// was a bare DID) restarts from the first page rather than erroring: the caller re-sees
+/// rows once and pagination proceeds normally with freshly minted cursors.
+fn parse_cursor(raw: &str) -> Option<(bool, &str)> {
+    let (flag, did) = raw.split_once(':')?;
+    let flagged = match flag {
+        "1" => true,
+        "0" => false,
+        _ => return None,
+    };
+    (!did.is_empty() && did.starts_with("did:")).then_some((flagged, did))
+}
+
+/// GET /v1/admin/accounts?limit=50&cursor=<cursor>&status=<lifecycle>&q=<term>
+///
+/// Operator account listing/search with cursor pagination — the console's entry point for
+/// all per-account work, replacing pasted DIDs. Flagged accounts (any in-force label from
+/// a watched labeler) sort first, DID order within each group, turning the roster into a
+/// triage view; each row carries its flags and the response carries `flaggedTotal` for the
+/// badge. Includes accounts in every lifecycle state (and those without a repo).
+/// Admin-authed: the master token **or** an active companion-app device's signed request
+/// ([`require_admin`]).
 pub async fn list_accounts(
     State(state): State<AppState>,
     Query(params): Query<ListAccountsParams>,
@@ -93,7 +132,7 @@ pub async fn list_accounts(
         .transpose()?;
 
     let limit = params.limit.unwrap_or(DEFAULT_LIMIT).clamp(1, MAX_LIMIT);
-    let cursor = params.cursor.as_deref().unwrap_or("");
+    let cursor = params.cursor.as_deref().and_then(parse_cursor);
     // A blank search box means "no filter", not "match the empty substring everywhere".
     let q = params.q.as_deref().map(str::trim).filter(|t| !t.is_empty());
 
@@ -104,10 +143,30 @@ pub async fn list_accounts(
             ApiError::new(ErrorCode::InternalError, "failed to list accounts")
         })?;
 
-    // A full page means more rows may follow — surface the last DID as the next cursor.
+    // A full page means more rows may follow — surface the last row's (flagged, did)
+    // position as the next cursor.
     let next_cursor = (rows.len() as i64 == limit)
-        .then(|| rows.last().map(|r| r.did.clone()))
+        .then(|| {
+            rows.last()
+                .map(|r| format!("{}:{}", u8::from(r.flagged), r.did))
+        })
         .flatten();
+
+    let flagged_total = crate::db::accounts::count_accounts_admin_flagged(&state.db, status, q)
+        .await
+        .map_err(|e| {
+            tracing::error!(error = %e, "failed to count flagged accounts");
+            ApiError::new(ErrorCode::InternalError, "failed to list accounts")
+        })?;
+
+    // One query for the whole page's flags (empty map when nothing is flagged).
+    let page_dids: Vec<String> = rows.iter().map(|r| r.did.clone()).collect();
+    let mut flags_by_did = crate::db::account_labels::labels_for_dids(&state.db, &page_dids)
+        .await
+        .map_err(|e| {
+            tracing::error!(error = %e, "failed to load account labels");
+            ApiError::new(ErrorCode::InternalError, "failed to list accounts")
+        })?;
 
     // Quota is u64 in config; clamp into i64 for the JSON number (1 GiB default is far below
     // i64::MAX, and an operator would not set a quota anywhere near it).
@@ -121,6 +180,16 @@ pub async fn list_accounts(
             } else {
                 0.0
             };
+            let flags = flags_by_did
+                .remove(&row.did)
+                .unwrap_or_default()
+                .into_iter()
+                .map(|label| AccountFlag {
+                    val: label.val,
+                    labeler_did: label.labeler_did,
+                    cts: label.cts,
+                })
+                .collect();
             AccountEntry {
                 did: row.did,
                 handle: row.handle,
@@ -128,6 +197,7 @@ pub async fn list_accounts(
                 status: row.lifecycle.as_status_str().unwrap_or("active"),
                 total_bytes: row.blob_bytes,
                 quota_used_pct,
+                flags,
             }
         })
         .collect();
@@ -135,6 +205,7 @@ pub async fn list_accounts(
     Ok(Json(ListAccountsResponse {
         accounts,
         quota_bytes,
+        flagged_total,
         cursor: next_cursor,
     }))
 }
@@ -189,6 +260,17 @@ mod tests {
         assert_eq!(status, StatusCode::UNAUTHORIZED);
     }
 
+    async fn insert_label(db: &sqlx::SqlitePool, did: &str, labeler: &str, val: &str, cts: &str) {
+        sqlx::query("INSERT INTO account_labels (did, labeler_did, val, cts) VALUES (?, ?, ?, ?)")
+            .bind(did)
+            .bind(labeler)
+            .bind(val)
+            .bind(cts)
+            .execute(db)
+            .await
+            .unwrap();
+    }
+
     #[tokio::test]
     async fn empty_pds_returns_empty_list_with_quota() {
         let state = test_state_with_admin_token().await;
@@ -199,6 +281,7 @@ mod tests {
         assert_eq!(status, StatusCode::OK);
         assert_eq!(body["accounts"].as_array().unwrap().len(), 0);
         assert_eq!(body["quotaBytes"], quota);
+        assert_eq!(body["flaggedTotal"], 0);
         assert!(body.get("cursor").is_none());
     }
 
@@ -249,6 +332,95 @@ mod tests {
         assert_eq!(accounts[1]["status"], "takendown");
         assert_eq!(accounts[1]["totalBytes"], 0);
         assert_eq!(accounts[1]["quotaUsedPct"], 0.0);
+        // No labeler flags anywhere: every row carries an empty flags array.
+        assert_eq!(accounts[0]["flags"].as_array().unwrap().len(), 0);
+        assert_eq!(body["flaggedTotal"], 0);
+    }
+
+    #[tokio::test]
+    async fn flagged_accounts_sort_first_with_their_flags() {
+        let state = test_state_with_admin_token().await;
+        // DID order alone would put aaa first; the flag on zzz must override it.
+        insert_account(&state.db, "did:plc:ala_fl_aaa").await;
+        insert_account(&state.db, "did:plc:ala_fl_zzz").await;
+        insert_label(
+            &state.db,
+            "did:plc:ala_fl_zzz",
+            "did:plc:labeler",
+            "spam",
+            "2026-01-05T00:00:00Z",
+        )
+        .await;
+        insert_label(
+            &state.db,
+            "did:plc:ala_fl_zzz",
+            "did:plc:labeler",
+            "!hide",
+            "2026-01-06T00:00:00Z",
+        )
+        .await;
+        let app = crate::app::app(state);
+
+        let (status, body) = list(&app, "", Some(ADMIN)).await;
+        assert_eq!(status, StatusCode::OK);
+        let accounts = body["accounts"].as_array().unwrap();
+        assert_eq!(accounts[0]["did"], "did:plc:ala_fl_zzz");
+        assert_eq!(accounts[1]["did"], "did:plc:ala_fl_aaa");
+        assert_eq!(body["flaggedTotal"], 1);
+
+        // Flags carry value + labeler + time, newest first.
+        let flags = accounts[0]["flags"].as_array().unwrap();
+        assert_eq!(flags.len(), 2);
+        assert_eq!(flags[0]["val"], "!hide");
+        assert_eq!(flags[0]["labelerDid"], "did:plc:labeler");
+        assert_eq!(flags[0]["cts"], "2026-01-06T00:00:00Z");
+        assert_eq!(flags[1]["val"], "spam");
+    }
+
+    #[tokio::test]
+    async fn paginates_across_the_flagged_boundary() {
+        let state = test_state_with_admin_token().await;
+        for did in ["did:plc:ala_fb_a", "did:plc:ala_fb_b", "did:plc:ala_fb_c"] {
+            insert_account(&state.db, did).await;
+        }
+        insert_label(
+            &state.db,
+            "did:plc:ala_fb_c",
+            "did:plc:labeler",
+            "spam",
+            "2026-01-01T00:00:00Z",
+        )
+        .await;
+        let app = crate::app::app(state);
+
+        // Page 1: the flagged account, then the first unflagged one.
+        let (status, page1) = list(&app, "?limit=2", Some(ADMIN)).await;
+        assert_eq!(status, StatusCode::OK);
+        let accounts1 = page1["accounts"].as_array().unwrap();
+        assert_eq!(accounts1[0]["did"], "did:plc:ala_fb_c");
+        assert_eq!(accounts1[1]["did"], "did:plc:ala_fb_a");
+        let cursor = page1["cursor"].as_str().unwrap();
+        assert_eq!(cursor, "0:did:plc:ala_fb_a");
+
+        // Page 2 resumes inside the unflagged group without repeating the flagged row.
+        let (status, page2) = list(&app, &format!("?limit=2&cursor={cursor}"), Some(ADMIN)).await;
+        assert_eq!(status, StatusCode::OK);
+        let accounts2 = page2["accounts"].as_array().unwrap();
+        assert_eq!(accounts2.len(), 1);
+        assert_eq!(accounts2[0]["did"], "did:plc:ala_fb_b");
+        assert!(page2.get("cursor").is_none());
+    }
+
+    #[tokio::test]
+    async fn malformed_cursor_restarts_from_the_first_page() {
+        let state = test_state_with_admin_token().await;
+        insert_account(&state.db, "did:plc:ala_mc").await;
+        let app = crate::app::app(state);
+
+        // A pre-flagged-ordering cursor was a bare DID; it restarts rather than erroring.
+        let (status, body) = list(&app, "?cursor=did:plc:ala_mc", Some(ADMIN)).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["accounts"].as_array().unwrap().len(), 1);
     }
 
     #[tokio::test]
@@ -294,7 +466,7 @@ mod tests {
         let accounts1 = page1["accounts"].as_array().unwrap();
         assert_eq!(accounts1.len(), 2);
         let cursor = page1["cursor"].as_str().unwrap();
-        assert_eq!(cursor, "did:plc:ala_pg_b");
+        assert_eq!(cursor, "0:did:plc:ala_pg_b");
 
         let (status, page2) = list(&app, &format!("?limit=2&cursor={cursor}"), Some(ADMIN)).await;
         assert_eq!(status, StatusCode::OK);
