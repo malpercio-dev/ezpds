@@ -62,7 +62,7 @@ fi
 # `mal.github.com` SSH host alias (dual-push GitHub/tangled setup), not the bare host.
 origin_url="$(git remote get-url origin 2>/dev/null || true)"
 case "$origin_url" in
-  git@github.com:*|git@*.github.com:*|ssh://git@github.com/*|https://github.com/*)
+  git@github.com:*|git@*.github.com:*|ssh://git@github.com/*|ssh://git@*.github.com/*|https://github.com/*)
     GH_REPO="${origin_url##*github.com[:/]}"; GH_REPO="${GH_REPO%.git}" ;;
   *)
     GH_REPO="" ;;
