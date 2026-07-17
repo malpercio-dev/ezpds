@@ -2,10 +2,12 @@ use aes_gcm::aead::{Aead, AeadCore, KeyInit};
 use aes_gcm::{Aes256Gcm, Nonce};
 use base64::engine::general_purpose::STANDARD as BASE64;
 use base64::Engine;
+use hkdf::Hkdf;
 use multibase::Base;
 use p256::elliptic_curve::sec1::ToEncodedPoint;
 use p256::SecretKey;
 use rand_core::OsRng;
+use sha2::Sha256;
 use zeroize::Zeroizing;
 
 use crate::CryptoError;
@@ -48,7 +50,13 @@ pub struct P256Keypair {
 
 /// Generate a fresh P-256 keypair and derive its `did:key` identifier.
 pub fn generate_p256_keypair() -> Result<P256Keypair, CryptoError> {
-    let secret_key = SecretKey::random(&mut OsRng);
+    Ok(keypair_from_secret_key(&SecretKey::random(&mut OsRng)))
+}
+
+/// Build the public [`P256Keypair`] representation (did:key URI, multibase public key, and
+/// zeroized private scalar) from a P-256 `SecretKey`. Shared by [`generate_p256_keypair`] and
+/// [`derive_recovery_keypair`] so both emit byte-identical did:key encodings.
+fn keypair_from_secret_key(secret_key: &SecretKey) -> P256Keypair {
     let public_key = secret_key.public_key();
 
     // Compressed point: 0x02/0x03 prefix byte + 32-byte x-coordinate = 33 bytes.
@@ -70,11 +78,59 @@ pub fn generate_p256_keypair() -> Result<P256Keypair, CryptoError> {
     let mut private_key_bytes = Zeroizing::new([0u8; 32]);
     private_key_bytes.copy_from_slice(raw_bytes.as_slice());
 
-    Ok(P256Keypair {
+    P256Keypair {
         key_id,
         public_key: public_key_str,
         private_key_bytes,
-    })
+    }
+}
+
+/// HKDF salt binding recovery-key derivation to this protocol and version.
+const RECOVERY_KEY_HKDF_SALT: &[u8] = b"ezpds/recovery-seed/v1";
+/// HKDF `info` domain-separation string. The rejection-sampling counter is appended to this so a
+/// rejected candidate scalar re-expands to fresh bytes rather than looping forever.
+const RECOVERY_KEY_HKDF_INFO: &[u8] = b"ezpds recovery rotation key (P-256)";
+
+/// Derive the recovery P-256 keypair from a 32-byte recovery seed.
+///
+/// The recovery seed is the secret reconstructed from the Shamir shares. Its did:key sits in the
+/// account's `rotationKeys` (as the recovery slot), so reconstructing the seed and re-deriving this
+/// keypair is what lets an owner re-key their DID without the device key.
+///
+/// Derivation is HKDF-SHA256 with a fixed salt + `info` domain-separation string, rejection-sampled
+/// into the P-256 scalar range `[1, n)`: an all-zero or out-of-range candidate re-expands with an
+/// incremented counter appended to `info` (overwhelmingly the first candidate succeeds — P-256's
+/// order is within ~2⁻³² of 2²⁵⁶). The result is fully deterministic: the same seed always yields
+/// the same keypair (pinned by a golden test).
+///
+/// # Errors
+/// Returns [`CryptoError::KeyGeneration`] only in the practically-impossible case that HKDF fails or
+/// no valid scalar is found within the counter space.
+pub fn derive_recovery_keypair(seed: &[u8; 32]) -> Result<P256Keypair, CryptoError> {
+    let hk = Hkdf::<Sha256>::new(Some(RECOVERY_KEY_HKDF_SALT), seed.as_slice());
+
+    for counter in 0u32..=u32::MAX {
+        let mut okm = Zeroizing::new([0u8; 32]);
+        // info = domain string || counter(4B, big-endian). The counter only advances on the rare
+        // rejection, so a golden seed pins counter 0's output.
+        let mut info = Vec::with_capacity(RECOVERY_KEY_HKDF_INFO.len() + 4);
+        info.extend_from_slice(RECOVERY_KEY_HKDF_INFO);
+        info.extend_from_slice(&counter.to_be_bytes());
+
+        hk.expand(&info, okm.as_mut())
+            .map_err(|e| CryptoError::KeyGeneration(format!("hkdf expand: {e}")))?;
+
+        // SecretKey::from_bytes rejects a zero scalar or one ≥ the curve order — exactly the
+        // rejection-sampling condition. On the near-certain success it returns the scalar in [1, n).
+        let field_bytes: p256::FieldBytes = (*okm).into();
+        if let Ok(secret_key) = SecretKey::from_bytes(&field_bytes) {
+            return Ok(keypair_from_secret_key(&secret_key));
+        }
+    }
+
+    Err(CryptoError::KeyGeneration(
+        "exhausted HKDF counter space without a valid P-256 scalar".to_string(),
+    ))
 }
 
 /// Encrypt a 32-byte P-256 private key using AES-256-GCM.
@@ -266,5 +322,79 @@ mod tests {
             80,
             "base64(60 bytes) must be exactly 80 characters"
         );
+    }
+
+    // ── Recovery keypair derivation ───────────────────────────────────────────
+
+    /// Golden vector: a fixed seed derives a fixed did:key. Pinning this catches any accidental
+    /// change to the HKDF salt/info/counter scheme, which would silently produce a *different*
+    /// recovery key and orphan every account whose rotationKeys already carry the old one.
+    ///
+    /// Seed is the 32 bytes 0x00..=0x1f.
+    const GOLDEN_RECOVERY_SEED: [u8; 32] = [
+        0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e,
+        0x0f, 0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18, 0x19, 0x1a, 0x1b, 0x1c, 0x1d,
+        0x1e, 0x1f,
+    ];
+    const GOLDEN_RECOVERY_DID_KEY: &str =
+        "did:key:zDnaeoYytsARBq9NiBk1TbJESQcPRy5RPVvdT7FqpjrQtJ5DL";
+
+    #[test]
+    fn derive_recovery_keypair_is_deterministic() {
+        let a = derive_recovery_keypair(&GOLDEN_RECOVERY_SEED).unwrap();
+        let b = derive_recovery_keypair(&GOLDEN_RECOVERY_SEED).unwrap();
+        assert_eq!(a.key_id, b.key_id);
+        assert_eq!(a.public_key, b.public_key);
+        assert_eq!(*a.private_key_bytes, *b.private_key_bytes);
+    }
+
+    #[test]
+    fn derive_recovery_keypair_matches_golden() {
+        let kp = derive_recovery_keypair(&GOLDEN_RECOVERY_SEED).unwrap();
+        assert_eq!(
+            kp.key_id.0, GOLDEN_RECOVERY_DID_KEY,
+            "recovery-key derivation drifted; if the change is intentional, regenerate the golden"
+        );
+    }
+
+    #[test]
+    fn derive_recovery_keypair_distinct_seeds_distinct_keys() {
+        let a = derive_recovery_keypair(&[0x11_u8; 32]).unwrap();
+        let b = derive_recovery_keypair(&[0x22_u8; 32]).unwrap();
+        assert_ne!(a.key_id, b.key_id);
+    }
+
+    #[test]
+    fn derive_recovery_keypair_produces_p256_did_key() {
+        let kp = derive_recovery_keypair(&GOLDEN_RECOVERY_SEED).unwrap();
+        assert!(kp.key_id.0.starts_with("did:key:z"));
+        let multibase_part = kp.key_id.0.strip_prefix("did:key:").unwrap();
+        let (_, multikey_bytes) = multibase::decode(multibase_part).unwrap();
+        assert_eq!(&multikey_bytes[..2], P256_MULTICODEC_PREFIX);
+    }
+
+    /// The derived key must sign a valid low-S signature that verifies against its own did:key —
+    /// the same canonical form every other signer in this crate emits.
+    #[test]
+    fn derived_recovery_key_signs_low_s_and_verifies() {
+        use p256::ecdsa::{signature::Signer, Signature, SigningKey};
+
+        let kp = derive_recovery_keypair(&GOLDEN_RECOVERY_SEED).unwrap();
+        let field_bytes: p256::FieldBytes = (*kp.private_key_bytes).into();
+        let signing_key = SigningKey::from_bytes(&field_bytes).unwrap();
+
+        let message = b"recovery ceremony proof";
+        let sig: Signature = signing_key.sign(message);
+        // atproto requires low-S; normalize like the crate's other signers do.
+        let sig = sig.normalize_s().unwrap_or(sig);
+        // A low-S signature has no high-S twin — normalize_s() returns None once already canonical.
+        assert!(
+            sig.normalize_s().is_none(),
+            "signature must be low-S canonical"
+        );
+
+        let sig_bytes: [u8; 64] = sig.to_bytes().into();
+        crate::plc::verify_p256_signature(&kp.key_id, message, &sig_bytes)
+            .expect("derived recovery key must verify its own low-S signature");
     }
 }

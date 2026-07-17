@@ -110,6 +110,9 @@ base64 = "0.21"
 ciborium = "0.2"
 data-encoding = "2"
 sha2 = "0.10"
+# HKDF-SHA256 for deriving the recovery keypair from the escrow seed (same RustCrypto family as
+# sha2/hmac, already resolved transitively via reqwest/rustls).
+hkdf = "0.12"
 zeroize = "1"
 urlencoding = "2"
 # URL parsing for the atproto-proxy SSRF guard (pds) — already resolved transitively via

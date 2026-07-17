@@ -1268,6 +1268,7 @@ dependencies = [
  "base64 0.21.7",
  "ciborium",
  "data-encoding",
+ "hkdf",
  "k256",
  "multibase",
  "p256",

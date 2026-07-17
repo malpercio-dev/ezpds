@@ -302,6 +302,109 @@ pub fn build_did_plc_genesis_op_with_external_signer<F>(
 where
     F: FnOnce(&[u8]) -> Result<Vec<u8>, CryptoError>,
 {
+    // The two-key genesis is just the ordered-rotation-keys builder with rotationKeys = [device,
+    // PDS]. Everything else (verificationMethods.atproto = PDS key, single atproto_pds service) is
+    // identical, so both share one core.
+    build_genesis_op_core(
+        vec![rotation_key.0.clone(), signing_key.0.clone()],
+        signing_key,
+        handle,
+        service_endpoint,
+        sign,
+    )
+}
+
+/// Build and sign a did:plc genesis operation with an **ordered list of rotation keys**.
+///
+/// Where [`build_did_plc_genesis_op_with_external_signer`] hardcodes `rotationKeys = [device, PDS]`,
+/// this variant takes the full ordered list — for key recovery that is `[device, recovery, PDS]`,
+/// placing the seed-derived recovery key in a middle slot so the device key stays highest-priority.
+/// `verificationMethods.atproto` remains the PDS `signing_key` regardless of the rotation-key list.
+///
+/// PLC allows up to 5 rotation keys; the server's genesis validation only pins `rotationKeys[0]`, so
+/// a third key is accepted downstream — this is purely a builder-side capability.
+///
+/// # Parameters
+/// - `rotation_keys`: The ordered rotation keys, highest-priority first (e.g. `[device, recovery, PDS]`).
+///   Must be non-empty.
+/// - `signing_key`: The PDS's signing key, placed at `verificationMethods.atproto`.
+/// - `handle`: The account handle, e.g. `"alice.example.com"`.
+/// - `service_endpoint`: The PDS's public URL.
+/// - `sign`: Callback receiving CBOR-encoded unsigned op bytes; must return the raw 64-byte r‖s
+///   P-256 ECDSA signature (big-endian, low-S canonical).
+///
+/// # Errors
+/// Returns `CryptoError::PlcOperation` if `rotation_keys` is empty, if `sign` returns `Err`, or if
+/// any serialization step fails.
+pub fn build_did_plc_genesis_op_multi_rotation_with_external_signer<F>(
+    rotation_keys: &[DidKeyUri],
+    signing_key: &DidKeyUri,
+    handle: &str,
+    service_endpoint: &str,
+    sign: F,
+) -> Result<PlcGenesisOp, CryptoError>
+where
+    F: FnOnce(&[u8]) -> Result<Vec<u8>, CryptoError>,
+{
+    if rotation_keys.is_empty() {
+        return Err(CryptoError::PlcOperation(
+            "rotation_keys must not be empty".to_string(),
+        ));
+    }
+    build_genesis_op_core(
+        rotation_keys.iter().map(|k| k.0.clone()).collect(),
+        signing_key,
+        handle,
+        service_endpoint,
+        sign,
+    )
+}
+
+/// Convenience wrapper over [`build_did_plc_genesis_op_multi_rotation_with_external_signer`] for
+/// callers holding the PDS signing key's raw private bytes.
+///
+/// Signs the op with `signing_private_key` (which must correspond to `signing_key`) and low-S
+/// normalizes the signature. `signing_key` must therefore appear in `rotation_keys` for the op to be
+/// self-verifiable against a rotation key.
+///
+/// # Errors
+/// Returns `CryptoError::PlcOperation` if `rotation_keys` is empty or `signing_private_key` is not a
+/// valid P-256 scalar.
+pub fn build_did_plc_genesis_op_multi_rotation(
+    rotation_keys: &[DidKeyUri],
+    signing_key: &DidKeyUri,
+    signing_private_key: &[u8; 32],
+    handle: &str,
+    service_endpoint: &str,
+) -> Result<PlcGenesisOp, CryptoError> {
+    let field_bytes: FieldBytes = (*signing_private_key).into();
+    let sk = SigningKey::from_bytes(&field_bytes)
+        .map_err(|e| CryptoError::PlcOperation(format!("invalid signing key: {e}")))?;
+    build_did_plc_genesis_op_multi_rotation_with_external_signer(
+        rotation_keys,
+        signing_key,
+        handle,
+        service_endpoint,
+        |data| {
+            let sig: Signature = Signer::sign(&sk, data);
+            let sig = sig.normalize_s().unwrap_or(sig);
+            Ok(sig.to_bytes().to_vec())
+        },
+    )
+}
+
+/// Shared core for both genesis builders: constructs the op with the given ordered `rotation_keys`,
+/// `verificationMethods.atproto = signing_key`, and a single `atproto_pds` service, then signs it.
+fn build_genesis_op_core<F>(
+    rotation_keys: Vec<String>,
+    signing_key: &DidKeyUri,
+    handle: &str,
+    service_endpoint: &str,
+    sign: F,
+) -> Result<PlcGenesisOp, CryptoError>
+where
+    F: FnOnce(&[u8]) -> Result<Vec<u8>, CryptoError>,
+{
     // Step 1: Build the unsigned operation.
     let mut verification_methods = BTreeMap::new();
     verification_methods.insert("atproto".to_string(), signing_key.0.clone());
@@ -324,7 +427,7 @@ where
         op_type: "plc_operation".to_string(),
         services: services.clone(),
         also_known_as: vec![format!("at://{handle}")],
-        rotation_keys: vec![rotation_key.0.clone(), signing_key.0.clone()],
+        rotation_keys: rotation_keys.clone(),
         verification_methods: verification_methods.clone(),
     };
 
@@ -357,7 +460,7 @@ where
         op_type: "plc_operation".to_string(),
         services,
         also_known_as: vec![format!("at://{handle}")],
-        rotation_keys: vec![rotation_key.0.clone(), signing_key.0.clone()],
+        rotation_keys,
         verification_methods,
     };
 
@@ -1456,6 +1559,213 @@ mod tests {
             op.cid, GOLDEN_MULTISERVICE_CID,
             "multi-service op must encode in canonical DAG-CBOR key order (length-first)"
         );
+    }
+
+    // ── Multi-rotation-key genesis (device, recovery, PDS) ────────────────────
+
+    /// A P-256 recovery key (57-char did:key), used as the middle rotation slot in the 3-key op.
+    const GOLDEN_RECOVERY_KEY: &str = "did:key:zDnaeoYytsARBq9NiBk1TbJESQcPRy5RPVvdT7FqpjrQtJ5DL";
+
+    /// CBOR text-string (major type 3) encoding of `s`, as lowercase hex. Only handles the string
+    /// lengths that occur here (24..=255 → 0x78 + 1-byte length + bytes).
+    fn cbor_text_str_hex(s: &str) -> String {
+        assert!(
+            (24..=255).contains(&s.len()),
+            "helper only covers 24..=255 byte strings"
+        );
+        format!("78{:02x}{}", s.len(), hex(s.as_bytes()))
+    }
+
+    /// The `rotationKeys` map entry as it appears in the golden 2-key CBOR: the key name
+    /// "rotationKeys" (text, len 12 → 0x6c) followed by an array-of-2 header (0x82) and the two
+    /// key text strings.
+    fn golden_two_key_rotation_run() -> String {
+        format!(
+            "6c726f746174696f6e4b65797382{}{}",
+            cbor_text_str_hex(GOLDEN_ROTATION_KEY),
+            cbor_text_str_hex(GOLDEN_SIGNING_KEY),
+        )
+    }
+
+    /// The same entry with the recovery key spliced in: array-of-3 (0x83) with
+    /// [device, recovery, PDS]. Built from DAG-CBOR array rules (definite length, elements in
+    /// order), independent of this crate's encoder.
+    fn expected_three_key_rotation_run() -> String {
+        format!(
+            "6c726f746174696f6e4b65797383{}{}{}",
+            cbor_text_str_hex(GOLDEN_ROTATION_KEY),
+            cbor_text_str_hex(GOLDEN_RECOVERY_KEY),
+            cbor_text_str_hex(GOLDEN_SIGNING_KEY),
+        )
+    }
+
+    fn golden_three_rotation_keys() -> Vec<DidKeyUri> {
+        vec![
+            DidKeyUri(GOLDEN_ROTATION_KEY.to_string()),
+            DidKeyUri(GOLDEN_RECOVERY_KEY.to_string()),
+            DidKeyUri(GOLDEN_SIGNING_KEY.to_string()),
+        ]
+    }
+
+    /// The 3-rotation-key genesis op's unsigned CBOR must equal the 2-key golden reference with the
+    /// rotationKeys array extended from 2 to 3 entries per DAG-CBOR rules — proving the encoder
+    /// emits canonical bytes for the [device, recovery, PDS] shape.
+    #[test]
+    fn golden_multi_rotation_unsigned_cbor_matches_reference() {
+        let expected = GOLDEN_UNSIGNED_CBOR_HEX.replace(
+            &golden_two_key_rotation_run(),
+            &expected_three_key_rotation_run(),
+        );
+        // Sanity: the splice actually changed something (array header 82 → 83).
+        assert_ne!(expected, GOLDEN_UNSIGNED_CBOR_HEX);
+
+        let op = UnsignedPlcOp {
+            prev: None,
+            op_type: "plc_operation".to_string(),
+            services: golden_services(),
+            also_known_as: vec![format!("at://{GOLDEN_HANDLE}")],
+            rotation_keys: golden_three_rotation_keys()
+                .iter()
+                .map(|k| k.0.clone())
+                .collect(),
+            verification_methods: golden_verification_methods(),
+        };
+        let mut cbor = Vec::new();
+        into_writer(&op, &mut cbor).expect("encode unsigned op");
+        assert_eq!(
+            hex(&cbor),
+            expected,
+            "3-rotation-key unsigned CBOR must match the DAG-CBOR reference"
+        );
+    }
+
+    /// The full 3-key builder derives the same did:plc as the independent reference pipeline
+    /// (splice the golden signed CBOR → sha256 → base32lower → first 24 chars).
+    #[test]
+    fn golden_multi_rotation_did_matches_reference() {
+        let expected_signed_hex = GOLDEN_SIGNED_CBOR_HEX.replace(
+            &golden_two_key_rotation_run(),
+            &expected_three_key_rotation_run(),
+        );
+        let expected_signed_bytes: Vec<u8> = (0..expected_signed_hex.len() / 2)
+            .map(|i| u8::from_str_radix(&expected_signed_hex[i * 2..i * 2 + 2], 16).unwrap())
+            .collect();
+        let hash = Sha256::digest(&expected_signed_bytes);
+        let encoded = base32_lowercase().unwrap().encode(hash.as_ref());
+        let expected_did = format!("did:plc:{}", &encoded[..24]);
+
+        let op = build_did_plc_genesis_op_multi_rotation_with_external_signer(
+            &golden_three_rotation_keys(),
+            &DidKeyUri(GOLDEN_SIGNING_KEY.to_string()),
+            GOLDEN_HANDLE,
+            GOLDEN_ENDPOINT,
+            // Same fixed stand-in signature (bytes 1..=64) as the golden signed op.
+            |_unsigned_cbor| Ok((1u8..=64).collect()),
+        )
+        .expect("build 3-key genesis op");
+        assert_eq!(
+            op.did, expected_did,
+            "3-rotation-key did:plc must match the spliced DAG-CBOR reference"
+        );
+    }
+
+    /// A 3-rotation-key genesis op signed by the device key verifies via `verify_genesis_op`, and
+    /// keeps rotationKeys order + verificationMethods.atproto = PDS key.
+    #[test]
+    fn multi_rotation_genesis_verifies_and_preserves_shape() {
+        let device = generate_p256_keypair().expect("device keypair");
+        let recovery = generate_p256_keypair().expect("recovery keypair");
+        let pds = generate_p256_keypair().expect("pds keypair");
+
+        let rotation_keys = vec![
+            device.key_id.clone(),
+            recovery.key_id.clone(),
+            pds.key_id.clone(),
+        ];
+
+        // Sign with the device key (rotationKeys[0]) via the external signer, low-S normalized.
+        let device_sk = SigningKey::from_bytes(&(*device.private_key_bytes).into())
+            .expect("device signing key");
+        let op = build_did_plc_genesis_op_multi_rotation_with_external_signer(
+            &rotation_keys,
+            &pds.key_id,
+            "alice.example.com",
+            "https://pds.example.com",
+            |data| {
+                let sig: Signature = Signer::sign(&device_sk, data);
+                let sig = sig.normalize_s().unwrap_or(sig);
+                Ok(sig.to_bytes().to_vec())
+            },
+        )
+        .expect("build 3-key genesis op");
+
+        let verified = verify_genesis_op(&op.signed_op_json, &device.key_id)
+            .expect("3-key genesis op must verify against the device rotation key");
+
+        assert_eq!(verified.did, op.did);
+        assert_eq!(
+            verified.rotation_keys,
+            vec![device.key_id.0, recovery.key_id.0, pds.key_id.0.clone()],
+            "rotationKeys must preserve [device, recovery, PDS] order"
+        );
+        assert_eq!(
+            verified.verification_methods.get("atproto"),
+            Some(&pds.key_id.0),
+            "verificationMethods.atproto must remain the PDS signing key"
+        );
+    }
+
+    /// The private-key convenience variant signs with the PDS key and verifies against it.
+    #[test]
+    fn multi_rotation_convenience_variant_verifies() {
+        let device = generate_p256_keypair().expect("device keypair");
+        let recovery = generate_p256_keypair().expect("recovery keypair");
+        let pds = generate_p256_keypair().expect("pds keypair");
+        let pds_private = *pds.private_key_bytes;
+
+        let op = build_did_plc_genesis_op_multi_rotation(
+            &[
+                device.key_id.clone(),
+                recovery.key_id.clone(),
+                pds.key_id.clone(),
+            ],
+            &pds.key_id,
+            &pds_private,
+            "alice.example.com",
+            "https://pds.example.com",
+        )
+        .expect("build 3-key genesis op");
+
+        verify_genesis_op(&op.signed_op_json, &pds.key_id)
+            .expect("op must verify against the PDS signing key");
+    }
+
+    #[test]
+    fn multi_rotation_empty_keys_is_error() {
+        let pds = generate_p256_keypair().expect("pds keypair");
+        let result = build_did_plc_genesis_op_multi_rotation_with_external_signer(
+            &[],
+            &pds.key_id,
+            "alice.example.com",
+            "https://pds.example.com",
+            |_| Ok((1u8..=64).collect()),
+        );
+        assert!(matches!(result, Err(CryptoError::PlcOperation(_))));
+    }
+
+    /// The two-key builder is now a delegation to the shared core; its output must be byte-identical
+    /// to before the refactor (the existing golden DID test guards the exact bytes).
+    #[test]
+    fn two_key_builder_still_matches_golden_did() {
+        let op = build_did_plc_genesis_op_with_external_signer(
+            &DidKeyUri(GOLDEN_ROTATION_KEY.to_string()),
+            &DidKeyUri(GOLDEN_SIGNING_KEY.to_string()),
+            GOLDEN_HANDLE,
+            GOLDEN_ENDPOINT,
+            |_unsigned_cbor| Ok((1u8..=64).collect()),
+        )
+        .expect("build genesis op");
+        assert_eq!(op.did, GOLDEN_DID);
     }
 
     /// Invalid signing key (all-zero scalar) returns CryptoError::PlcOperation
