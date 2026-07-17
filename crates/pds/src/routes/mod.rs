@@ -5,6 +5,8 @@ pub mod admin_account_repair;
 pub mod admin_devices;
 pub mod admin_health;
 pub mod admin_list_accounts;
+pub mod admin_relay_status;
+pub mod admin_request_crawl;
 pub mod admin_revoke_credentials;
 mod admin_subject_defs;
 pub mod admin_transfers;

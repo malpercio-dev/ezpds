@@ -1,0 +1,35 @@
+meta {
+  name: Admin Request Crawl (re-invite relay)
+  type: http
+  seq: 122
+}
+
+post {
+  url: {{baseUrl}}/v1/admin/request-crawl
+  body: none
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{adminToken}}
+}
+
+docs {
+  # POST /v1/admin/request-crawl
+
+  The operator companion to `GET /v1/admin/relay-status`: when the readout shows
+  the relay behind (or not-yet-crawling), this is the "Request crawl" action. Sends
+  `com.atproto.sync.requestCrawl` to every configured relay **now**, bypassing the
+  30s rate-limit window that governs the automatic post-emission notifications, and
+  reports each relay's outcome. Takes no request body. Admin-authed: the master
+  token (shown here) **or** an active operator companion-app device's signed
+  request. The acting admin is recorded on a structured log line.
+
+  Returns `400 INVALID_REQUEST` when no relay is configured (federation disabled).
+
+  Response:
+  - `requested` — how many relays the request was sent to.
+  - `accepted` — how many accepted the `requestCrawl`.
+  - `relays` — per-relay outcomes `[{host, accepted, detail}]`, in configuration
+    order; `detail` is `null` on success or a short reason on failure.
+}

@@ -796,6 +796,66 @@ pub async fn get_server_health(pairing_id: &str) -> Result<ServerHealth, RelayCl
     parse_success::<ServerHealth>(response).await
 }
 
+// ── Relay status (federation readout) ────────────────────────────────────────
+
+/// Build the signed relay-status readout (`GET /v1/admin/relay-status`). No params, no
+/// body — the whole request is the fixed path, so the envelope is the plain signed GET.
+pub fn build_relay_status_request(
+    pairing: &Pairing,
+    timestamp: i64,
+    nonce: &str,
+) -> Result<SignedRequest, RelayClientError> {
+    build_signed_request(
+        pairing,
+        "GET",
+        "/v1/admin/relay-status",
+        b"",
+        timestamp,
+        nonce,
+    )
+}
+
+/// Fetch the relay-status readout (is the upstream relay actually crawling/indexing us?)
+/// via a signed `GET` — the Home relay-status block's data source. Literal facts only;
+/// the relay derives no ok/warn verdict, so the block applies its own gap thresholds.
+/// Id-addressed like [`get_server_health`], so a concurrent active-pairing switch can
+/// never redirect which relay is asked (or signed for).
+pub async fn get_relay_status(pairing_id: &str) -> Result<RelayStatus, RelayClientError> {
+    let pairing = resolve_pairing(pairing_id)?;
+    let signed = build_relay_status_request(&pairing, unix_now(), &fresh_nonce())?;
+    let response = send(signed).await?;
+    parse_success::<RelayStatus>(response).await
+}
+
+/// Build the signed request-crawl action (`POST /v1/admin/request-crawl`). No body — the
+/// path is the whole request.
+pub fn build_request_crawl_request(
+    pairing: &Pairing,
+    timestamp: i64,
+    nonce: &str,
+) -> Result<SignedRequest, RelayClientError> {
+    build_signed_request(
+        pairing,
+        "POST",
+        "/v1/admin/request-crawl",
+        b"",
+        timestamp,
+        nonce,
+    )
+}
+
+/// Ask the given pairing's relay to crawl this PDS now via a signed `POST` — the "Request
+/// crawl" action beside the relay-status block. Un-throttled and reports each relay's
+/// outcome. Id-addressed so a concurrent active-pairing switch can't redirect which relay
+/// the crawl is requested from (or signed for). The UI runs the biometric gate first
+/// (this signs).
+pub async fn request_crawl(pairing_id: &str) -> Result<RequestCrawlResult, RelayClientError> {
+    let pairing = resolve_pairing(pairing_id)?;
+    let signed = build_request_crawl_request(&pairing, unix_now(), &fresh_nonce())?;
+    let response = send(signed).await?;
+    parse_success::<RequestCrawlResult>(response).await
+}
+
 /// Send an already-built [`SignedRequest`] and return the raw response.
 async fn send(req: SignedRequest) -> Result<reqwest::Response, RelayClientError> {
     let method = reqwest::Method::from_bytes(req.method.as_bytes()).map_err(|_| {
@@ -1140,6 +1200,65 @@ pub struct HealthSweepRun {
     pub completed_at: i64,
     /// Items acted on by that pass.
     pub swept: u64,
+}
+
+/// The relay-status readout — the response shape of `GET /v1/admin/relay-status`
+/// (`RelayStatusResponse` in crates/pds/src/routes/admin_relay_status.rs, pinned by a
+/// deserialization test). Literal facts only — the relay derives no ok/warn/behind
+/// verdict; the block applies its own gap thresholds. Re-serialized camelCase over IPC.
+#[derive(Debug, Clone, PartialEq, Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RelayStatus {
+    /// The relay we queried (first configured crawler), bare host; `None` when no relay
+    /// is configured (federation disabled).
+    pub relay_host: Option<String>,
+    /// Whether the relay answered at all. A `HostNotFound` still counts as reachable.
+    pub reachable: bool,
+    /// The relay's lifecycle status for us (`active`/`idle`/`offline`/`throttled`/
+    /// `banned`, verbatim); `None` when unreachable or not-yet-crawled.
+    pub relay_status: Option<String>,
+    /// The relay's cursor into our firehose seq-space; `None` when unavailable.
+    pub relay_seq: Option<u64>,
+    /// How many of our accounts the relay has indexed; `None` when unavailable.
+    pub account_count: Option<u64>,
+    /// Our exact sequencer head (0 before the first event).
+    pub pds_head_seq: u64,
+    /// `pdsHeadSeq − relaySeq` (positive = relay behind); signed, `None` when `relaySeq`
+    /// is unknown.
+    pub gap: Option<i64>,
+    /// The `sequenced_at` of our event at `relaySeq` ("caught up as of / not seen since
+    /// T"); `None` when the cursor is unknown or aged out of the retained log.
+    pub relay_cursor_at: Option<String>,
+    /// A short reason when unreachable or not-crawled; `None` on success.
+    pub detail: Option<String>,
+    /// When this readout polled the relay (RFC 3339).
+    pub checked_at: String,
+}
+
+/// The result of the request-crawl action — the response shape of
+/// `POST /v1/admin/request-crawl` (`RequestCrawlResponse` in
+/// crates/pds/src/routes/admin_request_crawl.rs). Re-serialized camelCase over IPC.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RequestCrawlResult {
+    /// How many relays the request was sent to.
+    pub requested: usize,
+    /// How many accepted the `requestCrawl`.
+    pub accepted: usize,
+    /// Per-relay outcomes, in configuration order.
+    pub relays: Vec<RelayCrawlAttempt>,
+}
+
+/// One relay's outcome in a request-crawl action.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RelayCrawlAttempt {
+    /// The crawler host (bare, scheme stripped) the request targeted.
+    pub host: String,
+    /// Whether the crawler accepted the `requestCrawl`.
+    pub accepted: bool,
+    /// A short reason when `accepted` is false; `None` on success.
+    pub detail: Option<String>,
 }
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
@@ -2880,5 +2999,125 @@ mod tests {
             &decode_sig(header(&req, signing::ADMIN_SIGNATURE_HEADER)),
         )
         .expect("the relay's verifier must accept the health readout");
+    }
+
+    #[test]
+    fn relay_status_deserializes_the_relay_shape() {
+        let json = r#"{
+            "relayHost": "bsky.network",
+            "reachable": true,
+            "relayStatus": "active",
+            "relaySeq": 1000,
+            "accountCount": 3,
+            "pdsHeadSeq": 1204,
+            "gap": 204,
+            "relayCursorAt": "2026-07-17T00:00:00.000Z",
+            "detail": null,
+            "checkedAt": "2026-07-17T00:00:10.000Z"
+        }"#;
+        let status: RelayStatus = serde_json::from_str(json).expect("deserialize");
+        assert_eq!(status.relay_host.as_deref(), Some("bsky.network"));
+        assert!(status.reachable);
+        assert_eq!(status.relay_status.as_deref(), Some("active"));
+        assert_eq!(status.relay_seq, Some(1000));
+        assert_eq!(status.gap, Some(204));
+        assert_eq!(status.pds_head_seq, 1204);
+        assert_eq!(status.detail, None);
+
+        // The "no relay configured" / unreachable shape: nullable fields read as None.
+        let none_shape: RelayStatus = serde_json::from_str(
+            r#"{"relayHost":null,"reachable":false,"relayStatus":null,"relaySeq":null,
+                "accountCount":null,"pdsHeadSeq":0,"gap":null,"relayCursorAt":null,
+                "detail":"no relay configured","checkedAt":"2026-07-17T00:00:00.000Z"}"#,
+        )
+        .expect("deserialize the no-relay shape");
+        assert_eq!(none_shape.relay_host, None);
+        assert_eq!(none_shape.gap, None);
+        assert_eq!(none_shape.detail.as_deref(), Some("no relay configured"));
+
+        // Re-serializes camelCase for IPC — the frontend sees the relay's names.
+        let value = serde_json::to_value(&status).expect("serialize");
+        assert_eq!(value["relayHost"], "bsky.network");
+        assert_eq!(value["pdsHeadSeq"], 1204);
+        assert_eq!(value["relayCursorAt"], "2026-07-17T00:00:00.000Z");
+    }
+
+    #[test]
+    fn request_crawl_result_deserializes_the_relay_shape() {
+        let json = r#"{
+            "requested": 2,
+            "accepted": 1,
+            "relays": [
+                {"host": "bsky.network", "accepted": true, "detail": null},
+                {"host": "relay2.example", "accepted": false, "detail": "crawler did not accept after retries"}
+            ]
+        }"#;
+        let result: RequestCrawlResult = serde_json::from_str(json).expect("deserialize");
+        assert_eq!(result.requested, 2);
+        assert_eq!(result.accepted, 1);
+        assert_eq!(result.relays.len(), 2);
+        assert!(result.relays[0].accepted);
+        assert_eq!(result.relays[0].detail, None);
+        assert!(!result.relays[1].accepted);
+        assert_eq!(
+            result.relays[1].detail.as_deref(),
+            Some("crawler did not accept after retries")
+        );
+
+        // Re-serializes camelCase for IPC.
+        let value = serde_json::to_value(&result).expect("serialize");
+        assert_eq!(value["relays"][0]["host"], "bsky.network");
+    }
+
+    #[test]
+    fn relay_status_request_is_verifiable() {
+        keychain::clear_for_test();
+        let key = device_key::get_or_create().expect("device key");
+        let pairing = test_pairing("device-relay", "https://relay.example");
+
+        let req = build_relay_status_request(&pairing, 1_700_000_000, "relay-nonce")
+            .expect("build request");
+        assert_eq!(req.method, "GET");
+        assert_eq!(req.url, "https://relay.example/v1/admin/relay-status");
+
+        let sign_string = signing::request_sign_string(
+            "GET",
+            "/v1/admin/relay-status",
+            1_700_000_000,
+            "relay-nonce",
+            b"",
+        );
+        verify_p256_signature(
+            &DidKeyUri(key.key_id),
+            sign_string.as_bytes(),
+            &decode_sig(header(&req, signing::ADMIN_SIGNATURE_HEADER)),
+        )
+        .expect("the relay's verifier must accept the relay-status readout");
+    }
+
+    #[test]
+    fn request_crawl_request_is_verifiable() {
+        keychain::clear_for_test();
+        let key = device_key::get_or_create().expect("device key");
+        let pairing = test_pairing("device-crawl", "https://relay.example");
+
+        let req = build_request_crawl_request(&pairing, 1_700_000_000, "crawl-nonce")
+            .expect("build request");
+        assert_eq!(req.method, "POST");
+        assert_eq!(req.url, "https://relay.example/v1/admin/request-crawl");
+
+        let sign_string = signing::request_sign_string(
+            "POST",
+            "/v1/admin/request-crawl",
+            1_700_000_000,
+            "crawl-nonce",
+            b"",
+        );
+        verify_p256_signature(
+            &DidKeyUri(key.key_id),
+            sign_string.as_bytes(),
+            &decode_sig(header(&req, signing::ADMIN_SIGNATURE_HEADER)),
+        )
+        .expect("the relay's verifier must accept the request-crawl action");
     }
 }

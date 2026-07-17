@@ -152,6 +152,28 @@ async fn get_server_health(
     relay_client::get_server_health(&pairing_id).await
 }
 
+/// Fetch the relay-status readout (is the upstream relay actually crawling/indexing us?)
+/// from the given pairing's relay — the Home relay-status block's data source. Literal
+/// facts only; the block applies its own gap thresholds. Id-addressed like
+/// `get_server_health`.
+#[tauri::command]
+async fn get_relay_status(
+    pairing_id: String,
+) -> Result<relay_client::RelayStatus, relay_client::RelayClientError> {
+    relay_client::get_relay_status(&pairing_id).await
+}
+
+/// Ask the given pairing's relay to crawl this PDS now (signed `POST`) — the "Request
+/// crawl" action beside the relay-status block. The UI runs the biometric gate before
+/// invoking this (it signs). Id-addressed so a concurrent active-pairing switch can't
+/// redirect which relay the crawl is requested from.
+#[tauri::command]
+async fn request_crawl(
+    pairing_id: String,
+) -> Result<relay_client::RequestCrawlResult, relay_client::RelayClientError> {
+    relay_client::request_crawl(&pairing_id).await
+}
+
 /// Fetch a page of the relay's account list (DID order, cursor pagination, optional
 /// derived-status filter and handle/DID substring search) — the Accounts screen's data
 /// source. Id-addressed like `list_admin_devices`.
@@ -295,6 +317,8 @@ pub fn run() {
             get_account_usage,
             get_account_storage,
             get_server_health,
+            get_relay_status,
+            request_crawl,
             list_accounts,
             list_claim_codes,
             revoke_claim_code,

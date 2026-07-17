@@ -18,6 +18,8 @@ import type {
   AccountUsage,
   AccountStorage,
   ServerHealth,
+  RelayStatus,
+  RequestCrawlResult,
   AccountList,
   ClaimCodeInventory,
   RevokedClaimCode,
@@ -57,6 +59,8 @@ export type CommandName =
   | 'get_account_usage'
   | 'get_account_storage'
   | 'get_server_health'
+  | 'get_relay_status'
+  | 'request_crawl'
   | 'list_accounts'
   | 'list_claim_codes'
   | 'revoke_claim_code'
@@ -198,6 +202,37 @@ export function buildRegistry(state: AdminState): Registry {
 
     get_server_health: (args): ServerHealth =>
       requireRelay(state, String(args.pairingId ?? '')).health,
+
+    get_relay_status: (args): RelayStatus => {
+      const relay = requireRelay(state, String(args.pairingId ?? ''));
+      // A healthy, actively-crawling relay a few events behind our head — exercises the
+      // "crawling / behind-by-N" state of the block.
+      const head = relay.health.firehose.currentSeq;
+      const relaySeq = Math.max(0, head - 3);
+      return {
+        relayHost: 'bsky.network',
+        reachable: true,
+        relayStatus: 'active',
+        relaySeq,
+        accountCount: relay.accounts.length,
+        pdsHeadSeq: head,
+        gap: head - relaySeq,
+        relayCursorAt: '2026-07-15T09:00:00.000Z',
+        detail: null,
+        checkedAt: '2026-07-15T12:00:00.000Z',
+      };
+    },
+
+    request_crawl: (args): RequestCrawlResult => {
+      // Validate the pairing (a signed action against a specific relay), then report the
+      // relay accepting the crawl.
+      requireRelay(state, String(args.pairingId ?? ''));
+      return {
+        requested: 1,
+        accepted: 1,
+        relays: [{ host: 'bsky.network', accepted: true, detail: null }],
+      };
+    },
 
     list_accounts: (args): AccountList => {
       const relay = requireRelay(state, String(args.pairingId ?? ''));

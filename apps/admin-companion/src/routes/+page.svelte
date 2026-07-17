@@ -12,6 +12,7 @@
   import CodeOutput from '$lib/components/ui/CodeOutput.svelte';
   import Button from '$lib/components/ui/Button.svelte';
   import ErrorState from '$lib/components/ui/ErrorState.svelte';
+  import RelayStatusBlock from '$lib/components/ui/RelayStatusBlock.svelte';
 
   // Home: multi-server home, tappable identity block opening an inline switcher,
   // explicit pick required when active is cleared (two+ remaining). The demo-lifesaver flow
@@ -235,6 +236,14 @@
     <!-- Main claim-code flow — hidden while a pick is required (the forced-open
          switcher is the only affordance in that state). -->
     {#if !needsPick}
+    <!-- Federation health for the active server: is the relay actually crawling us right now?
+         Keyed by pairing id so switching servers remounts the block and restarts its 15s poll. -->
+    {#if activePairing}
+      {#key activePairing.id}
+        <RelayStatusBlock pairingId={activePairing.id} server={identity} />
+      {/key}
+    {/if}
+
     <p class="lede">
       Mint a single-use account claim code, signed by this device. Share it with the person
       onboarding, or copy it.

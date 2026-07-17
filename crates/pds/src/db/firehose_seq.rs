@@ -122,6 +122,28 @@ pub async fn oldest_sequenced_at(db: &SqlitePool) -> Result<Option<String>, sqlx
         .await
 }
 
+/// The `sequenced_at` of the event with exactly this `seq`, or `None` when no such row is retained
+/// (the seq was never emitted, or has since been pruned from the log).
+///
+/// Backs the relay-status readout (`GET /v1/admin/relay-status`): given the relay's cursor into
+/// our seq-space, this is the wall-clock time of the newest event the relay has consumed — the
+/// "caught up as of / not seen since T" fact. A cursor that points below the retained window
+/// (the relay is further behind than our backfill reaches) simply has no row and reads as `None`.
+pub async fn sequenced_at_for_seq(
+    db: &SqlitePool,
+    seq: u64,
+) -> Result<Option<String>, sqlx::Error> {
+    // A seq beyond i64 cannot exist in our log (the sequencer only assigns i64-bounded values), so
+    // it has no row — report absent rather than erroring the whole readout over an impossible input.
+    let Ok(seq) = i64::try_from(seq) else {
+        return Ok(None);
+    };
+    sqlx::query_scalar("SELECT sequenced_at FROM repo_seq WHERE seq = ?")
+        .bind(seq)
+        .fetch_optional(db)
+        .await
+}
+
 /// First replay page plus whether the cursor is inside the retained range.
 ///
 /// `cursor_present` is computed in the same SQL statement as the first page (`EXISTS(seq <=
@@ -271,6 +293,29 @@ mod tests {
         insert(&db, 2, "account").await;
         insert(&db, 3, "commit").await;
         assert_eq!(max_seq(&db).await.unwrap(), 3);
+    }
+
+    #[tokio::test]
+    async fn sequenced_at_for_seq_returns_the_events_timestamp() {
+        let db = pool().await;
+        insert_at(&db, 1, "commit", "2026-06-30T00:00:00.000Z").await;
+        insert_at(&db, 2, "commit", "2026-06-30T00:00:05.000Z").await;
+
+        assert_eq!(
+            sequenced_at_for_seq(&db, 2).await.unwrap(),
+            Some("2026-06-30T00:00:05.000Z".to_string())
+        );
+    }
+
+    #[tokio::test]
+    async fn sequenced_at_for_seq_is_none_for_missing_or_pruned_seq() {
+        let db = pool().await;
+        insert(&db, 5, "commit").await;
+
+        // A seq we never emitted (or that was pruned) has no row.
+        assert_eq!(sequenced_at_for_seq(&db, 3).await.unwrap(), None);
+        // A seq beyond i64 is impossible in our log and reads as absent, not an error.
+        assert_eq!(sequenced_at_for_seq(&db, u64::MAX).await.unwrap(), None);
     }
 
     #[tokio::test]

@@ -36,6 +36,42 @@ const DEFAULT_MAX_ATTEMPTS: u32 = 3;
 /// Base delay for the exponential retry backoff (doubles each attempt).
 const DEFAULT_BASE_BACKOFF: Duration = Duration::from_millis(500);
 
+/// How one `requestCrawl` attempt ended. The automatic [`notify`](CrawlerNotifier::notify) path
+/// discards this (fire-and-forget); the explicit operator action
+/// [`request_crawl_now`](CrawlerNotifier::request_crawl_now) reports it back to the admin.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum CrawlOutcome {
+    /// The crawler accepted the request (2xx).
+    Accepted,
+    /// The crawler rejected it permanently (4xx) — carries a short reason.
+    Rejected(String),
+    /// Every attempt failed (transport error or 5xx) up to `max_attempts`.
+    Exhausted,
+}
+
+impl CrawlOutcome {
+    /// A short operator-facing reason when the request did not succeed; `None` on acceptance.
+    fn reason(&self) -> Option<String> {
+        match self {
+            Self::Accepted => None,
+            Self::Rejected(reason) => Some(reason.clone()),
+            Self::Exhausted => Some("crawler did not accept after retries".to_string()),
+        }
+    }
+}
+
+/// The result of one crawler in an explicit "Request crawl" action, for the admin readout.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CrawlAttempt {
+    /// The crawler host (bare, scheme stripped) the request targeted.
+    pub host: String,
+    /// Whether the crawler accepted the `requestCrawl`.
+    pub accepted: bool,
+    /// A short reason when `accepted` is false; `null` on success.
+    pub detail: Option<String>,
+}
+
 /// Notifies configured crawlers via `com.atproto.sync.requestCrawl` after new content.
 pub struct CrawlerNotifier {
     client: reqwest::Client,
@@ -128,10 +164,56 @@ impl CrawlerNotifier {
             .map(|base_url| {
                 let this = Arc::clone(self);
                 tokio::spawn(async move {
-                    this.send_with_retry(&base_url).await;
+                    // Fire-and-forget: the automatic path discards the outcome (it is logged and
+                    // counted inside `send_with_retry`).
+                    let _ = this.send_with_retry(&base_url).await;
                 })
             })
             .collect()
+    }
+
+    /// Send `requestCrawl` to every configured crawler **now**, bypassing the rate-limit window,
+    /// and await the outcomes. This is the explicit operator "Request crawl" action, distinct from
+    /// the automatic, rate-limited, fire-and-forget [`notify`](Self::notify): the admin is asking
+    /// on purpose and wants to see whether each relay accepted. Sends run concurrently.
+    ///
+    /// Returns one [`CrawlAttempt`] per configured crawler (empty when none are configured). It
+    /// deliberately ignores the rate-limit map — an operator's explicit request is never throttled.
+    pub async fn request_crawl_now(self: &Arc<Self>) -> Vec<CrawlAttempt> {
+        let handles: Vec<_> = self
+            .crawlers
+            .iter()
+            .cloned()
+            .map(|base_url| {
+                let this = Arc::clone(self);
+                tokio::spawn(async move {
+                    let outcome = this.send_with_retry(&base_url).await;
+                    CrawlAttempt {
+                        host: host_from_url(&base_url),
+                        accepted: outcome == CrawlOutcome::Accepted,
+                        detail: outcome.reason(),
+                    }
+                })
+            })
+            .collect();
+
+        let mut attempts = Vec::with_capacity(handles.len());
+        for handle in handles {
+            // A join error means the send task panicked; report it rather than dropping the crawler
+            // silently from the readout.
+            match handle.await {
+                Ok(attempt) => attempts.push(attempt),
+                Err(e) => {
+                    tracing::error!(error = %e, "requestCrawl task panicked");
+                    attempts.push(CrawlAttempt {
+                        host: "unknown".to_string(),
+                        accepted: false,
+                        detail: Some("crawl request task failed".to_string()),
+                    });
+                }
+            }
+        }
+        attempts
     }
 
     /// Return the crawlers due for notification at `now`, recording `now` as their last-notified
@@ -157,8 +239,10 @@ impl CrawlerNotifier {
     }
 
     /// POST `requestCrawl` to one crawler, retrying with exponential backoff. Best-effort: all
-    /// outcomes (success, rejection, transport error, exhaustion) are logged, never propagated.
-    async fn send_with_retry(&self, base_url: &str) {
+    /// outcomes are logged and counted here, never propagated as an error. Returns the
+    /// [`CrawlOutcome`] so an explicit caller ([`request_crawl_now`](Self::request_crawl_now)) can
+    /// report it; the automatic [`notify`](Self::notify) path discards it.
+    async fn send_with_retry(&self, base_url: &str) -> CrawlOutcome {
         let endpoint = format!("{base_url}/xrpc/com.atproto.sync.requestCrawl");
         let body = serde_json::json!({ "hostname": self.hostname });
 
@@ -167,18 +251,22 @@ impl CrawlerNotifier {
                 Ok(resp) if resp.status().is_success() => {
                     tracing::info!(crawler = %base_url, "requestCrawl accepted");
                     self.count_outcome("ok");
-                    return;
+                    return CrawlOutcome::Accepted;
                 }
                 // A 4xx means the request itself is wrong or unauthorised: the crawler has
                 // rejected it permanently, so retrying would only repeat the same failure.
                 Ok(resp) if resp.status().is_client_error() => {
+                    let status = resp.status();
                     tracing::warn!(
                         crawler = %base_url,
-                        status = %resp.status(),
+                        status = %status,
                         "requestCrawl rejected with a client error; not retrying"
                     );
                     self.count_outcome("rejected");
-                    return;
+                    return CrawlOutcome::Rejected(format!(
+                        "crawler rejected the request (HTTP {})",
+                        status.as_u16()
+                    ));
                 }
                 Ok(resp) => {
                     tracing::warn!(
@@ -207,6 +295,7 @@ impl CrawlerNotifier {
             "requestCrawl gave up after exhausting retries"
         );
         self.count_outcome("exhausted");
+        CrawlOutcome::Exhausted
     }
 
     /// Exponential backoff for a 1-based attempt number: `base * 2^(attempt - 1)`.
@@ -424,5 +513,73 @@ mod tests {
     async fn notify_with_no_crawlers_is_noop() {
         let n = notifier(&[]);
         assert!(n.notify().is_empty(), "no crawlers means nothing spawned");
+    }
+
+    #[tokio::test]
+    async fn request_crawl_now_reports_accepted_per_crawler() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/xrpc/com.atproto.sync.requestCrawl"))
+            .respond_with(ResponseTemplate::new(200))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let n = notifier(&[server.uri()]);
+        let attempts = n.request_crawl_now().await;
+        assert_eq!(attempts.len(), 1);
+        assert!(attempts[0].accepted, "a 200 must report accepted");
+        assert_eq!(attempts[0].detail, None);
+        assert_eq!(attempts[0].host, host_from_url(&server.uri()));
+    }
+
+    #[tokio::test]
+    async fn request_crawl_now_reports_rejection_with_detail() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/xrpc/com.atproto.sync.requestCrawl"))
+            .respond_with(ResponseTemplate::new(400))
+            .expect(1) // a 4xx is permanent: exactly one attempt, no retries
+            .mount(&server)
+            .await;
+
+        let n = notifier(&[server.uri()]);
+        let attempts = n.request_crawl_now().await;
+        assert_eq!(attempts.len(), 1);
+        assert!(!attempts[0].accepted);
+        assert!(
+            attempts[0].detail.is_some(),
+            "a rejection must carry a reason"
+        );
+    }
+
+    #[tokio::test]
+    async fn request_crawl_now_bypasses_the_rate_limit_window() {
+        let server = MockServer::start().await;
+        // Two requests must arrive: the automatic notify AND the explicit request_crawl_now, even
+        // though they fall inside the same rate-limit window.
+        Mock::given(method("POST"))
+            .and(path("/xrpc/com.atproto.sync.requestCrawl"))
+            .respond_with(ResponseTemplate::new(200))
+            .expect(2)
+            .mount(&server)
+            .await;
+
+        let n = notifier(&[server.uri()]);
+        // Automatic notify records the crawler as recently-notified.
+        for handle in n.notify() {
+            handle.await.expect("notify task panicked");
+        }
+        // The explicit action still sends despite the window being open.
+        let attempts = n.request_crawl_now().await;
+        assert_eq!(attempts.len(), 1);
+        assert!(attempts[0].accepted);
+        server.verify().await;
+    }
+
+    #[tokio::test]
+    async fn request_crawl_now_is_empty_without_crawlers() {
+        let n = notifier(&[]);
+        assert!(n.request_crawl_now().await.is_empty());
     }
 }

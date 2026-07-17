@@ -1,0 +1,51 @@
+meta {
+  name: Admin Relay Status (federation readout)
+  type: http
+  seq: 121
+}
+
+get {
+  url: {{baseUrl}}/v1/admin/relay-status
+  body: none
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{adminToken}}
+}
+
+docs {
+  # GET /v1/admin/relay-status
+
+  Is the upstream relay actually crawling/indexing this PDS? Compares our
+  **exact** sequencer head against what the relay reports for our hostname via
+  `com.atproto.sync.getHostStatus`, and derives the gap server-side. Admin-authed:
+  the master token (shown here) **or** an active operator companion-app device's
+  signed request.
+
+  Like `GET /v1/admin/health`, this reports literal truth only — no ok/warn/behind
+  verdict. The gap thresholds and status mapping live with the operator (the
+  companion app), not in the API shape.
+
+  Response:
+  - `relayHost` — the relay we queried (first configured crawler), bare host;
+    `null` when no relay is configured (federation notifications disabled).
+  - `reachable` — whether the relay answered at all. A `HostNotFound` still counts
+    as reachable (the relay is up, it just has no record of us yet); `false` means
+    a transport failure/timeout.
+  - `relayStatus` — the relay's lifecycle status for us: `active` | `idle` |
+    `offline` | `throttled` | `banned` (reported verbatim); `null` when unreachable
+    or not-yet-crawled.
+  - `relaySeq` — the relay's cursor into our firehose seq-space (last seq it
+    consumed from us); `null` when unavailable.
+  - `accountCount` — how many of our accounts the relay has indexed; `null` when
+    unavailable.
+  - `pdsHeadSeq` — our exact sequencer head (0 before the first event).
+  - `gap` — `pdsHeadSeq − relaySeq`: how many events the relay is behind us
+    (positive = behind). Signed; `null` when `relaySeq` is unknown.
+  - `relayCursorAt` — the `sequenced_at` of our event at `relaySeq` ("caught up as
+    of / not seen since T"); `null` when the cursor is unknown or that event has
+    aged out of the retained log.
+  - `detail` — a short reason when unreachable or not-crawled; `null` on success.
+  - `checkedAt` — when this readout polled the relay (RFC 3339).
+}
