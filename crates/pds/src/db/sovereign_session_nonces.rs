@@ -7,7 +7,6 @@ use sqlx::{Sqlite, SqlitePool};
 
 /// The full interval during which one captured request can remain timestamp-valid when first
 /// accepted at the early edge of the server's symmetric freshness window.
-#[allow(dead_code)] // Retention invariant consumed when the background nonce sweep is wired.
 pub const REPLAY_ACCEPTANCE_SPAN_SECS: i64 = 2 * SOVEREIGN_TIMESTAMP_WINDOW_SECS;
 
 /// Atomically record `(did, nonce)`. Returns `true` only for the first insertion.
@@ -35,7 +34,6 @@ where
 ///
 /// Retention must be strictly greater than the full replay-acceptance span. The boundary itself
 /// is unsafe because the delete predicate is inclusive.
-#[allow(dead_code)] // Foundation for the background nonce sweep; insertion is already live.
 pub async fn sweep_stale_nonces(
     pool: &SqlitePool,
     max_age_seconds: i64,

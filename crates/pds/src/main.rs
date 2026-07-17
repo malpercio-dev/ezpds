@@ -33,6 +33,7 @@ mod request_host;
 mod rewrap;
 mod routes;
 mod session_issuer;
+mod sovereign_session_nonce_sweep;
 mod state;
 mod sweep_status;
 mod telemetry;
@@ -483,6 +484,17 @@ async fn run() -> anyhow::Result<()> {
         interval_secs = state.config.admin_devices.nonce_sweep_interval_secs,
         max_age_secs = state.config.admin_devices.nonce_max_age_secs,
         "admin-nonce retention sweep started"
+    );
+
+    // Spawn the sovereign-session nonce retention sweep. The DID-scoped primary key enforces
+    // anti-replay while the fixed retention window remains strictly longer than the signed
+    // request's full replay-acceptance span; the sweep only bounds storage growth.
+    let _sovereign_session_nonce_sweep =
+        sovereign_session_nonce_sweep::spawn_sovereign_session_nonce_sweep(state.clone());
+    tracing::info!(
+        interval_secs = sovereign_session_nonce_sweep::SWEEP_INTERVAL.as_secs(),
+        max_age_secs = sovereign_session_nonce_sweep::MAX_AGE_SECS,
+        "sovereign-session nonce retention sweep started"
     );
 
     // Spawn the Iroh accept loop when the tunnel is enabled. Like the blob GC it is detached
