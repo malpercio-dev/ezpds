@@ -303,10 +303,17 @@ passwordless Phase 1 should not ship before them.
 - **did:web identities.** A did:web account has no PLC `rotationKeys`; its control model
   is domain/hosting control, so the recovery-rotation-key design doesn't map. The re-key
   migration (MM-411) skips did:web; whether share-based recovery has a did:web analogue
-  (e.g. an escrowed verification key in the served document) is unexplored.
-- **Version-skew transition.** The server deploys ahead of the TestFlight wallet fleet,
-  so `/v1/dids` runs dual-mode (legacy server-side generation for old-shaped requests)
-  until adoption allows removing the legacy path — captured in MM-407.
+  (e.g. an escrowed verification key in the served document) is unexplored. *Production
+  note (2026-07-17): the operator's did:web identity has not yet migrated onto Custos,
+  so this is precautionary scoping, not a live migration concern — and a did:web
+  migration performed after this work lands is unaffected either way.*
+- ~~**Version-skew transition.**~~ *Resolved 2026-07-17: the wallet fleet is a single
+  operator-controlled install, so MM-407 needs no dual-mode window. Coordinated cutover
+  instead — the server ships first and **hard-cuts** the legacy path (a legacy-shaped
+  `/v1/dids` request gets a clear 400 naming the required wallet version, never a
+  silently minted old-model account), the one wallet build updates the same day, and
+  `pending_share_{1,2,3}` + `generate_recovery_shares` retire inside MM-407 itself
+  rather than in a follow-up.*
 - **Seed-derived vs independent recovery key for rotation ops.** Deriving via HKDF makes
   reconstruction verifiable against the DID doc with no extra stored state — chosen
   here. The cost: the seed *is* the key; share-set rotation is therefore also key
