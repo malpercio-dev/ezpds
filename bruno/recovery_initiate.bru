@@ -1,0 +1,47 @@
+meta {
+  name: Initiate escrow-assisted recovery (POST /v1/recovery/initiate)
+  type: http
+  seq: 125
+}
+
+post {
+  url: {{baseUrl}}/v1/recovery/initiate
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "identifier": "alice.test.example.com"
+  }
+}
+
+vars:pre-request {
+  baseUrl: http://localhost:8080
+}
+
+docs {
+  # POST /v1/recovery/initiate
+
+  Begin the escrow-assisted recovery ceremony: email a single-use, 1-hour OTP to the account
+  address so the holder can open a release of the PDS-held Shamir Share 2.
+
+  Public and **always 200**, regardless of whether the identifier resolves or the account holds
+  escrow — the `requestPasswordReset` no-enumeration posture. A resolvable account with no escrow
+  still receives an OTP (opening a release against it fails uniformly at `release`), so this is not
+  an escrow-presence oracle either.
+
+  Shares one per-IP rate-limiter instance with `POST /v1/recovery/release` so alternating the two
+  cannot double an attacker's OTP-guess budget.
+
+  ## Request
+
+  ```json
+  { "identifier": "<handle or DID>" }
+  ```
+
+  ## Response (200)
+
+  Empty body. The OTP is delivered by email (the default log email sender writes it to the server
+  logs; a configured SMTP/HTTP sender sends a real message).
+}

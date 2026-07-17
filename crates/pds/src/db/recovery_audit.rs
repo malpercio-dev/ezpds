@@ -12,9 +12,9 @@
 use common::{ApiError, ErrorCode};
 use sqlx::Sqlite;
 
-/// What happened to an account's escrowed share. Only the owner-endpoint events exist as
-/// variants yet; the release-flow vocabulary is reserved in the table's CHECK constraint and
-/// grows here when the release endpoints land.
+/// What happened to an account's escrowed share. The owner endpoints write the
+/// deposit/rotate/delete events; the escrow release flow (`/v1/recovery/release*`) writes the
+/// release events. Every string is also reserved in the table's CHECK constraint.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum RecoveryAuditEventType {
     /// The account's first Share 2 envelope was deposited.
@@ -23,6 +23,13 @@ pub(crate) enum RecoveryAuditEventType {
     Rotated,
     /// The owner opted out of escrow and the envelope was deleted.
     Deleted,
+    /// A release was opened with a valid email OTP (the `pending` delay window began, or — with
+    /// a zero delay — the share was handed back in the same call).
+    ReleaseRequested,
+    /// An in-flight pending release was cancelled by an authenticated session/device.
+    ReleaseCancelled,
+    /// The Share 2 envelope was actually handed back to the recovering wallet.
+    Released,
 }
 
 impl RecoveryAuditEventType {
@@ -31,6 +38,9 @@ impl RecoveryAuditEventType {
             RecoveryAuditEventType::Deposited => "deposited",
             RecoveryAuditEventType::Rotated => "rotated",
             RecoveryAuditEventType::Deleted => "deleted",
+            RecoveryAuditEventType::ReleaseRequested => "release_requested",
+            RecoveryAuditEventType::ReleaseCancelled => "release_cancelled",
+            RecoveryAuditEventType::Released => "released",
         }
     }
 }

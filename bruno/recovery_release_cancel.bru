@@ -1,0 +1,45 @@
+meta {
+  name: Cancel a pending escrow release (POST /v1/recovery/release/cancel)
+  type: http
+  seq: 127
+}
+
+post {
+  url: {{baseUrl}}/v1/recovery/release/cancel
+  body: none
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{sessionToken}}
+}
+
+vars:pre-request {
+  baseUrl: http://localhost:8080
+}
+
+docs {
+  # POST /v1/recovery/release/cancel
+
+  Kill a pending escrow release. Authenticate as the account owner (wallet session token or
+  full-access OAuth/XRPC token; agent-derived and app-password credentials are refused) — the DID
+  comes from the credential, so a cancel can only ever touch the caller's own in-flight release.
+
+  This is the delay window's backstop: a user who sees the "a release was requested" email but
+  didn't request it cancels it from any signed-in device. Compose with
+  `POST /v1/admin/accounts/{id}/revoke-credentials` for a compromised-mailbox response (revoke the
+  attacker's sessions, then cancel). A fresh `initiate` is required to retry after a cancel.
+
+  Idempotent: cancelling with nothing pending is a 200 no-op with no `release_cancelled` audit
+  event.
+
+  ## Response (200)
+
+  ```json
+  { "status": "cancelled" }
+  ```
+
+  ## Errors
+
+  - `401` / `403` — missing/invalid credential, or an agent-derived/app-password token
+}

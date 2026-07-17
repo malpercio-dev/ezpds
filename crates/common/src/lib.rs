@@ -6,8 +6,8 @@ pub use config::{
     default_reserved_handles, parse_hex_32, AccountsConfig, AdminDevicesConfig, AgentAuthConfig,
     AppViewConfig, BlobsConfig, ChatConfig, Config, ConfigError, ContactConfig, CrawlersConfig,
     EmailConfig, EmailProvider, FirehoseConfig, IrohConfig, LabelerConfig, LogFormat, OAuthConfig,
-    RateLimitConfig, Sensitive, ServerLinksConfig, SmtpTls, TelemetryConfig, TrustedIssuer,
-    WatchedLabeler, ADMIN_TIMESTAMP_WINDOW_SECS, MAILTRAP_SEND_API_URL,
+    RateLimitConfig, RecoveryConfig, Sensitive, ServerLinksConfig, SmtpTls, TelemetryConfig,
+    TrustedIssuer, WatchedLabeler, ADMIN_TIMESTAMP_WINDOW_SECS, MAILTRAP_SEND_API_URL,
     SOVEREIGN_TIMESTAMP_WINDOW_SECS,
 };
 pub use config_loader::{

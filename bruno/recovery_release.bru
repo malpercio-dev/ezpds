@@ -1,0 +1,51 @@
+meta {
+  name: Open or poll an escrow release (POST /v1/recovery/release)
+  type: http
+  seq: 126
+}
+
+post {
+  url: {{baseUrl}}/v1/recovery/release
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "identifier": "alice.test.example.com",
+    "otp": "paste-the-emailed-recovery-code-here"
+  }
+}
+
+vars:pre-request {
+  baseUrl: http://localhost:8080
+}
+
+docs {
+  # POST /v1/recovery/release
+
+  Two modes on one endpoint:
+
+  - **Open** — include the emailed `otp`. The OTP is consumed and a cancellable release window
+    opens (`[recovery] release_delay_secs`, default 24h). Returns `{ "status": "pending",
+    "availableAt": "<time>" }`. With a zero delay it returns the share directly.
+  - **Poll** — omit `otp`. An already-opened release is identified by handle: returns
+    `{ "status": "pending", "availableAt": "<time>" }` until the window elapses, then
+    `{ "status": "released", "share": "<base32 v2 Share 2 envelope>" }` once, clearing the
+    in-flight state.
+
+  Every step audits (`release_requested` / `released`) and notifies the account email. Opening the
+  release also notifies on request.
+
+  ## Uniform failure (401)
+
+  A wrong / expired / replayed OTP, an unknown handle, and an escrow-deleted account (owner
+  opt-out) all return the same 401 — no oracle for account or escrow presence. OTP brute force is
+  bounded by the per-IP limiter this endpoint shares with `initiate` (429 + `RateLimit-*` headers).
+
+  ## Errors
+
+  - `401` — uniform release failure (see above)
+  - `429` — per-IP OTP-guess budget exhausted
+  - `503` — no signing-key master key configured on the server
+}

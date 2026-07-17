@@ -130,6 +130,13 @@ impl RateLimiterState {
         let claim_confirm = per_5min(cfg.agent_claim_confirm_per_5min);
         endpoints.insert("/agent/identity/claim/confirm", claim_confirm.clone());
         endpoints.insert("/v1/agents/claim-preview", claim_confirm);
+        // The escrow-recovery pair. `release` validates an emailed OTP (the guessable-credential
+        // class), and `initiate` mints one; they **share one limiter instance** so alternating the
+        // two endpoints can't double an attacker's per-IP OTP-guess budget — the same reasoning as
+        // the claim confirm/preview pair above.
+        let recovery = per_5min(cfg.recovery_per_5min);
+        endpoints.insert("/v1/recovery/initiate", recovery.clone());
+        endpoints.insert("/v1/recovery/release", recovery);
 
         Self {
             enabled: cfg.enabled,
