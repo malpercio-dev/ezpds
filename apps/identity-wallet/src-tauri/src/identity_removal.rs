@@ -373,17 +373,22 @@ fn wipe_local(store: &IdentityStore, did: &str) -> Result<(), RemovalError> {
     }
 }
 
-/// Compute the `RemovalOutcome` after a successful `tombstone_and_wipe`.
-fn removal_outcome(tombstone_cid: String) -> Result<RemovalOutcome, RemovalError> {
-    let was_last_identity = IdentityStore
+/// `true` if no managed identities remain — the UI returns to onboarding rather than the
+/// identity list. Shared by the tombstone-completing paths and the local-only forget path.
+fn no_identities_remain() -> Result<bool, RemovalError> {
+    IdentityStore
         .list_identities()
         .map(|ids| ids.is_empty())
         .map_err(|e| RemovalError::LocalWipeFailed {
             message: format!("failed to re-read managed identities: {e}"),
-        })?;
+        })
+}
+
+/// Compute the `RemovalOutcome` after a successful `tombstone_and_wipe`.
+fn removal_outcome(tombstone_cid: String) -> Result<RemovalOutcome, RemovalError> {
     Ok(RemovalOutcome {
         tombstone_cid,
-        was_last_identity,
+        was_last_identity: no_identities_remain()?,
     })
 }
 
@@ -481,6 +486,31 @@ pub async fn tombstone_identity(
 #[tauri::command]
 pub fn list_pending_removals() -> Vec<String> {
     load_pending_removals()
+}
+
+/// Tauri command: forget an identity's local material WITHOUT any network step.
+///
+/// The escape hatch for an identity that can no longer be removed through the normal flow
+/// because its PDS account no longer exists — deleted from another device, purged
+/// server-side, or migrated away. In every such case the deletion endpoints can only answer
+/// with an opaque 401: the PDS deliberately does not expose account existence, so an unknown
+/// DID and a wrong password are indistinguishable (see
+/// `crates/pds/src/routes/delete_account.rs`). The request/confirm flow can therefore never
+/// make progress, and without this the identity would be stranded in the wallet forever.
+///
+/// This wipes the DID's Keychain material and clears any pending-removal marker. It
+/// deliberately does NOT tombstone the did:plc: the DID may already be retired, or (the
+/// migrate-away case) the device key is no longer a rotation key and the identity now lives
+/// on another PDS — so "forget locally" only promises to remove the identity from THIS
+/// device. The frontend states that plainly and gates the call behind the biometric prompt.
+///
+/// Returns `was_last_identity` (mirroring `RemovalOutcome`) so the UI can route back to
+/// onboarding rather than the identity list when the wallet is now empty.
+#[tauri::command]
+pub fn forget_identity_locally(did: String) -> Result<bool, RemovalError> {
+    wipe_local(&IdentityStore, &did)?;
+    clear_removal_pending_best_effort(&did);
+    no_identities_remain()
 }
 
 /// Resolve the PDS base URL for `did`: the stored token record first, then live
@@ -683,5 +713,64 @@ mod tests {
         // safety net, and `list_pending_removals` is called unconditionally on launch.
         crate::keychain::store_item(PENDING_REMOVALS_ACCOUNT, b"not json").unwrap();
         assert!(load_pending_removals().is_empty());
+    }
+
+    // ── Local-only "forget" escape hatch ──────────────────────────────────────
+    //
+    // For an identity whose PDS account no longer exists (deleted elsewhere / migrated
+    // away), `forget_identity_locally` must wipe local state with no network step and
+    // clear any stale pending-removal marker.
+
+    #[test]
+    fn forget_identity_locally_wipes_and_clears_marker() {
+        crate::keychain::clear_for_test();
+        let store = IdentityStore;
+        store.add_identity("did:plc:gone").unwrap();
+        assert_eq!(
+            store.list_identities().unwrap(),
+            vec!["did:plc:gone".to_string()]
+        );
+        // A stale marker from an interrupted prior attempt must be cleared too.
+        mark_removal_pending("did:plc:gone").unwrap();
+
+        let was_last = forget_identity_locally("did:plc:gone".to_string()).unwrap();
+
+        assert!(
+            was_last,
+            "forgetting the only identity reports wasLast=true"
+        );
+        assert!(
+            store.list_identities().unwrap().is_empty(),
+            "the identity is gone from the managed set"
+        );
+        assert!(
+            load_pending_removals().is_empty(),
+            "the pending-removal marker was cleared"
+        );
+    }
+
+    #[test]
+    fn forget_identity_locally_is_idempotent_for_unknown_did() {
+        crate::keychain::clear_for_test();
+        // Never registered — a wipe of a not-found identity is success, not an error, so a
+        // second "forget" (or one against a DID some other path already removed) never wedges.
+        let was_last = forget_identity_locally("did:plc:never".to_string()).unwrap();
+        assert!(was_last, "an empty wallet reports wasLast=true");
+    }
+
+    #[test]
+    fn forget_identity_locally_reports_not_last_when_others_remain() {
+        crate::keychain::clear_for_test();
+        let store = IdentityStore;
+        store.add_identity("did:plc:gone").unwrap();
+        store.add_identity("did:plc:keep").unwrap();
+
+        let was_last = forget_identity_locally("did:plc:gone".to_string()).unwrap();
+
+        assert!(!was_last, "another identity remains, so not the last");
+        assert_eq!(
+            store.list_identities().unwrap(),
+            vec!["did:plc:keep".to_string()]
+        );
     }
 }

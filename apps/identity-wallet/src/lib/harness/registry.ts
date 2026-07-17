@@ -98,6 +98,7 @@ export type CommandName =
   | 'confirm_identity_removal'
   | 'tombstone_identity'
   | 'list_pending_removals'
+  | 'forget_identity_locally'
   // migration.ts
   | 'build_did_web_migration_document_cmd'
   | 'submit_did_web_migration_document_cmd'
@@ -356,6 +357,9 @@ export function buildRegistry(state: WalletState): Registry {
     // The fake removes an identity synchronously, so it never strands one mid-flow —
     // there is nothing to reconcile on launch. Real backend markers are covered by Rust.
     list_pending_removals: (): string[] => [],
+    // The local-only escape hatch: drop the identity and report whether the wallet is now
+    // empty, mirroring the backend's `wasLastIdentity`.
+    forget_identity_locally: (args): boolean => removeIdentity(state, didArg(args)).wasLastIdentity,
 
     // ── migration ────────────────────────────────────────────────────────────
     build_did_web_migration_document_cmd: (args): DidWebMigrationDocument => {
