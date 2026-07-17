@@ -1297,4 +1297,318 @@ mod tests {
             &Ipld::String("did:plc:dave".to_string())
         );
     }
+
+    // ── Firehose interop gate ────────────────────────────────────────────────
+    //
+    // Pins the `#commit` frame's `blocks` CAR payload to the upstream ATProto interop MST
+    // commit-proof vectors (`tests/fixtures/interop/commit-proof-fixtures.json`, vendored from
+    // bluesky-social/atproto-interop-tests, CC0). See that directory's README for provenance and
+    // the documented scope/divergence of this gate — there is no upstream vector for a literal
+    // `#commit`/`#account`/`#identity`/`#sync` wire *frame byte* sequence, only this MST
+    // commit-proof fixture.
+    mod firehose_interop_gate {
+        use super::*;
+        use atrium_repo::blockstore::{
+            AsyncBlockStoreRead, AsyncBlockStoreWrite, CarStore, MemoryBlockStore, SHA2_256,
+        };
+        use atrium_repo::mst::Tree;
+
+        /// One entry of `firehose/commit-proof-fixtures.json` (atproto-interop-tests, CC0).
+        #[derive(serde::Deserialize)]
+        struct CommitProofFixture {
+            comment: String,
+            #[serde(rename = "leafValue")]
+            leaf_value: String,
+            keys: Vec<String>,
+            adds: Vec<String>,
+            dels: Vec<String>,
+            #[serde(rename = "rootBeforeCommit")]
+            root_before: String,
+            #[serde(rename = "rootAfterCommit")]
+            root_after: String,
+            #[serde(rename = "blocksInProof")]
+            blocks_in_proof: Vec<String>,
+        }
+
+        fn load_fixtures() -> Vec<CommitProofFixture> {
+            let raw = include_str!("../../tests/fixtures/interop/commit-proof-fixtures.json");
+            let fixtures: Vec<CommitProofFixture> =
+                serde_json::from_str(raw).expect("parse commit-proof-fixtures.json");
+            assert!(
+                !fixtures.is_empty(),
+                "commit-proof fixtures must not be empty"
+            );
+            fixtures
+        }
+
+        fn parse_cid(s: &str) -> Cid {
+            s.parse().unwrap_or_else(|_| panic!("invalid CID: {s}"))
+        }
+
+        /// Rebuild a fixture's before/after MST (same technique as
+        /// `repo-engine/tests/interop_gate.rs`) and return the blockstore plus both root CIDs,
+        /// after asserting each matches the fixture's declared root.
+        async fn build_before_after(f: &CommitProofFixture) -> (MemoryBlockStore, Cid, Cid) {
+            let mut bs = MemoryBlockStore::new();
+            let leaf_cid = parse_cid(&f.leaf_value);
+
+            let root_before = {
+                let mut tree = Tree::create(&mut bs).await.expect("create tree");
+                for key in &f.keys {
+                    tree.add(key, leaf_cid)
+                        .await
+                        .unwrap_or_else(|_| panic!("add key {key:?}"));
+                }
+                tree.root()
+            };
+            assert_eq!(
+                root_before,
+                parse_cid(&f.root_before),
+                "[{}] rootBeforeCommit must match the interop fixture",
+                f.comment,
+            );
+
+            let root_after = {
+                let mut tree = Tree::open(&mut bs, root_before);
+                for key in &f.adds {
+                    tree.add(key, leaf_cid)
+                        .await
+                        .unwrap_or_else(|_| panic!("add key {key:?}"));
+                }
+                for key in &f.dels {
+                    tree.delete(key)
+                        .await
+                        .unwrap_or_else(|_| panic!("delete key {key:?}"));
+                }
+                tree.root()
+            };
+            assert_eq!(
+                root_after,
+                parse_cid(&f.root_after),
+                "[{}] rootAfterCommit must match the interop fixture",
+                f.comment,
+            );
+
+            (bs, root_before, root_after)
+        }
+
+        /// Copy exactly `cids` out of `source` into a fresh blockstore, verifying each block's
+        /// bytes actually hash to its declared CID. Simulates "the party that received exactly
+        /// this proof CAR and nothing else" — the same posture the reference implementation's own
+        /// test (`packages/repo/tests/commit-proofs.test.ts`) takes with `new MemoryBlockstore(proof)`.
+        async fn copy_blocks(source: &mut MemoryBlockStore, cids: &[Cid]) -> MemoryBlockStore {
+            let mut dest = MemoryBlockStore::new();
+            for &cid in cids {
+                let mut bytes = Vec::new();
+                source
+                    .read_block_into(cid, &mut bytes)
+                    .await
+                    .unwrap_or_else(|_| {
+                        panic!("proof CID {cid} must be readable from the source store")
+                    });
+                let written = dest
+                    .write_block(cid.codec(), SHA2_256, &bytes)
+                    .await
+                    .expect("write proof block");
+                assert_eq!(
+                    written, cid,
+                    "block bytes must hash to the declared CID {cid}"
+                );
+            }
+            dest
+        }
+
+        /// One step of undoing a commit's operations: re-delete an add, or re-add a del (with the
+        /// fixture's shared leaf value).
+        #[derive(Clone, Copy)]
+        enum InvertStep<'a> {
+            UndoAdd(&'a str),
+            UndoDel(&'a str),
+        }
+
+        /// Every ordering of `items` — mirrors `commit-proofs.test.ts`'s `permutations` helper, so
+        /// this gate proves the same order-independence property over the vendored fixtures.
+        fn permutations<T: Copy>(items: &[T]) -> Vec<Vec<T>> {
+            if items.len() <= 1 {
+                return vec![items.to_vec()];
+            }
+            let mut result = Vec::new();
+            for i in 0..items.len() {
+                let mut rest = items.to_vec();
+                let item = rest.remove(i);
+                for mut perm in permutations(&rest) {
+                    perm.insert(0, item);
+                    result.push(perm);
+                }
+            }
+            result
+        }
+
+        /// Apply one ordering of inverse steps to the tree at `root`, backed by `store`, and
+        /// return the resulting root.
+        async fn invert(
+            store: &mut MemoryBlockStore,
+            root: Cid,
+            leaf_cid: Cid,
+            steps: &[InvertStep<'_>],
+        ) -> Cid {
+            let mut tree = Tree::open(store, root);
+            for step in steps {
+                match step {
+                    InvertStep::UndoAdd(key) => tree
+                        .delete(key)
+                        .await
+                        .unwrap_or_else(|_| panic!("invert-delete {key:?}")),
+                    InvertStep::UndoDel(key) => tree
+                        .add(key, leaf_cid)
+                        .await
+                        .unwrap_or_else(|_| panic!("invert-add {key:?}")),
+                }
+            }
+            tree.root()
+        }
+
+        /// Assert that inverting every ordering of `f`'s operations, using ONLY the blocks in
+        /// `store` (rooted at `root_after`), recovers exactly `expected_before` — the load-bearing
+        /// guarantee `blocksInProof` provides (per `commit-proofs.test.ts`): the declared proof set
+        /// is sufficient, on its own, to invert the operation and recover the pre-commit root.
+        async fn assert_inverts_to(
+            store: &mut MemoryBlockStore,
+            root_after: Cid,
+            leaf_cid: Cid,
+            f: &CommitProofFixture,
+            expected_before: Cid,
+        ) {
+            let steps: Vec<InvertStep> = f
+                .adds
+                .iter()
+                .map(|k| InvertStep::UndoAdd(k))
+                .chain(f.dels.iter().map(|k| InvertStep::UndoDel(k)))
+                .collect();
+            for order in permutations(&steps) {
+                let inverted = invert(store, root_after, leaf_cid, &order).await;
+                assert_eq!(
+                    inverted, expected_before,
+                    "[{}] inverting the proof-only store must recover rootBeforeCommit",
+                    f.comment,
+                );
+            }
+        }
+
+        #[tokio::test]
+        async fn commit_blocks_invert_to_interop_proof_fixtures() {
+            for f in &load_fixtures() {
+                let (mut bs, root_before, root_after) = build_before_after(f).await;
+                let leaf_cid = parse_cid(&f.leaf_value);
+                let proof_cids: Vec<Cid> = f.blocks_in_proof.iter().map(|s| parse_cid(s)).collect();
+
+                // The reference implementation's own declared minimal proof set, on its own, must
+                // be sufficient for OUR MST algorithm to invert the operation and recover
+                // rootBeforeCommit — the direct interop pin (no firehose plumbing involved yet).
+                let mut proof_only = copy_blocks(&mut bs, &proof_cids).await;
+                assert_inverts_to(&mut proof_only, root_after, leaf_cid, f, root_before).await;
+
+                // Round-trip a CAR of that same block set through the real firehose pipeline:
+                // persist via `Firehose::emit_commit`, reconstruct via `decode_stored_event` (as
+                // cursor replay does), then re-encode the wire `#commit` frame and confirm the
+                // `blocks` field is byte-identical — and, decoded back out of the wire bytes alone,
+                // still inverts to rootBeforeCommit exactly like the source proof did.
+                let mut car_cids = proof_cids.clone();
+                if !car_cids.contains(&root_after) {
+                    car_cids.push(root_after);
+                }
+                let car_bytes = repo_engine::build_car_from_cids(&mut bs, root_after, car_cids)
+                    .await
+                    .expect("build proof CAR");
+
+                let db = crate::db::open_pool("sqlite::memory:").await.unwrap();
+                crate::db::run_migrations(&db).await.unwrap();
+                let fh = Firehose::new(db.clone()).await.unwrap();
+                let seq = fh
+                    .emit_commit(CommitInput {
+                        repo: "did:plc:firehoseinterop".to_string(),
+                        commit: root_after.to_string(),
+                        rev: "3kinterop".to_string(),
+                        since: None,
+                        prev_data: Some(root_before.to_string()),
+                        ops: Vec::new(),
+                        blocks: car_bytes.clone(),
+                    })
+                    .await
+                    .expect("emit commit");
+
+                let rows = crate::db::firehose_seq::events_in_range(&db, 0, seq, 1)
+                    .await
+                    .unwrap();
+                let event =
+                    crate::firehose::decode_stored_event(seq, &rows[0].event_type, &rows[0].event)
+                        .expect("decode stored #commit event");
+                let crate::firehose::FirehoseEvent::Commit(commit_event) = event else {
+                    panic!("expected a #commit event");
+                };
+                assert_eq!(
+                    commit_event.blocks, car_bytes,
+                    "blocks must round-trip through persist + replay unchanged"
+                );
+
+                let frame = encode_commit_frame(&commit_event).expect("encode #commit frame");
+                let (header, body) = decode_frame(&frame);
+                assert_eq!(map_get(&header, "op"), &Ipld::Integer(1));
+                assert_eq!(map_get(&header, "t"), &Ipld::String("#commit".to_string()));
+
+                let wire_blocks = match map_get(&body, "blocks") {
+                    Ipld::Bytes(b) => b.clone(),
+                    other => panic!("blocks must be a byte string, got {other:?}"),
+                };
+                assert_eq!(
+                    wire_blocks, car_bytes,
+                    "[{}] wire #commit.blocks must be byte-identical to the persisted proof CAR",
+                    f.comment,
+                );
+
+                let mut car_store = CarStore::open(std::io::Cursor::new(&wire_blocks))
+                    .await
+                    .expect("wire blocks must parse as a CARv1");
+                let mut wire_only = MemoryBlockStore::new();
+                for &cid in &proof_cids {
+                    let mut wire_bytes = Vec::new();
+                    car_store
+                        .read_block_into(cid, &mut wire_bytes)
+                        .await
+                        .unwrap_or_else(|_| {
+                            panic!(
+                                "[{}] blocksInProof CID {cid} must resolve from the wire #commit.blocks CAR",
+                                f.comment
+                            )
+                        });
+                    let written = wire_only
+                        .write_block(cid.codec(), SHA2_256, &wire_bytes)
+                        .await
+                        .expect("write wire-decoded proof block");
+                    assert_eq!(
+                        written, cid,
+                        "wire block bytes must hash to the declared CID {cid}"
+                    );
+                }
+                assert_inverts_to(&mut wire_only, root_after, leaf_cid, f, root_before).await;
+            }
+        }
+
+        /// Deliberately assert an inversion recovers the WRONG root (the after-root, which never
+        /// equals the before-root once an add/del actually changed the tree) — the gate must
+        /// catch this rather than passing vacuously.
+        #[tokio::test]
+        #[should_panic(expected = "must recover rootBeforeCommit")]
+        async fn corrupted_expected_root_fixture_is_detected() {
+            let fixtures = load_fixtures();
+            let f = &fixtures[0];
+            let (mut bs, _root_before, root_after) = build_before_after(f).await;
+            let leaf_cid = parse_cid(&f.leaf_value);
+            let proof_cids: Vec<Cid> = f.blocks_in_proof.iter().map(|s| parse_cid(s)).collect();
+            let mut proof_only = copy_blocks(&mut bs, &proof_cids).await;
+
+            // Wrong on purpose: the inverted root must equal `root_before`, never `root_after`.
+            assert_inverts_to(&mut proof_only, root_after, leaf_cid, f, root_after).await;
+        }
+    }
 }
