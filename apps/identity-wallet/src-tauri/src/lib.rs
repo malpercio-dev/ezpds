@@ -16,10 +16,13 @@ pub mod plc_monitor;
 pub mod recovery;
 pub mod rotate_repo_key;
 pub mod session_provider;
+pub mod share_ceremony;
 pub mod source_login;
 pub mod sovereign_session;
 
-use crypto::{build_did_plc_genesis_op_with_external_signer, CryptoError, DidKeyUri};
+use crypto::{
+    build_did_plc_genesis_op_multi_rotation_with_external_signer, CryptoError, DidKeyUri,
+};
 use serde::{Deserialize, Serialize};
 use tauri::{Emitter, Manager};
 
@@ -68,17 +71,31 @@ struct CreateDidRequest {
     did_web_document: Option<String>,
     /// Initial password stored as an argon2id PHC string by the PDS.
     password: String,
+    /// did:key of the wallet-derived recovery rotation key (client-share ceremony;
+    /// did:plc only). Sent together with `escrow_share`, never alone.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    recovery_key: Option<String>,
+    /// Share 2 of the wallet's client-side split as a base32 v2 share envelope — the
+    /// escrow deposit, the only share Custos ever sees.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    escrow_share: Option<String>,
 }
 
-/// Response from POST /v1/dids — the promoted DID, upgraded session token, and Shamir shares.
+/// Response from POST /v1/dids — the promoted DID and upgraded session token.
+///
+/// The Shamir share fields are populated only on the legacy server-side ceremony
+/// (did:web still uses it); the client-share did:plc path returns none — the wallet
+/// already holds every share it generated.
 #[derive(Deserialize)]
 struct CreateDidResponse {
     did: String,
     session_token: String,
-    /// Share 1 of 3 — to be stored in iCloud Keychain by the app.
-    shamir_share_1: String,
-    /// Share 3 of 3 — to be shown to the user for manual backup.
-    shamir_share_3: String,
+    /// Share 1 of 3 — to be stored in iCloud Keychain by the app (legacy path only).
+    #[serde(default)]
+    shamir_share_1: Option<String>,
+    /// Share 3 of 3 — to be shown to the user for manual backup (legacy path only).
+    #[serde(default)]
+    shamir_share_3: Option<String>,
 }
 
 /// PDS error envelope: { "error": { "code": "...", "message": "..." } }
@@ -140,9 +157,14 @@ pub enum CreateAccountError {
 #[serde(rename_all = "camelCase")]
 pub struct DIDCeremonyResult {
     pub did: String,
-    /// Share 3 of 3 — the user's manual backup share.
+    /// Share 3 of 3 — the user's manual backup share, in machine (base32 envelope)
+    /// form, used for the QR rendering.
     /// Share 1 has already been stored in iCloud Keychain by the Rust backend.
     pub share3: String,
+    /// Share 3 rendered as the BIP-39-style word phrase (same envelope bytes) — the
+    /// primary human-custody rendering on the backup screen. Empty on the legacy
+    /// did:web ceremony, whose share format predates the word rendering.
+    pub share3_words: String,
 }
 
 #[derive(Serialize)]
@@ -166,6 +188,8 @@ pub enum DIDCeremonyError {
     PdsKeyFetchFailed,
     #[error("PDS has no signing key provisioned")]
     NoPdsSigningKey,
+    #[error("recovery share generation failed")]
+    ShareGenerationFailed,
     #[error("device signing failed")]
     SigningFailed,
     #[error("DID creation request failed")]
@@ -472,16 +496,32 @@ async fn perform_did_ceremony(
     let pending_token = context.pending_token;
     let pds_key = fetch_repo_signing_key(&state, &pending_token).await?;
 
-    // Step 4: Build signed genesis op — device key as rotation key, per-account repo key as signing key.
+    // Step 3.5: Generate (or reload from staging) the client-side share set — seed,
+    // derived recovery key, and the 2-of-3 envelope split. Staged BEFORE any network
+    // call so a mid-ceremony retry reuses the identical set (same set_id) instead of
+    // orphaning an escrow deposit. Custos only ever receives Share 2.
+    let pds_base_url = state.custos_client().base_url_str().to_owned();
+    let shares = share_ceremony::load_or_create(&handle, &pds_base_url).map_err(|e| {
+        tracing::error!(error = %e, "client-side share generation failed during DID ceremony");
+        DIDCeremonyError::ShareGenerationFailed
+    })?;
+
+    // Step 4: Build signed genesis op with rotationKeys = [device, recovery, PDS] —
+    // device key supreme (the 72h-override backstop), the derived recovery key above the
+    // PDS key, the PDS's per-account repo key as the #atproto signing key.
     // On device, the private key never leaves the Secure Enclave; on Simulator and macOS, a software key is used instead.
-    let rotation_key = DidKeyUri(device_key.key_id.clone());
+    let rotation_keys = [
+        DidKeyUri(device_key.key_id.clone()),
+        DidKeyUri(shares.recovery_key_id.clone()),
+        DidKeyUri(pds_key.key_id.clone()),
+    ];
     let signing_key = DidKeyUri(pds_key.key_id.clone());
 
-    let genesis_op = build_did_plc_genesis_op_with_external_signer(
-        &rotation_key,
+    let genesis_op = build_did_plc_genesis_op_multi_rotation_with_external_signer(
+        &rotation_keys,
         &signing_key,
         &handle,
-        state.custos_client().base_url_str(),
+        &pds_base_url,
         |data| {
             device_key::sign(data)
                 .map_err(|e| CryptoError::PlcOperation(format!("device signing failed: {e}")))
@@ -492,7 +532,8 @@ async fn perform_did_ceremony(
         DIDCeremonyError::SigningFailed
     })?;
 
-    // Step 6: POST the signed genesis op to the PDS to promote the account to a full DID.
+    // Step 6: POST the signed genesis op to the PDS to promote the account to a full DID,
+    // depositing the Share 2 envelope in the same request (the client-share ceremony).
     let create_did_req = CreateDidRequest {
         rotation_key_public: device_key.key_id,
         signed_creation_op: Some(serde_json::from_str(&genesis_op.signed_op_json).map_err(
@@ -503,6 +544,8 @@ async fn perform_did_ceremony(
         )?),
         did_web_document: None,
         password,
+        recovery_key: Some(shares.recovery_key_id.clone()),
+        escrow_share: Some(shares.share2.to_string()),
     };
 
     let resp = state
@@ -542,22 +585,77 @@ async fn perform_did_ceremony(
         DIDCeremonyError::KeychainError
     })?;
 
-    // Step 8: Store Share 1 in iCloud Keychain for automatic backup.
+    // Step 8: Store the wallet-generated Share 1 envelope in the durable iCloud-synced
+    // Keychain slot, then verify the write by reading it back — Share 1's durability is a
+    // precondition for tearing down the staging slot later (`confirm_share_backup`).
     // Uses ShareStorageFailed (not KeychainError) because the DID is already committed:
     // retrying the ceremony will hit DidAlreadyExists. The frontend can surface a distinct
     // message rather than telling the user to retry the whole ceremony.
-    keychain::store_item(
-        "recovery-share-1",
-        create_did_resp.shamir_share_1.as_bytes(),
-    )
-    .map_err(|e| {
+    keychain::store_item("recovery-share-1", shares.share1.as_bytes()).map_err(|e| {
         tracing::error!(error = %e, "DID committed but recovery share 1 keychain write failed");
         DIDCeremonyError::ShareStorageFailed
     })?;
+    match keychain::get_item("recovery-share-1") {
+        Ok(read_back) if read_back == shares.share1.as_bytes() => {}
+        Ok(_) => {
+            tracing::error!("recovery share 1 read-back does not match the written value");
+            return Err(DIDCeremonyError::ShareStorageFailed);
+        }
+        Err(e) => {
+            tracing::error!(error = %e, "recovery share 1 read-back failed after write");
+            return Err(DIDCeremonyError::ShareStorageFailed);
+        }
+    }
 
     Ok(DIDCeremonyResult {
         did: create_did_resp.did,
-        share3: create_did_resp.shamir_share_3,
+        share3: shares.share3.to_string(),
+        share3_words: shares.share3_words.to_string(),
+    })
+}
+
+/// Error returned by `confirm_share_backup`.
+#[derive(Debug, Serialize, thiserror::Error)]
+#[serde(tag = "code", rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum ShareBackupError {
+    /// Share 1 is not present in its durable Keychain slot — the staging material must
+    /// not be destroyed while it is the only home of the seed.
+    #[error("recovery share 1 is not durably stored")]
+    ShareNotStored,
+    #[error("keychain operation failed")]
+    KeychainError,
+}
+
+/// Confirm the user has saved Share 3 and tear down the ceremony staging slot.
+///
+/// The teardown order is load-bearing: Share 1 must be verifiably present in its durable
+/// slot (written by `perform_did_ceremony`) before the staging record — the seed's and
+/// Share 2's last local copy — is destroyed. Idempotent; called by the frontend when the
+/// Shamir backup screen's confirmation completes.
+#[tauri::command]
+fn confirm_share_backup() -> Result<(), ShareBackupError> {
+    match keychain::get_item("recovery-share-1") {
+        Ok(bytes) if !bytes.is_empty() => {}
+        Ok(_) => {
+            tracing::error!(
+                "confirm_share_backup: recovery share 1 is empty; keeping staging slot"
+            );
+            return Err(ShareBackupError::ShareNotStored);
+        }
+        Err(ref e) if keychain::is_not_found(e) => {
+            tracing::error!("confirm_share_backup: recovery share 1 missing; keeping staging slot");
+            return Err(ShareBackupError::ShareNotStored);
+        }
+        // An operational Keychain failure is not evidence the share is absent —
+        // report it as such so the caller can retry rather than re-run the ceremony.
+        Err(e) => {
+            tracing::error!(error = %e, "confirm_share_backup: keychain read failed; keeping staging slot");
+            return Err(ShareBackupError::KeychainError);
+        }
+    }
+    share_ceremony::clear_staging().map_err(|e| {
+        tracing::error!(error = %e, "failed to clear ceremony staging slot");
+        ShareBackupError::KeychainError
     })
 }
 
@@ -597,6 +695,10 @@ async fn complete_did_web_ceremony(
         signed_creation_op: None,
         did_web_document: Some(document_text),
         password,
+        // did:web stays on the legacy server-side share path — a did:web document has
+        // no PLC rotationKeys for a recovery key to bind to.
+        recovery_key: None,
+        escrow_share: None,
     };
     let response = state
         .custos_client()
@@ -612,13 +714,23 @@ async fn complete_did_web_ceremony(
         .json()
         .await
         .map_err(|_| DIDCeremonyError::DidCreationFailed)?;
+    // The did:web ceremony stays on the legacy server-side share path (a did:web document
+    // has no PLC rotationKeys for a recovery key to bind to), so the server must have
+    // returned both shares.
+    let (share1, share3) = match (created.shamir_share_1, created.shamir_share_3) {
+        (Some(share1), Some(share3)) => (share1, share3),
+        _ => {
+            tracing::error!("did:web ceremony response is missing Shamir shares");
+            return Err(DIDCeremonyError::DidCreationFailed);
+        }
+    };
     // Promotion is already durable and cannot be retried. Persist every irreplaceable response
     // value before the optional hosting toggle so a transient failure cannot strand the user.
     keychain::store_item("session-token", created.session_token.as_bytes())
         .map_err(|_| DIDCeremonyError::KeychainError)?;
     keychain::store_item("did", created.did.as_bytes())
         .map_err(|_| DIDCeremonyError::KeychainError)?;
-    keychain::store_item("recovery-share-1", created.shamir_share_1.as_bytes())
+    keychain::store_item("recovery-share-1", share1.as_bytes())
         .map_err(|_| DIDCeremonyError::ShareStorageFailed)?;
     if enable_managed_hosting {
         let hosting_result = state
@@ -641,7 +753,10 @@ async fn complete_did_web_ceremony(
     }
     Ok(DIDCeremonyResult {
         did: created.did,
-        share3: created.shamir_share_3,
+        share3,
+        // Legacy bare-base32 shares predate the envelope word rendering; the backup
+        // screen falls back to the machine form when this is empty.
+        share3_words: String::new(),
     })
 }
 
@@ -1119,6 +1234,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             create_account,
             perform_did_ceremony,
+            confirm_share_backup,
             prepare_did_web_ceremony,
             complete_did_web_ceremony,
             register_handle,
@@ -1193,11 +1309,44 @@ mod tests {
             signed_creation_op: Some(serde_json::json!({"type": "plc_operation"})),
             did_web_document: None,
             password: "mysecretpassword".into(),
+            recovery_key: Some("did:key:zRecovery".into()),
+            escrow_share: Some("SHARE2ENVELOPE".into()),
         };
         let json = serde_json::to_value(&req).unwrap();
         assert_eq!(json["rotationKeyPublic"], "did:key:z123");
         assert_eq!(json["password"], "mysecretpassword");
         assert!(json["signedCreationOp"].is_object());
+        assert_eq!(json["recoveryKey"], "did:key:zRecovery");
+        assert_eq!(json["escrowShare"], "SHARE2ENVELOPE");
+    }
+
+    /// The legacy did:web request shape must not grow the client-share fields — the
+    /// server treats their absence as the legacy ceremony.
+    #[test]
+    fn create_did_request_omits_absent_client_share_fields() {
+        let req = CreateDidRequest {
+            rotation_key_public: "did:key:z123".into(),
+            signed_creation_op: None,
+            did_web_document: Some("{}".into()),
+            password: "mysecretpassword".into(),
+            recovery_key: None,
+            escrow_share: None,
+        };
+        let json = serde_json::to_value(&req).unwrap();
+        assert!(json.get("recoveryKey").is_none());
+        assert!(json.get("escrowShare").is_none());
+    }
+
+    // -- CreateDidResponse tolerates a share-less (client-share path) body --
+    #[test]
+    fn create_did_response_deserializes_without_shares() {
+        let resp: CreateDidResponse = serde_json::from_str(
+            r#"{"did":"did:plc:abc","session_token":"tok","did_document":{},"status":"active"}"#,
+        )
+        .unwrap();
+        assert_eq!(resp.did, "did:plc:abc");
+        assert!(resp.shamir_share_1.is_none());
+        assert!(resp.shamir_share_3.is_none());
     }
 
     // -- CreateMobileAccountRequest serialization --
@@ -1423,6 +1572,7 @@ mod tests {
         let result = DIDCeremonyResult {
             did: "did:plc:abcdefghijklmnopqrstuvwx".into(),
             share3: "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567ABCDEFGHIJKLMNOPQRST".into(),
+            share3_words: "arena baker cabin".into(),
         };
         let json = serde_json::to_value(&result).unwrap();
         assert_eq!(json["did"], "did:plc:abcdefghijklmnopqrstuvwx");
@@ -1430,6 +1580,7 @@ mod tests {
             json["share3"],
             "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567ABCDEFGHIJKLMNOPQRST"
         );
+        assert_eq!(json["share3Words"], "arena baker cabin");
     }
 
     #[test]
@@ -1438,9 +1589,43 @@ mod tests {
         let result = DIDCeremonyResult {
             did: "did:plc:abcdefghijklmnopqrstuvwx".into(),
             share3: share.into(),
+            share3_words: String::new(),
         };
         let json = serde_json::to_value(&result).unwrap();
         assert_eq!(json["share3"], share);
+    }
+
+    // -- ShareBackupError serialization --
+    #[test]
+    fn share_backup_error_variants_serialize_correctly() {
+        let json = serde_json::to_value(&ShareBackupError::ShareNotStored).unwrap();
+        assert_eq!(json["code"], "SHARE_NOT_STORED");
+        let json = serde_json::to_value(&ShareBackupError::KeychainError).unwrap();
+        assert_eq!(json["code"], "KEYCHAIN_ERROR");
+    }
+
+    // -- confirm_share_backup teardown ordering --
+    #[test]
+    fn confirm_share_backup_requires_durable_share1() {
+        keychain::clear_for_test();
+        share_ceremony::load_or_create("alice.example.com", "https://pds.example.com").unwrap();
+
+        // Share 1 not yet in its durable slot: the staging record must survive.
+        assert!(matches!(
+            confirm_share_backup(),
+            Err(ShareBackupError::ShareNotStored)
+        ));
+        assert!(keychain::get_item(share_ceremony::STAGING_ACCOUNT).is_ok());
+
+        // Once Share 1 is durably stored, confirmation tears the staging slot down.
+        keychain::store_item("recovery-share-1", b"SHARE1ENVELOPE").unwrap();
+        confirm_share_backup().expect("confirmation should succeed");
+        assert!(matches!(
+            keychain::get_item(share_ceremony::STAGING_ACCOUNT),
+            Err(ref e) if keychain::is_not_found(e)
+        ));
+        // Idempotent repeat.
+        confirm_share_backup().expect("repeat confirmation is a no-op");
     }
 
     // -- DIDCeremonyError serialization (one test per variant) --

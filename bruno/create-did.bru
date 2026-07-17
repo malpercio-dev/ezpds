@@ -18,7 +18,9 @@ body:json {
   {
     "rotationKeyPublic": "{{rotationKeyPublic}}",
     "signedCreationOp": {{signedCreationOp}},
-    "password": "{{password}}"
+    "password": "{{password}}",
+    "recoveryKey": "{{recoveryKey}}",
+    "escrowShare": "{{escrowShare}}"
   }
 }
 
@@ -26,5 +28,17 @@ docs {
   Promote a pending mobile account using exactly one identity ceremony: `signedCreationOp` for
   did:plc, or `didWebDocument` for did:web after the reviewed document is live at its authoritative
   URL. The did:web branch verifies `#device`, `#atproto`, `#atproto_pds`, the handle, and external
-  resolution before promotion. Both branches return the unchanged 2-of-3 Shamir shares.
+  resolution before promotion.
+
+  The route is dual-mode on share custody (the ceremony inversion):
+
+  - Client-share ceremony (did:plc only): `recoveryKey` (did:key of the wallet-derived recovery
+    rotation key — must appear in the op's rotationKeys) and `escrowShare` (base32 v2 share
+    envelope of Share 2, index 2) are sent together. The server KEK-wraps the envelope into
+    `recovery_escrow` atomically with promotion and the response carries NO share material
+    (`shamir_share_1`/`shamir_share_3` absent). Sending only one of the two fields is a 400.
+  - Legacy server-side ceremony (pre-inversion wallet builds, and all did:web ceremonies): omit
+    both fields. The server generates and splits the secret, returns `shamir_share_1`/
+    `shamir_share_3`, and keeps KEK-wrapped Share 2 in `accounts.recovery_share`. This path is
+    log-flagged for adoption tracking and retires in a follow-up once the wallet fleet updates.
 }

@@ -40,7 +40,8 @@
   import AgentClaimApprovalScreen from '$lib/components/home/AgentClaimApprovalScreen.svelte';
   import SettingsScreen from '$lib/components/home/SettingsScreen.svelte';
   import RemoveIdentityScreen from '$lib/components/home/RemoveIdentityScreen.svelte';
-  import { createAccount, registerCreatedIdentity, listIdentities, listPendingRemovals, getStoredDidDoc, checkIdentityStatus, isCodedError, type CreateAccountError, type OAuthError, type IdentityInfo, type VerifiedClaimOp, type ClaimResult, type UnauthorizedChange } from '$lib/ipc';
+  import { createAccount, confirmShareBackup, registerCreatedIdentity, listIdentities, listPendingRemovals, getStoredDidDoc, checkIdentityStatus, isCodedError, type CreateAccountError, type OAuthError, type IdentityInfo, type VerifiedClaimOp, type ClaimResult, type UnauthorizedChange } from '$lib/ipc';
+  import { authenticateBiometric } from '$lib/biometric';
   import { normalizePlcDocToW3c, extractHandle } from '$lib/did-doc-utils';
   import IdentityListHome from '$lib/components/home/IdentityListHome.svelte';
   import OnboardingShell from '$lib/components/ui/OnboardingShell.svelte';
@@ -103,7 +104,7 @@
   // home screen's "add" action), so the entry screen can offer a Back-to-home
   // affordance. Stays false on first launch, where there is no home to return to.
   let cameFromHome = $state(false);
-  let form = $state({ claimCode: '', email: '', handle: '', password: '', did: '', share3: '', registeredHandle: '', handleOrDid: '' });
+  let form = $state({ claimCode: '', email: '', handle: '', password: '', did: '', share3: '', share3Words: '', registeredHandle: '', handleOrDid: '' });
   let didWebHosting = $state<DidWebHosting>('self');
   let migrationHostingChosen = $state(false);
   let identityMethod = $state<'plc' | 'web'>('plc');
@@ -298,6 +299,35 @@
   // continue — the user keeps their identity and can refresh the card later.
   // (Strict alternative: surface the error and let the user retry before
   // advancing — see the accompanying notes.)
+  let backupConfirmError = $state<string | null>(null);
+
+  async function confirmBackupAndContinue() {
+    backupConfirmError = null;
+    // The teardown destroys the last local copy of the recovery seed material, so it
+    // is gated on user presence like every other irreversible operation.
+    try {
+      await authenticateBiometric('Confirm you have saved your recovery share');
+    } catch (e) {
+      console.warn('Backup confirmation biometric gate rejected:', e);
+      backupConfirmError = 'Authentication was cancelled. Try again to finish your backup.';
+      return;
+    }
+    // Fail closed: advancing without a successful teardown would either violate the
+    // backup invariant (SHARE_NOT_STORED — Share 1 never reached its durable slot) or
+    // report completion while sensitive staging material is still retained.
+    try {
+      await confirmShareBackup();
+    } catch (e) {
+      console.error('Ceremony staging teardown failed:', e);
+      backupConfirmError =
+        isCodedError(e) && e.code === 'SHARE_NOT_STORED'
+          ? 'Your automatic iCloud share is not saved yet. Try again — if this keeps happening, reopen the app before continuing.'
+          : 'Could not finalize the backup. Check device storage and try again.';
+      return;
+    }
+    step = 'handle_registration';
+  }
+
   async function finishCreateFlow(handle: string) {
     form.registeredHandle = handle;
     try {
@@ -426,7 +456,7 @@
     <DIDCeremonyScreen
       handle={form.handle}
       password={form.password}
-      onsuccess={(result) => { form.did = result.did; form.share3 = result.share3; step = 'did_success'; }}
+      onsuccess={(result) => { form.did = result.did; form.share3 = result.share3; form.share3Words = result.share3Words; step = 'did_success'; }}
     />
   {:else if step === 'did_web_ceremony'}
     <DidWebCeremonyScreen
@@ -434,7 +464,7 @@
       handle={form.handle}
       password={form.password}
       hosting={didWebHosting}
-      onsuccess={(result) => { form.did = result.did; form.share3 = result.share3; step = 'did_success'; }}
+      onsuccess={(result) => { form.did = result.did; form.share3 = result.share3; form.share3Words = result.share3Words; step = 'did_success'; }}
       onback={() => goTo('password')}
     />
   {:else if step === 'did_success'}
@@ -445,7 +475,9 @@
   {:else if step === 'shamir_backup'}
     <ShamirBackupScreen
       share3={form.share3}
-      oncomplete={() => { step = 'handle_registration'; }}
+      share3Words={form.share3Words}
+      confirmError={backupConfirmError}
+      oncomplete={confirmBackupAndContinue}
     />
   {:else if step === 'handle_registration'}
     <HandleRegistrationScreen

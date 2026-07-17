@@ -27,6 +27,7 @@ Source: `apps/identity-wallet/src/lib/ipc/`
 | `complete_oauth_flow` | App command |
 | `confirm_agent_claim` | App command |
 | `confirm_identity_removal` | App command |
+| `confirm_share_backup` | App command |
 | `create_account` | App command |
 | `create_app_password` | App command |
 | `create_destination_account` | App command |
