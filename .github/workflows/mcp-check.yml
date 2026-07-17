@@ -11,9 +11,10 @@ name: MCP · check
 # This lane closes the cheap half: it type-checks BOTH packages (catching a signature
 # break in the shared surface) and runs the sidecar's HERMETIC, self-contained suite
 # (a stub PDS on loopback — no cargo build, no live network, ~5s). It needs NO secrets and
-# no macOS/cargo. The stdio conformance suite (`just mcp-test`) and the sidecar's MM-370
-# end-to-end suite (`pnpm test:e2e`) stay out because they need the `pds` binary; folding
-# them into the ci.yml PDS lane (which already builds `pds`) is a tracked follow-up.
+# no macOS/cargo. The sidecar's MM-370 end-to-end suite (`pnpm test:e2e`) stays out because
+# it needs the `pds` binary; folding it into the ci.yml PDS lane (which already builds
+# `pds`) is a tracked follow-up. The stdio conformance suite (`just mcp-test`) has the same
+# need but already runs in ci.yml's PDS gate, which reuses the binary that lane builds.
 # Path-filtered so only MCP changes pay the cost.
 
 on:
