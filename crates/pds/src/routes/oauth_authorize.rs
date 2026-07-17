@@ -248,6 +248,9 @@ pub async fn get_authorization(
     State(state): State<AppState>,
     Query(raw): Query<GetAuthorizationQuery>,
 ) -> Response {
+    // RFC 9207 issuer identifier, emitted as `iss` on every authorization response.
+    // Trailing slash trimmed to match the AS-metadata `issuer` value exactly.
+    let issuer = state.config.public_url.trim_end_matches('/').to_string();
     let params = match resolve_authorize_params(&state, raw).await {
         Ok(p) => p,
         Err(ResolveError::Client(msg)) => {
@@ -297,6 +300,7 @@ pub async fn get_authorization(
             "unsupported_response_type",
             "only response_type=code is supported",
             &params.state,
+            &issuer,
         )
         .into_response();
     }
@@ -307,6 +311,7 @@ pub async fn get_authorization(
             "invalid_request",
             "code_challenge_method must be S256",
             &params.state,
+            &issuer,
         )
         .into_response();
     }
@@ -334,8 +339,14 @@ pub async fn get_authorization(
     {
         Ok(s) => s,
         Err(desc) => {
-            return error_redirect(&params.redirect_uri, "invalid_scope", &desc, &params.state)
-                .into_response()
+            return error_redirect(
+                &params.redirect_uri,
+                "invalid_scope",
+                &desc,
+                &params.state,
+                &issuer,
+            )
+            .into_response()
         }
     };
 
@@ -364,6 +375,9 @@ pub async fn post_authorization(
     State(state): State<AppState>,
     Form(form): Form<ConsentForm>,
 ) -> Response {
+    // RFC 9207 issuer identifier, emitted as `iss` on every authorization response.
+    // Trailing slash trimmed to match the AS-metadata `issuer` value exactly.
+    let issuer = state.config.public_url.trim_end_matches('/').to_string();
     // Validate client and redirect_uri first — deny/approve both redirect there,
     // so we must confirm it is safe before using it as a redirect target.
     let metadata = match lookup_and_validate_client(&state, &form.client_id, &form.redirect_uri)
@@ -399,6 +413,7 @@ pub async fn post_authorization(
             "access_denied",
             "User denied access",
             &form.state,
+            &issuer,
         )
         .into_response();
     }
@@ -409,6 +424,7 @@ pub async fn post_authorization(
             "invalid_request",
             "invalid action",
             &form.state,
+            &issuer,
         )
         .into_response();
     }
@@ -419,6 +435,7 @@ pub async fn post_authorization(
             "unsupported_response_type",
             "only response_type=code is supported",
             &form.state,
+            &issuer,
         )
         .into_response();
     }
@@ -429,6 +446,7 @@ pub async fn post_authorization(
             "invalid_request",
             "code_challenge_method must be S256",
             &form.state,
+            &issuer,
         )
         .into_response();
     }
@@ -477,6 +495,7 @@ pub async fn post_authorization(
                     "server_error",
                     "Internal server error",
                     &form.state,
+                    &issuer,
                 )
                 .into_response();
             }
@@ -517,6 +536,7 @@ pub async fn post_authorization(
                         "server_error",
                         "Internal server error",
                         &form.state,
+                        &issuer,
                     )
                     .into_response();
                 }
@@ -531,6 +551,7 @@ pub async fn post_authorization(
                 "server_error",
                 "Internal server error",
                 &form.state,
+                &issuer,
             )
             .into_response();
         }
@@ -559,6 +580,7 @@ pub async fn post_authorization(
                         "server_error",
                         "Internal server error",
                         &form.state,
+                        &issuer,
                     )
                     .into_response();
                 }
@@ -577,6 +599,7 @@ pub async fn post_authorization(
                 "server_error",
                 "Internal server error",
                 &form.state,
+                &issuer,
             )
             .into_response();
         }
@@ -592,6 +615,7 @@ pub async fn post_authorization(
                     "server_error",
                     "Internal server error",
                     &form.state,
+                    &issuer,
                 )
                 .into_response();
             }
@@ -609,8 +633,14 @@ pub async fn post_authorization(
     let normalized_scope = match crate::auth::oauth_scopes::normalize_scope_request(&form.scope) {
         Ok(s) => s,
         Err(desc) => {
-            return error_redirect(&form.redirect_uri, "invalid_scope", &desc, &form.state)
-                .into_response()
+            return error_redirect(
+                &form.redirect_uri,
+                "invalid_scope",
+                &desc,
+                &form.state,
+                &issuer,
+            )
+            .into_response()
         }
     };
 
@@ -627,8 +657,14 @@ pub async fn post_authorization(
     {
         Ok(s) => s,
         Err(desc) => {
-            return error_redirect(&form.redirect_uri, "invalid_scope", &desc, &form.state)
-                .into_response()
+            return error_redirect(
+                &form.redirect_uri,
+                "invalid_scope",
+                &desc,
+                &form.state,
+                &issuer,
+            )
+            .into_response()
         }
     };
 
@@ -645,8 +681,14 @@ pub async fn post_authorization(
         match crate::auth::oauth_scopes::normalize_scope_request(&granted_tokens.join(" ")) {
             Ok(s) => s,
             Err(desc) => {
-                return error_redirect(&form.redirect_uri, "invalid_scope", &desc, &form.state)
-                    .into_response()
+                return error_redirect(
+                    &form.redirect_uri,
+                    "invalid_scope",
+                    &desc,
+                    &form.state,
+                    &issuer,
+                )
+                .into_response()
             }
         };
 
@@ -674,6 +716,7 @@ pub async fn post_authorization(
             "server_error",
             "Failed to generate authorization code",
             &form.state,
+            &issuer,
         )
         .into_response();
     }
@@ -684,12 +727,15 @@ pub async fn post_authorization(
     } else {
         '?'
     };
+    // `iss` (RFC 9207) is required on the authorization response — the AS metadata advertises
+    // `authorization_response_iss_parameter_supported: true`, so a conformant client validates it.
     let redirect_url = format!(
-        "{}{}code={}&state={}",
+        "{}{}code={}&state={}&iss={}",
         form.redirect_uri,
         sep,
         encode_param(&token.plaintext),
         encode_param(&form.state),
+        encode_param(&issuer),
     );
     Redirect::to(&redirect_url).into_response()
 }
@@ -1038,6 +1084,11 @@ mod tests {
         let location = resp.headers().get("location").unwrap().to_str().unwrap();
         assert!(location.contains("error=access_denied"));
         assert!(location.contains("state=teststate"));
+        // RFC 9207 iss must be present on error responses too (test_state issuer).
+        assert!(
+            location.contains("iss=https%3A%2F%2Ftest.example.com"),
+            "error response must carry the iss parameter: {location}"
+        );
     }
 
     #[tokio::test]
@@ -1078,6 +1129,12 @@ mod tests {
         assert!(location.contains("code="));
         assert!(location.contains("state=teststate"));
         assert!(!location.contains("error="));
+        // RFC 9207 iss must be present on the successful authorization response so a
+        // conformant client (which the AS metadata told to expect it) accepts the code.
+        assert!(
+            location.contains("iss=https%3A%2F%2Ftest.example.com"),
+            "success response must carry the iss parameter: {location}"
+        );
     }
 
     #[tokio::test]

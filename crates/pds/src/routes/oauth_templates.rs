@@ -13,20 +13,27 @@ use axum::response::{Html, Redirect};
 // ── Public rendering functions ────────────────────────────────────────────────
 
 /// Build an OAuth error redirect (303) to `redirect_uri` with error parameters.
+///
+/// `issuer` is emitted as the RFC 9207 `iss` parameter. The AT Protocol OAuth metadata
+/// advertises `authorization_response_iss_parameter_supported: true`, so a conformant
+/// client validates `iss` on every authorization response — including error responses
+/// (e.g. the user denying) — and rejects one that omits it.
 pub(super) fn error_redirect(
     redirect_uri: &str,
     error: &str,
     description: &str,
     state: &str,
+    issuer: &str,
 ) -> Redirect {
     let sep = if redirect_uri.contains('?') { '&' } else { '?' };
     let url = format!(
-        "{}{}error={}&error_description={}&state={}",
+        "{}{}error={}&error_description={}&state={}&iss={}",
         redirect_uri,
         sep,
         encode_param(error),
         encode_param(description),
         encode_param(state),
+        encode_param(issuer),
     );
     Redirect::to(&url)
 }
@@ -400,6 +407,35 @@ const ICON_ALARM: &str = r#"<svg width="26" height="26" viewBox="0 0 24 24" fill
 #[cfg(test)]
 mod tests {
     use super::*;
+    use axum::response::IntoResponse;
+
+    /// `error_redirect` must emit the RFC 9207 `iss` parameter (the AS metadata advertises
+    /// `authorization_response_iss_parameter_supported: true`), alongside the error, its
+    /// description, and the round-tripped `state`.
+    #[test]
+    fn error_redirect_includes_iss_and_error_params() {
+        let redirect = error_redirect(
+            "https://app.example.com/callback",
+            "access_denied",
+            "User denied access",
+            "teststate",
+            "https://pds.example.com",
+        );
+        let location = redirect
+            .into_response()
+            .headers()
+            .get("location")
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .to_string();
+        assert!(location.contains("error=access_denied"), "{location}");
+        assert!(location.contains("state=teststate"), "{location}");
+        assert!(
+            location.contains("iss=https%3A%2F%2Fpds.example.com"),
+            "error redirect must carry the iss parameter: {location}"
+        );
+    }
 
     /// Every `granted_scope` checkbox must be a member of the consent <form> —
     /// controls outside the form element are silently omitted from the POST, which
