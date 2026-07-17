@@ -33,6 +33,7 @@ Fields come from the validated Rust configuration types. Environment overrides c
 | `appview` | — | `AppViewConfig` | No field-level description. |
 | `chat` | — | `ChatConfig` | No field-level description. |
 | `crawlers` | — | `CrawlersConfig` | No field-level description. |
+| `labeler` | — | `LabelerConfig` | Labeler watching: flag hosted accounts carrying labels from watched labelers. |
 | `rate_limit` | — | `RateLimitConfig` | Request rate-limiting knobs (global IP + per-endpoint IP + per-account write points). |
 | `telemetry` | — | `TelemetryConfig` | No field-level description. |
 | `email` | — | `EmailConfig` | Outbound email delivery (password reset, email confirmation, email update). |
@@ -85,6 +86,8 @@ Fields come from the validated Rust configuration types. Environment overrides c
 | `chat.url` | `EZPDS_CHAT_URL` | `String` | Base URL of the chat service (scheme + authority, no trailing slash). |
 | `chat.did` | `EZPDS_CHAT_DID` | `String` | Service DID (with `#fragment`) of the chat service, sent as `atproto-proxy`. |
 | `crawlers.urls` | `EZPDS_CRAWLERS` | `Vec<String>` | No field-level description. |
+| `labeler.watched` | `EZPDS_LABELER_WATCHED` | `Vec<WatchedLabeler>` | Labelers whose account-level labels flag hosted accounts. Empty (the default) disables labeler watching entirely. |
+| `labeler.poll_interval_secs` | `EZPDS_LABELER_POLL_INTERVAL_SECS` | `u64` | How often the watcher polls each watched labeler's `com.atproto.label.queryLabels`, in seconds. Default: 900 (15 minutes). Must be > 0 (like the GC intervals, a zero period would panic `tokio::time::interval`). |
 | `telemetry.enabled` | `EZPDS_TELEMETRY_ENABLED` | `bool` | Whether to export traces via OTLP. Off by default — zero overhead when disabled. |
 | `telemetry.otlp_endpoint` | `EZPDS_OTLP_ENDPOINT` | `String` | OTLP gRPC endpoint for the trace exporter. |
 | `telemetry.service_name` | `OTEL_SERVICE_NAME` | `String` | `service.name` resource attribute reported to the trace backend. |

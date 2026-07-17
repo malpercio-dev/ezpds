@@ -1119,6 +1119,11 @@ pub struct AccountList {
     pub accounts: Vec<AccountListEntry>,
     /// The configured per-account storage quota in bytes — one value for every row.
     pub quota_bytes: i64,
+    /// Accounts matching the current filters that carry at least one labeler flag —
+    /// stated per response because flagged accounts can sit on later pages. Defaulted so
+    /// a pre-labeler-watching relay (which omits the field) still parses.
+    #[serde(default)]
+    pub flagged_total: i64,
     pub cursor: Option<String>,
 }
 
@@ -1136,6 +1141,22 @@ pub struct AccountListEntry {
     pub total_bytes: i64,
     /// `total_bytes` as a percentage of `quota_bytes`.
     pub quota_used_pct: f64,
+    /// Labels currently in force from the relay's watched labelers, newest first; empty
+    /// for an unflagged account. Defaulted so a pre-labeler-watching relay still parses.
+    #[serde(default)]
+    pub flags: Vec<AccountFlag>,
+}
+
+/// One in-force label on an account, as observed by the relay from a watched labeler.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AccountFlag {
+    /// The label value (e.g. `spam`, `!hide`).
+    pub val: String,
+    /// DID of the labeler that applied the label.
+    pub labeler_did: String,
+    /// The labeler's label-creation timestamp.
+    pub cts: String,
 }
 
 /// The relay's server-health readout — the response shape of `GET /v1/admin/health`
@@ -1163,6 +1184,12 @@ pub struct HealthAccounts {
     pub deactivated: i64,
     pub suspended: i64,
     pub takendown: i64,
+    /// Accounts carrying at least one in-force label from a watched labeler — the
+    /// console's flagged badge count. Orthogonal to the lifecycle buckets, and always 0
+    /// when the relay watches no labelers. Defaulted so a pre-labeler-watching relay
+    /// (which omits the field) still parses.
+    #[serde(default)]
+    pub flagged: i64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, serde::Deserialize)]
@@ -2879,21 +2906,29 @@ mod tests {
                 "createdAt": "2026-07-01 12:00:00",
                 "status": "active",
                 "totalBytes": 42000,
-                "quotaUsedPct": 4.2
+                "quotaUsedPct": 4.2,
+                "flags": [{
+                    "val": "spam",
+                    "labelerDid": "did:plc:labeler",
+                    "cts": "2026-07-01T00:00:00Z"
+                }]
             }, {
                 "did": "did:plc:def456",
                 "handle": null,
                 "createdAt": "2026-07-02 08:30:00",
                 "status": "takendown",
                 "totalBytes": 0,
-                "quotaUsedPct": 0.0
+                "quotaUsedPct": 0.0,
+                "flags": []
             }],
             "quotaBytes": 1000000,
-            "cursor": "did:plc:def456"
+            "flaggedTotal": 1,
+            "cursor": "1:did:plc:def456"
         }"#;
         let list: AccountList = serde_json::from_str(json).expect("deserialize");
         assert_eq!(list.quota_bytes, 1_000_000);
-        assert_eq!(list.cursor.as_deref(), Some("did:plc:def456"));
+        assert_eq!(list.flagged_total, 1);
+        assert_eq!(list.cursor.as_deref(), Some("1:did:plc:def456"));
         assert_eq!(
             list.accounts[0],
             AccountListEntry {
@@ -2903,22 +2938,45 @@ mod tests {
                 status: "active".to_string(),
                 total_bytes: 42_000,
                 quota_used_pct: 4.2,
+                flags: vec![AccountFlag {
+                    val: "spam".to_string(),
+                    labeler_did: "did:plc:labeler".to_string(),
+                    cts: "2026-07-01T00:00:00Z".to_string(),
+                }],
             }
         );
         assert_eq!(list.accounts[1].handle, None);
         assert_eq!(list.accounts[1].status, "takendown");
+        assert!(list.accounts[1].flags.is_empty());
 
         // The relay omits `cursor` entirely on the last page — that must read as None.
-        let last_page: AccountList =
-            serde_json::from_str(r#"{"accounts":[],"quotaBytes":1000000}"#)
-                .expect("deserialize last page");
+        // A pre-labeler-watching relay also omits `flaggedTotal` and per-row `flags`;
+        // both must default rather than fail the whole page.
+        let last_page: AccountList = serde_json::from_str(
+            r#"{"accounts":[{
+                "did": "did:plc:old",
+                "handle": null,
+                "createdAt": "2026-07-02 08:30:00",
+                "status": "active",
+                "totalBytes": 0,
+                "quotaUsedPct": 0.0
+            }],"quotaBytes":1000000}"#,
+        )
+        .expect("deserialize last page");
         assert_eq!(last_page.cursor, None);
+        assert_eq!(last_page.flagged_total, 0);
+        assert!(last_page.accounts[0].flags.is_empty());
 
         // And it re-serializes camelCase for IPC — the frontend sees the relay's names.
         let value = serde_json::to_value(&list).expect("serialize");
         assert_eq!(value["accounts"][0]["createdAt"], "2026-07-01 12:00:00");
         assert_eq!(value["accounts"][0]["quotaUsedPct"], 4.2);
+        assert_eq!(
+            value["accounts"][0]["flags"][0]["labelerDid"],
+            "did:plc:labeler"
+        );
         assert_eq!(value["quotaBytes"], 1_000_000);
+        assert_eq!(value["flaggedTotal"], 1);
     }
 
     // Pins the relay's `HealthResponse` wire shape by value (the `pds` crate is
@@ -2929,7 +2987,7 @@ mod tests {
         let json = r#"{
             "version": "0.4.1",
             "uptimeSeconds": 86400,
-            "accounts": {"total": 5, "active": 3, "deactivated": 1, "suspended": 1, "takendown": 0},
+            "accounts": {"total": 5, "active": 3, "deactivated": 1, "suspended": 1, "takendown": 0, "flagged": 2},
             "storage": {"blobCount": 12, "blobBytes": 345678, "blockCount": 900},
             "firehose": {"currentSeq": 42, "subscribers": 2, "retainedEvents": 40, "backfillWindowSeconds": 3600},
             "sweeps": {
@@ -2944,6 +3002,14 @@ mod tests {
         assert_eq!(health.uptime_seconds, 86_400);
         assert_eq!(health.accounts.total, 5);
         assert_eq!(health.accounts.takendown, 0);
+        assert_eq!(health.accounts.flagged, 2);
+
+        // A pre-labeler-watching relay omits `flagged`; it must default, not fail.
+        let old_accounts: HealthAccounts = serde_json::from_str(
+            r#"{"total": 1, "active": 1, "deactivated": 0, "suspended": 0, "takendown": 0}"#,
+        )
+        .expect("deserialize pre-flag accounts");
+        assert_eq!(old_accounts.flagged, 0);
         assert_eq!(health.storage.blob_bytes, 345_678);
         assert_eq!(health.firehose.current_seq, 42);
         assert_eq!(health.firehose.backfill_window_seconds, Some(3_600));

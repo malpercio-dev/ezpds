@@ -51,6 +51,7 @@ changing the environment variable alone.
 | `PORT` | Injected by the platform; the server binds it. |
 | `EZPDS_PUBLIC_URL` | The externally reachable origin of the PDS. |
 | `EZPDS_AVAILABLE_USER_DOMAINS` | Domains users may claim handles on. |
+| `EZPDS_LABELER_WATCHED` | Comma-separated labeler DIDs to watch; hosted accounts they label are flagged on the operator console. Off (empty) by default — see [Moderation § Labeler watching](/operator/moderation/#labeler-watching--flagged-accounts). |
 
 The authoritative list is the PDS configuration type in the codebase; the table
 above is the operator-facing subset. The generated version (see the note above)

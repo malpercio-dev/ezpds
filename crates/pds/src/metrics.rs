@@ -66,6 +66,11 @@ pub mod names {
     pub const FIREHOSE_GC_SWEPT: &str = "firehose_gc_swept";
     /// Gauge: unix timestamp (seconds) of the last completed firehose-GC run.
     pub const FIREHOSE_GC_LAST_RUN_TIMESTAMP: &str = "firehose_gc_last_run_timestamp";
+    /// Counter (`_total`): `account_labels` rows changed (upserts + removals) by the
+    /// labeler-watch pass.
+    pub const LABELER_WATCH_CHANGES: &str = "labeler_watch_changes";
+    /// Gauge: unix timestamp (seconds) of the last completed labeler-watch run.
+    pub const LABELER_WATCH_LAST_RUN_TIMESTAMP: &str = "labeler_watch_last_run_timestamp";
     /// Counter (`_total`): requests rejected with 429, by [`LABEL_LIMITER`].
     pub const RATE_LIMIT_REJECTIONS: &str = "rate_limit_rejections";
     /// Counter (`_total`): HTTP requests served, by [`LABEL_ROUTE`] + [`LABEL_STATUS_CLASS`].
@@ -128,6 +133,8 @@ pub struct Metrics {
     pub admin_nonce_sweep_last_run_timestamp: Gauge<f64>,
     pub firehose_gc_swept: Counter<u64>,
     pub firehose_gc_last_run_timestamp: Gauge<f64>,
+    pub labeler_watch_changes: Counter<u64>,
+    pub labeler_watch_last_run_timestamp: Gauge<f64>,
     pub rate_limit_rejections: Counter<u64>,
     pub http_requests: Counter<u64>,
     pub migration_imports: Counter<u64>,
@@ -192,6 +199,10 @@ impl Metrics {
             firehose_gc_swept: meter.u64_counter(names::FIREHOSE_GC_SWEPT).build(),
             firehose_gc_last_run_timestamp: meter
                 .f64_gauge(names::FIREHOSE_GC_LAST_RUN_TIMESTAMP)
+                .build(),
+            labeler_watch_changes: meter.u64_counter(names::LABELER_WATCH_CHANGES).build(),
+            labeler_watch_last_run_timestamp: meter
+                .f64_gauge(names::LABELER_WATCH_LAST_RUN_TIMESTAMP)
                 .build(),
             rate_limit_rejections: meter.u64_counter(names::RATE_LIMIT_REJECTIONS).build(),
             http_requests: meter.u64_counter(names::HTTP_REQUESTS).build(),

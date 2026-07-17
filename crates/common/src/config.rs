@@ -69,6 +69,8 @@ pub struct Config {
     pub appview: AppViewConfig,
     pub chat: ChatConfig,
     pub crawlers: CrawlersConfig,
+    /// Labeler watching: flag hosted accounts carrying labels from watched labelers.
+    pub labeler: LabelerConfig,
     /// Request rate-limiting knobs (global IP + per-endpoint IP + per-account write points).
     pub rate_limit: RateLimitConfig,
     pub telemetry: TelemetryConfig,
@@ -795,6 +797,51 @@ fn default_crawler_urls() -> Vec<String> {
     vec!["https://bsky.network".to_string()]
 }
 
+/// Labeler-watching configuration (`labeler_watch.rs`): flag hosted accounts that carry
+/// account-level labels from operator-chosen labelers, for the operator console's triage view.
+///
+/// Watching is enabled by listing at least one labeler; the default (empty) spawns no watcher,
+/// and startup clears any previously persisted labels so the flagged state never outlives the
+/// config that produced it. Each entry names a labeler DID — any labeler, not just Bluesky's;
+/// the query endpoint is resolved from the DID document's `#atproto_labeler` service entry —
+/// plus an optional label-value watchlist (empty = every label from that labeler counts).
+#[derive(Debug, Clone, Deserialize)]
+pub struct LabelerConfig {
+    /// Labelers whose account-level labels flag hosted accounts. Empty (the default)
+    /// disables labeler watching entirely.
+    #[serde(default)]
+    pub watched: Vec<WatchedLabeler>,
+    /// How often the watcher polls each watched labeler's `com.atproto.label.queryLabels`,
+    /// in seconds. Default: 900 (15 minutes). Must be > 0 (like the GC intervals, a zero
+    /// period would panic `tokio::time::interval`).
+    #[serde(default = "default_labeler_poll_interval_secs")]
+    pub poll_interval_secs: u64,
+}
+
+impl Default for LabelerConfig {
+    fn default() -> Self {
+        Self {
+            watched: Vec::new(),
+            poll_interval_secs: default_labeler_poll_interval_secs(),
+        }
+    }
+}
+
+fn default_labeler_poll_interval_secs() -> u64 {
+    15 * 60 // 15 minutes
+}
+
+/// One `[[labeler.watched]]` entry: a labeler to watch and which of its labels count.
+#[derive(Debug, Clone, Deserialize)]
+pub struct WatchedLabeler {
+    /// The labeler's DID (e.g. `did:plc:ar7c4by46qjdydhdevvrndac`, Bluesky moderation).
+    pub did: String,
+    /// Label values that flag an account. Empty (the default) means every label this
+    /// labeler applies counts.
+    #[serde(default)]
+    pub labels: Vec<String>,
+}
+
 /// Output encoding for the stdout log stream.
 #[derive(Debug, Clone, Copy, Default, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
@@ -1024,6 +1071,8 @@ pub(crate) struct RawConfig {
     #[serde(default)]
     pub(crate) crawlers: CrawlersConfig,
     #[serde(default)]
+    pub(crate) labeler: LabelerConfig,
+    #[serde(default)]
     pub(crate) rate_limit: RateLimitConfig,
     #[serde(default)]
     pub(crate) telemetry: RawTelemetryConfig,
@@ -1223,6 +1272,20 @@ pub(crate) fn apply_env_overrides(
             .map(str::to_string)
             .collect();
     }
+    // Comma-separated watched labeler DIDs, each watching every label value; an empty value
+    // disables labeler watching. Per-labeler label watchlists are a list of structs and stay
+    // TOML-only, like the agent-auth issuer trust list.
+    if let Some(v) = env.get("EZPDS_LABELER_WATCHED") {
+        raw.labeler.watched = v
+            .split(',')
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(|did| WatchedLabeler {
+                did: did.to_string(),
+                labels: Vec::new(),
+            })
+            .collect();
+    }
     // Rate-limit overrides. A small local helper keeps the repetitive u64 parse+error-wrap in one
     // place; each knob is independent so a partial overlay (e.g. only the global cap) is fine.
     if let Some(v) = env.get("EZPDS_RATE_LIMIT_ENABLED") {
@@ -1297,6 +1360,9 @@ pub(crate) fn apply_env_overrides(
     if let Some(v) = env.get("EZPDS_ADMIN_DEVICES_NONCE_MAX_AGE_SECS") {
         raw.admin_devices.nonce_max_age_secs =
             parse_u64("EZPDS_ADMIN_DEVICES_NONCE_MAX_AGE_SECS", v)?;
+    }
+    if let Some(v) = env.get("EZPDS_LABELER_POLL_INTERVAL_SECS") {
+        raw.labeler.poll_interval_secs = parse_u64("EZPDS_LABELER_POLL_INTERVAL_SECS", v)?;
     }
     // Agent-auth (auth.md) scalar/bool overrides. The issuer trust list is a list of structs
     // (each carrying a PEM key or a JWKS URL), which does not map to a flat env var — it stays
@@ -1730,6 +1796,31 @@ pub(crate) fn validate_and_build(raw: RawConfig) -> Result<Config, ConfigError> 
 
     let email = build_email_config(raw.email)?;
 
+    // Labeler watching: a present-but-broken entry should fail at load, not surface as a
+    // logged resolution error on every poll pass.
+    if raw.labeler.poll_interval_secs == 0 {
+        return Err(ConfigError::Invalid(
+            "labeler.poll_interval_secs must be > 0 (tokio::time::interval panics on a zero period)"
+                .to_string(),
+        ));
+    }
+    let mut seen_labeler_dids = std::collections::HashSet::new();
+    for watched in &raw.labeler.watched {
+        if !watched.did.starts_with("did:") {
+            return Err(ConfigError::Invalid(format!(
+                "labeler.watched entries must set a DID (starting with \"did:\"), got: {:?}",
+                watched.did
+            )));
+        }
+        if !seen_labeler_dids.insert(watched.did.as_str()) {
+            return Err(ConfigError::Invalid(format!(
+                "labeler.watched lists {:?} more than once — duplicate entries would poll the \
+                 labeler twice and fight over its persisted labels",
+                watched.did
+            )));
+        }
+    }
+
     // Agent-auth (auth.md) validation. The feature ships off by default, but a present-but-broken
     // config should fail loudly at load rather than surface as a per-request 500.
     if raw.agent_auth.assertion_ttl_secs == 0 {
@@ -1836,6 +1927,7 @@ pub(crate) fn validate_and_build(raw: RawConfig) -> Result<Config, ConfigError> 
         appview,
         chat,
         crawlers: raw.crawlers,
+        labeler: raw.labeler,
         rate_limit: raw.rate_limit,
         telemetry,
         email,
@@ -3188,6 +3280,112 @@ mod tests {
         let raw = apply_env_overrides(minimal_raw(), &env).unwrap();
         let config = validate_and_build(raw).unwrap();
         assert!(config.crawlers.urls.is_empty());
+    }
+
+    // --- labeler config tests ---
+
+    #[test]
+    fn labeler_defaults_to_disabled() {
+        let config = validate_and_build(minimal_raw()).unwrap();
+        assert!(config.labeler.watched.is_empty());
+        assert_eq!(config.labeler.poll_interval_secs, 900);
+    }
+
+    #[test]
+    fn labeler_parses_watched_entries_from_toml() {
+        let toml = r#"
+            data_dir = "/var/pds"
+            public_url = "https://pds.example.com"
+            available_user_domains = ["example.com"]
+
+            [labeler]
+            poll_interval_secs = 120
+
+            [[labeler.watched]]
+            did = "did:plc:ar7c4by46qjdydhdevvrndac"
+            labels = ["spam", "!hide"]
+
+            [[labeler.watched]]
+            did = "did:web:labeler.example.com"
+        "#;
+        let raw: RawConfig = toml::from_str(toml).unwrap();
+        let config = validate_and_build(raw).unwrap();
+        assert_eq!(config.labeler.poll_interval_secs, 120);
+        assert_eq!(config.labeler.watched.len(), 2);
+        assert_eq!(
+            config.labeler.watched[0].did,
+            "did:plc:ar7c4by46qjdydhdevvrndac"
+        );
+        assert_eq!(config.labeler.watched[0].labels, vec!["spam", "!hide"]);
+        assert_eq!(config.labeler.watched[1].did, "did:web:labeler.example.com");
+        // An omitted watchlist means every label from that labeler counts.
+        assert!(config.labeler.watched[1].labels.is_empty());
+    }
+
+    #[test]
+    fn env_override_labeler_watched_comma_separated() {
+        let env = HashMap::from([
+            (
+                "EZPDS_LABELER_WATCHED".to_string(),
+                "did:plc:aaa, did:web:b.example".to_string(),
+            ),
+            (
+                "EZPDS_LABELER_POLL_INTERVAL_SECS".to_string(),
+                "60".to_string(),
+            ),
+        ]);
+        let raw = apply_env_overrides(minimal_raw(), &env).unwrap();
+        let config = validate_and_build(raw).unwrap();
+        assert_eq!(config.labeler.poll_interval_secs, 60);
+        let dids: Vec<&str> = config
+            .labeler
+            .watched
+            .iter()
+            .map(|w| w.did.as_str())
+            .collect();
+        assert_eq!(dids, vec!["did:plc:aaa", "did:web:b.example"]);
+        // Env-configured entries watch every label value.
+        assert!(config.labeler.watched.iter().all(|w| w.labels.is_empty()));
+    }
+
+    #[test]
+    fn labeler_rejects_zero_poll_interval() {
+        let toml = r#"
+            data_dir = "/var/pds"
+            public_url = "https://pds.example.com"
+            available_user_domains = ["example.com"]
+
+            [labeler]
+            poll_interval_secs = 0
+        "#;
+        let raw: RawConfig = toml::from_str(toml).unwrap();
+        let err = validate_and_build(raw).unwrap_err();
+        assert!(err.to_string().contains("labeler.poll_interval_secs"));
+    }
+
+    #[test]
+    fn labeler_rejects_non_did_entry_and_duplicates() {
+        let mut raw = minimal_raw();
+        raw.labeler.watched = vec![WatchedLabeler {
+            did: "labeler.example.com".to_string(),
+            labels: Vec::new(),
+        }];
+        let err = validate_and_build(raw).unwrap_err();
+        assert!(err.to_string().contains("must set a DID"));
+
+        let mut raw = minimal_raw();
+        raw.labeler.watched = vec![
+            WatchedLabeler {
+                did: "did:plc:aaa".to_string(),
+                labels: Vec::new(),
+            },
+            WatchedLabeler {
+                did: "did:plc:aaa".to_string(),
+                labels: vec!["spam".to_string()],
+            },
+        ];
+        let err = validate_and_build(raw).unwrap_err();
+        assert!(err.to_string().contains("more than once"));
     }
 
     // --- rate limit config tests ---

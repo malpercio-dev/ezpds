@@ -1,7 +1,14 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import { goto } from '$app/navigation';
-  import { listPairings, setActivePairing, generateClaimCode, unpair, type PairingsState } from '$lib/ipc';
+  import {
+    listPairings,
+    setActivePairing,
+    generateClaimCode,
+    getServerHealth,
+    unpair,
+    type PairingsState,
+  } from '$lib/ipc';
   import { serverIdentity, type ServerIdentity } from '$lib/server-identity';
   import { pinnedHref } from '$lib/pinned-pairing';
   import { classifyRelayError, type ErrorView } from '$lib/errors';
@@ -36,14 +43,35 @@
   let gateHint = $state<string | undefined>(undefined);
   let shareHint = $state<string | undefined>(undefined);
 
+  // The in-app flagged-accounts badge: how many hosted accounts the *active* relay's
+  // watched labelers currently flag, read from the health endpoint. Best-effort — a
+  // failed read renders no notice (the Accounts screen is the authoritative view).
+  let flaggedCount = $state(0);
+
   onMount(reloadPairings);
 
   async function reloadPairings() {
     pairingsView = 'loading';
     try {
-      pairingsView = await listPairings();
+      const loaded = await listPairings();
+      pairingsView = loaded;
+      void refreshFlagged(loaded.active);
     } catch {
       pairingsView = 'error';
+    }
+  }
+
+  async function refreshFlagged(pairingId: string | null) {
+    // Drop the old count immediately: a switch must never show the previous relay's
+    // flags beside the new identity, even for a moment.
+    flaggedCount = 0;
+    if (!pairingId) return;
+    try {
+      const health = await getServerHealth(pairingId);
+      // Discard a slow response if the active relay changed while it was in flight.
+      if (loadedState?.active === pairingId) flaggedCount = health.accounts.flagged;
+    } catch {
+      // Quietly badge-less; errors surface on the screens that own them.
     }
   }
 
@@ -236,6 +264,22 @@
     <!-- Main claim-code flow — hidden while a pick is required (the forced-open
          switcher is the only affordance in that state). -->
     {#if !needsPick}
+    {#if flaggedCount > 0}
+      <!-- The in-app flagged-accounts badge: watched-labeler flags on this relay's
+           accounts. Glyph + text + count, never color alone; tapping opens the
+           triage-sorted Accounts list pinned to this relay. Sits above the
+           relay-status block: a flag is actionable triage, crawl state is ambient. -->
+      <button class="flag-notice" type="button" onclick={() => openPinned('/accounts')}>
+        <StatusChip status="flagged" />
+        <span class="flag-notice-text">
+          {flaggedCount}
+          {flaggedCount === 1 ? 'account' : 'accounts'} flagged by a watched labeler —
+          review in Accounts
+        </span>
+        <span class="flag-notice-glyph" aria-hidden="true">▸</span>
+      </button>
+    {/if}
+
     <!-- Federation health for the active server: is the relay actually crawling us right now?
          Keyed by pairing id so switching servers remounts the block and restarts its 15s poll. -->
     {#if activePairing}
@@ -302,6 +346,32 @@
     display: flex;
     flex-direction: column;
     gap: var(--space-sm);
+  }
+  /* The flagged-accounts notice: a tappable caution panel on the warning surface —
+     chip (glyph + text) plus the literal count, never color alone. */
+  .flag-notice {
+    display: flex;
+    align-items: center;
+    gap: var(--space-sm);
+    width: 100%;
+    min-height: var(--control-min-height);
+    padding: var(--space-md);
+    background: var(--color-warning-surface);
+    border: var(--border-hairline) solid var(--color-warning);
+    border-radius: var(--radius-lg);
+    font: inherit;
+    text-align: left;
+    color: var(--color-ink);
+    cursor: pointer;
+  }
+  .flag-notice-text {
+    flex: 1;
+    font-family: var(--font-mono);
+    font-size: var(--text-label);
+    line-height: var(--leading-body);
+  }
+  .flag-notice-glyph {
+    color: var(--color-warning);
   }
   .lede {
     margin: 0;

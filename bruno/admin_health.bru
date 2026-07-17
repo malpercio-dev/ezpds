@@ -24,17 +24,22 @@ docs {
 
   Response:
   - `version`, `uptimeSeconds` — process facts.
-  - `accounts` — `{total, active, deactivated, suspended, takendown}`; derived
-    lifecycle buckets (takendown > suspended > deactivated precedence, matching
-    the account-listing `status` filter) that partition `total` exactly.
+  - `accounts` — `{total, active, deactivated, suspended, takendown, flagged}`;
+    derived lifecycle buckets (takendown > suspended > deactivated precedence,
+    matching the account-listing `status` filter) that partition `total`
+    exactly, plus `flagged` — accounts carrying at least one in-force label
+    from a watched labeler (orthogonal to the lifecycle buckets; always 0 when
+    labeler watching is off). `flagged` is the console's badge count.
   - `storage` — `{blobCount, blobBytes, blockCount}`; physical rows (blobs are
     shared across owners and counted once).
   - `firehose` — `{currentSeq, subscribers, retainedEvents,
     backfillWindowSeconds}`; `backfillWindowSeconds` is the age of the oldest
     retained event (`null` when the log is empty).
   - `sweeps` — `{blobGc, firehoseGc, accountReaper, agentClaimSweep,
-    adminNonceSweep}`, each `{completedAt, swept}` (unix seconds + items acted
-    on) or `null` until that sweep's first completed pass after boot. A failed
-    pass records nothing, so a stale `completedAt` is the operator's signal
-    that passes are not completing.
+    adminNonceSweep, labelerWatch}`, each `{completedAt, swept}` (unix seconds
+    + items acted on) or `null` until that sweep's first completed pass after
+    boot (`labelerWatch` stays `null` while labeler watching is off; its
+    `swept` counts label rows changed). A failed pass records nothing, so a
+    stale `completedAt` is the operator's signal that passes are not
+    completing.
 }

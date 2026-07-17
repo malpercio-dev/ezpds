@@ -1,6 +1,8 @@
 <script lang="ts">
   import StatusChip, { type Status } from './StatusChip.svelte';
   import { shortenId } from '$lib/format';
+  import { flagLine } from '$lib/flags';
+  import type { AccountFlag } from '$lib/ipc';
 
   // One account in the operator list — DeviceRow's dense `ls -l` register, plus the
   // blob-quota readout the list exists to make scannable. Handle (or an explicit
@@ -8,11 +10,14 @@
   // a lifecycle chip on the right. The full DID is one tap away (onclick → the
   // per-account screens), so the row shows a head…tail form with a VISIBLE ellipsis —
   // explicit truncation, never the silent kind the Literal-Truth rule forbids.
+  // A flagged account additionally carries one ⚑ line per in-force labeler flag
+  // (value · labeler · date — glyph + text + top-of-list position, never color alone).
   let {
     did,
     handle,
     status,
     quota,
+    flags = [],
     onclick,
   }: {
     did: string;
@@ -21,6 +26,8 @@
     status: 'active' | 'deactivated' | 'suspended' | 'takendown';
     /** The monospace quota readout for this row (see format.ts `quotaBar`). */
     quota: string;
+    /** In-force watched-labeler labels, newest first (empty = unflagged). */
+    flags?: AccountFlag[];
     onclick?: () => void;
   } = $props();
 
@@ -48,6 +55,12 @@
     </div>
     <span class="id">{shortenId(did)}</span>
     <span class="quota">{quota}</span>
+    {#each flags as flag (flag.labelerDid + flag.val)}
+      <span class="flag">
+        <span aria-hidden="true">⚑</span>
+        <span>flagged: {flagLine(flag)}</span>
+      </span>
+    {/each}
   </div>
   <StatusChip status={chip.chip} label={chip.label} />
 {/snippet}
@@ -120,5 +133,15 @@
     font-size: var(--text-label);
     color: var(--color-ink-soft);
     white-space: pre;
+  }
+  /* A labeler flag: the caution tone, but the meaning is carried by the ⚑ glyph, the
+     literal "flagged:" text, and the row's position — never the color alone. */
+  .flag {
+    display: flex;
+    gap: var(--space-xs);
+    font-family: var(--font-mono);
+    font-size: var(--text-label);
+    color: var(--color-warning);
+    overflow-wrap: anywhere;
   }
 </style>

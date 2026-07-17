@@ -200,6 +200,9 @@ pub async fn test_state_with_plc_url(plc_directory_url: String) -> AppState {
             chat: ChatConfig::default(),
             // Tests must never make outbound crawl notifications.
             crawlers: CrawlersConfig { urls: vec![] },
+            // No labelers watched by default; the labeler-watch tests opt in by swapping
+            // the config on the returned state.
+            labeler: common::LabelerConfig::default(),
             // Rate limiting off by default in tests so unit tests are never throttled; the
             // rate-limit tests opt back in by swapping `rate_limiter` on the returned state.
             rate_limit: RateLimitConfig {

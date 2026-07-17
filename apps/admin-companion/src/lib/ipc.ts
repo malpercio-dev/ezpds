@@ -250,6 +250,12 @@ export interface ServerHealth {
     deactivated: number;
     suspended: number;
     takendown: number;
+    /**
+     * Accounts carrying at least one in-force label from a watched labeler — the
+     * flagged badge count. Orthogonal to the lifecycle buckets; always 0 when the
+     * relay watches no labelers.
+     */
+    flagged: number;
   };
   /** Physical rows: blobs are shared across owners and counted (and summed) once. */
   storage: {
@@ -376,20 +382,43 @@ export interface AccountListEntry {
   status: 'active' | 'deactivated' | 'suspended' | 'takendown';
   totalBytes: number;
   quotaUsedPct: number;
+  /**
+   * Labels currently in force from the relay's watched labelers, newest first.
+   * Empty for an unflagged account (and always empty when labeler watching is off).
+   */
+  flags: AccountFlag[];
 }
 
-/** A page of the account list. `cursor` is null on the last page. */
+/** One in-force label on an account, observed by the relay from a watched labeler. */
+export interface AccountFlag {
+  /** The label value (e.g. `spam`, `!hide`). */
+  val: string;
+  /** DID of the labeler that applied the label. */
+  labelerDid: string;
+  /** The labeler's label-creation timestamp. */
+  cts: string;
+}
+
+/**
+ * A page of the account list — flagged accounts first, DID order within each group.
+ * `cursor` is null on the last page.
+ */
 export interface AccountList {
   accounts: AccountListEntry[];
   /** The configured per-account storage quota in bytes — one value for every row. */
   quotaBytes: number;
+  /**
+   * Accounts matching the current filters that carry at least one flag — stated per
+   * response because flagged accounts can sit on later pages.
+   */
+  flaggedTotal: number;
   cursor: string | null;
 }
 
 /** Optional filters for {@link listAccounts}. */
 export interface ListAccountsFilters {
   limit?: number;
-  /** The `cursor` from the previous page (the last DID returned). */
+  /** The opaque `cursor` from the previous page. */
   cursor?: string;
   /** Derived-lifecycle filter. */
   status?: AccountListEntry['status'];
@@ -398,8 +427,9 @@ export interface ListAccountsFilters {
 }
 
 /**
- * Fetch a page of the relay's account list (DID order, cursor pagination) from the
- * given pairing's relay via a signed request. Throws a {@link RelayClientError}.
+ * Fetch a page of the relay's account list (flagged accounts first, then DID order,
+ * cursor pagination) from the given pairing's relay via a signed request. Throws a
+ * {@link RelayClientError}.
  */
 export function listAccounts(
   pairingId: string,

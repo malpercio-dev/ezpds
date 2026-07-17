@@ -14,6 +14,7 @@ import type {
   DevicePublicKey,
   Pairing,
   AdminDevice,
+  AccountFlag,
   AccountListEntry,
   ClaimCodeEntry,
   TransferEntry,
@@ -103,7 +104,10 @@ export function activeRelay(state: AdminState): FakeRelay | undefined {
 }
 
 /** Build a healthy server-health readout, adjusted by account count. */
-export function healthyServer(accounts: number, opts?: { degraded?: boolean }): ServerHealth {
+export function healthyServer(
+  accounts: number,
+  opts?: { degraded?: boolean; flagged?: number }
+): ServerHealth {
   const degraded = opts?.degraded ?? false;
   // A completed sweep: recent when healthy, >24h stale when degraded (the staleness glyph).
   const sweep = (offsetSecs: number, swept: number) => ({
@@ -119,6 +123,7 @@ export function healthyServer(accounts: number, opts?: { degraded?: boolean }): 
       deactivated: 0,
       suspended: 0,
       takendown: 0,
+      flagged: opts?.flagged ?? 0,
     },
     storage: {
       blobCount: accounts * 12,
@@ -162,7 +167,7 @@ export function makeAdminDevice(
 /** Build a fake account row. */
 export function makeAccount(
   seed: string,
-  opts?: { status?: AccountListEntry['status']; handle?: string | null }
+  opts?: { status?: AccountListEntry['status']; handle?: string | null; flags?: AccountFlag[] }
 ): AccountListEntry {
   return {
     did: fakeAccountDid(seed),
@@ -171,7 +176,16 @@ export function makeAccount(
     status: opts?.status ?? 'active',
     totalBytes: 4_500_000 + hashInt(seed) % 40_000_000,
     quotaUsedPct: hashInt(seed) % 100,
+    flags: opts?.flags ?? [],
   };
+}
+
+/** The harness's stand-in watched labeler. */
+export const FAKE_LABELER_DID = 'did:plc:harnesslabelermoderation';
+
+/** Build one in-force labeler flag. */
+export function makeFlag(val = 'spam', cts = '2026-07-14T08:00:00Z'): AccountFlag {
+  return { val, labelerDid: FAKE_LABELER_DID, cts };
 }
 
 /** Build a fake claim-code entry. */
@@ -223,17 +237,28 @@ export function seedRelay(opts: {
   relayUrl: string;
   accounts?: number;
   degraded?: boolean;
+  /** How many accounts carry watched-labeler flags (from the end of the DID-seed list,
+   *  so flagged rows visibly jump the default order). */
+  flagged?: number;
 }): FakeRelay {
   const seed = opts.nickname;
   const pairingId = `pair-${hashToken(seed)}`;
   const thisDevice = makeAdminDevice(`${seed}:self`, { label: `${opts.nickname} console` });
   const otherDevice = makeAdminDevice(`${seed}:other`, { label: 'Spare iPad' });
   const accountCount = opts.accounts ?? 3;
-  const accounts = Array.from({ length: accountCount }, (_, i) =>
-    makeAccount(`${seed}:acct${i}`, {
+  const flaggedCount = Math.min(opts.flagged ?? 0, accountCount);
+  const accounts = Array.from({ length: accountCount }, (_, i) => {
+    const flagged = i >= accountCount - flaggedCount;
+    return makeAccount(`${seed}:acct${i}`, {
       status: i === 0 && opts.degraded ? 'suspended' : 'active',
-    })
-  );
+      // The first flagged account carries two labels so the row shows a stack.
+      flags: flagged
+        ? i === accountCount - flaggedCount
+          ? [makeFlag('spam'), makeFlag('!hide', '2026-07-15T10:30:00Z')]
+          : [makeFlag('platform-manipulation')]
+        : [],
+    });
+  });
   return {
     pairingId,
     nickname: opts.nickname,
@@ -250,7 +275,7 @@ export function seedRelay(opts: {
     transfers: opts.degraded
       ? [makeTransfer(`${seed}:t1`, 'accepted')]
       : [makeTransfer(`${seed}:t1`, 'pending')],
-    health: healthyServer(accountCount, { degraded: opts.degraded }),
+    health: healthyServer(accountCount, { degraded: opts.degraded, flagged: flaggedCount }),
     takedowns: {},
   };
 }

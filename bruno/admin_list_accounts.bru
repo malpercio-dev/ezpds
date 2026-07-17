@@ -24,16 +24,20 @@ auth:bearer {
 docs {
   # GET /v1/admin/accounts
 
-  Operator account listing/search in DID order with cursor pagination — the companion
-  app's entry point for all per-account work (usage, storage, takedown) without pasting
-  DIDs. Includes accounts in every lifecycle state, and accounts without a repo.
-  Admin-authed: the master token (shown here) **or** an active device's signed request
-  (the `X-Admin-*` envelope; the signature covers the bare path, so paging/filter query
-  params vary without re-signing).
+  Operator account listing/search with cursor pagination — the companion app's entry
+  point for all per-account work (usage, storage, takedown) without pasting DIDs.
+  Accounts flagged by a watched labeler (`[labeler] watched`) sort first, DID order
+  within each group, so the roster doubles as a spam/abuse triage view. Includes
+  accounts in every lifecycle state, and accounts without a repo. Admin-authed: the
+  master token (shown here) **or** an active device's signed request (the `X-Admin-*`
+  envelope; the signature covers the bare path, so paging/filter query params vary
+  without re-signing).
 
   Query params (all optional):
   - `limit` — page size, default 50, clamped to 1..=100.
-  - `cursor` — the `cursor` value from the previous page (the last DID returned).
+  - `cursor` — the `cursor` value from the previous page, opaque (encodes the last
+    row's flagged bit + DID, since the sort key is two-dimensional). A malformed or
+    pre-flag-era cursor restarts from the first page rather than erroring.
   - `status` — derived-lifecycle filter: `active`, `deactivated`, `suspended`, or
     `takendown` (precedence takendown > suspended > deactivated, matching the sync
     endpoints). Anything else is a 400.
@@ -41,7 +45,7 @@ docs {
     (`%`/`_` are matched literally, not as wildcards).
 
   Response:
-  - `accounts` — array of accounts in DID order, each:
+  - `accounts` — array of accounts, flagged first then DID order, each:
     - `did` — the account DID.
     - `handle` — the account's first-created handle, or null if it has none.
     - `createdAt` — account creation time (UTC).
@@ -50,7 +54,13 @@ docs {
     - `totalBytes` — total bytes of the account's owned blobs.
     - `quotaUsedPct` — `totalBytes` as a percentage of `quotaBytes`, carried per row so
       the console renders a capacity readout per account in one request per page.
+    - `flags` — labels currently in force from watched labelers, newest first; each is
+      `{val, labelerDid, cts}` (label value, labeler DID, the labeler's creation
+      timestamp). Empty when the account is unflagged or labeler watching is off.
   - `quotaBytes` — the configured per-account storage quota (`[blobs]
     max_storage_per_account`); one value applies to every account in v0.1.
+  - `flaggedTotal` — count of accounts matching the `status`/`q` filters that carry at
+    least one flag (flagged accounts can sit on later pages, so this is stated per
+    response for the badge).
   - `cursor` — pass back as `?cursor=` for the next page; omitted on the last page.
 }

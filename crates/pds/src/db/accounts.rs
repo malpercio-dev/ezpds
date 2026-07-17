@@ -333,6 +333,18 @@ pub async fn accounts_due_for_deletion(db: &sqlx::SqlitePool) -> Result<Vec<Stri
     Ok(rows.into_iter().map(|(did,)| did).collect())
 }
 
+/// Every hosted account DID, in DID order, unfiltered by lifecycle.
+///
+/// Backs the labeler watcher's `queryLabels` batching (`labeler_watch.rs`): a takendown or
+/// deactivated account's labels are still operator-relevant triage context, so no lifecycle
+/// filter applies.
+pub(crate) async fn all_account_dids(db: &sqlx::SqlitePool) -> Result<Vec<String>, sqlx::Error> {
+    let rows: Vec<(String,)> = sqlx::query_as("SELECT did FROM accounts ORDER BY did ASC")
+        .fetch_all(db)
+        .await?;
+    Ok(rows.into_iter().map(|(did,)| did).collect())
+}
+
 /// Fetch an account's stored password hash by DID, **without** the lifecycle guard the login
 /// lookups apply — a deactivated account must still be resolvable here so it can be deleted.
 ///
@@ -856,6 +868,10 @@ pub(crate) struct AdminAccountRow {
     pub(crate) lifecycle: AccountLifecycle,
     /// Total bytes of the account's owned blobs (0 when it has none).
     pub(crate) blob_bytes: i64,
+    /// Whether the account carries any in-force label from a watched labeler
+    /// (`account_labels`, V051). Flagged accounts sort first; this bit is also half of the
+    /// page cursor, since the sort key is `(flagged DESC, did ASC)`.
+    pub(crate) flagged: bool,
 }
 
 /// Escape SQL `LIKE` metacharacters (`%`, `_`, and the `\` escape itself) in a user-supplied
@@ -866,26 +882,35 @@ fn escape_like(term: &str) -> String {
         .replace('_', "\\_")
 }
 
-/// List accounts for the operator console in DID order, starting strictly after `cursor`.
+/// Whether an account carries any in-force label from a watched labeler. Prefixed with the
+/// `a.` alias used by [`list_accounts_admin`] and [`count_accounts_admin_flagged`]. Appears
+/// three times in the listing SQL (select column, cursor predicate, order key) because
+/// SQLite result-column aliases are usable in `ORDER BY` but not in `WHERE`.
+const FLAGGED_SQL: &str = "EXISTS (SELECT 1 FROM account_labels al WHERE al.did = a.did)";
+
+/// List accounts for the operator console — flagged accounts first, DID order within each
+/// group — starting strictly after `cursor`.
 ///
-/// Pass `cursor = ""` for the first page; the caller derives the next cursor from the last
-/// returned DID. `status` narrows to accounts whose *derived* lifecycle matches; `q` is a
-/// literal substring match against the DID or any of the account's handles. Unlike
-/// [`list_repos`] this includes accounts without a repo — the operator view must not hide
-/// half-provisioned rows.
+/// `cursor` is the previous page's last row as a `(flagged, did)` pair (`None` for the
+/// first page): the sort key is two-dimensional, so a bare DID cursor would skip or repeat
+/// rows whenever an account's flagged state differs from the cursor row's. `status` narrows
+/// to accounts whose *derived* lifecycle matches; `q` is a literal substring match against
+/// the DID or any of the account's handles. Unlike [`list_repos`] this includes accounts
+/// without a repo — the operator view must not hide half-provisioned rows.
 ///
-/// Handle and blob-byte lookups are correlated scalar subqueries rather than JOINs: a JOIN on
-/// `handles` would duplicate a multi-handle account across rows (corrupting the DID cursor),
-/// and both subqueries run only for the ≤`limit` emitted rows as indexed lookups — one query
-/// per page instead of N+1 on the single-connection pool.
+/// Handle, blob-byte, and flagged lookups are correlated scalar subqueries rather than
+/// JOINs: a JOIN on `handles` would duplicate a multi-handle account across rows
+/// (corrupting the cursor), and the subqueries run only for the ≤`limit` emitted rows as
+/// indexed lookups — one query per page instead of N+1 on the single-connection pool.
 pub(crate) async fn list_accounts_admin(
     db: &sqlx::SqlitePool,
-    cursor: &str,
+    cursor: Option<(bool, &str)>,
     limit: i64,
     status: Option<AccountLifecycle>,
     q: Option<&str>,
 ) -> Result<Vec<AdminAccountRow>, sqlx::Error> {
-    // (did, handle, created_at, deactivated_at, suspended_at, taken_down_at, blob_bytes)
+    // (did, handle, created_at, deactivated_at, suspended_at, taken_down_at, blob_bytes,
+    //  flagged)
     type Row = (
         String,
         Option<String>,
@@ -894,18 +919,27 @@ pub(crate) async fn list_accounts_admin(
         Option<String>,
         Option<String>,
         i64,
+        bool,
     );
 
     // Assembled from fixed clause constants only — user input is always bound, never spliced.
-    let mut sql = String::from(
+    let mut sql = format!(
         "SELECT a.did, \
                 (SELECT h.handle FROM handles h WHERE h.did = a.did \
                  ORDER BY h.created_at ASC, h.handle ASC LIMIT 1), \
                 a.created_at, a.deactivated_at, a.suspended_at, a.taken_down_at, \
                 (SELECT COALESCE(SUM(b.size_bytes), 0) FROM blob_owners o \
-                 JOIN blobs b ON b.cid = o.cid WHERE o.account_did = a.did) \
-         FROM accounts a WHERE a.did > ?",
+                 JOIN blobs b ON b.cid = o.cid WHERE o.account_did = a.did), \
+                {FLAGGED_SQL} AS is_flagged \
+         FROM accounts a WHERE 1 = 1",
     );
+    if cursor.is_some() {
+        // Rows strictly after the cursor position in (is_flagged DESC, did ASC) order:
+        // a lower flagged group, or the same group beyond the cursor DID.
+        sql.push_str(&format!(
+            " AND ({FLAGGED_SQL} < ? OR ({FLAGGED_SQL} = ? AND a.did > ?))"
+        ));
+    }
     if let Some(status) = status {
         sql.push_str(" AND ");
         sql.push_str(status.as_sql_predicate());
@@ -916,9 +950,13 @@ pub(crate) async fn list_accounts_admin(
               (SELECT 1 FROM handles hq WHERE hq.did = a.did AND hq.handle LIKE ? ESCAPE '\\'))",
         );
     }
-    sql.push_str(" ORDER BY a.did ASC LIMIT ?");
+    sql.push_str(" ORDER BY is_flagged DESC, a.did ASC LIMIT ?");
 
-    let mut query = sqlx::query_as::<_, Row>(&sql).bind(cursor);
+    let mut query = sqlx::query_as::<_, Row>(&sql);
+    if let Some((flagged, did)) = cursor {
+        let flagged = i64::from(flagged);
+        query = query.bind(flagged).bind(flagged).bind(did.to_string());
+    }
     if let Some(term) = q {
         let pattern = format!("%{}%", escape_like(term));
         query = query.bind(pattern.clone()).bind(pattern);
@@ -928,7 +966,16 @@ pub(crate) async fn list_accounts_admin(
     Ok(rows
         .into_iter()
         .map(
-            |(did, handle, created_at, deactivated_at, suspended_at, taken_down_at, blob_bytes)| {
+            |(
+                did,
+                handle,
+                created_at,
+                deactivated_at,
+                suspended_at,
+                taken_down_at,
+                blob_bytes,
+                flagged,
+            )| {
                 AdminAccountRow {
                     did,
                     handle,
@@ -939,10 +986,40 @@ pub(crate) async fn list_accounts_admin(
                         taken_down_at.as_deref(),
                     ),
                     blob_bytes,
+                    flagged,
                 }
             },
         )
         .collect())
+}
+
+/// Count the accounts matching the listing's `status`/`q` filters that carry any in-force
+/// label from a watched labeler — the `flaggedTotal` the console renders as a badge.
+///
+/// Shares [`list_accounts_admin`]'s filter clauses so the count always agrees with the
+/// filtered listing it accompanies.
+pub(crate) async fn count_accounts_admin_flagged(
+    db: &sqlx::SqlitePool,
+    status: Option<AccountLifecycle>,
+    q: Option<&str>,
+) -> Result<i64, sqlx::Error> {
+    let mut sql = format!("SELECT COUNT(*) FROM accounts a WHERE {FLAGGED_SQL}");
+    if let Some(status) = status {
+        sql.push_str(" AND ");
+        sql.push_str(status.as_sql_predicate());
+    }
+    if q.is_some() {
+        sql.push_str(
+            " AND (a.did LIKE ? ESCAPE '\\' OR EXISTS \
+              (SELECT 1 FROM handles hq WHERE hq.did = a.did AND hq.handle LIKE ? ESCAPE '\\'))",
+        );
+    }
+    let mut query = sqlx::query_scalar::<_, i64>(&sql);
+    if let Some(term) = q {
+        let pattern = format!("%{}%", escape_like(term));
+        query = query.bind(pattern.clone()).bind(pattern);
+    }
+    query.fetch_one(db).await
 }
 
 /// Repo hosting status for a single account, backing `com.atproto.sync.getRepoStatus`.
@@ -2074,7 +2151,7 @@ mod tests {
         status: Option<AccountLifecycle>,
         q: Option<&str>,
     ) -> Vec<AdminAccountRow> {
-        list_accounts_admin(db, "", 100, status, q).await.unwrap()
+        list_accounts_admin(db, None, 100, status, q).await.unwrap()
     }
 
     #[tokio::test]
@@ -2162,18 +2239,82 @@ mod tests {
         .await
         .unwrap();
 
-        let page1 = list_accounts_admin(&db, "", 2, None, None).await.unwrap();
+        let page1 = list_accounts_admin(&db, None, 2, None, None).await.unwrap();
         assert_eq!(page1.len(), 2);
         assert_eq!(page1[0].did, "did:plc:laa_pg_a");
         assert_eq!(page1[0].blob_bytes, 0);
         assert_eq!(page1[1].did, "did:plc:laa_pg_b");
         assert_eq!(page1[1].blob_bytes, 640);
 
-        let page2 = list_accounts_admin(&db, &page1[1].did, 2, None, None)
-            .await
-            .unwrap();
+        let page2 = list_accounts_admin(
+            &db,
+            Some((page1[1].flagged, page1[1].did.as_str())),
+            2,
+            None,
+            None,
+        )
+        .await
+        .unwrap();
         assert_eq!(page2.len(), 1);
         assert_eq!(page2[0].did, "did:plc:laa_pg_c");
+    }
+
+    #[tokio::test]
+    async fn list_accounts_admin_sorts_flagged_first_and_counts_them() {
+        let db = test_pool().await;
+        insert_account(&db, "did:plc:laa_fl_a").await;
+        insert_account(&db, "did:plc:laa_fl_b").await;
+        insert_account(&db, "did:plc:laa_fl_c").await;
+        sqlx::query(
+            "INSERT INTO account_labels (did, labeler_did, val, cts) \
+             VALUES ('did:plc:laa_fl_c', 'did:plc:labeler', 'spam', '2026-01-01T00:00:00Z')",
+        )
+        .execute(&db)
+        .await
+        .unwrap();
+
+        // The flagged account jumps the DID order; the rest stay DID-ordered.
+        let all = list_admin(&db, None, None).await;
+        let dids: Vec<&str> = all.iter().map(|r| r.did.as_str()).collect();
+        assert_eq!(
+            dids,
+            vec!["did:plc:laa_fl_c", "did:plc:laa_fl_a", "did:plc:laa_fl_b"]
+        );
+        assert!(all[0].flagged);
+        assert!(!all[1].flagged);
+
+        // Cursor pagination resumes correctly across the flagged→unflagged boundary.
+        let page1 = list_accounts_admin(&db, None, 1, None, None).await.unwrap();
+        assert_eq!(page1[0].did, "did:plc:laa_fl_c");
+        let page2 = list_accounts_admin(&db, Some((true, "did:plc:laa_fl_c")), 2, None, None)
+            .await
+            .unwrap();
+        let dids: Vec<&str> = page2.iter().map(|r| r.did.as_str()).collect();
+        assert_eq!(dids, vec!["did:plc:laa_fl_a", "did:plc:laa_fl_b"]);
+
+        // The flagged count follows the listing's filters.
+        assert_eq!(
+            count_accounts_admin_flagged(&db, None, None).await.unwrap(),
+            1
+        );
+        assert_eq!(
+            count_accounts_admin_flagged(&db, Some(AccountLifecycle::Deactivated), None)
+                .await
+                .unwrap(),
+            0
+        );
+        assert_eq!(
+            count_accounts_admin_flagged(&db, None, Some("laa_fl_c"))
+                .await
+                .unwrap(),
+            1
+        );
+        assert_eq!(
+            count_accounts_admin_flagged(&db, None, Some("laa_fl_a"))
+                .await
+                .unwrap(),
+            0
+        );
     }
 
     // ── resolve_by_email / update_account_email normalization ────────────────
