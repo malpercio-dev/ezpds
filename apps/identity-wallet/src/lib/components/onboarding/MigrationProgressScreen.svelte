@@ -11,6 +11,7 @@
   } from '$lib/ipc';
   import Spinner from '$lib/components/ui/Spinner.svelte';
   import Button from '$lib/components/ui/Button.svelte';
+  import { describeBlobTransferDetail } from '$lib/migration-errors';
 
   let {
     did,
@@ -48,6 +49,9 @@
   // The failed leg's error message, surfaced inline (CodeRabbit fix: don't rely solely
   // on the caller rewinding via onerror — show the failure here with a Retry action).
   let failure = $state<string | null>(null);
+  // The carried err.message, rendered as subordinate diagnostic detail beneath the headline
+  // (e.g. which blob CID, and whether the source or destination side broke).
+  let failureDetail = $state<string | null>(null);
 
   function statusGlyph(state: LegState): string {
     switch (state) {
@@ -108,6 +112,20 @@
     return 'An unexpected error occurred.';
   }
 
+  // The headline above stays a fixed, human sentence per code; this pulls out the carried
+  // `err.message` (the orchestrator's real cause — which CID, which server, which XRPC status)
+  // as subordinate detail. Most codes just show it verbatim; BLOB_TRANSFER_FAILED gets the
+  // fetch-vs-upload mapping so "source couldn't serve it" and "destination refused it" read as
+  // distinct, actionable causes rather than one undifferentiated blob failure.
+  function describeErrorDetail(raw: unknown): string | null {
+    if (!isCodedError(raw)) return null;
+    const err = raw as MigrationError;
+    if (!('message' in err) || typeof err.message !== 'string') return null;
+    const message = err.message.trim();
+    if (message.length === 0) return null;
+    return err.code === 'BLOB_TRANSFER_FAILED' ? describeBlobTransferDetail(message) : message;
+  }
+
   function toMigrationError(raw: unknown): MigrationError {
     if (isCodedError(raw)) return raw as MigrationError;
     return { code: 'NETWORK_ERROR', message: 'An unexpected error occurred.' };
@@ -125,6 +143,7 @@
 
   async function runMigration() {
     failure = null;
+    failureDetail = null;
     try {
       await runLeg('account', () => createDestinationAccount(did, email, inviteCode));
       await runLeg('repo', () => transferRepo(did));
@@ -146,6 +165,7 @@
       }
 
       failure = describeError(raw);
+      failureDetail = describeErrorDetail(raw);
       onerror(toMigrationError(raw));
     }
   }
@@ -182,6 +202,9 @@
   {#if failure}
     <div class="error-box" role="alert">
       <p class="error-text">{failure}</p>
+      {#if failureDetail}
+        <p class="error-detail">{failureDetail}</p>
+      {/if}
     </div>
     <Button onclick={retry}>Retry</Button>
   {/if}
@@ -284,5 +307,13 @@
     color: var(--color-critical);
     margin: 0;
     line-height: 1.4;
+  }
+  .error-detail {
+    font-family: var(--font-mono);
+    font-size: var(--text-label);
+    color: var(--color-critical-soft);
+    margin: var(--space-xs) 0 0;
+    line-height: 1.4;
+    word-break: break-word;
   }
 </style>
