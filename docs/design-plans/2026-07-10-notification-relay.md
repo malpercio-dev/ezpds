@@ -1,7 +1,10 @@
 # E2E-Encrypted Notification Relay for Self-Hosted Custos
 
-Status: **design exploration** — not yet scheduled into a wave. Captures the architecture
-discussion of 2026-07-10 so it survives the session (capture-before-close).
+Status: **design exploration** — scheduled as [MM-311](https://linear.app/malpercio/issue/MM-311);
+implementation details and issue decomposition pinned in
+[2026-07-17-notification-relay-implementation.md](2026-07-17-notification-relay-implementation.md).
+Captures the architecture discussion of 2026-07-10 so it survives the session
+(capture-before-close).
 
 ## Problem
 
