@@ -92,6 +92,7 @@ Source: `apps/admin-companion/src/lib/ipc.ts`
 | `issue_reset_token` | App command |
 | `list_accounts` | App command |
 | `list_admin_devices` | App command |
+| `list_audit` | App command |
 | `list_claim_codes` | App command |
 | `list_pairings` | App command |
 | `list_transfers` | App command |

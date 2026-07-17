@@ -1,0 +1,65 @@
+meta {
+  name: Admin Audit Log
+  type: http
+  seq: 124
+}
+
+get {
+  url: {{baseUrl}}/v1/admin/audit?limit=50
+  body: none
+  auth: bearer
+}
+
+params:query {
+  limit: 50
+  ~cursor:
+  ~action: account_takedown
+  ~actor: master-token
+  ~subject:
+}
+
+auth:bearer {
+  token: {{adminToken}}
+}
+
+docs {
+  # GET /v1/admin/audit
+
+  The server-wide admin audit log (`admin_audit_events`, V052): every privileged
+  mutating admin action, newest first, attributed to the credential that signed it.
+  Actions covered: `account_takedown`, `account_restore`, `credentials_revoked`,
+  `claim_codes_minted`, `claim_code_revoked`, `pairing_code_minted`,
+  `device_registered`, `device_revoked`, `transfer_cancelled`, `request_crawl`,
+  `email_updated`, `reset_token_issued`, `signing_key_created`. Only real state
+  transitions are recorded — an idempotent repeat (re-revoking a revoked device)
+  returns 200 but writes no event. Admin-authed: the master token (shown here) **or**
+  an active device's signed request (the `X-Admin-*` envelope; the signature covers the
+  bare path, so paging/filter query params vary without re-signing).
+
+  Query params (all optional):
+  - `limit` — page size, default 50, clamped to 1..=100.
+  - `cursor` — the `cursor` value from the previous page.
+  - `action` — exact-match action filter (one of the words above); anything else is a 400.
+  - `actor` — exact-match actor filter: `master-token`, `device:<id>`, or `pairing-code`
+    (the enrollment path — a registering device's acting credential is its consumed
+    pairing code, not an existing admin identity).
+  - `subject` — exact-match subject filter: an account DID, admin-device id, transfer
+    id, or claim code, depending on the action.
+
+  Response:
+  - `events` — array of audit events, newest first, each:
+    - `id` — the event's unique id.
+    - `actor` — the acting credential (`master-token` / `device:<id>` / `pairing-code`).
+    - `action` — one of the action words above.
+    - `subject` — the acted-on entity, omitted for server-wide actions
+      (`request_crawl`, mints).
+    - `outcome` — short result word (`ok`, `revoked`, `cancelled`).
+    - `detail` — JSON object of mechanical facts (counts, resulting status); omitted
+      when the action carries none. Never codes or token material.
+    - `createdAt` — when the action happened (UTC).
+  - `cursor` — pass back as `?cursor=` for the next page; omitted on the last page.
+
+  The trail is append-only and carries no foreign keys, so events outlive the
+  accounts, devices, and codes they describe — a takedown row survives the account's
+  later permanent deletion.
+}

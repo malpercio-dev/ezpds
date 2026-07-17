@@ -625,6 +625,74 @@ pub async fn revoke_claim_code(
     parse_success::<RevokedClaimCode>(response).await
 }
 
+// ── Server-wide admin audit log ──────────────────────────────────────────────
+
+/// Optional filters/pagination for the audit-log page lookup. Every `None` is omitted
+/// from the URL entirely.
+#[derive(Debug, Clone, Default)]
+pub struct ListAuditQuery {
+    pub limit: Option<u32>,
+    /// The previous page's `cursor` value; absent for the first page.
+    pub cursor: Option<String>,
+    /// Exact-match action filter (one of the relay's action words); an unknown word is
+    /// refused by the relay with 400.
+    pub action: Option<String>,
+    /// Exact-match actor filter (`master-token`, `device:<id>`, `pairing-code`).
+    pub actor: Option<String>,
+    /// Exact-match subject filter (account DID, admin-device id, transfer id, code).
+    pub subject: Option<String>,
+}
+
+/// Build the signed audit-log page lookup (`GET /v1/admin/audit?…`).
+///
+/// Like [`build_list_accounts_request`], the relay verifies the signature over
+/// `uri.path()` only, so the bare path is signed and the paging/filter params are
+/// appended to the URL *after* signing.
+pub fn build_list_audit_request(
+    pairing: &Pairing,
+    query: &ListAuditQuery,
+    timestamp: i64,
+    nonce: &str,
+) -> Result<SignedRequest, RelayClientError> {
+    let mut req = build_signed_request(pairing, "GET", "/v1/admin/audit", b"", timestamp, nonce)?;
+    let limit_str;
+    let mut params: Vec<(&str, &str)> = Vec::new();
+    if let Some(limit) = query.limit {
+        limit_str = limit.to_string();
+        params.push(("limit", &limit_str));
+    }
+    if let Some(cursor) = query.cursor.as_deref() {
+        params.push(("cursor", cursor));
+    }
+    if let Some(action) = query.action.as_deref() {
+        params.push(("action", action));
+    }
+    if let Some(actor) = query.actor.as_deref() {
+        params.push(("actor", actor));
+    }
+    if let Some(subject) = query.subject.as_deref() {
+        params.push(("subject", subject));
+    }
+    if !params.is_empty() {
+        req.url = append_query(&req.url, &params)?;
+    }
+    Ok(req)
+}
+
+/// Page the relay's server-wide admin audit log via a signed `GET` — every privileged
+/// admin action, newest first, attributed to the credential that signed it.
+/// Id-addressed like [`list_devices`], so a concurrent active-pairing switch can never
+/// redirect which relay is asked (or signed for).
+pub async fn list_audit(
+    pairing_id: &str,
+    query: ListAuditQuery,
+) -> Result<AuditPage, RelayClientError> {
+    let pairing = resolve_pairing(pairing_id)?;
+    let signed = build_list_audit_request(&pairing, &query, unix_now(), &fresh_nonce())?;
+    let response = send(signed).await?;
+    parse_success::<AuditPage>(response).await
+}
+
 // ── In-flight device transfers (list / cancel) ───────────────────────────────
 
 /// Build the signed in-flight transfer listing (`GET /v1/admin/transfers?cursor=…`).
@@ -946,6 +1014,37 @@ pub struct ClaimCodeInventory {
 #[derive(Serialize)]
 struct RevokeClaimCodeRequestBody {
     code: String,
+}
+
+/// One server-wide admin audit event as the relay reports it — the shape of
+/// `AuditEventView` in `crates/pds/src/routes/admin_audit.rs` (camelCase on the wire;
+/// re-serialized camelCase over IPC). The `pds` crate is binary-only, so this contract
+/// is shared by value, not import — a deserialization test pins it.
+#[derive(Debug, Clone, PartialEq, Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AuditEventEntry {
+    pub id: String,
+    /// The acting credential: `master-token`, `device:<id>`, or `pairing-code`.
+    pub actor: String,
+    pub action: String,
+    /// The acted-on entity (account DID, admin-device id, transfer id, claim code);
+    /// absent for server-wide actions (crawl requests, mints).
+    pub subject: Option<String>,
+    /// Short result word (`ok`, `revoked`, `cancelled`).
+    pub outcome: String,
+    /// Mechanical facts recorded with the action (counts, resulting status), as an
+    /// arbitrary JSON object; absent when the action carries none.
+    pub detail: Option<serde_json::Value>,
+    pub created_at: String,
+}
+
+/// One audit-log page: newest-first events plus the cursor for the next page (absent
+/// when the history is exhausted).
+#[derive(Debug, Clone, PartialEq, Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AuditPage {
+    pub events: Vec<AuditEventEntry>,
+    pub cursor: Option<String>,
 }
 
 /// One in-flight device transfer as the relay reports it — the shape of `TransferView`
@@ -2176,6 +2275,99 @@ mod tests {
             first_page.url,
             "https://relay.example/v1/accounts/claim-codes"
         );
+    }
+
+    // The audit-log page lookup: the signature covers the bare path and the
+    // paging/filter params are appended to the URL only, so every page and filter
+    // combination reuses the same envelope shape.
+    #[test]
+    fn signed_list_audit_request_signs_path_without_query() {
+        keychain::clear_for_test();
+        let key = device_key::get_or_create().expect("device key");
+        let pairing = test_pairing("device-audit", "https://relay.example");
+
+        let query = ListAuditQuery {
+            limit: Some(25),
+            cursor: Some("42".to_string()),
+            action: Some("device_revoked".to_string()),
+            actor: Some("device:dev-1".to_string()),
+            subject: None,
+        };
+        let req = build_list_audit_request(&pairing, &query, 1_700_000_000, "nonce-audit")
+            .expect("build signed audit lookup");
+
+        assert_eq!(
+            req.url,
+            "https://relay.example/v1/admin/audit?limit=25&cursor=42&action=device_revoked&actor=device%3Adev-1"
+        );
+        assert_eq!(req.method, "GET");
+        assert_eq!(req.body, b"");
+
+        // The relay reconstructs the envelope from uri.path() — no query — and verifies.
+        let path = "/v1/admin/audit";
+        let sign_string =
+            signing::request_sign_string("GET", path, 1_700_000_000, "nonce-audit", b"");
+        verify_p256_signature(
+            &DidKeyUri(key.key_id.clone()),
+            sign_string.as_bytes(),
+            &decode_sig(header(&req, signing::ADMIN_SIGNATURE_HEADER)),
+        )
+        .expect("the relay's verifier must accept this audit lookup");
+
+        // An unfiltered first page carries no query at all.
+        let first_page = build_list_audit_request(
+            &pairing,
+            &ListAuditQuery::default(),
+            1_700_000_000,
+            "nonce-audit",
+        )
+        .expect("build first-page lookup");
+        assert_eq!(first_page.url, "https://relay.example/v1/admin/audit");
+    }
+
+    // The audit page mirrors the relay's response shape (`AuditListResponse` /
+    // `AuditEventView` in crates/pds/src/routes/admin_audit.rs; the `pds` crate is
+    // binary-only, so the contract is shared by value, not import). Absent optional
+    // fields (`subject`, `detail`, `cursor`) are omitted from the relay's JSON, not null.
+    #[test]
+    fn audit_page_deserializes_the_relay_shape() {
+        let json = r#"{
+            "events": [
+                {
+                    "id": "evt-1",
+                    "actor": "device:dev-1",
+                    "action": "credentials_revoked",
+                    "subject": "did:plc:abc",
+                    "outcome": "ok",
+                    "detail": {"sessionsRevoked": 2},
+                    "createdAt": "2026-07-17 12:00:00"
+                },
+                {
+                    "id": "evt-2",
+                    "actor": "master-token",
+                    "action": "request_crawl",
+                    "outcome": "ok",
+                    "createdAt": "2026-07-17 11:00:00"
+                }
+            ],
+            "cursor": "17"
+        }"#;
+        let page: AuditPage = serde_json::from_str(json).expect("deserialize");
+        assert_eq!(page.cursor.as_deref(), Some("17"));
+        assert_eq!(page.events.len(), 2);
+        assert_eq!(page.events[0].actor, "device:dev-1");
+        assert_eq!(page.events[0].subject.as_deref(), Some("did:plc:abc"));
+        assert_eq!(
+            page.events[0].detail.as_ref().unwrap()["sessionsRevoked"],
+            2
+        );
+        assert_eq!(page.events[1].subject, None);
+        assert_eq!(page.events[1].detail, None);
+
+        // A final page omits the cursor.
+        let last: AuditPage =
+            serde_json::from_str(r#"{"events": []}"#).expect("deserialize final page");
+        assert_eq!(last.cursor, None);
     }
 
     // The revoke write: the exact serialized body is pinned, its hash is what the

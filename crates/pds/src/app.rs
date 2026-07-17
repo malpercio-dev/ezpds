@@ -13,6 +13,7 @@ use crate::routes::account_storage::account_storage;
 use crate::routes::account_usage::account_usage;
 use crate::routes::activate_account::activate_account_handler;
 use crate::routes::admin_account_repair::{issue_reset_token, set_account_email};
+use crate::routes::admin_audit::list_admin_audit;
 use crate::routes::admin_devices::{
     list_admin_devices, mint_pairing_code, register_admin_device, revoke_admin_device,
 };
@@ -487,6 +488,7 @@ pub fn app(state: AppState) -> Router {
             "/v1/admin/accounts/{id}/reset-token",
             post(issue_reset_token),
         )
+        .route("/v1/admin/audit", get(list_admin_audit))
         .route("/v1/admin/health", get(admin_health))
         .route("/v1/admin/relay-status", get(relay_status))
         .route("/v1/admin/request-crawl", post(request_crawl))

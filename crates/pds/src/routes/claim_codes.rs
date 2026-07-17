@@ -17,6 +17,7 @@ use common::{ApiError, ErrorCode};
 use crate::app::AppState;
 use crate::auth::guards::{require_admin, require_admin_json};
 use crate::code_gen::generate_code;
+use crate::db::admin_audit::{record_admin_audit_event, AdminAuditAction};
 use crate::db::claim_codes::{list_claim_codes, revoke_claim_code, RevokeClaimCodeOutcome};
 use crate::db::is_unique_violation;
 
@@ -59,18 +60,19 @@ pub async fn claim_codes(
     headers: HeaderMap,
     body: Bytes,
 ) -> Result<Json<ClaimCodesResponse>, Response> {
-    require_admin_json(method.as_str(), uri.path(), &headers, &body, &state).await?;
+    let actor = require_admin_json(method.as_str(), uri.path(), &headers, &body, &state).await?;
 
     let Json(payload) =
         Json::<ClaimCodesRequest>::from_bytes(&body).map_err(IntoResponse::into_response)?;
 
-    claim_codes_inner(&state, payload)
+    claim_codes_inner(&state, &actor, payload)
         .await
         .map_err(IntoResponse::into_response)
 }
 
 async fn claim_codes_inner(
     state: &AppState,
+    actor: &crate::auth::guards::AdminActor,
     payload: ClaimCodesRequest,
 ) -> Result<Json<ClaimCodesResponse>, ApiError> {
     // --- Validate input ---
@@ -92,7 +94,7 @@ async fn claim_codes_inner(
     // conflict with an existing DB row (probability ≈ existing_codes / 36^6 per code).
     for attempt in 0..3_usize {
         let codes = generate_unique_codes(payload.count as usize);
-        match insert_claim_codes(&state.db, &codes, payload.expires_in_hours).await {
+        match insert_claim_codes(&state.db, actor, &codes, payload.expires_in_hours).await {
             Ok(()) => return Ok(Json(ClaimCodesResponse { codes })),
             Err(e) if is_unique_violation(&e) => {
                 tracing::warn!(attempt, "claim code uniqueness conflict; retrying");
@@ -261,17 +263,18 @@ pub async fn revoke_claim_code_route(
     headers: HeaderMap,
     body: Bytes,
 ) -> Result<Json<RevokeClaimCodeResponse>, Response> {
-    require_admin_json(method.as_str(), uri.path(), &headers, &body, &state).await?;
+    let actor = require_admin_json(method.as_str(), uri.path(), &headers, &body, &state).await?;
     let Json(payload) =
         Json::<RevokeClaimCodeRequest>::from_bytes(&body).map_err(IntoResponse::into_response)?;
 
-    revoke_inner(&state, payload)
+    revoke_inner(&state, &actor, payload)
         .await
         .map_err(IntoResponse::into_response)
 }
 
 async fn revoke_inner(
     state: &AppState,
+    actor: &crate::auth::guards::AdminActor,
     payload: RevokeClaimCodeRequest,
 ) -> Result<Json<RevokeClaimCodeResponse>, ApiError> {
     let outcome = revoke_claim_code(&state.db, &payload.code)
@@ -283,6 +286,20 @@ async fn revoke_inner(
 
     match outcome {
         RevokeClaimCodeOutcome::Revoked | RevokeClaimCodeOutcome::AlreadyRevoked => {
+            // Audit only the transition: an idempotent repeat changed nothing. The code is
+            // the subject — it already appears in the admin-only inventory listing, so
+            // recording it here reveals nothing new to an audit reader.
+            if matches!(outcome, RevokeClaimCodeOutcome::Revoked) {
+                record_admin_audit_event(
+                    &state.db,
+                    actor.as_log_str().as_ref(),
+                    AdminAuditAction::ClaimCodeRevoked,
+                    Some(&payload.code),
+                    "revoked",
+                    None,
+                )
+                .await?;
+            }
             Ok(Json(RevokeClaimCodeResponse {
                 code: payload.code,
                 status: "revoked",
@@ -307,9 +324,12 @@ fn generate_unique_codes(count: usize) -> Vec<String> {
     codes.into_iter().collect()
 }
 
-/// Insert all codes in a single transaction; returns Err if any INSERT fails.
+/// Insert all codes in a single transaction; returns Err if any INSERT fails. The batch's
+/// audit event rides the same transaction (count only — the codes themselves live in the
+/// inventory, and one event per batch keeps the log readable).
 async fn insert_claim_codes(
     db: &sqlx::SqlitePool,
+    actor: &crate::auth::guards::AdminActor,
     codes: &[String],
     expires_in_hours: u32,
 ) -> Result<(), sqlx::Error> {
@@ -327,6 +347,20 @@ async fn insert_claim_codes(
         .execute(&mut *tx)
         .await?;
     }
+    let audit_detail = serde_json::json!({
+        "count": codes.len(),
+        "expiresInHours": expires_in_hours,
+    })
+    .to_string();
+    crate::db::admin_audit::insert_admin_audit_event(
+        &mut *tx,
+        actor.as_log_str().as_ref(),
+        AdminAuditAction::ClaimCodesMinted,
+        None,
+        "ok",
+        Some(&audit_detail),
+    )
+    .await?;
     tx.commit().await.inspect_err(|e| {
         tracing::error!(error = %e, "failed to commit claim_codes transaction");
     })?;

@@ -276,6 +276,15 @@
                   View devices on this server
                 </Button>
 
+                <!-- The server-wide admin audit log, pinned the same way: what every
+                     admin credential has done on THIS server. -->
+                <Button
+                  variant="secondary"
+                  onclick={() => goto(pinnedHref('/audit', pairing.id))}
+                >
+                  View admin audit log
+                </Button>
+
                 <!-- Revoke -->
                 <div class="revoke-block">
                   <Button

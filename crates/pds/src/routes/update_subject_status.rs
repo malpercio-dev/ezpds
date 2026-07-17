@@ -23,6 +23,7 @@ use crate::app::AppState;
 use crate::auth::guards::require_admin_json;
 use crate::auth::validation::is_valid_did;
 use crate::db::accounts::{set_account_takedown, TakedownStateChange};
+use crate::db::admin_audit::{record_admin_audit_event, AdminAuditAction};
 use crate::routes::admin_subject_defs::{RepoRefView, StatusAttrView};
 
 /// `subject` is a lexicon union (`com.atproto.admin.defs#repoRef` | `com.atproto.repo.strongRef`
@@ -170,6 +171,27 @@ pub async fn update_subject_status(
                     tracing::error!(error = %e, did = %did, "failed to stage #account takedown event");
                     ApiError::new(ErrorCode::InternalError, "failed to update account status").into_response()
                 })?;
+            // Audit the transition atomically with it. Only real transitions are recorded —
+            // the Unchanged arm above is a no-op the operator didn't change anything with.
+            let audit_action = if applied {
+                AdminAuditAction::AccountTakedown
+            } else {
+                AdminAuditAction::AccountRestore
+            };
+            let audit_detail = serde_json::json!({
+                "resultingStatus": lifecycle.as_status_str().unwrap_or("active"),
+            })
+            .to_string();
+            record_admin_audit_event(
+                &mut *tx,
+                actor.as_log_str().as_ref(),
+                audit_action,
+                Some(&did),
+                "ok",
+                Some(&audit_detail),
+            )
+            .await
+            .map_err(IntoResponse::into_response)?;
             tx.commit().await.map_err(|e| {
                 tracing::error!(error = %e, did = %did, "failed to commit updateSubjectStatus transaction");
                 ApiError::new(ErrorCode::InternalError, "failed to update account status").into_response()

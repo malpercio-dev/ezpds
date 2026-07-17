@@ -17,8 +17,9 @@ use common::{ApiError, ErrorCode};
 
 use crate::app::AppState;
 use crate::auth::extractors::AuthenticatedUser;
-use crate::auth::guards::require_admin_json;
+use crate::auth::guards::{require_admin_json, AdminActor};
 use crate::auth::jwt::AuthScope;
+use crate::db::admin_audit::{record_admin_audit_event, AdminAuditAction};
 use crate::db::claim_codes::{mint_claim_codes, MintClaimCodesError};
 
 const MAX_INVITE_CODE_COUNT: u32 = 10;
@@ -154,7 +155,7 @@ pub async fn create_invite_code(
     headers: HeaderMap,
     body: Bytes,
 ) -> Result<Json<CreateInviteCodeResponse>, Response> {
-    require_admin_json(method.as_str(), uri.path(), &headers, &body, &state).await?;
+    let actor = require_admin_json(method.as_str(), uri.path(), &headers, &body, &state).await?;
 
     // Lexicon input validation runs after auth (matching the reference PDS's order) and as a
     // plain call rather than the `LexiconInput` extractor, because the admin-device signature
@@ -173,13 +174,14 @@ pub async fn create_invite_code(
         .into_response()
     })?;
 
-    create_invite_code_inner(&state, payload)
+    create_invite_code_inner(&state, &actor, payload)
         .await
         .map_err(IntoResponse::into_response)
 }
 
 async fn create_invite_code_inner(
     state: &AppState,
+    actor: &AdminActor,
     payload: CreateInviteCodeRequest,
 ) -> Result<Json<CreateInviteCodeResponse>, ApiError> {
     require_single_use(payload.use_count)?;
@@ -192,6 +194,7 @@ async fn create_invite_code_inner(
         tracing::error!("claim-code mint returned an empty batch for createInviteCode");
         ApiError::new(ErrorCode::InternalError, "failed to mint invite code")
     })?;
+    audit_invite_mint(state, actor, 1).await?;
     Ok(Json(CreateInviteCodeResponse { code }))
 }
 
@@ -202,7 +205,7 @@ pub async fn create_invite_codes(
     headers: HeaderMap,
     body: Bytes,
 ) -> Result<Json<CreateInviteCodesResponse>, Response> {
-    require_admin_json(method.as_str(), uri.path(), &headers, &body, &state).await?;
+    let actor = require_admin_json(method.as_str(), uri.path(), &headers, &body, &state).await?;
 
     // Same post-auth lexicon validation as `create_invite_code` (the signature covers the
     // raw bytes, so the extractor can't be used here either).
@@ -220,13 +223,14 @@ pub async fn create_invite_codes(
         .into_response()
     })?;
 
-    create_invite_codes_inner(&state, payload)
+    create_invite_codes_inner(&state, &actor, payload)
         .await
         .map_err(IntoResponse::into_response)
 }
 
 async fn create_invite_codes_inner(
     state: &AppState,
+    actor: &AdminActor,
     payload: CreateInviteCodesRequest,
 ) -> Result<Json<CreateInviteCodesResponse>, ApiError> {
     require_single_use(payload.use_count)?;
@@ -250,7 +254,33 @@ async fn create_invite_codes_inner(
         });
     }
 
+    audit_invite_mint(state, actor, total).await?;
     Ok(Json(CreateInviteCodesResponse { codes }))
+}
+
+/// One `claim_codes_minted` audit event per invite-code batch — the XRPC invite NSIDs mint
+/// into the same `claim_codes` inventory as the native mint route, so they share its audit
+/// action. Written after the mint's own transaction (`mint_claim_codes` owns it); a failed
+/// audit write fails the request, leaving the minted codes discoverable in the inventory.
+async fn audit_invite_mint(
+    state: &AppState,
+    actor: &AdminActor,
+    count: u32,
+) -> Result<(), ApiError> {
+    let detail = serde_json::json!({
+        "count": count,
+        "expiresInHours": INVITE_CODE_EXPIRES_IN_HOURS,
+    })
+    .to_string();
+    record_admin_audit_event(
+        &state.db,
+        actor.as_log_str().as_ref(),
+        AdminAuditAction::ClaimCodesMinted,
+        None,
+        "ok",
+        Some(&detail),
+    )
+    .await
 }
 
 pub async fn get_account_invite_codes(

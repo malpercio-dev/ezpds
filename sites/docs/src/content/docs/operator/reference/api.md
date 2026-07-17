@@ -41,6 +41,7 @@ Every path registered by the server is listed here. For `/xrpc/` endpoints, use 
 | `/v1/admin/accounts/{id}/email` | Custos HTTP |
 | `/v1/admin/accounts/{id}/reset-token` | Custos HTTP |
 | `/v1/admin/accounts/{id}/revoke-credentials` | Custos HTTP |
+| `/v1/admin/audit` | Custos HTTP |
 | `/v1/admin/devices` | Custos HTTP |
 | `/v1/admin/devices/{id}/revoke` | Custos HTTP |
 | `/v1/admin/health` | Custos HTTP |

@@ -218,6 +218,31 @@ async fn revoke_claim_code(
     relay_client::revoke_claim_code(&pairing_id, &code).await
 }
 
+/// Page the server-wide admin audit log on the given pairing's relay — every privileged
+/// admin action, newest first, attributed to the credential that signed it (master token
+/// vs. a specific paired device). Id-addressed like `list_admin_devices`.
+#[tauri::command]
+async fn list_audit(
+    pairing_id: String,
+    limit: Option<u32>,
+    cursor: Option<String>,
+    action: Option<String>,
+    actor: Option<String>,
+    subject: Option<String>,
+) -> Result<relay_client::AuditPage, relay_client::RelayClientError> {
+    relay_client::list_audit(
+        &pairing_id,
+        relay_client::ListAuditQuery {
+            limit,
+            cursor,
+            action,
+            actor,
+            subject,
+        },
+    )
+    .await
+}
+
 /// Page the in-flight device transfers on the given pairing's relay — every planned
 /// device swap that can still advance, newest first, never carrying the transfer code.
 /// Id-addressed like `list_admin_devices`.
@@ -322,6 +347,7 @@ pub fn run() {
             list_accounts,
             list_claim_codes,
             revoke_claim_code,
+            list_audit,
             list_transfers,
             cancel_transfer,
             revoke_account_credentials,

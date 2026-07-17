@@ -17,6 +17,7 @@ use common::{ApiError, ErrorCode};
 
 use crate::app::AppState;
 use crate::auth::guards::require_admin;
+use crate::db::admin_audit::{record_admin_audit_event, AdminAuditAction};
 use crate::db::transfers::list_inflight_transfers;
 use crate::transfer::{cancel_transfer, CancelOutcome};
 
@@ -161,7 +162,7 @@ pub async fn cancel_admin_transfer(
     body: Bytes,
 ) -> Result<Json<CancelTransferResponse>, ApiError> {
     // Auth first so an unauthenticated caller cannot probe which transfer ids exist.
-    require_admin(method.as_str(), uri.path(), &headers, &body, &state).await?;
+    let actor = require_admin(method.as_str(), uri.path(), &headers, &body, &state).await?;
 
     let outcome = cancel_transfer(&state.db, &transfer_id)
         .await
@@ -173,11 +174,29 @@ pub async fn cancel_admin_transfer(
     match outcome {
         CancelOutcome::Cancelled {
             revoked_device_credential,
-        } => Ok(Json(CancelTransferResponse {
-            id: transfer_id,
-            status: "cancelled",
-            revoked_device_credential,
-        })),
+        } => {
+            // Audit only the real interruption (an idempotent repeat changed nothing).
+            // The transfer id is the subject; `transfer_audit_events` already ties it to
+            // its DID for per-account forensics.
+            let detail = serde_json::json!({
+                "revokedDeviceCredential": revoked_device_credential,
+            })
+            .to_string();
+            record_admin_audit_event(
+                &state.db,
+                actor.as_log_str().as_ref(),
+                AdminAuditAction::TransferCancelled,
+                Some(&transfer_id),
+                "cancelled",
+                Some(&detail),
+            )
+            .await?;
+            Ok(Json(CancelTransferResponse {
+                id: transfer_id,
+                status: "cancelled",
+                revoked_device_credential,
+            }))
+        }
         CancelOutcome::AlreadyCancelled => Ok(Json(CancelTransferResponse {
             id: transfer_id,
             status: "cancelled",
