@@ -28,14 +28,17 @@ If you are _using_ an identity rather than running a server, you want
 
 ## Which key you hold
 
-The one thing to internalize before running Custos: you hold the **second**
+The one thing to internalize before running Custos: you hold the **last**
 rotation key, not the first.
 
 ```text
-rotationKeys[0]  →  the user's device key   (higher precedence)
-rotationKeys[1]  →  the server's key        (yours, lower precedence)
+rotationKeys[0]  →  the user's device key     (highest precedence)
+rotationKeys[1]  →  the user's recovery key   (from their 2-of-3 backup)
+rotationKeys[2]  →  the server's key          (yours, lowest precedence)
 ```
 
-The user can always override you. That is by design: it is what lets a user
+Accounts created before on-device recovery keys carry two entries — the user's
+device key, then yours — until their wallet adds the recovery key; your key is
+last either way. The user can always override you. That is by design: it is what lets a user
 leave your server without your permission, and it is the property that makes
 hosting trustworthy rather than custodial.
