@@ -29,8 +29,12 @@ users' media, and there is no external copy anywhere on the network to heal from
   precisely the "metadata present, reads failing" fault observed on the source PDS.
 - Nothing ever re-verifies stored bytes against their CID after upload. Bitrot,
   truncation, or a bad restore stays silent until a `getBlob` — or a migration drain —
-  trips over it. `getBlob` streams whatever the file contains, with
-  `Cache-Control: immutable`, so corrupt bytes would also be cached as canonical.
+  trips over it. `getBlob` buffers the whole file and returns whatever it contains
+  (with `Content-Type`/CSP/`nosniff` headers; it does not currently set
+  `Cache-Control` — the [blob-handling spec](../blob-handling-spec.md) §7.3 recommends
+  `immutable`, which is safe only once bytes are verified). Because blobs are
+  content-addressed, downstream consumers cache them as immutable regardless, so
+  served corrupt bytes would stick as canonical.
 - Working in our favor: content addressing makes both verification (re-hash, compare
   to filename) and incremental replication (immutable, add-only files) trivial; the
   blob GC is authoritative by MST walk; `checkAccountStatus` /
@@ -48,7 +52,16 @@ Two viable shapes:
   Content addressing makes this trivially safe and incremental: files are immutable
   and add-only, so sync is "upload missing keys"; delete propagation may lag GC
   harmlessly (worst case the bucket briefly retains collected blobs). No schema
-  change, no serving-path change.
+  change, no serving-path change. Two integrity rules keep the mirror trustworthy:
+  **verify before replicating** — re-hash and size-check each local file before
+  upload (the write path can currently leave truncated bytes at a valid CID path,
+  №2; a corrupt local file must never become the trusted recovery copy), and apply
+  the same verification before any restore or scrub auto-heal trusts a bucket copy.
+  And **restore must gate serving**: restore-on-boot has to complete — blob files
+  restored and reconciled against the (Litestream-restored) rows — before the server
+  takes traffic, else a half-restored volume recreates the "metadata present, bytes
+  missing" fault; rows whose blobs remain missing are surfaced (scrub alarm), not
+  silently served.
 - **(b) S3-compatible backend as the primary store** — the
   [blob-handling spec](../blob-handling-spec.md) §4 v1.0 plan (R2/Tigris/MinIO via
   `rust-s3` or `opendal`, `storage_backend` column, local→S3 migration tool). Removes
@@ -81,9 +94,11 @@ an operator signal months before a migration depends on the bytes.
 ### 4. Verify on serve
 
 `getBlob` already buffers the whole file (`read_blob` → `Vec<u8>`); re-hashing a
-few-MB blob before streaming is cheap at this fleet's scale. On mismatch: 404 +
-error-log + flag for the scrub, never serve wrong bytes under an `immutable` cache
-header. Config-gated if the cost ever matters.
+few-MB blob before returning it is cheap at this fleet's scale. On mismatch: 404 +
+error-log + flag for the scrub — never serve wrong bytes that downstream caches
+would keep as canonical. Verification is unconditional in the correctness path; if
+an emergency bypass ever proves necessary, degraded mode must be explicit and
+observable (metric + log on every unverified serve), never a silent config default.
 
 ### 5. Migration-drain ergonomics (wallet + server)
 
@@ -126,8 +141,10 @@ an established wallet pattern.
    a stopgap while (1) is built.
 
 **Sync logic.** Reuse the drain's calls: paginated `listBlobs` → diff against local
-CIDs → `getBlob` → **verify SHA-256 against the CID before writing** (never back up
-corrupt bytes — the client-side twin of №4) → append to a manifest
+CIDs → `getBlob` → **recompute the full CID from the fetched bytes (CIDv1, raw
+codec, SHA-256 multihash — `blob_store::build_cid`'s exact encoding) and compare it
+to the listed CID before writing** (never back up corrupt bytes — the client-side
+twin of №4) → append to a manifest
 (`cid, mimeType, size, fetchedAt`). Immutable content-addressed files make the sync
 incremental and idempotent by construction. Start with an explicit "Back up media"
 action plus an opportunistic pass on app open; background scheduling
@@ -154,5 +171,7 @@ single change. №4 rides on №3's helpers. №5 is mostly wallet-side.
 The iCloud wallet backup is independent of all five and can proceed in parallel, but
 the server bucket mirror still comes first: it protects every account automatically,
 while the wallet mirror protects only opted-in users with the app installed and iCloud
-space free. Together they give three independent copies (volume, operator bucket,
-user's iCloud) with different failure domains and different owners.
+space free. For those users — once a backup pass has completed and iCloud sync has
+actually finished — there are three independent copies (volume, operator bucket,
+user's iCloud) with different failure domains and different owners; everyone else has
+at most the volume and the operator bucket.
