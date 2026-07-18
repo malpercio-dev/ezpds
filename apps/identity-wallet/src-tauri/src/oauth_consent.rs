@@ -166,18 +166,19 @@ pub(crate) async fn preview_oauth_consent_impl(
 ) -> Result<ConsentPreview, ConsentError> {
     let pds_url = resolve_safe_pds(pds_client, did).await?;
     let url = format!(
-        "{}/oauth/authorize/consent-request",
-        pds_url.trim_end_matches('/')
+        "{}/oauth/authorize/consent-request?user_code={}",
+        pds_url.trim_end_matches('/'),
+        urlencoding::encode(user_code)
     );
-    let response = pds_client
-        .client()
-        .get(url)
-        .query(&[("user_code", user_code)])
-        .send()
-        .await
-        .map_err(|e| ConsentError::TransportFailure {
-            message: e.to_string(),
-        })?;
+    let response =
+        pds_client
+            .client()
+            .get(url)
+            .send()
+            .await
+            .map_err(|e| ConsentError::TransportFailure {
+                message: e.to_string(),
+            })?;
     let status = response.status();
     if !status.is_success() {
         return Err(match status.as_u16() {
