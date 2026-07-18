@@ -183,6 +183,7 @@ pub fn encode_sovereign_session_envelope(
 - `SOVEREIGN_SESSION_DOMAIN`, `SOVEREIGN_SESSION_METHOD`, and `SOVEREIGN_SESSION_PATH` expose the pinned protocol constants
 
 **`encode_oauth_consent_envelope`** / **`granted_scope_hash`**
+
 ```rust
 pub fn encode_oauth_consent_envelope(
     server_did: &str, account_did: &str, signing_key_did: &str,
@@ -191,6 +192,7 @@ pub fn encode_oauth_consent_envelope(
 ) -> Vec<u8>
 pub fn granted_scope_hash(granted_scope: &str) -> String  // lowercase-hex SHA-256
 ```
+
 - The wallet-confirmed OAuth-consent counterpart of the sovereign-session encoder (same length-prefixed, domain-versioned `Vec<u8>` shape). Binds the pending request's `request_id`, `client_id`, the `decision` (`approve`/`deny`), and a SHA-256 hash of the canonical granted-scope string, so a signed approval cannot be replayed onto a different request, flipped from a denial, or widened to a larger scope set.
 - `OAUTH_CONSENT_DOMAIN` (`org.obsign.custos.oauth-consent.v1`), `OAUTH_CONSENT_METHOD`, `OAUTH_CONSENT_APPROVE_PATH`, and `OAUTH_CONSENT_DECISION_{APPROVE,DENY}` expose the pinned protocol constants. Golden vector: `test-vectors/oauth-consent-envelope-v1.json` (shared with the wallet client).
 

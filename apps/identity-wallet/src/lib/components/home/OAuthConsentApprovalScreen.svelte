@@ -170,6 +170,14 @@
     ceremonyError = null;
     phase = 'denying';
     try {
+      // Denial signs a terminal consent envelope, so it gates on biometrics too: a cancelled
+      // prompt aborts before any signing or network call, exactly like the approval path.
+      await authenticateBiometric(`Deny sign-in to ${clientLabel} as ${asWho}`);
+    } catch {
+      phase = 'review';
+      return;
+    }
+    try {
       // Denial terminates the request on the server so the app stops waiting; it grants nothing.
       await confirmOAuthConsent(did, preview.requestId, preview.clientId, 'deny', '');
       phase = 'denied';
@@ -370,7 +378,7 @@
   .req-meta {
     display: grid;
     grid-template-columns: auto 1fr;
-    gap: 4px var(--space-sm);
+    gap: var(--space-3xs) var(--space-sm);
     margin: var(--space-xs) 0 0;
   }
   .req-meta dt {

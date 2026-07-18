@@ -264,10 +264,17 @@ where
 /// code issuance in the same statement (`RETURNING`) so the browser can mint at most one code.
 /// Deliberately carries no `expires_at` predicate: approval is the meaningful gate, and the issued
 /// authorization code carries its own short expiry (matching the transfers-completion precedent).
-pub async fn complete_pending_authorization(
-    pool: &sqlx::SqlitePool,
+///
+/// Executor-generic so the caller can run this transition, the authorization-code insert, and the
+/// completion audit in one transaction — a failed code insert then rolls the transition back,
+/// leaving the request retryable rather than stranded as `completed` with no code.
+pub async fn complete_pending_authorization<'e, E>(
+    executor: E,
     request_id: &str,
-) -> Result<Option<CompletedAuthorization>, ApiError> {
+) -> Result<Option<CompletedAuthorization>, ApiError>
+where
+    E: sqlx::Executor<'e, Database = Sqlite>,
+{
     let row = sqlx::query(
         "UPDATE pending_oauth_authorizations SET status = 'completed' \
          WHERE request_id = ? AND status = 'approved' \
@@ -275,7 +282,7 @@ pub async fn complete_pending_authorization(
                    granted_scope, account_did",
     )
     .bind(request_id)
-    .fetch_optional(pool)
+    .fetch_optional(executor)
     .await
     .map_err(|e| {
         tracing::error!(error = %e, "DB error completing pending OAuth authorization");

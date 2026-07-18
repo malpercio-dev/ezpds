@@ -415,7 +415,7 @@ pub struct RateLimitConfig {
     #[serde(default = "default_recovery_per_5min")]
     pub recovery_per_5min: u64,
     /// Wallet-confirmed OAuth consent request creations (`GET /oauth/authorize` for a passwordless
-    /// account) per 5 minutes. Charged in-handler against **both** the requesting IP and the
+    /// or migrated account) per 5 minutes. Charged in-handler against **both** the requesting IP and the
     /// `client_id` (two independent counters, one limiter), so neither a single IP nor a single
     /// client can flood the pending-request table. Default 30. `0` disables.
     #[serde(default = "default_oauth_consent_create_per_5min")]

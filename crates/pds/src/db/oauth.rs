@@ -106,8 +106,8 @@ pub async fn get_oauth_client(
 ///
 /// The code expires 60 seconds after creation (single-use, short-lived per RFC 6749 §4.1.2).
 #[allow(clippy::too_many_arguments)]
-pub async fn store_authorization_code(
-    pool: &SqlitePool,
+pub async fn store_authorization_code<'e, E>(
+    executor: E,
     code: &str,
     client_id: &str,
     did: &str,
@@ -115,7 +115,10 @@ pub async fn store_authorization_code(
     code_challenge_method: &str,
     redirect_uri: &str,
     scope: &str,
-) -> Result<(), sqlx::Error> {
+) -> Result<(), sqlx::Error>
+where
+    E: sqlx::Executor<'e, Database = sqlx::Sqlite>,
+{
     sqlx::query(
         "INSERT INTO oauth_authorization_codes \
          (code, client_id, did, code_challenge, code_challenge_method, redirect_uri, scope, \
@@ -129,7 +132,7 @@ pub async fn store_authorization_code(
     .bind(code_challenge_method)
     .bind(redirect_uri)
     .bind(scope)
-    .execute(pool)
+    .execute(executor)
     .await?;
     Ok(())
 }

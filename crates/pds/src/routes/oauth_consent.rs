@@ -1,8 +1,7 @@
 // pattern: Imperative Shell
 //
-// The wallet-confirmed half of OAuth consent (Phase A of the wallet-confirmed-OAuth-consent design
-// plan). Three public routes plus a wallet preview, all keyed off the single-use
-// `pending_oauth_authorizations` request the consent page
+// The wallet-confirmed half of OAuth consent. Three public routes plus a wallet preview, all keyed
+// off the single-use `pending_oauth_authorizations` request the consent page
 // (`oauth_authorize::get_authorization`) created:
 //
 //   GET  /oauth/authorize/consent-request  — wallet preview: client/origin/scope for a user_code
@@ -407,7 +406,23 @@ pub async fn post_authorization_complete(
 ) -> Response {
     let issuer = state.config.public_url.trim_end_matches('/').to_string();
 
-    let completed = match complete_pending_authorization(&state.db, &form.request_id).await {
+    // The guarded transition, authorization-code insert, and completion audit share one transaction:
+    // a failed code insert rolls the `approved → completed` transition back, so the request stays
+    // retryable instead of being consumed with no code ever issued.
+    let token = generate_token();
+    let mut tx = match state.db.begin().await {
+        Ok(tx) => tx,
+        Err(e) => {
+            tracing::error!(error = %e, "failed to begin consent completion transaction");
+            return error_page(
+                "Server Error",
+                "Failed to issue the authorization code. Please try again.",
+            )
+            .into_response();
+        }
+    };
+
+    let completed = match complete_pending_authorization(&mut *tx, &form.request_id).await {
         Ok(Some(c)) => c,
         Ok(None) => {
             // Not in `approved` state: still pending, denied, expired, or already completed.
@@ -421,9 +436,8 @@ pub async fn post_authorization_complete(
         Err(e) => return e.into_response(),
     };
 
-    let token = generate_token();
     if let Err(e) = store_authorization_code(
-        &state.db,
+        &mut *tx,
         &token.hash,
         &completed.client_id,
         &completed.account_did,
@@ -442,9 +456,8 @@ pub async fn post_authorization_complete(
         .into_response();
     }
 
-    // Audit the completion (best-effort — the code is already issued and the redirect must proceed).
     if let Err(e) = insert_oauth_consent_audit_event(
-        &state.db,
+        &mut *tx,
         &uuid::Uuid::new_v4().to_string(),
         &form.request_id,
         Some(&completed.account_did),
@@ -454,7 +467,16 @@ pub async fn post_authorization_complete(
     )
     .await
     {
-        tracing::warn!(error = %e, "failed to audit wallet-consent completion");
+        return e.into_response();
+    }
+
+    if let Err(e) = tx.commit().await {
+        tracing::error!(error = %e, "failed to commit consent completion transaction");
+        return error_page(
+            "Server Error",
+            "Failed to issue the authorization code. Please try again.",
+        )
+        .into_response();
     }
 
     build_code_redirect(
@@ -643,7 +665,8 @@ mod tests {
         serde_json::from_slice(&bytes).unwrap()
     }
 
-    // AC: a NULL-password account completes a full authorization-code login using only the wallet.
+    // A NULL-password (sovereign / migrated) account completes a full authorization-code login
+    // using only the wallet — the lockout this whole path removes.
     #[tokio::test]
     async fn passwordless_account_completes_full_authorization_via_wallet() {
         let plc = MockServer::start().await;
@@ -729,7 +752,8 @@ mod tests {
         assert_eq!(codes, 1);
     }
 
-    // AC: an approval cannot be replayed onto its request once it has resolved (single-use).
+    // A signed approval cannot be replayed onto its request once it has resolved: the guarded
+    // status transition makes the second attempt a no-op (single-use).
     #[tokio::test]
     async fn replayed_approval_is_rejected() {
         let plc = MockServer::start().await;
@@ -755,7 +779,7 @@ mod tests {
         assert_ne!(replay.status(), StatusCode::OK);
     }
 
-    // AC: the binding covers the granted scope hash — a body granting a wider set than was signed
+    // The envelope binds the granted-scope hash — a body granting a wider set than was signed
     // fails signature verification, so an approval cannot be widened.
     #[tokio::test]
     async fn approval_cannot_be_widened_beyond_the_signed_scope() {
@@ -773,7 +797,8 @@ mod tests {
         assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
     }
 
-    // AC: denial terminates the request and is recorded.
+    // A denial terminates the request and is recorded, so the browser stops polling and the client
+    // sees the request resolved.
     #[tokio::test]
     async fn denial_terminates_and_audits_the_request() {
         let plc = MockServer::start().await;
@@ -819,7 +844,8 @@ mod tests {
         );
     }
 
-    // AC: a signing key absent from the account's authoritative PLC rotation set is rejected.
+    // A signing key absent from the account's authoritative PLC rotation set is rejected — approval
+    // is strictly key-sovereign against current PLC state, never the cached DID doc.
     #[tokio::test]
     async fn signing_key_outside_rotation_set_is_rejected() {
         let plc = MockServer::start().await;
@@ -875,7 +901,7 @@ mod tests {
         assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
     }
 
-    // AC: status polling is throttled (slow_down) when polled faster than the interval.
+    // Status polling faster than the minimum interval is throttled (the slow_down discipline).
     #[tokio::test]
     async fn status_polling_is_throttled() {
         let plc = MockServer::start().await;

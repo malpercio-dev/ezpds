@@ -675,7 +675,9 @@
         : undefined}
       onapppasswords={() => goTo('app_passwords')}
       onagents={() => goTo('my_agents')}
-      onsignin={() => goTo('oauth_consent_approval')}
+      onsignin={selectedDid?.startsWith('did:plc:')
+        ? () => goTo('oauth_consent_approval')
+        : undefined}
       onmigrate={selectedDeviceKeyIsRoot === true
         ? () => {
             migrationDid = selectedDid ?? '';

@@ -340,6 +340,19 @@ pub(crate) async fn confirm_oauth_consent_impl(
     if response.did != did {
         return Err(ConsentError::DidMismatch);
     }
+    // The recorded outcome must match the decision we signed: an approval reports `approved`, a
+    // denial `denied`. Anything else is a malformed/unexpected response, not a success to display.
+    let expected_status = if decision == crypto::OAUTH_CONSENT_DECISION_APPROVE {
+        "approved"
+    } else {
+        "denied"
+    };
+    if response.status != expected_status {
+        return Err(ConsentError::InvalidResponse {
+            message: "server returned a decision status that did not match the submitted decision"
+                .into(),
+        });
+    }
     Ok(ConsentDecision {
         status: response.status,
         did: did.into(),
@@ -479,18 +492,21 @@ mod tests {
         );
         let signature =
             crate::identity_store::per_did_sign_closure(DID).unwrap()(&envelope).unwrap();
+        // Clone the values the matcher closure consumes so `nonce` stays live for the call below.
+        let nonce_body = nonce.clone();
+        let signing_key = key.key_id.clone();
         let approve = server
             .mock_async(move |when, then| {
                 when.method(POST)
                     .path("/oauth/authorize/approve")
                     .json_body(json!({
                         "did": DID,
-                        "signingKey": key.key_id,
+                        "signingKey": signing_key,
                         "requestId": REQUEST_ID,
                         "decision": "approve",
                         "grantedScope": "atproto transition:generic",
                         "timestamp": TIMESTAMP,
-                        "nonce": nonce,
+                        "nonce": nonce_body,
                         "signature": URL_SAFE_NO_PAD.encode(signature),
                     }));
                 then.status(200)

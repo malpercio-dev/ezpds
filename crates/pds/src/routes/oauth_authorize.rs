@@ -40,6 +40,19 @@ const PENDING_REQUEST_TTL_SECS: i64 = 300;
 /// poll can still report `expired` for a while after the window closes.
 const PENDING_REQUEST_CLEANUP_GRACE_SECS: i64 = 3600;
 
+/// Reduce an `Origin`/`Referer` header to just scheme + host (+ port), discarding any path, query,
+/// or fragment. The wallet only ever shows the requesting origin, and a full referring URL has no
+/// business landing in the pending row or the audit log.
+fn sanitize_origin(raw: &str) -> Option<String> {
+    let parsed = url::Url::parse(raw).ok()?;
+    let host = parsed.host_str()?;
+    let scheme = parsed.scheme();
+    Some(match parsed.port() {
+        Some(port) => format!("{scheme}://{host}:{port}"),
+        None => format!("{scheme}://{host}"),
+    })
+}
+
 /// Fully-resolved parameters for the authorization consent page.
 ///
 /// Constructed either directly from query params (non-PAR flow) or by looking up
@@ -427,7 +440,11 @@ async fn create_pending_request(
             .and_then(|v| v.to_str().ok())
             .map(str::to_string)
     };
-    let origin = header_str("origin").or_else(|| header_str("referer"));
+    // Keep only scheme + host (+ port) from Origin/Referer — never a full referring URL's path or
+    // query — in the pending row and audit log.
+    let origin = header_str("origin")
+        .or_else(|| header_str("referer"))
+        .and_then(|raw| sanitize_origin(&raw));
     let user_agent = header_str("user-agent");
 
     let request_id = format!("poauth_{}", generate_token().plaintext);
@@ -463,18 +480,23 @@ async fn create_pending_request(
         return None;
     }
 
-    // Audit the creation (best-effort — a failed audit must not deny the consent page).
+    // Audit the creation (best-effort — a failed audit must not deny the consent page). The
+    // account_did is left NULL here: the client-supplied login_hint is unverified (it can be a
+    // handle or an attacker-chosen DID), so it is recorded as a mechanical `login_hint` fact in the
+    // detail rather than attributed as the approving account — that binding is only established at
+    // approval, against authoritative PLC state.
     let detail = serde_json::json!({
         "client_id": params.client_id,
         "requested_scope": display_scope,
         "origin": origin,
+        "login_hint": params.login_hint,
     })
     .to_string();
     if let Err(e) = insert_oauth_consent_audit_event(
         &state.db,
         &uuid::Uuid::new_v4().to_string(),
         &request_id,
-        params.login_hint.as_deref(),
+        None,
         &params.client_id,
         OAuthConsentAuditEventType::RequestCreated,
         Some(&detail),
