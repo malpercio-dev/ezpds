@@ -770,6 +770,11 @@ mod tests {
         DpopProofKey,
     };
 
+    /// Callers must keep the returned `MockServer` alive for the whole test. `MockServer::start`
+    /// hands out servers from wiremock's shared process-wide pool; dropping the guard returns the
+    /// server to the pool while its listener stays up, and the next test to check it out *resets*
+    /// it — silently unmounting the plc mock under a state that still points at its URL, so a
+    /// mid-test mint's plc POST 404s and surfaces as a 502 (observed as a parallel-load CI flake).
     async fn state_with_plc() -> (AppState, MockServer) {
         let plc = MockServer::start().await;
         Mock::given(method("POST"))
@@ -790,10 +795,6 @@ mod tests {
             },
             plc,
         )
-    }
-
-    async fn state() -> AppState {
-        state_with_plc().await.0
     }
 
     fn request(uri: &str, token: Option<&str>, body: serde_json::Value) -> Request<Body> {
@@ -847,16 +848,19 @@ mod tests {
         serde_json::from_str(&op.signed_op_json).unwrap()
     }
 
-    /// A `state()` whose child-deletion grace window is overridden — `0` makes the next reaper run
-    /// purge, a large value keeps a scheduled child parked in its window.
-    async fn state_with_grace(grace_secs: u64) -> AppState {
-        let base = state().await;
+    /// A `state_with_plc()` whose child-deletion grace window is overridden — `0` makes the next
+    /// reaper run purge, a large value keeps a scheduled child parked in its window.
+    async fn state_with_grace(grace_secs: u64) -> (AppState, MockServer) {
+        let (base, plc) = state_with_plc().await;
         let mut config = (*base.config).clone();
         config.accounts.child_deletion_grace_secs = grace_secs;
-        AppState {
-            config: Arc::new(config),
-            ..base
-        }
+        (
+            AppState {
+                config: Arc::new(config),
+                ..base
+            },
+            plc,
+        )
     }
 
     /// Mint a sovereign child of `parent` and return its DID. Reserves a fresh repo key and drives
@@ -887,7 +891,7 @@ mod tests {
 
     #[tokio::test]
     async fn local_parent_mints_lists_and_revokes_sovereign_child() {
-        let state = state().await;
+        let (state, _plc) = state_with_plc().await;
         let parent = "did:plc:parentchildowner111111";
         seed_account_with_repo(&state.db, parent).await;
         let repo_key = reserve(&state.db).await;
@@ -967,7 +971,7 @@ mod tests {
 
     #[tokio::test]
     async fn parent_reads_child_audit_trail_foreign_account_cannot() {
-        let state = state().await;
+        let (state, _plc) = state_with_plc().await;
         let parent = "did:plc:parentchildaudit111111";
         seed_account_with_repo(&state.db, parent).await;
         let repo_key = reserve(&state.db).await;
@@ -1019,7 +1023,7 @@ mod tests {
         // the RFC 9449 binding downgrade — a captured token replayed without its key. The owner
         // guard behind child minting must reject it exactly as the AuthenticatedUser extractor and
         // the repo-write handlers do; nothing may be provisioned under the victim's DID.
-        let state = state().await;
+        let (state, _plc) = state_with_plc().await;
         let parent = "did:plc:downgradeparent111111";
         seed_account_with_repo(&state.db, parent).await;
         let dpop_key = DpopProofKey::generate();
@@ -1049,7 +1053,7 @@ mod tests {
 
     #[tokio::test]
     async fn caller_without_local_parent_cannot_mint() {
-        let state = state().await;
+        let (state, _plc) = state_with_plc().await;
         let repo_key = reserve(&state.db).await;
         let op = genesis(
             "outsider-bot.example.com",
@@ -1157,7 +1161,7 @@ mod tests {
     #[tokio::test]
     async fn parent_deletes_child_then_reaper_purges_and_tombstone_survives() {
         // grace = 0 → the child is due the moment it is scheduled, so one reaper pass purges it.
-        let state = state_with_grace(0).await;
+        let (state, _plc) = state_with_grace(0).await;
         let parent = "did:plc:parentchilddelete1111";
         seed_account_with_repo(&state.db, parent).await;
         let token = access_jwt(&[0x42; 32], parent);
@@ -1256,7 +1260,7 @@ mod tests {
 
     #[tokio::test]
     async fn foreign_account_cannot_delete_child_uniform_404() {
-        let state = state_with_grace(0).await;
+        let (state, _plc) = state_with_grace(0).await;
         let parent = "did:plc:parentchilddelforeign";
         seed_account_with_repo(&state.db, parent).await;
         let token = access_jwt(&[0x42; 32], parent);
@@ -1289,7 +1293,7 @@ mod tests {
 
     #[tokio::test]
     async fn agent_derived_token_cannot_delete_child() {
-        let state = state_with_grace(0).await;
+        let (state, _plc) = state_with_grace(0).await;
         let parent = "did:plc:parentagentrefuse111";
         seed_account_with_repo(&state.db, parent).await;
         let owner = access_jwt(&[0x42; 32], parent);
@@ -1324,7 +1328,7 @@ mod tests {
     #[tokio::test]
     async fn deleting_a_child_twice_is_idempotent() {
         // A non-zero grace keeps the child parked so both calls exercise the schedule path.
-        let state = state_with_grace(3600).await;
+        let (state, _plc) = state_with_grace(3600).await;
         let parent = "did:plc:parentdelidempotent1";
         seed_account_with_repo(&state.db, parent).await;
         let token = access_jwt(&[0x42; 32], parent);
