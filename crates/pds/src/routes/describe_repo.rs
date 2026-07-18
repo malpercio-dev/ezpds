@@ -36,20 +36,20 @@ pub async fn describe_repo(
         .ok_or_else(|| ApiError::new(ErrorCode::NotFound, "repo not found"))?;
     let did = account.did;
 
-    // Local DID document. For accounts hosted here this is always present; null only
-    // for an account whose document was never cached locally.
+    // Local DID document. The lexicon requires `didDoc` and its `unknown` type still means a JSON
+    // object, so an account whose document was never cached is represented by an empty object.
     let did_doc = crate::db::dids::get_did_document(&state.db, &did)
         .await?
-        .unwrap_or(serde_json::Value::Null);
+        .unwrap_or_else(|| serde_json::json!({}));
 
     // The collections present in the repo. A genesis repo (no records) reports none.
     let collections = list_collections(&state, &did).await?;
 
     // handleIsCorrect: the handle resolves to this DID (it lives in our handles table)
     // *and* the DID document's alsoKnownAs lists `at://<handle>` — a bidirectional match.
-    // A missing DID document (`did_doc` is Null) deliberately yields `false`: without a
-    // document we cannot confirm the backward link, so an unverifiable handle and a
-    // genuine alsoKnownAs mismatch intentionally collapse to the same `false` outcome.
+    // A missing DID document (the empty-object fallback) deliberately yields `false`: without a
+    // document we cannot confirm the backward link, so an unverifiable handle and a genuine
+    // alsoKnownAs mismatch intentionally collapse to the same `false` outcome.
     let (handle, handle_is_correct) = match account.handle {
         Some(handle) => {
             let at_uri = format!("at://{handle}");
@@ -251,7 +251,7 @@ mod tests {
         let did = "did:plc:describenodoc";
         seed_account_with_repo(&state.db, did).await;
         // Handle present, but no DID document was ever cached. Without a document we
-        // cannot confirm the backward link, so handleIsCorrect is false and didDoc is null.
+        // cannot confirm the backward link, so handleIsCorrect is false and didDoc is empty.
         sqlx::query("INSERT INTO handles (handle, did, created_at) VALUES (?, ?, datetime('now'))")
             .bind("nodoc.test.example.com")
             .bind(did)
@@ -263,7 +263,7 @@ mod tests {
         let (status, body) = describe(&app, did).await;
         assert_eq!(status, StatusCode::OK);
         assert_eq!(body["handle"], "nodoc.test.example.com");
-        assert!(body["didDoc"].is_null());
+        assert_eq!(body["didDoc"], serde_json::json!({}));
         assert_eq!(body["handleIsCorrect"], false);
     }
 

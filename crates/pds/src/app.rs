@@ -447,6 +447,13 @@ pub fn app(state: AppState) -> Router {
     // the outermost layer (see `apply_shared_layers`). This is safe ONLY because authentication is
     // never cookie-based (all Bearer/DPoP/signed-request), so a permissive policy cannot be abused
     // to ride ambient cookie credentials — see the invariant in crates/pds/AGENTS.md.
+    // Test builds validate the bytes produced after each native handler has serialized its DTO.
+    // Keeping this at the router seam catches response drift without changing production behavior
+    // or exposing the binary-only crate's registry to the black-box test harness.
+    #[cfg(test)]
+    let public = public.layer(axum::middleware::from_fn(
+        crate::lexicon::validate_xrpc_output,
+    ));
     let public = apply_shared_layers(public, &state).layer(CorsLayer::permissive());
 
     // Admin (`/v1/admin/*`) and provisioning (`/v1/*`) routes have no cross-origin use case — they
