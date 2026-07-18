@@ -12,6 +12,7 @@ pub mod migrate;
 pub mod migration_orchestrator;
 pub mod oauth;
 pub mod oauth_client;
+pub mod oauth_consent;
 pub mod pds_client;
 pub mod plc_monitor;
 pub mod recovery;
@@ -1314,6 +1315,8 @@ pub fn run() {
             agents::get_agent_audit,
             agents::preview_agent_claim,
             agents::confirm_agent_claim,
+            oauth_consent::preview_oauth_consent,
+            oauth_consent::confirm_oauth_consent,
             app_passwords::create_app_password,
             app_passwords::list_app_passwords,
             app_passwords::revoke_app_password,

@@ -23,5 +23,6 @@ export * from './handle-change';
 export * from './rotation';
 export * from './rekey';
 export * from './agents';
+export * from './oauth-consent';
 export * from './app-passwords';
 export { isCodedError } from './errors';

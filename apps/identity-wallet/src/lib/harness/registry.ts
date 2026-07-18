@@ -39,6 +39,8 @@ import type {
   AgentAuditPage,
   AgentClaimPreview,
   AgentClaimConfirmation,
+  ConsentPreview,
+  ConsentDecision,
   AppPasswordCreated,
   AppPasswordEntry,
   RegisterHandleResult,
@@ -178,6 +180,8 @@ export type CommandName =
   | 'get_agent_audit'
   | 'preview_agent_claim'
   | 'confirm_agent_claim'
+  | 'preview_oauth_consent'
+  | 'confirm_oauth_consent'
   // app-passwords.ts
   | 'create_app_password'
   | 'list_app_passwords'
@@ -838,6 +842,21 @@ export function buildRegistry(state: WalletState): Registry {
       }
       return { registrationId, status: 'claimed', did: identity?.did ?? '' };
     },
+
+    // ── wallet-confirmed OAuth consent ───────────────────────────────────────
+    preview_oauth_consent: (args): ConsentPreview => ({
+      requestId: `poauth-${String(args.userCode ?? 'HARNESS')}`,
+      clientId: 'https://app.example.com/client-metadata.json',
+      clientName: 'Example App',
+      redirectUri: 'https://app.example.com/callback',
+      origin: 'https://app.example.com',
+      ip: '203.0.113.5',
+      requestedScope: ['atproto', 'transition:generic'],
+    }),
+    confirm_oauth_consent: (args): ConsentDecision => ({
+      status: String(args.decision) === 'deny' ? 'denied' : 'approved',
+      did: String(args.did ?? state.identities[0]?.did ?? ''),
+    }),
 
     // ── app passwords ("Sign in to Bluesky and other apps") ──────────────────
     list_app_passwords: (args): AppPasswordEntry[] => {
