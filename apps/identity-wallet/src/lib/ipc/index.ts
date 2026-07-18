@@ -11,6 +11,7 @@
 export * from './account';
 export * from './oauth';
 export * from './appearance';
+export * from './diagnostics';
 export * from './claim';
 export * from './identity';
 export * from './monitor';

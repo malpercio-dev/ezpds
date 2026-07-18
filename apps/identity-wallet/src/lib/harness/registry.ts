@@ -109,6 +109,8 @@ export type CommandName =
   // appearance.ts
   | 'get_appearance_preference'
   | 'set_appearance_preference'
+  // diagnostics.ts
+  | 'export_diagnostics'
   // claim.ts
   | 'resolve_identity'
   | 'authenticate_source_pds'
@@ -302,6 +304,12 @@ export function buildRegistry(state: WalletState): Registry {
       state.appearance = args.preference as WalletState['appearance'];
       return null;
     },
+
+    // ── diagnostics ──────────────────────────────────────────────────────────
+    // The real report is rendered from a Rust-side ring buffer the fake has no
+    // access to; return a representative empty-session report.
+    export_diagnostics: (): string =>
+      'Obsign diagnostics — network events\n\nNo network errors have been recorded this session.\n',
 
     // ── claim (import) flow ──────────────────────────────────────────────────
     resolve_identity: (args): IdentityInfo => {
