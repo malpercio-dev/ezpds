@@ -47,7 +47,7 @@ if scripts/changelog-check.sh "$base" >"$tmp/missing.out" 2>&1; then
   echo "✗ changelog gate accepted a shipped change without a fragment" >&2
   exit 1
 fi
-grep -q 'has no changelog.d' "$tmp/missing.out"
+grep -q 'adds no changelog.d' "$tmp/missing.out"
 
 cat > changelog.d/mm-358.added.md <<'EOF'
 Added the first fixture capability.
@@ -87,4 +87,32 @@ git commit -qm 'release: set version 1.1.0'
 scripts/changelog-check.sh "$base" >"$tmp/rollup.out" 2>&1
 grep -q 'release roll-up detected' "$tmp/rollup.out"
 
-echo "✓ changelog gate and release roll-up behavior"
+# A fragment already sitting in changelog.d/ (left over from an unmerged sibling or an
+# unconsumed earlier PR) must NOT satisfy the presence gate for a change that adds no
+# fragment of its own — presence is judged on fragments added since the base.
+cat > changelog.d/mm-999.added.md <<'EOF'
+Added by an earlier, unrelated change; already present at the PR base.
+EOF
+git add changelog.d
+git commit -qm pre-existing-fragment
+base_stale="$(git rev-parse HEAD)"
+cat > crates/pds/src/lib.rs <<'EOF'
+pub fn shipped_change_without_own_fragment() {}
+EOF
+git add crates/pds/src/lib.rs
+git commit -qm shipped-change-no-own-fragment
+if scripts/changelog-check.sh "$base_stale" >"$tmp/stale.out" 2>&1; then
+  echo "✗ changelog gate accepted a shipped change whose only fragment pre-dates the base" >&2
+  exit 1
+fi
+grep -q 'adds no changelog.d' "$tmp/stale.out"
+
+# Adding the change's own fragment (alongside the pre-existing one) satisfies the gate.
+cat > changelog.d/mm-1000.fixed.md <<'EOF'
+Fixed the thing this change actually ships.
+EOF
+git add changelog.d
+git commit -qm own-fragment
+scripts/changelog-check.sh "$base_stale" >/dev/null
+
+echo "✓ changelog gate, release roll-up, and added-fragment presence behavior"

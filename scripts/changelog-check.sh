@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Require a valid changelog fragment when a PR changes a shipped surface.
+# Require a changelog fragment *added by the change itself* when a PR changes a shipped
+# surface (fragments already sitting in changelog.d/ from other work don't satisfy it).
 # CHANGELOG_BASE_REF is set to the PR base SHA in CI; an explicit first argument is
 # convenient for local checks. With neither, fragment validity is still checked but
 # presence is not required because there is no trustworthy comparison range.
@@ -42,6 +43,17 @@ if ! git rev-parse --verify "${base_ref}^{commit}" >/dev/null 2>&1; then
   exit 1
 fi
 
+# Presence must be satisfied by fragments this change ADDS, not by whatever happens to be
+# sitting in changelog.d/ already — a pre-existing fragment from an unmerged sibling or an
+# unconsumed earlier PR would otherwise let a fragment-less shipped change slide through.
+added_fragment_count=0
+while IFS= read -r fragment; do
+  name="${fragment##*/}"
+  if [[ "$name" =~ $fragment_re ]]; then
+    added_fragment_count=$((added_fragment_count + 1))
+  fi
+done < <(git diff --name-only --diff-filter=A "${base_ref}...HEAD" -- "$fragment_dir")
+
 changed_files="$(git diff --name-only "${base_ref}...HEAD")"
 shipped_files="$(printf '%s\n' "$changed_files" | awk '
   /^Cargo\.toml$/ || /^Cargo\.lock$/ || /^Dockerfile$/ || /^railway\.toml$/ { print; next }
@@ -67,22 +79,23 @@ is_release_rollup() {
     | grep -qE '^\+## \[[0-9]+\.[0-9]+\.[0-9]+\] - [0-9]{4}-[0-9]{2}-[0-9]{2}$' || return 1
 }
 
-if [ -n "$shipped_files" ] && [ "$fragment_count" -eq 0 ]; then
+if [ -n "$shipped_files" ] && [ "$added_fragment_count" -eq 0 ]; then
   if is_release_rollup; then
     echo "✓ release roll-up detected (workspace version bump + new CHANGELOG.md section); fragment presence not required"
     exit 0
   fi
-  echo "✗ this change touches shipped surfaces but has no changelog.d/<id>.<type>.md fragment:" >&2
+  echo "✗ this change touches shipped surfaces but adds no changelog.d/<id>.<type>.md fragment:" >&2
   while IFS= read -r shipped_file; do
     printf '  %s\n' "$shipped_file" >&2
   done <<< "$shipped_files"
+  echo "  Pre-existing fragments in changelog.d/ don't count — the fragment must be added by this change." >&2
   echo "  See changelog.d/README.md for the format and scoped exemptions." >&2
   exit 1
 fi
 
 if [ -n "$shipped_files" ]; then
   shipped_count="$(printf '%s\n' "$shipped_files" | wc -l | tr -d ' ')"
-  echo "✓ $fragment_count valid changelog fragment(s) cover $shipped_count changed shipped file(s)"
+  echo "✓ $added_fragment_count changelog fragment(s) added by this change cover $shipped_count changed shipped file(s)"
 else
   echo "✓ no shipped surfaces changed; $fragment_count valid changelog fragment(s)"
 fi
