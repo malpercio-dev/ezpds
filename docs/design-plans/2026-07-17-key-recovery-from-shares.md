@@ -50,8 +50,9 @@ share material, information-theoretic single-share security). `split_secret` /
 (`crates/pds/src/routes/create_did.rs`) generates shares, returns Shares 1 and 3 to the
 wallet, and commits Share 2 to `accounts.recovery_share` (V010) atomically with
 promotion. Retries are idempotent via `pending_accounts.pending_share_{1,2,3}` (V011).
-The wallet stores Share 1 in the iCloud-synced Keychain (`recovery-share-1`) and walks
-the user through saving Share 3 (`ShamirBackupScreen`, confirm-before-continue).
+The wallet stores Share 1 in the iCloud-synced Keychain (per-DID slot
+`recovery-share-1:{did}`) and walks the user through saving Share 3 (`ShamirBackupScreen`,
+confirm-before-continue).
 
 **But the model has five gaps, in severity order:**
 
@@ -155,7 +156,7 @@ The wallet's Rust core already links `crates/crypto`. The ceremony changes:
 - Retry-resilience moves where the material now lives: the wallet persists the seed +
   all shares in a **non-synced** Keychain staging slot until the ceremony is confirmed
   complete. The teardown order is load-bearing — Share 1 must reach its **iCloud-synced**
-  Keychain slot (`recovery-share-1`) and that write must be verified, and Share 3
+  per-DID Keychain slot (`recovery-share-1:{did}`) and that write must be verified, and Share 3
   confirmation must be complete, *before* the seed and Share 2's local copy are zeroized.
   The staging slot (non-synced, transient) and the Share 1 slot (synced, durable) are
   deliberately different homes; losing the seed before Share 1 is durably synced would
@@ -291,10 +292,14 @@ in the same transaction and records `legacy_voided` in the escrow audit detail) 
 The three commands are `build_rekey` (preview + stage), `submit_rekey` (idempotent
 post→escrow→Share 1→refresh), and `confirm_rekey` (Share 3 saved → staging teardown).
 Two deliberate divergences from the sketch above: (1) the re-key writes a **per-DID**
-`recovery-share-1:{did}` Keychain slot rather than the app-global `recovery-share-1` the
-create/migration flows still use — clobbering a sibling identity's Share 1 would drop
-*that* identity below its baseline, which the "no intermediate state is worse off" AC
-forbids; unifying create/migration onto per-DID slots is a tracked follow-up. (2) Resume
+`recovery-share-1:{did}` Keychain slot rather than the app-global `recovery-share-1` — 
+clobbering a sibling identity's Share 1 would drop *that* identity below its baseline, which
+the "no intermediate state is worse off" AC forbids. **(Follow-up landed.)** The create
+ceremony (`perform_did_ceremony`), the did:web ceremony (`complete_did_web_ceremony`), and
+`confirm_share_backup(did)` now all write/read the same per-DID slot via the shared
+`rekey::recovery_share1_account` helper, and a best-effort startup step
+(`migrate_global_share1_to_per_did`) copies any pre-existing app-global slot into the primary
+DID's per-DID slot so older installs keep share-based recovery. (2) Resume
 is driven by the per-DID staging slot (`rekey_in_progress`), so an interrupted re-key
 whose PLC op already landed (identity reads as new-model) still resurfaces the prompt and
 finishes escrow/Share 1 idempotently. The re-key op is device-key-signed, so `plc_monitor`

@@ -118,11 +118,12 @@ export type ShareBackupError =
 /**
  * Confirm the user saved Share 3 and tear down the ceremony's Keychain staging slot
  * (the seed's and Share 2's last local copy). The Rust side refuses (SHARE_NOT_STORED)
- * if Share 1 is not durably stored yet — the staging material must outlive any state
- * where it is the only home of the seed. Idempotent.
+ * if the ceremony DID's Share 1 is not durably stored yet — the staging material must
+ * outlive any state where it is the only home of the seed. Pass the DID returned by the
+ * ceremony so the durability check reads that identity's per-DID slot. Idempotent.
  */
-export const confirmShareBackup = (): Promise<void> =>
-  invoke('confirm_share_backup');
+export const confirmShareBackup = (did: string): Promise<void> =>
+  invoke('confirm_share_backup', { did });
 
 export type DidWebPreparation = {
   deviceKeyMultibase: string;

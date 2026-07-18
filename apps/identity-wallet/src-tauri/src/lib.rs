@@ -587,16 +587,19 @@ async fn perform_did_ceremony(
     })?;
 
     // Step 8: Store the wallet-generated Share 1 envelope in the durable iCloud-synced
-    // Keychain slot, then verify the write by reading it back — Share 1's durability is a
-    // precondition for tearing down the staging slot later (`confirm_share_backup`).
+    // per-DID Keychain slot, then verify the write by reading it back — Share 1's durability
+    // is a precondition for tearing down the staging slot later (`confirm_share_backup`).
+    // The slot is per-DID (`recovery-share-1:{did}`, the same convention re-key uses) so a
+    // second identity's ceremony can never overwrite the first identity's Share 1.
     // Uses ShareStorageFailed (not KeychainError) because the DID is already committed:
     // retrying the ceremony will hit DidAlreadyExists. The frontend can surface a distinct
     // message rather than telling the user to retry the whole ceremony.
-    keychain::store_item("recovery-share-1", shares.share1.as_bytes()).map_err(|e| {
+    let share1_account = rekey::recovery_share1_account(&create_did_resp.did);
+    keychain::store_item(&share1_account, shares.share1.as_bytes()).map_err(|e| {
         tracing::error!(error = %e, "DID committed but recovery share 1 keychain write failed");
         DIDCeremonyError::ShareStorageFailed
     })?;
-    match keychain::get_item("recovery-share-1") {
+    match keychain::get_item(&share1_account) {
         Ok(read_back) if read_back == shares.share1.as_bytes() => {}
         Ok(_) => {
             tracing::error!("recovery share 1 read-back does not match the written value");
@@ -629,13 +632,17 @@ pub enum ShareBackupError {
 
 /// Confirm the user has saved Share 3 and tear down the ceremony staging slot.
 ///
-/// The teardown order is load-bearing: Share 1 must be verifiably present in its durable
-/// slot (written by `perform_did_ceremony`) before the staging record — the seed's and
-/// Share 2's last local copy — is destroyed. Idempotent; called by the frontend when the
-/// Shamir backup screen's confirmation completes.
+/// The teardown order is load-bearing: Share 1 must be verifiably present in the ceremony DID's
+/// durable per-DID slot (`recovery-share-1:{did}`, written by `perform_did_ceremony` /
+/// `complete_did_web_ceremony`) before the staging record — the seed's and Share 2's last local
+/// copy — is destroyed. The DID is threaded from the frontend (the ceremony result's `did`) so
+/// the durability check reads the exact identity just created, mirroring the re-key epilogue's
+/// `confirm_rekey`. Idempotent; called by the frontend when the Shamir backup screen's
+/// confirmation completes.
 #[tauri::command]
-fn confirm_share_backup() -> Result<(), ShareBackupError> {
-    match keychain::get_item("recovery-share-1") {
+fn confirm_share_backup(did: String) -> Result<(), ShareBackupError> {
+    let share1_account = rekey::recovery_share1_account(&did);
+    match keychain::get_item(&share1_account) {
         Ok(bytes) if !bytes.is_empty() => {}
         Ok(_) => {
             tracing::error!(
@@ -731,8 +738,13 @@ async fn complete_did_web_ceremony(
         .map_err(|_| DIDCeremonyError::KeychainError)?;
     keychain::store_item("did", created.did.as_bytes())
         .map_err(|_| DIDCeremonyError::KeychainError)?;
-    keychain::store_item("recovery-share-1", share1.as_bytes())
-        .map_err(|_| DIDCeremonyError::ShareStorageFailed)?;
+    // Per-DID Share 1 slot (`recovery-share-1:{did}`), the same convention the client-share and
+    // re-key paths use, so a second identity's ceremony cannot overwrite this one's Share 1.
+    keychain::store_item(
+        &rekey::recovery_share1_account(&created.did),
+        share1.as_bytes(),
+    )
+    .map_err(|_| DIDCeremonyError::ShareStorageFailed)?;
     if enable_managed_hosting {
         let hosting_result = state
             .custos_client()
@@ -1175,6 +1187,58 @@ async fn register_created_identity(
     Ok(())
 }
 
+/// Best-effort one-time migration of a pre-unification install's global `recovery-share-1` slot
+/// into the primary identity's per-DID slot.
+///
+/// Installs that onboarded before the per-DID unification wrote Share 1 to a single app-global
+/// `recovery-share-1` slot; the recovery ceremony now reads `recovery-share-1:{did}`. This copies
+/// that global share into the per-DID slot for the primary DID (the create flow persists it under
+/// the legacy `"did"` Keychain item) so those users keep share-based recovery once the ceremony
+/// switches to the per-DID slot. Additive and idempotent: it never deletes the global slot and
+/// skips when the per-DID slot already holds a value. Fully best-effort — any Keychain hiccup is
+/// logged and swallowed, never blocking launch.
+fn migrate_global_share1_to_per_did() {
+    // The legacy global slot; absent on a fresh (post-unification) install — nothing to migrate.
+    let global = match keychain::get_item("recovery-share-1") {
+        Ok(bytes) if !bytes.is_empty() => bytes,
+        Ok(_) => return,
+        Err(ref e) if keychain::is_not_found(e) => return,
+        Err(e) => {
+            tracing::warn!(error = %e, "share1 migration: global slot read failed; skipping");
+            return;
+        }
+    };
+    // The primary identity's DID (the create/did:web flow persists it under "did").
+    let did = match keychain::get_item("did") {
+        Ok(bytes) if !bytes.is_empty() => match String::from_utf8(bytes) {
+            Ok(did) => did,
+            Err(_) => {
+                tracing::warn!("share1 migration: stored DID is not valid UTF-8; skipping");
+                return;
+            }
+        },
+        // No primary DID recorded yet: nothing to key the per-DID slot on.
+        _ => return,
+    };
+    let per_did = rekey::recovery_share1_account(&did);
+    // Never clobber an already-populated per-DID slot — a newer ceremony or re-key owns it.
+    match keychain::get_item(&per_did) {
+        Ok(bytes) if !bytes.is_empty() => return,
+        Ok(_) => {}
+        Err(ref e) if keychain::is_not_found(e) => {}
+        Err(e) => {
+            tracing::warn!(error = %e, "share1 migration: per-DID slot read failed; skipping");
+            return;
+        }
+    }
+    match keychain::store_item(&per_did, &global) {
+        Ok(()) => tracing::info!(
+            "migrated global recovery-share-1 into the per-DID slot for the primary identity"
+        ),
+        Err(e) => tracing::warn!(error = %e, "share1 migration: per-DID slot write failed"),
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let builder = tauri::Builder::default()
@@ -1204,6 +1268,10 @@ pub fn run() {
             if let Some(url) = keychain::load_pds_url() {
                 app.state::<oauth::AppState>().set_custos_client(url);
             }
+
+            // One-time, best-effort: move a pre-unification install's global Share 1 into the
+            // primary identity's per-DID slot so share-based recovery survives the switch.
+            migrate_global_share1_to_per_did();
 
             // On relaunch: restore persisted session from Keychain and notify frontend.
             // The 300 ms delay lets the SvelteKit app boot and register its event listener
@@ -1613,24 +1681,93 @@ mod tests {
     #[test]
     fn confirm_share_backup_requires_durable_share1() {
         keychain::clear_for_test();
+        let did = "did:plc:aliceceremony";
         share_ceremony::load_or_create("alice.example.com", "https://pds.example.com").unwrap();
 
-        // Share 1 not yet in its durable slot: the staging record must survive.
+        // Share 1 not yet in its durable per-DID slot: the staging record must survive.
         assert!(matches!(
-            confirm_share_backup(),
+            confirm_share_backup(did.to_string()),
             Err(ShareBackupError::ShareNotStored)
         ));
         assert!(keychain::get_item(share_ceremony::STAGING_ACCOUNT).is_ok());
 
-        // Once Share 1 is durably stored, confirmation tears the staging slot down.
-        keychain::store_item("recovery-share-1", b"SHARE1ENVELOPE").unwrap();
-        confirm_share_backup().expect("confirmation should succeed");
+        // A different identity's Share 1 must NOT satisfy this DID's durability check — the
+        // teardown is gated on the exact ceremony DID's slot, not any global one.
+        keychain::store_item(
+            &rekey::recovery_share1_account("did:plc:someoneelse"),
+            b"OTHER1",
+        )
+        .unwrap();
+        assert!(matches!(
+            confirm_share_backup(did.to_string()),
+            Err(ShareBackupError::ShareNotStored)
+        ));
+        assert!(keychain::get_item(share_ceremony::STAGING_ACCOUNT).is_ok());
+
+        // Once THIS DID's Share 1 is durably stored, confirmation tears the staging slot down.
+        keychain::store_item(&rekey::recovery_share1_account(did), b"SHARE1ENVELOPE").unwrap();
+        confirm_share_backup(did.to_string()).expect("confirmation should succeed");
         assert!(matches!(
             keychain::get_item(share_ceremony::STAGING_ACCOUNT),
             Err(ref e) if keychain::is_not_found(e)
         ));
         // Idempotent repeat.
-        confirm_share_backup().expect("repeat confirmation is a no-op");
+        confirm_share_backup(did.to_string()).expect("repeat confirmation is a no-op");
+    }
+
+    // -- legacy global -> per-DID Share 1 migration --
+    #[test]
+    fn migrate_global_share1_copies_into_primary_per_did_slot() {
+        keychain::clear_for_test();
+        let did = "did:plc:legacyprimary";
+
+        // Pre-unification install: Share 1 in the global slot, primary DID under "did", and no
+        // per-DID slot yet.
+        keychain::store_item("recovery-share-1", b"LEGACY1").unwrap();
+        keychain::store_item("did", did.as_bytes()).unwrap();
+
+        migrate_global_share1_to_per_did();
+
+        // The per-DID slot now mirrors the global one; the global slot is left intact.
+        assert_eq!(
+            keychain::get_item(&rekey::recovery_share1_account(did)).unwrap(),
+            b"LEGACY1"
+        );
+        assert_eq!(keychain::get_item("recovery-share-1").unwrap(), b"LEGACY1");
+    }
+
+    #[test]
+    fn migrate_global_share1_never_clobbers_existing_per_did_slot() {
+        keychain::clear_for_test();
+        let did = "did:plc:legacyprimary";
+
+        // A per-DID slot already populated by a fresh ceremony/re-key must win over any stale
+        // global slot left behind.
+        keychain::store_item("recovery-share-1", b"STALE_GLOBAL").unwrap();
+        keychain::store_item("did", did.as_bytes()).unwrap();
+        keychain::store_item(&rekey::recovery_share1_account(did), b"CURRENT_PER_DID").unwrap();
+
+        migrate_global_share1_to_per_did();
+
+        assert_eq!(
+            keychain::get_item(&rekey::recovery_share1_account(did)).unwrap(),
+            b"CURRENT_PER_DID"
+        );
+    }
+
+    #[test]
+    fn migrate_global_share1_noop_without_global_slot() {
+        keychain::clear_for_test();
+        let did = "did:plc:freshinstall";
+        keychain::store_item("did", did.as_bytes()).unwrap();
+
+        // Fresh (post-unification) install has no global slot: nothing is written.
+        migrate_global_share1_to_per_did();
+
+        assert!(matches!(
+            keychain::get_item(&rekey::recovery_share1_account(did)),
+            Err(ref e) if keychain::is_not_found(e)
+        ));
     }
 
     // -- DIDCeremonyError serialization (one test per variant) --

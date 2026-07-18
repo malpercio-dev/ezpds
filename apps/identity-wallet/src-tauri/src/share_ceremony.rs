@@ -9,7 +9,7 @@
 //
 // Retry resilience lives here too: the generated set is persisted in a Keychain
 // staging slot (`ceremony-staging` — transient working material, distinct from the
-// durable `recovery-share-1` slot) BEFORE any network call, so a retry reuses the
+// durable per-DID `recovery-share-1:{did}` slot) BEFORE any network call, so a retry reuses the
 // identical set (same set_id) instead of orphaning a prior attempt's escrow deposit.
 // The staging record holds the three envelopes only — the seed is recomputed from
 // Shares 1+2 on load, and every load re-validates each envelope's checksum and
@@ -76,8 +76,8 @@ pub struct CeremonyShareSet {
     /// did:key URI of the recovery rotation key derived from the seed — goes into the
     /// genesis op's `rotationKeys` (slot \[1\]) and the ceremony request's `recoveryKey`.
     pub recovery_key_id: String,
-    /// Base32 v2 envelope of Share 1 — written to the durable `recovery-share-1` slot
-    /// after promotion.
+    /// Base32 v2 envelope of Share 1 — written to the durable per-DID `recovery-share-1:{did}`
+    /// slot after promotion.
     pub share1: Zeroizing<String>,
     /// Base32 v2 envelope of Share 2 — the escrow deposit sent to Custos.
     pub share2: Zeroizing<String>,
