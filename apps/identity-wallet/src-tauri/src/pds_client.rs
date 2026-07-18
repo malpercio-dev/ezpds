@@ -697,10 +697,10 @@ impl PdsClient {
 
         match response.status() {
             s if s == 404 => return Err(PdsClientError::DidNotFound),
+            // Status-classified like the other plc.directory reads: a throttle or outage
+            // verdict is preserved for callers instead of flattening to a transport error.
             s if !s.is_success() => {
-                return Err(PdsClientError::NetworkError {
-                    message: format!("plc.directory returned {}", s),
-                });
+                return Err(classify_xrpc_response("discover_pds", response).await);
             }
             _ => {}
         }
@@ -1118,10 +1118,10 @@ impl PdsClient {
 
         match resp.status() {
             s if s == 404 => return Err(PdsClientError::DidNotFound),
+            // A non-2xx is plc.directory's verdict (429 throttle, 5xx outage), not a
+            // connectivity problem — classify by status so callers can say which it was.
             s if !s.is_success() => {
-                return Err(PdsClientError::NetworkError {
-                    message: format!("audit log fetch returned {}", s),
-                });
+                return Err(classify_xrpc_response("fetch_audit_log", resp).await);
             }
             _ => {}
         }
@@ -1154,10 +1154,10 @@ impl PdsClient {
 
         match resp.status() {
             s if s == 404 => return Err(PdsClientError::DidNotFound),
+            // Same status-classification as `fetch_audit_log`: a 429/5xx from plc.directory
+            // must not read as "check your connection".
             s if !s.is_success() => {
-                return Err(PdsClientError::NetworkError {
-                    message: format!("PLC data document fetch returned {}", s),
-                });
+                return Err(classify_xrpc_response("fetch_plc_data_document", resp).await);
             }
             _ => {}
         }
@@ -1188,6 +1188,10 @@ impl PdsClient {
 
         if resp.status().is_success() {
             Ok(())
+        } else if resp.status().as_u16() == 429 {
+            // A throttle is not a rejection of the operation — surface it as the retryable
+            // condition it is, with the server's pacing hint.
+            Err(classify_xrpc_response("post_plc_operation", resp).await)
         } else {
             let body = resp
                 .text()
@@ -2084,6 +2088,104 @@ mod tests {
             parse_xrpc_error_envelope("  <html>502 Bad Gateway</html>  "),
             (None, "<html>502 Bad Gateway</html>".to_string())
         );
+    }
+
+    /// A plc.directory 429 on the audit-log read classifies as RateLimited (with the pacing
+    /// hint), not as a connectivity failure.
+    #[tokio::test]
+    async fn fetch_audit_log_429_is_rate_limited_not_network_error() {
+        let mock_server = MockServer::start();
+        mock_server.mock(|when, then| {
+            when.method(httpmock::Method::GET)
+                .path("/did:plc:throttled/log/audit");
+            then.status(429)
+                .header("Retry-After", "30")
+                .body(r#"{"message":"rate limit exceeded"}"#);
+        });
+
+        let client = PdsClient::new_for_test(mock_server.base_url());
+        let err = client
+            .fetch_audit_log("did:plc:throttled")
+            .await
+            .unwrap_err();
+        match err {
+            PdsClientError::RateLimited { retry_after, .. } => {
+                assert_eq!(retry_after.as_deref(), Some("30"));
+            }
+            other => panic!("expected RateLimited, got {other:?}"),
+        }
+    }
+
+    /// A plc.directory 5xx on the audit-log read is the directory's verdict — a status-classified
+    /// error, not NetworkError ("check your connection").
+    #[tokio::test]
+    async fn fetch_audit_log_500_is_status_classified_not_network_error() {
+        let mock_server = MockServer::start();
+        mock_server.mock(|when, then| {
+            when.method(httpmock::Method::GET)
+                .path("/did:plc:outage/log/audit");
+            then.status(500).body("upstream exploded");
+        });
+
+        let client = PdsClient::new_for_test(mock_server.base_url());
+        let err = client.fetch_audit_log("did:plc:outage").await.unwrap_err();
+        match err {
+            PdsClientError::XrpcError { status, .. } => assert_eq!(status, 500),
+            other => panic!("expected XrpcError, got {other:?}"),
+        }
+    }
+
+    /// A plc.directory 404 keeps its dedicated DidNotFound classification.
+    #[tokio::test]
+    async fn fetch_audit_log_404_stays_did_not_found() {
+        let mock_server = MockServer::start();
+        mock_server.mock(|when, then| {
+            when.method(httpmock::Method::GET)
+                .path("/did:plc:ghost/log/audit");
+            then.status(404);
+        });
+
+        let client = PdsClient::new_for_test(mock_server.base_url());
+        let err = client.fetch_audit_log("did:plc:ghost").await.unwrap_err();
+        assert!(matches!(err, PdsClientError::DidNotFound));
+    }
+
+    /// A plc.directory 429 on an operation submit surfaces as RateLimited; a 400 rejection keeps
+    /// the InvalidResponse "rejected operation" shape callers rely on.
+    #[tokio::test]
+    async fn post_plc_operation_classifies_throttle_but_keeps_rejection_shape() {
+        let mock_server = MockServer::start();
+        mock_server.mock(|when, then| {
+            when.method(httpmock::Method::POST).path("/did:plc:busy");
+            then.status(429).header("Retry-After", "7").body("{}");
+        });
+        mock_server.mock(|when, then| {
+            when.method(httpmock::Method::POST).path("/did:plc:badop");
+            then.status(400).body(r#"{"message":"invalid prev"}"#);
+        });
+
+        let client = PdsClient::new_for_test(mock_server.base_url());
+        let op = serde_json::json!({});
+        match client
+            .post_plc_operation("did:plc:busy", &op)
+            .await
+            .unwrap_err()
+        {
+            PdsClientError::RateLimited { retry_after, .. } => {
+                assert_eq!(retry_after.as_deref(), Some("7"));
+            }
+            other => panic!("expected RateLimited, got {other:?}"),
+        }
+        match client
+            .post_plc_operation("did:plc:badop", &op)
+            .await
+            .unwrap_err()
+        {
+            PdsClientError::InvalidResponse { message } => {
+                assert!(message.contains("rejected operation"), "got: {message}");
+            }
+            other => panic!("expected InvalidResponse, got {other:?}"),
+        }
     }
 
     /// 429 classifies as RateLimited and carries the Retry-After value through verbatim.

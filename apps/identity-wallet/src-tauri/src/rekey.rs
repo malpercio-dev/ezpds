@@ -41,7 +41,7 @@ use serde::Serialize;
 use crate::claim::OpDiff;
 use crate::handle_change::{latest_full_state, CurrentHandleState};
 use crate::identity_store::{IdentityStore, PerDidSignError};
-use crate::pds_client::PdsClient;
+use crate::pds_client::{PdsClient, PdsClientError};
 use crate::session_provider::{SessionError, SessionProvider, UnlockReason};
 use crypto::PlcService;
 
@@ -104,6 +104,16 @@ pub enum RekeyError {
     /// Submitting the rotation op to plc.directory failed.
     #[error("PLC submission failed: {message}")]
     PlcSubmissionFailed { message: String },
+    /// plc.directory answered a read with an HTTP failure (throttle handled separately as
+    /// `RateLimited`; this is a 5xx/4xx verdict) — distinct from `NetworkError` so a directory
+    /// outage is never reported as "check your connection".
+    #[error("plc.directory error: {message}")]
+    PlcDirectoryError { message: String },
+    /// A server-side step failed for a non-connectivity reason (session refresh verdict,
+    /// unsupported host, malformed response, or local session storage). The precise cause is
+    /// in `message` for diagnostics; the UI shows a neutral retry prompt.
+    #[error("server error: {message}")]
+    ServerError { message: String },
     /// The escrow deposit of the new Share 2 failed.
     #[error("escrow deposit failed (HTTP {status}): {message}")]
     EscrowFailed { status: u16, message: String },
@@ -125,7 +135,9 @@ pub enum RekeyError {
     IdentityNotFound { message: String },
 }
 
-/// Map a session-lifecycle failure into the re-key surface (mirrors `rotate_repo_key`).
+/// Map a session-lifecycle failure into the re-key surface. Exhaustive on purpose: only a
+/// genuine transport failure becomes `NetworkError` — a server verdict, unsupported host, or
+/// storage failure must not surface as "check your connection" (the MM-290 lesson).
 fn map_session_error(error: SessionError) -> RekeyError {
     match error {
         SessionError::NeedsUnlock { reason } => RekeyError::SessionLocked { reason },
@@ -134,8 +146,37 @@ fn map_session_error(error: SessionError) -> RekeyError {
             message: "identity not found".to_string(),
         },
         SessionError::Offline { message } => RekeyError::NetworkError { message },
+        SessionError::ServerFailure { status } => RekeyError::ServerError {
+            message: format!("session refresh returned HTTP {status}"),
+        },
+        SessionError::UnsupportedHost => RekeyError::ServerError {
+            message: "the identity's hosting server does not support session refresh".to_string(),
+        },
+        SessionError::Keychain { message } => RekeyError::ServerError {
+            message: format!("session keychain failure: {message}"),
+        },
+        SessionError::InvalidResponse { message } => RekeyError::ServerError {
+            message: format!("invalid session response: {message}"),
+        },
+    }
+}
+
+/// Map a plc.directory read failure into the re-key surface: a throttle is retryable
+/// (`RateLimited`), an HTTP verdict is the directory's problem (`PlcDirectoryError`), and only
+/// a transport failure is `NetworkError`.
+fn map_plc_fetch_error(context: &str, error: PdsClientError) -> RekeyError {
+    match error {
+        PdsClientError::RateLimited { retry_after, .. } => RekeyError::RateLimited { retry_after },
+        PdsClientError::XrpcError {
+            status, message, ..
+        } => RekeyError::PlcDirectoryError {
+            message: format!("{context}: plc.directory returned HTTP {status}: {message}"),
+        },
+        PdsClientError::Unauthorized { message, .. } => RekeyError::PlcDirectoryError {
+            message: format!("{context}: plc.directory returned HTTP 401: {message}"),
+        },
         other => RekeyError::NetworkError {
-            message: other.to_string(),
+            message: format!("{context}: {other}"),
         },
     }
 }
@@ -305,9 +346,7 @@ async fn fetch_current_state(
     let log_json = pds_client
         .fetch_audit_log(did)
         .await
-        .map_err(|e| RekeyError::NetworkError {
-            message: format!("failed to fetch audit log: {e}"),
-        })?;
+        .map_err(|e| map_plc_fetch_error("failed to fetch audit log", e))?;
     let audit_log =
         crypto::parse_audit_log(&log_json).map_err(|e| RekeyError::InvalidAuditLog {
             message: format!("failed to parse audit log: {e}"),
@@ -541,8 +580,13 @@ pub async fn submit_rekey(pds_client: &PdsClient, did: &str) -> Result<RekeyResu
         pds_client
             .post_plc_operation(did, &signed_op)
             .await
-            .map_err(|e| RekeyError::PlcSubmissionFailed {
-                message: format!("failed to submit re-key op: {e}"),
+            .map_err(|e| match e {
+                PdsClientError::RateLimited { retry_after, .. } => {
+                    RekeyError::RateLimited { retry_after }
+                }
+                other => RekeyError::PlcSubmissionFailed {
+                    message: format!("failed to submit re-key op: {other}"),
+                },
             })?;
     }
 
@@ -564,25 +608,19 @@ pub async fn submit_rekey(pds_client: &PdsClient, did: &str) -> Result<RekeyResu
     // Step 4: refresh the cached PLC log + DID document (PLC *data* shape — the home card reads
     // rotationKeys; caching the W3C form instead strips them and degrades the card, so the
     // post-op refresh must re-cache the data shape).
-    let updated_log =
-        pds_client
-            .fetch_audit_log(did)
-            .await
-            .map_err(|e| RekeyError::NetworkError {
-                message: format!("failed to fetch updated audit log: {e}"),
-            })?;
+    let updated_log = pds_client
+        .fetch_audit_log(did)
+        .await
+        .map_err(|e| map_plc_fetch_error("failed to fetch updated audit log", e))?;
     store
         .store_plc_log(did, &updated_log)
         .map_err(|e| RekeyError::ShareStorageFailed {
             message: format!("failed to cache updated PLC log: {e}"),
         })?;
-    let did_doc =
-        pds_client
-            .fetch_plc_data_document(did)
-            .await
-            .map_err(|e| RekeyError::NetworkError {
-                message: format!("failed to fetch DID document: {e}"),
-            })?;
+    let did_doc = pds_client
+        .fetch_plc_data_document(did)
+        .await
+        .map_err(|e| map_plc_fetch_error("failed to fetch DID document", e))?;
     store
         .store_did_doc(did, &serde_json::to_string(&did_doc).unwrap_or_default())
         .map_err(|e| RekeyError::ShareStorageFailed {
@@ -659,6 +697,63 @@ pub fn rekey_in_progress_cmd(did: String) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A directory throttle and a directory HTTP verdict must reach the UI as RATE_LIMITED /
+    /// PLC_DIRECTORY_ERROR — only a transport failure may say "check your connection".
+    #[test]
+    fn plc_fetch_errors_classify_by_status() {
+        let throttled = map_plc_fetch_error(
+            "failed to fetch audit log",
+            PdsClientError::RateLimited {
+                retry_after: Some("30".to_string()),
+                message: "slow down".to_string(),
+            },
+        );
+        assert!(matches!(
+            throttled,
+            RekeyError::RateLimited { retry_after: Some(ref r) } if r == "30"
+        ));
+
+        let outage = map_plc_fetch_error(
+            "failed to fetch audit log",
+            PdsClientError::XrpcError {
+                status: 502,
+                error: None,
+                message: "bad gateway".to_string(),
+            },
+        );
+        assert!(
+            matches!(outage, RekeyError::PlcDirectoryError { ref message } if message.contains("502")),
+            "got {outage:?}"
+        );
+
+        let transport = map_plc_fetch_error(
+            "failed to fetch audit log",
+            PdsClientError::NetworkError {
+                message: "dns failure".to_string(),
+            },
+        );
+        assert!(matches!(transport, RekeyError::NetworkError { .. }));
+    }
+
+    /// Session failures keep their nature: a server verdict is SERVER_ERROR, not NETWORK_ERROR.
+    #[test]
+    fn session_errors_no_longer_flatten_to_network_error() {
+        assert!(matches!(
+            map_session_error(SessionError::ServerFailure { status: 500 }),
+            RekeyError::ServerError { ref message } if message.contains("500")
+        ));
+        assert!(matches!(
+            map_session_error(SessionError::UnsupportedHost),
+            RekeyError::ServerError { .. }
+        ));
+        assert!(matches!(
+            map_session_error(SessionError::Offline {
+                message: "timeout".to_string()
+            }),
+            RekeyError::NetworkError { .. }
+        ));
+    }
 
     const DEVICE: &str = "did:key:zDEVICE";
     const PDS: &str = "did:key:zPDS";

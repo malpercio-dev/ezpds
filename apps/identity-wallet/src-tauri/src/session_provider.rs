@@ -173,7 +173,9 @@ fn map_store_error(error: IdentityStoreError) -> SessionError {
 
 /// Map a DID-discovery failure to a session-lifecycle error. A transport failure
 /// (offline, PDS unreachable) is [`SessionError::Offline`]; a resolution failure
-/// (DID or PDS metadata absent) is [`SessionError::UnsupportedHost`].
+/// (DID or PDS metadata absent) is [`SessionError::UnsupportedHost`]; a directory
+/// throttle or HTTP verdict keeps its status-classified shape rather than reading
+/// as a connectivity problem.
 fn map_discovery_error(error: PdsClientError) -> SessionError {
     match error {
         PdsClientError::PdsUnreachable { reason } => SessionError::Offline { message: reason },
@@ -181,6 +183,11 @@ fn map_discovery_error(error: PdsClientError) -> SessionError {
         PdsClientError::DidNotFound | PdsClientError::InvalidResponse { .. } => {
             SessionError::UnsupportedHost
         }
+        PdsClientError::RateLimited { retry_after, .. } => {
+            SessionError::RateLimited { retry_after }
+        }
+        PdsClientError::XrpcError { status, .. } => SessionError::ServerFailure { status },
+        PdsClientError::Unauthorized { .. } => SessionError::ServerFailure { status: 401 },
         other => SessionError::Offline {
             message: other.to_string(),
         },
@@ -447,6 +454,33 @@ mod tests {
     use serde_json::json;
 
     use super::*;
+
+    /// A directory throttle or HTTP verdict during discovery keeps its status-classified
+    /// shape instead of reading as Offline ("check your connection").
+    #[test]
+    fn discovery_throttle_and_verdict_are_not_offline() {
+        assert!(matches!(
+            map_discovery_error(PdsClientError::RateLimited {
+                retry_after: Some("15".to_string()),
+                message: "slow down".to_string(),
+            }),
+            SessionError::RateLimited { retry_after: Some(ref r) } if r == "15"
+        ));
+        assert!(matches!(
+            map_discovery_error(PdsClientError::XrpcError {
+                status: 503,
+                error: None,
+                message: "unavailable".to_string(),
+            }),
+            SessionError::ServerFailure { status: 503 }
+        ));
+        assert!(matches!(
+            map_discovery_error(PdsClientError::NetworkError {
+                message: "dns failure".to_string(),
+            }),
+            SessionError::Offline { .. }
+        ));
+    }
 
     const DID: &str = "did:plc:abcdefghijklmnopqrstuvwx";
     const OTHER_DID: &str = "did:plc:bbbbbbbbbbbbbbbbbbbbbbbb";
