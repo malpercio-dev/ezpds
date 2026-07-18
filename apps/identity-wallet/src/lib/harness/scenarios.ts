@@ -27,7 +27,15 @@ export type ScenarioName =
   | 'agent-connected'
   | 'app-password-minted'
   | 'rekey-eligible'
-  | 'rekey-mixed';
+  | 'rekey-mixed'
+  | 'recover-escrow'
+  | 'recover-sovereign'
+  | 'recover-wrong-set'
+  | 'recover-corrupt-share'
+  | 'recover-mismatch'
+  | 'recover-pending-delay'
+  | 'recover-cancelled'
+  | 'recover-epilogue-resume';
 
 /** The default scenario when `VITE_HARNESS` is set with no explicit choice. */
 export const DEFAULT_SCENARIO: ScenarioName = 'one-identity';
@@ -91,6 +99,84 @@ export const scenarios: Record<ScenarioName, () => WalletState> = {
     const identity = seedIdentity({ handle: 'alice.harness.pds.local' });
     identity.agents = [seedAgent(identity.did, identity.did)];
     upsertIdentity(state, identity);
+    return state;
+  },
+
+  // Happy path A (escrow-assisted): Share 1 in iCloud, escrow releases the moment
+  // the emailed code is entered (zero-delay server config).
+  'recover-escrow': () => {
+    const state = emptyWalletState();
+    state.recovery.share1Present = true;
+    state.recovery.escrow.delaySecs = 0;
+    return state;
+  },
+
+  // Happy path B (fully sovereign): Share 1 in iCloud + Share 3 entered manually.
+  // Paste `state().recovery.fixtures.share3Words` (or `.share3`) into the entry box.
+  'recover-sovereign': () => {
+    const state = emptyWalletState();
+    state.recovery.share1Present = true;
+    return state;
+  },
+
+  // Entering `fixtures.wrongSet` reports a cross-generation SHARE_SET_MISMATCH.
+  'recover-wrong-set': () => {
+    const state = emptyWalletState();
+    state.recovery.share1Present = true;
+    return state;
+  },
+
+  // Entering `fixtures.corrupt` reports SHARE_CHECKSUM (damaged/mistyped share).
+  'recover-corrupt-share': () => {
+    const state = emptyWalletState();
+    state.recovery.share1Present = true;
+    return state;
+  },
+
+  // Valid shares that don't belong to this identity: verification fails with
+  // SHARES_DO_NOT_MATCH_IDENTITY before anything signs.
+  'recover-mismatch': () => {
+    const state = emptyWalletState();
+    state.recovery.share1Present = true;
+    state.recovery.verifyOutcome = 'mismatch';
+    return state;
+  },
+
+  // The escrow release opens a 24h pending window; the second poll releases, so
+  // both the wait state and the arrival are reachable.
+  'recover-pending-delay': () => {
+    const state = emptyWalletState();
+    state.recovery.share1Present = true;
+    state.recovery.escrow.delaySecs = 86400;
+    state.recovery.escrow.releaseAfterPolls = 2;
+    return state;
+  },
+
+  // The pending release was cancelled from a signed-in device: polls answer the
+  // uniform 401 and the wait screen shows the cancelled state.
+  'recover-cancelled': () => {
+    const state = emptyWalletState();
+    state.recovery.share1Present = true;
+    state.recovery.escrow.delaySecs = 86400;
+    state.recovery.escrow.cancelled = true;
+    return state;
+  },
+
+  // An app restart interrupted the rotation epilogue mid-way: launch resumes
+  // straight to the epilogue screen, which re-runs only the incomplete steps.
+  'recover-epilogue-resume': () => {
+    const state = emptyWalletState();
+    state.pdsUrl = DEFAULT_PDS_URL;
+    const identity = seedIdentity({ handle: 'alice.harness.pds.local' });
+    upsertIdentity(state, identity);
+    state.recovery.did = identity.did;
+    state.recovery.handle = identity.handle;
+    state.recovery.epilogue = {
+      opSubmitted: true,
+      escrowDeposited: false,
+      escrowSkipped: false,
+      share1Written: false,
+    };
     return state;
   },
 
