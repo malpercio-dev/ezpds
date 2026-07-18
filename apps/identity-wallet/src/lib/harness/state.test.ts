@@ -7,6 +7,7 @@ import {
   upsertIdentity,
   fakeDeviceKeyId,
   fakePlcDid,
+  fakeRecoveryKeyId,
 } from './state';
 import { extractHandle, extractPdsFromPlcDoc } from '$lib/did-doc-utils';
 
@@ -18,9 +19,18 @@ describe('wallet harness state', () => {
     expect(state.biometricEnabled).toBe(true);
   });
 
-  it('seeds a device-key-root identity by default', () => {
+  it('seeds a device-key-root identity on the 3-key recovery model by default', () => {
     const id = seedIdentity({ handle: 'alice.test' });
     expect(id.rotationKeys[0]).toBe(id.deviceKeyId);
+    // Current (client-share ceremony) model: [device, recovery, PDS].
+    expect(id.rotationKeys).toHaveLength(3);
+    expect(id.rotationKeys[1]).toBe(fakeRecoveryKeyId(id.did));
+  });
+
+  it('seeds the old 2-key model when recoveryKey is false', () => {
+    const id = seedIdentity({ handle: 'alice.test', recoveryKey: false });
+    expect(id.rotationKeys).toHaveLength(2);
+    expect(id.rotationKeys).not.toContain(fakeRecoveryKeyId(id.did));
   });
 
   it('places the device key off-root when deviceKeyIsRoot is false', () => {

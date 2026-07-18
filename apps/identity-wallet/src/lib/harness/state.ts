@@ -254,8 +254,10 @@ export function fakeRecoveryKeyId(did: string): string {
 /**
  * Seed a fresh identity. `deviceKeyIsRoot` controls whether the device key sits at
  * `rotationKeys[0]` — the "Root key" badge on the home card depends on this. `recoveryKey`
- * seeds the new (client-generated) recovery model — a 3-key `[device, recovery, PDS]` array,
- * so the identity is NOT offered the old-model re-key upgrade (MM-411).
+ * (default true) seeds the current (client-generated) recovery model — a 3-key
+ * `[device, recovery, PDS]` array, so the identity is NOT offered the old-model re-key
+ * upgrade (MM-411). Pass `recoveryKey: false` for a pre-ceremony-inversion old-model
+ * identity, whose 2-key doc drives the "Add a recovery key" prompt.
  */
 export function seedIdentity(
   opts: {
@@ -272,10 +274,11 @@ export function seedIdentity(
   const deviceKeyIsRoot = opts.deviceKeyIsRoot ?? true;
   const pdsKey = fakeDeviceKeyId(`${did}:pds`);
   const baseKeys = deviceKeyIsRoot ? [deviceKeyId, pdsKey] : [pdsKey, deviceKeyId];
-  // New model inserts the recovery key at rotationKeys[1] (device stays [0], PDS shifts to [2]).
+  // The recovery model inserts the recovery key at rotationKeys[1] whichever key is root
+  // (device root: [device, recovery, PDS]; interop-style: [PDS, recovery, device]).
   const rotationKeys =
-    opts.recoveryKey && deviceKeyIsRoot
-      ? [deviceKeyId, fakeRecoveryKeyId(did), pdsKey]
+    (opts.recoveryKey ?? true)
+      ? [baseKeys[0], fakeRecoveryKeyId(did), ...baseKeys.slice(1)]
       : baseKeys;
   return {
     did,

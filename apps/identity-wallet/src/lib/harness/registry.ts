@@ -314,8 +314,10 @@ export function buildRegistry(state: WalletState): Registry {
         seedIdentity({
           handle: handleOrDid.startsWith('did:') ? 'imported.harness.pds.local' : handleOrDid,
           did: handleOrDid.startsWith('did:') ? handleOrDid : undefined,
-          // An externally-hosted identity being claimed: device key is not yet root.
+          // An externally-hosted identity being claimed: device key is not yet root, and the
+          // account predates the client-share ceremony (old 2-key model — no recovery key).
           deviceKeyIsRoot: false,
+          recoveryKey: false,
         });
       state.claim = {
         did: identity.did,
@@ -357,8 +359,10 @@ export function buildRegistry(state: WalletState): Registry {
           handle: claim?.handle ?? 'imported.harness.pds.local',
           did,
           pdsUrl: claim?.pdsUrl ?? DEFAULT_PDS_URL,
-          // After claiming, the device key becomes the primary rotation key.
+          // After claiming, the device key becomes the primary rotation key — but the
+          // imported account stays on the old 2-key model until the MM-411 re-key runs.
           deviceKeyIsRoot: true,
+          recoveryKey: false,
         });
       identity.rotationKeys = [identity.deviceKeyId, ...identity.rotationKeys.filter((k) => k !== identity.deviceKeyId)];
       upsertIdentity(state, identity);

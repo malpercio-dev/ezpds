@@ -76,7 +76,26 @@ const WALLET_SHOTS = [
     scenario: 'one-identity',
     steps: [{ click: 'button.card' }],
     waitForText: 'DID document',
-    caption: 'An identity’s DID document, decoded.',
+    caption:
+      'An identity’s DID document, decoded — all three rotation keys (device, recovery, PDS).',
+  },
+  {
+    out: 'home-rekey',
+    scenario: 'rekey-eligible',
+    waitForText: 'Add a recovery key',
+    caption:
+      'An old-model identity (no recovery key yet) is offered the calm re-key upgrade on home.',
+  },
+  {
+    out: 'app-passwords',
+    scenario: 'app-password-minted',
+    steps: [
+      { click: 'button.card' },
+      { clickText: 'Sign in to Bluesky and other apps' },
+    ],
+    waitForText: 'Chat client',
+    caption:
+      'App passwords: scoped credentials for signing the official Bluesky app (and others) into a sovereign account.',
   },
   {
     out: 'settings',
@@ -102,6 +121,51 @@ const WALLET_SHOTS = [
     scenario: 'alert-active',
     steps: [{ click: 'button.alert-strip' }],
     caption: 'The alert detail with a live recovery-window countdown.',
+    rareState: true,
+  },
+  {
+    out: 'recover-start',
+    scenario: 'recover-sovereign',
+    steps: [
+      { clickText: 'Recover from backup shares' },
+      { fill: ['[aria-label="Handle or DID"]', 'alice.harness.pds.local'] },
+      { clickText: 'Find my identity' },
+    ],
+    waitForText: 'Found on this device',
+    caption:
+      'Recovery starts from a handle or DID; Share 1 is auto-loaded from the iCloud Keychain when present.',
+  },
+  {
+    out: 'recover-shares',
+    scenario: 'recover-sovereign',
+    steps: [
+      { clickText: 'Recover from backup shares' },
+      { fill: ['[aria-label="Handle or DID"]', 'alice.harness.pds.local'] },
+      { clickText: 'Find my identity' },
+      { waitForText: 'Found on this device' },
+      { clickText: 'Continue' },
+    ],
+    waitForText: '1 of 2 shares collected',
+    caption:
+      'Collecting two of the three backup shares: request the server’s escrow share, or enter a saved one.',
+  },
+  {
+    out: 'recover-escrow-pending',
+    scenario: 'recover-pending-delay',
+    steps: [
+      { clickText: 'Recover from backup shares' },
+      { fill: ['[aria-label="Handle or DID"]', 'alice.harness.pds.local'] },
+      { clickText: 'Find my identity' },
+      { waitForText: 'Found on this device' },
+      { clickText: 'Continue' },
+      { clickText: 'Request escrow share' },
+      { clickText: 'Email me a code' },
+      { fill: ['[aria-label="Escrow release code"]', '731942'] },
+      { clickText: 'Unlock the share' },
+    ],
+    waitForText: 'Release opened',
+    caption:
+      'The escrow waiting period: the server holds the share, and any signed-in device can cancel the release.',
     rareState: true,
   },
   {
@@ -167,6 +231,14 @@ const ADMIN_SHOTS = [
     scenario: 'single-relay',
     goto: '/moderation',
     caption: 'Account takedown/restore and credential revocation, each armed and gated.',
+  },
+  {
+    out: 'audit',
+    scenario: 'single-relay',
+    goto: '/audit',
+    waitForText: 'account_takedown',
+    caption:
+      'The server-wide admin audit log: every privileged action, newest first, attributed to the credential that signed it.',
   },
   {
     out: 'status',

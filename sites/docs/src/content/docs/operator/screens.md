@@ -1,6 +1,6 @@
 ---
 title: Console screens
-description: A visual tour of the Custos operator console — claim codes, accounts, devices, moderation, transfers, and server status.
+description: A visual tour of the Custos operator console — claim codes, accounts, devices, moderation, the audit log, transfers, and server status.
 ---
 
 A tour of the Custos operator console (the admin companion app). Every image here is
@@ -79,6 +79,17 @@ destructive action.
 <figure>
   <img src="/screenshots/admin/moderation.png" alt="Custos console moderation screen for account takedown and restore" width="280" />
   <figcaption>Account takedown/restore and credential revocation, each armed and gated.</figcaption>
+</figure>
+
+## Audit log
+
+The server-wide admin audit log: every privileged action — takedowns, credential sweeps,
+code mints and revokes, device pairings and revocations — newest first, each attributed to
+the credential that signed it, with action-word filters and per-event drill-in.
+
+<figure>
+  <img src="/screenshots/admin/audit.png" alt="Custos console audit log listing admin actions with action filters and outcome chips" width="280" />
+  <figcaption>Every privileged admin action, newest first, attributed to the credential that signed it.</figcaption>
 </figure>
 
 ## Transfers

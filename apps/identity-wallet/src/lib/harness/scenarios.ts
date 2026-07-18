@@ -199,7 +199,10 @@ export const scenarios: Record<ScenarioName, () => WalletState> = {
   'rekey-eligible': () => {
     const state = emptyWalletState();
     state.pdsUrl = DEFAULT_PDS_URL;
-    upsertIdentity(state, seedIdentity({ handle: 'alice.harness.pds.local' }));
+    upsertIdentity(
+      state,
+      seedIdentity({ handle: 'alice.harness.pds.local', recoveryKey: false })
+    );
     return state;
   },
 
@@ -208,7 +211,10 @@ export const scenarios: Record<ScenarioName, () => WalletState> = {
   'rekey-mixed': () => {
     const state = emptyWalletState();
     state.pdsUrl = DEFAULT_PDS_URL;
-    upsertIdentity(state, seedIdentity({ handle: 'oldmodel.harness.pds.local' }));
+    upsertIdentity(
+      state,
+      seedIdentity({ handle: 'oldmodel.harness.pds.local', recoveryKey: false })
+    );
     upsertIdentity(
       state,
       seedIdentity({ handle: 'newmodel.harness.pds.local', recoveryKey: true })
