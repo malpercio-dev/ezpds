@@ -13,6 +13,7 @@ Source: `apps/identity-wallet/src/lib/ipc/`
 
 | Command | Kind |
 | --- | --- |
+| `add_recovery_share` | App command |
 | `arm_identity_leg` | App command |
 | `authenticate_migration_source` | App command |
 | `authenticate_source_pds` | App command |
@@ -28,6 +29,7 @@ Source: `apps/identity-wallet/src/lib/ipc/`
 | `complete_oauth_flow` | App command |
 | `confirm_agent_claim` | App command |
 | `confirm_identity_removal` | App command |
+| `confirm_recovery_backup` | App command |
 | `confirm_rekey_cmd` | App command |
 | `confirm_share_backup` | App command |
 | `create_account` | App command |
@@ -43,7 +45,9 @@ Source: `apps/identity-wallet/src/lib/ipc/`
 | `get_device_key_id` | App command |
 | `get_identity_handle_domains` | App command |
 | `get_pds_url` | App command |
+| `get_pending_recovery_epilogue` | App command |
 | `get_stored_did_doc` | App command |
+| `initiate_escrow_release` | App command |
 | `list_agents` | App command |
 | `list_app_passwords` | App command |
 | `list_identities` | App command |
@@ -54,19 +58,24 @@ Source: `apps/identity-wallet/src/lib/ipc/`
 | `prepare_did_web_ceremony` | App command |
 | `prepare_migration` | App command |
 | `preview_agent_claim` | App command |
+| `recover_identity` | App command |
 | `refresh_did_doc` | App command |
 | `register_created_identity` | App command |
 | `register_handle` | App command |
 | `rekey_in_progress_cmd` | App command |
+| `remove_recovery_share` | App command |
 | `request_claim_verification` | App command |
+| `request_escrow_release` | App command |
 | `request_identity_removal` | App command |
 | `resolve_identity` | App command |
 | `revoke_agent` | App command |
 | `revoke_app_password` | App command |
+| `run_recovery_epilogue` | App command |
 | `save_pds_url` | App command |
 | `set_appearance_preference` | App command |
 | `sign_and_verify_claim` | App command |
 | `sovereign_login` | App command |
+| `start_share_recovery` | App command |
 | `submit_claim` | App command |
 | `submit_did_web_migration_document_cmd` | App command |
 | `submit_migration_op_cmd` | App command |
@@ -78,6 +87,7 @@ Source: `apps/identity-wallet/src/lib/ipc/`
 | `transfer_preferences` | App command |
 | `transfer_repo` | App command |
 | `verify_import` | App command |
+| `verify_recovery_shares` | App command |
 
 ## Brass Console
 

@@ -22,6 +22,13 @@ import type {
   IdentityStatus,
   SignedRecoveryOp,
   SignedRotationOp,
+  RecoveryTarget,
+  CollectedShare,
+  EscrowReleaseStatus,
+  RecoveredIdentity,
+  RecoveryAnchor,
+  EpilogueResult,
+  PendingEpilogue,
   RemovalOutcome,
   SignedMigrationOp,
   MigrationPathDecision,
@@ -43,6 +50,8 @@ import type {
 } from '$lib/ipc';
 import {
   DEFAULT_PDS_URL,
+  RECOVERY_SET_ID,
+  RECOVERY_WRONG_SET_ID,
   fakeAppPasswordSecret,
   fakeDeviceKeyId,
   fakePlcDid,
@@ -118,6 +127,17 @@ export type CommandName =
   // recovery.ts
   | 'build_recovery_override_cmd'
   | 'submit_recovery_override_cmd'
+  // share-recovery.ts
+  | 'start_share_recovery'
+  | 'add_recovery_share'
+  | 'remove_recovery_share'
+  | 'initiate_escrow_release'
+  | 'request_escrow_release'
+  | 'verify_recovery_shares'
+  | 'recover_identity'
+  | 'run_recovery_epilogue'
+  | 'get_pending_recovery_epilogue'
+  | 'confirm_recovery_backup'
   // removal.ts
   | 'request_identity_removal'
   | 'confirm_identity_removal'
@@ -400,6 +420,152 @@ export function buildRegistry(state: WalletState): Registry {
       const identity = findIdentity(state, didArg(args));
       if (identity) identity.alerts = [];
       return identity ? claimResult(identity) : { updatedDidDoc: {} };
+    },
+
+    // ── share recovery ("Recover existing identity") ─────────────────────────
+    start_share_recovery: (args): RecoveryTarget => {
+      const identifier = String(args.identifier ?? '').trim();
+      const r = state.recovery;
+      const isDid = identifier.startsWith('did:');
+      r.did = isDid ? identifier : fakePlcDid(identifier);
+      r.handle = isDid ? (r.handle ?? 'alice.harness.pds.local') : identifier;
+      r.collected = r.share1Present ? [{ setId: RECOVERY_SET_ID, index: 1 }] : [];
+      return {
+        did: r.did,
+        handle: r.handle,
+        share1Loaded: r.share1Present,
+        collected: [...r.collected],
+      };
+    },
+    add_recovery_share: (args): CollectedShare => {
+      const r = state.recovery;
+      const share = String(args.share ?? '').trim();
+      const { fixtures } = r;
+      if (share === fixtures.corrupt) throw { code: 'SHARE_CHECKSUM' };
+      if (share === fixtures.wrongSet) {
+        throw {
+          code: 'SHARE_SET_MISMATCH',
+          expectedSetId: r.collected[0]?.setId ?? RECOVERY_SET_ID,
+          gotSetId: RECOVERY_WRONG_SET_ID,
+        };
+      }
+      if (share !== fixtures.share3 && share !== fixtures.share3Words) {
+        throw { code: 'SHARE_FORMAT', message: 'harness: unrecognized share fixture' };
+      }
+      if (r.collected.some((s) => s.index === 3)) throw { code: 'DUPLICATE_SHARE', index: 3 };
+      const collected = { setId: RECOVERY_SET_ID, index: 3 };
+      r.collected.push(collected);
+      return collected;
+    },
+    remove_recovery_share: (args): CollectedShare[] => {
+      const r = state.recovery;
+      r.collected = r.collected.filter((s) => s.index !== Number(args.index));
+      return [...r.collected];
+    },
+    initiate_escrow_release: () => {
+      state.recovery.escrow.initiated = true;
+      return null;
+    },
+    request_escrow_release: (args): EscrowReleaseStatus => {
+      const r = state.recovery;
+      const esc = r.escrow;
+      const otp = args.otp == null ? null : String(args.otp);
+      const release = (): EscrowReleaseStatus => {
+        esc.released = true;
+        esc.pendingOpened = false;
+        const share = { setId: RECOVERY_SET_ID, index: 2 };
+        r.collected = [...r.collected.filter((s) => s.index !== 2), share];
+        return { status: 'released', availableAt: null, share };
+      };
+      if (otp !== null) {
+        // The OTP opens the release. 'wrong' models a bad/expired code.
+        if (otp === 'wrong') throw { code: 'RELEASE_UNAUTHORIZED' };
+        if (esc.delaySecs === 0) return release();
+        esc.pendingOpened = true;
+        return { status: 'pending', availableAt: '2026-07-16 12:00:00', share: null };
+      }
+      // Poll: no release in flight, or a cancelled one, answers the uniform 401.
+      if (!esc.pendingOpened || esc.cancelled) throw { code: 'RELEASE_UNAUTHORIZED' };
+      if (esc.releaseAfterPolls !== null) {
+        esc.releaseAfterPolls -= 1;
+        if (esc.releaseAfterPolls <= 0) return release();
+      }
+      return { status: 'pending', availableAt: '2026-07-16 12:00:00', share: null };
+    },
+    verify_recovery_shares: (): RecoveredIdentity => {
+      const r = state.recovery;
+      if (r.collected.length < 2) throw { code: 'SHARES_INCOMPLETE' };
+      if (r.verifyOutcome === 'mismatch') throw { code: 'SHARES_DO_NOT_MATCH_IDENTITY' };
+      const did = r.did ?? fakePlcDid('recovered');
+      return {
+        did,
+        handle: r.handle,
+        recoveryKeyId: fakeDeviceKeyId(`${did}:recovery`),
+        rotationKeys: [
+          fakeDeviceKeyId(`${did}:lost-device`),
+          fakeDeviceKeyId(`${did}:recovery`),
+          fakeDeviceKeyId(`${did}:pds`),
+        ],
+      };
+    },
+    recover_identity: (): RecoveryAnchor => {
+      const r = state.recovery;
+      const did = r.did ?? fakePlcDid('recovered');
+      const identity = seedIdentity({
+        handle: r.handle ?? 'alice.harness.pds.local',
+        did,
+        deviceKeyIsRoot: true,
+      });
+      upsertIdentity(state, identity);
+      r.epilogue = {
+        opSubmitted: false,
+        escrowDeposited: false,
+        escrowSkipped: false,
+        share1Written: false,
+      };
+      return { did, opCid: `bafyharnessrecover${did.slice(-6)}`, alreadyAnchored: false };
+    },
+    run_recovery_epilogue: (args): EpilogueResult => {
+      const r = state.recovery;
+      const epilogue = r.epilogue;
+      if (!epilogue) throw { code: 'NO_PENDING_EPILOGUE' };
+      const skipEscrow = Boolean(args.skipEscrow ?? false);
+      epilogue.opSubmitted = true;
+      if (!epilogue.escrowDeposited && !epilogue.escrowSkipped) {
+        if (skipEscrow) {
+          epilogue.escrowSkipped = true;
+        } else if (r.failEpilogueEscrowOnce) {
+          // One-shot injected failure: progress so far stays durable, mirroring
+          // the real epilogue's resume contract.
+          r.failEpilogueEscrowOnce = false;
+          throw { code: 'ESCROW_DEPOSIT_FAILED', message: 'harness: injected escrow failure' };
+        } else {
+          epilogue.escrowDeposited = true;
+        }
+      }
+      epilogue.share1Written = true;
+      return {
+        share3: r.fixtures.share3,
+        share3Words: r.fixtures.share3Words,
+        escrowDeposited: epilogue.escrowDeposited,
+        escrowSkipped: epilogue.escrowSkipped,
+      };
+    },
+    get_pending_recovery_epilogue: (): PendingEpilogue | null => {
+      const r = state.recovery;
+      if (!r.epilogue) return null;
+      return {
+        did: r.did ?? state.identities[0]?.did ?? fakePlcDid('recovered'),
+        opSubmitted: r.epilogue.opSubmitted,
+        escrowDeposited: r.epilogue.escrowDeposited,
+        escrowSkipped: r.epilogue.escrowSkipped,
+        share1Written: r.epilogue.share1Written,
+      };
+    },
+    confirm_recovery_backup: () => {
+      state.recovery.epilogue = null;
+      state.recovery.collected = [];
+      return null;
     },
 
     // ── identity removal ─────────────────────────────────────────────────────
