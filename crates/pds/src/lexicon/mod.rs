@@ -1177,22 +1177,33 @@ mod tests {
     #[test]
     fn outputs_are_registered_only_for_json_bodies() {
         let registry = registry();
-        // Every natively-handled endpoint whose lexicon declares a JSON `output` is registered.
+        // Every vendored endpoint whose lexicon declares a JSON `output` must be registered — the
+        // full matrix, so silently dropping one endpoint's output registration fails this test.
         for nsid in [
+            "com.atproto.admin.updateSubjectStatus",
+            "com.atproto.identity.refreshIdentity",
+            "com.atproto.identity.resolveDid",
             "com.atproto.identity.resolveHandle",
             "com.atproto.identity.resolveIdentity",
+            "com.atproto.identity.signPlcOperation",
             "com.atproto.repo.applyWrites",
             "com.atproto.repo.createRecord",
             "com.atproto.repo.deleteRecord",
             "com.atproto.repo.describeRepo",
             "com.atproto.repo.getRecord",
+            "com.atproto.repo.listMissingBlobs",
             "com.atproto.repo.listRecords",
             "com.atproto.repo.putRecord",
             "com.atproto.server.createAccount",
+            "com.atproto.server.createAppPassword",
+            "com.atproto.server.createInviteCode",
+            "com.atproto.server.createInviteCodes",
             "com.atproto.server.createSession",
             "com.atproto.server.getServiceAuth",
+            "com.atproto.server.reserveSigningKey",
             "com.atproto.sync.getLatestCommit",
             "com.atproto.sync.getRepoStatus",
+            "com.atproto.sync.listBlobs",
             "com.atproto.sync.listRepos",
         ] {
             registry
