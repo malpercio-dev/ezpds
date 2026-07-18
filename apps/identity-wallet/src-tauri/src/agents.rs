@@ -231,10 +231,7 @@ async fn list_agents_impl(client: &OAuthClient) -> Result<Vec<AgentSummary>, Age
     }
 }
 
-async fn revoke_agent_impl(
-    client: &OAuthClient,
-    registration_id: &str,
-) -> Result<(), AgentsError> {
+async fn revoke_agent_impl(client: &OAuthClient, registration_id: &str) -> Result<(), AgentsError> {
     let resp = client
         .post(
             &format!("/v1/agents/{registration_id}/revoke"),
@@ -415,8 +412,12 @@ mod tests {
             .unwrap()
             .as_secs()
             + 3600;
-        OAuthClient::new_bearer(make_bearer_jwt(exp), "refresh".to_string(), server.base_url())
-            .expect("new_bearer must succeed")
+        OAuthClient::new_bearer(
+            make_bearer_jwt(exp),
+            "refresh".to_string(),
+            server.base_url(),
+        )
+        .expect("new_bearer must succeed")
     }
 
     #[tokio::test]
