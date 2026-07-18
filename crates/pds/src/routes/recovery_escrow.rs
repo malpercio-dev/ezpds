@@ -136,7 +136,7 @@ pub async fn put_escrow_share(
             .map_err(map_err)?;
         RecoveryAuditEventType::Deposited
     };
-    // A re-key of an old-model account (MM-411) voids the dead legacy Share 2
+    // A re-key of an old-model account voids the dead legacy Share 2
     // (`accounts.recovery_share`, V010) in the same transaction: once a client-generated Share 2
     // is escrowed, the server-generated legacy split protects nothing and must not survive in
     // backups. Idempotent for accounts that never had one, so it is safe on every deposit path.

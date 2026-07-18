@@ -4,7 +4,7 @@
 // Imperative Shell: build_rekey / submit_rekey / confirm_rekey (share generation + network +
 //                   Keychain + signing) and their Tauri command wrappers.
 //
-// This is the "re-key migration" for existing OLD-MODEL accounts (MM-411). Every account
+// This is the "re-key migration" for existing OLD-MODEL accounts. Every account
 // created before the ceremony inversion carries a server-generated 2-of-3 split of a secret
 // bound to nothing: the shares protect nothing, and the server saw all three at generation.
 // Such an account's `rotationKeys` are the 2-key `[device, PDS]` array — no recovery key. The
@@ -563,7 +563,8 @@ pub async fn submit_rekey(pds_client: &PdsClient, did: &str) -> Result<RekeyResu
     store_and_verify_share1(did, &shares.share1)?;
 
     // Step 4: refresh the cached PLC log + DID document (PLC *data* shape — the home card reads
-    // rotationKeys; the W3C form would strip them, the MM-300 staleness class).
+    // rotationKeys; caching the W3C form instead strips them and degrades the card, so the
+    // post-op refresh must re-cache the data shape).
     let updated_log =
         pds_client
             .fetch_audit_log(did)

@@ -468,9 +468,9 @@ mod tests {
         assert_eq!(changes.len(), 0, "No new changes after cache update");
     }
 
-    /// MM-411 AC: the wallet's own re-key op — a device-key-signed rotation that inserts a
-    /// recovery key at rotationKeys[1] (device stays [0], the PDS key shifts to [2]) — must be
-    /// treated as an AUTHORIZED change and raise no tamper alert. Authorization is by signature
+    /// The wallet's own re-key op — a device-key-signed rotation that inserts a recovery key at
+    /// rotationKeys[1] (device stays [0], the PDS key shifts to [2]) — must be treated as an
+    /// AUTHORIZED change and raise no tamper alert. Authorization is by signature
     /// (the device key signed it), independent of what the op does to the key set.
     #[tokio::test]
     async fn rekey_op_signed_by_device_key_is_authorized() {
