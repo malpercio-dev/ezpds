@@ -9,6 +9,7 @@
     onchangehandle,
     onrotatekey,
     onapppasswords,
+    onagents,
     onremove,
   }: {
     didDoc: Record<string, unknown>;
@@ -24,6 +25,8 @@
     onrotatekey?: () => void;
     /** Opens the app-password surface (sign the Bluesky app into this account). */
     onapppasswords?: () => void;
+    /** Opens the "My agents" surface (consent + audit + revoke) for this identity. */
+    onagents?: () => void;
     /** Opens the permanent-removal flow (delete on PDS + tombstone DID + local wipe). */
     onremove?: () => void;
   } = $props();
@@ -163,6 +166,10 @@
 
   {#if onapppasswords}
     <button class="action" onclick={onapppasswords}>Sign in to Bluesky and other apps</button>
+  {/if}
+
+  {#if onagents}
+    <button class="action" onclick={onagents}>My agents</button>
   {/if}
 
   {#if onmigrate}

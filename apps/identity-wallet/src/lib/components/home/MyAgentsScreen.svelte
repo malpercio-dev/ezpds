@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onMount } from 'svelte';
-  import { listAgents, type AgentSummary } from '$lib/ipc';
+  import { listAgents, sovereignLogin, isCodedError, type AgentSummary, type AgentsError } from '$lib/ipc';
   import { AGENT_STATUS, AGENT_TYPE_LABELS, agentName } from '$lib/agent-display';
   import { formatTimestamp } from '$lib/datetime';
   import Button from '$lib/components/ui/Button.svelte';
@@ -9,9 +9,11 @@
   import AgentDetailScreen from './AgentDetailScreen.svelte';
 
   let {
+    did,
     onback,
     onapprove,
   }: {
+    did: string;
     onback: () => void;
     /** Navigate to the claim-approval screen (enter a code from an agent). */
     onapprove: () => void;
@@ -19,23 +21,55 @@
 
   let agents = $state<AgentSummary[]>([]);
   let loading = $state(true);
+  // The list couldn't load because the identity's session needs a passwordless unlock.
+  let locked = $state(false);
   let loadError = $state<string | null>(null);
 
   // The selected agent, if any. The detail sub-view lives in AgentDetailScreen; its lifetime is
   // this selection, so its audit/revoke state is scoped to one agent by construction.
   let selected = $state<AgentSummary | null>(null);
 
+  function messageFor(raw: unknown): string {
+    if (!isCodedError(raw)) return 'Could not load your agents. Please try again.';
+    const err = raw as AgentsError;
+    switch (err.code) {
+      case 'RATE_LIMITED':
+        return 'Too many attempts. Please wait a moment and try again.';
+      case 'NOT_AUTHENTICATED':
+        return 'Your session for this identity has expired. Unlock it and try again.';
+      case 'NETWORK_ERROR':
+        return 'Couldn’t reach the server. Check your connection.';
+      default:
+        return 'Could not load your agents. Please try again.';
+    }
+  }
+
   async function loadAgents() {
     loading = true;
+    locked = false;
     loadError = null;
     try {
-      agents = await listAgents();
+      agents = await listAgents(did);
     } catch (e) {
-      console.error('Failed to load agents:', e);
-      loadError = 'Could not load your agents. Check your connection and try again.';
+      if (isCodedError(e) && e.code === 'SESSION_LOCKED') {
+        locked = true;
+      } else {
+        console.error('Failed to load agents:', e);
+        loadError = messageFor(e);
+      }
     } finally {
       loading = false;
     }
+  }
+
+  async function unlockAndReload() {
+    try {
+      await sovereignLogin(did);
+    } catch (e) {
+      console.error('[MyAgentsScreen] sovereign login failed:', e);
+      return;
+    }
+    await loadAgents();
   }
 
   function markRevoked(registrationId: string) {
@@ -49,6 +83,7 @@
 
 {#if selected}
   <AgentDetailScreen
+    {did}
     agent={selected}
     onback={() => (selected = null)}
     onrevoked={markRevoked}
@@ -62,6 +97,11 @@
         {#each [0, 1] as i (i)}
           <SkeletonCard />
         {/each}
+      </div>
+    {:else if locked}
+      <div class="notice" role="alert">
+        <p class="notice-text">This identity is locked. Unlock it to see and manage your agents.</p>
+        <Button onclick={unlockAndReload}>Unlock identity</Button>
       </div>
     {:else if loadError}
       <div class="notice" role="alert">

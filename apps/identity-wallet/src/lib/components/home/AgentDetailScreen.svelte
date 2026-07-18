@@ -21,10 +21,12 @@
   import ScreenHeader from '$lib/components/ui/ScreenHeader.svelte';
 
   let {
+    did,
     agent,
     onback,
     onrevoked,
   }: {
+    did: string;
     agent: AgentSummary;
     onback: () => void;
     /** Tell the parent list this agent is now revoked, so its card reflects the new status. */
@@ -55,7 +57,7 @@
     auditLoading = true;
     auditError = null;
     try {
-      const page = await getAgentAudit(agent.registrationId, cursor);
+      const page = await getAgentAudit(did, agent.registrationId, cursor);
       auditEvents = [...auditEvents, ...page.events];
       auditCursor = page.cursor;
     } catch (e) {
@@ -79,7 +81,7 @@
       return; // gate rejected — nothing changes.
     }
     try {
-      await revokeAgent(agent.registrationId);
+      await revokeAgent(did, agent.registrationId);
       confirmingRevoke = false;
       revokedLocally = true;
       onrevoked(agent.registrationId);
