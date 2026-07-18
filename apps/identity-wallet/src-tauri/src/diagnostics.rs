@@ -179,7 +179,12 @@ mod tests {
 
     #[test]
     fn export_reports_recorded_events() {
-        record_server("diag_test_login", Some("pds.example"), 429, Some("RateLimited"));
+        record_server(
+            "diag_test_login",
+            Some("pds.example"),
+            429,
+            Some("RateLimited"),
+        );
         record_transport("diag_test_discover", Some("plc.directory"), "timeout");
 
         let report = export();
