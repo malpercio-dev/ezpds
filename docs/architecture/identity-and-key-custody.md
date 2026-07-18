@@ -1,6 +1,6 @@
 # Identity and Key Custody
 
-Last verified: 2026-07-17
+Last verified: 2026-07-18
 
 Reference sheet for how an ezpds identity is represented and who holds the keys
 that control it. The custody model described here is ezpds's core
@@ -27,30 +27,37 @@ deliberately:
 | Position | Holder | Key material | Where it lives |
 | --- | --- | --- | --- |
 | `rotationKeys[0]` | **The user's wallet** | P-256 device key | Secure Enclave (real iOS) / Keychain-stored software key (simulator + macOS) |
-| `rotationKeys[1]` | The PDS | P-256 signing key | PDS-side key store |
+| `rotationKeys[1]` | **The recovery seed** | P-256 key deterministically derived from the reconstructed Shamir secret | Nowhere at rest — re-derived only during a recovery ceremony, from ≥2 of the 3 shares |
+| `rotationKeys[2]` | The PDS | P-256 signing key | PDS-side key store |
 
-`verificationMethods.atproto` is the PDS signing key (`rotationKeys[1]`) — it
-signs repo commits. The user's device key does **not** sign commits; it exists
-to *authorize identity operations*.
+`verificationMethods.atproto` is the PDS signing key (`rotationKeys[2]`) — it
+signs repo commits. Neither the device key nor the recovery key signs commits;
+they exist to *authorize identity operations*. The recovery key sits above the
+PDS key so that a user who reconstructs the seed (from iCloud + escrow, or from
+their two offline shares) can override a compromised PDS-signed op inside
+plc.directory's recovery window without the PDS's cooperation.
 
 The consequence that matters: **the highest-priority key that controls the
-identity is held by the user's wallet, not by the PDS.** The PDS is a
-lower-priority rotation key for commit-signing convenience and standard-tooling
-interop, not the custodian of the identity.
+identity is held by the user's wallet, not by the PDS.** The PDS is the
+*lowest*-priority rotation key — for commit-signing convenience and
+standard-tooling interop, not the custodian of the identity.
 
-See the genesis-op builder for where this ordering is set:
-[`build_did_plc_genesis_op_with_external_signer`](../../crates/crypto/src/plc.rs)
-places `rotation_key` (device key) at index 0 and `signing_key` (PDS key) at
-index 1.
+See the genesis-op builder for where this ordering is set: the wallet builds the
+op with [`build_did_plc_genesis_op_multi_rotation_with_external_signer`](../../crates/crypto/src/plc.rs)
+(the PDS's test harness uses the sibling `build_did_plc_genesis_op_multi_rotation`),
+placing the device key at index 0, the recovery key at index 1, and the PDS
+signing key at index 2. The ordering rationale is recorded in
+[ADR-0027](decisions/0027-rotation-key-ordering.md).
 
-> **Planned change (not yet shipped).** The accepted
-> [key-recovery redesign](../design-plans/2026-07-17-key-recovery-from-shares.md)
-> inserts a **derived recovery key** at `rotationKeys[1]`, moving the PDS key to
-> `[2]` (`[device, recovery, PDS]`) so the reconstructed recovery seed becomes an
-> identity controller plc.directory already recognizes. The genesis builder can
-> already emit that ordering (`build_did_plc_genesis_op_multi_rotation`), but the
-> `POST /v1/dids` ceremony still writes the two-key layout above — see the
-> as-built caveat under *Where keys live* before relying on a recovery slot.
+> **Transition note.** The three-key `[device, recovery, PDS]` layout above is
+> what the current client-share `POST /v1/dids` ceremony writes. Two populations
+> still carry the older two-key `[device, PDS]` layout: `did:web` accounts and
+> pre-inversion wallet builds fall back to the server-side split path (which has
+> no recovery slot). Pre-inversion **`did:plc` wallet** accounts are migrated onto
+> the recovery slot **additively** by the wallet's re-key flow (`rekey.rs`) —
+> device-key-signing a rotation op that inserts the derived recovery key at
+> `rotationKeys[1]`; `rekey.rs` refuses `did:web` and interop accounts, which stay
+> on the two-key layout. See *Where keys live* for the as-built ceremony split.
 
 ## Where keys live (wallet)
 
@@ -65,42 +72,58 @@ Managed by the Obsign identity-wallet app
   (`"{did}:device-key"`, …) so the wallet can hold multiple identities. The
   create flow signs the genesis op with the *global* device key before the DID
   exists, then `adopt_global_device_key` aliases the per-DID slot to it.
-- **Shamir recovery shares** — at onboarding the `POST /v1/dids` ceremony
-  ([`create_did.rs`](../../crates/pds/src/routes/create_did.rs)) generates a
-  fresh random 32-byte secret **server-side** and splits it 2-of-3
-  ([`split_secret`](../../crates/crypto/AGENTS.md)), distributing the shares per
-  the mapping in ADR-0001:
-  - **Share 1 → iCloud Keychain** — the ceremony returns it and the app stores it
-    under `recovery-share-1` (auto-backed-up by iCloud).
-  - **Share 2 → PDS escrow** — retained server-side (KEK-wrapped in
-    `accounts.recovery_share`); the ceremony response returns only Shares 1 and 3,
-    so the PDS holds Share 2 and never exposes it to the client.
-  - **Share 3 → the user** — returned by the ceremony for manual/offline backup.
+- **Shamir recovery shares** — at onboarding the **wallet** generates a fresh
+  32-byte recovery seed and splits it 2-of-3 **client-side**
+  ([`share_ceremony.rs`](../../apps/identity-wallet/src-tauri/src/share_ceremony.rs),
+  `split_secret_into_envelopes`). It derives the seed's recovery keypair
+  (`derive_recovery_keypair`), puts that key at `rotationKeys[1]` of the genesis
+  op it signs, and submits to the `POST /v1/dids` ceremony
+  ([`create_did.rs`](../../crates/pds/src/routes/create_did.rs)) **only** the
+  escrow share — the server never sees the seed or the other two shares.
+  Distribution (unchanged from ADR-0001's mapping):
+  - **Share 1 → iCloud Keychain** — kept wallet-side under the per-DID
+    `recovery-share-1:{did}` slot (auto-backed-up by iCloud).
+  - **Share 2 → PDS escrow** — the one share the wallet hands to the server. It
+    is the only share Custos ever holds, stored KEK-wrapped in the dedicated
+    `recovery_escrow` table (V050), and the ceremony rejects any submitted
+    envelope whose index isn't 2. Single-share escrow: worthless on its own.
+  - **Share 3 → the user** — surfaced by the wallet for manual/offline backup.
 
-  **As-built caveat (verified 2026-07-17).** The split secret is today a
-  standalone random value: it is **not** the device key (a Secure-Enclave key is
-  non-extractable and could never be the split input) and it does **not** yet
-  appear in the DID's `rotationKeys`, so reconstructing it recovers a random
-  number rather than identity-controlling authority. Share *generation* runs at
-  onboarding, but the 2-of-3 reconstruction *ceremony* does not exist yet — until
-  it does, the live safety net for device-key loss is the device key's own
-  72-hour override supremacy (see *What the custody model buys us* below), not
-  share reconstruction. The accepted redesign — bind the seed to a derived
-  recovery rotation key, move generation client-side, and build both
-  escrow-assisted and escrow-free recovery ceremonies — is specified in
+  **As-built note (verified 2026-07-18).** The recovery seed is **not** the
+  device key (a Secure-Enclave key is non-extractable and could never be the
+  split input); it is a standalone secret whose *derived* public key is the
+  `rotationKeys[1]` controller, so reconstructing the seed from ≥2 shares
+  recovers real identity-controlling authority. Both reconstruction ceremonies
+  exist: escrow-assisted (iCloud Share 1 + released escrow Share 2) and
+  escrow-free/sovereign (offline Shares 1 + 3), implemented wallet-side in
+  [`share_recovery.rs`](../../apps/identity-wallet/src-tauri/src/share_recovery.rs)
+  against the server's `/v1/recovery/*` endpoints
+  ([`recovery_escrow.rs`](../../crates/pds/src/routes/recovery_escrow.rs),
+  [`recovery_release.rs`](../../crates/pds/src/routes/recovery_release.rs)). The
+  device key's own 72-hour override supremacy (see *What the custody model buys
+  us* below) remains the fast in-window safety net; share reconstruction is the
+  recovery-of-last-resort for a lost device key.
+
+  Two populations predate this and use a server-side split with **no** recovery
+  slot: `did:web` accounts and pre-inversion `did:plc` wallet builds take the
+  legacy fallback path in `create_did.rs` (fresh random secret, `split_secret`,
+  Share 2 in the `accounts.recovery_share` column). Only the **pre-inversion
+  `did:plc` wallet accounts** are migrated additively onto the recovery slot by
+  the wallet's re-key flow (`rekey.rs`), which also voids the legacy column
+  server-side; `rekey.rs` deliberately refuses `did:web` and non-root-device
+  interop accounts, so those keep the two-key layout. The full design — the derived
+  recovery key, the versioned share envelope, and both recovery paths — is
+  specified in
   [Key recovery from Shamir shares](../design-plans/2026-07-17-key-recovery-from-shares.md).
-  Its crypto primitives (`derive_recovery_keypair`, the versioned share envelope,
-  the multi-rotation genesis builder) have shipped; the ceremony inversion has
-  not.
 
 ## What the custody model buys us
 
-Because the wallet holds `rotationKeys[0]`, three capabilities are cryptographic
+Because the wallet holds `rotationKeys[0]`, four capabilities are cryptographic
 facts rather than PDS policy promises:
 
 1. **Monitoring.** `plc_monitor.rs` polls plc.directory every 15 minutes and
    verifies each new audit-log entry's signature against the per-DID device key.
-   Anything signed by another key (e.g. the PDS's `rotationKeys[1]`) is flagged
+   Anything signed by another key (e.g. the PDS's `rotationKeys[2]`) is flagged
    as an unauthorized change.
 2. **Recovery / override.** `recovery.rs` builds a counter-operation restoring
    pre-tamper state, signed by the device key, submittable within plc.directory's
@@ -110,7 +133,7 @@ facts rather than PDS policy promises:
    PDS's cooperation. This reframes account migration; see
    [ADR-0002](decisions/0002-wallet-authorized-account-migration.md).
 4. **Repo signing-key rotation.** The device key can authorize replacing the
-   PDS-held repo signing key (`verificationMethods.atproto` / `rotationKeys[1]`)
+   PDS-held repo signing key (`verificationMethods.atproto` / `rotationKeys[2]`)
    with a freshly generated one — the recovery mechanism when that key's
    at-rest encryption is compromised or its master key is lost, since the PDS
    key cannot re-authorize itself. The wallet composes and signs the key-swap

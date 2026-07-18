@@ -1,9 +1,14 @@
 # ADR-0001: The user's wallet holds `rotationKeys[0]`; the PDS holds `rotationKeys[1]`
 
-- **Status:** Accepted
+- **Status:** Accepted — the ordering is **superseded in part by
+  [ADR-0027](0027-rotation-key-ordering.md)**, which inserts a derived recovery
+  key so new identities are `[device, recovery, PDS]` and the PDS key moves from
+  slot `[1]` to `[2]`. The core custody principle (the user's wallet key is
+  supreme, the PDS key is lowest priority) is unchanged; only the title's
+  "`[1]`" is now the historical slot.
 - **Date:** 2026-07-02 (backfilled; decision embodied in code since the DID ceremony landed)
 - **Deciders:** ezpds maintainers
-- **Related:** [ADR-0002](0002-wallet-authorized-account-migration.md) · [`../identity-and-key-custody.md`](../identity-and-key-custody.md) · [`crates/crypto/src/plc.rs`](../../../crates/crypto/src/plc.rs) · `apps/identity-wallet/src-tauri/src/{device_key,plc_monitor,recovery,claim}.rs`
+- **Related:** [ADR-0002](0002-wallet-authorized-account-migration.md) · [ADR-0027](0027-rotation-key-ordering.md) · [`../identity-and-key-custody.md`](../identity-and-key-custody.md) · [`crates/crypto/src/plc.rs`](../../../crates/crypto/src/plc.rs) · `apps/identity-wallet/src-tauri/src/{device_key,plc_monitor,recovery,claim}.rs`
 
 ## Context
 
@@ -56,14 +61,16 @@ external signer.
 - **New failure mode: user key loss.** If the wallet device key is lost with no
   other authorized key, the identity is unrecoverable. A 2-of-3 Shamir split runs
   at onboarding (Share 1 → iCloud Keychain, Share 2 → PDS escrow, Share 3 →
-  user's choice), and the PDS remains a lower-priority rotation key. **As built,
-  the split does not yet close this gap**: it splits a server-generated random
-  secret that is bound to nothing and absent from `rotationKeys`, and no
-  reconstruction ceremony exists — so the live mitigation for device-key loss is
-  presently only the device key's own 72-hour override supremacy. Binding the
-  seed to a derived recovery rotation key and building the reconstruction
-  ceremonies is designed in
+  user's choice), and the PDS remains the lowest-priority rotation key. **As
+  built, the split now closes this gap** (per ADR-0027 and the key-recovery
+  design): the wallet generates the split client-side, and the seed's *derived*
+  recovery key is installed at `rotationKeys[1]`, so reconstructing the seed from
+  any two shares yields real identity-controlling authority. Both reconstruction
+  ceremonies — escrow-assisted (iCloud + released PDS escrow) and escrow-free
+  (the user's two offline shares) — are implemented; see
   [Key recovery from Shamir shares](../../design-plans/2026-07-17-key-recovery-from-shares.md).
+  The device key's own 72-hour override supremacy remains the fast in-window
+  net; share reconstruction is the recovery-of-last-resort for a lost device key.
 - **Signatures must be low-S normalized** on every path (plc.directory rejects
   high-S); both the Secure Enclave and software signing paths enforce this.
 

@@ -50,18 +50,19 @@ Each asset has a distinct risk profile and recovery strategy:
 **2. Shamir Key Recovery Model**
 
 > **⚠️ Superseded model — do not implement from §§2, 4 as written.** These
-> sections predate both the passwordless-auth work and the as-built schema. Three
-> claims are wrong today: (a) the split input is described as the DID/root signing
-> key, but the onboarding ceremony splits a server-generated random secret bound
-> to nothing (not any rotation key); (b) Share 2 is described as "HSM-wrapped" and
+> sections predate both the passwordless-auth work and the shipped key-recovery
+> ceremony. Three claims are wrong today: (a) the split input is described as the
+> DID/root signing key, but the onboarding split is a fresh recovery *seed* whose
+> *derived* key sits at `rotationKeys[1]` — not the signing key itself, which a
+> Secure-Enclave key could never be; (b) Share 2 is described as "HSM-wrapped" and
 > released "after account authentication (email + password)" — it is AES-256-GCM
-> KEK-wrapped in `accounts.recovery_share`, and password auth is not the intended
-> gate for a key-sovereign account; (c) the §4.1 ceremony "reconstruct[s the] DID
-> key" and (§4.4) has "the PDS reconstruct rotation key from 2 shares" — no such
-> reconstruction ceremony exists, and the PDS must never reconstruct the user's
-> key. The accepted design reconstructs a *seed* client-side that derives a
-> separate recovery rotation key, with escrow release gated by an emailed OTP (not
-> a password) and an optional delay. See
+> KEK-wrapped in the `recovery_escrow` table (only pre-inversion/`did:web`
+> accounts use the legacy `accounts.recovery_share` column), and escrow release is
+> gated by an emailed OTP plus a delay window, not a password; (c) the §4.1/§4.4
+> ceremony has "the PDS reconstruct rotation key from 2 shares" — the PDS must
+> never reconstruct the user's key, and it does not: the reconstruction ceremony
+> now exists and runs **client-side** (the wallet combines ≥2 shares, re-derives
+> the recovery keypair, and signs the rotation op itself). See
 > [Key recovery from Shamir shares](design-plans/2026-07-17-key-recovery-from-shares.md)
 > (authoritative) and
 > [identity-and-key-custody.md](architecture/identity-and-key-custody.md).
