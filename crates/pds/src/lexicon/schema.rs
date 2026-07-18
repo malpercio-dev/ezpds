@@ -121,8 +121,7 @@ pub struct LexiconDoc {
 /// def type (subscription, …) fails parsing until support is added deliberately.
 pub enum LexDef {
     Procedure(LexProcedure),
-    /// A `query` def (an XRPC GET endpoint): its `parameters`, if declared. `output` is not
-    /// modeled — output validation is a separate non-goal.
+    /// A `query` def (an XRPC GET endpoint): its `parameters` and `output`, if declared.
     Query(LexQuery),
     /// A `record` def (`app.bsky.feed.post`, …): the record-key discipline plus the object
     /// schema the record body must satisfy. Only ever the `main` def of a document.
@@ -135,6 +134,9 @@ pub enum LexDef {
 pub struct LexProcedure {
     /// Absent for no-input procedures (which `NoInputBody` guards instead).
     pub input: Option<LexXrpcBody>,
+    /// A procedure's declared response body, if it returns one. Registered for output validation
+    /// (`assertValidXrpcOutput` parity) — a self-drift guard on what Custos serves.
+    pub output: Option<LexXrpcBody>,
     /// A procedure's query parameters, if it declares any (rare — the vendored set's procedures
     /// are all body-only today, but the parser supports it rather than rejecting it, mirroring
     /// the reference's `assertValidXrpcParams`, which is rooted at any of query/procedure/
@@ -146,6 +148,10 @@ pub struct LexQuery {
     /// A query's parameters. Absent when the doc declares no `parameters` key at all (e.g.
     /// `describeServer`) — distinct from a declared-but-empty `params` object.
     pub parameters: Option<LexObject>,
+    /// A query's declared response body, if it returns one (a non-JSON `encoding` like the sync
+    /// endpoints' `application/vnd.ipld.car` carries no `schema`). Registered for output
+    /// validation.
+    pub output: Option<LexXrpcBody>,
 }
 
 pub struct LexXrpcBody {
@@ -447,23 +453,8 @@ fn parse_def(value: &OrderedValue, context: &str) -> Result<LexDef, String> {
                 "output",
                 "errors",
             ])?;
-            let input = match node.get("input") {
-                None => None,
-                Some(input_value) => {
-                    let input_context = format!("{context} input");
-                    let input = Node::from(input_value, &input_context)?;
-                    input.check_keys(&["encoding", "schema", "description"])?;
-                    let encoding = input.required_string("encoding")?.to_owned();
-                    let schema = match input.get("schema") {
-                        None => None,
-                        Some(schema_value) => Some(parse_schema(
-                            schema_value,
-                            &format!("{context} input schema"),
-                        )?),
-                    };
-                    Some(LexXrpcBody { encoding, schema })
-                }
-            };
+            let input = parse_xrpc_body(&node, "input", context)?;
+            let output = parse_xrpc_body(&node, "output", context)?;
             let parameters = match node.get("parameters") {
                 None => None,
                 Some(params_value) => Some(parse_params(
@@ -471,7 +462,11 @@ fn parse_def(value: &OrderedValue, context: &str) -> Result<LexDef, String> {
                     &format!("{context} parameters"),
                 )?),
             };
-            Ok(LexDef::Procedure(LexProcedure { input, parameters }))
+            Ok(LexDef::Procedure(LexProcedure {
+                input,
+                output,
+                parameters,
+            }))
         }
         "query" => {
             node.check_keys(&["type", "description", "parameters", "output", "errors"])?;
@@ -482,7 +477,8 @@ fn parse_def(value: &OrderedValue, context: &str) -> Result<LexDef, String> {
                     &format!("{context} parameters"),
                 )?),
             };
-            Ok(LexDef::Query(LexQuery { parameters }))
+            let output = parse_xrpc_body(&node, "output", context)?;
+            Ok(LexDef::Query(LexQuery { parameters, output }))
         }
         "record" => {
             node.check_keys(&["type", "description", "key", "record"])?;
@@ -500,6 +496,28 @@ fn parse_def(value: &OrderedValue, context: &str) -> Result<LexDef, String> {
         // for `ref`/`union` resolution. `parse_schema` rejects any construct we don't implement.
         _ => Ok(LexDef::Schema(parse_schema(value, context)?)),
     }
+}
+
+/// Parse an XRPC body node (`input` or `output`) — `{ encoding, schema?, description? }` — into a
+/// [`LexXrpcBody`]. Both directions share the identical structure, so this is the one parser for
+/// `assertValidXrpcInput` and `assertValidXrpcOutput` bodies alike. A non-JSON `encoding` (the sync
+/// endpoints' `application/vnd.ipld.car`, `getBlob`'s `*/*`) simply carries no `schema`.
+fn parse_xrpc_body(def: &Node, key: &str, context: &str) -> Result<Option<LexXrpcBody>, String> {
+    let Some(body_value) = def.get(key) else {
+        return Ok(None);
+    };
+    let body_context = format!("{context} {key}");
+    let body = Node::from(body_value, &body_context)?;
+    body.check_keys(&["encoding", "schema", "description"])?;
+    let encoding = body.required_string("encoding")?.to_owned();
+    let schema = match body.get("schema") {
+        None => None,
+        Some(schema_value) => Some(parse_schema(
+            schema_value,
+            &format!("{context} {key} schema"),
+        )?),
+    };
+    Ok(Some(LexXrpcBody { encoding, schema }))
 }
 
 /// Parse a `type: "params"` node (an XRPC query/procedure's `parameters`) into the same
