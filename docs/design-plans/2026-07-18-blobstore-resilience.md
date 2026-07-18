@@ -93,9 +93,66 @@ the drain should degrade per-blob rather than all-or-nothing: retry each blob, t
 offer "continue with an explicit loss manifest" so one dead blob doesn't park the
 migration and the user makes an informed skip instead of abandoning the run.
 
+## Wallet-side option: user-held blob backup to iCloud
+
+A complement to the server tiers above, not a substitute — but it is the only layer
+that survives *the PDS itself* failing, which is exactly the MM-394 scenario (the
+source PDS lost the bytes and no other copy existed anywhere on the network). It also
+fits the product's existing custody story: Share 1 of the recovery key already lives
+in the iCloud Keychain, so "your Apple account holds a user-controlled copy" is
+established trust language, and content addressing makes a user-held mirror fully
+trustless — restored bytes re-hash to the same CID, so records never need rewriting.
+
+**Existing pieces.** The wallet's `pds_client.rs` already speaks `listBlobs` /
+`getBlob` / `uploadBlob` (the migration drain uses all three); the XcodeGen template
+(`scripts/ios/project.yml`) already owns the entitlements file; swift-rs bridging is
+an established wallet pattern.
+
+**Mechanism.** Three candidates on iOS:
+
+1. **iCloud Drive ubiquity container (recommended).** Add the iCloud
+   container/Documents entitlements, a small swift-rs bridge for
+   `URLForUbiquityContainerIdentifier`, then plain file I/O into
+   `Documents/blobs/{cid}` — iOS syncs it. User-legible sovereignty: the mirror is
+   visible in the Files app. Caveats: sync is asynchronous/best-effort; restore must
+   handle undownloaded placeholder files (`NSMetadataQuery`/file coordination); E2EE
+   only under Advanced Data Protection (acceptable — blobs are public content, served
+   unauthenticated by `getBlob`; nothing here weakens the key-custody posture).
+2. **CloudKit private database.** Handles large assets fine but needs far more bridge
+   surface and has no Files-app visibility. Not worth it.
+3. **Ride the iOS device backup (interim, near-free).** Mirror blobs into the app's
+   Documents dir without the `isExcludedFromBackup` flag. Restore only via
+   whole-device restore, invisible to the user — insufficient as the feature, fine as
+   a stopgap while (1) is built.
+
+**Sync logic.** Reuse the drain's calls: paginated `listBlobs` → diff against local
+CIDs → `getBlob` → **verify SHA-256 against the CID before writing** (never back up
+corrupt bytes — the client-side twin of №4) → append to a manifest
+(`cid, mimeType, size, fetchedAt`). Immutable content-addressed files make the sync
+incremental and idempotent by construction. Start with an explicit "Back up media"
+action plus an opportunistic pass on app open; background scheduling
+(`BGProcessingTask`, another entitlement) can come later.
+
+**Restore path.** Walk the manifest, `uploadBlob` each file with its stored MIME type;
+CIDs recompute identically, records untouched. The migration drain should also accept
+the local mirror as a *fallback blob source* when the source PDS fails `getBlob` —
+turning the MM-394 blocker into a non-event for backed-up users.
+
+**Costs and cautions.** iCloud free tier is 5 GB shared, and video-capable accounts
+can be large — the feature must be opt-in with the mirror size shown (the server
+already exposes per-account blob totals). Entitlement changes ride the committed
+XcodeGen template and `just ios-template-check`; the browser harness needs a fake for
+the ubiquity path so the surface stays scriptable off-device.
+
 ## Suggested sequencing
 
 №2 (write durability) and №3 (scrub) are self-contained server changes with existing
 patterns to copy and no new infrastructure. №1(a) needs a bucket + credentials on the
 production environment (same shape as the Litestream vars) and is the highest-impact
 single change. №4 rides on №3's helpers. №5 is mostly wallet-side.
+
+The iCloud wallet backup is independent of all five and can proceed in parallel, but
+the server bucket mirror still comes first: it protects every account automatically,
+while the wallet mirror protects only opted-in users with the app installed and iCloud
+space free. Together they give three independent copies (volume, operator bucket,
+user's iCloud) with different failure domains and different owners.
