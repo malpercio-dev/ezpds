@@ -4,6 +4,10 @@ Status: **design exploration** — extends the passwordless-auth exploration
 ([2026-07-12-passwordless-auth.md](2026-07-12-passwordless-auth.md), MM-312) by deciding
 the concrete cross-device mechanism it left open: device-code entry (Netflix-style) vs
 number matching (GitHub-style) vs QR vs push. Captures the discussion of 2026-07-18.
+Implementation tracked as sub-issues of MM-312:
+[MM-441](https://linear.app/malpercio/issue/MM-441) (Phase A),
+[MM-442](https://linear.app/malpercio/issue/MM-442) (Phase B),
+[MM-443](https://linear.app/malpercio/issue/MM-443) (Phase C).
 
 ## Problem
 
