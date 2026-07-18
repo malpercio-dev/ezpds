@@ -30,6 +30,7 @@ pub(super) fn validate_format(format: StringFormat, value: &str) -> Result<(), &
         StringFormat::Language => is_valid_language(value),
         StringFormat::Nsid => repo_engine::validate_collection(value).is_ok(),
         StringFormat::RecordKey => is_valid_record_key(value),
+        StringFormat::Tid => is_valid_tid(value),
         StringFormat::Uri => is_valid_uri(value),
     };
     if ok {
@@ -46,6 +47,7 @@ pub(super) fn validate_format(format: StringFormat, value: &str) -> Result<(), &
         StringFormat::Language => "must be a well-formed BCP 47 language tag",
         StringFormat::Nsid => "must be a valid nsid",
         StringFormat::RecordKey => "must be a valid Record Key",
+        StringFormat::Tid => "must be a valid TID",
         StringFormat::Uri => "must be a uri",
     })
 }

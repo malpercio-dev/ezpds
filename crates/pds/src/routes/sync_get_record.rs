@@ -6,13 +6,14 @@
 //! record yields a 200 inclusion-proof CAR; an absent record (in an existing repo) yields a 200
 //! exclusion-proof CAR carrying the covering MST nodes. Only an unknown DID/account returns 404.
 
-use axum::extract::{Query, State};
+use axum::extract::State;
 use axum::http::{header, StatusCode};
 use axum::response::{IntoResponse, Response};
 use serde::Deserialize;
 
 use crate::app::AppState;
 use crate::db::blocks::SqliteBlockStore;
+use crate::lexicon::LexiconParams;
 use common::{ApiError, ErrorCode};
 use repo_engine::export_record_proof_car;
 
@@ -34,14 +35,9 @@ pub struct SyncGetRecordParams {
 /// the other sync endpoints.
 pub async fn sync_get_record(
     State(state): State<AppState>,
-    Query(params): Query<SyncGetRecordParams>,
+    LexiconParams(params): LexiconParams<SyncGetRecordParams>,
 ) -> Result<Response, ApiError> {
     let did = &params.did;
-
-    // Validate DID format.
-    if !crate::auth::validation::is_valid_did(did) {
-        return Err(ApiError::new(ErrorCode::InvalidClaim, "invalid DID format"));
-    }
 
     // Look up the repo root CID from the accounts table.
     let root_cid_str = crate::db::accounts::get_repo_root_cid(&state.db, did)

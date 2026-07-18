@@ -118,9 +118,12 @@ pub struct LexiconDoc {
 }
 
 /// A top-level definition. Only the def types present in the vendored set are modeled; a new
-/// def type (query, subscription, …) fails parsing until support is added deliberately.
+/// def type (subscription, …) fails parsing until support is added deliberately.
 pub enum LexDef {
     Procedure(LexProcedure),
+    /// A `query` def (an XRPC GET endpoint): its `parameters`, if declared. `output` is not
+    /// modeled — output validation is a separate non-goal.
+    Query(LexQuery),
     /// A `record` def (`app.bsky.feed.post`, …): the record-key discipline plus the object
     /// schema the record body must satisfy. Only ever the `main` def of a document.
     Record(LexRecord),
@@ -132,6 +135,17 @@ pub enum LexDef {
 pub struct LexProcedure {
     /// Absent for no-input procedures (which `NoInputBody` guards instead).
     pub input: Option<LexXrpcBody>,
+    /// A procedure's query parameters, if it declares any (rare — the vendored set's procedures
+    /// are all body-only today, but the parser supports it rather than rejecting it, mirroring
+    /// the reference's `assertValidXrpcParams`, which is rooted at any of query/procedure/
+    /// subscription).
+    pub parameters: Option<LexObject>,
+}
+
+pub struct LexQuery {
+    /// A query's parameters. Absent when the doc declares no `parameters` key at all (e.g.
+    /// `describeServer`) — distinct from a declared-but-empty `params` object.
+    pub parameters: Option<LexObject>,
 }
 
 pub struct LexXrpcBody {
@@ -166,6 +180,9 @@ pub enum LexSchema {
         max_length: Option<u64>,
         /// Maximum length in extended grapheme clusters (`@atproto/lexicon`'s `graphemeLen`).
         max_graphemes: Option<u64>,
+        /// A closed set of accepted values (query-param sort/order enums, mainly). Empty when
+        /// undeclared.
+        enum_values: Vec<String>,
         has_default: bool,
     },
     Boolean {
@@ -176,6 +193,8 @@ pub enum LexSchema {
     Integer {
         minimum: Option<i64>,
         maximum: Option<i64>,
+        /// A closed set of accepted values. Empty when undeclared.
+        enum_values: Vec<i64>,
         /// Whether the lexicon declares a `default`. The reference applies primitive defaults
         /// during validation, so an absent value with a default satisfies even a `required`
         /// property (`createInviteCodes.codeCount`); the default's value itself never matters
@@ -244,6 +263,7 @@ pub enum StringFormat {
     Language,
     Nsid,
     RecordKey,
+    Tid,
     Uri,
 }
 
@@ -259,6 +279,7 @@ impl StringFormat {
             "language" => Self::Language,
             "nsid" => Self::Nsid,
             "record-key" => Self::RecordKey,
+            "tid" => Self::Tid,
             "uri" => Self::Uri,
             _ => return None,
         })
@@ -362,6 +383,29 @@ impl<'a> Node<'a> {
             Some(_) => Err(format!("{}: {key} must be a number", self.context)),
         }
     }
+
+    /// An optional `enum` of integers. Empty when absent.
+    fn i64_array(&self, key: &str) -> Result<Vec<i64>, String> {
+        let Some(value) = self.get(key) else {
+            return Ok(Vec::new());
+        };
+        let OrderedValue::Array(items) = value else {
+            return Err(format!("{}: {key} must be an array", self.context));
+        };
+        items
+            .iter()
+            .map(|item| match item {
+                OrderedValue::Number(n) => n
+                    .as_i64()
+                    .ok_or_else(|| format!("{}: {key} entries must be integers", self.context)),
+                other => Err(format!(
+                    "{}: {key} entries must be integers, got {}",
+                    self.context,
+                    other.type_name()
+                )),
+            })
+            .collect()
+    }
 }
 
 /// Parse one vendored lexicon document from its JSON source.
@@ -395,7 +439,14 @@ fn parse_def(value: &OrderedValue, context: &str) -> Result<LexDef, String> {
     let node = Node::from(value, context)?;
     match node.required_string("type")? {
         "procedure" => {
-            node.check_keys(&["type", "description", "input", "output", "errors"])?;
+            node.check_keys(&[
+                "type",
+                "description",
+                "parameters",
+                "input",
+                "output",
+                "errors",
+            ])?;
             let input = match node.get("input") {
                 None => None,
                 Some(input_value) => {
@@ -413,7 +464,25 @@ fn parse_def(value: &OrderedValue, context: &str) -> Result<LexDef, String> {
                     Some(LexXrpcBody { encoding, schema })
                 }
             };
-            Ok(LexDef::Procedure(LexProcedure { input }))
+            let parameters = match node.get("parameters") {
+                None => None,
+                Some(params_value) => Some(parse_params(
+                    params_value,
+                    &format!("{context} parameters"),
+                )?),
+            };
+            Ok(LexDef::Procedure(LexProcedure { input, parameters }))
+        }
+        "query" => {
+            node.check_keys(&["type", "description", "parameters", "output", "errors"])?;
+            let parameters = match node.get("parameters") {
+                None => None,
+                Some(params_value) => Some(parse_params(
+                    params_value,
+                    &format!("{context} parameters"),
+                )?),
+            };
+            Ok(LexDef::Query(LexQuery { parameters }))
         }
         "record" => {
             node.check_keys(&["type", "description", "key", "record"])?;
@@ -430,6 +499,76 @@ fn parse_def(value: &OrderedValue, context: &str) -> Result<LexDef, String> {
         // Every other top-level def (`object`, a bare `string`, a `token`, …) is a schema stored
         // for `ref`/`union` resolution. `parse_schema` rejects any construct we don't implement.
         _ => Ok(LexDef::Schema(parse_schema(value, context)?)),
+    }
+}
+
+/// Parse a `type: "params"` node (an XRPC query/procedure's `parameters`) into the same
+/// [`LexObject`] shape an input body uses, so params validation reuses the object validator
+/// unchanged. `nullable` is always empty — the lexicon params type has no such concept.
+fn parse_params(value: &OrderedValue, context: &str) -> Result<LexObject, String> {
+    let node = Node::from(value, context)?;
+    match node.required_string("type")? {
+        "params" => {}
+        other => {
+            return Err(format!(
+                "{context}: parameters `type` must be \"params\", got {other:?}"
+            ))
+        }
+    }
+    node.check_keys(&["type", "description", "required", "properties"])?;
+    let required = node.string_array("required")?;
+
+    let mut properties = Vec::new();
+    if let Some(props_value) = node.get("properties") {
+        let OrderedValue::Object(entries) = props_value else {
+            return Err(format!("{context}: `properties` must be an object"));
+        };
+        for (name, prop_value) in entries {
+            let prop_context = format!("{context}/{name}");
+            properties.push((
+                name.clone(),
+                parse_param_property(prop_value, &prop_context)?,
+            ));
+        }
+    }
+    Ok(LexObject {
+        required,
+        nullable: Vec::new(),
+        properties,
+    })
+}
+
+/// Parse one params `properties` entry. Query parameters are restricted to primitives (string,
+/// integer, boolean) and arrays of primitives — no object/ref/union/blob/bytes/token, mirroring
+/// `@atproto/lexicon`'s `LexXrpcParameters`. Reuses `parse_schema` for the actual field parsing
+/// (so format/minLength/minimum/enum/default all work identically to a body property) and then
+/// rejects any construct outside that allowed set.
+fn parse_param_property(value: &OrderedValue, context: &str) -> Result<LexSchema, String> {
+    let node = Node::from(value, context)?;
+    let declared_type = node.required_string("type")?.to_owned();
+    match declared_type.as_str() {
+        "string" | "integer" | "boolean" => parse_schema(value, context),
+        "array" => {
+            let schema = parse_schema(value, context)?;
+            let LexSchema::Array { items, .. } = &schema else {
+                unreachable!("parse_schema(\"array\") always returns LexSchema::Array");
+            };
+            if !matches!(
+                **items,
+                LexSchema::String { .. } | LexSchema::Integer { .. } | LexSchema::Boolean { .. }
+            ) {
+                return Err(format!(
+                    "{context}: array items in a params object must be string, integer, or \
+                     boolean (the validator does not support other param array item types)"
+                ));
+            }
+            Ok(schema)
+        }
+        other => Err(format!(
+            "{context}: unsupported params property type {other:?} \
+             (the validator only implements string/integer/boolean/array-of-primitive query \
+             parameters)"
+        )),
     }
 }
 
@@ -471,6 +610,7 @@ fn parse_schema(value: &OrderedValue, context: &str) -> Result<LexSchema, String
                 "maxLength",
                 "maxGraphemes",
                 "knownValues",
+                "enum",
                 "default",
             ])?;
             let format = match node.string("format")? {
@@ -487,6 +627,7 @@ fn parse_schema(value: &OrderedValue, context: &str) -> Result<LexSchema, String
                 min_length: node.u64_opt("minLength")?,
                 max_length: node.u64_opt("maxLength")?,
                 max_graphemes: node.u64_opt("maxGraphemes")?,
+                enum_values: node.string_array("enum")?,
                 has_default: node.get("default").is_some(),
             })
         }
@@ -503,7 +644,14 @@ fn parse_schema(value: &OrderedValue, context: &str) -> Result<LexSchema, String
             })
         }
         "integer" => {
-            node.check_keys(&["type", "description", "minimum", "maximum", "default"])?;
+            node.check_keys(&[
+                "type",
+                "description",
+                "minimum",
+                "maximum",
+                "enum",
+                "default",
+            ])?;
             let has_default = match node.get("default") {
                 None => false,
                 Some(OrderedValue::Number(n)) if n.is_i64() || n.is_u64() => true,
@@ -512,6 +660,7 @@ fn parse_schema(value: &OrderedValue, context: &str) -> Result<LexSchema, String
             Ok(LexSchema::Integer {
                 minimum: node.i64_opt("minimum")?,
                 maximum: node.i64_opt("maximum")?,
+                enum_values: node.i64_array("enum")?,
                 has_default,
             })
         }

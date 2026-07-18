@@ -2,11 +2,12 @@
 
 //! com.atproto.sync.getLatestCommit - Report the current commit CID and rev for a repo.
 
-use axum::extract::{Query, State};
+use axum::extract::State;
 use axum::response::Json;
 use serde::{Deserialize, Serialize};
 
 use crate::app::AppState;
+use crate::lexicon::LexiconParams;
 use common::{ApiError, ErrorCode};
 
 #[derive(Deserialize)]
@@ -31,14 +32,9 @@ pub struct GetLatestCommitResponse {
 /// `rev`. No authentication required (public data).
 pub async fn sync_get_latest_commit(
     State(state): State<AppState>,
-    Query(params): Query<GetLatestCommitParams>,
+    LexiconParams(params): LexiconParams<GetLatestCommitParams>,
 ) -> Result<Json<GetLatestCommitResponse>, ApiError> {
     let did = &params.did;
-
-    // Validate DID format, mirroring the other sync endpoints.
-    if !crate::auth::validation::is_valid_did(did) {
-        return Err(ApiError::new(ErrorCode::InvalidClaim, "invalid DID format"));
-    }
 
     let row = crate::db::accounts::get_repo_status(&state.db, did)
         .await

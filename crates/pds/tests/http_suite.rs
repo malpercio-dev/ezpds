@@ -527,6 +527,73 @@ async fn http_golden_path_suite() {
     })
     .await;
 
+    // 9c'. Lexicon *params* validation parity: every natively-handled GET query now
+    //     runs its query string through the vendored `com.atproto.*` lexicon `parameters` before
+    //     the handler, so a missing required param, a string-format violation, an out-of-range
+    //     integer, or a malformed array element gets the reference PDS's 400 InvalidRequest
+    //     envelope (previously axum's bare `Query` extractor answered 422 with a plain-text body,
+    //     and `sync.getBlocks`'s hand-rolled `RawQuery` parse skipped validation entirely).
+    //     Message shapes are asserted byte-for-byte against `@atproto/lexicon`/`@atproto/xrpc-server`.
+    step("lexicon params validation parity", || async {
+        let expect_invalid_request = |resp: reqwest::Response, expected_message: &'static str| async move {
+            let status = resp.status();
+            let body: serde_json::Value = resp.json().await.expect("error json");
+            assert_eq!(status.as_u16(), 400, "expected 400, got {status}: {body}");
+            assert_eq!(
+                body["error"]["code"], "InvalidRequest",
+                "expected InvalidRequest: {body}"
+            );
+            assert_eq!(
+                body["error"]["message"], expected_message,
+                "reference-parity message mismatch: {body}"
+            );
+        };
+
+        // Missing required param, named in lexicon declaration order.
+        let resp = h
+            .http
+            .get(h.url("/xrpc/com.atproto.repo.getRecord"))
+            .send()
+            .await
+            .expect("getRecord request");
+        expect_invalid_request(resp, "Params must have the property \"repo\"").await;
+
+        // Integer `maximum` bound.
+        let resp = h
+            .http
+            .get(h.url(&format!(
+                "/xrpc/com.atproto.repo.listRecords?repo={}&collection=app.bsky.feed.post&limit=500",
+                enc(&did)
+            )))
+            .send()
+            .await
+            .expect("listRecords request");
+        expect_invalid_request(resp, "Params/limit can not be greater than 100").await;
+
+        // String-format violation on a query param.
+        let resp = h
+            .http
+            .get(h.url("/xrpc/com.atproto.identity.resolveHandle?handle=not_a_handle"))
+            .send()
+            .await
+            .expect("resolveHandle request");
+        expect_invalid_request(resp, "Params/handle must be a valid handle").await;
+
+        // Array-of-primitives (repeated `cids=` keys): each element is validated, indexed path —
+        // the one route (`sync.getBlocks`) that previously hand-parsed its array param manually.
+        let resp = h
+            .http
+            .get(h.url(&format!(
+                "/xrpc/com.atproto.sync.getBlocks?did={}&cids=not-a-cid",
+                enc(&did)
+            )))
+            .send()
+            .await
+            .expect("getBlocks request");
+        expect_invalid_request(resp, "Params/cids/0 must be a cid string").await;
+    })
+    .await;
+
     // 9b. `validate`-flag record validation (`assertValidRecord` parity): a known-lexicon
     //     record is validated by default, rejectable, skippable with `validate: false`, and
     //     required with `validate: true`; the write reports `validationStatus`.

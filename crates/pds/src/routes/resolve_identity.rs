@@ -4,10 +4,7 @@
 // Processes: shared ATProto identity resolution (DID document + bidirectionally verified handle)
 // Returns: spec-shaped resolveDid / resolveIdentity / refreshIdentity JSON responses
 
-use axum::{
-    extract::{Query, State},
-    Json,
-};
+use axum::{extract::State, Json};
 use common::{ApiError, ErrorCode};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -17,7 +14,7 @@ use crate::identity::resolution::{
     resolve_did_document, resolve_did_document_force_refresh, resolve_handle_to_did,
     verified_handle_for_did, verified_handle_for_identifier, INVALID_HANDLE,
 };
-use crate::lexicon::LexiconInput;
+use crate::lexicon::{LexiconInput, LexiconParams};
 
 #[derive(Deserialize)]
 pub struct ResolveDidQuery {
@@ -50,7 +47,7 @@ pub struct IdentityInfoResponse {
 
 pub async fn resolve_did_handler(
     State(state): State<AppState>,
-    Query(params): Query<ResolveDidQuery>,
+    LexiconParams(params): LexiconParams<ResolveDidQuery>,
 ) -> Result<Json<ResolveDidResponse>, ApiError> {
     let did_doc = resolve_did_document(&state, &params.did).await?;
     Ok(Json(ResolveDidResponse { did_doc }))
@@ -58,7 +55,7 @@ pub async fn resolve_did_handler(
 
 pub async fn resolve_identity_handler(
     State(state): State<AppState>,
-    Query(params): Query<ResolveIdentityQuery>,
+    LexiconParams(params): LexiconParams<ResolveIdentityQuery>,
 ) -> Result<Json<IdentityInfoResponse>, ApiError> {
     resolve_identity(&state, &params.identifier, false)
         .await

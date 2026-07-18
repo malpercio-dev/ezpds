@@ -2,11 +2,12 @@
 
 //! com.atproto.sync.getRepoStatus - Report the hosting status of a single repo.
 
-use axum::extract::{Query, State};
+use axum::extract::State;
 use axum::response::Json;
 use serde::{Deserialize, Serialize};
 
 use crate::app::AppState;
+use crate::lexicon::LexiconParams;
 use common::{ApiError, ErrorCode};
 
 #[derive(Deserialize)]
@@ -39,14 +40,9 @@ pub struct GetRepoStatusResponse {
 /// authentication required (public data).
 pub async fn sync_get_repo_status(
     State(state): State<AppState>,
-    Query(params): Query<GetRepoStatusParams>,
+    LexiconParams(params): LexiconParams<GetRepoStatusParams>,
 ) -> Result<Json<GetRepoStatusResponse>, ApiError> {
     let did = &params.did;
-
-    // Validate DID format, mirroring the other sync endpoints.
-    if !crate::auth::validation::is_valid_did(did) {
-        return Err(ApiError::new(ErrorCode::InvalidClaim, "invalid DID format"));
-    }
 
     let row = crate::db::accounts::get_repo_status(&state.db, did)
         .await

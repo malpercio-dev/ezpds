@@ -1,16 +1,26 @@
 # Vendored lexicon documents
 
 Byte-identical copies of `com.atproto.*` and `app.bsky.*` lexicon JSON documents from the
-reference implementation, vendored so Custos can validate XRPC request bodies and repo-write
-records against the same schemas the reference PDS enforces (`crates/pds/src/lexicon/` — see
-MM-364 for the input layer, MM-399 for the `validate`-flag record layer).
+reference implementation, vendored so Custos can validate XRPC request bodies, query parameters,
+and repo-write records against the same schemas the reference PDS enforces
+(`crates/pds/src/lexicon/` — see MM-364 for the input-body layer, MM-397 for the query-params
+layer, MM-399 for the `validate`-flag record layer).
 
 - **Source:** <https://github.com/bluesky-social/atproto>, `lexicons/` tree
-- **Pinned at:** tag `@atproto/pds@0.5.18` (retrieved 2026-07-16; the `app.bsky.*` record set 2026-07-17)
+- **Pinned at:** tag `@atproto/pds@0.5.18` (retrieved 2026-07-16; the `app.bsky.*` record set
+  2026-07-17; the query-params (`type: "query"`) set 2026-07-17)
 - **Scope:**
   - **Input procedures:** the `com.atproto.*` documents needed by the natively-handled JSON-input
     procedures (plus the documents their input refs reach: `com.atproto.admin.defs`,
     `com.atproto.repo.strongRef`).
+  - **Query parameters (MM-397):** the `com.atproto.*` `type: "query"` documents behind every
+    natively-handled GET route that hand-parsed its query string with axum's bare `Query<T>` (or,
+    for `sync.getBlocks`, `RawQuery`) — `com.atproto.identity.resolve*`,
+    `com.atproto.repo.{describeRepo,getRecord,listMissingBlobs,listRecords}`,
+    `com.atproto.server.getServiceAuth`, and `com.atproto.sync.*` (excluding `subscribeRepos`, a
+    `type: "subscription"` def outside this layer's scope). Params properties are restricted to
+    primitives (string/integer/boolean) and arrays of primitives, so there is nothing further to
+    vendor transitively (no ref/union ever appears in a `parameters` object).
   - **Record validation (MM-399):** the `app.bsky.*` **record** lexicons worth validating on repo
     writes (`feed.post`/`like`/`repost`, `graph.follow`/`block`/`list`/`listitem`/`listblock`,
     `actor.profile`) plus only the `object`/`string`/`token` defs their record schemas transitively

@@ -9,10 +9,7 @@
 
 use std::collections::HashSet;
 
-use axum::{
-    extract::{Query, State},
-    response::Json,
-};
+use axum::{extract::State, response::Json};
 use futures_util::StreamExt;
 use ipld_core::ipld::Ipld;
 use serde::{Deserialize, Serialize};
@@ -22,6 +19,7 @@ use common::{ApiError, ErrorCode};
 use crate::app::AppState;
 use crate::auth::extractors::AuthenticatedUser;
 use crate::db::blocks::SqliteBlockStore;
+use crate::lexicon::LexiconParams;
 use repo_engine::Repository;
 
 // ── Query parameters ──────────────────────────────────────────────────────────
@@ -64,10 +62,11 @@ pub struct ListMissingBlobsResponse {
 pub async fn list_missing_blobs(
     State(state): State<AppState>,
     user: AuthenticatedUser,
-    Query(params): Query<ListMissingBlobsParams>,
+    LexiconParams(params): LexiconParams<ListMissingBlobsParams>,
 ) -> Result<Json<ListMissingBlobsResponse>, ApiError> {
     let did = &user.did;
-    let limit = params.limit.clamp(1, 1000) as usize;
+    // Already bounded to [1, 1000] by the lexicon; the cast just changes the integer type.
+    let limit = params.limit as usize;
 
     // No repo yet → nothing referenced, nothing missing.
     let Some(head) = crate::db::accounts::get_repo_root_cid(&state.db, did)

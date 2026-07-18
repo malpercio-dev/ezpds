@@ -2,15 +2,15 @@
 
 //! com.atproto.sync.listRepos - List all repositories hosted on this PDS.
 
-use axum::extract::{Query, State};
+use axum::extract::State;
 use axum::response::Json;
 use serde::{Deserialize, Serialize};
 
 use crate::app::AppState;
+use crate::lexicon::LexiconParams;
 use common::{ApiError, ErrorCode};
 
 const DEFAULT_LIMIT: i64 = 500;
-const MAX_LIMIT: i64 = 1000;
 
 #[derive(Deserialize)]
 pub struct ListReposParams {
@@ -45,10 +45,11 @@ pub struct ListReposResponse {
 /// required (public data).
 pub async fn list_repos(
     State(state): State<AppState>,
-    Query(params): Query<ListReposParams>,
+    LexiconParams(params): LexiconParams<ListReposParams>,
 ) -> Result<Json<ListReposResponse>, ApiError> {
-    // Clamp the page size to the documented bounds (default 500, max 1000, min 1).
-    let limit = params.limit.unwrap_or(DEFAULT_LIMIT).clamp(1, MAX_LIMIT);
+    // The lexicon already bounds a present `limit` to [1, 1000] (a 400 otherwise); an absent one
+    // defaults here to 500, also in range.
+    let limit = params.limit.unwrap_or(DEFAULT_LIMIT);
 
     // The cursor is the last DID returned by the previous page; "" yields the first page
     // because every DID sorts strictly after the empty string.
@@ -316,17 +317,18 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn limit_is_clamped_to_minimum_one() {
+    async fn limit_below_minimum_is_rejected() {
+        // The lexicon declares `minimum: 1`: a sub-minimum `limit` is a 400 InvalidRequest, not a
+        // silent clamp — reference-PDS parity, replacing the old clamp-to-1 behavior.
         let state = state_with_master_key().await;
-        for did in ["did:plc:listrepclampa", "did:plc:listrepclampb"] {
-            seed_account_with_repo(&state.db, did).await;
-        }
+        seed_account_with_repo(&state.db, "did:plc:listrepclampa").await;
         let app = crate::app::app(state);
 
-        // limit=0 clamps to 1 — exactly one repo, and a cursor since the page is full.
         let (status, body) = list(&app, "?limit=0").await;
-        assert_eq!(status, StatusCode::OK);
-        assert_eq!(body["repos"].as_array().unwrap().len(), 1);
-        assert_eq!(body["cursor"], "did:plc:listrepclampa");
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_eq!(
+            body["error"]["message"],
+            "Params/limit can not be less than 1"
+        );
     }
 }

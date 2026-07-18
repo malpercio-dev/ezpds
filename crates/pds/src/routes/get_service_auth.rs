@@ -8,10 +8,7 @@
 
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use axum::{
-    extract::{Query, State},
-    response::Json,
-};
+use axum::{extract::State, response::Json};
 use serde::{Deserialize, Serialize};
 
 use common::{ApiError, ErrorCode};
@@ -20,6 +17,7 @@ use crate::app::AppState;
 use crate::auth::extractors::AuthenticatedUser;
 use crate::auth::jwt::AuthScope;
 use crate::auth::oauth_scopes;
+use crate::lexicon::LexiconParams;
 
 /// Max future window for a *method-bound* token (`lxm` present): one hour. Mirrors the reference
 /// PDS, which bounds scoped service tokens to a short life so a leaked token expires quickly.
@@ -54,7 +52,7 @@ pub struct GetServiceAuthResponse {
 pub async fn get_service_auth(
     user: AuthenticatedUser,
     State(state): State<AppState>,
-    Query(params): Query<GetServiceAuthQuery>,
+    LexiconParams(params): LexiconParams<GetServiceAuthQuery>,
 ) -> Result<Json<GetServiceAuthResponse>, ApiError> {
     // Deliberately no deactivation check: an outbound-migrating account is expected to mint a
     // token for the destination's createAccount (and retry it) right up to and after the point

@@ -2,12 +2,13 @@
 
 //! com.atproto.repo.describeRepo - Return metadata about a repository.
 
-use axum::extract::{Query, State};
+use axum::extract::State;
 use axum::Json;
 use serde::Deserialize;
 
 use crate::app::AppState;
 use crate::db::blocks::SqliteBlockStore;
+use crate::lexicon::LexiconParams;
 use common::{ApiError, ErrorCode};
 use repo_engine::Repository;
 
@@ -27,7 +28,7 @@ pub struct DescribeRepoParams {
 /// No authentication required (public data).
 pub async fn describe_repo(
     State(state): State<AppState>,
-    Query(params): Query<DescribeRepoParams>,
+    LexiconParams(params): LexiconParams<DescribeRepoParams>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
     // Accept either a handle or a DID, mirroring the `at-identifier` the lexicon allows.
     let account = crate::db::accounts::resolve_identifier(&state.db, &params.repo)
