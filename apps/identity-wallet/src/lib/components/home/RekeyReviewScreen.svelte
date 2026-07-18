@@ -57,6 +57,10 @@
         return 'Your identity was upgraded, but saving the local backup failed. Please try again.';
       case 'PLC_SUBMISSION_FAILED':
         return 'The directory rejected the change. Please try again.';
+      case 'PLC_DIRECTORY_ERROR':
+        return 'The identity directory had a problem. Please try again shortly.';
+      case 'SERVER_ERROR':
+        return 'The server couldn’t complete this step. Please try again.';
       case 'NETWORK_ERROR':
         return 'Couldn’t reach the server. Check your connection.';
       default:
