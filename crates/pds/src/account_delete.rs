@@ -171,8 +171,8 @@ pub async fn purge_account(state: &AppState, did: &str) -> Result<PurgeOutcome, 
     .map_err(map_err)?;
     let mut deactivated_children = Vec::new();
     if !child_dids.is_empty() {
-        let grace = i64::try_from(state.config.accounts.child_deletion_grace_secs)
-            .unwrap_or(i64::MAX);
+        let grace =
+            i64::try_from(state.config.accounts.child_deletion_grace_secs).unwrap_or(i64::MAX);
         let delete_after = (chrono::Utc::now() + chrono::Duration::seconds(grace))
             .to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
         for child in &child_dids {
@@ -185,6 +185,17 @@ pub async fn purge_account(state: &AppState, did: &str) -> Result<PurgeOutcome, 
             ) {
                 deactivated_children.push(child.clone());
             }
+            // The operator-visible record of the cascade. No `agent_child_deletions` tombstone
+            // is written: that table exists for the PARENT's audit view and is by doctrine
+            // reclaimed when the parent is deleted (V049) — a tombstone written here would be
+            // removed by this same transaction's parent-keyed delete, with no surviving party
+            // holding standing to read it.
+            tracing::info!(
+                parent = %did,
+                child = %child,
+                %delete_after,
+                "parent purge: cascade-scheduled child deletion"
+            );
         }
     }
 
@@ -252,9 +263,13 @@ pub async fn purge_account(state: &AppState, did: &str) -> Result<PurgeOutcome, 
 
     // Announce each cascade-scheduled child's deactivation so relays stop serving its repo
     // now rather than at its reap. Best-effort AFTER the deletion transaction (the staged
-    // frame chain carries one account event; these ride the bare primitive): a failed emit
-    // leaves the deactivation discoverable via the lifecycle endpoints and the child's own
-    // deleted frame still fires when the reaper purges it.
+    // frame chain carries one account event; these ride the bare primitive) — deliberately
+    // so, not an outbox: the drift on a failed emit is bounded, because the child's terminal
+    // `#account` deleted frame at its reap IS transactionally staged (this function), its
+    // deactivated state is already served by the lifecycle endpoints (`getRepoStatus` /
+    // `listRepos`), and an `emit_account` failure post-commit means the same DB that just
+    // committed is now failing — a condition the reaper's next pass surfaces loudly anyway.
+    // Worst case: relays serve the deactivated repo's cached data until `delete_after`.
     for child in &deactivated_children {
         if let Err(e) = state
             .firehose
@@ -848,7 +863,10 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(count, 1, "the other account's audit trail must survive");
-        assert_eq!(linked, 0, "the surviving event must be unlinked from the purged DID");
+        assert_eq!(
+            linked, 0,
+            "the surviving event must be unlinked from the purged DID"
+        );
     }
 
     /// Tripwire: every foreign key referencing `accounts(did)` in the LIVE schema must be
@@ -862,8 +880,16 @@ mod tests {
 
         // Covered outside DELETE_BY_DID; each entry names its mechanism.
         const COVERED_ELSEWHERE: &[(&str, &str, &str)] = &[
-            ("block_owners", "account_did", "DELETE_BLOCKS + delete_unowned_unprotected_blocks_in_tx"),
-            ("blob_owners", "account_did", "db::blobs::delete_owners_and_unowned_blobs_in_tx"),
+            (
+                "block_owners",
+                "account_did",
+                "DELETE_BLOCKS + delete_unowned_unprotected_blocks_in_tx",
+            ),
+            (
+                "blob_owners",
+                "account_did",
+                "db::blobs::delete_owners_and_unowned_blobs_in_tx",
+            ),
         ];
 
         let state = crate::app::test_state().await;
