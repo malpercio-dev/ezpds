@@ -1,0 +1,28 @@
+meta {
+  name: OAuth Consent — Wallet Preview (GET consent-request)
+  type: http
+  seq: 129
+}
+
+get {
+  url: {{baseUrl}}/oauth/authorize/consent-request?user_code={{userCode}}
+  body: none
+  auth: none
+}
+
+vars:pre-request {
+  baseUrl: http://localhost:8080
+  userCode: ABCD-2345
+}
+
+docs {
+  # GET /oauth/authorize/consent-request
+
+  The wallet's preview of a pending wallet-confirmed OAuth authorization request (MM-441). Resolve
+  by `user_code` (typed path) or `request_id` (handoff-link path) — exactly one. Returns the client
+  name/id, redirect URI, requesting origin/IP, requested scope list, and any `login_hint`, so the
+  wallet can render "Sign in to {client} at {origin} as @{handle}" before the biometric gate.
+
+  Returns 404 for anything not currently pending (unknown/expired/terminal), so a guessed
+  `user_code` reveals nothing. Rate-limited per IP (shares one limiter with the approve endpoint).
+}

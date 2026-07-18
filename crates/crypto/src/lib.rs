@@ -3,6 +3,7 @@
 pub mod error;
 pub mod keys;
 mod mnemonic;
+pub mod oauth_consent;
 pub mod plc;
 pub mod shamir;
 pub mod sovereign_session;
@@ -11,6 +12,11 @@ pub use error::CryptoError;
 pub use keys::{
     decrypt_private_key, decrypt_secret_bytes, derive_recovery_keypair, encrypt_private_key,
     encrypt_secret_bytes, generate_p256_keypair, DidKeyUri, P256Keypair,
+};
+pub use oauth_consent::{
+    encode_oauth_consent_envelope, granted_scope_hash, OAUTH_CONSENT_APPROVE_PATH,
+    OAUTH_CONSENT_DECISION_APPROVE, OAUTH_CONSENT_DECISION_DENY, OAUTH_CONSENT_DOMAIN,
+    OAUTH_CONSENT_METHOD,
 };
 pub use plc::{
     build_did_plc_genesis_op, build_did_plc_genesis_op_multi_rotation,

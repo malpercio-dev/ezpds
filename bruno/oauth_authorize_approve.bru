@@ -1,0 +1,46 @@
+meta {
+  name: OAuth Consent — Wallet Approve/Deny (POST approve)
+  type: http
+  seq: 131
+}
+
+post {
+  url: {{baseUrl}}/oauth/authorize/approve
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "did": "did:plc:aaaaaaaaaaaaaaaaaaaaaaaa",
+    "signingKey": "did:key:zDnaeExample",
+    "requestId": "poauth_example",
+    "decision": "approve",
+    "grantedScope": "atproto transition:generic",
+    "timestamp": 1720000000,
+    "nonce": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+    "signature": "base64url-r-s-signature"
+  }
+}
+
+vars:pre-request {
+  baseUrl: http://localhost:8080
+}
+
+docs {
+  # POST /oauth/authorize/approve
+
+  The wallet approves or denies a pending OAuth authorization (MM-441) with a device-key-signed
+  canonical envelope (`crypto::encode_oauth_consent_envelope`). The envelope binds the server DID,
+  account DID, signing key, `requestId`, the request's `client_id`, the `decision`, a hash of the
+  granted scope set, timestamp, and nonce — verified against the account's **authoritative current
+  PLC rotationKeys** (never the cached DID doc).
+
+  `decision` is `"approve"` or `"deny"` (bound in the envelope so a captured denial can't be
+  replayed as an approval). `grantedScope` is the space-joined scope set the wallet chose (empty
+  for a denial); the server reduces it to what was actually requested and always grants `atproto`.
+
+  Single-use: the guarded status transition means a replayed envelope wins nothing. Returns
+  `{ "status": "approved" | "denied", "did": "…" }`. Rate-limited per IP (shared with the preview
+  endpoint).
+}

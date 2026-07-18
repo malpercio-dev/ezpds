@@ -78,6 +78,10 @@ use crate::routes::list_records::list_records;
 use crate::routes::list_repos::list_repos;
 use crate::routes::oauth_authorize::{get_authorization, post_authorization};
 use crate::routes::oauth_client_metadata::oauth_client_metadata;
+use crate::routes::oauth_consent::{
+    get_authorization_status, get_consent_request, post_authorization_approve,
+    post_authorization_complete,
+};
 use crate::routes::oauth_jwks::oauth_jwks;
 use crate::routes::oauth_par::post_par;
 use crate::routes::oauth_protected_resource::oauth_protected_resource_metadata;
@@ -238,6 +242,13 @@ pub fn app(state: AppState) -> Router {
         .route(
             "/oauth/authorize",
             get(get_authorization).post(post_authorization),
+        )
+        .route("/oauth/authorize/consent-request", get(get_consent_request))
+        .route("/oauth/authorize/status", get(get_authorization_status))
+        .route("/oauth/authorize/approve", post(post_authorization_approve))
+        .route(
+            "/oauth/authorize/complete",
+            post(post_authorization_complete),
         )
         .route("/oauth/client-metadata.json", get(oauth_client_metadata))
         .route("/oauth/jwks", get(oauth_jwks))

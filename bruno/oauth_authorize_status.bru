@@ -1,0 +1,27 @@
+meta {
+  name: OAuth Consent — Status Poll (GET status)
+  type: http
+  seq: 130
+}
+
+get {
+  url: {{baseUrl}}/oauth/authorize/status?request_id={{requestId}}
+  body: none
+  auth: none
+}
+
+vars:pre-request {
+  baseUrl: http://localhost:8080
+  requestId: poauth_example
+}
+
+docs {
+  # GET /oauth/authorize/status
+
+  The consent page's poll for a pending wallet-confirmed authorization (MM-441). Returns
+  `{ "status": "pending" | "approved" | "denied" | "expired" | "completed" }`.
+
+  Throttled with the `slow_down` discipline: a poll faster than the minimum interval returns
+  429 (the page's JS backs off on it). A lapsed or reclaimed request reads as `expired` so the
+  page stops. On `approved` the page POSTs `/oauth/authorize/complete` to finish.
+}

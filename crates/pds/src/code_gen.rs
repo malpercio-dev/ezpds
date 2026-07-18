@@ -18,26 +18,78 @@ pub fn generate_code() -> String {
     // so the surviving values divide evenly across the charset. For a 36-char set this is 252.
     let cutoff = 256 - (256 % CHARSET.len());
     let mut code = String::with_capacity(CODE_LEN);
-    let mut buf = [0u8; CODE_LEN];
-    while code.len() < CODE_LEN {
-        // Rejections are rare (4/256 ≈ 1.6%), so a fresh CODE_LEN-byte draw almost always
-        // yields enough survivors in one pass; the loop covers the occasional shortfall.
+    draw_chars(&mut code, CODE_LEN, cutoff);
+    code
+}
+
+/// Number of raw charset characters in a wallet OAuth-consent login code (before grouping).
+const LOGIN_CODE_LEN: usize = 8;
+
+/// Generate a wallet OAuth-consent login `user_code`, formatted **distinctly** from the 6-char
+/// agent-claim `user_code` and the operator invite/claim code (both `generate_code()` above).
+///
+/// ADR-0026 warns those codes "share a word, not a mechanism"; this one must be tellable apart at a
+/// glance, so it is 8 charset characters grouped `XXXX-XXXX`. The hyphen and length are the visual
+/// signal; the charset and uniform rejection-sampled draw are shared with `generate_code`.
+pub fn generate_login_code() -> String {
+    let cutoff = 256 - (256 % CHARSET.len());
+    let mut raw = String::with_capacity(LOGIN_CODE_LEN);
+    draw_chars(&mut raw, LOGIN_CODE_LEN, cutoff);
+    let mut grouped = String::with_capacity(LOGIN_CODE_LEN + 1);
+    grouped.push_str(&raw[..4]);
+    grouped.push('-');
+    grouped.push_str(&raw[4..]);
+    grouped
+}
+
+/// Append `n` uniformly-drawn charset characters to `out`, rejecting bytes at or above `cutoff`
+/// so the mapping onto the charset stays unbiased (see `generate_code`). Shared by both generators.
+fn draw_chars(out: &mut String, n: usize, cutoff: usize) {
+    let mut buf = [0u8; 16];
+    while out.len() < n {
         OsRng.fill_bytes(&mut buf);
         for &b in &buf {
             if (b as usize) < cutoff {
-                code.push(CHARSET[(b as usize) % CHARSET.len()] as char);
-                if code.len() == CODE_LEN {
+                out.push(CHARSET[(b as usize) % CHARSET.len()] as char);
+                if out.len() == n {
                     break;
                 }
             }
         }
     }
-    code
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn login_code_is_grouped_eight_chars_distinct_from_claim_codes() {
+        for _ in 0..50 {
+            let code = generate_login_code();
+            // XXXX-XXXX: 8 charset chars + one hyphen at index 4.
+            assert_eq!(
+                code.len(),
+                9,
+                "login code {code} should be 9 chars incl. hyphen"
+            );
+            assert_eq!(
+                &code[4..5],
+                "-",
+                "login code {code} must group as XXXX-XXXX"
+            );
+            assert!(
+                code.chars().enumerate().all(|(i, c)| if i == 4 {
+                    c == '-'
+                } else {
+                    c.is_ascii_uppercase() || c.is_ascii_digit()
+                }),
+                "login code {code} must be uppercase-alphanumeric groups"
+            );
+            // Distinct from the 6-char, hyphen-free agent/operator claim codes.
+            assert!(!generate_code().contains('-'));
+        }
+    }
 
     #[test]
     fn code_is_6_chars() {

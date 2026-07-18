@@ -20,6 +20,7 @@ pub mod kek;
 mod migrations;
 pub mod oauth;
 pub mod password_reset;
+pub mod pending_oauth_authorizations;
 pub mod plc_operation_tokens;
 pub mod preferences;
 pub mod recovery_audit;

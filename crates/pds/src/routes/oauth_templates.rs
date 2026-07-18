@@ -60,12 +60,48 @@ pub(super) fn error_page(title: &str, message: &str) -> (StatusCode, Html<String
     (StatusCode::BAD_REQUEST, Html(html))
 }
 
+/// Build an authorization-code success redirect (303) back to the client, carrying the plaintext
+/// `code`, the round-tripped `state`, and the RFC 9207 `iss` parameter. Shared by the password
+/// consent path and the wallet-completion path so both emit byte-identical responses.
+pub(super) fn build_code_redirect(
+    redirect_uri: &str,
+    code: &str,
+    state: &str,
+    issuer: &str,
+) -> Redirect {
+    let sep = if redirect_uri.contains('?') { '&' } else { '?' };
+    let url = format!(
+        "{}{}code={}&state={}&iss={}",
+        redirect_uri,
+        sep,
+        encode_param(code),
+        encode_param(state),
+        encode_param(issuer),
+    );
+    Redirect::to(&url)
+}
+
+/// The wallet-path data the consent page renders alongside the password form: the pending
+/// request's high-entropy `request_id` (poll key + handoff/complete linkage) and its human-typeable
+/// `user_code`. Present only when the GET handler created a pending request.
+pub(super) struct WalletConsentPath<'a> {
+    pub user_code: &'a str,
+    pub request_id: &'a str,
+}
+
+/// Custom URL scheme the identity wallet registers; the "Open in Obsign" handoff link targets it.
+/// The wallet has no deep-link handler yet (ADR-0006 removed server-initiated redirects), so this
+/// link may degrade to "copy the code" — the typed `user_code` is the guaranteed path.
+const WALLET_HANDOFF_SCHEME: &str = "org.obsign.identitywallet";
+
 /// Render the OAuth consent + sign-in page.
 ///
 /// All user-controlled values are HTML-escaped before insertion.
 /// `login_hint` pre-populates the identifier field (from the ATProto `login_hint` param
 /// or from a previous failed submission so the user can correct their handle).
 /// `error` renders an error banner above the form when credential validation fails.
+/// `wallet` renders the wallet-approval path (typed code + handoff link + status polling) above
+/// the password form; `None` on a password-error re-render, where no pending request exists.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn render_consent_page(
     client_name: &str,
@@ -79,6 +115,7 @@ pub(super) fn render_consent_page(
     public_url: &str,
     login_hint: Option<&str>,
     error: Option<&str>,
+    wallet: Option<&WalletConsentPath>,
 ) -> String {
     // Monogram for the application mark — the first character of the client name.
     let app_initial = client_name
@@ -111,6 +148,14 @@ pub(super) fn render_consent_page(
     html.push_str("</div>\n        <div class=\"client-id\">");
     html.push_str(&html_escape(client_id));
     html.push_str("</div>\n      </span>\n    </div>\n");
+
+    // Wallet path: shown first because it is the primary path for sovereign / passwordless
+    // accounts (which cannot use the password form at all). Scope reduction moves into the wallet
+    // for this path — the granted set is chosen there, not with the checkboxes below.
+    if let Some(w) = wallet {
+        html.push_str(&render_wallet_path(w));
+        html.push_str("    <div class=\"divider\"><span>or sign in with a password</span></div>\n");
+    }
 
     // The <form> opens BEFORE the permissions section: the `granted_scope` checkboxes
     // must be form members or the browser silently omits them from the POST, and the
@@ -213,6 +258,88 @@ fn render_permission_groups(scope: &str) -> String {
     }
     html
 }
+
+// ── Wallet approval path ────────────────────────────────────────────────────────
+
+/// Render the wallet-approval block: the human-typeable `user_code`, an "Open in Obsign" handoff
+/// link carrying the `request_id`, a live status region, and a no-JS "I've approved — continue"
+/// form that POSTs to `/oauth/authorize/complete`. An inline script polls
+/// `GET /oauth/authorize/status` (backing off on the `slow_down` 429) and, on approval, submits the
+/// same completion form — so JS and no-JS reach the identical completion path.
+fn render_wallet_path(w: &WalletConsentPath) -> String {
+    let request_id = html_escape(w.request_id);
+    let user_code = html_escape(w.user_code);
+    let handoff = format!(
+        "{WALLET_HANDOFF_SCHEME}:/consent?request_id={}",
+        encode_param(w.request_id)
+    );
+    let mut html = String::with_capacity(2048);
+    html.push_str("    <div class=\"section-label\">Approve in your wallet</div>\n");
+    html.push_str("    <div class=\"wallet\" id=\"wallet-path\" data-request-id=\"");
+    html.push_str(&request_id);
+    html.push_str("\">\n");
+    html.push_str(
+        "      <p class=\"wallet-lead\">Open Obsign and enter this code to sign in with your device key:</p>\n",
+    );
+    html.push_str("      <div class=\"user-code mono\">");
+    html.push_str(&user_code);
+    html.push_str("</div>\n");
+    html.push_str("      <a class=\"btn btn-approve wallet-open\" href=\"");
+    html.push_str(&html_escape(&handoff));
+    html.push_str("\">");
+    html.push_str(ICON_SEAL_SM);
+    html.push_str("Open in Obsign</a>\n");
+    html.push_str(
+        "      <p class=\"wallet-status\" id=\"wallet-status\" role=\"status\" aria-live=\"polite\">Waiting for approval in your wallet…</p>\n",
+    );
+    html.push_str(
+        "      <form method=\"POST\" action=\"/oauth/authorize/complete\" id=\"complete-form\">\n",
+    );
+    html.push_str("        <input type=\"hidden\" name=\"request_id\" value=\"");
+    html.push_str(&request_id);
+    html.push_str("\" />\n");
+    html.push_str(
+        "        <button type=\"submit\" class=\"btn btn-deny wallet-continue\">I've approved — continue</button>\n",
+    );
+    html.push_str("      </form>\n");
+    html.push_str("    </div>\n");
+    html.push_str(WALLET_POLL_SCRIPT);
+    html
+}
+
+/// Inline poller for the wallet path. Reads the `request_id` from the block's data attribute, polls
+/// the status endpoint on a backoff that widens when it sees the `slow_down` 429, and submits the
+/// completion form on approval. If CSP or a JS-off client blocks it, the no-JS continue button is
+/// the fallback — the whole flow still completes.
+const WALLET_POLL_SCRIPT: &str = r#"    <script>
+    (function(){
+      var el=document.getElementById('wallet-path');
+      if(!el)return;
+      var rid=el.getAttribute('data-request-id');
+      var status=document.getElementById('wallet-status');
+      var form=document.getElementById('complete-form');
+      var interval=3000;
+      function schedule(){setTimeout(poll,interval);}
+      function poll(){
+        fetch('/oauth/authorize/status?request_id='+encodeURIComponent(rid),{headers:{'Accept':'application/json'}})
+          .then(function(r){
+            if(r.status===429){interval=Math.min(interval+2000,15000);schedule();return null;}
+            return r.json();
+          })
+          .then(function(d){
+            if(!d)return;
+            if(d.status==='approved'){status.textContent='Approved — continuing…';form.submit();return;}
+            if(d.status==='denied'){status.textContent='This request was denied in your wallet.';return;}
+            if(d.status==='expired'){status.textContent='This request expired. Reload the page to try again.';return;}
+            if(d.status==='completed'){return;}
+            schedule();
+          })
+          .catch(function(){schedule();});
+      }
+      schedule();
+    })();
+    </script>
+"#;
 
 // ── Pure helpers ──────────────────────────────────────────────────────────────
 
@@ -346,6 +473,25 @@ const CONSENT_CSS: &str = r#"
       font-family: var(--mono); font-size: 12px; color: var(--muted);
       margin-top: 18px; padding-top: 14px; border-top: 1px solid var(--line);
     }
+    .wallet {
+      display: flex; flex-direction: column; align-items: center; text-align: center; gap: 12px;
+      background: var(--parchment); border: 1px solid var(--line); border-radius: 12px;
+      padding: 16px 14px;
+    }
+    .wallet-lead { font-size: 13.5px; line-height: 1.5; color: var(--ink-soft); max-width: 34ch; }
+    .user-code {
+      font-family: var(--mono); font-size: 26px; font-weight: 400; letter-spacing: 0.12em;
+      color: var(--ink); background: var(--bg); border: 1px solid var(--line); border-radius: 10px;
+      padding: 10px 18px; user-select: all;
+    }
+    .wallet-open { width: 100%; text-decoration: none; }
+    .wallet-continue { width: 100%; }
+    .wallet-status { font-size: 13px; color: var(--muted); line-height: 1.45; }
+    .divider {
+      display: flex; align-items: center; gap: 10px;
+      color: var(--muted); font-size: 12px; margin: 18px 0;
+    }
+    .divider::before, .divider::after { content: ""; flex: 1; height: 1px; background: var(--line); }
 "#;
 
 const CONSENT_PAGE_HEADER: &str = concat!(
@@ -455,6 +601,7 @@ mod tests {
             "https://pds.example.com",
             None,
             None,
+            None,
         );
 
         let form_open = html.find("<form").expect("consent form present");
@@ -489,6 +636,7 @@ mod tests {
             "atproto",
             "code",
             "https://pds.example.com",
+            None,
             None,
             None,
         );

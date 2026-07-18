@@ -414,6 +414,19 @@ pub struct RateLimitConfig {
     /// cannot double an attacker's OTP-guess budget (the agent claim-pair precedent). `0` disables.
     #[serde(default = "default_recovery_per_5min")]
     pub recovery_per_5min: u64,
+    /// Wallet-confirmed OAuth consent request creations (`GET /oauth/authorize` for a passwordless
+    /// account) per 5 minutes. Charged in-handler against **both** the requesting IP and the
+    /// `client_id` (two independent counters, one limiter), so neither a single IP nor a single
+    /// client can flood the pending-request table. Default 30. `0` disables.
+    #[serde(default = "default_oauth_consent_create_per_5min")]
+    pub oauth_consent_create_per_5min: u64,
+    /// Wallet-consent code-validating endpoints (`GET /oauth/authorize/consent-request` preview +
+    /// `POST /oauth/authorize/approve`) per IP per 5 minutes. Default 30. Preview validates a
+    /// guessable `user_code`, so it warrants the tight per-endpoint cap (the claim confirm/preview
+    /// precedent); the two **share one limiter instance** so alternating them can't double the
+    /// guess budget. `0` disables.
+    #[serde(default = "default_oauth_consent_action_per_5min")]
+    pub oauth_consent_action_per_5min: u64,
     /// Repo-write points per account per hour (reference: 5000). `0` disables the hourly budget.
     #[serde(default = "default_write_points_hourly")]
     pub write_points_hourly: u64,
@@ -434,6 +447,8 @@ impl Default for RateLimitConfig {
             transfer_accept_per_5min: default_transfer_accept_per_5min(),
             agent_claim_confirm_per_5min: default_agent_claim_confirm_per_5min(),
             recovery_per_5min: default_recovery_per_5min(),
+            oauth_consent_create_per_5min: default_oauth_consent_create_per_5min(),
+            oauth_consent_action_per_5min: default_oauth_consent_action_per_5min(),
             write_points_hourly: default_write_points_hourly(),
             write_points_daily: default_write_points_daily(),
         }
@@ -473,6 +488,14 @@ fn default_agent_claim_confirm_per_5min() -> u64 {
 }
 
 fn default_recovery_per_5min() -> u64 {
+    30
+}
+
+fn default_oauth_consent_create_per_5min() -> u64 {
+    30
+}
+
+fn default_oauth_consent_action_per_5min() -> u64 {
     30
 }
 
@@ -1374,6 +1397,14 @@ pub(crate) fn apply_env_overrides(
     }
     if let Some(v) = env.get("EZPDS_RATE_LIMIT_RECOVERY_PER_5MIN") {
         raw.rate_limit.recovery_per_5min = parse_u64("EZPDS_RATE_LIMIT_RECOVERY_PER_5MIN", v)?;
+    }
+    if let Some(v) = env.get("EZPDS_RATE_LIMIT_OAUTH_CONSENT_CREATE_PER_5MIN") {
+        raw.rate_limit.oauth_consent_create_per_5min =
+            parse_u64("EZPDS_RATE_LIMIT_OAUTH_CONSENT_CREATE_PER_5MIN", v)?;
+    }
+    if let Some(v) = env.get("EZPDS_RATE_LIMIT_OAUTH_CONSENT_ACTION_PER_5MIN") {
+        raw.rate_limit.oauth_consent_action_per_5min =
+            parse_u64("EZPDS_RATE_LIMIT_OAUTH_CONSENT_ACTION_PER_5MIN", v)?;
     }
     if let Some(v) = env.get("EZPDS_RATE_LIMIT_WRITE_POINTS_HOURLY") {
         raw.rate_limit.write_points_hourly = parse_u64("EZPDS_RATE_LIMIT_WRITE_POINTS_HOURLY", v)?;
