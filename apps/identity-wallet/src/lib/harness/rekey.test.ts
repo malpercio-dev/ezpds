@@ -128,7 +128,11 @@ describe('wallet harness re-key (MM-411)', () => {
     state.pdsUrl = 'https://harness.pds.local';
     // An identity whose device key is NOT rotationKeys[0] (interop-style) is not additively
     // re-keyable by this wallet.
-    const identity = seedIdentity({ handle: 'interop.harness.pds.local', deviceKeyIsRoot: false });
+    const identity = seedIdentity({
+      handle: 'interop.harness.pds.local',
+      deviceKeyIsRoot: false,
+      recoveryKey: false,
+    });
     state.identities.push(identity);
     const registry = buildRegistry(state);
 

@@ -1,6 +1,6 @@
 ---
 title: Console screens
-description: A visual tour of the Custos operator console — claim codes, accounts, devices, moderation, transfers, and server status.
+description: A visual tour of the Custos operator console — claim codes, accounts, devices, moderation, the audit log, transfers, and server status.
 ---
 
 A tour of the Custos operator console (the admin companion app). Every image here is
@@ -92,6 +92,11 @@ crawl requests — is durably recorded with the credential that signed it: the
 master token or the specific paired device. The Audit screen browses the trail
 reverse-chronologically, filterable by action, with per-event drill-in by actor
 or subject.
+
+<figure>
+  <img src="/screenshots/admin/audit.png" alt="Custos console audit log listing admin actions with action filters and outcome chips" width="280" />
+  <figcaption>Every privileged admin action, newest first, attributed to the credential that signed it.</figcaption>
+</figure>
 
 ## Transfers
 
