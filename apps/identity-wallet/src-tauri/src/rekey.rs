@@ -50,12 +50,11 @@ const ATPROTO_PDS_SERVICE_ID: &str = "atproto_pds";
 
 /// Per-DID Keychain account holding this identity's durable, iCloud-synced Share 1.
 ///
-/// The create/migration flows still write a single app-global `recovery-share-1` slot (a
-/// pre-existing single-identity assumption); re-key deliberately uses a per-DID slot so
-/// re-keying one identity can never overwrite a sibling identity's Share 1 — which would drop
-/// that sibling's recovery capability below its baseline. Unifying create/migration onto per-DID
-/// Share 1 slots is a tracked follow-up.
-fn recovery_share1_account(did: &str) -> String {
+/// A per-DID slot (never a single app-global one) so writing one identity's Share 1 can never
+/// overwrite a sibling identity's — which would drop that sibling's recovery capability below its
+/// baseline. Every write path shares this convention: the create ceremony, the did:web ceremony,
+/// and this re-key flow. The single source of the `recovery-share-1:{did}` naming.
+pub(crate) fn recovery_share1_account(did: &str) -> String {
     format!("recovery-share-1:{did}")
 }
 

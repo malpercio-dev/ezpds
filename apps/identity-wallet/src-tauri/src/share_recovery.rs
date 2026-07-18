@@ -7,8 +7,9 @@
 // fresh device key at `rotationKeys[0]` on the new device.
 //
 // Two collection paths feed the same core:
-//   - escrow-assisted: Share 1 auto-loads from the iCloud-synced `recovery-share-1`
-//     slot; Share 2 arrives via the PDS escrow-release flow (initiate → email OTP →
+//   - escrow-assisted: Share 1 auto-loads from the iCloud-synced per-DID
+//     `recovery-share-1:{did}` slot (falling back to the legacy global slot for
+//     pre-unification identities); Share 2 arrives via the PDS escrow-release flow (initiate → email OTP →
 //     release, with a cancellable pending-delay window).
 //   - fully sovereign: Share 1 (or a manually entered share) plus Share 3 (word
 //     phrase or base32/QR). This path touches ONLY plc.directory until the
@@ -44,9 +45,24 @@ use crate::sovereign_session;
 /// interrupted epilogue is resumable across app restarts.
 pub const EPILOGUE_ACCOUNT: &str = "recovery-epilogue";
 
-/// The durable iCloud-synced home of Share 1 (same literal `lib.rs` writes during the
-/// create-flow ceremony).
+/// The legacy app-global Share 1 slot. Share 1 now lives in the per-DID slot
+/// `recovery-share-1:{did}` (`crate::rekey::recovery_share1_account`); this literal is kept
+/// only as the auto-load fallback for identities created before the per-DID unification,
+/// whose iCloud-synced Share 1 is still under this global account.
 const RECOVERY_SHARE1_ACCOUNT: &str = "recovery-share-1";
+
+/// Read a Keychain slot and decode its bytes as an index-1 v2 share envelope, or `None` if
+/// the slot is absent, unreadable, non-UTF-8, not a valid envelope, or not Share 1. A bare
+/// legacy share (pre-envelope format) or foreign bytes are unusable for this ceremony and
+/// read as "not loaded" — manual entry covers the gap.
+fn load_share1_envelope(account: &str) -> Option<crypto::ShareEnvelope> {
+    // Sensitive key material — wipe the in-memory copy when this scope ends.
+    let bytes = zeroize::Zeroizing::new(keychain::get_item(account).ok()?);
+    let env = std::str::from_utf8(&bytes)
+        .ok()
+        .and_then(|s| crypto::ShareEnvelope::decode_share(s).ok())?;
+    (env.index() == 1).then_some(env)
+}
 
 /// Bumped only on a breaking epilogue-record format change; a mismatched version reads
 /// as corrupt and fails closed.
@@ -325,27 +341,25 @@ pub(crate) async fn start_impl(
         .get("atproto_pds")
         .map(|s| s.endpoint.clone());
 
-    // Share 1 auto-load: a valid v2 envelope with index 1 joins the session. A bare
-    // legacy share (pre-envelope format) or foreign bytes are unusable for this
-    // ceremony and simply read as "not loaded" — manual entry covers the gap.
+    // Share 1 auto-load: prefer the resolved DID's per-DID slot; fall back to the legacy
+    // app-global slot so an identity created before the per-DID unification (whose
+    // iCloud-synced Share 1 is still global) is recoverable on a fresh device. A valid v2
+    // index-1 envelope joins the session.
     let mut shares = Vec::new();
-    let share1_loaded = match keychain::get_item(RECOVERY_SHARE1_ACCOUNT) {
-        Ok(bytes) => match std::str::from_utf8(&bytes)
-            .ok()
-            .and_then(|s| crypto::ShareEnvelope::decode_share(s).ok())
-        {
-            Some(env) if env.index() == 1 => {
-                shares.push(StoredShare::from_envelope(&env));
-                true
-            }
-            _ => {
-                tracing::warn!(
-                    "recovery-share-1 slot holds no usable v2 envelope; falling back to manual entry"
-                );
-                false
-            }
-        },
-        Err(_) => false,
+    let per_did_account = crate::rekey::recovery_share1_account(&did);
+    let share1_loaded = match load_share1_envelope(&per_did_account)
+        .or_else(|| load_share1_envelope(RECOVERY_SHARE1_ACCOUNT))
+    {
+        Some(env) => {
+            shares.push(StoredShare::from_envelope(&env));
+            true
+        }
+        None => {
+            tracing::warn!(
+                "no usable v2 Share 1 envelope in the per-DID or legacy slot; falling back to manual entry"
+            );
+            false
+        }
     };
 
     let collected = shares
@@ -1088,13 +1102,14 @@ pub(crate) async fn epilogue_impl(
         }
     }
 
-    // Step 3 — rewrite the durable Share 1 slot, with a read-back verify (the
-    // teardown in `confirm_recovery_backup` re-checks it before destroying the
+    // Step 3 — rewrite the recovered DID's durable per-DID Share 1 slot, with a read-back
+    // verify (the teardown in `confirm_recovery_backup` re-checks it before destroying the
     // record, mirroring the create-flow ceremony's invariant).
     if !record.share1_written {
-        keychain::store_item(RECOVERY_SHARE1_ACCOUNT, record.share1.as_bytes())
+        let share1_account = crate::rekey::recovery_share1_account(&record.did);
+        keychain::store_item(&share1_account, record.share1.as_bytes())
             .map_err(map_keychain_error)?;
-        let read_back = keychain::get_item(RECOVERY_SHARE1_ACCOUNT).map_err(map_keychain_error)?;
+        let read_back = keychain::get_item(&share1_account).map_err(map_keychain_error)?;
         if read_back != record.share1.as_bytes() {
             return Err(ShareRecoveryError::KeychainError {
                 message: "Share 1 read-back verification failed".to_string(),
@@ -1201,9 +1216,16 @@ pub(crate) async fn confirm_backup_core(slot: &StateSlot) -> Result<(), crate::S
         }
         Err(_) => return Err(crate::ShareBackupError::KeychainError),
     };
-    match keychain::get_item(RECOVERY_SHARE1_ACCOUNT) {
+    match keychain::get_item(&crate::rekey::recovery_share1_account(&record.did)) {
         Ok(bytes) if bytes == record.share1.as_bytes() => {}
-        Ok(_) | Err(_) => return Err(crate::ShareBackupError::ShareNotStored),
+        Ok(_) => return Err(crate::ShareBackupError::ShareNotStored),
+        // A missing slot means the durable write never landed; an operational Keychain
+        // failure (e.g. a locked device) is not evidence the share is absent — surface it
+        // as retryable rather than the misleading "not saved yet" (mirrors confirm_share_backup).
+        Err(ref e) if keychain::is_not_found(e) => {
+            return Err(crate::ShareBackupError::ShareNotStored)
+        }
+        Err(_) => return Err(crate::ShareBackupError::KeychainError),
     }
     match keychain::delete_item(EPILOGUE_ACCOUNT) {
         Ok(()) => {}
@@ -1678,9 +1700,9 @@ mod tests {
         );
         assert_eq!(staged_after.share1, share1_before);
 
-        // Share 1 reached its durable slot and the teardown verifies it.
+        // Share 1 reached its durable per-DID slot and the teardown verifies it.
         assert_eq!(
-            keychain::get_item(RECOVERY_SHARE1_ACCOUNT).unwrap(),
+            keychain::get_item(&crate::rekey::recovery_share1_account(DID)).unwrap(),
             share1_before.as_bytes()
         );
         let slot = fresh_slot(DID, None);

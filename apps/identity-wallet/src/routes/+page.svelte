@@ -368,7 +368,7 @@
     // backup invariant (SHARE_NOT_STORED — Share 1 never reached its durable slot) or
     // report completion while sensitive staging material is still retained.
     try {
-      await confirmShareBackup();
+      await confirmShareBackup(form.did);
     } catch (e) {
       console.error('Ceremony staging teardown failed:', e);
       backupConfirmError =
