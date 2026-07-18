@@ -37,6 +37,24 @@ trailing glyph, so _what_ degraded is legible without relying on color.
   <figcaption>A degraded relay: stale sweeps carry a trailing <code>!</code> glyph, never color alone.</figcaption>
 </figure>
 
+## Is the upstream relay seeing you?
+
+A healthy server that no relay is crawling is invisible to the network — and an
+upstream relay can silently drop your subscription. The console's Home screen
+carries a **Relay federation** block that compares your server's exact sequencer
+head against what the upstream relay reports for your host: the relay's
+lifecycle status, its cursor, how many events it is behind, and when it last
+consumed one. **Request crawl** re-invites the relay on demand — the recovery
+move when the readout says the relay has stopped listening.
+
+<figure>
+  <img src="/screenshots/admin/home.png" alt="Custos operator console home screen with a Relay federation block reporting crawling status, events behind, and a Request crawl action" width="280" />
+  <figcaption>The Relay federation block on Home: crawling status, exact gap, last seen — and <strong>Request crawl</strong> when it stops listening.</figcaption>
+</figure>
+
+The same facts are served at `GET /v1/admin/relay-status` and the re-invite at
+`POST /v1/admin/request-crawl` — see the [API reference](/operator/reference/api/).
+
 ## What you are responsible for
 
 - **Durability** — the SQLite database is the identity store. Back it up.
@@ -44,10 +62,10 @@ trailing glyph, so _what_ degraded is legible without relying on color.
   [Backups & restore](/operator/backups/).
 - **Availability** — users' clients reach your server to read and write. Health
   checks and restart policy are your safety net.
-- **You can't lock anyone in** — you hold the lower-precedence rotation key
-  (`rotationKeys[1]`); the user's key (`rotationKeys[0]`) outranks it, so they can
-  move their identity to another server whenever they choose. Design your
-  operations for that.
+- **You can't lock anyone in** — you hold the lowest-precedence rotation key;
+  the user's device key (`rotationKeys[0]`) and their recovery key outrank it,
+  so they can move their identity to another server whenever they choose. Design
+  your operations for that.
 
 :::caution[Do not treat the DB as disposable]
 Losing the database is not like losing a cache. It holds the repositories your
