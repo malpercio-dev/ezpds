@@ -97,6 +97,104 @@ export interface CreateFlow {
   did?: string;
 }
 
+/**
+ * Share fixtures for the recovery flow fake. The fake never does real share
+ * crypto — these strings are recognized by `add_recovery_share` to produce each
+ * validation outcome deterministically. Grab them via
+ * `window.__harness.state().recovery.fixtures` when driving the screens.
+ */
+export interface RecoveryFixtures {
+  /** Accepted as a valid Share 3 of the current set (base32-style form). */
+  share3: string;
+  /** Accepted as the same valid Share 3 (word-phrase form). */
+  share3Words: string;
+  /** Rejected as SHARE_SET_MISMATCH — a share from a different generation. */
+  wrongSet: string;
+  /** Rejected as SHARE_CHECKSUM — a corrupted/mistyped share. */
+  corrupt: string;
+}
+
+/** The set_id the fake reports for the current (valid) share generation. */
+export const RECOVERY_SET_ID = 0x12345678;
+/** The set_id the fake reports for the wrong-generation share fixture. */
+export const RECOVERY_WRONG_SET_ID = 0x0dead123;
+
+export function defaultRecoveryFixtures(): RecoveryFixtures {
+  return {
+    share3: 'HARNESSRECOVERSHARE3B2C3D4E5F6G7A2B3C4D5E6F7RECOVERQ2R3S4T5U6V7W2X3Y',
+    share3Words:
+      'anchor baker canyon delta ember falcon garnet harbor island jasper kettle lantern ' +
+      'meadow nickel orchard pebble quarry ribbon saddle timber umbrella velvet walnut ' +
+      'yonder zephyr atlas bramble cedar drift echo fable glacier hollow ivory juniper ' +
+      'kindle ledger marble north opal prairie quill',
+    wrongSet: 'HARNESSWRONGSETSHARE3B2C3D4E5F6G7A2B3C4D5E6F7WRONGSETQ2R3S4T5U6V7W2',
+    corrupt: 'HARNESSCORRUPTSHARE3B2C3D4E5F6G7A2B3C4D5E6F7CORRUPTQ2R3S4T5U6V7W2X3',
+  };
+}
+
+/** The escrow-release sub-state of the recovery flow fake. */
+export interface RecoveryEscrow {
+  /** 0 → the OTP call releases immediately; >0 → a pending window opens. */
+  delaySecs: number;
+  initiated: boolean;
+  /** The OTP was consumed and a pending window is open. */
+  pendingOpened: boolean;
+  /**
+   * Polls remaining until the window reads as elapsed. `null` → the window never
+   * elapses within the scenario (the pure wait-state screen).
+   */
+  releaseAfterPolls: number | null;
+  /** A signed-in device cancelled the pending release: polls answer 401. */
+  cancelled: boolean;
+  released: boolean;
+}
+
+/** The durable rotation-epilogue record as the fake models it. */
+export interface RecoveryEpilogue {
+  opSubmitted: boolean;
+  escrowDeposited: boolean;
+  escrowSkipped: boolean;
+  share1Written: boolean;
+}
+
+/** Transient + scenario state for the "Recover existing identity" flow. */
+export interface RecoveryFlow {
+  did: string | null;
+  handle: string | null;
+  /** Scenario knob: Share 1 auto-loads from the (fake) iCloud Keychain. */
+  share1Present: boolean;
+  collected: { setId: number; index: number }[];
+  escrow: RecoveryEscrow;
+  /** Scenario knob: whether verification matches the identity's rotationKeys. */
+  verifyOutcome: 'ok' | 'mismatch';
+  /** One-shot knob: fail the epilogue's escrow deposit on the next run. */
+  failEpilogueEscrowOnce: boolean;
+  /** Non-null while a rotation epilogue is pending (drives launch resume). */
+  epilogue: RecoveryEpilogue | null;
+  fixtures: RecoveryFixtures;
+}
+
+export function defaultRecoveryFlow(): RecoveryFlow {
+  return {
+    did: null,
+    handle: null,
+    share1Present: true,
+    collected: [],
+    escrow: {
+      delaySecs: 0,
+      initiated: false,
+      pendingOpened: false,
+      releaseAfterPolls: null,
+      cancelled: false,
+      released: false,
+    },
+    verifyOutcome: 'ok',
+    failEpilogueEscrowOnce: false,
+    epilogue: null,
+    fixtures: defaultRecoveryFixtures(),
+  };
+}
+
 /** The full wallet fake store. */
 export interface WalletState {
   /** Configured PDS base URL, or null on first launch (drives the config screen). */
@@ -109,6 +207,7 @@ export interface WalletState {
   create: CreateFlow | null;
   claim: ClaimFlow | null;
   migration: MigrationFlow | null;
+  recovery: RecoveryFlow;
 }
 
 /** The default PDS the fake reports once configured. */
@@ -125,6 +224,7 @@ export function emptyWalletState(): WalletState {
     create: null,
     claim: null,
     migration: null,
+    recovery: defaultRecoveryFlow(),
   };
 }
 

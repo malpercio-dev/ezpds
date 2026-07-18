@@ -25,6 +25,11 @@
   import EmailVerificationScreen from '$lib/components/onboarding/EmailVerificationScreen.svelte';
   import ReviewOperationScreen from '$lib/components/onboarding/ReviewOperationScreen.svelte';
   import ClaimSuccessScreen from '$lib/components/onboarding/ClaimSuccessScreen.svelte';
+  import RecoverStartScreen from '$lib/components/onboarding/RecoverStartScreen.svelte';
+  import RecoverSharesScreen from '$lib/components/onboarding/RecoverSharesScreen.svelte';
+  import RecoverEscrowScreen from '$lib/components/onboarding/RecoverEscrowScreen.svelte';
+  import RecoverVerifyScreen from '$lib/components/onboarding/RecoverVerifyScreen.svelte';
+  import RecoverEpilogueScreen from '$lib/components/onboarding/RecoverEpilogueScreen.svelte';
   import MigrationStartScreen from '$lib/components/onboarding/MigrationStartScreen.svelte';
   import MigrationSourceAuthScreen from '$lib/components/onboarding/MigrationSourceAuthScreen.svelte';
   import MigrationProgressScreen from '$lib/components/onboarding/MigrationProgressScreen.svelte';
@@ -41,7 +46,7 @@
   import AgentClaimApprovalScreen from '$lib/components/home/AgentClaimApprovalScreen.svelte';
   import SettingsScreen from '$lib/components/home/SettingsScreen.svelte';
   import RemoveIdentityScreen from '$lib/components/home/RemoveIdentityScreen.svelte';
-  import { createAccount, confirmShareBackup, confirmRekey, registerCreatedIdentity, listIdentities, listPendingRemovals, getStoredDidDoc, checkIdentityStatus, isCodedError, type CreateAccountError, type OAuthError, type IdentityInfo, type VerifiedClaimOp, type ClaimResult, type RekeyResult, type UnauthorizedChange } from '$lib/ipc';
+  import { createAccount, confirmShareBackup, confirmRekey, confirmRecoveryBackup, getPendingRecoveryEpilogue, registerCreatedIdentity, listIdentities, listPendingRemovals, getStoredDidDoc, checkIdentityStatus, isCodedError, type CreateAccountError, type OAuthError, type IdentityInfo, type VerifiedClaimOp, type ClaimResult, type RekeyResult, type UnauthorizedChange, type CollectedShare } from '$lib/ipc';
   import { authenticateBiometric } from '$lib/biometric';
   import { normalizePlcDocToW3c, extractHandle } from '$lib/did-doc-utils';
   import IdentityListHome from '$lib/components/home/IdentityListHome.svelte';
@@ -99,7 +104,14 @@
     | 'migration_progress'
     | 'migration_hosting'
     | 'migration_review'
-    | 'migration_success';
+    | 'migration_success'
+    | 'recover_start'
+    | 'recover_shares'
+    | 'recover_escrow'
+    | 'recover_verify'
+    | 'recover_epilogue'
+    | 'recover_backup'
+    | 'recover_success';
 
   // ── State ────────────────────────────────────────────────────────────────
 
@@ -146,6 +158,16 @@
 
   let selectedRecoveryCid = $state<string | null>(null);
   let selectedRecoveryCreatedAt = $state<string | null>(null);
+
+  // ── Recovery flow state ──────────────────────────────────────────────────
+  let recoveryCollected = $state<CollectedShare[]>([]);
+  // The NEW Share 3 produced by the rotation epilogue, for the backup walkthrough.
+  let recoveryShare3 = $state('');
+  let recoveryShare3Words = $state('');
+  // True when the epilogue screen was entered from launch-time resume (an app
+  // restart interrupted a prior recovery's share rotation).
+  let recoveryResuming = $state(false);
+  let recoveryBackupConfirmError = $state<string | null>(null);
 
   // ── Migration flow state ──────────────────────────────────────────────────
   // Each migration screen owns its own transient error/progress display; the page only threads
@@ -203,8 +225,26 @@
       console.warn('listPendingRemovals failed on mount:', e);
     }
 
-    // If the user has claimed identities, skip to home (unless we're resuming a removal).
+    // Resume an interrupted recovery share-rotation epilogue next. The epilogue is
+    // mandatory — the lost device's share world must be voided — so a restart lands
+    // back on the epilogue screen, which re-runs only the incomplete steps.
+    let resumingRecovery = false;
     if (!resumingRemoval) {
+      try {
+        const pendingEpilogue = await getPendingRecoveryEpilogue();
+        if (pendingEpilogue) {
+          recoveryResuming = true;
+          step = 'recover_epilogue';
+          resumingRecovery = true;
+        }
+      } catch (e) {
+        console.warn('getPendingRecoveryEpilogue failed on mount:', e);
+      }
+    }
+
+    // If the user has claimed identities, skip to home (unless we're resuming a removal
+    // or a recovery epilogue).
+    if (!resumingRemoval && !resumingRecovery) {
       try {
         const identities = await listIdentities();
         if (identities.length > 0) {
@@ -364,6 +404,32 @@
     step = 'rekey_success';
   }
 
+  // ── Finish the recovery flow ──────────────────────────────────────────────
+  //
+  // Mirrors confirmBackupAndContinue: the teardown destroys the last transient home
+  // of the NEW recovery seed material, so it is biometric-gated and fails closed.
+  async function confirmRecoveryBackupAndFinish() {
+    recoveryBackupConfirmError = null;
+    try {
+      await authenticateBiometric('Confirm you have saved your new recovery share');
+    } catch (e) {
+      console.warn('Recovery backup biometric gate rejected:', e);
+      recoveryBackupConfirmError = 'Authentication was cancelled. Try again to finish your backup.';
+      return;
+    }
+    try {
+      await confirmRecoveryBackup();
+    } catch (e) {
+      console.error('Recovery epilogue teardown failed:', e);
+      recoveryBackupConfirmError =
+        isCodedError(e) && e.code === 'SHARE_NOT_STORED'
+          ? 'Your automatic iCloud share is not saved yet. Try again — if this keeps happening, reopen the app before continuing.'
+          : 'Could not finalize the backup. Check device storage and try again.';
+      return;
+    }
+    step = 'recover_success';
+  }
+
   async function finishCreateFlow(handle: string) {
     form.registeredHandle = handle;
     try {
@@ -380,6 +446,7 @@
     <ModeSelectScreen
       oncreate={() => goTo('identity_method')}
       onimport={() => goTo('identity_input')}
+      onrecover={() => goTo('recover_start')}
       onback={cameFromHome ? () => goTo('home') : undefined}
     />
   {:else if step === 'identity_method'}
@@ -737,6 +804,74 @@
       destPdsLabel={migrationDestPds}
       ondone={() => goTo('home')}
     />
+
+  {:else if step === 'recover_start'}
+    <RecoverStartScreen
+      bind:value={form.handleOrDid}
+      onnext={(target) => {
+        recoveryCollected = target.collected;
+        goTo('recover_shares');
+      }}
+      onback={() => goTo('mode_select')}
+    />
+
+  {:else if step === 'recover_shares'}
+    <RecoverSharesScreen
+      bind:collected={recoveryCollected}
+      onescrow={() => goTo('recover_escrow')}
+      onverify={() => goTo('recover_verify')}
+      onback={() => goTo('recover_start')}
+    />
+
+  {:else if step === 'recover_escrow'}
+    <RecoverEscrowScreen
+      onreleased={(share) => {
+        recoveryCollected = [...recoveryCollected.filter((s) => s.index !== share.index), share];
+        goTo('recover_shares');
+      }}
+      onback={() => goTo('recover_shares')}
+    />
+
+  {:else if step === 'recover_verify'}
+    <RecoverVerifyScreen
+      onanchored={() => {
+        recoveryResuming = false;
+        goTo('recover_epilogue');
+      }}
+      onback={() => goTo('recover_shares')}
+    />
+
+  {:else if step === 'recover_epilogue'}
+    <RecoverEpilogueScreen
+      resume={recoveryResuming}
+      oncomplete={(result) => {
+        recoveryShare3 = result.share3;
+        recoveryShare3Words = result.share3Words;
+        goTo('recover_backup');
+      }}
+    />
+
+  {:else if step === 'recover_backup'}
+    <ShamirBackupScreen
+      share3={recoveryShare3}
+      share3Words={recoveryShare3Words}
+      confirmError={recoveryBackupConfirmError}
+      oncomplete={confirmRecoveryBackupAndFinish}
+    />
+
+  {:else if step === 'recover_success'}
+    <OnboardingShell
+      tone="signet"
+      title="Identity recovered"
+      subtitle="This device now holds your identity's key. Your old backup shares are void; the new set is in place."
+    >
+      {#snippet icon()}
+        <SealEmblem>
+          <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" /><path d="m9 11.5 2 2 4-4" /></svg>
+        </SealEmblem>
+      {/snippet}
+      <Button onclick={() => goTo('home')}>Go to my identities</Button>
+    </OnboardingShell>
 
   {:else if step === 'alert_detail'}
     <AlertDetailScreen

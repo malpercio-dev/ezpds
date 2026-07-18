@@ -57,6 +57,11 @@ pub struct AppState {
     /// Uses tokio::sync::Mutex because migration orchestrator commands hold the lock across .await points.
     pub orchestration_state:
         tokio::sync::Mutex<Option<crate::migration_orchestrator::OutboundMigrationState>>,
+    /// Share-recovery ceremony state (collection → verify → re-anchor). In-memory by
+    /// design: the pre-anchor phase is restartable from the entry screen, and the
+    /// rotation epilogue persists its own durable Keychain record.
+    /// Uses tokio::sync::Mutex because recovery commands hold the lock across .await points.
+    pub share_recovery_state: tokio::sync::Mutex<Option<crate::share_recovery::ShareRecoveryState>>,
 }
 
 impl AppState {
@@ -71,6 +76,7 @@ impl AppState {
             rotation_state: tokio::sync::Mutex::new(None),
             migration_state: tokio::sync::Mutex::new(None),
             orchestration_state: tokio::sync::Mutex::new(None),
+            share_recovery_state: tokio::sync::Mutex::new(None),
         }
     }
 

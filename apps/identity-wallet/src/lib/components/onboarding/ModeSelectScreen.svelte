@@ -6,8 +6,14 @@
   let {
     oncreate,
     onimport,
+    onrecover,
     onback = undefined,
-  }: { oncreate: () => void; onimport: () => void; onback?: () => void } = $props();
+  }: {
+    oncreate: () => void;
+    onimport: () => void;
+    onrecover: () => void;
+    onback?: () => void;
+  } = $props();
 </script>
 
 <OnboardingShell tone="signet" title="Obsign" subtitle="Your self-sovereign identity, sealed in your pocket." {onback}>
@@ -22,6 +28,7 @@
   <div class="actions">
     <Button onclick={oncreate}>Add an identity</Button>
     <Button variant="secondary" onclick={onimport}>Move an identity to another PDS</Button>
+    <Button variant="secondary" onclick={onrecover}>Recover from backup shares</Button>
   </div>
 </OnboardingShell>
 

@@ -18,6 +18,7 @@ pub mod rekey;
 pub mod rotate_repo_key;
 pub mod session_provider;
 pub mod share_ceremony;
+pub mod share_recovery;
 pub mod source_login;
 pub mod sovereign_session;
 
@@ -1365,6 +1366,16 @@ pub fn run() {
             session_provider::ensure_identity_session,
             handle_change::change_handle_cmd,
             handle_change::get_identity_handle_domains,
+            share_recovery::start_share_recovery,
+            share_recovery::add_recovery_share,
+            share_recovery::remove_recovery_share,
+            share_recovery::initiate_escrow_release,
+            share_recovery::request_escrow_release,
+            share_recovery::verify_recovery_shares,
+            share_recovery::recover_identity,
+            share_recovery::run_recovery_epilogue,
+            share_recovery::get_pending_recovery_epilogue,
+            share_recovery::confirm_recovery_backup,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

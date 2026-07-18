@@ -27,14 +27,16 @@
 //   * `validate_output` — the `assertValidXrpcOutput` counterpart: "this serialized response body
 //     conforms to the query/procedure's declared lexicon `output`". Outputs are Custos-controlled,
 //     so a failure is *our* shape regression (missing required field, wrong type) rather than a
-//     client bug — this is drift detection, exercised by the registry tests (there is no lib target,
-//     so the black-box `http_suite` can't reach the registry) rather than wired into the serve path.
+//     client bug — this is drift detection. In test builds, `output.rs` wraps the real Axum router
+//     and validates successful serialized handler responses; production responses are untouched.
 //
 // Scope: input bodies, query parameters, and JSON output bodies of the natively-handled procedures,
 // plus the record bodies of the vendored `app.bsky.*` record lexicons.
 
 mod extractor;
 mod formats;
+#[cfg(test)]
+mod output;
 mod params;
 mod schema;
 mod validate;
@@ -47,6 +49,8 @@ use serde_json::Value;
 use schema::{LexDef, LexObject, LexRecord, LexSchema, LexXrpcBody};
 
 pub use extractor::{validate_procedure_body, LexiconInput};
+#[cfg(test)]
+pub(crate) use output::validate_xrpc_output;
 pub use params::{parse_raw_query, validate_params_map, LexiconParams};
 pub use validate::{RecordValidation, ValidationError};
 
