@@ -296,6 +296,9 @@ async fn read_body_capped(
 /// verbatim.
 async fn classify_xrpc_response(context: &str, resp: reqwest::Response) -> PdsClientError {
     let status = resp.status();
+    // Capture the host before the body read consumes the response — the diagnostics
+    // breadcrumb records the server hostname only (never the path or query).
+    let host = resp.url().host_str().map(str::to_string);
     let retry_after = resp
         .headers()
         .get(reqwest::header::RETRY_AFTER)
@@ -304,6 +307,11 @@ async fn classify_xrpc_response(context: &str, resp: reqwest::Response) -> PdsCl
     let body = match read_body_capped(resp, MAX_XRPC_ERROR_BODY).await {
         Ok(body) => body,
         Err(e) => {
+            crate::diagnostics::record_transport(
+                context,
+                host.as_deref(),
+                crate::diagnostics::transport_category(&e),
+            );
             tracing::warn!(context, status = %status, error = %e, "failed to read XRPC error body");
             return PdsClientError::NetworkError {
                 message: format!("failed to read {status} response body: {e}"),
@@ -311,6 +319,15 @@ async fn classify_xrpc_response(context: &str, resp: reqwest::Response) -> PdsCl
         }
     };
     tracing::warn!(context, status = %status, body = %body, "XRPC call returned non-success");
+    // Redacted breadcrumb for the user-exportable diagnostics log: the atproto `error`
+    // code is a short, safe token (e.g. `RateLimited`), never the free-form message/body.
+    let (error_code, _message) = parse_xrpc_error_envelope(&body);
+    crate::diagnostics::record_server(
+        context,
+        host.as_deref(),
+        status.as_u16(),
+        error_code.as_deref(),
+    );
     classify_xrpc_error(status.as_u16(), retry_after, &body)
 }
 

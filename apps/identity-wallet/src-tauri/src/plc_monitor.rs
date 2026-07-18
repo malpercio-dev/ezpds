@@ -93,6 +93,17 @@ impl<'a> PlcMonitor<'a> {
         // Fetch current audit log
         let current_log_json = self.pds_client.fetch_audit_log(did).await.map_err(|e| {
             tracing::warn!(did, error = %e, "failed to fetch audit log, will retry next cycle");
+            // A background identity check that can't reach the directory fails silently to
+            // the user. Record the transport case so an exported diagnostics log shows it —
+            // server verdicts are already captured at the XRPC classification seam, so this
+            // is gated to transport failures to avoid double-counting.
+            if matches!(e, crate::pds_client::PdsClientError::NetworkError { .. }) {
+                crate::diagnostics::record_transport(
+                    "plc_monitor.fetch_audit_log",
+                    None,
+                    "unreachable",
+                );
+            }
             MonitorError::NetworkError {
                 message: e.to_string(),
             }

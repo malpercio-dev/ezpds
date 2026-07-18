@@ -2,6 +2,7 @@ pub mod agents;
 pub mod app_passwords;
 pub mod claim;
 pub mod device_key;
+pub mod diagnostics;
 pub mod handle_change;
 pub mod http;
 pub mod identity_removal;
@@ -1320,6 +1321,7 @@ pub fn run() {
             save_pds_url,
             get_appearance_preference,
             set_appearance_preference,
+            diagnostics::export_diagnostics,
             oauth::prepare_oauth_flow,
             oauth::complete_oauth_flow,
             claim::resolve_identity,

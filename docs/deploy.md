@@ -174,8 +174,12 @@ enums only).
 `EZPDS_LOG_FORMAT=json` switches stdout logging to one JSON object per line, so `railway
 logs` output can be filtered by field instead of by regex. Default stays human-readable text.
 
-Persistent scraping/dashboards (a collector service inside the project) are deliberately
-out of scope for v0.1. For private-network troubleshooting — inspecting a restored DB copy
+Persistent scraping/dashboards (a collector service inside the project) were out of scope for
+v0.1. The post-v0.1 direction is now decided:
+[ADR-0028](architecture/decisions/0028-otel-native-backend-observability.md) commits the backend to
+an OpenTelemetry-native collector (traces + metrics + logs into one self-hosted OTLP backend on the
+private network), not a dedicated error-tracker — standing it up is tracked follow-on work, not yet
+deployed. For private-network troubleshooting — inspecting a restored DB copy
 over `railway ssh`, and a ready diagnostic sandbox that can run the interop suite against the
 private-network service — see the [operator debug kit](operations/debug-kit.md).
 

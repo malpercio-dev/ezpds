@@ -37,6 +37,7 @@ Source: `apps/identity-wallet/src/lib/ipc/`
 | `create_destination_account` | App command |
 | `detect_migration_path_cmd` | App command |
 | `ensure_identity_session` | App command |
+| `export_diagnostics` | App command |
 | `finalize_migration` | App command |
 | `forget_identity_locally` | App command |
 | `get_agent_audit` | App command |

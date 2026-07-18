@@ -1,10 +1,12 @@
 <script lang="ts">
   import ScreenHeader from '$lib/components/ui/ScreenHeader.svelte';
+  import Button from '$lib/components/ui/Button.svelte';
   import {
     readLocalMirror,
     setAppearance,
     type AppearancePreference,
   } from '$lib/appearance';
+  import { exportDiagnostics, shareTextNative } from '$lib/ipc';
 
   let { onback }: { onback: () => void } = $props();
 
@@ -34,6 +36,28 @@
     } catch (e) {
       console.error('Failed to persist appearance preference:', e);
       saveError = true;
+    }
+  }
+
+  // ── Diagnostics export ──────────────────────────────────────────────────
+  // A user-initiated share of the session's redacted network-error log. The report is
+  // built on the Rust side (operation names, server hosts, HTTP statuses, short error
+  // codes only — no tokens, bodies, handles, or DIDs) and handed to the native share
+  // sheet. Nothing is collected passively, so there is no opt-in toggle to manage.
+  let exportBusy = $state(false);
+  let exportError = $state(false);
+
+  async function shareDiagnostics() {
+    exportBusy = true;
+    exportError = false;
+    try {
+      const report = await exportDiagnostics();
+      await shareTextNative(report);
+    } catch (e) {
+      console.error('Failed to export diagnostics:', e);
+      exportError = true;
+    } finally {
+      exportBusy = false;
     }
   }
 
@@ -113,6 +137,42 @@
         </svg>
         Couldn’t save this choice to your device. It applies now, but may not stick after a
         relaunch.
+      </p>
+    {/if}
+  </section>
+
+  <section class="group" aria-labelledby="diagnostics-title">
+    <div class="group-head">
+      <h2 class="group-title" id="diagnostics-title">Diagnostics</h2>
+      <p class="group-sub">
+        Share a log of this session’s network errors when troubleshooting. It lists operation
+        names, server addresses, and error codes only — never your keys, tokens, or account
+        details.
+      </p>
+    </div>
+
+    <Button variant="secondary" disabled={exportBusy} onclick={shareDiagnostics}>
+      {exportBusy ? 'Preparing…' : 'Export diagnostics'}
+    </Button>
+
+    {#if exportError}
+      <p class="save-error" role="alert">
+        <svg
+          width="13"
+          height="13"
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          stroke-width="2.2"
+          stroke-linecap="round"
+          stroke-linejoin="round"
+          aria-hidden="true"
+        >
+          <path d="M10.3 3.2 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.2a2 2 0 0 0-3.4 0z" />
+          <path d="M12 9v4" />
+          <path d="M12 17h.01" />
+        </svg>
+        Couldn’t open the share sheet just now. Please try again.
       </p>
     {/if}
   </section>
