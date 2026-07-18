@@ -137,7 +137,8 @@ pub enum RekeyError {
 
 /// Map a session-lifecycle failure into the re-key surface. Exhaustive on purpose: only a
 /// genuine transport failure becomes `NetworkError` — a server verdict, unsupported host, or
-/// storage failure must not surface as "check your connection" (the MM-290 lesson).
+/// storage failure must not surface as "check your connection", or the real cause becomes
+/// undiagnosable from the screen (the same defect class `classify_xrpc_error` exists to fix).
 fn map_session_error(error: SessionError) -> RekeyError {
     match error {
         SessionError::NeedsUnlock { reason } => RekeyError::SessionLocked { reason },
