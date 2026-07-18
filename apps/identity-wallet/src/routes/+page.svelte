@@ -628,7 +628,6 @@
         selectedAlertChanges = changes;
         goTo('alert_detail');
       }}
-      onagents={() => goTo('my_agents')}
       onsettings={() => goTo('settings')}
       onrekey={(did) => {
         rekeyDid = did;
@@ -641,10 +640,18 @@
     <SettingsScreen onback={() => goTo('home')} />
 
   {:else if step === 'my_agents'}
-    <MyAgentsScreen onback={() => goTo('home')} onapprove={() => goTo('agent_approval')} />
+    <MyAgentsScreen
+      did={selectedDid ?? ''}
+      onback={() => goTo('identity_detail')}
+      onapprove={() => goTo('agent_approval')}
+    />
 
   {:else if step === 'agent_approval'}
-    <AgentClaimApprovalScreen onback={() => goTo('my_agents')} ondone={() => goTo('my_agents')} />
+    <AgentClaimApprovalScreen
+      did={selectedDid ?? ''}
+      onback={() => goTo('my_agents')}
+      ondone={() => goTo('my_agents')}
+    />
 
   {:else if step === 'identity_detail'}
     <DIDDocumentScreen
@@ -657,6 +664,7 @@
         ? () => goTo('rotate_repo_key')
         : undefined}
       onapppasswords={() => goTo('app_passwords')}
+      onagents={() => goTo('my_agents')}
       onmigrate={selectedDeviceKeyIsRoot === true
         ? () => {
             migrationDid = selectedDid ?? '';

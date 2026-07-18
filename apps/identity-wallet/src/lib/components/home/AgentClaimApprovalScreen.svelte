@@ -14,9 +14,11 @@
   import ScreenHeader from '$lib/components/ui/ScreenHeader.svelte';
 
   let {
+    did,
     onback,
     ondone,
   }: {
+    did: string;
     onback: () => void;
     /** Called after a confirmed claim, with the bound registration id. */
     ondone: (registrationId: string) => void;
@@ -81,7 +83,7 @@
     }
     phase = 'loading';
     try {
-      preview = await previewAgentClaim(trimmed);
+      preview = await previewAgentClaim(did, trimmed);
       code = trimmed;
       phase = 'review';
     } catch (e) {
@@ -92,8 +94,8 @@
         ceremonyError = terminal;
       } else if (c === 'CODE_NOT_FOUND') {
         codeError = 'That code was not recognized. Check it and try again.';
-      } else if (c === 'NOT_AUTHENTICATED') {
-        codeError = 'Your wallet session has expired on this server.';
+      } else if (c === 'NOT_AUTHENTICATED' || c === 'SESSION_LOCKED') {
+        codeError = 'Your session for this identity has expired. Reopen it from My agents and try again.';
       } else {
         codeError = 'Could not reach your server. Check your connection and try again.';
       }
@@ -113,7 +115,7 @@
       return;
     }
     try {
-      const confirmation = await confirmAgentClaim(code);
+      const confirmation = await confirmAgentClaim(did, code);
       phase = 'approved';
       // Give the sealed state a beat before handing control back.
       setTimeout(() => ondone(confirmation.registrationId), 1200);

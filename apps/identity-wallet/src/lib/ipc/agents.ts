@@ -1,6 +1,11 @@
 import { invoke } from '@tauri-apps/api/core';
+import type { UnlockReason } from './identity';
 
 // ── Agent consent + audit (auth.md claim ceremony, "My agents") ──────────────
+//
+// Per-identity: every command takes a `did` and runs through the refreshable per-DID
+// session (SessionProvider) in `agents.rs`, so an expired session self-heals — or returns
+// SESSION_LOCKED, the cue to run the biometric `sovereignLogin(did)` and retry.
 
 /** One agent identity bound to this account. */
 export type AgentSummary = {
@@ -56,44 +61,54 @@ export type AgentClaimConfirmation = {
   did: string;
 };
 
-/** Errors from the agent consent/management commands. */
-export type AgentsError = {
-  code:
-    | 'NOT_AUTHENTICATED'
-    | 'CODE_NOT_FOUND'
-    | 'CODE_EXPIRED'
-    | 'ALREADY_CLAIMED'
-    | 'ACCESS_DENIED'
-    | 'AGENT_NOT_FOUND'
-    | 'RATE_LIMITED'
-    | 'NETWORK_ERROR'
-    | 'UNKNOWN';
-};
+/**
+ * Errors from the agent consent/management commands. Matches `AgentsError` in `agents.rs`
+ * (`#[serde(tag = "code", rename_all = "SCREAMING_SNAKE_CASE")]`) — codes must match exactly.
+ *
+ * `SESSION_LOCKED` is the cue to run the passwordless {@link sovereignLogin} (biometric) and
+ * retry, exactly as in the app-password and change-handle flows.
+ */
+export type AgentsError =
+  | { code: 'NOT_AUTHENTICATED' }
+  | { code: 'CODE_NOT_FOUND' }
+  | { code: 'CODE_EXPIRED' }
+  | { code: 'ALREADY_CLAIMED' }
+  | { code: 'ACCESS_DENIED' }
+  | { code: 'AGENT_NOT_FOUND' }
+  | { code: 'RATE_LIMITED' }
+  // The identity is locked — run sovereignLogin(did) and retry.
+  | { code: 'SESSION_LOCKED'; reason: UnlockReason }
+  | { code: 'NETWORK_ERROR'; message: string }
+  | { code: 'UNKNOWN'; message: string };
 
-/** List the agent identities bound to this account. */
-export const listAgents = (): Promise<AgentSummary[]> => invoke('list_agents');
+/** List the agent identities bound to this identity's account. */
+export const listAgents = (did: string): Promise<AgentSummary[]> =>
+  invoke('list_agents', { did });
 
 /** Revoke an agent identity (idempotent; the next token exchange is refused immediately). */
-export const revokeAgent = (registrationId: string): Promise<void> =>
-  invoke('revoke_agent', { registrationId });
+export const revokeAgent = (did: string, registrationId: string): Promise<void> =>
+  invoke('revoke_agent', { did, registrationId });
 
 /** Page an agent's audit trail, newest first. Pass the previous page's cursor to continue. */
 export const getAgentAudit = (
+  did: string,
   registrationId: string,
   cursor?: string
-): Promise<AgentAuditPage> => invoke('get_agent_audit', { registrationId, cursor });
+): Promise<AgentAuditPage> => invoke('get_agent_audit', { did, registrationId, cursor });
 
 /**
  * Preview what confirming a claim-ceremony code would grant. Call this BEFORE the biometric
  * gate — the approval screen must show the agent's type and scope list first (informed consent).
  */
-export const previewAgentClaim = (userCode: string): Promise<AgentClaimPreview> =>
-  invoke('preview_agent_claim', { userCode });
+export const previewAgentClaim = (did: string, userCode: string): Promise<AgentClaimPreview> =>
+  invoke('preview_agent_claim', { did, userCode });
 
 /**
  * Confirm a claim ceremony — the human gate that binds the agent to this account. Callers gate
  * this behind `authenticateBiometric()`; it is the authorization boundary for granting an agent
  * standing access to the identity.
  */
-export const confirmAgentClaim = (userCode: string): Promise<AgentClaimConfirmation> =>
-  invoke('confirm_agent_claim', { userCode });
+export const confirmAgentClaim = (
+  did: string,
+  userCode: string
+): Promise<AgentClaimConfirmation> => invoke('confirm_agent_claim', { did, userCode });

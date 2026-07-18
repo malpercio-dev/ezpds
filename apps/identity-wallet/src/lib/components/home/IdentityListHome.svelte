@@ -21,15 +21,12 @@
     onadd,
     onselect,
     onalert,
-    onagents,
     onsettings,
     onrekey,
   }: {
     onadd: () => void;
     onselect: (did: string, didDoc: Record<string, unknown>, deviceKeyIsRoot: boolean | null) => void;
     onalert?: (did: string, changes: UnauthorizedChange[]) => void;
-    /** Open the "My agents" management screen (agent consent + audit). */
-    onagents?: () => void;
     /** Open the Settings screen. */
     onsettings?: () => void;
     /** Start the old-model re-key upgrade for a did:plc identity. */
@@ -334,18 +331,6 @@
         </span>
       </button>
 
-      {#if onagents}
-        <button class="agents-row" onclick={onagents}>
-          <span class="agents-ic" aria-hidden="true">
-            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="8" width="16" height="12" rx="2"/><path d="M12 8V4"/><circle cx="12" cy="3" r="1"/><path d="M9 14h.01M15 14h.01"/></svg>
-          </span>
-          <span class="agents-body">
-            <span class="agents-t">My agents</span>
-            <span class="agents-s">See and control what acts on your behalf</span>
-          </span>
-          <svg class="chev" width="9" height="16" viewBox="0 0 11 18" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m2 1 7 8-7 8"/></svg>
-        </button>
-      {/if}
     {/if}
   </div>
 {/if}
@@ -648,51 +633,6 @@
   .chev {
     color: var(--color-ink-faint);
     flex-shrink: 0;
-  }
-
-  /* Quiet row into the agent-management surface. */
-  .agents-row {
-    display: flex;
-    align-items: center;
-    gap: 13px;
-    background: var(--color-surface);
-    border: 1px solid var(--color-line);
-    border-radius: var(--radius-xl);
-    padding: var(--space-md);
-    width: 100%;
-    text-align: left;
-    cursor: pointer;
-    transition: background var(--duration-base) var(--ease-standard);
-  }
-  .agents-row:active {
-    background: var(--color-surface-sunk);
-  }
-  .agents-ic {
-    width: 42px;
-    height: 42px;
-    border-radius: var(--radius-full);
-    background: var(--color-bg);
-    color: var(--color-primary-deep);
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    flex-shrink: 0;
-  }
-  .agents-body {
-    display: flex;
-    flex-direction: column;
-    gap: 1px;
-    flex: 1;
-    min-width: 0;
-  }
-  .agents-t {
-    font-size: var(--text-body);
-    font-weight: var(--weight-semibold);
-    color: var(--color-ink);
-  }
-  .agents-s {
-    font-size: var(--text-label);
-    color: var(--color-muted);
   }
 
   .add-card {

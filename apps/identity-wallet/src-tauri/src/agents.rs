@@ -1,22 +1,26 @@
 // Agent consent + audit commands — the wallet side of the auth.md claim ceremony and the
-// "My agents" management surface. Five Tauri IPC commands against the configured PDS:
+// "My agents" management surface. Five per-identity Tauri IPC commands, each taking a `did`:
 //
-//   preview_agent_claim(user_code)  — what would approving this code grant? (shown pre-biometric)
-//   confirm_agent_claim(user_code)  — the human gate: flip the agent identity `active → claimed`
-//   list_agents()                   — agent identities bound to this account
-//   revoke_agent(registration_id)   — turn an agent off (idempotent on the server)
-//   get_agent_audit(registration_id, cursor) — page an agent's append-only audit trail
+//   preview_agent_claim(did, user_code)  — what would approving this code grant? (pre-biometric)
+//   confirm_agent_claim(did, user_code)  — the human gate: flip the agent identity active → claimed
+//   list_agents(did)                     — agent identities bound to this identity's account
+//   revoke_agent(did, registration_id)   — turn an agent off (idempotent on the server)
+//   get_agent_audit(did, registration_id, cursor) — page an agent's append-only audit trail
 //
-// All five authenticate with the wallet's full session token (Keychain `"session-token"`, the
-// credential the create flow leaves behind) — the PDS accepts it via its owner guard. Network
-// cores are `_impl` functions taking `&CustosClient` so tests drive them against httpmock,
-// mirroring `claim.rs`.
+// Each resolves a per-DID full-access session through `SessionProvider::full_access_client`
+// (like `app_passwords.rs`), so an expired session self-heals via `refreshSession` or, failing
+// that, `SessionLocked` cues the frontend to run the biometric `sovereignLogin(did)` and retry —
+// instead of dead-ending against the never-refreshed global session token this flow used before.
+// Request cores are `_impl` functions taking `&OAuthClient` so tests drive them against httpmock.
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::http::CustosClient;
-use crate::keychain;
+use crate::identity_store::IdentityStore;
+use crate::oauth::OAuthError;
+use crate::oauth_client::OAuthClient;
+use crate::pds_client::PdsClient;
+use crate::session_provider::{SessionError, SessionProvider, UnlockReason};
 
 // ── Frontend-facing types (camelCase, mirroring the PDS responses) ─────────────
 
@@ -125,6 +129,11 @@ pub enum AgentsError {
     /// the caller should back off and retry.
     #[error("rate limited")]
     RateLimited,
+    /// The identity's session could not be resolved without a passwordless unlock — the
+    /// frontend should run the biometric `sovereignLogin(did)` and retry. Replaces the old
+    /// dead-end where an expired global session token surfaced as a bogus connection error.
+    #[error("identity is locked and needs a passwordless unlock")]
+    SessionLocked { reason: UnlockReason },
     /// Transport-level failure reaching the PDS.
     #[error("network error: {message}")]
     NetworkError { message: String },
@@ -152,31 +161,61 @@ fn map_ceremony_error(error_code: &str) -> AgentsError {
     }
 }
 
-fn network_error(e: reqwest::Error) -> AgentsError {
+/// Map an `OAuthClient` request failure into the agents surface. The session is resolved (and
+/// refreshed) up front, so a failure here is a transport error on the request itself — and the
+/// redacted breadcrumb was already recorded inside `OAuthClient`.
+fn oauth_err(e: OAuthError) -> AgentsError {
     AgentsError::NetworkError {
         message: e.to_string(),
     }
 }
 
-/// Read the wallet's full session token from the Keychain.
-fn session_token() -> Result<String, AgentsError> {
-    let bytes = keychain::get_item("session-token").map_err(|e| {
-        tracing::warn!(error = %e, "no session-token in Keychain for agent command");
-        AgentsError::NotAuthenticated
-    })?;
-    String::from_utf8(bytes).map_err(|_| AgentsError::NotAuthenticated)
+/// Map a session-lifecycle failure into the agents surface. Only a genuine transport failure
+/// becomes `NetworkError`; a `NeedsUnlock` becomes `SessionLocked` (the cue to run
+/// `sovereignLogin(did)` and retry), and every other server/storage verdict is surfaced as
+/// `Unknown` carrying the real cause — never mislabelled as connectivity.
+fn map_session_error(error: SessionError) -> AgentsError {
+    match error {
+        SessionError::NeedsUnlock { reason } => AgentsError::SessionLocked { reason },
+        SessionError::RateLimited { .. } => AgentsError::RateLimited,
+        SessionError::Offline { message } => AgentsError::NetworkError { message },
+        SessionError::IdentityNotFound => AgentsError::Unknown {
+            message: "identity not found in wallet".to_string(),
+        },
+        SessionError::ServerFailure { status } => AgentsError::Unknown {
+            message: format!("session request failed with status {status}"),
+        },
+        SessionError::UnsupportedHost => AgentsError::Unknown {
+            message: "the identity's hosting server does not support session refresh".to_string(),
+        },
+        SessionError::Keychain { message } => AgentsError::Unknown {
+            message: format!("session keychain failure: {message}"),
+        },
+        SessionError::InvalidResponse { message } => AgentsError::Unknown {
+            message: format!("invalid session response: {message}"),
+        },
+    }
+}
+
+/// Resolve the DID's full-access session (restore / refresh, or `SessionLocked`).
+async fn full_access_session(
+    pds_client: &PdsClient,
+    did: &str,
+) -> Result<crate::session_provider::ActiveSession, AgentsError> {
+    let now =
+        crate::sovereign_session::unix_timestamp().map_err(|_| AgentsError::NetworkError {
+            message: "system clock is unavailable".to_string(),
+        })?;
+    SessionProvider
+        .full_access_client(pds_client, &IdentityStore, did, now)
+        .await
+        .map_err(map_session_error)
 }
 
 // ── Network cores (testable against httpmock) ──────────────────────────────────
 
-async fn list_agents_impl(
-    client: &CustosClient,
-    token: &str,
-) -> Result<Vec<AgentSummary>, AgentsError> {
-    let resp = client
-        .get_with_bearer("/v1/agents", token)
-        .await
-        .map_err(network_error)?;
+async fn list_agents_impl(client: &OAuthClient) -> Result<Vec<AgentSummary>, AgentsError> {
+    let resp = client.get("/v1/agents").await.map_err(oauth_err)?;
     match resp.status().as_u16() {
         200 => {
             let body: ListAgentsResponse = resp.json().await.map_err(|e| AgentsError::Unknown {
@@ -193,18 +232,16 @@ async fn list_agents_impl(
 }
 
 async fn revoke_agent_impl(
-    client: &CustosClient,
-    token: &str,
+    client: &OAuthClient,
     registration_id: &str,
 ) -> Result<(), AgentsError> {
     let resp = client
-        .post_with_bearer(
+        .post(
             &format!("/v1/agents/{registration_id}/revoke"),
             &serde_json::json!({}),
-            token,
         )
         .await
-        .map_err(network_error)?;
+        .map_err(oauth_err)?;
     match resp.status().as_u16() {
         200 => Ok(()),
         401 | 403 => Err(AgentsError::NotAuthenticated),
@@ -217,8 +254,7 @@ async fn revoke_agent_impl(
 }
 
 async fn get_agent_audit_impl(
-    client: &CustosClient,
-    token: &str,
+    client: &OAuthClient,
     registration_id: &str,
     cursor: Option<&str>,
 ) -> Result<AgentAuditPage, AgentsError> {
@@ -229,10 +265,7 @@ async fn get_agent_audit_impl(
         ),
         None => format!("/v1/agents/{registration_id}/audit"),
     };
-    let resp = client
-        .get_with_bearer(&path, token)
-        .await
-        .map_err(network_error)?;
+    let resp = client.get(&path).await.map_err(oauth_err)?;
     match resp.status().as_u16() {
         200 => resp.json().await.map_err(|e| AgentsError::Unknown {
             message: format!("failed to parse audit response: {e}"),
@@ -247,18 +280,16 @@ async fn get_agent_audit_impl(
 }
 
 async fn preview_agent_claim_impl(
-    client: &CustosClient,
-    token: &str,
+    client: &OAuthClient,
     user_code: &str,
 ) -> Result<AgentClaimPreview, AgentsError> {
     let resp = client
-        .post_with_bearer(
+        .post(
             "/v1/agents/claim-preview",
             &serde_json::json!({ "userCode": user_code }),
-            token,
         )
         .await
-        .map_err(network_error)?;
+        .map_err(oauth_err)?;
     match resp.status().as_u16() {
         200 => resp.json().await.map_err(|e| AgentsError::Unknown {
             message: format!("failed to parse claim preview: {e}"),
@@ -274,18 +305,16 @@ async fn preview_agent_claim_impl(
 }
 
 async fn confirm_agent_claim_impl(
-    client: &CustosClient,
-    token: &str,
+    client: &OAuthClient,
     user_code: &str,
 ) -> Result<AgentClaimConfirmation, AgentsError> {
     let resp = client
-        .post_with_bearer(
+        .post(
             "/agent/identity/claim/confirm",
             &serde_json::json!({ "user_code": user_code }),
-            token,
         )
         .await
-        .map_err(network_error)?;
+        .map_err(oauth_err)?;
     let status = resp.status();
     if status.is_success() {
         return resp.json().await.map_err(|e| AgentsError::Unknown {
@@ -308,62 +337,61 @@ async fn confirm_agent_claim_impl(
 
 // ── Tauri commands ──────────────────────────────────────────────────────────────
 
-/// List the agent identities bound to this account.
+/// List the agent identities bound to this identity's account.
 #[tauri::command]
 pub async fn list_agents(
     state: tauri::State<'_, crate::oauth::AppState>,
+    did: String,
 ) -> Result<Vec<AgentSummary>, AgentsError> {
-    let token = session_token()?;
-    list_agents_impl(state.custos_client(), &token).await
+    let session = full_access_session(state.pds_client(), &did).await?;
+    list_agents_impl(&session.client).await
 }
 
 /// Revoke an agent identity. Idempotent on the server; the next token exchange is refused.
 #[tauri::command]
 pub async fn revoke_agent(
-    registration_id: String,
     state: tauri::State<'_, crate::oauth::AppState>,
+    did: String,
+    registration_id: String,
 ) -> Result<(), AgentsError> {
-    let token = session_token()?;
-    revoke_agent_impl(state.custos_client(), &token, &registration_id).await
+    let session = full_access_session(state.pds_client(), &did).await?;
+    revoke_agent_impl(&session.client, &registration_id).await
 }
 
 /// Page an agent's audit trail, newest first. Pass the previous page's `cursor` to continue.
 #[tauri::command]
 pub async fn get_agent_audit(
+    state: tauri::State<'_, crate::oauth::AppState>,
+    did: String,
     registration_id: String,
     cursor: Option<String>,
-    state: tauri::State<'_, crate::oauth::AppState>,
 ) -> Result<AgentAuditPage, AgentsError> {
-    let token = session_token()?;
-    get_agent_audit_impl(
-        state.custos_client(),
-        &token,
-        &registration_id,
-        cursor.as_deref(),
-    )
-    .await
+    let session = full_access_session(state.pds_client(), &did).await?;
+    get_agent_audit_impl(&session.client, &registration_id, cursor.as_deref()).await
 }
 
 /// Preview what confirming a claim-ceremony `user_code` would grant (shown before the
 /// biometric approval gate — consent must be informed).
 #[tauri::command]
 pub async fn preview_agent_claim(
-    user_code: String,
     state: tauri::State<'_, crate::oauth::AppState>,
+    did: String,
+    user_code: String,
 ) -> Result<AgentClaimPreview, AgentsError> {
-    let token = session_token()?;
-    preview_agent_claim_impl(state.custos_client(), &token, &user_code).await
+    let session = full_access_session(state.pds_client(), &did).await?;
+    preview_agent_claim_impl(&session.client, &user_code).await
 }
 
 /// Confirm a claim ceremony: the human gate that flips the agent identity `active → claimed`.
 /// The frontend gates this call behind biometric authentication.
 #[tauri::command]
 pub async fn confirm_agent_claim(
-    user_code: String,
     state: tauri::State<'_, crate::oauth::AppState>,
+    did: String,
+    user_code: String,
 ) -> Result<AgentClaimConfirmation, AgentsError> {
-    let token = session_token()?;
-    confirm_agent_claim_impl(state.custos_client(), &token, &user_code).await
+    let session = full_access_session(state.pds_client(), &did).await?;
+    confirm_agent_claim_impl(&session.client, &user_code).await
 }
 
 #[cfg(test)]
@@ -371,8 +399,24 @@ mod tests {
     use super::*;
     use httpmock::prelude::*;
 
-    fn client_for(server: &MockServer) -> CustosClient {
-        CustosClient::new_with_url(server.base_url())
+    fn make_bearer_jwt(exp: u64) -> String {
+        use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+        use base64::Engine;
+        let header = URL_SAFE_NO_PAD.encode(r#"{"alg":"ES256"}"#);
+        let payload = URL_SAFE_NO_PAD.encode(format!(r#"{{"exp":{exp}}}"#).as_bytes());
+        format!("{header}.{payload}.sig")
+    }
+
+    /// A Bearer-mode client pointed at the mock server, with a far-future access token so no
+    /// refresh fires before the request under test.
+    fn bearer_client(server: &MockServer) -> OAuthClient {
+        let exp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs()
+            + 3600;
+        OAuthClient::new_bearer(make_bearer_jwt(exp), "refresh".to_string(), server.base_url())
+            .expect("new_bearer must succeed")
     }
 
     #[tokio::test]
@@ -381,7 +425,7 @@ mod tests {
         server.mock(|when, then| {
             when.method(GET)
                 .path("/v1/agents")
-                .header("authorization", "Bearer tok");
+                .header_exists("authorization");
             then.status(200).json_body(serde_json::json!({
                 "agents": [{
                     "registrationId": "reg_1",
@@ -395,7 +439,7 @@ mod tests {
             }));
         });
 
-        let agents = list_agents_impl(&client_for(&server), "tok").await.unwrap();
+        let agents = list_agents_impl(&bearer_client(&server)).await.unwrap();
         assert_eq!(agents.len(), 1);
         assert_eq!(agents[0].registration_id, "reg_1");
         assert_eq!(agents[0].status, "claimed");
@@ -425,7 +469,7 @@ mod tests {
             }));
         });
 
-        let page = get_agent_audit_impl(&client_for(&server), "tok", "reg_1", Some("42"))
+        let page = get_agent_audit_impl(&bearer_client(&server), "reg_1", Some("42"))
             .await
             .unwrap();
         assert_eq!(page.events.len(), 1);
@@ -442,7 +486,7 @@ mod tests {
                 .json_body(serde_json::json!({ "error": { "code": "NOT_FOUND" } }));
         });
 
-        let err = revoke_agent_impl(&client_for(&server), "tok", "reg_x")
+        let err = revoke_agent_impl(&bearer_client(&server), "reg_x")
             .await
             .unwrap_err();
         assert!(matches!(err, AgentsError::AgentNotFound));
@@ -457,7 +501,7 @@ mod tests {
                 .json_body(serde_json::json!({ "error": { "code": "RATE_LIMITED" } }));
         });
 
-        let err = preview_agent_claim_impl(&client_for(&server), "tok", "123456")
+        let err = preview_agent_claim_impl(&bearer_client(&server), "123456")
             .await
             .unwrap_err();
         assert!(matches!(err, AgentsError::RateLimited));
@@ -472,7 +516,7 @@ mod tests {
                 .json_body(serde_json::json!({ "error": { "code": "NOT_FOUND" } }));
         });
 
-        let err = preview_agent_claim_impl(&client_for(&server), "tok", "123456")
+        let err = preview_agent_claim_impl(&bearer_client(&server), "123456")
             .await
             .unwrap_err();
         assert!(matches!(err, AgentsError::CodeNotFound));
@@ -490,7 +534,7 @@ mod tests {
             }));
         });
 
-        let confirmation = confirm_agent_claim_impl(&client_for(&server), "tok", "123456")
+        let confirmation = confirm_agent_claim_impl(&bearer_client(&server), "123456")
             .await
             .unwrap();
         assert_eq!(confirmation.registration_id, "reg_1");
@@ -527,5 +571,46 @@ mod tests {
         assert_eq!(json["code"], "CODE_EXPIRED");
         let json = serde_json::to_value(AgentsError::NotAuthenticated).unwrap();
         assert_eq!(json["code"], "NOT_AUTHENTICATED");
+    }
+
+    #[test]
+    fn session_needs_unlock_maps_to_session_locked() {
+        let err = map_session_error(SessionError::NeedsUnlock {
+            reason: UnlockReason::NoRefreshChain,
+        });
+        assert!(matches!(
+            err,
+            AgentsError::SessionLocked {
+                reason: UnlockReason::NoRefreshChain
+            }
+        ));
+        let json = serde_json::to_value(err).unwrap();
+        assert_eq!(json["code"], "SESSION_LOCKED");
+        assert_eq!(json["reason"], "NO_REFRESH_CHAIN");
+    }
+
+    /// A session failure keeps its nature: only a genuine transport failure is NETWORK_ERROR;
+    /// a rate limit is RATE_LIMITED and a server/host verdict is UNKNOWN (never "check your
+    /// connection"), so the "My agents" screen can tell an expired session from an outage.
+    #[test]
+    fn session_errors_do_not_flatten_to_network_error() {
+        assert!(matches!(
+            map_session_error(SessionError::RateLimited { retry_after: None }),
+            AgentsError::RateLimited
+        ));
+        assert!(matches!(
+            map_session_error(SessionError::ServerFailure { status: 503 }),
+            AgentsError::Unknown { .. }
+        ));
+        assert!(matches!(
+            map_session_error(SessionError::UnsupportedHost),
+            AgentsError::Unknown { .. }
+        ));
+        assert!(matches!(
+            map_session_error(SessionError::Offline {
+                message: "timeout".to_string()
+            }),
+            AgentsError::NetworkError { .. }
+        ));
     }
 }
