@@ -87,6 +87,131 @@ where
     Ok(result.rows_affected() == 1)
 }
 
+/// The in-flight release view of an account's escrow row, read by the release/poll flow.
+pub(crate) struct ReleaseState {
+    /// The KEK-wrapped Share 2 envelope ciphertext (the caller unwraps it only when delivering).
+    pub(crate) share_encrypted: String,
+    /// Whether a release is currently in flight (`release_requested_at` set).
+    pub(crate) release_in_flight: bool,
+    /// When the pending release becomes collectable (`release_pending_until`), if in flight.
+    pub(crate) release_pending_until: Option<String>,
+    /// Whether the pending window has elapsed — the share is collectable now
+    /// (`release_pending_until <= now`, evaluated in SQL so "now" is derived once).
+    pub(crate) available: bool,
+}
+
+/// Read an account's escrow row for the release flow. `None` when the account holds no escrow
+/// (never deposited, or owner opted out) — the caller maps that to the same uniform failure as a
+/// wrong OTP so escrow presence is never an oracle.
+pub(crate) async fn get_release_state(
+    db: &sqlx::SqlitePool,
+    did: &str,
+) -> Result<Option<ReleaseState>, sqlx::Error> {
+    let row: Option<(String, Option<String>, Option<String>, i64)> = sqlx::query_as(
+        "SELECT share_encrypted, release_requested_at, release_pending_until, \
+                CASE WHEN release_pending_until IS NOT NULL \
+                      AND release_pending_until <= datetime('now') THEN 1 ELSE 0 END \
+         FROM recovery_escrow WHERE did = ?",
+    )
+    .bind(did)
+    .fetch_optional(db)
+    .await?;
+
+    Ok(row.map(
+        |(share_encrypted, requested_at, pending_until, available)| ReleaseState {
+            share_encrypted,
+            release_in_flight: requested_at.is_some(),
+            release_pending_until: pending_until,
+            available: available == 1,
+        },
+    ))
+}
+
+/// Open (or re-open) a pending release: stamp `release_requested_at = now` and
+/// `release_pending_until = now + delay`. Returns whether an escrow row existed to open against
+/// (so the caller keeps the same uniform failure for an escrow-less account). A fresh open resets
+/// the window — re-requesting after a cancel starts a new delay.
+pub(crate) async fn open_release<'e, E>(
+    executor: E,
+    did: &str,
+    delay_secs: u64,
+) -> Result<bool, sqlx::Error>
+where
+    E: sqlx::Executor<'e, Database = Sqlite>,
+{
+    // `datetime('now', '+N seconds')`: the modifier is a bound parameter, not string-built SQL.
+    let modifier = format!("+{delay_secs} seconds");
+    let result = sqlx::query(
+        "UPDATE recovery_escrow SET \
+             release_requested_at = datetime('now'), \
+             release_pending_until = datetime('now', ?) \
+         WHERE did = ?",
+    )
+    .bind(modifier)
+    .bind(did)
+    .execute(executor)
+    .await?;
+    Ok(result.rows_affected() == 1)
+}
+
+/// Clear an account's in-flight release state (`release_requested_at` / `release_pending_until`
+/// back to NULL). Returns whether a pending release was actually cleared, so the caller audits
+/// only a real transition (the cancel of a non-existent release, or a repeat, leaves no event).
+/// Used both by the cancel endpoint and by the release endpoint after the share is handed back.
+pub(crate) async fn clear_release<'e, E>(executor: E, did: &str) -> Result<bool, sqlx::Error>
+where
+    E: sqlx::Executor<'e, Database = Sqlite>,
+{
+    let result = sqlx::query(
+        "UPDATE recovery_escrow SET \
+             release_requested_at = NULL, \
+             release_pending_until = NULL \
+         WHERE did = ? AND release_requested_at IS NOT NULL",
+    )
+    .bind(did)
+    .execute(executor)
+    .await?;
+    Ok(result.rows_affected() == 1)
+}
+
+/// One in-flight escrow release, for the operator visibility list.
+pub(crate) struct PendingRelease {
+    pub(crate) did: String,
+    pub(crate) release_requested_at: String,
+    pub(crate) release_pending_until: Option<String>,
+    /// Whether the delay window has already elapsed (the share is collectable now).
+    pub(crate) available: bool,
+}
+
+/// List every account with an in-flight escrow release, newest request first. The share
+/// ciphertext is never selected — only the release timing an operator needs to see or act on.
+pub(crate) async fn list_pending_releases(
+    db: &sqlx::SqlitePool,
+) -> Result<Vec<PendingRelease>, sqlx::Error> {
+    let rows: Vec<(String, String, Option<String>, i64)> = sqlx::query_as(
+        "SELECT did, release_requested_at, release_pending_until, \
+                CASE WHEN release_pending_until IS NOT NULL \
+                      AND release_pending_until <= datetime('now') THEN 1 ELSE 0 END \
+         FROM recovery_escrow \
+         WHERE release_requested_at IS NOT NULL \
+         ORDER BY release_requested_at DESC, did ASC",
+    )
+    .fetch_all(db)
+    .await?;
+
+    Ok(rows
+        .into_iter()
+        .map(
+            |(did, release_requested_at, release_pending_until, available)| PendingRelease {
+                did,
+                release_requested_at,
+                release_pending_until,
+                available: available == 1,
+            },
+        )
+        .collect())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

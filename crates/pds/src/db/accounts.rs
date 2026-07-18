@@ -27,6 +27,23 @@ pub(crate) struct SessionAccountRow {
     pub(crate) did_doc: Option<String>,
 }
 
+/// The account's stored email address by DID, or `None` when the account has no row. Used by the
+/// escrow-recovery `initiate` flow to email an OTP to the account address; unfiltered by lifecycle
+/// (the caller resolves the identifier through the lifecycle-gated `resolve_identifier` first).
+pub(crate) async fn account_email(
+    db: &sqlx::SqlitePool,
+    did: &str,
+) -> Result<Option<String>, ApiError> {
+    sqlx::query_scalar("SELECT email FROM accounts WHERE did = ?")
+        .bind(did)
+        .fetch_optional(db)
+        .await
+        .map_err(|e| {
+            tracing::error!(error = %e, "failed to look up account email");
+            ApiError::new(ErrorCode::InternalError, "database error")
+        })
+}
+
 /// Whether a fully-provisioned account row exists for `did` (unfiltered by lifecycle). Used by the
 /// account-creation paths to reject a DID that has already been promoted.
 pub(crate) async fn account_exists(db: &sqlx::SqlitePool, did: &str) -> Result<bool, ApiError> {

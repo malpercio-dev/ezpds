@@ -59,6 +59,8 @@ pub struct Config {
     pub firehose: FirehoseConfig,
     /// Account-lifecycle knobs (the scheduled-deletion reaper interval).
     pub accounts: AccountsConfig,
+    /// Escrow-assisted recovery knobs (the cancellable release-delay window).
+    pub recovery: RecoveryConfig,
     /// Operator companion-app admin-device knobs (the stale-nonce sweep interval
     /// and retention).
     pub admin_devices: AdminDevicesConfig,
@@ -239,6 +241,37 @@ fn default_child_deletion_grace_secs() -> u64 {
     24 * 60 * 60 // 24 hours
 }
 
+/// Escrow-assisted recovery configuration.
+///
+/// The escrow release flow (`POST /v1/recovery/release`) is the gate that hands the PDS-held
+/// Share 2 back to a recovering wallet. Because releasing it converts an "iCloud + mailbox
+/// compromise" into an identity takeover, the release does not fire immediately: it enters a
+/// `pending` state for a cancellable window, during which any authenticated session/device for
+/// the account can kill it. Every knob errs toward friction — this path exists for a user who has
+/// already lost their phone; minutes don't matter, silent takeover does.
+#[derive(Debug, Clone, Deserialize)]
+pub struct RecoveryConfig {
+    /// The cancellable delay, in seconds, between opening an escrow release (with a valid email
+    /// OTP) and the Share 2 envelope becoming collectable. Default: 86400 (24 hours). `0`
+    /// collapses the two-step flow to a single call that returns the share directly — appropriate
+    /// only where the delay's protection isn't wanted (the operator's judgment). Not a
+    /// `tokio::time` period, so `0` is allowed.
+    #[serde(default = "default_release_delay_secs")]
+    pub release_delay_secs: u64,
+}
+
+impl Default for RecoveryConfig {
+    fn default() -> Self {
+        Self {
+            release_delay_secs: default_release_delay_secs(),
+        }
+    }
+}
+
+fn default_release_delay_secs() -> u64 {
+    24 * 60 * 60 // 24 hours
+}
+
 /// Clock-skew tolerance for admin device signed-request timestamps, in seconds: a request's
 /// claimed `timestamp` verifies at any relay clock within `timestamp ±
 /// ADMIN_TIMESTAMP_WINDOW_SECS` (see `pds::auth::guards::verify_signed_request`). Lives here
@@ -374,6 +407,13 @@ pub struct RateLimitConfig {
     /// `0` disables.
     #[serde(default = "default_agent_claim_confirm_per_5min")]
     pub agent_claim_confirm_per_5min: u64,
+    /// Escrow-recovery `POST /v1/recovery/initiate` + `POST /v1/recovery/release` requests per IP
+    /// per 5 minutes. Default 30 (in line with createSession). The release endpoint validates an
+    /// emailed OTP, so it carries the same code-guessing surface as the other short-code
+    /// endpoints; initiate and release **share one limiter instance** so alternating between them
+    /// cannot double an attacker's OTP-guess budget (the agent claim-pair precedent). `0` disables.
+    #[serde(default = "default_recovery_per_5min")]
+    pub recovery_per_5min: u64,
     /// Repo-write points per account per hour (reference: 5000). `0` disables the hourly budget.
     #[serde(default = "default_write_points_hourly")]
     pub write_points_hourly: u64,
@@ -393,6 +433,7 @@ impl Default for RateLimitConfig {
             update_handle_per_5min: default_update_handle_per_5min(),
             transfer_accept_per_5min: default_transfer_accept_per_5min(),
             agent_claim_confirm_per_5min: default_agent_claim_confirm_per_5min(),
+            recovery_per_5min: default_recovery_per_5min(),
             write_points_hourly: default_write_points_hourly(),
             write_points_daily: default_write_points_daily(),
         }
@@ -428,6 +469,10 @@ fn default_transfer_accept_per_5min() -> u64 {
 }
 
 fn default_agent_claim_confirm_per_5min() -> u64 {
+    30
+}
+
+fn default_recovery_per_5min() -> u64 {
     30
 }
 
@@ -1057,6 +1102,8 @@ pub(crate) struct RawConfig {
     #[serde(default)]
     pub(crate) accounts: AccountsConfig,
     #[serde(default)]
+    pub(crate) recovery: RecoveryConfig,
+    #[serde(default)]
     pub(crate) admin_devices: AdminDevicesConfig,
     #[serde(default)]
     pub(crate) oauth: OAuthConfig,
@@ -1325,6 +1372,9 @@ pub(crate) fn apply_env_overrides(
         raw.rate_limit.agent_claim_confirm_per_5min =
             parse_u64("EZPDS_RATE_LIMIT_AGENT_CLAIM_CONFIRM_PER_5MIN", v)?;
     }
+    if let Some(v) = env.get("EZPDS_RATE_LIMIT_RECOVERY_PER_5MIN") {
+        raw.rate_limit.recovery_per_5min = parse_u64("EZPDS_RATE_LIMIT_RECOVERY_PER_5MIN", v)?;
+    }
     if let Some(v) = env.get("EZPDS_RATE_LIMIT_WRITE_POINTS_HOURLY") {
         raw.rate_limit.write_points_hourly = parse_u64("EZPDS_RATE_LIMIT_WRITE_POINTS_HOURLY", v)?;
     }
@@ -1352,6 +1402,9 @@ pub(crate) fn apply_env_overrides(
     if let Some(v) = env.get("EZPDS_ACCOUNTS_CHILD_DELETION_GRACE_SECS") {
         raw.accounts.child_deletion_grace_secs =
             parse_u64("EZPDS_ACCOUNTS_CHILD_DELETION_GRACE_SECS", v)?;
+    }
+    if let Some(v) = env.get("EZPDS_RECOVERY_RELEASE_DELAY_SECS") {
+        raw.recovery.release_delay_secs = parse_u64("EZPDS_RECOVERY_RELEASE_DELAY_SECS", v)?;
     }
     if let Some(v) = env.get("EZPDS_ADMIN_DEVICES_NONCE_SWEEP_INTERVAL_SECS") {
         raw.admin_devices.nonce_sweep_interval_secs =
@@ -1920,6 +1973,7 @@ pub(crate) fn validate_and_build(raw: RawConfig) -> Result<Config, ConfigError> 
         blobs: raw.blobs,
         firehose: raw.firehose,
         accounts: raw.accounts,
+        recovery: raw.recovery,
         admin_devices: raw.admin_devices,
         oauth: raw.oauth,
         agent_auth: raw.agent_auth,

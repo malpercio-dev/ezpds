@@ -1,0 +1,47 @@
+meta {
+  name: Admin: list in-flight escrow releases (GET /v1/admin/recovery-releases)
+  type: http
+  seq: 128
+}
+
+get {
+  url: {{baseUrl}}/v1/admin/recovery-releases
+  body: none
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{adminToken}}
+}
+
+docs {
+  # GET /v1/admin/recovery-releases
+
+  Operator visibility into the escrow release flow: every account with an in-flight
+  recovery-share release, newest request first. The Brass Console's window onto an in-progress
+  recovery. Literal facts only — no verdicts — like `GET /v1/admin/health`.
+
+  The share ciphertext is never returned; only the release timing an operator needs to act. A
+  suspicious release is interrupted by composing this with `revoke-credentials` (kill the
+  attacker's sessions) and the owner's `POST /v1/recovery/release/cancel`.
+
+  Admin-authed: the master token (shown here) **or** an active operator companion-app device's
+  signed request.
+
+  ## Response (200)
+
+  ```json
+  {
+    "releases": [
+      {
+        "did": "did:plc:...",
+        "requestedAt": "2026-07-17 12:00:00",
+        "availableAt": "2026-07-18 12:00:00",
+        "available": false
+      }
+    ]
+  }
+  ```
+
+  `available` is `true` once the delay window has elapsed (the share is collectable now).
+}

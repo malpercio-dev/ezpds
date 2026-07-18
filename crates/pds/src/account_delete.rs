@@ -47,8 +47,8 @@ pub enum PurgeOutcome {
 ///   the identity rather than their own `did` column because pre-claim events on an anonymous
 ///   registration carry a NULL `did` but still pin the identity row via the FK
 /// * `sovereign_session_nonces` before `accounts` (each replay row is FK-owned by its DID)
-/// * `recovery_audit_events` and `recovery_escrow` before `accounts` (both FK-owned by the DID;
-///   no FK links the two, so their relative order is free)
+/// * `recovery_otps`, `recovery_audit_events`, and `recovery_escrow` before `accounts` (all
+///   FK-owned by the DID; no FK links them, so their relative order is free)
 ///
 /// The two sovereign-child-agent tables (V047/V049) are scoped by *different* DID columns and so
 /// are keyed deliberately:
@@ -83,6 +83,7 @@ const DELETE_BY_DID: &[&str] = &[
     "DELETE FROM plc_operation_tokens WHERE did = ?",
     "DELETE FROM account_deletion_tokens WHERE did = ?",
     "DELETE FROM sovereign_session_nonces WHERE did = ?",
+    "DELETE FROM recovery_otps WHERE did = ?",
     "DELETE FROM recovery_audit_events WHERE did = ?",
     "DELETE FROM recovery_escrow WHERE did = ?",
     "DELETE FROM agent_audit_events WHERE registration_id IN (SELECT id FROM agent_identities WHERE did = ?)",

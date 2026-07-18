@@ -19,6 +19,7 @@ use crate::routes::admin_devices::{
 };
 use crate::routes::admin_health::admin_health;
 use crate::routes::admin_list_accounts::list_accounts;
+use crate::routes::admin_recovery_releases::admin_recovery_releases;
 use crate::routes::admin_relay_status::relay_status;
 use crate::routes::admin_request_crawl::request_crawl;
 use crate::routes::admin_revoke_credentials::revoke_account_credentials;
@@ -87,6 +88,9 @@ use crate::routes::provisioning_session::create_provisioning_session;
 use crate::routes::put_preferences::put_preferences_handler;
 use crate::routes::put_record::put_record;
 use crate::routes::recovery_escrow::{delete_escrow_share_handler, put_escrow_share};
+use crate::routes::recovery_release::{
+    recovery_initiate, recovery_release, recovery_release_cancel,
+};
 use crate::routes::refresh_session::refresh_session;
 use crate::routes::register_device::register_device;
 use crate::routes::repo_key_rotation::{begin_repo_key_rotation, complete_repo_key_rotation};
@@ -473,6 +477,9 @@ pub fn app(state: AppState) -> Router {
             "/v1/recovery/escrow-share",
             put(put_escrow_share).delete(delete_escrow_share_handler),
         )
+        .route("/v1/recovery/initiate", post(recovery_initiate))
+        .route("/v1/recovery/release", post(recovery_release))
+        .route("/v1/recovery/release/cancel", post(recovery_release_cancel))
         .route("/v1/repo-keys/rotation", post(begin_repo_key_rotation))
         .route(
             "/v1/repo-keys/rotation/complete",
@@ -490,6 +497,7 @@ pub fn app(state: AppState) -> Router {
         )
         .route("/v1/admin/audit", get(list_admin_audit))
         .route("/v1/admin/health", get(admin_health))
+        .route("/v1/admin/recovery-releases", get(admin_recovery_releases))
         .route("/v1/admin/relay-status", get(relay_status))
         .route("/v1/admin/request-crawl", post(request_crawl))
         .route(
