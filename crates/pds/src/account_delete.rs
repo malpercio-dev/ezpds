@@ -17,9 +17,13 @@
 use common::{ApiError, ErrorCode};
 
 use crate::app::AppState;
+use crate::db::accounts::{deactivate_account, AccountStateChange};
 
 /// The firehose `#account` status reported for a permanent deletion.
 const STATUS_DELETED: &str = "deleted";
+
+/// The firehose `#account` status reported for a cascade-scheduled child's deactivation.
+const STATUS_DEACTIVATED: &str = "deactivated";
 
 /// Outcome of [`purge_account`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -45,14 +49,21 @@ pub enum PurgeOutcome {
 ///   (`agent_audit_events.registration_id → agent_identities.id`,
 ///   `agent_claim_attempts.identity_id → agent_identities.id`); audit events are keyed through
 ///   the identity rather than their own `did` column because pre-claim events on an anonymous
-///   registration carry a NULL `did` but still pin the identity row via the FK
+///   registration carry a NULL `did` but still pin the identity row via the FK. Any audit event
+///   left carrying this DID on a *foreign* account's registration is part of that account's
+///   trail, so it is unlinked (`did = NULL` — the column is nullable) rather than deleted.
 /// * `sovereign_session_nonces` before `accounts` (each replay row is FK-owned by its DID)
+/// * `email_tokens` before `accounts` (FK-owned by the DID; consumption only stamps `used_at`,
+///   so confirm/update rows persist for the account's lifetime and must be purged here)
 /// * `recovery_otps`, `recovery_audit_events`, and `recovery_escrow` before `accounts` (all
 ///   FK-owned by the DID; no FK links them, so their relative order is free)
 ///
-/// The two sovereign-child-agent tables (V047/V049) are scoped by *different* DID columns and so
-/// are keyed deliberately:
+/// The sovereign-child-agent tables (V047/V049) are scoped by *both* of their DID columns:
 ///
+/// * `agent_identities` / `agent_child_provisionings` are additionally keyed
+///   `WHERE parent_did = ?`: a purged parent's children lose the account their custody chains to
+///   (ADR-0023), so their registration/provisioning rows go with the parent — the child
+///   *accounts* are cascade-scheduled for the reaper by `purge_account` itself (see below).
 /// * `agent_child_provisionings` is keyed `WHERE child_did = ?`: a minted child's provisioning row
 ///   FK-references `accounts(did)` on `child_did`, so deleting a child account without first
 ///   removing this row is a foreign-key violation. A no-op for a non-child account (only children
@@ -61,6 +72,9 @@ pub enum PurgeOutcome {
 ///   child-deletion tombstone that must *survive* a child's purge to keep the parent's audit view
 ///   alive, so it carries no FK on `child_did`; it is anchored to `parent_did` and reclaimed only
 ///   when the *parent* is deleted. A no-op for a child (a child authors no deletions).
+///
+/// The `purge_covers_every_account_foreign_key_in_the_schema` test walks the live schema's
+/// FK graph and fails if a migration adds an account-keyed table this list doesn't reach.
 ///
 /// `did_documents` and `reserved_signing_keys` carry the DID with no FK to `accounts`, but are
 /// scoped by `did` so removing this account's rows is correct. `repo_seq` (the durable firehose
@@ -83,13 +97,19 @@ const DELETE_BY_DID: &[&str] = &[
     "DELETE FROM plc_operation_tokens WHERE did = ?",
     "DELETE FROM account_deletion_tokens WHERE did = ?",
     "DELETE FROM sovereign_session_nonces WHERE did = ?",
+    "DELETE FROM email_tokens WHERE did = ?",
     "DELETE FROM recovery_otps WHERE did = ?",
     "DELETE FROM recovery_audit_events WHERE did = ?",
     "DELETE FROM recovery_escrow WHERE did = ?",
     "DELETE FROM agent_audit_events WHERE registration_id IN (SELECT id FROM agent_identities WHERE did = ?)",
+    "DELETE FROM agent_audit_events WHERE registration_id IN (SELECT id FROM agent_identities WHERE parent_did = ?)",
     "DELETE FROM agent_claim_attempts WHERE identity_id IN (SELECT id FROM agent_identities WHERE did = ?)",
+    "DELETE FROM agent_claim_attempts WHERE identity_id IN (SELECT id FROM agent_identities WHERE parent_did = ?)",
     "DELETE FROM agent_identities WHERE did = ?",
+    "DELETE FROM agent_identities WHERE parent_did = ?",
+    "UPDATE agent_audit_events SET did = NULL WHERE did = ?",
     "DELETE FROM agent_child_provisionings WHERE child_did = ?",
+    "DELETE FROM agent_child_provisionings WHERE parent_did = ?",
     "DELETE FROM agent_child_deletions WHERE parent_did = ?",
     "DELETE FROM transfer_audit_events WHERE did = ?",
     "DELETE FROM transfers WHERE did = ?",
@@ -132,6 +152,52 @@ pub async fn purge_account(state: &AppState, did: &str) -> Result<PurgeOutcome, 
     // then delete every child row and the account row atomically.
     let emit_guard = state.firehose.lock_emit().await;
     let mut tx = state.db.begin().await.map_err(map_err)?;
+
+    // Cascade: a purged parent's sovereign children lose the account their recovery authority
+    // chains to (ADR-0023), so each child is scheduled for the same deactivate → `delete_after`
+    // → reaper pipeline a parent-driven `POST /agent/child/delete` uses. The children's
+    // registration/provisioning rows are removed by the parent-keyed `DELETE_BY_DID` entries;
+    // the child *accounts* stay behind, deactivated, until the reaper purges them. Collected
+    // from both child tables so a mid-provisioning child (row in only one) is still caught.
+    let child_dids: Vec<String> = sqlx::query_scalar(
+        "SELECT did FROM agent_identities WHERE parent_did = ? AND did IS NOT NULL \
+         UNION \
+         SELECT child_did FROM agent_child_provisionings WHERE parent_did = ?",
+    )
+    .bind(did)
+    .bind(did)
+    .fetch_all(&mut *tx)
+    .await
+    .map_err(map_err)?;
+    let mut deactivated_children = Vec::new();
+    if !child_dids.is_empty() {
+        let grace =
+            i64::try_from(state.config.accounts.child_deletion_grace_secs).unwrap_or(i64::MAX);
+        let delete_after = (chrono::Utc::now() + chrono::Duration::seconds(grace))
+            .to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
+        for child in &child_dids {
+            // A real active → deactivated transition gets an `#account` frame after commit; a
+            // child already deactivated (e.g. deletion already scheduled) only has its
+            // `delete_after` refreshed, exactly like a repeated `POST /agent/child/delete`.
+            if matches!(
+                deactivate_account(&mut tx, child, Some(&delete_after)).await?,
+                AccountStateChange::Changed
+            ) {
+                deactivated_children.push(child.clone());
+            }
+            // The operator-visible record of the cascade. No `agent_child_deletions` tombstone
+            // is written: that table exists for the PARENT's audit view and is by doctrine
+            // reclaimed when the parent is deleted (V049) — a tombstone written here would be
+            // removed by this same transaction's parent-keyed delete, with no surviving party
+            // holding standing to read it.
+            tracing::info!(
+                parent = %did,
+                child = %child,
+                %delete_after,
+                "parent purge: cascade-scheduled child deletion"
+            );
+        }
+    }
 
     for sql in DELETE_BY_DID {
         sqlx::query(sql)
@@ -194,6 +260,30 @@ pub async fn purge_account(state: &AppState, did: &str) -> Result<PurgeOutcome, 
         })?;
     tx.commit().await.map_err(map_err)?;
     pending.finish();
+
+    // Announce each cascade-scheduled child's deactivation so relays stop serving its repo
+    // now rather than at its reap. Best-effort AFTER the deletion transaction (the staged
+    // frame chain carries one account event; these ride the bare primitive) — deliberately
+    // so, not an outbox: the drift on a failed emit is bounded, because the child's terminal
+    // `#account` deleted frame at its reap IS transactionally staged (this function), its
+    // deactivated state is already served by the lifecycle endpoints (`getRepoStatus` /
+    // `listRepos`), and an `emit_account` failure post-commit means the same DB that just
+    // committed is now failing — a condition the reaper's next pass surfaces loudly anyway.
+    // Worst case: relays serve the deactivated repo's cached data until `delete_after`.
+    for child in &deactivated_children {
+        if let Err(e) = state
+            .firehose
+            .emit_account(child.clone(), false, Some(STATUS_DEACTIVATED.to_string()))
+            .await
+        {
+            tracing::warn!(
+                parent = %did,
+                child = %child,
+                error = %e,
+                "failed to emit #account deactivated for cascade-scheduled child"
+            );
+        }
+    }
 
     // Step 4: reclaim the on-disk blob files (best-effort; the DB row and firehose frame are the
     // source of truth for "deleted", so a stray file is a leak to clean up, not a failure).
@@ -578,6 +668,274 @@ mod tests {
             row_count(&state.db, "agent_child_deletions", "parent_did", parent).await,
             1,
             "the parent's deletion tombstone must survive the child's purge"
+        );
+    }
+
+    /// `email_tokens` rows FK-reference the account and are never consumed-by-delete
+    /// (`consume_email_token` only stamps `used_at`), so the purge must remove them or the
+    /// `accounts` delete fails the FK check.
+    #[tokio::test]
+    async fn purge_removes_email_tokens() {
+        let (state, _dir) = purge_state().await;
+        let did = "did:plc:purgemailtok";
+        seed_account_with_repo(&state.db, did).await;
+        sqlx::query(
+            "INSERT INTO email_tokens (token_hash, did, purpose, expires_at, used_at, created_at) \
+             VALUES ('hash_purge_used', ?, 'confirm', '2020-01-01T00:00:00Z', datetime('now'), datetime('now')), \
+                    ('hash_purge_live', ?, 'update', '2099-01-01T00:00:00Z', NULL, datetime('now'))",
+        )
+        .bind(did)
+        .bind(did)
+        .execute(&state.db)
+        .await
+        .unwrap();
+
+        assert_eq!(
+            purge_account(&state, did).await.unwrap(),
+            PurgeOutcome::Deleted
+        );
+        assert_eq!(row_count(&state.db, "email_tokens", "did", did).await, 0);
+    }
+
+    /// Purging a parent with living sovereign children must not FK-fail on the children's
+    /// `parent_did` rows: the children are cascade-scheduled for deletion (deactivated with a
+    /// `delete_after`, announced as deactivated), and their registration/provisioning rows —
+    /// whose custody chain dies with the parent — are removed with the parent.
+    #[tokio::test]
+    async fn purge_parent_cascade_schedules_children() {
+        let (state, _dir) = purge_state().await;
+        let parent = "did:plc:cascadeparent";
+        let child = "did:plc:cascadechild";
+        seed_account_with_repo(&state.db, parent).await;
+        seed_account_with_repo(&state.db, child).await;
+
+        sqlx::query(
+            "INSERT INTO agent_identities \
+             (id, did, parent_did, registration_type, scopes, assertion_expires_at, status, \
+              created_at, updated_at) \
+             VALUES ('reg_casc', ?, ?, 'child', '[]', '2099-01-01T00:00:00Z', 'active', \
+                     datetime('now'), datetime('now'))",
+        )
+        .bind(child)
+        .bind(parent)
+        .execute(&state.db)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO agent_audit_events \
+             (id, registration_id, did, event_type, detail, created_at) \
+             VALUES ('evt_casc', 'reg_casc', ?, 'registered', NULL, datetime('now'))",
+        )
+        .bind(child)
+        .execute(&state.db)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO agent_child_provisionings \
+             (child_did, parent_did, handle, registration_id, signed_op, scopes, \
+              identity_assertion, assertion_expires_at, genesis_car, sync_car, created_at, updated_at) \
+             VALUES (?, ?, 'cascade-child.example.com', 'reg_casc', 'op', '[]', 'jwt', \
+                     '2099-01-01T00:00:00Z', ?, ?, datetime('now'), datetime('now'))",
+        )
+        .bind(child)
+        .bind(parent)
+        .bind(Vec::<u8>::new())
+        .bind(Vec::<u8>::new())
+        .execute(&state.db)
+        .await
+        .unwrap();
+
+        let mut rx = state.firehose.subscribe();
+        assert_eq!(
+            purge_account(&state, parent).await.unwrap(),
+            PurgeOutcome::Deleted
+        );
+
+        // The parent and its child-agent rows are gone; the child ACCOUNT survives, but is
+        // deactivated with a scheduled deletion instant for the reaper.
+        assert_eq!(row_count(&state.db, "accounts", "did", parent).await, 0);
+        assert_eq!(
+            row_count(&state.db, "agent_identities", "parent_did", parent).await,
+            0
+        );
+        assert_eq!(
+            row_count(&state.db, "agent_child_provisionings", "parent_did", parent).await,
+            0
+        );
+        let (deactivated_at, delete_after): (Option<String>, Option<String>) =
+            sqlx::query_as("SELECT deactivated_at, delete_after FROM accounts WHERE did = ?")
+                .bind(child)
+                .fetch_one(&state.db)
+                .await
+                .unwrap();
+        assert!(
+            deactivated_at.is_some(),
+            "the child must be deactivated by the cascade"
+        );
+        assert!(
+            delete_after.is_some(),
+            "the child must carry a scheduled deletion instant for the reaper"
+        );
+
+        // Frames: the parent's deleted frame (staged in the transaction), then the child's
+        // best-effort deactivated frame.
+        let FirehoseEvent::Account(deleted) = rx.try_recv().unwrap() else {
+            panic!("expected the parent's #account deleted frame first");
+        };
+        assert_eq!(deleted.did, parent);
+        assert_eq!(deleted.status.as_deref(), Some("deleted"));
+        let FirehoseEvent::Account(deactivated) = rx.try_recv().unwrap() else {
+            panic!("expected the child's #account deactivated frame");
+        };
+        assert_eq!(deactivated.did, child);
+        assert!(!deactivated.active);
+        assert_eq!(deactivated.status.as_deref(), Some("deactivated"));
+    }
+
+    /// A cascade-scheduled child is purgeable by the reaper afterwards: its registration and
+    /// provisioning rows went with the parent, so the later child purge is a plain account purge.
+    #[tokio::test]
+    async fn cascade_scheduled_child_purges_cleanly_afterwards() {
+        let (state, _dir) = purge_state().await;
+        let parent = "did:plc:cascade2parent";
+        let child = "did:plc:cascade2child";
+        seed_account_with_repo(&state.db, parent).await;
+        seed_account_with_repo(&state.db, child).await;
+        sqlx::query(
+            "INSERT INTO agent_identities \
+             (id, did, parent_did, registration_type, scopes, assertion_expires_at, status, \
+              created_at, updated_at) \
+             VALUES ('reg_casc2', ?, ?, 'child', '[]', '2099-01-01T00:00:00Z', 'active', \
+                     datetime('now'), datetime('now'))",
+        )
+        .bind(child)
+        .bind(parent)
+        .execute(&state.db)
+        .await
+        .unwrap();
+
+        purge_account(&state, parent).await.unwrap();
+        assert_eq!(
+            purge_account(&state, child).await.unwrap(),
+            PurgeOutcome::Deleted
+        );
+        assert_eq!(row_count(&state.db, "accounts", "did", child).await, 0);
+    }
+
+    /// An audit event carrying the purged DID on ANOTHER account's registration is part of that
+    /// other account's trail: it must survive the purge, unlinked (did = NULL) so the FK holds.
+    #[tokio::test]
+    async fn purge_unlinks_audit_events_on_foreign_registrations() {
+        let (state, _dir) = purge_state().await;
+        let did = "did:plc:purgestray";
+        let other = "did:plc:keepstray";
+        seed_account_with_repo(&state.db, did).await;
+        seed_account_with_repo(&state.db, other).await;
+        sqlx::query(
+            "INSERT INTO agent_identities \
+             (id, did, registration_type, scopes, assertion_expires_at, status, created_at, updated_at) \
+             VALUES ('reg_stray', ?, 'anonymous', '[]', '2099-01-01T00:00:00Z', 'claimed', \
+                     datetime('now'), datetime('now'))",
+        )
+        .bind(other)
+        .execute(&state.db)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO agent_audit_events \
+             (id, registration_id, did, event_type, detail, created_at) \
+             VALUES ('evt_stray', 'reg_stray', ?, 'activity', NULL, datetime('now'))",
+        )
+        .bind(did)
+        .execute(&state.db)
+        .await
+        .unwrap();
+
+        assert_eq!(
+            purge_account(&state, did).await.unwrap(),
+            PurgeOutcome::Deleted
+        );
+
+        let (count, linked): (i64, i64) = sqlx::query_as(
+            "SELECT COUNT(*), COUNT(did) FROM agent_audit_events WHERE registration_id = 'reg_stray'",
+        )
+        .fetch_one(&state.db)
+        .await
+        .unwrap();
+        assert_eq!(count, 1, "the other account's audit trail must survive");
+        assert_eq!(
+            linked, 0,
+            "the surviving event must be unlinked from the purged DID"
+        );
+    }
+
+    /// Tripwire: every foreign key referencing `accounts(did)` in the LIVE schema must be
+    /// covered by the purge — by a `DELETE_BY_DID`/`DELETE_BLOCKS` statement scoping that
+    /// exact column, or by one of the named non-list mechanisms. A new migration that adds
+    /// an account-keyed table without extending the purge fails here instead of FK-failing
+    /// the reaper in production.
+    #[tokio::test]
+    async fn purge_covers_every_account_foreign_key_in_the_schema() {
+        use sqlx::Row;
+
+        // Covered outside DELETE_BY_DID; each entry names its mechanism.
+        const COVERED_ELSEWHERE: &[(&str, &str, &str)] = &[
+            (
+                "block_owners",
+                "account_did",
+                "DELETE_BLOCKS + delete_unowned_unprotected_blocks_in_tx",
+            ),
+            (
+                "blob_owners",
+                "account_did",
+                "db::blobs::delete_owners_and_unowned_blobs_in_tx",
+            ),
+        ];
+
+        let state = crate::app::test_state().await;
+        let tables: Vec<String> = sqlx::query_scalar(
+            "SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'",
+        )
+        .fetch_all(&state.db)
+        .await
+        .unwrap();
+
+        let mut checked = 0;
+        for table in &tables {
+            let fks = sqlx::query(&format!("PRAGMA foreign_key_list({table})"))
+                .fetch_all(&state.db)
+                .await
+                .unwrap();
+            for fk in fks {
+                let target: String = fk.get("table");
+                if target != "accounts" {
+                    continue;
+                }
+                let column: String = fk.get("from");
+                checked += 1;
+                if COVERED_ELSEWHERE
+                    .iter()
+                    .any(|(t, c, _)| t == table && *c == column)
+                {
+                    continue;
+                }
+                let covered = DELETE_BY_DID.iter().chain([&DELETE_BLOCKS]).any(|sql| {
+                    (sql.contains(&format!("FROM {table} "))
+                        || sql.contains(&format!("UPDATE {table} ")))
+                        && (sql.contains(&format!("{column} = ?"))
+                            || sql.contains(&format!("{column} IN (")))
+                });
+                assert!(
+                    covered,
+                    "{table}.{column} FK-references accounts(did) but no purge statement \
+                     scopes it — a purge of an account with a row here fails the FK check. \
+                     Add a DELETE_BY_DID entry (or register a mechanism in COVERED_ELSEWHERE)."
+                );
+            }
+        }
+        assert!(
+            checked >= 25,
+            "sanity: expected to find the schema's account FKs, found {checked}"
         );
     }
 
