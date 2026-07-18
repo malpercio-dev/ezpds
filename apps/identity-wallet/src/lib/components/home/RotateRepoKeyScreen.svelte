@@ -50,6 +50,10 @@
         return 'The rotation was blocked by a safety check and was not signed.';
       case 'ROTATION_FAILED':
         return 'The server rejected the rotation. Please try again.';
+      case 'PLC_DIRECTORY_ERROR':
+        return 'The identity directory had a problem. Please try again shortly.';
+      case 'SERVER_ERROR':
+        return 'The server couldn’t complete this step. Please try again.';
       case 'NETWORK_ERROR':
         return 'Couldn’t reach the server. Check your connection.';
       case 'NO_PENDING_ROTATION':

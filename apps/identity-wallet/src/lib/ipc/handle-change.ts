@@ -32,6 +32,9 @@ export type HandleChangeError =
   | { code: 'INVALID_AUDIT_LOG'; message: string }
   | { code: 'SIGNING_FAILED'; message: string }
   | { code: 'PLC_DIRECTORY_ERROR'; message: string }
+  // A server-side step failed for a non-connectivity reason (session refresh verdict,
+  // unsupported host, malformed response, or session storage). Details in `message`.
+  | { code: 'SERVER_ERROR'; message: string }
   | { code: 'NETWORK_ERROR'; message: string }
   | { code: 'IDENTITY_NOT_FOUND'; message: string };
 

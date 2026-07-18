@@ -91,6 +91,8 @@
         return 'The directory rejected the change. Please try again.';
       case 'UPDATE_HANDLE_FAILED':
         return 'The server rejected the handle change. Please try again.';
+      case 'SERVER_ERROR':
+        return 'The server couldn’t complete this step. Please try again.';
       case 'NETWORK_ERROR':
         return 'Couldn’t reach the server. Check your connection.';
       default:
