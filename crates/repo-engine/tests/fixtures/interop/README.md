@@ -37,7 +37,8 @@ vectors.
 
 The upstream `lexicon/` directory also carries `record-data-{valid,invalid}.json` (record
 values validated *against* a resolved lexicon def). Those are not vendored yet: the
-record-against-lexicon validator is the deferred second layer of this feature.
+record-against-lexicon validator is the deferred second layer of this feature, tracked as
+MM-439.
 
 Refresh each fixture or valid/invalid pair from its upstream path. The records loader
 preserves case whitespace and treats only `# ` as a comment marker so significant whitespace
