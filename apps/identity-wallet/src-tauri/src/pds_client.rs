@@ -331,6 +331,30 @@ async fn classify_xrpc_response(context: &str, resp: reqwest::Response) -> PdsCl
     classify_xrpc_error(status.as_u16(), retry_after, &body)
 }
 
+/// Record a redacted transport-failure breadcrumb for the user-exportable diagnostics log.
+///
+/// This is the transport-side companion to [`classify_xrpc_response`]. A connect/DNS/TLS/timeout
+/// failure or a mid-read body drop never produces a server *verdict*, so it never reaches
+/// `classify_xrpc_response` — without this, the entire "couldn't reach the server" class
+/// (`NetworkError`/`PdsUnreachable`) leaves no breadcrumb, which is exactly what made the re-key
+/// `NETWORK_ERROR` undiagnosable from the exported log. Every `reqwest::Error` site that returns a
+/// connectivity-class error funnels through here.
+///
+/// Only the *host* of `url` is recorded — never the path or query. On plc.directory reads the DID
+/// lives in the path, so callers must pass the full request URL and let this extract the host. When
+/// the host itself is sensitive (a handle domain on the well-known resolve path), pass `None` for
+/// `url` and the breadcrumb records no host.
+fn note_transport_failure(op: &str, url: Option<&str>, e: &reqwest::Error) {
+    let host = url
+        .and_then(|u| reqwest::Url::parse(u).ok())
+        .and_then(|parsed| parsed.host_str().map(str::to_string));
+    crate::diagnostics::record_transport(
+        op,
+        host.as_deref(),
+        crate::diagnostics::transport_category(e),
+    );
+}
+
 /// PLC operation data for a DID.
 ///
 /// Combines fields from the W3C DID Document (`GET /{did}`) and the PLC audit log
@@ -703,14 +727,12 @@ impl PdsClient {
         let url = format!("{}/{}", self.plc_directory_url, did);
 
         // Fetch the DID document from plc.directory
-        let response =
-            self.client
-                .get(&url)
-                .send()
-                .await
-                .map_err(|e| PdsClientError::NetworkError {
-                    message: format!("failed to fetch DID document: {}", e),
-                })?;
+        let response = self.client.get(&url).send().await.map_err(|e| {
+            note_transport_failure("discover_pds", Some(&url), &e);
+            PdsClientError::NetworkError {
+                message: format!("failed to fetch DID document: {}", e),
+            }
+        })?;
 
         match response.status() {
             s if s == 404 => return Err(PdsClientError::DidNotFound),
@@ -749,8 +771,11 @@ impl PdsClient {
             .timeout(Duration::from_secs(5))
             .send()
             .await
-            .map_err(|e| PdsClientError::PdsUnreachable {
-                reason: format!("failed to reach PDS endpoint: {}", e),
+            .map_err(|e| {
+                note_transport_failure("discover_pds", Some(pds_endpoint), &e);
+                PdsClientError::PdsUnreachable {
+                    reason: format!("failed to reach PDS endpoint: {}", e),
+                }
             })?;
 
         Ok((pds_endpoint.to_string(), doc))
@@ -791,6 +816,7 @@ impl PdsClient {
 
         let response = self.client.get(&url).send().await.map_err(|e| {
             tracing::error!(url = %url, error = %e, "OAuth metadata fetch failed");
+            note_transport_failure("discover_auth_server", Some(&url), &e);
             PdsClientError::NetworkError {
                 message: format!("failed to fetch OAuth metadata: {}", e),
             }
@@ -859,8 +885,11 @@ impl PdsClient {
             .timeout(Duration::from_secs(30))
             .send()
             .await
-            .map_err(|e| PdsClientError::PdsUnreachable {
-                reason: format!("failed to reach PDS: {}", e),
+            .map_err(|e| {
+                note_transport_failure("describeServer", Some(&url), &e);
+                PdsClientError::PdsUnreachable {
+                    reason: format!("failed to reach PDS: {}", e),
+                }
             })?;
 
         if !response.status().is_success() {
@@ -872,8 +901,11 @@ impl PdsClient {
         response
             .json::<DescribeServerResponse>()
             .await
-            .map_err(|e| PdsClientError::PdsUnreachable {
-                reason: format!("failed to parse describeServer response: {}", e),
+            .map_err(|e| {
+                note_transport_failure("describeServer", Some(&url), &e);
+                PdsClientError::PdsUnreachable {
+                    reason: format!("failed to parse describeServer response: {}", e),
+                }
             })
     }
 
@@ -928,8 +960,11 @@ impl PdsClient {
             .json(&request_body)
             .send()
             .await
-            .map_err(|e| PdsClientError::NetworkError {
-                message: format!("createSession request failed: {}", e),
+            .map_err(|e| {
+                note_transport_failure("createSession", Some(&url), &e);
+                PdsClientError::NetworkError {
+                    message: format!("createSession request failed: {}", e),
+                }
             })?;
 
         let status = response.status();
@@ -1034,8 +1069,11 @@ impl PdsClient {
             .form(&form_data)
             .send()
             .await
-            .map_err(|e| PdsClientError::NetworkError {
-                message: format!("PAR request failed: {}", e),
+            .map_err(|e| {
+                note_transport_failure("pds_par", Some(&par_url), &e);
+                PdsClientError::NetworkError {
+                    message: format!("PAR request failed: {}", e),
+                }
             })?;
 
         let status = response.status();
@@ -1091,8 +1129,11 @@ impl PdsClient {
             .form(&form_data)
             .send()
             .await
-            .map_err(|e| PdsClientError::OauthFailed {
-                message: format!("token exchange request failed: {}", e),
+            .map_err(|e| {
+                note_transport_failure("pds_token_exchange", Some(token_url), &e);
+                PdsClientError::OauthFailed {
+                    message: format!("token exchange request failed: {}", e),
+                }
             })
     }
 
@@ -1124,14 +1165,12 @@ impl PdsClient {
     /// Calls `GET {plc_directory_url}/{did}/log/audit` and returns the raw JSON string.
     pub async fn fetch_audit_log(&self, did: &str) -> Result<String, PdsClientError> {
         let url = format!("{}/{}/log/audit", self.plc_directory_url, did);
-        let resp =
-            self.client
-                .get(&url)
-                .send()
-                .await
-                .map_err(|e| PdsClientError::NetworkError {
-                    message: format!("failed to fetch audit log: {}", e),
-                })?;
+        let resp = self.client.get(&url).send().await.map_err(|e| {
+            note_transport_failure("fetch_audit_log", Some(&url), &e);
+            PdsClientError::NetworkError {
+                message: format!("failed to fetch audit log: {}", e),
+            }
+        })?;
 
         match resp.status() {
             s if s == 404 => return Err(PdsClientError::DidNotFound),
@@ -1143,8 +1182,11 @@ impl PdsClient {
             _ => {}
         }
 
-        resp.text().await.map_err(|e| PdsClientError::NetworkError {
-            message: format!("failed to read audit log response: {}", e),
+        resp.text().await.map_err(|e| {
+            note_transport_failure("fetch_audit_log", Some(&url), &e);
+            PdsClientError::NetworkError {
+                message: format!("failed to read audit log response: {}", e),
+            }
         })
     }
 
@@ -1160,14 +1202,12 @@ impl PdsClient {
         did: &str,
     ) -> Result<serde_json::Value, PdsClientError> {
         let url = format!("{}/{}/data", self.plc_directory_url, did);
-        let resp =
-            self.client
-                .get(&url)
-                .send()
-                .await
-                .map_err(|e| PdsClientError::NetworkError {
-                    message: format!("failed to fetch PLC data document: {}", e),
-                })?;
+        let resp = self.client.get(&url).send().await.map_err(|e| {
+            note_transport_failure("fetch_plc_data_document", Some(&url), &e);
+            PdsClientError::NetworkError {
+                message: format!("failed to fetch PLC data document: {}", e),
+            }
+        })?;
 
         match resp.status() {
             s if s == 404 => return Err(PdsClientError::DidNotFound),
@@ -1179,8 +1219,11 @@ impl PdsClient {
             _ => {}
         }
 
-        resp.json().await.map_err(|e| PdsClientError::NetworkError {
-            message: format!("failed to parse PLC data document: {}", e),
+        resp.json().await.map_err(|e| {
+            note_transport_failure("fetch_plc_data_document", Some(&url), &e);
+            PdsClientError::NetworkError {
+                message: format!("failed to parse PLC data document: {}", e),
+            }
         })
     }
 
@@ -1199,8 +1242,11 @@ impl PdsClient {
             .json(operation)
             .send()
             .await
-            .map_err(|e| PdsClientError::NetworkError {
-                message: format!("failed to post plc operation: {}", e),
+            .map_err(|e| {
+                note_transport_failure("post_plc_operation", Some(&url), &e);
+                PdsClientError::NetworkError {
+                    message: format!("failed to post plc operation: {}", e),
+                }
             })?;
 
         if resp.status().is_success() {
@@ -1243,20 +1289,23 @@ impl PdsClient {
             .timeout(Duration::from_secs(300))
             .send()
             .await
-            .map_err(|e| PdsClientError::NetworkError {
-                message: format!("failed to fetch repo CAR: {}", e),
+            .map_err(|e| {
+                note_transport_failure("getRepo", Some(&url), &e);
+                PdsClientError::NetworkError {
+                    message: format!("failed to fetch repo CAR: {}", e),
+                }
             })?;
 
         if !resp.status().is_success() {
             return Err(classify_xrpc_response("getRepo", resp).await);
         }
 
-        resp.bytes()
-            .await
-            .map(|b| b.to_vec())
-            .map_err(|e| PdsClientError::NetworkError {
+        resp.bytes().await.map(|b| b.to_vec()).map_err(|e| {
+            note_transport_failure("getRepo", Some(&url), &e);
+            PdsClientError::NetworkError {
                 message: format!("failed to read repo CAR bytes: {}", e),
-            })
+            }
+        })
     }
 
     /// Fetch a blob by DID and CID (auth: none).
@@ -1283,20 +1332,23 @@ impl PdsClient {
             .timeout(Duration::from_secs(300))
             .send()
             .await
-            .map_err(|e| PdsClientError::NetworkError {
-                message: format!("failed to fetch blob: {}", e),
+            .map_err(|e| {
+                note_transport_failure("getBlob", Some(&url), &e);
+                PdsClientError::NetworkError {
+                    message: format!("failed to fetch blob: {}", e),
+                }
             })?;
 
         if !resp.status().is_success() {
             return Err(classify_xrpc_response("getBlob", resp).await);
         }
 
-        resp.bytes()
-            .await
-            .map(|b| b.to_vec())
-            .map_err(|e| PdsClientError::NetworkError {
+        resp.bytes().await.map(|b| b.to_vec()).map_err(|e| {
+            note_transport_failure("getBlob", Some(&url), &e);
+            PdsClientError::NetworkError {
                 message: format!("failed to read blob bytes: {}", e),
-            })
+            }
+        })
     }
 
     /// Reserve a signing key for a DID on the PDS (auth: none, idempotent).
@@ -1320,8 +1372,11 @@ impl PdsClient {
             .json(&body)
             .send()
             .await
-            .map_err(|e| PdsClientError::NetworkError {
-                message: format!("failed to reserve signing key: {}", e),
+            .map_err(|e| {
+                note_transport_failure("reserveSigningKey", Some(&url), &e);
+                PdsClientError::NetworkError {
+                    message: format!("failed to reserve signing key: {}", e),
+                }
             })?;
 
         if !resp.status().is_success() {
@@ -1337,8 +1392,11 @@ impl PdsClient {
         resp.json::<ReserveSigningKeyResponse>()
             .await
             .map(|r| r.signing_key)
-            .map_err(|e| PdsClientError::NetworkError {
-                message: format!("failed to parse reserve_signing_key response: {}", e),
+            .map_err(|e| {
+                note_transport_failure("reserveSigningKey", Some(&url), &e);
+                PdsClientError::NetworkError {
+                    message: format!("failed to parse reserve_signing_key response: {}", e),
+                }
             })
     }
 
@@ -1375,8 +1433,11 @@ impl PdsClient {
             .json(&body)
             .send()
             .await
-            .map_err(|e| PdsClientError::NetworkError {
-                message: format!("delete_account failed: {}", e),
+            .map_err(|e| {
+                note_transport_failure("deleteAccount", Some(&url), &e);
+                PdsClientError::NetworkError {
+                    message: format!("delete_account failed: {}", e),
+                }
             })?;
 
         if resp.status().is_success() {
@@ -1470,6 +1531,9 @@ async fn try_resolve_dns(handle: &str) -> Result<Option<String>, PdsClientError>
                 Ok(None)
             } else {
                 tracing::warn!(dns_name = %dns_name, error = %e, "DNS TXT lookup failed");
+                // Host is omitted: the DNS name embeds the handle, which the diagnostics log
+                // must never capture. The fixed `"dns"` category is enough to show the class.
+                crate::diagnostics::record_transport("resolve_handle_dns", None, "dns");
                 Err(PdsClientError::NetworkError {
                     message: format!("DNS lookup failed: {}", e),
                 })
@@ -1496,6 +1560,8 @@ async fn try_resolve_http(
                     }
                     Err(e) => {
                         tracing::warn!(url = %url, error = %e, "HTTP well-known body read failed");
+                        // Host omitted: the well-known URL's host IS the handle domain.
+                        note_transport_failure("resolve_handle_http", None, &e);
                         Err(PdsClientError::NetworkError {
                             message: format!("failed to read response body: {}", e),
                         })
@@ -1515,6 +1581,8 @@ async fn try_resolve_http(
         }
         Err(e) => {
             tracing::warn!(url = %url, error = %e, "HTTP well-known request failed");
+            // Host omitted: the well-known URL's host IS the handle domain.
+            note_transport_failure("resolve_handle_http", None, &e);
             Err(PdsClientError::NetworkError {
                 message: format!("HTTP request failed: {}", e),
             })
@@ -4490,5 +4558,39 @@ mod tests {
             }
             e => panic!("Expected RateLimited, got: {:?}", e),
         }
+    }
+
+    /// A pure transport failure (connection refused) must leave a breadcrumb in the exportable
+    /// diagnostics log. This is the regression guard for the gap that made the re-key
+    /// `NETWORK_ERROR` invisible: `fetch_audit_log`'s `.send()` never yields a server verdict, so
+    /// it never reaches `classify_xrpc_response` — the breadcrumb has to be recorded at the
+    /// transport site itself. Also proves the recorded line stays redacted (the DID in the request
+    /// path must not appear).
+    #[tokio::test]
+    async fn transport_failure_records_a_diagnostics_breadcrumb() {
+        // Port 1 on loopback refuses immediately: a connect-class transport failure, no server.
+        let client = PdsClient::new_for_test("http://127.0.0.1:1".to_string());
+        let err = client
+            .fetch_audit_log("did:plc:diagbreadcrumb")
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(err, PdsClientError::NetworkError { .. }),
+            "expected NetworkError, got {err:?}"
+        );
+
+        let report = crate::diagnostics::export();
+        assert!(
+            report.contains("fetch_audit_log"),
+            "op name missing from report:\n{report}"
+        );
+        assert!(
+            report.contains("transport"),
+            "transport origin missing from report:\n{report}"
+        );
+        assert!(
+            !report.contains("diagbreadcrumb"),
+            "DID leaked into the redacted report:\n{report}"
+        );
     }
 }
