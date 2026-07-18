@@ -25,7 +25,9 @@ export type ScenarioName =
   | 'alert-active'
   | 'migration-in-flight'
   | 'agent-connected'
-  | 'app-password-minted';
+  | 'app-password-minted'
+  | 'rekey-eligible'
+  | 'rekey-mixed';
 
 /** The default scenario when `VITE_HARNESS` is set with no explicit choice. */
 export const DEFAULT_SCENARIO: ScenarioName = 'one-identity';
@@ -103,6 +105,32 @@ export const scenarios: Record<ScenarioName, () => WalletState> = {
       seedAppPassword('Chat client', true),
     ];
     upsertIdentity(state, identity);
+    return state;
+  },
+
+  // A single old-model did:plc identity (2-key rotationKeys) — the "Add a recovery key" strip
+  // shows and the full re-key upgrade runs (MM-411).
+  'rekey-eligible': () => {
+    const state = emptyWalletState();
+    state.pdsUrl = DEFAULT_PDS_URL;
+    upsertIdentity(state, seedIdentity({ handle: 'alice.harness.pds.local' }));
+    return state;
+  },
+
+  // Old-model + new-model + did:web side by side — only the old-model identity is offered the
+  // upgrade, proving the prompt skips new-model and did:web identities.
+  'rekey-mixed': () => {
+    const state = emptyWalletState();
+    state.pdsUrl = DEFAULT_PDS_URL;
+    upsertIdentity(state, seedIdentity({ handle: 'oldmodel.harness.pds.local' }));
+    upsertIdentity(
+      state,
+      seedIdentity({ handle: 'newmodel.harness.pds.local', recoveryKey: true })
+    );
+    upsertIdentity(
+      state,
+      seedIdentity({ handle: 'web.example.com', did: 'did:web:web.example.com' })
+    );
     return state;
   },
 };

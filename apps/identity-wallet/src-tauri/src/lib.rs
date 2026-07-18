@@ -14,6 +14,7 @@ pub mod oauth_client;
 pub mod pds_client;
 pub mod plc_monitor;
 pub mod recovery;
+pub mod rekey;
 pub mod rotate_repo_key;
 pub mod session_provider;
 pub mod share_ceremony;
@@ -1268,6 +1269,10 @@ pub fn run() {
             recovery::build_recovery_override_cmd,
             rotate_repo_key::build_repo_key_rotation_cmd,
             rotate_repo_key::submit_repo_key_rotation_cmd,
+            rekey::build_rekey_cmd,
+            rekey::submit_rekey_cmd,
+            rekey::confirm_rekey_cmd,
+            rekey::rekey_in_progress_cmd,
             recovery::submit_recovery_override_cmd,
             identity_removal::request_identity_removal,
             identity_removal::confirm_identity_removal,

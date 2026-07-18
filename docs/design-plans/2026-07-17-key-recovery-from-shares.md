@@ -282,6 +282,24 @@ rewrite Keychain Share 1, walk the user through saving the new Share 3 (reusing
 today: the device key itself. Old shares are voided by the re-key, not merely rotated —
 which is the honest framing, since they never protected anything.
 
+**As built (MM-411).** The wallet's `rekey.rs` composes the existing MM-407 seams:
+`share_ceremony::load_or_create_for_rekey` (a **per-DID** staging slot, so re-keying one
+identity can never abandon or orphan another's staged seed) → `build_did_plc_rotation_op`
+signed by `per_did_sign_closure` → `post_plc_operation` → `PUT /v1/recovery/escrow-share`
+(over a `SessionProvider` full-access session; the server nulls `accounts.recovery_share`
+in the same transaction and records `legacy_voided` in the escrow audit detail) → refresh.
+The three commands are `build_rekey` (preview + stage), `submit_rekey` (idempotent
+post→escrow→Share 1→refresh), and `confirm_rekey` (Share 3 saved → staging teardown).
+Two deliberate divergences from the sketch above: (1) the re-key writes a **per-DID**
+`recovery-share-1:{did}` Keychain slot rather than the app-global `recovery-share-1` the
+create/migration flows still use — clobbering a sibling identity's Share 1 would drop
+*that* identity below its baseline, which the "no intermediate state is worse off" AC
+forbids; unifying create/migration onto per-DID slots is a tracked follow-up. (2) Resume
+is driven by the per-DID staging slot (`rekey_in_progress`), so an interrupted re-key
+whose PLC op already landed (identity reads as new-model) still resurfaces the prompt and
+finishes escrow/Share 1 idempotently. The re-key op is device-key-signed, so `plc_monitor`
+already treats it as authorized (no tamper alert) — asserted by a test, not new code.
+
 ## Implementation seams (verified 2026-07-17)
 
 A pre-scheduling pass over the actual code confirmed the design lands on friendly seams:

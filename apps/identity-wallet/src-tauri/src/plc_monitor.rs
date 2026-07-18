@@ -468,6 +468,110 @@ mod tests {
         assert_eq!(changes.len(), 0, "No new changes after cache update");
     }
 
+    /// The wallet's own re-key op — a device-key-signed rotation that inserts a recovery key at
+    /// rotationKeys[1] (device stays [0], the PDS key shifts to [2]) — must be treated as an
+    /// AUTHORIZED change and raise no tamper alert. Authorization is by signature
+    /// (the device key signed it), independent of what the op does to the key set.
+    #[tokio::test]
+    async fn rekey_op_signed_by_device_key_is_authorized() {
+        use httpmock::prelude::*;
+        use p256::ecdsa::{signature::Signer, SigningKey};
+        use p256::FieldBytes;
+        use std::collections::BTreeMap;
+
+        let did = "did:plc:rekeyauthorized";
+        let (device_pub, device_priv) = setup_identity(did);
+        let device_uri = DidKeyUri(device_pub.key_id.clone());
+
+        // The PDS repo key and the fresh recovery key (in reality HKDF-derived; any did:key
+        // stands in for the monitor, which only checks the op's signature).
+        let pds_kp = crypto::generate_p256_keypair().expect("pds keygen");
+        let recovery_kp = crypto::generate_p256_keypair().expect("recovery keygen");
+
+        // A device-key sign closure (low-S) — the same shape `per_did_sign_closure` produces.
+        // `device_priv` is `[u8; 32]` (Copy), so both closures below capture their own copy.
+        let device_sign = move |data: &[u8]| {
+            let field_bytes: FieldBytes = device_priv.into();
+            let sk = SigningKey::from_bytes(&field_bytes).expect("valid device key");
+            let sig: p256::ecdsa::Signature = Signer::sign(&sk, data);
+            let sig = sig.normalize_s().unwrap_or(sig);
+            Ok::<_, crypto::CryptoError>(sig.to_bytes().to_vec())
+        };
+
+        // Old-model genesis: rotationKeys = [device, PDS], signed by the device key.
+        let genesis = crypto::build_did_plc_genesis_op_with_external_signer(
+            &device_uri,
+            &pds_kp.key_id,
+            "alice.test",
+            "https://pds.test",
+            device_sign,
+        )
+        .expect("genesis op");
+        let genesis_op: serde_json::Value =
+            serde_json::from_str(&genesis.signed_op_json).expect("parse genesis");
+
+        // The re-key: additively insert the recovery key at [1], device stays [0], PDS → [2].
+        let mut vms = BTreeMap::new();
+        vms.insert("atproto".to_string(), pds_kp.key_id.0.clone());
+        let mut services = BTreeMap::new();
+        services.insert(
+            "atproto_pds".to_string(),
+            crypto::PlcService {
+                service_type: "AtprotoPersonalDataServer".to_string(),
+                endpoint: "https://pds.test".to_string(),
+            },
+        );
+        let rekey = crypto::build_did_plc_rotation_op(
+            "bafy_rekey_genesis",
+            vec![
+                device_pub.key_id.clone(),
+                recovery_kp.key_id.0.clone(),
+                pds_kp.key_id.0.clone(),
+            ],
+            vms,
+            vec!["at://alice.test".to_string()],
+            services,
+            device_sign,
+        )
+        .expect("re-key rotation op");
+        let rekey_op: serde_json::Value =
+            serde_json::from_str(&rekey.signed_op_json).expect("parse re-key");
+
+        let audit_log = serde_json::json!([
+            {
+                "did": did,
+                "cid": "bafy_rekey_genesis",
+                "createdAt": "2026-03-29T00:00:00Z",
+                "nullified": false,
+                "operation": genesis_op
+            },
+            {
+                "did": did,
+                "cid": "bafy_rekey_rotation",
+                "createdAt": "2026-03-29T01:00:00Z",
+                "nullified": false,
+                "operation": rekey_op
+            }
+        ]);
+
+        let mock_server = MockServer::start();
+        let client = PdsClient::new_for_test(mock_server.base_url());
+        let monitor = PlcMonitor::new(&client);
+        mock_server.mock(|when, then| {
+            when.method(GET).path(format!("/{did}/log/audit"));
+            then.status(200)
+                .header("content-type", "application/json")
+                .json_body(audit_log.clone());
+        });
+
+        let changes = monitor.check_for_changes(did).await.expect("check failed");
+        assert_eq!(
+            changes.len(),
+            0,
+            "a device-key-signed re-key must not trigger a tamper alert"
+        );
+    }
+
     /// Unauthorized change (different key) creates an UnauthorizedChange alert.
     #[tokio::test]
     async fn test_ac6_2_unauthorized_change_detected() {

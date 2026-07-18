@@ -73,6 +73,33 @@ where
     Ok(result.rows_affected() == 1)
 }
 
+/// Void the legacy server-generated Share 2 (`accounts.recovery_share`, V010)
+/// for a DID that has just re-keyed onto the client-generated escrow model.
+///
+/// The pre-existing (old-model) split was generated server-side over a secret
+/// bound to nothing, and the server saw all three shares at ceremony time — so
+/// once the account has a client-generated Share 2 in `recovery_escrow`, the
+/// legacy column is dead material that must not linger in backups. Returns
+/// whether a non-NULL value was actually cleared, so the caller records the
+/// void only when there was material to void. Idempotent: a repeat call, or a
+/// call for an account that never had a legacy share (created after the
+/// ceremony inversion), is a no-op returning `false`.
+pub(crate) async fn null_legacy_recovery_share<'e, E>(
+    executor: E,
+    did: &str,
+) -> Result<bool, sqlx::Error>
+where
+    E: sqlx::Executor<'e, Database = Sqlite>,
+{
+    let result = sqlx::query(
+        "UPDATE accounts SET recovery_share = NULL WHERE did = ? AND recovery_share IS NOT NULL",
+    )
+    .bind(did)
+    .execute(executor)
+    .await?;
+    Ok(result.rows_affected() == 1)
+}
+
 /// Delete an account's escrow row (owner opt-out). Returns whether a row
 /// existed — the caller audits only a real deletion, keeping the repeat call
 /// an idempotent no-op with no duplicate event.
@@ -319,5 +346,43 @@ mod tests {
         assert!(!replace_escrow_share(&state.db, did, "ciphertext")
             .await
             .unwrap());
+    }
+
+    #[tokio::test]
+    async fn null_legacy_recovery_share_clears_only_when_present() {
+        let state = test_state().await;
+        let did = "did:plc:legacyrekey";
+        seed_account(&state.db, did).await;
+
+        // Account with no legacy material: the void is a no-op.
+        assert!(
+            !null_legacy_recovery_share(&state.db, did).await.unwrap(),
+            "an account without a legacy share has nothing to void"
+        );
+
+        // Simulate an old-model account carrying a server-generated Share 2.
+        sqlx::query("UPDATE accounts SET recovery_share = ? WHERE did = ?")
+            .bind("LEGACYSHARE2")
+            .bind(did)
+            .execute(&state.db)
+            .await
+            .unwrap();
+
+        assert!(
+            null_legacy_recovery_share(&state.db, did).await.unwrap(),
+            "the first void clears the dead legacy material"
+        );
+        let remaining: Option<String> =
+            sqlx::query_scalar("SELECT recovery_share FROM accounts WHERE did = ?")
+                .bind(did)
+                .fetch_one(&state.db)
+                .await
+                .unwrap();
+        assert_eq!(remaining, None, "legacy column is NULL after the void");
+
+        assert!(
+            !null_legacy_recovery_share(&state.db, did).await.unwrap(),
+            "the void is idempotent — a second call clears nothing"
+        );
     }
 }

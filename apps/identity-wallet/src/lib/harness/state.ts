@@ -59,6 +59,12 @@ export interface FakeIdentity {
   agents: FakeAgent[];
   /** App passwords minted for this identity (metadata only, like the real list route). */
   appPasswords: AppPasswordEntry[];
+  /**
+   * The staged recovery key of an in-flight old-model re-key (MM-411), or null when none is
+   * staged. Mirrors the per-DID `rekey-staging:{did}` Keychain slot: set by `build_rekey`,
+   * survives `submit_rekey`, and is cleared by `confirm_rekey`. Drives `rekey_in_progress`.
+   */
+  rekeyStagedRecoveryKey: string | null;
 }
 
 /** Transient state for the multi-step import (claim) flow. */
@@ -140,9 +146,16 @@ export function makeDidDoc(identity: FakeIdentity): Record<string, unknown> {
   };
 }
 
+/** The deterministic recovery `did:key` a re-key derives for a DID, in the fake. */
+export function fakeRecoveryKeyId(did: string): string {
+  return fakeDeviceKeyId(`${did}:recovery`);
+}
+
 /**
  * Seed a fresh identity. `deviceKeyIsRoot` controls whether the device key sits at
- * `rotationKeys[0]` — the "Root key" badge on the home card depends on this.
+ * `rotationKeys[0]` — the "Root key" badge on the home card depends on this. `recoveryKey`
+ * seeds the new (client-generated) recovery model — a 3-key `[device, recovery, PDS]` array,
+ * so the identity is NOT offered the old-model re-key upgrade (MM-411).
  */
 export function seedIdentity(
   opts: {
@@ -150,6 +163,7 @@ export function seedIdentity(
     pdsUrl?: string;
     did?: string;
     deviceKeyIsRoot?: boolean;
+    recoveryKey?: boolean;
   }
 ): FakeIdentity {
   const pdsUrl = opts.pdsUrl ?? DEFAULT_PDS_URL;
@@ -157,7 +171,12 @@ export function seedIdentity(
   const deviceKeyId = fakeDeviceKeyId(did);
   const deviceKeyIsRoot = opts.deviceKeyIsRoot ?? true;
   const pdsKey = fakeDeviceKeyId(`${did}:pds`);
-  const rotationKeys = deviceKeyIsRoot ? [deviceKeyId, pdsKey] : [pdsKey, deviceKeyId];
+  const baseKeys = deviceKeyIsRoot ? [deviceKeyId, pdsKey] : [pdsKey, deviceKeyId];
+  // New model inserts the recovery key at rotationKeys[1] (device stays [0], PDS shifts to [2]).
+  const rotationKeys =
+    opts.recoveryKey && deviceKeyIsRoot
+      ? [deviceKeyId, fakeRecoveryKeyId(did), pdsKey]
+      : baseKeys;
   return {
     did,
     handle: opts.handle,
@@ -167,6 +186,7 @@ export function seedIdentity(
     alerts: [],
     agents: [],
     appPasswords: [],
+    rekeyStagedRecoveryKey: null,
   };
 }
 
