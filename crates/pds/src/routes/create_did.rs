@@ -20,11 +20,17 @@
 //   that predate client-side generation, kept for the fleet-update transition window and
 //   flagged in logs for adoption tracking. The derived DID and its 3 Shamir shares are
 //   pre-stored on the pending account before the plc.directory POST: a retry (pending_did
-//   already set) reuses the stored shares and skips plc.directory instead of re-splitting
-//   the secret, which would orphan Share 2 from a prior attempt in accounts.recovery_share.
+//   already set) reuses the stored shares instead of re-splitting the secret, which would
+//   orphan Share 2 from a prior attempt in accounts.recovery_share.
 //
 // On the client-share path only the DID is pre-stored; retry idempotency of the share set is
 // the wallet's job (it stages the set locally until the ceremony is confirmed).
+//
+// Whether a retry skips the plc.directory POST is a *separate* decision from share reuse,
+// gated on `pending_plc_registered_at` — stamped only after plc.directory returns 2xx — not
+// on `pending_did` (which is stored before the POST). A retry after a failed POST re-submits
+// the signed genesis op (idempotent on plc.directory: same op → same DID) rather than
+// promoting a DID that never registered globally. Shares stay stable across those re-POSTs.
 //
 // Handles are NOT inserted here — that is POST /v1/handles' job (format validation +
 // optional DNS record creation), so a handle failure never has to unwind an already-
@@ -304,10 +310,16 @@ pub async fn create_did_handler(
     // being orphaned in accounts.recovery_share. The client-share path stores only the DID:
     // the wallet stages its share set locally, so nothing share-shaped may touch the DB
     // outside the escrow deposit at promotion.
-    let (skip_plc, legacy_shares) = match &custody {
+    //
+    // The plc-skip decision hangs on `pending_plc_registered_at` (stamped only after a 2xx
+    // from plc.directory), NOT on `pending_did` presence: `pending_did` is stored *before*
+    // the POST, so a retry after a failed POST must re-POST the (idempotent) genesis op
+    // rather than promoting a DID that never reached the directory.
+    let (plc_registered, legacy_shares) = match &custody {
         ShareCustody::ClientEscrow { .. } => {
-            let skip_plc = pre_store_did(&state.db, &session.account_id, &did, &pending).await?;
-            (skip_plc, None)
+            let plc_registered =
+                pre_store_did(&state.db, &session.account_id, &did, &pending).await?;
+            (plc_registered, None)
         }
         ShareCustody::ServerLegacy => {
             // Adoption tracking for the transition window: once this line goes quiet across
@@ -316,13 +328,18 @@ pub async fn create_did_handler(
                 account_id = %session.account_id,
                 "legacy server-side share ceremony used (pre-client-share wallet build)"
             );
-            let (skip_plc, s1, s2, s3) =
+            let (plc_registered, s1, s2, s3) =
                 pre_store_did_and_shares(&state.db, &session.account_id, &did, &pending).await?;
-            (skip_plc, Some((s1, s2, s3)))
+            (plc_registered, Some((s1, s2, s3)))
         }
     };
     check_already_promoted(&state.db, &did).await?;
-    if !skip_plc && signed_op_str.is_some() {
+    // Skip the POST only when a prior attempt confirmed registration. Otherwise submit (or
+    // re-submit) — the signed genesis op is idempotent on plc.directory, so a re-POST of a
+    // DID that *was* registered simply yields the same DID — and stamp the confirmation so a
+    // later retry (e.g. one whose promotion transaction failed) can skip it. did:web has no
+    // plc.directory log (`signed_op_str` is None), so it neither posts nor stamps.
+    if !plc_registered && signed_op_str.is_some() {
         crate::identity::genesis::post_to_plc_directory(
             &state.http_client,
             &state.config.plc_directory_url,
@@ -330,6 +347,7 @@ pub async fn create_did_handler(
             signed_op_str.as_deref().expect("checked above"),
         )
         .await?;
+        mark_plc_registered(&state.db, &session.account_id).await?;
     }
 
     // Phase 4: Build DID document, generate session, hash password, atomically promote.
@@ -499,9 +517,15 @@ fn validate_did_web_document(
 
 // ── Phase helpers ─────────────────────────────────────────────────────────────
 
+#[derive(sqlx::FromRow)]
 struct PendingAccount {
     handle: String,
     pending_did: Option<String>,
+    /// Set only after plc.directory returned 2xx for this account's genesis op
+    /// (`mark_plc_registered`). Distinct from `pending_did`, which is stored
+    /// *before* the POST: a retry may find `pending_did` set but this still NULL,
+    /// meaning the first POST never succeeded and must be re-attempted.
+    pending_plc_registered_at: Option<String>,
     email: String,
     pending_share_1: Option<String>,
     pending_share_2: Option<String>,
@@ -513,15 +537,9 @@ async fn load_pending_account(
     db: &sqlx::SqlitePool,
     account_id: &str,
 ) -> Result<PendingAccount, ApiError> {
-    let row: (
-        String,
-        Option<String>,
-        String,
-        Option<String>,
-        Option<String>,
-        Option<String>,
-    ) = sqlx::query_as(
-        "SELECT handle, pending_did, email, pending_share_1, pending_share_2, pending_share_3 \
+    sqlx::query_as::<_, PendingAccount>(
+        "SELECT handle, pending_did, pending_plc_registered_at, email, \
+                pending_share_1, pending_share_2, pending_share_3 \
              FROM pending_accounts WHERE id = ?",
     )
     .bind(account_id)
@@ -531,24 +549,21 @@ async fn load_pending_account(
         tracing::error!(error = %e, "failed to query pending account");
         ApiError::new(ErrorCode::InternalError, "failed to load account")
     })?
-    .ok_or_else(|| ApiError::new(ErrorCode::Unauthorized, "account not found"))?;
-    Ok(PendingAccount {
-        handle: row.0,
-        pending_did: row.1,
-        email: row.2,
-        pending_share_1: row.3,
-        pending_share_2: row.4,
-        pending_share_3: row.5,
-    })
+    .ok_or_else(|| ApiError::new(ErrorCode::Unauthorized, "account not found"))
 }
 
 /// Pre-store the DID alone for the client-share ceremony's retry resilience.
 ///
 /// The client-share path never writes share material to the DB — the wallet stages its
 /// share set locally until the ceremony is confirmed — so only `pending_did` is recorded.
-/// A retry (pending_did already set) returns `skip_plc = true` after the same DID-mismatch
-/// guard as the legacy path; any `pending_share_*` values left by an earlier legacy-shaped
-/// attempt are simply ignored (they are deleted with the pending row at promotion).
+/// A retry (pending_did already set) passes the same DID-mismatch guard as the legacy path,
+/// then reports whether plc.directory registration was confirmed on an earlier attempt
+/// (`pending_plc_registered_at`) so the caller can skip a redundant POST — but re-POSTs
+/// when it wasn't, since `pending_did` alone does not prove the op ever reached the
+/// directory. Any `pending_share_*` values left by an earlier legacy-shaped attempt are
+/// simply ignored (they are deleted with the pending row at promotion).
+///
+/// Returns `plc_registered` — `true` iff `pending_plc_registered_at` is already stamped.
 async fn pre_store_did(
     db: &sqlx::SqlitePool,
     account_id: &str,
@@ -567,8 +582,13 @@ async fn pre_store_did(
                 "DID mismatch: derived DID does not match pre-stored value",
             ));
         }
-        tracing::info!(did = %pre_stored_did, "retry detected: pending_did already set, skipping plc.directory");
-        return Ok(true);
+        let plc_registered = pending.pending_plc_registered_at.is_some();
+        tracing::info!(
+            did = %pre_stored_did,
+            plc_registered,
+            "retry detected: pending_did already set; skipping plc.directory only if registration was confirmed"
+        );
+        return Ok(plc_registered);
     }
 
     let result = sqlx::query("UPDATE pending_accounts SET pending_did = ? WHERE id = ?")
@@ -596,11 +616,14 @@ async fn pre_store_did(
 /// On first attempt: generates 3 Shamir shares, stores `pending_did` + all three shares
 /// in a single UPDATE so they are available to any retry.
 ///
-/// On retry (pending_did already set): reuses the stored shares and returns `skip_plc = true`
-/// to skip the plc.directory call. This guarantees every attempt returns the same shares,
-/// preventing Share 2 from being orphaned in accounts.recovery_share.
+/// On retry (pending_did already set): reuses the stored shares — guaranteeing every attempt
+/// returns the same shares, preventing Share 2 from being orphaned in accounts.recovery_share
+/// — and reports whether plc.directory registration was confirmed on an earlier attempt
+/// (`pending_plc_registered_at`). Share reuse and the plc-skip decision are orthogonal: shares
+/// stay stable across retries while the POST is re-attempted until `pending_plc_registered_at`
+/// is stamped, so `pending_did` alone never promotes an unregistered DID.
 ///
-/// Returns `(skip_plc, share1, share2, share3)`.
+/// Returns `(plc_registered, share1, share2, share3)`.
 async fn pre_store_did_and_shares(
     db: &sqlx::SqlitePool,
     account_id: &str,
@@ -619,7 +642,12 @@ async fn pre_store_did_and_shares(
                 "DID mismatch: derived DID does not match pre-stored value",
             ));
         }
-        tracing::info!(did = %pre_stored_did, "retry detected: pending_did already set, reusing shares, skipping plc.directory");
+        let plc_registered = pending.pending_plc_registered_at.is_some();
+        tracing::info!(
+            did = %pre_stored_did,
+            plc_registered,
+            "retry detected: pending_did already set, reusing shares; skipping plc.directory only if registration was confirmed"
+        );
         let s1 = pending.pending_share_1.clone().ok_or_else(|| {
             tracing::error!(
                 "retry: pending_share_1 is NULL; shares were not stored on first attempt"
@@ -647,7 +675,7 @@ async fn pre_store_did_and_shares(
                 "retry: missing shares from first attempt",
             )
         })?;
-        return Ok((true, s1, s2, s3));
+        return Ok((plc_registered, s1, s2, s3));
     }
 
     let (s1, s2, s3) = generate_recovery_shares()?;
@@ -677,6 +705,37 @@ async fn pre_store_did_and_shares(
         ));
     }
     Ok((false, s1, s2, s3))
+}
+
+/// Stamp `pending_plc_registered_at` after plc.directory has accepted the genesis op.
+///
+/// This is the confirmed-registration marker `pre_store_did`/`pre_store_did_and_shares`
+/// read on a retry: only once it is set may a retry skip the (idempotent) re-POST. It is
+/// written *after* a 2xx from the directory but *before* the promotion transaction, so if
+/// promotion then fails the retry correctly skips the POST — the DID is already registered.
+async fn mark_plc_registered(db: &sqlx::SqlitePool, account_id: &str) -> Result<(), ApiError> {
+    let result = sqlx::query(
+        "UPDATE pending_accounts SET pending_plc_registered_at = datetime('now') WHERE id = ?",
+    )
+    .bind(account_id)
+    .execute(db)
+    .await
+    .map_err(|e| {
+        tracing::error!(error = %e, "failed to mark PLC registration confirmed");
+        ApiError::new(
+            ErrorCode::InternalError,
+            "failed to record PLC registration",
+        )
+    })?;
+
+    if result.rows_affected() == 0 {
+        tracing::error!(account_id = %account_id, "pending account row vanished before PLC registration mark");
+        return Err(ApiError::new(
+            ErrorCode::InternalError,
+            "account no longer exists",
+        ));
+    }
+    Ok(())
 }
 
 /// Check if the DID is already fully promoted (Step 8).
@@ -1502,11 +1561,12 @@ mod tests {
 
     // ── Retry path skips plc.directory ────────────────────────────────────────
 
-    /// When pending_did already set, plc.directory is not called.
+    /// When pending_did is set AND registration was confirmed on a prior attempt
+    /// (`pending_plc_registered_at` stamped), plc.directory is not called again.
     #[tokio::test]
-    async fn retry_with_pending_did_skips_plc_directory() {
+    async fn retry_with_confirmed_registration_skips_plc_directory() {
         let mock_server = MockServer::start().await;
-        // plc.directory must NOT be called on retry
+        // plc.directory must NOT be called on a confirmed-registration retry
         Mock::given(method("POST"))
             .respond_with(ResponseTemplate::new(200))
             .expect(0)
@@ -1531,15 +1591,18 @@ mod tests {
         )
         .expect("verify should succeed");
 
-        // Pre-set pending_did and all three shares to simulate a retry scenario.
-        // The retry branch in pre_store_did_and_shares requires all share columns to be
-        // non-NULL; leaving them NULL would cause a 500 instead of 200.
+        // Pre-set pending_did, all three shares, AND pending_plc_registered_at to simulate a
+        // retry whose first attempt already registered on plc.directory (but died before
+        // promotion). Only the confirmation stamp — not pending_did alone — lets the retry
+        // skip the POST. The retry branch in pre_store_did_and_shares requires all share
+        // columns to be non-NULL; leaving them NULL would cause a 500 instead of 200.
         let pre_share_1 = BASE32_NOPAD.encode(&[0x11; 32]);
         let pre_share_2 = BASE32_NOPAD.encode(&[0x22; 32]);
         let pre_share_3 = BASE32_NOPAD.encode(&[0x33; 32]);
         sqlx::query(
             "UPDATE pending_accounts \
-             SET pending_did = ?, pending_share_1 = ?, pending_share_2 = ?, pending_share_3 = ? \
+             SET pending_did = ?, pending_share_1 = ?, pending_share_2 = ?, pending_share_3 = ?, \
+                 pending_plc_registered_at = datetime('now') \
              WHERE id = ?",
         )
         .bind(&verified.did)
@@ -1585,6 +1648,188 @@ mod tests {
             "retry should return pre-stored share 3, not a new one"
         );
         // wiremock verifies expect(0) on mock_server drop
+    }
+
+    // ── Retry re-POSTs when registration was never confirmed ──────────────────
+
+    /// A retry that finds `pending_did` set but `pending_plc_registered_at` NULL — the
+    /// signature of a first attempt whose plc.directory POST failed — must re-POST the
+    /// (idempotent) genesis op rather than skipping it and promoting an unregistered DID.
+    #[tokio::test]
+    async fn retry_without_confirmed_registration_reposts() {
+        let mock_server = MockServer::start().await;
+        // plc.directory MUST be re-POSTed because the first attempt never confirmed.
+        Mock::given(method("POST"))
+            .and(path_regex(r"^/did:plc:[a-z2-7]+$"))
+            .respond_with(ResponseTemplate::new(200))
+            .expect(1)
+            .named("plc.directory genesis op re-POST")
+            .mount(&mock_server)
+            .await;
+
+        let state = test_state_for_did(mock_server.uri()).await;
+        let db = state.db.clone();
+        let setup = insert_test_data(&db).await;
+        let (rotation_key_public, signed_op) = make_signed_op(
+            &setup.handle,
+            &state.config.public_url,
+            &setup.repo_signing_key_id,
+        );
+
+        let signed_op_str = serde_json::to_string(&signed_op).unwrap();
+        let verified = crypto::verify_genesis_op(
+            &signed_op_str,
+            &crypto::DidKeyUri(rotation_key_public.clone()),
+        )
+        .expect("verify should succeed");
+
+        // Simulate a first attempt that pre-stored the DID + shares but died on the POST:
+        // pending_plc_registered_at is deliberately left NULL.
+        sqlx::query(
+            "UPDATE pending_accounts \
+             SET pending_did = ?, pending_share_1 = ?, pending_share_2 = ?, pending_share_3 = ? \
+             WHERE id = ?",
+        )
+        .bind(&verified.did)
+        .bind(BASE32_NOPAD.encode(&[0x11; 32]))
+        .bind(BASE32_NOPAD.encode(&[0x22; 32]))
+        .bind(BASE32_NOPAD.encode(&[0x33; 32]))
+        .bind(&setup.account_id)
+        .execute(&db)
+        .await
+        .expect("pre-store pending_did and shares without registration");
+
+        let app = crate::app::app(state);
+        let response = app
+            .oneshot(create_did_request(
+                &setup.session_token,
+                &rotation_key_public,
+                &signed_op,
+            ))
+            .await
+            .unwrap();
+
+        assert_eq!(
+            response.status(),
+            StatusCode::OK,
+            "retry should re-POST and then succeed"
+        );
+        // The account is promoted only because the re-POST succeeded.
+        let promoted: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM accounts WHERE did = ?")
+            .bind(&verified.did)
+            .fetch_one(&db)
+            .await
+            .unwrap();
+        assert_eq!(promoted, 1, "account should be promoted after the re-POST");
+        // wiremock verifies expect(1) on mock_server drop
+    }
+
+    /// End-to-end: a first submission whose plc.directory POST fails (502) must NOT promote
+    /// the account, and the follow-up request must re-POST — not treat `pending_did` as
+    /// proof of registration and return success without ever registering the DID.
+    #[tokio::test]
+    async fn failed_first_submission_does_not_promote_then_retry_succeeds() {
+        let mock_server = MockServer::start().await;
+        // First attempt: plc.directory is down (500 → 502 to the client).
+        Mock::given(method("POST"))
+            .and(path_regex(r"^/did:plc:[a-z2-7]+$"))
+            .respond_with(ResponseTemplate::new(500))
+            .expect(1)
+            .named("plc.directory first POST fails")
+            .mount(&mock_server)
+            .await;
+
+        let state = test_state_for_did(mock_server.uri()).await;
+        let db = state.db.clone();
+        let setup = insert_test_data(&db).await;
+        let (rotation_key_public, signed_op) = make_signed_op(
+            &setup.handle,
+            &state.config.public_url,
+            &setup.repo_signing_key_id,
+        );
+        let signed_op_str = serde_json::to_string(&signed_op).unwrap();
+        let verified = crypto::verify_genesis_op(
+            &signed_op_str,
+            &crypto::DidKeyUri(rotation_key_public.clone()),
+        )
+        .expect("verify should succeed");
+
+        // First request: the POST fails, so the ceremony must abort with 502.
+        let response = crate::app::app(state.clone())
+            .oneshot(create_did_request(
+                &setup.session_token,
+                &rotation_key_public,
+                &signed_op,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(
+            response.status(),
+            StatusCode::BAD_GATEWAY,
+            "a failed plc.directory POST must surface as 502"
+        );
+
+        // Critically: the account was NOT promoted, and the DID was pre-stored but never
+        // marked as registered — the retry must re-POST, not trust pending_did.
+        let promoted: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM accounts WHERE did = ?")
+            .bind(&verified.did)
+            .fetch_one(&db)
+            .await
+            .unwrap();
+        assert_eq!(
+            promoted, 0,
+            "a failed submission must not promote the account"
+        );
+        let (pending_did, registered_at): (Option<String>, Option<String>) = sqlx::query_as(
+            "SELECT pending_did, pending_plc_registered_at FROM pending_accounts WHERE id = ?",
+        )
+        .bind(&setup.account_id)
+        .fetch_one(&db)
+        .await
+        .unwrap();
+        assert_eq!(
+            pending_did.as_deref(),
+            Some(verified.did.as_str()),
+            "pending_did is pre-stored even on a failed POST"
+        );
+        assert!(
+            registered_at.is_none(),
+            "pending_plc_registered_at must stay NULL after a failed POST"
+        );
+
+        // Now plc.directory recovers: the retry re-POSTs and succeeds.
+        mock_server.reset().await;
+        Mock::given(method("POST"))
+            .and(path_regex(r"^/did:plc:[a-z2-7]+$"))
+            .respond_with(ResponseTemplate::new(200))
+            .expect(1)
+            .named("plc.directory retry POST succeeds")
+            .mount(&mock_server)
+            .await;
+
+        let retry = crate::app::app(state)
+            .oneshot(create_did_request(
+                &setup.session_token,
+                &rotation_key_public,
+                &signed_op,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(
+            retry.status(),
+            StatusCode::OK,
+            "retry should re-POST and succeed once plc.directory recovers"
+        );
+        let promoted: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM accounts WHERE did = ?")
+            .bind(&verified.did)
+            .fetch_one(&db)
+            .await
+            .unwrap();
+        assert_eq!(
+            promoted, 1,
+            "account is promoted only after the DID is actually registered"
+        );
+        // wiremock verifies both expect(1) mounts across the reset
     }
 
     // ── Test Gap G2: Retry with mismatched pending_did ────────────────────────
@@ -1991,7 +2236,8 @@ mod tests {
             &setup.repo_signing_key_id,
         );
 
-        // Derive DID and pre-store it with dummy shares to trigger the skip_plc path.
+        // Derive DID and pre-store it with dummy shares AND a registration stamp to trigger
+        // the skip_plc path (pending_plc_registered_at set = plc.directory already confirmed).
         let signed_op_str = serde_json::to_string(&signed_op).unwrap();
         let verified = crypto::verify_genesis_op(
             &signed_op_str,
@@ -2000,7 +2246,8 @@ mod tests {
         .expect("verify should succeed");
         sqlx::query(
             "UPDATE pending_accounts \
-             SET pending_did = ?, pending_share_1 = ?, pending_share_2 = ?, pending_share_3 = ? \
+             SET pending_did = ?, pending_share_1 = ?, pending_share_2 = ?, pending_share_3 = ?, \
+                 pending_plc_registered_at = datetime('now') \
              WHERE id = ?",
         )
         .bind(&verified.did)
@@ -2097,7 +2344,8 @@ mod tests {
             &setup.repo_signing_key_id,
         );
 
-        // Pre-store pending_did to use the skip_plc path (no network required).
+        // Pre-store pending_did + a registration stamp to use the skip_plc path (no network
+        // required — pending_plc_registered_at set = plc.directory already confirmed).
         let signed_op_str = serde_json::to_string(&signed_op).unwrap();
         let verified = crypto::verify_genesis_op(
             &signed_op_str,
@@ -2106,7 +2354,8 @@ mod tests {
         .expect("verify should succeed");
         sqlx::query(
             "UPDATE pending_accounts \
-             SET pending_did = ?, pending_share_1 = ?, pending_share_2 = ?, pending_share_3 = ? \
+             SET pending_did = ?, pending_share_1 = ?, pending_share_2 = ?, pending_share_3 = ?, \
+                 pending_plc_registered_at = datetime('now') \
              WHERE id = ?",
         )
         .bind(&verified.did)
@@ -2437,8 +2686,9 @@ mod tests {
         assert_eq!(*stored_seed, *seed);
     }
 
-    /// A client-share retry (pending_did already set, no pending shares) skips
-    /// plc.directory and still lands the escrow deposit at promotion.
+    /// A client-share retry whose first attempt confirmed registration (pending_did set,
+    /// pending_plc_registered_at stamped, no pending shares) skips plc.directory and still
+    /// lands the escrow deposit at promotion.
     #[tokio::test]
     async fn client_share_retry_skips_plc_and_deposits_escrow() {
         let mock_server = MockServer::start().await;
@@ -2458,8 +2708,71 @@ mod tests {
             &setup.repo_signing_key_id,
         );
 
-        // Simulate a first attempt that reached the pre-store but died before promotion:
-        // pending_did set, pending_share_* untouched (the client-share path never writes them).
+        // Simulate a first attempt that reached the pre-store AND confirmed registration but
+        // died before promotion: pending_did + pending_plc_registered_at set, pending_share_*
+        // untouched (the client-share path never writes them). Only the registration stamp
+        // lets the retry skip the POST.
+        let verified = crypto::verify_genesis_op(
+            &serde_json::to_string(&ceremony.signed_op).unwrap(),
+            &crypto::DidKeyUri(ceremony.rotation_key_public.clone()),
+        )
+        .unwrap();
+        sqlx::query(
+            "UPDATE pending_accounts \
+             SET pending_did = ?, pending_plc_registered_at = datetime('now') WHERE id = ?",
+        )
+        .bind(&verified.did)
+        .bind(&setup.account_id)
+        .execute(&db)
+        .await
+        .unwrap();
+
+        let escrow_share = ceremony.envelopes[1].encode_share();
+        let response = crate::app::app(state)
+            .oneshot(client_share_request(
+                &setup.session_token,
+                &ceremony,
+                &ceremony.recovery_key_id,
+                &escrow_share,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK, "retry should return 200");
+
+        let escrow_count: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM recovery_escrow WHERE did = ?")
+                .bind(&verified.did)
+                .fetch_one(&db)
+                .await
+                .unwrap();
+        assert_eq!(escrow_count, 1, "the retry deposits exactly one escrow row");
+        // wiremock verifies expect(0) on drop
+    }
+
+    /// The client-share path has the same property as the legacy path: a retry whose first
+    /// POST failed (pending_did set, pending_plc_registered_at NULL) re-POSTs the genesis op
+    /// instead of promoting an unregistered DID.
+    #[tokio::test]
+    async fn client_share_retry_without_registration_reposts() {
+        let mock_server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path_regex(r"^/did:plc:[a-z2-7]+$"))
+            .respond_with(ResponseTemplate::new(200))
+            .expect(1)
+            .named("plc.directory genesis op re-POST")
+            .mount(&mock_server)
+            .await;
+
+        let state = test_state_for_did(mock_server.uri()).await;
+        let db = state.db.clone();
+        let setup = insert_test_data(&db).await;
+        let ceremony = make_client_share_ceremony(
+            &setup.handle,
+            &state.config.public_url,
+            &setup.repo_signing_key_id,
+        );
+
+        // First attempt reached the pre-store but its POST never confirmed.
         let verified = crypto::verify_genesis_op(
             &serde_json::to_string(&ceremony.signed_op).unwrap(),
             &crypto::DidKeyUri(ceremony.rotation_key_public.clone()),
@@ -2482,16 +2795,18 @@ mod tests {
             ))
             .await
             .unwrap();
-        assert_eq!(response.status(), StatusCode::OK, "retry should return 200");
-
-        let escrow_count: i64 =
-            sqlx::query_scalar("SELECT COUNT(*) FROM recovery_escrow WHERE did = ?")
-                .bind(&verified.did)
-                .fetch_one(&db)
-                .await
-                .unwrap();
-        assert_eq!(escrow_count, 1, "the retry deposits exactly one escrow row");
-        // wiremock verifies expect(0) on drop
+        assert_eq!(
+            response.status(),
+            StatusCode::OK,
+            "retry should re-POST and then succeed"
+        );
+        let promoted: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM accounts WHERE did = ?")
+            .bind(&verified.did)
+            .fetch_one(&db)
+            .await
+            .unwrap();
+        assert_eq!(promoted, 1, "account should be promoted after the re-POST");
+        // wiremock verifies expect(1) on drop
     }
 
     /// A declared recovery key that does not appear in the op's rotationKeys is refused —
