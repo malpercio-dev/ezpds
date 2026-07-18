@@ -60,16 +60,28 @@ export async function signPlcOp(unsignedOp, rotationKeypair) {
 }
 
 /**
- * Build and sign a did:plc genesis operation.
+ * Build and sign a did:plc genesis operation for the client-share ceremony.
  *
- * rotationKeys[0] = the locally-held rotation key (signs this op),
- * rotationKeys[1] = the PDS-issued per-account repo signing key, which is also
- * verificationMethods.atproto (it signs repo commits on the PDS).
+ * rotationKeys = [rotation, recovery, PDS] (the recovery slot mirrors the wallet's
+ * client-share ceremony: the device/rotation key stays highest-priority, the
+ * wallet-derived recovery key sits in the middle, the PDS repo signing key last):
+ *   rotationKeys[0] = the locally-held rotation key (signs this op),
+ *   rotationKeys[1] = the recovery rotation key (its did:key is declared as
+ *                     `recoveryKey` to POST /v1/dids; the server verifies it appears here),
+ *   rotationKeys[2] = the PDS-issued per-account repo signing key, which is also
+ *                     verificationMethods.atproto (it signs repo commits on the PDS).
  *
  * Returns the derived DID (`did:plc:` + first 24 chars of base32(sha256(signed
  * op DAG-CBOR))) and the signed op as a JSON-ready object.
  */
-export async function buildGenesisOp({ rotationKeyId, repoSigningKeyId, rotationKeypair, handle, pdsUrl }) {
+export async function buildGenesisOp({
+  rotationKeyId,
+  recoveryKeyId,
+  repoSigningKeyId,
+  rotationKeypair,
+  handle,
+  pdsUrl,
+}) {
   const unsignedOp = {
     prev: null,
     type: 'plc_operation',
@@ -80,7 +92,7 @@ export async function buildGenesisOp({ rotationKeyId, repoSigningKeyId, rotation
       },
     },
     alsoKnownAs: [`at://${handle}`],
-    rotationKeys: [rotationKeyId, repoSigningKeyId],
+    rotationKeys: [rotationKeyId, recoveryKeyId, repoSigningKeyId],
     verificationMethods: {
       atproto: repoSigningKeyId,
     },
@@ -93,6 +105,30 @@ export async function buildGenesisOp({ rotationKeyId, repoSigningKeyId, rotation
   const did = `did:plc:${base32Encode(hash).slice(0, 24)}`;
 
   return { did, signedOp };
+}
+
+/**
+ * Build a structurally-valid v2 Shamir Share 2 envelope for the client-share
+ * `escrowShare` field of POST /v1/dids.
+ *
+ * The server (crates/crypto `ShareEnvelope::decode_share`) validates only the
+ * envelope's structure — version, index, and trailing checksum — and that the index
+ * is 2; it never reconstructs a secret from it. The interop harness provisions
+ * accounts to exercise other surfaces and does not test recovery, so a fresh random
+ * payload under a random set_id is sufficient (the recovery key in `rotationKeys`
+ * is likewise an independent keypair). The wire layout mirrors the Rust envelope:
+ * `version(1)=2 || set_id(4 BE) || index(1)=2 || payload(32) || checksum(4 =
+ * sha256(preceding 38)[..4])`, uppercase base32 (RFC 4648, no padding).
+ */
+export function encodeEscrowShare() {
+  const preimage = Buffer.alloc(38);
+  preimage.writeUInt8(2, 0); // version
+  crypto.randomBytes(4).copy(preimage, 1); // set_id (4B big-endian; random bytes are fine)
+  preimage.writeUInt8(2, 5); // index — the escrow slot holds Share 2 only
+  crypto.randomBytes(32).copy(preimage, 6); // payload
+  const checksum = crypto.createHash('sha256').update(preimage).digest().subarray(0, 4);
+  const envelope = Buffer.concat([preimage, checksum]); // 42 bytes
+  return base32Encode(envelope).toUpperCase();
 }
 
 /** Cryptographically random password suitable for a test account. */
