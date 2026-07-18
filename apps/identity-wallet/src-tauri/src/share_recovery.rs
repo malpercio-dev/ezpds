@@ -1281,11 +1281,13 @@ mod tests {
         assert_eq!(collected.index, 3);
         assert_eq!(collected.set_id, 0x1111_1111);
 
-        // A corrupted share fails the checksum — distinct from a format error.
+        // A corrupted share fails the checksum — distinct from a format error. Flip a
+        // character in the payload region (char 20 ≈ byte 12): the leading character
+        // encodes the version byte, whose corruption is a ShareVersion error instead.
         let share1 = set_a[0].encode_share();
-        let flipped = if share1.starts_with('A') { "B" } else { "A" };
+        let flipped = if &share1[20..21] == "A" { "B" } else { "A" };
         let mut corrupt = share1.to_string();
-        corrupt.replace_range(0..1, flipped);
+        corrupt.replace_range(20..21, flipped);
         assert!(matches!(
             add_share_impl(&slot, &corrupt).await,
             Err(ShareRecoveryError::ShareChecksum)
