@@ -6,16 +6,14 @@
 //
 // Implements: GET /xrpc/com.atproto.sync.listBlobs
 
-use axum::{
-    extract::{Query, State},
-    response::Json,
-};
+use axum::{extract::State, response::Json};
 use serde::{Deserialize, Serialize};
 
 use common::{ApiError, ErrorCode};
 
 use crate::app::AppState;
 use crate::db::blobs;
+use crate::lexicon::LexiconParams;
 
 // ── Query parameters ────────────────────────────────────────────────────────
 
@@ -49,10 +47,11 @@ pub struct ListBlobsResponse {
 /// as `cursor` to get the next page.
 pub async fn list_blobs(
     State(state): State<AppState>,
-    Query(params): Query<ListBlobsParams>,
+    LexiconParams(params): LexiconParams<ListBlobsParams>,
 ) -> Result<Json<ListBlobsResponse>, ApiError> {
-    // Clamp limit to valid range.
-    let limit = params.limit.clamp(1, 2000);
+    // `limit` is already bounded to [1, 1000] by the lexicon (anything outside is a 400 before
+    // this handler runs); an absent one is `default_limit()`'s 500, also in range.
+    let limit = params.limit;
 
     // Fetch one extra to detect if there's a next page.
     let mut cids = blobs::list_blob_cids(&state.db, &params.did, limit, params.cursor.as_deref())
@@ -274,7 +273,7 @@ mod tests {
         let response = app_with_state(state)
             .oneshot(
                 Request::builder()
-                    .uri("/xrpc/com.atproto.sync.listBlobs?did=did:plc:ordertest&limit=2000")
+                    .uri("/xrpc/com.atproto.sync.listBlobs?did=did:plc:ordertest&limit=1000")
                     .body(Body::empty())
                     .unwrap(),
             )

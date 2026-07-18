@@ -67,13 +67,17 @@ pub(super) fn validate(
             min_length,
             max_length,
             max_graphemes,
+            enum_values,
             ..
         } => {
             let Value::String(s) = value else {
                 return invalid(format!("{path} must be a string"));
             };
-            // Order mirrors `@atproto/lexicon`'s string validator: byte-length bounds, then the
-            // grapheme bound, then the format check.
+            // Order mirrors `@atproto/lexicon`'s string validator: enum, then byte-length bounds,
+            // then the grapheme bound, then the format check.
+            if !enum_values.is_empty() && !enum_values.iter().any(|e| e == s) {
+                return invalid(format!("{path} must be one of ({})", enum_values.join("|")));
+            }
             if let Some(max) = max_length {
                 if s.len() as u64 > *max {
                     return invalid(format!("{path} must not be longer than {max} characters"));
@@ -108,7 +112,10 @@ pub(super) fn validate(
             Ok(())
         }
         LexSchema::Integer {
-            minimum, maximum, ..
+            minimum,
+            maximum,
+            enum_values,
+            ..
         } => {
             // `Number.isInteger` in the reference: a float with a zero fraction is an integer.
             let is_integer = value.is_i64()
@@ -119,6 +126,16 @@ pub(super) fn validate(
             }
             let n = value.as_i64().or_else(|| value.as_f64().map(|f| f as i64));
             if let Some(n) = n {
+                if !enum_values.is_empty() && !enum_values.contains(&n) {
+                    return invalid(format!(
+                        "{path} must be one of ({})",
+                        enum_values
+                            .iter()
+                            .map(i64::to_string)
+                            .collect::<Vec<_>>()
+                            .join("|")
+                    ));
+                }
                 if let Some(max) = maximum {
                     if n > *max {
                         return invalid(format!("{path} can not be greater than {max}"));
@@ -175,6 +192,22 @@ pub(super) fn validate(
         }
         LexSchema::Union { refs, closed } => validate_union(registry, path, refs, *closed, value),
     }
+}
+
+/// Assert a coerced query-params object conforms to `params` (a `type: "params"` def parsed into
+/// the same [`LexObject`] shape an input body uses), rooted at `path` (`"Params"`). `value` is
+/// the already-coerced object built by `lexicon::params` — absent/empty-string query values are
+/// expected to already be omitted, matching the reference's `decodeQueryParams`. This is a thin
+/// wrapper: params share the same required/default/type-check semantics as an input body's
+/// object properties (`@atproto/lexicon`'s `params()` validator is structurally the same
+/// algorithm as its `object()` validator).
+pub(super) fn validate_params(
+    registry: &Registry,
+    path: &str,
+    params: &LexObject,
+    value: &Value,
+) -> Result<(), ValidationError> {
+    validate_object(registry, path, params, value)
 }
 
 fn validate_object(

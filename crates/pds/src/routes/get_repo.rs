@@ -3,13 +3,14 @@
 //! com.atproto.sync.getRepo - Export a repository as a CAR file.
 
 use axum::body::{Body, Bytes};
-use axum::extract::{Query, State};
+use axum::extract::State;
 use axum::http::{header, StatusCode};
 use axum::response::{IntoResponse, Response};
 use serde::Deserialize;
 
 use crate::app::AppState;
 use crate::db::blocks::SqliteBlockStore;
+use crate::lexicon::LexiconParams;
 use common::{ApiError, ErrorCode};
 use repo_engine::Cid;
 
@@ -32,14 +33,9 @@ pub struct GetRepoParams {
 /// repo never materializes the whole CAR in memory.
 pub async fn get_repo(
     State(state): State<AppState>,
-    Query(params): Query<GetRepoParams>,
+    LexiconParams(params): LexiconParams<GetRepoParams>,
 ) -> Result<Response, ApiError> {
     let did = &params.did;
-
-    // Validate DID format.
-    if !crate::auth::validation::is_valid_did(did) {
-        return Err(ApiError::new(ErrorCode::InvalidClaim, "invalid DID format"));
-    }
 
     // Look up the repo root CID from the accounts table.
     let root_cid_str = crate::db::accounts::get_repo_root_cid(&state.db, did)

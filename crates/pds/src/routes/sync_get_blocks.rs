@@ -11,36 +11,22 @@
 
 use std::collections::HashMap;
 
-use axum::extract::{RawQuery, State};
+use axum::extract::State;
 use axum::http::{header, StatusCode};
 use axum::response::{IntoResponse, Response};
+use serde::Deserialize;
 
 use crate::app::AppState;
+use crate::lexicon::LexiconParams;
 use common::{ApiError, ErrorCode};
 use repo_engine::{build_blocks_car, Cid};
 
-fn parse_query(raw_query: Option<&str>) -> Result<(String, Vec<String>), ApiError> {
-    let raw_query = raw_query.unwrap_or_default();
-    let mut did = None;
-    let mut cids = Vec::new();
-
-    for pair in raw_query.split('&').filter(|p| !p.is_empty()) {
-        let (raw_key, raw_value) = pair.split_once('=').unwrap_or((pair, ""));
-        let key = urlencoding::decode(raw_key)
-            .map_err(|_| ApiError::new(ErrorCode::InvalidClaim, "invalid query encoding"))?;
-        let value = urlencoding::decode(raw_value)
-            .map_err(|_| ApiError::new(ErrorCode::InvalidClaim, "invalid query encoding"))?
-            .into_owned();
-
-        match key.as_ref() {
-            "did" => did = Some(value),
-            "cids" => cids.push(value),
-            _ => {}
-        }
-    }
-
-    let did = did.ok_or_else(|| ApiError::new(ErrorCode::InvalidClaim, "missing did"))?;
-    Ok((did, cids))
+#[derive(Deserialize)]
+pub struct GetBlocksParams {
+    did: String,
+    /// Repeated `cids=` query keys — the one route whose array param previously required a
+    /// hand-rolled `RawQuery` parse, now handled generically by `LexiconParams`.
+    cids: Vec<String>,
 }
 
 /// GET /xrpc/com.atproto.sync.getBlocks?did=<did>&cids=<cid>&cids=<cid>...
@@ -56,16 +42,14 @@ fn parse_query(raw_query: Option<&str>) -> Result<(String, Vec<String>), ApiErro
 /// * A malformed CID (or an empty `cids` list) → `400`.
 pub async fn sync_get_blocks(
     State(state): State<AppState>,
-    RawQuery(raw_query): RawQuery,
+    LexiconParams(params): LexiconParams<GetBlocksParams>,
 ) -> Result<Response, ApiError> {
-    let (did, cids) = parse_query(raw_query.as_deref())?;
-    let did = &did;
+    let did = &params.did;
+    let cids = params.cids;
 
-    // Validate DID format.
-    if !crate::auth::validation::is_valid_did(did) {
-        return Err(ApiError::new(ErrorCode::InvalidClaim, "invalid DID format"));
-    }
-
+    // `did`'s format and every `cids` element's format are already lexicon-enforced above. A
+    // fully absent `cids` is a lexicon 400 too; an all-empty repeated key (`cids=&cids=`, JS-array
+    // truthy but every element filtered) is the one shape that still reaches here as `[]`.
     if cids.is_empty() {
         return Err(ApiError::new(ErrorCode::InvalidClaim, "no CIDs requested"));
     }
@@ -312,9 +296,10 @@ mod tests {
     async fn nonexistent_account_returns_404() {
         let state = crate::app::test_state().await;
         let app = crate::app::app(state);
+        let cid = valid_absent_cid(b"nonexistent-account-block");
 
         let response = app
-            .oneshot(get_request("did:plc:nonexistent", &["bafkreifake"]))
+            .oneshot(get_request("did:plc:nonexistent", &[cid.as_str()]))
             .await
             .unwrap();
         assert_eq!(response.status(), StatusCode::NOT_FOUND);

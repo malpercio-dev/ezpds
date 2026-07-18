@@ -2,8 +2,8 @@
 
 //! com.atproto.repo.getRecord - Read a record from a repository.
 
-use axum::extract::{Query, State};
-use axum::http::StatusCode;
+use axum::extract::State;
+use axum::http::{StatusCode, Uri};
 use axum::response::IntoResponse;
 use serde::Deserialize;
 
@@ -15,11 +15,10 @@ use repo_engine::Repository;
 #[derive(Deserialize)]
 pub struct GetRecordParams {
     /// The repo to read from — an at-identifier (DID or handle), per the
-    /// `com.atproto.repo.getRecord` lexicon.
-    repo: Option<String>,
-    /// Legacy alias for `repo`, kept so pre-existing clients of this PDS that were built
-    /// against the earlier `did=` parameter keep working. `repo` wins when both are given.
-    did: Option<String>,
+    /// `com.atproto.repo.getRecord` lexicon. Always present by the time this deserializes: a
+    /// legacy `did=` alias is rewritten onto `repo` before lexicon validation runs (see
+    /// `get_record`).
+    repo: String,
     collection: String,
     rkey: String,
     /// Optional CID selecting a specific version of the record. When omitted, the current
@@ -39,28 +38,32 @@ pub struct GetRecordParams {
 /// consumers already treat a non-current-CID miss as the normal, interoperable outcome.
 pub async fn get_record(
     State(state): State<AppState>,
-    Query(params): Query<GetRecordParams>,
+    uri: Uri,
 ) -> Result<impl IntoResponse, ApiError> {
-    // Empty values are treated as absent (matching `cid` below), so a bare `?repo=` still
-    // falls back to a valid legacy `did=` alias.
-    let identifier = params
-        .repo
-        .as_deref()
-        .filter(|s| !s.is_empty())
-        .or(params.did.as_deref().filter(|s| !s.is_empty()))
-        .ok_or_else(|| {
-            ApiError::new(
-                ErrorCode::InvalidRequest,
-                "missing repo parameter (the handle or DID of the repo)",
-            )
-        })?;
-
-    // A did:-prefixed identifier must be a well-formed DID; anything else is treated as a
-    // handle and resolved to its owning DID, matching the repo-write routes.
-    if identifier.starts_with("did:") && !crate::auth::validation::is_valid_did(identifier) {
-        return Err(ApiError::new(ErrorCode::InvalidClaim, "invalid DID format"));
+    // The lexicon's query-param validation is keyed off the declared `repo` property; a legacy
+    // `did=` alias (kept for pre-existing clients of this PDS built against the earlier `did=`
+    // parameter) is not a declared property, so it must be rewritten onto `repo` *before*
+    // validation runs, or a `did=`-only request would 400 as "missing repo". `repo` wins when
+    // both are given, and an explicitly empty `repo=` doesn't shadow a valid `did=` — both match
+    // the pre-lexicon behavior this replaces.
+    let mut raw = crate::lexicon::parse_raw_query(uri.query().unwrap_or_default())?;
+    let repo_effectively_absent = raw
+        .get("repo")
+        .is_none_or(|values| values.iter().all(String::is_empty));
+    if repo_effectively_absent {
+        if let Some(did_values) = raw.remove("did") {
+            raw.insert("repo".to_string(), did_values);
+        }
     }
-    let did = &crate::record_write::resolve_repo_did(&state, identifier).await?;
+    let value = crate::lexicon::validate_params_map("com.atproto.repo.getRecord", &raw)?;
+    let params: GetRecordParams = serde_json::from_value(value).map_err(|e| {
+        ApiError::new(
+            ErrorCode::InvalidRequest,
+            format!("invalid query parameters: {e}"),
+        )
+    })?;
+
+    let did = &crate::record_write::resolve_repo_did(&state, &params.repo).await?;
     let collection = &params.collection;
     let rkey = &params.rkey;
 

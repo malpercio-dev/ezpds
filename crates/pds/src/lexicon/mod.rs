@@ -2,7 +2,7 @@
 //
 // The lexicon registry: the vendored `com.atproto.*` and `app.bsky.*` lexicon documents
 // (`crates/pds/lexicons/`, pinned upstream — see the README there) compiled into the binary and
-// parsed once, plus two validation entry points:
+// parsed once, plus three validation entry points:
 //
 //   * `validate_input` — the single place asserting "this request body conforms to the procedure's
 //     declared lexicon input". The reference PDS gets this uniformity from `@atproto/xrpc-server`'s
@@ -10,16 +10,27 @@
 //     bespoke serde struct, so strictness drifted route by route and concealed client bugs.
 //     Handlers consume it through the `LexiconInput` axum extractor (`extractor.rs`), or through
 //     `validate_procedure_body` where the raw body bytes are also needed for signature verification.
+//   * `validate_params` — the query-parameter counterpart: "this GET request's query
+//     string conforms to the procedure's declared lexicon `parameters`". Query values are always
+//     strings, so `lexicon::params` coerces each declared property to its typed JSON value
+//     (`@atproto/xrpc-server`'s `decodeQueryParams` semantics — an empty value decodes to absent,
+//     an unparseable integer decodes to `0`, a boolean is `true` only for the literal string
+//     "true", an array is repeated query keys) before running the same object-validator required/
+//     format/bounds checks an input body uses. Handlers consume it through the `LexiconParams`
+//     axum extractor (`params.rs`), or through `validate_procedure_params`/`validate_params_map`
+//     for a handler that needs to adjust the raw query before validation (`get_record.rs`'s legacy
+//     `did=` alias).
 //   * `validate_record` — `assertValidRecord`-parity validation for a repo write: reject an invalid
 //     record of a known (vendored) collection by default, honor the `validate` flag, enforce
 //     `$type`/collection agreement and the record-key discipline, and report `validationStatus`.
 //     The repo-write routes call it via `record_write::write_record` / `apply_writes`.
 //
-// Scope: input bodies of the natively-handled JSON procedures, plus the record bodies of the
-// vendored `app.bsky.*` record lexicons. Query-parameter and output validation remain non-goals.
+// Scope: input bodies and query parameters of the natively-handled procedures, plus the record
+// bodies of the vendored `app.bsky.*` record lexicons. Output validation remains a non-goal.
 
 mod extractor;
 mod formats;
+mod params;
 mod schema;
 mod validate;
 
@@ -28,9 +39,10 @@ use std::sync::LazyLock;
 
 use serde_json::Value;
 
-use schema::{LexDef, LexRecord, LexSchema, LexXrpcBody};
+use schema::{LexDef, LexObject, LexRecord, LexSchema, LexXrpcBody};
 
 pub use extractor::{validate_procedure_body, LexiconInput};
+pub use params::{parse_raw_query, validate_params_map, LexiconParams};
 pub use validate::{RecordValidation, ValidationError};
 
 /// The vendored lexicon documents. Adding a route with a JSON input body means vendoring its
@@ -83,6 +95,24 @@ static LEXICON_SOURCES: &[&str] = &[
     include_str!("../../lexicons/com/atproto/server/resetPassword.json"),
     include_str!("../../lexicons/com/atproto/server/revokeAppPassword.json"),
     include_str!("../../lexicons/com/atproto/server/updateEmail.json"),
+    // Query (`type: "query"`, GET) documents, vendored so natively-handled queries run
+    // `LexiconParams` validation with `assertValidXrpcParams` parity.
+    include_str!("../../lexicons/com/atproto/identity/resolveDid.json"),
+    include_str!("../../lexicons/com/atproto/identity/resolveHandle.json"),
+    include_str!("../../lexicons/com/atproto/identity/resolveIdentity.json"),
+    include_str!("../../lexicons/com/atproto/repo/describeRepo.json"),
+    include_str!("../../lexicons/com/atproto/repo/getRecord.json"),
+    include_str!("../../lexicons/com/atproto/repo/listMissingBlobs.json"),
+    include_str!("../../lexicons/com/atproto/repo/listRecords.json"),
+    include_str!("../../lexicons/com/atproto/server/getServiceAuth.json"),
+    include_str!("../../lexicons/com/atproto/sync/getBlob.json"),
+    include_str!("../../lexicons/com/atproto/sync/getBlocks.json"),
+    include_str!("../../lexicons/com/atproto/sync/getLatestCommit.json"),
+    include_str!("../../lexicons/com/atproto/sync/getRecord.json"),
+    include_str!("../../lexicons/com/atproto/sync/getRepo.json"),
+    include_str!("../../lexicons/com/atproto/sync/getRepoStatus.json"),
+    include_str!("../../lexicons/com/atproto/sync/listBlobs.json"),
+    include_str!("../../lexicons/com/atproto/sync/listRepos.json"),
 ];
 
 /// A procedure's declared input body: its encoding and (for JSON inputs) its schema.
@@ -98,10 +128,15 @@ impl InputDef {
 }
 
 /// Parsed lexicons, keyed for validation: procedure inputs by NSID, `record` definitions by
-/// collection NSID, and referencable definitions by fully-qualified `lex:<nsid>#<def>` URI.
+/// collection NSID, query/procedure `parameters` by NSID, and referencable definitions by
+/// fully-qualified `lex:<nsid>#<def>` URI.
 pub struct Registry {
     inputs: HashMap<String, InputDef>,
     records: HashMap<String, LexRecord>,
+    /// Every registered `query` def (even one that declares no `parameters` — stored as an empty
+    /// object, so "vendored with no constraints" and "not vendored at all" stay distinguishable
+    /// via `params()`'s `Option`) plus any `procedure` that explicitly declares `parameters`.
+    params: HashMap<String, LexObject>,
     defs: HashMap<String, LexSchema>,
 }
 
@@ -121,6 +156,7 @@ impl Registry {
     fn build(sources: &[&str]) -> Result<Self, String> {
         let mut inputs = HashMap::new();
         let mut records = HashMap::new();
+        let mut params = HashMap::new();
         let mut defs = HashMap::new();
 
         for source in sources {
@@ -141,6 +177,26 @@ impl Registry {
                             });
                             inputs.insert(doc.id.clone(), InputDef { encoding, schema });
                         }
+                        // Params properties are restricted to string/integer/boolean/array-of-
+                        // primitive by the parser (`schema::parse_param_property`), so unlike an
+                        // input/record schema there is never a `ref`/`union` to qualify here.
+                        if let Some(parameters) = procedure.parameters {
+                            params.insert(doc.id.clone(), parameters);
+                        }
+                    }
+                    LexDef::Query(query) => {
+                        if name != "main" {
+                            return Err(format!(
+                                "{}#{name}: only main query definitions are supported",
+                                doc.id
+                            ));
+                        }
+                        let parameters = query.parameters.unwrap_or(LexObject {
+                            required: Vec::new(),
+                            nullable: Vec::new(),
+                            properties: Vec::new(),
+                        });
+                        params.insert(doc.id.clone(), parameters);
                     }
                     LexDef::Record(mut record) => {
                         if name != "main" {
@@ -163,6 +219,7 @@ impl Registry {
         let registry = Registry {
             inputs,
             records,
+            params,
             defs,
         };
         registry.check_refs()?;
@@ -235,6 +292,24 @@ impl Registry {
             Some(schema) => validate::validate(self, "Input", schema, body),
             None => Ok(()),
         }
+    }
+
+    /// The declared `parameters` of a registered query (or a procedure that declares them), if
+    /// vendored. `None` means the nsid itself isn't registered at all (a wiring defect); a
+    /// registered query with no `parameters` key still yields `Some` (an empty object — every
+    /// query string trivially satisfies it).
+    pub fn params(&self, nsid: &str) -> Option<&LexObject> {
+        self.params.get(nsid)
+    }
+
+    /// Assert `value` (an already-coerced query-params object — see `lexicon::params`) conforms
+    /// to `nsid`'s declared `parameters`, rooted at `Params` like the reference's
+    /// `assertValidXrpcParams`.
+    pub fn validate_params(&self, nsid: &str, value: &Value) -> Result<(), ValidationError> {
+        let params = self.params(nsid).ok_or_else(|| {
+            ValidationError::Lexicon(format!("no lexicon params are vendored for {nsid}"))
+        })?;
+        validate::validate_params(self, "Params", params, value)
     }
 
     /// Run `assertValidRecord`-parity validation for a repo write, mirroring the reference PDS's
@@ -376,6 +451,30 @@ mod tests {
                 .input(nsid)
                 .unwrap_or_else(|| panic!("{nsid} must have a vendored input"));
             assert_eq!(input.encoding(), "application/json", "{nsid} encoding");
+        }
+        // Every natively-handled GET query this branch converts must be registered, with
+        // `parameters` (an empty object counts — `describeRepo` has none it needs beyond `repo`).
+        for nsid in [
+            "com.atproto.identity.resolveDid",
+            "com.atproto.identity.resolveHandle",
+            "com.atproto.identity.resolveIdentity",
+            "com.atproto.repo.describeRepo",
+            "com.atproto.repo.getRecord",
+            "com.atproto.repo.listMissingBlobs",
+            "com.atproto.repo.listRecords",
+            "com.atproto.server.getServiceAuth",
+            "com.atproto.sync.getBlob",
+            "com.atproto.sync.getBlocks",
+            "com.atproto.sync.getLatestCommit",
+            "com.atproto.sync.getRecord",
+            "com.atproto.sync.getRepo",
+            "com.atproto.sync.getRepoStatus",
+            "com.atproto.sync.listBlobs",
+            "com.atproto.sync.listRepos",
+        ] {
+            registry
+                .params(nsid)
+                .unwrap_or_else(|| panic!("{nsid} must have vendored params"));
         }
     }
 
@@ -869,6 +968,119 @@ mod tests {
             record_result("app.bsky.feed.like", TID, like("not a uri"), None)
                 .unwrap_err()
                 .contains("subject/uri must be a valid at-uri")
+        );
+    }
+
+    // ── validate_params (assertValidXrpcParams parity) ───────────────────────
+
+    fn expect_params_invalid(nsid: &str, value: Value) -> String {
+        match registry().validate_params(nsid, &value) {
+            Err(ValidationError::Invalid(message)) => message,
+            Err(ValidationError::Lexicon(message)) => {
+                panic!("expected an Invalid error, got a Lexicon error: {message}")
+            }
+            Ok(()) => panic!("expected {nsid} to reject {value}"),
+        }
+    }
+
+    fn expect_params_valid(nsid: &str, value: Value) {
+        if let Err(e) = registry().validate_params(nsid, &value) {
+            let message = match e {
+                ValidationError::Invalid(m) | ValidationError::Lexicon(m) => m,
+            };
+            panic!("expected {nsid} to accept {value}: {message}");
+        }
+    }
+
+    #[test]
+    fn params_missing_required_property_is_rejected() {
+        assert_eq!(
+            expect_params_invalid("com.atproto.repo.getRecord", json!({})),
+            "Params must have the property \"repo\""
+        );
+    }
+
+    #[test]
+    fn params_string_format_is_enforced() {
+        assert_eq!(
+            expect_params_invalid(
+                "com.atproto.sync.getBlob",
+                json!({"did": "not-a-did", "cid": "x"})
+            ),
+            "Params/did must be a valid did"
+        );
+        expect_params_valid(
+            "com.atproto.sync.getBlob",
+            json!({
+                "did": "did:plc:abc123abc123abc123abc123",
+                "cid": "bafyreidfayvfuwqa7qlnopdjiqrxzs6blmoeu4rujcjtnci5beludirz2a",
+            }),
+        );
+    }
+
+    #[test]
+    fn params_integer_bounds_are_enforced() {
+        assert_eq!(
+            expect_params_invalid(
+                "com.atproto.repo.listRecords",
+                json!({
+                    "repo": "did:plc:abc123abc123abc123abc123",
+                    "collection": "app.bsky.feed.post",
+                    "limit": 500,
+                })
+            ),
+            "Params/limit can not be greater than 100"
+        );
+        expect_params_valid(
+            "com.atproto.repo.listRecords",
+            json!({
+                "repo": "did:plc:abc123abc123abc123abc123",
+                "collection": "app.bsky.feed.post",
+                "limit": 100,
+            }),
+        );
+    }
+
+    #[test]
+    fn params_optional_property_absent_is_fine() {
+        // listRecords declares `limit`/`cursor`/`reverse` optional: omitting them entirely (not
+        // even present as JSON null) must pass.
+        expect_params_valid(
+            "com.atproto.repo.listRecords",
+            json!({
+                "repo": "did:plc:abc123abc123abc123abc123",
+                "collection": "app.bsky.feed.post",
+            }),
+        );
+    }
+
+    #[test]
+    fn params_array_of_primitives_validates_each_element() {
+        assert_eq!(
+            expect_params_invalid(
+                "com.atproto.sync.getBlocks",
+                json!({"did": "did:plc:abc123abc123abc123abc123", "cids": ["not-a-cid"]})
+            ),
+            "Params/cids/0 must be a cid string"
+        );
+        expect_params_valid(
+            "com.atproto.sync.getBlocks",
+            json!({
+                "did": "did:plc:abc123abc123abc123abc123",
+                "cids": ["bafyreidfayvfuwqa7qlnopdjiqrxzs6blmoeu4rujcjtnci5beludirz2a"],
+            }),
+        );
+    }
+
+    #[test]
+    fn params_required_property_missing_reports_first_missing_in_document_order() {
+        assert_eq!(
+            expect_params_invalid("com.atproto.server.getServiceAuth", json!({})),
+            "Params must have the property \"aud\""
+        );
+        expect_params_valid(
+            "com.atproto.server.getServiceAuth",
+            json!({"aud": "did:web:api.bsky.app"}),
         );
     }
 }

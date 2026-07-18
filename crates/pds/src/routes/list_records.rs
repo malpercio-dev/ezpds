@@ -2,13 +2,14 @@
 
 //! com.atproto.repo.listRecords - List records in a collection with pagination.
 
-use axum::extract::{Query, State};
+use axum::extract::State;
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use serde::Deserialize;
 
 use crate::app::AppState;
 use crate::db::blocks::SqliteBlockStore;
+use crate::lexicon::LexiconParams;
 use common::{ApiError, ErrorCode};
 use repo_engine::Repository;
 
@@ -31,26 +32,22 @@ pub struct ListRecordsParams {
 /// No authentication required (public data).
 pub async fn list_records(
     State(state): State<AppState>,
-    Query(params): Query<ListRecordsParams>,
+    LexiconParams(params): LexiconParams<ListRecordsParams>,
 ) -> Result<impl IntoResponse, ApiError> {
     let did = &params.repo;
     let collection = &params.collection;
 
-    // Validate DID format.
+    // The lexicon's `repo` format is `at-identifier` (DID or handle), but this route resolves
+    // only DIDs directly — a stricter, deliberate restriction the lexicon layer doesn't cover, so
+    // it stays a handler-level check rather than being subsumed by `LexiconParams`.
     if !crate::auth::validation::is_valid_did(did) {
         return Err(ApiError::new(ErrorCode::InvalidClaim, "invalid DID format"));
     }
 
-    // Validate the collection is a syntactically valid NSID. Without this, a malformed
-    // collection would silently match nothing and return an empty 200 rather than a 400.
-    if repo_engine::validate_collection(collection).is_err() {
-        return Err(ApiError::new(
-            ErrorCode::InvalidClaim,
-            "invalid collection NSID",
-        ));
-    }
+    // `collection`'s lexicon format is `nsid`, already enforced by `LexiconParams` above.
 
-    // Clamp the page size to the documented bounds (default 50, max 100, min 1).
+    // Clamp the page size to the documented bounds (default 50, max 100, min 1) — the lexicon
+    // already rejects a `limit` outside [1, 100], so this only applies the default.
     let limit = params.limit.unwrap_or(DEFAULT_LIMIT).clamp(1, MAX_LIMIT);
 
     // Look up the repo root CID.

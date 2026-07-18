@@ -8,7 +8,7 @@
 
 use axum::{
     body::Body,
-    extract::{Query, State},
+    extract::State,
     http::{header, StatusCode},
     response::{IntoResponse, Response},
 };
@@ -19,6 +19,7 @@ use common::{ApiError, ErrorCode};
 use crate::app::AppState;
 use crate::blob_store;
 use crate::db::blobs;
+use crate::lexicon::LexiconParams;
 
 // ── Query parameters ────────────────────────────────────────────────────────
 
@@ -36,7 +37,7 @@ pub struct GetBlobParams {
 /// Validates that the blob belongs to the specified DID's repo.
 pub async fn get_blob(
     State(state): State<AppState>,
-    Query(params): Query<GetBlobParams>,
+    LexiconParams(params): LexiconParams<GetBlobParams>,
 ) -> Result<Response, ApiError> {
     // 1. Look up blob metadata by CID, scoped to the requested DID's ownership rows
     //    (`blob_owners` — the same content may be owned by several accounts). A missing CID
@@ -97,13 +98,25 @@ mod tests {
     use super::*;
     use crate::app::test_state;
     use crate::routes::test_utils::body_json;
+    use atrium_repo::blockstore::{DAG_CBOR, SHA2_256};
     use axum::{body::Body, http::Request, routing::get, Router};
+    use sha2::Digest;
     use tower::ServiceExt;
 
     fn app_with_state(state: AppState) -> Router {
         Router::new()
             .route("/xrpc/com.atproto.sync.getBlob", get(get_blob))
             .with_state(state)
+    }
+
+    /// A syntactically valid CID string derived from `seed` — the lexicon's `cid` format
+    /// requires a real CID, unlike the short placeholder strings this file's fixtures used
+    /// before query-params were lexicon-validated (a fake "cid" now 400s at the lexicon layer
+    /// before the handler runs).
+    fn valid_cid(seed: &[u8]) -> String {
+        let digest = sha2::Sha256::digest(seed);
+        let mh = atrium_repo::Multihash::wrap(SHA2_256, digest.as_slice()).unwrap();
+        repo_engine::Cid::new_v1(DAG_CBOR, mh).to_string()
     }
 
     /// Helper: seed an account and a blob for testing.
@@ -141,12 +154,15 @@ mod tests {
     #[tokio::test]
     async fn returns_blob_with_correct_mime_type() {
         let state = test_state().await;
-        seed_blob(&state, "did:plc:test1", "bafkreitest123", "image/png").await;
+        let cid = valid_cid(b"get-blob-test1");
+        seed_blob(&state, "did:plc:test1", &cid, "image/png").await;
 
         let response = app_with_state(state)
             .oneshot(
                 Request::builder()
-                    .uri("/xrpc/com.atproto.sync.getBlob?did=did:plc:test1&cid=bafkreitest123")
+                    .uri(format!(
+                        "/xrpc/com.atproto.sync.getBlob?did=did:plc:test1&cid={cid}"
+                    ))
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -167,18 +183,15 @@ mod tests {
     #[tokio::test]
     async fn serves_content_security_and_nosniff_headers() {
         let state = test_state().await;
-        seed_blob(
-            &state,
-            "did:plc:svgserve",
-            "bafkreisvgserve",
-            "image/svg+xml",
-        )
-        .await;
+        let cid = valid_cid(b"get-blob-svgserve");
+        seed_blob(&state, "did:plc:svgserve", &cid, "image/svg+xml").await;
 
         let response = app_with_state(state)
             .oneshot(
                 Request::builder()
-                    .uri("/xrpc/com.atproto.sync.getBlob?did=did:plc:svgserve&cid=bafkreisvgserve")
+                    .uri(format!(
+                        "/xrpc/com.atproto.sync.getBlob?did=did:plc:svgserve&cid={cid}"
+                    ))
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -204,11 +217,14 @@ mod tests {
     #[tokio::test]
     async fn nonexistent_blob_returns_404() {
         let state = test_state().await;
+        let cid = valid_cid(b"get-blob-noexist");
 
         let response = app_with_state(state)
             .oneshot(
                 Request::builder()
-                    .uri("/xrpc/com.atproto.sync.getBlob?did=did:plc:none&cid=bafkreinoexist")
+                    .uri(format!(
+                        "/xrpc/com.atproto.sync.getBlob?did=did:plc:none&cid={cid}"
+                    ))
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -225,7 +241,8 @@ mod tests {
     #[tokio::test]
     async fn shared_blob_is_served_for_every_owner() {
         let state = test_state().await;
-        seed_blob(&state, "did:plc:sharefirst", "bafkreishared", "image/png").await;
+        let cid = valid_cid(b"get-blob-shared");
+        seed_blob(&state, "did:plc:sharefirst", &cid, "image/png").await;
 
         // A second account uploads the same bytes: same CID, same file, its own ownership row.
         sqlx::query(
@@ -237,11 +254,11 @@ mod tests {
         .unwrap();
         crate::db::blobs::insert_blob(
             &state.db,
-            "bafkreishared",
+            &cid,
             "did:plc:sharesecond",
             "image/png",
             17,
-            "blobs/ba/bafkreishared",
+            &format!("blobs/{}/{cid}", &cid[..2]),
             "2030-01-01 00:00:00",
         )
         .await
@@ -252,7 +269,7 @@ mod tests {
                 .oneshot(
                     Request::builder()
                         .uri(format!(
-                            "/xrpc/com.atproto.sync.getBlob?did={did}&cid=bafkreishared"
+                            "/xrpc/com.atproto.sync.getBlob?did={did}&cid={cid}"
                         ))
                         .body(Body::empty())
                         .unwrap(),
@@ -271,12 +288,15 @@ mod tests {
     #[tokio::test]
     async fn did_mismatch_returns_404() {
         let state = test_state().await;
-        seed_blob(&state, "did:plc:owner", "bafkreimismatch", "image/jpeg").await;
+        let cid = valid_cid(b"get-blob-mismatch");
+        seed_blob(&state, "did:plc:owner", &cid, "image/jpeg").await;
 
         let response = app_with_state(state)
             .oneshot(
                 Request::builder()
-                    .uri("/xrpc/com.atproto.sync.getBlob?did=did:plc:other&cid=bafkreimismatch")
+                    .uri(format!(
+                        "/xrpc/com.atproto.sync.getBlob?did=did:plc:other&cid={cid}"
+                    ))
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -288,10 +308,7 @@ mod tests {
         assert_eq!(body["error"]["code"], "NOT_FOUND");
         // Error message must not leak CID or DID.
         let msg = body["error"]["message"].as_str().unwrap();
-        assert!(
-            !msg.contains("bafkreimismatch"),
-            "message must not leak CID"
-        );
+        assert!(!msg.contains(&cid), "message must not leak CID");
         assert!(!msg.contains("did:plc:"), "message must not leak DID");
     }
 

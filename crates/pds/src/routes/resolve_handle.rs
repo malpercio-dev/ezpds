@@ -4,15 +4,13 @@
 // Processes: none (resolution priority is local → DNS TXT → HTTP well-known)
 // Returns: JSON { did: "..." } matching com.atproto.identity.resolveHandle Lexicon
 
-use axum::{
-    extract::{Query, State},
-    Json,
-};
+use axum::{extract::State, Json};
 use common::{ApiError, ErrorCode};
 use serde::{Deserialize, Serialize};
 
 use crate::app::AppState;
 use crate::identity::resolution::resolve_handle_to_did;
+use crate::lexicon::LexiconParams;
 
 #[derive(Deserialize)]
 pub struct ResolveHandleQuery {
@@ -26,7 +24,7 @@ pub struct ResolveHandleResponse {
 
 pub async fn resolve_handle_handler(
     State(state): State<AppState>,
-    Query(params): Query<ResolveHandleQuery>,
+    LexiconParams(params): LexiconParams<ResolveHandleQuery>,
 ) -> Result<Json<ResolveHandleResponse>, ApiError> {
     let Some(did) = resolve_handle_to_did(&state, &params.handle).await? else {
         return Err(ApiError::new(ErrorCode::HandleNotFound, "handle not found"));
@@ -354,6 +352,10 @@ mod tests {
 
     #[tokio::test]
     async fn ip_literal_is_rejected_before_network_resolution() {
+        // An IP literal's last label is all-numeric, which fails ATProto handle syntax — the
+        // lexicon's `format: handle` check on the query param now rejects it before the handler
+        // (and its own SSRF-relevant structural check) ever runs, matching the reference PDS
+        // (`resolveHandle`'s `handle` param is lexicon-validated the same way).
         let last_name = Arc::new(Mutex::new(None));
         let state = AppState {
             txt_resolver: Some(Arc::new(CapturingTxtResolver {
@@ -375,7 +377,10 @@ mod tests {
                 .unwrap(),
         )
         .unwrap();
-        assert_eq!(body["error"]["code"], "INVALID_HANDLE");
+        assert_eq!(
+            body["error"]["message"],
+            "Params/handle must be a valid handle"
+        );
     }
 
     #[tokio::test]
