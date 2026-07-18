@@ -339,15 +339,27 @@ async fn rotate_and_persist(
     );
     let response = pds_client
         .client()
-        .post(url)
+        .post(url.as_str())
         .header(
             reqwest::header::AUTHORIZATION,
             format!("Bearer {}", record.refresh_jwt),
         )
         .send()
         .await
-        .map_err(|e| SessionError::Offline {
-            message: e.to_string(),
+        .map_err(|e| {
+            // Redacted breadcrumb so a refresh transport failure is visible in diagnostics —
+            // it otherwise records nothing and surfaces only as a generic offline error.
+            crate::diagnostics::record_transport(
+                "refreshSession",
+                reqwest::Url::parse(&url)
+                    .ok()
+                    .and_then(|u| u.host_str().map(str::to_string))
+                    .as_deref(),
+                crate::diagnostics::transport_category(&e),
+            );
+            SessionError::Offline {
+                message: e.to_string(),
+            }
         })?;
 
     let status = response.status();

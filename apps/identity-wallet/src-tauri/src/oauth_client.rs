@@ -65,6 +65,14 @@ fn jwt_exp_claim(token: &str) -> Option<u64> {
     payload.get("exp")?.as_u64()
 }
 
+/// Extract just the host from a request URL for a redacted diagnostics breadcrumb — never the
+/// path or query (which can carry a DID or token). `None` if the URL doesn't parse.
+fn host_of(url: &str) -> Option<String> {
+    reqwest::Url::parse(url)
+        .ok()
+        .and_then(|u| u.host_str().map(str::to_string))
+}
+
 /// How this client authenticates its XRPC requests.
 ///
 /// `Dpop` is the wallet's normal OAuth mode (DPoP-bound access token + proof header,
@@ -346,11 +354,11 @@ impl OAuthClient {
             s.access_token.clone()
         };
 
-        let mut builder = match method {
-            m if *m == reqwest::Method::GET => self.inner.get(url),
-            m if *m == reqwest::Method::POST => self.inner.post(url),
-            _ => return Err(OAuthError::NotAuthenticated),
-        };
+        // Build the request for the given method. Callers use GET, POST, and PUT — the last
+        // drives the idempotent escrow-share deposit (`PUT /v1/recovery/escrow-share`). A
+        // GET/POST-only `match` here silently turned every PUT into `NotAuthenticated` before a
+        // single byte left the device, which surfaced downstream as a bogus "network error".
+        let mut builder = self.inner.request(method.clone(), url);
 
         // Branch on auth mode for header construction.
         match self.auth_mode {
@@ -374,14 +382,22 @@ impl OAuthClient {
             }
         }
 
-        if let (Some(b), m) = (body, method) {
-            if *m == reqwest::Method::POST {
-                builder = builder.json(b);
-            }
+        // Attach the JSON body for the methods that carry one (POST/PUT). GET and the no-body
+        // POST (`post_no_body`) pass `None`, so they send no body or `Content-Type`.
+        if let Some(b) = body {
+            builder = builder.json(b);
         }
 
         builder.send().await.map_err(|e| {
             tracing::error!(error = %e, "OAuthClient request network error");
+            // Record a redacted breadcrumb (host + transport category only). The escrow deposit
+            // and every other authenticated owner write go through this client, so without this
+            // a genuine connect/timeout/read failure leaves no trace in the diagnostics log.
+            crate::diagnostics::record_transport(
+                "oauthRequest",
+                host_of(url).as_deref(),
+                crate::diagnostics::transport_category(&e),
+            );
             OAuthError::NotAuthenticated
         })
     }
@@ -427,6 +443,11 @@ impl OAuthClient {
 
         builder.body(body.to_vec()).send().await.map_err(|e| {
             tracing::error!(error = %e, "OAuthClient post_bytes network error");
+            crate::diagnostics::record_transport(
+                "oauthUpload",
+                host_of(url).as_deref(),
+                crate::diagnostics::transport_category(&e),
+            );
             OAuthError::NotAuthenticated
         })
     }
@@ -799,6 +820,38 @@ mod tests {
             200,
             "DPoP htu must exclude the query string"
         );
+    }
+
+    #[tokio::test]
+    async fn put_reaches_server_with_body_in_bearer_mode() {
+        // Regression: `send_with_dpop` once matched only GET/POST, so every PUT returned
+        // `NotAuthenticated` before any network call — breaking the escrow-share deposit
+        // (`PUT /v1/recovery/escrow-share`), which then surfaced as a bogus "network error".
+        let server = MockServer::start();
+        let far_future = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs()
+            + 3600;
+        let access_jwt = make_bearer_jwt(far_future);
+        let mock = server.mock(|when, then| {
+            when.method(PUT)
+                .path("/v1/recovery/escrow-share")
+                .header("Authorization", format!("Bearer {access_jwt}"))
+                .json_body(serde_json::json!({ "share": "share-two" }));
+            then.status(200).body("ok");
+        });
+
+        let client = make_bearer_client(&access_jwt, "bearer_refresh", &server.base_url()).await;
+        let resp = client
+            .put(
+                "/v1/recovery/escrow-share",
+                &serde_json::json!({ "share": "share-two" }),
+            )
+            .await
+            .expect("PUT must reach the server, not fail before sending");
+        assert_eq!(resp.status().as_u16(), 200);
+        mock.assert();
     }
 
     #[tokio::test]
