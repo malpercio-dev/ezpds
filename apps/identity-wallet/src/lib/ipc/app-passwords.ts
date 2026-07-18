@@ -44,8 +44,10 @@ export type AppPasswordsError =
   // An app password with this name already exists — pick a different name.
   | { code: 'DUPLICATE_NAME' }
   | { code: 'IDENTITY_NOT_FOUND'; message: string }
-  // The hosting PDS refused the request; `message` is the server's own error text.
-  | { code: 'SERVER_ERROR'; status: number; message: string }
+  // A server-side step failed for a non-connectivity reason. `status` is the HTTP code when
+  // the hosting PDS refused the request, or null for a non-HTTP session failure (unsupported
+  // host, keychain, malformed response); `message` is the server's own error text.
+  | { code: 'SERVER_ERROR'; status: number | null; message: string }
   | { code: 'NETWORK_ERROR'; message: string };
 
 /**

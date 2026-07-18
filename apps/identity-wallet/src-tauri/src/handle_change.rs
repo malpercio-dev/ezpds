@@ -40,7 +40,7 @@ use serde::Serialize;
 
 use crate::claim::ClaimResult;
 use crate::identity_store::{IdentityStore, PerDidSignError};
-use crate::pds_client::PdsClient;
+use crate::pds_client::{PdsClient, PdsClientError};
 use crate::session_provider::{SessionError, SessionProvider, UnlockReason};
 use crypto::{AuditEntry, PlcService};
 
@@ -92,6 +92,11 @@ pub enum HandleChangeError {
     /// plc.directory rejected the submitted operation.
     #[error("PLC directory error: {message}")]
     PlcDirectoryError { message: String },
+    /// A server-side step failed for a non-connectivity reason (session refresh verdict,
+    /// unsupported host, malformed response, or local session storage). The precise cause is
+    /// in `message` for diagnostics; the UI shows a neutral retry prompt.
+    #[error("server error: {message}")]
+    ServerError { message: String },
     /// A network / transport call failed.
     #[error("network error: {message}")]
     NetworkError { message: String },
@@ -100,9 +105,10 @@ pub enum HandleChangeError {
     IdentityNotFound { message: String },
 }
 
-/// Map a session-lifecycle failure into the change-handle surface. A needed unlock
-/// stays a distinct, actionable signal; a rate limit is preserved; everything else
-/// degrades to a transport error the frontend can retry.
+/// Map a session-lifecycle failure into the change-handle surface. Exhaustive on purpose: only
+/// a genuine transport failure becomes `NetworkError` — a server verdict, unsupported host, or
+/// storage failure must not surface as "check your connection", or the real cause becomes
+/// undiagnosable from the screen (the same defect class `classify_xrpc_error` exists to fix).
 fn map_session_error(error: SessionError) -> HandleChangeError {
     match error {
         SessionError::NeedsUnlock { reason } => HandleChangeError::SessionLocked { reason },
@@ -111,8 +117,39 @@ fn map_session_error(error: SessionError) -> HandleChangeError {
             message: "identity not found".to_string(),
         },
         SessionError::Offline { message } => HandleChangeError::NetworkError { message },
+        SessionError::ServerFailure { status } => HandleChangeError::ServerError {
+            message: format!("session refresh returned HTTP {status}"),
+        },
+        SessionError::UnsupportedHost => HandleChangeError::ServerError {
+            message: "the identity's hosting server does not support session refresh".to_string(),
+        },
+        SessionError::Keychain { message } => HandleChangeError::ServerError {
+            message: format!("session keychain failure: {message}"),
+        },
+        SessionError::InvalidResponse { message } => HandleChangeError::ServerError {
+            message: format!("invalid session response: {message}"),
+        },
+    }
+}
+
+/// Map a plc.directory read failure into the change-handle surface: a throttle is retryable
+/// (`RateLimited`), an HTTP verdict is the directory's problem (`PlcDirectoryError`), and only
+/// a transport failure is `NetworkError`.
+fn map_plc_fetch_error(context: &str, error: PdsClientError) -> HandleChangeError {
+    match error {
+        PdsClientError::RateLimited { retry_after, .. } => {
+            HandleChangeError::RateLimited { retry_after }
+        }
+        PdsClientError::XrpcError {
+            status, message, ..
+        } => HandleChangeError::PlcDirectoryError {
+            message: format!("{context}: plc.directory returned HTTP {status}: {message}"),
+        },
+        PdsClientError::Unauthorized { message, .. } => HandleChangeError::PlcDirectoryError {
+            message: format!("{context}: plc.directory returned HTTP 401: {message}"),
+        },
         other => HandleChangeError::NetworkError {
-            message: other.to_string(),
+            message: format!("{context}: {other}"),
         },
     }
 }
@@ -421,13 +458,10 @@ async fn build_handle_op(
     let device_key_id = device.key_id;
 
     // 2. Current audit log -> prev + full current state.
-    let log_json =
-        pds_client
-            .fetch_audit_log(did)
-            .await
-            .map_err(|e| HandleChangeError::NetworkError {
-                message: format!("failed to fetch audit log: {e}"),
-            })?;
+    let log_json = pds_client
+        .fetch_audit_log(did)
+        .await
+        .map_err(|e| map_plc_fetch_error("failed to fetch audit log", e))?;
     let audit_log =
         crypto::parse_audit_log(&log_json).map_err(|e| HandleChangeError::InvalidAuditLog {
             message: format!("failed to parse audit log: {e}"),
@@ -496,8 +530,14 @@ async fn submit_handle_op(
     pds_client
         .post_plc_operation(did, signed_op)
         .await
-        .map_err(|e| HandleChangeError::PlcDirectoryError {
-            message: format!("plc.directory rejected the operation: {e}"),
+        .map_err(|e| match e {
+            // A throttle is a pacing instruction, not a rejection of the operation.
+            PdsClientError::RateLimited { retry_after, .. } => {
+                HandleChangeError::RateLimited { retry_after }
+            }
+            other => HandleChangeError::PlcDirectoryError {
+                message: format!("plc.directory rejected the operation: {other}"),
+            },
         })?;
     refresh_handle_cache(pds_client, did).await
 }
@@ -512,24 +552,20 @@ async fn refresh_handle_cache(
 ) -> Result<ClaimResult, HandleChangeError> {
     let store = IdentityStore;
 
-    let updated_log =
-        pds_client
-            .fetch_audit_log(did)
-            .await
-            .map_err(|e| HandleChangeError::NetworkError {
-                message: format!("failed to fetch updated audit log: {e}"),
-            })?;
+    let updated_log = pds_client
+        .fetch_audit_log(did)
+        .await
+        .map_err(|e| map_plc_fetch_error("failed to fetch updated audit log", e))?;
     store
         .store_plc_log(did, &updated_log)
         .map_err(|e| HandleChangeError::SigningFailed {
             message: format!("failed to cache updated PLC log: {e}"),
         })?;
 
-    let did_doc = pds_client.fetch_plc_data_document(did).await.map_err(|e| {
-        HandleChangeError::NetworkError {
-            message: format!("failed to fetch DID document: {e}"),
-        }
-    })?;
+    let did_doc = pds_client
+        .fetch_plc_data_document(did)
+        .await
+        .map_err(|e| map_plc_fetch_error("failed to fetch DID document", e))?;
     store
         .store_did_doc(did, &serde_json::to_string(&did_doc).unwrap_or_default())
         .map_err(|e| HandleChangeError::SigningFailed {
@@ -671,11 +707,13 @@ pub async fn get_identity_handle_domains(
     state: tauri::State<'_, crate::oauth::AppState>,
     did: String,
 ) -> Result<Vec<String>, HandleChangeError> {
-    let (pds_url, _doc) = state.pds_client().discover_pds(&did).await.map_err(|e| {
-        HandleChangeError::NetworkError {
-            message: format!("failed to discover hosting PDS: {e}"),
-        }
-    })?;
+    // Discovery reads plc.directory, so its throttle/verdict classification is preserved
+    // (RATE_LIMITED / PLC_DIRECTORY_ERROR) instead of flattening to "check your connection".
+    let (pds_url, _doc) = state
+        .pds_client()
+        .discover_pds(&did)
+        .await
+        .map_err(|e| map_plc_fetch_error("failed to discover hosting PDS", e))?;
     let description = state
         .pds_client()
         .describe_server(&pds_url)
@@ -689,6 +727,75 @@ pub async fn get_identity_handle_domains(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A directory throttle and a directory HTTP verdict must reach the UI as RATE_LIMITED /
+    /// PLC_DIRECTORY_ERROR — only a transport failure may say "check your connection".
+    #[test]
+    fn plc_fetch_errors_classify_by_status() {
+        let throttled = map_plc_fetch_error(
+            "failed to fetch audit log",
+            PdsClientError::RateLimited {
+                retry_after: Some("30".to_string()),
+                message: "slow down".to_string(),
+            },
+        );
+        assert!(matches!(
+            throttled,
+            HandleChangeError::RateLimited { retry_after: Some(ref r) } if r == "30"
+        ));
+
+        let outage = map_plc_fetch_error(
+            "failed to fetch audit log",
+            PdsClientError::XrpcError {
+                status: 502,
+                error: None,
+                message: "bad gateway".to_string(),
+            },
+        );
+        assert!(
+            matches!(outage, HandleChangeError::PlcDirectoryError { ref message } if message.contains("502")),
+            "got {outage:?}"
+        );
+
+        let transport = map_plc_fetch_error(
+            "failed to fetch audit log",
+            PdsClientError::NetworkError {
+                message: "dns failure".to_string(),
+            },
+        );
+        assert!(matches!(transport, HandleChangeError::NetworkError { .. }));
+    }
+
+    /// Session failures keep their nature: a server verdict is SERVER_ERROR, not NETWORK_ERROR.
+    #[test]
+    fn session_errors_no_longer_flatten_to_network_error() {
+        assert!(matches!(
+            map_session_error(SessionError::ServerFailure { status: 500 }),
+            HandleChangeError::ServerError { ref message } if message.contains("500")
+        ));
+        assert!(matches!(
+            map_session_error(SessionError::UnsupportedHost),
+            HandleChangeError::ServerError { .. }
+        ));
+        assert!(matches!(
+            map_session_error(SessionError::Keychain {
+                message: "no slot".to_string()
+            }),
+            HandleChangeError::ServerError { .. }
+        ));
+        assert!(matches!(
+            map_session_error(SessionError::InvalidResponse {
+                message: "bad json".to_string()
+            }),
+            HandleChangeError::ServerError { .. }
+        ));
+        assert!(matches!(
+            map_session_error(SessionError::Offline {
+                message: "timeout".to_string()
+            }),
+            HandleChangeError::NetworkError { .. }
+        ));
+    }
 
     const DEVICE: &str = "did:key:zDEVICE";
     const PDS: &str = "did:key:zPDS";

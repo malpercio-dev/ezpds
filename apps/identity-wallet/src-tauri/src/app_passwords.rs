@@ -54,17 +54,25 @@ pub enum AppPasswordsError {
     /// The DID is not registered in this wallet.
     #[error("identity not found: {message}")]
     IdentityNotFound { message: String },
-    /// The hosting PDS refused the request (non-2xx other than the cases above).
-    #[error("server error {status}: {message}")]
-    ServerError { status: u16, message: String },
+    /// A server-side step failed for a non-connectivity reason: the hosting PDS refused
+    /// the request (non-2xx other than the cases above, `status` carries the HTTP code),
+    /// or the session could not be resolved for a reason that is not a transport failure
+    /// (refresh verdict, unsupported host, malformed response, or local session storage —
+    /// `status` is `None` for these).
+    #[error("server error: {message}")]
+    ServerError {
+        status: Option<u16>,
+        message: String,
+    },
     /// A network / transport call failed.
     #[error("network error: {message}")]
     NetworkError { message: String },
 }
 
-/// Map a session-lifecycle failure into the app-password surface. A needed unlock
-/// stays a distinct, actionable signal; a rate limit is preserved; everything else
-/// degrades to a transport error the frontend can retry.
+/// Map a session-lifecycle failure into the app-password surface. Exhaustive on purpose: only
+/// a genuine transport failure becomes `NetworkError` — a server verdict, unsupported host, or
+/// storage failure must not surface as "check your connection", or the real cause becomes
+/// undiagnosable from the screen (the same defect class `classify_xrpc_error` exists to fix).
 fn map_session_error(error: SessionError) -> AppPasswordsError {
     match error {
         SessionError::NeedsUnlock { reason } => AppPasswordsError::SessionLocked { reason },
@@ -74,11 +82,20 @@ fn map_session_error(error: SessionError) -> AppPasswordsError {
         },
         SessionError::Offline { message } => AppPasswordsError::NetworkError { message },
         SessionError::ServerFailure { status } => AppPasswordsError::ServerError {
-            status,
+            status: Some(status),
             message: format!("session request failed with status {status}"),
         },
-        other => AppPasswordsError::NetworkError {
-            message: other.to_string(),
+        SessionError::UnsupportedHost => AppPasswordsError::ServerError {
+            status: None,
+            message: "the identity's hosting server does not support session refresh".to_string(),
+        },
+        SessionError::Keychain { message } => AppPasswordsError::ServerError {
+            status: None,
+            message: format!("session keychain failure: {message}"),
+        },
+        SessionError::InvalidResponse { message } => AppPasswordsError::ServerError {
+            status: None,
+            message: format!("invalid session response: {message}"),
         },
     }
 }
@@ -95,9 +112,12 @@ fn map_pds_error(error: PdsClientError) -> AppPasswordsError {
         PdsClientError::XrpcError { status: 409, .. } => AppPasswordsError::DuplicateName,
         PdsClientError::XrpcError {
             status, message, ..
-        } => AppPasswordsError::ServerError { status, message },
+        } => AppPasswordsError::ServerError {
+            status: Some(status),
+            message,
+        },
         PdsClientError::Unauthorized { message, .. } => AppPasswordsError::ServerError {
-            status: 401,
+            status: Some(401),
             message,
         },
         PdsClientError::NetworkError { message } => AppPasswordsError::NetworkError { message },
@@ -202,7 +222,37 @@ mod tests {
         let err = map_session_error(SessionError::ServerFailure { status: 503 });
         assert!(matches!(
             err,
-            AppPasswordsError::ServerError { status: 503, .. }
+            AppPasswordsError::ServerError {
+                status: Some(503),
+                ..
+            }
+        ));
+    }
+
+    /// Session failures keep their nature: a server verdict is SERVER_ERROR, not NETWORK_ERROR.
+    #[test]
+    fn session_errors_no_longer_flatten_to_network_error() {
+        assert!(matches!(
+            map_session_error(SessionError::UnsupportedHost),
+            AppPasswordsError::ServerError { status: None, .. }
+        ));
+        assert!(matches!(
+            map_session_error(SessionError::Keychain {
+                message: "no slot".to_string()
+            }),
+            AppPasswordsError::ServerError { status: None, .. }
+        ));
+        assert!(matches!(
+            map_session_error(SessionError::InvalidResponse {
+                message: "bad json".to_string()
+            }),
+            AppPasswordsError::ServerError { status: None, .. }
+        ));
+        assert!(matches!(
+            map_session_error(SessionError::Offline {
+                message: "timeout".to_string()
+            }),
+            AppPasswordsError::NetworkError { .. }
         ));
     }
 
@@ -225,7 +275,7 @@ mod tests {
         });
         match err {
             AppPasswordsError::ServerError { status, message } => {
-                assert_eq!(status, 400);
+                assert_eq!(status, Some(400));
                 assert_eq!(message, "app password name must not be empty");
             }
             e => panic!("expected ServerError, got: {e:?}"),
@@ -240,7 +290,10 @@ mod tests {
         });
         assert!(matches!(
             err,
-            AppPasswordsError::ServerError { status: 401, .. }
+            AppPasswordsError::ServerError {
+                status: Some(401),
+                ..
+            }
         ));
     }
 
@@ -262,5 +315,15 @@ mod tests {
 
         let json = serde_json::to_value(AppPasswordsError::DuplicateName).unwrap();
         assert_eq!(json["code"], "DUPLICATE_NAME");
+
+        // A status-less server error (session verdict) serializes `status: null`, matching
+        // the TS union's `status: number | null`.
+        let json = serde_json::to_value(AppPasswordsError::ServerError {
+            status: None,
+            message: "invalid session response: bad json".to_string(),
+        })
+        .unwrap();
+        assert_eq!(json["code"], "SERVER_ERROR");
+        assert_eq!(json["status"], serde_json::Value::Null);
     }
 }
