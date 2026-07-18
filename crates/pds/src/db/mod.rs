@@ -466,6 +466,63 @@ mod tests {
         );
     }
 
+    /// V055 drops `pending_accounts.pending_share_{1,2,3}`. The fresh-DB migration run
+    /// has no rows during the DROP COLUMN, so this exercises the production upgrade path: seed a
+    /// populated pending_accounts row (with share columns set) at the pre-V055 schema, apply
+    /// V055, and confirm the columns are gone while the rest of the row survives.
+    #[tokio::test]
+    async fn v055_drops_pending_shares_over_a_populated_table() {
+        let pool = in_memory_pool().await;
+        apply_migrations_before(&pool, 55).await;
+
+        // pending_accounts.claim_code FKs into claim_codes, and foreign keys are enforced.
+        sqlx::query(
+            "INSERT INTO claim_codes (code, expires_at, created_at) \
+             VALUES ('V055CODE', datetime('now', '+1 hour'), datetime('now'))",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO pending_accounts \
+             (id, email, handle, tier, claim_code, created_at, \
+              pending_did, pending_share_1, pending_share_2, pending_share_3) \
+             VALUES ('acct_v055', 'v055@example.com', 'v055.example.com', 'free', 'V055CODE', \
+                     datetime('now'), 'did:plc:v055', 'S1', 'S2', 'S3')",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        // Apply just V055 over the populated table.
+        let v055 = MIGRATIONS.iter().find(|m| m.version == 55).unwrap();
+        let mut tx = pool.begin().await.unwrap();
+        sqlx::raw_sql(v055.sql)
+            .execute(&mut *tx)
+            .await
+            .expect("V055 must DROP COLUMN cleanly over a populated pending_accounts");
+        tx.commit().await.unwrap();
+
+        // The share columns are gone.
+        for column in ["pending_share_1", "pending_share_2", "pending_share_3"] {
+            let query = format!("SELECT {column} FROM pending_accounts");
+            assert!(
+                sqlx::query(&query).fetch_optional(&pool).await.is_err(),
+                "{column} must no longer exist after V055"
+            );
+        }
+
+        // The rest of the row — including the share-independent retry columns — survives.
+        let (email, pending_did): (String, Option<String>) = sqlx::query_as(
+            "SELECT email, pending_did FROM pending_accounts WHERE id = 'acct_v055'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(email, "v055@example.com");
+        assert_eq!(pending_did.as_deref(), Some("did:plc:v055"));
+    }
+
     /// schema_migrations records version=1 with a non-null applied_at.
     /// Verifies that version and timestamp fields are recorded correctly.
     #[tokio::test]

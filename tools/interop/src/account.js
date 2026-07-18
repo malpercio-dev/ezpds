@@ -11,7 +11,14 @@
 
 import { BASE_URL, ADMIN_TOKEN, defaultEmail } from './config.js';
 import { request, xrpc } from './http.js';
-import { newKeypair, keypairFromHex, buildGenesisOp, randomPassword, randomSuffix } from './crypto.js';
+import {
+  newKeypair,
+  keypairFromHex,
+  buildGenesisOp,
+  encodeEscrowShare,
+  randomPassword,
+  randomSuffix,
+} from './crypto.js';
 import { loadState, saveState, getAccount } from './state.js';
 
 export async function describeServer() {
@@ -100,8 +107,14 @@ export async function createAccount({ name, kind, handle, claimCode }) {
 
   // Rotation key: held locally, signs the genesis op — the root of control.
   const rotationKey = await newKeypair();
+  // Recovery key: the middle rotationKeys slot in the client-share ceremony. The
+  // server verifies its did:key appears in the op's rotationKeys; recovery itself is
+  // out of scope for the interop harness, so this is an independent local keypair.
+  const recoveryKey = await newKeypair();
+  const escrowShare = encodeEscrowShare();
   const { did, signedOp } = await buildGenesisOp({
     rotationKeyId: rotationKey.keyId,
+    recoveryKeyId: recoveryKey.keyId,
     repoSigningKeyId: repoKey.keyId,
     rotationKeypair: rotationKey.keypair,
     handle,
@@ -113,6 +126,8 @@ export async function createAccount({ name, kind, handle, claimCode }) {
     repoSigningKeyId: repoKey.keyId,
     rotationKeyId: rotationKey.keyId,
     rotationKeyPrivateHex: rotationKey.privateKeyHex,
+    recoveryKeyId: recoveryKey.keyId,
+    recoveryKeyPrivateHex: recoveryKey.privateKeyHex,
   });
 
   const didResult = await request(`${BASE_URL}/v1/dids`, {
@@ -122,6 +137,8 @@ export async function createAccount({ name, kind, handle, claimCode }) {
       rotationKeyPublic: rotationKey.keyId,
       signedCreationOp: signedOp,
       password,
+      recoveryKey: recoveryKey.keyId,
+      escrowShare,
     },
   });
   if (didResult.did !== did) {

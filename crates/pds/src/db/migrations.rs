@@ -238,4 +238,8 @@ pub(super) static MIGRATIONS: &[Migration] = &[
         version: 54,
         sql: include_str!("migrations/V054__pending_plc_registered.sql"),
     },
+    Migration {
+        version: 55,
+        sql: include_str!("migrations/V055__drop_pending_shares.sql"),
+    },
 ];
