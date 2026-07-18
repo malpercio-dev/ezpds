@@ -56,6 +56,23 @@ import {
 export type Handler = (args: Record<string, unknown>) => unknown | Promise<unknown>;
 
 /**
+ * Share 3 fixtures for the client-share ceremony fake: the shapes match the real
+ * envelope contract — 68 base32 chars (a 42-byte v2 envelope) and a 42-word phrase
+ * (one word per envelope byte) — so the backup screen renders exactly as on device.
+ * Not cryptographically valid material; the harness never combines shares.
+ */
+const HARNESS_SHARE3_ENVELOPE =
+  'HARNESSSHARETHREEB2C3D4E5F6G7A2B3C4D5E6F7HARNESSQ2R3S4T5U6V7W2X3Y4Z5';
+const HARNESS_SHARE3_WORDS = [
+  'anchor', 'baker', 'canyon', 'delta', 'ember', 'falcon', 'garnet',
+  'harbor', 'island', 'jasper', 'kettle', 'lantern', 'meadow', 'nickel',
+  'orchard', 'pebble', 'quarry', 'ribbon', 'saddle', 'timber', 'umbrella',
+  'velvet', 'walnut', 'yonder', 'zephyr', 'atlas', 'bramble', 'cedar',
+  'drift', 'echo', 'fable', 'glacier', 'hollow', 'ivory', 'juniper',
+  'kindle', 'ledger', 'marble', 'north', 'opal', 'prairie', 'quill',
+].join(' ');
+
+/**
  * Every command the wallet frontend can invoke. Hand-maintained; `registry.test.ts`
  * cross-checks it against the live `$lib/ipc` source so drift fails a test.
  */
@@ -63,6 +80,7 @@ export type CommandName =
   // account.ts
   | 'create_account'
   | 'perform_did_ceremony'
+  | 'confirm_share_backup'
   | 'prepare_did_web_ceremony'
   | 'complete_did_web_ceremony'
   | 'plugin:sharesheet|share_text'
@@ -183,8 +201,17 @@ export function buildRegistry(state: WalletState): Registry {
       const handle = String(args.handle ?? state.create?.handle ?? 'newuser.harness.pds.local');
       const did = fakePlcDid(`${handle}:${state.create?.email ?? ''}`);
       state.create = { ...(state.create ?? {}), handle, did };
-      return { did, share3: 'HARNESSSHARETHREEAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA' };
+      // The client-share ceremony returns Share 3 in both forms: the base32 v2
+      // envelope (68 chars, the QR payload) and the 42-word human-custody phrase.
+      return {
+        did,
+        share3: HARNESS_SHARE3_ENVELOPE,
+        share3Words: HARNESS_SHARE3_WORDS,
+      };
     },
+    // Teardown of the ceremony's Keychain staging slot — pure side effect on device,
+    // nothing observable in the fake beyond succeeding.
+    confirm_share_backup: () => null,
     prepare_did_web_ceremony: (): DidWebPreparation => ({
       deviceKeyMultibase: `z${fakeDeviceKeyId('did:web')}`,
       repoKeyMultibase: `z${fakeDeviceKeyId('did:web:repo')}`,
@@ -195,7 +222,13 @@ export function buildRegistry(state: WalletState): Registry {
       const did = `did:web:${handle}`;
       state.create = { ...(state.create ?? {}), handle, did };
       void args;
-      return { did, share3: 'HARNESSSHARETHREEAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA' };
+      // did:web stays on the legacy server-side share path: bare base32 share, no
+      // word rendering — the backup screen falls back to the machine form.
+      return {
+        did,
+        share3: 'HARNESSSHARETHREEAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA',
+        share3Words: '',
+      };
     },
     'plugin:sharesheet|share_text': () => null,
     register_handle: (args): RegisterHandleResult => {

@@ -345,13 +345,18 @@ passwordless Phase 1 should not ship before them.
   note (2026-07-17): the operator's did:web identity has not yet migrated onto Custos,
   so this is precautionary scoping, not a live migration concern — and a did:web
   migration performed after this work lands is unaffected either way.*
-- ~~**Version-skew transition.**~~ *Resolved 2026-07-17: the wallet fleet is a single
-  operator-controlled install, so MM-407 needs no dual-mode window. Coordinated cutover
-  instead — the server ships first and **hard-cuts** the legacy path (a legacy-shaped
-  `/v1/dids` request gets a clear 400 naming the required wallet version, never a
-  silently minted old-model account), the one wallet build updates the same day, and
-  `pending_share_{1,2,3}` + `generate_recovery_shares` retire inside MM-407 itself
-  rather than in a follow-up.*
+- ~~**Version-skew transition.**~~ *Resolved 2026-07-17, then **reversed the same day**
+  by the production-migration review (recorded on MM-407): the earlier resolution
+  ("single operator-controlled install → hard-cut the legacy path inside MM-407")
+  underweighted the deploy ordering — Railway deploys the server on `main`/`production`
+  before the TestFlight wallet build propagates, so a hard cut would break an old wallet
+  build onboarding a new account mid-ceremony. As built, `/v1/dids` runs **dual-mode**
+  for a transition window: a request carrying the client-share fields (`recoveryKey` +
+  `escrowShare`) takes the new path; a legacy-shaped request keeps the old server-side
+  generation and is flagged in logs for adoption tracking. The legacy path,
+  `pending_share_{1,2,3}`, and `generate_recovery_shares` retire in a follow-up once the
+  fleet has updated. (did:web ceremonies stay on the legacy path regardless — see the
+  did:web open question above.)*
 - **Seed-derived vs independent recovery key for rotation ops.** Deriving via HKDF makes
   reconstruction verifiable against the DID doc with no extra stored state — chosen
   here. The cost: the seed *is* the key; share-set rotation is therefore also key
