@@ -466,7 +466,7 @@ mod tests {
         );
     }
 
-    /// V055 drops `pending_accounts.pending_share_{1,2,3}` (MM-426). The fresh-DB migration run
+    /// V055 drops `pending_accounts.pending_share_{1,2,3}`. The fresh-DB migration run
     /// has no rows during the DROP COLUMN, so this exercises the production upgrade path: seed a
     /// populated pending_accounts row (with share columns set) at the pre-V055 schema, apply
     /// V055, and confirm the columns are gone while the rest of the row survives.
