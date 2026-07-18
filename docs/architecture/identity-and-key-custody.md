@@ -53,10 +53,11 @@ signing key at index 2. The ordering rationale is recorded in
 > what the current client-share `POST /v1/dids` ceremony writes. Two populations
 > still carry the older two-key `[device, PDS]` layout: `did:web` accounts and
 > pre-inversion wallet builds fall back to the server-side split path (which has
-> no recovery slot), and accounts created before the inversion are migrated onto
+> no recovery slot). Pre-inversion **`did:plc` wallet** accounts are migrated onto
 > the recovery slot **additively** by the wallet's re-key flow (`rekey.rs`) —
 > device-key-signing a rotation op that inserts the derived recovery key at
-> `rotationKeys[1]`. See *Where keys live* for the as-built ceremony split.
+> `rotationKeys[1]`; `rekey.rs` refuses `did:web` and interop accounts, which stay
+> on the two-key layout. See *Where keys live* for the as-built ceremony split.
 
 ## Where keys live (wallet)
 
@@ -104,11 +105,13 @@ Managed by the Obsign identity-wallet app
   recovery-of-last-resort for a lost device key.
 
   Two populations predate this and use a server-side split with **no** recovery
-  slot: `did:web` accounts and pre-inversion wallet builds take the legacy
-  fallback path in `create_did.rs` (fresh random secret, `split_secret`, Share 2
-  in the `accounts.recovery_share` column). Existing such accounts are migrated
-  additively onto the recovery slot by the wallet's re-key flow (`rekey.rs`),
-  which also voids the legacy column server-side. The full design — the derived
+  slot: `did:web` accounts and pre-inversion `did:plc` wallet builds take the
+  legacy fallback path in `create_did.rs` (fresh random secret, `split_secret`,
+  Share 2 in the `accounts.recovery_share` column). Only the **pre-inversion
+  `did:plc` wallet accounts** are migrated additively onto the recovery slot by
+  the wallet's re-key flow (`rekey.rs`), which also voids the legacy column
+  server-side; `rekey.rs` deliberately refuses `did:web` and non-root-device
+  interop accounts, so those keep the two-key layout. The full design — the derived
   recovery key, the versioned share envelope, and both recovery paths — is
   specified in
   [Key recovery from Shamir shares](../design-plans/2026-07-17-key-recovery-from-shares.md).
