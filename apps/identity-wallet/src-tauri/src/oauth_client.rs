@@ -389,6 +389,10 @@ impl OAuthClient {
         }
 
         builder.send().await.map_err(|e| {
+            // Strip the request URL from the error before it is logged: a reqwest error's
+            // `Display` embeds the full URL (host + query), which can carry a DID or other
+            // account material. The redacted host is recorded separately below.
+            let e = e.without_url();
             tracing::error!(error = %e, "OAuthClient request network error");
             // Record a redacted breadcrumb (host + transport category only). The escrow deposit
             // and every other authenticated owner write go through this client, so without this
@@ -442,6 +446,8 @@ impl OAuthClient {
         }
 
         builder.body(body.to_vec()).send().await.map_err(|e| {
+            // Redact the URL from the error before logging (see `send_with_dpop`).
+            let e = e.without_url();
             tracing::error!(error = %e, "OAuthClient post_bytes network error");
             crate::diagnostics::record_transport(
                 "oauthUpload",

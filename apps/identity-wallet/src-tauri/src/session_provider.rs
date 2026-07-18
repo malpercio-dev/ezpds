@@ -347,6 +347,9 @@ async fn rotate_and_persist(
         .send()
         .await
         .map_err(|e| {
+            // Strip the URL from the error before it becomes a message: a reqwest error's
+            // `Display` embeds the full request URL, which can carry account material.
+            let e = e.without_url();
             // Redacted breadcrumb so a refresh transport failure is visible in diagnostics —
             // it otherwise records nothing and surfaces only as a generic offline error.
             crate::diagnostics::record_transport(
