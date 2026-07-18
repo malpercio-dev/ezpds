@@ -481,7 +481,7 @@
   .halt-ic {
     color: var(--color-critical);
     flex-shrink: 0;
-    margin-top: 1px;
+    margin-top: var(--space-3xs);
   }
   .halt-body {
     display: flex;

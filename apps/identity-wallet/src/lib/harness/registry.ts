@@ -852,6 +852,7 @@ export function buildRegistry(state: WalletState): Registry {
       origin: 'https://app.example.com',
       ip: '203.0.113.5',
       requestedScope: ['atproto', 'transition:generic'],
+      loginHint: null,
     }),
     confirm_oauth_consent: (args): ConsentDecision => ({
       status: String(args.decision) === 'deny' ? 'denied' : 'approved',

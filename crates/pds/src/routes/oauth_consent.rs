@@ -80,20 +80,6 @@ fn approval_rejected() -> ApiError {
     )
 }
 
-async fn active_local_account_exists(pool: &sqlx::SqlitePool, did: &str) -> Result<bool, ApiError> {
-    sqlx::query_scalar(
-        "SELECT EXISTS(SELECT 1 FROM accounts WHERE did = ? \
-         AND deactivated_at IS NULL AND suspended_at IS NULL AND taken_down_at IS NULL)",
-    )
-    .bind(did)
-    .fetch_one(pool)
-    .await
-    .map_err(|e| {
-        tracing::error!(error = %e, "DB error checking local account for consent approval");
-        ApiError::new(ErrorCode::InternalError, "failed to verify account")
-    })
-}
-
 /// Reduce the wallet's requested granted-scope string to the tokens actually on offer: `atproto` is
 /// always granted (never optional), and every other token is kept only if it was part of the
 /// request's snapshotted `requested_scope`. This mirrors `oauth_authorize`'s reduction filter, so a
@@ -290,7 +276,7 @@ pub async fn post_authorization_approve(
             return Err(approval_rejected());
         }
     }
-    if !active_local_account_exists(&state.db, &request.did).await? {
+    if !crate::db::accounts::active_local_account_exists(&state.db, &request.did).await? {
         return Err(approval_rejected());
     }
 

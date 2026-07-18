@@ -13,6 +13,7 @@ use common::{ApiError, ErrorCode, SOVEREIGN_TIMESTAMP_WINDOW_SECS};
 use serde::{Deserialize, Serialize};
 
 use crate::app::AppState;
+use crate::db::accounts::active_local_account_exists;
 use crate::db::sovereign_session_nonces::insert_nonce_if_absent;
 use crate::identity::plc::fetch_current_plc_state;
 use crate::session_issuer::{issue_session_in_transaction, SessionKind};
@@ -82,23 +83,6 @@ fn unix_timestamp() -> Result<i64, ApiError> {
             ErrorCode::InternalError,
             "system timestamp exceeds supported range",
         )
-    })
-}
-
-async fn active_local_account_exists<'e, E>(executor: E, did: &str) -> Result<bool, ApiError>
-where
-    E: sqlx::Executor<'e, Database = sqlx::Sqlite>,
-{
-    sqlx::query_scalar(
-        "SELECT EXISTS(SELECT 1 FROM accounts WHERE did = ? \
-         AND deactivated_at IS NULL AND suspended_at IS NULL AND taken_down_at IS NULL)",
-    )
-    .bind(did)
-    .fetch_one(executor)
-    .await
-    .map_err(|e| {
-        tracing::error!(error = %e, account_did = %did, "failed to check sovereign account state");
-        ApiError::new(ErrorCode::InternalError, "failed to verify account")
     })
 }
 

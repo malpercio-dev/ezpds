@@ -10,16 +10,18 @@ import { invoke } from '@tauri-apps/api/core';
 export type ConsentPreview = {
   requestId: string;
   clientId: string;
-  clientName?: string;
+  // These come from Rust `Option<T>` without `skip_serializing_if`, so the JSON carries an explicit
+  // `null` (not an absent key) when empty — hence `string | null`, not `?: string`.
+  clientName: string | null;
   redirectUri: string;
   /** The origin the consent page was requested from (for display). */
-  origin?: string;
+  origin: string | null;
   /** The requesting IP (for display). */
-  ip?: string;
+  ip: string | null;
   /** The scope tokens the client requested — the wallet may uncheck individual ones. */
   requestedScope: string[];
   /** If set, the request is pre-bound to this DID; approving as a different DID is refused. */
-  loginHint?: string;
+  loginHint: string | null;
 };
 
 /** The recorded decision for a consent request. */
@@ -38,7 +40,7 @@ export type ConsentError =
   | { code: 'REQUEST_NOT_FOUND' }
   | { code: 'APPROVAL_REJECTED' }
   | { code: 'ALREADY_RESOLVED' }
-  | { code: 'RATE_LIMITED'; retryAfter?: string }
+  | { code: 'RATE_LIMITED'; retryAfter: string | null }
   | { code: 'TRANSPORT_FAILURE'; message: string }
   | { code: 'KEYCHAIN_FAILURE'; message: string }
   | { code: 'SIGNING_FAILED'; message: string }
