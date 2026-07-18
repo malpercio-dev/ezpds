@@ -62,3 +62,4 @@ understand why the architecture is the way it is.
 | [0025](0025-wallet-driven-repo-key-rotation.md) | Accepted | Repo signing-key rotation is wallet-signed and PDS-submitted, with a staged key promoted under the repo write lock |
 | [0026](0026-human-signup-invite-gated.md) | Accepted | Human signup is invite-gated by construction; claim codes are the invite primitive and the Brass Console Codes screen manages them |
 | [0027](0027-rotation-key-ordering.md) | Accepted | Genesis rotation keys are ordered `[device, recovery, PDS]` — enclave supremacy over the share-collection threat |
+| [0028](0028-otel-native-backend-observability.md) | Accepted | OpenTelemetry-native observability for the backend (traces + metrics + logs into one self-hosted OTLP backend, not Sentry/Bugsink); mobile stays on user-initiated log export |

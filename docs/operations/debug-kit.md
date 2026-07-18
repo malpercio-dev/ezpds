@@ -304,7 +304,10 @@ railway sandbox destroy          # acts on the active sandbox
 
 - **Persistent scraping / dashboards** (a collector service inside the project
   to retain `/metrics` history and receive the OTLP traces `telemetry.rs`
-  already exports) is a separate cost/benefit decision, not part of this kit.
+  already exports) is not part of this kit. The direction is decided in
+  [ADR-0028](../architecture/decisions/0028-otel-native-backend-observability.md)
+  (an OpenTelemetry-native backend — traces + metrics + logs — on the private
+  network); standing it up is tracked follow-on work.
 - **JSON log output** (`EZPDS_LOG_FORMAT=json`) shipped separately — see
   [deploy.md → Observability](../deploy.md#observability-metrics-and-logs).
 
