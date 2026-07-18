@@ -1,5 +1,33 @@
 import { describe, expect, it } from 'vitest';
-import { didMethod, isDidWeb, docNeedsRotationKeysRefresh } from './did-doc-utils';
+import {
+  didMethod,
+  isDidWeb,
+  docNeedsRotationKeysRefresh,
+  isOldModelRecovery,
+} from './did-doc-utils';
+
+describe('isOldModelRecovery', () => {
+  const twoKey = { rotationKeys: ['did:key:zDevice', 'did:key:zPds'] };
+  const threeKey = { rotationKeys: ['did:key:zDevice', 'did:key:zRecovery', 'did:key:zPds'] };
+
+  it('is true for a did:plc identity with exactly 2 rotation keys (old model)', () => {
+    expect(isOldModelRecovery('did:plc:abc', twoKey)).toBe(true);
+  });
+
+  it('is false for a new-model (3-key) did:plc identity', () => {
+    expect(isOldModelRecovery('did:plc:abc', threeKey)).toBe(false);
+  });
+
+  it('is false for a did:web identity regardless of doc shape', () => {
+    expect(isOldModelRecovery('did:web:example.com', twoKey)).toBe(false);
+  });
+
+  it('is false when the doc is missing or lacks a rotationKeys array (stale cache)', () => {
+    expect(isOldModelRecovery('did:plc:abc', null)).toBe(false);
+    expect(isOldModelRecovery('did:plc:abc', { rotationKeys: 'nope' })).toBe(false);
+    expect(isOldModelRecovery('did:plc:abc', {})).toBe(false);
+  });
+});
 
 describe('didMethod', () => {
   it('extracts the method from a did:plc', () => {

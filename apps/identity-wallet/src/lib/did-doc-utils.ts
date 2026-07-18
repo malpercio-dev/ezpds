@@ -102,6 +102,32 @@ export function isDidWeb(did: string): boolean {
 }
 
 /**
+ * Whether an identity is on the OLD recovery model and eligible for a re-key (MM-411).
+ *
+ * Every account created before the ceremony inversion carries a server-generated split of a
+ * secret bound to nothing — its `rotationKeys` are the 2-key `[device, PDS]` array with no
+ * recovery key. The new (client-generated) model inserts a recovery key at `rotationKeys[1]`,
+ * giving 3 keys. The re-key prompt appears only for old-model identities:
+ *
+ * - `did:web` is skipped entirely — it has no PLC `rotationKeys`, so the recovery-key concept
+ *   does not apply (a separate design question).
+ * - A doc without a usable `rotationKeys` array (a stale W3C cache) returns `false` — the caller
+ *   self-heals the cache first (`docNeedsRotationKeysRefresh`) so detection reads the PLC shape.
+ * - `rotationKeys.length >= 3` is already new-model and never prompts.
+ *
+ * @param did - The identity's DID
+ * @param doc - The cached PLC-shape DID document, or null when none is stored
+ * @returns true only for a did:plc identity whose authoritative doc has exactly 2 rotation keys
+ */
+export function isOldModelRecovery(did: string, doc: Record<string, unknown> | null): boolean {
+  if (didMethod(did) !== 'plc') return false;
+  if (!doc) return false;
+  const keys = doc.rotationKeys;
+  if (!Array.isArray(keys)) return false;
+  return keys.length === 2;
+}
+
+/**
  * Normalizes a PLC directory format DID document to W3C format for DIDDocumentScreen.
  *
  * Converts:

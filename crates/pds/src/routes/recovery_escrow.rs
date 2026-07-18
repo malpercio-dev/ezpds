@@ -34,7 +34,8 @@ use crate::app::AppState;
 use crate::auth::guards::{authenticate_account_owner, OwnerAuthError};
 use crate::db::recovery_audit::{insert_recovery_audit_event, RecoveryAuditEventType};
 use crate::db::recovery_escrow::{
-    delete_escrow_share, escrow_share_exists, insert_escrow_share, replace_escrow_share,
+    delete_escrow_share, escrow_share_exists, insert_escrow_share, null_legacy_recovery_share,
+    replace_escrow_share,
 };
 use common::{ApiError, ErrorCode};
 
@@ -135,9 +136,17 @@ pub async fn put_escrow_share(
             .map_err(map_err)?;
         RecoveryAuditEventType::Deposited
     };
+    // A re-key of an old-model account (MM-411) voids the dead legacy Share 2
+    // (`accounts.recovery_share`, V010) in the same transaction: once a client-generated Share 2
+    // is escrowed, the server-generated legacy split protects nothing and must not survive in
+    // backups. Idempotent for accounts that never had one, so it is safe on every deposit path.
+    let legacy_voided = null_legacy_recovery_share(&mut *tx, &did)
+        .await
+        .map_err(map_err)?;
     let detail = serde_json::json!({
         "set_id": envelope.set_id(),
         "version": envelope.version(),
+        "legacy_voided": legacy_voided,
     });
     insert_recovery_audit_event(
         &mut *tx,
@@ -350,6 +359,96 @@ mod tests {
             audit_events(&state.db, did).await,
             vec!["deposited", "rotated", "deleted"],
             "one event per real state change; the repeat delete adds none"
+        );
+    }
+
+    async fn audit_details(db: &sqlx::SqlitePool, did: &str) -> Vec<String> {
+        sqlx::query_scalar(
+            "SELECT COALESCE(detail, '') FROM recovery_audit_events WHERE did = ? ORDER BY rowid",
+        )
+        .bind(did)
+        .fetch_all(db)
+        .await
+        .unwrap()
+    }
+
+    async fn legacy_recovery_share(db: &sqlx::SqlitePool, did: &str) -> Option<String> {
+        sqlx::query_scalar("SELECT recovery_share FROM accounts WHERE did = ?")
+            .bind(did)
+            .fetch_one(db)
+            .await
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn rekey_deposit_voids_legacy_recovery_share() {
+        let state = escrow_state().await;
+        let did = "did:plc:legacyrekeydeposit";
+        seed_account(&state.db, did).await;
+        // Old-model account: a server-generated legacy Share 2 sits in accounts.recovery_share.
+        sqlx::query("UPDATE accounts SET recovery_share = ? WHERE did = ?")
+            .bind("LEGACYSHARE2")
+            .bind(did)
+            .execute(&state.db)
+            .await
+            .unwrap();
+        let headers = session_headers(&state.db, did).await;
+
+        // The re-key deposits its client-generated Share 2 through the standalone PUT.
+        assert_eq!(
+            put_share(&state, &headers, &share_envelope(7, 1))
+                .await
+                .unwrap(),
+            "deposited"
+        );
+
+        // The legacy column is voided in the same transaction, and the audit event records it.
+        assert_eq!(
+            legacy_recovery_share(&state.db, did).await,
+            None,
+            "the dead legacy share is nulled on the re-key deposit"
+        );
+        let details = audit_details(&state.db, did).await;
+        assert_eq!(details.len(), 1);
+        assert!(
+            details[0].contains("\"legacy_voided\":true"),
+            "the deposit event records that it voided legacy material: {}",
+            details[0]
+        );
+
+        // A subsequent rotation deposit has no legacy material left to void.
+        assert_eq!(
+            put_share(&state, &headers, &share_envelope(8, 1))
+                .await
+                .unwrap(),
+            "rotated"
+        );
+        let details = audit_details(&state.db, did).await;
+        assert!(
+            details[1].contains("\"legacy_voided\":false"),
+            "a later rotation voids nothing: {}",
+            details[1]
+        );
+    }
+
+    #[tokio::test]
+    async fn deposit_without_legacy_material_records_no_void() {
+        let state = escrow_state().await;
+        let did = "did:plc:cleandeposit";
+        seed_account(&state.db, did).await; // no legacy recovery_share
+        let headers = session_headers(&state.db, did).await;
+
+        assert_eq!(
+            put_share(&state, &headers, &share_envelope(1, 1))
+                .await
+                .unwrap(),
+            "deposited"
+        );
+        let details = audit_details(&state.db, did).await;
+        assert!(
+            details[0].contains("\"legacy_voided\":false"),
+            "a post-inversion account has nothing to void: {}",
+            details[0]
         );
     }
 

@@ -31,9 +31,22 @@ use zeroize::Zeroizing;
 
 use crate::keychain;
 
-/// Keychain account for the in-flight ceremony share set. Transient working
+/// Keychain account for the in-flight *create* ceremony share set. Transient working
 /// material — deleted by [`clear_staging`] once the ceremony is confirmed.
 pub const STAGING_ACCOUNT: &str = "ceremony-staging";
+
+/// Keychain account for an in-flight *re-key* share set, scoped per DID.
+///
+/// Re-key (moving an existing old-model account onto a client-generated recovery key)
+/// runs its own ceremony against an existing identity, so it gets a slot keyed by DID
+/// rather than sharing the single create-flow slot. A per-DID slot is load-bearing for
+/// safety: unlike the create flow, a re-key must NEVER abandon a staged set because a
+/// *different* DID's re-key started — a staged set whose rotation op has already landed
+/// is the only durable home of that account's new recovery seed. Keying the account by
+/// DID means one identity's re-key can never overwrite or orphan another's.
+fn rekey_staging_account(did: &str) -> String {
+    format!("rekey-staging:{did}")
+}
 
 /// Bumped only on a breaking staging-record format change; a mismatched version
 /// reads as corrupt and fails closed (`StagingCorrupt`).
@@ -102,11 +115,35 @@ impl Drop for StagingRecord {
     }
 }
 
-/// Load the staged share set for `(handle, pds_url)` if a valid one exists, else
-/// generate a fresh set and stage it — always BEFORE the caller makes any network call,
-/// so a mid-ceremony failure retries with the identical set (same `set_id`).
+/// Load the staged *create*-ceremony share set for `(handle, pds_url)` if a valid one
+/// exists, else generate a fresh set and stage it — always BEFORE the caller makes any
+/// network call, so a mid-ceremony failure retries with the identical set (same
+/// `set_id`).
 pub fn load_or_create(handle: &str, pds_url: &str) -> Result<CeremonyShareSet, ShareCeremonyError> {
-    if let Some(staged) = load_staged(handle, pds_url)? {
+    load_or_create_in_account(STAGING_ACCOUNT, handle, pds_url)
+}
+
+/// Load-or-create for a re-key ceremony: same generation/reload semantics as
+/// [`load_or_create`], but staged in the per-DID re-key slot (see
+/// [`rekey_staging_account`]). The `(did, pds_url)` pair is the discriminator, so a
+/// resumed re-key for the same DID always reloads the identical set — a re-key never
+/// abandons a staged set the way a create ceremony does on changed inputs.
+pub fn load_or_create_for_rekey(
+    did: &str,
+    pds_url: &str,
+) -> Result<CeremonyShareSet, ShareCeremonyError> {
+    load_or_create_in_account(&rekey_staging_account(did), did, pds_url)
+}
+
+/// Shared implementation: load the staged set from `account` (bound to the
+/// `(discriminator_a, discriminator_b)` pair), else generate a fresh set and stage it
+/// there before returning.
+fn load_or_create_in_account(
+    account: &str,
+    discriminator_a: &str,
+    discriminator_b: &str,
+) -> Result<CeremonyShareSet, ShareCeremonyError> {
+    if let Some(staged) = load_staged(account, discriminator_a, discriminator_b)? {
         return Ok(staged);
     }
 
@@ -134,15 +171,15 @@ pub fn load_or_create(handle: &str, pds_url: &str) -> Result<CeremonyShareSet, S
     let record = Zeroizing::new(
         serde_json::to_string(&StagingRecord {
             version: STAGING_VERSION,
-            handle: handle.to_string(),
-            pds_url: pds_url.to_string(),
+            handle: discriminator_a.to_string(),
+            pds_url: discriminator_b.to_string(),
             share1: share1.to_string(),
             share2: share2.to_string(),
             share3: share3.to_string(),
         })
         .expect("staging record serialization cannot fail"),
     );
-    keychain::store_item(STAGING_ACCOUNT, record.as_bytes())?;
+    keychain::store_item(account, record.as_bytes())?;
 
     Ok(CeremonyShareSet {
         recovery_key_id: recovery.key_id.0,
@@ -166,10 +203,11 @@ pub fn load_or_create(handle: &str, pds_url: &str) -> Result<CeremonyShareSet, S
 /// unrelated shares would permanently destroy the recovery seed. The slot is
 /// preserved for a later retry or manual inspection.
 fn load_staged(
-    handle: &str,
-    pds_url: &str,
+    account: &str,
+    discriminator_a: &str,
+    discriminator_b: &str,
 ) -> Result<Option<CeremonyShareSet>, ShareCeremonyError> {
-    let bytes = match keychain::get_item(STAGING_ACCOUNT) {
+    let bytes = match keychain::get_item(account) {
         Ok(bytes) => Zeroizing::new(bytes),
         Err(e) if keychain::is_not_found(&e) => return Ok(None),
         Err(e) => {
@@ -193,7 +231,7 @@ fn load_staged(
             record.version
         )));
     }
-    if record.handle != handle || record.pds_url != pds_url {
+    if record.handle != discriminator_a || record.pds_url != discriminator_b {
         tracing::warn!(
             "ceremony inputs changed since staging; abandoning the staged set and regenerating"
         );
@@ -252,10 +290,28 @@ fn load_staged(
     }))
 }
 
-/// Tear down the staging slot — the seed material's last transient home. Idempotent:
-/// an absent slot is success (the teardown already happened).
+/// Tear down the *create*-ceremony staging slot — the seed material's last transient
+/// home. Idempotent: an absent slot is success (the teardown already happened).
 pub fn clear_staging() -> Result<(), keychain::KeychainError> {
-    match keychain::delete_item(STAGING_ACCOUNT) {
+    clear_staging_account(STAGING_ACCOUNT)
+}
+
+/// Tear down the per-DID re-key staging slot. Idempotent, like [`clear_staging`].
+pub fn clear_rekey_staging(did: &str) -> Result<(), keychain::KeychainError> {
+    clear_staging_account(&rekey_staging_account(did))
+}
+
+/// Whether a per-DID re-key staging slot exists — i.e. a re-key was started for this DID and has
+/// not yet been confirmed/torn down. Used to resurface the "finish your upgrade" prompt when a
+/// re-key was interrupted after its PLC op landed (so the identity already reads as new-model) but
+/// before escrow/Share 1/confirmation completed. A transient keychain read error reads as "not in
+/// progress" (fail-open for a prompt is safe — the account is never worse off un-prompted).
+pub fn rekey_staging_exists(did: &str) -> bool {
+    keychain::get_item(&rekey_staging_account(did)).is_ok()
+}
+
+fn clear_staging_account(account: &str) -> Result<(), keychain::KeychainError> {
+    match keychain::delete_item(account) {
         Ok(()) => Ok(()),
         Err(e) if keychain::is_not_found(&e) => Ok(()),
         Err(e) => Err(e),
@@ -384,5 +440,56 @@ mod tests {
             Err(ref e) if keychain::is_not_found(e)
         ));
         clear_staging().unwrap();
+    }
+
+    const DID_A: &str = "did:plc:aaaaaaaaaaaaaaaaaaaaaaaa";
+    const DID_B: &str = "did:plc:bbbbbbbbbbbbbbbbbbbbbbbb";
+
+    #[test]
+    fn rekey_staging_is_scoped_per_did() {
+        keychain::clear_for_test();
+        // Two identities re-keying concurrently must not share a staging slot: each
+        // reloads its own set, and neither abandons the other's.
+        let a = load_or_create_for_rekey(DID_A, PDS).unwrap();
+        let b = load_or_create_for_rekey(DID_B, PDS).unwrap();
+        assert_ne!(*a.share2, *b.share2, "distinct DIDs get distinct sets");
+
+        let a_again = load_or_create_for_rekey(DID_A, PDS).unwrap();
+        assert_eq!(
+            *a.share2, *a_again.share2,
+            "DID A's set survives DID B's re-key staging"
+        );
+        assert_eq!(a.recovery_key_id, a_again.recovery_key_id);
+    }
+
+    #[test]
+    fn rekey_staging_does_not_collide_with_create_staging() {
+        keychain::clear_for_test();
+        let create = load_or_create(HANDLE, PDS).unwrap();
+        let rekey = load_or_create_for_rekey(DID_A, PDS).unwrap();
+        assert_ne!(
+            *create.share2, *rekey.share2,
+            "create and re-key ceremonies use independent slots"
+        );
+        // Clearing the re-key slot leaves the create slot intact and vice versa.
+        clear_rekey_staging(DID_A).unwrap();
+        assert!(keychain::get_item(STAGING_ACCOUNT).is_ok());
+        assert_eq!(
+            *load_or_create(HANDLE, PDS).unwrap().share2,
+            *create.share2,
+            "create staging is untouched by re-key teardown"
+        );
+    }
+
+    #[test]
+    fn clear_rekey_staging_is_idempotent() {
+        keychain::clear_for_test();
+        load_or_create_for_rekey(DID_A, PDS).unwrap();
+        clear_rekey_staging(DID_A).unwrap();
+        assert!(matches!(
+            keychain::get_item(&rekey_staging_account(DID_A)),
+            Err(ref e) if keychain::is_not_found(e)
+        ));
+        clear_rekey_staging(DID_A).unwrap();
     }
 }

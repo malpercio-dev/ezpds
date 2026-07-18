@@ -33,6 +33,7 @@
   import DIDDocumentScreen from '$lib/components/home/DIDDocumentScreen.svelte';
   import ChangeHandleScreen from '$lib/components/home/ChangeHandleScreen.svelte';
   import RotateRepoKeyScreen from '$lib/components/home/RotateRepoKeyScreen.svelte';
+  import RekeyReviewScreen from '$lib/components/home/RekeyReviewScreen.svelte';
   import AppPasswordsScreen from '$lib/components/home/AppPasswordsScreen.svelte';
   import AlertDetailScreen from '$lib/components/home/AlertDetailScreen.svelte';
   import RecoveryOverrideScreen from '$lib/components/home/RecoveryOverrideScreen.svelte';
@@ -40,7 +41,7 @@
   import AgentClaimApprovalScreen from '$lib/components/home/AgentClaimApprovalScreen.svelte';
   import SettingsScreen from '$lib/components/home/SettingsScreen.svelte';
   import RemoveIdentityScreen from '$lib/components/home/RemoveIdentityScreen.svelte';
-  import { createAccount, confirmShareBackup, registerCreatedIdentity, listIdentities, listPendingRemovals, getStoredDidDoc, checkIdentityStatus, isCodedError, type CreateAccountError, type OAuthError, type IdentityInfo, type VerifiedClaimOp, type ClaimResult, type UnauthorizedChange } from '$lib/ipc';
+  import { createAccount, confirmShareBackup, confirmRekey, registerCreatedIdentity, listIdentities, listPendingRemovals, getStoredDidDoc, checkIdentityStatus, isCodedError, type CreateAccountError, type OAuthError, type IdentityInfo, type VerifiedClaimOp, type ClaimResult, type RekeyResult, type UnauthorizedChange } from '$lib/ipc';
   import { authenticateBiometric } from '$lib/biometric';
   import { normalizePlcDocToW3c, extractHandle } from '$lib/did-doc-utils';
   import IdentityListHome from '$lib/components/home/IdentityListHome.svelte';
@@ -77,6 +78,9 @@
     | 'identity_detail'
     | 'change_handle'
     | 'rotate_repo_key'
+    | 'rekey_review'
+    | 'rekey_backup'
+    | 'rekey_success'
     | 'app_passwords'
     | 'remove_identity'
     | 'alert_detail'
@@ -131,6 +135,14 @@
 
   let selectedAlertDid = $state<string | null>(null);
   let selectedAlertChanges = $state<UnauthorizedChange[]>([]);
+
+  // ── Re-key (old-model upgrade) flow state ─────────────────────────────────
+  // The re-key runs against an existing identity; the review screen produces the new Share 3,
+  // which the backup screen then walks the user through saving before the staging teardown.
+  let rekeyDid = $state<string | null>(null);
+  let rekeyShare3 = $state('');
+  let rekeyShare3Words = $state('');
+  let rekeyBackupError = $state<string | null>(null);
 
   let selectedRecoveryCid = $state<string | null>(null);
   let selectedRecoveryCreatedAt = $state<string | null>(null);
@@ -326,6 +338,30 @@
       return;
     }
     step = 'handle_registration';
+  }
+
+  // Mirror of confirmBackupAndContinue for the re-key epilogue: the biometric-gated teardown of
+  // the per-DID re-key staging slot, fail-closed on a non-durable Share 1 (SHARE_NOT_STORED).
+  async function confirmRekeyBackup() {
+    rekeyBackupError = null;
+    try {
+      await authenticateBiometric('Confirm you have saved your recovery share');
+    } catch (e) {
+      console.warn('Re-key backup confirmation biometric gate rejected:', e);
+      rekeyBackupError = 'Authentication was cancelled. Try again to finish your backup.';
+      return;
+    }
+    try {
+      await confirmRekey(rekeyDid ?? '');
+    } catch (e) {
+      console.error('Re-key staging teardown failed:', e);
+      rekeyBackupError =
+        isCodedError(e) && e.code === 'SHARE_NOT_STORED'
+          ? 'Your automatic iCloud share is not saved yet. Try again — if this keeps happening, reopen the app before continuing.'
+          : 'Could not finalize the backup. Check device storage and try again.';
+      return;
+    }
+    step = 'rekey_success';
   }
 
   async function finishCreateFlow(handle: string) {
@@ -527,6 +563,11 @@
       }}
       onagents={() => goTo('my_agents')}
       onsettings={() => goTo('settings')}
+      onrekey={(did) => {
+        rekeyDid = did;
+        rekeyBackupError = null;
+        goTo('rekey_review');
+      }}
     />
 
   {:else if step === 'settings'}
@@ -589,6 +630,39 @@
       onback={() => goTo('identity_detail')}
       ondone={() => goTo('home')}
     />
+
+  {:else if step === 'rekey_review'}
+    <RekeyReviewScreen
+      did={rekeyDid ?? ''}
+      onback={() => goTo('home')}
+      ondone={(result: RekeyResult) => {
+        rekeyShare3 = result.share3;
+        rekeyShare3Words = result.share3Words;
+        goTo('rekey_backup');
+      }}
+    />
+
+  {:else if step === 'rekey_backup'}
+    <ShamirBackupScreen
+      share3={rekeyShare3}
+      share3Words={rekeyShare3Words}
+      confirmError={rekeyBackupError}
+      oncomplete={confirmRekeyBackup}
+    />
+
+  {:else if step === 'rekey_success'}
+    <OnboardingShell
+      tone="signet"
+      title="Recovery key added"
+      subtitle="Your identity now has a recovery key, and your new shares are safely backed up. Nothing you rely on today has changed."
+    >
+      {#snippet icon()}
+        <SealEmblem>
+          <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" /><path d="m9 11.5 2 2 4-4" /></svg>
+        </SealEmblem>
+      {/snippet}
+      <Button onclick={() => goTo('home')}>Done</Button>
+    </OnboardingShell>
 
   {:else if step === 'app_passwords'}
     <AppPasswordsScreen did={selectedDid ?? ''} onback={() => goTo('identity_detail')} />

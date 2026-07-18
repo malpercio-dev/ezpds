@@ -38,12 +38,15 @@ import type {
   CreateAccountResult,
   DIDCeremonyResult,
   DidWebPreparation,
+  RekeyPreview,
+  RekeyResult,
 } from '$lib/ipc';
 import {
   DEFAULT_PDS_URL,
   fakeAppPasswordSecret,
   fakeDeviceKeyId,
   fakePlcDid,
+  fakeRecoveryKeyId,
   findIdentity,
   makeDidDoc,
   seedIdentity,
@@ -142,6 +145,11 @@ export type CommandName =
   // rotation.ts
   | 'build_repo_key_rotation_cmd'
   | 'submit_repo_key_rotation_cmd'
+  // rekey.ts
+  | 'build_rekey_cmd'
+  | 'submit_rekey_cmd'
+  | 'confirm_rekey_cmd'
+  | 'rekey_in_progress_cmd'
   // agents.ts
   | 'list_agents'
   | 'revoke_agent'
@@ -547,6 +555,62 @@ export function buildRegistry(state: WalletState): Registry {
         identity.rotationKeys = [identity.rotationKeys[0], 'did:key:zharnessRotatedRepoKey'];
       }
       return identity ? claimResult(identity) : { updatedDidDoc: {} };
+    },
+
+    // ── re-key (old-model upgrade, MM-411) ───────────────────────────────────
+    build_rekey_cmd: (args): RekeyPreview => {
+      const did = didArg(args);
+      const identity = findIdentity(state, did);
+      if (!identity) throw { code: 'IDENTITY_NOT_FOUND', message: 'identity not found' };
+      if (did.startsWith('did:web:')) throw { code: 'NOT_DID_PLC' };
+      const recoveryKey = fakeRecoveryKeyId(did);
+      // Resumable: a re-key already in flight (staging set) is always allowed, even after its op
+      // landed and the identity reads as new-model. A fresh re-key needs the 2-key old model with
+      // the device key at [0] — mirrors the Rust precheck (staging is the only escape).
+      if (!identity.rekeyStagedRecoveryKey) {
+        if (identity.rotationKeys.length !== 2) throw { code: 'ALREADY_REKEYED' };
+        if (identity.rotationKeys[0] !== identity.deviceKeyId) {
+          throw { code: 'WALLET_NOT_AUTHORIZED' };
+        }
+      }
+      identity.rekeyStagedRecoveryKey = recoveryKey;
+      return {
+        diff: {
+          addedKeys: [recoveryKey],
+          removedKeys: [],
+          changedServices: [],
+          prevCid: 'bafyharnessrekeyprev',
+        },
+        recoveryKeyId: recoveryKey,
+      };
+    },
+    submit_rekey_cmd: (args): RekeyResult => {
+      const did = didArg(args);
+      const identity = findIdentity(state, did);
+      if (!identity) throw { code: 'IDENTITY_NOT_FOUND', message: 'identity not found' };
+      if (did.startsWith('did:web:')) throw { code: 'NOT_DID_PLC' };
+      const recoveryKey = identity.rekeyStagedRecoveryKey ?? fakeRecoveryKeyId(did);
+      identity.rekeyStagedRecoveryKey = recoveryKey;
+      // Additively insert the recovery key at [1] (device stays [0], PDS shifts to [2]) — idempotent:
+      // a resumed submit whose op already landed leaves the 3-key array untouched.
+      if (!identity.rotationKeys.includes(recoveryKey)) {
+        const [device, ...rest] = identity.rotationKeys;
+        identity.rotationKeys = [device, recoveryKey, ...rest];
+      }
+      return {
+        updatedDidDoc: makeDidDoc(identity),
+        share3: HARNESS_SHARE3_ENVELOPE,
+        share3Words: HARNESS_SHARE3_WORDS,
+      };
+    },
+    confirm_rekey_cmd: (args) => {
+      const identity = findIdentity(state, didArg(args));
+      if (identity) identity.rekeyStagedRecoveryKey = null;
+      return null;
+    },
+    rekey_in_progress_cmd: (args): boolean => {
+      const identity = findIdentity(state, didArg(args));
+      return Boolean(identity?.rekeyStagedRecoveryKey);
     },
 
     // ── agents ───────────────────────────────────────────────────────────────

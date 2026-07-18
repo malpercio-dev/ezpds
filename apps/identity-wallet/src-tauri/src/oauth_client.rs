@@ -154,6 +154,21 @@ impl OAuthClient {
             .await
     }
 
+    /// PUT `{base_url}/{path}` with JSON body and DPoP authentication.
+    ///
+    /// Used for idempotent owner writes like `PUT /v1/recovery/escrow-share` (deposit or
+    /// replace the account's escrow Share 2), where the resource is the account's single
+    /// escrow slot rather than a new collection member.
+    pub async fn put<B: Serialize + Sync>(
+        &self,
+        path: &str,
+        body: &B,
+    ) -> Result<Response, OAuthError> {
+        let url = format!("{}/{}", self.base_url, path.trim_start_matches('/'));
+        self.execute_with_retry(reqwest::Method::PUT, &url, Some(body))
+            .await
+    }
+
     /// POST `{base_url}/{path}` with NO request body and no `Content-Type` header.
     ///
     /// For no-input XRPC procedures (`requestPlcOperationSignature`, `activateAccount`):

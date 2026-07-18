@@ -2,13 +2,14 @@
   import { onMount, onDestroy } from 'svelte';
   import { listen, type UnlistenFn } from '@tauri-apps/api/event';
   import { listIdentities, getStoredDidDoc,
-    refreshDidDoc, getDeviceKeyId, checkIdentityStatus, type UnauthorizedChange, type IdentityStatus } from '$lib/ipc';
+    refreshDidDoc, getDeviceKeyId, checkIdentityStatus, rekeyInProgress, type UnauthorizedChange, type IdentityStatus } from '$lib/ipc';
   import {
     extractPdsFromPlcDoc,
     extractHandle,
     truncateDid,
     docNeedsRotationKeysRefresh,
     isDidWeb,
+    isOldModelRecovery,
   } from '$lib/did-doc-utils';
   import { hostOf } from '$lib/url';
   import Button from '$lib/components/ui/Button.svelte';
@@ -22,6 +23,7 @@
     onalert,
     onagents,
     onsettings,
+    onrekey,
   }: {
     onadd: () => void;
     onselect: (did: string, didDoc: Record<string, unknown>, deviceKeyIsRoot: boolean | null) => void;
@@ -30,6 +32,8 @@
     onagents?: () => void;
     /** Open the Settings screen. */
     onsettings?: () => void;
+    /** Start the old-model re-key upgrade for a did:plc identity. */
+    onrekey?: (did: string) => void;
   } = $props();
 
   interface IdentityCard {
@@ -44,6 +48,10 @@
   let loading = $state(true);
   let loadError = $state<string | null>(null);
   let alertData = $state<Map<string, UnauthorizedChange[]>>(new Map());
+  // DIDs eligible for the old-model re-key upgrade (old-model doc OR an interrupted re-key with a
+  // staged set). Drives the calm per-identity "Add a recovery key" strip. Reassigned wholesale
+  // after each load so the map stays reactive (per the `$state(new Map())` reactivity rule).
+  let rekeyEligible = $state<Map<string, boolean>>(new Map());
   let unlisten: UnlistenFn | null = null;
 
   // Total unauthorized changes across all identities, for the monitoring banner.
@@ -68,6 +76,7 @@
   async function loadData() {
     loading = true;
     loadError = null;
+    const rekeyMap = new Map<string, boolean>();
     try {
       const dids = await listIdentities();
       identities = [];
@@ -100,6 +109,19 @@
             didDocs.set(did, docResult);
           }
 
+          // Old-model identities (and interrupted re-keys with a staged set) are offered the
+          // recovery-key upgrade. The in-progress check resurfaces a re-key whose PLC op already
+          // landed (so the doc reads as new-model) but whose escrow/Share 1 did not finish.
+          let eligible = isOldModelRecovery(did, docResult);
+          if (!eligible && !isDidWeb(did)) {
+            try {
+              eligible = await rekeyInProgress(did);
+            } catch (e) {
+              console.warn(`Re-key in-progress check failed for ${did}:`, e);
+            }
+          }
+          rekeyMap.set(did, eligible);
+
           identities.push({
             did,
             handle,
@@ -123,6 +145,7 @@
       didDocs.clear();
       loadError = 'Failed to load identities. Tap refresh to try again.';
     } finally {
+      rekeyEligible = rekeyMap;
       loading = false;
     }
   }
@@ -243,8 +266,9 @@
       <div class="cards">
         {#each identities as card (card.did)}
           {@const alerts = alertData.get(card.did)}
+          {@const showRekey = Boolean(onrekey && rekeyEligible.get(card.did) && !alerts?.length)}
           <div class="card-group">
-          <button class="card" class:card--alert={alerts?.length} onclick={() => onselect(card.did, didDocs.get(card.did) ?? {}, card.deviceKeyIsRoot)}>
+          <button class="card" class:card--alert={alerts?.length} class:card--rekey={showRekey} onclick={() => onselect(card.did, didDocs.get(card.did) ?? {}, card.deviceKeyIsRoot)}>
             <DIDAvatar did={card.did} handle={card.handle ?? 'Unknown'} />
             <span class="info">
               <span class="handle">{card.handle ? '@' + card.handle : 'Unknown handle'}</span>
@@ -283,6 +307,16 @@
             <button class="alert-strip" onclick={() => onalert?.(card.did, alerts ?? [])}>
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M7.86 2h8.28L22 7.86v8.28L16.14 22H7.86L2 16.14V7.86z"/><path d="M12 8v4"/><path d="M12 16h.01"/></svg>
               Review {alerts.length} unauthorized {alerts.length === 1 ? 'change' : 'changes'}
+              <svg class="strip-chev" width="8" height="14" viewBox="0 0 11 18" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m2 1 7 8-7 8"/></svg>
+            </button>
+          {/if}
+          {#if showRekey}
+            <!-- Calm, non-alarmist upgrade prompt (this is an improvement, not an incident): a
+                 seal-toned strip, deliberately NOT the critical/alert palette. Yields to an active
+                 alert strip, which takes priority for the same card. -->
+            <button class="rekey-strip" onclick={() => onrekey?.(card.did)}>
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><path d="m9 11.5 2 2 4-4"/></svg>
+              Add a recovery key
               <svg class="strip-chev" width="8" height="14" viewBox="0 0 11 18" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m2 1 7 8-7 8"/></svg>
             </button>
           {/if}
@@ -550,6 +584,11 @@
     border-bottom-left-radius: 0;
     border-bottom-right-radius: 0;
   }
+  /* Same fuse for the calm re-key upgrade strip. */
+  .card--rekey {
+    border-bottom-left-radius: 0;
+    border-bottom-right-radius: 0;
+  }
   .alert-strip {
     display: flex;
     align-items: center;
@@ -576,6 +615,34 @@
     margin-left: auto;
     color: var(--color-critical-soft);
     flex-shrink: 0;
+  }
+
+  /* Calm upgrade strip: seal-toned, deliberately NOT the critical/alert palette — a re-key is an
+     improvement, not an incident. Fuses to the bottom of the card like the alert strip. */
+  .rekey-strip {
+    display: flex;
+    align-items: center;
+    gap: var(--space-sm);
+    width: 100%;
+    min-height: var(--size-tap-target);
+    padding: 10px 15px;
+    background: var(--color-seal-tint);
+    color: var(--color-accent);
+    border: 1px solid var(--color-line);
+    border-top: none;
+    border-bottom-left-radius: var(--radius-xl);
+    border-bottom-right-radius: var(--radius-xl);
+    font-size: var(--text-label);
+    font-weight: var(--weight-semibold);
+    text-align: left;
+    cursor: pointer;
+    transition: border-color var(--duration-base) var(--ease-standard);
+  }
+  .rekey-strip:active {
+    border-color: var(--color-accent);
+  }
+  .rekey-strip .strip-chev {
+    color: var(--color-accent);
   }
 
   .chev {
