@@ -405,12 +405,13 @@ The iOS app is not:
 > recovery scenarios below say the reconstructed secret is imported as a *root
 > rotation key* "in new Secure Enclave" (§7.2). That is cryptographically
 > impossible: Secure-Enclave private keys are non-extractable and cannot be
-> imported. The as-built system also does not match this section — the onboarding
-> split is a server-generated random secret bound to nothing, and no
-> reconstruction ceremony exists yet. The accepted model instead reconstructs a
-> *seed* that HKDF-derives a **separate software recovery rotation key**; the new
-> device's Secure-Enclave key is freshly generated and *installed* by a PLC op the
-> recovery key signs. See
+> imported. The as-built system works differently: the onboarding split is
+> generated **client-side** over a fresh recovery *seed* that HKDF-derives a
+> **separate software recovery rotation key** (installed at `rotationKeys[1]`),
+> and the reconstruction ceremony now exists — the wallet combines ≥2 shares,
+> re-derives that recovery key, and signs a PLC op *installing a freshly generated
+> Secure-Enclave device key* at `rotationKeys[0]` (the reconstructed key is never
+> the device key). See
 > [Key recovery from Shamir shares](design-plans/2026-07-17-key-recovery-from-shares.md)
 > for the authoritative design and
 > [identity-and-key-custody.md](architecture/identity-and-key-custody.md) for the
