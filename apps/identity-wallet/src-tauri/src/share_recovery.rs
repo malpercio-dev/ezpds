@@ -56,7 +56,8 @@ const RECOVERY_SHARE1_ACCOUNT: &str = "recovery-share-1";
 /// legacy share (pre-envelope format) or foreign bytes are unusable for this ceremony and
 /// read as "not loaded" — manual entry covers the gap.
 fn load_share1_envelope(account: &str) -> Option<crypto::ShareEnvelope> {
-    let bytes = keychain::get_item(account).ok()?;
+    // Sensitive key material — wipe the in-memory copy when this scope ends.
+    let bytes = zeroize::Zeroizing::new(keychain::get_item(account).ok()?);
     let env = std::str::from_utf8(&bytes)
         .ok()
         .and_then(|s| crypto::ShareEnvelope::decode_share(s).ok())?;
@@ -1217,7 +1218,14 @@ pub(crate) async fn confirm_backup_core(slot: &StateSlot) -> Result<(), crate::S
     };
     match keychain::get_item(&crate::rekey::recovery_share1_account(&record.did)) {
         Ok(bytes) if bytes == record.share1.as_bytes() => {}
-        Ok(_) | Err(_) => return Err(crate::ShareBackupError::ShareNotStored),
+        Ok(_) => return Err(crate::ShareBackupError::ShareNotStored),
+        // A missing slot means the durable write never landed; an operational Keychain
+        // failure (e.g. a locked device) is not evidence the share is absent — surface it
+        // as retryable rather than the misleading "not saved yet" (mirrors confirm_share_backup).
+        Err(ref e) if keychain::is_not_found(e) => {
+            return Err(crate::ShareBackupError::ShareNotStored)
+        }
+        Err(_) => return Err(crate::ShareBackupError::KeychainError),
     }
     match keychain::delete_item(EPILOGUE_ACCOUNT) {
         Ok(()) => {}

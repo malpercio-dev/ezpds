@@ -1201,7 +1201,8 @@ async fn register_created_identity(
 fn migrate_global_share1_to_per_did() {
     // The legacy global slot; absent on a fresh (post-unification) install — nothing to migrate.
     let global = match keychain::get_item("recovery-share-1") {
-        Ok(bytes) if !bytes.is_empty() => bytes,
+        // Sensitive key material — wipe the in-memory copy when this scope ends.
+        Ok(bytes) if !bytes.is_empty() => zeroize::Zeroizing::new(bytes),
         Ok(_) => return,
         Err(ref e) if keychain::is_not_found(e) => return,
         Err(e) => {
