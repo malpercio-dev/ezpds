@@ -24,9 +24,14 @@
 //     record of a known (vendored) collection by default, honor the `validate` flag, enforce
 //     `$type`/collection agreement and the record-key discipline, and report `validationStatus`.
 //     The repo-write routes call it via `record_write::write_record` / `apply_writes`.
+//   * `validate_output` — the `assertValidXrpcOutput` counterpart: "this serialized response body
+//     conforms to the query/procedure's declared lexicon `output`". Outputs are Custos-controlled,
+//     so a failure is *our* shape regression (missing required field, wrong type) rather than a
+//     client bug — this is drift detection, exercised by the registry tests (there is no lib target,
+//     so the black-box `http_suite` can't reach the registry) rather than wired into the serve path.
 //
-// Scope: input bodies and query parameters of the natively-handled procedures, plus the record
-// bodies of the vendored `app.bsky.*` record lexicons. Output validation remains a non-goal.
+// Scope: input bodies, query parameters, and JSON output bodies of the natively-handled procedures,
+// plus the record bodies of the vendored `app.bsky.*` record lexicons.
 
 mod extractor;
 mod formats;
@@ -113,6 +118,11 @@ static LEXICON_SOURCES: &[&str] = &[
     include_str!("../../lexicons/com/atproto/sync/getRepoStatus.json"),
     include_str!("../../lexicons/com/atproto/sync/listBlobs.json"),
     include_str!("../../lexicons/com/atproto/sync/listRepos.json"),
+    // Output-only `defs` documents: the `object` defs the vendored queries'/procedures' `output`
+    // schemas reach that no input/record closure already pulled in. Registering outputs makes these
+    // validation roots, so `check_refs` requires them.
+    include_str!("../../lexicons/com/atproto/identity/defs.json"),
+    include_str!("../../lexicons/com/atproto/repo/defs.json"),
 ];
 
 /// A procedure's declared input body: its encoding and (for JSON inputs) its schema.
@@ -128,8 +138,8 @@ impl InputDef {
 }
 
 /// Parsed lexicons, keyed for validation: procedure inputs by NSID, `record` definitions by
-/// collection NSID, query/procedure `parameters` by NSID, and referencable definitions by
-/// fully-qualified `lex:<nsid>#<def>` URI.
+/// collection NSID, query/procedure `parameters` by NSID, query/procedure JSON `output` schemas by
+/// NSID, and referencable definitions by fully-qualified `lex:<nsid>#<def>` URI.
 pub struct Registry {
     inputs: HashMap<String, InputDef>,
     records: HashMap<String, LexRecord>,
@@ -137,6 +147,10 @@ pub struct Registry {
     /// object, so "vendored with no constraints" and "not vendored at all" stay distinguishable
     /// via `params()`'s `Option`) plus any `procedure` that explicitly declares `parameters`.
     params: HashMap<String, LexObject>,
+    /// Every query/procedure that declares a JSON `output` schema, keyed by NSID. A non-JSON output
+    /// (the sync endpoints' CAR streams, `getBlob`'s `*/*`) carries no schema and so is absent —
+    /// there is nothing to shape-check against.
+    outputs: HashMap<String, LexSchema>,
     defs: HashMap<String, LexSchema>,
 }
 
@@ -154,9 +168,27 @@ pub fn registry() -> &'static Registry {
 
 impl Registry {
     fn build(sources: &[&str]) -> Result<Self, String> {
+        // Register a query/procedure's JSON `output` body (if it declares one with a schema),
+        // qualifying its refs against the owning document exactly as an input/record schema is.
+        fn register_output(
+            outputs: &mut HashMap<String, LexSchema>,
+            nsid: &str,
+            output: Option<LexXrpcBody>,
+        ) {
+            if let Some(LexXrpcBody {
+                schema: Some(mut schema),
+                ..
+            }) = output
+            {
+                qualify_refs(&mut schema, nsid);
+                outputs.insert(nsid.to_owned(), schema);
+            }
+        }
+
         let mut inputs = HashMap::new();
         let mut records = HashMap::new();
         let mut params = HashMap::new();
+        let mut outputs = HashMap::new();
         let mut defs = HashMap::new();
 
         for source in sources {
@@ -183,6 +215,7 @@ impl Registry {
                         if let Some(parameters) = procedure.parameters {
                             params.insert(doc.id.clone(), parameters);
                         }
+                        register_output(&mut outputs, &doc.id, procedure.output);
                     }
                     LexDef::Query(query) => {
                         if name != "main" {
@@ -197,6 +230,7 @@ impl Registry {
                             properties: Vec::new(),
                         });
                         params.insert(doc.id.clone(), parameters);
+                        register_output(&mut outputs, &doc.id, query.output);
                     }
                     LexDef::Record(mut record) => {
                         if name != "main" {
@@ -220,6 +254,7 @@ impl Registry {
             inputs,
             records,
             params,
+            outputs,
             defs,
         };
         registry.check_refs()?;
@@ -268,11 +303,17 @@ impl Registry {
             }
         }
         // Record schemas are validation roots too: a dangling ref reachable from a record body
-        // must fail the build the same way an input's does. Only the record-reachable closure is
-        // walked — the vendored documents' AppView view/output defs are never validation roots, so
-        // an unresolvable ref buried in one of those (never reached at write time) is not vendored.
+        // must fail the build the same way an input's does.
         for record in self.records.values() {
             walk(self, &record.record)?;
+        }
+        // Output schemas are validation roots now as well (`validate_output`): a dangling ref
+        // reachable from a served response body must fail the build. This is exactly what pulls the
+        // output-only closure (`com.atproto.repo.defs#commitMeta`, `com.atproto.identity.defs#\
+        // identityInfo`, the `applyWrites` result unions) into the vendored set — a document whose
+        // output refs something un-vendored fails `registry_builds` instead of 500ing at serve time.
+        for output in self.outputs.values() {
+            walk(self, output)?;
         }
         Ok(())
     }
@@ -310,6 +351,31 @@ impl Registry {
             ValidationError::Lexicon(format!("no lexicon params are vendored for {nsid}"))
         })?;
         validate::validate_params(self, "Params", params, value)
+    }
+
+    /// The declared JSON `output` schema of a query/procedure, if its document is vendored and it
+    /// returns a JSON body. `None` for a non-JSON output (CAR/blob streams) or an un-vendored nsid.
+    ///
+    /// Test-only: outputs are Custos-controlled, so this layer is drift *detection* (the registry
+    /// tests) rather than a serve-path guard. The production-side value is `check_refs` walking the
+    /// output closure at build time (a dangling output ref fails `registry_builds`); the registered
+    /// schemas themselves are consumed only from `#[cfg(test)]` code today.
+    #[cfg(test)]
+    pub fn output(&self, nsid: &str) -> Option<&LexSchema> {
+        self.outputs.get(nsid)
+    }
+
+    /// Assert `body` conforms to `nsid`'s declared JSON output schema, rooted at `Output` like the
+    /// reference's `assertValidXrpcOutput`. Because outputs are Custos-controlled, a failure here is
+    /// *our* shape regression, not the client's — this is drift detection, wired into tests rather
+    /// than the production serve path (`Lexicon(...)` when the nsid declares no vendored JSON
+    /// output, so a caller can tell "not validatable" from "invalid").
+    #[cfg(test)]
+    pub fn validate_output(&self, nsid: &str, body: &Value) -> Result<(), ValidationError> {
+        let schema = self.output(nsid).ok_or_else(|| {
+            ValidationError::Lexicon(format!("no lexicon output is vendored for {nsid}"))
+        })?;
+        validate::validate(self, "Output", schema, body)
     }
 
     /// Run `assertValidRecord`-parity validation for a repo write, mirroring the reference PDS's
@@ -1081,6 +1147,219 @@ mod tests {
         expect_params_valid(
             "com.atproto.server.getServiceAuth",
             json!({"aud": "did:web:api.bsky.app"}),
+        );
+    }
+
+    // ── validate_output (assertValidXrpcOutput parity) ───────────────────────
+
+    const DID: &str = "did:plc:abc123abc123abc123abc123";
+    const CID: &str = "bafyreidfayvfuwqa7qlnopdjiqrxzs6blmoeu4rujcjtnci5beludirz2a";
+
+    fn expect_output_invalid(nsid: &str, value: Value) -> String {
+        match registry().validate_output(nsid, &value) {
+            Err(ValidationError::Invalid(message)) => message,
+            Err(ValidationError::Lexicon(message)) => {
+                panic!("expected an Invalid error, got a Lexicon error: {message}")
+            }
+            Ok(()) => panic!("expected {nsid} to reject {value}"),
+        }
+    }
+
+    fn expect_output_valid(nsid: &str, value: Value) {
+        if let Err(e) = registry().validate_output(nsid, &value) {
+            let message = match e {
+                ValidationError::Invalid(m) | ValidationError::Lexicon(m) => m,
+            };
+            panic!("expected {nsid} to accept {value}: {message}");
+        }
+    }
+
+    #[test]
+    fn outputs_are_registered_only_for_json_bodies() {
+        let registry = registry();
+        // Every natively-handled endpoint whose lexicon declares a JSON `output` is registered.
+        for nsid in [
+            "com.atproto.identity.resolveHandle",
+            "com.atproto.identity.resolveIdentity",
+            "com.atproto.repo.applyWrites",
+            "com.atproto.repo.createRecord",
+            "com.atproto.repo.deleteRecord",
+            "com.atproto.repo.describeRepo",
+            "com.atproto.repo.getRecord",
+            "com.atproto.repo.listRecords",
+            "com.atproto.repo.putRecord",
+            "com.atproto.server.createAccount",
+            "com.atproto.server.createSession",
+            "com.atproto.server.getServiceAuth",
+            "com.atproto.sync.getLatestCommit",
+            "com.atproto.sync.getRepoStatus",
+            "com.atproto.sync.listRepos",
+        ] {
+            registry
+                .output(nsid)
+                .unwrap_or_else(|| panic!("{nsid} must have a vendored output"));
+        }
+        // A non-JSON output (CAR/blob streams) carries no schema, so it is deliberately absent —
+        // there is nothing to shape-check, and `validate_output` reports it as not-validatable.
+        for nsid in [
+            "com.atproto.sync.getRepo",
+            "com.atproto.sync.getRecord",
+            "com.atproto.sync.getBlocks",
+            "com.atproto.sync.getBlob",
+        ] {
+            assert!(
+                registry.output(nsid).is_none(),
+                "{nsid} streams a non-JSON body and must have no output schema"
+            );
+            match registry.validate_output(nsid, &json!({})) {
+                Err(ValidationError::Lexicon(_)) => {}
+                Err(ValidationError::Invalid(m)) => {
+                    panic!("{nsid} output should be un-validatable, got Invalid: {m}")
+                }
+                Ok(()) => panic!("{nsid} output should be un-validatable, got Ok"),
+            }
+        }
+    }
+
+    #[test]
+    fn valid_session_output_passes() {
+        expect_output_valid(
+            "com.atproto.server.createSession",
+            json!({
+                "accessJwt": "a.b.c",
+                "refreshJwt": "d.e.f",
+                "handle": "alice.example.com",
+                "did": DID,
+                "active": true,
+            }),
+        );
+        // createAccount shares the session shape plus an optional `didDoc` (unknown = any object).
+        expect_output_valid(
+            "com.atproto.server.createAccount",
+            json!({
+                "accessJwt": "a.b.c",
+                "refreshJwt": "d.e.f",
+                "handle": "alice.example.com",
+                "did": DID,
+                "didDoc": {"id": DID},
+            }),
+        );
+    }
+
+    #[test]
+    fn output_missing_required_field_reports_document_order() {
+        // createSession requires accessJwt, refreshJwt, handle, did in that order.
+        assert_eq!(
+            expect_output_invalid(
+                "com.atproto.server.createSession",
+                json!({"accessJwt": "a", "refreshJwt": "r", "handle": "alice.example.com"})
+            ),
+            "Output must have the property \"did\""
+        );
+    }
+
+    #[test]
+    fn output_wrong_type_is_rejected_with_path() {
+        assert_eq!(
+            expect_output_invalid(
+                "com.atproto.server.createSession",
+                json!({
+                    "accessJwt": "a",
+                    "refreshJwt": "r",
+                    "handle": "alice.example.com",
+                    "did": DID,
+                    "active": "yes",
+                })
+            ),
+            "Output/active must be a boolean"
+        );
+        // A declared string `format` is enforced on outputs exactly as on inputs.
+        assert_eq!(
+            expect_output_invalid(
+                "com.atproto.identity.resolveHandle",
+                json!({"did": "not-a-did"})
+            ),
+            "Output/did must be a valid did"
+        );
+    }
+
+    #[test]
+    fn output_commit_meta_ref_is_validated() {
+        // createRecord's `commit` is a ref to com.atproto.repo.defs#commitMeta (required cid, rev) —
+        // an output-only external doc pulled in by this layer.
+        expect_output_valid(
+            "com.atproto.repo.createRecord",
+            json!({
+                "uri": format!("at://{DID}/app.bsky.feed.post/3jui7kd54zh2y"),
+                "cid": CID,
+                "commit": {"cid": CID, "rev": "3jui7kd54zh2y"},
+                "validationStatus": "valid",
+            }),
+        );
+        assert_eq!(
+            expect_output_invalid(
+                "com.atproto.repo.putRecord",
+                json!({
+                    "uri": format!("at://{DID}/app.bsky.feed.post/3jui7kd54zh2y"),
+                    "cid": CID,
+                    "commit": {"cid": CID},
+                })
+            ),
+            "Output/commit must have the property \"rev\""
+        );
+    }
+
+    #[test]
+    fn output_apply_writes_result_union_is_closed() {
+        // applyWrites' `results` is a closed union of #createResult/#updateResult/#deleteResult.
+        expect_output_valid(
+            "com.atproto.repo.applyWrites",
+            json!({
+                "commit": {"cid": CID, "rev": "3jui7kd54zh2y"},
+                "results": [
+                    {
+                        "$type": "com.atproto.repo.applyWrites#createResult",
+                        "uri": format!("at://{DID}/app.bsky.feed.post/3jui7kd54zh2y"),
+                        "cid": CID,
+                        "validationStatus": "valid",
+                    },
+                    {"$type": "com.atproto.repo.applyWrites#deleteResult"},
+                ],
+            }),
+        );
+        assert_eq!(
+            expect_output_invalid(
+                "com.atproto.repo.applyWrites",
+                json!({"results": [{"$type": "com.atproto.repo.applyWrites#upsertResult"}]})
+            ),
+            "Output/results/0 $type must be one of lex:com.atproto.repo.applyWrites#createResult, \
+             lex:com.atproto.repo.applyWrites#updateResult, lex:com.atproto.repo.applyWrites#deleteResult"
+        );
+    }
+
+    #[test]
+    fn output_cross_document_ref_is_validated() {
+        // resolveIdentity returns com.atproto.identity.defs#identityInfo (required did/handle/didDoc).
+        expect_output_valid(
+            "com.atproto.identity.resolveIdentity",
+            json!({"did": DID, "handle": "alice.example.com", "didDoc": {"id": DID}}),
+        );
+        assert_eq!(
+            expect_output_invalid(
+                "com.atproto.identity.resolveIdentity",
+                json!({"did": DID, "handle": "alice.example.com"})
+            ),
+            "Output must have the property \"didDoc\""
+        );
+    }
+
+    #[test]
+    fn output_known_values_string_is_advisory() {
+        // getRepoStatus.status carries `knownValues` — the reference does not enforce it, so an
+        // out-of-set value still validates (it is a plain string).
+        expect_output_valid(
+            "com.atproto.sync.getRepoStatus",
+            json!({"did": DID, "active": false, "status": "some-future-status"}),
         );
     }
 }
