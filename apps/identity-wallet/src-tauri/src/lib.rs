@@ -86,19 +86,12 @@ struct CreateDidRequest {
 
 /// Response from POST /v1/dids — the promoted DID and upgraded session token.
 ///
-/// The Shamir share fields are populated only on the legacy server-side ceremony
-/// (did:web still uses it); the client-share did:plc path returns none — the wallet
-/// already holds every share it generated.
+/// The server never returns share material: the client-share did:plc path leaves every
+/// share with the wallet, and the did:web ceremony has no share-based recovery at all.
 #[derive(Deserialize)]
 struct CreateDidResponse {
     did: String,
     session_token: String,
-    /// Share 1 of 3 — to be stored in iCloud Keychain by the app (legacy path only).
-    #[serde(default)]
-    shamir_share_1: Option<String>,
-    /// Share 3 of 3 — to be shown to the user for manual backup (legacy path only).
-    #[serde(default)]
-    shamir_share_3: Option<String>,
 }
 
 /// PDS error envelope: { "error": { "code": "...", "message": "..." } }
@@ -165,8 +158,8 @@ pub struct DIDCeremonyResult {
     /// Share 1 has already been stored in iCloud Keychain by the Rust backend.
     pub share3: String,
     /// Share 3 rendered as the BIP-39-style word phrase (same envelope bytes) — the
-    /// primary human-custody rendering on the backup screen. Empty on the legacy
-    /// did:web ceremony, whose share format predates the word rendering.
+    /// primary human-custody rendering on the backup screen. Both share fields are empty
+    /// on the did:web ceremony, which has no share-based recovery.
     pub share3_words: String,
 }
 
@@ -705,8 +698,8 @@ async fn complete_did_web_ceremony(
         signed_creation_op: None,
         did_web_document: Some(document_text),
         password,
-        // did:web stays on the legacy server-side share path — a did:web document has
-        // no PLC rotationKeys for a recovery key to bind to.
+        // did:web promotes with no escrow — a did:web document has no PLC rotationKeys for a
+        // recovery key to bind to, so it carries neither client-share field.
         recovery_key: None,
         escrow_share: None,
     };
@@ -724,29 +717,16 @@ async fn complete_did_web_ceremony(
         .json()
         .await
         .map_err(|_| DIDCeremonyError::DidCreationFailed)?;
-    // The did:web ceremony stays on the legacy server-side share path (a did:web document
-    // has no PLC rotationKeys for a recovery key to bind to), so the server must have
-    // returned both shares.
-    let (share1, share3) = match (created.shamir_share_1, created.shamir_share_3) {
-        (Some(share1), Some(share3)) => (share1, share3),
-        _ => {
-            tracing::error!("did:web ceremony response is missing Shamir shares");
-            return Err(DIDCeremonyError::DidCreationFailed);
-        }
-    };
+    // A did:web document has no PLC rotationKeys for a recovery key to bind to, so the did:web
+    // ceremony has no share-based recovery: the server generates and returns no shares, and the
+    // wallet stores none. (Recovery for a did:web identity is domain/hosting control.)
+    //
     // Promotion is already durable and cannot be retried. Persist every irreplaceable response
     // value before the optional hosting toggle so a transient failure cannot strand the user.
     keychain::store_item("session-token", created.session_token.as_bytes())
         .map_err(|_| DIDCeremonyError::KeychainError)?;
     keychain::store_item("did", created.did.as_bytes())
         .map_err(|_| DIDCeremonyError::KeychainError)?;
-    // Per-DID Share 1 slot (`recovery-share-1:{did}`), the same convention the client-share and
-    // re-key paths use, so a second identity's ceremony cannot overwrite this one's Share 1.
-    keychain::store_item(
-        &rekey::recovery_share1_account(&created.did),
-        share1.as_bytes(),
-    )
-    .map_err(|_| DIDCeremonyError::ShareStorageFailed)?;
     if enable_managed_hosting {
         let hosting_result = state
             .custos_client()
@@ -768,9 +748,9 @@ async fn complete_did_web_ceremony(
     }
     Ok(DIDCeremonyResult {
         did: created.did,
-        share3,
-        // Legacy bare-base32 shares predate the envelope word rendering; the backup
-        // screen falls back to the machine form when this is empty.
+        // A did:web identity has no share-based recovery, so there is nothing to back up —
+        // the create flow skips the Shamir backup screen for this path.
+        share3: String::new(),
         share3_words: String::new(),
     })
 }
@@ -1407,8 +1387,8 @@ mod tests {
         assert_eq!(json["escrowShare"], "SHARE2ENVELOPE");
     }
 
-    /// The legacy did:web request shape must not grow the client-share fields — the
-    /// server treats their absence as the legacy ceremony.
+    /// The did:web request shape carries no client-share fields — a did:web identity has no
+    /// PLC rotationKeys for a recovery key to bind to, so it promotes with no escrow.
     #[test]
     fn create_did_request_omits_absent_client_share_fields() {
         let req = CreateDidRequest {
@@ -1424,7 +1404,7 @@ mod tests {
         assert!(json.get("escrowShare").is_none());
     }
 
-    // -- CreateDidResponse tolerates a share-less (client-share path) body --
+    // -- CreateDidResponse deserializes the share-less body the server always returns --
     #[test]
     fn create_did_response_deserializes_without_shares() {
         let resp: CreateDidResponse = serde_json::from_str(
@@ -1432,8 +1412,7 @@ mod tests {
         )
         .unwrap();
         assert_eq!(resp.did, "did:plc:abc");
-        assert!(resp.shamir_share_1.is_none());
-        assert!(resp.shamir_share_3.is_none());
+        assert_eq!(resp.session_token, "tok");
     }
 
     // -- CreateMobileAccountRequest serialization --

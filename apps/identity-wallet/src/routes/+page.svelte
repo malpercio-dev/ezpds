@@ -573,7 +573,7 @@
   {:else if step === 'did_success'}
     <DIDSuccessScreen
       did={form.did}
-      oncontinue={() => { step = 'shamir_backup'; }}
+      oncontinue={() => { step = identityMethod === 'web' ? 'handle_registration' : 'shamir_backup'; }}
     />
   {:else if step === 'shamir_backup'}
     <ShamirBackupScreen
