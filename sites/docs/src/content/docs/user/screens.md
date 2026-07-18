@@ -18,11 +18,12 @@ device photos.
 
 ## Getting started
 
-The first launch offers to create a new identity or move an existing one in.
+The first launch offers to create a new identity, move an existing one in, or
+recover one from its backup shares.
 
 <figure>
-  <img src="/screenshots/wallet/welcome.png" alt="Obsign welcome screen with 'Add an identity' and 'Move an identity' options" width="280" />
-  <figcaption>First launch: create a new identity, or move one you already have.</figcaption>
+  <img src="/screenshots/wallet/welcome.png" alt="Obsign welcome screen with 'Add an identity', 'Move an identity', and 'Recover from backup shares' options" width="280" />
+  <figcaption>First launch: create a new identity, move one you already have, or recover from backup shares.</figcaption>
 </figure>
 
 ## Your identities

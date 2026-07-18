@@ -19,11 +19,14 @@ diagrams, not pixel-exact device photos.
 ## Home — mint a claim code
 
 The console opens on the active relay, ready to mint a single-use, device-signed account
-claim code.
+claim code. A **Relay federation** block up top reports whether the upstream relay is
+actually crawling this server — status, exact events behind, last seen — with a
+**Request crawl** re-invite (see
+[Is the upstream relay seeing you?](/operator/running-a-relay/#is-the-upstream-relay-seeing-you)).
 
 <figure>
-  <img src="/screenshots/admin/home.png" alt="Custos console home screen for minting an account claim code" width="280" />
-  <figcaption>Mint a single-use, device-signed account claim code for the active relay.</figcaption>
+  <img src="/screenshots/admin/home.png" alt="Custos console home screen with a Relay federation readout and a claim-code mint action" width="280" />
+  <figcaption>Home: the relay-federation readout, then mint a single-use, device-signed claim code for the active relay.</figcaption>
 </figure>
 
 Before any relay is paired, the console asks you to pair this operator device.
@@ -80,6 +83,15 @@ destructive action.
   <img src="/screenshots/admin/moderation.png" alt="Custos console moderation screen for account takedown and restore" width="280" />
   <figcaption>Account takedown/restore and credential revocation, each armed and gated.</figcaption>
 </figure>
+
+## Audit log
+
+Every privileged operator action — takedowns, credential sweeps, code mints and
+revokes, device pairings and revocations, transfer cancels, account repairs,
+crawl requests — is durably recorded with the credential that signed it: the
+master token or the specific paired device. The Audit screen browses the trail
+reverse-chronologically, filterable by action, with per-event drill-in by actor
+or subject.
 
 ## Transfers
 
