@@ -53,8 +53,12 @@ Litestream replicates only the SQLite database. Uploaded blobs — avatars,
 post images, video — live as files on the deployment volume, where losing the
 volume would destroy every account's media. The blob mirror is the Litestream
 analogue for those files: a periodic sweep uploads every stored blob to an
-S3-compatible bucket, and on boot any file missing from the volume is restored
-from the bucket **before the server takes traffic**.
+S3-compatible bucket, and on boot the server attempts to restore any file
+missing from the volume out of the bucket **before it takes traffic**. The
+restore is best-effort per blob: a blob whose bytes exist in neither place, or
+whose bucket copy fails content-hash verification, is logged loudly (per-CID
+error plus a boot summary count) and boot continues — that blob stays
+unavailable rather than blocking startup.
 
 Turn it on by setting a bucket (unset means disabled):
 
@@ -65,9 +69,13 @@ Turn it on by setting a bucket (unset means disabled):
 | `EZPDS_BLOB_MIRROR_ACCESS_KEY_ID` | Access key for the bucket. |
 | `EZPDS_BLOB_MIRROR_SECRET_ACCESS_KEY` | Secret key for the bucket. |
 
-The sweep also propagates deletions: once no account references a blob, its
-object is removed from the bucket, so the mirror tracks the live blobstore
-rather than growing forever. The full knob list (region, path-style addressing,
+The sweep also propagates deletions, on a lag: after blob garbage collection or
+account deletion removes a blob's database row, a subsequent sweep deletes the
+bucket object, so the mirror tracks the live blobstore rather than growing
+forever (the worst case of the lag is the bucket briefly retaining collected
+blobs). As a tripwire against acting on a wrong or empty database, a sweep that
+finds no blob rows at all while the bucket has objects skips delete propagation
+entirely. The full knob list (region, path-style addressing,
 key prefix, sweep interval) is in the
 [configuration reference](/operator/reference/config/).
 
