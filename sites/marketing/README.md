@@ -12,6 +12,16 @@ credible exit as a property of the keys.
 - `custos/index.html` — the operator story: what Custos runs, how to run it,
   and the custody seam (`rotationKeys[0]` user / `rotationKeys[1]` server).
 
+## Social cards (Open Graph)
+
+Each page links a 1200×630 `og:image` (`summary_large_image`) so shared links
+unfurl as a branded card. The images are generated, not hand-drawn: the HTML
+sources (`assets/og/*.src.html`) use the same forked tokens and self-hosted
+fonts as the pages — Obsign in the Sealed-Credential register, Custos in the
+Brass Console. Regenerate with `assets/og/render.sh` (headless Chrome + the
+pure-Node `pngcrop.mjs`; the script documents the 717→630 headless-crop trick).
+`og:image` URLs are absolute against `about.obsign.org`.
+
 ## Design derivation
 
 The two pages speak the repo's two scoped design registers — do **not**
@@ -29,6 +39,15 @@ Tokens in `assets/css/site.css` are **forked from the live app token layers**
 (`apps/identity-wallet/src/lib/styles/tokens.css` and
 `apps/admin-companion/src/lib/styles/tokens.css`). Values must not drift from
 those files; when a brief changes, re-fork.
+
+The Obsign register follows the system appearance: each color token is a
+`light-dark()` pair forked from the wallet's dark appearance (§2 of root
+`DESIGN.md`), and `:root` carries `color-scheme: light dark`. There is no toggle
+and no JavaScript — the switch is `prefers-color-scheme` alone, so there is no
+flash. The seal gold is appearance-invariant (the Same-Seal Rule) and every dark
+text pairing is verified AAA, never eyeballed. The Brass Console (`.register-custos`)
+is a **fixed dark register** — it does not follow the system in either place it
+appears (the Custos page body and the Custos CTA band on the Obsign page).
 
 Web-scale extension: the app type scales are mobile-restrained, so the site
 extends the same ~1.2 modular scale up two fixed-rem steps (`--text-display`
