@@ -3,29 +3,53 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <meta name="color-scheme" content="light" />
+  <meta name="color-scheme" content="light dark" />
+  <meta name="theme-color" content="#ffffff" media="(prefers-color-scheme: light)" />
+  <meta name="theme-color" content="#16100c" media="(prefers-color-scheme: dark)" />
   <title>{{host}} — a Custos personal data server</title>
   <meta name="description" content="This is a Custos personal data server on the AT Protocol. Accounts here are created and defended with the Obsign identity wallet; their owners, not this server, hold the keys that control them." />
   <style>
     /* Visual system: "The Sealed Credential" (see DESIGN.md), matching the OAuth
        consent page. Brand fonts come from this server's own /static/fonts route —
-       no third-party CDN. */
+       no third-party CDN.
+
+       Two appearances, one token set: `color-scheme: light dark` follows the
+       viewer's system setting and every color is a light-dark() pair forked
+       verbatim from apps/identity-wallet/src/lib/styles/tokens.css. Light is
+       archival paper; dark is the archive at night — the same warm ink hue
+       carried into a near-black ground, never a cold blue-black. The wax seal is
+       a physical object, so gold (--gold/--gold-deep/--on) keeps its color at
+       night (the Same-Seal Rule); aubergine lifts to lavender so links hold AAA
+       on the dark ground; status pairs invert; raised surfaces step lighter in
+       dark (the Inverted-Elevation Rule). Every text pairing is verified ≥7:1
+       body/status, ≥4.5:1 labels in both appearances (DESIGN.md §2). */
     @font-face{font-family:'Public Sans';font-style:normal;font-weight:400;font-display:swap;src:url('/static/fonts/PublicSans-Regular.woff2') format('woff2')}
     @font-face{font-family:'Public Sans';font-style:normal;font-weight:600;font-display:swap;src:url('/static/fonts/PublicSans-SemiBold.woff2') format('woff2')}
     @font-face{font-family:'JetBrains Mono';font-style:normal;font-weight:400;font-display:swap;src:url('/static/fonts/JetBrainsMono-Regular.woff2') format('woff2')}
     @font-face{font-family:'Libre Caslon Display';font-style:normal;font-weight:400;font-display:swap;src:url('/static/fonts/LibreCaslonDisplay-Regular.ttf') format('truetype')}
     :root{
+      color-scheme: light dark;
       --serif:'Libre Caslon Display',Georgia,serif;
       --sans:'Public Sans',system-ui,-apple-system,sans-serif;
       --mono:'JetBrains Mono',ui-monospace,monospace;
+      /* Gold is appearance-invariant (the Same-Seal Rule). */
       --gold:oklch(0.46 0.105 62); --gold-deep:oklch(0.38 0.09 60);
-      --aubergine:oklch(0.34 0.10 330);
-      --ink:oklch(0.23 0.012 60); --ink-soft:oklch(0.31 0.012 60); --muted:oklch(0.40 0.012 60);
-      --bg:oklch(1 0 0); --parchment:oklch(0.975 0.004 75); --sunk:oklch(0.955 0.005 75);
-      --line:oklch(0.90 0.004 75); --on:oklch(0.99 0.005 80);
-      --safe:oklch(0.40 0.10 150); --safe-surface:oklch(0.95 0.045 150);
-      --crit:oklch(0.44 0.16 25); --crit-surface:oklch(0.95 0.045 25);
-      --info:oklch(0.42 0.07 250); --info-surface:oklch(0.95 0.030 250);
+      --on:oklch(0.99 0.005 80);
+      --aubergine:light-dark(oklch(0.34 0.10 330), oklch(0.76 0.07 330));
+      --aubergine-deep:light-dark(oklch(0.28 0.09 330), oklch(0.68 0.08 330));
+      --ink:light-dark(oklch(0.23 0.012 60), oklch(0.96 0.004 75));
+      --ink-soft:light-dark(oklch(0.31 0.012 60), oklch(0.85 0.006 70));
+      --muted:light-dark(oklch(0.42 0.012 60), oklch(0.70 0.008 65));
+      --bg:light-dark(oklch(1 0 0), oklch(0.18 0.012 60));
+      --parchment:light-dark(oklch(0.975 0.004 75), oklch(0.23 0.012 60));
+      --sunk:light-dark(oklch(0.955 0.005 75), oklch(0.205 0.012 60));
+      --line:light-dark(oklch(0.90 0.004 75), oklch(0.32 0.012 60));
+      --safe:light-dark(oklch(0.40 0.10 150), oklch(0.82 0.10 150));
+      --safe-surface:light-dark(oklch(0.95 0.045 150), oklch(0.27 0.05 150));
+      --crit:light-dark(oklch(0.44 0.16 25), oklch(0.82 0.095 25));
+      --crit-surface:light-dark(oklch(0.95 0.045 25), oklch(0.26 0.055 25));
+      --info:light-dark(oklch(0.42 0.07 250), oklch(0.80 0.07 250));
+      --info-surface:light-dark(oklch(0.95 0.030 250), oklch(0.27 0.045 250));
     }
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
     body {
@@ -37,8 +61,8 @@
       padding: 40px 20px 56px;
     }
     .page { max-width: 620px; margin: 0 auto; }
-    a { color: var(--aubergine); text-decoration-thickness: 1px; text-underline-offset: 3px; }
-    a:hover { color: oklch(0.28 0.09 330); }
+    a { color: var(--aubergine); text-decoration-thickness: 1px; text-underline-offset: 3px; transition: color 120ms cubic-bezier(0.22,1,0.36,1); }
+    a:hover { color: var(--aubergine-deep); }
     :focus-visible { outline: 2px solid var(--aubergine); outline-offset: 2px; border-radius: 4px; }
     code { font-family: var(--mono); font-size: 0.875rem; word-break: break-all; }
 
@@ -93,6 +117,10 @@
     }
     .foot a { color: var(--muted); }
     .foot a:hover { color: var(--ink); }
+
+    @media (prefers-reduced-motion: reduce) {
+      * { transition: none !important; }
+    }
   </style>
 </head>
 <body>
