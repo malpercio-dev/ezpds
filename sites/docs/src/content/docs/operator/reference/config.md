@@ -24,6 +24,7 @@ Fields come from the validated Rust configuration types. Environment overrides c
 | `links` | — | `ServerLinksConfig` | No field-level description. |
 | `contact` | — | `ContactConfig` | No field-level description. |
 | `blobs` | — | `BlobsConfig` | No field-level description. |
+| `blob_mirror` | — | `BlobMirrorConfig` | Off-volume blob replication to an S3-compatible bucket (the Litestream analogue for blob bytes). Disabled unless a bucket is configured. |
 | `firehose` | — | `FirehoseConfig` | Persistent firehose event log (`repo_seq`) retention / pruning configuration. |
 | `accounts` | — | `AccountsConfig` | Account-lifecycle knobs (the scheduled-deletion reaper interval). |
 | `recovery` | — | `RecoveryConfig` | Escrow-assisted recovery knobs (the cancellable release-delay window). |
@@ -48,6 +49,14 @@ Fields come from the validated Rust configuration types. Environment overrides c
 | `blobs.max_storage_per_account` | — | `u64` | Per-account storage quota in bytes. Default: 1 GiB. |
 | `blobs.gc_interval_secs` | `EZPDS_BLOBS_GC_INTERVAL_SECS` | `u64` | How often the blob garbage collector runs, in seconds. Default: 1800 (30 min). |
 | `blobs.temp_ttl_secs` | — | `u64` | Grace period, in seconds, before an unreferenced blob is deleted. Applies both to freshly uploaded blobs that are never referenced and to blobs that lose their last reference. Default: 21600 (6 hours). |
+| `blob_mirror.bucket` | `EZPDS_BLOB_MIRROR_BUCKET` | `Option<String>` | Bucket name. Setting this enables the mirror; leave unset to disable (the default). |
+| `blob_mirror.endpoint` | `EZPDS_BLOB_MIRROR_ENDPOINT` | `Option<String>` | S3-compatible endpoint URL (e.g. `https://t3.storage.dev`). Required when `bucket` is set. |
+| `blob_mirror.region` | `EZPDS_BLOB_MIRROR_REGION` | `String` | SigV4 signing region. S3-compatible providers commonly accept `auto` (the default); set the real region where the provider requires it. |
+| `blob_mirror.access_key_id` | `EZPDS_BLOB_MIRROR_ACCESS_KEY_ID` | `Option<String>` | Access key id for the bucket. Required when `bucket` is set. |
+| `blob_mirror.secret_access_key` | `EZPDS_BLOB_MIRROR_SECRET_ACCESS_KEY` | `Option<Sensitive<String>>` | Secret access key for the bucket. Required when `bucket` is set. Wrapped in [`Sensitive`] so it never appears in `Debug` output. |
+| `blob_mirror.force_path_style` | `EZPDS_BLOB_MIRROR_FORCE_PATH_STYLE` | `bool` | Address the bucket as `{endpoint}/{bucket}/…` (path-style) instead of `https://{bucket}.{endpoint-host}/…` (virtual-hosted). Default `false`, matching the Litestream replica's `force-path-style: false` for the same bucket family. |
+| `blob_mirror.key_prefix` | `EZPDS_BLOB_MIRROR_KEY_PREFIX` | `String` | Object-key prefix the mirror owns inside the bucket. Objects under it are managed by the sweep — including deletion of keys no `blobs` row references — so nothing else should write there. Default: `blobs/`. |
+| `blob_mirror.sync_interval_secs` | `EZPDS_BLOB_MIRROR_SYNC_INTERVAL_SECS` | `u64` | How often the mirror sweep runs, in seconds. Default: 300 (5 min). |
 | `firehose.gc_interval_secs` | `EZPDS_FIREHOSE_GC_INTERVAL_SECS` | `u64` | How often the `repo_seq` retention sweep runs, in seconds. Default: 3600 (1 hour). |
 | `firehose.log_retention_secs` | — | `u64` | Age-based retention: rows whose `sequenced_at` is older than this many seconds are prunable. Default: 604800 (7 days). Set to `0` to disable age-based pruning. |
 | `firehose.log_retention_count` | — | `u64` | Count-based retention: keep at most this many of the newest rows. `0` disables count-based pruning. Default: `0` (age-based only). |

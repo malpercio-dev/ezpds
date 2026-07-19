@@ -40,6 +40,10 @@ impl SweepRun {
 #[derive(Debug, Default, Clone, Copy)]
 pub struct SweepSnapshot {
     pub blob_gc: Option<SweepRun>,
+    /// The blob mirror is a replicator rather than a reclaimer, but shares the sweep
+    /// posture: `swept` counts bucket objects synced (uploads + deletes), and a stale
+    /// pass is the alarm.
+    pub blob_mirror: Option<SweepRun>,
     pub firehose_gc: Option<SweepRun>,
     pub account_reaper: Option<SweepRun>,
     pub agent_claim_sweep: Option<SweepRun>,
@@ -58,6 +62,10 @@ pub struct SweepStatus {
 impl SweepStatus {
     pub fn record_blob_gc(&self, run: SweepRun) {
         self.write().blob_gc = Some(run);
+    }
+
+    pub fn record_blob_mirror(&self, run: SweepRun) {
+        self.write().blob_mirror = Some(run);
     }
 
     pub fn record_firehose_gc(&self, run: SweepRun) {

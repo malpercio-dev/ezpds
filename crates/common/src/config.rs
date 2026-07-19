@@ -55,6 +55,9 @@ pub struct Config {
     pub links: ServerLinksConfig,
     pub contact: ContactConfig,
     pub blobs: BlobsConfig,
+    /// Off-volume blob replication to an S3-compatible bucket (the Litestream analogue for
+    /// blob bytes). Disabled unless a bucket is configured.
+    pub blob_mirror: BlobMirrorConfig,
     /// Persistent firehose event log (`repo_seq`) retention / pruning configuration.
     pub firehose: FirehoseConfig,
     /// Account-lifecycle knobs (the scheduled-deletion reaper interval).
@@ -156,6 +159,78 @@ impl Default for BlobsConfig {
             temp_ttl_secs: default_temp_ttl_secs(),
         }
     }
+}
+
+/// Off-volume blob replication: a periodic sweep mirrors every stored blob file to an
+/// S3-compatible bucket, and boot restores any file missing from the volume back out of the
+/// bucket — the Litestream analogue for the blob directory, which Litestream itself never
+/// covers. Same configuration shape as the `LITESTREAM_*` deployment variables: setting
+/// `bucket` enables the mirror and then requires `endpoint`, `access_key_id`, and
+/// `secret_access_key`.
+#[derive(Debug, Clone, Deserialize)]
+pub struct BlobMirrorConfig {
+    /// Bucket name. Setting this enables the mirror; leave unset to disable (the default).
+    pub bucket: Option<String>,
+    /// S3-compatible endpoint URL (e.g. `https://t3.storage.dev`). Required when `bucket`
+    /// is set.
+    pub endpoint: Option<String>,
+    /// SigV4 signing region. S3-compatible providers commonly accept `auto` (the default);
+    /// set the real region where the provider requires it.
+    #[serde(default = "default_blob_mirror_region")]
+    pub region: String,
+    /// Access key id for the bucket. Required when `bucket` is set.
+    pub access_key_id: Option<String>,
+    /// Secret access key for the bucket. Required when `bucket` is set. Wrapped in
+    /// [`Sensitive`] so it never appears in `Debug` output.
+    pub secret_access_key: Option<Sensitive<String>>,
+    /// Address the bucket as `{endpoint}/{bucket}/…` (path-style) instead of
+    /// `https://{bucket}.{endpoint-host}/…` (virtual-hosted). Default `false`, matching the
+    /// Litestream replica's `force-path-style: false` for the same bucket family.
+    #[serde(default)]
+    pub force_path_style: bool,
+    /// Object-key prefix the mirror owns inside the bucket. Objects under it are managed by
+    /// the sweep — including deletion of keys no `blobs` row references — so nothing else
+    /// should write there. Default: `blobs/`.
+    #[serde(default = "default_blob_mirror_key_prefix")]
+    pub key_prefix: String,
+    /// How often the mirror sweep runs, in seconds. Default: 300 (5 min).
+    #[serde(default = "default_blob_mirror_sync_interval_secs")]
+    pub sync_interval_secs: u64,
+}
+
+impl BlobMirrorConfig {
+    /// The mirror is enabled exactly when a bucket is configured (the `LITESTREAM_S3_BUCKET`
+    /// convention).
+    pub fn enabled(&self) -> bool {
+        self.bucket.is_some()
+    }
+}
+
+impl Default for BlobMirrorConfig {
+    fn default() -> Self {
+        Self {
+            bucket: None,
+            endpoint: None,
+            region: default_blob_mirror_region(),
+            access_key_id: None,
+            secret_access_key: None,
+            force_path_style: false,
+            key_prefix: default_blob_mirror_key_prefix(),
+            sync_interval_secs: default_blob_mirror_sync_interval_secs(),
+        }
+    }
+}
+
+fn default_blob_mirror_region() -> String {
+    "auto".to_string()
+}
+
+fn default_blob_mirror_key_prefix() -> String {
+    "blobs/".to_string()
+}
+
+fn default_blob_mirror_sync_interval_secs() -> u64 {
+    300 // 5 minutes
 }
 
 /// Persistent firehose event-log (`repo_seq`) retention configuration.
@@ -1121,6 +1196,8 @@ pub(crate) struct RawConfig {
     #[serde(default)]
     pub(crate) blobs: BlobsConfig,
     #[serde(default)]
+    pub(crate) blob_mirror: BlobMirrorConfig,
+    #[serde(default)]
     pub(crate) firehose: FirehoseConfig,
     #[serde(default)]
     pub(crate) accounts: AccountsConfig,
@@ -1422,6 +1499,32 @@ pub(crate) fn apply_env_overrides(
     }
     if let Some(v) = env.get("EZPDS_BLOBS_GC_INTERVAL_SECS") {
         raw.blobs.gc_interval_secs = parse_u64("EZPDS_BLOBS_GC_INTERVAL_SECS", v)?;
+    }
+    // Blob-mirror overrides: the same shape as the LITESTREAM_* deployment variables (bucket
+    // presence enables; endpoint + credentials required alongside — validated later).
+    if let Some(v) = env.get("EZPDS_BLOB_MIRROR_BUCKET") {
+        raw.blob_mirror.bucket = Some(v.clone());
+    }
+    if let Some(v) = env.get("EZPDS_BLOB_MIRROR_ENDPOINT") {
+        raw.blob_mirror.endpoint = Some(v.clone());
+    }
+    if let Some(v) = env.get("EZPDS_BLOB_MIRROR_REGION") {
+        raw.blob_mirror.region = v.clone();
+    }
+    if let Some(v) = env.get("EZPDS_BLOB_MIRROR_ACCESS_KEY_ID") {
+        raw.blob_mirror.access_key_id = Some(v.clone());
+    }
+    if let Some(v) = env.get("EZPDS_BLOB_MIRROR_SECRET_ACCESS_KEY") {
+        raw.blob_mirror.secret_access_key = Some(Sensitive(v.clone()));
+    }
+    if let Some(v) = env.get("EZPDS_BLOB_MIRROR_FORCE_PATH_STYLE") {
+        raw.blob_mirror.force_path_style = parse_bool_env("EZPDS_BLOB_MIRROR_FORCE_PATH_STYLE", v)?;
+    }
+    if let Some(v) = env.get("EZPDS_BLOB_MIRROR_KEY_PREFIX") {
+        raw.blob_mirror.key_prefix = v.clone();
+    }
+    if let Some(v) = env.get("EZPDS_BLOB_MIRROR_SYNC_INTERVAL_SECS") {
+        raw.blob_mirror.sync_interval_secs = parse_u64("EZPDS_BLOB_MIRROR_SYNC_INTERVAL_SECS", v)?;
     }
     if let Some(v) = env.get("EZPDS_FIREHOSE_GC_INTERVAL_SECS") {
         raw.firehose.gc_interval_secs = parse_u64("EZPDS_FIREHOSE_GC_INTERVAL_SECS", v)?;
@@ -1846,6 +1949,65 @@ pub(crate) fn validate_and_build(raw: RawConfig) -> Result<Config, ConfigError> 
                 .to_string(),
         ));
     }
+    // Blob mirror: a configured bucket enables the mirror, and a present-but-incomplete
+    // configuration must fail at load rather than surface as a per-pass upload error while
+    // the operator believes blobs are replicated.
+    if raw.blob_mirror.enabled() {
+        // A set-but-empty bucket (e.g. `EZPDS_BLOB_MIRROR_BUCKET=""`) passes the enable
+        // gate but can only produce malformed request hosts/paths — the operator would
+        // believe blobs are replicated while every request fails. Reject it loudly rather
+        // than treating it as disabled.
+        if raw
+            .blob_mirror
+            .bucket
+            .as_deref()
+            .unwrap_or("")
+            .trim()
+            .is_empty()
+        {
+            return Err(ConfigError::Invalid(
+                "blob_mirror.bucket must be non-empty when set (unset it to disable the mirror)"
+                    .to_string(),
+            ));
+        }
+        let endpoint = raw.blob_mirror.endpoint.as_deref().unwrap_or("");
+        if !endpoint.starts_with("http://") && !endpoint.starts_with("https://") {
+            return Err(ConfigError::Invalid(format!(
+                "blob_mirror.endpoint must be an http:// or https:// URL when blob_mirror.bucket \
+                 is set, got: {endpoint:?}"
+            )));
+        }
+        if raw
+            .blob_mirror
+            .access_key_id
+            .as_deref()
+            .unwrap_or("")
+            .is_empty()
+        {
+            return Err(ConfigError::Invalid(
+                "blob_mirror.access_key_id must be set when blob_mirror.bucket is set".to_string(),
+            ));
+        }
+        if raw
+            .blob_mirror
+            .secret_access_key
+            .as_ref()
+            .map(|s| s.0.as_str())
+            .unwrap_or("")
+            .is_empty()
+        {
+            return Err(ConfigError::Invalid(
+                "blob_mirror.secret_access_key must be set when blob_mirror.bucket is set"
+                    .to_string(),
+            ));
+        }
+        if raw.blob_mirror.sync_interval_secs == 0 {
+            return Err(ConfigError::Invalid(
+                "blob_mirror.sync_interval_secs must be > 0 (tokio::time::interval panics on a zero period)"
+                    .to_string(),
+            ));
+        }
+    }
     if raw.accounts.deletion_reaper_interval_secs == 0 {
         return Err(ConfigError::Invalid(
             "accounts.deletion_reaper_interval_secs must be > 0 (tokio::time::interval panics on a zero period)"
@@ -2002,6 +2164,7 @@ pub(crate) fn validate_and_build(raw: RawConfig) -> Result<Config, ConfigError> 
         links: raw.links,
         contact: raw.contact,
         blobs: raw.blobs,
+        blob_mirror: raw.blob_mirror,
         firehose: raw.firehose,
         accounts: raw.accounts,
         recovery: raw.recovery,
@@ -2633,6 +2796,149 @@ mod tests {
         let config = validate_and_build(raw).unwrap();
 
         assert_eq!(config.blobs.gc_interval_secs, 5);
+    }
+
+    #[test]
+    fn blob_mirror_defaults_disabled() {
+        let config = validate_and_build(minimal_raw()).unwrap();
+        assert!(!config.blob_mirror.enabled());
+        assert_eq!(config.blob_mirror.region, "auto");
+        assert_eq!(config.blob_mirror.key_prefix, "blobs/");
+        assert_eq!(config.blob_mirror.sync_interval_secs, 300);
+        assert!(!config.blob_mirror.force_path_style);
+    }
+
+    #[test]
+    fn blob_mirror_toml_section_parses() {
+        let toml = r#"
+            data_dir = "/var/pds"
+            public_url = "https://pds.example.com"
+            available_user_domains = ["example.com"]
+
+            [blob_mirror]
+            bucket = "custos-blobs"
+            endpoint = "https://t3.storage.dev"
+            region = "auto"
+            access_key_id = "AKIAEXAMPLE"
+            secret_access_key = "secret"
+            force_path_style = true
+            key_prefix = "mirror/"
+            sync_interval_secs = 60
+        "#;
+        let raw: RawConfig = toml::from_str(toml).unwrap();
+        let config = validate_and_build(raw).unwrap();
+
+        assert!(config.blob_mirror.enabled());
+        assert_eq!(config.blob_mirror.bucket.as_deref(), Some("custos-blobs"));
+        assert_eq!(
+            config.blob_mirror.endpoint.as_deref(),
+            Some("https://t3.storage.dev")
+        );
+        assert!(config.blob_mirror.force_path_style);
+        assert_eq!(config.blob_mirror.key_prefix, "mirror/");
+        assert_eq!(config.blob_mirror.sync_interval_secs, 60);
+    }
+
+    #[test]
+    fn env_override_blob_mirror() {
+        let env = HashMap::from([
+            ("EZPDS_BLOB_MIRROR_BUCKET".to_string(), "b".to_string()),
+            (
+                "EZPDS_BLOB_MIRROR_ENDPOINT".to_string(),
+                "https://s3.example.com".to_string(),
+            ),
+            (
+                "EZPDS_BLOB_MIRROR_REGION".to_string(),
+                "us-west-000".to_string(),
+            ),
+            (
+                "EZPDS_BLOB_MIRROR_ACCESS_KEY_ID".to_string(),
+                "AKIA".to_string(),
+            ),
+            (
+                "EZPDS_BLOB_MIRROR_SECRET_ACCESS_KEY".to_string(),
+                "sekrit".to_string(),
+            ),
+            (
+                "EZPDS_BLOB_MIRROR_FORCE_PATH_STYLE".to_string(),
+                "true".to_string(),
+            ),
+            (
+                "EZPDS_BLOB_MIRROR_SYNC_INTERVAL_SECS".to_string(),
+                "120".to_string(),
+            ),
+        ]);
+        let raw = apply_env_overrides(minimal_raw(), &env).unwrap();
+        let config = validate_and_build(raw).unwrap();
+
+        assert!(config.blob_mirror.enabled());
+        assert_eq!(config.blob_mirror.bucket.as_deref(), Some("b"));
+        assert_eq!(config.blob_mirror.region, "us-west-000");
+        assert_eq!(config.blob_mirror.access_key_id.as_deref(), Some("AKIA"));
+        assert_eq!(
+            config
+                .blob_mirror
+                .secret_access_key
+                .as_ref()
+                .map(|s| s.0.as_str()),
+            Some("sekrit")
+        );
+        assert!(config.blob_mirror.force_path_style);
+        assert_eq!(config.blob_mirror.sync_interval_secs, 120);
+    }
+
+    #[test]
+    fn blob_mirror_empty_bucket_is_rejected_not_silently_disabled() {
+        for bucket in ["", "   "] {
+            let mut raw = minimal_raw();
+            raw.blob_mirror.bucket = Some(bucket.to_string());
+            raw.blob_mirror.endpoint = Some("https://s3.example.com".to_string());
+            raw.blob_mirror.access_key_id = Some("AKIA".to_string());
+            raw.blob_mirror.secret_access_key = Some(Sensitive("s".to_string()));
+            let err = validate_and_build(raw).unwrap_err();
+            assert!(
+                err.to_string().contains("blob_mirror.bucket"),
+                "bucket {bucket:?} must be rejected, got: {err}"
+            );
+        }
+    }
+
+    #[test]
+    fn blob_mirror_bucket_without_endpoint_is_rejected() {
+        let mut raw = minimal_raw();
+        raw.blob_mirror.bucket = Some("b".to_string());
+        raw.blob_mirror.access_key_id = Some("AKIA".to_string());
+        raw.blob_mirror.secret_access_key = Some(Sensitive("s".to_string()));
+        let err = validate_and_build(raw).unwrap_err();
+        assert!(err.to_string().contains("blob_mirror.endpoint"));
+    }
+
+    #[test]
+    fn blob_mirror_bucket_without_credentials_is_rejected() {
+        let mut raw = minimal_raw();
+        raw.blob_mirror.bucket = Some("b".to_string());
+        raw.blob_mirror.endpoint = Some("https://s3.example.com".to_string());
+        let err = validate_and_build(raw).unwrap_err();
+        assert!(err.to_string().contains("blob_mirror.access_key_id"));
+
+        let mut raw = minimal_raw();
+        raw.blob_mirror.bucket = Some("b".to_string());
+        raw.blob_mirror.endpoint = Some("https://s3.example.com".to_string());
+        raw.blob_mirror.access_key_id = Some("AKIA".to_string());
+        let err = validate_and_build(raw).unwrap_err();
+        assert!(err.to_string().contains("blob_mirror.secret_access_key"));
+    }
+
+    #[test]
+    fn blob_mirror_zero_interval_is_rejected() {
+        let mut raw = minimal_raw();
+        raw.blob_mirror.bucket = Some("b".to_string());
+        raw.blob_mirror.endpoint = Some("https://s3.example.com".to_string());
+        raw.blob_mirror.access_key_id = Some("AKIA".to_string());
+        raw.blob_mirror.secret_access_key = Some(Sensitive("s".to_string()));
+        raw.blob_mirror.sync_interval_secs = 0;
+        let err = validate_and_build(raw).unwrap_err();
+        assert!(err.to_string().contains("blob_mirror.sync_interval_secs"));
     }
 
     #[test]

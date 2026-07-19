@@ -44,6 +44,7 @@ base64 = { workspace = true }
 rand_core = { workspace = true }
 data-encoding = { workspace = true }
 sha2 = { workspace = true }
+hmac = { workspace = true }
 infer = { workspace = true }
 lettre = { workspace = true }
 subtle = { workspace = true }

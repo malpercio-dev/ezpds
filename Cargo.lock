@@ -5093,6 +5093,7 @@ dependencies = [
  "data-encoding",
  "futures-util",
  "hickory-resolver",
+ "hmac",
  "http-body-util",
  "infer",
  "ipld-core",
