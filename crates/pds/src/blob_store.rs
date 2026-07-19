@@ -9,6 +9,8 @@
 use sha2::{Digest, Sha256};
 use std::path::Path;
 use thiserror::Error;
+use tokio::io::AsyncWriteExt;
+use uuid::Uuid;
 
 #[derive(Debug, Error)]
 pub enum BlobStoreError {
@@ -107,11 +109,27 @@ pub async fn store_blob(
     let rel_path = format!("blobs/{prefix}/{cid}");
     let abs_path = data_dir.join(&rel_path);
 
-    // 3. Create parent directory and write.
-    if let Some(parent) = abs_path.parent() {
-        tokio::fs::create_dir_all(parent).await?;
+    // 3. Create parent directory.
+    let parent = abs_path
+        .parent()
+        .expect("blob path always has a parent (blobs/{prefix}/{cid})");
+    tokio::fs::create_dir_all(parent).await?;
+
+    // 4. Write to a temp file in the same directory, fsync it, atomically rename onto the
+    //    final CID path, then fsync the directory. Without this, a crash or power loss between
+    //    the write and the page cache's flush can leave truncated bytes at a valid CID path (or
+    //    none at all) even though the caller's later DB row insert is WAL-durable — a
+    //    "metadata present, bytes missing" split the caller has no way to detect.
+    let tmp_path = parent.join(format!(".{cid}.{}.tmp", Uuid::new_v4()));
+    if let Err(e) = write_and_sync(&tmp_path, content).await {
+        tokio::fs::remove_file(&tmp_path).await.ok();
+        return Err(e.into());
     }
-    tokio::fs::write(&abs_path, content).await?;
+    if let Err(e) = tokio::fs::rename(&tmp_path, &abs_path).await {
+        tokio::fs::remove_file(&tmp_path).await.ok();
+        return Err(e.into());
+    }
+    tokio::fs::File::open(parent).await?.sync_all().await?;
 
     Ok(StoredBlob {
         cid,
@@ -119,6 +137,14 @@ pub async fn store_blob(
         storage_path: rel_path,
         size_bytes: content.len() as u64,
     })
+}
+
+/// Write `content` to `path` and fsync it before returning, so the bytes are durable on disk
+/// (not just handed to the page cache) before the caller renames the file into place.
+async fn write_and_sync(path: &Path, content: &[u8]) -> std::io::Result<()> {
+    let mut file = tokio::fs::File::create(path).await?;
+    file.write_all(content).await?;
+    file.sync_all().await
 }
 
 /// Read a blob from disk by CID.
@@ -201,6 +227,34 @@ fn build_cid(hash: &[u8]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn store_blob_leaves_only_the_final_file_behind() {
+        // The durable write path stages content in a temp file before the atomic rename;
+        // a successful store must leave no trace of that temp file in the prefix directory.
+        let dir = tempfile::tempdir().unwrap();
+        let stored = store_blob(
+            dir.path(),
+            b"no stray temp files",
+            "application/octet-stream",
+        )
+        .await
+        .unwrap();
+
+        let prefix_dir = dir
+            .path()
+            .join(stored.storage_path.rsplit_once('/').unwrap().0);
+        let mut entries = tokio::fs::read_dir(&prefix_dir).await.unwrap();
+        let mut names = Vec::new();
+        while let Some(entry) = entries.next_entry().await.unwrap() {
+            names.push(entry.file_name().to_string_lossy().into_owned());
+        }
+        assert_eq!(
+            names,
+            vec![stored.cid.clone()],
+            "prefix directory must contain only the final CID file, no leftover temp files"
+        );
+    }
 
     #[tokio::test]
     async fn store_and_read_roundtrip() {
