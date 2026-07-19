@@ -18,6 +18,8 @@ head to [Running Custos](/operator/) instead.
 ## What you can do here
 
 - **[Getting started](/user/getting-started/)** — create or bring an identity.
+- **[Signing in to apps](/user/signing-in-to-apps/)** — approve sign-in to a
+  third-party app with your wallet, no password.
 - **[Tamper monitoring & recovery](/user/recovery/)** — how Obsign watches for
   unexpected changes and the 72-hour override that lets you take back control.
 - **[2-of-3 Shamir backup](/user/backup/)** — split your recovery secret so no
