@@ -440,21 +440,41 @@ const FONT_FACES: &str = r#"
 "#;
 
 const CONSENT_CSS: &str = r#"
+    /* Two appearances, one token set (see DESIGN.md §2): `color-scheme: light dark`
+       follows the viewer's system setting and every color is a light-dark() pair
+       forked verbatim from apps/identity-wallet/src/lib/styles/tokens.css. The wax
+       seal is a physical object, so gold (--gold/--gold-deep/--on) is appearance-
+       invariant (the Same-Seal Rule); aubergine lifts to lavender so links and the
+       focus glow hold AAA on the dark ground; the critical pair inverts. The card
+       floats above --ground in both appearances; raised surfaces step lighter in
+       dark (the Inverted-Elevation Rule). Every text pairing is verified ≥7:1 body,
+       ≥4.5:1 labels in both. The QR stays white regardless of theme (it renders its
+       own white ground) so a phone camera scans it in either appearance. */
     :root{
+      color-scheme: light dark;
       --serif:'Libre Caslon Display',Georgia,serif;
       --sans:'Public Sans',system-ui,-apple-system,sans-serif;
       --mono:'JetBrains Mono',ui-monospace,monospace;
       --gold:oklch(0.46 0.105 62); --gold-deep:oklch(0.38 0.09 60);
-      --aubergine:oklch(0.34 0.10 330);
-      --ink:oklch(0.23 0.012 60); --ink-soft:oklch(0.31 0.012 60); --muted:oklch(0.40 0.012 60);
-      --bg:oklch(1 0 0); --parchment:oklch(0.975 0.004 75); --sunk:oklch(0.955 0.005 75);
-      --line:oklch(0.90 0.004 75); --on:oklch(0.99 0.005 80);
-      --crit:oklch(0.44 0.16 25); --crit-surface:oklch(0.95 0.045 25);
+      --on:oklch(0.99 0.005 80);
+      --aubergine:light-dark(oklch(0.34 0.10 330), oklch(0.76 0.07 330));
+      --aubergine-deep:light-dark(oklch(0.28 0.09 330), oklch(0.68 0.08 330));
+      --ink:light-dark(oklch(0.23 0.012 60), oklch(0.96 0.004 75));
+      --ink-soft:light-dark(oklch(0.31 0.012 60), oklch(0.85 0.006 70));
+      --muted:light-dark(oklch(0.42 0.012 60), oklch(0.70 0.008 65));
+      --ground:light-dark(oklch(0.965 0.006 75), oklch(0.16 0.012 60));
+      --bg:light-dark(oklch(1 0 0), oklch(0.23 0.012 60));
+      --parchment:light-dark(oklch(0.975 0.004 75), oklch(0.205 0.012 60));
+      --sunk:light-dark(oklch(0.955 0.005 75), oklch(0.185 0.012 60));
+      --line:light-dark(oklch(0.90 0.004 75), oklch(0.32 0.012 60));
+      --crit:light-dark(oklch(0.44 0.16 25), oklch(0.82 0.095 25));
+      --crit-surface:light-dark(oklch(0.95 0.045 25), oklch(0.26 0.055 25));
+      --focus-glow:light-dark(oklch(0.34 0.10 330 / 0.12), oklch(0.76 0.07 330 / 0.28));
     }
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
     body {
       font-family: var(--sans);
-      background: oklch(0.965 0.006 75);
+      background: var(--ground);
       color: var(--ink);
       min-height: 100vh;
       display: flex;
@@ -470,7 +490,7 @@ const CONSENT_CSS: &str = r#"
       border: 1px solid var(--line);
       border-radius: 18px;
       padding: 28px 26px;
-      box-shadow: 0 1px 0 var(--line), 0 12px 44px oklch(0.23 0.012 60 / 0.09);
+      box-shadow: 0 1px 0 var(--line), 0 12px 44px light-dark(oklch(0.23 0.012 60 / 0.09), oklch(0 0 0 / 0.5));
     }
     .top { display: flex; flex-direction: column; align-items: center; text-align: center; gap: 10px; margin-bottom: 20px; }
     .seal {
@@ -520,12 +540,14 @@ const CONSENT_CSS: &str = r#"
     }
     .field.mono { font-family: var(--mono); font-size: 14px; }
     .field::placeholder { color: var(--muted); }
-    .field:focus-visible { border-color: var(--aubergine); box-shadow: 0 0 0 3px oklch(0.34 0.10 330 / 0.12); }
+    .field { transition: border-color 120ms cubic-bezier(0.22,1,0.36,1), box-shadow 120ms cubic-bezier(0.22,1,0.36,1); }
+    .field:focus-visible { border-color: var(--aubergine); box-shadow: 0 0 0 3px var(--focus-glow); }
     .actions { display: flex; gap: 10px; margin-top: 6px; }
     .btn {
       flex: 1; display: inline-flex; align-items: center; justify-content: center; gap: 8px;
       border-radius: 11px; padding: 14px; border: none; cursor: pointer;
       font-family: var(--sans); font-size: 15px; font-weight: 600;
+      transition: background 120ms cubic-bezier(0.22,1,0.36,1);
     }
     .btn-approve { background: var(--gold); color: var(--on); }
     .btn-approve:hover { background: var(--gold-deep); }
@@ -561,28 +583,41 @@ const CONSENT_CSS: &str = r#"
       color: var(--muted); font-size: 12px; margin: 18px 0;
     }
     .divider::before, .divider::after { content: ""; flex: 1; height: 1px; background: var(--line); }
+    @media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
 "#;
 
 const CONSENT_PAGE_HEADER: &str = concat!(
     "<!DOCTYPE html>\n<html lang=\"en\">\n<head>\n",
     "  <meta charset=\"UTF-8\" />\n",
     "  <meta name=\"viewport\" content=\"width=device-width, initial-scale=1.0\" />\n",
+    "  <meta name=\"color-scheme\" content=\"light dark\" />\n",
+    "  <meta name=\"theme-color\" content=\"#f6f3ef\" media=\"(prefers-color-scheme: light)\" />\n",
+    "  <meta name=\"theme-color\" content=\"#110c08\" media=\"(prefers-color-scheme: dark)\" />\n",
     "  <title>Authorize access</title>\n",
     "  <style>",
 );
 
 const ERROR_CSS: &str = r#"
+    /* Same two-appearance token set as the consent page (see DESIGN.md §2): every
+       color is a light-dark() pair, the card floats above --ground, and the alarm
+       seal's critical pair inverts to a light red on a dim red ground in dark. */
     :root{
+      color-scheme: light dark;
       --serif:'Libre Caslon Display',Georgia,serif;
       --sans:'Public Sans',system-ui,-apple-system,sans-serif;
-      --ink:oklch(0.23 0.012 60); --ink-soft:oklch(0.31 0.012 60);
-      --bg:oklch(1 0 0); --line:oklch(0.90 0.004 75);
-      --crit:oklch(0.44 0.16 25); --crit-surface:oklch(0.95 0.045 25);
+      --ink:light-dark(oklch(0.23 0.012 60), oklch(0.96 0.004 75));
+      --ink-soft:light-dark(oklch(0.31 0.012 60), oklch(0.85 0.006 70));
+      --ground:light-dark(oklch(0.965 0.006 75), oklch(0.16 0.012 60));
+      --bg:light-dark(oklch(1 0 0), oklch(0.23 0.012 60));
+      --line:light-dark(oklch(0.90 0.004 75), oklch(0.32 0.012 60));
+      --crit:light-dark(oklch(0.44 0.16 25), oklch(0.82 0.095 25));
+      --crit-surface:light-dark(oklch(0.95 0.045 25), oklch(0.26 0.055 25));
+      --crit-ring:light-dark(oklch(0.44 0.16 25 / 0.18), oklch(0.82 0.095 25 / 0.30));
     }
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
     body {
       font-family: var(--sans);
-      background: oklch(0.965 0.006 75);
+      background: var(--ground);
       color: var(--ink);
       min-height: 100vh;
       display: flex;
@@ -595,11 +630,11 @@ const ERROR_CSS: &str = r#"
       width: 100%; max-width: 420px;
       background: var(--bg); border: 1px solid var(--line); border-radius: 18px;
       padding: 28px 26px;
-      box-shadow: 0 1px 0 var(--line), 0 12px 44px oklch(0.23 0.012 60 / 0.09);
+      box-shadow: 0 1px 0 var(--line), 0 12px 44px light-dark(oklch(0.23 0.012 60 / 0.09), oklch(0 0 0 / 0.5));
     }
     .top { display: flex; flex-direction: column; align-items: center; text-align: center; gap: 12px; }
     .seal { width: 56px; height: 56px; border-radius: 9999px; display: flex; align-items: center; justify-content: center; }
-    .seal.alarm { background: var(--crit-surface); color: var(--crit); box-shadow: inset 0 0 0 2px oklch(0.44 0.16 25 / 0.18); }
+    .seal.alarm { background: var(--crit-surface); color: var(--crit); box-shadow: inset 0 0 0 2px var(--crit-ring); }
     h1 { font-family: var(--serif); font-weight: 400; font-size: 25px; line-height: 1.12; color: var(--ink); }
     .err-msg { font-size: 14.5px; line-height: 1.55; color: var(--ink-soft); max-width: 36ch; }
 "#;
@@ -608,6 +643,9 @@ const ERROR_PAGE_HEADER: &str = concat!(
     "<!DOCTYPE html>\n<html lang=\"en\">\n<head>\n",
     "  <meta charset=\"UTF-8\" />\n",
     "  <meta name=\"viewport\" content=\"width=device-width, initial-scale=1.0\" />\n",
+    "  <meta name=\"color-scheme\" content=\"light dark\" />\n",
+    "  <meta name=\"theme-color\" content=\"#f6f3ef\" media=\"(prefers-color-scheme: light)\" />\n",
+    "  <meta name=\"theme-color\" content=\"#110c08\" media=\"(prefers-color-scheme: dark)\" />\n",
     "  <title>",
 );
 
