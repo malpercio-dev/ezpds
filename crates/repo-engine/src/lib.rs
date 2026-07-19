@@ -33,7 +33,10 @@ pub use datetime::{
     is_valid as is_valid_datetime, validate as validate_datetime, AtprotoDatetimeError,
 };
 pub use genesis::{build_genesis_repo, create_genesis_repo, CapturingBlockStore, GenesisError};
-pub use lexicon::{validate_document as validate_lexicon_document, LexiconSchemaError};
+pub use lexicon::{
+    validate_document as validate_lexicon_document, validate_record as validate_lexicon_record,
+    LexiconRecordError, LexiconSchemaError,
+};
 pub use records::{
     apply_writes, count_records, delete_record, generate_tid, get_record, get_record_cid,
     get_record_json, json_to_record_value, list_collections, list_records_json, put_record,
