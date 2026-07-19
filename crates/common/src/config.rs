@@ -1953,6 +1953,23 @@ pub(crate) fn validate_and_build(raw: RawConfig) -> Result<Config, ConfigError> 
     // configuration must fail at load rather than surface as a per-pass upload error while
     // the operator believes blobs are replicated.
     if raw.blob_mirror.enabled() {
+        // A set-but-empty bucket (e.g. `EZPDS_BLOB_MIRROR_BUCKET=""`) passes the enable
+        // gate but can only produce malformed request hosts/paths — the operator would
+        // believe blobs are replicated while every request fails. Reject it loudly rather
+        // than treating it as disabled.
+        if raw
+            .blob_mirror
+            .bucket
+            .as_deref()
+            .unwrap_or("")
+            .trim()
+            .is_empty()
+        {
+            return Err(ConfigError::Invalid(
+                "blob_mirror.bucket must be non-empty when set (unset it to disable the mirror)"
+                    .to_string(),
+            ));
+        }
         let endpoint = raw.blob_mirror.endpoint.as_deref().unwrap_or("");
         if !endpoint.starts_with("http://") && !endpoint.starts_with("https://") {
             return Err(ConfigError::Invalid(format!(
@@ -2868,6 +2885,22 @@ mod tests {
         );
         assert!(config.blob_mirror.force_path_style);
         assert_eq!(config.blob_mirror.sync_interval_secs, 120);
+    }
+
+    #[test]
+    fn blob_mirror_empty_bucket_is_rejected_not_silently_disabled() {
+        for bucket in ["", "   "] {
+            let mut raw = minimal_raw();
+            raw.blob_mirror.bucket = Some(bucket.to_string());
+            raw.blob_mirror.endpoint = Some("https://s3.example.com".to_string());
+            raw.blob_mirror.access_key_id = Some("AKIA".to_string());
+            raw.blob_mirror.secret_access_key = Some(Sensitive("s".to_string()));
+            let err = validate_and_build(raw).unwrap_err();
+            assert!(
+                err.to_string().contains("blob_mirror.bucket"),
+                "bucket {bucket:?} must be rejected, got: {err}"
+            );
+        }
     }
 
     #[test]

@@ -59,6 +59,7 @@ The PDS container expects the following environment variables and mounts:
      - `EZPDS_SIGNING_KEY_MASTER_KEY` - 64-character hex string; generate with: `openssl rand -hex 32`
      - `EZPDS_ADMIN_TOKEN` - A secure random token.
      - `EZPDS_EMAIL_PROVIDER` + provider settings - **Required for a real deployment.** Leaving the default `log` provider silently disables outbound email — confirmation, password-reset, PLC-operation, and account-delete tokens are only logged, never sent. On Railway non-Pro plans (outbound SMTP blocked) set `mailtrap` with `EZPDS_EMAIL_FROM` + `EZPDS_EMAIL_HTTP_TOKEN` (sealed); see the container contract above for the `smtp` alternative.
+     - `EZPDS_BLOB_MIRROR_BUCKET` + `EZPDS_BLOB_MIRROR_ENDPOINT` + `EZPDS_BLOB_MIRROR_ACCESS_KEY_ID` + `EZPDS_BLOB_MIRROR_SECRET_ACCESS_KEY` (sealed) - **Required for a production deployment.** Without them, blob files have no off-volume replication — Litestream covers only the database, so a volume loss destroys user media the mirror could otherwise restore. Use a bucket (or prefix namespace) separate from the Litestream replica. Optional: `EZPDS_BLOB_MIRROR_KEY_PREFIX` (default `blobs/`), `EZPDS_BLOB_MIRROR_SYNC_INTERVAL_SECS` (default 300), `EZPDS_BLOB_MIRROR_REGION` (default `auto`), `EZPDS_BLOB_MIRROR_FORCE_PATH_STYLE` (default `false`). See **Backup & rollback** below.
    - Do **not** set `PORT` or `EZPDS_DATA_DIR` — Railway injects `PORT` automatically, and `EZPDS_DATA_DIR=/data` is already set by the Dockerfile `ENV`.
 
 3. **Add a volume:**
