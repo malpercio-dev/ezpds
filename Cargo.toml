@@ -156,6 +156,9 @@ lettre = { version = "0.11", default-features = false, features = ["builder", "s
 tauri = { version = "2" }
 tauri-build = { version = "2" }
 tauri-plugin-log = "2"
+# Camera QR scanning (identity-wallet OAuth consent scan path + admin-companion pairing). Mobile-
+# only; each app opts in under its iOS/android target table and registers it behind `#[cfg(mobile)]`.
+tauri-plugin-barcode-scanner = "2"
 log = "0.4"
 security-framework = { version = "3" }
 
