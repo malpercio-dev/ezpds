@@ -28,6 +28,50 @@ const MAX_TTL_WITHOUT_LXM: u64 = 60;
 /// Expiry applied when the caller requests none: 60 seconds in the future.
 const DEFAULT_TTL: u64 = 60;
 
+/// Account-management methods that must be performed directly on the PDS and are **never** mintable
+/// as a service-auth token, for any credential (full access included). Mirrors the reference PDS's
+/// `PROTECTED_METHODS` so a service token can't be used to sidestep the session-level access these
+/// operations require.
+const PROTECTED_METHODS: &[&str] = &[
+    "com.atproto.admin.sendEmail",
+    "com.atproto.identity.requestPlcOperationSignature",
+    "com.atproto.identity.signPlcOperation",
+    "com.atproto.identity.updateHandle",
+    "com.atproto.server.activateAccount",
+    "com.atproto.server.confirmEmail",
+    "com.atproto.server.createAppPassword",
+    "com.atproto.server.deactivateAccount",
+    "com.atproto.server.getAccountInviteCodes",
+    "com.atproto.server.getSession",
+    "com.atproto.server.listAppPasswords",
+    "com.atproto.server.requestAccountDelete",
+    "com.atproto.server.requestEmailConfirmation",
+    "com.atproto.server.requestEmailUpdate",
+    "com.atproto.server.revokeAppPassword",
+    "com.atproto.server.updateEmail",
+];
+
+/// Methods that require a **privileged** credential (a full-access session or a privileged app
+/// password): the `chat.bsky.*` surface plus account creation. A non-privileged app password may
+/// not mint service auth for these. Mirrors the reference PDS's `PRIVILEGED_METHODS`.
+const PRIVILEGED_METHODS: &[&str] = &[
+    "chat.bsky.actor.deleteAccount",
+    "chat.bsky.actor.exportAccountData",
+    "chat.bsky.convo.deleteMessageForSelf",
+    "chat.bsky.convo.getConvo",
+    "chat.bsky.convo.getConvoForMembers",
+    "chat.bsky.convo.getLog",
+    "chat.bsky.convo.getMessages",
+    "chat.bsky.convo.leaveConvo",
+    "chat.bsky.convo.listConvos",
+    "chat.bsky.convo.muteConvo",
+    "chat.bsky.convo.sendMessage",
+    "chat.bsky.convo.sendMessageBatch",
+    "chat.bsky.convo.unmuteConvo",
+    "chat.bsky.convo.updateRead",
+    "com.atproto.server.createAccount",
+];
+
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct GetServiceAuthQuery {
@@ -58,8 +102,11 @@ pub async fn get_service_auth(
     // token for the destination's createAccount (and retry it) right up to and after the point
     // its own PDS deactivates it — gating on activity here would break exactly the flow this
     // endpoint exists to serve.
-    // Refresh tokens and app-password tokens must not mint arbitrary service auth.
-    if user.scope != AuthScope::Access {
+    // Refresh tokens never mint service auth. Full-access and app-password sessions are both
+    // admitted here; the per-method authorization gate below (once `lxm` is resolved) enforces
+    // exactly what each may mint — matching the reference PDS, whose `getServiceAuth` accepts app
+    // passwords for non-protected, non-privileged methods (the video-upload path).
+    if user.scope == AuthScope::Refresh {
         return Err(ApiError::new(
             ErrorCode::InvalidToken,
             "access token required",
@@ -90,13 +137,50 @@ pub async fn get_service_auth(
 
     let exp = resolve_expiry(params.exp, lxm.is_some(), now)?;
 
-    let required_lxm = lxm.unwrap_or("*");
-    oauth_scopes::require_rpc(
-        &user.scope_claim,
-        required_lxm,
-        aud_claim,
-        "token scope does not permit service auth for this RPC audience",
-    )?;
+    // A protected method is account management that must be performed directly on the PDS: never
+    // mintable as a service-auth token, whatever the credential.
+    if let Some(method) = lxm {
+        if PROTECTED_METHODS.contains(&method) {
+            return Err(ApiError::new(
+                ErrorCode::InvalidToken,
+                "cannot request a service auth token for a protected method",
+            ));
+        }
+    }
+
+    match &user.scope {
+        // A full-access session (legacy `com.atproto.access`) or a granular OAuth grant: the
+        // granular scope gate enforces per-audience/method access, and a legacy full-access session
+        // short-circuits inside `require_rpc`.
+        AuthScope::Access => {
+            let required_lxm = lxm.unwrap_or("*");
+            oauth_scopes::require_rpc(
+                &user.scope_claim,
+                required_lxm,
+                aud_claim,
+                "token scope does not permit service auth for this RPC audience",
+            )?;
+        }
+        // App passwords may mint a *method-bound* token for non-protected methods (the video-upload
+        // path). A method-unrestricted token is too broad to grant an app password, and privileged
+        // methods (`chat.bsky.*`, account creation) require a privileged credential.
+        AuthScope::AppPass | AuthScope::AppPassPrivileged => {
+            let Some(method) = lxm else {
+                return Err(ApiError::new(
+                    ErrorCode::InvalidToken,
+                    "an app-password session must request a method-bound (lxm) service auth token",
+                ));
+            };
+            if user.scope == AuthScope::AppPass && PRIVILEGED_METHODS.contains(&method) {
+                return Err(ApiError::new(
+                    ErrorCode::InvalidToken,
+                    "insufficient access to request service auth for this method",
+                ));
+            }
+        }
+        // Rejected before parameter validation above.
+        AuthScope::Refresh => unreachable!("refresh scope is rejected before authorization"),
+    }
 
     // Sign with the account's per-account repo key (decrypted with the configured master key);
     // the audience service verifies it against the `#atproto` key in the issuer's DID document.
@@ -538,6 +622,136 @@ mod tests {
             .await
             .unwrap();
 
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    // ── App-password service auth (the bsky-app login path) ───────────────────────
+
+    #[tokio::test]
+    async fn app_password_mints_service_auth_for_non_privileged_method() {
+        // The bsky app signs into a self-hosted PDS with an app password; video upload requests a
+        // service token for a non-privileged method. This must be permitted (the reference PDS
+        // allows it) — rejecting it broke video upload for every app-password session.
+        let state = state_with_master_key().await;
+        seed_account_with_repo(&state.db, TEST_DID).await;
+        let token = scoped_access_jwt(&state.jwt_secret, TEST_DID, "com.atproto.appPass");
+
+        let response = app(state)
+            .oneshot(get_request(
+                &token,
+                "aud=did:web:video.bsky.app&lxm=app.bsky.video.getUploadLimits",
+            ))
+            .await
+            .unwrap();
+
+        assert_eq!(
+            response.status(),
+            StatusCode::OK,
+            "an app password must mint service auth for a non-privileged method"
+        );
+        let json = body_json(response).await;
+        let (_, claims) = decode_jwt(json["token"].as_str().unwrap());
+        assert_eq!(claims["aud"], "did:web:video.bsky.app");
+        assert_eq!(claims["lxm"], "app.bsky.video.getUploadLimits");
+    }
+
+    #[tokio::test]
+    async fn app_password_mints_uploadblob_service_auth() {
+        // The second leg of video upload: the transcoded blob is pushed back to the PDS via
+        // uploadBlob, a token the client also mints. uploadBlob is non-privileged.
+        let state = state_with_master_key().await;
+        seed_account_with_repo(&state.db, TEST_DID).await;
+        let token = scoped_access_jwt(&state.jwt_secret, TEST_DID, "com.atproto.appPass");
+
+        let response = app(state)
+            .oneshot(get_request(
+                &token,
+                "aud=did:web:pds.example.com&lxm=com.atproto.repo.uploadBlob",
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn app_password_cannot_mint_service_auth_for_protected_method() {
+        let state = state_with_master_key().await;
+        seed_account_with_repo(&state.db, TEST_DID).await;
+        let token = scoped_access_jwt(&state.jwt_secret, TEST_DID, "com.atproto.appPass");
+
+        let response = app(state)
+            .oneshot(get_request(
+                &token,
+                "aud=did:web:api.bsky.app&lxm=com.atproto.server.getSession",
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn full_access_cannot_mint_service_auth_for_protected_method() {
+        // Protected (account-management) methods are blocked for every credential, full access
+        // included — a service token must never sidestep the direct-session access they require.
+        let state = state_with_master_key().await;
+        seed_account_with_repo(&state.db, TEST_DID).await;
+        let token = access_jwt(&state.jwt_secret, TEST_DID);
+
+        let response = app(state)
+            .oneshot(get_request(
+                &token,
+                "aud=did:web:api.bsky.app&lxm=com.atproto.identity.updateHandle",
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn non_privileged_app_password_cannot_mint_service_auth_for_chat() {
+        // chat.bsky.* is privileged: a plain app password may not mint service auth for it.
+        let state = state_with_master_key().await;
+        seed_account_with_repo(&state.db, TEST_DID).await;
+        let token = scoped_access_jwt(&state.jwt_secret, TEST_DID, "com.atproto.appPass");
+
+        let response = app(state)
+            .oneshot(get_request(
+                &token,
+                "aud=did:web:api.bsky.chat&lxm=chat.bsky.convo.sendMessage",
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn privileged_app_password_mints_service_auth_for_chat() {
+        // A privileged app password may mint service auth for the privileged chat surface.
+        let state = state_with_master_key().await;
+        seed_account_with_repo(&state.db, TEST_DID).await;
+        let token = scoped_access_jwt(&state.jwt_secret, TEST_DID, "com.atproto.appPassPrivileged");
+
+        let response = app(state)
+            .oneshot(get_request(
+                &token,
+                "aud=did:web:api.bsky.chat&lxm=chat.bsky.convo.sendMessage",
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn app_password_without_lxm_is_rejected() {
+        // A method-unrestricted token is too broad to grant an app password.
+        let state = state_with_master_key().await;
+        seed_account_with_repo(&state.db, TEST_DID).await;
+        let token = scoped_access_jwt(&state.jwt_secret, TEST_DID, "com.atproto.appPass");
+
+        let response = app(state)
+            .oneshot(get_request(&token, "aud=did:web:api.bsky.app"))
+            .await
+            .unwrap();
         assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
     }
 }
