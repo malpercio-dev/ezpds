@@ -10,7 +10,7 @@ checksum = "320119579fcad9c21884f5c4861d16174d0e06250625266f50fe6898340abefa"
 
 [[package]]
 name = "admin-companion"
-version = "0.6.0"
+version = "0.7.0"
 dependencies = [
  "base64 0.21.7",
  "crypto",
@@ -1042,7 +1042,7 @@ dependencies = [
 
 [[package]]
 name = "common"
-version = "0.6.0"
+version = "0.7.0"
 dependencies = [
  "axum",
  "serde",
@@ -1262,7 +1262,7 @@ checksum = "460fbee9c2c2f33933d720630a6a0bac33ba7053db5344fac858d4b8952d77d5"
 
 [[package]]
 name = "crypto"
-version = "0.6.0"
+version = "0.7.0"
 dependencies = [
  "aes-gcm",
  "base64 0.21.7",
@@ -3240,7 +3240,7 @@ checksum = "dfdd7caa900436d8f13b2346fe10257e0c05c1f1f9e351f4f5d57c03bd5f45da"
 
 [[package]]
 name = "identity-wallet"
-version = "0.6.0"
+version = "0.7.0"
 dependencies = [
  "base64 0.21.7",
  "chrono",
@@ -5079,7 +5079,7 @@ dependencies = [
 
 [[package]]
 name = "pds"
-version = "0.6.0"
+version = "0.7.0"
 dependencies = [
  "anyhow",
  "argon2",
@@ -6068,7 +6068,7 @@ dependencies = [
 
 [[package]]
 name = "repo-engine"
-version = "0.6.0"
+version = "0.7.0"
 dependencies = [
  "atrium-api",
  "atrium-repo",

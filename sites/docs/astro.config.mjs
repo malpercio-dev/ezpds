@@ -35,6 +35,7 @@ export default defineConfig({
           items: [
             { label: 'Welcome', slug: 'user' },
             { label: 'Getting started', slug: 'user/getting-started' },
+            { label: 'Signing in to apps', slug: 'user/signing-in-to-apps' },
             { label: 'Screens', slug: 'user/screens' },
             { label: 'Tamper monitoring & recovery', slug: 'user/recovery' },
             { label: '2-of-3 Shamir backup', slug: 'user/backup' },
