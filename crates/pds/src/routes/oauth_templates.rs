@@ -731,7 +731,8 @@ mod tests {
     }
 
     /// The wallet path renders BOTH the scan QR (an inline SVG) and the typed `user_code` fallback,
-    /// so a phone-scan and a no-camera/accessibility path are always available together (Phase B AC).
+    /// so the phone-scan channel and the no-camera / accessibility channel are always present
+    /// together — the typed code is never dropped in favor of the QR.
     #[test]
     fn wallet_path_renders_qr_and_the_typed_code_fallback() {
         let wallet = WalletConsentPath {

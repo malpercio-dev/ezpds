@@ -14,20 +14,29 @@
  * Returns the `request_id` string, or `null` if the text is not a well-formed consent payload (the
  * caller then keeps the typed-code entry — the guaranteed fallback).
  */
+/** The wallet's private-use scheme the consent page encodes the handoff URI under. */
+const WALLET_HANDOFF_PROTOCOL = 'org.obsign.identitywallet:';
+/** The single path the handoff URI targets. */
+const WALLET_HANDOFF_PATH = '/consent';
+
 export function parseConsentQr(text: string): string | null {
   const trimmed = text.trim();
   if (!trimmed) return null;
 
-  // Accept the full private-use URI. A bare `?query` or a `//host/path?query` shape both parse once
-  // a base is supplied, so normalize to a parseable URL and read the `request_id` param.
   let requestId: string | null = null;
   try {
-    // The custom scheme (`org.obsign.identitywallet:/consent?…`) is a valid absolute URL; `URL`
-    // parses its query even though the scheme is non-special.
+    // Accept ONLY the wallet's own consent handoff URI — the exact
+    // `org.obsign.identitywallet:/consent?request_id=…` shape the consent page emits. An arbitrary
+    // URL that merely carries a `request_id` param (e.g. an attacker's `https://…?request_id=…`) is
+    // not a consent payload, so gate on both the scheme and the path before reading the id.
     const url = new URL(trimmed);
-    requestId = url.searchParams.get('request_id');
+    if (url.protocol === WALLET_HANDOFF_PROTOCOL && url.pathname === WALLET_HANDOFF_PATH) {
+      requestId = url.searchParams.get('request_id');
+    }
   } catch {
-    // Not a URL — try a lone query string (`request_id=…&origin=…`) as a lenient fallback.
+    // Not a URL — try a lone query string (`request_id=…&origin=…`) as a lenient fallback for a QR
+    // that dropped the scheme. The `poauth_` shape check below and the server's own lookup remain
+    // the backstop.
     const q = trimmed.startsWith('?') ? trimmed.slice(1) : trimmed;
     if (q.includes('request_id=')) {
       requestId = new URLSearchParams(q).get('request_id');

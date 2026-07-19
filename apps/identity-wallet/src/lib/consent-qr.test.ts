@@ -25,9 +25,14 @@ describe('parseConsentQr', () => {
     expect(parseConsentQr('org.obsign.identitywallet:/consent?request_id=deadbeef')).toBeNull();
   });
 
-  it('rejects an unrelated URL that merely carries a request_id param', () => {
-    // Not a poauth_ id — the server would 404 anyway, but reject before any network call.
-    expect(parseConsentQr('https://evil.example.com/?request_id=notapoauthid')).toBeNull();
+  it('rejects an unrelated URL even when it carries a valid-shaped request_id', () => {
+    // The scheme + /consent gate rejects it before the id shape ever matters — a foreign origin
+    // must not be able to drive a preview just by embedding a well-formed poauth_ id.
+    expect(parseConsentQr(`https://evil.example.com/?request_id=${REQ}`)).toBeNull();
+  });
+
+  it('rejects the wallet scheme on a non-/consent path', () => {
+    expect(parseConsentQr(`org.obsign.identitywallet:/other?request_id=${REQ}`)).toBeNull();
   });
 
   it('rejects empty and non-payload text', () => {

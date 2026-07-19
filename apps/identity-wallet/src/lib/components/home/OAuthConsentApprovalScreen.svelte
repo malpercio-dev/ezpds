@@ -51,6 +51,7 @@
   let scanHint = $state<string | undefined>(undefined);
   let scanToken = 0;
   let overlayEl = $state<HTMLDivElement | undefined>();
+  let triggerEl = $state<HTMLDivElement | undefined>();
 
   const asWho = $derived(handle ? `@${handle}` : did);
   const clientLabel = $derived(preview?.clientName ?? preview?.clientId ?? 'an app');
@@ -222,15 +223,17 @@
     return () => document.body.classList.remove('scanning');
   });
 
-  // Focus handoff into the Cancel button when scan mode opens (keyboard + VoiceOver).
+  // Focus handoff: into the Cancel button when scan mode opens, back to the Scan button when it
+  // closes (cancel, failed parse, or a bad QR) so focus never lands on the removed dialog. On a
+  // successful scan the screen advances to the review phase and the trigger is gone — `host` is then
+  // undefined and focus follows the newly-rendered review content, which is the desired handoff.
   let wasScanning = false;
   $effect(() => {
     const open = scanning;
     if (open === wasScanning) return;
     wasScanning = open;
-    if (open) {
-      void tick().then(() => overlayEl?.querySelector<HTMLButtonElement>('button')?.focus());
-    }
+    const host = open ? overlayEl : triggerEl;
+    void tick().then(() => host?.querySelector<HTMLButtonElement>('button')?.focus());
   });
 
   async function approve() {
@@ -292,7 +295,7 @@
         short code it shows — either way you see exactly what it is asking for before anything happens.
       </p>
 
-      <div class="scan-cta">
+      <div class="scan-cta" bind:this={triggerEl}>
         <Button variant="secondary" onclick={scan} disabled={phase === 'loading'}>
           Scan QR code
         </Button>

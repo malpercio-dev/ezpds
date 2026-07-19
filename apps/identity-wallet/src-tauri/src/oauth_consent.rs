@@ -160,9 +160,9 @@ pub async fn preview_oauth_consent(
 }
 
 /// Preview a pending authorization by its high-entropy `request_id`, resolved against the selected
-/// DID's hosting PDS. The QR-scan path (Phase B): the wallet extracts only the `request_id` from the
-/// scanned QR and re-fetches the client/origin/scope from the server's record here — it never trusts
-/// the QR contents for what it displays. Otherwise identical to the typed path (same approval flow).
+/// DID's hosting PDS. The QR-scan path: the wallet extracts only the `request_id` from the scanned
+/// QR and re-fetches the client/origin/scope from the server's record here — it never trusts the QR
+/// contents for what it displays. Otherwise identical to the typed path (same approval flow).
 #[tauri::command]
 pub async fn preview_oauth_consent_by_request_id(
     state: tauri::State<'_, AppState>,
