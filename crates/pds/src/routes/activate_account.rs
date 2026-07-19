@@ -112,6 +112,24 @@ pub async fn activate_account_handler(
                 }
             }
             tracing::info!(did = %user.did, "account activated");
+
+            // Completing a migration into this server: the account's PLC document was repointed to
+            // us, but our cached copy may still be its pre-migration snapshot (wrong PDS endpoint +
+            // old `#atproto` key). We would then serve that stale document in getSession/describeRepo
+            // and mislead clients into routing to the *old* PDS with a token only we can verify. So,
+            // after the status transition (and outside the sequencer guard, now released by
+            // `finish`): force-refresh the cached document from the authoritative DID source, then
+            // announce an `#identity` frame so relays/AppViews re-resolve the new key, handle, and
+            // PDS. Both are best-effort — activation already succeeded and must not be failed here.
+            if let Err(e) =
+                crate::identity::resolution::resolve_did_document_force_refresh(&state, &user.did)
+                    .await
+            {
+                tracing::warn!(did = %user.did, error = %e, "failed to force-refresh DID document after activation (non-fatal)");
+            }
+            if let Err(e) = state.firehose.emit_identity(user.did.clone(), None).await {
+                tracing::warn!(did = %user.did, error = %e, "failed to emit #identity after activation (non-fatal)");
+            }
         }
     }
 
@@ -153,7 +171,7 @@ mod tests {
     };
     use tower::ServiceExt;
 
-    use crate::app::{app, test_state};
+    use crate::app::{app, test_state, test_state_with_plc_url};
     use crate::firehose::FirehoseEvent;
     use crate::routes::test_utils::{access_jwt, body_json};
 
@@ -212,7 +230,10 @@ mod tests {
 
     #[tokio::test]
     async fn activates_deactivated_account_and_emits_firehose_event() {
-        let state = test_state().await;
+        // Give the activation force-refresh a local (404ing) PLC endpoint so it stays a best-effort
+        // no-op instead of reaching the real plc.directory.
+        let plc = wiremock::MockServer::start().await;
+        let state = test_state_with_plc_url(plc.uri()).await;
         insert_account(&state.db, "did:plc:act1", "act1@example.com", true).await;
         let token = access_jwt(&state.jwt_secret, "did:plc:act1");
         let db = state.db.clone();
@@ -242,7 +263,8 @@ mod tests {
         use crate::firehose::FirehoseEvent;
         use crate::routes::test_utils::seed_account_with_repo;
 
-        let state = test_state().await;
+        let plc = wiremock::MockServer::start().await;
+        let state = test_state_with_plc_url(plc.uri()).await;
         let did = "did:plc:actrepo";
         seed_account_with_repo(&state.db, did).await;
         sqlx::query("UPDATE accounts SET deactivated_at = '2026-01-01T00:00:00Z' WHERE did = ?")
@@ -305,7 +327,8 @@ mod tests {
 
     #[tokio::test]
     async fn clears_pending_delete_after() {
-        let state = test_state().await;
+        let plc = wiremock::MockServer::start().await;
+        let state = test_state_with_plc_url(plc.uri()).await;
         insert_account(&state.db, "did:plc:act3", "act3@example.com", true).await;
         sqlx::query("UPDATE accounts SET delete_after = '2030-01-01T00:00:00Z' WHERE did = ?")
             .bind("did:plc:act3")
@@ -386,5 +409,95 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn activation_refreshes_stale_did_doc_and_emits_identity() {
+        // The migration-into-obsign case: our cached DID document is a pre-migration snapshot
+        // (points at the old PDS + old key). Activation must force-refresh it from the authoritative
+        // PLC source and announce an #identity so consumers re-resolve — otherwise getSession /
+        // describeRepo serve the stale doc and misroute clients to the old PDS.
+        use crate::routes::test_utils::seed_account_with_repo;
+        use wiremock::{
+            matchers::{method, path},
+            Mock, MockServer, ResponseTemplate,
+        };
+
+        let did = "did:plc:migrated0000000000000";
+        let plc = MockServer::start().await;
+        // Authoritative PLC serves the FRESH document (the new PDS endpoint).
+        let fresh_doc = serde_json::json!({
+            "id": did,
+            "alsoKnownAs": ["at://migrated.example.com"],
+            "service": [{
+                "id": "#atproto_pds",
+                "type": "AtprotoPersonalDataServer",
+                "serviceEndpoint": "https://new.example.com",
+            }],
+        });
+        Mock::given(method("GET"))
+            .and(path(format!("/{did}")))
+            .respond_with(ResponseTemplate::new(200).set_body_json(&fresh_doc))
+            .mount(&plc)
+            .await;
+
+        let state = test_state_with_plc_url(plc.uri()).await;
+        // A deactivated account with a repo (so the activation is a real transition that emits
+        // #account + #sync), plus a STALE cached DID doc pointing at the old PDS.
+        seed_account_with_repo(&state.db, did).await;
+        sqlx::query("UPDATE accounts SET deactivated_at = '2026-01-01T00:00:00Z' WHERE did = ?")
+            .bind(did)
+            .execute(&state.db)
+            .await
+            .unwrap();
+        let stale_doc = serde_json::json!({
+            "id": did,
+            "service": [{
+                "id": "#atproto_pds",
+                "type": "AtprotoPersonalDataServer",
+                "serviceEndpoint": "https://old.example.com",
+            }],
+        });
+        sqlx::query(
+            "INSERT INTO did_documents (did, document, created_at, updated_at) \
+             VALUES (?, ?, datetime('now'), datetime('now')) \
+             ON CONFLICT(did) DO UPDATE SET document = excluded.document",
+        )
+        .bind(did)
+        .bind(stale_doc.to_string())
+        .execute(&state.db)
+        .await
+        .unwrap();
+
+        let token = access_jwt(&state.jwt_secret, did);
+        let db = state.db.clone();
+        let mut rx = state.firehose.subscribe();
+
+        let response = app(state).oneshot(activate_request(&token)).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+
+        // The stale cached DID doc is rewritten with the authoritative one, so the server now
+        // serves the correct PDS endpoint in getSession/describeRepo.
+        let cached = crate::db::dids::get_did_document(&db, did)
+            .await
+            .unwrap()
+            .expect("a cached DID document must exist after activation");
+        assert_eq!(
+            cached["service"][0]["serviceEndpoint"], "https://new.example.com",
+            "activation must rewrite the stale cached DID doc with the authoritative one"
+        );
+
+        // Frame order: #account (active), then #sync (the account has a repo), then #identity.
+        let FirehoseEvent::Account(acct) = rx.try_recv().unwrap() else {
+            panic!("expected an #account event first");
+        };
+        assert!(acct.active);
+        let FirehoseEvent::Sync(_) = rx.try_recv().unwrap() else {
+            panic!("expected a #sync event second");
+        };
+        let FirehoseEvent::Identity(identity) = rx.try_recv().unwrap() else {
+            panic!("expected an #identity event after activation");
+        };
+        assert_eq!(identity.did, did);
     }
 }

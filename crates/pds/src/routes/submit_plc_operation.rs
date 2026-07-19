@@ -108,6 +108,18 @@ pub async fn submit_plc_operation(
         }
     }
 
+    // Announce the identity change on the firehose so relays and AppViews re-resolve this DID's
+    // document — its `#atproto` signing key, handle, or PDS endpoint may all have changed. A PLC
+    // operation that changes the signing key (e.g. an account migrating in) is invisible to
+    // consumers without this: `#account`/`#commit` frames update repo data, but only `#identity`
+    // makes a consumer re-resolve the key, so they keep verifying service auth against the old key
+    // and routing to the old PDS. The handle is passed as `None` ("identity changed, re-resolve")
+    // — the same signal `repo_key_rotation` emits. Best-effort: the operation is already durable at
+    // the PLC directory, so an emit failure must not fail the request.
+    if let Err(e) = state.firehose.emit_identity(did.clone(), None).await {
+        tracing::warn!(error = %e, did = %did, "failed to emit #identity after submitPlcOperation (non-fatal)");
+    }
+
     Ok(Json(SubmitPlcOperationResponse {}))
 }
 
@@ -236,6 +248,7 @@ mod tests {
 
         let state = state_with_plc(plc.uri()).await;
         let db = state.db.clone();
+        let mut rx = state.firehose.subscribe();
         let op = build_op(&kp, "bafyCurrentHead", "https://new.example.com");
         let jwt = access_jwt(&[0x42u8; 32], did);
 
@@ -257,6 +270,13 @@ mod tests {
             doc["service"][0]["serviceEndpoint"],
             "https://new.example.com"
         );
+
+        // The identity change is announced on the firehose so relays/AppViews re-resolve the new
+        // key/handle/PDS — without this, a key-changing migration op stays invisible to consumers.
+        let crate::firehose::FirehoseEvent::Identity(identity) = rx.try_recv().unwrap() else {
+            panic!("expected an #identity firehose event after submitPlcOperation");
+        };
+        assert_eq!(identity.did, did);
         // plc mock's `.expect(1)` verifies the POST happened on drop.
     }
 
