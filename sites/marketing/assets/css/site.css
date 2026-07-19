@@ -69,29 +69,37 @@
 
 /* ── Tokens: Obsign, "The Sealed Credential" (default register) ───────── */
 :root {
+  /* The wax seal is a physical object; its gold keeps its color at night — the
+     Same-Seal Rule, so `primary` / `primary-deep` / `on-color` are appearance-
+     invariant. Every other color is a light-dark() pair forked verbatim from
+     apps/identity-wallet/src/lib/styles/tokens.css; the Obsign pages follow the
+     system appearance (see `color-scheme` in Base). Raised surfaces step DARKER
+     than the page in light and LIGHTER in dark (the Inverted-Elevation Rule),
+     aubergine lifts to lavender, status pairs invert. AAA holds in both — the
+     dark pairings are verified, never eyeballed. */
   --color-primary: oklch(0.46 0.105 62);
   --color-primary-deep: oklch(0.38 0.09 60);
-  --color-accent: oklch(0.34 0.1 330);
-  --color-accent-deep: oklch(0.28 0.09 330);
-  --color-seal-pale: oklch(0.92 0.055 80);
+  --color-accent: light-dark(oklch(0.34 0.1 330), oklch(0.76 0.07 330));
+  --color-accent-deep: light-dark(oklch(0.28 0.09 330), oklch(0.68 0.08 330));
+  --color-seal-pale: light-dark(oklch(0.92 0.055 80), oklch(0.32 0.07 65));
   --color-on-color: oklch(0.99 0.005 80);
 
-  --color-bg: oklch(1 0 0);
-  --color-surface: oklch(0.975 0.004 75);
-  --color-surface-sunk: oklch(0.955 0.005 75);
-  --color-ink: oklch(0.23 0.012 60);
-  --color-ink-soft: oklch(0.31 0.012 60);
-  --color-muted: oklch(0.42 0.012 60);
-  --color-line: oklch(0.9 0.004 75);
+  --color-bg: light-dark(oklch(1 0 0), oklch(0.18 0.012 60));
+  --color-surface: light-dark(oklch(0.975 0.004 75), oklch(0.23 0.012 60));
+  --color-surface-sunk: light-dark(oklch(0.955 0.005 75), oklch(0.205 0.012 60));
+  --color-ink: light-dark(oklch(0.23 0.012 60), oklch(0.96 0.004 75));
+  --color-ink-soft: light-dark(oklch(0.31 0.012 60), oklch(0.85 0.006 70));
+  --color-muted: light-dark(oklch(0.42 0.012 60), oklch(0.7 0.008 65));
+  --color-line: light-dark(oklch(0.9 0.004 75), oklch(0.32 0.012 60));
 
-  --color-safe: oklch(0.4 0.1 150);
-  --color-safe-surface: oklch(0.95 0.045 150);
-  --color-warning: oklch(0.42 0.1 60);
-  --color-warning-surface: oklch(0.95 0.055 75);
-  --color-critical: oklch(0.44 0.16 25);
-  --color-critical-surface: oklch(0.95 0.045 25);
-  --color-expired: oklch(0.42 0.02 25);
-  --color-expired-surface: oklch(0.95 0.004 25);
+  --color-safe: light-dark(oklch(0.4 0.1 150), oklch(0.82 0.1 150));
+  --color-safe-surface: light-dark(oklch(0.95 0.045 150), oklch(0.27 0.05 150));
+  --color-warning: light-dark(oklch(0.42 0.1 60), oklch(0.84 0.095 65));
+  --color-warning-surface: light-dark(oklch(0.95 0.055 75), oklch(0.28 0.05 60));
+  --color-critical: light-dark(oklch(0.44 0.16 25), oklch(0.82 0.095 25));
+  --color-critical-surface: light-dark(oklch(0.95 0.045 25), oklch(0.26 0.055 25));
+  --color-expired: light-dark(oklch(0.42 0.02 25), oklch(0.78 0.012 25));
+  --color-expired-surface: light-dark(oklch(0.95 0.004 25), oklch(0.25 0.004 25));
 
   --color-focus-ring: var(--color-accent);
 
@@ -162,6 +170,9 @@
   --radius-md: 6px;
   --radius-lg: 10px;
 
+  /* Fixed dark register: resolve any inherited light-dark() token to its dark
+     side locally, so the Custos band stays slate even on a light Obsign page. */
+  color-scheme: dark;
   background: var(--color-bg);
   color: var(--color-ink);
 }
@@ -173,6 +184,18 @@
   box-sizing: border-box;
   margin: 0;
   padding: 0;
+}
+
+/* Appearance. The Obsign pages follow the system (light-dark() tokens resolve
+   against this); the Brass Console is a fixed dark register that never follows
+   the system. The :has() is keyed to the class on <body> so the nested Custos
+   CTA band on the Obsign page doesn't force the whole light page dark; UA chrome
+   (scrollbar, overscroll gutter) tracks the same value. */
+:root {
+  color-scheme: light dark;
+}
+:root:has(body.register-custos) {
+  color-scheme: dark;
 }
 
 html {
@@ -306,18 +329,22 @@ section {
   }
 }
 
-/* ── The seal mark (matches the wallet's SealEmblem) ──────────────────── */
+/* ── The seal mark (the wax seal from app-icon.svg, stamped via <use>) ─── */
+.seal-sprite {
+  position: absolute;
+  width: 0;
+  height: 0;
+}
 .seal {
   display: inline-flex;
   align-items: center;
   justify-content: center;
   flex-shrink: 0;
-  border-radius: var(--radius-full);
-  background: var(--color-primary);
-  color: var(--color-on-color);
-  box-shadow:
-    inset 0 0 0 2px oklch(0.99 0.05 80 / 0.35),
-    inset 0 -3px 8px oklch(0.2 0.05 60 / 0.22);
+}
+.seal svg {
+  display: block;
+  width: 100%;
+  height: 100%;
 }
 .seal-sm {
   width: 32px;
@@ -340,6 +367,7 @@ section {
   line-height: var(--leading-hero);
   max-width: 22ch;
   margin: var(--space-lg) 0 var(--space-md);
+  text-wrap: balance;
 }
 .hero .lede {
   font-size: var(--text-title);
@@ -391,6 +419,14 @@ section {
   background: var(--color-primary-hover);
   color: var(--color-on-primary);
 }
+/* The register's brass link color must not leak into a ghost button's label
+   (`.register-custos a` outranks `.btn-secondary`). A secondary button stays
+   neutral ink — matching the Obsign secondary and the admin Button primitive
+   this register is forked from — so the primary/secondary hierarchy holds. */
+.register-custos .btn-secondary,
+.register-custos .btn-secondary:hover {
+  color: var(--color-ink);
+}
 .btn-secondary {
   background: var(--color-surface);
   color: var(--color-ink);
@@ -415,6 +451,7 @@ h2 {
   letter-spacing: -0.005em;
   max-width: 28ch;
   margin-bottom: var(--space-md);
+  text-wrap: balance;
 }
 h3 {
   font-family: var(--font-sans);
@@ -422,6 +459,7 @@ h3 {
   font-size: var(--text-title);
   line-height: var(--leading-title);
   margin-bottom: var(--space-sm);
+  text-wrap: balance;
 }
 .section-intro {
   color: var(--color-ink-soft);
@@ -431,6 +469,14 @@ h3 {
 .section-intro p + p,
 .prose p + p {
   margin-top: var(--space-md);
+}
+/* Long-form copy: let the browser avoid short last-line orphans. */
+.hero .lede,
+.section-intro,
+.prose p,
+.answers p,
+.card p {
+  text-wrap: pretty;
 }
 
 /* ── Cards (flat at rest: parchment + hairline, no shadow) ────────────── */
@@ -559,6 +605,13 @@ figure.badge-figure figcaption {
 /* ── Custos band / Brass Console surfaces ─────────────────────────────── */
 .register-custos section {
   padding: var(--space-3xl) 0;
+}
+/* The Custos CTA on the Obsign page is a band (a <div>, not the page <body>).
+   In light the register shift is carried by the lightness jump (white → slate);
+   in dark the warm Obsign ground and the cool Custos slate share a lightness, so
+   a hairline top edge keeps the "different room" boundary legible in both. */
+.register-custos:not(body) {
+  border-top: 1px solid var(--color-line);
 }
 .prompt {
   font-family: var(--font-mono);
@@ -696,6 +749,13 @@ figure.badge-figure figcaption {
 }
 
 /* ── Motion: state only, and only when the user allows it ─────────────── */
+/* In-page nav (How it works / Plain answers / Run it) glides rather than jumps,
+   but only for users who haven't asked for reduced motion. */
+@media (prefers-reduced-motion: no-preference) {
+  html {
+    scroll-behavior: smooth;
+  }
+}
 @media (prefers-reduced-motion: reduce) {
   * {
     transition-duration: 0.01ms !important;

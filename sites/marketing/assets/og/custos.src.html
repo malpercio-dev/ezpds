@@ -1,0 +1,79 @@
+<!doctype html>
+<!--
+  Source for assets/og/custos.png (1200x630 social card). Regenerate: ./render.sh
+  (headless Chrome renders at 1200x717 and crops to 630 — see render.sh for why).
+  Colours + fonts are the "Brass Console" register, forked from site.css.
+  Blocks are placed with absolute `top` so headless layout is deterministic.
+-->
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <style>
+      @font-face { font-family: 'Public Sans'; font-weight: 600; src: url('../fonts/PublicSans-SemiBold.woff2') format('woff2'); }
+      @font-face { font-family: 'Public Sans'; font-weight: 400; src: url('../fonts/PublicSans-Regular.woff2') format('woff2'); }
+      @font-face { font-family: 'JetBrains Mono'; font-weight: 400; src: url('../fonts/JetBrainsMono-Regular.woff2') format('woff2'); }
+      @font-face { font-family: 'JetBrains Mono'; font-weight: 500; src: url('../fonts/JetBrainsMono-Medium.woff2') format('woff2'); }
+      * { margin: 0; padding: 0; box-sizing: border-box; }
+      html, body { width: 1200px; height: 630px; }
+      /* Fixed 1200x630 canvas: every block is absolutely placed by `top` so the
+         headless screenshot (which mis-handles bottom-anchored / space-between
+         layout) captures the whole card deterministically. */
+      body {
+        background: oklch(0.18 0.012 250);
+        color: oklch(0.95 0.006 250);
+        font-family: 'Public Sans', system-ui, sans-serif;
+        position: relative;
+        overflow: hidden;
+      }
+      /* Oversized prompt glyph watermark, bleeding off the right edge. */
+      .watermark {
+        position: absolute;
+        right: -30px; bottom: -110px;
+        font-family: 'JetBrains Mono', monospace;
+        font-size: 520px; line-height: 1;
+        color: oklch(0.72 0.12 80);
+        opacity: 0.07;
+      }
+      .prompt {
+        position: absolute; top: 64px; left: 80px;
+        font-family: 'JetBrains Mono', monospace; font-weight: 500;
+        font-size: 28px; letter-spacing: 0.02em;
+      }
+      .prompt .glyph { color: oklch(0.72 0.12 80); }
+      .hero { position: absolute; top: 190px; left: 80px; max-width: 940px; }
+      h1 {
+        font-weight: 600; font-size: 56px; line-height: 1.12;
+        letter-spacing: -0.01em; text-wrap: balance; margin-bottom: 24px;
+      }
+      .sub {
+        font-size: 26px; line-height: 1.45; color: oklch(0.82 0.008 250); max-width: 840px;
+      }
+      .sub .mono { font-family: 'JetBrains Mono', monospace; font-size: 23px; color: oklch(0.72 0.12 80); }
+      .foot {
+        position: absolute; top: 550px; left: 80px; right: 80px;
+        display: flex; justify-content: space-between; align-items: baseline;
+      }
+      .domain { font-family: 'JetBrains Mono', monospace; font-size: 22px; color: oklch(0.73 0.01 250); }
+      .tag { font-size: 20px; color: oklch(0.73 0.01 250); }
+    </style>
+  </head>
+  <body>
+    <div class="watermark" aria-hidden="true">&#9656;</div>
+
+    <div class="prompt">custos <span class="glyph">&#9656;</span> personal data server</div>
+
+    <div class="hero">
+      <h1>Powerful enough to run your presence. Unable to take your identity.</h1>
+      <p class="sub">
+        A complete AT&nbsp;Protocol PDS in a single Rust binary. Its signing key
+        sits at <span class="mono">rotationKeys[1]</span> &mdash; below the key
+        its users hold.
+      </p>
+    </div>
+
+    <div class="foot">
+      <span class="domain">about.obsign.org/custos</span>
+      <span class="tag">Open source &middot; one binary</span>
+    </div>
+  </body>
+</html>
