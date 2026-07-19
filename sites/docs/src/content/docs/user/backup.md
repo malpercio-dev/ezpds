@@ -79,3 +79,9 @@ Your other safety net is unchanged: because your identity key sits on your
 device as the highest-priority key, you can
 [override an unexpected change](/user/recovery/) within a 72-hour window without
 reassembling any shares.
+
+:::note[This page describes did:plc identities]
+The 2-of-3 split backs the recovery key of a **did:plc** identity — the default.
+A [did:web identity](/user/getting-started/#advanced-anchor-to-a-domain-you-control-didweb)
+carries no shares and no escrow; its recovery model is control of its domain.
+:::

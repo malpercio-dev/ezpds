@@ -48,6 +48,31 @@ If you already have an ATProtocol identity, you can move it to a server you
 control without losing your handle or history. That flow has its own page:
 [Migrating your identity](/user/migration/).
 
+## Advanced: anchor to a domain you control (did:web)
+
+By default, a new identity is a **did:plc** — an entry in ATProtocol's public
+PLC directory. That is the right choice for almost everyone, and everything
+else in these docs assumes it.
+
+If you already run a domain, Obsign also offers **did:web**: your identity
+becomes `did:web:your-domain.example`, anchored to a DID document served from
+that domain rather than to the PLC directory. The wallet walks you through
+composing the document, proves you control the domain by requiring the exact
+reviewed document to be live at its authoritative HTTPS URL before the server
+accepts it, and can either let your server host the document for you or leave
+you hosting it yourself.
+
+The trade is real, which is why it sits behind an "Advanced" link:
+
+- **You gain** an identity rooted in something you already own. No directory,
+  and no server, sits between you and it.
+- **You take on** the domain as part of your security perimeter. A did:web
+  identity has no PLC rotation keys, so the
+  [tamper monitoring and 72-hour override](/user/recovery/) and the
+  [2-of-3 share backup](/user/backup/) do not apply — recovery is controlling
+  the domain (plus your device key), and losing the domain means losing the
+  identity.
+
 ## The custody model, briefly
 
 Your identity is anchored by rotation keys, in order of precedence:
