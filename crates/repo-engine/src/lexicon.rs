@@ -1,16 +1,22 @@
 // pattern: Functional Core
 //
-//! Validation of a **lexicon document** against the lexicon meta-schema
-//! (`https://atproto.com/specs/lexicon`) — "is this lexicon itself well-formed?", the layer
-//! *above* records. It does not validate any record; it validates the schema document that
-//! records are later checked against.
+//! Two layers of lexicon validation over **arbitrary, untrusted** lexicon documents (e.g. a
+//! `com.atproto.lexicon.schema` record a user publishes), keyed on `https://atproto.com/specs/lexicon`:
 //!
-//! This is distinct from the PDS's `lexicon` module, which parses the *vendored* first-party
-//! lexicons into a typed registry and validates XRPC bodies against them. Here the input is an
-//! arbitrary, untrusted lexicon document (e.g. a `com.atproto.lexicon.schema` record a user
-//! publishes), so the job is to reject a malformed one before it is trusted downstream.
+//! * [`validate_document`] — the meta-schema layer: "is this lexicon document itself
+//!   well-formed?", the layer *above* records. It validates the schema document, not any record.
+//! * [`validate_record`] — the record-data layer: given a (well-formed) lexicon document and one
+//!   of its `record` defs, "does this record conform?" — resolving refs/unions within the
+//!   document and enforcing the field types, formats, and record-key discipline the def declares.
+//!   Backed by the `record-data-{valid,invalid}.json` + `lexicon-record.json` interop vectors.
 //!
-//! Rules enforced (each backed by an interop `lexicon-{valid,invalid}.json` vector):
+//! Both are distinct from the PDS's `lexicon` module, which parses the *vendored* first-party
+//! lexicons into a typed registry and validates XRPC bodies against them. There the schemas are
+//! trusted and fixed; here the input is arbitrary and untrusted, so the job is to reject a
+//! malformed document — or a record that violates one — before it is trusted downstream.
+//!
+//! Meta-schema rules enforced by [`validate_document`] (each backed by an interop
+//! `lexicon-{valid,invalid}.json` vector):
 //!
 //! * The document is an object with `lexicon`, `id`, and `defs`.
 //! * `lexicon` is the version number, and must be exactly the integer `1`.
