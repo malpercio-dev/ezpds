@@ -1,0 +1,1 @@
+OAuth token responses now include the account DID in the `sub` field, as the AT Protocol OAuth profile requires. Third-party atproto clients (such as tangled.org) previously failed to complete sign-in because the token response omitted `sub`.

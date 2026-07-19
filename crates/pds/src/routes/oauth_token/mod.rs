@@ -58,7 +58,14 @@ pub struct TokenRequestForm {
     pub claim_token: Option<String>,
 }
 
-/// Successful token endpoint response body (RFC 6749 §5.1).
+/// Successful token endpoint response body (RFC 6749 §5.1 + AT Protocol OAuth profile).
+///
+/// The AT Protocol profile requires the Authorization Server to return the authenticated
+/// account's DID in `sub` on both the initial `authorization_code` exchange and every
+/// `refresh_token` response. atproto OAuth clients (e.g. indigo, which tangled.org runs)
+/// read `sub` to bind the session to a DID and verify it matches the expected account; a
+/// response without `sub` fails that check and the client aborts the login. Omitting it
+/// is a plain RFC 6749 shape that breaks interop with every real atproto client.
 #[derive(Debug, Serialize)]
 pub struct TokenResponse {
     pub access_token: String,
@@ -66,6 +73,8 @@ pub struct TokenResponse {
     pub expires_in: u64,
     pub refresh_token: String,
     pub scope: String,
+    /// The authenticated account's DID (AT Protocol OAuth: required in the token response).
+    pub sub: String,
 }
 
 // ── Helper functions ────────────────────────────────────────────────────────────
