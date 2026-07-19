@@ -1,11 +1,16 @@
 <script lang="ts">
+  import { tick } from 'svelte';
   import {
     previewOAuthConsent,
+    previewOAuthConsentByRequestId,
     confirmOAuthConsent,
+    scanQrCode,
+    cancelQrScan,
     isCodedError,
     type ConsentPreview,
     type ConsentError,
   } from '$lib/ipc';
+  import { parseConsentQr } from '$lib/consent-qr';
   import { authenticateBiometric } from '$lib/biometric';
   import { describeScope } from '$lib/agent-scopes';
   import Button from '$lib/components/ui/Button.svelte';
@@ -36,6 +41,16 @@
   /** Non-`atproto` scope tokens the user has left checked (scope reduction lives here). */
   let checked = $state<Set<string>>(new Set());
   let ceremonyError = $state<{ title: string; body: string } | null>(null);
+
+  // ── QR scan (Phase B: cross-device convenience channel) ──────────────────────
+  // `scanning` makes the WebView see-through so the native camera the barcode-scanner plugin
+  // renders BEHIND the web layer is visible; the overlay draws only the framing. A monotonic
+  // `scanToken` supersedes an in-flight scan so a late-settling scanQrCode() (or a Cancel) can't
+  // touch shared state. `scanHint` carries the "no camera / bad QR" fallback nudge to the typed code.
+  let scanning = $state(false);
+  let scanHint = $state<string | undefined>(undefined);
+  let scanToken = 0;
+  let overlayEl = $state<HTMLDivElement | undefined>();
 
   const asWho = $derived(handle ? `@${handle}` : did);
   const clientLabel = $derived(preview?.clientName ?? preview?.clientId ?? 'an app');
@@ -112,6 +127,13 @@
     checked = next;
   }
 
+  /** Accept a fetched preview: default scope reduction to "grant everything requested", then review. */
+  function applyPreview(p: ConsentPreview) {
+    preview = p;
+    checked = new Set(p.requestedScope.filter((t) => t !== 'atproto'));
+    phase = 'review';
+  }
+
   async function loadPreview() {
     codeError = undefined;
     ceremonyError = null;
@@ -122,11 +144,8 @@
     }
     phase = 'loading';
     try {
-      preview = await previewOAuthConsent(did, trimmed);
+      applyPreview(await previewOAuthConsent(did, trimmed));
       code = trimmed;
-      // Scope reduction defaults to granting everything requested; the user unchecks to narrow.
-      checked = new Set(preview.requestedScope.filter((t) => t !== 'atproto'));
-      phase = 'review';
     } catch (e) {
       phase = 'enter';
       const c = errorCode(e);
@@ -139,6 +158,80 @@
       }
     }
   }
+
+  /** Scan a QR from the sign-in page: decode → extract `request_id` → verify server-side by that id
+   *  (never trusting the QR contents for display) → same review → biometric → sign flow. */
+  async function scan() {
+    const token = ++scanToken;
+    scanning = true;
+    scanHint = undefined;
+    codeError = undefined;
+    ceremonyError = null;
+    let text: string;
+    try {
+      text = await scanQrCode();
+    } catch {
+      // A cancelled/superseded scan isn't a real failure — leave the current UI alone.
+      if (token !== scanToken) return;
+      scanning = false;
+      // No camera (simulator/desktop) or permission denied — the typed code is the path.
+      scanHint = 'Camera scanning is unavailable here. Enter the code from the sign-in page below.';
+      return;
+    }
+    // A newer scan or a Cancel superseded this one — don't touch shared state.
+    if (token !== scanToken) return;
+    scanning = false;
+    const requestId = parseConsentQr(text);
+    if (!requestId) {
+      scanHint = 'That QR was not an Obsign sign-in code. Enter the code from the page below.';
+      return;
+    }
+    phase = 'loading';
+    try {
+      applyPreview(await previewOAuthConsentByRequestId(did, requestId));
+    } catch (e) {
+      phase = 'enter';
+      const c = errorCode(e);
+      if (c === 'REQUEST_NOT_FOUND') {
+        scanHint = 'That sign-in request expired. Reload the sign-in page and scan the new code.';
+      } else if (c === 'RATE_LIMITED') {
+        ceremonyError = decisionFailure(c);
+      } else {
+        scanHint = 'Could not reach your server. Check your connection and try again.';
+      }
+    }
+  }
+
+  async function cancelScan() {
+    // Supersede the in-flight scan — its result/error become no-ops via the token — and close the
+    // overlay immediately for a responsive Cancel.
+    scanToken++;
+    scanning = false;
+    try {
+      await cancelQrScan();
+    } catch {
+      // best-effort — tearing the overlay down is what matters
+    }
+  }
+
+  // Scan mode makes the WebView see-through so the windowed native camera shows; base.css paints an
+  // opaque body ground, so drop it to transparent for the duration.
+  $effect(() => {
+    if (typeof document === 'undefined') return;
+    document.body.classList.toggle('scanning', scanning);
+    return () => document.body.classList.remove('scanning');
+  });
+
+  // Focus handoff into the Cancel button when scan mode opens (keyboard + VoiceOver).
+  let wasScanning = false;
+  $effect(() => {
+    const open = scanning;
+    if (open === wasScanning) return;
+    wasScanning = open;
+    if (open) {
+      void tick().then(() => overlayEl?.querySelector<HTMLButtonElement>('button')?.focus());
+    }
+  });
 
   async function approve() {
     if (!preview) return;
@@ -189,15 +282,32 @@
   }
 </script>
 
-<div class="screen">
+<div class="screen" class:hidden={scanning}>
   <ScreenHeader title="Sign in to an app" {onback} />
 
   {#if phase === 'enter' || phase === 'loading'}
     <div class="body">
       <p class="lede">
-        An app is asking to sign in as your identity. It will show you a short code on its sign-in
-        page — enter it here to see exactly what it is asking for. Nothing happens until you approve.
+        An app is asking to sign in as your identity. Scan the QR on its sign-in page, or enter the
+        short code it shows — either way you see exactly what it is asking for before anything happens.
       </p>
+
+      <div class="scan-cta">
+        <Button variant="secondary" onclick={scan} disabled={phase === 'loading'}>
+          Scan QR code
+        </Button>
+      </div>
+
+      {#if scanHint}
+        <p class="scan-hint" role="status">
+          <span class="scan-hint-ic" aria-hidden="true">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4"/><path d="M12 8h.01"/></svg>
+          </span>
+          <span>{scanHint}</span>
+        </p>
+      {/if}
+
+      <div class="divider" aria-hidden="true"><span>or enter the code</span></div>
 
       <label class="field-label" for="consent-code">Code from the sign-in page</label>
       <TextField
@@ -320,6 +430,39 @@
   {/if}
 </div>
 
+{#if scanning}
+  <!-- The camera is a native layer BEHIND the transparent WebView; this overlay draws only the
+       framing. An opaque top bar guarantees legible text over an unknown camera image; the stage
+       below is the live camera, focused by a viewfinder. -->
+  <div
+    class="scan"
+    bind:this={overlayEl}
+    role="dialog"
+    aria-modal="true"
+    aria-label="Scanning for a sign-in QR code"
+  >
+    <div class="scan-bar">
+      <p class="scan-title">Scan the sign-in QR</p>
+      <p class="scan-instruction" role="status">
+        Point the camera at the QR on the app's sign-in page.
+      </p>
+    </div>
+
+    <div class="scan-stage">
+      <div class="reticle" aria-hidden="true">
+        <span class="corner corner--tl"></span>
+        <span class="corner corner--tr"></span>
+        <span class="corner corner--bl"></span>
+        <span class="corner corner--br"></span>
+      </div>
+    </div>
+
+    <div class="scan-foot">
+      <Button variant="secondary" onclick={cancelScan}>Cancel</Button>
+    </div>
+  </div>
+{/if}
+
 <style>
   .screen {
     display: flex;
@@ -328,6 +471,153 @@
     padding: var(--space-lg) var(--space-md) var(--space-xl);
     gap: var(--space-lg);
     overflow-y: auto;
+  }
+  .screen.hidden {
+    display: none;
+  }
+
+  .scan-cta {
+    display: flex;
+    flex-direction: column;
+  }
+  .scan-hint {
+    display: flex;
+    align-items: flex-start;
+    gap: var(--space-sm);
+    margin: 0;
+    font-size: var(--text-label);
+    line-height: 1.45;
+    color: var(--color-muted);
+  }
+  .scan-hint-ic {
+    color: var(--color-accent);
+    flex-shrink: 0;
+    margin-top: var(--space-3xs);
+  }
+  .divider {
+    display: flex;
+    align-items: center;
+    gap: var(--space-sm);
+    color: var(--color-muted);
+    font-size: var(--text-label);
+    margin: var(--space-2xs) 0;
+  }
+  .divider::before,
+  .divider::after {
+    content: '';
+    flex: 1;
+    height: 1px;
+    background: var(--color-line);
+  }
+
+  /* ── Scan mode ──────────────────────────────────────────────────────────────
+     A framed viewfinder over the native camera. An opaque top bar keeps its labels
+     legible over any camera image; the transparent middle strip is the camera, dimmed
+     outside the target square by a single-element spotlight so the frame reads. */
+  .scan {
+    position: fixed;
+    inset: 0;
+    z-index: var(--z-modal);
+    display: flex;
+    flex-direction: column;
+    background: transparent;
+    --scan-scrim: color-mix(in oklab, var(--color-bg) 55%, transparent);
+    animation: scan-in var(--duration-base) var(--ease-standard);
+  }
+  .scan-bar,
+  .scan-foot {
+    position: relative;
+    z-index: 1;
+    background: var(--color-bg);
+    padding: var(--space-lg);
+  }
+  .scan-bar {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-xs);
+    padding-top: max(var(--space-xl), env(safe-area-inset-top));
+    border-bottom: 1px solid var(--color-line);
+  }
+  .scan-foot {
+    padding-bottom: max(var(--space-lg), env(safe-area-inset-bottom));
+    border-top: 1px solid var(--color-line);
+  }
+  .scan-title {
+    margin: 0;
+    font-family: var(--font-display);
+    font-size: var(--text-title);
+    color: var(--color-ink);
+  }
+  .scan-instruction {
+    margin: 0;
+    font-size: var(--text-body);
+    line-height: 1.5;
+    color: var(--color-ink);
+  }
+  .scan-stage {
+    flex: 1;
+    display: grid;
+    place-items: center;
+    overflow: hidden;
+  }
+  .reticle {
+    position: relative;
+    width: min(68vw, 300px);
+    aspect-ratio: 1;
+    border-radius: var(--radius-lg);
+    box-shadow: 0 0 0 100vmax var(--scan-scrim);
+  }
+  .corner {
+    position: absolute;
+    width: var(--space-xl);
+    height: var(--space-xl);
+    border: 3px solid var(--color-primary);
+    filter: drop-shadow(0 0 3px color-mix(in oklab, var(--color-bg) 65%, transparent));
+  }
+  .corner--tl {
+    top: 0;
+    left: 0;
+    border-right: none;
+    border-bottom: none;
+    border-top-left-radius: var(--radius-lg);
+  }
+  .corner--tr {
+    top: 0;
+    right: 0;
+    border-left: none;
+    border-bottom: none;
+    border-top-right-radius: var(--radius-lg);
+  }
+  .corner--bl {
+    bottom: 0;
+    left: 0;
+    border-right: none;
+    border-top: none;
+    border-bottom-left-radius: var(--radius-lg);
+  }
+  .corner--br {
+    bottom: 0;
+    right: 0;
+    border-left: none;
+    border-top: none;
+    border-bottom-right-radius: var(--radius-lg);
+  }
+  @keyframes scan-in {
+    from {
+      opacity: 0;
+    }
+    to {
+      opacity: 1;
+    }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .scan {
+      animation: none;
+    }
+  }
+  /* Drop the opaque body ground so the windowed camera shows through the WebView. */
+  :global(body.scanning) {
+    background: transparent !important;
   }
 
   .body {

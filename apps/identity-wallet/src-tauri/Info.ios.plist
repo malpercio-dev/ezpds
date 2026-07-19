@@ -64,5 +64,14 @@
   -->
   <key>NSFaceIDUsageDescription</key>
   <string>Confirm it's you before authorizing the identity change to migrate your account.</string>
+
+  <!--
+    The camera is used only to scan the QR code an app's sign-in page shows, so you can approve
+    a cross-device login from your phone without typing the code. Tauri merges this key into the
+    generated iOS Info.plist, satisfying iOS's NSCameraUsageDescription requirement for the
+    barcode-scanner plugin (the wallet-confirmed OAuth consent scan path).
+  -->
+  <key>NSCameraUsageDescription</key>
+  <string>Scan the QR code on an app's sign-in page to approve signing in with your device key.</string>
 </dict>
 </plist>

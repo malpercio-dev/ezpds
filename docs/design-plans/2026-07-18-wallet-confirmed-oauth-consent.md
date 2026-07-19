@@ -161,6 +161,18 @@ the primitive, the envelope, or the completion path changes.
   wallet has no deep-link handler yet, per ADR-0006).
 - **Phase B — QR.** Encode `request_id` + origin on the consent page; wallet scan screen
   feeding the same approval flow. Camera plumbing is the only new work.
+  **Landed (2026-07-19):** the consent page renders an inline-SVG QR (`qrcodegen` →
+  `render_qr_svg` in `oauth_templates.rs`) encoding the wallet's private-use handoff URI
+  (`org.obsign.identitywallet:/consent?request_id=…&origin=…`) beside the typed `user_code`, which
+  stays rendered as the no-camera / accessibility fallback; the same URI backs both the QR and the
+  same-device "Open in Obsign" link. The wallet gains a `preview_oauth_consent_by_request_id` IPC
+  command (the server's preview endpoint already resolved by `request_id`) and a camera scan screen
+  on `OAuthConsentApprovalScreen` via `@tauri-apps/plugin-barcode-scanner` (mobile-only, `#[cfg(mobile)]`,
+  `NSCameraUsageDescription`, `barcode-scanner:default`). The scan path extracts **only** the
+  `request_id` from the QR (`parseConsentQr`) and re-verifies it server-side — the client/origin/scope
+  the wallet displays always come from the server's record, never the QR — then feeds the identical
+  preview → biometric → device-key-signed-envelope flow. No server protocol change beyond encoding
+  the QR payload.
 - **Phase C — push + number matching.** After the notification relay (MM-311) lands:
   `login-approval` notification type, deep-link approve/deny, number-match UX.
 

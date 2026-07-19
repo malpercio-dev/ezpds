@@ -11,6 +11,9 @@ importers:
       '@tauri-apps/api':
         specifier: ~2.11.0
         version: 2.11.1
+      '@tauri-apps/plugin-barcode-scanner':
+        specifier: ^2
+        version: 2.4.5
       '@tauri-apps/plugin-biometric':
         specifier: ^2
         version: 2.3.2
@@ -400,6 +403,9 @@ packages:
 
   '@tauri-apps/api@2.11.1':
     resolution: {integrity: sha512-M2FPuYND2m+wh5hfW9ZpSdxMPdEJovPBWwoHJmwUpysTYNHaOkVFN419m/K0LIgjb/7KU2vBgsUepJWugQCvAA==}
+
+  '@tauri-apps/plugin-barcode-scanner@2.4.5':
+    resolution: {integrity: sha512-sIPRYEfxww8/y8skZ2LcAp/h5bwvlHkQiq+3w6QEl+2BHs13xnpn7hP+pv4fkBs8DyDfpUbOBIYS5YBwP7x1QQ==}
 
   '@tauri-apps/plugin-biometric@2.3.2':
     resolution: {integrity: sha512-RFydYGKEJ6m4UWdcPsO+vJQUb3JyyfFeNoZSPDs0uWjvwHBs03xey5wWO+uowmFFy03JAff1l2idQAwuycO8Uw==}
@@ -1095,6 +1101,10 @@ snapshots:
       - supports-color
 
   '@tauri-apps/api@2.11.1': {}
+
+  '@tauri-apps/plugin-barcode-scanner@2.4.5':
+    dependencies:
+      '@tauri-apps/api': 2.11.1
 
   '@tauri-apps/plugin-biometric@2.3.2':
     dependencies:

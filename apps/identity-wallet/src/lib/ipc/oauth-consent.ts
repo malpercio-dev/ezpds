@@ -58,6 +58,18 @@ export const previewOAuthConsent = (did: string, userCode: string): Promise<Cons
   invoke('preview_oauth_consent', { did, userCode });
 
 /**
+ * Preview a pending authorization by its high-entropy `requestId` (the QR-scan / handoff path,
+ * Phase B), against the selected DID's hosting PDS. The wallet extracts only the `requestId` from
+ * the scanned QR and re-fetches the client, origin, and scope from the server's record here — it
+ * never trusts the QR contents for what it displays. Feeds the same review → biometric → sign flow
+ * as {@link previewOAuthConsent}.
+ */
+export const previewOAuthConsentByRequestId = (
+  did: string,
+  requestId: string
+): Promise<ConsentPreview> => invoke('preview_oauth_consent_by_request_id', { did, requestId });
+
+/**
  * Sign and submit a decision for a previewed authorization. `grantedScope` is the space-joined
  * scope set the wallet chose (empty for a denial). Gate this behind `authenticateBiometric()` — it
  * is the authorization boundary that signs the consent envelope with the identity's device key.

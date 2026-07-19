@@ -82,11 +82,13 @@ pub(super) fn build_code_redirect(
 }
 
 /// The wallet-path data the consent page renders alongside the password form: the pending
-/// request's high-entropy `request_id` (poll key + handoff/complete linkage) and its human-typeable
-/// `user_code`. Present only when the GET handler created a pending request.
+/// request's high-entropy `request_id` (poll key + handoff/complete linkage), its human-typeable
+/// `user_code`, and the requesting `origin` (snapshotted on creation, encoded into the scan QR
+/// alongside the `request_id`). Present only when the GET handler created a pending request.
 pub(super) struct WalletConsentPath<'a> {
     pub user_code: &'a str,
     pub request_id: &'a str,
+    pub origin: Option<&'a str>,
 }
 
 /// Custom URL scheme the identity wallet registers; the "Open in Obsign" handoff link targets it.
@@ -261,26 +263,56 @@ fn render_permission_groups(scope: &str) -> String {
 
 // ── Wallet approval path ────────────────────────────────────────────────────────
 
-/// Render the wallet-approval block: the human-typeable `user_code`, an "Open in Obsign" handoff
-/// link carrying the `request_id`, a live status region, and a no-JS "I've approved — continue"
-/// form that POSTs to `/oauth/authorize/complete`. An inline script polls
-/// `GET /oauth/authorize/status` (backing off on the `slow_down` 429) and, on approval, submits the
-/// same completion form — so JS and no-JS reach the identical completion path.
+/// The scan-QR / handoff payload: the wallet's private-use scheme carrying the pending request's
+/// `request_id` and (informationally) the requesting `origin`. The wallet resolves and displays the
+/// request **server-side by `request_id`** (it never trusts the QR contents for what it shows), so
+/// the origin here is a snapshot for context/debugging only. The same string backs both the QR the
+/// phone scans and the same-device "Open in Obsign" link.
+fn wallet_handoff_uri(request_id: &str, origin: Option<&str>) -> String {
+    let mut uri = format!(
+        "{WALLET_HANDOFF_SCHEME}:/consent?request_id={}",
+        encode_param(request_id)
+    );
+    if let Some(origin) = origin {
+        uri.push_str("&origin=");
+        uri.push_str(&encode_param(origin));
+    }
+    uri
+}
+
+/// Render the wallet-approval block: a scan QR encoding the `request_id` (+ origin) for the
+/// cross-device phone-scan path, the human-typeable `user_code` fallback (no camera / accessibility),
+/// an "Open in Obsign" handoff link carrying the same payload for the same-device path, a live status
+/// region, and a no-JS "I've approved — continue" form that POSTs to `/oauth/authorize/complete`. An
+/// inline script polls `GET /oauth/authorize/status` (backing off on the `slow_down` 429) and, on
+/// approval, submits the same completion form — so JS and no-JS reach the identical completion path.
 fn render_wallet_path(w: &WalletConsentPath) -> String {
     let request_id = html_escape(w.request_id);
     let user_code = html_escape(w.user_code);
-    let handoff = format!(
-        "{WALLET_HANDOFF_SCHEME}:/consent?request_id={}",
-        encode_param(w.request_id)
-    );
+    let handoff = wallet_handoff_uri(w.request_id, w.origin);
     let mut html = String::with_capacity(2048);
     html.push_str("    <div class=\"section-label\">Approve in your wallet</div>\n");
     html.push_str("    <div class=\"wallet\" id=\"wallet-path\" data-request-id=\"");
     html.push_str(&request_id);
     html.push_str("\">\n");
-    html.push_str(
-        "      <p class=\"wallet-lead\">Open Obsign and enter this code to sign in with your device key:</p>\n",
-    );
+    // Scan path first: the strongest cross-device channel (start from the page, no transcription).
+    // Rendered only when the payload actually fits in a QR — otherwise the typed code below stands
+    // in, and nothing about the fallback changes.
+    if let Some(qr) = render_qr_svg(&handoff) {
+        html.push_str(
+            "      <p class=\"wallet-lead\">Scan this with Obsign on your phone to sign in with your device key:</p>\n",
+        );
+        html.push_str("      <div class=\"qr\">");
+        html.push_str(&qr);
+        html.push_str("</div>\n");
+        html.push_str(
+            "      <p class=\"wallet-lead wallet-or\">No camera? Open Obsign and enter this code:</p>\n",
+        );
+    } else {
+        html.push_str(
+            "      <p class=\"wallet-lead\">Open Obsign and enter this code to sign in with your device key:</p>\n",
+        );
+    }
     html.push_str("      <div class=\"user-code mono\">");
     html.push_str(&user_code);
     html.push_str("</div>\n");
@@ -355,6 +387,37 @@ pub(super) fn encode_param(s: &str) -> String {
         }
     }
     out
+}
+
+/// Render `data` as an inline, self-contained SVG QR code, or `None` if it does not fit in a QR
+/// (the caller then falls back to the typed code, never breaking the page). Dark modules are drawn
+/// as one `<path>` on a white ground with a 4-module quiet zone — dark-on-light with a fixed white
+/// background so it scans regardless of the viewer's page theme. Pure: no I/O, deterministic.
+fn render_qr_svg(data: &str) -> Option<String> {
+    // Medium error correction balances density against scan robustness on a phone camera.
+    let qr = qrcodegen::QrCode::encode_text(data, qrcodegen::QrCodeEcc::Medium).ok()?;
+    const QUIET: i32 = 4;
+    let size = qr.size();
+    let dim = size + 2 * QUIET;
+
+    // One path of "M{x} {y}h1v1h-1z" per dark module — compact and crisp at any rendered size.
+    use std::fmt::Write as _;
+    let mut modules = String::new();
+    for y in 0..size {
+        for x in 0..size {
+            if qr.get_module(x, y) {
+                let _ = write!(modules, "M{} {}h1v1h-1z", x + QUIET, y + QUIET);
+            }
+        }
+    }
+
+    Some(format!(
+        "<svg viewBox=\"0 0 {dim} {dim}\" width=\"196\" height=\"196\" role=\"img\" \
+         aria-label=\"QR code to sign in with the Obsign wallet\" \
+         xmlns=\"http://www.w3.org/2000/svg\" shape-rendering=\"crispEdges\">\
+         <rect width=\"{dim}\" height=\"{dim}\" fill=\"#ffffff\"/>\
+         <path d=\"{modules}\" fill=\"#1b1b1f\"/></svg>"
+    ))
 }
 
 /// HTML-escape a string for safe embedding in HTML content or attribute values.
@@ -479,6 +542,12 @@ const CONSENT_CSS: &str = r#"
       padding: 16px 14px;
     }
     .wallet-lead { font-size: 13.5px; line-height: 1.5; color: var(--ink-soft); max-width: 34ch; }
+    .wallet-or { color: var(--muted); font-size: 12.5px; margin-top: 2px; }
+    .qr {
+      background: #fff; border: 1px solid var(--line); border-radius: 10px; padding: 12px;
+      line-height: 0;
+    }
+    .qr svg { display: block; width: 196px; height: 196px; }
     .user-code {
       font-family: var(--mono); font-size: 26px; font-weight: 400; letter-spacing: 0.12em;
       color: var(--ink); background: var(--bg); border: 1px solid var(--line); border-radius: 10px;
@@ -659,5 +728,79 @@ mod tests {
             input.contains("spellcheck=\"false\""),
             "identifier input must set spellcheck=false"
         );
+    }
+
+    /// The wallet path renders BOTH the scan QR (an inline SVG) and the typed `user_code` fallback,
+    /// so a phone-scan and a no-camera/accessibility path are always available together (Phase B AC).
+    #[test]
+    fn wallet_path_renders_qr_and_the_typed_code_fallback() {
+        let wallet = WalletConsentPath {
+            user_code: "4QX9-TX7P",
+            request_id: "poauth_abcDEF123",
+            origin: Some("https://app.example.com"),
+        };
+        let html = render_consent_page(
+            "Test App",
+            "https://app.example.com/client-metadata.json",
+            "https://app.example.com/callback",
+            "challenge",
+            "S256",
+            "state",
+            "atproto",
+            "code",
+            "https://pds.example.com",
+            None,
+            None,
+            Some(&wallet),
+        );
+        // Scan QR present as a self-contained inline SVG.
+        assert!(html.contains("<svg"), "the scan QR SVG must render");
+        assert!(
+            html.contains("aria-label=\"QR code to sign in with the Obsign wallet\""),
+            "the QR SVG must carry an accessible label"
+        );
+        // Typed code fallback present alongside it.
+        assert!(
+            html.contains("4QX9-TX7P"),
+            "the typed user_code fallback must remain rendered"
+        );
+        // Same-device handoff link carries the request_id.
+        assert!(
+            html.contains("consent?request_id=poauth_abcDEF123"),
+            "the handoff link must carry the request_id"
+        );
+    }
+
+    /// The handoff URI carries the request_id (and origin when present) under the wallet's
+    /// private-use scheme — the payload the QR encodes and the same-device link targets.
+    #[test]
+    fn wallet_handoff_uri_encodes_request_id_and_origin() {
+        let uri = wallet_handoff_uri("poauth_xyz", Some("https://app.example.com"));
+        assert!(uri.starts_with("org.obsign.identitywallet:/consent?request_id=poauth_xyz"));
+        assert!(uri.contains("&origin=https%3A%2F%2Fapp.example.com"));
+        // Origin is optional — a request created without an Origin/Referer header omits it.
+        let bare = wallet_handoff_uri("poauth_xyz", None);
+        assert_eq!(
+            bare,
+            "org.obsign.identitywallet:/consent?request_id=poauth_xyz"
+        );
+    }
+
+    /// The QR renderer produces a self-contained SVG that scans dark-on-white regardless of page
+    /// theme, and reports `None` only when the data cannot fit in a QR at all.
+    #[test]
+    fn render_qr_svg_produces_a_self_contained_svg() {
+        let svg = render_qr_svg("org.obsign.identitywallet:/consent?request_id=poauth_abc")
+            .expect("a short payload always fits in a QR");
+        assert!(svg.starts_with("<svg"));
+        assert!(svg.contains("viewBox="));
+        assert!(
+            svg.contains("fill=\"#ffffff\""),
+            "white ground for scanning"
+        );
+        assert!(svg.contains("<path"), "dark modules drawn as a path");
+        // No external resource fetches — the SVG must be fully inline (the `xmlns` namespace URI is a
+        // declaration, not a fetch); nothing loads over the network, matching the auth page rule.
+        assert!(!svg.contains("href") && !svg.contains("<image") && !svg.contains("src="));
     }
 }

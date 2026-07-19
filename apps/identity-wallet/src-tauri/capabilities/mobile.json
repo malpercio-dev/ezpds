@@ -1,8 +1,8 @@
 {
   "$schema": "../gen/schemas/mobile-schema.json",
   "identifier": "mobile",
-  "description": "Mobile-only plugin commands. The migration review screen gates the PLC-op submission behind biometric (Face ID / Touch ID) user presence — the user is the signer, so this is the authorization boundary. The plugin exists only on iOS/Android, so this capability is platform-gated and skipped on the macOS host build.",
+  "description": "Mobile-only plugin commands. Biometric (Face ID / Touch ID) user presence gates the signing actions (migration PLC-op, wallet-confirmed OAuth consent) — the user is the signer, so this is the authorization boundary. The share sheet exports material. The barcode scanner reads the sign-in QR on the OAuth consent scan path (Phase B) — the user carries the binding by scanning the page they are logging into. These plugins exist only on iOS/Android, so this capability is platform-gated and skipped on the macOS host build.",
   "platforms": ["iOS", "android"],
   "windows": ["main"],
-  "permissions": ["biometric:default", "sharesheet:default"]
+  "permissions": ["biometric:default", "sharesheet:default", "barcode-scanner:default"]
 }

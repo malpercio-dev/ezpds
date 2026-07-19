@@ -1238,13 +1238,15 @@ pub fn run() {
         // auto-launching the app from a custom-scheme redirect — which iOS blocks.)
         .plugin(tauri_plugin_auth_session::init());
 
-    // Biometric (Face ID / Touch ID) gate on the migration PLC-op submission. Mobile-only —
-    // registering it behind `#[cfg(mobile)]` keeps the macOS host build and its test suite
-    // free of a dependency they cannot compile.
+    // Mobile-only plugins: biometric (Face ID / Touch ID) gate on signing actions, the iOS Share
+    // Pane, and camera QR scanning for the OAuth consent scan path. Registering them behind
+    // `#[cfg(mobile)]` keeps the macOS host build and its test suite free of dependencies they
+    // cannot compile.
     #[cfg(mobile)]
     let builder = builder
         .plugin(tauri_plugin_biometric::init())
-        .plugin(tauri_plugin_sharesheet::init());
+        .plugin(tauri_plugin_sharesheet::init())
+        .plugin(tauri_plugin_barcode_scanner::init());
 
     builder
         .setup(|app| {
@@ -1316,6 +1318,7 @@ pub fn run() {
             agents::preview_agent_claim,
             agents::confirm_agent_claim,
             oauth_consent::preview_oauth_consent,
+            oauth_consent::preview_oauth_consent_by_request_id,
             oauth_consent::confirm_oauth_consent,
             app_passwords::create_app_password,
             app_passwords::list_app_passwords,
