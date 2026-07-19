@@ -203,6 +203,7 @@ pub(super) async fn handle_refresh_token(
             expires_in: 300,
             refresh_token: new_refresh.plaintext,
             scope: granted_scope,
+            sub: stored.did,
         }),
     )
         .into_response()
@@ -425,6 +426,13 @@ mod tests {
         assert_eq!(
             json["scope"], "atproto transition:generic",
             "the granted granular scope must be carried forward on rotation"
+        );
+
+        // AT Protocol OAuth requires `sub` (the account DID) on refresh responses too, not just
+        // the initial exchange — a client re-verifies it on every rotation.
+        assert_eq!(
+            json["sub"], "did:plc:testaccount000000000000",
+            "rotation response must return the account DID in sub"
         );
 
         // Rotated token must differ from the original and be the correct length.

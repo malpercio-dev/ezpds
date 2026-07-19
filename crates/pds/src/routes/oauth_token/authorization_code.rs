@@ -237,6 +237,7 @@ pub(super) async fn handle_authorization_code(
             expires_in: 300,
             refresh_token: refresh.plaintext,
             scope: granted_scope,
+            sub: auth_code.did,
         }),
     )
         .into_response()
@@ -513,6 +514,14 @@ mod tests {
             "the granted granular scope must be returned"
         );
 
+        // AT Protocol OAuth: the token response must carry the account DID in `sub` so the
+        // client (e.g. indigo, which tangled.org runs) can bind the session to a DID and
+        // verify it. A response without `sub` fails that check and the client aborts login.
+        assert_eq!(
+            json["sub"], "did:plc:testaccount000000000000",
+            "token response must return the account DID in sub"
+        );
+
         let rt = json["refresh_token"].as_str().unwrap();
         assert_eq!(rt.len(), 43, "refresh_token must be 43 chars");
 
@@ -539,6 +548,17 @@ mod tests {
         assert_eq!(
             payload["aud"], "https://test.example.com",
             "aud must be public_url"
+        );
+        // The response-body `sub` and the access-token's `sub` claim derive from the same
+        // account DID; assert they agree so a future refactor can't populate one and drop
+        // the other, silently reintroducing the interop break tangled.org hit.
+        assert_eq!(
+            payload["sub"], json["sub"],
+            "response-body sub must match the access-token sub claim"
+        );
+        assert_eq!(
+            payload["sub"], "did:plc:testaccount000000000000",
+            "access-token sub claim must be the account DID"
         );
     }
 
