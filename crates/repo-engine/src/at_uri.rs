@@ -76,7 +76,7 @@ fn validate_authority(authority: &str) -> Result<(), AtUriError> {
     validate_handle(authority)
 }
 
-fn validate_did(did: &str) -> Result<(), AtUriError> {
+pub(crate) fn validate_did(did: &str) -> Result<(), AtUriError> {
     if did.len() > 2_048 {
         return Err(AtUriError("invalid DID authority"));
     }
@@ -99,7 +99,7 @@ fn validate_did(did: &str) -> Result<(), AtUriError> {
     Ok(())
 }
 
-fn validate_handle(handle: &str) -> Result<(), AtUriError> {
+pub(crate) fn validate_handle(handle: &str) -> Result<(), AtUriError> {
     if handle.is_empty() || handle.len() > 253 {
         return Err(AtUriError("invalid handle authority"));
     }
