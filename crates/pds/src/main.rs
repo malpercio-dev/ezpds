@@ -12,6 +12,7 @@ mod agent_claim_sweep;
 mod app;
 mod auth;
 mod blob_gc;
+mod blob_mirror;
 mod blob_store;
 mod code_gen;
 mod crawler;
@@ -445,6 +446,31 @@ async fn run() -> anyhow::Result<()> {
         started_at,
     };
 
+    // Blob mirror: when a bucket is configured, reconcile the volume against it BEFORE the
+    // listener binds — a (Litestream-)restored database must never serve against a volume
+    // missing the files its rows point at when the mirror can heal them. Blobs recoverable
+    // from neither place are surfaced per-CID (and in the summary below) rather than
+    // aborting boot: their reads 404 exactly as they would have anyway, now with an
+    // operator signal.
+    let blob_mirror = blob_mirror::BlobMirror::from_config(&state.config.blob_mirror)
+        .with_context(|| "failed to build blob-mirror client")?
+        .map(std::sync::Arc::new);
+    if let Some(mirror) = &blob_mirror {
+        let restore = blob_mirror::restore_missing_blobs(&state.db, &state.config.data_dir, mirror)
+            .await
+            .with_context(|| "failed to reconcile blob files against the mirror bucket")?;
+        if restore.restored > 0 || restore.missing > 0 || restore.errors > 0 {
+            tracing::warn!(
+                restored = restore.restored,
+                missing = restore.missing,
+                errors = restore.errors,
+                "blob restore-on-boot complete; `missing` blobs are recoverable from neither the volume nor the bucket"
+            );
+        } else {
+            tracing::info!("blob restore-on-boot complete: volume and mirror bucket agree");
+        }
+    }
+
     let listener = tokio::net::TcpListener::bind(&addr)
         .await
         .with_context(|| format!("failed to bind to {addr}"))?;
@@ -460,6 +486,22 @@ async fn run() -> anyhow::Result<()> {
         interval_secs = state.config.blobs.gc_interval_secs,
         "blob garbage collector started"
     );
+
+    // Spawn the periodic blob-mirror sweep when a bucket is configured. Each pass uploads
+    // stored blobs the bucket is missing (verified against their CIDs first) and deletes
+    // bucket objects whose rows are gone; like the GC tasks it is best-effort and runs for
+    // the life of the process, so the handle is dropped on shutdown rather than joined.
+    if let Some(mirror) = blob_mirror {
+        let mirror_interval =
+            std::time::Duration::from_secs(state.config.blob_mirror.sync_interval_secs);
+        let _blob_mirror_sweep =
+            blob_mirror::spawn_blob_mirror(state.clone(), mirror, mirror_interval);
+        tracing::info!(
+            interval_secs = state.config.blob_mirror.sync_interval_secs,
+            bucket = state.config.blob_mirror.bucket.as_deref().unwrap_or(""),
+            "blob-mirror sweep started"
+        );
+    }
 
     // Spawn the periodic `repo_seq` firehose event-log retention sweep. It prunes rows below the
     // configured age/count watermark so the durable log backing

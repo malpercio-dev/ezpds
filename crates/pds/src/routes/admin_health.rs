@@ -81,6 +81,9 @@ struct FirehoseState {
 #[serde(rename_all = "camelCase")]
 struct SweepStates {
     blob_gc: Option<SweepState>,
+    /// The blob-mirror sweep's last completed pass (`swept` = bucket objects synced:
+    /// uploads + deletes); `null` while the mirror is not configured, like an idle sweep.
+    blob_mirror: Option<SweepState>,
     firehose_gc: Option<SweepState>,
     account_reaper: Option<SweepState>,
     agent_claim_sweep: Option<SweepState>,
@@ -193,6 +196,7 @@ pub async fn admin_health(
         },
         sweeps: SweepStates {
             blob_gc: sweeps.blob_gc.map(SweepState::from),
+            blob_mirror: sweeps.blob_mirror.map(SweepState::from),
             firehose_gc: sweeps.firehose_gc.map(SweepState::from),
             account_reaper: sweeps.account_reaper.map(SweepState::from),
             agent_claim_sweep: sweeps.agent_claim_sweep.map(SweepState::from),
@@ -272,6 +276,7 @@ mod tests {
             serde_json::Value::Null
         );
         assert_eq!(json["sweeps"]["blobGc"], serde_json::Value::Null);
+        assert_eq!(json["sweeps"]["blobMirror"], serde_json::Value::Null);
         assert_eq!(json["sweeps"]["firehoseGc"], serde_json::Value::Null);
         assert_eq!(json["sweeps"]["accountReaper"], serde_json::Value::Null);
         assert_eq!(json["sweeps"]["agentClaimSweep"], serde_json::Value::Null);
@@ -325,6 +330,12 @@ mod tests {
             completed_at: 1_750_000_000,
             swept: 7,
         });
+        state
+            .sweeps
+            .record_blob_mirror(crate::sweep_status::SweepRun {
+                completed_at: 1_750_000_100,
+                swept: 3,
+            });
 
         let router = app(state);
         let (status, json) = get_health(router, Some("test-admin-token")).await;
@@ -337,6 +348,8 @@ mod tests {
         assert!((0..60).contains(&window), "window was {window}");
         assert_eq!(json["sweeps"]["blobGc"]["completedAt"], 1_750_000_000);
         assert_eq!(json["sweeps"]["blobGc"]["swept"], 7);
+        assert_eq!(json["sweeps"]["blobMirror"]["completedAt"], 1_750_000_100);
+        assert_eq!(json["sweeps"]["blobMirror"]["swept"], 3);
         assert_eq!(json["sweeps"]["firehoseGc"], serde_json::Value::Null);
     }
 }

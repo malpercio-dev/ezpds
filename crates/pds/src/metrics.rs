@@ -50,6 +50,10 @@ pub mod names {
     pub const BLOB_GC_SWEPT: &str = "blob_gc_swept";
     /// Gauge: unix timestamp (seconds) of the last completed blob-GC run.
     pub const BLOB_GC_LAST_RUN_TIMESTAMP: &str = "blob_gc_last_run_timestamp";
+    /// Counter (`_total`): bucket objects the blob-mirror sweep synced (uploads + deletes).
+    pub const BLOB_MIRROR_SYNCED: &str = "blob_mirror_synced";
+    /// Gauge: unix timestamp (seconds) of the last completed blob-mirror run.
+    pub const BLOB_MIRROR_LAST_RUN_TIMESTAMP: &str = "blob_mirror_last_run_timestamp";
     /// Counter (`_total`): accounts permanently deleted by the account reaper.
     pub const ACCOUNT_REAPER_SWEPT: &str = "account_reaper_swept";
     /// Gauge: unix timestamp (seconds) of the last completed account-reaper run.
@@ -125,6 +129,8 @@ pub struct Metrics {
     pub proxy_upstream_lag_seconds: Histogram<f64>,
     pub blob_gc_swept: Counter<u64>,
     pub blob_gc_last_run_timestamp: Gauge<f64>,
+    pub blob_mirror_synced: Counter<u64>,
+    pub blob_mirror_last_run_timestamp: Gauge<f64>,
     pub account_reaper_swept: Counter<u64>,
     pub account_reaper_last_run_timestamp: Gauge<f64>,
     pub agent_claim_sweep_swept: Counter<u64>,
@@ -184,6 +190,10 @@ impl Metrics {
                 .build(),
             blob_gc_swept: meter.u64_counter(names::BLOB_GC_SWEPT).build(),
             blob_gc_last_run_timestamp: meter.f64_gauge(names::BLOB_GC_LAST_RUN_TIMESTAMP).build(),
+            blob_mirror_synced: meter.u64_counter(names::BLOB_MIRROR_SYNCED).build(),
+            blob_mirror_last_run_timestamp: meter
+                .f64_gauge(names::BLOB_MIRROR_LAST_RUN_TIMESTAMP)
+                .build(),
             account_reaper_swept: meter.u64_counter(names::ACCOUNT_REAPER_SWEPT).build(),
             account_reaper_last_run_timestamp: meter
                 .f64_gauge(names::ACCOUNT_REAPER_LAST_RUN_TIMESTAMP)

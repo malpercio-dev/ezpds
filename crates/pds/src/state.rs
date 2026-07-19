@@ -190,6 +190,7 @@ pub async fn test_state_with_plc_url(plc_directory_url: String) -> AppState {
             links: common::ServerLinksConfig::default(),
             contact: common::ContactConfig::default(),
             blobs: BlobsConfig::default(),
+            blob_mirror: common::BlobMirrorConfig::default(),
             firehose: FirehoseConfig::default(),
             accounts: common::AccountsConfig::default(),
             recovery: common::RecoveryConfig::default(),

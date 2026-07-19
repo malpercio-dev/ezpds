@@ -100,8 +100,7 @@ pub async fn store_blob(
     mime_type: &str,
 ) -> Result<StoredBlob, BlobStoreError> {
     // 1. Compute SHA-256 multihash.
-    let hash = Sha256::digest(content);
-    let cid = build_cid(hash.as_slice());
+    let cid = compute_cid(content);
 
     // 2. Build storage path: blobs/{prefix}/{cid}
     let prefix = &cid[..2.min(cid.len())];
@@ -154,6 +153,15 @@ pub async fn delete_blob_file(data_dir: &Path, storage_path: &str) -> Result<boo
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(false),
         Err(e) => Err(BlobStoreError::Io(e)),
     }
+}
+
+/// Compute the CID the blob store would assign to `content` — a CIDv1 (raw codec, SHA-256)
+/// in base32. This is the store's single content-identity function: the upload path names
+/// files with it, and the blob mirror re-runs it to verify bytes against their claimed CID
+/// before trusting them (before uploading a local file to the mirror bucket, and before
+/// restoring a bucket copy onto the volume).
+pub fn compute_cid(content: &[u8]) -> String {
+    build_cid(Sha256::digest(content).as_slice())
 }
 
 /// Build a CIDv1 (raw codec, SHA-256 multihash) from a 32-byte SHA-256 hash.

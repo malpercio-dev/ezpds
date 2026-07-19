@@ -110,6 +110,9 @@ base64 = "0.21"
 ciborium = "0.2"
 data-encoding = "2"
 sha2 = "0.10"
+# HMAC-SHA256 for the blob mirror's AWS SigV4 request signing (pds) — same RustCrypto family
+# as sha2/hkdf, already resolved transitively.
+hmac = "0.12"
 # HKDF-SHA256 for deriving the recovery keypair from the escrow seed (same RustCrypto family as
 # sha2/hmac, already resolved transitively via reqwest/rustls).
 hkdf = "0.12"

@@ -454,6 +454,29 @@ pub async fn list_blob_cids(
     }
 }
 
+/// One physical stored blob, as the mirror sweep and restore-on-boot see it.
+#[derive(Debug, Clone, sqlx::FromRow)]
+pub struct PhysicalBlob {
+    pub cid: String,
+    pub mime_type: String,
+    pub size_bytes: i64,
+    pub storage_path: String,
+}
+
+/// List every physical `blobs` row (one per stored CID, ownership-independent), CID-ordered.
+///
+/// The blob mirror's working set: the sweep diffs this against the bucket listing, and
+/// restore-on-boot walks it to find rows whose file is missing from the volume. Reading the
+/// table rather than the filesystem makes the DB the source of truth — an orphaned file no
+/// row references is never replicated.
+pub async fn list_all_blobs(pool: &SqlitePool) -> Result<Vec<PhysicalBlob>, sqlx::Error> {
+    sqlx::query_as::<_, PhysicalBlob>(
+        "SELECT cid, mime_type, size_bytes, storage_path FROM blobs ORDER BY cid ASC",
+    )
+    .fetch_all(pool)
+    .await
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
