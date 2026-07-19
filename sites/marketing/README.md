@@ -10,7 +10,8 @@ credible exit as a property of the keys.
 - `index.html` — the Obsign story, user-facing, with a Brass Console band
   introducing Custos.
 - `custos/index.html` — the operator story: what Custos runs, how to run it,
-  and the custody seam (`rotationKeys[0]` user / `rotationKeys[1]` server).
+  and the custody seam (`rotationKeys[0]` device / `rotationKeys[1]` recovery,
+  both user-held / `rotationKeys[2]` server).
 
 ## Social cards (Open Graph)
 

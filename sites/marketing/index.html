@@ -109,7 +109,7 @@
           <h2>Owned, not rented.</h2>
           <div class="section-intro">
             <p>
-              On the AT&nbsp;Protocol, your identity is a <code>did:plc</code>, controlled
+              On the AT&nbsp;Protocol, your identity is a public record, controlled
               by whoever holds its <em>rotation keys</em>. On most hosts today,
               that&rsquo;s the server. Your ability to leave, to recover from an attack, or
               simply to stay yourself is a policy promise: real only for as long as your
@@ -126,11 +126,13 @@
               <dt>rotationKeys[0]</dt>
               <dd>your device: Secure&nbsp;Enclave, non-extractable</dd>
               <dt>rotationKeys[1]</dt>
+              <dd>your recovery key: rebuilt from your backup shares, never seen by the server</dd>
+              <dt>rotationKeys[2]</dt>
               <dd>your server: signs posts, can never outrank you</dd>
               <dt>recovery window</dt>
-              <dd>72 hours, during which your key overrides any other</dd>
+              <dd>72 hours, during which your keys override the server&rsquo;s</dd>
               <dt>backup</dt>
-              <dd>your key, split 2-of-3 (no single custodian)</dd>
+              <dd>your recovery secret, split 2-of-3 (no single custodian)</dd>
             </dl>
           </div>
         </div>
@@ -197,9 +199,10 @@
               </span>
               <h3>Backup without a custodian</h3>
               <p>
-                At setup, your key is split into three shares: iCloud Keychain, your
-                server&rsquo;s escrow, and a place you choose. Any two recover it; no
-                single share (and no single company) can.
+                At setup, your device creates a recovery secret and splits it into three
+                shares: iCloud Keychain, your server&rsquo;s escrow, and a place you
+                choose. Any two bring your identity back; no single share (and no single
+                company) can.
               </p>
             </div>
           </div>
@@ -253,9 +256,10 @@
             <div>
               <h3>What if I lose my phone?</h3>
               <p>
-                Your key is split 2-of-3 at setup: one share in iCloud Keychain, one held
-                in escrow by your server, one wherever you choose. Losing the phone loses
-                one share; any two remaining shares recover the key.
+                Your recovery secret is split 2-of-3 at setup: one share in iCloud
+                Keychain, one held in escrow by your server, one wherever you choose.
+                Losing the phone loses one share; any two remaining shares bring your
+                identity back on a new device.
               </p>
             </div>
             <div>
@@ -268,9 +272,18 @@
               </p>
             </div>
             <div>
+              <h3>What about my posts and photos?</h3>
+              <p>
+                Your server backs up its database and your photos off-box, continuously.
+                And an option to keep your own copy in iCloud is coming, so your whole
+                presence stays portable even if every server you&rsquo;ve ever used
+                disappears.
+              </p>
+            </div>
+            <div>
               <h3>What if this project disappears?</h3>
               <p>
-                Your identity outlives it. It&rsquo;s a <code>did:plc</code> in the public
+                Your identity outlives it. It lives in the network&rsquo;s public
                 directory, your keys are on your device, and your server remains a
                 standard rotation key, so ordinary AT&nbsp;Protocol tooling can still
                 operate on your identity. All of this is open source.

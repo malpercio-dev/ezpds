@@ -35,9 +35,9 @@ dot alone.
 
 ## The 72-hour override
 
-ATProtocol gives the higher-precedence rotation key a **72-hour window** to
-contest a change. Because your key is `rotationKeys[0]` (see
-[Getting started](/user/getting-started/)), you hold that power:
+ATProtocol's PLC directory gives the higher-precedence rotation key a
+**72-hour window** to contest a change. Because your key is `rotationKeys[0]`
+(see [Getting started](/user/getting-started/)), you hold that power:
 
 1. Obsign detects a contested change and starts the countdown.
 2. You review what changed, in plain language.
@@ -54,4 +54,11 @@ The countdown is shown as a time remaining, not just a color. An override is
 signed by the identity key already on your device — no share to reassemble and no
 scramble in the moment. (Your [Shamir backup](/user/backup/) is the separate
 safety net for getting a key back onto a _new_ device.)
+:::
+
+:::note[This page describes did:plc identities]
+Monitoring and the 72-hour override are properties of the PLC directory, so they
+apply to **did:plc** identities — the default. A
+[did:web identity](/user/getting-started/#advanced-anchor-to-a-domain-you-control-didweb)
+is anchored to your domain instead: defending it means defending the domain.
 :::

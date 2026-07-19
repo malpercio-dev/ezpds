@@ -55,9 +55,9 @@
           <p class="lede">
             Custos is a complete AT&nbsp;Protocol PDS in a single Rust binary: it hosts
             repositories, signs commits, serves the firehose, and federates with the
-            network. Its signing key sits at <code>rotationKeys[1]</code>, below the key
-            your users hold. A Custos instance can act <em>for</em> its users; it cannot
-            act <em>against</em> them.
+            network. Its signing key sits at <code>rotationKeys[2]</code>, below the
+            device and recovery keys your users hold. A Custos instance can act
+            <em>for</em> its users; it cannot act <em>against</em> them.
           </p>
           <div class="hero-actions">
             <a class="btn btn-primary" href="#run">Run it</a>
@@ -85,7 +85,9 @@
             <div>
               <dt>backup</dt>
               <dd>
-                Litestream streams the database off-box continuously: point-in-time
+                Litestream streams the database off-box continuously, and a bucket
+                mirror does the same for blobs — media is re-uploaded to S3-compatible
+                storage on a sweep and restored to the volume on boot. Point-in-time
                 recovery without a backup cron.
               </dd>
             </div>
@@ -150,9 +152,11 @@
             <div>
               <dt>custody seam</dt>
               <dd>
-                Custos holds <code>rotationKeys[1]</code> and signs repo commits. Your
-                users&rsquo; wallets hold <code>rotationKeys[0]</code> and sign identity
-                operations. The server works; the user rules.
+                Custos holds <code>rotationKeys[2]</code> and signs repo commits. Your
+                users&rsquo; wallets hold <code>rotationKeys[0]</code>, and their backup
+                shares rebuild the recovery key at <code>rotationKeys[1]</code> — the
+                server escrows one share and never sees the rest. The server works; the
+                user rules.
               </dd>
             </div>
           </dl>
