@@ -115,6 +115,11 @@ sha2 = "0.10"
 hkdf = "0.12"
 zeroize = "1"
 urlencoding = "2"
+# QR-code matrix generation for the wallet-confirmed OAuth consent page (pds): the consent page
+# renders a QR encoding the pending request's `request_id` so the identity wallet can scan it
+# cross-device instead of typing the code. `qrcodegen` is the Nayuki reference encoder — pure Rust,
+# MIT-licensed, zero transitive dependencies; the PDS renders the matrix to an inline SVG itself.
+qrcodegen = "1.8"
 # URL parsing for the atproto-proxy SSRF guard (pds) — already resolved transitively via
 # reqwest; declared directly so `url::Host` is nameable for host-type matching.
 url = "2"
@@ -151,6 +156,9 @@ lettre = { version = "0.11", default-features = false, features = ["builder", "s
 tauri = { version = "2" }
 tauri-build = { version = "2" }
 tauri-plugin-log = "2"
+# Camera QR scanning (identity-wallet OAuth consent scan path + admin-companion pairing). Mobile-
+# only; each app opts in under its iOS/android target table and registers it behind `#[cfg(mobile)]`.
+tauri-plugin-barcode-scanner = "2"
 log = "0.4"
 security-framework = { version = "3" }
 

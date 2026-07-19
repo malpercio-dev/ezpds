@@ -40,6 +40,17 @@ absent — the window binding already covers them, so they need no per-command e
 | `core:event:default` | The frontend calls `listen()` for the `auth_ready` event (session restored on launch) and `plc_alert` event (`IdentityListHome` updates alert badges). The backend *emits* these from Rust, which is not ACL-gated; the webview *listening* is. |
 | `auth-session:default` | The in-app OAuth flow calls `plugin:auth-session\|start` (the vendored `tauri-plugin-auth-session` / `ASWebAuthenticationSession`) for both the create and claim login flows. |
 
+### identity-wallet — `capabilities/mobile.json`
+
+Platform-gated (`"platforms": ["iOS", "android"]`), so it is skipped on the macOS host build
+and the Linux/host test suite.
+
+| Permission | Why it's present |
+| --- | --- |
+| `biometric:default` | Face ID / Touch ID user-presence gate before every signing action (`authenticateBiometric()` in `$lib/biometric`) — migration PLC-op submission, sovereign login, agent claim/revoke, wallet-confirmed OAuth consent. |
+| `sharesheet:default` | iOS Share Pane for exporting material (e.g. diagnostics). |
+| `barcode-scanner:default` | Camera QR scan on the wallet-confirmed OAuth consent scan path (`scanQrCode()` dynamic import in `$lib/ipc/qr-scan`, Phase B). The wallet extracts only the pending request's `request_id` from the QR and re-verifies it server-side; the camera never drives any decision on its own. |
+
 ### admin-companion — `capabilities/default.json`
 
 | Permission | Why it's present |

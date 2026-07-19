@@ -149,26 +149,45 @@ async fn resolve_safe_pds(pds_client: &PdsClient, did: &str) -> Result<String, C
 }
 
 /// Preview a pending authorization by its typed `user_code`, resolved against the selected DID's
-/// hosting PDS.
+/// hosting PDS. The typed path — the guaranteed fallback (no camera / accessibility).
 #[tauri::command]
 pub async fn preview_oauth_consent(
     state: tauri::State<'_, AppState>,
     did: String,
     user_code: String,
 ) -> Result<ConsentPreview, ConsentError> {
-    preview_oauth_consent_impl(state.pds_client(), &did, &user_code).await
+    preview_oauth_consent_impl(state.pds_client(), did, "user_code", user_code).await
 }
 
+/// Preview a pending authorization by its high-entropy `request_id`, resolved against the selected
+/// DID's hosting PDS. The QR-scan path: the wallet extracts only the `request_id` from the scanned
+/// QR and re-fetches the client/origin/scope from the server's record here — it never trusts the QR
+/// contents for what it displays. Otherwise identical to the typed path (same approval flow).
+#[tauri::command]
+pub async fn preview_oauth_consent_by_request_id(
+    state: tauri::State<'_, AppState>,
+    did: String,
+    request_id: String,
+) -> Result<ConsentPreview, ConsentError> {
+    preview_oauth_consent_impl(state.pds_client(), did, "request_id", request_id).await
+}
+
+/// Shared preview core. `query_key` selects the server's lookup dimension (`user_code` for the typed
+/// path, `request_id` for the scan/handoff path); the server resolves the same pending request and
+/// returns the identical `ConsentRequestPreview` either way, so the wallet screen is unchanged.
 pub(crate) async fn preview_oauth_consent_impl(
     pds_client: &PdsClient,
-    did: &str,
-    user_code: &str,
+    did: impl AsRef<str>,
+    query_key: &str,
+    query_value: impl AsRef<str>,
 ) -> Result<ConsentPreview, ConsentError> {
+    let did = did.as_ref();
     let pds_url = resolve_safe_pds(pds_client, did).await?;
     let url = format!(
-        "{}/oauth/authorize/consent-request?user_code={}",
+        "{}/oauth/authorize/consent-request?{}={}",
         pds_url.trim_end_matches('/'),
-        urlencoding::encode(user_code)
+        query_key,
+        urlencoding::encode(query_value.as_ref())
     );
     let response =
         pds_client
@@ -438,7 +457,7 @@ mod tests {
             .await;
 
         let client = PdsClient::new_for_test(server.base_url());
-        let result = preview_oauth_consent_impl(&client, DID, "ABCD-2345")
+        let result = preview_oauth_consent_impl(&client, DID, "user_code", "ABCD-2345")
             .await
             .unwrap();
 
@@ -449,6 +468,41 @@ mod tests {
             result.requested_scope,
             vec!["atproto", "transition:generic"]
         );
+    }
+
+    #[tokio::test]
+    async fn preview_by_request_id_queries_the_request_id_dimension() {
+        reset_identity(DID);
+        let server = MockServer::start_async().await;
+        let (_plc, _head, _describe) = discovery_mocks(&server).await;
+        // The scan path re-fetches the request server-side by request_id — never trusting the QR
+        // contents for display. Assert the query rides on the `request_id` dimension.
+        let preview = server
+            .mock_async(|when, then| {
+                when.method(GET)
+                    .path("/oauth/authorize/consent-request")
+                    .query_param("request_id", REQUEST_ID);
+                then.status(200).json_body(json!({
+                    "requestId": REQUEST_ID,
+                    "clientId": CLIENT_ID,
+                    "clientName": "Test App",
+                    "redirectUri": "https://app.example.com/callback",
+                    "origin": "https://app.example.com",
+                    "ip": "203.0.113.5",
+                    "requestedScope": ["atproto", "transition:generic"],
+                    "loginHint": null,
+                }));
+            })
+            .await;
+
+        let client = PdsClient::new_for_test(server.base_url());
+        let result = preview_oauth_consent_impl(&client, DID, "request_id", REQUEST_ID)
+            .await
+            .unwrap();
+
+        preview.assert_async().await;
+        assert_eq!(result.request_id, REQUEST_ID);
+        assert_eq!(result.client_name.as_deref(), Some("Test App"));
     }
 
     #[tokio::test]
@@ -467,6 +521,7 @@ mod tests {
         let result = preview_oauth_consent_impl(
             &PdsClient::new_for_test(server.base_url()),
             DID,
+            "user_code",
             "NOPE-0000",
         )
         .await;

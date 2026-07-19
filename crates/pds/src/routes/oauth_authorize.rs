@@ -390,9 +390,10 @@ pub async fn get_authorization(
     .await;
     let wallet = wallet_codes
         .as_ref()
-        .map(|(user_code, request_id)| WalletConsentPath {
+        .map(|(user_code, request_id, origin)| WalletConsentPath {
             user_code,
             request_id,
+            origin: origin.as_deref(),
         });
 
     Html(render_consent_page(
@@ -412,18 +413,18 @@ pub async fn get_authorization(
     .into_response()
 }
 
-/// Create a single-use pending wallet-consent request, returning `(user_code, request_id)` for the
-/// page to render, or `None` if creation should be skipped (rate limited or a DB error) — the
-/// caller degrades to the password-only page. Snapshots the client metadata and requesting context
-/// so the wallet preview and later completion never re-resolve the client document, and audits the
-/// creation.
+/// Create a single-use pending wallet-consent request, returning `(user_code, request_id, origin)`
+/// for the page to render (the origin is snapshotted into the scan QR alongside the request_id), or
+/// `None` if creation should be skipped (rate limited or a DB error) — the caller degrades to the
+/// password-only page. Snapshots the client metadata and requesting context so the wallet preview
+/// and later completion never re-resolve the client document, and audits the creation.
 async fn create_pending_request(
     state: &AppState,
     headers: &HeaderMap,
     params: &AuthorizeQuery,
     client_name: &str,
     display_scope: &str,
-) -> Option<(String, String)> {
+) -> Option<(String, String, Option<String>)> {
     let client_ip = crate::rate_limit::client_ip_from_headers(headers);
     if state
         .rate_limiter
@@ -506,7 +507,7 @@ async fn create_pending_request(
         tracing::warn!(error = %e, "failed to audit wallet-consent request creation");
     }
 
-    Some((user_code, request_id))
+    Some((user_code, request_id, origin))
 }
 
 /// `POST /oauth/authorize` — handle the user's approval or denial of the consent request.

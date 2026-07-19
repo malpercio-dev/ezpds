@@ -57,6 +57,11 @@ chrono = { workspace = true }
 # `#[cfg(mobile)]` in lib.rs. Same version admin-companion already uses.
 [target.'cfg(any(target_os = "ios", target_os = "android"))'.dependencies]
 tauri-plugin-biometric = "2"
+# Camera QR scanning for the wallet-confirmed OAuth consent scan path. Mobile-only (no desktop
+# implementation) and registered behind `#[cfg(mobile)]` in lib.rs, so the macOS host build and test
+# suite never compile it. Version lives in the workspace table (shared with admin-companion's Pair
+# screen); opted in here under the iOS/android target so a host build stays plugin-free.
+tauri-plugin-barcode-scanner = { workspace = true }
 # Reuse the audited in-repo native plugin. The wallet calls its single command through the current
 # Tauri API directly, avoiding the upstream's stale 0.0.1 guest package and API dependency.
 tauri-plugin-sharesheet = { path = "../../admin-companion/vendor/tauri-plugin-sharesheet" }

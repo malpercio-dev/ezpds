@@ -61,6 +61,7 @@ Source: `apps/identity-wallet/src/lib/ipc/`
 | `prepare_migration` | App command |
 | `preview_agent_claim` | App command |
 | `preview_oauth_consent` | App command |
+| `preview_oauth_consent_by_request_id` | App command |
 | `recover_identity` | App command |
 | `refresh_did_doc` | App command |
 | `register_created_identity` | App command |

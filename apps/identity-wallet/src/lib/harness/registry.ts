@@ -181,6 +181,7 @@ export type CommandName =
   | 'preview_agent_claim'
   | 'confirm_agent_claim'
   | 'preview_oauth_consent'
+  | 'preview_oauth_consent_by_request_id'
   | 'confirm_oauth_consent'
   // app-passwords.ts
   | 'create_app_password'
@@ -846,6 +847,17 @@ export function buildRegistry(state: WalletState): Registry {
     // ── wallet-confirmed OAuth consent ───────────────────────────────────────
     preview_oauth_consent: (args): ConsentPreview => ({
       requestId: `poauth-${String(args.userCode ?? 'HARNESS')}`,
+      clientId: 'https://app.example.com/client-metadata.json',
+      clientName: 'Example App',
+      redirectUri: 'https://app.example.com/callback',
+      origin: 'https://app.example.com',
+      ip: '203.0.113.5',
+      requestedScope: ['atproto', 'transition:generic'],
+      loginHint: null,
+    }),
+    // The scan path resolves the same pending request server-side by request_id — same preview shape.
+    preview_oauth_consent_by_request_id: (args): ConsentPreview => ({
+      requestId: String(args.requestId ?? 'poauth-HARNESS'),
       clientId: 'https://app.example.com/client-metadata.json',
       clientName: 'Example App',
       redirectUri: 'https://app.example.com/callback',
