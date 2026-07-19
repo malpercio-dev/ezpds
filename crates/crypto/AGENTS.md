@@ -182,6 +182,20 @@ pub fn encode_sovereign_session_envelope(
 - UTF-8 byte-length-prefixes every value so separators inside a future identifier syntax cannot make two field tuples encode identically
 - `SOVEREIGN_SESSION_DOMAIN`, `SOVEREIGN_SESSION_METHOD`, and `SOVEREIGN_SESSION_PATH` expose the pinned protocol constants
 
+**`encode_oauth_consent_envelope`** / **`granted_scope_hash`**
+
+```rust
+pub fn encode_oauth_consent_envelope(
+    server_did: &str, account_did: &str, signing_key_did: &str,
+    request_id: &str, client_id: &str, decision: &str,
+    granted_scope: &str, timestamp: i64, nonce: &str,
+) -> Vec<u8>
+pub fn granted_scope_hash(granted_scope: &str) -> String  // lowercase-hex SHA-256
+```
+
+- The wallet-confirmed OAuth-consent counterpart of the sovereign-session encoder (same length-prefixed, domain-versioned `Vec<u8>` shape). Binds the pending request's `request_id`, `client_id`, the `decision` (`approve`/`deny`), and a SHA-256 hash of the canonical granted-scope string, so a signed approval cannot be replayed onto a different request, flipped from a denial, or widened to a larger scope set.
+- `OAUTH_CONSENT_DOMAIN` (`org.obsign.custos.oauth-consent.v1`), `OAUTH_CONSENT_METHOD`, `OAUTH_CONSENT_APPROVE_PATH`, and `OAUTH_CONSENT_DECISION_{APPROVE,DENY}` expose the pinned protocol constants. Golden vector: `test-vectors/oauth-consent-envelope-v1.json` (shared with the wallet client).
+
 **`build_did_plc_rotation_op`**
 ```rust
 pub fn build_did_plc_rotation_op<F>(
@@ -372,6 +386,7 @@ pub fn diff_audit_logs(cached: &[AuditEntry], current: &[AuditEntry]) -> Vec<Aud
 - `src/keys.rs` - P-256 key generation, AES-256-GCM encrypt/decrypt
 - `src/plc.rs` - did:plc genesis operation builder and verifier
 - `src/sovereign_session.rs` - canonical sovereign-session signed-envelope encoder and protocol constants
+- `src/oauth_consent.rs` - canonical wallet-confirmed OAuth-consent approval/denial signed-envelope encoder, `granted_scope_hash`, and protocol constants
 - `src/shamir.rs` - Shamir Secret Sharing (split/combine, GF(2^8) arithmetic) + share envelope v2 (`ShareEnvelope`, base32/mnemonic encode-decode, `split_secret_into_envelopes`/`combine_envelopes`)
 - `src/mnemonic.rs` - BIP-39-style 256-word list + byte↔word encoding for the human-custody Share 3 (module-private; used by `shamir.rs`)
 - `src/error.rs` - CryptoError enum

@@ -24,6 +24,10 @@ Every path registered by the server is listed here. For `/xrpc/` endpoints, use 
 | `/auth.md` | Custos HTTP |
 | `/metrics` | Custos HTTP |
 | `/oauth/authorize` | Custos HTTP |
+| `/oauth/authorize/approve` | Custos HTTP |
+| `/oauth/authorize/complete` | Custos HTTP |
+| `/oauth/authorize/consent-request` | Custos HTTP |
+| `/oauth/authorize/status` | Custos HTTP |
 | `/oauth/client-metadata.json` | Custos HTTP |
 | `/oauth/jwks` | Custos HTTP |
 | `/oauth/par` | Custos HTTP |

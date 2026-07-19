@@ -72,6 +72,10 @@ pub struct RateLimiterState {
     /// same limiter instance.
     endpoints: HashMap<&'static str, Arc<Mutex<MultiWindowLimiter>>>,
     write_points: Mutex<MultiWindowLimiter>,
+    /// Wallet-confirmed OAuth consent request creation, charged in-handler against both the
+    /// requesting IP (`ip:<addr>`) and the `client_id` (`client:<id>`) keys — a single limiter with
+    /// two independent keyspaces, so neither dimension can flood the pending-request table.
+    oauth_consent_creation: Mutex<MultiWindowLimiter>,
 }
 
 impl RateLimiterState {
@@ -137,6 +141,13 @@ impl RateLimiterState {
         let recovery = per_5min(cfg.recovery_per_5min);
         endpoints.insert("/v1/recovery/initiate", recovery.clone());
         endpoints.insert("/v1/recovery/release", recovery);
+        // Wallet-consent code-validating endpoints. The preview validates a guessable `user_code`
+        // (the short-code class), and the approve endpoint drives an outbound PLC fetch; they
+        // **share one limiter instance** so alternating them can't double an attacker's per-IP
+        // budget — the claim confirm/preview precedent above.
+        let consent_action = per_5min(cfg.oauth_consent_action_per_5min);
+        endpoints.insert("/oauth/authorize/consent-request", consent_action.clone());
+        endpoints.insert("/oauth/authorize/approve", consent_action);
 
         Self {
             enabled: cfg.enabled,
@@ -155,7 +166,36 @@ impl RateLimiterState {
                     max_points: cfg.write_points_daily,
                 },
             ])),
+            oauth_consent_creation: Mutex::new(MultiWindowLimiter::new([Window {
+                window: FIVE_MIN,
+                max_points: cfg.oauth_consent_create_per_5min,
+            }])),
         }
+    }
+
+    /// Charge one wallet-consent request creation against both the requesting IP and the
+    /// `client_id`. Returns [`ErrorCode::RateLimited`] (429, with the standard `Retry-After` /
+    /// `RateLimit-*` headers) when either dimension is exhausted, so a single IP or a single client
+    /// cannot flood the pending-request table. A no-op when rate limiting is disabled.
+    pub fn check_oauth_consent_creation(&self, client_id: &str, ip: &str) -> Result<(), ApiError> {
+        if !self.enabled {
+            return Ok(());
+        }
+        let now = Instant::now();
+        for key in [format!("ip:{ip}"), format!("client:{client_id}")] {
+            let decision = lock(&self.oauth_consent_creation).check(&key, 1, now);
+            if !decision.allowed {
+                return Err(ApiError::new(
+                    ErrorCode::RateLimited,
+                    "too many authorization requests; slow down and retry later",
+                )
+                .with_header("retry-after", decision.reset_after_secs.to_string())
+                .with_header("ratelimit-limit", decision.limit.to_string())
+                .with_header("ratelimit-remaining", decision.remaining.to_string())
+                .with_header("ratelimit-reset", decision.reset_after_secs.to_string()));
+            }
+        }
+        Ok(())
     }
 
     /// Charge `cost` write points to `did`'s repo-write budget. Returns
@@ -197,6 +237,14 @@ fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
 /// **Assumption:** the edge proxy is trusted to set `X-Forwarded-For`. A client can prepend a
 /// spoofed value, which is the well-known limitation of any XFF-keyed limiter; the global cap is
 /// defence-in-depth, not an authentication boundary.
+/// Public XFF-based client-IP resolver for handlers that rate-limit or record the client IP
+/// in-handler (keyed the same way the middleware keys its per-IP limiters). Behind the edge proxy
+/// the TCP peer is unavailable to a handler, so this reads the leftmost valid `X-Forwarded-For`
+/// entry, falling back to a shared `"unknown"` bucket.
+pub fn client_ip_from_headers(headers: &HeaderMap) -> String {
+    client_ip(headers, None)
+}
+
 fn client_ip(headers: &HeaderMap, connect_info: Option<&ConnectInfo<SocketAddr>>) -> String {
     if let Some(xff) = headers.get("x-forwarded-for").and_then(|v| v.to_str().ok()) {
         if let Some(first) = xff

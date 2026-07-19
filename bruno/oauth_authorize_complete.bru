@@ -1,0 +1,28 @@
+meta {
+  name: OAuth Consent — Browser Complete (POST complete)
+  type: http
+  seq: 132
+}
+
+post {
+  url: {{baseUrl}}/oauth/authorize/complete
+  body: formUrlEncoded
+  auth: none
+}
+
+body:form-urlencoded {
+  request_id: poauth_example
+}
+
+docs {
+  # POST /oauth/authorize/complete
+
+  After the wallet approves, the consent page exchanges the approved request (MM-441) for an
+  authorization code and is redirected back to the client — completing through the same
+  `store_authorization_code` → 303 `redirect_uri?code=…&state=…&iss=…` tail as the password path.
+  The token endpoint (PKCE + DPoP) is untouched.
+
+  The guarded `approved → completed` transition mints at most one code (single-use). Both the
+  page's JS poller (on `approved`) and the no-JS "I've approved — continue" button post here. A
+  request that is not in the `approved` state renders a "Not Ready" page instead of a redirect.
+}

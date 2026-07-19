@@ -149,6 +149,16 @@ the primitive, the envelope, or the completion path changes.
 - **Phase A — code + handoff (no push, no camera).** The pending-request table/routes,
   the second consent-page path, typed `user_code` entry in the wallet (clone of the
   agent-claim screen), the same-device handoff link. Depends on nothing unbuilt.
+  **Landed (2026-07-18):** `pending_oauth_authorizations` + `oauth_consent_audit_events`
+  (V056), `crypto::encode_oauth_consent_envelope` (+ shared golden vector), the
+  `routes/oauth_consent.rs` routes (wallet preview, `slow_down`-throttled status poll,
+  device-key-signed approve/deny against authoritative PLC `rotationKeys`, browser
+  completion through the existing code-issuance tail), the wallet path on the consent page,
+  and the wallet's `oauth_consent.rs` IPC + `OAuthConsentApprovalScreen`. The signed
+  envelope binds `request_id` + `client_id` + decision + granted-scope hash; single-use is
+  enforced by the guarded status transitions (which, with the `request_id` binding, subsume
+  a nonce store — no separate nonce table). Handoff link degrades to copy-the-code (the
+  wallet has no deep-link handler yet, per ADR-0006).
 - **Phase B — QR.** Encode `request_id` + origin on the consent page; wallet scan screen
   feeding the same approval flow. Camera plumbing is the only new work.
 - **Phase C — push + number matching.** After the notification relay (MM-311) lands:

@@ -1,0 +1,12 @@
+{
+  "serverDid": "did:web:pds.example.com",
+  "accountDid": "did:plc:abcdefghijklmnopqrstuvwx",
+  "signingKeyDid": "did:key:zExample",
+  "requestId": "req_0123456789abcdef0123456789abcdef",
+  "clientId": "https://app.example.com/client-metadata.json",
+  "decision": "approve",
+  "grantedScope": "atproto transition:generic",
+  "timestamp": 1720000000,
+  "nonce": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+  "envelope": "domain:34:org.obsign.custos.oauth-consent.v1\naud:23:did:web:pds.example.com\nmethod:4:POST\npath:24:/oauth/authorize/approve\ndid:32:did:plc:abcdefghijklmnopqrstuvwx\nkey:16:did:key:zExample\nrequest:36:req_0123456789abcdef0123456789abcdef\nclient:44:https://app.example.com/client-metadata.json\ndecision:7:approve\nscopeHash:64:823c7015d9f8de89d2fec574c8a9608d9bb2142abced283e922d2971a82244a4\ntimestamp:10:1720000000\nnonce:43:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\n"
+}

@@ -6,6 +6,29 @@
 use common::{ApiError, ErrorCode};
 use sqlx::Sqlite;
 
+/// Whether `did` names a locally-hosted account in an active lifecycle — not deactivated,
+/// suspended, or taken down. Executor-generic so callers can re-check inside a transaction; the
+/// sovereign-session and wallet-consent proofs both gate on this before minting anything.
+pub(crate) async fn active_local_account_exists<'e, E>(
+    executor: E,
+    did: &str,
+) -> Result<bool, ApiError>
+where
+    E: sqlx::Executor<'e, Database = Sqlite>,
+{
+    sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1 FROM accounts WHERE did = ? \
+         AND deactivated_at IS NULL AND suspended_at IS NULL AND taken_down_at IS NULL)",
+    )
+    .bind(did)
+    .fetch_one(executor)
+    .await
+    .map_err(|e| {
+        tracing::error!(error = %e, account_did = %did, "failed to check local account lifecycle");
+        ApiError::new(ErrorCode::InternalError, "failed to verify account")
+    })
+}
+
 /// Flat account row returned by `resolve_identifier`.
 pub(crate) struct AccountRow {
     pub(crate) did: String,

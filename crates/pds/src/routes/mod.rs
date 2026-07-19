@@ -64,6 +64,7 @@ pub mod list_records;
 pub mod list_repos;
 pub mod oauth_authorize;
 pub mod oauth_client_metadata;
+pub mod oauth_consent;
 pub(super) mod oauth_errors;
 pub mod oauth_jwks;
 pub mod oauth_par;

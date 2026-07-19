@@ -10,6 +10,7 @@
     onrotatekey,
     onapppasswords,
     onagents,
+    onsignin,
     onremove,
   }: {
     didDoc: Record<string, unknown>;
@@ -27,6 +28,8 @@
     onapppasswords?: () => void;
     /** Opens the "My agents" surface (consent + audit + revoke) for this identity. */
     onagents?: () => void;
+    /** Opens the wallet-confirmed OAuth consent surface (sign in to an app with a typed code). */
+    onsignin?: () => void;
     /** Opens the permanent-removal flow (delete on PDS + tombstone DID + local wipe). */
     onremove?: () => void;
   } = $props();
@@ -166,6 +169,10 @@
 
   {#if onapppasswords}
     <button class="action" onclick={onapppasswords}>Sign in to Bluesky and other apps</button>
+  {/if}
+
+  {#if onsignin}
+    <button class="action" onclick={onsignin}>Sign in to an app</button>
   {/if}
 
   {#if onagents}

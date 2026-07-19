@@ -44,6 +44,7 @@
   import RecoveryOverrideScreen from '$lib/components/home/RecoveryOverrideScreen.svelte';
   import MyAgentsScreen from '$lib/components/home/MyAgentsScreen.svelte';
   import AgentClaimApprovalScreen from '$lib/components/home/AgentClaimApprovalScreen.svelte';
+  import OAuthConsentApprovalScreen from '$lib/components/home/OAuthConsentApprovalScreen.svelte';
   import SettingsScreen from '$lib/components/home/SettingsScreen.svelte';
   import RemoveIdentityScreen from '$lib/components/home/RemoveIdentityScreen.svelte';
   import { createAccount, confirmShareBackup, confirmRekey, confirmRecoveryBackup, getPendingRecoveryEpilogue, registerCreatedIdentity, listIdentities, listPendingRemovals, getStoredDidDoc, checkIdentityStatus, isCodedError, type CreateAccountError, type OAuthError, type IdentityInfo, type VerifiedClaimOp, type ClaimResult, type RekeyResult, type UnauthorizedChange, type CollectedShare } from '$lib/ipc';
@@ -92,6 +93,7 @@
     | 'recovery_override'
     | 'my_agents'
     | 'agent_approval'
+    | 'oauth_consent_approval'
     | 'settings'
     | 'auth_failed'
     | 'identity_input'
@@ -653,6 +655,14 @@
       ondone={() => goTo('my_agents')}
     />
 
+  {:else if step === 'oauth_consent_approval'}
+    <OAuthConsentApprovalScreen
+      did={selectedDid ?? ''}
+      handle={selectedDidDoc ? (extractHandle(selectedDidDoc) ?? undefined) : undefined}
+      onback={() => goTo('identity_detail')}
+      ondone={() => goTo('identity_detail')}
+    />
+
   {:else if step === 'identity_detail'}
     <DIDDocumentScreen
       didDoc={selectedDidDoc ? normalizePlcDocToW3c(selectedDidDoc) : {}}
@@ -665,6 +675,9 @@
         : undefined}
       onapppasswords={() => goTo('app_passwords')}
       onagents={() => goTo('my_agents')}
+      onsignin={selectedDid?.startsWith('did:plc:')
+        ? () => goTo('oauth_consent_approval')
+        : undefined}
       onmigrate={selectedDeviceKeyIsRoot === true
         ? () => {
             migrationDid = selectedDid ?? '';

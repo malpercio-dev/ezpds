@@ -11,6 +11,7 @@
 
 use axum::{
     extract::{Form, Query, State},
+    http::HeaderMap,
     response::{Html, IntoResponse, Redirect, Response},
 };
 use serde::Deserialize;
@@ -19,14 +20,38 @@ use crate::app::AppState;
 use crate::auth::password::{verify_password, VerifyResult, TIMING_DUMMY_HASH};
 use crate::auth::rate_limit::{clear_failures, is_rate_limited, record_failure};
 use crate::auth::token::generate_token;
+use crate::code_gen::generate_login_code;
 use crate::db::accounts::resolve_identifier;
 use crate::db::oauth::{
     consume_par_request, get_oauth_client, store_authorization_code, ClientMetadata,
     StoredPARParams,
 };
-use crate::routes::oauth_templates::{
-    encode_param, error_page, error_redirect, render_consent_page,
+use crate::db::pending_oauth_authorizations::{
+    cleanup_expired_pending_authorizations, insert_oauth_consent_audit_event,
+    insert_pending_authorization, NewPendingOAuthAuthorization, OAuthConsentAuditEventType,
 };
+use crate::routes::oauth_templates::{
+    encode_param, error_page, error_redirect, render_consent_page, WalletConsentPath,
+};
+
+/// Time-to-live of a pending wallet-consent request (~5 minutes, per the design).
+const PENDING_REQUEST_TTL_SECS: i64 = 300;
+/// How long an expired pending row lingers before opportunistic cleanup reclaims it, so the status
+/// poll can still report `expired` for a while after the window closes.
+const PENDING_REQUEST_CLEANUP_GRACE_SECS: i64 = 3600;
+
+/// Reduce an `Origin`/`Referer` header to just scheme + host (+ port), discarding any path, query,
+/// or fragment. The wallet only ever shows the requesting origin, and a full referring URL has no
+/// business landing in the pending row or the audit log.
+fn sanitize_origin(raw: &str) -> Option<String> {
+    let parsed = url::Url::parse(raw).ok()?;
+    let host = parsed.host_str()?;
+    let scheme = parsed.scheme();
+    Some(match parsed.port() {
+        Some(port) => format!("{scheme}://{host}:{port}"),
+        None => format!("{scheme}://{host}"),
+    })
+}
 
 /// Fully-resolved parameters for the authorization consent page.
 ///
@@ -246,6 +271,7 @@ async fn lookup_and_validate_client(
 /// redirect to `redirect_uri` with an `error` query parameter per RFC 6749 §4.1.2.1.
 pub async fn get_authorization(
     State(state): State<AppState>,
+    headers: HeaderMap,
     Query(raw): Query<GetAuthorizationQuery>,
 ) -> Response {
     // RFC 9207 issuer identifier, emitted as `iss` on every authorization response.
@@ -350,6 +376,25 @@ pub async fn get_authorization(
         }
     };
 
+    // Wallet-confirmed consent path: create a single-use pending request that a sovereign /
+    // passwordless account approves out-of-band from its wallet. This is best-effort — a creation
+    // failure (rate limit, DB error) simply degrades to the legacy password-only page rather than
+    // breaking consent for passworded accounts.
+    let wallet_codes = create_pending_request(
+        &state,
+        &headers,
+        &params,
+        client_name.as_str(),
+        &display_scope,
+    )
+    .await;
+    let wallet = wallet_codes
+        .as_ref()
+        .map(|(user_code, request_id)| WalletConsentPath {
+            user_code,
+            request_id,
+        });
+
     Html(render_consent_page(
         &client_name,
         &params.client_id,
@@ -362,8 +407,106 @@ pub async fn get_authorization(
         &state.config.public_url,
         params.login_hint.as_deref(),
         None,
+        wallet.as_ref(),
     ))
     .into_response()
+}
+
+/// Create a single-use pending wallet-consent request, returning `(user_code, request_id)` for the
+/// page to render, or `None` if creation should be skipped (rate limited or a DB error) — the
+/// caller degrades to the password-only page. Snapshots the client metadata and requesting context
+/// so the wallet preview and later completion never re-resolve the client document, and audits the
+/// creation.
+async fn create_pending_request(
+    state: &AppState,
+    headers: &HeaderMap,
+    params: &AuthorizeQuery,
+    client_name: &str,
+    display_scope: &str,
+) -> Option<(String, String)> {
+    let client_ip = crate::rate_limit::client_ip_from_headers(headers);
+    if state
+        .rate_limiter
+        .check_oauth_consent_creation(&params.client_id, &client_ip)
+        .is_err()
+    {
+        tracing::debug!(client_id = %params.client_id, "wallet-consent request creation rate-limited");
+        return None;
+    }
+
+    let header_str = |name: &str| {
+        headers
+            .get(name)
+            .and_then(|v| v.to_str().ok())
+            .map(str::to_string)
+    };
+    // Keep only scheme + host (+ port) from Origin/Referer — never a full referring URL's path or
+    // query — in the pending row and audit log.
+    let origin = header_str("origin")
+        .or_else(|| header_str("referer"))
+        .and_then(|raw| sanitize_origin(&raw));
+    let user_agent = header_str("user-agent");
+
+    let request_id = format!("poauth_{}", generate_token().plaintext);
+    let user_code = generate_login_code();
+
+    // Reclaim long-expired rows before inserting (the oauth_par_requests / transfers precedent),
+    // so the table stays bounded without a background sweep.
+    if cleanup_expired_pending_authorizations(&state.db, PENDING_REQUEST_CLEANUP_GRACE_SECS)
+        .await
+        .is_err()
+    {
+        return None;
+    }
+
+    let new = NewPendingOAuthAuthorization {
+        request_id: &request_id,
+        user_code: &user_code,
+        client_id: &params.client_id,
+        client_name: Some(client_name),
+        redirect_uri: &params.redirect_uri,
+        code_challenge: &params.code_challenge,
+        code_challenge_method: &params.code_challenge_method,
+        state: &params.state,
+        response_type: &params.response_type,
+        requested_scope: display_scope,
+        login_hint: params.login_hint.as_deref(),
+        origin: origin.as_deref(),
+        ip: Some(client_ip.as_str()),
+        user_agent: user_agent.as_deref(),
+        ttl_secs: PENDING_REQUEST_TTL_SECS,
+    };
+    if insert_pending_authorization(&state.db, &new).await.is_err() {
+        return None;
+    }
+
+    // Audit the creation (best-effort — a failed audit must not deny the consent page). The
+    // account_did is left NULL here: the client-supplied login_hint is unverified (it can be a
+    // handle or an attacker-chosen DID), so it is recorded as a mechanical `login_hint` fact in the
+    // detail rather than attributed as the approving account — that binding is only established at
+    // approval, against authoritative PLC state.
+    let detail = serde_json::json!({
+        "client_id": params.client_id,
+        "requested_scope": display_scope,
+        "origin": origin,
+        "login_hint": params.login_hint,
+    })
+    .to_string();
+    if let Err(e) = insert_oauth_consent_audit_event(
+        &state.db,
+        &uuid::Uuid::new_v4().to_string(),
+        &request_id,
+        None,
+        &params.client_id,
+        OAuthConsentAuditEventType::RequestCreated,
+        Some(&detail),
+    )
+    .await
+    {
+        tracing::warn!(error = %e, "failed to audit wallet-consent request creation");
+    }
+
+    Some((user_code, request_id))
 }
 
 /// `POST /oauth/authorize` — handle the user's approval or denial of the consent request.
@@ -475,6 +618,9 @@ pub async fn post_authorization(
             &state.config.public_url,
             hint,
             Some(error),
+            // The password-error re-render creates no pending request, so the wallet path is
+            // omitted here; the user retries the password form (or reloads to get the wallet code).
+            None,
         ))
         .into_response()
     };
@@ -1017,13 +1163,16 @@ mod tests {
         let resp = get_authorize(state, &authorize_url("")).await;
         let body = axum::body::to_bytes(resp.into_body(), 32768).await.unwrap();
         let html = std::str::from_utf8(&body).unwrap();
+        // The page carries a legitimate inline poll <script> for the wallet path, so assert on the
+        // specific attacker payload rather than any <script>: the injected client_name must be
+        // HTML-escaped, never reflected raw.
         assert!(
-            !html.contains("<script>"),
-            "raw <script> must not appear in output"
+            !html.contains("<script>alert(1)</script>"),
+            "raw injected script must not appear in output"
         );
         assert!(
-            html.contains("&lt;script&gt;"),
-            "script tag must be HTML-escaped"
+            html.contains("&lt;script&gt;alert(1)&lt;/script&gt;"),
+            "injected script tag must be HTML-escaped"
         );
     }
 
@@ -1042,6 +1191,36 @@ mod tests {
             !location.contains("<b>"),
             "raw HTML tags must not appear anywhere in the response"
         );
+    }
+
+    #[tokio::test]
+    async fn get_consent_page_creates_pending_request_and_renders_wallet_path() {
+        let state = state_with_client().await;
+        let resp = get_authorize(state.clone(), &authorize_url("")).await;
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(resp.into_body(), 32768).await.unwrap();
+        let html = std::str::from_utf8(&body).unwrap();
+        // The wallet path renders: section heading, a request-id data attribute, and the poller.
+        assert!(
+            html.contains("Approve in your wallet"),
+            "wallet section must render"
+        );
+        assert!(
+            html.contains("data-request-id=\"poauth_"),
+            "wallet block must carry the pending request_id"
+        );
+        assert!(
+            html.contains("/oauth/authorize/status?request_id="),
+            "the poll script must target the status endpoint"
+        );
+        // A single-use pending request row was created for this consent load.
+        let pending: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM pending_oauth_authorizations WHERE status = 'pending'",
+        )
+        .fetch_one(&state.db)
+        .await
+        .unwrap();
+        assert_eq!(pending, 1);
     }
 
     #[tokio::test]
