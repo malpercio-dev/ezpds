@@ -3,7 +3,7 @@ title: Mobile IPC commands
 description: Generated Tauri command surface for Obsign and Brass Console.
 ---
 
-> Generated from source for ezpds **v0.7.0**. Do not edit this page by hand.
+> Generated from source for ezpds **v0.7.1**. Do not edit this page by hand.
 
 These are the literal commands invoked by each frontend registry.
 

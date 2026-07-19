@@ -7,6 +7,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Changes are collected in `changelog.d/` during development and inserted here when
 `just set-version` prepares a release. There is intentionally no `Unreleased` section.
 
+## [0.7.1] - 2026-07-19
+
+### Added
+
+- Blob files are now replicated off the deployment volume: configuring an S3-compatible bucket (`EZPDS_BLOB_MIRROR_*`, the same shape as the Litestream variables) enables a periodic mirror sweep that uploads every stored blob after verifying its bytes against its CID, and a restore-on-boot pass that heals any blob file missing from the volume out of the bucket before the server takes traffic — so blobs lost with the volume can be recovered from the mirrored copy instead of being gone for good.
+
+- Custos can now validate records against arbitrary resolved ATProto lexicons, including required and nullable fields, string formats, collection key rules, refs and unions, and array, byte, and blob constraints, with conformance pinned to the upstream record-data interop vectors.
+
+
+### Changed
+
+- The instance landing page and the OAuth consent and error pages now follow the viewer's system light/dark appearance, matching the identity wallet and the marketing and docs sites.
+
+- Corrected the repo-engine lexicon module's own documentation to reflect that it now validates record data against a resolved lexicon, not only lexicon documents themselves.
+
+
+### Fixed
+
+- `com.atproto.server.getServiceAuth` now accepts app-password sessions for non-protected methods (and privileged app passwords for the `chat.bsky.*` surface), matching the reference PDS. Previously it required a full-access token and rejected every app-password session, which broke video upload from the Bluesky app (the app authenticates to a self-hosted PDS with an app password). Protected account-management methods remain blocked for all credentials.
+
+- Migrating an account into this PDS now announces the identity change so the network re-resolves it: `activateAccount` force-refreshes the account's cached DID document from the authoritative PLC source and emits an `#identity` firehose frame, and `submitPlcOperation` emits `#identity` after a successful operation. Previously a migrated-in account could keep serving its pre-migration DID document (old PDS endpoint and signing key) in `getSession`/`describeRepo`, causing clients to route to the old PDS and fail service-auth verification ("Token could not be verified") on feeds and video upload.
+
+- OAuth token responses now include the account DID in the `sub` field, as the AT Protocol OAuth profile requires. Third-party atproto clients (such as tangled.org) previously failed to complete sign-in because the token response omitted `sub`.
+
+
 ## [0.7.0] - 2026-07-18
 
 ### Added
