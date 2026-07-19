@@ -7,6 +7,47 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Changes are collected in `changelog.d/` during development and inserted here when
 `just set-version` prepares a release. There is intentionally no `Unreleased` section.
 
+## [0.7.0] - 2026-07-18
+
+### Added
+
+- Obsign Settings now has an **Export diagnostics** action that shares a redacted log of the session's network errors — operation, server host, HTTP status, and short error code only, never tokens, request/response bodies, or account data — so a network problem can be handed to support without a device or simulator.
+
+- The marketing site (about.obsign.org) now follows the visitor's system light or dark appearance, in the same warm "archive at night" palette as the wallet.
+
+- Shared links to the marketing site now unfurl with branded Open Graph preview cards for both the Obsign and Custos pages.
+
+- Added ATProto lexicon meta-schema and data-model validators (`repo-engine`), gated against the vendored `bluesky-social/atproto-interop-tests` `lexicon/` and `data-model/` acceptance/rejection vectors, so a malformed lexicon document or a non-conformant data-model value is caught against the same fixtures the reference implementation uses.
+
+- Wallet-confirmed OAuth consent (Phase A): a sovereign or migrated account with no password can now sign in to third-party OAuth apps using only its wallet. The consent page shows a typed code and an "Open in Obsign" handoff link; the wallet previews the app, origin, and requested scopes, lets you reduce the granted scope, and approves with a biometric-gated device-key signature verified against your identity's authoritative PLC rotation keys. Approvals are single-use, expire in about five minutes, cannot be replayed onto a different request or a widened scope set, and both approvals and denials are audited.
+
+- Signing in to an OAuth app across devices no longer needs typing: the sign-in page now shows a QR code beside the short code, and the Obsign wallet can scan it with the phone camera to approve the login with your device key. The wallet always re-fetches the app, origin, and requested permissions from your server by the request's id — never from the QR — before the biometric confirmation, and the typed code stays as the fallback when there's no camera.
+
+
+### Changed
+
+- The documentation sites' screen tours now cover the v0.6.0 screens — share recovery (including the escrow waiting period), app passwords, the "Add a recovery key" upgrade prompt, and the operator console's audit log — and the wallet's browser-harness fake now models the current three-key recovery rotation ([device, recovery, PDS]) so the pictured DID document shows the recovery key.
+
+- Retired the legacy server-side recovery-share path from account creation: `POST /v1/dids` now requires the wallet-generated recovery key and escrow share for a did:plc identity (the server never generates or splits a recovery secret), and did:web identities are created without recovery escrow. The now-dead pending-share columns were dropped from the database.
+
+
+### Fixed
+
+- Permanent account deletion no longer fails on accounts with email-verification history or sovereign child agents: all account-keyed references are purged or safely unlinked (a schema tripwire test now enforces this), and deleting a parent schedules its children for deletion instead of stranding them.
+
+- The wallet's "Add a recovery key" flow no longer reports every failure as a connection problem: a directory throttle now says to wait a moment, a directory or server problem is named as such, and only real transport failures say "check your connection".
+
+- Exportable network diagnostics now capture connection failures (timeouts, DNS, refused connections, TLS), not only server-error responses — so a "Couldn't reach the server" error (such as when adding a recovery key) no longer produces an empty diagnostics log.
+
+- "My agents" no longer fails with a misleading "check your connection" error when your session has expired. The agent-management surface is now per-identity (opened from an identity's detail screen) and runs through the same refreshable per-identity session as app passwords and change-handle: an expired session self-heals, or prompts a quick biometric unlock, instead of dead-ending on a never-refreshed login token.
+
+- The sovereign-child mint tests no longer race wiremock's shared mock-server pool: the mock plc.directory guard is now held for each test's lifetime, fixing a CI-only flake where a parallel test could reset the pooled server mid-mint and surface as a spurious 502. No runtime behavior changed.
+
+- Adding or recovering a recovery key no longer fails instantly with "Couldn't reach the server": the wallet's authenticated HTTP client sent PUT requests (used to deposit your recovery share) but its internal sender only handled GET and POST, so every deposit failed before any network call and was mislabelled as a connection problem. PUT requests are now sent correctly, and connection failures on the escrow and session-refresh paths are recorded in the exportable diagnostics log.
+
+- The wallet's signing-key rotation, change-handle, and app-password flows no longer report every failure as a connection problem (matching the earlier re-key fix): a directory or server throttle now says to wait a moment, a directory or server problem is named as such, and only real transport failures say "check your connection".
+
+
 ## [0.6.0] - 2026-07-17
 
 ### Added
