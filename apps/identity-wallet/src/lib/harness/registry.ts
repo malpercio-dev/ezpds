@@ -43,6 +43,9 @@ import type {
   ConsentDecision,
   AppPasswordCreated,
   AppPasswordEntry,
+  BlobBackupStatus,
+  BlobBackupRunReport,
+  BlobRestoreReport,
   RegisterHandleResult,
   CreateAccountResult,
   DIDCeremonyResult,
@@ -187,6 +190,11 @@ export type CommandName =
   | 'create_app_password'
   | 'list_app_passwords'
   | 'revoke_app_password'
+  // blob-backup.ts
+  | 'get_blob_backup_status'
+  | 'set_blob_backup_enabled'
+  | 'run_blob_backup'
+  | 'restore_blob_backup'
   // biometric plugin (driven by $lib/biometric — resolves = allow the gate)
   | 'plugin:biometric|authenticate'
   | 'plugin:biometric|status';
@@ -215,6 +223,19 @@ function identityInfo(identity: FakeIdentity): IdentityInfo {
 
 function claimResult(identity: FakeIdentity): ClaimResult {
   return { updatedDidDoc: makeDidDoc(identity) };
+}
+
+/** Render the fake's blob-backup model as the status the real command returns. */
+function blobBackupStatus(identity: FakeIdentity): BlobBackupStatus {
+  const backup = identity.blobBackup;
+  const mirrored = backup.remote.filter((b) => backup.mirroredCids.includes(b.cid));
+  return {
+    enabled: backup.enabled,
+    location: backup.location,
+    backedUpCount: mirrored.length,
+    backedUpBytes: mirrored.reduce((sum, b) => sum + b.size, 0),
+    lastBackupAt: backup.lastBackupAt,
+  };
 }
 
 /**
@@ -895,6 +916,49 @@ export function buildRegistry(state: WalletState): Registry {
       const name = String(args.name ?? '');
       identity.appPasswords = identity.appPasswords.filter((p) => p.name !== name);
       return null;
+    },
+
+    // ── media backup (user-held blob mirror) ─────────────────────────────────
+    get_blob_backup_status: (args): BlobBackupStatus => {
+      const identity = findIdentity(state, didArg(args));
+      if (!identity) throw { code: 'IDENTITY_NOT_FOUND', message: 'identity not found' };
+      return blobBackupStatus(identity);
+    },
+    set_blob_backup_enabled: (args): BlobBackupStatus => {
+      const identity = findIdentity(state, didArg(args));
+      if (!identity) throw { code: 'IDENTITY_NOT_FOUND', message: 'identity not found' };
+      identity.blobBackup.enabled = Boolean(args.enabled ?? false);
+      return blobBackupStatus(identity);
+    },
+    run_blob_backup: (args): BlobBackupRunReport => {
+      const identity = findIdentity(state, didArg(args));
+      if (!identity) throw { code: 'IDENTITY_NOT_FOUND', message: 'identity not found' };
+      const backup = identity.blobBackup;
+      if (backup.location === null) throw { code: 'BACKUP_UNAVAILABLE' };
+      const missing = backup.remote.filter((b) => !backup.mirroredCids.includes(b.cid));
+      backup.mirroredCids = [...backup.mirroredCids, ...missing.map((b) => b.cid)];
+      backup.lastBackupAt = '2026-07-15T12:00:00.000Z';
+      const mirrored = backup.remote.filter((b) => backup.mirroredCids.includes(b.cid));
+      return {
+        listed: backup.remote.length,
+        alreadyPresent: backup.remote.length - missing.length,
+        fetched: missing.length,
+        fetchedBytes: missing.reduce((sum, b) => sum + b.size, 0),
+        failed: [],
+        backedUpCount: mirrored.length,
+        backedUpBytes: mirrored.reduce((sum, b) => sum + b.size, 0),
+      };
+    },
+    restore_blob_backup: (args): BlobRestoreReport => {
+      const identity = findIdentity(state, didArg(args));
+      if (!identity) throw { code: 'IDENTITY_NOT_FOUND', message: 'identity not found' };
+      const backup = identity.blobBackup;
+      if (backup.location === null) throw { code: 'BACKUP_UNAVAILABLE' };
+      return {
+        manifestCount: backup.mirroredCids.length,
+        uploaded: backup.mirroredCids.length,
+        failed: [],
+      };
     },
 
     // ── biometric plugin (allow the gate) ────────────────────────────────────

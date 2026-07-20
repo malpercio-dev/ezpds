@@ -110,6 +110,15 @@ migration and the user makes an informed skip instead of abandoning the run.
 
 ## Wallet-side option: user-held blob backup to iCloud
 
+**Implemented (MM-434, 2026-07-20):** the wallet's "Back up media" surface
+(`apps/identity-wallet/src-tauri/src/blob_backup.rs` + `MediaBackupScreen`) ships this
+design — opt-in mirror with size shown, CID-verified incremental sync, per-blob-degrading
+restore, tracked iCloud entitlements riding the XcodeGen template, and a harness fake.
+The ubiquity container is reached via `objc2-foundation`'s `NSFileManager` binding rather
+than a swift-rs bridge (same call, no new Swift build surface). Still open from this
+section: the migration drain's local-mirror fallback source, and `BGProcessingTask`
+background scheduling.
+
 A complement to the server tiers above, not a substitute — but it is the only layer
 that survives *the PDS itself* failing, which is exactly the MM-394 scenario (the
 source PDS lost the bytes and no other copy existed anywhere on the network). It also

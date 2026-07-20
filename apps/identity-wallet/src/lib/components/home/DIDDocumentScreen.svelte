@@ -11,6 +11,7 @@
     onapppasswords,
     onagents,
     onsignin,
+    onbackup,
     onremove,
   }: {
     didDoc: Record<string, unknown>;
@@ -30,6 +31,8 @@
     onagents?: () => void;
     /** Opens the wallet-confirmed OAuth consent surface (sign in to an app with a typed code). */
     onsignin?: () => void;
+    /** Opens the media-backup surface (user-held blob mirror in iCloud Drive). */
+    onbackup?: () => void;
     /** Opens the permanent-removal flow (delete on PDS + tombstone DID + local wipe). */
     onremove?: () => void;
   } = $props();
@@ -177,6 +180,10 @@
 
   {#if onagents}
     <button class="action" onclick={onagents}>My agents</button>
+  {/if}
+
+  {#if onbackup}
+    <button class="action" onclick={onbackup}>Back up media</button>
   {/if}
 
   {#if onmigrate}

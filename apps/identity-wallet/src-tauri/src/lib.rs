@@ -1,5 +1,6 @@
 pub mod agents;
 pub mod app_passwords;
+pub mod blob_backup;
 pub mod claim;
 pub mod device_key;
 pub mod diagnostics;
@@ -1323,6 +1324,10 @@ pub fn run() {
             app_passwords::create_app_password,
             app_passwords::list_app_passwords,
             app_passwords::revoke_app_password,
+            blob_backup::get_blob_backup_status,
+            blob_backup::set_blob_backup_enabled,
+            blob_backup::run_blob_backup,
+            blob_backup::restore_blob_backup,
             plc_monitor::check_identity_status,
             recovery::build_recovery_override_cmd,
             rotate_repo_key::build_repo_key_rotation_cmd,

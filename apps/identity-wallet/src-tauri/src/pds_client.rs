@@ -631,6 +631,17 @@ pub struct UploadBlobResponse {
     pub blob: serde_json::Value,
 }
 
+/// One page of a DID's blob CIDs from the public sync listing.
+///
+/// Returned from `GET /xrpc/com.atproto.sync.listBlobs` (auth: none). Used by the
+/// blob-backup sync pass to enumerate the account's blobs on its hosting PDS.
+#[derive(Debug, Deserialize)]
+pub struct ListedBlobs {
+    pub cids: Vec<String>,
+    #[serde(default)]
+    pub cursor: Option<String>,
+}
+
 /// Parameters for a Pushed Authorization Request.
 pub struct PdsParRequest<'a> {
     pub pkce_challenge: &'a str,
@@ -1318,6 +1329,23 @@ impl PdsClient {
         did: &str,
         cid: &str,
     ) -> Result<Vec<u8>, PdsClientError> {
+        self.fetch_blob_with_type(pds_url, did, cid)
+            .await
+            .map(|(bytes, _)| bytes)
+    }
+
+    /// Fetch a blob by DID and CID, also returning the server's `Content-Type` (auth: none).
+    ///
+    /// Same call as [`fetch_blob`](Self::fetch_blob), but preserves the response's
+    /// `Content-Type` header — the only place the blob's MIME type is available on the
+    /// public sync surface (`listBlobs` yields bare CIDs). The blob-backup manifest
+    /// records it so a later `uploadBlob` restore can replay the original type.
+    pub async fn fetch_blob_with_type(
+        &self,
+        pds_url: &str,
+        did: &str,
+        cid: &str,
+    ) -> Result<(Vec<u8>, Option<String>), PdsClientError> {
         let url = format!(
             "{}/xrpc/com.atproto.sync.getBlob?did={}&cid={}",
             pds_url.trim_end_matches('/'),
@@ -1343,12 +1371,61 @@ impl PdsClient {
             return Err(classify_xrpc_response("getBlob", resp).await);
         }
 
-        resp.bytes().await.map(|b| b.to_vec()).map_err(|e| {
-            note_transport_failure("getBlob", Some(&url), &e);
+        // Capture the header before the body read consumes the response.
+        let content_type = resp
+            .headers()
+            .get(reqwest::header::CONTENT_TYPE)
+            .and_then(|v| v.to_str().ok())
+            .map(str::to_string);
+
+        resp.bytes()
+            .await
+            .map(|b| (b.to_vec(), content_type))
+            .map_err(|e| {
+                note_transport_failure("getBlob", Some(&url), &e);
+                PdsClientError::NetworkError {
+                    message: format!("failed to read blob bytes: {}", e),
+                }
+            })
+    }
+
+    /// List a DID's blob CIDs on its PDS, one page (auth: none).
+    ///
+    /// Calls `GET {pds_url}/xrpc/com.atproto.sync.listBlobs?did={did}&cursor={cursor}`.
+    /// This is the source-side listing the blob-backup sync pass paginates (distinct
+    /// from the authenticated destination-side `listMissingBlobs` the migration drain
+    /// uses); the response is bare CIDs plus an optional cursor.
+    pub async fn list_blobs(
+        &self,
+        pds_url: &str,
+        did: &str,
+        cursor: Option<&str>,
+    ) -> Result<ListedBlobs, PdsClientError> {
+        let mut url = format!(
+            "{}/xrpc/com.atproto.sync.listBlobs?did={}",
+            pds_url.trim_end_matches('/'),
+            urlencoding::encode(did)
+        );
+        if let Some(cur) = cursor {
+            url.push_str(&format!("&cursor={}", urlencoding::encode(cur)));
+        }
+
+        let resp = self.client.get(&url).send().await.map_err(|e| {
+            note_transport_failure("listBlobs", Some(&url), &e);
             PdsClientError::NetworkError {
-                message: format!("failed to read blob bytes: {}", e),
+                message: format!("failed to list blobs: {}", e),
             }
-        })
+        })?;
+
+        if !resp.status().is_success() {
+            return Err(classify_xrpc_response("listBlobs", resp).await);
+        }
+
+        resp.json::<ListedBlobs>()
+            .await
+            .map_err(|e| PdsClientError::InvalidResponse {
+                message: format!("failed to parse listBlobs response: {}", e),
+            })
     }
 
     /// Reserve a signing key for a DID on the PDS (auth: none, idempotent).

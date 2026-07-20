@@ -71,6 +71,14 @@ git push origin main
 3. **App Store provisioning profile** — Certificates, Identifiers & Profiles → **Profiles**
    → **+** → **App Store Connect** (Distribution) → App ID `dev.malpercio.identitywallet`
    → select the Distribution cert from step 2 → download the `.mobileprovision`.
+
+   **iCloud capability (media backup, MM-434):** the wallet signs with the iCloud
+   Documents entitlements in `apps/identity-wallet/src-tauri/Entitlements.ios.plist`
+   (container `iCloud.dev.malpercio.identitywallet`), so the App ID must have the
+   **iCloud** capability enabled with that container assigned, and the provisioning
+   profile must be **regenerated after** the capability is added — a profile minted
+   before it will fail signing with an entitlements mismatch. Update the
+   `IOS_MOBILE_PROVISION` secret with the regenerated profile.
 4. **API key (upload)** — Users and Access → **Integrations** → App Store Connect API →
    **Team Keys** (NOT "Individual Keys" — those don't expose an Issuer ID) → generate a key
    with the **App Manager** role (it uploads builds; Admin also works). Download the `.p8`

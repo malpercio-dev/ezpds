@@ -80,6 +80,18 @@ if ! grep -q 'CODE_SIGN_ALLOW_ENTITLEMENTS_MODIFICATION = YES' "${PBXPROJ}"; the
   fail=1
 fi
 
+# The signed entitlements must come from the TRACKED per-app file (template change
+# 5) — a stock path means the app signs with the empty generated entitlements and
+# the wallet's iCloud blob-backup container silently disappears from the build.
+if ! grep -qE 'CODE_SIGN_ENTITLEMENTS = "?\.\./\.\./Entitlements\.ios\.plist"?;' "${PBXPROJ}"; then
+  echo "ios-check: FAIL — CODE_SIGN_ENTITLEMENTS does not point at the tracked src-tauri/Entitlements.ios.plist ${REINIT_HINT}" >&2
+  fail=1
+fi
+if [ ! -f "${APP_DIR}/src-tauri/Entitlements.ios.plist" ]; then
+  echo "ios-check: FAIL — ${APP_DIR}/src-tauri/Entitlements.ios.plist missing (the template's entitlements path references it)" >&2
+  fail=1
+fi
+
 # Every Apple framework the Rust staticlib needs (bundle > iOS > frameworks in
 # tauri.conf.json) must be linked on ONE shared OTHER_LDFLAGS line. A bare-string
 # grep is insufficient: a split or duplicated OTHER_LDFLAGS (two assignments for

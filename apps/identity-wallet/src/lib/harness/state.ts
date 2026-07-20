@@ -16,6 +16,7 @@ import type {
   AgentSummary,
   AgentAuditEvent,
   AppPasswordEntry,
+  BackupLocation,
 } from '$lib/ipc';
 
 /** A `did:key` multibase string that is stable for a given seed (not a real key). */
@@ -44,6 +45,31 @@ export interface FakeAgent {
   audit: AgentAuditEvent[];
 }
 
+/** One blob as the backup fake models it (a "remote" blob on the PDS, or a mirrored copy). */
+export interface FakeBlob {
+  cid: string;
+  mimeType: string;
+  size: number;
+}
+
+/**
+ * The fake's model of the user-held blob-backup mirror (Media Backup screen).
+ * The real thing lives in the iCloud Drive ubiquity container; here `remote` is
+ * what the PDS would `listBlobs` and `mirrored` is what a backup pass has copied.
+ */
+export interface FakeBlobBackup {
+  /** The user's opt-in flag. */
+  enabled: boolean;
+  /** Mirror location; `null` models iOS with iCloud Drive off (the unavailable state). */
+  location: BackupLocation | null;
+  /** Blobs the account's PDS lists (the backup pass's source set). */
+  remote: FakeBlob[];
+  /** CIDs a backup pass has mirrored so far (subset of `remote` cids). */
+  mirroredCids: string[];
+  /** When the last backup pass completed, or null if never run. */
+  lastBackupAt: string | null;
+}
+
 /** One managed identity as the fake models it. */
 export interface FakeIdentity {
   did: string;
@@ -59,6 +85,8 @@ export interface FakeIdentity {
   agents: FakeAgent[];
   /** App passwords minted for this identity (metadata only, like the real list route). */
   appPasswords: AppPasswordEntry[];
+  /** The user-held blob-backup mirror (Media Backup screen). */
+  blobBackup: FakeBlobBackup;
   /**
    * The staged recovery key of an in-flight old-model re-key (MM-411), or null when none is
    * staged. Mirrors the per-DID `rekey-staging:{did}` Keychain slot: set by `build_rekey`,
@@ -289,7 +317,28 @@ export function seedIdentity(
     alerts: [],
     agents: [],
     appPasswords: [],
+    blobBackup: seedBlobBackup(did),
     rekeyStagedRecoveryKey: null,
+  };
+}
+
+/**
+ * Default blob-backup model for a seeded identity: backup available (fake "iCloud")
+ * but not yet opted in, with a small deterministic remote blob set so the Media
+ * Backup screen has something to mirror. Script other states via
+ * `window.__harness.state()` inspection + `failNext`, or mutate before reseeding.
+ */
+export function seedBlobBackup(did: string): FakeBlobBackup {
+  return {
+    enabled: false,
+    location: 'icloud',
+    remote: [
+      { cid: `bafkharness${hashToken(`${did}:avatar`)}`, mimeType: 'image/jpeg', size: 184_320 },
+      { cid: `bafkharness${hashToken(`${did}:banner`)}`, mimeType: 'image/png', size: 512_000 },
+      { cid: `bafkharness${hashToken(`${did}:clip`)}`, mimeType: 'video/mp4', size: 8_388_608 },
+    ],
+    mirroredCids: [],
+    lastBackupAt: null,
   };
 }
 

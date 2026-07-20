@@ -59,6 +59,55 @@ describe('wallet harness scenarios', () => {
     expect(dids).toContain(ceremony.did);
   });
 
+  it('media backup flow: opt in, mirror everything, report a restore (AC2.1)', () => {
+    const state = scenarios['one-identity']();
+    const registry = buildRegistry(state);
+    const did = state.identities[0].did;
+
+    // Available but not opted in, nothing mirrored yet.
+    const before = registry.get_blob_backup_status({ did }) as {
+      enabled: boolean;
+      location: string | null;
+      backedUpCount: number;
+    };
+    expect(before.enabled).toBe(false);
+    expect(before.location).toBe('icloud');
+    expect(before.backedUpCount).toBe(0);
+
+    registry.set_blob_backup_enabled({ did, enabled: true });
+    const run = registry.run_blob_backup({ did }) as {
+      listed: number;
+      fetched: number;
+      alreadyPresent: number;
+      backedUpCount: number;
+    };
+    expect(run.fetched).toBe(run.listed);
+    expect(run.backedUpCount).toBe(run.listed);
+
+    // A second pass is incremental: everything already present.
+    const second = registry.run_blob_backup({ did }) as { fetched: number; alreadyPresent: number };
+    expect(second.fetched).toBe(0);
+    expect(second.alreadyPresent).toBe(run.listed);
+
+    const after = registry.get_blob_backup_status({ did }) as {
+      enabled: boolean;
+      backedUpCount: number;
+      backedUpBytes: number;
+      lastBackupAt: string | null;
+    };
+    expect(after.enabled).toBe(true);
+    expect(after.backedUpCount).toBe(run.listed);
+    expect(after.backedUpBytes).toBeGreaterThan(0);
+    expect(after.lastBackupAt).not.toBeNull();
+
+    const restore = registry.restore_blob_backup({ did }) as {
+      manifestCount: number;
+      uploaded: number;
+    };
+    expect(restore.uploaded).toBe(run.listed);
+    expect(restore.manifestCount).toBe(run.listed);
+  });
+
   it('claim flow persists the imported identity (AC2.1)', () => {
     const state = scenarios['fresh-install']();
     const registry = buildRegistry(state);
