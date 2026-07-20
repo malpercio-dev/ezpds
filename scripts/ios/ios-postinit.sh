@@ -12,6 +12,8 @@
 # work a template cannot express:
 #   - Patch A: verify the swift-rs --disable-sandbox fork is declared AND applied
 #   - Patch G: regenerate the AppIcon asset catalog from the checked-in brand icon
+#   - Patch H: install the tracked entitlements into the generated default file
+#     (tauri's build-time codesign reads that default path, not project.yml's)
 # followed by the full drift check (ios-check.sh), so "init + postinit" still fails
 # loudly if the template was not applied (e.g. the `template` key was dropped from
 # tauri.conf.json, or tauri-cli changed behavior).
@@ -103,6 +105,36 @@ else
   sha256_file "${APP_ICON}" > "${APPICONSET}/.ezpds-app-icon.sha256"
   echo "ios-postinit: regenerated AppIcon.appiconset from app-icon.png"
 fi
+
+# --- Patch H: install the tracked entitlements into the generated default file ---
+# `cargo tauri ios init` renders an (empty) entitlements at the DEFAULT path
+# gen/apple/<name>_iOS/<name>_iOS.entitlements, and tauri-cli's own build-time
+# codesign reads THAT path — not project.yml's — so it must exist there and be a
+# readable plist (a fileless path is the "cannot read entitlement data" signing
+# failure). Overwrite the generated file with the tracked source of truth
+# (src-tauri/Entitlements.ios.plist) so the wallet's iCloud grants — or the
+# console's deliberately-empty set — are what the app is actually signed with.
+# Same tracked-source → gitignored-tree shape as Patch G; the sha marker written
+# here is what ios-check verifies.
+TRACKED_ENT="${APP_DIR}/src-tauri/Entitlements.ios.plist"
+IOS_SRC_DIR="$(ls -d "$(dirname "${PBXPROJ}")/.."/*_iOS 2>/dev/null | head -n1 || true)"
+if [ ! -f "${TRACKED_ENT}" ]; then
+  echo "error: ${TRACKED_ENT} missing — cannot install entitlements (Patch H)." >&2
+  exit 1
+fi
+if [ -z "${IOS_SRC_DIR}" ] || [ ! -d "${IOS_SRC_DIR}" ]; then
+  echo "error: no <name>_iOS source dir under gen/apple/ — cannot install entitlements (Patch H)." >&2
+  echo "       tauri-cli's generated layout may have changed; adjust Patch H in $(basename "$0")." >&2
+  exit 1
+fi
+if command -v plutil >/dev/null 2>&1 && ! plutil -lint "${TRACKED_ENT}" >/dev/null 2>&1; then
+  echo "error: ${TRACKED_ENT} is not a valid plist — codesign would reject it (Patch H)." >&2
+  exit 1
+fi
+ENT_FILE="${IOS_SRC_DIR}/$(basename "${IOS_SRC_DIR}").entitlements"
+cp "${TRACKED_ENT}" "${ENT_FILE}"
+sha256_file "${TRACKED_ENT}" > "${IOS_SRC_DIR}/.ezpds-entitlements.sha256"
+echo "ios-postinit: installed entitlements from $(basename "${TRACKED_ENT}") into $(basename "${ENT_FILE}")"
 
 # Full verification — everything the template should have put into the generated
 # project, plus the checks above. This is what makes the CI "init + postinit" step

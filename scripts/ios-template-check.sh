@@ -95,14 +95,16 @@ for app in identity-wallet admin-companion; do
   fi
 done
 
-# --- Entitlements: tracked per-app content, wired through the template ---
-# The template points CODE_SIGN_ENTITLEMENTS at a tracked file (../../ resolves
-# from gen/apple to src-tauri), so entitlement grants survive `cargo tauri ios
-# init` instead of living in the empty generated file.
-require 'path: ../../Entitlements.ios.plist' "the tracked per-app entitlements file (wallet iCloud blob backup)"
+# --- Entitlements: tauri's default path in the template, content via Patch H ---
+# The template MUST keep tauri-cli's default entitlements path: tauri's build-time
+# codesign reads that exact path regardless of the template, so a repoint leaves it
+# fileless and signing dies with "cannot read entitlement data". The tracked per-app
+# src-tauri/Entitlements.ios.plist is the source of truth; ios-postinit's Patch H
+# copies it into the generated default file (verified by ios-check's sha marker).
+require 'path: {{app.name}}_iOS/{{app.name}}_iOS.entitlements' "tauri's default entitlements path (do NOT repoint — breaks build-time codesign)"
 for app in identity-wallet admin-companion; do
   if [ ! -f "${REPO_ROOT}/apps/${app}/src-tauri/Entitlements.ios.plist" ]; then
-    echo "ios-template-check: FAIL — apps/${app}/src-tauri/Entitlements.ios.plist missing (the template references it for every app)" >&2
+    echo "ios-template-check: FAIL — apps/${app}/src-tauri/Entitlements.ios.plist missing (Patch H installs it into every app's generated project)" >&2
     fail=1
   fi
 done

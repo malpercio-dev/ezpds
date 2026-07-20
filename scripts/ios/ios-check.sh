@@ -80,16 +80,39 @@ if ! grep -q 'CODE_SIGN_ALLOW_ENTITLEMENTS_MODIFICATION = YES' "${PBXPROJ}"; the
   fail=1
 fi
 
-# The signed entitlements must come from the TRACKED per-app file (template change
-# 5) — a stock path means the app signs with the empty generated entitlements and
-# the wallet's iCloud blob-backup container silently disappears from the build.
-if ! grep -qE 'CODE_SIGN_ENTITLEMENTS = "?\.\./\.\./Entitlements\.ios\.plist"?;' "${PBXPROJ}"; then
-  echo "ios-check: FAIL — CODE_SIGN_ENTITLEMENTS does not point at the tracked src-tauri/Entitlements.ios.plist ${REINIT_HINT}" >&2
+# Entitlements: tauri's DEFAULT path in the project + Patch H content injection.
+# tauri-cli's build-time codesign reads gen/apple/<name>_iOS/<name>_iOS.entitlements
+# regardless of what project.yml says, so (a) CODE_SIGN_ENTITLEMENTS must point at
+# that default — a repoint leaves it fileless and signing dies with "cannot read
+# entitlement data" — and (b) postinit's Patch H must have overwritten that generated
+# file with the tracked source of truth (so the wallet's iCloud grants actually reach
+# the signed app), verified by a plist lint + the sha marker.
+TRACKED_ENT="${APP_DIR}/src-tauri/Entitlements.ios.plist"
+if [ ! -f "${TRACKED_ENT}" ]; then
+  echo "ios-check: FAIL — ${TRACKED_ENT} missing (the entitlements source of truth)" >&2
   fail=1
 fi
-if [ ! -f "${APP_DIR}/src-tauri/Entitlements.ios.plist" ]; then
-  echo "ios-check: FAIL — ${APP_DIR}/src-tauri/Entitlements.ios.plist missing (the template's entitlements path references it)" >&2
+if ! grep -qE 'CODE_SIGN_ENTITLEMENTS = "?[^"/;]+_iOS/[^"/;]+_iOS\.entitlements"?;' "${PBXPROJ}"; then
+  echo "ios-check: FAIL — CODE_SIGN_ENTITLEMENTS is not tauri's default <name>_iOS/<name>_iOS.entitlements path; a repoint breaks tauri's build-time codesign ${REINIT_HINT}" >&2
   fail=1
+fi
+IOS_SRC_DIR="$(ls -d "$(dirname "${PBXPROJ}")/.."/*_iOS 2>/dev/null | head -n1 || true)"
+if [ -z "${IOS_SRC_DIR}" ]; then
+  echo "ios-check: FAIL — no <name>_iOS source dir under gen/apple/ to hold entitlements ${REINIT_HINT}" >&2
+  fail=1
+elif [ -f "${TRACKED_ENT}" ]; then
+  ENT_FILE="${IOS_SRC_DIR}/$(basename "${IOS_SRC_DIR}").entitlements"
+  ENT_MARKER="${IOS_SRC_DIR}/.ezpds-entitlements.sha256"
+  if [ ! -f "${ENT_FILE}" ]; then
+    echo "ios-check: FAIL — generated entitlements ${ENT_FILE} missing; tauri's codesign will fail to read it ${REINIT_HINT}" >&2
+    fail=1
+  elif command -v plutil >/dev/null 2>&1 && ! plutil -lint "${ENT_FILE}" >/dev/null 2>&1; then
+    echo "ios-check: FAIL — generated entitlements ${ENT_FILE} is not a valid plist (codesign 'cannot read entitlement data') ${REINIT_HINT}" >&2
+    fail=1
+  elif [ ! -f "${ENT_MARKER}" ] || [ "$(cat "${ENT_MARKER}")" != "$(sha256_file "${TRACKED_ENT}")" ]; then
+    echo "ios-check: FAIL — generated entitlements not installed from ${TRACKED_ENT} (run 'just ${RECIPE}-postinit' — Patch H) ${REINIT_HINT}" >&2
+    fail=1
+  fi
 fi
 
 # Every Apple framework the Rust staticlib needs (bundle > iOS > frameworks in
