@@ -2,10 +2,11 @@
 //
 //! Blob integrity scrub sweep.
 //!
-//! Nothing else ever re-verifies stored blob bytes against their CID after upload. Bitrot,
-//! truncation, or a bad restore stays silent until a `getBlob` — or a migration drain — trips
-//! over it: metadata present, reads failing, discovered mid-drain instead of months earlier
-//! when it was still cheap to fix. This periodic background task (template: `blob_gc.rs`, same
+//! Apart from `getBlob`'s serve-time re-hash (which only ever sees blobs someone requests),
+//! nothing re-verifies stored blob bytes against their CID after upload. Bitrot, truncation,
+//! or a bad restore stays silent until a `getBlob` — or a migration drain — trips over it:
+//! metadata present, reads failing, discovered mid-drain instead of months earlier when it
+//! was still cheap to fix. This periodic background task (template: `blob_gc.rs`, same
 //! failed-pass-leaves-timestamp-stale posture) walks every stored blob, re-hashes its file, and
 //! compares hash + size against its `blobs` row.
 //!
