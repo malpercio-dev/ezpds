@@ -209,7 +209,18 @@ by that validator**, not optional — omitting them breaks client discovery:
   "revocation_endpoint": "https://PDS.example.com/oauth/revoke",
   "pushed_authorization_request_endpoint": "https://PDS.example.com/oauth/par",
   "jwks_uri": "https://PDS.example.com/oauth/jwks",
-  "scopes_supported": ["atproto", "transition:email", "transition:generic", "transition:chat.bsky"],
+  "scopes_supported": [
+    "atproto",
+    "transition:email",
+    "transition:generic",
+    "transition:chat.bsky",
+    "repo:*",
+    "rpc:*",
+    "blob:*/*",
+    "account:*",
+    "identity:*",
+    "include:*"
+  ],
   "response_types_supported": ["code"],
   "grant_types_supported": [
     "authorization_code",
@@ -225,11 +236,25 @@ by that validator**, not optional — omitting them breaks client discovery:
   "require_pushed_authorization_requests": true,
   "authorization_response_iss_parameter_supported": true,
   "client_id_metadata_document_supported": true,
-  "agent_auth": { "…": "auth.md agent-registration discovery surface (see docs/ below)" }
+  "agent_auth": {
+    "skill": "https://PDS.example.com/auth.md",
+    "identity_endpoint": "https://PDS.example.com/agent/identity",
+    "claim_endpoint": "https://PDS.example.com/agent/identity/claim",
+    "events_endpoint": "https://PDS.example.com/agent/event/notify",
+    "identity_types_supported": ["anonymous", "identity_assertion", "service_auth"],
+    "identity_assertion": {
+      "assertion_types_supported": ["urn:ietf:params:oauth:token-type:id-jag"]
+    },
+    "events_supported": [
+      "https://schemas.workos.com/events/agent/auth/identity/assertion/revoked"
+    ]
+  }
 }
 ```
 
-Notes on the fields the March draft omitted:
+This is the complete top-level response shape `oauth_server_metadata.rs` emits
+(field for field); the only per-instance variation is the base URL substituted
+into the endpoint/`agent_auth` URLs. Notes on the fields the March draft omitted:
 - `token_endpoint_auth_signing_alg_values_supported: ["ES256"]` — required whenever
   `private_key_jwt` is advertised; the validator rejects a server that advertises
   `private_key_jwt` without an alg list including `ES256`.
@@ -240,8 +265,15 @@ Notes on the fields the March draft omitted:
 - The two extra `grant_types_supported` entries are the auth.md agent grants
   (`jwt-bearer` service-assertion exchange and the machine-pollable `claim`
   grant); see the `oauth_token/` and `agent_*` route docs.
-- `scopes_supported` reflects the granular atproto scope grammar in
-  `auth/oauth_scopes.rs`, not just `atproto`/`transition:generic`.
+- `scopes_supported` is `auth/oauth_scopes::supported_scopes()`: the four
+  fixed/transition scopes **plus** a six-entry resource-prefix *summary*
+  (`repo:*`, `rpc:*`, `blob:*/*`, `account:*`, `identity:*`, `include:*`).
+  Each prefix accepts further positional/query parameters per the granular
+  atproto scope grammar, so the grantable space is unbounded — the metadata
+  summarizes it by prefix rather than enumerating every concrete value.
+- `agent_auth` is an ATProto/auth.md discovery extension (not RFC 8414); its
+  endpoints back the agent-registration flow documented in the `agent_identity.rs`
+  / `agent_claim.rs` / `agent_event.rs` route entries in `crates/pds/AGENTS.md`.
 
 ---
 
