@@ -144,9 +144,9 @@ cargo run -p pds -- --config pds.toml
 ### Run checks
 
 ```bash
-just ci          # Full local gate (macOS — builds the iOS app crates): fmt-check, lock-check,
-                 # bruno-check, font-check, cap-check, ios-paths-check, swift-rs-check,
-                 # ios-template-check, clippy, test, audit, deny
+just ci          # Full local gate (macOS — builds the iOS app crates): every check in the
+                 # justfile `checks` recipe, then clippy, test, audit, deny (the recipe is
+                 # the authoritative list — this comment stopped enumerating after it drifted)
 just ci-pds      # Linux gate (what CI runs): the same checks, excluding the iOS app crates
 just test        # Run all tests
 just clippy      # Lint (warnings as errors)
