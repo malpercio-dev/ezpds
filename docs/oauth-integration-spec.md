@@ -8,6 +8,23 @@ Companion to: Provisioning API Spec, Mobile Architecture Spec
 
 ---
 
+> **Status (verified 2026-07-20): superseded pre-build planning draft — read §§5–5.1 as trued-up, treat the crate-integration plan as the road not taken.**
+>
+> This document was written before the OAuth server was built, and its central
+> thesis — that the PDS would *integrate an existing Rust OAuth crate rather than
+> build OAuth from scratch* (§1.1, §2, §3.1, §8, §10) — describes a path that was
+> **not** taken. The shipped PDS implements the ATProto OAuth authorization server
+> **entirely by hand** in `crates/pds/src/routes/oauth_*` (authorize/PAR/token/
+> revoke/jwks/metadata/client-metadata) and `crates/pds/src/auth/` (DPoP, client
+> resolution, scopes, JWT). `atproto-oauth-axum`, `atproto-oauth-aip`, and
+> graze-social/aip are **not** dependencies (check `Cargo.toml`); §§2–3, 8, and 10
+> are retained only as provenance for that early evaluation.
+>
+> The living, endpoint-by-endpoint source of truth is the `routes/` table in
+> [`crates/pds/AGENTS.md`](../crates/pds/AGENTS.md) (the `oauth_*` rows) and the
+> code itself. §5 (endpoints) and §5.1 (server metadata) below have been trued-up
+> to the shipped server; the rest of this doc is un-updated planning-era text.
+
 ## 1. Overview
 
 The PDS must be a compliant ATProto OAuth 2.1 authorization server so that third-party apps (Bluesky, etc.) can authenticate users and create records via XRPC. This document specifies how the PDS integrates existing Rust OAuth libraries rather than building OAuth from scratch.
@@ -152,40 +169,79 @@ Third-party apps see a PDS that accepts reads but rejects writes. This is a know
 
 ## 5. Endpoints
 
-The PDS must serve these endpoints at its base URL (the DID document's service endpoint):
+The PDS serves these endpoints at its base URL (the DID document's service
+endpoint). Every one is a hand-written handler (see the source column, all under
+`crates/pds/src/routes/`), registered in `crates/pds/src/app.rs`:
 
-| Endpoint | Source | Purpose |
-|----------|--------|---------|
-| `/.well-known/oauth-authorization-server` | atproto-oauth-axum | Server metadata (issuer, endpoints, supported flows) |
-| `/oauth/authorize` | atproto-oauth-axum | Authorization endpoint (user-facing) |
-| `/oauth/token` | atproto-oauth-axum | Token endpoint (app-facing) |
-| `/oauth/par` | atproto-oauth-axum | Pushed Authorization Request endpoint |
-| `/oauth/jwks` | atproto-oauth-axum | Public keys for token verification |
-| `/oauth/callback` | atproto-oauth-axum | Authorization callback |
+| Endpoint | Handler | Purpose |
+|----------|---------|---------|
+| `GET /.well-known/oauth-authorization-server` | `oauth_server_metadata.rs` | AS metadata (RFC 8414 + ATProto extensions) |
+| `GET /.well-known/oauth-protected-resource` | `oauth_protected_resource.rs` | Protected-resource metadata (RFC 9728); ezpds is both AS and resource server |
+| `GET/POST /oauth/authorize` | `oauth_authorize.rs` | Authorization endpoint (user-facing consent) |
+| `GET /oauth/authorize/consent-request`, `GET /oauth/authorize/status`, `POST /oauth/authorize/approve`, `POST /oauth/authorize/complete` | `oauth_authorize.rs` + wallet-confirmed-consent handlers | Consent-page data + the wallet-confirmed (passwordless) approval sub-flow |
+| `POST /oauth/par` | `oauth_par.rs` | Pushed Authorization Request endpoint (mandatory) |
+| `POST /oauth/token` | `oauth_token/` (per-grant submodules) | Token endpoint (authorization_code, refresh_token, jwt-bearer, claim) |
+| `POST /oauth/revoke` | `oauth_revoke.rs` | Token revocation (RFC 7009) |
+| `GET /oauth/jwks` | `oauth_jwks.rs` | Public keys for token verification |
+| `GET /oauth/client-metadata.json` | `oauth_client_metadata.rs` | The identity wallet's own client-metadata document |
+
+There is **no** PDS-served `/oauth/callback` — the `…/oauth/callback` string in
+the seeded client rows is the *native app's* private-use redirect URI (e.g.
+`org.obsign.identitywallet:/oauth/callback`), which the OS routes back to the
+wallet, not an endpoint on the PDS.
 
 These are in addition to the PDS's existing endpoints:
 - `/v1/*` — provisioning API
-- `/xrpc/*` — ATProto XRPC
+- `/xrpc/*` — ATProto XRPC (access tokens minted here are validated per-request against DPoP)
 
 ### 5.1 Server Metadata
 
-The `/.well-known/oauth-authorization-server` response must include:
+The `/.well-known/oauth-authorization-server` response (built by
+`oauth_server_metadata.rs`) is shaped to pass the ATProto OAuth metadata
+validator, which is stricter than plain RFC 8414. Several fields are **required
+by that validator**, not optional — omitting them breaks client discovery:
 
 ```json
 {
   "issuer": "https://PDS.example.com",
   "authorization_endpoint": "https://PDS.example.com/oauth/authorize",
   "token_endpoint": "https://PDS.example.com/oauth/token",
+  "revocation_endpoint": "https://PDS.example.com/oauth/revoke",
   "pushed_authorization_request_endpoint": "https://PDS.example.com/oauth/par",
   "jwks_uri": "https://PDS.example.com/oauth/jwks",
-  "scopes_supported": ["atproto", "transition:generic"],
+  "scopes_supported": ["atproto", "transition:email", "transition:generic", "transition:chat.bsky"],
   "response_types_supported": ["code"],
-  "grant_types_supported": ["authorization_code", "refresh_token"],
+  "grant_types_supported": [
+    "authorization_code",
+    "refresh_token",
+    "urn:ietf:params:oauth:grant-type:jwt-bearer",
+    "urn:workos:agent-auth:grant-type:claim"
+  ],
   "token_endpoint_auth_methods_supported": ["none", "private_key_jwt"],
+  "token_endpoint_auth_signing_alg_values_supported": ["ES256"],
+  "revocation_endpoint_auth_methods_supported": ["none", "private_key_jwt"],
   "code_challenge_methods_supported": ["S256"],
-  "dpop_signing_alg_values_supported": ["ES256"]
+  "dpop_signing_alg_values_supported": ["ES256"],
+  "require_pushed_authorization_requests": true,
+  "authorization_response_iss_parameter_supported": true,
+  "client_id_metadata_document_supported": true,
+  "agent_auth": { "…": "auth.md agent-registration discovery surface (see docs/ below)" }
 }
 ```
+
+Notes on the fields the March draft omitted:
+- `token_endpoint_auth_signing_alg_values_supported: ["ES256"]` — required whenever
+  `private_key_jwt` is advertised; the validator rejects a server that advertises
+  `private_key_jwt` without an alg list including `ES256`.
+- `require_pushed_authorization_requests`, `authorization_response_iss_parameter_supported`
+  (the RFC 9207 `iss` the authorize endpoint returns), and
+  `client_id_metadata_document_supported` (clients are identified by a
+  metadata-document URL, not pre-registration) must all be `true`.
+- The two extra `grant_types_supported` entries are the auth.md agent grants
+  (`jwt-bearer` service-assertion exchange and the machine-pollable `claim`
+  grant); see the `oauth_token/` and `agent_*` route docs.
+- `scopes_supported` reflects the granular atproto scope grammar in
+  `auth/oauth_scopes.rs`, not just `atproto`/`transition:generic`.
 
 ---
 
@@ -230,6 +286,15 @@ Self-hosted PDS operators run their own OAuth provider. The BYO PDS binary (Nix/
 ---
 
 ## 8. Implementation Milestones
+
+> **Historical.** These milestones are the original plan; they still name the
+> `atproto-oauth-axum` integration that was never adopted. What actually shipped
+> diverges: v0.1 delivered a hand-rolled server (validated live against the
+> official Bluesky app), and several items filed here as "v1.0" or "Later" have
+> already landed — token **revocation** (`/oauth/revoke`, RFC 7009), rate limiting
+> on the OAuth endpoints (`rate_limit.rs`), and granular **scoped tokens**
+> (`auth/oauth_scopes.rs`). Storage stays SQLite by design (PostgreSQL was
+> dropped, not deferred). Treat the list below as provenance, not a roadmap.
 
 ### v0.1 — Basic OAuth (blocks mobile-only phase)
 
