@@ -28,6 +28,7 @@
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex, OnceLock};
 
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -44,6 +45,13 @@ const BACKUP_DIR_ENV: &str = "EZPDS_BLOB_BACKUP_DIR";
 
 /// Manifest schema version (bump on breaking layout changes).
 const MANIFEST_VERSION: u32 = 1;
+
+/// Persist the manifest every N newly fetched blobs (plus the final save). Saving
+/// per-blob would rewrite a growing file thousands of times on a video-heavy
+/// account (flash wear + iCloud churn); a checkpoint loses at most N-1 entries to
+/// a crash, and those self-heal — the files exist but are unrecorded, so the next
+/// pass re-fetches and re-records them.
+const MANIFEST_SAVE_EVERY: u64 = 25;
 
 // ── Errors ───────────────────────────────────────────────────────────────────
 
@@ -486,6 +494,19 @@ async fn status_core(
     })
 }
 
+/// Per-DID mirror lock. The manifest is a read-modify-write file, and two passes
+/// can overlap for one DID (the opportunistic app-open pass racing a manual "Back
+/// up now", or a restore reading mid-backup) — blob files are content-addressed
+/// and safe either way, but an unserialized manifest save would be last-writer-wins
+/// and could transiently drop the other run's entries. Process-global registry,
+/// the same unit-of-global shape as `session_provider`'s coalescing locks.
+fn mirror_lock(did: &str) -> Arc<tokio::sync::Mutex<()>> {
+    static LOCKS: OnceLock<Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>> = OnceLock::new();
+    let registry = LOCKS.get_or_init(|| Mutex::new(HashMap::new()));
+    let mut map = registry.lock().expect("mirror lock registry poisoned");
+    map.entry(did.to_string()).or_default().clone()
+}
+
 /// One incremental sync pass: list the account's blobs on its PDS, fetch what the
 /// mirror lacks, verify each against its CID, write, and record in the manifest.
 /// Idempotent by construction (content-addressed, immutable files); degrades per-blob.
@@ -495,6 +516,9 @@ pub(crate) async fn run_backup_core(
     did: &str,
     pds_url: &str,
 ) -> Result<BlobBackupRunReport, BlobBackupError> {
+    let lock = mirror_lock(did);
+    let _guard = lock.lock().await;
+
     let mut manifest = load_manifest(root, did).await?;
     let mut known: HashMap<String, usize> = manifest
         .entries
@@ -595,11 +619,13 @@ pub(crate) async fn run_backup_core(
                 manifest.entries.push(entry);
             }
         }
-        // Persist after every blob so an interrupted run resumes where it stopped.
-        save_manifest(root, did, &manifest).await?;
-
         report.fetched += 1;
         report.fetched_bytes += bytes.len() as u64;
+        // Checkpoint periodically so an interrupted run resumes near where it
+        // stopped (see MANIFEST_SAVE_EVERY for why not per-blob).
+        if report.fetched % MANIFEST_SAVE_EVERY == 0 {
+            save_manifest(root, did, &manifest).await?;
+        }
     }
 
     manifest.last_backup_at = Some(chrono::Utc::now().to_rfc3339());
@@ -620,6 +646,9 @@ pub(crate) async fn restore_core(
     root: &Path,
     did: &str,
 ) -> Result<BlobRestoreReport, BlobBackupError> {
+    let lock = mirror_lock(did);
+    let _guard = lock.lock().await;
+
     let manifest = load_manifest(root, did).await?;
     let mut report = BlobRestoreReport {
         manifest_count: manifest.entries.len() as u64,

@@ -123,8 +123,10 @@ if ! grep -qF -- "${WALLET_CONTAINER}" "${REPO_ROOT}/apps/identity-wallet/src-ta
   fail=1
 fi
 # Least privilege: the operator console must NOT grow iCloud entitlements — only
-# the wallet's blob backup is entitled to a ubiquity container.
-if grep -q 'icloud' "${REPO_ROOT}/apps/admin-companion/src-tauri/Entitlements.ios.plist"; then
+# the wallet's blob backup is entitled to a ubiquity container. Case-insensitive,
+# and 'ubiquity' included: the ubiquity-container key has no "icloud" substring,
+# and container values are conventionally capitalized ("iCloud.…").
+if grep -qiE 'icloud|ubiquity' "${REPO_ROOT}/apps/admin-companion/src-tauri/Entitlements.ios.plist"; then
   echo "ios-template-check: FAIL — admin-companion Entitlements.ios.plist declares an iCloud entitlement (least privilege: only the wallet's blob backup needs one)" >&2
   fail=1
 fi

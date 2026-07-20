@@ -105,6 +105,11 @@ p256 = { version = "0.13", features = ["ecdsa", "pkcs8"] }
 k256 = { version = "0.13", features = ["ecdsa"] }
 aes-gcm = "0.10"
 multibase = "0.9"
+# Foundation bindings for the wallet's iCloud ubiquity-container resolution
+# (blob_backup.rs). Same major the vendored auth-session plugin pins, so the
+# workspace stays on a single objc2 family version. iOS-only at the use site;
+# per-class features are opted into there (features are additive).
+objc2-foundation = "0.3"
 rand_core = { version = "0.6", features = ["getrandom"] }
 base64 = "0.21"
 ciborium = "0.2"

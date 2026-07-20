@@ -11,6 +11,7 @@
     setBlobBackupEnabled,
     runBlobBackup,
     restoreBlobBackup,
+    ensureIdentitySession,
     sovereignLogin,
     isCodedError,
     type BlobBackupStatus,
@@ -153,12 +154,24 @@
     restoreReport = null;
     backupReport = null;
     try {
+      // Pre-flight the session with no prompt. If it's locked, unlock it passwordlessly
+      // (biometric) BEFORE the restore's own biometric gate — avoids a wasted prompt.
+      try {
+        await ensureIdentitySession(did);
+      } catch (e) {
+        if (isCodedError(e) && e.code === 'NEEDS_UNLOCK') {
+          await sovereignLogin(did);
+        } else {
+          throw e;
+        }
+      }
+
       let report: BlobRestoreReport;
       try {
         report = await restoreBlobBackup(did);
       } catch (e) {
-        // The restore needs a full-access session; a locked identity unlocks
-        // passwordlessly (biometric) and the restore retries once.
+        // A live token can lapse between the pre-flight and the command. Unlock once
+        // (passwordless biometric sovereign login) and retry.
         if (isCodedError(e) && e.code === 'SESSION_LOCKED') {
           await sovereignLogin(did);
           report = await restoreBlobBackup(did);
@@ -382,7 +395,7 @@
   .stat {
     display: flex;
     flex-direction: column;
-    gap: 2px;
+    gap: var(--space-3xs);
   }
   .stat-n {
     font-size: var(--text-title);
@@ -438,7 +451,7 @@
     padding-left: var(--space-md);
     display: flex;
     flex-direction: column;
-    gap: 4px;
+    gap: var(--space-xs);
   }
   .fail-list li {
     font-size: var(--text-label);

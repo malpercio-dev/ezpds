@@ -69,11 +69,11 @@ tauri-plugin-sharesheet = { path = "../../admin-companion/vendor/tauri-plugin-sh
 # iCloud Drive ubiquity-container resolution for the blob backup (blob_backup.rs):
 # `NSFileManager.URLForUbiquityContainerIdentifier` has no Rust-crate binding in
 # security-framework, so it is reached through the objc2 Foundation bindings — the
-# same crate family the vendored auth-session plugin already uses (versions match
-# its pins, so no duplicate majors enter the lockfile). iOS-only: every other
-# platform uses the local-directory fallback and never compiles this.
+# same crate family the vendored auth-session plugin already uses (version in the
+# workspace table, so no duplicate majors enter the lockfile). iOS-only: every
+# other platform uses the local-directory fallback and never compiles this.
 [target.'cfg(target_os = "ios")'.dependencies]
-objc2-foundation = { version = "0.3", features = ["NSFileManager", "NSURL", "NSString"] }
+objc2-foundation = { workspace = true, features = ["NSFileManager", "NSURL", "NSString"] }
 
 [dev-dependencies]
 tokio = { version = "1", features = ["macros", "rt"] }
