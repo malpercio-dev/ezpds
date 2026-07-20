@@ -971,8 +971,8 @@ mod tests {
         let did = "did:plc:corrupttest";
         let good = b"good bytes".to_vec();
         let cid_good = blob_cid(&good);
-        // The server lists a CID but serves DIFFERENT bytes for it (the MM-394 class
-        // of fault: metadata present, bytes wrong).
+        // The server lists a CID but serves DIFFERENT bytes for it (the fault class
+        // that motivated this feature: metadata present, bytes wrong).
         let cid_listed = blob_cid(b"the original bytes the server lost");
 
         server
