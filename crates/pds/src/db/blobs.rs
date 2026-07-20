@@ -19,10 +19,9 @@ use super::blocks::SqliteTransaction;
 /// authoritative for ownership. Lifecycle columns live on the ownership rows ([`BlobOwnerRow`]).
 #[derive(Debug, Clone, sqlx::FromRow)]
 pub struct BlobRow {
-    // `cid`/`account_did`/`size_bytes`/`created_at` are mapped from `SELECT *` so the row
-    // mirrors the table, but the live read paths only consume `mime_type`/`storage_path`;
+    // `account_did`/`size_bytes`/`created_at` are mapped from `SELECT *` so the row mirrors
+    // the table, but the live read paths only consume `cid`/`mime_type`/`storage_path`;
     // the rest back tests and diagnostics.
-    #[allow(dead_code)]
     pub cid: String,
     #[allow(dead_code)]
     pub account_did: String,

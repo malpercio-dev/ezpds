@@ -2,6 +2,7 @@
 //
 // Gathers: query params (did, cid), AppState
 // Processes: look up blob metadata via the DID's ownership row → read blob from filesystem
+//            → re-hash the bytes against the CID before serving
 // Returns: raw blob bytes with Content-Type header
 //
 // Implements: GET /xrpc/com.atproto.sync.getBlob
@@ -64,7 +65,25 @@ pub async fn get_blob(
             ApiError::new(ErrorCode::InternalError, "failed to read blob")
         })?;
 
-    // 3. Build response with the stored Content-Type, hardened against a stored-XSS vector.
+    // 3. Verify the bytes still hash to the row's CID before serving. Blobs are
+    //    content-addressed and served with an immutable cache header, so corrupt bytes
+    //    (bitrot, truncation, a bad restore) served even once would be cached downstream as
+    //    canonical, permanently. A mismatch is flagged on the scrub sweep's operator alarm
+    //    counter and reads as the same generic 404 as an absent blob — never the wrong bytes.
+    //    Re-hashing a few-MB buffer per read is cheap at this fleet's scale.
+    let computed = blob_store::compute_cid(&content);
+    if computed != blob.cid {
+        tracing::error!(
+            cid = %blob.cid,
+            computed = %computed,
+            path = %blob.storage_path,
+            "blob file failed integrity check on serve; refusing to serve corrupt bytes"
+        );
+        state.metrics.blob_scrub_flagged.add(1, &[]);
+        return Err(ApiError::new(ErrorCode::NotFound, "blob not found"));
+    }
+
+    // 4. Build response with the stored Content-Type, hardened against a stored-XSS vector.
     //    A blob's type is client-controlled (an uploader can declare image/svg+xml, which
     //    browsers execute script from) and this endpoint is same-origin with the OAuth/landing
     //    surface, so a rendered blob could script that origin. `default-src 'none'; sandbox`
@@ -78,10 +97,17 @@ pub async fn get_blob(
         blob.mime_type
     };
 
+    // The `immutable` directive is safe exactly because of the verification above: the CID is
+    // a content hash, so verified bytes can never change out from under a cache
+    // (docs/blob-handling-spec.md §7.3).
     Ok((
         StatusCode::OK,
         [
             (header::CONTENT_TYPE, content_type),
+            (
+                header::CACHE_CONTROL,
+                "public, max-age=31536000, immutable".to_string(),
+            ),
             (
                 header::CONTENT_SECURITY_POLICY,
                 "default-src 'none'; sandbox".to_string(),
@@ -119,8 +145,10 @@ mod tests {
         repo_engine::Cid::new_v1(DAG_CBOR, mh).to_string()
     }
 
-    /// Helper: seed an account and a blob for testing.
-    async fn seed_blob(state: &AppState, did: &str, cid: &str, mime_type: &str) {
+    /// Helper: seed an account and a blob for testing. The CID is computed from `content`
+    /// (the serve path now re-hashes the file against the row's CID), so each test should
+    /// use distinct content — the shared `/tmp` data dir keys files by CID.
+    async fn seed_blob(state: &AppState, did: &str, content: &[u8], mime_type: &str) -> String {
         sqlx::query(
             "INSERT INTO accounts (did, email, password_hash, created_at, updated_at) \
              VALUES (?, 'blob@example.com', NULL, datetime('now'), datetime('now'))",
@@ -130,32 +158,38 @@ mod tests {
         .await
         .unwrap();
 
-        // Write a real file to the filesystem.
-        let prefix = &cid[..2.min(cid.len())];
-        let storage_path = format!("blobs/{prefix}/{cid}");
+        // Write a real file to the filesystem, named by the content's actual CID.
+        let cid = crate::blob_store::compute_cid(content);
+        let storage_path = blob_storage_path(&cid);
         let abs_path = state.config.data_dir.join(&storage_path);
         std::fs::create_dir_all(abs_path.parent().unwrap()).unwrap();
-        std::fs::write(&abs_path, b"test blob content").unwrap();
+        std::fs::write(&abs_path, content).unwrap();
 
         crate::db::blobs::insert_blob(
             &state.db,
-            cid,
+            &cid,
             did,
             mime_type,
-            17, // len of "test blob content"
+            content.len() as i64,
             &storage_path,
             "2030-01-01 00:00:00",
         )
         .await
         .unwrap();
+        cid
     }
 
-    /// Happy path: returns blob content with correct MIME type.
+    fn blob_storage_path(cid: &str) -> String {
+        format!("blobs/{}/{cid}", &cid[..2])
+    }
+
+    /// Happy path: returns blob content with correct MIME type and the immutable cache
+    /// header (safe because the bytes were just verified against the CID).
     #[tokio::test]
     async fn returns_blob_with_correct_mime_type() {
         let state = test_state().await;
-        let cid = valid_cid(b"get-blob-test1");
-        seed_blob(&state, "did:plc:test1", &cid, "image/png").await;
+        let content = b"get-blob happy-path bytes";
+        let cid = seed_blob(&state, "did:plc:test1", content, "image/png").await;
 
         let response = app_with_state(state)
             .oneshot(
@@ -171,11 +205,15 @@ mod tests {
 
         assert_eq!(response.status(), StatusCode::OK);
         assert_eq!(response.headers().get("content-type").unwrap(), "image/png");
+        assert_eq!(
+            response.headers().get("cache-control").unwrap(),
+            "public, max-age=31536000, immutable"
+        );
 
         let body = axum::body::to_bytes(response.into_body(), 1024)
             .await
             .unwrap();
-        assert_eq!(body.as_ref(), b"test blob content");
+        assert_eq!(body.as_ref(), content);
     }
 
     /// Blob responses carry hardening headers so a client-controlled active type (e.g.
@@ -183,8 +221,13 @@ mod tests {
     #[tokio::test]
     async fn serves_content_security_and_nosniff_headers() {
         let state = test_state().await;
-        let cid = valid_cid(b"get-blob-svgserve");
-        seed_blob(&state, "did:plc:svgserve", &cid, "image/svg+xml").await;
+        let cid = seed_blob(
+            &state,
+            "did:plc:svgserve",
+            b"<svg>get-blob svg-serve</svg>",
+            "image/svg+xml",
+        )
+        .await;
 
         let response = app_with_state(state)
             .oneshot(
@@ -241,8 +284,8 @@ mod tests {
     #[tokio::test]
     async fn shared_blob_is_served_for_every_owner() {
         let state = test_state().await;
-        let cid = valid_cid(b"get-blob-shared");
-        seed_blob(&state, "did:plc:sharefirst", &cid, "image/png").await;
+        let content = b"get-blob shared-owner bytes";
+        let cid = seed_blob(&state, "did:plc:sharefirst", content, "image/png").await;
 
         // A second account uploads the same bytes: same CID, same file, its own ownership row.
         sqlx::query(
@@ -257,8 +300,8 @@ mod tests {
             &cid,
             "did:plc:sharesecond",
             "image/png",
-            17,
-            &format!("blobs/{}/{cid}", &cid[..2]),
+            content.len() as i64,
+            &blob_storage_path(&cid),
             "2030-01-01 00:00:00",
         )
         .await
@@ -288,8 +331,13 @@ mod tests {
     #[tokio::test]
     async fn did_mismatch_returns_404() {
         let state = test_state().await;
-        let cid = valid_cid(b"get-blob-mismatch");
-        seed_blob(&state, "did:plc:owner", &cid, "image/jpeg").await;
+        let cid = seed_blob(
+            &state,
+            "did:plc:owner",
+            b"get-blob did-mismatch bytes",
+            "image/jpeg",
+        )
+        .await;
 
         let response = app_with_state(state)
             .oneshot(
@@ -310,6 +358,49 @@ mod tests {
         let msg = body["error"]["message"].as_str().unwrap();
         assert!(!msg.contains(&cid), "message must not leak CID");
         assert!(!msg.contains("did:plc:"), "message must not leak DID");
+    }
+
+    /// A file whose bytes no longer hash to the row's CID (bitrot, truncation, bad restore)
+    /// is never served: the response is the same generic 404 as an absent blob, and the
+    /// problem is flagged on the scrub sweep's operator alarm counter. Serving it would let
+    /// downstream caches keep the corrupt bytes as canonical under the immutable header.
+    #[tokio::test]
+    async fn corrupted_blob_returns_404_and_flags() {
+        let state = test_state().await;
+        let cid = seed_blob(
+            &state,
+            "did:plc:corrupt",
+            b"get-blob pristine bytes",
+            "image/png",
+        )
+        .await;
+        // Corrupt the file in place after upload.
+        let abs_path = state.config.data_dir.join(blob_storage_path(&cid));
+        std::fs::write(&abs_path, b"rotten bytes!").unwrap();
+
+        let response = app_with_state(state.clone())
+            .oneshot(
+                Request::builder()
+                    .uri(format!(
+                        "/xrpc/com.atproto.sync.getBlob?did=did:plc:corrupt&cid={cid}"
+                    ))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+        let body = body_json(response).await;
+        assert_eq!(body["error"]["code"], "NOT_FOUND");
+        // Same generic message as an absent blob — no corruption oracle.
+        assert_eq!(body["error"]["message"], "blob not found");
+
+        let rendered = state.metrics.render().unwrap().unwrap();
+        assert!(
+            rendered.contains(r#"blob_scrub_flagged_total{otel_scope_name="pds"} 1"#),
+            "serve-time integrity failure must land on the scrub flag counter: {rendered}"
+        );
     }
 
     /// Missing query params returns 400.
