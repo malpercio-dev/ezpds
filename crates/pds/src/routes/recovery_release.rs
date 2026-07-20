@@ -1,7 +1,7 @@
 // pattern: Imperative Shell
 //
 // The escrow-assisted recovery *release gate* — the server half of recovery ceremony A
-// (`docs/design-plans/2026-07-17-key-recovery-from-shares.md` §4):
+// (`docs/archive/design-plans/2026-07-17-key-recovery-from-shares.md` §4):
 //
 //   POST /v1/recovery/initiate       — public; handle/DID → email an OTP. Always 200 (no oracle).
 //   POST /v1/recovery/release        — OTP opens a cancellable release; polling collects the share.

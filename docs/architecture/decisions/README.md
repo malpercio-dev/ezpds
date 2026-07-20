@@ -35,7 +35,7 @@ understand why the architecture is the way it is.
 | ADR | Status | Decision |
 | --- | --- | --- |
 | [0000](0000-record-architecture-decisions.md) | Accepted | Record architecture decisions as ADRs |
-| [0001](0001-client-held-rotation-key-custody.md) | Accepted | The user's wallet holds `rotationKeys[0]`; the PDS holds `rotationKeys[1]` |
+| [0001](0001-client-held-rotation-key-custody.md) | Accepted | The user's wallet holds the supreme rotation key; the PDS key ranks below it (ordering later refined to `[device, recovery, PDS]` by [0027](0027-rotation-key-ordering.md)) |
 | [0002](0002-wallet-authorized-account-migration.md) | Proposed | Account migration is wallet-authorized by default, with a PDS-signed interop fallback |
 | [0003](0003-did-plc-as-did-method.md) | Superseded by ADR-0022 | Use `did:plc` as the account identity method |
 | [0004](0004-pds-signed-repo-commits.md) | Accepted | The PDS holds the repo signing key and signs commits |

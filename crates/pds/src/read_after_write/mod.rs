@@ -192,7 +192,6 @@ fn local_lag_ms(local: &LocalRecords) -> Option<i64> {
 
     let oldest_str = oldest?;
 
-    // Parse RFC 3339 timestamp
     let oldest_time = match chrono::DateTime::parse_from_rfc3339(oldest_str) {
         Ok(dt) => dt,
         Err(err) => {
@@ -201,10 +200,8 @@ fn local_lag_ms(local: &LocalRecords) -> Option<i64> {
         }
     };
 
-    // Get current time
     let now = chrono::Local::now();
 
-    // Calculate milliseconds elapsed
     let duration = now.signed_duration_since(oldest_time);
     Some(duration.num_milliseconds())
 }

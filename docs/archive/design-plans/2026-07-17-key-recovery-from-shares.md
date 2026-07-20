@@ -11,9 +11,9 @@ Status: **accepted for implementation** — tracked in Linear as
 [MM-412](https://linear.app/malpercio/issue/MM-412) (docs truth-up, immediately
 actionable). MM-405 blocks MM-312 (passwordless). Captures the
 recovery-ceremony discussion of 2026-07-17 (capture-before-close). Builds on
-[ADR-0001](../architecture/decisions/0001-client-held-rotation-key-custody.md),
-[ADR-0002](../architecture/decisions/0002-wallet-authorized-account-migration.md), and the
-[passwordless-auth exploration](2026-07-12-passwordless-auth.md), which flagged the Shamir
+[ADR-0001](../../architecture/decisions/0001-client-held-rotation-key-custody.md),
+[ADR-0002](../../architecture/decisions/0002-wallet-authorized-account-migration.md), and the
+[passwordless-auth exploration](../../design-plans/2026-07-12-passwordless-auth.md), which flagged the Shamir
 reconstruction ceremony as a **hard prerequisite** for removing the password.
 
 ## Problem
@@ -25,7 +25,7 @@ recover anything:
   splitting of the device key at onboarding … Full 2-of-3 recovery ceremony is future
   work."
 - The docs site tells users "Obsign brings any two shares back together and reconstructs
-  the recovery key on your device" ([user/backup.md](../../sites/docs/src/content/docs/user/backup.md)) —
+  the recovery key on your device" ([user/backup.md](../../../sites/docs/src/content/docs/user/backup.md)) —
   a flow that does not exist.
 - The V046 admin-repair doctrine refuses password-reset tokens for passwordless accounts
   because "a key-sovereign account is recovered through its escrowed key share."
@@ -68,13 +68,13 @@ confirm-before-continue).
    retain complete reconstruction material for every account that ran the ceremony.
    Today's impact is nil only because of gap 1: the moment the secret is bound to real
    authority, server-side generation breaks the sovereignty claim ("the PDS holds at
-   most one share" — [data-migration-spec](../data-migration-spec.md)) for every
+   most one share" — [data-migration-spec](../../data-migration-spec.md)) for every
    existing account, retroactively and unfixably for anyone holding old backups.
 
 3. **The specs describe an impossible reconstruction.** The
-   [mobile spec §7](../mobile-architecture-spec.md) says recovery "reconstruct[s the]
+   [mobile spec §7](../../mobile-architecture-spec.md) says recovery "reconstruct[s the]
    root key in new Secure Enclave" — SE keys cannot be imported. And
-   [identity-and-key-custody.md](../architecture/identity-and-key-custody.md) says "the
+   [identity-and-key-custody.md](../../architecture/identity-and-key-custody.md) says "the
    crypto crate splits the device key 2-of-3" — wrong on both counts (not the device
    key; not split client-side). The correct model (below): the reconstructed seed
    derives a *separate software rotation key*; the new device's SE key is fresh and gets
@@ -195,7 +195,7 @@ The common case: lost/dead phone, iCloud intact, Custos alive and honest.
    per-IP rate limits, audit events, and a notification to the account email.
 3. **Release delay (default on, operator- and user-configurable).** The release enters a
    `pending` state for a window (e.g. 24h) during which any authenticated session/device
-   can cancel — a push through the [notification relay](2026-07-10-notification-relay.md)
+   can cancel — a push through the [notification relay](../../design-plans/2026-07-10-notification-relay.md)
    when that lands, email links meanwhile. The state machine (detailed in MM-409) is:
    the OTP is single-use and consumed by the opening `release` call, which returns
    `{status: "pending", available_at}`; the client then **re-polls the same
