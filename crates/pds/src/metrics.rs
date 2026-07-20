@@ -54,6 +54,14 @@ pub mod names {
     pub const BLOB_MIRROR_SYNCED: &str = "blob_mirror_synced";
     /// Gauge: unix timestamp (seconds) of the last completed blob-mirror run.
     pub const BLOB_MIRROR_LAST_RUN_TIMESTAMP: &str = "blob_mirror_last_run_timestamp";
+    /// Counter (`_total`): integrity problems the blob-scrub sweep flagged this pass (missing
+    /// files, hash/size mismatches, orphan files) that were not auto-healed.
+    pub const BLOB_SCRUB_FLAGGED: &str = "blob_scrub_flagged";
+    /// Counter (`_total`): bad/missing files the blob-scrub sweep repaired from the blob-mirror
+    /// bucket.
+    pub const BLOB_SCRUB_HEALED: &str = "blob_scrub_healed";
+    /// Gauge: unix timestamp (seconds) of the last completed blob-scrub run.
+    pub const BLOB_SCRUB_LAST_RUN_TIMESTAMP: &str = "blob_scrub_last_run_timestamp";
     /// Counter (`_total`): accounts permanently deleted by the account reaper.
     pub const ACCOUNT_REAPER_SWEPT: &str = "account_reaper_swept";
     /// Gauge: unix timestamp (seconds) of the last completed account-reaper run.
@@ -131,6 +139,9 @@ pub struct Metrics {
     pub blob_gc_last_run_timestamp: Gauge<f64>,
     pub blob_mirror_synced: Counter<u64>,
     pub blob_mirror_last_run_timestamp: Gauge<f64>,
+    pub blob_scrub_flagged: Counter<u64>,
+    pub blob_scrub_healed: Counter<u64>,
+    pub blob_scrub_last_run_timestamp: Gauge<f64>,
     pub account_reaper_swept: Counter<u64>,
     pub account_reaper_last_run_timestamp: Gauge<f64>,
     pub agent_claim_sweep_swept: Counter<u64>,
@@ -193,6 +204,11 @@ impl Metrics {
             blob_mirror_synced: meter.u64_counter(names::BLOB_MIRROR_SYNCED).build(),
             blob_mirror_last_run_timestamp: meter
                 .f64_gauge(names::BLOB_MIRROR_LAST_RUN_TIMESTAMP)
+                .build(),
+            blob_scrub_flagged: meter.u64_counter(names::BLOB_SCRUB_FLAGGED).build(),
+            blob_scrub_healed: meter.u64_counter(names::BLOB_SCRUB_HEALED).build(),
+            blob_scrub_last_run_timestamp: meter
+                .f64_gauge(names::BLOB_SCRUB_LAST_RUN_TIMESTAMP)
                 .build(),
             account_reaper_swept: meter.u64_counter(names::ACCOUNT_REAPER_SWEPT).build(),
             account_reaper_last_run_timestamp: meter

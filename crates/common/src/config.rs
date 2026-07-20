@@ -58,6 +58,9 @@ pub struct Config {
     /// Off-volume blob replication to an S3-compatible bucket (the Litestream analogue for
     /// blob bytes). Disabled unless a bucket is configured.
     pub blob_mirror: BlobMirrorConfig,
+    /// Periodic blob-integrity scrub sweep (re-hash stored bytes against their CID/size,
+    /// walk for orphans in both directions).
+    pub blob_scrub: BlobScrubConfig,
     /// Persistent firehose event log (`repo_seq`) retention / pruning configuration.
     pub firehose: FirehoseConfig,
     /// Account-lifecycle knobs (the scheduled-deletion reaper interval).
@@ -231,6 +234,41 @@ fn default_blob_mirror_key_prefix() -> String {
 
 fn default_blob_mirror_sync_interval_secs() -> u64 {
     300 // 5 minutes
+}
+
+/// Periodic blob-integrity scrub sweep configuration.
+///
+/// A background pass re-hashes every stored blob's bytes against its `blobs` row (same
+/// template as `blob_gc.rs`: failed-pass-leaves-timestamp-stale posture) and walks the blob
+/// directory for files no row owns — the orphan direction `blob_gc` never scans for, since it
+/// only ever works from DB rows outward. Bitrot, truncation, or a bad restore otherwise stays
+/// silent until a `getBlob` — or a migration drain — trips over it.
+#[derive(Debug, Clone, Deserialize)]
+pub struct BlobScrubConfig {
+    /// How often the scrub sweep runs, in seconds. Default: 21600 (6 hours) — re-hashing every
+    /// stored blob is I/O-heavy, so it runs far less often than the reference-reconciling blob
+    /// GC.
+    #[serde(default = "default_blob_scrub_interval_secs")]
+    pub interval_secs: u64,
+    /// Whether a bad file (hash/size mismatch, or a row whose file is missing) may be
+    /// auto-healed from the blob-mirror bucket (`[blob_mirror]`) when it holds a
+    /// verified-good copy. Default: true. Has no effect when the mirror itself is disabled —
+    /// a bad file is then only ever flagged, never healed.
+    #[serde(default = "default_true")]
+    pub auto_heal: bool,
+}
+
+impl Default for BlobScrubConfig {
+    fn default() -> Self {
+        Self {
+            interval_secs: default_blob_scrub_interval_secs(),
+            auto_heal: true,
+        }
+    }
+}
+
+fn default_blob_scrub_interval_secs() -> u64 {
+    6 * 60 * 60 // 6 hours
 }
 
 /// Persistent firehose event-log (`repo_seq`) retention configuration.
@@ -1198,6 +1236,8 @@ pub(crate) struct RawConfig {
     #[serde(default)]
     pub(crate) blob_mirror: BlobMirrorConfig,
     #[serde(default)]
+    pub(crate) blob_scrub: BlobScrubConfig,
+    #[serde(default)]
     pub(crate) firehose: FirehoseConfig,
     #[serde(default)]
     pub(crate) accounts: AccountsConfig,
@@ -1525,6 +1565,12 @@ pub(crate) fn apply_env_overrides(
     }
     if let Some(v) = env.get("EZPDS_BLOB_MIRROR_SYNC_INTERVAL_SECS") {
         raw.blob_mirror.sync_interval_secs = parse_u64("EZPDS_BLOB_MIRROR_SYNC_INTERVAL_SECS", v)?;
+    }
+    if let Some(v) = env.get("EZPDS_BLOB_SCRUB_INTERVAL_SECS") {
+        raw.blob_scrub.interval_secs = parse_u64("EZPDS_BLOB_SCRUB_INTERVAL_SECS", v)?;
+    }
+    if let Some(v) = env.get("EZPDS_BLOB_SCRUB_AUTO_HEAL") {
+        raw.blob_scrub.auto_heal = parse_bool_env("EZPDS_BLOB_SCRUB_AUTO_HEAL", v)?;
     }
     if let Some(v) = env.get("EZPDS_FIREHOSE_GC_INTERVAL_SECS") {
         raw.firehose.gc_interval_secs = parse_u64("EZPDS_FIREHOSE_GC_INTERVAL_SECS", v)?;
@@ -2008,6 +2054,12 @@ pub(crate) fn validate_and_build(raw: RawConfig) -> Result<Config, ConfigError> 
             ));
         }
     }
+    if raw.blob_scrub.interval_secs == 0 {
+        return Err(ConfigError::Invalid(
+            "blob_scrub.interval_secs must be > 0 (tokio::time::interval panics on a zero period)"
+                .to_string(),
+        ));
+    }
     if raw.accounts.deletion_reaper_interval_secs == 0 {
         return Err(ConfigError::Invalid(
             "accounts.deletion_reaper_interval_secs must be > 0 (tokio::time::interval panics on a zero period)"
@@ -2165,6 +2217,7 @@ pub(crate) fn validate_and_build(raw: RawConfig) -> Result<Config, ConfigError> 
         contact: raw.contact,
         blobs: raw.blobs,
         blob_mirror: raw.blob_mirror,
+        blob_scrub: raw.blob_scrub,
         firehose: raw.firehose,
         accounts: raw.accounts,
         recovery: raw.recovery,
@@ -2939,6 +2992,58 @@ mod tests {
         raw.blob_mirror.sync_interval_secs = 0;
         let err = validate_and_build(raw).unwrap_err();
         assert!(err.to_string().contains("blob_mirror.sync_interval_secs"));
+    }
+
+    #[test]
+    fn blob_scrub_defaults() {
+        let config = validate_and_build(minimal_raw()).unwrap();
+        assert_eq!(config.blob_scrub.interval_secs, 6 * 60 * 60);
+        assert!(config.blob_scrub.auto_heal);
+    }
+
+    #[test]
+    fn blob_scrub_toml_section_parses() {
+        let toml = r#"
+            data_dir = "/var/pds"
+            public_url = "https://pds.example.com"
+            available_user_domains = ["example.com"]
+
+            [blob_scrub]
+            interval_secs = 900
+            auto_heal = false
+        "#;
+        let raw: RawConfig = toml::from_str(toml).unwrap();
+        let config = validate_and_build(raw).unwrap();
+
+        assert_eq!(config.blob_scrub.interval_secs, 900);
+        assert!(!config.blob_scrub.auto_heal);
+    }
+
+    #[test]
+    fn env_override_blob_scrub() {
+        let env = HashMap::from([
+            (
+                "EZPDS_BLOB_SCRUB_INTERVAL_SECS".to_string(),
+                "1800".to_string(),
+            ),
+            (
+                "EZPDS_BLOB_SCRUB_AUTO_HEAL".to_string(),
+                "false".to_string(),
+            ),
+        ]);
+        let raw = apply_env_overrides(minimal_raw(), &env).unwrap();
+        let config = validate_and_build(raw).unwrap();
+
+        assert_eq!(config.blob_scrub.interval_secs, 1800);
+        assert!(!config.blob_scrub.auto_heal);
+    }
+
+    #[test]
+    fn blob_scrub_zero_interval_is_rejected() {
+        let mut raw = minimal_raw();
+        raw.blob_scrub.interval_secs = 0;
+        let err = validate_and_build(raw).unwrap_err();
+        assert!(err.to_string().contains("blob_scrub.interval_secs"));
     }
 
     #[test]

@@ -13,6 +13,7 @@ mod app;
 mod auth;
 mod blob_gc;
 mod blob_mirror;
+mod blob_scrub;
 mod blob_store;
 mod code_gen;
 mod crawler;
@@ -491,7 +492,7 @@ async fn run() -> anyhow::Result<()> {
     // stored blobs the bucket is missing (verified against their CIDs first) and deletes
     // bucket objects whose rows are gone; like the GC tasks it is best-effort and runs for
     // the life of the process, so the handle is dropped on shutdown rather than joined.
-    if let Some(mirror) = blob_mirror {
+    if let Some(mirror) = blob_mirror.clone() {
         let mirror_interval =
             std::time::Duration::from_secs(state.config.blob_mirror.sync_interval_secs);
         let _blob_mirror_sweep =
@@ -502,6 +503,20 @@ async fn run() -> anyhow::Result<()> {
             "blob-mirror sweep started"
         );
     }
+
+    // Spawn the periodic blob-integrity scrub sweep. Each pass re-hashes every stored blob
+    // against its row and walks the blob directory for orphan files in both directions
+    // (rows whose file is missing, and files no row owns); when the mirror is configured and
+    // `[blob_scrub] auto_heal` is on, a bad or missing file is repaired from the bucket's
+    // verified copy. Like the GC tasks it is best-effort and runs for the life of the process,
+    // so the handle is dropped on shutdown rather than joined.
+    let scrub_interval = std::time::Duration::from_secs(state.config.blob_scrub.interval_secs);
+    let _blob_scrub = blob_scrub::spawn_blob_scrub(state.clone(), blob_mirror, scrub_interval);
+    tracing::info!(
+        interval_secs = state.config.blob_scrub.interval_secs,
+        auto_heal = state.config.blob_scrub.auto_heal,
+        "blob integrity scrub sweep started"
+    );
 
     // Spawn the periodic `repo_seq` firehose event-log retention sweep. It prunes rows below the
     // configured age/count watermark so the durable log backing

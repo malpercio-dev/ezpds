@@ -44,6 +44,10 @@ pub struct SweepSnapshot {
     /// posture: `swept` counts bucket objects synced (uploads + deletes), and a stale
     /// pass is the alarm.
     pub blob_mirror: Option<SweepRun>,
+    /// The blob scrub is a verifier rather than a reclaimer: `swept` counts integrity
+    /// problems flagged this pass (missing files, hash/size mismatches, orphan files) that
+    /// were not auto-healed — the operator alarm count. A stale pass is still the alarm.
+    pub blob_scrub: Option<SweepRun>,
     pub firehose_gc: Option<SweepRun>,
     pub account_reaper: Option<SweepRun>,
     pub agent_claim_sweep: Option<SweepRun>,
@@ -66,6 +70,10 @@ impl SweepStatus {
 
     pub fn record_blob_mirror(&self, run: SweepRun) {
         self.write().blob_mirror = Some(run);
+    }
+
+    pub fn record_blob_scrub(&self, run: SweepRun) {
+        self.write().blob_scrub = Some(run);
     }
 
     pub fn record_firehose_gc(&self, run: SweepRun) {

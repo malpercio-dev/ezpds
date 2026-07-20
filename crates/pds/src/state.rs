@@ -191,6 +191,7 @@ pub async fn test_state_with_plc_url(plc_directory_url: String) -> AppState {
             contact: common::ContactConfig::default(),
             blobs: BlobsConfig::default(),
             blob_mirror: common::BlobMirrorConfig::default(),
+            blob_scrub: common::BlobScrubConfig::default(),
             firehose: FirehoseConfig::default(),
             accounts: common::AccountsConfig::default(),
             recovery: common::RecoveryConfig::default(),

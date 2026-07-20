@@ -84,6 +84,9 @@ struct SweepStates {
     /// The blob-mirror sweep's last completed pass (`swept` = bucket objects synced:
     /// uploads + deletes); `null` while the mirror is not configured, like an idle sweep.
     blob_mirror: Option<SweepState>,
+    /// The blob-scrub sweep's last completed pass (`swept` = unhealed integrity problems
+    /// flagged this pass: missing files, hash/size mismatches, orphan files).
+    blob_scrub: Option<SweepState>,
     firehose_gc: Option<SweepState>,
     account_reaper: Option<SweepState>,
     agent_claim_sweep: Option<SweepState>,
@@ -197,6 +200,7 @@ pub async fn admin_health(
         sweeps: SweepStates {
             blob_gc: sweeps.blob_gc.map(SweepState::from),
             blob_mirror: sweeps.blob_mirror.map(SweepState::from),
+            blob_scrub: sweeps.blob_scrub.map(SweepState::from),
             firehose_gc: sweeps.firehose_gc.map(SweepState::from),
             account_reaper: sweeps.account_reaper.map(SweepState::from),
             agent_claim_sweep: sweeps.agent_claim_sweep.map(SweepState::from),
@@ -277,6 +281,7 @@ mod tests {
         );
         assert_eq!(json["sweeps"]["blobGc"], serde_json::Value::Null);
         assert_eq!(json["sweeps"]["blobMirror"], serde_json::Value::Null);
+        assert_eq!(json["sweeps"]["blobScrub"], serde_json::Value::Null);
         assert_eq!(json["sweeps"]["firehoseGc"], serde_json::Value::Null);
         assert_eq!(json["sweeps"]["accountReaper"], serde_json::Value::Null);
         assert_eq!(json["sweeps"]["agentClaimSweep"], serde_json::Value::Null);
@@ -336,6 +341,12 @@ mod tests {
                 completed_at: 1_750_000_100,
                 swept: 3,
             });
+        state
+            .sweeps
+            .record_blob_scrub(crate::sweep_status::SweepRun {
+                completed_at: 1_750_000_200,
+                swept: 1,
+            });
 
         let router = app(state);
         let (status, json) = get_health(router, Some("test-admin-token")).await;
@@ -350,6 +361,8 @@ mod tests {
         assert_eq!(json["sweeps"]["blobGc"]["swept"], 7);
         assert_eq!(json["sweeps"]["blobMirror"]["completedAt"], 1_750_000_100);
         assert_eq!(json["sweeps"]["blobMirror"]["swept"], 3);
+        assert_eq!(json["sweeps"]["blobScrub"]["completedAt"], 1_750_000_200);
+        assert_eq!(json["sweeps"]["blobScrub"]["swept"], 1);
         assert_eq!(json["sweeps"]["firehoseGc"], serde_json::Value::Null);
     }
 }
