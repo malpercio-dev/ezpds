@@ -4,14 +4,11 @@ description: The configuration and environment surface that tunes a deployment.
 ---
 
 A Custos deployment is configured through environment variables and a small set
-of runtime settings. This page is the operator's map of that surface.
-
-:::note[This page will become generated]
-In a later phase this reference is generated directly from the PDS configuration
-type in Rust (serde field names + doc-comments), and a `just docs-check` parity
-gate fails the build when a config field has no entry here — the same anti-drift
-model as `just bruno-check`. Until then, treat this as the hand-authored scaffold.
-:::
+of runtime settings. This page is the operator's map of that surface — the
+knobs you'll actually set, with the context to set them safely. The exhaustive,
+drift-proof inventory of every setting is the
+[generated configuration reference](/operator/reference/config/), produced
+directly from the server's configuration types.
 
 ## Secrets
 
@@ -53,6 +50,6 @@ changing the environment variable alone.
 | `EZPDS_AVAILABLE_USER_DOMAINS` | Domains users may claim handles on. |
 | `EZPDS_LABELER_WATCHED` | Comma-separated labeler DIDs to watch; hosted accounts they label are flagged on the operator console. Off (empty) by default — see [Moderation § Labeler watching](/operator/moderation/#labeler-watching--flagged-accounts). |
 
-The authoritative list is the PDS configuration type in the codebase; the table
-above is the operator-facing subset. The generated version (see the note above)
-will make this list exhaustive and drift-proof.
+The table above is the operator-facing subset. Every remaining setting — with
+its type, default, and doc-comment — is in the
+[generated configuration reference](/operator/reference/config/).

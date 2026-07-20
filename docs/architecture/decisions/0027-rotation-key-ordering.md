@@ -5,7 +5,7 @@
 - **Deciders:** malpercio
 - **Related:** ADR-0001 (client-held rotation-key custody), ADR-0002
   (wallet-authorized account migration),
-  `docs/design-plans/2026-07-17-key-recovery-from-shares.md` (MM-405 epic)
+  `docs/archive/design-plans/2026-07-17-key-recovery-from-shares.md` (MM-405 epic)
 
 ## Context
 

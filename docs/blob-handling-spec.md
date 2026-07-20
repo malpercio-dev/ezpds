@@ -6,6 +6,15 @@ v0.1 Draft — March 2026
 
 Companion to: Provisioning API Spec, Mobile Architecture Spec, Data Migration Spec
 
+> **2026-07 update:** the durability story this draft deferred to "v1.0
+> (production)" has partially shipped ahead of that framing: blob bytes now
+> replicate off-volume to an S3-compatible bucket mirror with restore-on-boot,
+> the write path is crash-durable (temp file + fsync + atomic rename), and a
+> periodic integrity scrub sweeps for row/file mismatches. See
+> [design-plans/2026-07-18-blobstore-resilience.md](design-plans/2026-07-18-blobstore-resilience.md)
+> for what shipped and what remains, and [deploy.md](deploy.md) for the
+> operator-facing configuration.
+
 ---
 
 ## 1. Overview

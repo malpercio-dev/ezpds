@@ -285,7 +285,6 @@ impl<'a> LocalViewer<'a> {
         .await
         {
             Ok(service_jwt) => {
-                // Build URL-encoded query string with percent-encoded URIs
                 let query_parts: Vec<String> = uri_list
                     .iter()
                     .map(|uri| format!("uris={}", urlencoding::encode(uri)))

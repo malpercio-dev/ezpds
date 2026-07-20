@@ -412,7 +412,7 @@ The iOS app is not:
 > re-derives that recovery key, and signs a PLC op *installing a freshly generated
 > Secure-Enclave device key* at `rotationKeys[0]` (the reconstructed key is never
 > the device key). See
-> [Key recovery from Shamir shares](design-plans/2026-07-17-key-recovery-from-shares.md)
+> [Key recovery from Shamir shares](archive/design-plans/2026-07-17-key-recovery-from-shares.md)
 > for the authoritative design and
 > [identity-and-key-custody.md](architecture/identity-and-key-custody.md) for the
 > current custody model.

@@ -1,6 +1,10 @@
 # Blobstore Resilience
 
-**Status: survey + recommendations (2026-07-18). Nothing here is implemented yet.**
+**Status: survey + recommendations (2026-07-18). Partially implemented:**
+recommendations 1–3 shipped — the off-volume bucket mirror (#367), crash-durable
+blob writes (#375), and the periodic integrity scrub sweep (MM-431, #376).
+Recommendations 4 (verify on serve) and 5 (migration-drain ergonomics) and the
+wallet-side iCloud blob backup remain open.
 
 Prompted by the MM-394 real-identity migration
 ([validation record](../validation/2026-07-17-mm-394-real-identity-migration.md)):
