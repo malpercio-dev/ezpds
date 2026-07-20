@@ -154,9 +154,9 @@ pub async fn account_largest_blob(
 
 /// Look up a blob's physical metadata by CID, regardless of owner.
 ///
-/// Part of the blob-store query surface; the live read paths are all ownership-scoped
-/// ([`get_owned_blob`]), so only tests consume the global lookup.
-#[allow(dead_code)]
+/// The live read paths are otherwise all ownership-scoped ([`get_owned_blob`]); this
+/// ownership-independent lookup backs `blob_scrub`'s pre-write existence recheck (has
+/// `blob_gc` reclaimed this exact CID since the scrub pass's snapshot?) and tests.
 pub async fn get_blob_by_cid(pool: &SqlitePool, cid: &str) -> Result<Option<BlobRow>, sqlx::Error> {
     sqlx::query_as::<_, BlobRow>("SELECT * FROM blobs WHERE cid = ?")
         .bind(cid)

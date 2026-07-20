@@ -329,17 +329,8 @@ pub async fn restore_missing_blobs(
             }
         }
 
-        match mirror.s3.get_object(&mirror.key_for(&row.cid)).await {
+        match mirror.fetch_verified(&row).await {
             Ok(Some(content)) => {
-                if let Err(reason) = verify_content(&row, &content) {
-                    stats.errors += 1;
-                    tracing::error!(
-                        cid = %row.cid,
-                        reason = %reason,
-                        "blob restore: bucket copy failed verification; not restoring it"
-                    );
-                    continue;
-                }
                 if let Err(e) = write_restored(&abs_path, &content).await {
                     stats.errors += 1;
                     tracing::error!(cid = %row.cid, error = %e, "blob restore: failed to write restored file");
@@ -357,7 +348,7 @@ pub async fn restore_missing_blobs(
             }
             Err(e) => {
                 stats.errors += 1;
-                tracing::error!(cid = %row.cid, error = %e, "blob restore: failed to fetch bucket copy");
+                tracing::error!(cid = %row.cid, error = %e, "blob restore: bucket copy fetch or verification failed; not restoring it");
             }
         }
     }

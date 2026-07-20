@@ -229,24 +229,37 @@ async fn check_row(data_dir: &Path, row: &PhysicalBlob) -> Result<RowCheck, Stri
 }
 
 /// Attempt to repair a bad or missing file from the mirror bucket's verified copy. `Ok(true)`
-/// on a successful heal, `Ok(false)` when the bucket has no copy either (an `Err` covers a
-/// transfer failure or a bucket copy that itself fails verification — never trusted).
+/// on a successful heal, `Ok(false)` when the bucket has no copy either or the row is gone by
+/// write time (an `Err` covers a transfer failure or a bucket copy that itself fails
+/// verification — never trusted).
 ///
 /// Writing goes through [`blob_store::store_blob`] — the same durable write path (temp file +
 /// fsync + atomic rename) every upload uses — rather than a bespoke write, so a healed file is
 /// exactly as crash-durable as a freshly uploaded one. Recomputing the CID here is redundant
 /// (the content is already verified against `row.cid`) but harmless: the resulting path is
 /// identical to `row.storage_path` by construction.
+///
+/// `row` comes from the scrub pass's `list_all_blobs` snapshot taken at the top of the pass,
+/// but `blob_gc` runs independently and can reclaim the exact same CID (its last owner's grace
+/// period expiring) between that snapshot and this write. Re-checking the row's existence
+/// immediately before writing narrows that window to "one query, then one write" — without it,
+/// a heal could resurrect bytes on disk with no owning row, creating precisely the orphan-file
+/// leak this sweep exists to catch rather than cause.
 async fn heal(state: &AppState, mirror: &BlobMirror, row: &PhysicalBlob) -> Result<bool, String> {
-    match mirror.fetch_verified(row).await? {
-        Some(content) => {
-            blob_store::store_blob(&state.config.data_dir, &content, &row.mime_type)
-                .await
-                .map_err(|e| format!("write healed file: {e}"))?;
-            Ok(true)
-        }
-        None => Ok(false),
+    let Some(content) = mirror.fetch_verified(row).await? else {
+        return Ok(false);
+    };
+    if blobs::get_blob_by_cid(&state.db, &row.cid)
+        .await
+        .map_err(|e| format!("recheck row: {e}"))?
+        .is_none()
+    {
+        return Ok(false);
     }
+    blob_store::store_blob(&state.config.data_dir, &content, &row.mime_type)
+        .await
+        .map_err(|e| format!("write healed file: {e}"))?;
+    Ok(true)
 }
 
 /// Walk `{data_dir}/blobs/{prefix}/{cid}` and return every stored CID found on disk (the
@@ -398,6 +411,48 @@ mod tests {
         assert_eq!(stats.missing_files, 0);
         let on_disk = tokio::fs::read(local_path(&state, &cid)).await.unwrap();
         assert_eq!(on_disk, b"restorable");
+    }
+
+    #[tokio::test]
+    async fn heal_refuses_to_resurrect_a_blob_whose_row_was_deleted() {
+        // The scrub pass's blob list is a snapshot taken at the top of the pass; blob_gc runs
+        // independently and can reclaim the exact same CID (row + file) between that snapshot
+        // and this heal's write. Simulate that race directly against `heal()`.
+        let (state, _dir, fake, mirror) = build_test_mirror().await;
+        let cid = add_blob(&state, "did:plc:scrubrace", b"raced bytes", "image/png").await;
+        fake.put(
+            &format!("blobs/{cid}"),
+            "image/png",
+            b"raced bytes".to_vec(),
+        );
+
+        let rows = blobs::list_all_blobs(&state.db).await.unwrap();
+        let row = rows.iter().find(|r| r.cid == cid).unwrap().clone();
+
+        // blob_gc reclaims the CID: ownership row, physical row, and file all gone.
+        sqlx::query("DELETE FROM blob_owners WHERE cid = ?")
+            .bind(&cid)
+            .execute(&state.db)
+            .await
+            .unwrap();
+        sqlx::query("DELETE FROM blobs WHERE cid = ?")
+            .bind(&cid)
+            .execute(&state.db)
+            .await
+            .unwrap();
+        tokio::fs::remove_file(local_path(&state, &cid))
+            .await
+            .unwrap();
+
+        let healed = heal(&state, &mirror, &row).await.unwrap();
+        assert!(
+            !healed,
+            "a CID blob_gc already reclaimed must never be resurrected"
+        );
+        assert!(
+            tokio::fs::metadata(local_path(&state, &cid)).await.is_err(),
+            "no file must appear on disk for a reclaimed CID with no owning row"
+        );
     }
 
     #[tokio::test]
