@@ -14,9 +14,9 @@ The question explored here: can we drop the password entirely — forcing accoun
 through the wallet (already the de facto reality) — and what does that actually cost?
 
 The phase-0.1 review docs already point in this direction: "promote the device/biometric
-to a first-class session factor" ([gap analysis](../2026-06-30-pds-phase-0.1-gap-and-competitive-analysis.md),
+to a first-class session factor" ([gap analysis](../archive/2026-06-30-pds-phase-0.1-gap-and-competitive-analysis.md),
 citing cirrus's passwordless passkey auth; reiterated as passkey/WebAuthn session auth in
-the [review update](../2026-07-01-pds-phase-0.1-review-update.md)). This exploration turns
+the [review update](../archive/2026-07-01-pds-phase-0.1-review-update.md)). This exploration turns
 that note into a concrete shape.
 
 ## What the password actually gates today

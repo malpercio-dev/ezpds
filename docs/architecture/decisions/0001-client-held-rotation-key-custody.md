@@ -68,7 +68,7 @@ external signer.
   any two shares yields real identity-controlling authority. Both reconstruction
   ceremonies — escrow-assisted (iCloud + released PDS escrow) and escrow-free
   (the user's two offline shares) — are implemented; see
-  [Key recovery from Shamir shares](../../design-plans/2026-07-17-key-recovery-from-shares.md).
+  [Key recovery from Shamir shares](../../archive/design-plans/2026-07-17-key-recovery-from-shares.md).
   The device key's own 72-hour override supremacy remains the fast in-window
   net; share reconstruction is the recovery-of-last-resort for a lost device key.
 - **Signatures must be low-S normalized** on every path (plc.directory rejects

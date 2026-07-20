@@ -63,7 +63,7 @@ Each asset has a distinct risk profile and recovery strategy:
 > never reconstruct the user's key, and it does not: the reconstruction ceremony
 > now exists and runs **client-side** (the wallet combines ≥2 shares, re-derives
 > the recovery keypair, and signs the rotation op itself). See
-> [Key recovery from Shamir shares](design-plans/2026-07-17-key-recovery-from-shares.md)
+> [Key recovery from Shamir shares](archive/design-plans/2026-07-17-key-recovery-from-shares.md)
 > (authoritative) and
 > [identity-and-key-custody.md](architecture/identity-and-key-custody.md).
 

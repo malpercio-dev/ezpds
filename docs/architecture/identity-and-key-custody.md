@@ -114,7 +114,7 @@ Managed by the Obsign identity-wallet app
   interop accounts, so those keep the two-key layout. The full design — the derived
   recovery key, the versioned share envelope, and both recovery paths — is
   specified in
-  [Key recovery from Shamir shares](../design-plans/2026-07-17-key-recovery-from-shares.md).
+  [Key recovery from Shamir shares](../archive/design-plans/2026-07-17-key-recovery-from-shares.md).
 
 ## What the custody model buys us
 

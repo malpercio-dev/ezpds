@@ -7,7 +7,7 @@ Single source of truth for all ezpds phases.
 > official-Bluesky-app service (OAuth/DPoP login, posts, images, **video**, email
 > verification), and the live bsky.social migration round trip with the Secure-Enclave
 > key at `rotationKeys[0]` throughout. Records: the closed
-> [daily-driver readiness audit](2026-07-08-daily-driver-readiness-audit.md) and the
+> [daily-driver readiness audit](archive/2026-07-08-daily-driver-readiness-audit.md) and the
 > [MM-241 execution record](validation/2026-07-07-mm-241-live-migration.md). Live issue
 > state: Linear (milestone "v0.1 — Mobile-Only PDS", marked complete).
 
