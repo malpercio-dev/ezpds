@@ -96,7 +96,7 @@ if ! grep -qE 'CODE_SIGN_ENTITLEMENTS = "?[^"/;]+_iOS/[^"/;]+_iOS\.entitlements"
   echo "ios-check: FAIL — CODE_SIGN_ENTITLEMENTS is not tauri's default <name>_iOS/<name>_iOS.entitlements path; a repoint breaks tauri's build-time codesign ${REINIT_HINT}" >&2
   fail=1
 fi
-IOS_SRC_DIR="$(ls -d "$(dirname "${PBXPROJ}")/.."/*_iOS 2>/dev/null | head -n1 || true)"
+IOS_SRC_DIR="$(ios_src_dir "${PBXPROJ}")"
 if [ -z "${IOS_SRC_DIR}" ]; then
   echo "ios-check: FAIL — no <name>_iOS source dir under gen/apple/ to hold entitlements ${REINIT_HINT}" >&2
   fail=1

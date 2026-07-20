@@ -117,7 +117,7 @@ fi
 # Same tracked-source → gitignored-tree shape as Patch G; the sha marker written
 # here is what ios-check verifies.
 TRACKED_ENT="${APP_DIR}/src-tauri/Entitlements.ios.plist"
-IOS_SRC_DIR="$(ls -d "$(dirname "${PBXPROJ}")/.."/*_iOS 2>/dev/null | head -n1 || true)"
+IOS_SRC_DIR="$(ios_src_dir "${PBXPROJ}")"
 if [ ! -f "${TRACKED_ENT}" ]; then
   echo "error: ${TRACKED_ENT} missing — cannot install entitlements (Patch H)." >&2
   exit 1
