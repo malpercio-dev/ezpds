@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <!--
+    The operator console's iOS code-signing entitlements. Referenced by the shared
+    XcodeGen template (scripts/ios/project.yml, `entitlements > path`), so both
+    apps carry a tracked entitlements file; `just ios-template-check` guards the
+    wiring. Deliberately empty: the console requests no special capabilities —
+    in particular no cloud-container storage (that entitlement belongs only to
+    the wallet's media backup; the console's Secure-Enclave key and keychain
+    items need none). The template-check gate enforces this stays empty.
+  -->
+</dict>
+</plist>

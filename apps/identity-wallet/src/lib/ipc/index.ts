@@ -26,4 +26,5 @@ export * from './agents';
 export * from './oauth-consent';
 export * from './qr-scan';
 export * from './app-passwords';
+export * from './blob-backup';
 export { isCodedError } from './errors';

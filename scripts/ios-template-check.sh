@@ -95,6 +95,42 @@ for app in identity-wallet admin-companion; do
   fi
 done
 
+# --- Entitlements: tracked per-app content, wired through the template ---
+# The template points CODE_SIGN_ENTITLEMENTS at a tracked file (../../ resolves
+# from gen/apple to src-tauri), so entitlement grants survive `cargo tauri ios
+# init` instead of living in the empty generated file.
+require 'path: ../../Entitlements.ios.plist' "the tracked per-app entitlements file (wallet iCloud blob backup)"
+for app in identity-wallet admin-companion; do
+  if [ ! -f "${REPO_ROOT}/apps/${app}/src-tauri/Entitlements.ios.plist" ]; then
+    echo "ios-template-check: FAIL — apps/${app}/src-tauri/Entitlements.ios.plist missing (the template references it for every app)" >&2
+    fail=1
+  fi
+done
+# The wallet's blob backup needs the iCloud ubiquity container; the container id
+# must also be declared to the Files app in Info.ios.plist (NSUbiquitousContainers).
+WALLET_ENT="${REPO_ROOT}/apps/identity-wallet/src-tauri/Entitlements.ios.plist"
+WALLET_CONTAINER='iCloud.dev.malpercio.identitywallet'
+if [ -f "${WALLET_ENT}" ]; then
+  for key in 'com.apple.developer.ubiquity-container-identifiers' 'com.apple.developer.icloud-services' "${WALLET_CONTAINER}"; do
+    if ! grep -qF -- "${key}" "${WALLET_ENT}"; then
+      echo "ios-template-check: FAIL — wallet Entitlements.ios.plist lost '${key}' (the iCloud Drive blob backup mirror needs it)" >&2
+      fail=1
+    fi
+  done
+fi
+if ! grep -qF -- "${WALLET_CONTAINER}" "${REPO_ROOT}/apps/identity-wallet/src-tauri/Info.ios.plist"; then
+  echo "ios-template-check: FAIL — wallet Info.ios.plist lost the NSUbiquitousContainers entry for ${WALLET_CONTAINER} (the backup mirror would be invisible in the Files app)" >&2
+  fail=1
+fi
+# Least privilege: the operator console must NOT grow iCloud entitlements — only
+# the wallet's blob backup is entitled to a ubiquity container. Case-insensitive,
+# and 'ubiquity' included: the ubiquity-container key has no "icloud" substring,
+# and container values are conventionally capitalized ("iCloud.…").
+if grep -qiE 'icloud|ubiquity' "${REPO_ROOT}/apps/admin-companion/src-tauri/Entitlements.ios.plist"; then
+  echo "ios-template-check: FAIL — admin-companion Entitlements.ios.plist declares an iCloud entitlement (least privilege: only the wallet's blob backup needs one)" >&2
+  fail=1
+fi
+
 # --- Both apps must actually point at the template ---
 for app in identity-wallet admin-companion; do
   conf="${REPO_ROOT}/apps/${app}/src-tauri/tauri.conf.json"

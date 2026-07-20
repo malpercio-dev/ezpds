@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <!--
+    The wallet's iOS code-signing entitlements. Referenced by the committed XcodeGen
+    template (scripts/ios/project.yml, `entitlements > path`), so the content is
+    tracked here and survives every `cargo tauri ios init` — the same treatment as
+    Info.ios.plist. `just ios-template-check` guards the wiring.
+
+    iCloud Documents (the ubiquity container) backs the user-held blob backup
+    (src-tauri/src/blob_backup.rs): a content-addressed mirror of the account's
+    media in the app's iCloud Drive container, user-visible in the Files app —
+    the one backup layer that survives the PDS itself failing. The container id
+    follows Apple's `iCloud.<bundle-id>` convention and must exist on the App ID
+    (Apple Developer portal: enable the iCloud capability with this container and
+    regenerate the App Store provisioning profile, or TestFlight signing fails
+    with an entitlements mismatch).
+  -->
+  <key>com.apple.developer.icloud-container-identifiers</key>
+  <array>
+    <string>iCloud.dev.malpercio.identitywallet</string>
+  </array>
+  <key>com.apple.developer.icloud-services</key>
+  <array>
+    <string>CloudDocuments</string>
+  </array>
+  <key>com.apple.developer.ubiquity-container-identifiers</key>
+  <array>
+    <string>iCloud.dev.malpercio.identitywallet</string>
+  </array>
+</dict>
+</plist>

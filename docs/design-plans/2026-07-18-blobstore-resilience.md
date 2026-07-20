@@ -1,10 +1,11 @@
 # Blobstore Resilience
 
 **Status: survey + recommendations (2026-07-18). Partially implemented:**
-recommendations 1–3 shipped — the off-volume bucket mirror (#367), crash-durable
-blob writes (#375), and the periodic integrity scrub sweep (MM-431, #376).
-Recommendations 4 (verify on serve) and 5 (migration-drain ergonomics) and the
-wallet-side iCloud blob backup remain open.
+recommendations 1–4 shipped — the off-volume bucket mirror (#367), crash-durable
+blob writes (#375), the periodic integrity scrub sweep (MM-431, #376), and
+verify-on-serve (MM-432, #377) — and the wallet-side iCloud blob backup shipped
+as MM-434 (see that section). Recommendation 5 (migration-drain ergonomics,
+MM-433) remains open.
 
 Prompted by the MM-394 real-identity migration
 ([validation record](../validation/2026-07-17-mm-394-real-identity-migration.md)):
@@ -113,6 +114,15 @@ offer "continue with an explicit loss manifest" so one dead blob doesn't park th
 migration and the user makes an informed skip instead of abandoning the run.
 
 ## Wallet-side option: user-held blob backup to iCloud
+
+**Implemented (MM-434, 2026-07-20):** the wallet's "Back up media" surface
+(`apps/identity-wallet/src-tauri/src/blob_backup.rs` + `MediaBackupScreen`) ships this
+design — opt-in mirror with size shown, CID-verified incremental sync, per-blob-degrading
+restore, tracked iCloud entitlements riding the XcodeGen template, and a harness fake.
+The ubiquity container is reached via `objc2-foundation`'s `NSFileManager` binding rather
+than a swift-rs bridge (same call, no new Swift build surface). Still open from this
+section: the migration drain's local-mirror fallback source, and `BGProcessingTask`
+background scheduling.
 
 A complement to the server tiers above, not a substitute — but it is the only layer
 that survives *the PDS itself* failing, which is exactly the MM-394 scenario (the

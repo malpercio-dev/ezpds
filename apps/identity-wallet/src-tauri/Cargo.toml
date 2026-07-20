@@ -66,9 +66,19 @@ tauri-plugin-barcode-scanner = { workspace = true }
 # Tauri API directly, avoiding the upstream's stale 0.0.1 guest package and API dependency.
 tauri-plugin-sharesheet = { path = "../../admin-companion/vendor/tauri-plugin-sharesheet" }
 
+# iCloud Drive ubiquity-container resolution for the blob backup (blob_backup.rs):
+# `NSFileManager.URLForUbiquityContainerIdentifier` has no Rust-crate binding in
+# security-framework, so it is reached through the objc2 Foundation bindings — the
+# same crate family the vendored auth-session plugin already uses (version in the
+# workspace table, so no duplicate majors enter the lockfile). iOS-only: every
+# other platform uses the local-directory fallback and never compiles this.
+[target.'cfg(target_os = "ios")'.dependencies]
+objc2-foundation = { workspace = true, features = ["NSFileManager", "NSURL", "NSString"] }
+
 [dev-dependencies]
 tokio = { version = "1", features = ["macros", "rt"] }
 httpmock = "0.8"
+tempfile = { workspace = true }
 
 [build-dependencies]
 # Tauri-specific — declared locally

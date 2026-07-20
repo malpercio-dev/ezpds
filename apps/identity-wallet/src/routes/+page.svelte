@@ -40,6 +40,7 @@
   import RotateRepoKeyScreen from '$lib/components/home/RotateRepoKeyScreen.svelte';
   import RekeyReviewScreen from '$lib/components/home/RekeyReviewScreen.svelte';
   import AppPasswordsScreen from '$lib/components/home/AppPasswordsScreen.svelte';
+  import MediaBackupScreen from '$lib/components/home/MediaBackupScreen.svelte';
   import AlertDetailScreen from '$lib/components/home/AlertDetailScreen.svelte';
   import RecoveryOverrideScreen from '$lib/components/home/RecoveryOverrideScreen.svelte';
   import MyAgentsScreen from '$lib/components/home/MyAgentsScreen.svelte';
@@ -47,7 +48,7 @@
   import OAuthConsentApprovalScreen from '$lib/components/home/OAuthConsentApprovalScreen.svelte';
   import SettingsScreen from '$lib/components/home/SettingsScreen.svelte';
   import RemoveIdentityScreen from '$lib/components/home/RemoveIdentityScreen.svelte';
-  import { createAccount, confirmShareBackup, confirmRekey, confirmRecoveryBackup, getPendingRecoveryEpilogue, registerCreatedIdentity, listIdentities, listPendingRemovals, getStoredDidDoc, checkIdentityStatus, isCodedError, type CreateAccountError, type OAuthError, type IdentityInfo, type VerifiedClaimOp, type ClaimResult, type RekeyResult, type UnauthorizedChange, type CollectedShare } from '$lib/ipc';
+  import { createAccount, confirmShareBackup, confirmRekey, confirmRecoveryBackup, getPendingRecoveryEpilogue, registerCreatedIdentity, listIdentities, listPendingRemovals, getStoredDidDoc, checkIdentityStatus, getBlobBackupStatus, runBlobBackup, isCodedError, type CreateAccountError, type OAuthError, type IdentityInfo, type VerifiedClaimOp, type ClaimResult, type RekeyResult, type UnauthorizedChange, type CollectedShare } from '$lib/ipc';
   import { authenticateBiometric } from '$lib/biometric';
   import { normalizePlcDocToW3c, extractHandle } from '$lib/did-doc-utils';
   import IdentityListHome from '$lib/components/home/IdentityListHome.svelte';
@@ -88,6 +89,7 @@
     | 'rekey_backup'
     | 'rekey_success'
     | 'app_passwords'
+    | 'media_backup'
     | 'remove_identity'
     | 'alert_detail'
     | 'recovery_override'
@@ -251,6 +253,17 @@
         const identities = await listIdentities();
         if (identities.length > 0) {
           step = 'home';
+          // Opportunistic media-backup pass for opted-in identities: incremental and
+          // idempotent by construction (content-addressed mirror), fire-and-forget so
+          // the home screen never waits on it, and silent — failures surface the next
+          // time the user opens the Media Backup screen.
+          for (const did of identities) {
+            getBlobBackupStatus(did)
+              .then((s) => (s.enabled ? runBlobBackup(did) : null))
+              .catch((e) => {
+                console.warn('opportunistic media backup pass failed:', did, e);
+              });
+          }
         }
       } catch (e) {
         console.error('listIdentities failed on mount:', e);
@@ -675,6 +688,7 @@
         : undefined}
       onapppasswords={() => goTo('app_passwords')}
       onagents={() => goTo('my_agents')}
+      onbackup={() => goTo('media_backup')}
       onsignin={selectedDid?.startsWith('did:plc:')
         ? () => goTo('oauth_consent_approval')
         : undefined}
@@ -754,6 +768,9 @@
 
   {:else if step === 'app_passwords'}
     <AppPasswordsScreen did={selectedDid ?? ''} onback={() => goTo('identity_detail')} />
+
+  {:else if step === 'media_backup'}
+    <MediaBackupScreen did={selectedDid ?? ''} onback={() => goTo('identity_detail')} />
 
   {:else if step === 'migration_start'}
     <MigrationStartScreen

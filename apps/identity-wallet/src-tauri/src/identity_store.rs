@@ -193,6 +193,7 @@ impl IdentityStore {
             did_doc_account(did),
             plc_log_account(did),
             oauth_tokens_account(did),
+            crate::blob_backup::backup_enabled_account(did),
         ];
 
         for entry in entries {
