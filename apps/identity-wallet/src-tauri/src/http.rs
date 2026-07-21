@@ -91,7 +91,7 @@ impl CustosClient {
             .await
             .map_err(|error| {
                 Self::record_transport("custosPost", &url, &error);
-                error
+                error.without_url()
             })
     }
 
@@ -103,7 +103,7 @@ impl CustosClient {
         let url = format!("{}{}", self.base_url, path);
         self.client.get(&url).send().await.map_err(|error| {
             Self::record_transport("custosGet", &url, &error);
-            error
+            error.without_url()
         })
     }
 
@@ -124,7 +124,7 @@ impl CustosClient {
             .await
             .map_err(|error| {
                 Self::record_transport("custosGetAuthenticated", &url, &error);
-                error
+                error.without_url()
             })
     }
 
@@ -147,7 +147,7 @@ impl CustosClient {
             .await
             .map_err(|error| {
                 Self::record_transport("custosPostAuthenticated", &url, &error);
-                error
+                error.without_url()
             })
     }
 
@@ -272,13 +272,16 @@ mod tests {
         let marker = "create-flow-secret@example.com";
         let before = crate::diagnostics::export().matches("custosPost").count();
 
-        client
+        let error = client
             .post(
                 "/v1/accounts/mobile?claim=diagnostic-secret",
                 &serde_json::json!({"email": marker, "handle": "private.example"}),
             )
             .await
             .unwrap_err();
+        let displayed_error = error.to_string();
+        assert!(!displayed_error.contains("diagnostic-secret"));
+        assert!(!displayed_error.contains("/v1/accounts/mobile"));
 
         let report = crate::diagnostics::export();
         assert_eq!(report.matches("custosPost").count(), before + 1);

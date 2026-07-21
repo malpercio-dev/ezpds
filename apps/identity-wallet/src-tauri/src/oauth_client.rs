@@ -543,6 +543,8 @@ impl OAuthClient {
                             Some(&token_htu),
                             &e,
                         );
+                        let e = e.without_url();
+                        tracing::error!(error = %e, "token refresh nonce retry network error");
                         OAuthError::TokenRefreshFailed
                     })?;
 
