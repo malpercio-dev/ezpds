@@ -105,6 +105,7 @@ Source: `apps/admin-companion/src/lib/ipc.ts`
 | --- | --- |
 | `biometric_enabled` | App command |
 | `cancel_transfer` | App command |
+| `export_diagnostics` | App command |
 | `generate_claim_code` | App command |
 | `get_account_storage` | App command |
 | `get_account_usage` | App command |

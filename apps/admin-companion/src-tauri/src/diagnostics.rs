@@ -130,8 +130,16 @@ pub fn export_diagnostics() -> String {
 mod tests {
     use super::*;
 
+    static TEST_LOCK: Mutex<()> = Mutex::new(());
+
+    fn reset_sink() {
+        sink().lock().unwrap_or_else(|e| e.into_inner()).clear();
+    }
+
     #[test]
     fn unreachable_and_rejected_include_only_relay_host_and_fixed_codes() {
+        let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        reset_sink();
         let credential = "admin-token-super-secret";
         let claim_code = "claim-code-super-secret";
         let envelope = "X-Admin-Signature: signed-envelope-super-secret";
@@ -159,6 +167,8 @@ mod tests {
 
     #[test]
     fn ring_buffer_is_bounded() {
+        let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        reset_sink();
         for _ in 0..CAPACITY + 50 {
             record_unreachable(Operation::SignedRelayRequest, "https://relay.example");
         }

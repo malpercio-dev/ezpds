@@ -937,7 +937,6 @@ pub async fn request_crawl(pairing_id: &str) -> Result<RequestCrawlResult, Relay
 
 /// Send an already-built [`SignedRequest`] and return the raw response.
 async fn send(req: SignedRequest) -> Result<reqwest::Response, RelayClientError> {
-    let relay_url = req.url.clone();
     let method = reqwest::Method::from_bytes(req.method.as_bytes()).map_err(|_| {
         RelayClientError::BadResponse {
             message: "invalid HTTP method".into(),
@@ -948,13 +947,13 @@ async fn send(req: SignedRequest) -> Result<reqwest::Response, RelayClientError>
         builder = builder.header(*name, value);
     }
     let response = builder.send().await.map_err(|error| {
-        diagnostics::record_unreachable(diagnostics::Operation::SignedRelayRequest, &relay_url);
+        diagnostics::record_unreachable(diagnostics::Operation::SignedRelayRequest, &req.url);
         unreachable(error)
     })?;
     if !response.status().is_success() {
         diagnostics::record_relay_rejected(
             diagnostics::Operation::SignedRelayRequest,
-            &relay_url,
+            &req.url,
             response.status().as_u16(),
         );
     }
