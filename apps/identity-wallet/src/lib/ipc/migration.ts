@@ -115,6 +115,28 @@ export type AccountStatus = {
 };
 
 /**
+ * Which half of a single blob's transfer failed. Mirrors the Rust `BlobTransferDirection`
+ * (`#[serde(rename_all = "lowercase")]`): `source` = the source PDS couldn't serve `getBlob`;
+ * `destination` = the destination PDS refused `uploadBlob`.
+ */
+export type BlobTransferDirection = 'source' | 'destination';
+
+/**
+ * One blob the drain gave up on after per-blob retries — an entry in the loss manifest (MM-433).
+ * Mirrors the Rust `BlobLoss` (`#[serde(rename_all = "camelCase")]`).
+ */
+export type BlobLoss = {
+  /** The blob's CID (content hash). */
+  cid: string;
+  /** An `at://` URI of a record that references this blob, so the user knows what loses its media. */
+  recordUri: string;
+  /** Which side of the transfer failed after retries. */
+  direction: BlobTransferDirection;
+  /** The last error text (server-supplied when available). */
+  reason: string;
+};
+
+/**
  * Error returned by the migration orchestrator commands.
  * Matches MigrationError in migration_orchestrator.rs with
  * #[serde(tag = "code", rename_all = "SCREAMING_SNAKE_CASE")] — codes must match exactly.
@@ -139,6 +161,11 @@ export type MigrationError =
   | { code: 'DESTINATION_CONFLICT'; message: string }
   | { code: 'REPO_TRANSFER_FAILED'; message: string }
   | { code: 'BLOB_TRANSFER_FAILED'; message: string }
+  // The drain finished a full pass but some blobs permanently failed after per-blob retries. Not a
+  // hard failure: the transferable blobs are already on the destination and the phase is NOT
+  // advanced. `losses` is the manifest — the screen offers an informed "continue without them"
+  // (re-invoke transferBlobs with acceptLoss=true) instead of abandoning the run.
+  | { code: 'BLOB_DRAIN_INCOMPLETE'; losses: BlobLoss[] }
   | { code: 'PREFERENCES_TRANSFER_FAILED'; message: string }
   | { code: 'VERIFICATION_INCOMPLETE'; imported: number; expected: number }
   | { code: 'ACTIVATION_FAILED'; message: string }
@@ -201,8 +228,16 @@ export const createDestinationAccount = (
 /** Export the source repo CAR and import it into the destination. */
 export const transferRepo = (did: string): Promise<void> => invoke('transfer_repo', { did });
 
-/** Drain the destination's missing-blob set from the source (cursor-paginated). */
-export const transferBlobs = (did: string): Promise<void> => invoke('transfer_blobs', { did });
+/**
+ * Drain the destination's missing-blob set from the source (cursor-paginated), degrading per-blob.
+ *
+ * Rejects with `BLOB_DRAIN_INCOMPLETE` (carrying the loss manifest) when some blobs permanently fail
+ * and `acceptLoss` is false — the screen shows the manifest and lets the user decide. Re-invoke with
+ * `acceptLoss = true` to record those blobs as an accepted loss and advance the migration anyway
+ * (`verifyImport` then tolerates the gap).
+ */
+export const transferBlobs = (did: string, acceptLoss = false): Promise<void> =>
+  invoke('transfer_blobs', { did, acceptLoss });
 
 /** Copy the source account preferences to the destination. */
 export const transferPreferences = (did: string): Promise<void> =>

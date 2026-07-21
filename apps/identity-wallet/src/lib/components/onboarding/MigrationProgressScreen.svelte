@@ -7,11 +7,12 @@
     verifyImport,
     isCodedError,
     type AccountStatus,
+    type BlobLoss,
     type MigrationError,
   } from '$lib/ipc';
   import Spinner from '$lib/components/ui/Spinner.svelte';
   import Button from '$lib/components/ui/Button.svelte';
-  import { describeBlobTransferDetail } from '$lib/migration-errors';
+  import { describeBlobLoss, describeBlobTransferDetail } from '$lib/migration-errors';
 
   let {
     did,
@@ -52,6 +53,13 @@
   // The carried err.message, rendered as subordinate diagnostic detail beneath the headline
   // (e.g. which blob CID, and whether the source or destination side broke).
   let failureDetail = $state<string | null>(null);
+  // The BLOB_DRAIN_INCOMPLETE loss manifest (MM-433): blobs that couldn't be transferred after
+  // per-blob retries. Non-null renders the manifest UI — an informed choice between "continue
+  // without them" and "try again" — instead of the generic single-error box.
+  let lossManifest = $state<BlobLoss[] | null>(null);
+  // Set once the user chooses to proceed past a loss manifest: re-runs the blobs leg with
+  // acceptLoss=true so the orchestrator records the skip and advances (verify then tolerates it).
+  let acceptBlobLoss = $state(false);
 
   function statusGlyph(state: LegState): string {
     switch (state) {
@@ -97,6 +105,8 @@
           return "Couldn't transfer the repository.";
         case 'BLOB_TRANSFER_FAILED':
           return "Couldn't transfer one or more blobs.";
+        case 'BLOB_DRAIN_INCOMPLETE':
+          return "Some media couldn't be transferred.";
         case 'PREFERENCES_TRANSFER_FAILED':
           return "Couldn't transfer preferences.";
         case 'VERIFICATION_INCOMPLETE':
@@ -144,10 +154,13 @@
   async function runMigration() {
     failure = null;
     failureDetail = null;
+    lossManifest = null;
     try {
       await runLeg('account', () => createDestinationAccount(did, email, inviteCode));
       await runLeg('repo', () => transferRepo(did));
-      await runLeg('blobs', () => transferBlobs(did));
+      // acceptBlobLoss stays false on a normal run and each Retry, so a dead blob surfaces the
+      // manifest; "Continue without them" flips it true and re-runs so the leg advances anyway.
+      await runLeg('blobs', () => transferBlobs(did, acceptBlobLoss));
       await runLeg('preferences', () => transferPreferences(did));
 
       legStates.verify = 'active';
@@ -164,13 +177,31 @@
         }
       }
 
-      failure = describeError(raw);
-      failureDetail = describeErrorDetail(raw);
+      // A drain that only partially failed isn't a dead end: render the loss manifest and let the
+      // user make an informed choice, rather than the generic single-error box.
+      if (isCodedError(raw) && (raw as MigrationError).code === 'BLOB_DRAIN_INCOMPLETE') {
+        lossManifest = (raw as Extract<MigrationError, { code: 'BLOB_DRAIN_INCOMPLETE' }>).losses;
+      } else {
+        failure = describeError(raw);
+        failureDetail = describeErrorDetail(raw);
+      }
       onerror(toMigrationError(raw));
     }
   }
 
   function retry() {
+    for (const leg of LEGS) {
+      if (legStates[leg.id] === 'failed') legStates[leg.id] = 'pending';
+    }
+    runMigration();
+  }
+
+  // Accept the loss manifest: skip the blobs that couldn't be transferred and resume. Re-runs the
+  // blobs leg with acceptLoss=true (the orchestrator records the skip and advances; verify then
+  // subtracts the accepted loss), then carries on through preferences + verify.
+  function continueWithLoss() {
+    acceptBlobLoss = true;
+    lossManifest = null;
     for (const leg of LEGS) {
       if (legStates[leg.id] === 'failed') legStates[leg.id] = 'pending';
     }
@@ -199,7 +230,31 @@
     {/each}
   </ul>
 
-  {#if failure}
+  {#if lossManifest}
+    <div class="loss-box" role="alert">
+      <p class="loss-title">
+        {lossManifest.length}
+        {lossManifest.length === 1 ? 'file' : 'files'} couldn't be transferred
+      </p>
+      <p class="loss-lede">
+        These media files couldn't be moved and won't appear on your new account. Posts that use
+        them will show a broken image. You can continue without them or try the transfer again.
+      </p>
+      <ul class="loss-list">
+        {#each lossManifest as loss (loss.cid)}
+          <li class="loss-item">
+            <span class="loss-detail">{describeBlobLoss(loss)}</span>
+            <span class="loss-record">Used by {loss.recordUri}</span>
+            <span class="loss-cid">{loss.cid}</span>
+          </li>
+        {/each}
+      </ul>
+      <div class="loss-actions">
+        <Button onclick={continueWithLoss}>Continue without them</Button>
+        <Button variant="secondary" onclick={retry}>Try again</Button>
+      </div>
+    </div>
+  {:else if failure}
     <div class="error-box" role="alert">
       <p class="error-text">{failure}</p>
       {#if failureDetail}
@@ -315,5 +370,68 @@
     margin: var(--space-xs) 0 0;
     line-height: 1.4;
     word-break: break-word;
+  }
+
+  .loss-box {
+    background: var(--color-critical-surface);
+    border-radius: var(--radius-md);
+    padding: var(--space-md);
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-sm);
+  }
+  .loss-title {
+    font-size: var(--text-body);
+    font-weight: var(--weight-semibold);
+    color: var(--color-critical);
+    margin: 0;
+  }
+  .loss-lede {
+    font-size: var(--text-label);
+    color: var(--color-ink);
+    margin: 0;
+    line-height: 1.4;
+  }
+  .loss-list {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-sm);
+    max-height: 40vh;
+    overflow-y: auto;
+  }
+  .loss-item {
+    display: flex;
+    flex-direction: column;
+    gap: 1px;
+    padding: var(--space-sm);
+    background: var(--color-surface);
+    border: 1px solid var(--color-line);
+    border-radius: var(--radius-md);
+    min-width: 0;
+  }
+  .loss-detail {
+    font-size: var(--text-label);
+    color: var(--color-ink);
+    line-height: 1.4;
+    word-break: break-word;
+  }
+  .loss-record {
+    font-size: var(--text-label);
+    color: var(--color-muted);
+    word-break: break-all;
+  }
+  .loss-cid {
+    font-family: var(--font-mono);
+    font-size: var(--text-label);
+    color: var(--color-muted);
+    word-break: break-all;
+  }
+  .loss-actions {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-sm);
   }
 </style>

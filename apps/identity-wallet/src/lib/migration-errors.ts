@@ -7,6 +7,8 @@
 // string function (no Svelte, no IPC), matching the repo's tested-utility pattern (see
 // claim-errors.ts).
 
+import type { BlobLoss } from '$lib/ipc';
+
 const FETCH_BLOB_PATTERN = /^failed to fetch blob (\S+): ([\s\S]+)$/;
 const UPLOAD_BLOB_PATTERN = /^failed to upload blob (\S+): ([\s\S]+)$/;
 
@@ -33,4 +35,18 @@ export function describeBlobTransferDetail(message: string): string {
   }
 
   return trimmed;
+}
+
+/**
+ * Render one entry of a BLOB_DRAIN_INCOMPLETE loss manifest as human-readable detail, attributing
+ * the failure to the right side of the transfer — the structured twin of `describeBlobTransferDetail`
+ * (`source` = the previous server couldn't serve it; `destination` = the new server refused it).
+ */
+export function describeBlobLoss(loss: BlobLoss): string {
+  const side =
+    loss.direction === 'source'
+      ? 'Your previous server could not provide it'
+      : 'Your new server refused it';
+  const reason = loss.reason.trim();
+  return reason.length > 0 ? `${side}: ${reason}` : side;
 }

@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
-import { describeBlobTransferDetail } from './migration-errors';
+import type { BlobLoss } from '$lib/ipc';
+import { describeBlobLoss, describeBlobTransferDetail } from './migration-errors';
 
 describe('describeBlobTransferDetail', () => {
   it('attributes a fetch failure to the source (previous) server', () => {
@@ -37,5 +38,33 @@ describe('describeBlobTransferDetail', () => {
       'failed to list missing blobs: XRPC 500',
     );
     expect(describeBlobTransferDetail('  something unexpected  ')).toBe('something unexpected');
+  });
+});
+
+describe('describeBlobLoss', () => {
+  const loss = (over: Partial<BlobLoss>): BlobLoss => ({
+    cid: 'bafkreiabc',
+    recordUri: 'at://did:plc:abc/app.bsky.feed.post/1',
+    direction: 'source',
+    reason: 'XRPC 500',
+    ...over,
+  });
+
+  it('attributes a source-side loss to the previous server', () => {
+    expect(describeBlobLoss(loss({ direction: 'source', reason: 'XRPC 500' }))).toBe(
+      'Your previous server could not provide it: XRPC 500',
+    );
+  });
+
+  it('attributes a destination-side loss to the new server', () => {
+    expect(describeBlobLoss(loss({ direction: 'destination', reason: 'rejected' }))).toBe(
+      'Your new server refused it: rejected',
+    );
+  });
+
+  it('omits the reason clause when the reason is empty', () => {
+    expect(describeBlobLoss(loss({ direction: 'source', reason: '   ' }))).toBe(
+      'Your previous server could not provide it',
+    );
   });
 });
