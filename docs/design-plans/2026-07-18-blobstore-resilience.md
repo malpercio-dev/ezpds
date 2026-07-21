@@ -1,11 +1,15 @@
 # Blobstore Resilience
 
-**Status: survey + recommendations (2026-07-18). Partially implemented:**
-recommendations 1–4 shipped — the off-volume bucket mirror (#367), crash-durable
-blob writes (#375), the periodic integrity scrub sweep (MM-431, #376), and
-verify-on-serve (MM-432, #377) — and the wallet-side iCloud blob backup shipped
-as MM-434 (see that section). Recommendation 5 (migration-drain ergonomics,
-MM-433) remains open.
+**Status: survey + recommendations (2026-07-18). All five recommendations
+shipped:** the off-volume bucket mirror (#367), crash-durable blob writes
+(#375), the periodic integrity scrub sweep (MM-431, #376), verify-on-serve
+(MM-432, #377), and the migration-drain per-blob degradation + loss manifest
+(MM-433, #383) — plus the wallet-side iCloud blob backup as MM-434 (see that
+section). The only follow-ons still open are the two wallet-side items noted in
+the MM-434 section: the migration drain accepting the local iCloud mirror as a
+*fallback blob source*, and `BGProcessingTask` background scheduling — polish on
+top of the shipped resilience, not core durability. This plan is therefore a
+candidate for archival once those follow-ons are tracked.
 
 Prompted by the MM-394 real-identity migration
 ([validation record](../validation/2026-07-17-mm-394-real-identity-migration.md)):
@@ -107,11 +111,25 @@ observable (metric + log on every unverified serve), never a silent config defau
 
 ### 5. Migration-drain ergonomics (wallet + server)
 
-Already noted in the MM-394 record: `MigrationError::BlobTransferFailed` carries the
-failing CID and direction, but the wallet's `describeError` drops it. Beyond that fix,
-the drain should degrade per-blob rather than all-or-nothing: retry each blob, then
-offer "continue with an explicit loss manifest" so one dead blob doesn't park the
-migration and the user makes an informed skip instead of abandoning the run.
+**Shipped (MM-433, #383).** The drain now degrades per-blob rather than
+all-or-nothing: each blob is retried individually, and any that still can't be
+transferred are collected into a loss manifest the wallet surfaces — which media,
+which post references it, and whether the source PDS couldn't serve it or the
+destination refused it — so a single dead blob no longer parks the migration and
+the user makes an informed skip instead of abandoning the run. Verification
+tolerates the accepted skips, and the progress screen shows the specific per-blob
+failure detail (fetch-from-source vs upload-to-destination) rather than a generic
+"couldn't transfer one or more blobs." The one piece from this recommendation
+still open is having the drain fall back to the wallet's local iCloud mirror
+(§"Wallet-side option") when the source PDS fails `getBlob` — see that section's
+"Still open" note.
+
+Original survey text: already noted in the MM-394 record,
+`MigrationError::BlobTransferFailed` carries the failing CID and direction, but
+the wallet's `describeError` dropped it. Beyond that fix, the drain should degrade
+per-blob rather than all-or-nothing: retry each blob, then offer "continue with an
+explicit loss manifest" so one dead blob doesn't park the migration and the user
+makes an informed skip instead of abandoning the run.
 
 ## Wallet-side option: user-held blob backup to iCloud
 
