@@ -65,14 +65,6 @@ fn jwt_exp_claim(token: &str) -> Option<u64> {
     payload.get("exp")?.as_u64()
 }
 
-/// Extract just the host from a request URL for a redacted diagnostics breadcrumb — never the
-/// path or query (which can carry a DID or token). `None` if the URL doesn't parse.
-fn host_of(url: &str) -> Option<String> {
-    reqwest::Url::parse(url)
-        .ok()
-        .and_then(|u| u.host_str().map(str::to_string))
-}
-
 /// How this client authenticates its XRPC requests.
 ///
 /// `Dpop` is the wallet's normal OAuth mode (DPoP-bound access token + proof header,
@@ -397,11 +389,7 @@ impl OAuthClient {
             // Record a redacted breadcrumb (host + transport category only). The escrow deposit
             // and every other authenticated owner write go through this client, so without this
             // a genuine connect/timeout/read failure leaves no trace in the diagnostics log.
-            crate::diagnostics::record_transport(
-                "oauthRequest",
-                host_of(url).as_deref(),
-                crate::diagnostics::transport_category(&e),
-            );
+            crate::diagnostics::record_reqwest_transport("oauthRequest", Some(url), &e);
             OAuthError::NotAuthenticated
         })
     }
@@ -449,11 +437,7 @@ impl OAuthClient {
             // Redact the URL from the error before logging (see `send_with_dpop`).
             let e = e.without_url();
             tracing::error!(error = %e, "OAuthClient post_bytes network error");
-            crate::diagnostics::record_transport(
-                "oauthUpload",
-                host_of(url).as_deref(),
-                crate::diagnostics::transport_category(&e),
-            );
+            crate::diagnostics::record_reqwest_transport("oauthUpload", Some(url), &e);
             OAuthError::NotAuthenticated
         })
     }
@@ -524,6 +508,8 @@ impl OAuthClient {
             .send()
             .await
             .map_err(|e| {
+                crate::diagnostics::record_reqwest_transport("oauthRefresh", Some(&token_htu), &e);
+                let e = e.without_url();
                 tracing::error!(error = %e, "token refresh network error");
                 OAuthError::TokenRefreshFailed
             })?;
@@ -551,7 +537,14 @@ impl OAuthClient {
                     ])
                     .send()
                     .await
-                    .map_err(|_| OAuthError::TokenRefreshFailed)?;
+                    .map_err(|e| {
+                        crate::diagnostics::record_reqwest_transport(
+                            "oauthRefreshNonceRetry",
+                            Some(&token_htu),
+                            &e,
+                        );
+                        OAuthError::TokenRefreshFailed
+                    })?;
 
                 if resp2.status().as_u16() == 200 {
                     return self.apply_token_response(resp2).await;
@@ -614,6 +607,8 @@ impl OAuthClient {
             .send()
             .await
             .map_err(|e| {
+                crate::diagnostics::record_reqwest_transport("oauthBearerRefresh", Some(&url), &e);
+                let e = e.without_url();
                 tracing::error!(error = %e, "Bearer token refresh network error");
                 OAuthError::TokenRefreshFailed
             })?;
@@ -990,6 +985,37 @@ mod tests {
             updated.access_token, "new_access_token",
             "session must have new token"
         );
+    }
+
+    #[tokio::test]
+    async fn lazy_refresh_transport_failure_records_one_redacted_breadcrumb() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let base_url = format!("http://{}", listener.local_addr().unwrap());
+        drop(listener);
+
+        let keypair = DPoPKeypair::get_or_create().expect("keypair must exist");
+        let session = make_session("private-access-token", "private-refresh-token", 0);
+        let client = OAuthClient::new_for_test(keypair, session, base_url);
+        let before = crate::diagnostics::export().matches("oauthRefresh").count();
+
+        let error = client
+            .get("/resource?did=did:plc:private-identity")
+            .await
+            .unwrap_err();
+        assert!(matches!(error, OAuthError::TokenRefreshFailed));
+
+        let report = crate::diagnostics::export();
+        assert_eq!(report.matches("oauthRefresh").count(), before + 1);
+        for secret in [
+            "private-access-token",
+            "private-refresh-token",
+            "private-identity",
+        ] {
+            assert!(
+                !report.contains(secret),
+                "secret leaked into report: {secret}"
+            );
+        }
     }
 
     #[tokio::test]

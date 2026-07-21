@@ -55,6 +55,10 @@ pub struct CustosClient {
 }
 
 impl CustosClient {
+    fn record_transport(op: &str, url: &str, error: &reqwest::Error) {
+        crate::diagnostics::record_reqwest_transport(op, Some(url), error);
+    }
+
     /// Create a new `CustosClient` with the compile-time base URL.
     pub fn new() -> Self {
         Self {
@@ -80,7 +84,15 @@ impl CustosClient {
     /// before attempting to deserialize the body.
     pub async fn post<T: Serialize>(&self, path: &str, body: &T) -> reqwest::Result<Response> {
         let url = format!("{}{}", self.base_url, path);
-        self.client.post(&url).json(body).send().await
+        self.client
+            .post(&url)
+            .json(body)
+            .send()
+            .await
+            .map_err(|error| {
+                Self::record_transport("custosPost", &url, &error);
+                error
+            })
     }
 
     /// GET `path` (relative, e.g. `"/v1/PDS/keys"`).
@@ -89,7 +101,10 @@ impl CustosClient {
     /// before attempting to deserialize the body.
     pub async fn get(&self, path: &str) -> reqwest::Result<Response> {
         let url = format!("{}{}", self.base_url, path);
-        self.client.get(&url).send().await
+        self.client.get(&url).send().await.map_err(|error| {
+            Self::record_transport("custosGet", &url, &error);
+            error
+        })
     }
 
     /// GET `path` with a Bearer token in the Authorization header.
@@ -102,7 +117,15 @@ impl CustosClient {
         bearer_token: &str,
     ) -> reqwest::Result<Response> {
         let url = format!("{}{}", self.base_url, path);
-        self.client.get(&url).bearer_auth(bearer_token).send().await
+        self.client
+            .get(&url)
+            .bearer_auth(bearer_token)
+            .send()
+            .await
+            .map_err(|error| {
+                Self::record_transport("custosGetAuthenticated", &url, &error);
+                error
+            })
     }
 
     /// POST JSON to `path` with a Bearer token in the Authorization header.
@@ -122,6 +145,10 @@ impl CustosClient {
             .json(body)
             .send()
             .await
+            .map_err(|error| {
+                Self::record_transport("custosPostAuthenticated", &url, &error);
+                error
+            })
     }
 
     /// POST `/oauth/par` — push the authorization request parameters to the PDS.
@@ -168,6 +195,8 @@ impl CustosClient {
             .send()
             .await
             .map_err(|e| {
+                Self::record_transport("oauthPar", &url, &e);
+                let e = e.without_url();
                 tracing::error!(error = %e, "PAR request network error");
                 OAuthError::ParFailed
             })?;
@@ -213,6 +242,8 @@ impl CustosClient {
             .send()
             .await
             .map_err(|e| {
+                Self::record_transport("oauthTokenExchange", &url, &e);
+                let e = e.without_url();
                 tracing::error!(error = %e, "token exchange network error");
                 OAuthError::TokenExchangeFailed
             })?;
@@ -228,5 +259,32 @@ impl CustosClient {
 impl Default for CustosClient {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn create_flow_transport_failure_records_one_redacted_breadcrumb() {
+        let client = CustosClient::new_with_url("http://127.0.0.1:1".to_string());
+        let marker = "create-flow-secret@example.com";
+        let before = crate::diagnostics::export().matches("custosPost").count();
+
+        client
+            .post(
+                "/v1/accounts/mobile?claim=diagnostic-secret",
+                &serde_json::json!({"email": marker, "handle": "private.example"}),
+            )
+            .await
+            .unwrap_err();
+
+        let report = crate::diagnostics::export();
+        assert_eq!(report.matches("custosPost").count(), before + 1);
+        assert!(report.contains("127.0.0.1"));
+        assert!(!report.contains(marker));
+        assert!(!report.contains("diagnostic-secret"));
+        assert!(!report.contains("private.example"));
     }
 }
