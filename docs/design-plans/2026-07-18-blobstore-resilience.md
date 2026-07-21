@@ -7,9 +7,16 @@ shipped:** the off-volume bucket mirror (#367), crash-durable blob writes
 (MM-433, #383) — plus the wallet-side iCloud blob backup as MM-434 (see that
 section). The only follow-ons still open are the two wallet-side items noted in
 the MM-434 section: the migration drain accepting the local iCloud mirror as a
-*fallback blob source*, and `BGProcessingTask` background scheduling — polish on
-top of the shipped resilience, not core durability. This plan is therefore a
-candidate for archival once those follow-ons are tracked.
+*fallback blob source* (tracked as MM-446, whose iCloud-placeholder-download
+dependency is MM-445), and `BGProcessingTask` background scheduling — polish on
+top of the shipped resilience, not core durability.
+
+The **Recommendations** and **Wallet-side option** sections below are preserved
+as the original 2026-07-18 survey, written in that day's future tense ("do (a)
+now"; what the scrub/serve paths "should" do). Read them as the historical
+rationale for what shipped, not as open work — the status above and the inline
+"Shipped" note at §5 record the as-shipped state. The plan stays live only for
+the two MM-434 follow-ons.
 
 Prompted by the MM-394 real-identity migration
 ([validation record](../validation/2026-07-17-mm-394-real-identity-migration.md)):
