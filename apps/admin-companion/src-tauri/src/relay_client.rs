@@ -16,7 +16,7 @@
 use serde::Serialize;
 
 use crate::pairings::{self, Pairing, PairingsState};
-use crate::{device_key, keychain, signing};
+use crate::{device_key, diagnostics, keychain, signing};
 
 /// Platform tag sent at registration and stored on the device row. Derived from the
 /// build target so an Android build registers as `"android"`; iOS and the macOS host
@@ -190,7 +190,18 @@ pub async fn pair(
         .json(&body)
         .send()
         .await
-        .map_err(unreachable)?;
+        .map_err(|error| {
+            diagnostics::record_unreachable(diagnostics::Operation::PairDevice, relay_url);
+            unreachable(error)
+        })?;
+
+    if !response.status().is_success() {
+        diagnostics::record_relay_rejected(
+            diagnostics::Operation::PairDevice,
+            relay_url,
+            response.status().as_u16(),
+        );
+    }
 
     let device_id = parse_success::<RegisterDeviceResponse>(response)
         .await?
@@ -926,6 +937,7 @@ pub async fn request_crawl(pairing_id: &str) -> Result<RequestCrawlResult, Relay
 
 /// Send an already-built [`SignedRequest`] and return the raw response.
 async fn send(req: SignedRequest) -> Result<reqwest::Response, RelayClientError> {
+    let relay_url = req.url.clone();
     let method = reqwest::Method::from_bytes(req.method.as_bytes()).map_err(|_| {
         RelayClientError::BadResponse {
             message: "invalid HTTP method".into(),
@@ -935,7 +947,18 @@ async fn send(req: SignedRequest) -> Result<reqwest::Response, RelayClientError>
     for (name, value) in &req.headers {
         builder = builder.header(*name, value);
     }
-    builder.send().await.map_err(unreachable)
+    let response = builder.send().await.map_err(|error| {
+        diagnostics::record_unreachable(diagnostics::Operation::SignedRelayRequest, &relay_url);
+        unreachable(error)
+    })?;
+    if !response.status().is_success() {
+        diagnostics::record_relay_rejected(
+            diagnostics::Operation::SignedRelayRequest,
+            &relay_url,
+            response.status().as_u16(),
+        );
+    }
+    Ok(response)
 }
 
 // ── Wire types (relay request/response bodies) ───────────────────────────────
