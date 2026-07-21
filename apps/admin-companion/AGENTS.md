@@ -259,6 +259,14 @@ share sheet, and server-side self-revoke (Phase 8). Wired:
   pairs the operator nickname with the relay host in monospace everywhere, so staging and production
   are always disambiguated. The `ScreenShell` UI primitive reserves a server slot for the active
   pairing display.
+- The error-state matrix is backed by a process-global, in-memory diagnostics ring buffer
+  (`src-tauri/src/diagnostics.rs`, cap 200). The two relay HTTP exits in `relay_client.rs`
+  record exactly one redacted breadcrumb for each `UNREACHABLE` transport failure or
+  `RELAY_REJECTED` server verdict. Each event contains only a fixed operation name, the relay
+  hostname, optional HTTP status, and fixed error code; signed envelopes, device-key data,
+  admin credentials, claim/invite codes, paths, queries, and response bodies never enter the
+  diagnostics module. Settings exposes the user-initiated `export_diagnostics` share action;
+  nothing persists to disk.
 - **New UI primitives**: `ui/Toggle.svelte` (switch; state by position + on/off text, not
   color), `ui/ErrorState.svelte` (a classified failure → chip + message + recovery CTA),
   and `CodeOutput`'s optional `onshare` Share affordance. All exercised at `/preview`.

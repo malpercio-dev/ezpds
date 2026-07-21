@@ -68,6 +68,11 @@ export function getOrCreateDeviceKey(): Promise<DevicePublicKey> {
   return invoke<DevicePublicKey>('get_or_create_device_key');
 }
 
+/** Export this process's bounded, redacted relay-error breadcrumb log. */
+export function exportDiagnostics(): Promise<string> {
+  return invoke<string>('export_diagnostics');
+}
+
 /**
  * Pair this device with `relayUrl` by claiming `pairingCode`. Persists the
  * relay-assigned device id and returns it. Throws a {@link RelayClientError}.

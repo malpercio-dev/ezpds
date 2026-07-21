@@ -4,6 +4,7 @@
   import { SvelteMap } from 'svelte/reactivity';
   import {
     getOrCreateDeviceKey,
+    exportDiagnostics,
     listPairings,
     renamePairing,
     revokeSelf,
@@ -16,6 +17,7 @@
     type RelayClientError,
   } from '$lib/ipc';
   import { serverIdentity } from '$lib/server-identity';
+  import { shareText } from '$lib/share';
   import { pinnedHref } from '$lib/pinned-pairing';
   import { classifyRelayError, type ErrorView } from '$lib/errors';
   import { requireUserPresence, presenceAllows } from '$lib/biometric';
@@ -42,6 +44,8 @@
 
   let biometricOn = $state(true);
   let biometricBusy = $state(false);
+  let exportBusy = $state(false);
+  let exportError = $state(false);
 
   let expandedId = $state<string | null>(null);
   let renameStates = $state<SvelteMap<string, { value: string; error?: string }>>(
@@ -85,6 +89,20 @@
       biometricOn = !next;
     } finally {
       biometricBusy = false;
+    }
+  }
+
+  async function shareDiagnostics() {
+    if (exportBusy) return;
+    exportBusy = true;
+    exportError = false;
+    try {
+      const report = await exportDiagnostics();
+      exportError = !(await shareText(report));
+    } catch {
+      exportError = true;
+    } finally {
+      exportBusy = false;
     }
   }
 
@@ -334,6 +352,21 @@
       description="Confirm with Face ID, Touch ID, or your passcode before generating a claim code or revoking on a server."
       onchange={onBiometricChange}
     />
+  </section>
+
+  <section class="panel" aria-labelledby="diagnostics-label">
+    <span id="diagnostics-label" class="label">Diagnostics</span>
+    <p class="note">
+      Share this session’s relay errors for troubleshooting. The export includes operation
+      names, relay hosts, statuses, and short error codes — never credentials, keys, signed
+      requests, or claim codes.
+    </p>
+    <Button variant="secondary" loading={exportBusy} onclick={shareDiagnostics}>
+      Export diagnostics
+    </Button>
+    {#if exportError}
+      <p class="note" role="alert">Couldn’t open the share sheet. Please try again.</p>
+    {/if}
   </section>
 
   {#if gateHint}

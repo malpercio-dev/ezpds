@@ -47,6 +47,7 @@ export type Handler = (args: Record<string, unknown>) => unknown | Promise<unkno
 /** Every command the admin frontend can invoke. Cross-checked by `registry.test.ts`. */
 export type CommandName =
   | 'get_or_create_device_key'
+  | 'export_diagnostics'
   | 'pair_device'
   | 'list_pairings'
   | 'set_active_pairing'
@@ -95,6 +96,9 @@ function requireRelay(state: AdminState, pairingId: string): FakeRelay {
 export function buildRegistry(state: AdminState): Registry {
   return {
     get_or_create_device_key: (): DevicePublicKey => state.deviceKey,
+
+    export_diagnostics: (): string =>
+      'Brass Console diagnostics — network events\n\nNo network errors have been recorded this session.\n',
 
     pair_device: (args): string => {
       const relay = seedRelay({

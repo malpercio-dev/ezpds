@@ -11,6 +11,7 @@
 //! Settings screen. The terminal-native operator screens consume these commands over IPC.
 
 mod device_key;
+mod diagnostics;
 mod keychain;
 mod pairings;
 mod relay_client;
@@ -354,7 +355,8 @@ pub fn run() {
             set_account_email,
             issue_reset_token,
             biometric_enabled,
-            set_biometric_enabled
+            set_biometric_enabled,
+            diagnostics::export_diagnostics
         ])
         .run(tauri::generate_context!())
         .expect("error while running admin-companion");

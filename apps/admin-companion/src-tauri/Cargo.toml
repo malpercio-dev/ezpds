@@ -35,6 +35,7 @@ uuid = { workspace = true }
 # Relay HTTP client. default-features = false + rustls: iOS has no OpenSSL, so rustls
 # is the only viable TLS backend (same rationale as identity-wallet's pds_client).
 reqwest = { workspace = true }
+chrono = { workspace = true }
 # Secure Enclave + Keychain access (real-device and macOS/simulator software paths both
 # touch the Keychain via this crate). OSX_10_12 enables the SE access-control APIs.
 security-framework = { workspace = true, features = ["OSX_10_12"] }
