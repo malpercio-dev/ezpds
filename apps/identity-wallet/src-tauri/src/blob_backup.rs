@@ -422,7 +422,7 @@ fn ubiquity_documents_dir() -> Option<PathBuf> {
     all(target_os = "ios", not(target_env = "sim")),
     allow(unused_variables)
 )]
-fn resolve_backup_root(app: &tauri::AppHandle) -> Option<(PathBuf, BackupLocation)> {
+pub(crate) fn resolve_backup_root(app: &tauri::AppHandle) -> Option<(PathBuf, BackupLocation)> {
     if let Ok(dir) = std::env::var(BACKUP_DIR_ENV) {
         if !dir.is_empty() {
             return Some((PathBuf::from(dir), BackupLocation::Local));
@@ -706,6 +706,85 @@ pub(crate) async fn restore_core(
     }
 
     Ok(report)
+}
+
+/// Migration-drain fallback: read a blob's bytes from the local mirror when the source PDS can't
+/// serve them, but only if they are trustworthy. The CID must be recorded in the DID's manifest
+/// (the record of what was intentionally backed up), the file must be locally readable, and the
+/// bytes must re-hash to the CID. Returns `None` — never an error — whenever the mirror can't
+/// supply the blob (no location, not backed up, an undownloaded iCloud placeholder, an I/O
+/// failure, a corrupt manifest, or a hash mismatch), so the drain simply falls through to
+/// recording the loss. Content addressing makes the substitution fully trustless: verified bytes
+/// are byte-identical to what the source PDS would have served, so the destination recomputes the
+/// same CID and no record is rewritten.
+///
+/// Holds the per-DID mirror lock across the read, so it never reads a manifest or file that a
+/// concurrent backup/restore pass is mid-write on (the same lock `run_backup_core` / `restore_core`
+/// take). An undownloaded iCloud placeholder reads as `NotFound` today and is reported as "not
+/// locally available"; a later change will teach the mirror to materialize placeholders on demand.
+pub(crate) async fn mirror_fallback_blob(root: &Path, did: &str, cid: &str) -> Option<Vec<u8>> {
+    let lock = mirror_lock(did);
+    let _guard = lock.lock().await;
+
+    // Refuse anything that isn't a plain base32-lower CID before it touches the filesystem.
+    if !cid_is_safe_filename(cid) {
+        return None;
+    }
+
+    // Only serve blobs we intentionally recorded. A corrupt manifest fails closed (skip fallback).
+    let manifest = match load_manifest(root, did).await {
+        Ok(manifest) => manifest,
+        Err(e) => {
+            tracing::warn!(did = %did, cid = %cid, error = %e, "blob drain: mirror manifest unreadable; no fallback");
+            return None;
+        }
+    };
+    if !manifest.entries.iter().any(|entry| entry.cid == cid) {
+        return None;
+    }
+
+    // Read the mirrored file. NotFound = never downloaded on this device (iCloud placeholder) or
+    // deleted; either way the mirror can't help this blob.
+    let bytes = match tokio::fs::read(blob_path(root, cid)).await {
+        Ok(bytes) => bytes,
+        Err(e) => {
+            tracing::info!(did = %did, cid = %cid, error = %e, "blob drain: local mirror has no usable copy for this blob");
+            return None;
+        }
+    };
+
+    // Re-verify before trusting the copy — a corrupt mirror file must never be pushed to the
+    // destination as the account's media (the same guard the backup and restore paths apply).
+    if blob_cid(&bytes) != cid {
+        tracing::error!(did = %did, cid = %cid, "blob drain: mirrored bytes no longer match the CID; not using as fallback");
+        return None;
+    }
+
+    tracing::info!(did = %did, cid = %cid, "blob drain: recovered blob from the local mirror after a source getBlob failure");
+    Some(bytes)
+}
+
+/// Test-only: seed the mirror with a verified blob and its manifest entry, exactly as a completed
+/// backup pass would leave it. Crate-visible so the migration-drain tests (a different module) can
+/// stand up a mirror to exercise the fallback. Returns the blob's CID.
+#[cfg(test)]
+pub(crate) async fn seed_mirror_blob_for_test(
+    root: &Path,
+    did: &str,
+    bytes: &[u8],
+    mime: &str,
+) -> String {
+    let cid = blob_cid(bytes);
+    write_blob(root, &cid, bytes).await.unwrap();
+    let mut manifest = load_manifest(root, did).await.unwrap();
+    manifest.entries.push(ManifestEntry {
+        cid: cid.clone(),
+        mime_type: mime.to_string(),
+        size: bytes.len() as u64,
+        fetched_at: "2026-07-21T00:00:00Z".to_string(),
+    });
+    save_manifest(root, did, &manifest).await.unwrap();
+    cid
 }
 
 // ── Tauri commands ───────────────────────────────────────────────────────────
@@ -1331,5 +1410,72 @@ mod tests {
         assert!(load_enabled(did));
         store_enabled(did, false).unwrap();
         assert!(!load_enabled(did));
+    }
+
+    // ── Migration-drain mirror fallback ────────────────────────────────────
+
+    #[tokio::test]
+    async fn mirror_fallback_returns_verified_backed_up_bytes() {
+        let dir = tempfile::tempdir().unwrap();
+        let did = "did:plc:fallbackhit";
+        let bytes = b"the media the source PDS lost".to_vec();
+        let cid = seed_mirror_blob_for_test(dir.path(), did, &bytes, "image/png").await;
+
+        let recovered = mirror_fallback_blob(dir.path(), did, &cid).await;
+        assert_eq!(recovered.as_deref(), Some(bytes.as_slice()));
+    }
+
+    #[tokio::test]
+    async fn mirror_fallback_misses_when_cid_is_not_in_the_manifest() {
+        let dir = tempfile::tempdir().unwrap();
+        let did = "did:plc:notbackedup";
+        // A CID the account references but was never backed up.
+        let cid = blob_cid(b"never mirrored");
+        assert!(mirror_fallback_blob(dir.path(), did, &cid).await.is_none());
+    }
+
+    #[tokio::test]
+    async fn mirror_fallback_misses_when_the_file_is_absent() {
+        // The manifest names the blob but the file is not on this device (an undownloaded iCloud
+        // placeholder, or one the user deleted in the Files app).
+        let dir = tempfile::tempdir().unwrap();
+        let did = "did:plc:placeholder";
+        let bytes = b"recorded but not downloaded".to_vec();
+        let cid = seed_mirror_blob_for_test(dir.path(), did, &bytes, "video/mp4").await;
+        tokio::fs::remove_file(blob_path(dir.path(), &cid))
+            .await
+            .unwrap();
+
+        assert!(mirror_fallback_blob(dir.path(), did, &cid).await.is_none());
+    }
+
+    #[tokio::test]
+    async fn mirror_fallback_refuses_a_corrupt_mirror_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let did = "did:plc:corruptfallback";
+        let cid = blob_cid(b"the original bytes");
+        // Manifest records the CID, but the file at that path no longer hashes to it (bitrot).
+        write_blob(dir.path(), &cid, b"rotten replacement")
+            .await
+            .unwrap();
+        let mut manifest = load_manifest(dir.path(), did).await.unwrap();
+        manifest.entries.push(ManifestEntry {
+            cid: cid.clone(),
+            mime_type: "image/jpeg".to_string(),
+            size: 18,
+            fetched_at: "2026-07-21T00:00:00Z".to_string(),
+        });
+        save_manifest(dir.path(), did, &manifest).await.unwrap();
+
+        assert!(mirror_fallback_blob(dir.path(), did, &cid).await.is_none());
+    }
+
+    #[tokio::test]
+    async fn mirror_fallback_rejects_an_unsafe_cid() {
+        let dir = tempfile::tempdir().unwrap();
+        let did = "did:plc:unsafe";
+        assert!(mirror_fallback_blob(dir.path(), did, "../../etc/passwd")
+            .await
+            .is_none());
     }
 }

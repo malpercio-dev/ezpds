@@ -16,6 +16,7 @@
 
 use crate::oauth_client::OAuthClient;
 use serde::Serialize;
+use std::path::Path;
 use std::sync::Arc;
 
 // ── Phase enum ─────────────────────────────────────────────────────────────
@@ -757,31 +758,71 @@ fn blob_backoff(attempt: u32) -> std::time::Duration {
     std::time::Duration::from_millis(250u64 * 2u64.pow(attempt.saturating_sub(1)))
 }
 
+/// Where a successfully-transferred blob's bytes came from. Tracked so a drain that leaned on the
+/// local mirror to route around a source-PDS `getBlob` fault is visible in the logs (and countable),
+/// never a silent substitution — the observability the resilience design asks of any degraded path.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BlobOrigin {
+    /// Fetched from the source PDS, the normal path.
+    SourcePds,
+    /// Recovered from the wallet's local blob mirror after the source PDS failed `getBlob`.
+    LocalMirror,
+}
+
 /// Transfer one blob: fetch it from the source, then upload it to the destination, retrying each
-/// half up to `BLOB_TRANSFER_ATTEMPTS` times with a short backoff. On success `Ok(())`; once retries
-/// are exhausted, `Err(BlobLoss)` naming which half failed (and the last server error) so the caller
-/// can fold it into the loss manifest instead of aborting the whole drain.
+/// half up to `BLOB_TRANSFER_ATTEMPTS` times with a short backoff. On success `Ok(BlobOrigin)`
+/// naming where the bytes came from; once retries are exhausted, `Err(BlobLoss)` naming which half
+/// failed (and the last server error) so the caller can fold it into the loss manifest instead of
+/// aborting the whole drain.
+///
+/// `mirror_root`, when present, is the local blob-backup mirror. If the source PDS can't serve the
+/// blob (the observed real-migration fault: metadata present, `getBlob` 500s), the drain falls back
+/// to the mirror before recording a loss — content addressing makes that substitution trustless, so
+/// a backed-up user's dead source blob becomes a non-event. The mirror is consulted only for the
+/// fetch half; a destination `uploadBlob` refusal is a genuinely different failure it can't fix.
 async fn transfer_one_blob(
     pds_client: &crate::pds_client::PdsClient,
     dest_client: &OAuthClient,
     source_pds_url: &str,
     did: &str,
     blob: &crate::pds_client::MissingBlob,
-) -> Result<(), BlobLoss> {
+    mirror_root: Option<&Path>,
+) -> Result<BlobOrigin, BlobLoss> {
     // Fetch-from-source half.
     let mut attempt = 0;
-    let bytes = loop {
+    let (bytes, origin) = loop {
         attempt += 1;
         match pds_client.fetch_blob(source_pds_url, did, &blob.cid).await {
-            Ok(bytes) => break bytes,
+            Ok(bytes) => break (bytes, BlobOrigin::SourcePds),
             Err(e) if attempt >= BLOB_TRANSFER_ATTEMPTS => {
-                tracing::error!(did = %did, cid = %blob.cid, attempts = attempt, error = %e, "fetch_blob exhausted retries; recording blob loss");
-                return Err(BlobLoss {
-                    cid: blob.cid.clone(),
-                    record_uri: blob.record_uri.clone(),
-                    direction: BlobTransferDirection::Source,
-                    reason: e.to_string(),
-                });
+                // Source PDS is out of retries. Before declaring the blob lost, try the local
+                // mirror: content addressing lets a verified backup copy stand in for the bytes the
+                // source can't serve.
+                match mirror_root {
+                    Some(root) => {
+                        match crate::blob_backup::mirror_fallback_blob(root, did, &blob.cid).await {
+                            Some(bytes) => break (bytes, BlobOrigin::LocalMirror),
+                            None => {
+                                tracing::error!(did = %did, cid = %blob.cid, attempts = attempt, error = %e, "fetch_blob exhausted retries and the local mirror has no usable copy; recording blob loss");
+                                return Err(BlobLoss {
+                                    cid: blob.cid.clone(),
+                                    record_uri: blob.record_uri.clone(),
+                                    direction: BlobTransferDirection::Source,
+                                    reason: e.to_string(),
+                                });
+                            }
+                        }
+                    }
+                    None => {
+                        tracing::error!(did = %did, cid = %blob.cid, attempts = attempt, error = %e, "fetch_blob exhausted retries; recording blob loss");
+                        return Err(BlobLoss {
+                            cid: blob.cid.clone(),
+                            record_uri: blob.record_uri.clone(),
+                            direction: BlobTransferDirection::Source,
+                            reason: e.to_string(),
+                        });
+                    }
+                }
             }
             Err(e) => {
                 tracing::warn!(did = %did, cid = %blob.cid, attempt, error = %e, "fetch_blob failed; retrying");
@@ -797,7 +838,7 @@ async fn transfer_one_blob(
         match crate::pds_client::upload_blob(dest_client, "application/octet-stream", bytes.clone())
             .await
         {
-            Ok(_) => return Ok(()),
+            Ok(_) => return Ok(origin),
             Err(e) if attempt >= BLOB_TRANSFER_ATTEMPTS => {
                 tracing::error!(did = %did, cid = %blob.cid, attempts = attempt, error = %e, "upload_blob exhausted retries; recording blob loss");
                 return Err(BlobLoss {
@@ -824,14 +865,20 @@ async fn transfer_one_blob(
 /// a full pass (cursor exhausted) surfaces no *new* transferable blob. A clean drain returns an
 /// empty `Vec`. Only `list_missing_blobs` itself failing — we can't even enumerate, so no manifest
 /// is possible — aborts hard with `BlobTransferFailed`, still WITHOUT advancing the phase.
+///
+/// `mirror_root`, when present, is the wallet's local blob mirror: a blob the source PDS can't serve
+/// is recovered from it before being recorded as lost (see `transfer_one_blob`), shrinking the loss
+/// manifest — ideally to empty — for backed-up users.
 async fn drain_missing_blobs(
     pds_client: &crate::pds_client::PdsClient,
     dest_client: &OAuthClient,
     source_pds_url: &str,
     did: &str,
+    mirror_root: Option<&Path>,
 ) -> Result<Vec<BlobLoss>, MigrationError> {
     let mut cursor: Option<String> = None;
     let mut losses: Vec<BlobLoss> = Vec::new();
+    let mut recovered_from_mirror: u64 = 0;
     let mut given_up: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
     loop {
         let page = crate::pds_client::list_missing_blobs(dest_client, cursor.as_deref())
@@ -860,6 +907,9 @@ async fn drain_missing_blobs(
                     continue;
                 }
                 None => {
+                    if recovered_from_mirror > 0 {
+                        tracing::info!(did = %did, recovered = recovered_from_mirror, "blob drain: recovered blob(s) from the local mirror after source getBlob failures");
+                    }
                     if losses.is_empty() {
                         tracing::debug!(did = %did, "blob drain complete: missing set is empty");
                     } else {
@@ -872,11 +922,22 @@ async fn drain_missing_blobs(
 
         for blob in pending {
             tracing::debug!(did = %did, cid = %blob.cid, "transferring blob");
-            if let Err(loss) =
-                transfer_one_blob(pds_client, dest_client, source_pds_url, did, blob).await
+            match transfer_one_blob(
+                pds_client,
+                dest_client,
+                source_pds_url,
+                did,
+                blob,
+                mirror_root,
+            )
+            .await
             {
-                given_up.insert(blob.cid.clone());
-                losses.push(loss);
+                Ok(BlobOrigin::LocalMirror) => recovered_from_mirror += 1,
+                Ok(BlobOrigin::SourcePds) => {}
+                Err(loss) => {
+                    given_up.insert(blob.cid.clone());
+                    losses.push(loss);
+                }
             }
         }
 
@@ -898,6 +959,7 @@ async fn drain_missing_blobs(
 ///   `verify_import` later subtracts them so the migration still reconciles.
 #[tauri::command]
 pub async fn transfer_blobs(
+    app: tauri::AppHandle,
     state: tauri::State<'_, crate::oauth::AppState>,
     did: String,
     accept_loss: bool,
@@ -926,8 +988,20 @@ pub async fn transfer_blobs(
 
     let pds_client = state.pds_client();
 
+    // Resolve the local blob mirror, if this device has one. When present the drain falls back to it
+    // for any blob the source PDS can't serve (the observed real-migration fault), turning a dead
+    // source blob into a non-event for backed-up users; when absent the drain behaves as before.
+    let mirror_root = crate::blob_backup::resolve_backup_root(&app).map(|(root, _location)| root);
+
     // Drain the missing-blob set. A hard enumerate failure propagates as BlobTransferFailed.
-    let losses = drain_missing_blobs(pds_client, &dest_client, &source_pds_url, &did).await?;
+    let losses = drain_missing_blobs(
+        pds_client,
+        &dest_client,
+        &source_pds_url,
+        &did,
+        mirror_root.as_deref(),
+    )
+    .await?;
 
     // Some blobs couldn't be transferred. Unless the user has already accepted the loss, surface the
     // manifest and DON'T advance — the step stays retry-safe (the transferable blobs are already on
@@ -2177,6 +2251,7 @@ mod tests {
             &dest_client,
             "http://127.0.0.1:1",
             "did:plc:abc123",
+            None,
         )
         .await;
 
@@ -2257,6 +2332,7 @@ mod tests {
             &dest_client,
             &source.base_url(),
             "did:plc:abc123",
+            None,
         )
         .await;
 
@@ -2298,6 +2374,7 @@ mod tests {
             &dest_client,
             &source.base_url(),
             "did:plc:abc123",
+            None,
         )
         .await
         .expect("drain degrades per-blob rather than erroring");
@@ -2369,6 +2446,7 @@ mod tests {
             &dest_client,
             &source.base_url(),
             "did:plc:abc123",
+            None,
         )
         .await
         .expect("drain completes with a partial loss");
@@ -2377,6 +2455,129 @@ mod tests {
         assert_eq!(upload.calls(), 1, "only the good blob is uploaded");
         assert_eq!(losses.len(), 1, "only the bad blob is on the manifest");
         assert_eq!(losses[0].cid, "cid_bad");
+    }
+
+    // The payoff: a blob the source PDS can't serve is recovered from the local mirror instead of
+    // being recorded as lost. The mirror holds a verified copy; the drain uploads it to the
+    // destination and the loss manifest stays empty.
+    #[tokio::test]
+    #[ignore] // Requires socket binding; ignore in sandboxed environments
+    async fn test_drain_falls_back_to_local_mirror_on_source_failure() {
+        let did = "did:plc:mirrorfallback";
+        let blob = b"media the source PDS lost but the wallet backed up".to_vec();
+
+        // Seed a local mirror with the verified blob, as a completed backup pass would leave it.
+        let mirror = tempfile::tempdir().unwrap();
+        let cid =
+            crate::blob_backup::seed_mirror_blob_for_test(mirror.path(), did, &blob, "image/png")
+                .await;
+
+        // The source PDS permanently 500s getBlob for this CID (the observed real-migration fault).
+        let source = MockServer::start();
+        let get = source.mock(|when, then| {
+            when.method(httpmock::Method::GET)
+                .path("/xrpc/com.atproto.sync.getBlob");
+            then.status(500).body("blob bytes are gone");
+        });
+
+        // Two pages: page 1 lists the CID, page 2 is empty so the loop terminates after the
+        // mirror-sourced upload removes it from the destination's missing set.
+        let dest = MockServer::start();
+        dest.mock(|when, then| {
+            when.method(httpmock::Method::GET)
+                .path("/xrpc/com.atproto.repo.listMissingBlobs")
+                .query_param_missing("cursor");
+            then.status(200).json_body(serde_json::json!({
+                "blobs": [ { "cid": cid, "recordUri": "at://did:plc:mirrorfallback/app.bsky.feed.post/1" } ],
+                "cursor": "c1"
+            }));
+        });
+        dest.mock(|when, then| {
+            when.method(httpmock::Method::GET)
+                .path("/xrpc/com.atproto.repo.listMissingBlobs")
+                .query_param("cursor", "c1");
+            then.status(200)
+                .json_body(serde_json::json!({ "blobs": [], "cursor": null }));
+        });
+        let upload = dest.mock(|when, then| {
+            when.method(httpmock::Method::POST)
+                .path("/xrpc/com.atproto.repo.uploadBlob")
+                .body(std::str::from_utf8(&blob).unwrap());
+            then.status(200)
+                .json_body(serde_json::json!({ "blob": { "$type": "blob" } }));
+        });
+
+        let pds_client = crate::pds_client::PdsClient::new();
+        let dest_client = bearer_client_at(dest.base_url());
+
+        let losses = drain_missing_blobs(
+            &pds_client,
+            &dest_client,
+            &source.base_url(),
+            did,
+            Some(mirror.path()),
+        )
+        .await
+        .expect("drain completes by recovering the blob from the mirror");
+
+        assert!(
+            losses.is_empty(),
+            "the blob was recovered from the mirror, not lost"
+        );
+        assert_eq!(
+            get.calls(),
+            BLOB_TRANSFER_ATTEMPTS as usize,
+            "the source was tried up to the retry cap before falling back"
+        );
+        assert_eq!(
+            upload.calls(),
+            1,
+            "the mirror's verified bytes were uploaded to the destination"
+        );
+    }
+
+    // The fallback never masks a genuine loss: when the mirror is present but doesn't hold the
+    // failing blob, the drain still records it (direction=Source) rather than silently succeeding.
+    #[tokio::test]
+    #[ignore] // Requires socket binding; ignore in sandboxed environments
+    async fn test_drain_records_loss_when_mirror_lacks_the_blob() {
+        let did = "did:plc:mirrormiss";
+
+        // An empty mirror (no manifest entry for the failing CID).
+        let mirror = tempfile::tempdir().unwrap();
+
+        let source = MockServer::start();
+        source.mock(|when, then| {
+            when.method(httpmock::Method::GET)
+                .path("/xrpc/com.atproto.sync.getBlob");
+            then.status(500).body("gone");
+        });
+        let dest = MockServer::start();
+        dest.mock(|when, then| {
+            when.method(httpmock::Method::GET)
+                .path("/xrpc/com.atproto.repo.listMissingBlobs");
+            then.status(200).json_body(serde_json::json!({
+                "blobs": [ { "cid": "cid_absent", "recordUri": "at://did:plc:mirrormiss/x/1" } ],
+                "cursor": null
+            }));
+        });
+
+        let pds_client = crate::pds_client::PdsClient::new();
+        let dest_client = bearer_client_at(dest.base_url());
+
+        let losses = drain_missing_blobs(
+            &pds_client,
+            &dest_client,
+            &source.base_url(),
+            did,
+            Some(mirror.path()),
+        )
+        .await
+        .expect("drain degrades per-blob rather than erroring");
+
+        assert_eq!(losses.len(), 1, "the blob the mirror lacks is still lost");
+        assert_eq!(losses[0].cid, "cid_absent");
+        assert_eq!(losses[0].direction, BlobTransferDirection::Source);
     }
 
     // Failing to even enumerate the missing set is a hard error (no manifest is possible),
@@ -2399,6 +2600,7 @@ mod tests {
             &dest_client,
             "http://127.0.0.1:1",
             "did:plc:abc123",
+            None,
         )
         .await;
 
@@ -3480,7 +3682,8 @@ mod tests {
         assert!(repo_result.is_ok(), "transfer_repo_impl should succeed");
 
         // ─ Step 3: drain_missing_blobs ─
-        let blobs_result = drain_missing_blobs(&pds_client, &dest_client, &source_url, did).await;
+        let blobs_result =
+            drain_missing_blobs(&pds_client, &dest_client, &source_url, did, None).await;
         assert!(blobs_result.is_ok(), "drain_missing_blobs should succeed");
 
         // ─ Step 4: transfer_preferences_impl ─
@@ -3633,6 +3836,7 @@ mod tests {
             &dest_client,
             &source.base_url(),
             "did:plc:test",
+            None,
         )
         .await;
 
@@ -3776,6 +3980,7 @@ mod tests {
             &dest_client,
             &source.base_url(),
             "did:plc:test",
+            None,
         )
         .await
         .expect("drain blobs");
