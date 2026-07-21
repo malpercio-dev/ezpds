@@ -104,6 +104,16 @@ pub fn record_transport(op: &str, host: Option<&str>, category: &str) {
     });
 }
 
+/// Record a reqwest transport failure while preserving the redaction boundary in one place.
+/// Only the parsed hostname is retained; paths, queries, userinfo, and the error's `Display`
+/// representation are discarded. Pass `None` when even the hostname is account-derived.
+pub fn record_reqwest_transport(op: &str, url: Option<&str>, error: &reqwest::Error) {
+    let host = url
+        .and_then(|value| reqwest::Url::parse(value).ok())
+        .and_then(|parsed| parsed.host_str().map(str::to_string));
+    record_transport(op, host.as_deref(), transport_category(error));
+}
+
 /// Classify a `reqwest` transport error into a short, non-sensitive category. The error's
 /// `Display` can embed the full request URL (host *and* query), so it is deliberately never
 /// captured — only this fixed category is.

@@ -345,14 +345,7 @@ async fn classify_xrpc_response(context: &str, resp: reqwest::Response) -> PdsCl
 /// the host itself is sensitive (a handle domain on the well-known resolve path), pass `None` for
 /// `url` and the breadcrumb records no host.
 fn note_transport_failure(op: &str, url: Option<&str>, e: &reqwest::Error) {
-    let host = url
-        .and_then(|u| reqwest::Url::parse(u).ok())
-        .and_then(|parsed| parsed.host_str().map(str::to_string));
-    crate::diagnostics::record_transport(
-        op,
-        host.as_deref(),
-        crate::diagnostics::transport_category(e),
-    );
+    crate::diagnostics::record_reqwest_transport(op, url, e);
 }
 
 /// PLC operation data for a DID.
