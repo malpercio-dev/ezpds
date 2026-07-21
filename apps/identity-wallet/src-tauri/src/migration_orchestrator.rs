@@ -63,6 +63,11 @@ pub struct OutboundMigrationState {
     pub dest_client: Option<Arc<OAuthClient>>,
     /// Current phase in the migration flow
     pub phase: MigrationPhase,
+    /// Blobs the user explicitly accepted as lost via the drain's loss manifest. Empty on a
+    /// clean drain; populated only when `transfer_blobs` is re-invoked with `accept_loss = true`.
+    /// `verify_import` subtracts this count from `expected_blobs` so a degraded-but-accepted
+    /// migration still reconciles.
+    pub accepted_blob_loss: Vec<BlobLoss>,
 }
 
 /// Resolved source identity returned by `prepare_migration`, so the source-auth screen can prefill
@@ -76,6 +81,37 @@ pub struct PreparedMigration {
     pub handle: String,
     /// Source PDS base URL (the account's current PDS, resolved via `discover_pds`).
     pub source_pds_url: String,
+}
+
+// ── Blob loss manifest ─────────────────────────────────────────────────────
+
+/// Which half of a single blob's transfer failed. `Source` = the source PDS couldn't serve
+/// `getBlob` (the observed source-PDS fault); `Destination` = the destination PDS refused `uploadBlob`.
+/// Serializes lowercase (`"source"` / `"destination"`) — the wallet UI maps it to the same
+/// fetch-vs-upload language `describeBlobTransferDetail` already uses.
+#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum BlobTransferDirection {
+    Source,
+    Destination,
+}
+
+/// One blob the drain gave up on after per-blob retries. Collected into a loss manifest so the
+/// user can make an informed skip — which blob, which record references it, and why it failed —
+/// instead of the whole migration parking on a single dead blob. Serializes camelCase to
+/// match the wallet's `BlobLoss` type.
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct BlobLoss {
+    /// The blob's CID (content hash), as listed by `listMissingBlobs`.
+    pub cid: String,
+    /// The `at://` URI of a record that references this blob (from `listMissingBlobs`), so the UI
+    /// can tell the user which content loses its media.
+    pub record_uri: String,
+    /// Which side of the transfer failed after retries.
+    pub direction: BlobTransferDirection,
+    /// The last error text (server-supplied when available), shown as subordinate detail.
+    pub reason: String,
 }
 
 // ── Error types ────────────────────────────────────────────────────────────
@@ -139,6 +175,12 @@ pub enum MigrationError {
     /// Blob transfer failed
     #[error("blob transfer failed: {message}")]
     BlobTransferFailed { message: String },
+    /// The drain completed a full pass, but some blobs permanently failed after per-blob retries.
+    /// Not a hard abort: the transferable blobs are already on the destination and the phase is NOT
+    /// advanced. The carried manifest lets the UI offer an informed "continue without these blobs"
+    /// (re-invoke `transfer_blobs` with `accept_loss = true`) instead of abandoning the run.
+    #[error("blob drain incomplete: {} blob(s) could not be transferred", losses.len())]
+    BlobDrainIncomplete { losses: Vec<BlobLoss> },
     /// Preferences transfer failed
     #[error("preferences transfer failed: {message}")]
     PreferencesTransferFailed { message: String },
@@ -287,6 +329,7 @@ async fn prepare_migration_impl(
         source_client: None,
         dest_client: None,
         phase: MigrationPhase::Resolved,
+        accepted_blob_loss: Vec::new(),
     })
 }
 
@@ -703,18 +746,93 @@ pub async fn transfer_repo(
 
 // ── Task 2: transfer_blobs ─────────────────────────────────────────────────
 
-/// Pure core: drain the destination's missing-blob set via cursor pagination.
+/// Per-blob transfer attempts before the drain gives up on a blob and records it in the loss
+/// manifest. A source PDS that permanently 500s every `getBlob` (the observed source-PDS fault) is
+/// declared lost after this many tries; transient blips get absorbed by the retry.
+const BLOB_TRANSFER_ATTEMPTS: u32 = 3;
+
+/// Short exponential backoff between per-blob retries: 250ms after the 1st failure, 500ms after the
+/// 2nd. Keeps a doomed drain from hammering the source while still spacing out transient retries.
+fn blob_backoff(attempt: u32) -> std::time::Duration {
+    std::time::Duration::from_millis(250u64 * 2u64.pow(attempt.saturating_sub(1)))
+}
+
+/// Transfer one blob: fetch it from the source, then upload it to the destination, retrying each
+/// half up to `BLOB_TRANSFER_ATTEMPTS` times with a short backoff. On success `Ok(())`; once retries
+/// are exhausted, `Err(BlobLoss)` naming which half failed (and the last server error) so the caller
+/// can fold it into the loss manifest instead of aborting the whole drain.
+async fn transfer_one_blob(
+    pds_client: &crate::pds_client::PdsClient,
+    dest_client: &OAuthClient,
+    source_pds_url: &str,
+    did: &str,
+    blob: &crate::pds_client::MissingBlob,
+) -> Result<(), BlobLoss> {
+    // Fetch-from-source half.
+    let mut attempt = 0;
+    let bytes = loop {
+        attempt += 1;
+        match pds_client.fetch_blob(source_pds_url, did, &blob.cid).await {
+            Ok(bytes) => break bytes,
+            Err(e) if attempt >= BLOB_TRANSFER_ATTEMPTS => {
+                tracing::error!(did = %did, cid = %blob.cid, attempts = attempt, error = %e, "fetch_blob exhausted retries; recording blob loss");
+                return Err(BlobLoss {
+                    cid: blob.cid.clone(),
+                    record_uri: blob.record_uri.clone(),
+                    direction: BlobTransferDirection::Source,
+                    reason: e.to_string(),
+                });
+            }
+            Err(e) => {
+                tracing::warn!(did = %did, cid = %blob.cid, attempt, error = %e, "fetch_blob failed; retrying");
+                tokio::time::sleep(blob_backoff(attempt)).await;
+            }
+        }
+    };
+
+    // Upload-to-destination half.
+    let mut attempt = 0;
+    loop {
+        attempt += 1;
+        match crate::pds_client::upload_blob(dest_client, "application/octet-stream", bytes.clone())
+            .await
+        {
+            Ok(_) => return Ok(()),
+            Err(e) if attempt >= BLOB_TRANSFER_ATTEMPTS => {
+                tracing::error!(did = %did, cid = %blob.cid, attempts = attempt, error = %e, "upload_blob exhausted retries; recording blob loss");
+                return Err(BlobLoss {
+                    cid: blob.cid.clone(),
+                    record_uri: blob.record_uri.clone(),
+                    direction: BlobTransferDirection::Destination,
+                    reason: e.to_string(),
+                });
+            }
+            Err(e) => {
+                tracing::warn!(did = %did, cid = %blob.cid, attempt, error = %e, "upload_blob failed; retrying");
+                tokio::time::sleep(blob_backoff(attempt)).await;
+            }
+        }
+    }
+}
+
+/// Pure core: drain the destination's missing-blob set via cursor pagination, degrading per-blob.
 ///
-/// Loops: list_missing_blobs(cursor) → if empty, done; for each blob, fetch from source
-/// and upload to dest; advance cursor and repeat. Any leg failing aborts with
-/// BlobTransferFailed WITHOUT advancing the phase, so the whole step is retry-safe.
+/// Loops `list_missing_blobs(cursor)`; each blob is transferred via `transfer_one_blob` (which
+/// retries per-blob). A blob that still fails is added to a give-up set and recorded in the returned
+/// loss manifest — one dead blob no longer parks the whole migration. The give-up set also
+/// drives termination: `listMissingBlobs` keeps re-reporting a skipped blob, so the loop stops once
+/// a full pass (cursor exhausted) surfaces no *new* transferable blob. A clean drain returns an
+/// empty `Vec`. Only `list_missing_blobs` itself failing — we can't even enumerate, so no manifest
+/// is possible — aborts hard with `BlobTransferFailed`, still WITHOUT advancing the phase.
 async fn drain_missing_blobs(
     pds_client: &crate::pds_client::PdsClient,
     dest_client: &OAuthClient,
     source_pds_url: &str,
     did: &str,
-) -> Result<(), MigrationError> {
+) -> Result<Vec<BlobLoss>, MigrationError> {
     let mut cursor: Option<String> = None;
+    let mut losses: Vec<BlobLoss> = Vec::new();
+    let mut given_up: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
     loop {
         let page = crate::pds_client::list_missing_blobs(dest_client, cursor.as_deref())
             .await
@@ -725,51 +843,66 @@ async fn drain_missing_blobs(
                 }
             })?;
 
-        // Terminate when page is empty
-        if page.blobs.is_empty() {
-            tracing::debug!(did = %did, "blob drain complete: missing set is empty");
-            return Ok(());
+        // Blobs on this page we haven't already given up on.
+        let pending: Vec<&crate::pds_client::MissingBlob> = page
+            .blobs
+            .iter()
+            .filter(|b| !given_up.contains(&b.cid))
+            .collect();
+
+        if pending.is_empty() {
+            // Nothing transferable on this page: either the set is fully drained (empty page → a
+            // clean drain) or only already-given-up blobs remain. Keep scanning while pages remain;
+            // once a full pass (cursor exhausted) yields no transferable blob, return the manifest.
+            match page.cursor {
+                Some(next) => {
+                    cursor = Some(next);
+                    continue;
+                }
+                None => {
+                    if losses.is_empty() {
+                        tracing::debug!(did = %did, "blob drain complete: missing set is empty");
+                    } else {
+                        tracing::warn!(did = %did, lost = losses.len(), "blob drain incomplete: some blobs could not be transferred");
+                    }
+                    return Ok(losses);
+                }
+            }
         }
 
-        // Upload each blob on this page
-        for blob in &page.blobs {
-            tracing::debug!(did = %did, cid = %blob.cid, "fetching blob from source");
-            let bytes = pds_client
-                .fetch_blob(source_pds_url, did, &blob.cid)
-                .await
-                .map_err(|e| {
-                    tracing::error!(did = %did, cid = %blob.cid, error = %e, "fetch_blob failed");
-                    MigrationError::BlobTransferFailed {
-                        message: format!("failed to fetch blob {}: {}", blob.cid, e),
-                    }
-                })?;
-
-            tracing::debug!(did = %did, cid = %blob.cid, bytes_len = %bytes.len(), "uploading blob to destination");
-            crate::pds_client::upload_blob(dest_client, "application/octet-stream", bytes)
-                .await
-                .map_err(|e| {
-                    tracing::error!(did = %did, cid = %blob.cid, error = %e, "upload_blob failed");
-                    MigrationError::BlobTransferFailed {
-                        message: format!("failed to upload blob {}: {}", blob.cid, e),
-                    }
-                })?;
+        for blob in pending {
+            tracing::debug!(did = %did, cid = %blob.cid, "transferring blob");
+            if let Err(loss) =
+                transfer_one_blob(pds_client, dest_client, source_pds_url, did, blob).await
+            {
+                given_up.insert(blob.cid.clone());
+                losses.push(loss);
+            }
         }
 
-        // Walk pages: advance cursor or loop with None (will re-list and see empty on success)
+        // Advance: Some → next page; None → re-list from the start. On the re-list the transferred
+        // blobs are gone from the missing set, so only given-up blobs remain and the `pending`
+        // filter above converges the loop.
         cursor = page.cursor;
     }
 }
 
 /// Tauri command: drain missing blobs from destination via cursor-paginated loop.
 ///
-/// Gate: ensure_phase_did(..., RepoTransferred) → clone dest_client, read source_pds_url; drop lock
-/// Then: drain_missing_blobs; re-lock + advance to BlobsTransferred
+/// Gate: ensure_phase_did(..., RepoTransferred) → clone dest_client, read source_pds_url; drop lock.
+/// Then `drain_missing_blobs` degrades per-blob:
+/// - clean drain → advance to BlobsTransferred.
+/// - some blobs lost and `accept_loss = false` → return `BlobDrainIncomplete { losses }` WITHOUT
+///   advancing, so the UI can show the manifest and let the user decide.
+/// - `accept_loss = true` → record the (re-drained) losses on the state, advance anyway, and
+///   `verify_import` later subtracts them so the migration still reconciles.
 #[tauri::command]
 pub async fn transfer_blobs(
     state: tauri::State<'_, crate::oauth::AppState>,
     did: String,
+    accept_loss: bool,
 ) -> Result<(), MigrationError> {
-    tracing::info!(did = %did, "transfer_blobs: draining missing blobs");
+    tracing::info!(did = %did, accept_loss, "transfer_blobs: draining missing blobs");
 
     // Gate + extract dependencies
     let (dest_client, source_pds_url) = {
@@ -793,10 +926,18 @@ pub async fn transfer_blobs(
 
     let pds_client = state.pds_client();
 
-    // Drain the missing-blob set
-    drain_missing_blobs(pds_client, &dest_client, &source_pds_url, &did).await?;
+    // Drain the missing-blob set. A hard enumerate failure propagates as BlobTransferFailed.
+    let losses = drain_missing_blobs(pds_client, &dest_client, &source_pds_url, &did).await?;
 
-    // Update orchestration state: advance phase to BlobsTransferred
+    // Some blobs couldn't be transferred. Unless the user has already accepted the loss, surface the
+    // manifest and DON'T advance — the step stays retry-safe (the transferable blobs are already on
+    // the destination; a Retry re-drains and may recover blobs that failed transiently).
+    if !losses.is_empty() && !accept_loss {
+        tracing::warn!(did = %did, lost = losses.len(), "transfer_blobs: drain incomplete; awaiting user decision");
+        return Err(MigrationError::BlobDrainIncomplete { losses });
+    }
+
+    // Update orchestration state: record any accepted losses and advance to BlobsTransferred.
     let mut orchestration = state.orchestration_state.lock().await;
     if let Some(ref mut mig) = orchestration.as_mut() {
         // Defense-in-depth DID check
@@ -807,6 +948,10 @@ pub async fn transfer_blobs(
                 message: "did mismatch with orchestration state".into(),
             });
         }
+        if !losses.is_empty() {
+            tracing::warn!(did = %did, accepted = losses.len(), "transfer_blobs: proceeding with an accepted blob-loss manifest");
+        }
+        mig.accepted_blob_loss = losses;
         mig.phase = MigrationPhase::BlobsTransferred;
     } else {
         drop(orchestration);
@@ -917,10 +1062,17 @@ pub async fn transfer_preferences(
 
 // ── Task 4: verify_import ──────────────────────────────────────────────────
 
-/// Pure completeness check: gate on blobs complete AND repo present.
-/// Does NOT require valid_did (the DID doc still points at the old PDS pre-identity-op).
-pub(crate) fn import_reconciles(status: &crate::pds_client::AccountStatus) -> bool {
-    status.imported_blobs == status.expected_blobs && status.repo_commit.is_some()
+/// Pure completeness check: the import reconciles when every expected blob is accounted
+/// for — either imported or on the user-accepted loss manifest — AND the repo is present. Does NOT
+/// require valid_did (the DID doc still points at the old PDS pre-identity-op). `accepted_loss` is
+/// the count of blobs the user explicitly chose to skip via the drain's manifest; on a clean
+/// migration it is 0 and this reduces to the exact `imported == expected` check.
+pub(crate) fn import_reconciles_with_loss(
+    status: &crate::pds_client::AccountStatus,
+    accepted_loss: u64,
+) -> bool {
+    status.imported_blobs.saturating_add(accepted_loss) == status.expected_blobs
+        && status.repo_commit.is_some()
 }
 
 /// Tauri command: check destination account completeness, advance to Verified if reconciled.
@@ -935,8 +1087,9 @@ pub async fn verify_import(
 ) -> Result<crate::pds_client::AccountStatus, MigrationError> {
     tracing::info!(did = %did, "verify_import: checking account completeness");
 
-    // Gate + extract dependencies
-    let dest_client = {
+    // Gate + extract dependencies. Capture the accepted blob-loss count so the reconcile check can
+    // tolerate blobs the user explicitly chose to skip via the drain's manifest.
+    let (dest_client, accepted_loss) = {
         let orchestration = state.orchestration_state.lock().await;
         let mig = ensure_phase_did(&orchestration, &did, MigrationPhase::PreferencesTransferred)
             .map_err(|e| {
@@ -944,7 +1097,7 @@ pub async fn verify_import(
                 e
             })?;
 
-        mig.dest_client.clone()
+        (mig.dest_client.clone(), mig.accepted_blob_loss.len() as u64)
     }; // lock released
 
     let Some(dest_client) = dest_client else {
@@ -964,8 +1117,8 @@ pub async fn verify_import(
             }
         })?;
 
-    // Gate: verify import is complete (blobs + repo)
-    if import_reconciles(&status) {
+    // Gate: verify import is complete (blobs — imported or accepted-as-lost — plus repo)
+    if import_reconciles_with_loss(&status, accepted_loss) {
         // Advance phase and return the status
         let mut orchestration = state.orchestration_state.lock().await;
         if let Some(ref mut mig) = orchestration.as_mut() {
@@ -1311,6 +1464,7 @@ mod tests {
             source_client: None,
             dest_client: None,
             phase: MigrationPhase::SourceAuthed,
+            accepted_blob_loss: Vec::new(),
         });
 
         let result = ensure_phase_did(&state, "did:plc:abc123", MigrationPhase::RepoTransferred);
@@ -1332,6 +1486,7 @@ mod tests {
             source_client: None,
             dest_client: None,
             phase: MigrationPhase::Resolved,
+            accepted_blob_loss: Vec::new(),
         });
 
         let result = ensure_phase_did(&state, "did:plc:different", MigrationPhase::Resolved);
@@ -1363,6 +1518,7 @@ mod tests {
             source_client: None,
             dest_client: None,
             phase: MigrationPhase::RepoTransferred,
+            accepted_blob_loss: Vec::new(),
         });
 
         let result = ensure_phase_did(&state, "did:plc:abc123", MigrationPhase::SourceAuthed);
@@ -1392,6 +1548,38 @@ mod tests {
         assert_eq!(json["code"], "VERIFICATION_INCOMPLETE");
         assert_eq!(json["imported"], 5);
         assert_eq!(json["expected"], 10);
+    }
+
+    // MigrationError serialization — BlobDrainIncomplete carries the loss manifest with camelCase
+    // fields and a lowercase direction, the exact shape the wallet's `BlobLoss` type consumes.
+    #[test]
+    fn test_migration_error_serialization_blob_drain_incomplete() {
+        let err = MigrationError::BlobDrainIncomplete {
+            losses: vec![
+                BlobLoss {
+                    cid: "bafyfetch".into(),
+                    record_uri: "at://did:plc:abc/app.bsky.feed.post/1".into(),
+                    direction: BlobTransferDirection::Source,
+                    reason: "server error (500)".into(),
+                },
+                BlobLoss {
+                    cid: "bafyupload".into(),
+                    record_uri: "at://did:plc:abc/app.bsky.feed.post/2".into(),
+                    direction: BlobTransferDirection::Destination,
+                    reason: "rejected".into(),
+                },
+            ],
+        };
+        let json = serde_json::to_value(&err).unwrap();
+        assert_eq!(json["code"], "BLOB_DRAIN_INCOMPLETE");
+        assert_eq!(json["losses"][0]["cid"], "bafyfetch");
+        assert_eq!(
+            json["losses"][0]["recordUri"],
+            "at://did:plc:abc/app.bsky.feed.post/1"
+        );
+        assert_eq!(json["losses"][0]["direction"], "source");
+        assert_eq!(json["losses"][0]["reason"], "server error (500)");
+        assert_eq!(json["losses"][1]["direction"], "destination");
     }
 
     // MigrationError serialization — DestinationUnreachable
@@ -1441,6 +1629,7 @@ mod tests {
             source_client: None,
             dest_client: None,
             phase: MigrationPhase::Resolved,
+            accepted_blob_loss: Vec::new(),
         });
 
         let result = ensure_phase_did(&state, "did:plc:different", MigrationPhase::Resolved);
@@ -1746,6 +1935,7 @@ mod tests {
             source_client: None,
             dest_client: None,
             phase: MigrationPhase::Resolved, // Too early!
+            accepted_blob_loss: Vec::new(),
         });
 
         let result = ensure_phase_did(&state, "did:plc:abc123", MigrationPhase::SourceAuthed);
@@ -1829,6 +2019,7 @@ mod tests {
             source_client: None,
             dest_client: None,
             phase: MigrationPhase::SourceAuthed, // Too early!
+            accepted_blob_loss: Vec::new(),
         });
 
         let result = ensure_phase_did(&state, "did:plc:abc123", MigrationPhase::DestCreated);
@@ -1850,6 +2041,7 @@ mod tests {
             source_client: None,
             dest_client: None,
             phase: MigrationPhase::SourceAuthed, // Too early!
+            accepted_blob_loss: Vec::new(),
         });
 
         let result = ensure_phase_did(&state, "did:plc:abc123", MigrationPhase::DestCreated);
@@ -1873,6 +2065,7 @@ mod tests {
             source_client: None,
             dest_client: None,
             phase: MigrationPhase::DestCreated, // Too early for transfer_blobs!
+            accepted_blob_loss: Vec::new(),
         });
 
         let result = ensure_phase_did(&state, "did:plc:abc123", MigrationPhase::RepoTransferred);
@@ -2074,21 +2267,23 @@ mod tests {
         assert_eq!(upload.calls(), 3, "each of the 3 blobs uploaded once");
     }
 
-    // A failing source getBlob mid-drain aborts with BlobTransferFailed (retry-safe).
+    // A permanently-failing source getBlob no longer aborts the drain. The blob is retried,
+    // given up on, and returned in the loss manifest (direction=Source) — the drain still completes.
     #[tokio::test]
     #[ignore] // Requires socket binding; ignore in sandboxed environments
-    async fn test_drain_missing_blobs_mid_failure_is_blob_transfer_failed() {
+    async fn test_drain_missing_blobs_records_loss_instead_of_aborting() {
         let source = MockServer::start();
-        source.mock(|when, then| {
+        let get = source.mock(|when, then| {
             when.method(httpmock::Method::GET)
                 .path("/xrpc/com.atproto.sync.getBlob");
             then.status(500).body("blob fetch error");
         });
         let dest = MockServer::start();
+        // Stateless mock: keeps re-reporting cid_a as missing. The drain's give-up set must still
+        // converge the loop and return the loss.
         dest.mock(|when, then| {
             when.method(httpmock::Method::GET)
-                .path("/xrpc/com.atproto.repo.listMissingBlobs")
-                .query_param_missing("cursor");
+                .path("/xrpc/com.atproto.repo.listMissingBlobs");
             then.status(200).json_body(serde_json::json!({
                 "blobs": [ { "cid": "cid_a", "recordUri": "at://did:plc:abc123/x/1" } ],
                 "cursor": null
@@ -2098,10 +2293,111 @@ mod tests {
         let pds_client = crate::pds_client::PdsClient::new();
         let dest_client = bearer_client_at(dest.base_url());
 
-        let result = drain_missing_blobs(
+        let losses = drain_missing_blobs(
             &pds_client,
             &dest_client,
             &source.base_url(),
+            "did:plc:abc123",
+        )
+        .await
+        .expect("drain degrades per-blob rather than erroring");
+
+        assert_eq!(losses.len(), 1, "the one dead blob is on the manifest");
+        assert_eq!(losses[0].cid, "cid_a");
+        assert_eq!(losses[0].direction, BlobTransferDirection::Source);
+        assert_eq!(losses[0].record_uri, "at://did:plc:abc123/x/1");
+        assert_eq!(
+            get.calls(),
+            BLOB_TRANSFER_ATTEMPTS as usize,
+            "fetch retried up to the cap"
+        );
+    }
+
+    // A good blob is transferred while a dead one is skipped onto the manifest — one bad
+    // blob doesn't take the healthy ones down with it.
+    #[tokio::test]
+    #[ignore] // Requires socket binding; ignore in sandboxed environments
+    async fn test_drain_missing_blobs_mixed_good_and_bad() {
+        let source = MockServer::start();
+        let get_good = source.mock(|when, then| {
+            when.method(httpmock::Method::GET)
+                .path("/xrpc/com.atproto.sync.getBlob")
+                .query_param("cid", "cid_good");
+            then.status(200).body("good-bytes");
+        });
+        source.mock(|when, then| {
+            when.method(httpmock::Method::GET)
+                .path("/xrpc/com.atproto.sync.getBlob")
+                .query_param("cid", "cid_bad");
+            then.status(500).body("gone");
+        });
+        let dest = MockServer::start();
+        // Page 1 (no cursor): both blobs, cursor c1. Page 2 (c1): empty — a real server drops the
+        // uploaded good blob from the missing set, so the drain advances to the empty page and
+        // returns with only the given-up bad blob on the manifest.
+        dest.mock(|when, then| {
+            when.method(httpmock::Method::GET)
+                .path("/xrpc/com.atproto.repo.listMissingBlobs")
+                .query_param_missing("cursor");
+            then.status(200).json_body(serde_json::json!({
+                "blobs": [
+                    { "cid": "cid_good", "recordUri": "at://did:plc:abc123/x/1" },
+                    { "cid": "cid_bad", "recordUri": "at://did:plc:abc123/x/2" }
+                ],
+                "cursor": "c1"
+            }));
+        });
+        dest.mock(|when, then| {
+            when.method(httpmock::Method::GET)
+                .path("/xrpc/com.atproto.repo.listMissingBlobs")
+                .query_param("cursor", "c1");
+            then.status(200)
+                .json_body(serde_json::json!({ "blobs": [], "cursor": null }));
+        });
+        let upload = dest.mock(|when, then| {
+            when.method(httpmock::Method::POST)
+                .path("/xrpc/com.atproto.repo.uploadBlob");
+            then.status(200)
+                .json_body(serde_json::json!({ "blob": { "$type": "blob" } }));
+        });
+
+        let pds_client = crate::pds_client::PdsClient::new();
+        let dest_client = bearer_client_at(dest.base_url());
+
+        let losses = drain_missing_blobs(
+            &pds_client,
+            &dest_client,
+            &source.base_url(),
+            "did:plc:abc123",
+        )
+        .await
+        .expect("drain completes with a partial loss");
+
+        assert_eq!(get_good.calls(), 1, "the good blob is fetched once");
+        assert_eq!(upload.calls(), 1, "only the good blob is uploaded");
+        assert_eq!(losses.len(), 1, "only the bad blob is on the manifest");
+        assert_eq!(losses[0].cid, "cid_bad");
+    }
+
+    // Failing to even enumerate the missing set is a hard error (no manifest is possible),
+    // so the drain still aborts with BlobTransferFailed and the phase never advances.
+    #[tokio::test]
+    #[ignore] // Requires socket binding; ignore in sandboxed environments
+    async fn test_drain_missing_blobs_list_failure_is_hard_error() {
+        let dest = MockServer::start();
+        dest.mock(|when, then| {
+            when.method(httpmock::Method::GET)
+                .path("/xrpc/com.atproto.repo.listMissingBlobs");
+            then.status(500).body("cannot list");
+        });
+
+        let pds_client = crate::pds_client::PdsClient::new();
+        let dest_client = bearer_client_at(dest.base_url());
+
+        let result = drain_missing_blobs(
+            &pds_client,
+            &dest_client,
+            "http://127.0.0.1:1",
             "did:plc:abc123",
         )
         .await;
@@ -2126,6 +2422,7 @@ mod tests {
             source_client: None,
             dest_client: None,
             phase: MigrationPhase::RepoTransferred, // Too early for transfer_preferences!
+            accepted_blob_loss: Vec::new(),
         });
 
         let result = ensure_phase_did(&state, "did:plc:abc123", MigrationPhase::BlobsTransferred);
@@ -2244,7 +2541,7 @@ mod tests {
             imported_blobs: 10,
         };
 
-        assert!(import_reconciles(&status));
+        assert!(import_reconciles_with_loss(&status, 0));
     }
 
     // Pure: import_reconciles is true even when valid_did = false
@@ -2262,7 +2559,7 @@ mod tests {
             imported_blobs: 10,
         };
 
-        assert!(import_reconciles(&status));
+        assert!(import_reconciles_with_loss(&status, 0));
     }
 
     // Pure: import_reconciles is false when imported_blobs < expected_blobs
@@ -2280,7 +2577,7 @@ mod tests {
             imported_blobs: 5, // Incomplete
         };
 
-        assert!(!import_reconciles(&status));
+        assert!(!import_reconciles_with_loss(&status, 0));
     }
 
     // Pure: import_reconciles is false when repo_commit is None
@@ -2298,7 +2595,55 @@ mod tests {
             imported_blobs: 10,
         };
 
-        assert!(!import_reconciles(&status));
+        assert!(!import_reconciles_with_loss(&status, 0));
+    }
+
+    // Pure: a degraded import reconciles when imported + accepted-loss == expected. The
+    // skipped blobs never arrive, so without the tolerance verify_import would reject forever.
+    #[test]
+    fn test_import_reconciles_with_loss_tolerates_accepted_skips() {
+        let status = crate::pds_client::AccountStatus {
+            activated: false,
+            valid_did: true,
+            repo_commit: Some("baffy".to_string()),
+            repo_rev: Some("rev".to_string()),
+            stored_blocks: 10,
+            indexed_records: 5,
+            private_state_values: 0,
+            expected_blobs: 10,
+            imported_blobs: 7, // 3 blobs permanently lost
+        };
+
+        // 3 accepted losses close the gap; 2 leaves it open; 0 (exact) fails.
+        assert!(import_reconciles_with_loss(&status, 3));
+        assert!(!import_reconciles_with_loss(&status, 2));
+        assert!(!import_reconciles_with_loss(&status, 0));
+    }
+
+    // Pure: accepted loss never papers over a MISSING repo — a degraded blob set with no
+    // repo commit must still fail the gate.
+    #[test]
+    fn test_import_reconciles_with_loss_still_requires_repo() {
+        let status = crate::pds_client::AccountStatus {
+            activated: false,
+            valid_did: true,
+            repo_commit: None,
+            repo_rev: None,
+            stored_blocks: 0,
+            indexed_records: 0,
+            private_state_values: 0,
+            expected_blobs: 10,
+            imported_blobs: 7,
+        };
+
+        assert!(!import_reconciles_with_loss(&status, 3));
+    }
+
+    // Pure: the per-blob backoff is 250ms after the 1st failure, 500ms after the 2nd.
+    #[test]
+    fn test_blob_backoff_schedule() {
+        assert_eq!(blob_backoff(1), std::time::Duration::from_millis(250));
+        assert_eq!(blob_backoff(2), std::time::Duration::from_millis(500));
     }
 
     // A real checkAccountStatus payload with imported==expected and a repo commit passes the
@@ -2329,7 +2674,7 @@ mod tests {
             .await
             .unwrap();
 
-        assert!(import_reconciles(&status));
+        assert!(import_reconciles_with_loss(&status, 0));
         assert_eq!(status.imported_blobs, 10);
         assert_eq!(status.expected_blobs, 10);
     }
@@ -2363,7 +2708,7 @@ mod tests {
             .unwrap();
 
         // Verify the pure gate catches the incompleteness
-        assert!(!import_reconciles(&status));
+        assert!(!import_reconciles_with_loss(&status, 0));
         assert_eq!(status.imported_blobs, 5);
         assert_eq!(status.expected_blobs, 10);
     }
@@ -2382,6 +2727,7 @@ mod tests {
             source_client: None,
             dest_client: Some(Arc::new(bearer_client_at("https://dest.pds".into()))),
             phase: MigrationPhase::PreferencesTransferred, // Too early!
+            accepted_blob_loss: Vec::new(),
         });
 
         let result = ensure_phase_did(&state, "did:plc:abc123", MigrationPhase::Verified);
@@ -2402,6 +2748,7 @@ mod tests {
             source_client: Some(Arc::new(bearer_client_at("https://source.pds".into()))),
             dest_client: Some(Arc::new(bearer_client_at("https://dest.pds".into()))),
             phase: MigrationPhase::Verified,
+            accepted_blob_loss: Vec::new(),
         }
     }
 
@@ -2477,6 +2824,7 @@ mod tests {
             source_client: None,
             dest_client: None,
             phase: MigrationPhase::Verified, // Too early for finalize!
+            accepted_blob_loss: Vec::new(),
         });
 
         let result = ensure_phase_did(&state, "did:plc:abc123", MigrationPhase::IdentityArmed);
@@ -3146,7 +3494,10 @@ mod tests {
         let status = crate::pds_client::check_account_status(&dest_client)
             .await
             .expect("check_account_status should succeed");
-        assert!(import_reconciles(&status), "import should reconcile");
+        assert!(
+            import_reconciles_with_loss(&status, 0),
+            "import should reconcile"
+        );
 
         // ─ Step 6/7: identity leg — build_migration_op (dest getRecommendedDidCredentials +
         //   plc.directory audit fetch). arm_identity_leg (parking migrate::MigrationState) is a
@@ -3177,6 +3528,7 @@ mod tests {
             source_client: Some(source_client.clone()),
             dest_client: Some(dest_client),
             phase: MigrationPhase::IdentityArmed,
+            accepted_blob_loss: Vec::new(),
         }));
         let migration_state = tokio::sync::Mutex::new(None); // identity op already submitted
 
@@ -3437,7 +3789,7 @@ mod tests {
         let status = crate::pds_client::check_account_status(&dest_client)
             .await
             .expect("check status");
-        assert!(import_reconciles(&status));
+        assert!(import_reconciles_with_loss(&status, 0));
 
         // ─ Verify dest was NEVER activated (coherent state on abort) ─
         assert_eq!(
