@@ -110,6 +110,13 @@ multibase = "0.9"
 # workspace stays on a single objc2 family version. iOS-only at the use site;
 # per-class features are opted into there (features are additive).
 objc2-foundation = "0.3"
+# objc2 core (Retained, AnyThread) + the BackgroundTasks framework binding for the
+# wallet's iOS background media-backup scheduling (bg_backup.rs), and block2 for the
+# BGTaskScheduler launch/expiration handler blocks. Same objc2 0.6 family as
+# objc2-foundation, so the lockfile stays on one major. iOS-only at the use site.
+objc2 = "0.6"
+objc2-background-tasks = "0.3"
+block2 = "0.6"
 rand_core = { version = "0.6", features = ["getrandom"] }
 base64 = "0.21"
 ciborium = "0.2"

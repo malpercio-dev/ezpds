@@ -1,5 +1,6 @@
 pub mod agents;
 pub mod app_passwords;
+pub mod bg_backup;
 pub mod blob_backup;
 pub mod claim;
 pub mod device_key;
@@ -1284,6 +1285,13 @@ pub fn run() {
             // Start PLC monitoring timer (15-minute interval)
             let monitor_handle = app.handle().clone();
             tauri::async_runtime::spawn(plc_monitor::run_monitoring_loop(monitor_handle));
+
+            // iOS only: register the background media-backup task and submit the first
+            // request, so an opted-in identity's iCloud mirror stays topped up without the
+            // app being opened. Must run before app launch completes — `setup` does. A
+            // no-op off-device (scheduling is a device concern; the harness is untouched).
+            #[cfg(target_os = "ios")]
+            bg_backup::register_and_schedule(app.handle());
 
             Ok(())
         })
