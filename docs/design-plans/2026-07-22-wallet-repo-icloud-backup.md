@@ -298,6 +298,22 @@ size + last-backup shown; fire `runRepoBackup` opportunistically on app open in
 `+page.svelte`; add the harness registry fakes + scenario. **Done when** the surface is
 reachable in fake mode and the registry-coverage test passes.
 
+## Issue breakdown
+
+The work is tracked as three issues so the self-contained backup ships and reviews
+independently of the migration-orchestrator wiring — the same split the blob backup
+used (MM-434 backup / MM-446 migration fallback):
+
+- **MM-447** — the backup feature: `repo_backup.rs` (backup + validate +
+  `export_repo_backup`), IPC, UI, harness, tests. Implementation Phases 1, 3, 4.
+- **MM-448** — the `transfer_repo` iCloud-mirror fallback source (`mirror_repo_car`),
+  Phase 2. Blocked by MM-447; the repo twin of MM-446.
+- **MM-449** — background repo-backup passes via `BGProcessingTask`, sharing MM-444's
+  mechanism. Blocked by MM-447.
+
+The two further follow-ons in the section below are still in design discussion and
+unfiled.
+
 ## Additional Considerations (sharp edges)
 
 **The disaster case is the interesting one, and it's a follow-on.** Standard ATProto
@@ -335,16 +351,26 @@ mirror. The mirror is Files-app-visible, reinforcing user-legible sovereignty.
 place for the blob backup; repo backup writes under the same container and needs no new
 entitlement, capability, or `just ios-template-check`/`ios-check` change.
 
-## Out of scope (tracked as follow-ons)
+## Follow-ons under design discussion (unfiled)
+
+These are deliberately **not** yet Linear issues — each carries an open design question
+to work through before deciding whether/how to build it (unlike MM-448/MM-449, which are
+clear wins already filed):
 
 - **Sovereign disaster-recovery flow** (source PDS dead → wallet-signed `createAccount`
-  authorization → import from iCloud CAR → activate). The credible-exit guarantee;
-  needs a PDS-side auth change (ADR-0002 territory).
+  authorization → import from iCloud CAR → activate). The piece that upgrades this from a
+  migration convenience to a real credible-exit *guarantee*; needs a PDS-side auth change
+  (ADR-0002 territory). **Open question:** how a destination PDS authorizes a source-free
+  `createAccount` under an existing DID — a wallet device-key proof over the DID (the
+  wallet already holds `rotationKeys[0]`) accepted by any Custos, vs. restricting the
+  guarantee to Custos-to-Custos, vs. a narrower deactivated-only creation surface. The
+  destination account is created *deactivated* (inert until the wallet-signed PLC repoint
+  lands and `activateAccount` is called), which bounds the blast radius of the new auth.
 - **Option B: block-level incremental mirror** via `getRepo?since=<rev>` + on-device CAR
   reassembly (`collect_reachable_cids` + `build_car_from_cids`, a repo-engine dep in the
-  wallet). Only if measured repo sizes justify it.
-- **`BGProcessingTask` background scheduling** — shared with the blob backup's existing
-  open follow-on; both mirrors would refresh together off-foreground.
+  wallet). **Open question:** the trigger — at what measured repo size does re-fetching a
+  full CAR on each pass become painful enough to justify the repo-engine dependency and
+  MST-reassembly logic on-device? Revisit with real size data from opted-in accounts.
 
 ## Glossary
 
