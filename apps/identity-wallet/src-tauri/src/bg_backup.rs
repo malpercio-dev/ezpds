@@ -203,7 +203,11 @@ pub(crate) async fn run_backup_sweep(app: &tauri::AppHandle) -> BackupSweepRepor
         |did| blob_backup::is_backup_enabled(did),
         |did| {
             let app = app.clone();
-            async move { blob_backup::run_backup_for_did(&app, &did).await.map(|_| ()) }
+            async move {
+                blob_backup::run_backup_for_did(&app, &did)
+                    .await
+                    .map(|_| ())
+            }
         },
     )
     .await;
@@ -504,14 +508,18 @@ mod tests {
         let all = dids(&["did:plc:a", "did:plc:b"]);
         let called = AtomicUsize::new(0);
 
-        let report = run_sweep_with(&all, |_| false, |did| {
-            let called = &called;
-            async move {
-                called.fetch_add(1, Ordering::SeqCst);
-                let _ = did;
-                Ok(())
-            }
-        })
+        let report = run_sweep_with(
+            &all,
+            |_| false,
+            |did| {
+                let called = &called;
+                async move {
+                    called.fetch_add(1, Ordering::SeqCst);
+                    let _ = did;
+                    Ok(())
+                }
+            },
+        )
         .await;
 
         assert_eq!(called.load(Ordering::SeqCst), 0);
