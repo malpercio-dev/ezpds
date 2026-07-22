@@ -267,8 +267,13 @@ pub struct BlobRestoreReport {
     pub manifest_count: u64,
     /// Blobs uploaded to the PDS this run.
     pub uploaded: u64,
-    /// Per-blob failures (unreadable/undownloaded files, hash mismatches, upload
-    /// refusals). The run continues past them.
+    /// Evicted iCloud placeholders this run downloaded before it could read them — the
+    /// "downloaded from iCloud first" count, so a restore that took longer on a
+    /// mostly-evicted device explains itself.
+    pub downloaded_from_icloud: u64,
+    /// Per-blob failures (files with no local copy and no placeholder to download,
+    /// placeholders whose download failed, hash mismatches, upload refusals). The run
+    /// continues past them.
     pub failed: Vec<BlobFailure>,
 }
 
@@ -636,15 +641,161 @@ pub(crate) async fn run_backup_core(
     Ok(report)
 }
 
-/// One restore pass: walk the manifest and `uploadBlob` each mirrored file back to
-/// the DID's current PDS with its stored MIME type. Content addressing makes this
-/// trustless — the PDS recomputes the same CID, so records never need rewriting.
-/// Degrades per-blob (an undownloaded iCloud placeholder or corrupt file is a report
-/// entry with guidance, never an aborted run).
-pub(crate) async fn restore_core(
+// ── iCloud placeholder materialization ───────────────────────────────────────
+
+/// Bring an evicted iCloud file local before a restore reads it.
+///
+/// On a real device iOS silently evicts the least-used files in the ubiquity container
+/// to reclaim space, replacing each with a `.{name}.icloud` placeholder; the bytes come
+/// back only when something asks iCloud to download them. Restore injects this so the
+/// iOS download path stays isolated from the platform-agnostic, unit-tested restore
+/// core — and a test can drive every branch (download, genuinely-missing, timeout)
+/// without iCloud. Mirrors the file's existing split around `ubiquity_documents_dir`.
+pub(crate) trait PlaceholderMaterializer {
+    /// Try to make the file at `path` locally readable.
+    ///
+    /// - `Ok(true)` — a placeholder existed and the file is now present (a download ran).
+    /// - `Ok(false)` — no placeholder: the file is genuinely absent, not merely evicted.
+    /// - `Err(reason)` — a placeholder existed but the download failed or timed out.
+    fn materialize(
+        &self,
+        path: &Path,
+    ) -> impl std::future::Future<Output = Result<bool, String>> + Send;
+}
+
+/// The production materializer: the real iOS download-and-await on device, an inert "no
+/// placeholder" everywhere else (desktop, the simulator, and the env-override dev root
+/// hold plain local files — a missing one is genuinely missing, never merely evicted).
+pub(crate) struct PlatformMaterializer;
+
+impl PlaceholderMaterializer for PlatformMaterializer {
+    async fn materialize(&self, path: &Path) -> Result<bool, String> {
+        #[cfg(target_os = "ios")]
+        {
+            icloud_materialize(path).await
+        }
+        #[cfg(not(target_os = "ios"))]
+        {
+            let _ = path;
+            Ok(false)
+        }
+    }
+}
+
+/// How long to wait for iOS to finish downloading an evicted placeholder before giving
+/// up on that blob (recorded as a per-blob failure). Bounded so restoring a large,
+/// mostly-evicted mirror can't wedge indefinitely on one slow or stalled download.
+#[cfg(target_os = "ios")]
+const MATERIALIZE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(90);
+/// How often to re-check whether the file has materialized while awaiting the download.
+#[cfg(target_os = "ios")]
+const MATERIALIZE_POLL_INTERVAL: std::time::Duration = std::time::Duration::from_millis(500);
+
+/// iOS: if `path` has an evicted `.{name}.icloud` placeholder, ask iCloud to download it
+/// and poll (bounded) until the real file appears at `path`. Contract per
+/// [`PlaceholderMaterializer::materialize`].
+#[cfg(target_os = "ios")]
+async fn icloud_materialize(path: &Path) -> Result<bool, String> {
+    let Some(placeholder) = icloud_placeholder_path(path) else {
+        return Ok(false);
+    };
+    // No `.icloud` sibling → the file is genuinely gone, not merely evicted.
+    if !tokio::fs::try_exists(&placeholder).await.unwrap_or(false) {
+        return Ok(false);
+    }
+
+    // Kick off the download (this also extends our sandbox to the item). Confined to a
+    // synchronous helper so no non-`Send` Foundation object is held across an await.
+    start_downloading_ubiquitous_item(path)?;
+
+    let deadline = tokio::time::Instant::now() + MATERIALIZE_TIMEOUT;
+    loop {
+        // iOS replaces the placeholder with the real file at the original path once the
+        // download completes; a partial download never surfaces here (and if one somehow
+        // did, restore's own CID check would reject it before upload).
+        if tokio::fs::try_exists(path).await.unwrap_or(false) {
+            return Ok(true);
+        }
+        if tokio::time::Instant::now() >= deadline {
+            return Err(format!(
+                "iCloud did not finish downloading within {}s",
+                MATERIALIZE_TIMEOUT.as_secs()
+            ));
+        }
+        tokio::time::sleep(MATERIALIZE_POLL_INTERVAL).await;
+    }
+}
+
+/// `…/blobs/{name}` → `…/blobs/.{name}.icloud`, iOS's evicted-placeholder naming.
+#[cfg(target_os = "ios")]
+fn icloud_placeholder_path(path: &Path) -> Option<PathBuf> {
+    let name = path.file_name()?.to_str()?;
+    Some(path.with_file_name(format!(".{name}.icloud")))
+}
+
+/// Ask `NSFileManager` to begin downloading the ubiquitous item at `path`. Synchronous
+/// and self-contained: every Foundation object is created and dropped here, so the
+/// caller's future stays `Send`.
+#[cfg(target_os = "ios")]
+fn start_downloading_ubiquitous_item(path: &Path) -> Result<(), String> {
+    use objc2_foundation::{NSFileManager, NSString, NSURL};
+
+    let path_str = path
+        .to_str()
+        .ok_or_else(|| "blob path is not valid UTF-8".to_string())?;
+    let ns_path = NSString::from_str(path_str);
+    // objc2 exposes both of these as safe wrappers (same as the `NSFileManager` call in
+    // `ubiquity_documents_dir`); the returned `NSError` is formatted via its Debug impl.
+    let url = NSURL::fileURLWithPath(&ns_path);
+    let manager = NSFileManager::defaultManager();
+    manager
+        .startDownloadingUbiquitousItemAtURL_error(&url)
+        .map_err(|e| format!("failed to start iCloud download: {e:?}"))
+}
+
+/// Read a mirrored blob's bytes for restore, first materializing an evicted iCloud
+/// placeholder if that is why the file is missing. Returns `(bytes, downloaded_this_run)`
+/// or a per-blob failure reason. A genuinely-missing file (no placeholder) keeps the
+/// original "download it in the Files app" guidance; a placeholder whose download fails
+/// or times out surfaces that reason instead.
+async fn read_mirrored_blob<M: PlaceholderMaterializer>(
+    root: &Path,
+    cid: &str,
+    materializer: &M,
+) -> Result<(Vec<u8>, bool), String> {
+    let path = blob_path(root, cid);
+    match tokio::fs::read(&path).await {
+        Ok(bytes) => Ok((bytes, false)),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            match materializer.materialize(&path).await {
+                Ok(true) => {
+                    let bytes = tokio::fs::read(&path).await.map_err(|e| {
+                        format!("failed to read the file iCloud just downloaded: {e}")
+                    })?;
+                    Ok((bytes, true))
+                }
+                Ok(false) => Err(
+                    "file is not on this device — download it in the Files app and retry"
+                        .to_string(),
+                ),
+                Err(reason) => Err(format!("iCloud download failed: {reason}")),
+            }
+        }
+        Err(e) => Err(format!("failed to read mirrored file: {e}")),
+    }
+}
+
+/// One restore pass: walk the manifest and `uploadBlob` each mirrored file back to the
+/// DID's current PDS with its stored MIME type. Content addressing makes this trustless
+/// — the PDS recomputes the same CID, so records never need rewriting. Degrades per-blob
+/// (a corrupt file, or a file with no local copy and no placeholder to download, is a
+/// report entry with guidance, never an aborted run). Evicted iCloud placeholders are
+/// downloaded on demand via `materializer` before reading, and counted in the report.
+pub(crate) async fn restore_core<M: PlaceholderMaterializer>(
     client: &OAuthClient,
     root: &Path,
     did: &str,
+    materializer: &M,
 ) -> Result<BlobRestoreReport, BlobBackupError> {
     let lock = mirror_lock(did);
     let _guard = lock.lock().await;
@@ -653,6 +804,7 @@ pub(crate) async fn restore_core(
     let mut report = BlobRestoreReport {
         manifest_count: manifest.entries.len() as u64,
         uploaded: 0,
+        downloaded_from_icloud: 0,
         failed: Vec::new(),
     };
 
@@ -664,24 +816,22 @@ pub(crate) async fn restore_core(
             });
             continue;
         }
-        let bytes = match tokio::fs::read(blob_path(root, &entry.cid)).await {
-            Ok(bytes) => bytes,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+
+        let (bytes, downloaded) = match read_mirrored_blob(root, &entry.cid, materializer).await {
+            Ok(loaded) => loaded,
+            Err(reason) => {
                 report.failed.push(BlobFailure {
                     cid: entry.cid.clone(),
-                    reason: "file is not on this device — download it in the Files app and retry"
-                        .to_string(),
-                });
-                continue;
-            }
-            Err(e) => {
-                report.failed.push(BlobFailure {
-                    cid: entry.cid.clone(),
-                    reason: format!("failed to read mirrored file: {e}"),
+                    reason,
                 });
                 continue;
             }
         };
+        // Count the download regardless of what the verify/upload steps do with it — the
+        // time was spent fetching from iCloud either way, which is what the count explains.
+        if downloaded {
+            report.downloaded_from_icloud += 1;
+        }
 
         // Verify the local copy still re-hashes to its CID before uploading — a
         // corrupted mirror file must not be pushed back as the account's media.
@@ -720,8 +870,9 @@ pub(crate) async fn restore_core(
 ///
 /// Holds the per-DID mirror lock across the read, so it never reads a manifest or file that a
 /// concurrent backup/restore pass is mid-write on (the same lock `run_backup_core` / `restore_core`
-/// take). An undownloaded iCloud placeholder reads as `NotFound` today and is reported as "not
-/// locally available"; a later change will teach the mirror to materialize placeholders on demand.
+/// take). An undownloaded iCloud placeholder reads as `NotFound` here and the drain records the
+/// loss rather than blocking: a migration drain has no room for a foreground iCloud download, so
+/// only the user-initiated restore path materializes placeholders on demand (see `restore_core`).
 pub(crate) async fn mirror_fallback_blob(root: &Path, did: &str, cid: &str) -> Option<Vec<u8>> {
     let lock = mirror_lock(did);
     let _guard = lock.lock().await;
@@ -862,7 +1013,7 @@ pub async fn restore_blob_backup(
 ) -> Result<BlobRestoreReport, BlobBackupError> {
     let (root, _location) = resolve_backup_root(&app).ok_or(BlobBackupError::BackupUnavailable)?;
     let session = full_access_session(state.pds_client(), &did).await?;
-    restore_core(&session.client, &root, &did).await
+    restore_core(&session.client, &root, &did, &PlatformMaterializer).await
 }
 
 // ── Tests ────────────────────────────────────────────────────────────────────
@@ -1187,6 +1338,53 @@ mod tests {
 
     // ── Restore pass ───────────────────────────────────────────────────────
 
+    /// Test double for `PlaceholderMaterializer`, keyed by CID (the blob file name):
+    ///   - `Ok(bytes)` → simulate iOS finishing the download by writing `bytes` at the
+    ///     path, return `Ok(true)`;
+    ///   - `Err(reason)` → the placeholder's download failed / timed out;
+    ///   - absent key → no placeholder (a genuinely missing file), `Ok(false)`.
+    #[derive(Default)]
+    struct FakeMaterializer {
+        outcomes: HashMap<String, Result<Vec<u8>, String>>,
+    }
+
+    impl FakeMaterializer {
+        /// A materializer that downloads `bytes` for `cid` (writes them at the CID path).
+        fn downloads(cid: &str, bytes: &[u8]) -> Self {
+            let mut outcomes = HashMap::new();
+            outcomes.insert(cid.to_string(), Ok(bytes.to_vec()));
+            Self { outcomes }
+        }
+
+        /// A materializer whose download of `cid` fails with `reason`.
+        fn fails(cid: &str, reason: &str) -> Self {
+            let mut outcomes = HashMap::new();
+            outcomes.insert(cid.to_string(), Err(reason.to_string()));
+            Self { outcomes }
+        }
+    }
+
+    impl PlaceholderMaterializer for FakeMaterializer {
+        async fn materialize(&self, path: &Path) -> Result<bool, String> {
+            let cid = path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or_default()
+                .to_string();
+            match self.outcomes.get(&cid) {
+                Some(Ok(bytes)) => {
+                    if let Some(parent) = path.parent() {
+                        tokio::fs::create_dir_all(parent).await.unwrap();
+                    }
+                    tokio::fs::write(path, bytes).await.unwrap();
+                    Ok(true)
+                }
+                Some(Err(reason)) => Err(reason.clone()),
+                None => Ok(false),
+            }
+        }
+    }
+
     #[tokio::test]
     async fn restore_uploads_each_entry_with_its_stored_mime() {
         let server = MockServer::start_async().await;
@@ -1232,10 +1430,15 @@ mod tests {
 
         let client =
             OAuthClient::new_bearer(make_bearer_jwt(), String::new(), server.base_url()).unwrap();
-        let report = restore_core(&client, dir.path(), did).await.unwrap();
+        // The absent entry has no placeholder here, so the default fake reports it
+        // genuinely missing (Ok(false)) — the pre-materialization behavior, unchanged.
+        let report = restore_core(&client, dir.path(), did, &FakeMaterializer::default())
+            .await
+            .unwrap();
 
         assert_eq!(report.manifest_count, 2);
         assert_eq!(report.uploaded, 1);
+        assert_eq!(report.downloaded_from_icloud, 0);
         assert_eq!(upload_mock.calls_async().await, 1);
         assert_eq!(report.failed.len(), 1);
         assert!(report.failed[0].reason.contains("not on this device"));
@@ -1273,7 +1476,9 @@ mod tests {
 
         let client =
             OAuthClient::new_bearer(make_bearer_jwt(), String::new(), server.base_url()).unwrap();
-        let report = restore_core(&client, dir.path(), did).await.unwrap();
+        let report = restore_core(&client, dir.path(), did, &FakeMaterializer::default())
+            .await
+            .unwrap();
 
         assert_eq!(report.uploaded, 0);
         assert_eq!(report.failed.len(), 1);
@@ -1338,12 +1543,194 @@ mod tests {
 
         let client =
             OAuthClient::new_bearer(make_bearer_jwt(), String::new(), server.base_url()).unwrap();
-        let report = restore_core(&client, dir.path(), did).await.unwrap();
+        let report = restore_core(&client, dir.path(), did, &FakeMaterializer::default())
+            .await
+            .unwrap();
 
         assert_eq!(report.uploaded, 1);
         assert_eq!(report.failed.len(), 1);
         assert_eq!(report.failed[0].cid, cid_a);
         assert!(report.failed[0].reason.contains("over quota"));
+    }
+
+    #[tokio::test]
+    async fn restore_downloads_an_evicted_placeholder_then_uploads() {
+        // The manifest records the blob, but the file is not on disk — it's an evicted
+        // iCloud placeholder. The fake materializer stands in for iOS's on-demand download.
+        let server = MockServer::start_async().await;
+        let did = "did:plc:evicted";
+        let blob = b"evicted media the device offloaded".to_vec();
+        let cid = blob_cid(&blob);
+
+        let dir = tempfile::tempdir().unwrap();
+        let manifest = Manifest {
+            version: MANIFEST_VERSION,
+            did: did.to_string(),
+            last_backup_at: None,
+            entries: vec![ManifestEntry {
+                cid: cid.clone(),
+                mime_type: "image/heic".to_string(),
+                size: blob.len() as u64,
+                fetched_at: "2026-07-20T00:00:00Z".to_string(),
+            }],
+        };
+        save_manifest(dir.path(), did, &manifest).await.unwrap();
+        // The file is genuinely absent before restore runs.
+        assert!(!tokio::fs::try_exists(blob_path(dir.path(), &cid))
+            .await
+            .unwrap());
+
+        let upload_mock = server
+            .mock_async(|when, then| {
+                when.method(POST)
+                    .path("/xrpc/com.atproto.repo.uploadBlob")
+                    .header("content-type", "image/heic")
+                    .body(std::str::from_utf8(&blob).unwrap());
+                then.status(200)
+                    .json_body(serde_json::json!({ "blob": {} }));
+            })
+            .await;
+
+        let client =
+            OAuthClient::new_bearer(make_bearer_jwt(), String::new(), server.base_url()).unwrap();
+        let materializer = FakeMaterializer::downloads(&cid, &blob);
+        let report = restore_core(&client, dir.path(), did, &materializer)
+            .await
+            .unwrap();
+
+        assert_eq!(report.uploaded, 1);
+        assert_eq!(report.downloaded_from_icloud, 1);
+        assert!(report.failed.is_empty());
+        assert_eq!(upload_mock.calls_async().await, 1);
+    }
+
+    #[tokio::test]
+    async fn restore_reports_a_genuinely_missing_file_without_downloading() {
+        // No placeholder to download: the file is genuinely absent (never mirrored on this
+        // device, or deleted). The fake reports Ok(false) and the run keeps the guidance.
+        let server = MockServer::start_async().await;
+        let did = "did:plc:trulygone";
+        let cid = blob_cid(b"never on this device");
+
+        let dir = tempfile::tempdir().unwrap();
+        let manifest = Manifest {
+            version: MANIFEST_VERSION,
+            did: did.to_string(),
+            last_backup_at: None,
+            entries: vec![ManifestEntry {
+                cid: cid.clone(),
+                mime_type: "video/mp4".to_string(),
+                size: 4,
+                fetched_at: "2026-07-20T00:00:00Z".to_string(),
+            }],
+        };
+        save_manifest(dir.path(), did, &manifest).await.unwrap();
+
+        let upload_mock = server
+            .mock_async(|when, then| {
+                when.method(POST).path("/xrpc/com.atproto.repo.uploadBlob");
+                then.status(200)
+                    .json_body(serde_json::json!({ "blob": {} }));
+            })
+            .await;
+
+        let client =
+            OAuthClient::new_bearer(make_bearer_jwt(), String::new(), server.base_url()).unwrap();
+        let report = restore_core(&client, dir.path(), did, &FakeMaterializer::default())
+            .await
+            .unwrap();
+
+        assert_eq!(report.uploaded, 0);
+        assert_eq!(report.downloaded_from_icloud, 0);
+        assert_eq!(report.failed.len(), 1);
+        assert!(report.failed[0].reason.contains("not on this device"));
+        assert_eq!(upload_mock.calls_async().await, 0);
+    }
+
+    #[tokio::test]
+    async fn restore_reports_an_icloud_download_failure() {
+        // A placeholder exists but its download stalls/times out — surfaced as its own
+        // reason (distinct from the genuinely-missing guidance), counted as neither
+        // uploaded nor downloaded. No upload is attempted, so the client base is unused.
+        let did = "did:plc:downloadstall";
+        let cid = blob_cid(b"stuck in the cloud");
+
+        let dir = tempfile::tempdir().unwrap();
+        let manifest = Manifest {
+            version: MANIFEST_VERSION,
+            did: did.to_string(),
+            last_backup_at: None,
+            entries: vec![ManifestEntry {
+                cid: cid.clone(),
+                mime_type: "image/png".to_string(),
+                size: 8,
+                fetched_at: "2026-07-20T00:00:00Z".to_string(),
+            }],
+        };
+        save_manifest(dir.path(), did, &manifest).await.unwrap();
+
+        let client = OAuthClient::new_bearer(
+            make_bearer_jwt(),
+            String::new(),
+            "http://127.0.0.1:1".to_string(),
+        )
+        .unwrap();
+        let materializer =
+            FakeMaterializer::fails(&cid, "iCloud did not finish downloading within 90s");
+        let report = restore_core(&client, dir.path(), did, &materializer)
+            .await
+            .unwrap();
+
+        assert_eq!(report.uploaded, 0);
+        assert_eq!(report.downloaded_from_icloud, 0);
+        assert_eq!(report.failed.len(), 1);
+        assert!(report.failed[0].reason.contains("iCloud download failed"));
+    }
+
+    #[tokio::test]
+    async fn restore_verifies_a_materialized_placeholder_and_rejects_corrupt_bytes() {
+        // Even a freshly downloaded placeholder is CID-checked: if iCloud hands back bytes
+        // that don't match the recorded CID, the download still counts but the upload is
+        // refused — a corrupt copy must never be pushed back as the account's media.
+        let server = MockServer::start_async().await;
+        let did = "did:plc:corruptdownload";
+        let cid = blob_cid(b"the original media");
+
+        let dir = tempfile::tempdir().unwrap();
+        let manifest = Manifest {
+            version: MANIFEST_VERSION,
+            did: did.to_string(),
+            last_backup_at: None,
+            entries: vec![ManifestEntry {
+                cid: cid.clone(),
+                mime_type: "image/jpeg".to_string(),
+                size: 18,
+                fetched_at: "2026-07-20T00:00:00Z".to_string(),
+            }],
+        };
+        save_manifest(dir.path(), did, &manifest).await.unwrap();
+
+        let upload_mock = server
+            .mock_async(|when, then| {
+                when.method(POST).path("/xrpc/com.atproto.repo.uploadBlob");
+                then.status(200)
+                    .json_body(serde_json::json!({ "blob": {} }));
+            })
+            .await;
+
+        let client =
+            OAuthClient::new_bearer(make_bearer_jwt(), String::new(), server.base_url()).unwrap();
+        // The fake "downloads" bytes that do NOT hash to the manifest CID.
+        let materializer = FakeMaterializer::downloads(&cid, b"corrupted replacement bytes");
+        let report = restore_core(&client, dir.path(), did, &materializer)
+            .await
+            .unwrap();
+
+        assert_eq!(report.downloaded_from_icloud, 1);
+        assert_eq!(report.uploaded, 0);
+        assert_eq!(report.failed.len(), 1);
+        assert!(report.failed[0].reason.contains("corrupt"));
+        assert_eq!(upload_mock.calls_async().await, 0);
     }
 
     // ── Status + opt-in ────────────────────────────────────────────────────

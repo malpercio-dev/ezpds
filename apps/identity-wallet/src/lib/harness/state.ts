@@ -66,6 +66,12 @@ export interface FakeBlobBackup {
   remote: FakeBlob[];
   /** CIDs a backup pass has mirrored so far (subset of `remote` cids). */
   mirroredCids: string[];
+  /**
+   * Mirrored CIDs iOS has evicted to placeholders (subset of `mirroredCids`). A restore
+   * downloads these before uploading; the fake clears them and reports the count as
+   * `downloadedFromIcloud`, modeling the on-demand materialization off-device.
+   */
+  evictedCids: string[];
   /** When the last backup pass completed, or null if never run. */
   lastBackupAt: string | null;
 }
@@ -338,6 +344,7 @@ export function seedBlobBackup(did: string): FakeBlobBackup {
       { cid: `bafkharness${hashToken(`${did}:clip`)}`, mimeType: 'video/mp4', size: 8_388_608 },
     ],
     mirroredCids: [],
+    evictedCids: [],
     lastBackupAt: null,
   };
 }

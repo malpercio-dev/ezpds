@@ -57,7 +57,14 @@ export type BlobRestoreReport = {
   manifestCount: number;
   /** Blobs uploaded back to the PDS this run. */
   uploaded: number;
-  /** Per-blob failures (undownloaded iCloud placeholders, corrupt files, upload refusals). */
+  /**
+   * Evicted iCloud placeholders this run downloaded before it could read them — the
+   * "downloaded from iCloud first" count, so a restore that took longer on a
+   * mostly-evicted device explains itself.
+   */
+  downloadedFromIcloud: number;
+  /** Per-blob failures (files with no local copy and no placeholder, failed placeholder
+   * downloads, corrupt files, upload refusals). */
   failed: BlobFailure[];
 };
 
@@ -110,6 +117,9 @@ export const runBlobBackup = (did: string): Promise<BlobBackupRunReport> =>
 /**
  * Restore the mirrored blobs to the identity's CURRENT hosting PDS (`uploadBlob`
  * with each blob's stored MIME type; CIDs recompute identically, records untouched).
+ * Files iOS has evicted to iCloud placeholders are downloaded on demand first (counted
+ * in {@link BlobRestoreReport.downloadedFromIcloud}), so an evicted mirror restores
+ * without the user hand-downloading each file in the Files app.
  *
  * The biometric prompt precedes the IPC invocation: a restore writes many blobs
  * into the account, so cancellation must reach neither Rust nor the network.
