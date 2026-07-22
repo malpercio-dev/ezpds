@@ -13,13 +13,11 @@ const FETCH_BLOB_PATTERN = /^failed to fetch blob (\S+): ([\s\S]+)$/;
 const UPLOAD_BLOB_PATTERN = /^failed to upload blob (\S+): ([\s\S]+)$/;
 
 /**
- * Turn a BLOB_TRANSFER_FAILED message into detail that names which side of the transfer failed.
- * Since the loss-manifest work, per-blob failures no longer arrive here — the drain records them as
- * structured `BlobLoss` (rendered by `describeBlobLoss`, below), and the only BLOB_TRANSFER_FAILED
- * message `drain_missing_blobs` still raises is the hard enumerate failure ("failed to list missing
- * blobs: {err}", no CID → falls through to the raw message). The two CID-bearing patterns below are
- * kept as a defensive parser for any "failed to fetch blob {cid}: {err}" (source-side) or
- * "failed to upload blob {cid}: {err}" (destination-side) shape.
+ * Turn a BLOB_TRANSFER_FAILED message into detail that names which side of the transfer
+ * failed. Matches the two per-blob failure shapes
+ * `migration_orchestrator.rs::drain_missing_blobs` formats — "failed to fetch blob {cid}: {err}"
+ * (source-side) and "failed to upload blob {cid}: {err}" (destination-side). Anything else
+ * (e.g. the list-missing-blobs failure, which carries no CID) falls back to the raw message.
  */
 export function describeBlobTransferDetail(message: string): string {
   const trimmed = message.trim();
