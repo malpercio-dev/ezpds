@@ -117,6 +117,11 @@ objc2-foundation = "0.3"
 objc2 = "0.6"
 objc2-background-tasks = "0.3"
 block2 = "0.6"
+# SCNetworkReachability WWAN flag for the wallet's "Wi-Fi only" background-backup setting
+# (bg_backup.rs) — BGProcessingTaskRequest can't express metered-network avoidance, so the
+# sweep checks the live network type at fire time. Already in the tree transitively
+# (hickory-resolver/reqwest); promoted to a direct iOS-target dep at the use site.
+system-configuration = "0.7"
 rand_core = { version = "0.6", features = ["getrandom"] }
 base64 = "0.21"
 ciborium = "0.2"

@@ -14,11 +14,109 @@
 //
 // Scheduling is a device concern: everything that touches `BGTaskScheduler` is iOS-only,
 // reached through objc2's BackgroundTasks binding — the same no-new-Swift bridge pattern as
-// blob_backup's ubiquity-container call. Off-device the whole surface is inert, so the
-// browser harness fake is untouched. The sweep *orchestration* (`run_sweep_with`) is
-// platform-agnostic and unit-tested.
+// blob_backup's ubiquity-container call. Off-device the scheduling surface is inert. The
+// sweep *orchestration* (`run_sweep_with`) is platform-agnostic and unit-tested.
+//
+// The user tunes the sweep from Settings via three app-global flags
+// (`BackgroundBackupSettings`): whether iOS may wake the app at all, whether to require
+// external power, and whether to skip cellular links. They are app-global (not per-DID)
+// because the sweep is one `BGProcessingTask` covering every opted-in identity. The
+// settings get/set commands are frontend-facing, so they (and their harness fakes) are the
+// one part of this module the browser harness does touch.
 
 use crate::blob_backup;
+use serde::{Deserialize, Serialize};
+
+// ── User-tunable settings (app-global) ───────────────────────────────────────
+
+/// Global Keychain account holding the background-backup settings JSON. App-wide (not
+/// per-DID): the sweep is one `BGProcessingTask` covering every opted-in identity, so its
+/// power/network policy is a single shared setting.
+const SETTINGS_ACCOUNT: &str = "blob-backup-settings";
+
+/// User-tunable policy for the background media-backup sweep. App-global. Serializes as
+/// camelCase to match the `$lib/ipc` `BackgroundBackupSettings` type.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BackgroundBackupSettings {
+    /// Whether iOS may wake the app to run a backup sweep at all. Off keeps the
+    /// opportunistic app-open pass but stops OS-scheduled wakes.
+    pub background_enabled: bool,
+    /// Only run the sweep while the device is on external power (charging). Off by default
+    /// so the sweep isn't starved on devices that rarely charge on a predictable schedule.
+    pub require_external_power: bool,
+    /// Skip the sweep on a cellular (metered) link — a video-heavy account's mirror can be
+    /// large. Enforced at fire time via a reachability check (`BGProcessingTaskRequest`
+    /// can't express "Wi-Fi only").
+    pub wifi_only: bool,
+}
+
+impl Default for BackgroundBackupSettings {
+    fn default() -> Self {
+        Self {
+            background_enabled: true,
+            require_external_power: false,
+            wifi_only: false,
+        }
+    }
+}
+
+/// Error from the background-backup settings commands. Serializes as
+/// `{ "code": "SCREAMING_SNAKE_CASE" }` like the sibling wallet error enums.
+#[derive(Debug, Serialize, thiserror::Error)]
+#[serde(tag = "code", rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum BackgroundBackupError {
+    #[error("keychain error: {message}")]
+    KeychainError { message: String },
+    #[error("could not encode settings: {message}")]
+    SerializationError { message: String },
+}
+
+/// Read the persisted settings, or the defaults when unset or unreadable. A corrupt/
+/// unreadable value reads as the defaults (background on), never an error — a diagnostic
+/// hiccup must not silently disable a backup the user relies on.
+pub(crate) fn load_settings() -> BackgroundBackupSettings {
+    crate::keychain::get_item(SETTINGS_ACCOUNT)
+        .ok()
+        .and_then(|raw| serde_json::from_slice(&raw).ok())
+        .unwrap_or_default()
+}
+
+/// Tauri command: the current background-backup settings, for the Settings screen.
+#[tauri::command]
+pub fn get_background_backup_settings() -> BackgroundBackupSettings {
+    load_settings()
+}
+
+/// Tauri command: persist the background-backup settings and re-apply the schedule (on iOS:
+/// submit or cancel the `BGProcessingTask` to match `background_enabled` /
+/// `require_external_power`; `wifi_only` needs no reschedule — it is read at fire time).
+/// Returns the stored settings.
+#[tauri::command]
+pub fn set_background_backup_settings(
+    settings: BackgroundBackupSettings,
+) -> Result<BackgroundBackupSettings, BackgroundBackupError> {
+    let json =
+        serde_json::to_vec(&settings).map_err(|e| BackgroundBackupError::SerializationError {
+            message: e.to_string(),
+        })?;
+    crate::keychain::store_item(SETTINGS_ACCOUNT, &json).map_err(|e| {
+        BackgroundBackupError::KeychainError {
+            message: e.to_string(),
+        }
+    })?;
+    #[cfg(target_os = "ios")]
+    apply_schedule();
+    Ok(settings)
+}
+
+/// Whether the sweep should be skipped this run for network policy: `wifi_only` is on and
+/// we are on a cellular (metered) link. Pure so the decision is unit-tested; the live
+/// cellular check (`on_cellular`) is the iOS-only side effect.
+#[cfg_attr(not(target_os = "ios"), allow(dead_code))]
+pub(crate) fn should_skip_for_network(wifi_only: bool, on_cellular: bool) -> bool {
+    wifi_only && on_cellular
+}
 
 /// The `BGTaskScheduler` identifier for the media-backup processing task. MUST match the
 /// entry in `Info.ios.plist`'s `BGTaskSchedulerPermittedIdentifiers` array — iOS refuses to
@@ -87,6 +185,16 @@ where
 /// delegates to `run_sweep_with` with the real opt-in flag + per-DID backup.
 #[cfg(target_os = "ios")]
 pub(crate) async fn run_backup_sweep(app: &tauri::AppHandle) -> BackupSweepReport {
+    // Honor the Wi-Fi-only preference: BGProcessingTaskRequest can't express "Wi-Fi only", so
+    // we check the live network type here and defer to the next scheduled fire if on cellular.
+    let settings = load_settings();
+    if should_skip_for_network(settings.wifi_only, on_cellular()) {
+        tracing::info!(
+            "background media backup: skipped this run — Wi-Fi only is on and the device is on cellular"
+        );
+        return BackupSweepReport::default();
+    }
+
     let dids = crate::identity_store::IdentityStore
         .list_identities()
         .unwrap_or_default();
@@ -184,7 +292,51 @@ pub(crate) fn register_and_schedule(app: &tauri::AppHandle) {
         return;
     }
 
-    schedule_next(&scheduler, &identifier);
+    apply_schedule();
+}
+
+/// Submit or cancel the `BGProcessingTask` request to match the current settings: a pending
+/// request when background backups are enabled (carrying the external-power preference), or
+/// none when they're off. Called at launch, whenever the settings change, and to re-arm the
+/// next run as the task fires. The launch handler must already be registered.
+#[cfg(target_os = "ios")]
+fn apply_schedule() {
+    use objc2_background_tasks::BGTaskScheduler;
+    use objc2_foundation::NSString;
+
+    let scheduler = unsafe { BGTaskScheduler::sharedScheduler() };
+    let identifier = NSString::from_str(BACKUP_TASK_IDENTIFIER);
+    let settings = load_settings();
+    if settings.background_enabled {
+        schedule_next(&scheduler, &identifier, settings.require_external_power);
+    } else {
+        // Drop any pending request so a disabled setting takes effect immediately.
+        unsafe { scheduler.cancelTaskRequestWithIdentifier(&identifier) };
+    }
+}
+
+/// Whether the device's default route is currently a cellular (WWAN) link, via
+/// `SCNetworkReachability` flags for the unspecified address (general internet reachability).
+/// On any read failure we report `false` (not cellular) so a diagnostic hiccup never silently
+/// disables backups — an occasional cellular sweep is the lesser evil than a mirror that
+/// quietly stops updating.
+#[cfg(target_os = "ios")]
+fn on_cellular() -> bool {
+    use std::net::{Ipv4Addr, SocketAddr};
+    use system_configuration::network_reachability::{ReachabilityFlags, SCNetworkReachability};
+
+    let addr = SocketAddr::from((Ipv4Addr::UNSPECIFIED, 0));
+    let reachability = SCNetworkReachability::from(addr);
+    match reachability.reachability() {
+        Ok(flags) => {
+            flags.contains(ReachabilityFlags::REACHABLE)
+                && flags.contains(ReachabilityFlags::IS_WWAN)
+        }
+        Err(e) => {
+            tracing::warn!(error = ?e, "background media backup: could not read network type; assuming not cellular");
+            false
+        }
+    }
 }
 
 /// The launch-handler body (runs on the main thread): re-arm the next run, then kick off the
@@ -195,16 +347,13 @@ fn handle_launch(
     task: objc2::rc::Retained<objc2_background_tasks::BGTask>,
 ) {
     use block2::RcBlock;
-    use objc2_background_tasks::BGTaskScheduler;
-    use objc2_foundation::NSString;
     use std::sync::atomic::AtomicBool;
     use std::sync::Arc;
 
-    // Re-schedule the follow-up immediately (Apple's guidance is to submit the next request as
-    // the task begins), so the mirror keeps getting topped up run after run.
-    let scheduler = unsafe { BGTaskScheduler::sharedScheduler() };
-    let identifier = NSString::from_str(BACKUP_TASK_IDENTIFIER);
-    schedule_next(&scheduler, &identifier);
+    // Re-arm the follow-up immediately (Apple's guidance is to submit the next request as the
+    // task begins), so the mirror keeps getting topped up run after run. Via `apply_schedule`
+    // so a disable toggled between fires cancels instead of re-submitting.
+    apply_schedule();
 
     // Share the task + a one-shot completion latch between the worker and the expiration
     // handler so the task is marked complete exactly once.
@@ -242,6 +391,7 @@ fn handle_launch(
 fn schedule_next(
     scheduler: &objc2_background_tasks::BGTaskScheduler,
     identifier: &objc2_foundation::NSString,
+    require_external_power: bool,
 ) {
     use objc2::AnyThread;
     use objc2_background_tasks::BGProcessingTaskRequest;
@@ -251,12 +401,12 @@ fn schedule_next(
         BGProcessingTaskRequest::initWithIdentifier(BGProcessingTaskRequest::alloc(), identifier)
     };
     unsafe {
-        // The sweep fetches blobs, so it needs the network. External power is left off so the
-        // sweep isn't starved on devices that rarely charge on a predictable schedule; iOS
-        // already prefers to run processing tasks while charging. Power-gating a video-heavy
-        // account by its mirror size is a documented future refinement.
+        // The sweep fetches blobs, so it always needs the network. External power follows the
+        // user's "only while charging" setting (off by default so the sweep isn't starved on
+        // devices that rarely charge on a predictable schedule). "Wi-Fi only" can't be
+        // expressed here — it is enforced at fire time in `run_backup_sweep`.
         request.setRequiresNetworkConnectivity(true);
-        request.setRequiresExternalPower(false);
+        request.setRequiresExternalPower(require_external_power);
         let earliest = NSDate::dateWithTimeIntervalSinceNow(EARLIEST_BEGIN_AFTER_SECS);
         request.setEarliestBeginDate(Some(&earliest));
     }
@@ -380,5 +530,38 @@ mod tests {
     async fn sweep_over_empty_identity_list_is_a_noop() {
         let report = run_sweep_with(&[], |_| true, |_did| async { Ok(()) }).await;
         assert_eq!(report, BackupSweepReport::default());
+    }
+
+    #[test]
+    fn wifi_only_skips_only_on_cellular() {
+        // Skip only when the user asked for Wi-Fi only AND we're on cellular.
+        assert!(should_skip_for_network(true, true));
+        assert!(!should_skip_for_network(true, false));
+        // Wi-Fi-only off: never skip, cellular or not.
+        assert!(!should_skip_for_network(false, true));
+        assert!(!should_skip_for_network(false, false));
+    }
+
+    #[test]
+    fn settings_default_to_background_on_no_power_no_wifi_gate() {
+        let d = BackgroundBackupSettings::default();
+        assert!(d.background_enabled);
+        assert!(!d.require_external_power);
+        assert!(!d.wifi_only);
+    }
+
+    #[test]
+    fn settings_round_trip_as_camel_case() {
+        let s = BackgroundBackupSettings {
+            background_enabled: false,
+            require_external_power: true,
+            wifi_only: true,
+        };
+        let json = serde_json::to_string(&s).unwrap();
+        assert!(json.contains("\"backgroundEnabled\":false"));
+        assert!(json.contains("\"requireExternalPower\":true"));
+        assert!(json.contains("\"wifiOnly\":true"));
+        let back: BackgroundBackupSettings = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, s);
     }
 }

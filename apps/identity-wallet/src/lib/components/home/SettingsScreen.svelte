@@ -1,14 +1,55 @@
 <script lang="ts">
+  import { onMount } from 'svelte';
   import ScreenHeader from '$lib/components/ui/ScreenHeader.svelte';
   import Button from '$lib/components/ui/Button.svelte';
+  import Toggle from '$lib/components/ui/Toggle.svelte';
   import {
     readLocalMirror,
     setAppearance,
     type AppearancePreference,
   } from '$lib/appearance';
-  import { exportDiagnostics, shareTextNative } from '$lib/ipc';
+  import {
+    exportDiagnostics,
+    shareTextNative,
+    getBackgroundBackupSettings,
+    setBackgroundBackupSettings,
+    type BackgroundBackupSettings,
+  } from '$lib/ipc';
 
   let { onback }: { onback: () => void } = $props();
+
+  // ── Background media-backup settings ────────────────────────────────────────
+  // App-global (the background sweep is one task covering every opted-in identity).
+  // "Only while charging" and "Wi-Fi only" refine the background pass, so they're
+  // inert while it's off. Defaults match the backend; the real value loads on mount.
+  let bgBackup = $state<BackgroundBackupSettings>({
+    backgroundEnabled: true,
+    requireExternalPower: false,
+    wifiOnly: false,
+  });
+  let bgSaveError = $state(false);
+
+  onMount(async () => {
+    try {
+      bgBackup = await getBackgroundBackupSettings();
+    } catch (e) {
+      console.error('Failed to load media-backup settings:', e);
+      // Keep the defaults; a failed read must not present a wrong state as if saved.
+    }
+  });
+
+  async function updateBgBackup(patch: Partial<BackgroundBackupSettings>) {
+    const prev = bgBackup;
+    bgBackup = { ...bgBackup, ...patch }; // optimistic — the switch flips instantly
+    bgSaveError = false;
+    try {
+      bgBackup = await setBackgroundBackupSettings(bgBackup);
+    } catch (e) {
+      console.error('Failed to save media-backup settings:', e);
+      bgBackup = prev; // revert so the UI never claims a change that didn't persist
+      bgSaveError = true;
+    }
+  }
 
   // initAppearance() reconciled the mirror against the Keychain at launch,
   // so the mirror is authoritative by the time this screen opens.
@@ -141,6 +182,61 @@
     {/if}
   </section>
 
+  <section class="group" aria-labelledby="media-backup-title">
+    <div class="group-head">
+      <h2 class="group-title" id="media-backup-title">Media backup</h2>
+      <p class="group-sub">
+        For identities with media backup turned on, keep the iCloud copy up to date in the
+        background — so media stays protected without opening the app.
+      </p>
+    </div>
+
+    <Toggle
+      label="Back up in the background"
+      description="Let your iPhone refresh your backups on its own. Off backs up only when you open the app."
+      checked={bgBackup.backgroundEnabled}
+      onchange={(v) => updateBgBackup({ backgroundEnabled: v })}
+    />
+
+    <div class="sub-toggles">
+      <Toggle
+        label="Only while charging"
+        description="Wait until your iPhone is plugged in."
+        checked={bgBackup.requireExternalPower}
+        disabled={!bgBackup.backgroundEnabled}
+        onchange={(v) => updateBgBackup({ requireExternalPower: v })}
+      />
+      <Toggle
+        label="Use Wi-Fi only"
+        description="Skip background backups on cellular data."
+        checked={bgBackup.wifiOnly}
+        disabled={!bgBackup.backgroundEnabled}
+        onchange={(v) => updateBgBackup({ wifiOnly: v })}
+      />
+    </div>
+
+    {#if bgSaveError}
+      <p class="save-error" role="alert">
+        <svg
+          width="13"
+          height="13"
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          stroke-width="2.2"
+          stroke-linecap="round"
+          stroke-linejoin="round"
+          aria-hidden="true"
+        >
+          <path d="M10.3 3.2 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.2a2 2 0 0 0-3.4 0z" />
+          <path d="M12 9v4" />
+          <path d="M12 17h.01" />
+        </svg>
+        Couldn’t save this setting to your device. Please try again.
+      </p>
+    {/if}
+  </section>
+
   <section class="group" aria-labelledby="diagnostics-title">
     <div class="group-head">
       <h2 class="group-title" id="diagnostics-title">Diagnostics</h2>
@@ -214,6 +310,16 @@
     font-size: var(--text-label);
     color: var(--color-muted);
     margin: 0;
+  }
+
+  /* The two dependent switches read as sub-options of "Back up in the background":
+     a hairline step down and a small inset, no nested card. */
+  .sub-toggles {
+    display: flex;
+    flex-direction: column;
+    padding-left: var(--space-md);
+    padding-top: var(--space-2xs);
+    border-top: 1px solid var(--color-line);
   }
 
   .segmented {

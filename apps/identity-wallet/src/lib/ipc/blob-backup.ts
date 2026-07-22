@@ -97,6 +97,42 @@ export type BlobBackupError =
   | { code: 'MANIFEST_CORRUPT'; message: string }
   | { code: 'KEYCHAIN_ERROR'; message: string };
 
+/**
+ * App-global settings for the iOS background media-backup sweep (distinct from the per-DID
+ * opt-in above). App-wide because the sweep is one BGProcessingTask covering every opted-in
+ * identity. Matches `BackgroundBackupSettings` in `bg_backup.rs` (camelCase fields).
+ */
+export type BackgroundBackupSettings = {
+  /** Whether iOS may wake the app to run a backup sweep. Off keeps only the app-open pass. */
+  backgroundEnabled: boolean;
+  /** Only run the background sweep while charging. */
+  requireExternalPower: boolean;
+  /** Skip the background sweep on a cellular (metered) connection. */
+  wifiOnly: boolean;
+};
+
+/**
+ * Error from `setBackgroundBackupSettings`. Serialized as `{ code: "..." }` by
+ * `BackgroundBackupError` in `bg_backup.rs` — codes must match exactly.
+ */
+export type BackgroundBackupError =
+  | { code: 'KEYCHAIN_ERROR'; message: string }
+  | { code: 'SERIALIZATION_ERROR'; message: string };
+
+/** The current background-backup settings (defaults: background on, no power/Wi-Fi gate). */
+export const getBackgroundBackupSettings = (): Promise<BackgroundBackupSettings> =>
+  invoke('get_background_backup_settings');
+
+/**
+ * Persist the background-backup settings and (on device) re-apply the schedule: submit or
+ * cancel the BGProcessingTask to match. Returns the stored settings. Throws
+ * {@link BackgroundBackupError} on a Keychain/encode failure.
+ */
+export const setBackgroundBackupSettings = (
+  settings: BackgroundBackupSettings
+): Promise<BackgroundBackupSettings> =>
+  invoke('set_background_backup_settings', { settings });
+
 /** The Media Backup screen's status readout: location, opt-in flag, mirror size. */
 export const getBlobBackupStatus = (did: string): Promise<BlobBackupStatus> =>
   invoke('get_blob_backup_status', { did });

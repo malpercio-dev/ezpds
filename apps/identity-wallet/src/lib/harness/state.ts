@@ -237,6 +237,16 @@ export interface WalletState {
   availableUserDomains: string[];
   appearance: 'system' | 'light' | 'dark' | null;
   biometricEnabled: boolean;
+  /**
+   * App-global background media-backup settings (the iOS BGProcessingTask policy). Global,
+   * not per-identity: the sweep is one task covering every opted-in DID. Off-device this is
+   * just stored/echoed — the real scheduling is a device concern the harness never runs.
+   */
+  backgroundBackupSettings: {
+    backgroundEnabled: boolean;
+    requireExternalPower: boolean;
+    wifiOnly: boolean;
+  };
   identities: FakeIdentity[];
   create: CreateFlow | null;
   claim: ClaimFlow | null;
@@ -254,6 +264,11 @@ export function emptyWalletState(): WalletState {
     availableUserDomains: ['.harness.pds.local'],
     appearance: null,
     biometricEnabled: true,
+    backgroundBackupSettings: {
+      backgroundEnabled: true,
+      requireExternalPower: false,
+      wifiOnly: false,
+    },
     identities: [],
     create: null,
     claim: null,

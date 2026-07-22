@@ -1336,6 +1336,8 @@ pub fn run() {
             blob_backup::set_blob_backup_enabled,
             blob_backup::run_blob_backup,
             blob_backup::restore_blob_backup,
+            bg_backup::get_background_backup_settings,
+            bg_backup::set_background_backup_settings,
             plc_monitor::check_identity_status,
             recovery::build_recovery_override_cmd,
             rotate_repo_key::build_repo_key_rotation_cmd,

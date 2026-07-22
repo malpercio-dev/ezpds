@@ -86,6 +86,9 @@ objc2-foundation = { workspace = true, features = ["NSFileManager", "NSURL", "NS
 objc2 = { workspace = true }
 objc2-background-tasks = { workspace = true, features = ["BGTaskScheduler", "BGTask", "BGTaskRequest", "block2", "dispatch2"] }
 block2 = { workspace = true }
+# "Wi-Fi only" background-backup check: SCNetworkReachability's IS_WWAN flag, since a
+# BGProcessingTaskRequest can't require an unmetered link (bg_backup.rs).
+system-configuration = { workspace = true }
 
 [dev-dependencies]
 tokio = { version = "1", features = ["macros", "rt"] }
