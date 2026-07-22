@@ -954,9 +954,14 @@ export function buildRegistry(state: WalletState): Registry {
       if (!identity) throw { code: 'IDENTITY_NOT_FOUND', message: 'identity not found' };
       const backup = identity.blobBackup;
       if (backup.location === null) throw { code: 'BACKUP_UNAVAILABLE' };
+      // Evicted placeholders are "downloaded from iCloud first", then cleared — modeling
+      // the real restore's on-demand materialization before upload.
+      const downloaded = backup.evictedCids.filter((cid) => backup.mirroredCids.includes(cid));
+      backup.evictedCids = backup.evictedCids.filter((cid) => !backup.mirroredCids.includes(cid));
       return {
         manifestCount: backup.mirroredCids.length,
         uploaded: backup.mirroredCids.length,
+        downloadedFromIcloud: downloaded.length,
         failed: [],
       };
     },

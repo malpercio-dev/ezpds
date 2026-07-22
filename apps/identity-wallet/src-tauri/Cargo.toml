@@ -72,8 +72,10 @@ tauri-plugin-sharesheet = { path = "../../admin-companion/vendor/tauri-plugin-sh
 # same crate family the vendored auth-session plugin already uses (version in the
 # workspace table, so no duplicate majors enter the lockfile). iOS-only: every
 # other platform uses the local-directory fallback and never compiles this.
+# `NSError` is needed for `startDownloadingUbiquitousItemAtURL:error:` (the restore
+# path's on-demand download of an evicted placeholder), which returns `Result<(), NSError>`.
 [target.'cfg(target_os = "ios")'.dependencies]
-objc2-foundation = { workspace = true, features = ["NSFileManager", "NSURL", "NSString"] }
+objc2-foundation = { workspace = true, features = ["NSFileManager", "NSURL", "NSString", "NSError"] }
 
 [dev-dependencies]
 tokio = { version = "1", features = ["macros", "rt"] }

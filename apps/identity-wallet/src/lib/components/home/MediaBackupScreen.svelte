@@ -288,6 +288,12 @@
             Restored {restoreReport.uploaded} of {restoreReport.manifestCount}
             {restoreReport.manifestCount === 1 ? 'item' : 'items'} to your server.
           </p>
+          {#if restoreReport.downloadedFromIcloud > 0}
+            <p class="report-sub">
+              Downloaded {restoreReport.downloadedFromIcloud}
+              {restoreReport.downloadedFromIcloud === 1 ? 'file' : 'files'} from iCloud first.
+            </p>
+          {/if}
           {#if restoreReport.failed.length > 0}
             <p class="report-fail-title" role="alert">
               {restoreReport.failed.length}
