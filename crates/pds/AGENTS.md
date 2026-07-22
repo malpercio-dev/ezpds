@@ -96,8 +96,9 @@ A `#sync` frame (`SyncEvent`: DID, rev, and a ≤10 KB commit-block CAR) is the 
 assertion relays use to auto-repair drift; it is emitted on account genesis (above) and on
 `activateAccount` (chained after the `#account` via `PendingAccount::stage_sync` when the account
 has a repo — the commit-block CAR is built *before* the transaction, since the single-connection
-pool can't serve a block read while the tx holds the connection), and belongs on a future
-`importRepo` once that lands. Account-status changes emit a separate
+pool can't serve a block read while the tx holds the connection). `importRepo` (shipped,
+`routes/import_repo.rs`) deliberately does *not* emit one — a migrated repo's head assertion rides
+on the `activateAccount` that follows it in the migration sequence. Account-status changes emit a separate
 `#account` frame instead of a `#commit`: `activate_account.rs`/`deactivate_account.rs` stage one
 via `Firehose::stage_account` (active=false/`deactivated` or active=true) **only on a real status
 transition** — a redundant no-op activate/deactivate returns 200 and emits nothing.
