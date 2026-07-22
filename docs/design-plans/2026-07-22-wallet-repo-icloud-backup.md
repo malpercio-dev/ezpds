@@ -300,9 +300,9 @@ reachable in fake mode and the registry-coverage test passes.
 
 ## Issue breakdown
 
-The work is tracked as three issues so the self-contained backup ships and reviews
-independently of the migration-orchestrator wiring — the same split the blob backup
-used (MM-434 backup / MM-446 migration fallback):
+The work is split so the self-contained backup ships and reviews independently of the
+migration-orchestrator wiring — the same split the blob backup used (MM-434 backup /
+MM-446 migration fallback):
 
 - **MM-447** — the backup feature: `repo_backup.rs` (backup + validate +
   `export_repo_backup`), IPC, UI, harness, tests. Implementation Phases 1, 3, 4.
@@ -310,23 +310,19 @@ used (MM-434 backup / MM-446 migration fallback):
   Phase 2. Blocked by MM-447; the repo twin of MM-446.
 - **MM-449** — background repo-backup passes via `BGProcessingTask`, sharing MM-444's
   mechanism. Blocked by MM-447.
-
-The two further follow-ons in the section below are still in design discussion and
-unfiled.
+- **MM-451** — the sovereign disaster-recovery flow (below): rebuild the account from
+  the iCloud backups when the source PDS is gone. Blocked by MM-447.
+- **MM-450** — block-level incremental storage (Option B, below): an icebox
+  optimization, filed but trigger-gated on measured repo size. Related to MM-447.
 
 ## Additional Considerations (sharp edges)
 
-**The disaster case is the interesting one, and it's a follow-on.** Standard ATProto
-migration assumes the *source* PDS is alive to mint the `getServiceAuth` token that
-authorizes `createAccount` on the destination. If the reason for restoring is that the
-old PDS is *gone*, that token path is dead — so a true "rebuild my account from iCloud
-onto a fresh PDS" flow needs a **wallet-signed `createAccount`/import authorization** (a
-device-key proof over the DID, which the wallet already holds as `rotationKeys[0]`)
-rather than source service-auth. That is the piece that turns this backup from a
-migration *convenience* into a genuine credible-exit *guarantee*, and it intersects
-ADR-0002 and needs a PDS-side change. **This plan deliberately scopes that out** and
-delivers the backup + the migration mirror-fallback first; the sovereign
-disaster-recovery flow is a tracked follow-on.
+**The disaster case (source PDS gone) is a follow-on — and it needs no PDS-side
+change.** See the "Sovereign disaster-recovery flow" section below (MM-451): the wallet
+can rebuild the account entirely client-side, because it holds `rotationKeys[0]` and can
+enroll a self-controlled `atproto` signing key then mint the `createAccount` service-auth
+JWT offline. This plan delivers the backup (MM-447) and migration mirror-fallback
+(MM-448) first; MM-451 layers on the source-independent rebuild.
 
 **A CAR is records, not blobs.** The MST references blobs by CID but does not contain
 their bytes. A full account restore is therefore **import the repo CAR (this backup) +
@@ -351,26 +347,74 @@ mirror. The mirror is Files-app-visible, reinforcing user-legible sovereignty.
 place for the blob backup; repo backup writes under the same container and needs no new
 entitlement, capability, or `just ios-template-check`/`ios-check` change.
 
-## Follow-ons under design discussion (unfiled)
+## Sovereign disaster-recovery flow (resolved design — MM-451)
 
-These are deliberately **not** yet Linear issues — each carries an open design question
-to work through before deciding whether/how to build it (unlike MM-448/MM-449, which are
-clear wins already filed):
+The credible-exit *guarantee*: rebuild the account on a new (or the same) PDS from the
+iCloud backups **when the source PDS is gone or uncooperative** — with no dependency on
+the old PDS. This upgrades the backup from a migration convenience to a real sovereignty
+guarantee, and — the key resolution of this design session — **it needs no PDS-side
+change.** It is the ATProto "adversarial migration" pattern (see the account-migration
+guide's offline-auth path and D. Buchanan's "Adversarial ATProto PDS Migration"),
+automated by a wallet that already holds the did:plc rotation key.
 
-- **Sovereign disaster-recovery flow** (source PDS dead → wallet-signed `createAccount`
-  authorization → import from iCloud CAR → activate). The piece that upgrades this from a
-  migration convenience to a real credible-exit *guarantee*; needs a PDS-side auth change
-  (ADR-0002 territory). **Open question:** how a destination PDS authorizes a source-free
-  `createAccount` under an existing DID — a wallet device-key proof over the DID (the
-  wallet already holds `rotationKeys[0]`) accepted by any Custos, vs. restricting the
-  guarantee to Custos-to-Custos, vs. a narrower deactivated-only creation surface. The
-  destination account is created *deactivated* (inert until the wallet-signed PLC repoint
-  lands and `activateAccount` is called), which bounds the blast radius of the new auth.
-- **Option B: block-level incremental mirror** via `getRepo?since=<rev>` + on-device CAR
-  reassembly (`collect_reachable_cids` + `build_car_from_cids`, a repo-engine dep in the
-  wallet). **Open question:** the trigger — at what measured repo size does re-fetching a
-  full CAR on each pass become painful enough to justify the repo-engine dependency and
-  MST-reassembly logic on-device? Revisit with real size data from opted-in accounts.
+**Why no PDS-side change.** `com.atproto.server.createAccount` is authorized by a
+service-auth JWT signed with the DID's current `atproto` signing key. Normally that JWT
+comes from the source PDS (`getServiceAuth`). But because the wallet holds
+`rotationKeys[0]`, it can first enroll a **self-controlled** `atproto` signing key via a
+device-key-signed PLC op, then **mint the JWT offline** itself. The destination PDS runs
+the *standard* migration `createAccount` path and verifies the JWT against the
+self-controlled key it resolves from plc.directory — so this works against any PDS, not
+just Custos ("exit anywhere").
+
+**Flow — two guarded PLC ops, `createAccount`+import sandwiched between:**
+1. **PLC op #1** (device-key-signed, direct to plc.directory): enroll a fresh
+   self-controlled `atproto` signing key. (Buchanan bundles the `services.atproto_pds`
+   repoint into this same op; reusing `migrate.rs` we may instead defer the repoint to
+   op #2 — an implementation choice.) The strict guard preserves the wallet device key at
+   `rotationKeys[0]`.
+2. **Poll the plc.directory audit log** until op #1 is globally visible — `createAccount`
+   cannot verify the offline JWT before the signing-key change propagates.
+3. **Mint the service-auth JWT offline** with the self-controlled key:
+   `iss = <account DID>`, `aud = did:web:<dest host>`,
+   `lxm = com.atproto.server.createAccount`, ~3600s.
+4. **`createAccount`** (deactivated) on the destination with the JWT → Bearer session.
+5. **`importRepo`** from the iCloud CAR (`export_repo_backup`/`mirror_repo_car`), **drain
+   blobs** from the iCloud mirror (`mirror_fallback_blob`), **`putPreferences`** if backed
+   up.
+6. **PLC op #2** (device-key-signed): adopt the destination's recommended rotation +
+   `atproto` keys (`reserveSigningKey`/`getRecommendedDidCredentials`), handing
+   commit-signing to the destination — **still preserving the wallet device key at
+   `rotationKeys[0]`, at the front.**
+7. **`activateAccount`** on the destination.
+
+**Reuse map.** *New:* offline service-auth JWT minting with a wallet-held key; a
+wallet-*submitted* signing-key-enroll PLC op (a sovereign variant of `rotate_repo_key.rs`,
+which today routes through the live PDS); the audit-log propagation poll. *Reused:*
+`migrate.rs` op-building + strict guard for the identity legs; the migration
+orchestrator's `createAccount`/`importRepo`/blob-drain/`activateAccount`; MM-448 (repo
+mirror source) + MM-446 (blob mirror source).
+
+**Safety.** The strict allowlist guard must preserve the wallet's rotation key in *both*
+ops — Buchanan's central warning is that accidentally dropping your own rotation key
+permanently locks you out, and our `guard_migration_op`-style allowlists are exactly that
+safeguard (already how the wallet's claim/migrate/handle/rotate ops stay honest). The
+account stays deactivated (inert, not servable) until step 7; a stolen device key
+attempting this is caught by `plc_monitor` + the 72-hour recovery-override window.
+
+**Edge case.** If the old PDS served the account's handle domain and is offline, the
+handle won't resolve — the flow must let the user fall back to a destination-served handle
+(e.g. `<handle>.<dest host>`).
+
+## Block-level incremental storage — deferred (Option B — MM-450)
+
+Filed as a trigger-gated icebox, not a discussion item. Store the repo as individual
+content-addressed IPLD blocks and fetch only new blocks via `getRepo?since=<rev>`
+(server-side support already exists), reassembling a CAR on-device from the current root
+(`collect_reachable_cids` + `build_car_from_cids`, a repo-engine dep in the wallet). The
+trigger to build it: measured repo sizes (the status surface shows snapshot size) where
+re-fetching a full CAR on each pass is a real battery/bandwidth cost. Until then, the
+full-CAR snapshot is simpler and cheap, because the byte-heavy asset (blobs) is mirrored
+separately.
 
 ## Glossary
 
@@ -394,3 +438,17 @@ clear wins already filed):
   CID/commit-verified local iCloud copy when the source PDS can't serve the asset —
   shipped for blobs as `mirror_fallback_blob`, added here for the repo as
   `mirror_repo_car`.
+- **Service-auth JWT**: the short-lived token that authorizes `createAccount` for an
+  existing DID, signed with the DID's `atproto` signing key and carrying `iss`
+  (account DID), `aud` (destination PDS `did:web`), and `lxm`
+  (`com.atproto.server.createAccount`). Normally minted by the source PDS
+  (`getServiceAuth`); in disaster recovery the wallet mints it **offline** after enrolling
+  a self-controlled signing key.
+- **Adversarial migration**: moving an account off a PDS without that PDS's cooperation,
+  by rotating the identity's `atproto` signing key to one the user controls and minting
+  the migration credentials locally. The basis for the sovereign disaster-recovery flow
+  (MM-451).
+- **Rotation-key guard**: the strict pre-sign allowlist (`guard_migration_op` and
+  siblings) that proves a wallet-built PLC op preserves the device key at
+  `rotationKeys[0]` and changes only what it should — the safeguard against the
+  "accidentally locked myself out" failure the adversarial-migration write-up warns of.
