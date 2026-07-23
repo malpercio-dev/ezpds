@@ -10,7 +10,7 @@
   <meta name="description" content="This is a Custos personal data server on the AT Protocol. Accounts here are created and defended with the Obsign identity wallet; their owners, not this server, hold the keys that control them." />
   <link
     rel="icon"
-    href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Crect width='24' height='24' rx='5' fill='%23262b36'/%3E%3Ccircle cx='12' cy='12' r='6' fill='%23d4a844'/%3E%3C/svg%3E"
+    href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Crect width='24' height='24' rx='5' fill='%23262b36'/%3E%3Cpath d='M6.89 8.63 11.02 12 6.89 15.38' fill='none' stroke='%23d4a844' stroke-width='2.53' stroke-linecap='round' stroke-linejoin='round'/%3E%3Crect x='13.69' y='15.05' width='4.69' height='1.59' rx='0.8' fill='%23d3d7db'/%3E%3C/svg%3E"
   />
   <style>
     /* Visual system: "The Sealed Credential" (see DESIGN.md), matching the OAuth
@@ -68,10 +68,11 @@
     code { font-family: var(--mono); font-size: 0.875rem; word-break: break-all; }
 
     .top { display: flex; flex-direction: column; align-items: flex-start; gap: 14px; margin-bottom: 28px; }
-    /* The Custos mark (gold disc on cool-slate rounded square), matching the
-       marketing site's Custos identity and this page's favicon. Its colours are
-       the Custos register (cool slate + gold), appearance-invariant like a
-       physical seal, so the mark reads the same in light and dark. */
+    /* The Custos mark — the operator's prompt (a brass chevron ❯ and a filament
+       cursor _), the same glyph as the Brass Console app icon (apps/admin-companion/
+       app-icon.svg) and this page's favicon. Its colours are the Custos register
+       (cool slate + brass + filament), appearance-invariant like a physical seal,
+       so the mark reads the same in light and dark. */
     .mark {
       width: 56px; height: 56px; border-radius: 12px;
       display: flex; overflow: hidden;
@@ -132,7 +133,7 @@
   <main class="page">
     <div class="top">
       <span class="mark" aria-hidden="true">
-        <svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><rect width="24" height="24" fill="#262b36"/><circle cx="12" cy="12" r="6" fill="#d4a844"/></svg>
+        <svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><rect width="24" height="24" fill="#262b36"/><path d="M6.89 8.63 11.02 12 6.89 15.38" fill="none" stroke="#d4a844" stroke-width="2.53" stroke-linecap="round" stroke-linejoin="round"/><rect x="13.69" y="15.05" width="4.69" height="1.59" rx="0.8" fill="#d3d7db"/></svg>
       </span>
       <h1>This is a Custos personal data server.</h1>
       <p class="sub">
