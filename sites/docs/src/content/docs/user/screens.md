@@ -114,9 +114,12 @@ with its permissions and full activity record.
   <figcaption>Appearance and app settings.</figcaption>
 </figure>
 
-## Backing up your media
+## Backing up your content
 
-Opening an identity and choosing **Back up media** keeps your own content-verified copy of
+The **Media backup** screen (opened from an identity) holds two backups you control — your
+media and your posts.
+
+Choosing **Back up media** keeps your own content-verified copy of
 that account's photos and video in iCloud Drive — restorable to your server byte for byte if
 the server ever loses the originals. The mirror size is always shown.
 
@@ -131,6 +134,15 @@ background — with controls to turn that off, restrict it to while charging, or
 <figure>
   <img src="/screenshots/wallet/media-backup-settings.png" alt="Obsign settings screen showing the Media backup section with 'Back up in the background', 'Only while charging', and 'Use Wi-Fi only' switches" width="280" />
   <figcaption>The background media-backup controls in Settings — status is carried by the switch position, never colour alone.</figcaption>
+</figure>
+
+Below the media controls, **Back up your posts** mirrors an integrity-checked snapshot of your
+repository — every post, like, follow, and profile edit — into the same iCloud Drive. It's the
+one part of your account that otherwise lives only on your server.
+
+<figure>
+  <img src="/screenshots/wallet/repo-backup.png" alt="Obsign 'Back up your posts' section showing a 2.3 MB repository snapshot backed up to iCloud, with a 'Back up posts now' action" width="280" />
+  <figcaption>Backing up your posts — an integrity-checked snapshot of your repository, held in your own iCloud Drive.</figcaption>
 </figure>
 
 ## When something is wrong

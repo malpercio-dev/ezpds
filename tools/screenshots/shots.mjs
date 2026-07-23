@@ -127,6 +127,21 @@ const WALLET_SHOTS = [
       'The background media-backup controls in Settings — turn it off, restrict to charging, or skip cellular data.',
   },
   {
+    out: 'repo-backup',
+    scenario: 'one-identity',
+    fullPage: false,
+    // Same screen, below the media section: drive the posts opt-in, then frame that section.
+    steps: [
+      { click: 'button.card' },
+      { clickText: 'Back up media' },
+      { clickText: 'Turn on post backup' },
+      { scrollTo: 'h2.section-title' },
+    ],
+    waitForText: 'Back up posts now',
+    caption:
+      'Backing up your posts: an integrity-checked snapshot of your repository — every post, like, follow, and profile edit — held in your iCloud Drive.',
+  },
+  {
     out: 'agents',
     scenario: 'agent-connected',
     steps: [{ click: 'button.agents-row' }],
