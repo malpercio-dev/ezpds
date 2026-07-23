@@ -8,6 +8,10 @@
   <meta name="theme-color" content="#16100c" media="(prefers-color-scheme: dark)" />
   <title>{{host}} — a Custos personal data server</title>
   <meta name="description" content="This is a Custos personal data server on the AT Protocol. Accounts here are created and defended with the Obsign identity wallet; their owners, not this server, hold the keys that control them." />
+  <link
+    rel="icon"
+    href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Crect width='24' height='24' rx='5' fill='%23262b36'/%3E%3Ccircle cx='12' cy='12' r='6' fill='%23d4a844'/%3E%3C/svg%3E"
+  />
   <style>
     /* Visual system: "The Sealed Credential" (see DESIGN.md), matching the OAuth
        consent page. Brand fonts come from this server's own /static/fonts route —
@@ -17,9 +21,9 @@
        viewer's system setting and every color is a light-dark() pair forked
        verbatim from apps/identity-wallet/src/lib/styles/tokens.css. Light is
        archival paper; dark is the archive at night — the same warm ink hue
-       carried into a near-black ground, never a cold blue-black. The wax seal is
-       a physical object, so gold (--gold/--gold-deep/--on) keeps its color at
-       night (the Same-Seal Rule); aubergine lifts to lavender so links hold AAA
+       carried into a near-black ground, never a cold blue-black. The Custos
+       mark (see .mark) is a physical object, so its colours stay put at night
+       (the Same-Seal Rule); aubergine lifts to lavender so links hold AAA
        on the dark ground; status pairs invert; raised surfaces step lighter in
        dark (the Inverted-Elevation Rule). Every text pairing is verified ≥7:1
        body/status, ≥4.5:1 labels in both appearances (DESIGN.md §2). */
@@ -32,9 +36,6 @@
       --serif:'Libre Caslon Display',Georgia,serif;
       --sans:'Public Sans',system-ui,-apple-system,sans-serif;
       --mono:'JetBrains Mono',ui-monospace,monospace;
-      /* Gold is appearance-invariant (the Same-Seal Rule). */
-      --gold:oklch(0.46 0.105 62); --gold-deep:oklch(0.38 0.09 60);
-      --on:oklch(0.99 0.005 80);
       --aubergine:light-dark(oklch(0.34 0.10 330), oklch(0.76 0.07 330));
       --aubergine-deep:light-dark(oklch(0.28 0.09 330), oklch(0.68 0.08 330));
       --ink:light-dark(oklch(0.23 0.012 60), oklch(0.96 0.004 75));
@@ -67,12 +68,16 @@
     code { font-family: var(--mono); font-size: 0.875rem; word-break: break-all; }
 
     .top { display: flex; flex-direction: column; align-items: flex-start; gap: 14px; margin-bottom: 28px; }
-    .seal {
-      width: 56px; height: 56px; border-radius: 9999px;
-      background: var(--gold); color: var(--on);
-      display: flex; align-items: center; justify-content: center;
-      box-shadow: inset 0 0 0 2px oklch(0.99 0.05 80 / 0.35), inset 0 -3px 8px oklch(0.2 0.05 60 / 0.22);
+    /* The Custos mark (gold disc on cool-slate rounded square), matching the
+       marketing site's Custos identity and this page's favicon. Its colours are
+       the Custos register (cool slate + gold), appearance-invariant like a
+       physical seal, so the mark reads the same in light and dark. */
+    .mark {
+      width: 56px; height: 56px; border-radius: 12px;
+      display: flex; overflow: hidden;
+      box-shadow: inset 0 0 0 1px oklch(1 0 0 / 0.06), 0 1px 3px oklch(0.2 0.05 60 / 0.18);
     }
+    .mark svg { width: 100%; height: 100%; display: block; }
     h1 { font-family: var(--serif); font-weight: 400; font-size: 1.75rem; line-height: 1.15; }
     .sub { color: var(--ink-soft); max-width: 52ch; }
 
@@ -126,8 +131,8 @@
 <body>
   <main class="page">
     <div class="top">
-      <span class="seal" aria-hidden="true">
-        <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><path d="m9 11.5 2 2 4-4"/></svg>
+      <span class="mark" aria-hidden="true">
+        <svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><rect width="24" height="24" fill="#262b36"/><circle cx="12" cy="12" r="6" fill="#d4a844"/></svg>
       </span>
       <h1>This is a Custos personal data server.</h1>
       <p class="sub">
