@@ -190,7 +190,17 @@
         await enrollRecoverySigningKey(did);
       });
       await runLeg('propagate', pollUntilVisible);
-      await runLeg('account', () => createRecoveryDestinationAccount(did, email, inviteCode));
+      await runLeg('account', async () => {
+        // Creating the destination account mints the service-auth JWT with the
+        // Keychain-held recovery signing key — a signing action, so it gets the
+        // same user-presence gate as the enroll.
+        try {
+          await authenticateBiometric('Approve creating the account on the new PDS');
+        } catch {
+          throw BIOMETRIC_CANCELLED;
+        }
+        await createRecoveryDestinationAccount(did, email, inviteCode);
+      });
       await runLeg('repo', () => recoveryTransferRepo(did));
       await runLeg('blobs', () => transferBlobs(did, acceptBlobLoss));
       await runLeg('preferences', () => transferPreferences(did));

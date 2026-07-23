@@ -544,6 +544,15 @@ pub(crate) async fn create_destination_account_with_token(
     invite_code: Option<String>,
     existing_dest_client: Option<Arc<OAuthClient>>,
 ) -> Result<Arc<OAuthClient>, MigrationError> {
+    // Idempotent fast path shared by both callers: a session already established by a
+    // prior attempt means there is nothing to create — return it without any network.
+    if let Some(client) = &existing_dest_client {
+        tracing::info!(
+            "create_destination_account_with_token: dest_client exists, returning cached"
+        );
+        return Ok(client.clone());
+    }
+
     // One-shot Bearer client carrying the service-auth token.
     let sa_client = OAuthClient::new_bearer(
         service_auth_token.to_string(),
