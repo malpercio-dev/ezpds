@@ -134,3 +134,12 @@ Per-relay pairings, the global admin key, and the biometric toggle.
   <img src="/screenshots/admin/settings.png" alt="Custos console settings with per-relay pairings" width="280" />
   <figcaption>Per-relay pairings, the global admin key, and the biometric toggle.</figcaption>
 </figure>
+
+Further down, a **Diagnostics** section exports a redacted, per-relay network-error log for
+troubleshooting — operation names, relay hosts, statuses, and short error codes only, never
+credentials, keys, signed requests, or claim codes.
+
+<figure>
+  <img src="/screenshots/admin/settings-diagnostics.png" alt="Custos console settings scrolled to the Diagnostics section with an 'Export diagnostics' button" width="280" />
+  <figcaption>The diagnostics export — a redacted relay-error log for handing a problem to support.</figcaption>
+</figure>

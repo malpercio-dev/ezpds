@@ -85,6 +85,10 @@ async function runStep(page, step) {
     await page.locator(step.waitFor).first().waitFor({ state: 'visible' });
   } else if (step.waitForText) {
     await page.getByText(step.waitForText, { exact: false }).first().waitFor({ state: 'visible' });
+  } else if (step.scrollTo) {
+    // Bring a below-the-fold element into view (scrolls the nearest scroll container —
+    // the wallet's internal `.screen` overflow, or the admin route's document scroll).
+    await page.locator(step.scrollTo).first().scrollIntoViewIfNeeded();
   } else {
     throw new Error(`Unrecognized step: ${JSON.stringify(step)}`);
   }
@@ -130,7 +134,10 @@ async function renderShot(browser, app, shot) {
     await page.addStyleTag({ content: DISABLE_MOTION_CSS });
     await page.waitForTimeout(400);
 
-    return await page.screenshot({ fullPage: true, animations: 'disabled' });
+    // Default to a full-page capture. A shot may set `fullPage: false` to capture just the
+    // viewport — the right framing after a `scrollTo` into a long, document-scrolling screen
+    // (e.g. the operator settings route), where a full-page shot would show every panel.
+    return await page.screenshot({ fullPage: shot.fullPage !== false, animations: 'disabled' });
   } finally {
     await context.close();
   }
