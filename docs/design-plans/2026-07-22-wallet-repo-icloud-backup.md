@@ -1,11 +1,25 @@
 # Wallet-Held MST Repo Backup to iCloud
 
-**Status: design + recommendation (2026-07-22). Not yet built.** This plan proposes
-a `repo_backup.rs` module in the identity wallet that mirrors a user's ATProto repo
+**Status: core shipped (MM-447, 2026-07-23 — PR #394, in v0.7.2). Follow-ons open;
+plan retained for them.** This plan proposed — and the wallet now ships — a
+`repo_backup.rs` module in the identity wallet that mirrors a user's ATProto repo
 (their signed commit + MST + records — the CAR) into their iCloud Drive, as the
-sibling of the shipped user-held blob backup (`blob_backup.rs`, MM-434). It closes
-the last gap in the wallet's self-custody story: the repo is currently the only
-account asset that lives *only* on the PDS.
+sibling of the user-held blob backup (`blob_backup.rs`, MM-434). It closed the last
+gap in the wallet's self-custody story: until this landed, the repo was the one
+account asset that lived *only* on the PDS.
+
+What shipped under MM-447 (the "Definition of Done" below, minus item 3's migration
+wiring): the four fine-grained Tauri commands + the `pub(crate) mirror_repo_car`
+helper, opt-in per DID, the public-`getRepo` fetch with client-side CAR validation
+before write, the shared iCloud root reused from `blob_backup`, and the "Back up your
+posts" section folded into the Media Backup screen. What is **not** yet built, tracked
+as follow-ons (see the sections below): consuming `mirror_repo_car` from the migration
+`transfer_repo` drain (MM-448); background repo passes via `BGProcessingTask` (MM-449,
+the repo sibling of the media sweep — repo backup is currently on-demand + opportunistic
+on app open only, never off-foreground); block-level incremental storage (MM-450,
+deferred / on ice); and the sovereign disaster-recovery rebuild (MM-451). This file
+stays in `design-plans/` rather than moving to `archive/` because those follow-ons still
+reference its design.
 
 ## Summary
 

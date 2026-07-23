@@ -43,9 +43,16 @@ The product launches mobile-first. The PDS is a full PDS before any desktop is i
 
 **Phase: Mobile-Only (v0.1)**
 - PDS behavior: Full PDS — hosts repo, serves XRPC, signs commits, emits firehose
-- Repo location: PDS (primary and only copy)
+- Repo location: PDS (authoritative primary copy)
 - Phone role: Identity wallet (key management, device admin)
 - Desktop: Does not exist yet
+
+> Since v0.7.2 the repo is no longer PDS-*only*: the identity wallet can keep an
+> opt-in, user-held CAR snapshot of the repo in the user's iCloud Drive
+> (`apps/identity-wallet/src-tauri/src/repo_backup.rs`, MM-447) — the self-custody
+> sibling of the blob backup. The PDS stays the authoritative copy; the snapshot is a
+> disaster-recovery/export artifact fetched over public `getRepo`, not a second writer.
+> See [the design plan](design-plans/2026-07-22-wallet-repo-icloud-backup.md).
 
 **Phase: Desktop-Enrolled (v0.2)**
 - PDS behavior: XRPC proxy + signer — forwards writes to desktop, signs commits, serves reads from cache
