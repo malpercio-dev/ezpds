@@ -25,6 +25,8 @@ Changes are collected in `changelog.d/` during development and inserted here whe
 
 - The identity wallet can now back up your posts. Alongside media backup, the Media Backup screen has a "Back up your posts" section that mirrors a full snapshot of your repository — every post, like, follow, and profile edit — into your iCloud Drive. Each snapshot is integrity-checked before it is saved (and the previous good copy is kept if a fetched one fails the check), so you hold a self-custodied, portable copy of the one part of your account that otherwise lives only on your server.
 
+- The marketing site now runs self-hosted, cookieless, IP-anonymized page-view analytics (Umami), disclosed on a new privacy page linked from every footer. No cookies are set, no data leaves the self-hosted instance, and analytics stay scoped to the marketing site — the mobile apps, PDS backend, and any auth surface remain untouched.
+
 
 ### Changed
 
@@ -34,6 +36,8 @@ Changes are collected in `changelog.d/` during development and inserted here whe
 
 - Restoring your iCloud media backup no longer stops at files iOS has offloaded to save space. When a backed-up file isn't on the device, the wallet now asks iCloud to download it, waits for it to arrive (with a time limit), verifies it still matches its content hash, and uploads it — so a restore on a device where most of the mirror has been evicted just works instead of handing you a long list of files to download by hand in the Files app. The restore summary shows how many files it pulled from iCloud first, so a slower restore explains itself. Files that are genuinely gone (no iCloud copy to download) are still reported per-file, and the run continues past them.
 
+- The PDS instance landing page now carries a favicon and shows the Custos brand mark (a gold disc on a cool-slate square) in place of the Obsign seal, matching the marketing site.
+
 
 ### Fixed
 
@@ -42,6 +46,8 @@ Changes are collected in `changelog.d/` during development and inserted here whe
 - `getBlob` now re-hashes each blob's bytes against its CID before serving and returns a 404 (flagging the scrub-sweep alarm counter) on a mismatch, so a corrupted file is never handed to downstream caches; verified responses now carry the `Cache-Control: public, max-age=31536000, immutable` header the blob-handling spec recommends.
 
 - Wallet diagnostics exports now include redacted connection and timeout failures from account creation, OAuth refresh, and authenticated requests.
+
+- The marketing site's analytics embed now restricts itself to the production domain (`about.obsign.org`), so non-production deployments (Railway staging, local previews) no longer report page views into the production analytics dashboard.
 
 
 ## [0.7.1] - 2026-07-19
