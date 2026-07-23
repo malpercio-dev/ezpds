@@ -73,6 +73,13 @@ services. `privacy.html` discloses what it collects and doesn't; the footer
 on every page links it. Per the ADR, analytics never extends to the docs
 site, either mobile app, the PDS backend, or any auth/PII surface.
 
+Umami's own website-level "Domain" setting is cosmetic only (it filters
+self-referrals out of the referrer list; it does not gate the collection
+API), so the embed carries `data-domains="about.obsign.org"` — Umami's
+client-side hostname allowlist — to keep this site's non-production
+deployments (Railway staging, local previews) from reporting into the
+production dashboard.
+
 ## Serving
 
 Any static file host — the site is plain HTML/CSS/fonts with no build step.
