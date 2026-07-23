@@ -60,7 +60,25 @@ Held invariants: WCAG 2.2 AAA targets; status never color alone (color + icon
 shadows); visible focus ring on every interactive element (aubergine on light,
 gold on dark); matte gold, never metallic; `prefers-reduced-motion` honored;
 fonts self-hosted in `assets/fonts/` (copied from
-`apps/identity-wallet/static/fonts/`), no runtime CDN; no JavaScript.
+`apps/identity-wallet/static/fonts/`), no runtime CDN; no JavaScript beyond
+the one self-hosted, cookieless analytics `<script>` (see "Analytics" below).
+
+## Analytics
+
+Self-hosted, cookieless, IP-anonymized page-view analytics (Umami — see
+[ADR-0029](../../docs/architecture/decisions/0029-self-hosted-web-analytics-marketing-only.md)),
+present on every page of this site only (`index.html`, `custos/index.html`,
+`privacy.html`). It is a Railway service run alongside the PDS's other
+services. `privacy.html` discloses what it collects and doesn't; the footer
+on every page links it. Per the ADR, analytics never extends to the docs
+site, either mobile app, the PDS backend, or any auth/PII surface.
+
+Umami's own website-level "Domain" setting is cosmetic only (it filters
+self-referrals out of the referrer list; it does not gate the collection
+API), so the embed carries `data-domains="about.obsign.org"` — Umami's
+client-side hostname allowlist — to keep this site's non-production
+deployments (Railway staging, local previews) from reporting into the
+production dashboard.
 
 ## Serving
 

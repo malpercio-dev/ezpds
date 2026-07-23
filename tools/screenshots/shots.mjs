@@ -104,6 +104,44 @@ const WALLET_SHOTS = [
     caption: 'Appearance and app settings.',
   },
   {
+    out: 'media-backup',
+    scenario: 'one-identity',
+    // Drive the real opt-in so the screen lands on a populated, backed-up state (count +
+    // iCloud size + "Back up now" / "Restore to server") rather than the empty prompt.
+    steps: [
+      { click: 'button.card' },
+      { clickText: 'Back up media' },
+      { clickText: 'Turn on media backup' },
+    ],
+    waitForText: 'Back up now',
+    caption:
+      'User-held media backup: a content-verified copy of this account’s photos and video in iCloud Drive, restorable to the server.',
+  },
+  {
+    out: 'media-backup-settings',
+    scenario: 'one-identity',
+    fullPage: false,
+    steps: [{ click: '[aria-label="Settings"]' }, { scrollTo: '#media-backup-title' }],
+    waitForText: 'Back up in the background',
+    caption:
+      'The background media-backup controls in Settings — turn it off, restrict to charging, or skip cellular data.',
+  },
+  {
+    out: 'repo-backup',
+    scenario: 'one-identity',
+    fullPage: false,
+    // Same screen, below the media section: drive the posts opt-in, then frame that section.
+    steps: [
+      { click: 'button.card' },
+      { clickText: 'Back up media' },
+      { clickText: 'Turn on post backup' },
+      { scrollTo: 'h2.section-title' },
+    ],
+    waitForText: 'Back up posts now',
+    caption:
+      'Backing up your posts: an integrity-checked snapshot of your repository — every post, like, follow, and profile edit — held in your iCloud Drive.',
+  },
+  {
     out: 'agents',
     scenario: 'agent-connected',
     steps: [{ click: 'button.agents-row' }],
@@ -258,6 +296,16 @@ const ADMIN_SHOTS = [
     scenario: 'multi-relay',
     goto: '/settings',
     caption: 'Per-relay pairings, the global admin key, and the biometric toggle.',
+  },
+  {
+    out: 'settings-diagnostics',
+    scenario: 'multi-relay',
+    goto: '/settings',
+    fullPage: false,
+    steps: [{ scrollTo: '[aria-labelledby="diagnostics-label"]' }],
+    waitForText: 'Export diagnostics',
+    caption:
+      'Export a redacted, per-relay network-error log for troubleshooting — operation names, hosts, and codes only.',
   },
 ];
 
