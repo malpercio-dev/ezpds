@@ -1,0 +1,93 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="theme-color" media="(prefers-color-scheme: light)" content="#ffffff" />
+    <meta name="theme-color" media="(prefers-color-scheme: dark)" content="#16100c" />
+    <title>Privacy — Obsign</title>
+    <meta
+      name="description"
+      content="This site's analytics: cookieless, self-hosted, IP-anonymized page views on the marketing site only. Nothing is ever collected inside the Obsign or Admin Companion apps."
+    />
+    <link rel="stylesheet" href="assets/css/site.css" />
+    <link
+      rel="icon"
+      href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Ccircle cx='12' cy='12' r='12' fill='%23844b03'/%3E%3Cg transform='translate(12 12) scale(0.6) translate(-12 -12)' fill='none' stroke='%23fefbf8' stroke-width='3' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z'/%3E%3Cpath d='m9 11.5 2 2 4-4'/%3E%3C/g%3E%3C/svg%3E"
+    />
+    <!-- Cookieless, self-hosted, IP-anonymized analytics (ADR-0029) — marketing site only. -->
+    <script defer src="https://umami-production-f70a.up.railway.app/script.js" data-website-id="1bd62f06-b2d4-4a77-aa24-460ed9676eca"></script>
+  </head>
+  <body>
+    <a class="skip-link" href="#main">Skip to content</a>
+
+    <header class="site-header">
+      <div class="container">
+        <a class="brand" href="./">Obsign</a>
+        <nav class="site-nav" aria-label="Site">
+          <a href="./">Obsign</a>
+          <a href="custos/">Custos</a>
+          <a href="https://github.com/malpercio-dev/ezpds">GitHub</a>
+        </nav>
+      </div>
+    </header>
+
+    <main id="main">
+      <section class="hero section-tight">
+        <div class="container">
+          <h1>Privacy</h1>
+          <p class="lede">
+            This site runs cookieless, self-hosted analytics. No third party ever sees
+            your visit, and nothing you read here follows you anywhere else.
+          </p>
+        </div>
+      </section>
+
+      <section>
+        <div class="container">
+          <div class="prose">
+            <p>
+              We run our own instance of Umami, an open-source analytics tool, to see
+              which pages get read and where visitors come from. It sets no cookies and
+              stores no cross-site identifier: there is nothing here to opt out of
+              because there is nothing that tracks you between sites or across visits.
+            </p>
+            <p>
+              What it records per page view: the page, the referrer, and coarse
+              browser/OS/device and country information. Your IP address is never
+              stored — Umami hashes it together with your browser and this site's ID,
+              using a salt it rotates every day, purely to distinguish a return visit
+              from a new one within that day. The raw address never touches disk.
+            </p>
+            <p>
+              This applies to <a href="./">Obsign</a> and <a href="custos/">Custos</a>,
+              the two pages of this marketing site — and nowhere else. It is never
+              present in the Obsign or Admin&nbsp;Companion apps, on the Custos server
+              itself, or on any page that touches your account, your identity, or your
+              keys.
+            </p>
+            <p>
+              The dashboard lives on infrastructure we operate; the data never leaves
+              it, and it is never sold or shared. The
+              <a href="https://github.com/malpercio-dev/ezpds">source for this site</a>
+              is public, same as everything else we run.
+            </p>
+          </div>
+        </div>
+      </section>
+    </main>
+
+    <footer class="site-footer">
+      <div class="container">
+        <div class="foot-brands">
+          <span>Obsign — the identity wallet</span>
+          <a href="custos/">Custos — the personal data server</a>
+        </div>
+        <div>
+          <a href="https://github.com/malpercio-dev/ezpds">Open source (ezpds)</a>
+          · built on the <a href="https://atproto.com">AT&nbsp;Protocol</a>
+        </div>
+      </div>
+    </footer>
+  </body>
+</html>
