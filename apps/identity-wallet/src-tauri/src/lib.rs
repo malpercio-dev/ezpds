@@ -1,5 +1,6 @@
 pub mod agents;
 pub mod app_passwords;
+pub mod bg_backup;
 pub mod blob_backup;
 pub mod claim;
 pub mod device_key;
@@ -1285,6 +1286,13 @@ pub fn run() {
             let monitor_handle = app.handle().clone();
             tauri::async_runtime::spawn(plc_monitor::run_monitoring_loop(monitor_handle));
 
+            // iOS only: register the background media-backup task and submit the first
+            // request, so an opted-in identity's iCloud mirror stays topped up without the
+            // app being opened. Must run before app launch completes — `setup` does. A
+            // no-op off-device (scheduling is a device concern; the harness is untouched).
+            #[cfg(target_os = "ios")]
+            bg_backup::register_and_schedule(app.handle());
+
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -1328,6 +1336,8 @@ pub fn run() {
             blob_backup::set_blob_backup_enabled,
             blob_backup::run_blob_backup,
             blob_backup::restore_blob_backup,
+            bg_backup::get_background_backup_settings,
+            bg_backup::set_background_backup_settings,
             plc_monitor::check_identity_status,
             recovery::build_recovery_override_cmd,
             rotate_repo_key::build_repo_key_rotation_cmd,

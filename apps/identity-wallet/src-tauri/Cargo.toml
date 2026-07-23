@@ -74,8 +74,21 @@ tauri-plugin-sharesheet = { path = "../../admin-companion/vendor/tauri-plugin-sh
 # other platform uses the local-directory fallback and never compiles this.
 # `NSError` is needed for `startDownloadingUbiquitousItemAtURL:error:` (the restore
 # path's on-demand download of an evicted placeholder), which returns `Result<(), NSError>`.
+# `NSDate` is needed for the background-backup task's `earliestBeginDate` (bg_backup.rs).
 [target.'cfg(target_os = "ios")'.dependencies]
-objc2-foundation = { workspace = true, features = ["NSFileManager", "NSURL", "NSString", "NSError"] }
+objc2-foundation = { workspace = true, features = ["NSFileManager", "NSURL", "NSString", "NSError", "NSDate"] }
+# Background media-backup scheduling (bg_backup.rs): the iOS `BGProcessingTask` that keeps an
+# opted-in identity's iCloud mirror topped up without opening the app. `objc2` supplies
+# `Retained`/`AnyThread`; `objc2-background-tasks` the `BGTaskScheduler`/`BGProcessingTaskRequest`
+# bindings; `block2` the launch + expiration handler blocks the scheduler stores. Same objc2 0.6
+# family as objc2-foundation, so no duplicate major enters the lockfile. iOS-only — every other
+# platform leaves the scheduling surface inert.
+objc2 = { workspace = true }
+objc2-background-tasks = { workspace = true, features = ["BGTaskScheduler", "BGTask", "BGTaskRequest", "block2", "dispatch2"] }
+block2 = { workspace = true }
+# "Wi-Fi only" background-backup check: SCNetworkReachability's IS_WWAN flag, since a
+# BGProcessingTaskRequest can't require an unmetered link (bg_backup.rs).
+system-configuration = { workspace = true }
 
 [dev-dependencies]
 tokio = { version = "1", features = ["macros", "rt"] }

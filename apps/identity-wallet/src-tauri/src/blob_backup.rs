@@ -462,6 +462,15 @@ fn load_enabled(did: &str) -> bool {
         .unwrap_or(false)
 }
 
+/// Whether `did` has opted into the media backup. The background sweep (`bg_backup`)
+/// reads this to decide which identities to top up; a never-opted-in or Keychain-error
+/// read is `false` (never back up without an explicit opt-in). Only the iOS background
+/// sweep calls this; the foreground surface reads `load_enabled` via `status_core`.
+#[cfg_attr(not(target_os = "ios"), allow(dead_code))]
+pub(crate) fn is_backup_enabled(did: &str) -> bool {
+    load_enabled(did)
+}
+
 fn store_enabled(did: &str, enabled: bool) -> Result<(), BlobBackupError> {
     let value: &[u8] = if enabled { b"true" } else { b"false" };
     crate::keychain::store_item(&backup_enabled_account(did), value).map_err(|e| {
@@ -988,18 +997,31 @@ pub async fn set_blob_backup_enabled(
     get_blob_backup_status(app, did).await
 }
 
+/// One incremental backup pass for `did`, resolving the mirror root, hosting PDS, and
+/// shared `PdsClient` from the app handle. The shared body of the `run_blob_backup`
+/// Tauri command and the background sweep (`bg_backup::run_backup_sweep`): both need the
+/// identical "resolve root → discover PDS → run the CID-verified sync" sequence, and it
+/// reads only public sync endpoints (`listBlobs`/`getBlob`), so it needs no session.
+pub(crate) async fn run_backup_for_did(
+    app: &tauri::AppHandle,
+    did: &str,
+) -> Result<BlobBackupRunReport, BlobBackupError> {
+    use tauri::Manager;
+    let (root, _location) = resolve_backup_root(app).ok_or(BlobBackupError::BackupUnavailable)?;
+    let state = app.state::<crate::oauth::AppState>();
+    let pds_client = state.pds_client();
+    let pds_url = hosting_pds_url(pds_client, did).await?;
+    run_backup_core(pds_client, &root, did, &pds_url).await
+}
+
 /// Tauri command: run one incremental backup sync pass for the identity. Reads only
 /// public sync endpoints (`listBlobs`/`getBlob`), so it needs no session.
 #[tauri::command]
 pub async fn run_blob_backup(
     app: tauri::AppHandle,
-    state: tauri::State<'_, crate::oauth::AppState>,
     did: String,
 ) -> Result<BlobBackupRunReport, BlobBackupError> {
-    let (root, _location) = resolve_backup_root(&app).ok_or(BlobBackupError::BackupUnavailable)?;
-    let pds_client = state.pds_client();
-    let pds_url = hosting_pds_url(pds_client, &did).await?;
-    run_backup_core(pds_client, &root, &did, &pds_url).await
+    run_backup_for_did(&app, &did).await
 }
 
 /// Tauri command: restore the mirrored blobs to the DID's current PDS. Requires a

@@ -195,6 +195,8 @@ export type CommandName =
   | 'set_blob_backup_enabled'
   | 'run_blob_backup'
   | 'restore_blob_backup'
+  | 'get_background_backup_settings'
+  | 'set_background_backup_settings'
   // biometric plugin (driven by $lib/biometric — resolves = allow the gate)
   | 'plugin:biometric|authenticate'
   | 'plugin:biometric|status';
@@ -329,6 +331,15 @@ export function buildRegistry(state: WalletState): Registry {
     set_appearance_preference: (args) => {
       state.appearance = args.preference as WalletState['appearance'];
       return null;
+    },
+
+    // ── background media-backup settings (app-global) ─────────────────────────
+    // The real BGProcessingTask scheduling is a device concern the harness never runs;
+    // the fake just stores and echoes the settings so the Settings UI is scriptable.
+    get_background_backup_settings: () => state.backgroundBackupSettings,
+    set_background_backup_settings: (args) => {
+      state.backgroundBackupSettings = args.settings as WalletState['backgroundBackupSettings'];
+      return state.backgroundBackupSettings;
     },
 
     // ── diagnostics ──────────────────────────────────────────────────────────
