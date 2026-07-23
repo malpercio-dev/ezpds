@@ -215,12 +215,19 @@
     }
   }
 
-  // Scan mode makes the WebView see-through so the windowed native camera shows; base.css paints an
-  // opaque body ground, so drop it to transparent for the duration.
+  // Scan mode makes the WebView see-through so the windowed native camera shows. base.css paints an
+  // opaque ground on BOTH <html> (the anti-flash root paint) and <body>, so drop both to transparent
+  // for the duration — otherwise the root <html> paint stays opaque behind the transparent body and
+  // the camera is still hidden behind it (the admin-companion pair screen never hit this because its
+  // base.css paints only <body>).
   $effect(() => {
     if (typeof document === 'undefined') return;
+    document.documentElement.classList.toggle('scanning', scanning);
     document.body.classList.toggle('scanning', scanning);
-    return () => document.body.classList.remove('scanning');
+    return () => {
+      document.documentElement.classList.remove('scanning');
+      document.body.classList.remove('scanning');
+    };
   });
 
   // Focus handoff: into the Cancel button when scan mode opens, back to the Scan button when it
@@ -618,7 +625,9 @@
       animation: none;
     }
   }
-  /* Drop the opaque body ground so the windowed camera shows through the WebView. */
+  /* Drop the opaque root + body ground so the windowed camera shows through the WebView.
+     Both are needed: base.css paints <html> (anti-flash root) as well as <body>. */
+  :global(html.scanning),
   :global(body.scanning) {
     background: transparent !important;
   }
