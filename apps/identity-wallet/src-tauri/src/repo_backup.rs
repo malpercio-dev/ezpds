@@ -686,9 +686,11 @@ async fn export_core(root: &Path, did: &str) -> Result<RepoExport, RepoBackupErr
 /// so the migration simply surfaces the original source failure unchanged. Content addressing makes
 /// the substitution trustless: the validated bytes are byte-identical to what the source PDS would
 /// have served, so the destination `importRepo` accepts them and the commit is preserved verbatim.
-/// The repo twin of `blob_backup::mirror_fallback_blob`; consumed by the sovereign
-/// disaster-recovery flow (`disaster_recovery::recovery_transfer_repo`), which imports
-/// this snapshot into the destination when the source PDS is gone.
+/// The repo twin of `blob_backup::mirror_fallback_blob`. Two consumers import this snapshot:
+/// `migration_orchestrator::transfer_repo`, which falls back to it when a normal outbound
+/// migration's source PDS can't serve `getRepo`; and the sovereign disaster-recovery flow
+/// (`disaster_recovery::recovery_transfer_repo`), where the source PDS is presumed gone and the
+/// mirror is the only source.
 pub(crate) async fn mirror_repo_car(root: &Path, did: &str) -> Option<Vec<u8>> {
     let lock = repo_lock(did);
     let _guard = lock.lock().await;
@@ -710,6 +712,17 @@ pub(crate) async fn mirror_repo_car(root: &Path, did: &str) -> Option<Vec<u8>> {
             None
         }
     }
+}
+
+/// Test-only: seed the repo mirror with a valid empty-repo snapshot for `did`, exactly as a
+/// completed backup pass would leave it, and return the CAR bytes. Crate-visible so the
+/// migration-orchestrator tests (a different module) can stand up a mirror to exercise the
+/// `transfer_repo` iCloud fallback. Twin of `blob_backup::seed_mirror_blob_for_test`.
+#[cfg(test)]
+pub(crate) async fn seed_mirror_repo_for_test(root: &Path, did: &str) -> Vec<u8> {
+    let (car, _root_cid, _rev) = tests::valid_empty_repo(did, "3lqqqqqqq2az");
+    write_car(root, did, &car).await.unwrap();
+    car
 }
 
 // ── Tauri commands ───────────────────────────────────────────────────────────
@@ -871,7 +884,8 @@ mod tests {
     }
 
     /// A valid empty-repo CAR (commit → empty MST node). Returns `(car, root_cid_string, rev)`.
-    fn valid_empty_repo(did: &str, rev: &str) -> (Vec<u8>, String, String) {
+    /// `pub(super)` so the module-level `seed_mirror_repo_for_test` helper can build a snapshot.
+    pub(super) fn valid_empty_repo(did: &str, rev: &str) -> (Vec<u8>, String, String) {
         let mst_bytes = dagcbor(&mst_node(None, vec![]));
         let mst_cid = block_cid(DAG_CBOR, &mst_bytes);
         let commit_bytes = dagcbor(&commit(did, mst_cid, rev));

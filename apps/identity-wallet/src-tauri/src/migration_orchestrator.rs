@@ -702,23 +702,53 @@ pub async fn create_destination_account(
 
 /// Pure core: fetch the source repo CAR (auth:none) and import it into the destination
 /// (Bearer). Extracted for unit testability with mocked servers.
+///
+/// `mirror_root`, when present, is the wallet's local iCloud repo mirror. If the source PDS can't
+/// serve `getRepo` (the repo twin of the observed blob-drain fault), the transfer falls back to the
+/// mirror's snapshot before giving up — content addressing makes that substitution trustless
+/// (`repo_backup::mirror_repo_car` re-validates the CAR against the DID and returns `None` on any
+/// doubt), so a backed-up user's dead source repo becomes a non-event. When the mirror can't supply
+/// a valid snapshot the original source failure is surfaced unchanged, exactly as before the mirror
+/// existed. The fallback is consulted only for the source `getRepo` half; a destination `importRepo`
+/// refusal is a genuinely different failure the mirror can't fix.
 async fn transfer_repo_impl(
     pds_client: &crate::pds_client::PdsClient,
     dest_client: &OAuthClient,
     source_pds_url: &str,
     did: &str,
+    mirror_root: Option<&Path>,
 ) -> Result<(), MigrationError> {
-    // 1. Fetch repository CAR from source
+    // 1. Fetch repository CAR from source; on a source getRepo failure, fall back to the local
+    //    iCloud mirror before giving up.
     tracing::debug!(did = %did, source_url = %source_pds_url, "fetching repository from source");
-    let car = pds_client
-        .fetch_repo_car(source_pds_url, did)
-        .await
-        .map_err(|e| {
-            tracing::error!(did = %did, error = %e, "failed to fetch repository CAR");
-            MigrationError::RepoTransferFailed {
-                message: format!("failed to fetch repository: {}", e),
+    let car = match pds_client.fetch_repo_car(source_pds_url, did).await {
+        Ok(car) => car,
+        Err(source_err) => {
+            tracing::error!(did = %did, error = %source_err, "failed to fetch repository CAR from source");
+            // The source PDS can't serve getRepo. Try the local mirror: a CID/commit-valid backup
+            // copy stands in for the bytes the source can't serve. `mirror_repo_car` is fail-closed
+            // (revalidates, returns None on a missing/undownloaded/rotten snapshot), so the original
+            // source failure is preserved unchanged whenever no trustworthy snapshot exists.
+            match mirror_root {
+                Some(root) => match crate::repo_backup::mirror_repo_car(root, did).await {
+                    Some(car) => {
+                        tracing::info!(did = %did, "transfer_repo: recovered the repo snapshot from the local mirror after a source getRepo failure");
+                        car
+                    }
+                    None => {
+                        return Err(MigrationError::RepoTransferFailed {
+                            message: format!("failed to fetch repository: {}", source_err),
+                        });
+                    }
+                },
+                None => {
+                    return Err(MigrationError::RepoTransferFailed {
+                        message: format!("failed to fetch repository: {}", source_err),
+                    });
+                }
             }
-        })?;
+        }
+    };
 
     // 2. Import repository into destination
     tracing::debug!(did = %did, car_len = %car.len(), "importing repository to destination");
@@ -737,9 +767,14 @@ async fn transfer_repo_impl(
 /// Tauri command: fetch repository from source PDS and import into destination.
 ///
 /// Gate: ensure_phase_did(..., DestCreated) → clone dest_client, read source_pds_url; drop lock
-/// Then: fetch_repo_car(source) → import_repo(dest); re-lock + advance to RepoTransferred
+/// Then: fetch_repo_car(source) → import_repo(dest); re-lock + advance to RepoTransferred.
+/// A source `getRepo` failure falls back to the local iCloud repo mirror when this device has a
+/// CID/commit-valid snapshot for the DID (`repo_backup::mirror_repo_car`), turning a dead source
+/// repo into a non-event for backed-up users; when no valid snapshot exists the original source
+/// failure is surfaced unchanged.
 #[tauri::command]
 pub async fn transfer_repo(
+    app: tauri::AppHandle,
     state: tauri::State<'_, crate::oauth::AppState>,
     did: String,
 ) -> Result<(), MigrationError> {
@@ -766,8 +801,20 @@ pub async fn transfer_repo(
 
     let pds_client = state.pds_client();
 
+    // Resolve the local repo mirror, if this device has one. When present the transfer falls back to
+    // it for a source PDS that can't serve getRepo (the repo twin of the blob drain's fallback);
+    // when absent the transfer behaves as before.
+    let mirror_root = crate::blob_backup::resolve_backup_root(&app).map(|(root, _location)| root);
+
     // Fetch source CAR + import into destination (pure core, unit-tested).
-    transfer_repo_impl(pds_client, &dest_client, &source_pds_url, &did).await?;
+    transfer_repo_impl(
+        pds_client,
+        &dest_client,
+        &source_pds_url,
+        &did,
+        mirror_root.as_deref(),
+    )
+    .await?;
 
     // 3. Update orchestration state: advance phase to RepoTransferred
     let mut orchestration = state.orchestration_state.lock().await;
@@ -2332,6 +2379,7 @@ mod tests {
             &dest_client,
             &source.base_url(),
             "did:plc:abc123",
+            None,
         )
         .await;
 
@@ -2365,6 +2413,7 @@ mod tests {
             &dest_client,
             &source.base_url(),
             "did:plc:abc123",
+            None,
         )
         .await;
 
@@ -2372,6 +2421,109 @@ mod tests {
             result,
             Err(MigrationError::RepoTransferFailed { .. })
         ));
+    }
+
+    // The payoff: the source PDS can't serve getRepo, but the wallet has a validated iCloud snapshot
+    // for the DID — the transfer recovers the repo from the mirror and imports it, so a dead source
+    // repo is a non-event for a backed-up user.
+    #[tokio::test]
+    #[ignore] // Requires socket binding; ignore in sandboxed environments
+    async fn test_transfer_repo_falls_back_to_local_mirror_on_source_failure() {
+        let did = "did:plc:repomirrorfallback";
+
+        // Seed a local mirror with a valid snapshot, as a completed repo-backup pass would leave it.
+        let mirror = tempfile::tempdir().unwrap();
+        let car = crate::repo_backup::seed_mirror_repo_for_test(mirror.path(), did).await;
+
+        // The source PDS permanently 500s getRepo (the repo twin of the observed migration fault).
+        let source = MockServer::start();
+        let get_repo = source.mock(|when, then| {
+            when.method(httpmock::Method::GET)
+                .path("/xrpc/com.atproto.sync.getRepo");
+            then.status(500).body("repo bytes are gone");
+        });
+        // The destination importRepo must succeed — reached only via the mirror fallback.
+        let dest = MockServer::start();
+        let import = dest.mock(|when, then| {
+            when.method(httpmock::Method::POST)
+                .path("/xrpc/com.atproto.repo.importRepo");
+            then.status(200);
+        });
+
+        let pds_client = crate::pds_client::PdsClient::new();
+        let dest_client = bearer_client_at(dest.base_url());
+
+        let result = transfer_repo_impl(
+            &pds_client,
+            &dest_client,
+            &source.base_url(),
+            did,
+            Some(mirror.path()),
+        )
+        .await;
+
+        assert!(
+            result.is_ok(),
+            "the repo was recovered from the iCloud mirror after the source getRepo failure"
+        );
+        assert!(
+            get_repo.calls() >= 1,
+            "the source was tried before falling back"
+        );
+        assert_eq!(
+            import.calls(),
+            1,
+            "the mirror's validated snapshot was imported to the destination"
+        );
+        // Sanity: the seeded snapshot is a real, non-empty CAR (it is what got imported).
+        assert!(!car.is_empty());
+    }
+
+    // The fallback never masks a genuine failure: with the mirror empty (no snapshot for the DID),
+    // a source getRepo failure is surfaced unchanged as REPO_TRANSFER_FAILED and no import happens.
+    #[tokio::test]
+    #[ignore] // Requires socket binding; ignore in sandboxed environments
+    async fn test_transfer_repo_preserves_source_failure_with_empty_mirror() {
+        let did = "did:plc:repomirrormiss";
+
+        // An empty mirror (no snapshot seeded for this DID).
+        let mirror = tempfile::tempdir().unwrap();
+
+        let source = MockServer::start();
+        let get_repo = source.mock(|when, then| {
+            when.method(httpmock::Method::GET)
+                .path("/xrpc/com.atproto.sync.getRepo");
+            then.status(500).body("gone");
+        });
+        let dest = MockServer::start();
+        let import = dest.mock(|when, then| {
+            when.method(httpmock::Method::POST)
+                .path("/xrpc/com.atproto.repo.importRepo");
+            then.status(200);
+        });
+
+        let pds_client = crate::pds_client::PdsClient::new();
+        let dest_client = bearer_client_at(dest.base_url());
+
+        let result = transfer_repo_impl(
+            &pds_client,
+            &dest_client,
+            &source.base_url(),
+            did,
+            Some(mirror.path()),
+        )
+        .await;
+
+        assert!(
+            matches!(result, Err(MigrationError::RepoTransferFailed { .. })),
+            "an empty mirror preserves the original source failure unchanged"
+        );
+        assert!(get_repo.calls() >= 1);
+        assert_eq!(
+            import.calls(),
+            0,
+            "no import is attempted when the mirror has no valid snapshot"
+        );
     }
 
     // ── Task 2 mock tests: drain_missing_blobs ─────────────────────────────
@@ -3830,7 +3982,8 @@ mod tests {
         let dest_client = dest_result.unwrap();
 
         // ─ Step 2: transfer_repo_impl ─
-        let repo_result = transfer_repo_impl(&pds_client, &dest_client, &source_url, did).await;
+        let repo_result =
+            transfer_repo_impl(&pds_client, &dest_client, &source_url, did, None).await;
         assert!(repo_result.is_ok(), "transfer_repo_impl should succeed");
 
         // ─ Step 3: drain_missing_blobs ─
@@ -4124,6 +4277,7 @@ mod tests {
             &dest_client,
             &source.base_url(),
             "did:plc:test",
+            None,
         )
         .await
         .expect("transfer repo");
