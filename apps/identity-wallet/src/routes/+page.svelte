@@ -48,7 +48,7 @@
   import OAuthConsentApprovalScreen from '$lib/components/home/OAuthConsentApprovalScreen.svelte';
   import SettingsScreen from '$lib/components/home/SettingsScreen.svelte';
   import RemoveIdentityScreen from '$lib/components/home/RemoveIdentityScreen.svelte';
-  import { createAccount, confirmShareBackup, confirmRekey, confirmRecoveryBackup, getPendingRecoveryEpilogue, registerCreatedIdentity, listIdentities, listPendingRemovals, getStoredDidDoc, checkIdentityStatus, getBlobBackupStatus, runBlobBackup, isCodedError, type CreateAccountError, type OAuthError, type IdentityInfo, type VerifiedClaimOp, type ClaimResult, type RekeyResult, type UnauthorizedChange, type CollectedShare } from '$lib/ipc';
+  import { createAccount, confirmShareBackup, confirmRekey, confirmRecoveryBackup, getPendingRecoveryEpilogue, registerCreatedIdentity, listIdentities, listPendingRemovals, getStoredDidDoc, checkIdentityStatus, getBlobBackupStatus, runBlobBackup, getRepoBackupStatus, runRepoBackup, isCodedError, type CreateAccountError, type OAuthError, type IdentityInfo, type VerifiedClaimOp, type ClaimResult, type RekeyResult, type UnauthorizedChange, type CollectedShare } from '$lib/ipc';
   import { authenticateBiometric } from '$lib/biometric';
   import { normalizePlcDocToW3c, extractHandle } from '$lib/did-doc-utils';
   import IdentityListHome from '$lib/components/home/IdentityListHome.svelte';
@@ -253,15 +253,21 @@
         const identities = await listIdentities();
         if (identities.length > 0) {
           step = 'home';
-          // Opportunistic media-backup pass for opted-in identities: incremental and
-          // idempotent by construction (content-addressed mirror), fire-and-forget so
-          // the home screen never waits on it, and silent — failures surface the next
-          // time the user opens the Media Backup screen.
+          // Opportunistic backup passes for opted-in identities: incremental and idempotent
+          // by construction (content-addressed mirror / rev short-circuit), fire-and-forget so
+          // the home screen never waits on them, and silent — failures surface the next time
+          // the user opens the Media Backup screen. Media (blobs) and posts (repo CAR) are
+          // independent opt-ins over the same iCloud location, so each runs on its own flag.
           for (const did of identities) {
             getBlobBackupStatus(did)
               .then((s) => (s.enabled ? runBlobBackup(did) : null))
               .catch((e) => {
                 console.warn('opportunistic media backup pass failed:', did, e);
+              });
+            getRepoBackupStatus(did)
+              .then((s) => (s.enabled ? runRepoBackup(did) : null))
+              .catch((e) => {
+                console.warn('opportunistic post backup pass failed:', did, e);
               });
           }
         }

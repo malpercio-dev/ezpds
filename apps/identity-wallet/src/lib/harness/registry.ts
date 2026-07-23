@@ -46,6 +46,9 @@ import type {
   BlobBackupStatus,
   BlobBackupRunReport,
   BlobRestoreReport,
+  RepoBackupStatus,
+  RepoBackupRunReport,
+  RepoExport,
   RegisterHandleResult,
   CreateAccountResult,
   DIDCeremonyResult,
@@ -197,6 +200,11 @@ export type CommandName =
   | 'restore_blob_backup'
   | 'get_background_backup_settings'
   | 'set_background_backup_settings'
+  // repo-backup.ts
+  | 'get_repo_backup_status'
+  | 'set_repo_backup_enabled'
+  | 'run_repo_backup'
+  | 'export_repo_backup'
   // biometric plugin (driven by $lib/biometric — resolves = allow the gate)
   | 'plugin:biometric|authenticate'
   | 'plugin:biometric|status';
@@ -236,6 +244,20 @@ function blobBackupStatus(identity: FakeIdentity): BlobBackupStatus {
     location: backup.location,
     backedUpCount: mirrored.length,
     backedUpBytes: mirrored.reduce((sum, b) => sum + b.size, 0),
+    lastBackupAt: backup.lastBackupAt,
+  };
+}
+
+/** Render the fake's repo-backup model as the status the real command returns. */
+function repoBackupStatus(identity: FakeIdentity): RepoBackupStatus {
+  const backup = identity.repoBackup;
+  const mirrored = backup.mirroredRev !== null;
+  return {
+    enabled: backup.enabled,
+    location: backup.location,
+    rootCid: mirrored ? backup.rootCid : null,
+    rev: backup.mirroredRev,
+    sizeBytes: mirrored ? backup.sizeBytes : 0,
     lastBackupAt: backup.lastBackupAt,
   };
 }
@@ -974,6 +996,57 @@ export function buildRegistry(state: WalletState): Registry {
         uploaded: backup.mirroredCids.length,
         downloadedFromIcloud: downloaded.length,
         failed: [],
+      };
+    },
+
+    // ── repo backup (user-held CAR snapshot) ─────────────────────────────────
+    get_repo_backup_status: (args): RepoBackupStatus => {
+      const identity = findIdentity(state, didArg(args));
+      if (!identity) throw { code: 'IDENTITY_NOT_FOUND', message: 'identity not found' };
+      return repoBackupStatus(identity);
+    },
+    set_repo_backup_enabled: (args): RepoBackupStatus => {
+      const identity = findIdentity(state, didArg(args));
+      if (!identity) throw { code: 'IDENTITY_NOT_FOUND', message: 'identity not found' };
+      identity.repoBackup.enabled = Boolean(args.enabled ?? false);
+      return repoBackupStatus(identity);
+    },
+    run_repo_backup: (args): RepoBackupRunReport => {
+      const identity = findIdentity(state, didArg(args));
+      if (!identity) throw { code: 'IDENTITY_NOT_FOUND', message: 'identity not found' };
+      const backup = identity.repoBackup;
+      if (backup.location === null) throw { code: 'BACKUP_UNAVAILABLE' };
+      // Idempotent: a re-run at the same rev captures nothing new (`updated: false`) but
+      // still advances the timestamp, mirroring the real rev short-circuit.
+      const updated = backup.mirroredRev !== backup.rev;
+      backup.mirroredRev = backup.rev;
+      backup.lastBackupAt = '2026-07-15T12:00:00.000Z';
+      return {
+        rootCid: backup.rootCid,
+        rev: backup.rev,
+        sizeBytes: backup.sizeBytes,
+        updated,
+        lastBackupAt: backup.lastBackupAt,
+      };
+    },
+    export_repo_backup: (args): RepoExport => {
+      const identity = findIdentity(state, didArg(args));
+      if (!identity) throw { code: 'IDENTITY_NOT_FOUND', message: 'identity not found' };
+      const backup = identity.repoBackup;
+      if (backup.mirroredRev === null) {
+        throw {
+          code: 'STORAGE_ERROR',
+          message: 'no repo snapshot has been backed up for this identity yet',
+        };
+      }
+      return {
+        rootCid: backup.rootCid,
+        rev: backup.rev,
+        sizeBytes: backup.sizeBytes,
+        lastBackupAt: backup.lastBackupAt,
+        // A stand-in for the base64 CAR bytes — the harness never imports it, only proves
+        // the export surface returns validated metadata + a payload.
+        carBase64: btoa(`fake-car:${backup.rootCid}`),
       };
     },
 

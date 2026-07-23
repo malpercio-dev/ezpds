@@ -50,6 +50,16 @@ hickory-resolver = { workspace = true }
 zeroize = { workspace = true }
 urlencoding = { workspace = true }
 chrono = { workspace = true }
+# Client-side CAR validation for the user-held repo backup (repo_backup.rs). These are the
+# pure, no_std-capable IPLD primitives repo-engine already uses (already resolved in the
+# lockfile, single-major), NOT the repo-engine crate itself and NOT atrium-repo: the wallet
+# reads a fetched repo CAR's framing/hashes, decodes the commit, and walks the MST by its
+# documented block shape — no MST-building or repo-engine dependency enters the iOS staticlib.
+# `cid` gives CIDv1 parsing (`Cid::read_bytes`, codec/multihash inspection); `ipld-core` the
+# `Ipld` model for decoding the commit + MST nodes; `serde_ipld_dagcbor` the dag-cbor decoder.
+cid = "0.11"
+ipld-core = { version = "0.4", features = ["serde"] }
+serde_ipld_dagcbor = "0.6"
 
 # Biometric (Face ID / Touch ID) gate on the migration PLC-op submission. Mobile-only —
 # there is no desktop implementation, so it is target-gated to keep the macOS host build
@@ -94,6 +104,11 @@ system-configuration = { workspace = true }
 tokio = { version = "1", features = ["macros", "rt"] }
 httpmock = "0.8"
 tempfile = { workspace = true }
+# Tests construct valid + deliberately-broken repo CARs by hand (commit + MST nodes + record
+# blocks framed into CARv1) to exercise repo_backup's client-side validator. `multihash` wraps
+# the SHA2-256 digest into a CIDv1 multihash on the build side; the validator itself reads CIDs
+# through `cid`'s own API and never needs this crate at runtime.
+multihash = "0.19"
 
 [build-dependencies]
 # Tauri-specific — declared locally

@@ -11,6 +11,9 @@
     setBlobBackupEnabled,
     runBlobBackup,
     restoreBlobBackup,
+    getRepoBackupStatus,
+    setRepoBackupEnabled,
+    runRepoBackup,
     ensureIdentitySession,
     sovereignLogin,
     isCodedError,
@@ -18,6 +21,9 @@
     type BlobBackupRunReport,
     type BlobRestoreReport,
     type BlobBackupError,
+    type RepoBackupStatus,
+    type RepoBackupRunReport,
+    type RepoBackupError,
   } from '$lib/ipc';
 
   let {
@@ -45,6 +51,14 @@
   let restoring = $state(false);
   let restoreReport = $state<BlobRestoreReport | null>(null);
   let restoreError = $state<string | null>(null);
+
+  // "Back up your posts" — the user-held CAR snapshot of this account's repo (its signed
+  // commit + every post/like/follow), the sibling of the media mirror. Public read, so no
+  // session or biometric; the same iCloud location as media.
+  let repoStatus = $state<RepoBackupStatus | null>(null);
+  let repoTogglingOrBackingUp = $state(false);
+  let repoReport = $state<RepoBackupRunReport | null>(null);
+  let repoError = $state<string | null>(null);
 
   function formatBytes(bytes: number): string {
     if (bytes < 1024) return `${bytes} B`;
@@ -84,16 +98,109 @@
     }
   }
 
+  function messageForRepo(raw: unknown): string {
+    if (!isCodedError(raw)) return 'Something went wrong. Please try again.';
+    const err = raw as RepoBackupError;
+    switch (err.code) {
+      case 'BACKUP_UNAVAILABLE':
+        return 'iCloud Drive isn’t available. Turn it on in Settings → your name → iCloud, then try again.';
+      case 'RATE_LIMITED':
+        return formatRateLimitMessage(err.retryAfter);
+      case 'IDENTITY_NOT_FOUND':
+        return 'This identity isn’t registered in the wallet.';
+      case 'PLC_DIRECTORY_ERROR':
+        return 'Couldn’t look up where this identity is hosted. Try again in a moment.';
+      case 'SERVER_ERROR':
+        return formatServerErrorMessage(err.message);
+      case 'STORAGE_ERROR':
+        return 'Couldn’t write to the backup folder. Check your iCloud storage and try again.';
+      case 'MANIFEST_CORRUPT':
+        return 'The backup’s index file is unreadable. The backed-up snapshot is untouched — contact support before changing anything.';
+      case 'CAR_INVALID':
+        return 'The server sent a snapshot that failed our integrity check, so it wasn’t saved. Your last good backup is untouched. Try again in a moment.';
+      case 'NETWORK_ERROR':
+        return 'Couldn’t reach the server. Check your connection.';
+      default:
+        return 'Something went wrong. Please try again.';
+    }
+  }
+
   async function load() {
     loading = true;
     loadError = null;
+    // The repo snapshot shares the same iCloud location; load both so the screen shows the
+    // whole self-custody picture. A repo-status failure is non-fatal — the media section
+    // still renders, and the posts section surfaces its own error.
     try {
-      status = await getBlobBackupStatus(did);
+      const [blob, repo] = await Promise.allSettled([
+        getBlobBackupStatus(did),
+        getRepoBackupStatus(did),
+      ]);
+      if (blob.status === 'fulfilled') {
+        status = blob.value;
+      } else {
+        throw blob.reason;
+      }
+      if (repo.status === 'fulfilled') {
+        repoStatus = repo.value;
+      } else {
+        console.error('[MediaBackupScreen] failed to load repo backup status:', repo.reason);
+        repoError = messageForRepo(repo.reason);
+      }
     } catch (e) {
       console.error('[MediaBackupScreen] failed to load backup status:', e);
       loadError = messageFor(e);
     } finally {
       loading = false;
+    }
+  }
+
+  async function enableAndBackUpRepo() {
+    if (repoTogglingOrBackingUp) return;
+    repoTogglingOrBackingUp = true;
+    repoError = null;
+    repoReport = null;
+    try {
+      repoStatus = await setRepoBackupEnabled(did, true);
+      // Opting in captures the first snapshot immediately — an enabled-but-empty backup
+      // protects nothing.
+      repoReport = await runRepoBackup(did);
+      repoStatus = await getRepoBackupStatus(did);
+    } catch (e) {
+      console.error('[MediaBackupScreen] repo backup failed:', e);
+      repoError = messageForRepo(e);
+    } finally {
+      repoTogglingOrBackingUp = false;
+    }
+  }
+
+  async function backUpRepo() {
+    if (repoTogglingOrBackingUp) return;
+    repoTogglingOrBackingUp = true;
+    repoError = null;
+    repoReport = null;
+    try {
+      repoReport = await runRepoBackup(did);
+      repoStatus = await getRepoBackupStatus(did);
+    } catch (e) {
+      console.error('[MediaBackupScreen] repo backup pass failed:', e);
+      repoError = messageForRepo(e);
+    } finally {
+      repoTogglingOrBackingUp = false;
+    }
+  }
+
+  async function disableRepo() {
+    if (repoTogglingOrBackingUp) return;
+    repoTogglingOrBackingUp = true;
+    try {
+      repoStatus = await setRepoBackupEnabled(did, false);
+      repoReport = null;
+    } catch (e) {
+      console.error('[MediaBackupScreen] disabling repo backup failed:', e);
+      repoError = messageForRepo(e);
+    } finally {
+      repoTogglingOrBackingUp = false;
     }
   }
 
@@ -359,6 +466,81 @@
         until you delete it in the Files app.
       </p>
     {/if}
+
+    <!-- Back up your posts — the user-held CAR snapshot of the account's repo. -->
+    <div class="section-divider" role="separator"></div>
+    <h2 class="section-title">Back up your posts</h2>
+    <p class="lede">
+      Keep your own copy of your timeline — every post, like, follow, and profile edit — in
+      iCloud Drive. It’s the one part of your account held only on your server, so this is the
+      copy that survives your server itself losing it.
+    </p>
+
+    {#if repoStatus}
+      <div class="status-card">
+        <div class="stat-row">
+          <span class="stat">
+            <span class="stat-n">{repoStatus.rev ? formatBytes(repoStatus.sizeBytes) : '—'}</span>
+            <span class="stat-l">snapshot size</span>
+          </span>
+          <span class="stat">
+            <span class="stat-n">{repoStatus.rev ? 'Backed up' : 'Not yet'}</span>
+            <span class="stat-l">of your posts</span>
+          </span>
+        </div>
+        <p class="status-meta">
+          {#if repoStatus.location === 'icloud'}
+            Stored in your iCloud Drive — visible in the Files app under “Obsign”.
+          {:else}
+            Stored in a local folder (development build — no iCloud on this platform).
+          {/if}
+          {#if repoStatus.lastBackupAt}
+            Last backed up {formatTimestamp(repoStatus.lastBackupAt)}.
+          {/if}
+        </p>
+      </div>
+
+      {#if repoReport}
+        <div class="report" role="status">
+          <p class="report-title">
+            {#if repoReport.updated}
+              Backed up your posts ({formatBytes(repoReport.sizeBytes)}).
+            {:else}
+              Your posts are already backed up.
+            {/if}
+          </p>
+        </div>
+      {/if}
+      {#if repoError}<p class="error" role="alert">{repoError}</p>{/if}
+
+      {#if !repoStatus.enabled}
+        <p class="explain">
+          This backs up your posts now and keeps the copy current each time you open the app.
+          It’s small — just text and structure, not your media (backed up above) — so it barely
+          touches your iCloud storage.
+        </p>
+        <Button onclick={enableAndBackUpRepo} disabled={repoTogglingOrBackingUp}>
+          {#if repoTogglingOrBackingUp}<Spinner size={16} /> Backing up…{:else}Turn on post backup{/if}
+        </Button>
+      {:else}
+        <Button onclick={backUpRepo} disabled={repoTogglingOrBackingUp}>
+          {#if repoTogglingOrBackingUp}<Spinner size={16} /> Backing up…{:else}Back up posts now{/if}
+        </Button>
+        <button
+          class="disable-link"
+          onclick={disableRepo}
+          disabled={repoTogglingOrBackingUp}
+        >
+          Turn off post backup
+        </button>
+        <p class="disable-note">
+          Turning it off stops future backups. The snapshot already in iCloud Drive stays there
+          until you delete it in the Files app.
+        </p>
+      {/if}
+    {:else if repoError}
+      <p class="error" role="alert">{repoError}</p>
+    {/if}
   {/if}
 </div>
 
@@ -376,6 +558,18 @@
     font-size: var(--text-body);
     color: var(--color-muted);
     line-height: 1.5;
+    margin: 0;
+  }
+
+  .section-divider {
+    height: 1px;
+    background: var(--color-line);
+    margin: var(--space-sm) 0;
+  }
+  .section-title {
+    font-size: var(--text-title);
+    font-weight: var(--weight-semibold);
+    color: var(--color-ink);
     margin: 0;
   }
 
