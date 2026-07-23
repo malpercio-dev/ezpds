@@ -303,8 +303,9 @@ fn cid_is_safe_filename(cid: &str) -> bool {
 }
 
 /// Render a DID as a filesystem-safe manifest file stem (`:` → `_`; any other
-/// non-portable byte likewise).
-fn sanitize_did(did: &str) -> String {
+/// non-portable byte likewise). `pub(crate)` so the sibling `repo_backup` mirror reuses the
+/// identical transform for its `{root}/repo/{sanitized-did}.car` layout.
+pub(crate) fn sanitize_did(did: &str) -> String {
     did.chars()
         .map(|c| {
             if c.is_ascii_alphanumeric() || c == '.' || c == '-' {

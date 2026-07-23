@@ -76,6 +76,29 @@ export interface FakeBlobBackup {
   lastBackupAt: string | null;
 }
 
+/**
+ * The fake's model of the user-held repo-backup snapshot ("Back up your posts").
+ * The real thing is a full-CAR snapshot in the iCloud Drive ubiquity container; here
+ * `rootCid`/`rev` are what the PDS's `getRepo` would serve, and `mirroredRev` is the rev
+ * a backup pass has captured (null = never backed up).
+ */
+export interface FakeRepoBackup {
+  /** The user's opt-in flag. */
+  enabled: boolean;
+  /** Mirror location; `null` models iOS with iCloud Drive off (the unavailable state). */
+  location: BackupLocation | null;
+  /** The account's current repo root CID (what a fresh `getRepo` would carry). */
+  rootCid: string;
+  /** The account's current repo revision (TID). */
+  rev: string;
+  /** The snapshot size a backup pass would write. */
+  sizeBytes: number;
+  /** The rev a backup pass has mirrored, or `null` if none — drives the "backed up" state. */
+  mirroredRev: string | null;
+  /** When the last backup pass completed, or null if never run. */
+  lastBackupAt: string | null;
+}
+
 /** One managed identity as the fake models it. */
 export interface FakeIdentity {
   did: string;
@@ -93,6 +116,8 @@ export interface FakeIdentity {
   appPasswords: AppPasswordEntry[];
   /** The user-held blob-backup mirror (Media Backup screen). */
   blobBackup: FakeBlobBackup;
+  /** The user-held repo-backup snapshot ("Back up your posts", same screen). */
+  repoBackup: FakeRepoBackup;
   /**
    * The staged recovery key of an in-flight old-model re-key (MM-411), or null when none is
    * staged. Mirrors the per-DID `rekey-staging:{did}` Keychain slot: set by `build_rekey`,
@@ -339,6 +364,7 @@ export function seedIdentity(
     agents: [],
     appPasswords: [],
     blobBackup: seedBlobBackup(did),
+    repoBackup: seedRepoBackup(did),
     rekeyStagedRecoveryKey: null,
   };
 }
@@ -360,6 +386,24 @@ export function seedBlobBackup(did: string): FakeBlobBackup {
     ],
     mirroredCids: [],
     evictedCids: [],
+    lastBackupAt: null,
+  };
+}
+
+/**
+ * Default repo-backup model for a seeded identity: backup available (fake "iCloud") but
+ * not yet opted in, with a deterministic current root/rev so the "Back up your posts"
+ * section has a snapshot to capture. Script other states via `window.__harness.state()`
+ * inspection + `failNext`, or mutate before reseeding.
+ */
+export function seedRepoBackup(did: string): FakeRepoBackup {
+  return {
+    enabled: false,
+    location: 'icloud',
+    rootCid: `bafyharness${hashToken(`${did}:repo-root`)}`,
+    rev: `3lharness${hashToken(`${did}:repo-rev`).slice(0, 6)}`,
+    sizeBytes: 2_400_000,
+    mirroredRev: null,
     lastBackupAt: null,
   };
 }
