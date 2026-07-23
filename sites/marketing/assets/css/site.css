@@ -727,6 +727,10 @@ figure.badge-figure figcaption {
   display: flex;
   gap: var(--space-lg);
 }
+.site-footer .foot-privacy {
+  flex-basis: 100%;
+  margin-top: var(--space-sm);
+}
 
 /* ── Small screens: step the extended scale down (fixed steps, no clamp) ── */
 @media (max-width: 640px) {
