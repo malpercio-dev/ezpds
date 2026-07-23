@@ -31,3 +31,19 @@ The move has been tested all the way through on the real network, including movi
 an identity to a big provider and back. Operators can read the server side in
 [Running a relay](/operator/running-a-relay/).
 :::
+
+## If some media can't come along
+
+Occasionally the server you're leaving can't hand over a piece of media — a file
+it lost, or one it refuses to serve. A single stuck file no longer parks the
+whole move. Obsign retries each one on its own and collects any it still can't
+transfer into a **loss list** that names exactly what's affected: which media,
+which post references it, and whether your old server couldn't serve it or the
+new one refused it. You decide, with the facts in front of you, whether to finish
+the move without those files rather than abandon the run.
+
+You can often avoid the choice entirely. If you've kept a
+[media backup](/user/media-backup/) in iCloud, Obsign fills the gap from your own
+copy: it checks the backed-up file still matches its content address and uploads
+that to your new server. The substitution is exact, so a file your old server
+dropped comes off the loss list instead of being left behind.
