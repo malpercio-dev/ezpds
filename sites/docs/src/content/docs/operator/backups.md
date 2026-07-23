@@ -1,6 +1,6 @@
 ---
 title: Backups & restore
-description: Continuous SQLite backups with Litestream, blob replication with the bucket mirror, and how to restore.
+description: Continuous SQLite backups with Litestream, blob replication with the bucket mirror, integrity scrubbing, and how to restore.
 ---
 
 The PDS keeps its records in one SQLite database and its blobs (media files) on
@@ -84,6 +84,37 @@ Blob bytes are content-addressed but they are still your users' data — keep th
 mirror bucket's credentials in your secret manager, exactly like the Litestream
 bucket's.
 :::
+
+## Blob integrity: the scrub sweep
+
+A backup only helps if the bytes it protects are still good. A periodic **scrub
+sweep** re-hashes every stored blob against its recorded CID and size, and walks
+the blob directory for orphans in both directions — a database row whose file has
+gone missing, and a file that no row owns. Bitrot, a truncated write, or a bad
+restore surfaces as an operator alarm (the `blob_scrub_*` metrics and
+`GET /v1/admin/health`) **months before a migration would trip over it**, rather
+than as a mystery at the worst possible moment.
+
+When the [bucket mirror](#blobs-the-bucket-mirror) is configured, the sweep can
+do more than report: a file that fails its hash or has gone missing is
+**auto-healed** from the mirror's verified-good copy. Auto-heal is on by default
+and has no effect when the mirror is disabled — with no verified copy to pull
+from, a bad file is only ever flagged, never silently replaced. Both knobs
+(`blob_scrub.interval_secs`, default 6 hours; `blob_scrub.auto_heal`) are in the
+[configuration reference](/operator/reference/config/).
+
+Two guarantees close the loop around the sweep, so it catches genuine bitrot
+rather than gaps the write and read paths should have handled themselves:
+
+- **Writes are crash-durable.** An uploaded blob is written to a temp file,
+  fsynced, atomically renamed onto its content-addressed path, and the directory
+  fsynced, *before* the database row is recorded. A crash or power loss can no
+  longer leave truncated bytes at a valid path behind a row that already
+  committed.
+- **Reads are verified.** `getBlob` re-hashes a blob against its CID before
+  serving it and returns a 404 (flagging the scrub alarm counter) on a mismatch,
+  so a corrupted file is never handed to a downstream cache. A verified response
+  carries the long-lived `immutable` cache header the blob spec recommends.
 
 ## Restoring
 

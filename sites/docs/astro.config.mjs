@@ -39,6 +39,7 @@ export default defineConfig({
             { label: 'Screens', slug: 'user/screens' },
             { label: 'Tamper monitoring & recovery', slug: 'user/recovery' },
             { label: '2-of-3 Shamir backup', slug: 'user/backup' },
+            { label: 'Backing up your media', slug: 'user/media-backup' },
             { label: 'Migrating your identity', slug: 'user/migration' },
           ],
         },

@@ -7,6 +7,41 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Changes are collected in `changelog.d/` during development and inserted here when
 `just set-version` prepares a release. There is intentionally no `Unreleased` section.
 
+## [0.7.2] - 2026-07-22
+
+### Added
+
+- A periodic blob-integrity scrub sweep now re-hashes every stored blob against its recorded CID and size, and walks the blob directory for both orphan directions — a row whose file has gone missing and a file no row owns — surfacing bitrot, truncation, or a bad restore as an operator alarm (`blob_scrub_*` metrics, `GET /v1/admin/health`) months before a migration would trip over it. When a blob-mirror bucket is configured, a bad or missing file can be auto-healed from its verified-good copy (`[blob_scrub] auto_heal`, on by default).
+
+- The migration blob-drain now degrades per-blob instead of parking the whole migration on a single dead blob: each blob is retried individually, and any that still can't be transferred are collected into a loss manifest the wallet shows you — which media, which post references it, and whether your previous server couldn't serve it or the new one refused it — so you can make an informed choice to continue without them rather than abandoning the run. Verification tolerates the accepted skips, and the progress screen surfaces the specific per-blob failure detail (fetch-from-source vs upload-to-destination) instead of a generic "couldn't transfer one or more blobs."
+
+- Obsign can now keep a user-held backup of an account's media in the wallet's iCloud Drive folder ("Back up media" on the identity screen): an opt-in, incremental mirror of the account's blobs — every fetched file is verified against its content address before it is stored, the mirror size is always shown, and the copy is visible in the Files app. If the hosting server ever loses the originals, "Restore to server" uploads the mirrored files back byte-for-byte, so posts keep pointing at the same media — the one backup layer that survives the server itself failing.
+
+- Brass Console operators can export a redacted, per-relay network-error log from Settings for troubleshooting.
+
+- The user-held media backup now tops itself up in the background: on iOS, an opted-in identity's iCloud mirror is refreshed by a scheduled background task (BGProcessingTask), so media posted days ago no longer stays unprotected until the next time the app is opened. Each run is the same incremental, content-address-verified pass as "Back up now" and degrades per-identity, so one account's failure never stops the others. Settings gains a "Media backup" section to tune it: turn background backups off entirely, restrict them to while charging, or skip them on cellular data.
+
+- If you've backed up your media to iCloud, migrating away from a server that has lost some of your blobs is no longer a loss: when your old server can't serve a piece of media during a migration, the wallet now falls back to your local backup copy, verifies it still matches its content hash, and uploads that copy to your new server. Because media is content-addressed the substitution is exact — nothing in your posts is rewritten — so a backed-up blob your old server dropped shrinks (ideally empties) the migration's loss manifest instead of forcing you to skip it.
+
+
+### Changed
+
+- The marketing site's copy now matches the shipped custody model: the three-rotation-key ordering (device, recovery, server), backup described as a device-created recovery secret split 2-of-3, the blob bucket mirror alongside Litestream, and identity-method jargon (did:plc) moved off the marketing pages into the docs site's new did:web coverage.
+
+- Marketing FAQ now states the backup cadence precisely: the database streams off-box continuously, while photos replicate on a regular sweep.
+
+- Restoring your iCloud media backup no longer stops at files iOS has offloaded to save space. When a backed-up file isn't on the device, the wallet now asks iCloud to download it, waits for it to arrive (with a time limit), verifies it still matches its content hash, and uploads it — so a restore on a device where most of the mirror has been evicted just works instead of handing you a long list of files to download by hand in the Files app. The restore summary shows how many files it pulled from iCloud first, so a slower restore explains itself. Files that are genuinely gone (no iCloud copy to download) are still reported per-file, and the run continues past them.
+
+
+### Fixed
+
+- Blob uploads are now crash-durable: bytes are written to a temp file, fsynced, atomically renamed onto the final content-addressed path, and the directory fsynced, before the blob is recorded — closing a gap where a crash or power loss could leave truncated bytes at a valid path even though the database row was already durable.
+
+- `getBlob` now re-hashes each blob's bytes against its CID before serving and returns a 404 (flagging the scrub-sweep alarm counter) on a mismatch, so a corrupted file is never handed to downstream caches; verified responses now carry the `Cache-Control: public, max-age=31536000, immutable` header the blob-handling spec recommends.
+
+- Wallet diagnostics exports now include redacted connection and timeout failures from account creation, OAuth refresh, and authenticated requests.
+
+
 ## [0.7.1] - 2026-07-19
 
 ### Added

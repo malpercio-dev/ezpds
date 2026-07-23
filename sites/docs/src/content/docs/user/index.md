@@ -24,6 +24,8 @@ head to [Running Custos](/operator/) instead.
   unexpected changes and the 72-hour override that lets you take back control.
 - **[2-of-3 Shamir backup](/user/backup/)** — split your recovery secret so no
   single lost device locks you out.
+- **[Backing up your media](/user/media-backup/)** — keep your own verified copy
+  of your photos and video, the one backup that survives your server failing.
 - **[Migrating your identity](/user/migration/)** — move between servers without
   losing your handle, posts, or followers.
 
