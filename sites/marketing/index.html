@@ -32,10 +32,7 @@
     />
   </head>
   <body>
-    <!-- The Obsign seal, forked from apps/identity-wallet/app-icon.svg (DESIGN.md
-         §6): a pressed wax seal with a gently undulating edge, the deep wax
-         gradient, an embossed pale ring, and the near-white shield-check. Defined
-         once, stamped at any size via <use>. -->
+    <!-- The Obsign seal, forked from apps/identity-wallet/app-icon.svg -->
     <svg class="seal-sprite" aria-hidden="true" focusable="false">
       <defs>
         <linearGradient id="sealWax" x1="0" y1="0" x2="0" y2="1">
@@ -80,7 +77,6 @@
     </header>
 
     <main id="main">
-      <!-- Hero: the one Libre Caslon Display moment on this screen (the Signet Rule). -->
       <section class="hero">
         <div class="container">
           <span class="seal seal-lg" aria-hidden="true">
@@ -88,9 +84,9 @@
           </span>
           <h1>Hold the keys to your own identity.</h1>
           <p class="lede">
-            Obsign is an identity wallet for the AT&nbsp;Protocol, the network behind
-            Bluesky. The keys that control your identity live in your device&rsquo;s
-            Secure&nbsp;Enclave, not on someone else&rsquo;s server. No platform, host,
+            Obsign is an iOS identity wallet for the AT&nbsp;Protocol, the network behind
+            Bluesky. The keys that control your account live in your device&rsquo;s
+            Secure&nbsp;Enclave, not on someone else&rsquo;s server, and your content is backed up to your iCloud account. No platform, host,
             or provider can take your identity, block your exit, or hold it hostage.
           </p>
           <div class="hero-actions">
@@ -109,7 +105,7 @@
           <h2>Owned, not rented.</h2>
           <div class="section-intro">
             <p>
-              On the AT&nbsp;Protocol, your identity is a public record, controlled
+              On the AT&nbsp;Protocol, your account is a public record, controlled
               by whoever holds its <em>rotation keys</em>. On most hosts today,
               that&rsquo;s the server. Your ability to leave, to recover from an attack, or
               simply to stay yourself is a policy promise: real only for as long as your
@@ -117,8 +113,8 @@
             </p>
             <p>
               Obsign turns that promise into arithmetic. Your device holds the
-              highest-priority rotation key, so the final word on your identity is signed
-              by you — and only ever by you.
+              highest-priority rotation key, so the final word on your account is signed
+              by you — and only ever by you. In addition, your wallet will create a recovery key, which is securely split into three shares, one stored in iCloud, one held in escrow by your server, and the third given to you to store offline. Only two-of-three shares are required to reconstruct the recovery key, so even if one share is compromised, the other two remain secure. A dishonest host cannot steal your recovery key, and you are able to fully recover your account from the two shares you hold.
             </p>
           </div>
           <div class="keyfacts">
@@ -141,7 +137,7 @@
       <!-- How it works -->
       <section id="how">
         <div class="container">
-          <h2>How Obsign defends an identity.</h2>
+          <h2>How Obsign defends an account.</h2>
           <p class="section-intro">
             Set it up once, with care. After that, Obsign watches quietly, and if
             something is wrong, it says so in plain words.
@@ -156,8 +152,8 @@
               </span>
               <h3>Sealed in your device</h3>
               <p>
-                Your identity key is generated inside the Secure&nbsp;Enclave and never
-                leaves it. It signs identity operations only after you approve them:
+                Your account key is generated inside the Secure&nbsp;Enclave and never
+                leaves it. It signs account operations only after you approve them:
                 reviewed on screen, confirmed with your biometrics.
               </p>
             </div>
@@ -170,7 +166,7 @@
               </span>
               <h3>It keeps watch</h3>
               <p>
-                Obsign monitors the public PLC directory for changes to your identity.
+                Obsign monitors the public PLC directory for changes to your account.
                 Every entry is verified against your own key: any operation you
                 didn&rsquo;t authorize raises an alarm that tells you exactly what changed.
               </p>
@@ -186,7 +182,7 @@
               <p>
                 Inside the directory&rsquo;s recovery window, your device key outranks
                 every other key. One clear, reviewed action signs the override and
-                reclaims the identity, calmly, before the window closes.
+                reclaims the account, before the window closes.
               </p>
             </div>
             <div class="card">
@@ -197,11 +193,11 @@
                   <path d="M2 17l10-5 10 5" />
                 </svg>
               </span>
-              <h3>Backup without a custodian</h3>
+              <h3>Backup without your server</h3>
               <p>
                 At setup, your device creates a recovery secret and splits it into three
                 shares: iCloud Keychain, your server&rsquo;s escrow, and a place you
-                choose. Any two bring your identity back; no single share (and no single
+                choose. Any two bring your account back; no single share (and no single
                 company) can.
               </p>
             </div>
@@ -215,9 +211,7 @@
               <span class="badge badge-expired"><span class="glyph" aria-hidden="true">⊘</span> Recovery window closed</span>
             </div>
             <figcaption>
-              The wallet&rsquo;s urgency states. Status is never color alone: every state
-              carries an icon, a label, and a position, so it can&rsquo;t be misread under
-              stress or with color blindness.
+              The wallet&rsquo;s urgency states.
             </figcaption>
           </figure>
         </div>
@@ -229,7 +223,7 @@
           <h2>Leaving is allowed. That&rsquo;s the point.</h2>
           <div class="prose">
             <p>
-              Because you hold the top rotation key, moving your identity to a new host is
+              Because you hold the top rotation key, moving your account to a new host is
               an operation <em>you</em> sign: it never requires your old server&rsquo;s
               permission, cooperation, or continued existence. Credible exit stops being a
               promise in someone&rsquo;s terms of service and becomes a property of the keys.
@@ -240,9 +234,7 @@
               ordinary migrations keep working exactly as they do everywhere else.
             </p>
             <p>
-              This isn&rsquo;t a roadmap promise. The full move — a real account leaving
-              bsky.social for a Custos server, then leaving Custos again — has been
-              carried out live on the network, from the wallet.
+                If enabled, the wallet will automatically back up all of your content, such as your posts, likes, and follows, as well as any photos or videos you have shared to your iCloud Drive. This ensures that your data is always safe and accessible, and allows you to migrate your account to a new host even if that host is inaccessible.
             </p>
           </div>
         </div>
@@ -265,21 +257,13 @@
             <div>
               <h3>Do I need to understand the cryptography?</h3>
               <p>
-                No, and you&rsquo;re never asked to. Obsign leads with plain human stakes.
-                But every screen keeps the machinery — the DIDs, the keys, the audit log —
-                one deliberate tap away, so you can verify anything yourself whenever you
-                want to.
+                No, and you&rsquo;re never asked to. Obsign attempts to keep the process as simple as possible. If you want to understand what&rsquo;s happening under the hood, Obsign gives you the details just a few taps away.
               </p>
             </div>
             <div>
               <h3>What about my posts and photos?</h3>
               <p>
-                Your server backs up its database off-box continuously, and your photos
-                on a regular sweep.
-                And Obsign can keep your own copy of your media in iCloud &mdash; verified
-                against its content address and topped up in the background &mdash; so your
-                whole presence stays portable even if every server you&rsquo;ve ever used
-                disappears.
+                Your server already regularly backs up your data and photos. If your server ever disappears, your entire account is backed up in your iCloud account and easily restore to a new host.
               </p>
             </div>
             <div>
@@ -300,12 +284,12 @@
         <section id="custos">
           <div class="container">
             <p class="prompt">custos <span class="prompt-glyph" aria-hidden="true">▸</span> the server side</p>
-            <h2>Run the room your identity lives in.</h2>
+            <h2>Run the server your account lives in.</h2>
             <p class="section-intro">
               Custos is Obsign&rsquo;s personal data server, a complete AT&nbsp;Protocol
               PDS in a single Rust binary. It hosts your repository, signs your posts, and
               federates with the network. What it cannot do, by construction, is take your
-              identity: its key is ranked below yours.
+              account: its key is ranked below yours.
             </p>
             <div class="hero-actions">
               <a class="btn btn-primary" href="custos/">About Custos</a>
