@@ -98,7 +98,33 @@ _ipa app_dir build_number:
     tmp="$(mktemp)"
     jq --arg bv "$bv" '.bundle.iOS.bundleVersion = $bv' "$conf" > "$tmp" && mv "$tmp" "$conf"
     echo "CFBundleVersion -> $bv"
-    cd {{app_dir}} && export EZPDS_IOS_BUILD=1 && . scripts/ios-env.sh && cargo tauri ios build --export-method app-store-connect
+    cd {{app_dir}} && export EZPDS_IOS_BUILD=1 && . scripts/ios-env.sh
+    # SwiftPM manifest compilation for the vendored swift-rs fork occasionally crashes the
+    # Apple toolchain non-deterministically: `clang` dies with `Segmentation fault: 11`
+    # while linking the throwaway Package.swift manifest executable, panicking swift-rs's
+    # build script ("Failed to compile swift package Tauri") and failing the whole lane.
+    # It is a transient toolchain crash, not a build defect — the identical build passes on
+    # retry and passed on the sibling app's lane for the same commit. Retry ONLY that
+    # signature (a clang crash-by-signal); any other failure — a real Rust/Swift compile
+    # error or a signing failure — still fails fast on the first attempt.
+    # See docs/ios-upstream-bugs.md Bug 4.
+    transient_re='Segmentation fault: 11|linker command failed due to signal|unable to execute command: (Segmentation fault|Killed)'
+    attempts=3
+    for attempt in $(seq 1 "$attempts"); do
+      buildlog="$(mktemp)"
+      if cargo tauri ios build --export-method app-store-connect 2>&1 | tee "$buildlog"; then
+        rm -f "$buildlog"
+        exit 0
+      fi
+      status="${PIPESTATUS[0]}"
+      if [ "$attempt" -lt "$attempts" ] && grep -qE "$transient_re" "$buildlog"; then
+        echo "⚠ transient Apple-toolchain crash during swift-rs manifest compile (attempt $attempt/$attempts) — retrying" >&2
+        rm -f "$buildlog"
+        continue
+      fi
+      rm -f "$buildlog"
+      exit "$status"
+    done
 
 # Compile the app's Icon Composer document (AppIcon.icon, referenced in place by
 # the scripts/ios/project.yml template) with actool — the same compiler Xcode's
