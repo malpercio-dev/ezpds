@@ -19,6 +19,7 @@ pub mod pds_client;
 pub mod plc_monitor;
 pub mod recovery;
 pub mod rekey;
+pub mod repo_backup;
 pub mod rotate_repo_key;
 pub mod session_provider;
 pub mod share_ceremony;
@@ -1336,6 +1337,10 @@ pub fn run() {
             blob_backup::set_blob_backup_enabled,
             blob_backup::run_blob_backup,
             blob_backup::restore_blob_backup,
+            repo_backup::get_repo_backup_status,
+            repo_backup::set_repo_backup_enabled,
+            repo_backup::run_repo_backup,
+            repo_backup::export_repo_backup,
             bg_backup::get_background_backup_settings,
             bg_backup::set_background_backup_settings,
             plc_monitor::check_identity_status,
