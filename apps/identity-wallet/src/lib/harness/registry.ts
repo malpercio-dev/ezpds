@@ -169,6 +169,12 @@ export type CommandName =
   | 'verify_import'
   | 'arm_identity_leg'
   | 'finalize_migration'
+  // disaster-recovery.ts
+  | 'prepare_disaster_recovery'
+  | 'enroll_recovery_signing_key'
+  | 'await_recovery_key_visibility'
+  | 'create_recovery_destination_account'
+  | 'recovery_transfer_repo'
   // handle-change.ts
   | 'get_identity_handle_domains'
   | 'change_handle_cmd'
@@ -761,6 +767,65 @@ export function buildRegistry(state: WalletState): Registry {
       const identity = findIdentity(state, didArg(args));
       if (identity && state.migration?.destPdsUrl) identity.pdsUrl = state.migration.destPdsUrl;
       state.migration = null;
+      return null;
+    },
+
+    // ── sovereign disaster recovery ──────────────────────────────────────────
+    prepare_disaster_recovery: (args) => {
+      const did = didArg(args);
+      const identity = findIdentity(state, did);
+      state.migration = {
+        did,
+        destPdsUrl: String(args.destPdsUrl ?? 'https://destination.harness.pds.local'),
+        sourceAuthenticated: false,
+        destinationCreated: false,
+        repoTransferred: false,
+        blobsTransferred: false,
+        preferencesTransferred: false,
+        verified: false,
+        armed: false,
+        recovery: true,
+        recoveryKeyEnrolled: false,
+        // Two "not yet visible" polls before propagation, so the screen's polling
+        // state is reachable in the harness.
+        recoveryVisibilityPollsRemaining: 2,
+      };
+      return {
+        handle:
+          typeof args.handleOverride === 'string' && args.handleOverride.trim() !== ''
+            ? args.handleOverride
+            : (identity?.handle ?? 'alice.harness.pds.local'),
+        destDid: 'did:web:destination.harness.pds.local',
+        sourcePdsUrl: identity?.pdsUrl ?? DEFAULT_PDS_URL,
+      };
+    },
+    enroll_recovery_signing_key: () => {
+      if (state.migration) state.migration.recoveryKeyEnrolled = true;
+      return {
+        signingKeyId: 'did:key:zharnessRecoverySigningKey',
+        opCid: 'bafyharnessenrollop',
+        alreadyEnrolled: false,
+      };
+    },
+    await_recovery_key_visibility: () => {
+      const flow = state.migration;
+      if (!flow?.recoveryKeyEnrolled) {
+        throw { code: 'KEY_NOT_ENROLLED', message: 'run enroll_recovery_signing_key first' };
+      }
+      const remaining = flow.recoveryVisibilityPollsRemaining ?? 0;
+      if (remaining > 0) {
+        flow.recoveryVisibilityPollsRemaining = remaining - 1;
+        return { visible: false };
+      }
+      flow.sourceAuthenticated = true;
+      return { visible: true };
+    },
+    create_recovery_destination_account: () => {
+      if (state.migration) state.migration.destinationCreated = true;
+      return null;
+    },
+    recovery_transfer_repo: () => {
+      if (state.migration) state.migration.repoTransferred = true;
       return null;
     },
 

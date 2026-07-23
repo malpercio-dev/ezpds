@@ -686,11 +686,9 @@ async fn export_core(root: &Path, did: &str) -> Result<RepoExport, RepoBackupErr
 /// so the migration simply surfaces the original source failure unchanged. Content addressing makes
 /// the substitution trustless: the validated bytes are byte-identical to what the source PDS would
 /// have served, so the destination `importRepo` accepts them and the commit is preserved verbatim.
-/// The repo twin of `blob_backup::mirror_fallback_blob`; consumed by the migration orchestrator's
-/// `transfer_repo` fallback wiring (added in a follow-on change).
-// Exercised by this module's tests; the production consumer (the migration orchestrator's
-// `transfer_repo` fallback) lands in a follow-on change, so the non-test lib build sees it as unused.
-#[allow(dead_code)]
+/// The repo twin of `blob_backup::mirror_fallback_blob`; consumed by the sovereign
+/// disaster-recovery flow (`disaster_recovery::recovery_transfer_repo`), which imports
+/// this snapshot into the destination when the source PDS is gone.
 pub(crate) async fn mirror_repo_car(root: &Path, did: &str) -> Option<Vec<u8>> {
     let lock = repo_lock(did);
     let _guard = lock.lock().await;

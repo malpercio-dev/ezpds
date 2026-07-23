@@ -6,6 +6,7 @@
     didDoc,
     onback,
     onmigrate,
+    onrecoverpds,
     onchangehandle,
     onrotatekey,
     onapppasswords,
@@ -19,6 +20,10 @@
     /** Only passed when the device key is the DID's root rotation key — gates the
      *  wallet-authorized outbound migration entry point (ADR-0002 path 1). */
     onmigrate?: () => void;
+    /** Only passed when the device key is the DID's root rotation key — gates the
+     *  sovereign disaster-recovery entry point: rebuild the account on a new PDS from
+     *  the iCloud backups when the current PDS is gone or uncooperative (MM-451). */
+    onrecoverpds?: () => void;
     /** Only passed for a wallet-custodied did:plc (device key in the rotation set) —
      *  gates the sovereign change-handle entry point (device-key-signed alsoKnownAs op). */
     onchangehandle?: () => void;
@@ -188,6 +193,10 @@
 
   {#if onmigrate}
     <button class="migrate" onclick={onmigrate}>Migrate to another PDS</button>
+  {/if}
+
+  {#if onrecoverpds}
+    <button class="migrate" onclick={onrecoverpds}>Rebuild from backup (PDS gone)</button>
   {/if}
 
   {#if onremove}

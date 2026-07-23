@@ -176,7 +176,10 @@ export type MigrationError =
   // stays active; the prior valid token record (if any) is left intact.
   | { code: 'SESSION_PERSIST_FAILED'; message: string }
   | { code: 'DEACTIVATION_FAILED'; message: string }
-  | { code: 'NETWORK_ERROR'; message: string };
+  | { code: 'NETWORK_ERROR'; message: string }
+  // Disaster recovery: the iCloud/local backup is unavailable or holds no valid repo
+  // snapshot — the account cannot be rebuilt without one.
+  | { code: 'BACKUP_UNAVAILABLE'; message: string };
 
 /**
  * Resolved source identity returned by `prepareMigration` — mirrors the Rust `PreparedMigration`
