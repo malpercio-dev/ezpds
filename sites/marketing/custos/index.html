@@ -3,8 +3,6 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <!-- The Brass Console is a fixed dark register; chrome matches its cool
-         slate ground (derived from the .register-custos --color-bg) always. -->
     <meta name="theme-color" content="#0e1217" />
     <title>Custos — a personal data server whose users hold their own keys</title>
     <meta
@@ -47,7 +45,6 @@
     </header>
 
     <main id="main">
-      <!-- The mono prompt is the display moment on this surface (mono is the signet here). -->
       <section class="hero">
         <div class="container">
           <p class="prompt">custos <span class="prompt-glyph" aria-hidden="true">▸</span> personal data server</p>
@@ -64,8 +61,7 @@
             <a class="btn btn-secondary" href="https://github.com/malpercio-dev/ezpds">Read the source</a>
           </div>
           <p class="hero-honesty">
-            Open source, in active development. Reports the literal truth, including its
-            own limits.
+            Open source, in active development.
           </p>
         </div>
       </section>
@@ -124,9 +120,7 @@
               <dt>migration</dt>
               <dd>
                 Accounts arrive and leave by the standard AT&nbsp;Protocol migration
-                flow, driven from the user&rsquo;s wallet. The full round trip —
-                bsky.social to Custos and back out — has been executed live on the
-                network.
+                flow, driven from the user&rsquo;s wallet.
               </dd>
             </div>
             <div>
@@ -155,15 +149,13 @@
                 Custos holds <code>rotationKeys[2]</code> and signs repo commits. Your
                 users&rsquo; wallets hold <code>rotationKeys[0]</code>, and their backup
                 shares rebuild the recovery key at <code>rotationKeys[1]</code> — the
-                server escrows one share and never sees the rest. The server works; the
-                user rules.
+                server escrows one share and never sees the rest.
               </dd>
             </div>
           </dl>
         </div>
       </section>
 
-      <!-- Run it -->
       <section id="run" class="section-alt">
         <div class="container">
           <h2>Run it.</h2>
@@ -188,7 +180,6 @@
         </div>
       </section>
 
-      <!-- The honest relationship -->
       <section id="relationship">
         <div class="container">
           <h2>The deal between Custos and its users.</h2>
