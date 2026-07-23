@@ -92,6 +92,13 @@ fn oauth_tokens_account(did: &str) -> String {
     format!("{did}:oauth-tokens")
 }
 
+/// Returns the Keychain account name for a DID's self-controlled disaster-recovery
+/// `atproto` signing key (raw P-256 scalar), enrolled by the sovereign
+/// disaster-recovery flow so the wallet can mint service-auth JWTs offline.
+fn recovery_signing_key_account(did: &str) -> String {
+    format!("{did}:recovery-signing-key")
+}
+
 // ── IdentityStore ──────────────────────────────────────────────────────────────
 
 /// Unit struct for multi-identity Keychain management.
@@ -193,6 +200,7 @@ impl IdentityStore {
             did_doc_account(did),
             plc_log_account(did),
             oauth_tokens_account(did),
+            recovery_signing_key_account(did),
             crate::blob_backup::backup_enabled_account(did),
             crate::repo_backup::backup_enabled_account(did),
         ];
@@ -391,6 +399,73 @@ impl IdentityStore {
                     }
                 })?;
                 Ok(Some(log_json))
+            }
+            Err(e) if crate::keychain::is_not_found(&e) => Ok(None),
+            Err(e) => Err(IdentityStoreError::KeychainError {
+                message: e.to_string(),
+            }),
+        }
+    }
+
+    /// Persist the DID's self-controlled disaster-recovery `atproto` signing key
+    /// (raw P-256 scalar) with a read-back verify — the write convention for anything
+    /// holding key material. This scalar is what mints the offline service-auth JWT
+    /// once the corresponding did:key is enrolled as the DID's `atproto` verification
+    /// method, so it must be durably in place *before* the enroll op is submitted.
+    ///
+    /// Returns `Err(IdentityNotFound)` if the DID is not registered.
+    pub fn store_recovery_signing_key(
+        &self,
+        did: &str,
+        scalar: &[u8; 32],
+    ) -> Result<(), IdentityStoreError> {
+        if !self.is_managed(did)? {
+            return Err(IdentityStoreError::IdentityNotFound);
+        }
+        let account = recovery_signing_key_account(did);
+        crate::keychain::store_item(&account, scalar).map_err(|e| {
+            IdentityStoreError::KeychainError {
+                message: e.to_string(),
+            }
+        })?;
+        // Read-back verify: the enroll op is only safe to submit once the key that
+        // will sign the offline JWT is provably durable.
+        let read_back =
+            zeroize::Zeroizing::new(crate::keychain::get_item(&account).map_err(|e| {
+                IdentityStoreError::KeychainError {
+                    message: format!("read-back verify failed: {e}"),
+                }
+            })?);
+        if read_back.as_slice() != scalar {
+            return Err(IdentityStoreError::KeychainError {
+                message: "read-back verify mismatch for recovery signing key".to_string(),
+            });
+        }
+        Ok(())
+    }
+
+    /// Load the DID's disaster-recovery `atproto` signing key scalar, if enrolled.
+    ///
+    /// Returns `Err(IdentityNotFound)` if the DID is not registered.
+    pub fn load_recovery_signing_key(
+        &self,
+        did: &str,
+    ) -> Result<Option<zeroize::Zeroizing<[u8; 32]>>, IdentityStoreError> {
+        if !self.is_managed(did)? {
+            return Err(IdentityStoreError::IdentityNotFound);
+        }
+        match crate::keychain::get_item(&recovery_signing_key_account(did)) {
+            Ok(bytes) => {
+                let bytes = zeroize::Zeroizing::new(bytes);
+                let scalar: [u8; 32] = bytes.as_slice().try_into().map_err(|_| {
+                    IdentityStoreError::SerializationError {
+                        message: format!(
+                            "recovery signing key has {} bytes, expected 32",
+                            bytes.len()
+                        ),
+                    }
+                })?;
+                Ok(Some(zeroize::Zeroizing::new(scalar)))
             }
             Err(e) if crate::keychain::is_not_found(&e) => Ok(None),
             Err(e) => Err(IdentityStoreError::KeychainError {

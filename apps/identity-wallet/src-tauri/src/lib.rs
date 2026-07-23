@@ -5,6 +5,7 @@ pub mod blob_backup;
 pub mod claim;
 pub mod device_key;
 pub mod diagnostics;
+pub mod disaster_recovery;
 pub mod handle_change;
 pub mod http;
 pub mod identity_removal;
@@ -1371,6 +1372,11 @@ pub fn run() {
             migration_orchestrator::verify_import,
             migration_orchestrator::arm_identity_leg,
             migration_orchestrator::finalize_migration,
+            disaster_recovery::prepare_disaster_recovery,
+            disaster_recovery::enroll_recovery_signing_key,
+            disaster_recovery::await_recovery_key_visibility,
+            disaster_recovery::create_recovery_destination_account,
+            disaster_recovery::recovery_transfer_repo,
             sovereign_session::sovereign_login,
             session_provider::ensure_identity_session,
             handle_change::change_handle_cmd,

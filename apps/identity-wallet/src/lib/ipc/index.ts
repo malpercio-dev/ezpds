@@ -19,6 +19,7 @@ export * from './recovery';
 export * from './share-recovery';
 export * from './removal';
 export * from './migration';
+export * from './disaster-recovery';
 export * from './handle-change';
 export * from './rotation';
 export * from './rekey';

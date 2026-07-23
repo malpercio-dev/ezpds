@@ -5,6 +5,7 @@ pub mod keys;
 mod mnemonic;
 pub mod oauth_consent;
 pub mod plc;
+pub mod service_auth;
 pub mod shamir;
 pub mod sovereign_session;
 
@@ -27,6 +28,7 @@ pub use plc::{
     verify_plc_tombstone_op, AuditEntry, DidKeyCurve, PlcGenesisOp, PlcService, SignedPlcOperation,
     VerifiedGenesisOp, VerifiedPlcOp, VerifiedTombstoneOp,
 };
+pub use service_auth::mint_service_auth_jwt;
 pub use shamir::{
     combine_envelopes, combine_shares, split_secret, split_secret_into_envelopes, ShamirShare,
     ShareEnvelope, SHARE_ENVELOPE_LEN, SHARE_ENVELOPE_VERSION,

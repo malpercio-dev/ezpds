@@ -146,6 +146,12 @@ export interface MigrationFlow {
   preferencesTransferred: boolean;
   verified: boolean;
   armed: boolean;
+  /** True for a sovereign disaster-recovery session (no source PDS). */
+  recovery?: boolean;
+  /** Disaster recovery: the self-controlled signing key has been enrolled. */
+  recoveryKeyEnrolled?: boolean;
+  /** Disaster recovery: polls before the enrolled key reads as visible. */
+  recoveryVisibilityPollsRemaining?: number;
 }
 
 /** Transient state for the create flow (account → DID ceremony → handle). */

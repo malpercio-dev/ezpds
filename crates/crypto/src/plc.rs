@@ -940,7 +940,7 @@ pub fn verify_plc_tombstone_op(
 /// would derive a different DID/CID). Failing fast at build time makes that a loud, local
 /// error instead. Callbacks that already normalize (the convenience wrapper, `CommitSigner`,
 /// the wallet signers) pass unchanged.
-fn ensure_low_s_callback_signature(sig_bytes: &[u8]) -> Result<(), CryptoError> {
+pub(crate) fn ensure_low_s_callback_signature(sig_bytes: &[u8]) -> Result<(), CryptoError> {
     let sig = Signature::try_from(sig_bytes).map_err(|e| {
         CryptoError::PlcOperation(format!(
             "signing callback returned invalid signature bytes: {e}"

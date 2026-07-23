@@ -69,6 +69,12 @@ pub struct OutboundMigrationState {
     /// `verify_import` subtracts this count from `expected_blobs` so a degraded-but-accepted
     /// migration still reconciles.
     pub accepted_blob_loss: Vec<BlobLoss>,
+    /// True when this session is a sovereign disaster recovery (`disaster_recovery.rs`):
+    /// the source PDS is presumed dead, so there is no source client, the blob drain
+    /// goes straight to the iCloud mirror, the preferences leg is skipped (nothing to
+    /// read them from), and the finalize activates the destination without deactivating
+    /// a source. False for every normal outbound migration.
+    pub recovery: bool,
 }
 
 /// Resolved source identity returned by `prepare_migration`, so the source-auth screen can prefill
@@ -207,6 +213,10 @@ pub enum MigrationError {
     /// Network error during migration
     #[error("network error: {message}")]
     NetworkError { message: String },
+    /// The iCloud/local backup needed by a disaster recovery is unavailable or invalid
+    /// (no backup location, or no snapshot that passes validation).
+    #[error("backup unavailable: {message}")]
+    BackupUnavailable { message: String },
 }
 
 // ── Pure prerequisite gate ─────────────────────────────────────────────────
@@ -331,6 +341,7 @@ async fn prepare_migration_impl(
         dest_client: None,
         phase: MigrationPhase::Resolved,
         accepted_blob_loss: Vec::new(),
+        recovery: false,
     })
 }
 
@@ -506,9 +517,45 @@ async fn create_destination_account_impl(
         }
     })?;
 
-    // 3. One-shot Bearer client carrying the service-auth token
+    // 3-5. Shared with the disaster-recovery flow, which mints the token offline
+    // instead of asking the source PDS for one.
+    create_destination_account_with_token(
+        &service_auth_token.token,
+        dest_pds_url,
+        did,
+        handle,
+        email,
+        invite_code,
+        existing_dest_client,
+    )
+    .await
+}
+
+/// The token-agnostic half of destination-account creation: wrap a service-auth JWT
+/// (source-minted or offline-minted) in a one-shot Bearer client, run the migration
+/// `createAccount`, and return the destination Bearer session. Shared by
+/// `create_destination_account_impl` and `disaster_recovery.rs`.
+pub(crate) async fn create_destination_account_with_token(
+    service_auth_token: &str,
+    dest_pds_url: &str,
+    did: &str,
+    handle: &str,
+    email: &str,
+    invite_code: Option<String>,
+    existing_dest_client: Option<Arc<OAuthClient>>,
+) -> Result<Arc<OAuthClient>, MigrationError> {
+    // Idempotent fast path shared by both callers: a session already established by a
+    // prior attempt means there is nothing to create — return it without any network.
+    if let Some(client) = &existing_dest_client {
+        tracing::info!(
+            "create_destination_account_with_token: dest_client exists, returning cached"
+        );
+        return Ok(client.clone());
+    }
+
+    // One-shot Bearer client carrying the service-auth token.
     let sa_client = OAuthClient::new_bearer(
-        service_auth_token.token.clone(),
+        service_auth_token.to_string(),
         String::new(),
         dest_pds_url.into(),
     )
@@ -519,7 +566,7 @@ async fn create_destination_account_impl(
         }
     })?;
 
-    // 4. Create account migration (deactivated account)
+    // Create account migration (deactivated account).
     tracing::info!(
         did = %did,
         handle = %handle,
@@ -783,11 +830,45 @@ enum BlobOrigin {
 async fn transfer_one_blob(
     pds_client: &crate::pds_client::PdsClient,
     dest_client: &OAuthClient,
-    source_pds_url: &str,
+    source_pds_url: Option<&str>,
     did: &str,
     blob: &crate::pds_client::MissingBlob,
     mirror_root: Option<&Path>,
 ) -> Result<BlobOrigin, BlobLoss> {
+    // No source at all (disaster recovery): the mirror IS the source. Skip the doomed
+    // fetch retries and read the CID-verified backup copy directly.
+    let Some(source_pds_url) = source_pds_url else {
+        return match mirror_root {
+            Some(root) => {
+                match crate::blob_backup::mirror_fallback_blob(root, did, &blob.cid).await {
+                    Some(bytes) => {
+                        upload_blob_with_retries(
+                            dest_client,
+                            did,
+                            blob,
+                            bytes,
+                            BlobOrigin::LocalMirror,
+                        )
+                        .await
+                    }
+                    None => Err(BlobLoss {
+                        cid: blob.cid.clone(),
+                        record_uri: blob.record_uri.clone(),
+                        direction: BlobTransferDirection::Source,
+                        reason: "source PDS unavailable and the backup mirror has no usable copy"
+                            .to_string(),
+                    }),
+                }
+            }
+            None => Err(BlobLoss {
+                cid: blob.cid.clone(),
+                record_uri: blob.record_uri.clone(),
+                direction: BlobTransferDirection::Source,
+                reason: "source PDS unavailable and no backup mirror on this device".to_string(),
+            }),
+        };
+    };
+
     // Fetch-from-source half.
     let mut attempt = 0;
     let (bytes, origin) = loop {
@@ -832,6 +913,19 @@ async fn transfer_one_blob(
     };
 
     // Upload-to-destination half.
+    upload_blob_with_retries(dest_client, did, blob, bytes, origin).await
+}
+
+/// Upload one blob's bytes to the destination with per-blob retries — the shared
+/// upload half of `transfer_one_blob` for both the source-fetched and mirror-read
+/// paths. Returns the given `origin` on success.
+async fn upload_blob_with_retries(
+    dest_client: &OAuthClient,
+    did: &str,
+    blob: &crate::pds_client::MissingBlob,
+    bytes: Vec<u8>,
+    origin: BlobOrigin,
+) -> Result<BlobOrigin, BlobLoss> {
     let mut attempt = 0;
     loop {
         attempt += 1;
@@ -872,7 +966,7 @@ async fn transfer_one_blob(
 async fn drain_missing_blobs(
     pds_client: &crate::pds_client::PdsClient,
     dest_client: &OAuthClient,
-    source_pds_url: &str,
+    source_pds_url: Option<&str>,
     did: &str,
     mirror_root: Option<&Path>,
 ) -> Result<Vec<BlobLoss>, MigrationError> {
@@ -966,7 +1060,8 @@ pub async fn transfer_blobs(
 ) -> Result<(), MigrationError> {
     tracing::info!(did = %did, accept_loss, "transfer_blobs: draining missing blobs");
 
-    // Gate + extract dependencies
+    // Gate + extract dependencies. A recovery session has no usable source: the drain
+    // reads the iCloud mirror directly instead of burning retries on a dead host.
     let (dest_client, source_pds_url) = {
         let orchestration = state.orchestration_state.lock().await;
         let mig = ensure_phase_did(&orchestration, &did, MigrationPhase::RepoTransferred).map_err(
@@ -976,7 +1071,12 @@ pub async fn transfer_blobs(
             },
         )?;
 
-        (mig.dest_client.clone(), mig.source_pds_url.clone())
+        let source = if mig.recovery {
+            None
+        } else {
+            Some(mig.source_pds_url.clone())
+        };
+        (mig.dest_client.clone(), source)
     }; // lock released
 
     let Some(dest_client) = dest_client else {
@@ -997,7 +1097,7 @@ pub async fn transfer_blobs(
     let losses = drain_missing_blobs(
         pds_client,
         &dest_client,
-        &source_pds_url,
+        source_pds_url.as_deref(),
         &did,
         mirror_root.as_deref(),
     )
@@ -1083,7 +1183,7 @@ pub async fn transfer_preferences(
     tracing::info!(did = %did, "transfer_preferences: getting and putting preferences");
 
     // Gate + extract dependencies
-    let (source_client, dest_client) = {
+    let (source_client, dest_client, recovery) = {
         let orchestration = state.orchestration_state.lock().await;
         let mig = ensure_phase_did(&orchestration, &did, MigrationPhase::BlobsTransferred)
             .map_err(|e| {
@@ -1091,8 +1191,31 @@ pub async fn transfer_preferences(
                 e
             })?;
 
-        (mig.source_client.clone(), mig.dest_client.clone())
+        (
+            mig.source_client.clone(),
+            mig.dest_client.clone(),
+            mig.recovery,
+        )
     }; // lock released
+
+    // Disaster recovery: there is no source to read preferences from and no
+    // preferences backup exists — skip honestly and advance the phase so the rest of
+    // the flow proceeds.
+    if recovery {
+        tracing::info!(did = %did, "transfer_preferences: recovery session has no preferences source; skipping");
+        let mut orchestration = state.orchestration_state.lock().await;
+        match orchestration.as_mut() {
+            Some(mig) if mig.did == did => {
+                mig.phase = MigrationPhase::PreferencesTransferred;
+                return Ok(());
+            }
+            _ => {
+                return Err(MigrationError::MigrationNotReady {
+                    message: "orchestration state lost".into(),
+                })
+            }
+        }
+    }
 
     let Some(source_client) = source_client else {
         tracing::error!(did = %did, "transfer_preferences: source_client not found");
@@ -1441,14 +1564,18 @@ where
     Fut: std::future::Future<Output = Result<(), MigrationError>>,
 {
     // Gate: ensure phase + DID, extract clients
-    let (dest_client, source_client) = {
+    let (dest_client, source_client, recovery) = {
         let orchestration = orchestration_state.lock().await;
         let mig =
             ensure_phase_did(&orchestration, did, MigrationPhase::IdentityArmed).map_err(|e| {
                 tracing::warn!("finalize_migration: phase gate failed: {}", e);
                 e
             })?;
-        (mig.dest_client.clone(), mig.source_client.clone())
+        (
+            mig.dest_client.clone(),
+            mig.source_client.clone(),
+            mig.recovery,
+        )
     }; // lock released
 
     let Some(dest_client) = dest_client else {
@@ -1458,11 +1585,20 @@ where
         });
     };
 
-    let Some(source_client) = source_client else {
-        tracing::error!(did = %did, "finalize_migration: source_client not found");
-        return Err(MigrationError::SourceAuthFailed {
-            message: "source client not authenticated".into(),
-        });
+    // A disaster recovery has no source to deactivate — the source PDS is presumed
+    // dead. A normal migration requires the authenticated source client for step 3.
+    let source_client = if recovery {
+        None
+    } else {
+        match source_client {
+            Some(client) => Some(client),
+            None => {
+                tracing::error!(did = %did, "finalize_migration: source_client not found");
+                return Err(MigrationError::SourceAuthFailed {
+                    message: "source client not authenticated".into(),
+                });
+            }
+        }
     };
 
     // Defense-in-depth: the identity op must have been submitted (migration_state cleared).
@@ -1482,7 +1618,11 @@ where
     ensure_session().await?;
 
     // 3. Deactivate source (no deleteAfter) — the destination credential is now durable.
-    deactivate_source_account(&source_client).await?;
+    //    Skipped entirely in a disaster recovery: the source is gone, and there is
+    //    nothing to deactivate.
+    if let Some(source_client) = &source_client {
+        deactivate_source_account(source_client).await?;
+    }
 
     // Advance orchestration phase to Finalized (defense-in-depth DID re-check under the lock).
     let mut orchestration = orchestration_state.lock().await;
@@ -1504,7 +1644,7 @@ where
 
 // ── Helper: extract handle from also_known_as ───────────────────────────────
 
-fn extract_handle_from_also_known_as(also_known_as: &[String]) -> Option<String> {
+pub(crate) fn extract_handle_from_also_known_as(also_known_as: &[String]) -> Option<String> {
     for entry in also_known_as {
         if let Some(handle) = entry.strip_prefix("at://") {
             if !handle.starts_with("did:") {
@@ -1515,7 +1655,7 @@ fn extract_handle_from_also_known_as(also_known_as: &[String]) -> Option<String>
     None
 }
 
-fn preferred_login_identifier(also_known_as: &[String], did: &str) -> String {
+pub(crate) fn preferred_login_identifier(also_known_as: &[String], did: &str) -> String {
     extract_handle_from_also_known_as(also_known_as).unwrap_or_else(|| did.to_string())
 }
 
@@ -1539,6 +1679,7 @@ mod tests {
             dest_client: None,
             phase: MigrationPhase::SourceAuthed,
             accepted_blob_loss: Vec::new(),
+            recovery: false,
         });
 
         let result = ensure_phase_did(&state, "did:plc:abc123", MigrationPhase::RepoTransferred);
@@ -1561,6 +1702,7 @@ mod tests {
             dest_client: None,
             phase: MigrationPhase::Resolved,
             accepted_blob_loss: Vec::new(),
+            recovery: false,
         });
 
         let result = ensure_phase_did(&state, "did:plc:different", MigrationPhase::Resolved);
@@ -1593,6 +1735,7 @@ mod tests {
             dest_client: None,
             phase: MigrationPhase::RepoTransferred,
             accepted_blob_loss: Vec::new(),
+            recovery: false,
         });
 
         let result = ensure_phase_did(&state, "did:plc:abc123", MigrationPhase::SourceAuthed);
@@ -1704,6 +1847,7 @@ mod tests {
             dest_client: None,
             phase: MigrationPhase::Resolved,
             accepted_blob_loss: Vec::new(),
+            recovery: false,
         });
 
         let result = ensure_phase_did(&state, "did:plc:different", MigrationPhase::Resolved);
@@ -2010,6 +2154,7 @@ mod tests {
             dest_client: None,
             phase: MigrationPhase::Resolved, // Too early!
             accepted_blob_loss: Vec::new(),
+            recovery: false,
         });
 
         let result = ensure_phase_did(&state, "did:plc:abc123", MigrationPhase::SourceAuthed);
@@ -2094,6 +2239,7 @@ mod tests {
             dest_client: None,
             phase: MigrationPhase::SourceAuthed, // Too early!
             accepted_blob_loss: Vec::new(),
+            recovery: false,
         });
 
         let result = ensure_phase_did(&state, "did:plc:abc123", MigrationPhase::DestCreated);
@@ -2116,6 +2262,7 @@ mod tests {
             dest_client: None,
             phase: MigrationPhase::SourceAuthed, // Too early!
             accepted_blob_loss: Vec::new(),
+            recovery: false,
         });
 
         let result = ensure_phase_did(&state, "did:plc:abc123", MigrationPhase::DestCreated);
@@ -2140,6 +2287,7 @@ mod tests {
             dest_client: None,
             phase: MigrationPhase::DestCreated, // Too early for transfer_blobs!
             accepted_blob_loss: Vec::new(),
+            recovery: false,
         });
 
         let result = ensure_phase_did(&state, "did:plc:abc123", MigrationPhase::RepoTransferred);
@@ -2249,7 +2397,7 @@ mod tests {
         let result = drain_missing_blobs(
             &pds_client,
             &dest_client,
-            "http://127.0.0.1:1",
+            Some("http://127.0.0.1:1"),
             "did:plc:abc123",
             None,
         )
@@ -2330,7 +2478,7 @@ mod tests {
         let result = drain_missing_blobs(
             &pds_client,
             &dest_client,
-            &source.base_url(),
+            Some(&source.base_url()),
             "did:plc:abc123",
             None,
         )
@@ -2372,7 +2520,7 @@ mod tests {
         let losses = drain_missing_blobs(
             &pds_client,
             &dest_client,
-            &source.base_url(),
+            Some(&source.base_url()),
             "did:plc:abc123",
             None,
         )
@@ -2444,7 +2592,7 @@ mod tests {
         let losses = drain_missing_blobs(
             &pds_client,
             &dest_client,
-            &source.base_url(),
+            Some(&source.base_url()),
             "did:plc:abc123",
             None,
         )
@@ -2513,7 +2661,7 @@ mod tests {
         let losses = drain_missing_blobs(
             &pds_client,
             &dest_client,
-            &source.base_url(),
+            Some(&source.base_url()),
             did,
             Some(mirror.path()),
         )
@@ -2568,7 +2716,7 @@ mod tests {
         let losses = drain_missing_blobs(
             &pds_client,
             &dest_client,
-            &source.base_url(),
+            Some(&source.base_url()),
             did,
             Some(mirror.path()),
         )
@@ -2598,7 +2746,7 @@ mod tests {
         let result = drain_missing_blobs(
             &pds_client,
             &dest_client,
-            "http://127.0.0.1:1",
+            Some("http://127.0.0.1:1"),
             "did:plc:abc123",
             None,
         )
@@ -2625,6 +2773,7 @@ mod tests {
             dest_client: None,
             phase: MigrationPhase::RepoTransferred, // Too early for transfer_preferences!
             accepted_blob_loss: Vec::new(),
+            recovery: false,
         });
 
         let result = ensure_phase_did(&state, "did:plc:abc123", MigrationPhase::BlobsTransferred);
@@ -2930,6 +3079,7 @@ mod tests {
             dest_client: Some(Arc::new(bearer_client_at("https://dest.pds".into()))),
             phase: MigrationPhase::PreferencesTransferred, // Too early!
             accepted_blob_loss: Vec::new(),
+            recovery: false,
         });
 
         let result = ensure_phase_did(&state, "did:plc:abc123", MigrationPhase::Verified);
@@ -2951,6 +3101,7 @@ mod tests {
             dest_client: Some(Arc::new(bearer_client_at("https://dest.pds".into()))),
             phase: MigrationPhase::Verified,
             accepted_blob_loss: Vec::new(),
+            recovery: false,
         }
     }
 
@@ -3027,6 +3178,7 @@ mod tests {
             dest_client: None,
             phase: MigrationPhase::Verified, // Too early for finalize!
             accepted_blob_loss: Vec::new(),
+            recovery: false,
         });
 
         let result = ensure_phase_did(&state, "did:plc:abc123", MigrationPhase::IdentityArmed);
@@ -3683,7 +3835,7 @@ mod tests {
 
         // ─ Step 3: drain_missing_blobs ─
         let blobs_result =
-            drain_missing_blobs(&pds_client, &dest_client, &source_url, did, None).await;
+            drain_missing_blobs(&pds_client, &dest_client, Some(&source_url), did, None).await;
         assert!(blobs_result.is_ok(), "drain_missing_blobs should succeed");
 
         // ─ Step 4: transfer_preferences_impl ─
@@ -3732,6 +3884,7 @@ mod tests {
             dest_client: Some(dest_client),
             phase: MigrationPhase::IdentityArmed,
             accepted_blob_loss: Vec::new(),
+            recovery: false,
         }));
         let migration_state = tokio::sync::Mutex::new(None); // identity op already submitted
 
@@ -3834,7 +3987,7 @@ mod tests {
         let result = drain_missing_blobs(
             &pds_client,
             &dest_client,
-            &source.base_url(),
+            Some(&source.base_url()),
             "did:plc:test",
             None,
         )
@@ -3978,7 +4131,7 @@ mod tests {
         drain_missing_blobs(
             &pds_client,
             &dest_client,
-            &source.base_url(),
+            Some(&source.base_url()),
             "did:plc:test",
             None,
         )

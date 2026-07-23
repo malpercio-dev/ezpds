@@ -31,6 +31,8 @@
   import RecoverVerifyScreen from '$lib/components/onboarding/RecoverVerifyScreen.svelte';
   import RecoverEpilogueScreen from '$lib/components/onboarding/RecoverEpilogueScreen.svelte';
   import MigrationStartScreen from '$lib/components/onboarding/MigrationStartScreen.svelte';
+  import DisasterRecoveryStartScreen from '$lib/components/onboarding/DisasterRecoveryStartScreen.svelte';
+  import DisasterRecoveryProgressScreen from '$lib/components/onboarding/DisasterRecoveryProgressScreen.svelte';
   import MigrationSourceAuthScreen from '$lib/components/onboarding/MigrationSourceAuthScreen.svelte';
   import MigrationProgressScreen from '$lib/components/onboarding/MigrationProgressScreen.svelte';
   import MigrationReviewScreen from '$lib/components/onboarding/MigrationReviewScreen.svelte';
@@ -104,6 +106,8 @@
     | 'review_operation'
     | 'claim_success'
     | 'migration_start'
+    | 'recovery_rebuild_start'
+    | 'recovery_rebuild_progress'
     | 'migration_source_auth'
     | 'migration_progress'
     | 'migration_hosting'
@@ -706,6 +710,12 @@
             goTo('migration_start');
           }
         : undefined}
+      onrecoverpds={selectedDeviceKeyIsRoot === true && selectedDid?.startsWith('did:plc:')
+        ? () => {
+            migrationDid = selectedDid ?? '';
+            goTo('recovery_rebuild_start');
+          }
+        : undefined}
       onremove={selectedDid?.startsWith('did:plc:')
         ? () => goTo('remove_identity')
         : undefined}
@@ -790,6 +800,29 @@
         goTo('migration_source_auth');
       }}
       onback={() => goTo('identity_detail')}
+    />
+
+  {:else if step === 'recovery_rebuild_start'}
+    <DisasterRecoveryStartScreen
+      did={migrationDid}
+      onnext={({ destPdsUrl, email, inviteCode }) => {
+        migrationDestPds = destPdsUrl;
+        migrationEmail = email;
+        migrationInviteCode = inviteCode;
+        goTo('recovery_rebuild_progress');
+      }}
+      onback={() => goTo('identity_detail')}
+    />
+
+  {:else if step === 'recovery_rebuild_progress'}
+    <DisasterRecoveryProgressScreen
+      did={migrationDid}
+      email={migrationEmail}
+      inviteCode={migrationInviteCode}
+      onnext={() => goTo('migration_review')}
+      onerror={() => {
+        // Stay on the progress screen — it surfaces the error inline and offers Retry itself.
+      }}
     />
 
   {:else if step === 'migration_source_auth'}
