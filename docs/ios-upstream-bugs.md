@@ -103,3 +103,48 @@ per-build sync, which preserves existing buildSettings.
 `synchronize_project_config`) and/or Xcode (the spurious detection). **Remove the
 template's `CODE_SIGN_ALLOW_ENTITLEMENTS_MODIFICATION` setting if Tauri stops
 restamping the project on every build, or stops regenerating the entitlements.**
+
+---
+
+## Bug 4 — swift-rs: `clang` segfaults (`Segmentation fault: 11`) during SwiftPM manifest compilation
+
+**Symptom:**
+```
+error: 'swift-rs': Invalid manifest (compiled with: [".../swiftc" ... "-target"
+"x86_64-apple-macosx14.0" ... "Package.swift" "-o" ".../swift-rs-manifest"])
+clang: error: unable to execute command: Segmentation fault: 11
+clang: error: linker command failed due to signal (use -v to see invocation)
+thread 'main' panicked at apps/identity-wallet/swift-rs-patch/src-rs/build.rs:285:17:
+Failed to compile swift package Tauri
+```
+
+**Cause:** Before SwiftPM can build the Tauri Swift package it compiles its
+`Package.swift` *manifest* into a throwaway executable to evaluate it. On the
+`macos-26` runners that link step non-deterministically crashes the Apple
+toolchain — `clang` is killed by `Segmentation fault: 11` while linking the manifest
+binary. It is a **transient toolchain crash, not a build defect**: the decisive
+evidence is that the same commit built cleanly on the sibling app's TestFlight lane
+at the same moment on the same runner image (`identity-wallet` green while
+`admin-companion` hit this), and both lanes compile the identical vendored swift-rs
+fork. First observed 2026-07-23 (Xcode 26.5, `macos-26-arm64` image `20260715.0248`,
+swift-rs 1.0.7). This is distinct from Bug 1 (the `sandbox_apply` `EPERM`, already
+fixed by `--disable-sandbox`); the sandbox is off — this is a crash *inside* the
+now-unsandboxed manifest link.
+
+**Workaround (in this repo):** the shared `_ipa` recipe in `just/ios.just` wraps
+`cargo tauri ios build` in a bounded retry (3 attempts) that re-runs **only** when the
+captured output matches a `clang` crash-by-signal signature (`Segmentation fault: 11`
+/ `linker command failed due to signal`). Any other failure — a real Rust/Swift
+compile error or a signing failure — does not match and still fails fast on the first
+attempt, so the retry cannot mask genuine breakage. Retries are cheap: cargo caches
+every unit compiled before swift-rs's build-script panic, so a retry re-runs just the
+manifest compile onward. Because the recipe is the shared build core, this covers both
+app lanes and the local `just <prefix>-release` escape hatch identically.
+
+**Reproduction:** non-deterministic — it cannot be forced. It surfaces intermittently
+on the `macos-26` TestFlight runners; a plain re-run of the failed lane clears it.
+
+**Upstream:** the Apple toolchain (`clang`/`swiftc`) shipped with Xcode 26 and/or
+SwiftPM's manifest-compilation step (note the manifest is linked for the
+`x86_64-apple-macosx14.0` host target on an arm64 runner). **Remove the `_ipa`
+retry loop once the crash stops recurring on the runner image / a fixed Xcode.**
