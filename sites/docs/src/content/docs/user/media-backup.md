@@ -1,18 +1,22 @@
 ---
-title: Backing up your media
-description: Keep your own verified copy of your photos and video in iCloud — the one backup that survives your server failing.
+title: Backing up your content
+description: Keep your own verified copy of your posts and media in iCloud — the one backup that survives your server failing.
 ---
 
-Your **media** — the photos and video attached to your posts, your avatar, your
-banner — lives on your server as files. Obsign can keep a second copy of those
-files that **you** hold, in your own iCloud Drive, so a server that loses your
-media isn't the end of the story.
+Your server holds two kinds of thing for you: your **posts** — the records, every
+post, like, follow, and profile edit — and your **media** — the photos and video
+attached to them, plus your avatar and banner. Obsign can keep a second copy of
+**both**, held by **you** in your own iCloud Drive, so a server that loses them —
+or goes away entirely — isn't the end of the story.
+
+Both are opt-in, per identity, and live side by side on the **Media backup**
+screen (reached from an identity's detail view).
 
 :::note[This is a different backup from your recovery key]
 The [2-of-3 Shamir backup](/user/backup/) protects the **key that proves who you
 are** — your way back in if you lose your phone. This page is about backing up
-**the media itself**. They defend different things: one protects *access*, the
-other protects *content*. You want both.
+**your content**. They defend different things: one protects *access*, the other
+protects *content*. You want both.
 :::
 
 ## Why hold your own copy
@@ -29,7 +33,7 @@ reference media by its **content address** — a hash of the bytes themselves �
 your copy is either exactly the file the post points at or it isn't; there is no
 "close enough."
 
-## Turning it on
+## Backing up your media
 
 Open an identity and choose **Back up media**. The backup is:
 
@@ -88,3 +92,23 @@ you've backed it up, Obsign instead falls back to your own copy: it verifies the
 backed-up file still matches its content address and uploads *that* to your new
 server. The substitution is exact, so a blob your old server dropped shrinks — and
 ideally empties — the move's loss list instead of forcing you to skip it.
+
+## Backing up your posts
+
+Your **posts** — the records themselves, every post, like, follow, and profile
+edit — are the one part of your account that otherwise lives only on your server.
+The same **Media backup** screen has a **Back up your posts** section that mirrors
+a full snapshot of your repository into your iCloud Drive.
+
+- **A snapshot, not a stream** — each backup captures your whole repository as it
+  stands, so the copy you hold is always a complete, self-contained record rather
+  than a pile of fragments.
+- **Integrity-checked before it's kept** — a snapshot is verified before it
+  replaces the last one, and if a freshly fetched copy fails the check the previous
+  good snapshot is left untouched. You are never left holding a corrupt backup.
+- **Yours to keep and to move** — the snapshot is a standard repository export you
+  can hold, inspect, and carry to another server, so the record of what you've
+  written stays with you no matter what happens to the server that hosted it.
+
+Together with your media backup, this means your whole presence — what you wrote
+and the images you attached — has a copy that you control.
