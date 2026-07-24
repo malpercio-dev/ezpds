@@ -17,6 +17,13 @@
 	header /.well-known/did.json Content-Type application/did+json
 	header /.well-known/atproto-did Content-Type "text/plain; charset=utf-8"
 
+	# Railway service healthcheck (path copied from the PDS services); answering
+	# it here means the service settings need no healthcheck exception.
+	handle /xrpc/_health {
+		header Content-Type application/json
+		respond `{"ok":true,"service":"didweb-rehearsal"}` 200
+	}
+
 	handle / {
 		respond "did:web rehearsal document host" 200
 	}
