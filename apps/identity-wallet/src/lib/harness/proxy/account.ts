@@ -80,6 +80,8 @@ export async function buildAccountProxyHandlers(
       };
       const advertised = {
         version: body.custos?.version ?? null,
+        // Proxy mode reaches a live host, so an answer here is always a reached answer.
+        reached: true,
         capabilities: body.custos?.capabilities ?? [],
       };
       state.pdsCapabilities = advertised;

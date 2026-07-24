@@ -209,9 +209,14 @@ pub enum DIDCeremonyError {
 }
 
 /// Subset of `GET /xrpc/com.atproto.server.describeServer` used internally.
+///
+/// `availableUserDomains` is optional in the lexicon, so its absence must not reject a
+/// response the wallet otherwise understands. The `custos` capability extension is read
+/// separately, through `pds_capabilities`, which owns the per-host cache.
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct DescribeServerResponse {
+    #[serde(default)]
     available_user_domains: Vec<String>,
 }
 

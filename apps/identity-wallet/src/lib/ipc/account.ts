@@ -276,6 +276,17 @@ export type PdsCapability =
 export type PdsCapabilities = {
   /** The host's self-reported Custos version, or null. Display only — never gate on it. */
   version: string | null;
+  /**
+   * Whether the host actually answered. False means it was never asked — unreachable,
+   * unparseable, or no PDS configured — so the empty `capabilities` below says nothing
+   * about the host.
+   *
+   * Most callers should ignore this: withholding an optional feature is the right response
+   * either way. Read it only when the UI would *tell the user something about their
+   * server*, where "advertises nothing" and "could not ask" are different claims and only
+   * the first is safe to state as fact.
+   */
+  reached: boolean;
   /** Capability names the host advertises. Empty for a non-Custos (or unreachable) host. */
   capabilities: PdsCapability[];
 };
@@ -286,8 +297,8 @@ export type PdsCapabilities = {
  *
  * Cached per host after the first probe. **Never rejects for an absent extension or an
  * unreachable host** — both report an empty `capabilities`, which means "offer nothing
- * host-gated", the safe way to degrade. Rejects with `PdsConfigError` only for a
- * malformed `pdsUrl`.
+ * host-gated", the safe way to degrade; they are told apart by `reached`. Rejects with
+ * `PdsConfigError` only for a malformed `pdsUrl`.
  */
 export const getPdsCapabilities = (pdsUrl?: string): Promise<PdsCapabilities> =>
   invoke('get_pds_capabilities', { pdsUrl: pdsUrl ?? null });
