@@ -1,0 +1,1 @@
+I tested with a fresh throwaway. I successfully migrated! However the wallet doesn't seem to be quite as functional post migration
