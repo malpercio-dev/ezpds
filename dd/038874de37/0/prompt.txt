@@ -1,0 +1,92 @@
+<task-notification>
+<task-id>a25aca69142a418f4</task-id>
+<tool-use-id>toolu_011JMNLU44CioEjdiqbX34py</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-jacob-zweifel-workspace-malpercio-dev-ezpds--claude-worktrees-exciting-ardinghelli-6e9eeb/ee686e48-6c83-4e5b-a0fa-53ae45617a1e/tasks/a25aca69142a418f4.output</output-file>
+<status>completed</status>
+<summary>Agent "Implementing Phase 7 (Tasks 1-4)" finished</summary>
+<note>A task-notification fires each time this agent stops with no live background children of its own. The user can send it another message and resume it, so the same task-id may notify more than once.</note>
+<result>Excellent! All checks pass. Let me create a summary of what was implemented:
+
+## Summary of Phase 7 Implementation
+
+All four tasks have been successfully completed and committed.
+
+### Task 1: Complete the fallback ladder + response buffer cap
+**Commit:** `5c44ca1e feat(pds): complete read-after-write best-effort fallback ladder + response cap`
+
+**Implementation:**
+- Added `MAX_MUNGE_RESPONSE_BODY` constant (10 MiB) to guard against unbounded buffering
+- Implemented two-layer cap checking: early bailout via `content_length()` if available, plus post-buffer size validation
+- Added three new integration tests:
+  - `test_pipethrough_munged_ac4_1_non_json_body_passthrough`: Verifies non-JSON upstream responses are passed through unchanged when JSON parse fails
+  - `test_pipethrough_munged_ac4_2_quote_post_with_failed_get_posts`: Tests quote-post degradation when AppView calls fail during munge
+  - `test_pipethrough_munged_ac4_4_no_lag_when_current`: Confirms no Atproto-Upstream-Lag header when repo is current (local.count == 0)
+
+**Fallback Ladder:** The complete ladder now handles all error paths:
+1. Upstream connection error → return error response
+2. Non-2xx upstream → return buffered original (except getPostThread 400 NotFound → reconstruct)
+3. JSON parse error → return buffered original untouched
+4. Empty LocalRecords (local.count == 0) → return buffered original with NO lag header
+5. Munge/hydration errors → log + return buffered original
+
+### Task 2: Fast-path regression assertion
+**Commit:** `5c44ca1e feat(pds): complete read-after-write best-effort fallback ladder + response cap` (included with Task 1)
+
+**Implementation:**
+- Added `test_non_munged_appbsky_nsid_streams_verbatim` to service_proxy.rs tests
+- Explicitly verifies that non-listed app.bsky.* NSIDs (e.g., `app.bsky.graph.getFollows`) stream through `proxy_xrpc` without buffering
+- Ensures the six munged NSIDs don't capture other app.bsky requests
+
+### Task 3: Bruno example requests
+**Commit:** `6d53a57a docs(bruno): add example requests for read-after-write endpoints`
+
+**Files Created:**
+- `bruno/app-bsky-feed-getTimeline.bru` (seq: 86)
+- `bruno/app-bsky-feed-getAuthorFeed.bru` (seq: 87)
+- `bruno/app-bsky-feed-getPostThread.bru` (seq: 88)
+- `bruno/app-bsky-feed-getActorLikes.bru` (seq: 89)
+- `bruno/app-bsky-actor-getProfile.bru` (seq: 90)
+- `bruno/app-bsky-actor-getProfiles.bru` (seq: 91)
+
+All files follow the existing Bruno naming conventions (dots→hyphens) and include descriptive documentation of the read-after-write behavior.
+
+**Verification:** `just bruno-check` confirms all 87 registered routes are covered with no stale requests.
+
+### Task 4: Documentation
+**Commit:** `98acdb2e docs(pds): document read_after_write module and config`
+
+**Changes:**
+- Updated "Last verified" date to 2026-07-03
+- Added `read_after_write/` module entry to Module Map
+- Created comprehensive `read_after_write/` section documenting:
+  - The six munged NSIDs and their purpose
+  - Record selection strategy via atproto-repo-rev + repo_seq
+  - Complete fallback ladder with all five error handling paths
+  - Response buffering cap (10 MiB) and early bailout logic
+  - Atproto-Upstream-Lag header behavior
+  - Submodule breakdown (mod.rs, munge/*.rs, viewer.rs, types.rs)
+  - Shared proxy_request extraction with fast path
+  - Configuration knobs (EZPDS_APPVIEW_URL, EZPDS_APPVIEW_DID, EZPDS_APPVIEW_CDN_URL)
+- Updated `service_proxy.rs` routes entry to mention:
+  - Dual path routing (six munged NSIDs → pipethrough_munged; others → proxy_xrpc)
+  - Fast vs. buffered distinction
+  - Shared proxy_request and mint_service_auth (now pub(crate))
+
+## Verification Results
+
+**All tests passing:** 1350/1350 tests pass
+- `cargo test -p pds --all-targets` ✓
+- `just bruno-check` ✓ (87 routes covered)
+- `cargo fmt --check` ✓
+- `cargo clippy -p pds --all-targets -- -D warnings` ✓
+
+**Git commits:**
+```
+98acdb2e docs(pds): document read_after_write module and config
+6d53a57a docs(bruno): add example requests for read-after-write endpoints
+5c44ca1e feat(pds): complete read-after-write best-effort fallback ladder + response cap
+```
+
+All four Phase 7 tasks completed successfully with comprehensive testing and documentation.</result>
+<usage><subagent_tokens>140498</subagent_tokens><tool_uses>81</tool_uses><duration_ms>695003</duration_ms></usage>
+</task-notification>
