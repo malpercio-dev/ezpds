@@ -180,7 +180,7 @@ pub async fn build_did_web_migration_document_cmd(
     methods.retain(|method| {
         method.get("id").and_then(serde_json::Value::as_str) != Some(&format!("{did}#device"))
     });
-    methods.push(serde_json::json!({"id": format!("{did}#device"), "type": "Multikey", "controller": did, "publicKeyMultibase": device.multibase}));
+    methods.push(serde_json::json!({"id": format!("{did}#device"), "type": "Multikey", "controller": did, "publicKeyMultibase": multibase(&device.key_id)}));
     methods.push(serde_json::json!({"id": format!("{did}#atproto"), "type": "Multikey", "controller": did, "publicKeyMultibase": multibase(&repo_key)}));
     let document = serde_json::json!({
         "@context": ["https://www.w3.org/ns/did/v1"],
