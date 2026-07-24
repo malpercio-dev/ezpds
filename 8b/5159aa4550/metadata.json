@@ -1,0 +1,27 @@
+{
+  "cli_version": "0.8.42",
+  "checkpoint_id": "8b5159aa4550",
+  "strategy": "manual-commit",
+  "branch": "serve-server-did-json",
+  "checkpoints_count": 1,
+  "files_touched": [
+    "crates/pds/src/request_host.rs",
+    "crates/pds/src/routes/did_json.rs"
+  ],
+  "sessions": [
+    {
+      "metadata": "/8b/5159aa4550/0/metadata.json",
+      "transcript": "/8b/5159aa4550/0/full.jsonl",
+      "compact_transcript": "/8b/5159aa4550/0/transcript.jsonl",
+      "content_hash": "/8b/5159aa4550/0/content_hash.txt",
+      "prompt": "/8b/5159aa4550/0/prompt.txt"
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 16,
+    "cache_creation_tokens": 13580,
+    "cache_read_tokens": 1694393,
+    "output_tokens": 6379,
+    "api_call_count": 9
+  }
+}
