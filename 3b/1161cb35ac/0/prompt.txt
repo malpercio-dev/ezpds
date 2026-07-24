@@ -1,0 +1,29 @@
+The change is in, I updated from testflight, ran the repoint operation
+
+---
+
+<task-notification>
+<task-id>b1wmt3p6i</task-id>
+<tool-use-id>toolu_01Sqyyj3iiUHiwAYmjV6EUwn</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-jacob-zweifel-workspace-malpercio-dev-ezpds/cead9993-b6df-435d-9881-b381a7fc7d57/tasks/b1wmt3p6i.output</output-file>
+<status>completed</status>
+<summary>Background command "Poll relay until it starts consuming from the new host" completed (exit code 0)</summary>
+</task-notification>
+
+---
+
+<task-notification>
+<task-id>b9v1wwbjg</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-jacob-zweifel-workspace-malpercio-dev-ezpds/cead9993-b6df-435d-9881-b381a7fc7d57/tasks/b9v1wwbjg.output</output-file>
+<status>failed</status>
+<summary>Background command "Poll relay for up to 15 minutes after requestCrawl" failed with exit code 1</summary>
+</task-notification>
+
+---
+
+Alright, I've successfully logged in with my malpercio.obsign.org account and liked a post
+
+---
+
+I've bound obsign.org to the marketing site. All other hosted accounts are taken down or deactivated and I don't plan on reverting either of those

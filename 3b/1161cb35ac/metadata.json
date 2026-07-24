@@ -1,0 +1,26 @@
+{
+  "cli_version": "0.8.42",
+  "checkpoint_id": "3b1161cb35ac",
+  "strategy": "manual-commit",
+  "branch": "apex-marketing-trueup",
+  "checkpoints_count": 5,
+  "files_touched": [
+    "changelog.d/apex-marketing.changed.md"
+  ],
+  "sessions": [
+    {
+      "metadata": "/3b/1161cb35ac/0/metadata.json",
+      "transcript": "/3b/1161cb35ac/0/full.jsonl",
+      "compact_transcript": "/3b/1161cb35ac/0/transcript.jsonl",
+      "content_hash": "/3b/1161cb35ac/0/content_hash.txt",
+      "prompt": "/3b/1161cb35ac/0/prompt.txt"
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 55,
+    "cache_creation_tokens": 23122,
+    "cache_read_tokens": 12570441,
+    "output_tokens": 17678,
+    "api_call_count": 29
+  }
+}
