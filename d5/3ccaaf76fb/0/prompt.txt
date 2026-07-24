@@ -1,0 +1,1 @@
+The change is in, I updated from testflight, ran the repoint operation
