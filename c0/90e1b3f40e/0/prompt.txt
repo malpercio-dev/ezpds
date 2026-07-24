@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>bu341jbhk</task-id>
+<tool-use-id>toolu_016TZAqzd3uWMFsZ4QnR1PZR</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-jacob-zweifel-workspace-malpercio-dev-ezpds/cead9993-b6df-435d-9881-b381a7fc7d57/tasks/bu341jbhk.output</output-file>
+<status>completed</status>
+<summary>Background command "Watch PR 410 checks, merge when green, sync clean main" completed (exit code 0)</summary>
+</task-notification>
