@@ -1,0 +1,80 @@
+Work on Linear issue MM-411:
+
+Suggested branch name: malpercio/mm-411-re-key-migration-move-existing-old-model-accounts-onto
+
+<issue identifier="MM-411">
+<title>Re-key migration: move existing (old-model) accounts onto client-generated shares + recovery rotation key</title>
+<description>
+Phase 2–3 bridge of <issue id="5ec229fb-5497-4ace-8295-ad2b83985a7a" href="https://linear.app/malpercio/issue/MM-405/key-recovery-from-shares-bind-the-escrowed-secret-and-build-the">MM-405</issue>. Design: `docs/design-plans/2026-07-17-key-recovery-from-shares.md` §7.
+
+Every pre-existing account carries the old model: a server-generated split of an unbound secret. Those shares protect nothing (the honest framing — they are *voided*, not rotated), and the material was server-visible at generation. Until re-key, such an account's only safety net is the device key itself.
+
+## Scoping (production-migration review, 2026-07-17)
+
+* **did:plc only.** A did:web identity has no PLC `rotationKeys` — its control model is domain/hosting control, so the recovery-rotation-key concept doesn't map. The detection must skip did:web identities entirely (no prompt, no error); share-based recovery for did:web is a separate design question, noted in the design doc's open questions.
+* **Wallet-native identities only.** Interop accounts migrated in via standard `createAccount` never entered the Shamir model (no `/v1/dids` ceremony, no shares) and manage their own rotation keys — nothing to re-key. They adopt the new model only if/when they adopt the wallet.
+* **Lazy by construction.** Only the device key can sign the re-key op, so there is no server-driven bulk migration and no deadline pressure: an un-re-keyed account is exactly as protected as it is today (device key only). The prompt appears on next wallet open, per DID.
+* **Additive-only safety property.** The device key stays at `rotationKeys[0]` through every step; shares are generated and locally persisted *before* the PLC op; escrow deposit follows it. A failure at any step leaves the account no less recoverable than the status quo, and resume converges to the same terminal state. There is no window in which the account is worse off.
+
+## Scope
+
+**Wallet:**
+
+* Detect the old model per identity: **did:plc** + authoritative [plc.directory](<http://plc.directory>) doc has no recovery key at `rotationKeys[1]` (2-key array = old model).
+* Prompt (calm, non-alarmist — this is an upgrade, not an incident) and run the re-key: generate seed + split client-side (envelope v2) → device-key-signed PLC rotation op inserting the recovery key at `[1]` (device stays `[0]`, PDS key shifts to `[2]`) → `PUT /v1/recovery/escrow-share` → rewrite Keychain `recovery-share-1` → walk the user through saving the new Share 3 (reuse `ShamirBackupScreen`).
+* After the op lands, trigger `refreshIdentity` so the PDS-side cached doc heals (the <issue id="d87c4698-7a8e-4373-92bb-64dffb8ec5d8" href="https://linear.app/malpercio/issue/MM-300/post-migrationrecovery-did-doc-cache-stores-the-w3c-document-home">MM-300</issue> class of staleness).
+* Resumable at every step (PLC op landed but escrow not deposited, etc. — persist progress like the migration orchestrator does).
+* Multi-identity wallets: per-DID, not per-app.
+
+**PDS:**
+
+* On successful escrow deposit for a DID with a legacy `accounts.recovery_share`, null the legacy column (it's dead material).
+* Once fleet adoption allows, a follow-up migration drops `accounts.recovery_share` entirely (tracked here; can ship later).
+
+## Acceptance
+
+* Old-model did:plc identity in the harness: full re-key ends with 3 rotation keys on the doc, envelope-v2 escrow row, legacy column NULL, old Keychain share overwritten.
+* A did:web identity and a new-model identity never see the prompt.
+* Interrupt-and-resume at each step lands in the same terminal state; at no intermediate state is recovery capability below the pre-re-key baseline.
+* `plc_monitor` treats the wallet's own re-key op as authorized (signed by the device key — should already hold, but assert it: the re-key must not trigger a tamper alert).
+</description>
+<team name="Mal's Machinations"/>
+<label>Mobile: Identity Wallet</label>
+<label>Security</label>
+<label>Wave 3: Key Sovereignty</label>
+<project name="ezpds">An easy-to-host PDS on the ATProtocol, MacOS. Grandma-approved.</project>
+<parent-issue identifier="MM-405">
+<id>5ec229fb-5497-4ace-8295-ad2b83985a7a</id>
+<title>Key recovery from shares — bind the escrowed secret and build the recovery ceremony (epic)</title>
+<description>
+Umbrella for the design captured in `docs/design-plans/2026-07-17-key-recovery-from-shares.md` (branch `claude/key-recovery-shares-l0n8zm`).
+
+## The gap
+
+The as-built 2-of-3 Shamir split recovers **nothing**: the secret is a fresh random 32 bytes generated *server-side* in `create_did.rs`, bound to no rotation key and encrypting nothing. The Secure-Enclave device key was never splittable (non-extractable), so recovery must ride a separate software key — which doesn't exist. Compounding it: the escrow agent (Custos) saw the secret and all three shares at ceremony time, and `pending_accounts.pending_share_{1,2,3}` puts full reconstruction material into Litestream backups. ADR-0001, the docs site (`user/backup.md`), and the V046 admin-repair doctrine all promise a ceremony that doesn't exist. The passwordless plan (<issue id="ff3e493f-009c-4211-b4de-4ed9a2e7d1a4" href="https://linear.app/malpercio/issue/MM-312/passwordless-auth-retire-the-account-password-in-favor-of-device">MM-312</issue>) names this its **hard prerequisite**.
+
+## The design, in one paragraph
+
+The secret becomes a **recovery seed**: HKDF-derive a P-256 keypair from it and place its did:key in `rotationKeys` as `[device, recovery, PDS]` (3 of PLC's 5 key slots; device stays supreme so a share-collecting operator can never outrank the enclave — the 72h override backstop). Generation moves **client-side** (the wallet already links `crates/crypto`), so the server only ever holds Share 2. Reconstruction is verifiable against the public DID doc, and — because `/v1/sessions/sovereign` accepts any current rotation key — a recovered wallet can authenticate passwordlessly before the key-replacement PLC op even lands. Two ceremonies: **escrow-assisted** (Share 1 iCloud + Share 2 released via email OTP behind rate limits/audit/cancellable delay) and **fully sovereign** (Share 1 + Share 3, zero server involvement, composing with ADR-0002 migration for credible exit).
+
+## Child issues (dependency order)
+
+1. Crypto primitives: share envelope v2 + seed-derived recovery keypair + multi-rotation-key genesis builder
+2. Ceremony inversion: client-side share generation, recovery key in genesis, single-share escrow (+ ordering ADR)
+3. PDS escrow storage: `recovery_escrow` table, KEK wrapping (absorbs <issue id="619eda03-07be-4705-aee4-39e12cdaf0f8" href="https://linear.app/malpercio/issue/MM-378/kek-wrap-the-escrow-shamir-share-accountsrecovery-share-at-rest">MM-378</issue>), owner endpoints, audit trail
+4. PDS escrow release: initiate/release/cancel with email OTP, delay window, rate limits
+5. Wallet recovery ceremony: both paths + re-anchor + share-rotation epilogue
+6. Re-key migration for existing (old-model) accounts
+7. Docs truth-up (immediately actionable — current docs claim untrue things)
+</description>
+</parent-issue>
+<issue-relations>
+<blocked-by>
+<issue-ref identifier="MM-408" title="PDS escrow storage: recovery_escrow table, KEK wrapping, owner endpoints, audit trail"/>
+<issue-ref identifier="MM-407" title="Ceremony inversion: client-side share generation, recovery key in genesis rotationKeys, single-share escrow"/>
+</blocked-by>
+<related><issue-ref identifier="MM-378" title="KEK-wrap the escrow Shamir share (accounts.recovery_share) at rest"/></related>
+</issue-relations>
+</issue>
+
+Open a pr linked to the linear issue when complete
