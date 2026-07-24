@@ -1,0 +1,28 @@
+<task-notification>
+<task-id>a5504d3e95aa96473</task-id>
+<tool-use-id>toolu_01LZUFDgCnjdqJ8XJUjUVi1o</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-jacob-zweifel-workspace-malpercio-dev-ezpds--claude-worktrees-exciting-ardinghelli-6e9eeb/ee686e48-6c83-4e5b-a0fa-53ae45617a1e/tasks/a5504d3e95aa96473.output</output-file>
+<status>completed</status>
+<summary>Agent "Updating project context after read-after-write" finished</summary>
+<note>A task-notification fires each time this agent stops with no live background children of its own. The user can send it another message and resume it, so the same task-id may notify more than once.</note>
+<result>## Context File Maintenance Report
+
+### Format Detected
+- Repository uses: **AGENTS.md-canonical** (root `AGENTS.md` with content; root `CLAUDE.md` is the companion `@AGENTS.md` pointer). Domain-level context files under `crates/` use `CLAUDE.md` (which is the pre-existing convention here — no companion `AGENTS.md` exists at those paths, so I did not introduce one).
+
+### Changes Analyzed
+- Files changed: 16 (base `09c6c04b` → HEAD `3f71eda9`)
+- Contract changes detected: **Yes** — one new `pub` DB query function; new crate-root module; a config knob; two functions promoted to `pub(crate)`.
+
+### Context File Updates
+- `/Users/jacob.zweifel/workspace/malpercio-dev/ezpds/.claude/worktrees/exciting-ardinghelli-6e9eeb/crates/pds/src/db/CLAUDE.md`: Added `recent_commits_for_did(did, limit)` to the `firehose_seq.rs` entry (it was the one new public query the file's function enumeration was missing), extended its "Consumed by" clause to include `read_after_write/` (via `get_records_since_rev`), and refreshed the freshness date `2026-03-25` → `2026-07-03`. Committed as `08cde61a`.
+
+### No Updates Needed (verified against code)
+- `crates/pds/CLAUDE.md` — **already accurate.** Verified every relevant claim against the code: the `read_after_write/` Module Map row and full section (six munged NSIDs, fallback ladder, 10 MiB buffer cap, `Atproto-Upstream-Lag` header, the `mod.rs`/`munge.rs`/`viewer.rs`/`types.rs` table); `munge.rs` is a single file (confirmed — not `munge/*.rs`); the AppView DID default `did:web:api.bsky.app#bsky_appview` (confirmed in `config.rs`); the `[appview] cdn_url` / `EZPDS_APPVIEW_CDN_URL` default `https://cdn.bsky.app` (confirmed); `service_proxy.rs` shares `proxy_request` and `mint_service_auth` is `pub(crate)` (both confirmed at lines 51/241); the `service_proxy.rs` routes row already describes the six-NSID buffered split. No changes made — re-documenting would duplicate.
+- **Root `AGENTS.md`** — no update. Read-after-write is a PDS-internal detail; the root correctly delegates all PDS specifics to `crates/pds/CLAUDE.md`. The six new `bruno/*.bru` files are covered by the existing standing "Bruno API Collection" convention (no per-route enumeration in root). "CDN" appears in root only in the unrelated font/CI context.
+- `crates/common` — no context file exists there, and the `cdn_url` config addition is already documented at its point of use in `crates/pds/CLAUDE.md`. Consistent with the existing pattern (root AGENTS.md does not enumerate individual config knobs), so none created.
+
+### Human Review Recommended
+- None. All contract changes were verified directly against the code.</result>
+<usage><subagent_tokens>107405</subagent_tokens><tool_uses>19</tool_uses><duration_ms>107002</duration_ms></usage>
+</task-notification>
