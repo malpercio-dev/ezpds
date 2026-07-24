@@ -1,0 +1,1 @@
+Ah, I fired up the sleeping stg deploy and I think I got it. Linear already has some issues for allowing key rotation, check it and see if it matches your expectations
