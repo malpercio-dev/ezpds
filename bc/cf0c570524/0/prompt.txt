@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>byo0vspmu</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-jacob-zweifel-workspace-malpercio-dev-ezpds/0358c4eb-9759-45c9-b431-6ff75866f75b/tasks/byo0vspmu.output</output-file>
+<status>completed</status>
+<summary>Background command "Wait for PR 350 checks to complete" completed (exit code 0)</summary>
+</task-notification>
