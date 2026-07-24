@@ -1551,6 +1551,88 @@ async fn ensure_sovereign_session_persisted(
         .map_err(map_sovereign_error)
 }
 
+/// Ensure a migrated did:web identity has a durably persisted destination session.
+///
+/// A did:web account has no PLC rotation keys, so the sovereign mint
+/// (`/v1/sessions/sovereign`, rotation-key-signed) is unavailable to it. The
+/// Bearer session the destination issued during the migration is the account's
+/// only credential — this persists that pair to the Keychain so it survives the
+/// app process, and it must succeed *before* the source is deactivated.
+///
+/// Idempotency mirrors `ensure_sovereign_session_persisted`: an existing record
+/// whose refresh token is still unexpired is left untouched, so a resumed
+/// finalize never clobbers a durable credential with a possibly-staler one.
+async fn ensure_didweb_session_persisted(
+    store: &crate::identity_store::IdentityStore,
+    did: &str,
+    dest_client: &OAuthClient,
+    dest_pds_url: &str,
+    dest_server_did: &str,
+    now: i64,
+) -> Result<(), MigrationError> {
+    if let Some(record) =
+        store
+            .load_oauth_tokens(did)
+            .map_err(|e| MigrationError::SessionPersistFailed {
+                message: e.to_string(),
+            })?
+    {
+        if record
+            .refresh_expires_at
+            .is_some_and(|exp| (exp as i64) > now)
+        {
+            tracing::info!(did = %did, "did:web session already persisted; skipping");
+            return Ok(());
+        }
+    }
+
+    let (access_jwt, refresh_jwt) = dest_client.session_tokens();
+    let access_claims = crate::sovereign_session::bearer_jwt_claims(&access_jwt).ok_or(
+        MigrationError::SessionPersistFailed {
+            message: "destination access token is not a readable JWT".into(),
+        },
+    )?;
+    let refresh_claims = crate::sovereign_session::bearer_jwt_claims(&refresh_jwt).ok_or(
+        MigrationError::SessionPersistFailed {
+            message: "destination refresh token is not a readable JWT".into(),
+        },
+    )?;
+    for claims in [&access_claims, &refresh_claims] {
+        if claims.sub != did {
+            return Err(MigrationError::SessionPersistFailed {
+                message: "destination session subject does not match the migrated DID".into(),
+            });
+        }
+        if !crate::sovereign_session::audience_matches_server(
+            &claims.aud,
+            dest_server_did,
+            dest_pds_url,
+        ) {
+            return Err(MigrationError::SessionPersistFailed {
+                message: "destination session audience does not match the destination PDS".into(),
+            });
+        }
+    }
+
+    let record = crate::identity_store::SovereignTokenRecord {
+        version: crate::identity_store::SovereignTokenRecord::VERSION,
+        access_jwt,
+        refresh_jwt,
+        pds_url: dest_pds_url.trim_end_matches('/').to_string(),
+        server_did: dest_server_did.to_string(),
+        access_expires_at: Some(access_claims.exp),
+        refresh_expires_at: Some(refresh_claims.exp),
+        stored_at: u64::try_from(now).map_err(|_| MigrationError::SessionPersistFailed {
+            message: "system clock is before the Unix epoch".into(),
+        })?,
+    };
+    store
+        .store_oauth_tokens(did, &record)
+        .map_err(|e| MigrationError::SessionPersistFailed {
+            message: e.to_string(),
+        })
+}
+
 /// Tauri command: run the safe cutover — activate the destination, mint + persist its
 /// sovereign session, deactivate the source, then advance to Finalized.
 ///
@@ -1569,6 +1651,47 @@ pub async fn finalize_migration(
 
     // Proof material for the sovereign-session mint (imperative shell: clock + RNG).
     let now = crate::sovereign_session::unix_timestamp().map_err(map_sovereign_error)?;
+
+    // A did:web identity has no PLC rotation keys, so the sovereign mint is impossible for it;
+    // persist the migration-issued destination Bearer session instead. Snapshot the destination
+    // coordinates up front — the closure runs after `finalize_migration_core`'s own phase/client
+    // gates, so a missing client here surfaces through those gates, never through the closure.
+    if did.starts_with("did:web:") {
+        let (dest_client, dest_pds_url, dest_server_did) = {
+            let orchestration = state.orchestration_state.lock().await;
+            match orchestration.as_ref() {
+                Some(mig) => (
+                    mig.dest_client.clone(),
+                    mig.dest_pds_url.clone(),
+                    mig.dest_did.clone(),
+                ),
+                None => (None, String::new(), String::new()),
+            }
+        };
+        let session_did = did.clone();
+        return finalize_migration_core(
+            &state.orchestration_state,
+            &state.migration_state,
+            &did,
+            || async move {
+                let dest_client =
+                    dest_client.ok_or_else(|| MigrationError::AccountCreationFailed {
+                        message: "destination client not authenticated".into(),
+                    })?;
+                ensure_didweb_session_persisted(
+                    &crate::identity_store::IdentityStore,
+                    &session_did,
+                    &dest_client,
+                    &dest_pds_url,
+                    &dest_server_did,
+                    now,
+                )
+                .await
+            },
+        )
+        .await;
+    }
+
     let nonce = crate::sovereign_session::fresh_nonce();
     let pds_client = state.pds_client();
     let session_did = did.clone();
@@ -3605,6 +3728,167 @@ mod tests {
         // The pre-existing record is untouched.
         let loaded = store.load_oauth_tokens(did).unwrap().unwrap();
         assert_eq!(loaded.refresh_jwt, "refresh");
+
+        let _ = store.remove_identity(did);
+    }
+
+    /// A JWT carrying the full claim set `ensure_didweb_session_persisted` validates.
+    fn make_session_jwt(sub: &str, aud: &str, exp: u64) -> String {
+        use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+        use base64::Engine;
+        let header = URL_SAFE_NO_PAD.encode(r#"{"alg":"ES256"}"#);
+        let payload = URL_SAFE_NO_PAD.encode(format!(
+            r#"{{"exp":{},"sub":"{}","aud":"{}"}}"#,
+            exp, sub, aud
+        ));
+        format!("{}.{}.sig", header, payload)
+    }
+
+    // Happy path: the destination Bearer pair is validated (sub == did, aud == destination)
+    // and persisted with the claim-derived expiries. No network, no signature.
+    #[tokio::test]
+    async fn test_ensure_didweb_session_persisted_stores_bearer_pair() {
+        let did = "did:web:rehearsal.example";
+        crate::keychain::clear_for_test();
+        let store = crate::identity_store::IdentityStore;
+        store.add_identity(did).unwrap();
+
+        let access = make_session_jwt(did, "did:web:pds.example", 9_000);
+        let refresh = make_session_jwt(did, "did:web:pds.example", 20_000);
+        let client = OAuthClient::new_bearer(
+            access.clone(),
+            refresh.clone(),
+            "https://pds.example".into(),
+        )
+        .unwrap();
+
+        ensure_didweb_session_persisted(
+            &store,
+            did,
+            &client,
+            "https://pds.example/",
+            "did:web:pds.example",
+            1_000,
+        )
+        .await
+        .expect("valid pair persists");
+
+        let record = store.load_oauth_tokens(did).unwrap().unwrap();
+        assert_eq!(record.access_jwt, access);
+        assert_eq!(record.refresh_jwt, refresh);
+        assert_eq!(
+            record.pds_url, "https://pds.example",
+            "trailing slash trimmed"
+        );
+        assert_eq!(record.server_did, "did:web:pds.example");
+        assert_eq!(record.access_expires_at, Some(9_000));
+        assert_eq!(record.refresh_expires_at, Some(20_000));
+
+        let _ = store.remove_identity(did);
+    }
+
+    // Idempotency: an existing record with an unexpired refresh token short-circuits before any
+    // token validation — proven by handing a client whose tokens would FAIL validation (wrong sub)
+    // and still getting Ok with the original record intact.
+    #[tokio::test]
+    async fn test_ensure_didweb_session_persisted_skips_when_valid_record_exists() {
+        let did = "did:web:rehearsal.example";
+        crate::keychain::clear_for_test();
+        let store = crate::identity_store::IdentityStore;
+        store.add_identity(did).unwrap();
+
+        let now = 1_000i64;
+        let record = crate::identity_store::SovereignTokenRecord {
+            version: crate::identity_store::SovereignTokenRecord::VERSION,
+            access_jwt: "access".into(),
+            refresh_jwt: "refresh".into(),
+            pds_url: "https://pds.example".into(),
+            server_did: "did:web:pds.example".into(),
+            access_expires_at: Some(9_999),
+            refresh_expires_at: Some(9_999), // well beyond `now`
+            stored_at: now as u64,
+        };
+        store.store_oauth_tokens(did, &record).unwrap();
+
+        let wrong = make_session_jwt("did:web:someone.else", "did:web:pds.example", 9_000);
+        let client =
+            OAuthClient::new_bearer(wrong.clone(), wrong, "https://pds.example".into()).unwrap();
+
+        ensure_didweb_session_persisted(
+            &store,
+            did,
+            &client,
+            "https://pds.example",
+            "did:web:pds.example",
+            now,
+        )
+        .await
+        .expect("valid persisted session → skip without validating the client pair");
+
+        let loaded = store.load_oauth_tokens(did).unwrap().unwrap();
+        assert_eq!(loaded.refresh_jwt, "refresh", "original record untouched");
+
+        let _ = store.remove_identity(did);
+    }
+
+    // A session pair whose subject is not the migrated DID must never be persisted under it.
+    #[tokio::test]
+    async fn test_ensure_didweb_session_persisted_rejects_sub_mismatch() {
+        let did = "did:web:rehearsal.example";
+        crate::keychain::clear_for_test();
+        let store = crate::identity_store::IdentityStore;
+        store.add_identity(did).unwrap();
+
+        let wrong = make_session_jwt("did:web:someone.else", "did:web:pds.example", 9_000);
+        let client =
+            OAuthClient::new_bearer(wrong.clone(), wrong, "https://pds.example".into()).unwrap();
+
+        let result = ensure_didweb_session_persisted(
+            &store,
+            did,
+            &client,
+            "https://pds.example",
+            "did:web:pds.example",
+            1_000,
+        )
+        .await;
+        assert!(matches!(
+            result,
+            Err(MigrationError::SessionPersistFailed { .. })
+        ));
+        assert!(store.load_oauth_tokens(did).unwrap().is_none());
+
+        let _ = store.remove_identity(did);
+    }
+
+    // A session pair minted for a different server (audience mismatch on both the server DID and
+    // the PDS URL) is refused.
+    #[tokio::test]
+    async fn test_ensure_didweb_session_persisted_rejects_aud_mismatch() {
+        let did = "did:web:rehearsal.example";
+        crate::keychain::clear_for_test();
+        let store = crate::identity_store::IdentityStore;
+        store.add_identity(did).unwrap();
+
+        let foreign = make_session_jwt(did, "did:web:other-server.example", 9_000);
+        let client =
+            OAuthClient::new_bearer(foreign.clone(), foreign, "https://pds.example".into())
+                .unwrap();
+
+        let result = ensure_didweb_session_persisted(
+            &store,
+            did,
+            &client,
+            "https://pds.example",
+            "did:web:pds.example",
+            1_000,
+        )
+        .await;
+        assert!(matches!(
+            result,
+            Err(MigrationError::SessionPersistFailed { .. })
+        ));
+        assert!(store.load_oauth_tokens(did).unwrap().is_none());
 
         let _ = store.remove_identity(did);
     }
