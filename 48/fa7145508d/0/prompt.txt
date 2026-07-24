@@ -1,0 +1,1 @@
+Excellent. One more thing. I was successfully able to install and run the app on my phone. When I go through the onboarding flow, eventually it asks me to log in to the relay (currently hosted at https://ezpds-staging.up.railway.app). After I successfully log in, the browser attempts to redirect back to the app, but "Something went wrong. The application could not be opened.".
