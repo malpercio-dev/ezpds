@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>b02d5sac7</task-id>
+<tool-use-id>toolu_013BZ7kcaRoKxZaaAyEGfTpR</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-jacob-zweifel-workspace-malpercio-dev-ezpds/00ef4afd-87f5-4f84-908b-60302e7f879a/tasks/b02d5sac7.output</output-file>
+<status>completed</status>
+<summary>Background command "Watch PR 191 for merge" completed (exit code 0)</summary>
+</task-notification>
