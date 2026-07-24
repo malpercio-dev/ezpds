@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>bmu1uvvfd</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-jacob-zweifel-workspace-malpercio-dev-ezpds/00ef4afd-87f5-4f84-908b-60302e7f879a/tasks/bmu1uvvfd.output</output-file>
+<status>completed</status>
+<summary>Background command "Watch production for the v0.4.4 deploy" completed (exit code 0)</summary>
+</task-notification>
