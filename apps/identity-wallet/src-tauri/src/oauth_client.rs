@@ -136,6 +136,17 @@ impl OAuthClient {
         })
     }
 
+    /// Snapshot the current session token pair (access, refresh).
+    ///
+    /// Reads the live session state, so a pair rotated by a transparent refresh is returned
+    /// rather than the construction-time snapshot. Used by the migration finalize path to
+    /// persist the destination Bearer session for a did:web identity, which has no PLC
+    /// rotation keys to mint a sovereign session with.
+    pub fn session_tokens(&self) -> (String, String) {
+        let session = self.session.lock().unwrap();
+        (session.access_token.clone(), session.refresh_token.clone())
+    }
+
     /// GET `{base_url}/{path}` with DPoP authentication.
     pub async fn get(&self, path: &str) -> Result<Response, OAuthError> {
         let url = format!("{}/{}", self.base_url, path.trim_start_matches('/'));

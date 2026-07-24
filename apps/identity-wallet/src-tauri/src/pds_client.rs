@@ -749,7 +749,19 @@ impl PdsClient {
         &self,
         did: &str,
     ) -> Result<(String, PlcDidDocument), PdsClientError> {
-        let url = format!("{}/{}", self.plc_directory_url, did);
+        // A did:web document lives at the domain itself, not plc.directory. Hostname-form
+        // identifiers only (the shape the wallet composes): a colon would smuggle a port or
+        // path segment into the URL, so those shapes are refused rather than misresolved.
+        let url = if let Some(host) = did.strip_prefix("did:web:") {
+            if host.is_empty() || host.contains([':', '/', '@']) {
+                return Err(PdsClientError::InvalidResponse {
+                    message: "unsupported did:web identifier".to_string(),
+                });
+            }
+            format!("https://{}/.well-known/did.json", host.to_ascii_lowercase())
+        } else {
+            format!("{}/{}", self.plc_directory_url, did)
+        };
 
         // Fetch the DID document from plc.directory
         let response = self.client.get(&url).send().await.map_err(|e| {
