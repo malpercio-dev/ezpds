@@ -425,12 +425,19 @@ impl W3cDidDocument {
             }
         }
 
-        // Convert service array to HashMap keyed by id (strip leading '#')
+        // Convert service array to HashMap keyed by the id's fragment. Like the
+        // verification-method ids above, service ids come in both W3C forms:
+        // plc.directory serves the bare fragment ("#atproto_pds") while a did:web
+        // document typically carries the absolute form ("did:web:host#atproto_pds").
         let services = self
             .service
             .into_iter()
             .map(|svc| {
-                let key = svc.id.strip_prefix('#').unwrap_or(&svc.id).to_string();
+                let key = svc
+                    .id
+                    .rsplit_once('#')
+                    .map(|(_, name)| name.to_string())
+                    .unwrap_or_else(|| svc.id.clone());
                 let plc_svc = PlcService {
                     service_type: svc.service_type,
                     endpoint: svc.service_endpoint,
@@ -2537,6 +2544,49 @@ mod tests {
         assert!(doc.services.contains_key("atproto_pds"));
         // verificationMethod array converted to { "atproto": "zQ3test1" }
         assert_eq!(doc.verification_methods["atproto"], "zQ3test1");
+    }
+
+    // A did:web document carries absolute-form ids ("did:web:host#atproto_pds"), unlike
+    // plc.directory's bare fragments ("#atproto_pds"). Both must key the services map by
+    // the fragment alone, or `discover_pds` reports "missing atproto_pds service" for a
+    // perfectly valid did:web document.
+    #[test]
+    fn test_into_plc_doc_keys_services_by_fragment_for_absolute_ids() {
+        let did = "did:web:rehearsal.example";
+        let w3c_doc: W3cDidDocument = serde_json::from_value(serde_json::json!({
+            "@context": ["https://www.w3.org/ns/did/v1"],
+            "id": did,
+            "alsoKnownAs": ["at://rehearsal.example"],
+            "verificationMethod": [
+                {
+                    "id": format!("{did}#device"),
+                    "type": "Multikey",
+                    "controller": did,
+                    "publicKeyMultibase": "zDnaDevice"
+                },
+                {
+                    "id": format!("{did}#atproto"),
+                    "type": "Multikey",
+                    "controller": did,
+                    "publicKeyMultibase": "zDnaRepo"
+                }
+            ],
+            "service": [{
+                "id": format!("{did}#atproto_pds"),
+                "type": "AtprotoPersonalDataServer",
+                "serviceEndpoint": "https://pds.example"
+            }]
+        }))
+        .expect("document deserializes");
+
+        let doc = w3c_doc.into_plc_doc();
+        let pds = doc
+            .services
+            .get("atproto_pds")
+            .expect("service keyed by fragment, not the absolute id");
+        assert_eq!(pds.endpoint, "https://pds.example");
+        assert_eq!(doc.verification_methods["atproto"], "zDnaRepo");
+        assert_eq!(doc.verification_methods["device"], "zDnaDevice");
     }
 
     /// DID_NOT_FOUND error when plc.directory returns 404
