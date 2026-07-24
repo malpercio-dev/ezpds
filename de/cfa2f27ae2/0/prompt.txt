@@ -1,0 +1,88 @@
+<task-notification>
+<task-id>a25ef062425826f27</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-jacob-zweifel-workspace-malpercio-dev-ezpds--claude-worktrees-exciting-ardinghelli-6e9eeb/ee686e48-6c83-4e5b-a0fa-53ae45617a1e/tasks/a25ef062425826f27.output</output-file>
+<status>completed</status>
+<summary>Agent "Reviewing Phase 2 rev-faithful selection" finished</summary>
+<note>A task-notification fires each time this agent stops with no live background children of its own. The user can send it another message and resume it, so the same task-id may notify more than once.</note>
+<result>All verification evidence gathered. Task 1 is complete and well-tested. Task 2 has a critical coverage gap plus a correctness bug in the untested path. Let me compile the structured review.
+
+# Code Review: Read-After-Write Phase 2 — Rev-faithful LocalRecords selection
+
+## Status
+**CHANGES REQUIRED**
+
+## Issue Summary
+**Critical: 2 | Important: 1 | Minor: 1**
+
+## Verification Evidence
+```
+Tests (read_after_write): cargo test -p pds ... read_after_write
+  → 6 passed; 0 failed (5 in read_after_write::tests + 1 service_proxy)
+Tests (Task 1 query):     cargo test -p pds ... db::firehose_seq::tests::recent_commits
+  → 3 passed; 0 failed
+Build:   cargo build -p pds → compiles (pre-verified, re-confirmed via test compile)
+Clippy:  cargo clippy -p pds --all-targets -- -D warnings → CLEAN (pre-verified)
+```
+Run from the main checkout's devenv against the worktree manifest (`--manifest-path .../exciting-ardinghelli-6e9eeb/Cargo.toml`, sandbox disabled for the nix daemon socket).
+
+## Plan Alignment
+
+### Implemented Requirements
+- Task 1 — `recent_commits_for_did(db, did, limit)` in `db/firehose_seq.rs`: ✓ (DID-scoped, `event_type='commit'`, `ORDER BY seq DESC LIMIT ?`, reuses `StoredEventRow`)
+- Task 1 — 3 unit tests (newest-first, limit, nonexistent-DID): ✓ pass
+- Task 2 — `get_records_since_rev` present with None-guard, decode+walk, rev cutoff, single repo-open, MST re-read, delete-skip, profile/post bucketing: ✓ (code exists and compiles)
+- Task 2 — `local_lag_ms` helper: ✓ (correct in isolation, tested)
+- Task 2 — **AC5.1/AC5.2/AC5.3 tests: ✗ MISSING** (see Critical #1)
+- Task 2 — per-key `indexed_at = kept CommitEvent.time`: ✗ **deviates** (see Critical #2)
+
+### Deviations from Plan
+- **Problematic:** `indexed_at` is not the per-key commit time the plan specifies. See Critical #2.
+- **Problematic:** The three required selection tests were not written. See Critical #1.
+
+## Critical Issues (count: 2)
+
+### Critical #1 — Required AC5.1/AC5.2/AC5.3 tests are absent; the core selection path is entirely untested
+- **Issue:** The plan's Task 2 Testing block mandates three tests that exercise `get_records_since_rev` (AC5.1 bucketed selection with rev-cutoff exclusion, AC5.2 create-then-delete absence, AC5.3 `header_rev = None` ⇒ empty). None exist. `grep` finds exactly one reference to `get_records_since_rev` in the crate — its own definition at line 31. The function has zero callers (hence the `#[allow(dead_code)]`), so no test and no production code drives it.
+- **Location:** `crates/pds/src/read_after_write/mod.rs` — `mod tests` at line 273 contains only 5 tests, all targeting `local_lag_ms`/`RecordDescript`/`LocalRecords` shape; none call `get_records_since_rev`.
+- **Impact:** Functionality shipped without its required verification. The rev cutoff, distinct-key collection, single repo-open + per-key MST re-read, delete-skip, CID derivation, and bucketing are all unverified against real `repo_seq` data. This is exactly where Critical #2 hides.
+- **Fix:** Add the three integration tests using `seed_account_with_repo` + real record writes via `app(state).oneshot(...)` (helpers confirmed available in `routes::test_utils`), capturing the repo rev before/after writes to synthesize `header_rev`, per plan lines 127–130.
+
+### Critical #2 — `indexed_at` is stamped with a single global commit time, not each record's own commit time
+- **Issue:** The plan requires collecting "the newest `CommitEvent.time` seen per key" (phase_02.md line 98–99) and setting `indexed_at = the kept CommitEvent.time` (line 107). The implementation instead captures one global `kept_time` = the time of the newest commit in the walk (mod.rs lines 79–81, set only `if kept_time.is_none()`), and applies that same value to **every** record (line 143: `let indexed_at = kept_time.clone().unwrap_or_default();`). The `touched` map stores `event.rev` as its value and never the per-key time, so per-record time is not tracked at all.
+- **Location:** `crates/pds/src/read_after_write/mod.rs:51`, `:79-81`, `:143`.
+- **Impact:** All merged records share one timestamp (the newest commit's). This corrupts `indexedAt` for feed ordering (AC5.1's downstream munges) and defeats AC4.3's contract — `local_lag_ms` is documented and tested as "milliseconds since the **oldest** merged record's indexed_at," but on real data every record is identical, so the lag reflects the newest commit rather than the oldest write. It only appears correct in the hand-built `local_lag_ms` unit tests (which set distinct timestamps manually); the real production path can never produce the intended distinction. A record deleted in the newest commit but re-read from an older commit would also mis-stamp.
+- **Fix:** Track the newest `CommitEvent.time` per `(collection, rkey)` in the `touched` map (e.g. store a small struct or `(rev, time)` and, since you walk newest-first, keep the first-seen time for each key). Use that per-key time as the record's `indexed_at` instead of the global `kept_time`.
+
+## Important Issues (count: 1)
+
+### Important #1 — Redundant second MST lookup for the CID; the op `cid` is discarded
+- **Issue:** For each touched key the code calls `get_record_json` and then a separate `get_record_cid` (mod.rs lines 122 and 133) — two MST traversals per record. The plan explicitly notes the op `cid` from the decoded `RepoOp` is available (`RepoOp.cid: Option&lt;String&gt;`, and `op.at_uri(did)` helpers already exist in `firehose.rs`), and suggests re-deriving via `get_record_cid` only as the "simplest" option. The current code collects neither the op cid nor a combined read.
+- **Location:** `crates/pds/src/read_after_write/mod.rs:122-140`.
+- **Impact:** Two tree lookups where one suffices; on a burst of unindexed writes this doubles MST reads per record. Not a correctness bug (both reads hit the same opened repo), but wasteful on the hot read-after-write path.
+- **Fix:** Either derive the CID from the value read once, or (preferred per plan) keep the op `cid` alongside the per-key time when populating `touched`, and skip the second lookup. If you keep `get_record_cid`, note the `Ok(None)` arm at line 135 is effectively dead (a value that just read as `Some` at line 123 will have a CID), so it is defensive-only.
+
+## Minor Issues (count: 1)
+
+### Minor #1 — `touched` map value (`event.rev`) is stored but never read
+- **Issue:** `touched: HashMap&lt;(String, String), String&gt;` stores `event.rev` (mod.rs line 51, inserted line 78) but nothing ever reads the value — the map is only iterated by `.keys()` at line 120. The rev is dead payload; a `HashSet&lt;(String, String)&gt;` would express intent. (This overlaps with the Critical #2 fix, which will repurpose the value to carry per-key time — so fold it into that change rather than fixing separately.)
+- **Location:** `crates/pds/src/read_after_write/mod.rs:51`, `:120`.
+
+## Skills Applied
+- `coding-effectively` (FCIS): `mod.rs` correctly carries `// pattern: Imperative Shell` and orchestrates `db/` + `repo-engine` without embedding pure logic; `firehose_seq.rs` correctly `// pattern: Imperative Shell` (db-layer query). Boundaries respected — no route-to-route imports; the new query lives in `db/` and accepts `&amp;SqlitePool`. Correctness-over-convenience flagged the `indexed_at` shortcut.
+- `writing-good-tests`: Applied the "were tests written or afterthought / can they fail" gate — the selection path has no test at all (Critical #1); the existing `local_lag_ms` tests are genuine behavior tests (not mock assertions) and correctly exercise the oldest-selection, but they mask the upstream defect because they hand-construct distinct timestamps the real path never produces.
+- Project standards: No ticket/AC references in the two `.rs` files (verified — compliant with AGENTS.md). Pattern comments correct.
+
+## Decision
+
+**BLOCKED — CHANGES REQUIRED**
+
+Fix the Critical issues (write the three AC5.x selection tests; correct per-key `indexed_at`), address Important #1 and fold in Minor #1, then re-submit for a full re-review from Step 1. Task 1 (`recent_commits_for_did` + its tests) is solid and needs no changes.
+
+Relevant files:
+- `/Users/jacob.zweifel/workspace/malpercio-dev/ezpds/.claude/worktrees/exciting-ardinghelli-6e9eeb/crates/pds/src/read_after_write/mod.rs` (Critical #1, #2; Important #1; Minor #1)
+- `/Users/jacob.zweifel/workspace/malpercio-dev/ezpds/.claude/worktrees/exciting-ardinghelli-6e9eeb/crates/pds/src/db/firehose_seq.rs` (Task 1 — approved)
+- `/Users/jacob.zweifel/workspace/malpercio-dev/ezpds/.claude/worktrees/exciting-ardinghelli-6e9eeb/crates/pds/src/read_after_write/types.rs` (`RecordDescript.indexed_at` doc-comment is the contract Critical #2 violates)
+- `/Users/jacob.zweifel/workspace/malpercio-dev/ezpds/.claude/worktrees/exciting-ardinghelli-6e9eeb/docs/implementation-plans/2026-07-03-read-after-write/phase_02.md` (plan)</result>
+<usage><subagent_tokens>129638</subagent_tokens><tool_uses>25</tool_uses><duration_ms>215051</duration_ms></usage>
+</task-notification>
