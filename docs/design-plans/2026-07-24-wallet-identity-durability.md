@@ -1,8 +1,10 @@
 # Wallet Identity Durability — Reinstall, Restore, and Redistribution
 
-**Status: design, unstarted.** Three defects in the wallet's local-persistence layer,
-found by auditing what actually survives when the app's *installation* changes rather
-than when the *network* fails. Each is small in code and large in consequence: the first
+**Status: design, unstarted.** Tracked as MM-460 (§2), MM-461 (§3), MM-462 (§4).
+
+Three defects in the wallet's local-persistence layer, found by auditing what actually
+survives when the app's *installation* changes rather than when the *network* fails.
+Each is small in code and large in consequence: the first
 means the recovery model is one share weaker than designed, the second means the wallet
 can claim custody it does not have, the third is a loaded footgun that has not fired yet.
 
@@ -100,7 +102,7 @@ a gap — it is the premise the ceremony was built on. The gaps are that one of 
 shares is not where it was designed to be, and that one scenario lies about its state
 instead of routing into the ceremony.
 
-## 2. Phase 1 — make Share 1 actually sync
+## 2. Phase 1 — make Share 1 actually sync (MM-460)
 
 **Goal:** `recovery-share-1:{did}` reaches the user's other Apple devices and a fresh
 install on a new phone, so escrow-assisted recovery works as specified with no user-held
@@ -186,7 +188,7 @@ whose durability does not depend on a vendor.
 - Device-verified: onboard on device A, confirm Share 1 auto-loads into recovery on
   device B signed into the same Apple account.
 
-## 3. Phase 2 — Secure Enclave liveness probe
+## 3. Phase 2 — Secure Enclave liveness probe (MM-461)
 
 **Goal:** the wallet never reports custody of a rotation key the enclave cannot sign with.
 
@@ -229,7 +231,7 @@ alone, never a claim the code cannot back.
 - Unit test: metadata present + enclave lookup miss ⇒ `DeviceKeyUnusable`, not a
   freshly-minted key and not a success.
 
-## 4. Phase 3 — bundle-ID rename safety net
+## 4. Phase 3 — bundle-ID rename safety net (MM-462)
 
 **Goal:** make the `dev.malpercio.*` → `org.obsign.*` rename survivable, and make it
 impossible to perform accidentally before the net is in place.
