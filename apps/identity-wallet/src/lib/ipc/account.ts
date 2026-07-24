@@ -250,3 +250,50 @@ export const getPdsUrl = (): Promise<string | null> =>
  */
 export const savePdsUrl = (url: string): Promise<void> =>
   invoke('save_pds_url', { url });
+
+// ── PDS capabilities ───────────────────────────────────────────────────
+
+/**
+ * A capability name a Custos host can advertise, as it appears in
+ * `describeServer`'s `custos.capabilities`. The server's
+ * `crates/pds/src/capabilities.rs` is the source of truth for this list; see the
+ * operator capability documentation for what each one means.
+ *
+ * Typed as a union of the known names **plus** `string`, deliberately: a newer
+ * server may advertise a capability this build has never heard of, and that must
+ * stay readable rather than being a type error.
+ */
+export type PdsCapability =
+  | 'createCeremony'
+  | 'escrow'
+  | 'sovereignSessions'
+  | 'agents'
+  | 'walletConsent'
+  | 'didWebHosting'
+  | (string & {});
+
+/** What a PDS advertises. Every PDS that is not Custos reports no capabilities. */
+export type PdsCapabilities = {
+  /** The host's self-reported Custos version, or null. Display only — never gate on it. */
+  version: string | null;
+  /** Capability names the host advertises. Empty for a non-Custos (or unreachable) host. */
+  capabilities: PdsCapability[];
+};
+
+/**
+ * Report what the configured PDS (or `pdsUrl`, when given) advertises, so a screen
+ * can offer only the features that host actually supports.
+ *
+ * Cached per host after the first probe. **Never rejects for an absent extension or an
+ * unreachable host** — both report an empty `capabilities`, which means "offer nothing
+ * host-gated", the safe way to degrade. Rejects with `PdsConfigError` only for a
+ * malformed `pdsUrl`.
+ */
+export const getPdsCapabilities = (pdsUrl?: string): Promise<PdsCapabilities> =>
+  invoke('get_pds_capabilities', { pdsUrl: pdsUrl ?? null });
+
+/** Does `capabilities` advertise `capability`? The only question a gate should ask. */
+export const hasPdsCapability = (
+  capabilities: PdsCapabilities | null | undefined,
+  capability: PdsCapability,
+): boolean => capabilities?.capabilities.includes(capability) ?? false;

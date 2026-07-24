@@ -569,13 +569,34 @@ pub struct CreateSessionResponse {
 ///
 /// Returned from `GET /xrpc/com.atproto.server.describeServer`. This is the public,
 /// unauthenticated server description endpoint used to discover the server's DID and
-/// available user domains (for destination reachability probes).
+/// available user domains (for destination reachability probes), and — on a Custos
+/// host — the capabilities the wallet may feature-gate on.
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DescribeServerResponse {
     pub did: String,
     #[serde(default)]
     pub available_user_domains: Vec<String>,
+    /// Custos's off-lexicon capability extension. **Absent on every other
+    /// implementation** — the reference PDS and rsky-pds return strictly the lexicon
+    /// fields, millipds adds only a top-level `version` — so this must stay optional and
+    /// its absence must mean "no Custos capabilities", never an error. See
+    /// [`crate::pds_capabilities`].
+    #[serde(default)]
+    pub custos: Option<CustosExtension>,
+}
+
+/// The `custos` object of a describeServer response: what the host is, and what it offers.
+///
+/// Both members are tolerant by design. `version` is informational only (never parsed for
+/// comparison — a client gates on named capabilities, not on version arithmetic), and an
+/// unrecognized capability name is simply one this build does not use, not an error.
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct CustosExtension {
+    #[serde(default)]
+    pub version: Option<String>,
+    #[serde(default)]
+    pub capabilities: Vec<String>,
 }
 
 /// Missing blob entry from listMissingBlobs.
@@ -902,7 +923,7 @@ impl PdsClient {
             });
         }
 
-        response
+        let described = response
             .json::<DescribeServerResponse>()
             .await
             .map_err(|e| {
@@ -910,7 +931,14 @@ impl PdsClient {
                 PdsClientError::PdsUnreachable {
                     reason: format!("failed to parse describeServer response: {}", e),
                 }
-            })
+            })?;
+
+        // Warm the per-host capability cache from every describeServer call, wherever it
+        // was made from (migration prepare, handle change, consent, sovereign login). The
+        // probe and the cache are then the same fetch rather than a second round trip.
+        crate::pds_capabilities::record(pds_url, described.custos.as_ref());
+
+        Ok(described)
     }
 
     /// Create a full password session against a PDS (`com.atproto.server.createSession`).

@@ -13,3 +13,25 @@ get {
 vars:pre-request {
   baseUrl: http://localhost:8080
 }
+
+docs {
+  Public server description. Returns the standard `com.atproto.server.describeServer`
+  lexicon fields plus the off-lexicon `custos` extension object:
+
+  {
+    "did": "did:web:pds.example.com",
+    "availableUserDomains": ["example.com"],
+    "inviteCodeRequired": true,
+    "phoneVerificationRequired": false,
+    "custos": {
+      "version": "0.8.1",
+      "capabilities": ["sovereignSessions", "walletConsent", "didWebHosting"]
+    }
+  }
+
+  `custos.capabilities` is derived from the running configuration, so a deployment
+  advertises only what it can actually do (for example, `createCeremony` and `escrow`
+  appear only when a master key is configured). Clients feature-gate on the presence of
+  a name; a server that sends no `custos` object has none of these capabilities.
+  `links` and `contact` are present only when configured.
+}

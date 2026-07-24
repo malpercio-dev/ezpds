@@ -26,6 +26,22 @@ function apiReference() {
     + unique.map((route) => `| \`${esc(route)}\` | ${route.startsWith('/xrpc/') ? 'AT Protocol XRPC' : 'Custos HTTP'} |`).join('\n') + '\n';
 }
 
+function capabilityReference() {
+  const source = read('crates/pds/src/capabilities.rs');
+  const table = source.match(/pub const CAPABILITIES: &\[Capability\] = &\[([\s\S]*?)\n\];/);
+  if (!table) throw new Error('could not find the CAPABILITIES table in crates/pds/src/capabilities.rs');
+  const entries = [...table[1].matchAll(/name:\s*"([^"]+)",\s*\n\s*control:\s*(?:CONTROL_ALWAYS|"([^"]*)"),\s*\n\s*summary:\s*"((?:[^"\\]|\\.)*)",/g)]
+    .map(([, name, control, summary]) => ({ name, control: control ?? 'always', summary }));
+  if (entries.length === 0) throw new Error('no capabilities found in crates/pds/src/capabilities.rs');
+  const renderControl = (control) => control === 'always'
+    ? 'Always offered'
+    : control.split(/\s+/).map((field) => `\`${field}\``).join(', ');
+  return frontmatter('Capability reference', 'Generated list of the capabilities a Custos deployment advertises.') + stamp
+    + 'Custos advertises these under the `custos` extension object of `com.atproto.server.describeServer`, alongside the running version. A client feature-gates on the presence of a name; a server that sends no `custos` object — the reference PDS, rsky-pds, millipds — has none of them, and clients fall back to standard AT Protocol behaviour. See [Capabilities](/operator/capabilities/) for what each one means for your deployment and how to turn it on.\n\n'
+    + '| Capability | What it enables | Controlled by |\n| --- | --- | --- |\n'
+    + entries.map(({ name, control, summary }) => `| \`${name}\` | ${esc(summary)} | ${renderControl(control)} |`).join('\n') + '\n';
+}
+
 function parseConfigFields(source) {
   const fields = [];
   const structs = [...source.matchAll(/^(?:pub(?:\(crate\))?\s+)?struct\s+([A-Za-z0-9_]*Config)\s*\{\s*\n([\s\S]*?)^\}/gm)];
@@ -91,6 +107,7 @@ function ipcReference() {
 
 const pages = new Map([
   ['sites/docs/src/content/docs/operator/reference/api.md', apiReference()],
+  ['sites/docs/src/content/docs/operator/reference/capabilities.md', capabilityReference()],
   ['sites/docs/src/content/docs/operator/reference/config.md', configReference()],
   ['sites/docs/src/content/docs/operator/reference/ipc.md', ipcReference()],
 ]);

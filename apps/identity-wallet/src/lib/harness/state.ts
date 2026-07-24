@@ -266,6 +266,13 @@ export interface WalletState {
   pdsUrl: string | null;
   /** Available handle domains the configured PDS offers. */
   availableUserDomains: string[];
+  /**
+   * What the configured PDS advertises under `describeServer`'s `custos` extension.
+   * Defaults to a fully-featured Custos, since that is what the fake host stands in for;
+   * set `capabilities: []` (and `version: null`) from the console to drive the screens the
+   * way a reference PDS or bsky.social would — a host with no Custos capabilities at all.
+   */
+  pdsCapabilities: { version: string | null; capabilities: string[] };
   appearance: 'system' | 'light' | 'dark' | null;
   biometricEnabled: boolean;
   /**
@@ -293,6 +300,17 @@ export function emptyWalletState(): WalletState {
   return {
     pdsUrl: null,
     availableUserDomains: ['.harness.pds.local'],
+    pdsCapabilities: {
+      version: '0.0.0-harness',
+      capabilities: [
+        'createCeremony',
+        'escrow',
+        'sovereignSessions',
+        'agents',
+        'walletConsent',
+        'didWebHosting',
+      ],
+    },
     appearance: null,
     biometricEnabled: true,
     backgroundBackupSettings: {

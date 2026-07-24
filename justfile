@@ -141,6 +141,14 @@ runbook-parity-check:
 auth-seam-check:
     scripts/auth-seam-check.sh
 
+# Guard the operator capability documentation against drift from the capability table in
+# crates/pds/src/capabilities.rs — the source of truth for what describeServer advertises
+# under the `custos` extension and which config gates each capability. Fails if a
+# capability is added, renamed, or re-gated without the operator page moving with it (a
+# stale "how do I turn this on" answer is worse than none — an operator acts on it).
+capability-docs-check:
+    scripts/capability-docs-check.sh
+
 # Guard the caller-influenced identity fetch against SSRF: resolveHandle's well-known
 # fallback fetches a caller-controlled host, so it must use the SSRF-hardened HTTP client.
 # Fails on a novel/un-hardened wiring; the plain-client wiring is baselined as MM-387.
@@ -232,7 +240,7 @@ mcp-sidecar-test:
 # Adding a check here covers `just ci` (macOS/full) and `just ci-pds` (Linux) at once —
 # the old design re-stated all twelve checks in each, so a gate added to one and
 # forgotten in the other was a silent gap.
-checks: fmt-check lock-check bruno-check docs-check changelog-check changelog-test font-check cap-check ticket-ref-check runbook-parity-check auth-seam-check ssrf-client-check gc-guard-check ios-paths-check swift-rs-check ios-template-check
+checks: fmt-check lock-check bruno-check docs-check changelog-check changelog-test font-check cap-check capability-docs-check ticket-ref-check runbook-parity-check auth-seam-check ssrf-client-check gc-guard-check ios-paths-check swift-rs-check ios-template-check
 
 # Run the full CI pipeline locally (all crates; use on macOS where the iOS app builds)
 ci: checks clippy test audit deny

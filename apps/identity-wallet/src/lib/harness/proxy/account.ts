@@ -69,6 +69,23 @@ export async function buildAccountProxyHandlers(
       return domains;
     },
 
+    // Real: the live PDS's own capability advertisement, read from the same
+    // describeServer response. A host with no `custos` object reports nothing, which is
+    // exactly how the wallet must read a reference PDS.
+    get_pds_capabilities: async (): Promise<WalletState['pdsCapabilities']> => {
+      const res = await pdsFetch('/xrpc/com.atproto.server.describeServer');
+      if (!res.ok) throw { message: `describeServer failed (${res.status})` };
+      const body = (await res.json()) as {
+        custos?: { version?: string; capabilities?: string[] };
+      };
+      const advertised = {
+        version: body.custos?.version ?? null,
+        capabilities: body.custos?.capabilities ?? [],
+      };
+      state.pdsCapabilities = advertised;
+      return advertised;
+    },
+
     // Real: register the handle against the PDS's describeServer domains. The mobile
     // create flow assembles the full handle client-side, so this is a light echo that
     // confirms the domain is served; the authoritative handle binding happens in the
