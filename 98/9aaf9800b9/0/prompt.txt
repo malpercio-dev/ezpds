@@ -1,7 +1,0 @@
-<task-notification>
-<task-id>bd24cm495</task-id>
-<tool-use-id>REDACTED</tool-use-id>
-<output-file>/private/tmp/claude-501/-Users-jacob-zweifel-workspace-malpercio-dev-ezpds/216975ef-2693-46f8-8858-c28dff4ef0e3/tasks/bd24cm495.output</output-file>
-<status>completed</status>
-<summary>Background command "Watch for new CodeRabbit findings or CI gate result" completed (exit code 0)</summary>
-</task-notification>
