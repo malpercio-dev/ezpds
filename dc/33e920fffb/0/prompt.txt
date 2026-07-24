@@ -1,0 +1,1 @@
+I think we should go with equal-weight buttons. and we can host the fonts at a different path, our product may expand to have more than just an oauth webpage, and may have other features
