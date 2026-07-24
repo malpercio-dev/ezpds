@@ -1,0 +1,1 @@
+CI failed because we didn't write a changelog fragment, lol

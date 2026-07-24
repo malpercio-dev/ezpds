@@ -1,7 +1,0 @@
-<task-notification>
-<task-id>b7cpirv9q</task-id>
-<tool-use-id>toolu_01DPTQ7SnSxEw98wLyUEdDQo</tool-use-id>
-<output-file>/private/tmp/claude-501/-Users-jacob-zweifel-workspace-malpercio-dev-ezpds/02fd7e8b-2819-45db-9859-53e734e45665/tasks/b7cpirv9q.output</output-file>
-<status>completed</status>
-<summary>Background command "Pre-validate locked release build of relay at 2bfc872 (background)" completed (exit code 0)</summary>
-</task-notification>
