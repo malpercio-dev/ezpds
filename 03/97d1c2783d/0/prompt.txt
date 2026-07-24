@@ -1,0 +1,1 @@
+`just gc` seems to think a lot of worktrees aren't merged, but they should be
