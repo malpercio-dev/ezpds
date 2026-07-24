@@ -13,8 +13,9 @@
 // own flag. Both are safe to overlap with a foreground pass: the per-DID mirror lock in each
 // module serializes its writes, and the passes are idempotent by construction (content-
 // addressed, immutable/atomically-replaced files), so a sweep iOS interrupts mid-run self-heals
-// on the next pass. The two mirrors sweep sequentially (all opted-in blobs, then all opted-in
-// repos) over one wake-up, reusing the single generic sweep core.
+// on the next pass. The two mirrors sweep sequentially over one wake-up, alternating which
+// mirror leads across fires so iOS's bounded task budget cannot systematically starve either
+// one, while reusing the single generic sweep core.
 //
 // Scheduling is a device concern: everything that touches `BGTaskScheduler` is iOS-only,
 // reached through objc2's BackgroundTasks binding — the same no-new-Swift bridge pattern as
@@ -43,6 +44,69 @@ use serde::{Deserialize, Serialize};
 /// per-DID): the sweep is one `BGProcessingTask` covering every opted-in identity, so its
 /// power/network policy is a single shared setting.
 const SETTINGS_ACCOUNT: &str = "blob-backup-settings";
+
+/// Global Keychain account holding the mirror that should lead the next background sweep.
+/// The task budget can expire between the two mirror passes, so this durable cross-fire turn
+/// makes that interruption fair over time.
+#[cfg(any(target_os = "ios", test))]
+const NEXT_MIRROR_ACCOUNT: &str = "background-backup-next-mirror";
+
+#[cfg(any(target_os = "ios", test))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Mirror {
+    Blob,
+    Repo,
+}
+
+#[cfg(any(target_os = "ios", test))]
+impl Mirror {
+    const fn encoded(self) -> &'static [u8] {
+        match self {
+            Self::Blob => b"blob",
+            Self::Repo => b"repo",
+        }
+    }
+
+    const fn other(self) -> Self {
+        match self {
+            Self::Blob => Self::Repo,
+            Self::Repo => Self::Blob,
+        }
+    }
+}
+
+/// Claim the lead position for this fire and durably hand the next fire to the other mirror.
+/// Missing/corrupt/unreadable state starts with blobs for backward compatibility. Keychain
+/// trouble is non-fatal: the sweep still protects data, and the next fire retries the flip.
+#[cfg(any(target_os = "ios", test))]
+fn take_mirror_lead() -> Mirror {
+    let lead = match crate::keychain::get_item(NEXT_MIRROR_ACCOUNT) {
+        Ok(raw) if raw == Mirror::Repo.encoded() => Mirror::Repo,
+        Ok(raw) if raw == Mirror::Blob.encoded() => Mirror::Blob,
+        Ok(_) => {
+            tracing::warn!(
+                "background backup: mirror-order state is invalid; restarting with blob first"
+            );
+            Mirror::Blob
+        }
+        Err(e) if crate::keychain::is_not_found(&e) => Mirror::Blob,
+        Err(e) => {
+            tracing::warn!(
+                error = %e,
+                "background backup: could not read mirror-order state; using blob first"
+            );
+            Mirror::Blob
+        }
+    };
+
+    if let Err(e) = crate::keychain::store_item(NEXT_MIRROR_ACCOUNT, lead.other().encoded()) {
+        tracing::warn!(
+            error = %e,
+            "background backup: could not persist the next mirror order"
+        );
+    }
+    lead
+}
 
 /// User-tunable policy for the background media-backup sweep. App-global. Serializes as
 /// camelCase to match the `$lib/ipc` `BackgroundBackupSettings` type.
@@ -196,7 +260,8 @@ where
 
 /// Run one background backup wake-up over every managed identity, refreshing both iCloud mirrors
 /// for those opted in. The launch handler's payload. Resolves the managed DIDs once from the
-/// `IdentityStore`, then runs the blob sweep and the repo sweep back-to-back over that list —
+/// `IdentityStore`, then runs the blob and repo sweeps back-to-back over that list, alternating
+/// which mirror leads on each fire via a durable Keychain turn —
 /// each gated on its OWN per-DID opt-in flag (`blob_backup::is_backup_enabled` /
 /// `repo_backup::is_backup_enabled`), so a user who enabled only one mirror gets only that one.
 /// Both passes read public sync endpoints (no session) and are idempotent, so an interrupted
@@ -218,15 +283,25 @@ pub(crate) async fn run_backup_sweep(app: &tauri::AppHandle) {
         .list_identities()
         .unwrap_or_default();
 
-    // Blob first, then repo. A `BGProcessingTask` has a bounded time budget and iOS aborts the
-    // whole worker on expiration, so a pathologically large blob pass could exhaust the budget
-    // before the repo sweep starts. Both passes are incremental and idempotent, so a deferred
-    // repo pass simply completes on a later fire rather than being lost — self-correcting for the
-    // common case where each fire's blob work shrinks to the newly-added blobs. Making the order
-    // fair under sustained budget pressure (alternating which mirror leads per fire) would need
-    // durable cross-fire state and is left as a deliberate follow-up.
+    // iOS aborts the whole worker when its bounded task budget expires. Claim and flip the
+    // durable lead turn before either pass starts, so repeated expirations cannot always discard
+    // the same trailing mirror. Each pass remains independently opt-in gated.
+    match take_mirror_lead() {
+        Mirror::Blob => {
+            run_blob_sweep(app, &dids).await;
+            run_repo_sweep(app, &dids).await;
+        }
+        Mirror::Repo => {
+            run_repo_sweep(app, &dids).await;
+            run_blob_sweep(app, &dids).await;
+        }
+    }
+}
+
+#[cfg(target_os = "ios")]
+async fn run_blob_sweep(app: &tauri::AppHandle, dids: &[String]) {
     let blob = run_sweep_with(
-        &dids,
+        dids,
         |did| blob_backup::is_backup_enabled(did),
         |did| {
             let app = app.clone();
@@ -245,9 +320,12 @@ pub(crate) async fn run_backup_sweep(app: &tauri::AppHandle) {
         skipped = blob.skipped,
         "background blob backup sweep complete"
     );
+}
 
+#[cfg(target_os = "ios")]
+async fn run_repo_sweep(app: &tauri::AppHandle, dids: &[String]) {
     let repo = run_sweep_with(
-        &dids,
+        dids,
         |did| repo_backup::is_backup_enabled(did),
         |did| {
             let app = app.clone();
@@ -708,5 +786,31 @@ mod tests {
         assert!(json.contains("\"wifiOnly\":true"));
         let back: BackgroundBackupSettings = serde_json::from_str(&json).unwrap();
         assert_eq!(back, s);
+    }
+
+    #[test]
+    fn mirror_lead_alternates_durably_across_fires() {
+        crate::keychain::clear_for_test();
+
+        assert_eq!(take_mirror_lead(), Mirror::Blob);
+        assert_eq!(
+            crate::keychain::get_item(NEXT_MIRROR_ACCOUNT).unwrap(),
+            Mirror::Repo.encoded()
+        );
+        assert_eq!(take_mirror_lead(), Mirror::Repo);
+        assert_eq!(
+            crate::keychain::get_item(NEXT_MIRROR_ACCOUNT).unwrap(),
+            Mirror::Blob.encoded()
+        );
+        assert_eq!(take_mirror_lead(), Mirror::Blob);
+    }
+
+    #[test]
+    fn invalid_mirror_lead_state_recovers_to_blob_then_repo() {
+        crate::keychain::clear_for_test();
+        crate::keychain::store_item(NEXT_MIRROR_ACCOUNT, b"invalid").unwrap();
+
+        assert_eq!(take_mirror_lead(), Mirror::Blob);
+        assert_eq!(take_mirror_lead(), Mirror::Repo);
     }
 }
