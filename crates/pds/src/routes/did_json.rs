@@ -11,6 +11,11 @@
 // `atproto_did.rs`'s `.well-known/atproto-did`; the opt-in gate lives in
 // `db::dids::serve_hosted_did_document`, so a host that hasn't enabled hosting 404s identically to
 // an unknown one (no opt-in existence oracle).
+//
+// The server's own did:web identity is the one exception to the account gate: when the request
+// host names the server DID itself, the document is synthesized from config rather than read from
+// the accounts join — the server identity is config-owned infrastructure, not an account, and
+// must keep resolving across a public-URL migration without a ghost accounts row.
 
 use axum::{
     extract::State,
@@ -30,6 +35,22 @@ fn host_to_did_web(host: &str) -> String {
     format!("did:web:{}", host.to_ascii_lowercase().replace(':', "%3A"))
 }
 
+/// The server's own did:web document, synthesized from config rather than storage: a service-only
+/// document (no verification methods — inter-service auth is always verified against per-account
+/// `#atproto` keys, never a server key) pointing `#atproto_pds` at the public URL, the same shape
+/// the reference PDS serves for its instance DID.
+fn server_did_document(server_did: &str, public_url: &str) -> serde_json::Value {
+    serde_json::json!({
+        "@context": ["https://www.w3.org/ns/did/v1"],
+        "id": server_did,
+        "service": [{
+            "id": "#atproto_pds",
+            "type": "AtprotoPersonalDataServer",
+            "serviceEndpoint": public_url.trim_end_matches('/'),
+        }],
+    })
+}
+
 pub async fn did_json_handler(
     headers: HeaderMap,
     uri: Uri,
@@ -40,6 +61,20 @@ pub async fn did_json_handler(
         return StatusCode::BAD_REQUEST.into_response();
     };
     let did = host_to_did_web(&host);
+
+    // The server's own DID is served from config, checked before the account-gated read so a
+    // coincidental account row can never shadow it — the served identity stays exactly what
+    // `describeServer` advertises (both derive from `resolve_server_did`). A non-did:web
+    // `server_did` never matches here, since `host_to_did_web` only produces did:web DIDs.
+    if did == state.config.resolve_server_did() {
+        let document = server_did_document(&did, &state.config.public_url);
+        return (
+            StatusCode::OK,
+            [(header::CONTENT_TYPE, "application/did+json")],
+            document.to_string(),
+        )
+            .into_response();
+    }
 
     match crate::db::dids::serve_hosted_did_document(&state.db, &did).await {
         Ok(Some(document)) => (
@@ -55,12 +90,15 @@ pub async fn did_json_handler(
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+
     use axum::{
         body::Body,
         http::{Request, StatusCode},
     };
     use tower::ServiceExt;
 
+    use super::server_did_document;
     use crate::app::{app, test_state, AppState};
 
     /// Insert an opted-in `did:web:{host}` account with a stored DID document.
@@ -168,6 +206,104 @@ mod tests {
             .unwrap();
 
         assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    #[test]
+    fn server_document_shape_and_trailing_slash() {
+        let doc = server_did_document("did:web:pds.example.com", "https://pds.example.com/");
+        assert_eq!(doc["id"], "did:web:pds.example.com");
+        assert_eq!(doc["@context"][0], "https://www.w3.org/ns/did/v1");
+        let service = &doc["service"][0];
+        assert_eq!(service["id"], "#atproto_pds");
+        assert_eq!(service["type"], "AtprotoPersonalDataServer");
+        assert_eq!(service["serviceEndpoint"], "https://pds.example.com");
+    }
+
+    #[tokio::test]
+    async fn server_host_serves_synthesized_document_without_account_row() {
+        // test_state(): public_url = "https://test.example.com", server_did = None,
+        // so the derived server DID is did:web:test.example.com — with no accounts row.
+        let response = app(test_state().await)
+            .oneshot(did_json_request("test.example.com"))
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            response.headers().get("content-type").unwrap(),
+            "application/did+json",
+        );
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let served: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(served["id"], "did:web:test.example.com");
+        assert_eq!(
+            served["service"][0]["serviceEndpoint"],
+            "https://test.example.com",
+        );
+    }
+
+    #[tokio::test]
+    async fn explicit_default_port_still_matches_the_server_document() {
+        // `Host: test.example.com:443` names the same origin as the bare host; the shared
+        // `request_host` normalization must keep it matching the derived server DID.
+        let response = app(test_state().await)
+            .oneshot(did_json_request("test.example.com:443"))
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let served: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(served["id"], "did:web:test.example.com");
+    }
+
+    #[tokio::test]
+    async fn server_document_wins_over_a_coincidental_account_row() {
+        let state = test_state().await;
+        // An account row bearing the server's own DID must never shadow the config-derived
+        // document — the stored doc's distinguishing field must not appear in the response.
+        seed_hosted_did_web(
+            &state,
+            "test.example.com",
+            sample_doc("did:web:test.example.com"),
+        )
+        .await;
+
+        let response = app(state)
+            .oneshot(did_json_request("test.example.com"))
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let served: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(served["id"], "did:web:test.example.com");
+        assert!(served.get("alsoKnownAs").is_none());
+    }
+
+    #[tokio::test]
+    async fn non_did_web_server_did_falls_through_to_account_path() {
+        let base = test_state().await;
+        let mut config = (*base.config).clone();
+        config.server_did = Some("did:plc:configured123".to_string());
+        let state = AppState {
+            config: Arc::new(config),
+            ..base
+        };
+
+        // With a did:plc server DID, no host can match the server branch — the public-url
+        // host resolves through the account gate like any other, and 404s without one.
+        let response = app(state)
+            .oneshot(did_json_request("test.example.com"))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
     }
 
     #[tokio::test]

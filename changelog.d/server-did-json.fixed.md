@@ -1,0 +1,1 @@
+Custos now serves its own `did:web` server identity at `/.well-known/did.json`, synthesized from the configured public URL and server DID. Previously the route only served opted-in account documents, so the server's own DID never resolved; it now survives a public-URL migration with no database row involved.
