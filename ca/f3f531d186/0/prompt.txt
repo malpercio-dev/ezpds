@@ -1,0 +1,14 @@
+hmm ```Run cargo tauri ios init
+        Info Installing iOS Rust targets...
+        Info Installing target x86_64-apple-ios
+info: downloading component rust-std
+/opt/homebrew/bin/xcodegen
+        Info package `libimobiledevice` not found
+        Info Installing `libimobiledevice` with brew...
+Error: Cannot install under Rosetta 2 in ARM default prefix (/opt/homebrew)!
+To rerun under ARM use:
+    arch -arm64 brew install ...
+To install under x86_64, install Homebrew into /usr/local.
+
+       Error failed to run command pod install: Failed to install `libimobiledevice`: command ["brew", "reinstall", "libimobiledevice"] exited with code 1
+Error: Process completed with exit code 1.```
