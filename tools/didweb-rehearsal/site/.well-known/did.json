@@ -2,29 +2,29 @@
   "@context": [
     "https://www.w3.org/ns/did/v1"
   ],
-  "id": "did:web:rehersal-production.up.railway.app",
   "alsoKnownAs": [
     "at://rehersal-production.up.railway.app"
   ],
-  "verificationMethod": [
-    {
-      "id": "did:web:rehersal-production.up.railway.app#device",
-      "type": "Multikey",
-      "controller": "did:web:rehersal-production.up.railway.app",
-      "publicKeyMultibase": "zDnaeY2jnoijCdfj9zkZXrf2ZZ2Yct9Z4KZdgxAtRe3T1u52r"
-    },
-    {
-      "id": "did:web:rehersal-production.up.railway.app#atproto",
-      "type": "Multikey",
-      "controller": "did:web:rehersal-production.up.railway.app",
-      "publicKeyMultibase": "zDnaehy6FvLkxdM2Ddd1s5xD93TdqCcshCqbFCyGWoKzEDZDx"
-    }
-  ],
+  "id": "did:web:rehersal-production.up.railway.app",
   "service": [
     {
       "id": "did:web:rehersal-production.up.railway.app#atproto_pds",
-      "type": "AtprotoPersonalDataServer",
-      "serviceEndpoint": "https://ezpds-staging.up.railway.app"
+      "serviceEndpoint": "https://pds.obsign.org",
+      "type": "AtprotoPersonalDataServer"
+    }
+  ],
+  "verificationMethod": [
+    {
+      "controller": "did:web:rehersal-production.up.railway.app",
+      "id": "did:web:rehersal-production.up.railway.app#device",
+      "publicKeyMultibase": "zDnaeY2jnoijCdfj9zkZXrf2ZZ2Yct9Z4KZdgxAtRe3T1u52r",
+      "type": "Multikey"
+    },
+    {
+      "controller": "did:web:rehersal-production.up.railway.app",
+      "id": "did:web:rehersal-production.up.railway.app#atproto",
+      "publicKeyMultibase": "zDnaeSgAtvr87PFDbCWvVCHb9t9Npa6ik5QcpGVXEz7B7xSeW",
+      "type": "Multikey"
     }
   ]
 }
