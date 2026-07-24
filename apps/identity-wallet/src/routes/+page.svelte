@@ -39,6 +39,7 @@
   import MigrationSuccessScreen from '$lib/components/onboarding/MigrationSuccessScreen.svelte';
   import DIDDocumentScreen from '$lib/components/home/DIDDocumentScreen.svelte';
   import ChangeHandleScreen from '$lib/components/home/ChangeHandleScreen.svelte';
+  import EndpointRepairScreen from '$lib/components/home/EndpointRepairScreen.svelte';
   import RotateRepoKeyScreen from '$lib/components/home/RotateRepoKeyScreen.svelte';
   import RekeyReviewScreen from '$lib/components/home/RekeyReviewScreen.svelte';
   import AppPasswordsScreen from '$lib/components/home/AppPasswordsScreen.svelte';
@@ -52,7 +53,7 @@
   import RemoveIdentityScreen from '$lib/components/home/RemoveIdentityScreen.svelte';
   import { createAccount, confirmShareBackup, confirmRekey, confirmRecoveryBackup, getPendingRecoveryEpilogue, registerCreatedIdentity, listIdentities, listPendingRemovals, getStoredDidDoc, checkIdentityStatus, getBlobBackupStatus, runBlobBackup, getRepoBackupStatus, runRepoBackup, isCodedError, type CreateAccountError, type OAuthError, type IdentityInfo, type VerifiedClaimOp, type ClaimResult, type RekeyResult, type UnauthorizedChange, type CollectedShare } from '$lib/ipc';
   import { authenticateBiometric } from '$lib/biometric';
-  import { normalizePlcDocToW3c, extractHandle } from '$lib/did-doc-utils';
+  import { normalizePlcDocToW3c, extractHandle, extractPdsFromPlcDoc } from '$lib/did-doc-utils';
   import IdentityListHome from '$lib/components/home/IdentityListHome.svelte';
   import OnboardingShell from '$lib/components/ui/OnboardingShell.svelte';
   import SealEmblem from '$lib/components/ui/SealEmblem.svelte';
@@ -86,6 +87,7 @@
     | 'home'
     | 'identity_detail'
     | 'change_handle'
+    | 'endpoint_repair'
     | 'rotate_repo_key'
     | 'rekey_review'
     | 'rekey_backup'
@@ -693,6 +695,9 @@
       onchangehandle={selectedDeviceKeyIsRoot === true && selectedDid?.startsWith('did:plc:')
         ? () => goTo('change_handle')
         : undefined}
+      onrepairendpoint={selectedDeviceKeyIsRoot === true && selectedDid?.startsWith('did:plc:')
+        ? () => goTo('endpoint_repair')
+        : undefined}
       onrotatekey={selectedDeviceKeyIsRoot === true && selectedDid?.startsWith('did:plc:')
         ? () => goTo('rotate_repo_key')
         : undefined}
@@ -738,6 +743,14 @@
     <ChangeHandleScreen
       did={selectedDid ?? ''}
       currentHandle={selectedDidDoc ? extractHandle(selectedDidDoc) : null}
+      onback={() => goTo('identity_detail')}
+      ondone={() => goTo('home')}
+    />
+
+  {:else if step === 'endpoint_repair'}
+    <EndpointRepairScreen
+      did={selectedDid ?? ''}
+      currentEndpoint={selectedDidDoc ? extractPdsFromPlcDoc(selectedDidDoc) : null}
       onback={() => goTo('identity_detail')}
       ondone={() => goTo('home')}
     />

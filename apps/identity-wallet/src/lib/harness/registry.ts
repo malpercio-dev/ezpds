@@ -178,6 +178,8 @@ export type CommandName =
   // handle-change.ts
   | 'get_identity_handle_domains'
   | 'change_handle_cmd'
+  // endpoint-repair.ts
+  | 'repair_hosting_endpoint'
   // rotation.ts
   | 'build_repo_key_rotation_cmd'
   | 'submit_repo_key_rotation_cmd'
@@ -835,6 +837,20 @@ export function buildRegistry(state: WalletState): Registry {
       const identity = findIdentity(state, didArg(args));
       if (identity) identity.handle = String(args.handle ?? identity.handle);
       return identity ? claimResult(identity) : { updatedDidDoc: {} };
+    },
+
+    // ── repair hosting endpoint ──────────────────────────────────────────────
+    repair_hosting_endpoint: (args) => {
+      const identity = findIdentity(state, didArg(args));
+      const oldEndpoint = identity?.pdsUrl ?? 'https://old.harness.example';
+      const newEndpoint = String(args.newEndpoint ?? oldEndpoint).replace(/\/+$/, '');
+      const changed = newEndpoint !== oldEndpoint;
+      if (identity && changed) identity.pdsUrl = newEndpoint;
+      return {
+        oldEndpoint,
+        newEndpoint,
+        opCid: changed ? 'bafyharnessrepaircid' : null,
+      };
     },
 
     // ── rotate signing key ───────────────────────────────────────────────────
