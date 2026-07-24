@@ -1,0 +1,49 @@
+<task-notification>
+<task-id>b6a5s47w5</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-jacob-zweifel-workspace-malpercio-dev-ezpds/cead9993-b6df-435d-9881-b381a7fc7d57/tasks/b6a5s47w5.output</output-file>
+<status>completed</status>
+<summary>Background command "Watch main CI run to completion" completed (exit code 0)</summary>
+</task-notification>
+
+---
+
+<task-notification>
+<task-id>bw1uxi7os</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-jacob-zweifel-workspace-malpercio-dev-ezpds/cead9993-b6df-435d-9881-b381a7fc7d57/tasks/bw1uxi7os.output</output-file>
+<status>completed</status>
+<summary>Background command "Poll staging did.json until the deploy serves it" completed (exit code 0)</summary>
+</task-notification>
+
+---
+
+<task-notification>
+<task-id>b4nycc1uz</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-jacob-zweifel-workspace-malpercio-dev-ezpds/cead9993-b6df-435d-9881-b381a7fc7d57/tasks/b4nycc1uz.output</output-file>
+<status>completed</status>
+<summary>Background command "Watch PR 406 checks to completion" completed (exit code 0)</summary>
+</task-notification>
+
+---
+
+<task-notification>
+<task-id>byjsgrgk0</task-id>
+<tool-use-id>toolu_01CFYk2sikNACWK2kFc6YVuk</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-jacob-zweifel-workspace-malpercio-dev-ezpds/cead9993-b6df-435d-9881-b381a7fc7d57/tasks/byjsgrgk0.output</output-file>
+<status>failed</status>
+<summary>Background command "Watch production CI then poll prod health for 0.8.0" failed with exit code 1</summary>
+</task-notification>
+
+---
+
+let's start the plc repointing. let's only worry about did:plc:...jdkk aka malpercio.obsign.org. I believe that one will need the wallet, but could be wrong
+
+---
+
+hmmm, step 2 returns invalid token
+
+---
+
+ah next wrinkle. I can only use app passwords, which does not qualify as a "full access token"
