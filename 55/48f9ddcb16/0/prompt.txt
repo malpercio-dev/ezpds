@@ -1,0 +1,3 @@
+```
+2026-07-11 21:44:23.588463-0400 0xa3bd6f   Error       0x0                  95801  0    Obsign: [dev.malpercio.identitywallet:app] [identity_wallet::migration_orchestrator] getServiceAuth failed did=did:plc:qguepidxfcb6tw52czs6tdkf error=server error 403: {"error":{"code":"InsufficientScope","message":"token scope does not permit service auth for this RPC audience"}}
+```
