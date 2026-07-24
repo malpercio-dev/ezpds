@@ -1,5 +1,0 @@
-got to the migrating your identity screen. it shows an error "couldn't authorize with the destination pds". I have this in the logs: 
-
-```
-2026-07-11 21:09:20.130944-0400 0xa3bd72   Error       0x0                  95801  0    Obsign: [dev.malpercio.identitywallet:app] [identity_wallet::migration_orchestrator] getServiceAuth failed did=did:plc:qguepidxfcb6tw52czs6tdkf error=unauthorized: {"error":{"code":"AUTHENTICATION_REQUIRED","message":"Authorization header must use Bearer scheme"}}
-```
