@@ -10,6 +10,7 @@
   import DidWebHostingScreen from '$lib/components/onboarding/DidWebHostingScreen.svelte';
   import { didWebFromDomain, type DidWebHosting } from '$lib/did-web';
   import PdsConfigScreen from '$lib/components/onboarding/PdsConfigScreen.svelte';
+  import CreateUnavailableScreen from '$lib/components/onboarding/CreateUnavailableScreen.svelte';
   import ClaimCodeScreen from '$lib/components/onboarding/ClaimCodeScreen.svelte';
   import EmailScreen from '$lib/components/onboarding/EmailScreen.svelte';
   import HandleScreen from '$lib/components/onboarding/HandleScreen.svelte';
@@ -73,6 +74,7 @@
     | 'did_web_existing'
     | 'did_web_ceremony'
     | 'pds_config'
+    | 'create_unavailable'
     | 'claim_code'
     | 'email'
     | 'handle'
@@ -135,6 +137,10 @@
   let migrationHostingChosen = $state(false);
   let identityMethod = $state<'plc' | 'web'>('plc');
   let didWebDomain = $state('');
+  // The server the user configured that turned out not to run the create ceremony, held so
+  // the explanation can name it. Both the did:plc and did:web create paths pass through
+  // `pds_config`, so this one gate covers each of them.
+  let createUnavailablePdsUrl = $state('');
 
   // ── Import flow state ────────────────────────────────────────────────────────
   let identityInfo = $state<IdentityInfo | null>(null);
@@ -551,7 +557,21 @@
       ondone={() => goTo('home')}
     />
   {:else if step === 'pds_config'}
-    <PdsConfigScreen onnext={() => goTo('claim_code')} onback={() => goTo('mode_select')} />
+    <PdsConfigScreen
+      onnext={() => goTo('claim_code')}
+      oncreateunavailable={(pdsUrl) => {
+        createUnavailablePdsUrl = pdsUrl;
+        goTo('create_unavailable');
+      }}
+      onback={() => goTo('mode_select')}
+    />
+  {:else if step === 'create_unavailable'}
+    <CreateUnavailableScreen
+      pdsUrl={createUnavailablePdsUrl}
+      onimport={() => goTo('identity_input')}
+      onchangeserver={() => goTo('pds_config')}
+      onback={() => goTo('mode_select')}
+    />
   {:else if step === 'claim_code'}
     <ClaimCodeScreen
       bind:value={form.claimCode}

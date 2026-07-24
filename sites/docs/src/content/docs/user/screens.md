@@ -18,12 +18,21 @@ device photos.
 
 ## Getting started
 
-The first launch offers to create a new identity, move an existing one in, or
+The first launch offers to create a new identity, import an existing one, or
 recover one from its backup shares.
 
 <figure>
-  <img src="/screenshots/wallet/welcome.png" alt="Obsign welcome screen with 'Add an identity', 'Move an identity', and 'Recover from backup shares' options" width="280" />
-  <figcaption>First launch: create a new identity, move one you already have, or recover from backup shares.</figcaption>
+  <img src="/screenshots/wallet/welcome.png" alt="Obsign welcome screen with 'Create an identity', 'Import an identity', and 'Recover from backup shares' options" width="280" />
+  <figcaption>First launch: create a new identity, import one you already have, or recover from backup shares.</figcaption>
+</figure>
+
+Creating an identity needs a Custos server. Point the wallet at one that only speaks the
+standard lexicons and it says so on the server screen, before you have filled anything in,
+with import one tap away.
+
+<figure>
+  <img src="/screenshots/wallet/create-unavailable.png" alt="Obsign screen reading 'This server can't create identities', naming the configured host, with 'Import an identity' and 'Use a different server' buttons" width="280" />
+  <figcaption>An honest early stop: this server can host your identity, it just cannot mint one.</figcaption>
 </figure>
 
 ## Recovering from backup shares

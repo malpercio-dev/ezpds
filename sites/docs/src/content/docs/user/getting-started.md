@@ -6,16 +6,21 @@ description: Create a new identity or bring an existing one into Obsign.
 When you open Obsign, you're offered three options:
 
 <figure>
-  <img src="/screenshots/wallet/welcome.png" alt="Obsign's first screen, offering 'Add an identity', 'Move an identity to another PDS', and 'Recover from backup shares'" width="280" />
-  <figcaption>The first screen: create a new identity, move one you already have, or recover one from its backup shares.</figcaption>
+  <img src="/screenshots/wallet/welcome.png" alt="Obsign's first screen, offering 'Create an identity', 'Import an identity', and 'Recover from backup shares'" width="280" />
+  <figcaption>The first screen: create a new identity, import one you already have, or recover one from its backup shares.</figcaption>
 </figure>
 
-- **Add an identity** — create a brand-new identity.
-- **Move an identity to another PDS** — bring an identity you already have onto a
-  server you control (see [Migrating your identity](/user/migration/)).
+- **Create an identity** — set up a brand-new identity from scratch.
+- **Import an identity** — take custody of an identity you already have, wherever
+  it is hosted. Your device becomes its master key; the identity stays on its
+  current server.
 - **Recover from backup shares** — bring an identity back onto a new device using
   any two of its three backup shares (see
   [Recovering with two shares](/user/backup/#recovering-with-two-shares)).
+
+Importing is not the same as moving. Import changes *who holds the keys*; moving
+changes *where the account lives*, and you do that later from the identity's own
+screen (see [Migrating your identity](/user/migration/)).
 
 If you already have identities in the wallet, tap **Add an identity** at the
 bottom of your identity list to reach the same screen.
@@ -25,9 +30,9 @@ bottom of your identity list to reach the same screen.
   <figcaption>The identity list. One wallet holds several identities; each shows whether your device holds its root key.</figcaption>
 </figure>
 
-## Add an identity
+## Create an identity
 
-1. Open Obsign and choose **Add an identity**.
+1. Open Obsign and choose **Create an identity**.
 2. Follow the prompts to pick a handle on an available domain and set up your
    account.
 3. Obsign generates your identity key **on your device** and seals it. The key
@@ -42,11 +47,28 @@ which is exactly the right time. Save your share somewhere durable when Obsign
 prompts you, not after you've lost a device.
 :::
 
-## Move an identity to another PDS
+:::note
+Creating an identity needs a **Custos** server. Your device has to author the
+identity's very first record and hold its master key from that moment on, and a
+standard ATProtocol server has no way to accept that — it can only create
+accounts where the server holds the key. If you point Obsign at another server,
+it says so on the server screen, before you fill anything in, and offers to
+import an identity there instead.
+:::
 
-If you already have an ATProtocol identity, you can move it to a server you
-control without losing your handle or history. That flow has its own page:
-[Migrating your identity](/user/migration/).
+## Import an identity
+
+If you already have an ATProtocol identity — on [bsky.social](https://bsky.social),
+a self-hosted PDS, anywhere — choose **Import an identity**. Obsign installs this
+device's key as the identity's master key, which is what unlocks tamper
+monitoring, the 72-hour reversal window, and your own backups. The account itself
+does not move: it keeps running on the same server, with the same handle.
+
+Importing works against any spec-compliant server, Custos or not.
+
+Moving the account to a different server is a separate decision you can make
+later, from the identity's own screen: [Migrating your
+identity](/user/migration/).
 
 ## Advanced: anchor to a domain you control (did:web)
 

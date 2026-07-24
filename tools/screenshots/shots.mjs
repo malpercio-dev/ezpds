@@ -60,6 +60,22 @@ const WALLET_SHOTS = [
     caption: 'First launch — create or import an identity.',
   },
   {
+    out: 'create-unavailable',
+    scenario: 'foreign-pds',
+    steps: [
+      { clickText: 'Create an identity' },
+      { clickText: 'Create identity' },
+      { fill: ['[aria-label="Server URL"]', 'https://foreign.pds.local'] },
+      // Not `clickText: 'Connect'` — that resolves to the screen's own "Connect to Custos"
+      // heading before it reaches the button.
+      { click: 'button:has-text("Connect")' },
+    ],
+    waitForText: "This server can't create identities",
+    caption:
+      'Pointed at a PDS that does not run the create ceremony, the flow says so up front and offers import instead.',
+    rareState: true,
+  },
+  {
     out: 'home',
     scenario: 'one-identity',
     waitForText: 'All identities secure',

@@ -20,6 +20,8 @@ import {
 /** The canonical wallet scenario names. */
 export type ScenarioName =
   | 'fresh-install'
+  | 'foreign-pds'
+  | 'unreachable-pds'
   | 'one-identity'
   | 'multi-identity'
   | 'alert-active'
@@ -43,6 +45,32 @@ export const DEFAULT_SCENARIO: ScenarioName = 'one-identity';
 /** Every scenario builder, keyed by name. */
 export const scenarios: Record<ScenarioName, () => WalletState> = {
   'fresh-install': () => emptyWalletState(),
+
+  /**
+   * A first launch pointed at a spec-compliant, non-Custos PDS: it advertises no Custos
+   * capabilities, so the create flow's gate closes at the config step and steers to import.
+   * This is the majority of the ecosystem (the reference PDS, bsky.social, rsky-pds), and
+   * the only scenario that reaches `CreateUnavailableScreen`.
+   */
+  'foreign-pds': () => {
+    const state = emptyWalletState();
+    // Reached, and it genuinely advertises nothing — the answer that closes the gate.
+    state.pdsCapabilities = { version: null, reached: true, capabilities: [] };
+    state.availableUserDomains = ['.foreign.pds.local'];
+    return state;
+  },
+
+  /**
+   * A host the capability probe could not reach. Indistinguishable from `foreign-pds`
+   * through the capability list alone — which is the point: the create-flow gate must
+   * show a retryable error here rather than telling the user their server cannot create
+   * identities, a claim it has no evidence for.
+   */
+  'unreachable-pds': () => {
+    const state = emptyWalletState();
+    state.pdsCapabilities = { version: null, reached: false, capabilities: [] };
+    return state;
+  },
 
   'one-identity': () => {
     const state = emptyWalletState();

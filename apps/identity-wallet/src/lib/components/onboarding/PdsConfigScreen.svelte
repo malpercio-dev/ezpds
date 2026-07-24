@@ -1,6 +1,12 @@
 <script lang="ts">
   import { onMount } from 'svelte';
-  import { savePdsUrl, getPdsUrl, type PdsConfigError } from '$lib/ipc';
+  import {
+    savePdsUrl,
+    getPdsUrl,
+    getPdsCapabilities,
+    hasPdsCapability,
+    type PdsConfigError,
+  } from '$lib/ipc';
   import OnboardingShell from '$lib/components/ui/OnboardingShell.svelte';
   import TextField from '$lib/components/ui/TextField.svelte';
   import Button from '$lib/components/ui/Button.svelte';
@@ -8,7 +14,20 @@
 
   const DEFAULT_PDS_URL = 'https://obsign.org';
 
-  let { onnext, onback = undefined }: { onnext: () => void; onback?: () => void } = $props();
+  let {
+    onnext,
+    oncreateunavailable,
+    onback = undefined,
+  }: {
+    onnext: () => void;
+    /**
+     * The configured server does not run the create ceremony. Called with the saved URL
+     * instead of `onnext`, so the flow can explain that here rather than letting the user
+     * fill in a claim code, an email, and a handle before a `/v1/*` call fails opaquely.
+     */
+    oncreateunavailable: (pdsUrl: string) => void;
+    onback?: () => void;
+  } = $props();
 
   let url = $state(DEFAULT_PDS_URL);
   let loading = $state(false);
@@ -40,8 +59,27 @@
   async function handleConnect() {
     error = undefined;
     loading = true;
+    const trimmed = url.trim();
     try {
-      await savePdsUrl(url.trim());
+      await savePdsUrl(trimmed);
+
+      // Ask the server what it can do before the user invests any typing in it.
+      // `save_pds_url` has already re-probed this host, so this reads a warm cache.
+      const capabilities = await getPdsCapabilities(trimmed);
+
+      // A host we could not ask is NOT a host that cannot create identities. Telling the
+      // user their server can't do this because the network blinked is a false accusation
+      // they have no way to tell apart from a true one, so it surfaces as a retryable
+      // error instead of the steer.
+      if (!capabilities.reached) {
+        error = "Could not check what this server supports. Check the URL and try again.";
+        return;
+      }
+
+      if (!hasPdsCapability(capabilities, 'createCeremony')) {
+        oncreateunavailable(trimmed);
+        return;
+      }
       onnext();
     } catch (e) {
       const err = e as PdsConfigError;

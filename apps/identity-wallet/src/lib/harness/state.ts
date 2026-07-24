@@ -270,9 +270,11 @@ export interface WalletState {
    * What the configured PDS advertises under `describeServer`'s `custos` extension.
    * Defaults to a fully-featured Custos, since that is what the fake host stands in for;
    * set `capabilities: []` (and `version: null`) from the console to drive the screens the
-   * way a reference PDS or bsky.social would — a host with no Custos capabilities at all.
+   * way a reference PDS or bsky.social would — a host with no Custos capabilities at all,
+   * which is what closes the create flow's gate. Set `reached: false` instead to model a
+   * host that could not be asked, which must NOT read as "advertises nothing".
    */
-  pdsCapabilities: { version: string | null; capabilities: string[] };
+  pdsCapabilities: { version: string | null; reached: boolean; capabilities: string[] };
   appearance: 'system' | 'light' | 'dark' | null;
   biometricEnabled: boolean;
   /**
@@ -302,6 +304,7 @@ export function emptyWalletState(): WalletState {
     availableUserDomains: ['.harness.pds.local'],
     pdsCapabilities: {
       version: '0.0.0-harness',
+      reached: true,
       capabilities: [
         'createCeremony',
         'escrow',

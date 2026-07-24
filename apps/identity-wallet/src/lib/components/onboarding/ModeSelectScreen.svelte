@@ -26,8 +26,14 @@
     </SealEmblem>
   {/snippet}
   <div class="actions">
-    <Button onclick={oncreate}>Add an identity</Button>
-    <Button variant="secondary" onclick={onimport}>Move an identity to another PDS</Button>
+    <!--
+      "Import" is a correction, not a rewording: this button starts the claim flow, which
+      takes custody of an identity that stays on its current server. Moving an identity to
+      another PDS is a different feature entirely, and it lives on the identity detail
+      screen. The old label sent people looking for import somewhere it was never offered.
+    -->
+    <Button onclick={oncreate}>Create an identity</Button>
+    <Button variant="secondary" onclick={onimport}>Import an identity</Button>
     <Button variant="secondary" onclick={onrecover}>Recover from backup shares</Button>
   </div>
 </OnboardingShell>

@@ -56,6 +56,17 @@ pub mod capability {
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ServerCapabilities {
+    /// Whether the host actually answered. False means the question was never asked — no
+    /// PDS configured, unreachable, or an unparseable response — and the empty capability
+    /// list below carries no information.
+    ///
+    /// Most gates should ignore this and simply read [`has`](Self::has): "advertises
+    /// nothing" and "could not be asked" both mean *do not offer this optional feature*,
+    /// which degrades safely. It exists for the gates that do not merely withhold a
+    /// feature but **tell the user something about their server** — the create-flow gate
+    /// states that the host cannot create identities, and saying that because the network
+    /// blinked would be a false accusation the user cannot distinguish from a real one.
+    pub reached: bool,
     /// The host's self-reported Custos version, if it reported one. Informational only —
     /// never parsed for comparison. Gate on capability names, not on version arithmetic.
     pub version: Option<String>,
@@ -65,7 +76,12 @@ pub struct ServerCapabilities {
 }
 
 impl ServerCapabilities {
-    /// A host that advertises nothing: a non-Custos PDS, or one that could not be probed.
+    /// A host that was never successfully asked: unreachable, unparseable, or not yet
+    /// configured. Advertises nothing *and* reports `reached: false`.
+    ///
+    /// Distinct from a host that answered with no `custos` object — that is a real answer
+    /// (see the [`From`] impl), and only it may be reported to the user as a fact about
+    /// their server.
     pub fn none() -> Self {
         Self::default()
     }
@@ -111,12 +127,16 @@ impl ServerCapabilities {
 
 impl From<Option<&CustosExtension>> for ServerCapabilities {
     fn from(extension: Option<&CustosExtension>) -> Self {
-        match extension {
-            Some(extension) => Self {
-                version: extension.version.clone(),
-                capabilities: extension.capabilities.clone(),
-            },
-            None => Self::none(),
+        // Both arms describe a host that answered describeServer, so both are `reached`.
+        // An absent `custos` object is a real answer — "this host advertises nothing", the
+        // correct reading of every implementation that is not Custos — and must not be
+        // conflated with never having got an answer at all.
+        Self {
+            reached: true,
+            version: extension.and_then(|extension| extension.version.clone()),
+            capabilities: extension
+                .map(|extension| extension.capabilities.clone())
+                .unwrap_or_default(),
         }
     }
 }
@@ -174,7 +194,8 @@ pub fn forget(pds_url: &str) {
 /// [`ServerCapabilities::none`] and is **not** cached — the answer is "we could not ask",
 /// and caching it would freeze a transient outage into a permanent verdict. Callers gating
 /// optional features degrade to standard-lexicon behavior, which is safe; a caller that
-/// needs to distinguish "unreachable" from "not offered" must probe reachability itself.
+/// must distinguish "unreachable" from "not offered" reads
+/// [`ServerCapabilities::reached`], which is false in exactly that case.
 pub async fn probe(client: &PdsClient, pds_url: &str) -> ServerCapabilities {
     if let Some(cached) = cached(pds_url) {
         return cached;
@@ -209,7 +230,12 @@ mod tests {
     #[test]
     fn absent_extension_means_no_capabilities() {
         let capabilities = ServerCapabilities::from(None::<&CustosExtension>);
-        assert_eq!(capabilities, ServerCapabilities::none());
+        // Every capability is withheld, but the host DID answer — so this is not the same
+        // value as `none()`, which means the question was never put to it. Only this one
+        // may be reported to the user as a fact about their server.
+        assert!(capabilities.reached);
+        assert_ne!(capabilities, ServerCapabilities::none());
+        assert!(!ServerCapabilities::none().reached);
         assert!(!capabilities.create_ceremony());
         assert!(!capabilities.escrow());
         assert!(!capabilities.sovereign_sessions());
@@ -290,7 +316,24 @@ mod tests {
         let url = "https://reference-pds.example.com";
         forget(url);
         record(url, None);
-        assert_eq!(cached(url), Some(ServerCapabilities::none()));
+        let cached = cached(url).expect("a real answer is cached");
+        assert!(cached.capabilities.is_empty());
+        // Cached as *reached*: the distinction has to survive the cache, or the first gate
+        // to read it back would mistake a reference PDS for a host it could not contact.
+        assert!(cached.reached);
         forget(url);
+    }
+
+    #[test]
+    fn an_unreachable_host_is_not_a_host_that_advertises_nothing() {
+        // The two look identical through `has`, and both correctly withhold every feature.
+        // They must stay distinguishable for the one caller that tells the user *why*.
+        let unreachable = ServerCapabilities::none();
+        let reached_but_bare = ServerCapabilities::from(None::<&CustosExtension>);
+
+        assert!(!unreachable.create_ceremony());
+        assert!(!reached_but_bare.create_ceremony());
+        assert!(!unreachable.reached);
+        assert!(reached_but_bare.reached);
     }
 }
