@@ -218,6 +218,13 @@ pub(crate) async fn run_backup_sweep(app: &tauri::AppHandle) {
         .list_identities()
         .unwrap_or_default();
 
+    // Blob first, then repo. A `BGProcessingTask` has a bounded time budget and iOS aborts the
+    // whole worker on expiration, so a pathologically large blob pass could exhaust the budget
+    // before the repo sweep starts. Both passes are incremental and idempotent, so a deferred
+    // repo pass simply completes on a later fire rather than being lost — self-correcting for the
+    // common case where each fire's blob work shrinks to the newly-added blobs. Making the order
+    // fair under sustained budget pressure (alternating which mirror leads per fire) would need
+    // durable cross-fire state and is left as a deliberate follow-up.
     let blob = run_sweep_with(
         &dids,
         |did| blob_backup::is_backup_enabled(did),
@@ -626,7 +633,7 @@ mod tests {
         );
     }
 
-    // AC2: the blob and repo opt-ins are honored independently. Over one shared DID list, each
+    // The blob and repo opt-ins are honored independently. Over one shared DID list, each
     // mirror's sweep selects only the identities opted into THAT mirror — a DID opted into blob
     // only is never repo-backed-up, and vice versa; a DID opted into both is swept by both.
     #[tokio::test]
