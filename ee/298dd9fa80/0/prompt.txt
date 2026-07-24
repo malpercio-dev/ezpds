@@ -1,0 +1,19 @@
+```warning: `swift-rs` (lib) generated 2 warnings (run `cargo fix --lib -p swift-rs` to apply 2 suggestions)
+warning: `swift-rs` (build script) generated 1 warning (1 duplicate)
+warning: `swift-rs` (lib) generated 2 warnings (2 duplicates)
+warning: `identity-wallet` (build script) generated 1 warning (1 duplicate)
+   Compiling identity-wallet v0.1.0 (/Users/jacob.zweifel/workspace/malpercio-dev/ezpds/apps/identity-wallet/src-tauri)
+    Finished `release` profile [optimized] target(s) in 15.71s
+note: Run script build phase 'Build Rust Code' will be run during every build because the option to run the script phase "Based on dependency analysis" is unchecked. (in target 'identity-wallet_iOS' from project 'identity-wallet')
+2026-06-24 19:28:47.874 xcodebuild[73617:15319263] [MT] IDEDistribution: -[IDEDistributionLogging _createLoggingBundleAtPath:]: Created bundle at path "/var/folders/6f/s0q439cd5qz6_w8ld1_hnz2m0000gn/T/identity-wallet_iOS_2026-06-24_19-28-47.874.xcdistributionlogs".
+error: exportArchive "Obsign.app" requires a provisioning profile.
+
+** EXPORT FAILED **
+
+       Error failed to export iOS app: command ["xcodebuild"] exited with code 70
+error: Recipe `ios-ipa` failed on line 92 with exit code 1
+  "CFBundleURLTypes" => [
+    0 => {
+      "CFBundleURLName" => "dev.malpercio.identitywallet"
+      "CFBundleURLSchemes" => [
+        0 => "dev.malpercio.identitywallet"```
