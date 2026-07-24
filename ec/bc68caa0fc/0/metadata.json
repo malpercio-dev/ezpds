@@ -1,0 +1,106 @@
+{
+  "cli_version": "0.8.42",
+  "checkpoint_id": "ecbc68caa0fc",
+  "session_id": "a66a6600-6c09-4c65-9fba-00721a86f773",
+  "strategy": "manual-commit",
+  "created_at": "2026-07-24T19:03:23.772781Z",
+  "branch": "claude/mode-select-create-import-identity-984626",
+  "checkpoints_count": 1,
+  "save_step_count": 1,
+  "files_touched": [
+    "apps/identity-wallet/AGENTS.md",
+    "apps/identity-wallet/src-tauri/src/lib.rs",
+    "apps/identity-wallet/src/lib/components/onboarding/CreateUnavailableScreen.svelte",
+    "apps/identity-wallet/src/lib/components/onboarding/ModeSelectScreen.svelte",
+    "apps/identity-wallet/src/lib/components/onboarding/PdsConfigScreen.svelte",
+    "apps/identity-wallet/src/lib/harness/proxy/account.ts",
+    "apps/identity-wallet/src/lib/harness/registry.ts",
+    "apps/identity-wallet/src/lib/harness/scenarios.ts",
+    "apps/identity-wallet/src/lib/harness/state.ts",
+    "apps/identity-wallet/src/lib/ipc/account.ts",
+    "apps/identity-wallet/src/routes/+page.svelte",
+    "changelog.d/mm-453.changed.md",
+    "sites/docs/public/screenshots/wallet/create-unavailable.png",
+    "sites/docs/public/screenshots/wallet/welcome.png",
+    "sites/docs/src/content/docs/operator/reference/ipc.md",
+    "sites/docs/src/content/docs/user/getting-started.md",
+    "sites/docs/src/content/docs/user/screens.md",
+    "tools/screenshots/shots.mjs"
+  ],
+  "agent": "Claude Code",
+  "model": "",
+  "turn_id": "89bcc99be56d",
+  "compact_transcript_start": 0,
+  "token_usage": {
+    "input_tokens": 244,
+    "cache_creation_tokens": 530636,
+    "cache_read_tokens": 29022603,
+    "output_tokens": 60601,
+    "api_call_count": 131
+  },
+  "skill_events_version": 1,
+  "skill_events": [
+    {
+      "id": "claude-skill-toolu_01M22PqxPNGMxjbudgWTR1os",
+      "event_type": "tool_invocation",
+      "skill": {
+        "name": "linear-workflow"
+      },
+      "source": {
+        "agent": "claude-code",
+        "signal": "skill_tool_use",
+        "confidence": "explicit"
+      },
+      "turn_id": "89bcc99be56d",
+      "transcript_anchor": {
+        "unit": "line",
+        "start": 18,
+        "end": 19,
+        "entry_ids": [
+          "04ee2f4e-70d3-49b4-a22f-1cc417e1f190"
+        ],
+        "tool_use_id": "toolu_01M22PqxPNGMxjbudgWTR1os"
+      },
+      "native": {
+        "tool_name": "Skill",
+        "tool_use_id": "toolu_01M22PqxPNGMxjbudgWTR1os"
+      },
+      "collapse": {
+        "target": "tool_pair",
+        "label": "Skill: linear-workflow",
+        "default_collapsed": true
+      }
+    }
+  ],
+  "session_metrics": {
+    "turn_count": 1
+  },
+  "initial_attribution": {
+    "calculated_at": "2026-07-24T19:03:23.652842Z",
+    "agent_lines": 357,
+    "agent_removed": 29,
+    "human_added": 0,
+    "human_modified": 0,
+    "human_removed": 0,
+    "total_committed": 357,
+    "total_lines_changed": 386,
+    "agent_percentage": 100,
+    "metric_version": 2
+  },
+  "prompt_attributions": [
+    {
+      "checkpoint_number": 1,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 0,
+      "agent_lines_removed": 0
+    },
+    {
+      "checkpoint_number": 2,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 357,
+      "agent_lines_removed": 29
+    }
+  ]
+}

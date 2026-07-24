@@ -1,0 +1,43 @@
+{
+  "cli_version": "0.8.42",
+  "checkpoint_id": "ecbc68caa0fc",
+  "strategy": "manual-commit",
+  "branch": "claude/mode-select-create-import-identity-984626",
+  "checkpoints_count": 1,
+  "files_touched": [
+    "apps/identity-wallet/AGENTS.md",
+    "apps/identity-wallet/src-tauri/src/lib.rs",
+    "apps/identity-wallet/src/lib/components/onboarding/CreateUnavailableScreen.svelte",
+    "apps/identity-wallet/src/lib/components/onboarding/ModeSelectScreen.svelte",
+    "apps/identity-wallet/src/lib/components/onboarding/PdsConfigScreen.svelte",
+    "apps/identity-wallet/src/lib/harness/proxy/account.ts",
+    "apps/identity-wallet/src/lib/harness/registry.ts",
+    "apps/identity-wallet/src/lib/harness/scenarios.ts",
+    "apps/identity-wallet/src/lib/harness/state.ts",
+    "apps/identity-wallet/src/lib/ipc/account.ts",
+    "apps/identity-wallet/src/routes/+page.svelte",
+    "changelog.d/mm-453.changed.md",
+    "sites/docs/public/screenshots/wallet/create-unavailable.png",
+    "sites/docs/public/screenshots/wallet/welcome.png",
+    "sites/docs/src/content/docs/operator/reference/ipc.md",
+    "sites/docs/src/content/docs/user/getting-started.md",
+    "sites/docs/src/content/docs/user/screens.md",
+    "tools/screenshots/shots.mjs"
+  ],
+  "sessions": [
+    {
+      "metadata": "/ec/bc68caa0fc/0/metadata.json",
+      "transcript": "/ec/bc68caa0fc/0/full.jsonl",
+      "compact_transcript": "/ec/bc68caa0fc/0/transcript.jsonl",
+      "content_hash": "/ec/bc68caa0fc/0/content_hash.txt",
+      "prompt": "/ec/bc68caa0fc/0/prompt.txt"
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 244,
+    "cache_creation_tokens": 530636,
+    "cache_read_tokens": 29022603,
+    "output_tokens": 60601,
+    "api_call_count": 131
+  }
+}

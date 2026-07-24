@@ -1,0 +1,60 @@
+Work on Linear issue MM-453:
+
+Suggested branch name: malpercio/mm-453-phase-0a-mode-select-honesty-create-an-identity-import-an
+
+<issue identifier="MM-453">
+<title>Phase 0a: Mode-select honesty — "Create an identity" / "Import an identity" + non-Custos create gate</title>
+<description>
+Part of <issue id="d5cb6e3d-f781-4ecb-aebf-c954915b3708" href="https://linear.app/malpercio/issue/MM-452/obsign-without-custos-first-class-any-pds-wallet-support-epic">MM-452</issue>. Design: `docs/design-plans/2026-07-24-obsign-without-custos.md` §Phase 0a.
+
+## Problem
+
+`ModeSelectScreen.svelte` currently offers:
+
+1. **"Add an identity"** → the create flow. Should read **"Create an identity"**.
+2. **"Move an identity to another PDS"** → actually launches the **claim flow** (identity_input → pds_auth → review_operation), which takes sovereign custody of an identity that *stays on its current PDS*. The label describes a different feature (outbound migration lives on the identity detail screen) and hides the exact flow that is the front door for non-Custos users. Should read **"Import an identity"**.
+3. "Recover from backup shares" — unchanged.
+
+Sharper problem behind (1): `PdsConfigScreen` accepts any PDS URL, but the create flow is Custos-structural (`POST /v1/accounts/mobile` claim-code redeem, then the `/v1/dids` genesis ceremony — standard `createAccount` never lets the client author rotation keys). Pointing the config at a reference PDS today fails later with an opaque error.
+
+## Acceptance criteria
+
+1. Button copy updated as above; harness scenarios/tests and docs screenshots that assert the old strings updated with it.
+2. When the configured PDS does not advertise the `createCeremony` Custos capability (per MM-454's probe; until that lands, gate on the probe's absence-of-`custos`-field fallback), the create flow entry explains honestly that creating a new identity requires a Custos server and steers to "Import an identity" instead — before the user has typed anything, not as a late network error.
+3. The steer is a calm redirect, not an upsell wall: importing from the configured PDS must remain one tap away.
+</description>
+<team name="Mal's Machinations"/>
+<label>Improvement</label>
+<label>Wave 9: Obsign Anywhere</label>
+<label>Mobile: Identity Wallet</label>
+<project name="ezpds">An easy-to-host PDS on the ATProtocol, MacOS. Grandma-approved.</project>
+<parent-issue identifier="MM-452">
+<id>d5cb6e3d-f781-4ecb-aebf-c954915b3708</id>
+<title>Obsign without Custos — first-class any-PDS wallet support (epic)</title>
+<description>
+## Strategy
+
+Broaden Obsign's market beyond Custos-hosted accounts: a user on the reference PDS, [bsky.social](<http://bsky.social>), or any spec-compliant PDS should get real, honest value from the wallet — Secure-Enclave root key, PLC monitoring + 72h override, user-held repo/media backup, self-held Shamir recovery — with Custos capabilities (escrow-assisted recovery, passwordless sovereign sessions, agents, wallet-confirmed consent) as the opt-in upgrade rather than a lock-in. Rescue and migration must never force a stressed user onto Custos.
+
+Design doc: `docs/design-plans/2026-07-24-obsign-without-custos.md` (survey of what already works without Custos, the ecosystem describeServer survey, the capability-extension design, and phase rationale).
+
+## As-built starting point (verified 2026-07-24, v0.8.1)
+
+Already works on any PDS today: the claim/import flow (device key → `rotationKeys[0]` via standard lexicons), PLC monitoring + recovery override ([plc.directory](<http://plc.directory>) only), repo + blob backup (public sync endpoints, no session), endpoint repair, sovereign share-based recovery (Shares 1+3), and disaster recovery **into a Custos destination**.
+
+Custos-locked today: create ceremony, Shamir generation/re-key (fused to `/v1/dids` + escrow), sovereign sessions (and everything downstream: app passwords, change handle, removal, blob restore), agents/consent, and the rescue/migration **destination** (finalize unconditionally mints `/v1/sessions/sovereign`).
+
+## Phases (one child issue each)
+
+* Phase 0a — mode-select honesty: "Create an identity" / "Import an identity" + non-Custos create gate
+* Phase 0b — `custos` capability extension in describeServer + self-identifying `_health`
+* Phase 0c — positioning + live validation of the any-PDS arc (claim → backup → rescue)
+* Phase 1 — self-held Shamir kit for foreign-hosted identities (escrow-less re-key)
+* Phase 2 — foreign-PDS session provider (password `createSession` unlock path)
+* Phase 3 — any-PDS rescue/migration destination (capability-gated finalize)
+
+Parked (needs its own design pass, deliberately not in this epic): "create-then-sovereignize" — creating a brand-new account on a reference PDS via standard `createAccount` then immediately running the claim ceremony.
+</description>
+</parent-issue>
+<issue-relations><related><issue-ref identifier="MM-455" title="Phase 0c: &quot;Obsign for any PDS&quot; positioning + live validation of the claim → backup → rescue arc"/></related></issue-relations>
+</issue>
