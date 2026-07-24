@@ -1,0 +1,110 @@
+## Context
+
+- Current git status: On branch malpercio/mm-293-claim-flow-sign-step-fails-for-any-fresh-identity-device-key
+Your branch is up to date with 'origin/main'.
+
+Changes not staged for commit:
+  (use "git add <file>..." to update what will be committed)
+  (use "git restore <file>..." to discard changes in working directory)
+	modified:   apps/identity-wallet/src-tauri/src/claim.rs
+
+no changes added to commit (use "git add" and/or "git commit -a")
+- Current git diff (staged and unstaged changes): diff --git a/apps/identity-wallet/src-tauri/src/claim.rs b/apps/identity-wallet/src-tauri/src/claim.rs
+index f9b72a42..749148b4 100644
+--- a/apps/identity-wallet/src-tauri/src/claim.rs
++++ b/apps/identity-wallet/src-tauri/src/claim.rs
+@@ -623,6 +623,35 @@ fn mentions_invalid_token(error: Option<&str>, message: &str) -> bool {
+         || haystack.contains("not authenticated")
+ }
+ 
++/// Register the claim DID in the `IdentityStore` (if not already) and return its device key.
++///
++/// The device key must exist BEFORE `submit_claim` registers the identity: this key goes at
++/// `rotationKeys[0]` of the operation the old PDS signs, and `IdentityStore` refuses key
++/// access for unregistered DIDs. Registering here (tolerating a prior partial claim's
++/// registration, the same tolerance `submit_claim` has) is what makes the sign step possible
++/// for a fresh identity. A store failure surfaces as `VerificationFailed` — it is a local
++/// keychain problem, never a network one.
++fn ensure_claim_device_key(did: &str) -> Result<crate::device_key::DevicePublicKey, ClaimError> {
++    use crate::identity_store::{IdentityStore, IdentityStoreError};
++
++    match IdentityStore.add_identity(did) {
++        Ok(()) | Err(IdentityStoreError::IdentityAlreadyExists) => {}
++        Err(e) => {
++            tracing::error!(did = %did, error = %e, "claim device-key registration failed");
++            return Err(ClaimError::VerificationFailed {
++                message: format!("failed to prepare device key: {}", e),
++            });
++        }
++    }
++
++    IdentityStore.get_or_create_device_key(did).map_err(|e| {
++        tracing::error!(did = %did, error = %e, "claim device-key creation failed");
++        ClaimError::VerificationFailed {
++            message: format!("failed to prepare device key: {}", e),
++        }
++    })
++}
++
+ /// Sign and verify a PLC operation.
+ ///
+ /// This command coordinates three systems:
+@@ -668,12 +697,8 @@ pub async fn sign_and_verify_claim(
+         )
+     }; // claim_state lock released here
+ 
+-    // Step 2: Look up the device key ID using IdentityStore
+-    let device_key = crate::identity_store::IdentityStore
+-        .get_or_create_device_key(&did)
+-        .map_err(|e| ClaimError::NetworkError {
+-            message: format!("failed to get device key: {}", e),
+-        })?;
++    // Step 2: Register the DID (if new) and get its device key.
++    let device_key = ensure_claim_device_key(&did)?;
+ 
+     let (verified_op, signed_op_json) = sign_and_verify_claim_impl(
+         pds_client_ref,
+@@ -2010,6 +2035,29 @@ mod tests {
+         (rotation.signed_op_json, device_key_id)
+     }
+ 
++    /// A FRESH claim DID (not yet registered — registration normally happens in
++    /// `submit_claim`, after the sign step) must still get a device key. The historical
++    /// bug: `get_or_create_device_key` on the unregistered DID returned `IdentityNotFound`,
++    /// mapped to NETWORK_ERROR, killing every first-time claim before any network call.
++    #[test]
++    fn ensure_claim_device_key_registers_fresh_did() {
++        crate::keychain::clear_for_test();
++        let did = "did:plc:freshclaimdevicekey";
++
++        let key = ensure_claim_device_key(did).expect("fresh DID must get a device key");
++
++        // Idempotent: a retry (or a prior partial claim) reuses the registration and key.
++        let again = ensure_claim_device_key(did).expect("existing registration is tolerated");
++        assert_eq!(key.multibase, again.multibase);
++        assert_eq!(key.key_id, again.key_id);
++
++        // The DID is now registered, so submit_claim's own add_identity tolerance applies.
++        let ids = crate::identity_store::IdentityStore
++            .list_identities()
++            .expect("list_identities");
++        assert!(ids.contains(&did.to_string()));
++    }
++
+     /// Test 1: Success path with device key at rotationKeys[0]
+     #[tokio::test]
+     async fn test_sign_and_verify_claim_success() {
+- Current branch: malpercio/mm-293-claim-flow-sign-step-fails-for-any-fresh-identity-device-key
+
+## Your task
+
+Based on the above changes:
+
+1. Create a new branch if on main
+2. Create a single commit with an appropriate message
+3. Push the branch to origin
+4. Create a pull request using `gh pr create`
+5. You have the capability to call multiple tools in a single response. You MUST do all of the above in a single message. Do not use any other tools or do anything else. Do not send any other text or messages besides these tool calls.
+
+
+ARGUMENTS: MM-293 fix: register claim DID before device-key lookup in sign_and_verify_claim; stop mapping store errors to NETWORK_ERROR
