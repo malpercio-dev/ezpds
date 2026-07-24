@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>bp3g3b00h</task-id>
+<tool-use-id>toolu_01JbpgiBaE8DjJJV72iuq25U</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-jacob-zweifel-workspace-malpercio-dev-ezpds/00ef4afd-87f5-4f84-908b-60302e7f879a/tasks/bp3g3b00h.output</output-file>
+<status>completed</status>
+<summary>Background command "Format crypto crate, rerun full ci-pds gate with explicit exit code" completed (exit code 0)</summary>
+</task-notification>
