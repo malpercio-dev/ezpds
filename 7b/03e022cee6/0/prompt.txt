@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>btkrl23ex</task-id>
+<tool-use-id>toolu_01FkyUu1qUQJXoaEBMkPioHN</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-jacob-zweifel-workspace-malpercio-dev-ezpds/60cbbe54-5381-4469-9f8b-9eef34e30a06/tasks/btkrl23ex.output</output-file>
+<status>completed</status>
+<summary>Background command "iOS-target lib build (compile proof of edited pds_client.rs)" completed (exit code 0)</summary>
+</task-notification>
