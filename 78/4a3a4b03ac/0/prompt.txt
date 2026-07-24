@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>busp4k7um</task-id>
+<tool-use-id>toolu_011ujTP9x3LJLeCyKaezaqfL</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-jacob-zweifel-workspace-malpercio-dev-ezpds/71f6ffbc-79f4-41fc-888b-ca6e6aca1fed/tasks/busp4k7um.output</output-file>
+<status>completed</status>
+<summary>Background command "Poll staging health until it reports 0.5.0" completed (exit code 0)</summary>
+</task-notification>
