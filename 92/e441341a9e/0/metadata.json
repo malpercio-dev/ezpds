@@ -1,0 +1,81 @@
+{
+  "cli_version": "0.8.42",
+  "checkpoint_id": "92e441341a9e",
+  "session_id": "3ad2ffdc-4a7c-4c14-996c-80e8a7eeff7b",
+  "strategy": "manual-commit",
+  "created_at": "2026-07-24T16:48:56.271125Z",
+  "branch": "claude/wallet-repo-backup-bgprocessingtask-e684df",
+  "checkpoints_count": 1,
+  "files_touched": [
+    "apps/identity-wallet/src-tauri/src/repo_backup.rs",
+    "apps/identity-wallet/src-tauri/src/bg_backup.rs",
+    "changelog.d/mm-449.added.md",
+    "apps/identity-wallet/AGENTS.md"
+  ],
+  "agent": "Claude Code",
+  "model": "",
+  "turn_id": "da8eff8c14e0",
+  "compact_transcript_start": 0,
+  "token_usage": {
+    "input_tokens": 102,
+    "cache_creation_tokens": 270010,
+    "cache_read_tokens": 11335951,
+    "output_tokens": 51918,
+    "api_call_count": 56
+  },
+  "skill_events_version": 1,
+  "skill_events": [
+    {
+      "id": "claude-skill-toolu_017x4UnzKKo8eCM874aesfBV",
+      "event_type": "tool_invocation",
+      "skill": {
+        "name": "linear-workflow"
+      },
+      "source": {
+        "agent": "claude-code",
+        "signal": "skill_tool_use",
+        "confidence": "explicit"
+      },
+      "turn_id": "da8eff8c14e0",
+      "transcript_anchor": {
+        "unit": "line",
+        "start": 19,
+        "end": 20,
+        "entry_ids": [
+          "e6d118c3-ee6b-42cf-a37e-bf3423efe546"
+        ],
+        "tool_use_id": "toolu_017x4UnzKKo8eCM874aesfBV"
+      },
+      "native": {
+        "tool_name": "Skill",
+        "tool_use_id": "toolu_017x4UnzKKo8eCM874aesfBV"
+      },
+      "collapse": {
+        "target": "tool_pair",
+        "label": "Skill: linear-workflow",
+        "default_collapsed": true
+      }
+    }
+  ],
+  "initial_attribution": {
+    "calculated_at": "2026-07-24T16:48:56.220647Z",
+    "agent_lines": 178,
+    "agent_removed": 37,
+    "human_added": 0,
+    "human_modified": 0,
+    "human_removed": 0,
+    "total_committed": 178,
+    "total_lines_changed": 215,
+    "agent_percentage": 100,
+    "metric_version": 2
+  },
+  "prompt_attributions": [
+    {
+      "checkpoint_number": 1,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 0,
+      "agent_lines_removed": 0
+    }
+  ]
+}

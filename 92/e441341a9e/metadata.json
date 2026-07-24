@@ -1,0 +1,29 @@
+{
+  "cli_version": "0.8.42",
+  "checkpoint_id": "92e441341a9e",
+  "strategy": "manual-commit",
+  "branch": "claude/wallet-repo-backup-bgprocessingtask-e684df",
+  "checkpoints_count": 1,
+  "files_touched": [
+    "apps/identity-wallet/AGENTS.md",
+    "apps/identity-wallet/src-tauri/src/bg_backup.rs",
+    "apps/identity-wallet/src-tauri/src/repo_backup.rs",
+    "changelog.d/mm-449.added.md"
+  ],
+  "sessions": [
+    {
+      "metadata": "/92/e441341a9e/0/metadata.json",
+      "transcript": "/92/e441341a9e/0/full.jsonl",
+      "compact_transcript": "/92/e441341a9e/0/transcript.jsonl",
+      "content_hash": "/92/e441341a9e/0/content_hash.txt",
+      "prompt": ""
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 102,
+    "cache_creation_tokens": 270010,
+    "cache_read_tokens": 11335951,
+    "output_tokens": 51918,
+    "api_call_count": 56
+  }
+}
