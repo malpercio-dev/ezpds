@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>bawcdhj27</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-jacob-zweifel-workspace-malpercio-dev-ezpds/60cbbe54-5381-4469-9f8b-9eef34e30a06/tasks/bawcdhj27.output</output-file>
+<status>completed</status>
+<summary>Background command "Run the new host test with SDKROOT workaround" completed (exit code 0)</summary>
+</task-notification>
