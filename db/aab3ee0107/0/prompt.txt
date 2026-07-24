@@ -1,1 +1,0 @@
-btw, which custos will the bring my identity flow migrate to? I have a production identity registered right now, and iirc, for this test, we want to migrate to staging first. will I have the opportunity to input the server address in the flow?
