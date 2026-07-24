@@ -15,3 +15,4 @@ Custos advertises these under the `custos` extension object of `com.atproto.serv
 | `agents` | The auth.md agent surface: agent registration, the owner-confirmed claim ceremony, and agent-derived access tokens. | `agent_auth.service_auth_enabled`, `agent_auth.anonymous_enabled`, `agent_auth.trusted_issuers` |
 | `walletConsent` | OAuth authorization can be approved in the identity wallet with a device-key-signed decision instead of a browser password. | Always offered |
 | `didWebHosting` | Custos serves an opted-in account's did:web document at the account's own domain and propagates edits to relays. | Always offered |
+| `waitlist` | Public interest-signup waitlist: unauthenticated email (+ optional atproto handle) signups a marketing page can post to, readable back by the operator. | `waitlist.enabled` |

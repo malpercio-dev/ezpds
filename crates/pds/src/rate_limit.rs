@@ -148,6 +148,10 @@ impl RateLimiterState {
         let consent_action = per_5min(cfg.oauth_consent_action_per_5min);
         endpoints.insert("/oauth/authorize/consent-request", consent_action.clone());
         endpoints.insert("/oauth/authorize/approve", consent_action);
+        // The public waitlist signup: unauthenticated and row-writing, so it gets its own
+        // tight per-IP cap on top of the global one (no shared instance — nothing else
+        // consumes its budget).
+        endpoints.insert("/waitlist", per_5min(cfg.waitlist_per_5min));
 
         Self {
             enabled: cfg.enabled,

@@ -24,6 +24,7 @@ use crate::routes::admin_relay_status::relay_status;
 use crate::routes::admin_request_crawl::request_crawl;
 use crate::routes::admin_revoke_credentials::revoke_account_credentials;
 use crate::routes::admin_transfers::{cancel_admin_transfer, list_admin_transfers};
+use crate::routes::admin_waitlist::admin_waitlist;
 use crate::routes::agent_child::{delete_child, list_children, mint_child, revoke_child};
 use crate::routes::agent_claim::{post_agent_claim, post_agent_claim_confirm};
 use crate::routes::agent_event::post_agent_event;
@@ -130,6 +131,7 @@ use crate::routes::update_email::update_email;
 use crate::routes::update_handle::update_handle_handler;
 use crate::routes::update_subject_status::update_subject_status;
 use crate::routes::upload_blob::upload_blob;
+use crate::routes::waitlist_signup::waitlist_signup;
 #[cfg(test)]
 pub(crate) use crate::state::test_state;
 #[cfg(test)]
@@ -265,6 +267,10 @@ pub fn app(state: AppState) -> Router {
             post(post_agent_claim_confirm),
         )
         .route("/agent/event/notify", post(post_agent_event))
+        // Public + credential-free by design (the `waitlist` capability): a marketing
+        // page on another origin posts here, so it belongs on this CORS'd group, not
+        // `/v1/*`. The handler itself 404s unless `[waitlist] enabled`.
+        .route("/waitlist", post(waitlist_signup))
         .route("/xrpc/_health", get(health))
         .route(
             "/xrpc/com.atproto.server.describeServer",
@@ -523,6 +529,7 @@ pub fn app(state: AppState) -> Router {
             post(revoke_account_credentials),
         )
         .route("/v1/admin/transfers", get(list_admin_transfers))
+        .route("/v1/admin/waitlist", get(admin_waitlist))
         .route(
             "/v1/admin/transfers/{id}/cancel",
             post(cancel_admin_transfer),

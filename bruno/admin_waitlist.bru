@@ -1,0 +1,36 @@
+meta {
+  name: Admin Waitlist (operator signup readout)
+  type: http
+  seq: 134
+}
+
+get {
+  url: {{baseUrl}}/v1/admin/waitlist?limit=50
+  body: none
+  auth: bearer
+}
+
+params:query {
+  limit: 50
+  ~cursor:
+}
+
+auth:bearer {
+  token: {{adminToken}}
+}
+
+docs {
+  # GET /v1/admin/waitlist
+
+  Operator readout of the public interest-signup waitlist: every signup, newest
+  first, with the total count. Available even when `[waitlist] enabled` has since
+  been switched off (it reads data already collected).
+
+  Query: `limit` (default 50, max 100), `cursor` (opaque rowid cursor from the
+  previous page; present in the response only when the page was full).
+
+  Response: `{ "signups": [{ "email", "handle"?, "createdAt" }], "total", "cursor"? }`.
+
+  Auth: admin (master token or device signature); the signature covers the bare
+  path, so paging params vary without re-signing.
+}

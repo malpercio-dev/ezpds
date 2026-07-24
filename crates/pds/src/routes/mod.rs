@@ -12,6 +12,7 @@ pub mod admin_request_crawl;
 pub mod admin_revoke_credentials;
 mod admin_subject_defs;
 pub mod admin_transfers;
+pub mod admin_waitlist;
 pub mod agent_child;
 pub mod agent_claim;
 pub mod agent_event;
@@ -109,6 +110,7 @@ pub mod update_email;
 pub mod update_handle;
 pub mod update_subject_status;
 pub mod upload_blob;
+pub mod waitlist_signup;
 
 mod preference_scope;
 

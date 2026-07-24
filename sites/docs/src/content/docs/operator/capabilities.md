@@ -154,6 +154,24 @@ holder's decision. Exit is a DNS repoint away.
 Custos and has no operator switch; whether any given account uses it is that
 account holder's choice.
 
+### `waitlist`
+
+A public interest-signup waitlist for a pre-launch deployment: an unauthenticated
+`POST /waitlist` accepting an email address plus an optional atproto handle, meant
+to be posted to directly from a marketing page on another origin (the endpoint is
+CORS-open and carries no credentials). Signups are idempotent per email — a repeat
+returns the same success and never discloses whether an address was already on the
+list — and the handle is syntax-checked but deliberately never resolved, so the
+endpoint has no outbound-request surface. The operator reads the list back with
+`GET /v1/admin/waitlist` (newest first, with a total), which keeps working even
+after the public endpoint is switched off again.
+
+**Controlled by:** `waitlist.enabled`. Off by default — an instance that isn't
+running a launch funnel should not carry a public write endpoint it never asked
+for. Enable it with `[waitlist] enabled = true` (`EZPDS_WAITLIST_ENABLED`) and the
+capability appears; the per-IP signup rate cap is `rate_limit.waitlist_per_5min`
+(`EZPDS_RATE_LIMIT_WAITLIST_PER_5MIN`, default 30).
+
 ## Keeping this page honest
 
 The capability table in the server source

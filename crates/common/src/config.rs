@@ -67,6 +67,8 @@ pub struct Config {
     pub accounts: AccountsConfig,
     /// Escrow-assisted recovery knobs (the cancellable release-delay window).
     pub recovery: RecoveryConfig,
+    /// Public interest-signup waitlist (the `waitlist` capability). Off by default.
+    pub waitlist: WaitlistConfig,
     /// Operator companion-app admin-device knobs (the stale-nonce sweep interval
     /// and retention).
     pub admin_devices: AdminDevicesConfig,
@@ -385,6 +387,21 @@ fn default_release_delay_secs() -> u64 {
     24 * 60 * 60 // 24 hours
 }
 
+/// Public interest-signup waitlist configuration.
+///
+/// The waitlist is a pre-launch interest capture surface: a public, unauthenticated
+/// `POST /waitlist` (email + optional atproto handle) an operator can point a marketing
+/// page at, with the entries readable back through `GET /v1/admin/waitlist`. Off by
+/// default — an operator who runs an open or invite-only instance without a launch
+/// funnel should not carry a public write endpoint they never asked for.
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct WaitlistConfig {
+    /// Enable the public waitlist signup endpoint (and advertise the `waitlist`
+    /// capability). Default `false`.
+    #[serde(default)]
+    pub enabled: bool,
+}
+
 /// Clock-skew tolerance for admin device signed-request timestamps, in seconds: a request's
 /// claimed `timestamp` verifies at any relay clock within `timestamp ±
 /// ADMIN_TIMESTAMP_WINDOW_SECS` (see `pds::auth::guards::verify_signed_request`). Lives here
@@ -541,6 +558,11 @@ pub struct RateLimitConfig {
     /// guess budget. `0` disables.
     #[serde(default = "default_oauth_consent_action_per_5min")]
     pub oauth_consent_action_per_5min: u64,
+    /// Public waitlist signups (`POST /waitlist`) per IP per 5 minutes. Default 30: the endpoint
+    /// is unauthenticated and writes a row per novel email, so it warrants a tight per-endpoint
+    /// cap on top of the global one. `0` disables.
+    #[serde(default = "default_waitlist_per_5min")]
+    pub waitlist_per_5min: u64,
     /// Repo-write points per account per hour (reference: 5000). `0` disables the hourly budget.
     #[serde(default = "default_write_points_hourly")]
     pub write_points_hourly: u64,
@@ -563,6 +585,7 @@ impl Default for RateLimitConfig {
             recovery_per_5min: default_recovery_per_5min(),
             oauth_consent_create_per_5min: default_oauth_consent_create_per_5min(),
             oauth_consent_action_per_5min: default_oauth_consent_action_per_5min(),
+            waitlist_per_5min: default_waitlist_per_5min(),
             write_points_hourly: default_write_points_hourly(),
             write_points_daily: default_write_points_daily(),
         }
@@ -602,6 +625,10 @@ fn default_agent_claim_confirm_per_5min() -> u64 {
 }
 
 fn default_recovery_per_5min() -> u64 {
+    30
+}
+
+fn default_waitlist_per_5min() -> u64 {
     30
 }
 
@@ -1245,6 +1272,8 @@ pub(crate) struct RawConfig {
     #[serde(default)]
     pub(crate) recovery: RecoveryConfig,
     #[serde(default)]
+    pub(crate) waitlist: WaitlistConfig,
+    #[serde(default)]
     pub(crate) admin_devices: AdminDevicesConfig,
     #[serde(default)]
     pub(crate) oauth: OAuthConfig,
@@ -1524,6 +1553,9 @@ pub(crate) fn apply_env_overrides(
         raw.rate_limit.oauth_consent_action_per_5min =
             parse_u64("EZPDS_RATE_LIMIT_OAUTH_CONSENT_ACTION_PER_5MIN", v)?;
     }
+    if let Some(v) = env.get("EZPDS_RATE_LIMIT_WAITLIST_PER_5MIN") {
+        raw.rate_limit.waitlist_per_5min = parse_u64("EZPDS_RATE_LIMIT_WAITLIST_PER_5MIN", v)?;
+    }
     if let Some(v) = env.get("EZPDS_RATE_LIMIT_WRITE_POINTS_HOURLY") {
         raw.rate_limit.write_points_hourly = parse_u64("EZPDS_RATE_LIMIT_WRITE_POINTS_HOURLY", v)?;
     }
@@ -1597,6 +1629,9 @@ pub(crate) fn apply_env_overrides(
     }
     if let Some(v) = env.get("EZPDS_LABELER_POLL_INTERVAL_SECS") {
         raw.labeler.poll_interval_secs = parse_u64("EZPDS_LABELER_POLL_INTERVAL_SECS", v)?;
+    }
+    if let Some(v) = env.get("EZPDS_WAITLIST_ENABLED") {
+        raw.waitlist.enabled = parse_bool_env("EZPDS_WAITLIST_ENABLED", v)?;
     }
     // Agent-auth (auth.md) scalar/bool overrides. The issuer trust list is a list of structs
     // (each carrying a PEM key or a JWKS URL), which does not map to a flat env var — it stays
@@ -2222,6 +2257,7 @@ pub(crate) fn validate_and_build(raw: RawConfig) -> Result<Config, ConfigError> 
         firehose: raw.firehose,
         accounts: raw.accounts,
         recovery: raw.recovery,
+        waitlist: raw.waitlist,
         admin_devices: raw.admin_devices,
         oauth: raw.oauth,
         agent_auth: raw.agent_auth,
@@ -2733,6 +2769,28 @@ mod tests {
         let raw = apply_env_overrides(minimal_raw(), &env).unwrap();
         let config = validate_and_build(raw).unwrap();
         assert!(config.agent_auth.service_auth_enabled);
+    }
+
+    #[test]
+    fn waitlist_defaults_to_disabled() {
+        let config = validate_and_build(minimal_raw()).unwrap();
+        assert!(!config.waitlist.enabled);
+        assert_eq!(config.rate_limit.waitlist_per_5min, 30);
+    }
+
+    #[test]
+    fn waitlist_env_override_enables() {
+        let env = HashMap::from([
+            ("EZPDS_WAITLIST_ENABLED".to_string(), "true".to_string()),
+            (
+                "EZPDS_RATE_LIMIT_WAITLIST_PER_5MIN".to_string(),
+                "10".to_string(),
+            ),
+        ]);
+        let raw = apply_env_overrides(minimal_raw(), &env).unwrap();
+        let config = validate_and_build(raw).unwrap();
+        assert!(config.waitlist.enabled);
+        assert_eq!(config.rate_limit.waitlist_per_5min, 10);
     }
 
     #[test]

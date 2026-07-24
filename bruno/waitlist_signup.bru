@@ -1,0 +1,41 @@
+meta {
+  name: Waitlist signup (POST /waitlist)
+  type: http
+  seq: 133
+}
+
+post {
+  url: {{baseUrl}}/waitlist
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "email": "alice@example.com",
+    "handle": "alice.bsky.social"
+  }
+}
+
+vars:pre-request {
+  baseUrl: http://localhost:8080
+}
+
+docs {
+  # POST /waitlist
+
+  Public interest-signup endpoint (the `waitlist` capability). Unauthenticated and
+  CORS-open by design: an operator's marketing page posts to it cross-origin.
+
+  Request: `email` (required), `handle` (optional atproto handle; a leading `@` is
+  tolerated, syntax-validated only — never resolved).
+
+  Responses:
+  - `200 { "status": "ok" }` — for a new signup *and* a repeat of the same email
+    (idempotent; no already-signed-up oracle).
+  - `400 INVALID_REQUEST` — implausible email; `400 InvalidHandle` — malformed handle.
+  - `404 NOT_FOUND` — `[waitlist] enabled` is off (the capability is not offered).
+
+  Rate limit: per-IP `[rate_limit] waitlist_per_5min` (default 30) on top of the
+  global limiter.
+}
