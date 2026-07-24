@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>byjsgrgk0</task-id>
+<tool-use-id>toolu_01CFYk2sikNACWK2kFc6YVuk</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-jacob-zweifel-workspace-malpercio-dev-ezpds/cead9993-b6df-435d-9881-b381a7fc7d57/tasks/byjsgrgk0.output</output-file>
+<status>failed</status>
+<summary>Background command "Watch production CI then poll prod health for 0.8.0" failed with exit code 1</summary>
+</task-notification>
