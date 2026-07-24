@@ -1,0 +1,97 @@
+<task-notification>
+<task-id>aaea0481499b8307f</task-id>
+<tool-use-id>toolu_01SaSu247EWvy6yDUUcHsohv</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-jacob-zweifel-workspace-malpercio-dev-ezpds--claude-worktrees-exciting-ardinghelli-6e9eeb/ee686e48-6c83-4e5b-a0fa-53ae45617a1e/tasks/aaea0481499b8307f.output</output-file>
+<status>completed</status>
+<summary>Agent "Final holistic review of read-after-write" finished</summary>
+<note>A task-notification fires each time this agent stops with no live background children of its own. The user can send it another message and resume it, so the same task-id may notify more than once.</note>
+<result># Code Review: Read-After-Write (Final Holistic Pass, all 7 phases)
+
+## Status
+**CHANGES REQUIRED** (one Minor code-hygiene issue; feature is otherwise correct and complete)
+
+## Issue Summary
+**Critical: 0 | Important: 0 | Minor: 1**
+
+## Verification Evidence
+```
+Full pds suite (pre-verified by caller): 1350 passed, 0 failed
+Build (this review):  cargo build -p pds --manifest-path &lt;worktree&gt; → Finished, exit 0
+Clippy probe (this review): stripped ALL #[allow(dead_code)]/#[allow(unused_imports)]
+   from read_after_write/{mod,viewer,types}.rs → cargo clippy -p pds --all-targets → 0 warnings, EXIT 0
+   (files restored afterward; git status --porcelain clean)
+HEAD confirmed: 08cde61a43640ef6929fea5ce3a1b36e77ab1eb0
+```
+
+## AC Coverage Table (every AC → covering test)
+
+| AC | Covering test(s) | File |
+|----|------------------|------|
+| AC1.1 | `get_timeline_ac1_1_injects_local_post_at_top` | munge.rs |
+| AC1.2 | `get_author_feed_ac1_2_injects_own_posts_when_actor_is_requester` | munge.rs |
+| AC1.3 | `get_actor_likes_ac1_3_refreshes_author_only` | munge.rs |
+| AC1.4 | `post_view_includes_author_and_zero_counts` | viewer.rs |
+| AC1.5 | `post_view_hydrates_image_embed_locally`, `post_view_hydrates_external_embed_locally` | viewer.rs |
+| AC1.6 | `get_author_feed_ac1_6_no_injection_for_other_actor` | munge.rs |
+| AC1.7 | `get_timeline_ac1_7_multiple_posts_chronological_order` (+ `insert_posts_in_feed_maintains_chronological_order`) | munge.rs / viewer.rs |
+| AC2.1 | `test_pipethrough_munged_ac2_1_stale_appview_plus_fresh_local_profile` | mod.rs |
+| AC2.2 | `test_pipethrough_munged_ac2_2_getprofiles_overwrites_requester_only` (+ `get_profiles_overwrites_requester_only`) | mod.rs / munge.rs |
+| AC2.3 | `update_profile_detailed_overwrites_all_fields` | viewer.rs |
+| AC2.4 | `image_url_formats_correctly` (+ `extract_blob_cid_parses_link_correctly`) | viewer.rs |
+| AC2.5 | `test_pipethrough_munged_ac2_5_no_local_profile` | mod.rs |
+| AC3.1 | `test_pipethrough_munged_ac3_1_getpostthread_notfound_reconstructs` | mod.rs |
+| AC3.2 | `test_pipethrough_munged_ac3_2_getpostthread_splices_own_replies` | mod.rs |
+| AC3.3 | `test_pipethrough_munged_ac3_3_getpostthread_other_user_unchanged` | mod.rs |
+| AC4.1 | `test_pipethrough_munged_ac4_1_non_json_body_passthrough` | mod.rs |
+| AC4.2 | `test_pipethrough_munged_ac4_2_quote_post_with_failed_get_posts` (+ `hydrate_quotes_degrades_to_empty_on_appview_5xx`) | mod.rs / viewer.rs |
+| AC4.3 | `local_lag_ms_returns_some_for_records_with_indexed_at`, `local_lag_ms_picks_oldest_among_posts`, `local_lag_ms_returns_none_for_empty_records` | mod.rs |
+| AC4.4 | `test_pipethrough_munged_ac4_4_no_lag_when_current` | mod.rs |
+| AC5.1 | `test_get_records_since_rev_ac5_1_returns_records_after_header_rev` | mod.rs |
+| AC5.2 | `test_get_records_since_rev_ac5_2_excludes_deleted_records` | mod.rs |
+| AC5.3 | `test_get_records_since_rev_ac5_3_none_header_rev_returns_empty` | mod.rs |
+| AC5.1-support | `recent_commits_for_did_returns_did_commits_newest_first`, `_respects_limit`, `_returns_empty_for_nonexistent_did` | db/firehose_seq.rs |
+| AC6.1 | `post_view_hydrates_image_embed_locally`, `post_view_hydrates_external_embed_locally` (+ `record_with_media_embed_nests_full_record_view_and_media`) | viewer.rs |
+| AC6.2 | `hydrate_quotes_fetches_from_appview_and_populates_map` (success) + `record_embed_view_not_found_when_quote_missing` / `hydrate_quotes_degrades_to_empty_on_appview_5xx` (failure) | viewer.rs |
+| AC7.1 | `non_munged_appbsky_nsid_streams_verbatim` (+ `read_after_write_nsids_return_appview_response_verbatim` seam) | service_proxy.rs |
+
+**All 27 ACs + the AC5.1-support case are covered. No AC is NOT COVERED.** The 5 flagged live checks (HV-1…HV-5) remain human-verification items by design and are correctly documented as such in test-requirements.md.
+
+## Cross-Phase Integration Findings (the point of this pass)
+
+**1. Dispatch completeness/correctness — CLEAN.** `READ_AFTER_WRITE_NSIDS` (`app.rs:482-489`) and the `match nsid` in `pipethrough_munged` (`mod.rs:417-430`) are a byte-exact 1:1 mapping over the same six NSIDs. Each is routed to its correct munge; no NSID is branched-but-unmatched or matched-but-unbranched. The `_ =&gt; parsed` arm is unreachable in production (app.rs gates entry on the same set) but is a correct defensive default.
+
+**2. Fallback ladder ↔ munge composition — CLEAN.** Every munge returns a `serde_json::Value` that the shared serialize+respond tail (`mod.rs:433-475`) handles uniformly. The `getPostThread` 400→200 override (`mod.rs:451-458`) is correctly triple-gated on `is_thread_not_found &amp;&amp; status.is_client_error() &amp;&amp; reconstructed`, where `reconstructed` re-reads `munged["thread"]` non-null. I specifically checked for a *second* status-path contradiction beyond the Phase 6 non-local regression: there is none. A NotFound whose `thread` munge leaves the body as the error envelope (non-local uri) keeps `reconstructed == false` → status stays 400; the dedicated regression test `..._nonlocal_notfound_stays_400` locks this.
+
+**3. Shared param threading — CLEAN.** `actor` and `uri` are both extracted (`mod.rs:257-258`) *before* `req` is moved into `proxy_request`, then passed to exactly the munges that need them (`get_author_feed` ← `actor`, `get_post_thread` ← `uri`). No production munge silently receives `None`/`""` where a value existed. The `Atproto-Upstream-Lag` header is attached only on the merged tail (reached only when `local.count &gt; 0`), consistently across all six munges including `getActorLikes` (author-refresh-only), matching "set only when merged."
+
+**4. Stale `#[allow(dead_code)]` across the completed module — MINOR (the one finding).** See below.
+
+**5. FCIS pattern comments — CLEAN.** All four files carry accurate pattern comments: `mod.rs` Imperative Shell, `viewer.rs` Imperative Shell, `types.rs` Functional Core, `munge.rs` Mixed (unavoidable) with an honest justification of why the feed/thread munges can't be a pure core. Consistent with `crates/pds/CLAUDE.md`.
+
+## Minor Issues (count: 1)
+
+- **Issue**: ~21 stale `#[allow(dead_code)]` (and one `#[allow(unused_imports)]`) attributes remain across the fully-integrated module. They were phased scaffolding — each phase added code before its caller existed — and are now unnecessary because every annotated item is reachable from the integrated `pipethrough_munged` dispatch (e.g. `profile_view_basic` is called by `post_view` at `viewer.rs:151`; `update_profile_view` by `update_profile_detailed` at `viewer.rs:92`; `get_records_since_rev`/`local_lag_ms`/`LocalViewer::*`/`hydrate_quotes`/`insert_posts_in_feed` all reachable from `app.rs:561`).
+- **Location**: `crates/pds/src/read_after_write/mod.rs` (lines 12, 40, 173), `viewer.rs` (24, 39, 63, 90, 107, 128, 136, 145, 166, 180, 204, 226, 258, 273, 356, 379), `types.rs` (5, 17).
+- **Impact**: Hygiene only — no runtime effect. But stale blanket `#[allow(dead_code)]` is a latent maintenance hazard: it will silently mask a *genuinely* dead item added later, defeating the lint on this module going forward.
+- **Fix**: Remove all `#[allow(dead_code)]`/`#[allow(unused_imports)]` from the three files. **Proven safe**: I stripped every one and ran `cargo clippy -p pds --all-targets` → 0 warnings, exit 0. The `pub use types::{LocalRecords, RecordDescript}` re-export at `mod.rs:12-13` likewise no longer needs its `#[allow(unused_imports)]` (the mod.rs test module and `local_lag_ms` consume both types).
+
+## Skills Applied
+- `writing-good-tests`: audited the new tests — they assert real behavior (HTTP-level wiremock integration + pure-function units), no mock-existence assertions, no test-only methods leaking into production, complete mock bodies mirroring the real lexicon shapes. The two deliberate reference-PDS divergences (`#viewNotFound`-instead-of-drop; getAuthorFeed actor-guard) are each pinned by both a positive and negative automated test.
+- Verification-before-completion: every claim above (dispatch parity, stale-allow staleness, AC mapping) is backed by a grep/build/clippy run, not inspection alone.
+
+## Decision
+
+**BLOCKED — CHANGES REQUIRED** (per this workflow's zero-issue gate).
+
+The read-after-write feature is functionally complete and correct: all 27 ACs are covered by automated tests, the six-NSID dispatch is exact, the fallback ladder composes cleanly with every munge, param threading and the lag-header invariant hold across all paths, and the FCIS pattern comments are accurate. The **only** finding is a single Minor code-hygiene item — remove the now-stale `#[allow(dead_code)]`/`#[allow(unused_imports)]` attributes from `read_after_write/{mod,viewer,types}.rs` (proven safe: clippy stays green with all of them removed). No Critical or Important issues beyond the already-fixed per-phase items.
+
+Relevant files:
+- `/Users/jacob.zweifel/workspace/malpercio-dev/ezpds/.claude/worktrees/exciting-ardinghelli-6e9eeb/crates/pds/src/read_after_write/mod.rs`
+- `/Users/jacob.zweifel/workspace/malpercio-dev/ezpds/.claude/worktrees/exciting-ardinghelli-6e9eeb/crates/pds/src/read_after_write/viewer.rs`
+- `/Users/jacob.zweifel/workspace/malpercio-dev/ezpds/.claude/worktrees/exciting-ardinghelli-6e9eeb/crates/pds/src/read_after_write/types.rs`
+- `/Users/jacob.zweifel/workspace/malpercio-dev/ezpds/.claude/worktrees/exciting-ardinghelli-6e9eeb/crates/pds/src/read_after_write/munge.rs`
+- `/Users/jacob.zweifel/workspace/malpercio-dev/ezpds/.claude/worktrees/exciting-ardinghelli-6e9eeb/crates/pds/src/app.rs` (dispatch, lines 482-562)
+- `/Users/jacob.zweifel/workspace/malpercio-dev/ezpds/.claude/worktrees/exciting-ardinghelli-6e9eeb/crates/pds/src/routes/service_proxy.rs` (`proxy_request` line 51, AC7.1 test line 1114)
+- `/Users/jacob.zweifel/workspace/malpercio-dev/ezpds/.claude/worktrees/exciting-ardinghelli-6e9eeb/crates/common/src/config.rs` (`cdn_url`, lines 329-362, 655)</result>
+<usage><subagent_tokens>167022</subagent_tokens><tool_uses>28</tool_uses><duration_ms>276003</duration_ms></usage>
+</task-notification>
