@@ -622,6 +622,32 @@ pub(crate) fn decide_migration_path(
 
 /// Fetch current PLC state and decide which migration path should be used.
 pub async fn detect_migration_path(pds_client: &PdsClient, did: &str) -> MigrationPathDecision {
+    // A did:web identity has no PLC audit log or rotationKeys to classify — its identity
+    // leg is the domain's did.json edit, which the wallet drives. Asking plc.directory
+    // would 404 and dead-end every did:web migration as CannotDetermine.
+    if did.starts_with("did:web:") {
+        let device_key_id = match IdentityStore.get_or_create_device_key(did) {
+            Ok(key) => Some(key.key_id),
+            Err(crate::identity_store::IdentityStoreError::IdentityNotFound) => None,
+            Err(e) => {
+                return MigrationPathDecision {
+                    path: MigrationPath::CannotDetermine,
+                    device_key_id: None,
+                    rotation_key_index: None,
+                    reason: format!("cannot load wallet device key: {e}"),
+                }
+            }
+        };
+        return MigrationPathDecision {
+            path: MigrationPath::SelfSigned,
+            device_key_id,
+            rotation_key_index: None,
+            reason:
+                "did:web identity: the identity leg is the domain's did.json edit, driven by the wallet"
+                    .to_string(),
+        };
+    }
+
     let log_json = match pds_client.fetch_audit_log(did).await {
         Ok(log_json) => log_json,
         Err(e) => {
