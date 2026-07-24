@@ -92,6 +92,18 @@ fn map_plc_error(context: &str, error: PdsClientError) -> EndpointRepairError {
         } => EndpointRepairError::PlcDirectoryError {
             message: format!("{context}: plc.directory returned HTTP {status}: {message}"),
         },
+        // A 404 on the audit log is the directory's definite "no such DID" verdict.
+        PdsClientError::DidNotFound => EndpointRepairError::PlcDirectoryError {
+            message: format!("{context}: plc.directory has no record of this DID"),
+        },
+        // `post_plc_operation` reports a non-429 rejection body as InvalidResponse —
+        // that is the directory refusing the operation, not a connectivity problem.
+        PdsClientError::InvalidResponse { message, .. } => EndpointRepairError::PlcDirectoryError {
+            message: format!("{context}: {message}"),
+        },
+        PdsClientError::Unauthorized { .. } => EndpointRepairError::PlcDirectoryError {
+            message: format!("{context}: plc.directory returned HTTP 401"),
+        },
         other => EndpointRepairError::NetworkError {
             message: format!("{context}: {other}"),
         },
@@ -262,11 +274,16 @@ async fn verify_destination_hosts(
     if status.is_success() {
         return Ok(());
     }
+    if status.as_u16() == 429 {
+        let retry_after = resp
+            .headers()
+            .get(reqwest::header::RETRY_AFTER)
+            .and_then(|v| v.to_str().ok())
+            .map(str::to_owned);
+        return Err(EndpointRepairError::RateLimited { retry_after });
+    }
     let body = resp.text().await.unwrap_or_default();
     let message = format!("getRepoStatus returned HTTP {status}: {body}");
-    if status.as_u16() == 429 {
-        return Err(EndpointRepairError::RateLimited { retry_after: None });
-    }
     Err(EndpointRepairError::DestinationNotHosting { message })
 }
 
@@ -388,8 +405,14 @@ async fn repair_hosting_endpoint_impl(
         .send()
         .await
     {
-        if let Ok(doc) = resp.text().await {
-            let _ = store.store_did_doc(did, &doc);
+        // Gate on HTTP success AND a JSON body: a directory error page must never be
+        // cached as the identity's DID document.
+        if resp.status().is_success() {
+            if let Ok(doc) = resp.text().await {
+                if serde_json::from_str::<serde_json::Value>(&doc).is_ok() {
+                    let _ = store.store_did_doc(did, &doc);
+                }
+            }
         }
     }
 
@@ -563,6 +586,101 @@ mod tests {
             normalize_endpoint("http://localhost:8080").unwrap(),
             "http://localhost:8080"
         );
+    }
+
+    #[test]
+    fn map_plc_error_classifies_verdicts_not_transport() {
+        // A rejection body from post_plc_operation (InvalidResponse) is the directory's
+        // verdict on the operation, never a connectivity problem.
+        assert!(matches!(
+            map_plc_error(
+                "ctx",
+                PdsClientError::InvalidResponse {
+                    message: "plc.directory rejected operation: bad prev".to_string(),
+                }
+            ),
+            EndpointRepairError::PlcDirectoryError { .. }
+        ));
+        assert!(matches!(
+            map_plc_error("ctx", PdsClientError::DidNotFound),
+            EndpointRepairError::PlcDirectoryError { .. }
+        ));
+        assert!(matches!(
+            map_plc_error(
+                "ctx",
+                PdsClientError::RateLimited {
+                    retry_after: Some("30".to_string()),
+                    message: "slow down".to_string(),
+                }
+            ),
+            EndpointRepairError::RateLimited {
+                retry_after: Some(_)
+            }
+        ));
+        assert!(matches!(
+            map_plc_error(
+                "ctx",
+                PdsClientError::NetworkError {
+                    message: "connection reset".to_string(),
+                }
+            ),
+            EndpointRepairError::NetworkError { .. }
+        ));
+    }
+
+    #[tokio::test]
+    async fn destination_probe_accepts_a_hosting_server() {
+        let server = httpmock::MockServer::start();
+        let mock = server.mock(|when, then| {
+            when.method(httpmock::Method::GET)
+                .path("/xrpc/com.atproto.sync.getRepoStatus");
+            then.status(200)
+                .json_body(serde_json::json!({"did": "did:plc:abc", "active": true}));
+        });
+        let client = PdsClient::new_for_test(server.base_url());
+        verify_destination_hosts(&client, &server.base_url(), "did:plc:abc")
+            .await
+            .expect("200 probe must pass");
+        mock.assert();
+    }
+
+    #[tokio::test]
+    async fn destination_probe_rejects_a_non_hosting_server() {
+        let server = httpmock::MockServer::start();
+        server.mock(|when, then| {
+            when.method(httpmock::Method::GET)
+                .path("/xrpc/com.atproto.sync.getRepoStatus");
+            then.status(400)
+                .json_body(serde_json::json!({"error": "RepoNotFound"}));
+        });
+        let client = PdsClient::new_for_test(server.base_url());
+        let err = verify_destination_hosts(&client, &server.base_url(), "did:plc:abc")
+            .await
+            .expect_err("400 probe must fail");
+        assert!(matches!(
+            err,
+            EndpointRepairError::DestinationNotHosting { .. }
+        ));
+    }
+
+    #[tokio::test]
+    async fn destination_probe_surfaces_retry_after_on_429() {
+        let server = httpmock::MockServer::start();
+        server.mock(|when, then| {
+            when.method(httpmock::Method::GET)
+                .path("/xrpc/com.atproto.sync.getRepoStatus");
+            then.status(429).header("Retry-After", "17");
+        });
+        let client = PdsClient::new_for_test(server.base_url());
+        let err = verify_destination_hosts(&client, &server.base_url(), "did:plc:abc")
+            .await
+            .expect_err("429 probe must fail");
+        match err {
+            EndpointRepairError::RateLimited { retry_after } => {
+                assert_eq!(retry_after.as_deref(), Some("17"));
+            }
+            other => panic!("expected RateLimited, got {other:?}"),
+        }
     }
 
     #[test]
