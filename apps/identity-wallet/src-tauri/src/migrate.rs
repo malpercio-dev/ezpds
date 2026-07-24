@@ -626,9 +626,19 @@ pub async fn detect_migration_path(pds_client: &PdsClient, did: &str) -> Migrati
     // leg is the domain's did.json edit, which the wallet drives. Asking plc.directory
     // would 404 and dead-end every did:web migration as CannotDetermine.
     if did.starts_with("did:web:") {
+        // Unlike did:plc, there is no interop fallback for a DID the wallet does not
+        // manage — the did.json edit needs the wallet's device key — so an unmanaged
+        // DID fails closed instead of advertising a path the wallet cannot drive.
         let device_key_id = match IdentityStore.get_or_create_device_key(did) {
             Ok(key) => Some(key.key_id),
-            Err(crate::identity_store::IdentityStoreError::IdentityNotFound) => None,
+            Err(crate::identity_store::IdentityStoreError::IdentityNotFound) => {
+                return MigrationPathDecision {
+                    path: MigrationPath::CannotDetermine,
+                    device_key_id: None,
+                    rotation_key_index: None,
+                    reason: "DID is not managed by this wallet".to_string(),
+                }
+            }
             Err(e) => {
                 return MigrationPathDecision {
                     path: MigrationPath::CannotDetermine,
