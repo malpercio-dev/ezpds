@@ -1,0 +1,25 @@
+# Throwaway did:web document host for the MM-395 migration rehearsal.
+#
+# TLS terminates at the Railway edge, so Caddy serves plain HTTP on $PORT and
+# auto-HTTPS must stay off (an HTTP->HTTPS redirect here would break the
+# resolvers, which follow no redirects).
+{
+	auto_https off
+	admin off
+}
+
+:{$PORT:8080} {
+	root * /srv
+
+	# Pre-set Content-Types stick: file_server uses http.ServeContent, which
+	# only sniffs/derives a type when none is set. did.json gets the DID media
+	# type; atproto-did is an extensionless file that would otherwise be sniffed.
+	header /.well-known/did.json Content-Type application/did+json
+	header /.well-known/atproto-did Content-Type "text/plain; charset=utf-8"
+
+	handle / {
+		respond "did:web rehearsal document host" 200
+	}
+
+	file_server
+}
