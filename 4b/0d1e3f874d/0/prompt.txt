@@ -1,0 +1,97 @@
+<task-notification>
+<task-id>a571265bca9325c0e</task-id>
+<tool-use-id>toolu_01Wi7Nme3keXQMg2P7aEknno</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-jacob-zweifel-workspace-malpercio-dev-ezpds--claude-worktrees-exciting-ardinghelli-6e9eeb/ee686e48-6c83-4e5b-a0fa-53ae45617a1e/tasks/a571265bca9325c0e.output</output-file>
+<status>completed</status>
+<summary>Agent "Reviewing Phase 6 thread munge" finished</summary>
+<note>A task-notification fires each time this agent stops with no live background children of its own. The user can send it another message and resume it, so the same task-id may notify more than once.</note>
+<result># Code Review: Phase 6 — Thread munge (getPostThread reconstruction + reply splice)
+
+## Status
+**CHANGES REQUIRED**
+
+## Issue Summary
+**Critical: 1 | Important: 1 | Minor: 1**
+
+## Verification Evidence
+Per the pre-verified context supplied (and trusted per instructions; no cargo in worktree):
+```
+Build:  cargo build -p pds                              → compiles (pre-verified)
+Clippy: cargo clippy -p pds --all-targets -- -D warnings → CLEAN (pre-verified)
+Tests:  50 read_after_write tests                       → PASS (pre-verified)
+        incl. AC3.1/AC3.2/AC3.3 end-to-end via pipethrough_munged
+        + 4 parsed_error_code unit tests
+```
+I independently traced the logic paths against the source; findings below are from that trace, not from re-running the suite.
+
+## Plan Alignment
+
+### Implemented Requirements
+- ✓ Task 1: `getPostThread` 400 NotFound treated as munge trigger (narrow exception, mod.rs:290-292)
+- ✓ Task 3: `parsed_error_code` helper + 4 unit tests; `extract_query_param` generalization threading `actor` and `uri`
+- ✓ Task 2 AC3.1: NotFound → reconstructed `threadViewPost` (Case B, munge.rs:199-234)
+- ✓ Task 2 AC3.2: own unindexed reply spliced into existing thread (Case A, munge.rs:132-189)
+- ✓ Task 2 AC3.3: another user's thread, no local replies → passthrough unchanged
+- ✗ Plan requirement (Task 1, line 50): *"falls back to the original `400` when the requested URI is not a local post"* — **NOT correctly implemented** (see Critical issue)
+
+### Deviations from Plan
+- **Reply insertion order** (munge.rs:174-182): plan says "Insert by createdAt order"; implementation sorts by `indexed_at` desc then **appends at the end** of `thread.replies`. Assessed below as Important, not Critical (plan explicitly blesses "shallow/best-effort").
+
+## Critical Issues (count: 1)
+
+- **Issue**: A genuine `NotFound` whose requested URI is **not** a local post is returned as **HTTP 200 carrying the AppView's `{"error":"NotFound"}` body**, instead of falling back to the original 400.
+- **Location**: `crates/pds/src/read_after_write/mod.rs:418` (status override) in combination with `munge.rs:236-237` (Case-B fallthrough returns the original error body unchanged).
+- **Trace**:
+  1. Client requests `getPostThread?uri=&lt;someone else's post the AppView doesn't know&gt;`.
+  2. AppView returns `400 {"error":"NotFound"}` + `atproto-repo-rev` header ⇒ `is_thread_not_found = true`.
+  3. Requester happens to have **any** unrelated local record ⇒ `local.count &gt; 0`, so the count==0 gate (mod.rs:332) is passed.
+  4. `get_post_thread`: `original` has no `thread` field (Case A skipped); the loop finds no `local_post.uri == requested_uri` ⇒ returns `original` **unchanged** (`{"error":"NotFound",…}`), munge.rs:237.
+  5. mod.rs:418 `is_thread_not_found &amp;&amp; status.is_client_error()` = `true &amp;&amp; true` ⇒ **status forced to 200 OK**, but the body is still the error envelope.
+- **Impact**: A real NotFound is masked as success. The client receives `200 OK` with a body that has no `thread` and instead an `error` field — malformed per the `getPostThread` lexicon. This directly violates the plan's stated fallback contract and can misrender in clients that branch on HTTP status. The override keys only on `is_thread_not_found`, never on whether reconstruction actually produced a thread; the munge returns `Value` with no success/failure signal, so the two outcomes are indistinguishable at the override site.
+- **Why the AC tests miss it**: AC3.1 only exercises the case where `requested_uri` **is** a local post. There is no test for "NotFound + local records present + requested_uri not local." Confirmed no such assertion exists in the suite.
+- **Fix**: Gate the override on the munged output actually being a reconstructed thread. `munged` (the `serde_json::Value`) is still in scope at line 418. For example:
+  ```rust
+  let reconstructed = munged.get("thread").map(|t| !t.is_null()).unwrap_or(false);
+  let response_status = if is_thread_not_found &amp;&amp; status.is_client_error() &amp;&amp; reconstructed {
+      axum::http::StatusCode::OK
+  } else {
+      status
+  };
+  ```
+  Add a regression test: NotFound body + a local post whose URI ≠ the requested URI ⇒ assert `resp.status() == 400` and the body still carries `error == "NotFound"`.
+
+## Important Issues (count: 1)
+
+- **Issue**: Case A splices local replies by **appending to the end** of `thread.replies` rather than merging in `createdAt`/`indexedAt` order. The code even computes the sort (`replies_to_add.sort_by(... b.0.cmp(&amp;a.0))`, munge.rs:176) and then discards its effect by pushing onto the existing array (lines 178-182), so the sort is dead work and ordering across AppView-vs-local replies is not honored.
+- **Location**: `crates/pds/src/read_after_write/munge.rs:174-189`.
+- **Impact**: Own fresh replies always sink below the AppView's existing replies regardless of recency. The plan asks for createdAt ordering; it also permits "shallow/best-effort," so this is a quality gap rather than a correctness failure for the AC (AC3.2 only asserts presence, not position). The internal inconsistency (sort computed but unused) is a maintenance smell worth resolving even if end-append is kept deliberately.
+- **Fix**: Either merge-sort the combined replies by the reply post's `indexedAt`/`createdAt`, or drop the now-pointless `sort_by` and add a one-line comment stating end-append is the intentional best-effort behavior.
+
+## Minor Issues (count: 1)
+
+- **Issue**: `extract_actor_param` (mod.rs:222-228) is now a thin NSID-gated wrapper over the generalized `extract_query_param`. It reads cleanly and its tests still pass, but the NSID gate duplicates knowledge the dispatch already has. Not worth changing on its own; flagging only for awareness. No action required.
+
+## Skills Applied
+- `coding-effectively` — correctness-over-convenience: the status/body mismatch is exactly the "model the full error space" gap the skill warns against.
+- `defense-in-depth` — the override should validate the munge's *actual output* (Layer 2, business validation) rather than trusting the entry-level `is_thread_not_found` flag; a single check point was treated as sufficient.
+- `writing-good-tests` — identified the missing test for the NotFound-but-not-local path; the AC tests are otherwise genuine end-to-end integration tests through `pipethrough_munged` with a real wiremock AppView (good confidence-to-cost).
+
+## Assessment of the specific focus points raised
+1. **Status exception narrowness** — the exception itself (mod.rs:290-292) is correctly narrow (getPostThread + 400 + error=="NotFound"); every other non-2xx passes through at line 295. The **override** (line 418) is the defect: it fires on `is_thread_not_found` without confirming reconstruction. count==0 NotFound correctly returns the original 400 (line 332 uses the original `status`). ✓ except the override.
+2. **Case A double-insert** — safe. Matching is on *parent* URI vs focus/existing-reply URIs; rev-selection keeps local posts out of the AppView page, and the reply's own URI is never compared, so no duplication. ✓
+3. **munge.rs:127 `.unwrap()`** — safe. `update_profile_view_basic` only mutates via indexing/`as_object_mut` and never replaces the whole `Value`; given a `Value::Object` input (which line 126 guarantees via `Value::Object(author.clone())`), it always returns an object. No hostile-payload panic path. ✓
+4. **Case B reconstruction** — correct: builds from the local record via `post_view`, gathers replies by `parent.uri == requested_uri`, sets `$type` = `threadViewPost`. Parent resolution omitted, which the plan explicitly allows. ✓
+5. **extract_query_param / parsed_error_code** — correct for both `actor` and `uri`; robust across the 4 error-parse cases. ✓
+6. **FCIS / pattern comments** — `munge.rs` `// pattern: Mixed (unavoidable)` correct; `mod.rs` Imperative Shell correct; no ticket/AC references in comments. ✓
+
+## Decision
+
+**BLOCKED — CHANGES REQUIRED**
+
+Fix the Critical status-override issue (gate the 200 override on an actually-reconstructed thread, plus a regression test) before merge. Address the Important reply-ordering inconsistency (either sort-merge or delete the dead sort and document end-append). Re-submit for a full re-review from Step 1.
+
+Relevant files:
+- `/Users/jacob.zweifel/workspace/malpercio-dev/ezpds/crates/pds/src/read_after_write/mod.rs` (status override at line 418; count==0 gate at 332; dispatch at 391-393)
+- `/Users/jacob.zweifel/workspace/malpercio-dev/ezpds/crates/pds/src/read_after_write/munge.rs` (Case B fallthrough at 236-237; reply ordering at 174-189)</result>
+<usage><subagent_tokens>129446</subagent_tokens><tool_uses>14</tool_uses><duration_ms>130297</duration_ms></usage>
+</task-notification>
