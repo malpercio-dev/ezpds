@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>bo3cfj9p2</task-id>
+<tool-use-id>toolu_0166PEjqTgG3e8tCBgukC8dn</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-jacob-zweifel-workspace-malpercio-dev-ezpds/02fd7e8b-2819-45db-9859-53e734e45665/tasks/bo3cfj9p2.output</output-file>
+<status>completed</status>
+<summary>Background command "Poll for new Greptile review in background" completed (exit code 0)</summary>
+</task-notification>
