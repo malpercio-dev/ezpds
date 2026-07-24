@@ -1,0 +1,77 @@
+<task-notification>
+<task-id>a8347750297fbf185</task-id>
+<tool-use-id>toolu_01TTvTaAYJSJDiZxeJ19aa7y</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-jacob-zweifel-workspace-malpercio-dev-ezpds--claude-worktrees-exciting-ardinghelli-6e9eeb/ee686e48-6c83-4e5b-a0fa-53ae45617a1e/tasks/a8347750297fbf185.output</output-file>
+<status>completed</status>
+<summary>Agent "Reviewing Phase 5 feed munges" finished</summary>
+<note>A task-notification fires each time this agent stops with no live background children of its own. The user can send it another message and resume it, so the same task-id may notify more than once.</note>
+<result># Code Review: Phase 5 Feed Munges (getTimeline / getAuthorFeed / getActorLikes)
+
+## Status
+**CHANGES REQUIRED**
+
+## Issue Summary
+**Critical: 1 | Important: 1 | Minor: 2**
+
+## Verification Evidence
+```
+Tests: cargo test -p pds read_after_write → ok. 38 passed; 0 failed; 0 ignored (incl. 6 new Phase 5 tests)
+Build: compiles (test profile finished, exit 0)
+Linter: cargo clippy -p pds --all-targets -- -D warnings → clean, exit 0
+```
+All pre-verified claims confirmed independently against the worktree manifest.
+
+## Plan Alignment
+
+### Implemented Requirements
+- ✓ AC1.1 — `get_timeline` injects local post at top (`get_timeline_ac1_1_injects_local_post_at_top`)
+- ✓ AC1.2 — own `getAuthorFeed` injects when `actor` resolves to requester (`..._ac1_2...`, `actor=Some(did)`)
+- ✓ AC1.3 — `getActorLikes` refreshes own author, inserts nothing (feed length asserted unchanged)
+- ✓ AC1.6 — another actor's `getAuthorFeed` is passthrough (`..._ac1_6...`, `actor=Some(other)`, asserts `result == original`)
+- ✓ AC1.7 — multiple posts spliced newest-first by `indexed_at` (`..._ac1_7...`)
+- ✓ `extract_actor_param` + dispatch threading (Task 2 mechanics)
+- ✓ `update_profile_view_basic` (displayName + avatar only; omits description/banner — correct for `profileViewBasic`)
+
+### Deviations from Plan
+- None. Implementation matches the design plan (lines 127, 189-198) and phase_05.md tasks 1-3 exactly, including the explicit actor-guard the design flagged as a deliberate divergence from the ambiguous reference.
+
+## Critical Issues (count: 1)
+
+- **Issue**: `munge.rs` is labeled `// pattern: Functional Core` and its header asserts "Each munge is a **pure transformation** of the AppView response + local records → merged output." That claim is now false. `get_timeline` (munge.rs:54, 59) and `get_author_feed` (munge.rs:78, 83) `.await` on `viewer.hydrate_quotes(...)` and `viewer.insert_posts_in_feed(...)`, both of which perform outbound HTTP I/O (the service-auth'd `app.bsky.feed.getPosts` call in `viewer.rs:278-361`). A Functional Core must not perform or transitively invoke side effects.
+- **Location**: `crates/pds/src/read_after_write/munge.rs:1-4` (and the async I/O call sites at 54, 59, 78, 83)
+- **Impact**: The project CLAUDE.md makes the pattern comment a **hard rule**, and the review rubric lists FCIS mislabels (mixed patterns without explanation) as Critical. This is worse than a missing comment: it actively tells a future maintainer that side effects cannot live here, when network I/O now flows through this file. `viewer.rs` — which owns the same I/O — is correctly labeled `Imperative Shell`, making the inconsistency concrete. (Note: `get_profile`/`get_profiles`/`get_actor_likes`/`refresh_own_authored_items`/`is_actor_requester` genuinely are pure; only the two feed-injection paths break purity.)
+- **Fix**: Change the pattern comment to `// pattern: Mixed (unavoidable)` and update the header to state that `get_timeline`/`get_author_feed` orchestrate async hydration/insertion through the `LocalViewer` (Imperative Shell) while the profile/likes/refresh/guard helpers remain pure. Alternatively, if the intent is to keep `munge.rs` pure, the hydration + insertion side effects must be lifted into the caller (`pipethrough_munged`) and the munges handed already-hydrated views — but relabeling is the pragmatic, in-scope fix.
+
+## Important Issues (count: 1)
+
+- **Issue**: `extract_actor_param` (mod.rs:208-223) — the URI-query parser that feeds the production actor-guard — has **no direct test**. The guard's *consumers* are tested via direct munge calls passing `Some(did)`/`Some(other)`, but nothing exercises the actual `?actor=&lt;value&gt;` parsing. A regression here (e.g. a wrong NSID guard, mis-split on `&amp;`, or a decode change) would silently make the guard never match in production: own posts would stop appearing in `getAuthorFeed` (AC1.2 fails in the field) with **all tests still green**. This is the exact gap the coverage note called out, and it sits on the load-bearing seam between the untested parser and the tested guard.
+- **Location**: `crates/pds/src/read_after_write/mod.rs:208-223`
+- **Impact**: The one piece of production logic that decides whether AC1.2 fires at all is unverified. The function is pure and trivially unit-testable (build a `Request`, assert the extracted `Option&lt;String&gt;`), so the gap is cheap to close.
+- **Fix**: Add unit tests for `extract_actor_param` covering: (a) `getAuthorFeed` with `?actor=did:plc:x` → `Some("did:plc:x")`; (b) actor not first param, e.g. `?limit=30&amp;actor=alice.bsky.social` → `Some("alice.bsky.social")`; (c) a different NSID (e.g. `getTimeline`) → `None`; (d) `getAuthorFeed` with no `actor` param → `None`; (e) a percent-encoded handle to confirm decoding.
+
+Assessment on the correctness questions raised (no bug found, but documented): the parser is **correct** — `strip_prefix("actor=")` matches only the literal key (so `actorFoo=` is not a false match), works in any query position, returns `None` for non-`getAuthorFeed` NSIDs and when absent, and percent-decodes. The only theoretical limitation is that `urlencoding::decode` does not treat `+` as space, but DIDs (`did:plc:…`) and ATProto handles contain no `+` or reserved characters, so this never bites in practice. The `is_actor_requester` fallback ordering is also **safe**: the `feed[0].post.author.did == requester` last-resort branch runs only after the actor-param checks fail, and in production the param is always threaded, so it cannot pre-empt a correct passthrough for another actor's feed (and a real author feed's items all share the subject anyway).
+
+## Minor Issues (count: 2)
+
+- **Redundant refresh in injection paths**: In `get_timeline`/`get_author_feed`, `refresh_own_authored_items` refreshes the author on *existing* own items, and separately `insert_posts_in_feed` builds fresh `postView`s (with `profile_view_basic` author) for *injected* items. Correct and non-overlapping, but the two author-construction paths (`update_profile_view_basic` on existing vs. `profile_view_basic` on injected) could drift. Consider a brief comment noting they intentionally cover disjoint item sets. Not blocking.
+- **`get_actor_likes` discards `_local`**: The unused `_local: &amp;LocalRecords` param is correct by design (likes are not own records, no insertion), and matches the plan. A one-line `// no insertion: likes are not the requester's own post records` at the body would make the intentional non-use self-evident to the next reader. Not blocking.
+
+## Skills Applied
+- `ed3d-house-style:coding-effectively` (FCIS separation, correctness-over-convenience)
+- `ed3d-house-style:writing-good-tests` — verified the 6 new tests are genuine (real writes via `put_record_request` + `seed_account_with_repo`, real local-record read via `get_records_since_rev`, direct munge calls; no MockServer needed since test posts carry no quote embeds so `hydrate_quotes` makes no HTTP call — valid). No test-only production methods, no mock-behavior assertions, no arbitrary sleeps. The AC1.7 ordering assertion checks the real invariant (`times[i-1] &gt;= times[i]`).
+- Enforced project hard rule: mandatory pattern comment accuracy (crates/pds/CLAUDE.md).
+
+## Decision
+
+**BLOCKED — CHANGES REQUIRED**
+
+Logic is correct: all five ACs are genuinely satisfied, the actor-guard and its parser are sound, `get_actor_likes` provably inserts nothing, `refresh_own_authored_items` mutates only requester-authored items in place, and `update_profile_view_basic` matches established view semantics. Build, tests, and clippy are all green.
+
+The blocker is not behavioral — it is the Critical FCIS mislabel (a hard project rule): `munge.rs` claims Functional-Core purity while now performing network I/O through the viewer. Fix that (relabel to `Mixed (unavoidable)` + correct the header), and close the Important test gap on `extract_actor_param`, then re-submit for a full re-review from Step 1.
+
+Relevant files:
+- `/Users/jacob.zweifel/workspace/malpercio-dev/ezpds/.claude/worktrees/exciting-ardinghelli-6e9eeb/crates/pds/src/read_after_write/munge.rs`
+- `/Users/jacob.zweifel/workspace/malpercio-dev/ezpds/.claude/worktrees/exciting-ardinghelli-6e9eeb/crates/pds/src/read_after_write/mod.rs`
+- `/Users/jacob.zweifel/workspace/malpercio-dev/ezpds/.claude/worktrees/exciting-ardinghelli-6e9eeb/crates/pds/src/read_after_write/viewer.rs`</result>
+<usage><subagent_tokens>138849</subagent_tokens><tool_uses>20</tool_uses><duration_ms>195906</duration_ms></usage>
+</task-notification>
