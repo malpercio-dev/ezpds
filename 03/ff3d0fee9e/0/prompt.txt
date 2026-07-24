@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>bkx6zbny8</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-jacob-zweifel-workspace-malpercio-dev-ezpds/b04fdddb-b074-44f0-903d-4509966d974e/tasks/bkx6zbny8.output</output-file>
+<status>completed</status>
+<summary>Background command "Poll prod health until version flips to 0.7.0" completed (exit code 0)</summary>
+</task-notification>
