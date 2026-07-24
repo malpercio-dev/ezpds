@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>bx3esg3t5</task-id>
+<tool-use-id>toolu_01Eaz5Wo18EmDoujtEqtQHEz</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-jacob-zweifel-workspace-malpercio-dev-ezpds/02fd7e8b-2819-45db-9859-53e734e45665/tasks/bx3esg3t5.output</output-file>
+<status>completed</status>
+<summary>Background command "FF local main to GitHub 1801d77 and pre-validate with ci-relay (background)" completed (exit code 0)</summary>
+</task-notification>
