@@ -1,1 +1,0 @@
-Draft the ADR, execute the two borderline backfills. then do the archive sweep. after, show me an updated list so we can decide next move
