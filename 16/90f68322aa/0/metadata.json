@@ -1,0 +1,181 @@
+{
+  "cli_version": "0.8.42",
+  "checkpoint_id": "1690f68322aa",
+  "session_id": "cead9993-b6df-435d-9881-b381a7fc7d57",
+  "strategy": "manual-commit",
+  "created_at": "2026-07-24T02:01:25.076253Z",
+  "branch": "release-0.8.0",
+  "checkpoints_count": 1,
+  "files_touched": [
+    "sites/docs/src/content/docs/operator/reference/api.md",
+    "sites/docs/src/content/docs/operator/reference/config.md",
+    "sites/docs/src/content/docs/operator/reference/ipc.md"
+  ],
+  "agent": "Claude Code",
+  "model": "",
+  "turn_id": "a8566ef55d1a",
+  "checkpoint_transcript_start": 279,
+  "transcript_lines_at_start": 279,
+  "compact_transcript_start": 62,
+  "token_usage": {
+    "input_tokens": 7,
+    "cache_creation_tokens": 4474,
+    "cache_read_tokens": 820516,
+    "output_tokens": 1630,
+    "api_call_count": 4
+  },
+  "skill_events_version": 1,
+  "skill_events": [
+    {
+      "id": "claude-skill-toolu_01W4nidgSYDpPfGjs1o4xh9N",
+      "event_type": "tool_invocation",
+      "skill": {
+        "name": "ed3d-house-style:coding-effectively"
+      },
+      "source": {
+        "agent": "claude-code",
+        "signal": "skill_tool_use",
+        "confidence": "explicit"
+      },
+      "turn_id": "a8566ef55d1a",
+      "transcript_anchor": {
+        "unit": "line",
+        "start": 82,
+        "end": 83,
+        "entry_ids": [
+          "3a80a974-2928-43a0-9ea7-956750cd30a4"
+        ],
+        "tool_use_id": "toolu_01W4nidgSYDpPfGjs1o4xh9N"
+      },
+      "native": {
+        "tool_name": "Skill",
+        "tool_use_id": "toolu_01W4nidgSYDpPfGjs1o4xh9N"
+      },
+      "collapse": {
+        "target": "tool_pair",
+        "label": "Skill: ed3d-house-style:coding-effectively",
+        "default_collapsed": true
+      }
+    },
+    {
+      "id": "claude-skill-toolu_01Mcg3o8DyGzph33ZunDmSzZ",
+      "event_type": "tool_invocation",
+      "skill": {
+        "name": "ed3d-house-style:howto-code-in-rust"
+      },
+      "source": {
+        "agent": "claude-code",
+        "signal": "skill_tool_use",
+        "confidence": "explicit"
+      },
+      "turn_id": "a8566ef55d1a",
+      "transcript_anchor": {
+        "unit": "line",
+        "start": 87,
+        "end": 88,
+        "entry_ids": [
+          "7b16f516-e74a-4cd1-bf6d-7263b56c4a32"
+        ],
+        "tool_use_id": "toolu_01Mcg3o8DyGzph33ZunDmSzZ"
+      },
+      "native": {
+        "tool_name": "Skill",
+        "tool_use_id": "toolu_01Mcg3o8DyGzph33ZunDmSzZ"
+      },
+      "collapse": {
+        "target": "tool_pair",
+        "label": "Skill: ed3d-house-style:howto-code-in-rust",
+        "default_collapsed": true
+      }
+    },
+    {
+      "id": "claude-skill-toolu_012KjrstDuTbdq3fsWeRCUbD",
+      "event_type": "tool_invocation",
+      "skill": {
+        "name": "commit-commands:commit-push-pr"
+      },
+      "source": {
+        "agent": "claude-code",
+        "signal": "skill_tool_use",
+        "confidence": "explicit"
+      },
+      "turn_id": "a8566ef55d1a",
+      "transcript_anchor": {
+        "unit": "line",
+        "start": 170,
+        "end": 171,
+        "entry_ids": [
+          "c46e8154-ea79-4629-940f-2ad44e9b13bd"
+        ],
+        "tool_use_id": "toolu_012KjrstDuTbdq3fsWeRCUbD"
+      },
+      "native": {
+        "tool_name": "Skill",
+        "tool_use_id": "toolu_012KjrstDuTbdq3fsWeRCUbD"
+      },
+      "collapse": {
+        "target": "tool_pair",
+        "label": "Skill: commit-commands:commit-push-pr",
+        "default_collapsed": true
+      }
+    },
+    {
+      "id": "claude-skill-toolu_01M1cSRrDthtBDkuQ9UxjwAV",
+      "event_type": "tool_invocation",
+      "skill": {
+        "name": "pr-review-comments"
+      },
+      "source": {
+        "agent": "claude-code",
+        "signal": "skill_tool_use",
+        "confidence": "explicit"
+      },
+      "turn_id": "a8566ef55d1a",
+      "transcript_anchor": {
+        "unit": "line",
+        "start": 186,
+        "end": 187,
+        "entry_ids": [
+          "b218bf41-7602-4b3d-a9e0-fc3d0a6706d1"
+        ],
+        "tool_use_id": "toolu_01M1cSRrDthtBDkuQ9UxjwAV"
+      },
+      "native": {
+        "tool_name": "Skill",
+        "tool_use_id": "toolu_01M1cSRrDthtBDkuQ9UxjwAV"
+      },
+      "collapse": {
+        "target": "tool_pair",
+        "label": "Skill: pr-review-comments",
+        "default_collapsed": true
+      }
+    }
+  ],
+  "session_metrics": {
+    "turn_count": 7
+  },
+  "initial_attribution": {
+    "calculated_at": "2026-07-24T02:01:25.034057Z",
+    "agent_lines": 3,
+    "agent_removed": 3,
+    "human_added": 0,
+    "human_modified": 0,
+    "human_removed": 0,
+    "total_committed": 3,
+    "total_lines_changed": 6,
+    "agent_percentage": 100,
+    "metric_version": 2
+  },
+  "prompt_attributions": [
+    {
+      "checkpoint_number": 1,
+      "user_lines_added": 5,
+      "user_lines_removed": 0,
+      "agent_lines_added": 0,
+      "agent_lines_removed": 0,
+      "user_added_per_file": {
+        ".impeccable/config.local.json": 5
+      }
+    }
+  ]
+}
