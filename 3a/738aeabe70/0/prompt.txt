@@ -1,0 +1,1 @@
+hm, copypasting the exact token with the dash in the app fails, but succeeds with curl. somethings up
