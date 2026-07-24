@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>b07cxuibu</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-jacob-zweifel-workspace-malpercio-dev-ezpds/00ef4afd-87f5-4f84-908b-60302e7f879a/tasks/b07cxuibu.output</output-file>
+<status>completed</status>
+<summary>Background command "Watch TestFlight lane for the build containing both fixes" completed (exit code 0)</summary>
+</task-notification>
