@@ -1,1 +1,0 @@
-hm, made it to an email verification page, "failed to send verification email"
