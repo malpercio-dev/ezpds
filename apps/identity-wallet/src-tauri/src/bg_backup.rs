@@ -1,16 +1,20 @@
 // pattern: Mixed (Functional Core sweep orchestration + iOS-only imperative scheduling bridge)
 //
-// Background media-backup scheduling. The user-held blob backup (`blob_backup.rs`) ships
-// the explicit "Back up media" action plus an opportunistic pass on app open; this module
-// adds the deliberate later step — an iOS `BGProcessingTask` so an opted-in identity's
-// iCloud mirror stays topped up without the user opening the app (media posted days ago
-// shouldn't sit unprotected until the next launch).
+// Background backup scheduling. The user-held blob backup (`blob_backup.rs`) and repo backup
+// (`repo_backup.rs`) each ship an explicit action plus an opportunistic pass on app open; this
+// module adds the deliberate later step — an iOS `BGProcessingTask` so an opted-in identity's
+// iCloud mirrors stay topped up without the user opening the app (posts and media made days
+// ago shouldn't sit un-backed-up until the next launch).
 //
-// On fire it runs the same incremental, CID-verified, per-blob-degrading `run_blob_backup`
-// pass for every opted-in DID. That is safe to overlap with a foreground pass: the per-DID
-// mirror lock in `blob_backup` serializes the manifest writes, and the pass is idempotent
-// by construction (content-addressed, immutable files), so a sweep iOS interrupts mid-run
-// self-heals on the next pass.
+// On fire it runs, off-foreground, both mirror passes for every opted-in DID: the incremental,
+// CID-verified, per-blob-degrading `blob_backup::run_backup_for_did` and the full-CAR,
+// client-validated `repo_backup::run_backup_for_did`. The two opt-ins are per-DID and
+// independent — a user can enable one mirror and not the other — so each pass is gated on its
+// own flag. Both are safe to overlap with a foreground pass: the per-DID mirror lock in each
+// module serializes its writes, and the passes are idempotent by construction (content-
+// addressed, immutable/atomically-replaced files), so a sweep iOS interrupts mid-run self-heals
+// on the next pass. The two mirrors sweep sequentially (all opted-in blobs, then all opted-in
+// repos) over one wake-up, reusing the single generic sweep core.
 //
 // Scheduling is a device concern: everything that touches `BGTaskScheduler` is iOS-only,
 // reached through objc2's BackgroundTasks binding — the same no-new-Swift bridge pattern as
@@ -24,7 +28,13 @@
 // settings get/set commands are frontend-facing, so they (and their harness fakes) are the
 // one part of this module the browser harness does touch.
 
+// Only the iOS launch-handler payload (`run_backup_sweep`) and the unit tests reference the two
+// backup modules by name; the platform-agnostic `run_sweep_with` core is generic over the backup
+// step's error type, so a plain host build (no `run_backup_sweep`, no tests) uses neither import.
+#[cfg(any(target_os = "ios", test))]
 use crate::blob_backup;
+#[cfg(any(target_os = "ios", test))]
+use crate::repo_backup;
 use serde::{Deserialize, Serialize};
 
 // ── User-tunable settings (app-global) ───────────────────────────────────────
@@ -148,19 +158,23 @@ pub(crate) struct BackupSweepReport {
 }
 
 /// Sweep core: back up every opted-in identity, degrading per-DID — one identity's failure
-/// is tallied and logged, never stops the others. Generic over the opt-in predicate and the
-/// per-DID backup step so it is unit-testable without a live PDS, Keychain, or iCloud.
-/// Sequential by design: the passes share the network and the process-global per-DID mirror
-/// locks, and a background sweep has no reason to race them concurrently.
+/// is tallied and logged, never stops the others. Generic over the opt-in predicate, the
+/// per-DID backup step, AND its error type (`E: Display`, the only thing the sweep does with a
+/// failure is log it) so the one tested loop drives both the blob mirror
+/// (`blob_backup::BlobBackupError`) and the repo mirror (`repo_backup::RepoBackupError`). Fully
+/// unit-testable without a live PDS, Keychain, or iCloud. Sequential by design: the passes share
+/// the network and the process-global per-DID mirror locks, and a background sweep has no reason
+/// to race them concurrently.
 #[cfg_attr(not(target_os = "ios"), allow(dead_code))]
-pub(crate) async fn run_sweep_with<F, Fut>(
+pub(crate) async fn run_sweep_with<F, Fut, E>(
     dids: &[String],
     is_enabled: impl Fn(&str) -> bool,
     backup_one: F,
 ) -> BackupSweepReport
 where
     F: Fn(String) -> Fut,
-    Fut: std::future::Future<Output = Result<(), blob_backup::BlobBackupError>>,
+    Fut: std::future::Future<Output = Result<(), E>>,
+    E: std::fmt::Display,
 {
     let mut report = BackupSweepReport::default();
     for did in dids {
@@ -172,7 +186,7 @@ where
         match backup_one(did.clone()).await {
             Ok(()) => report.succeeded += 1,
             Err(e) => {
-                tracing::warn!(did = %did, error = %e, "background media backup: pass failed");
+                tracing::warn!(did = %did, error = %e, "background backup: pass failed");
                 report.failed += 1;
             }
         }
@@ -180,25 +194,31 @@ where
     report
 }
 
-/// Run one background backup sweep over every managed identity, backing up those opted in.
-/// The launch handler's payload. Resolves the managed DIDs from the `IdentityStore` and
-/// delegates to `run_sweep_with` with the real opt-in flag + per-DID backup.
+/// Run one background backup wake-up over every managed identity, refreshing both iCloud mirrors
+/// for those opted in. The launch handler's payload. Resolves the managed DIDs once from the
+/// `IdentityStore`, then runs the blob sweep and the repo sweep back-to-back over that list —
+/// each gated on its OWN per-DID opt-in flag (`blob_backup::is_backup_enabled` /
+/// `repo_backup::is_backup_enabled`), so a user who enabled only one mirror gets only that one.
+/// Both passes read public sync endpoints (no session) and are idempotent, so an interrupted
+/// wake-up self-heals on the next fire. Each mirror's tally is logged as its sweep completes.
 #[cfg(target_os = "ios")]
-pub(crate) async fn run_backup_sweep(app: &tauri::AppHandle) -> BackupSweepReport {
+pub(crate) async fn run_backup_sweep(app: &tauri::AppHandle) {
     // Honor the Wi-Fi-only preference: BGProcessingTaskRequest can't express "Wi-Fi only", so
     // we check the live network type here and defer to the next scheduled fire if on cellular.
+    // The gate covers both mirrors — each pass fetches over the network.
     let settings = load_settings();
     if should_skip_for_network(settings.wifi_only, on_cellular()) {
         tracing::info!(
-            "background media backup: skipped this run — Wi-Fi only is on and the device is on cellular"
+            "background backup: skipped this run — Wi-Fi only is on and the device is on cellular"
         );
-        return BackupSweepReport::default();
+        return;
     }
 
     let dids = crate::identity_store::IdentityStore
         .list_identities()
         .unwrap_or_default();
-    let report = run_sweep_with(
+
+    let blob = run_sweep_with(
         &dids,
         |did| blob_backup::is_backup_enabled(did),
         |did| {
@@ -212,13 +232,33 @@ pub(crate) async fn run_backup_sweep(app: &tauri::AppHandle) -> BackupSweepRepor
     )
     .await;
     tracing::info!(
-        attempted = report.attempted,
-        succeeded = report.succeeded,
-        failed = report.failed,
-        skipped = report.skipped,
-        "background media backup sweep complete"
+        attempted = blob.attempted,
+        succeeded = blob.succeeded,
+        failed = blob.failed,
+        skipped = blob.skipped,
+        "background blob backup sweep complete"
     );
-    report
+
+    let repo = run_sweep_with(
+        &dids,
+        |did| repo_backup::is_backup_enabled(did),
+        |did| {
+            let app = app.clone();
+            async move {
+                repo_backup::run_backup_for_did(&app, &did)
+                    .await
+                    .map(|_| ())
+            }
+        },
+    )
+    .await;
+    tracing::info!(
+        attempted = repo.attempted,
+        succeeded = repo.succeeded,
+        failed = repo.failed,
+        skipped = repo.skipped,
+        "background repo backup sweep complete"
+    );
 }
 
 // ── iOS BGProcessingTask bridge ──────────────────────────────────────────────
@@ -370,7 +410,7 @@ fn handle_launch(
         let task = task.clone();
         let done = done.clone();
         tauri::async_runtime::spawn(async move {
-            let _ = run_backup_sweep(&app).await;
+            run_backup_sweep(&app).await;
             complete_once(&task, &done, true);
         })
     };
@@ -428,6 +468,7 @@ fn schedule_next(
 mod tests {
     use super::*;
     use blob_backup::BlobBackupError;
+    use repo_backup::RepoBackupError;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Mutex;
 
@@ -446,7 +487,7 @@ mod tests {
             let backed_up = &backed_up;
             async move {
                 backed_up.lock().unwrap().push(did);
-                Ok(())
+                Ok::<(), BlobBackupError>(())
             }
         })
         .await;
@@ -516,7 +557,7 @@ mod tests {
                 async move {
                     called.fetch_add(1, Ordering::SeqCst);
                     let _ = did;
-                    Ok(())
+                    Ok::<(), BlobBackupError>(())
                 }
             },
         )
@@ -536,8 +577,97 @@ mod tests {
 
     #[tokio::test]
     async fn sweep_over_empty_identity_list_is_a_noop() {
-        let report = run_sweep_with(&[], |_| true, |_did| async { Ok(()) }).await;
+        let report = run_sweep_with(
+            &[],
+            |_| true,
+            |_did| async { Ok::<(), BlobBackupError>(()) },
+        )
+        .await;
         assert_eq!(report, BackupSweepReport::default());
+    }
+
+    // The generic sweep core drives the repo mirror too: its per-DID step returns
+    // `RepoBackupError` rather than `BlobBackupError`, and a per-DID failure still degrades
+    // (logged + tallied) without stopping the remaining identities — proving one tested loop
+    // covers both mirrors after the error-type generalization.
+    #[tokio::test]
+    async fn sweep_drives_repo_error_type_and_degrades() {
+        let all = dids(&["did:plc:a", "did:plc:b", "did:plc:c"]);
+        let attempts = AtomicUsize::new(0);
+
+        let report = run_sweep_with(
+            &all,
+            |_| true,
+            |did| {
+                let attempts = &attempts;
+                async move {
+                    attempts.fetch_add(1, Ordering::SeqCst);
+                    if did == "did:plc:b" {
+                        Err(RepoBackupError::NetworkError {
+                            message: "boom".to_string(),
+                        })
+                    } else {
+                        Ok(())
+                    }
+                }
+            },
+        )
+        .await;
+
+        assert_eq!(attempts.load(Ordering::SeqCst), 3);
+        assert_eq!(
+            report,
+            BackupSweepReport {
+                attempted: 3,
+                succeeded: 2,
+                failed: 1,
+                skipped: 0,
+            }
+        );
+    }
+
+    // AC2: the blob and repo opt-ins are honored independently. Over one shared DID list, each
+    // mirror's sweep selects only the identities opted into THAT mirror — a DID opted into blob
+    // only is never repo-backed-up, and vice versa; a DID opted into both is swept by both.
+    #[tokio::test]
+    async fn blob_and_repo_opt_in_are_independent() {
+        let all = dids(&["did:plc:blob-only", "did:plc:repo-only", "did:plc:both"]);
+        let blob_enabled = |did: &str| did == "did:plc:blob-only" || did == "did:plc:both";
+        let repo_enabled = |did: &str| did == "did:plc:repo-only" || did == "did:plc:both";
+
+        let blobbed = Mutex::new(Vec::new());
+        let blob_report = run_sweep_with(&all, blob_enabled, |did| {
+            let blobbed = &blobbed;
+            async move {
+                blobbed.lock().unwrap().push(did);
+                Ok::<(), BlobBackupError>(())
+            }
+        })
+        .await;
+
+        let repoed = Mutex::new(Vec::new());
+        let repo_report = run_sweep_with(&all, repo_enabled, |did| {
+            let repoed = &repoed;
+            async move {
+                repoed.lock().unwrap().push(did);
+                Ok::<(), RepoBackupError>(())
+            }
+        })
+        .await;
+
+        // Each mirror touched only its own opted-in identities.
+        assert_eq!(
+            *blobbed.lock().unwrap(),
+            vec!["did:plc:blob-only".to_string(), "did:plc:both".to_string()]
+        );
+        assert_eq!(
+            *repoed.lock().unwrap(),
+            vec!["did:plc:repo-only".to_string(), "did:plc:both".to_string()]
+        );
+        assert_eq!(blob_report.attempted, 2);
+        assert_eq!(blob_report.skipped, 1);
+        assert_eq!(repo_report.attempted, 2);
+        assert_eq!(repo_report.skipped, 1);
     }
 
     #[test]
