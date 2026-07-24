@@ -1,7 +1,0 @@
-<task-notification>
-<task-id>blcgqssdw</task-id>
-<tool-use-id>REDACTED</tool-use-id>
-<output-file>/private/tmp/claude-501/-Users-jacob-zweifel-workspace-malpercio-dev-ezpds/00ef4afd-87f5-4f84-908b-60302e7f879a/tasks/blcgqssdw.output</output-file>
-<status>completed</status>
-<summary>Background command "Watch CI then probe staging consent page for the MM-297 fix" completed (exit code 0)</summary>
-</task-notification>
