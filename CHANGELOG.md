@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Changes are collected in `changelog.d/` during development and inserted here when
 `just set-version` prepares a release. There is intentionally no `Unreleased` section.
 
+## [0.8.0] - 2026-07-23
+
+### Added
+
+- A wallet-authorized migration whose source PDS can no longer serve the repository now falls back to the user's iCloud repo snapshot: `transfer_repo` imports the locally backed-up CAR instead of failing, provided the mirror holds a snapshot that re-validates against the account's DID. When no valid snapshot exists the original source failure is surfaced unchanged, so a source repo-read fault becomes a non-event for backed-up users — the repo twin of the existing blob-drain mirror fallback.
+
+- The wallet can now rebuild an account on a new PDS entirely from its iCloud backups when the old PDS is gone or uncooperative ("Rebuild from backup" on the identity screen): it enrolls a self-controlled signing key via a device-key-signed PLC operation submitted directly to plc.directory, mints the migration `createAccount` service-auth token offline, imports the backed-up repo snapshot, restores media from the blob mirror, and re-points the DID — with strict guards preserving the wallet's rotation key at every step, and the new account staying inert until final activation.
+
+
+### Changed
+
+- The Custos mark on the PDS landing page and the Custos marketing page is now the "operator's prompt" glyph (a brass chevron and a filament cursor), matching the Brass Console app icon, replacing the earlier gold disc.
+
+
+### Fixed
+
+- The wallet's sign-in QR scanner is now visible: the camera preview (a native layer the barcode scanner renders behind the WebView) was staying hidden behind the app's opaque root background, so the scan screen appeared blank. The root and body grounds are now both dropped to transparent while scanning, letting the camera show through.
+
+- Custos now serves its own `did:web` server identity at `/.well-known/did.json`, synthesized from the configured public URL and server DID. Previously the route only served opted-in account documents, so the server's own DID never resolved; it now survives a public-URL migration with no database row involved.
+
+
 ## [0.7.2] - 2026-07-22
 
 ### Added

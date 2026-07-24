@@ -3,7 +3,7 @@ title: HTTP & XRPC API
 description: Generated route reference for the Custos server.
 ---
 
-> Generated from source for ezpds **v0.7.2**. Do not edit this page by hand.
+> Generated from source for ezpds **v0.8.0**. Do not edit this page by hand.
 
 Every path registered by the server is listed here. For `/xrpc/` endpoints, use the namespace after `/xrpc/` to find the request, response, and authentication schema in the [AT Protocol Lexicon reference](https://docs.bsky.app/docs/api/at-protocol-xrpc-api). Custos-specific endpoints are explained in the operator workflows elsewhere in this documentation; this generated inventory is the complete route-coverage index.
 
