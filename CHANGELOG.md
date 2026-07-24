@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Changes are collected in `changelog.d/` during development and inserted here when
 `just set-version` prepares a release. There is intentionally no `Unreleased` section.
 
+## [0.8.1] - 2026-07-24
+
+### Added
+
+- The wallet can now repair a did:plc identity's hosting endpoint ("Repair hosting endpoint" on the identity screen): when the hosting server changes hostname underneath the account, the DID document still points at the dead host and every app misroutes. The wallet signs the `atproto_pds` repoint with the device key and submits it directly to plc.directory — no session and no contact with the old endpoint, and the new endpoint is probed to prove it actually hosts the account before anything is signed. A sixth strict pre-sign allowlist guarantees nothing but the endpoint string changes.
+
+
+### Changed
+
+- The Obsign marketing site now lives at the apex (`obsign.org`), completing the `pds.obsign.org` hostname migration: the PDS landing page, marketing Open Graph metadata and rendered cards, analytics domain gate, Bruno production environment, and deploy docs all reference the apex instead of the retired `about.obsign.org` subdomain. The `about` handle name stays reserved so the retired subdomain can never be claimed as a user handle.
+
+
 ## [0.8.0] - 2026-07-23
 
 ### Added
