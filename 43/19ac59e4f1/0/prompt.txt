@@ -1,7 +1,0 @@
-<task-notification>
-<task-id>bkshtrbw6</task-id>
-<tool-use-id>REDACTED</tool-use-id>
-<output-file>/private/tmp/claude-501/-Users-jacob-zweifel-workspace-malpercio-dev-ezpds/3f781e1f-a2ed-422b-90e0-628aae42bd84/tasks/bkshtrbw6.output</output-file>
-<status>completed</status>
-<summary>Background command "Poll production health every 30s until it reports version 0.6.0 (max 30 min)" completed (exit code 0)</summary>
-</task-notification>
