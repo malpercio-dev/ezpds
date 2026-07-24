@@ -1,0 +1,60 @@
+<task-notification>
+<task-id>a6064db47f8539da5</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-jacob-zweifel-workspace-malpercio-dev-ezpds--claude-worktrees-exciting-ardinghelli-6e9eeb/ee686e48-6c83-4e5b-a0fa-53ae45617a1e/tasks/a6064db47f8539da5.output</output-file>
+<status>completed</status>
+<summary>Agent "Fixing Phase 3 review issues" finished</summary>
+<note>A task-notification fires each time this agent stops with no live background children of its own. The user can send it another message and resume it, so the same task-id may notify more than once.</note>
+<result>Perfect! Here's my report:
+
+## Bug Fixes Applied - Phase 3 Read-After-Write Viewer
+
+All code review feedback gaps have been addressed. Here are the actual test results:
+
+### Test Results
+
+Running: `cargo test -p pds read_after_write`
+
+**Result: 24 passed; 0 failed**
+
+**Key new tests (addressing coordinator's GAP 1):**
+- `read_after_write::viewer::tests::hydrate_quotes_fetches_from_appview_and_populates_map` - Actually invokes `hydrate_quotes` against a mocked AppView, exercising the full HTTP call path (URL build, service-auth JWT minting, JSON parsing)
+- `read_after_write::viewer::tests::hydrate_quotes_degrades_to_empty_on_appview_5xx` - Verifies graceful degradation when AppView returns 5xx, confirming embed falls back to viewNotFound while post renders
+
+**Critical Fix (Code Review Issue #1):**
+- Line 251: Changed `record_view.get("record")` to `record_view` 
+- Ensures recordWithMedia#view.record is the FULL app.bsky.embed.record#view wrapper, not the stripped inner viewRecord
+- Verified by existing test `record_embed_view_includes_post_when_quote_found` which validates the record#view wrapper structure
+
+### Implementation Details
+
+**Important #2 - URL Encoding Fix (lines 289-297):**
+- Added `urlencoding::encode()` to properly percent-encode AT-URIs with reserved characters (`:`, `/`)
+- Clean query string construction with proper encoding
+
+**Minor #2 - Batch Cap:**
+- Added `.take(25)` to limit URIs per getPosts call (reference accepts max 25)
+- Prevents unbounded request sizes
+
+**Minor #1 - Simplify Media Check:**
+- Changed from `media_view.get("$type").is_some().then_some(media_view)` to just `media_view`
+- Media is required by lexicon and always has `$type`
+
+### Verification
+
+```bash
+cargo test -p pds --manifest-path /Users/jacob.zweifel/workspace/malpercio-dev/ezpds/.claude/worktrees/exciting-ardinghelli-6e9eeb/Cargo.toml read_after_write
+→ test result: ok. 24 passed; 0 failed
+
+cargo clippy -p pds --all-targets --manifest-path /Users/jacob.zweifel/workspace/malpercio-dev/ezpds/.claude/worktrees/exciting-ardinghelli-6e9eeb/Cargo.toml -- -D warnings
+→ Finished `dev` profile [unoptimized + debuginfo] (no warnings)
+```
+
+### Commit
+
+SHA: `03c529ee`
+File: `/Users/jacob.zweifel/workspace/malpercio-dev/ezpds/.claude/worktrees/exciting-ardinghelli-6e9eeb/crates/pds/src/read_after_write/viewer.rs`
+
+All coordinator-identified gaps have been resolved. Ready for re-review.</result>
+<usage><subagent_tokens>156107</subagent_tokens><tool_uses>36</tool_uses><duration_ms>530732</duration_ms></usage>
+</task-notification>
