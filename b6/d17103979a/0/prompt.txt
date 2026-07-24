@@ -1,0 +1,282 @@
+## Context
+
+- Current git status: On branch main
+Your branch is up to date with 'origin/main'.
+
+Changes to be committed:
+  (use "git restore --staged <file>..." to unstage)
+	renamed:    docs/design-plans/2026-06-26-admin-companion-app.md -> docs/archive/design-plans/2026-06-26-admin-companion-app.md
+	renamed:    docs/design-plans/2026-07-03-read-after-write.md -> docs/archive/design-plans/2026-07-03-read-after-write.md
+	renamed:    docs/design-plans/2026-07-05-wallet-outbound-migration.md -> docs/archive/design-plans/2026-07-05-wallet-outbound-migration.md
+	renamed:    docs/design-plans/2026-07-07-code-quality-hardening.md -> docs/archive/design-plans/2026-07-07-code-quality-hardening.md
+	renamed:    docs/design-plans/2026-07-07-custos-mcp-server.md -> docs/archive/design-plans/2026-07-07-custos-mcp-server.md
+	renamed:    docs/design-plans/2026-07-07-v01-operational-proof.md -> docs/archive/design-plans/2026-07-07-v01-operational-proof.md
+	renamed:    docs/design-plans/2026-07-07-v01-strategy-recommendations.md -> docs/archive/design-plans/2026-07-07-v01-strategy-recommendations.md
+	renamed:    docs/design-plans/2026-07-09-agent-provider-revocation-set.md -> docs/archive/design-plans/2026-07-09-agent-provider-revocation-set.md
+	renamed:    docs/design-plans/2026-07-09-post-commit-block-gc.md -> docs/archive/design-plans/2026-07-09-post-commit-block-gc.md
+	renamed:    docs/implementation-plans/2026-07-03-read-after-write/phase_01.md -> docs/archive/implementation-plans/2026-07-03-read-after-write/phase_01.md
+	renamed:    docs/implementation-plans/2026-07-03-read-after-write/phase_02.md -> docs/archive/implementation-plans/2026-07-03-read-after-write/phase_02.md
+	renamed:    docs/implementation-plans/2026-07-03-read-after-write/phase_03.md -> docs/archive/implementation-plans/2026-07-03-read-after-write/phase_03.md
+	renamed:    docs/implementation-plans/2026-07-03-read-after-write/phase_04.md -> docs/archive/implementation-plans/2026-07-03-read-after-write/phase_04.md
+	renamed:    docs/implementation-plans/2026-07-03-read-after-write/phase_05.md -> docs/archive/implementation-plans/2026-07-03-read-after-write/phase_05.md
+	renamed:    docs/implementation-plans/2026-07-03-read-after-write/phase_06.md -> docs/archive/implementation-plans/2026-07-03-read-after-write/phase_06.md
+	renamed:    docs/implementation-plans/2026-07-03-read-after-write/phase_07.md -> docs/archive/implementation-plans/2026-07-03-read-after-write/phase_07.md
+	renamed:    docs/implementation-plans/2026-07-03-read-after-write/test-requirements.md -> docs/archive/implementation-plans/2026-07-03-read-after-write/test-requirements.md
+	renamed:    docs/implementation-plans/2026-07-05-wallet-outbound-migration/phase_01.md -> docs/archive/implementation-plans/2026-07-05-wallet-outbound-migration/phase_01.md
+	renamed:    docs/implementation-plans/2026-07-05-wallet-outbound-migration/phase_02.md -> docs/archive/implementation-plans/2026-07-05-wallet-outbound-migration/phase_02.md
+	renamed:    docs/implementation-plans/2026-07-05-wallet-outbound-migration/phase_03.md -> docs/archive/implementation-plans/2026-07-05-wallet-outbound-migration/phase_03.md
+	renamed:    docs/implementation-plans/2026-07-05-wallet-outbound-migration/phase_04.md -> docs/archive/implementation-plans/2026-07-05-wallet-outbound-migration/phase_04.md
+	renamed:    docs/implementation-plans/2026-07-05-wallet-outbound-migration/phase_05.md -> docs/archive/implementation-plans/2026-07-05-wallet-outbound-migration/phase_05.md
+	renamed:    docs/implementation-plans/2026-07-05-wallet-outbound-migration/phase_06.md -> docs/archive/implementation-plans/2026-07-05-wallet-outbound-migration/phase_06.md
+	renamed:    docs/implementation-plans/2026-07-05-wallet-outbound-migration/phase_07.md -> docs/archive/implementation-plans/2026-07-05-wallet-outbound-migration/phase_07.md
+	renamed:    docs/implementation-plans/2026-07-05-wallet-outbound-migration/test-requirements.md -> docs/archive/implementation-plans/2026-07-05-wallet-outbound-migration/test-requirements.md
+	renamed:    docs/test-plans/2026-07-03-read-after-write.md -> docs/archive/test-plans/2026-07-03-read-after-write.md
+	renamed:    docs/test-plans/2026-07-05-wallet-outbound-migration.md -> docs/archive/test-plans/2026-07-05-wallet-outbound-migration.md
+	renamed:    docs/test-plans/2026-07-09-agent-provider-revocation-set.md -> docs/archive/test-plans/2026-07-09-agent-provider-revocation-set.md
+
+Changes not staged for commit:
+  (use "git add <file>..." to update what will be committed)
+  (use "git restore <file>..." to discard changes in working directory)
+	modified:   AGENTS.md
+	modified:   apps/admin-companion/CLAUDE.md
+	modified:   apps/admin-companion/PRODUCT.md
+	modified:   bruno/list_repos.bru
+	modified:   docs/architecture/decisions/README.md
+	modified:   docs/archive/design-plans/2026-07-07-v01-strategy-recommendations.md
+	modified:   docs/validation/2026-07-07-mm-241-live-migration.md
+
+Untracked files:
+  (use "git add <file>..." to include in what will be committed)
+	bruno/environments/production.bru
+	docs/architecture/decisions/0018-admin-signed-request-envelope.md
+	docs/architecture/decisions/0019-authmd-agent-authentication.md
+	docs/architecture/decisions/0020-set-revocation-trusted-issuers.md
+- Current git diff (staged and unstaged changes): diff --git a/AGENTS.md b/AGENTS.md
+index 10086e6b..85f8f148 100644
+--- a/AGENTS.md
++++ b/AGENTS.md
+@@ -89,7 +89,7 @@ The two are **siblings** — shared security rigor (practice-what-you-preach, WC
+ - **Tooling:** design work runs through the `/impeccable` skill (it reads the targeted app's PRODUCT.md/DESIGN.md — pass the app path so it loads the right brief, e.g. `apps/admin-companion`); live-iteration mode is pre-configured for the wallet in `.impeccable/live/config.json`.
+ 
+ ### admin-companion — *terminal-native operator console* ("The Brass Console")
+-- **What:** a separate iOS app for the relay **operator** (generate/share claim codes, pair/revoke admin devices via per-device Secure-Enclave signed requests). One global admin device key (Secure-Enclave-backed on real devices, software P-256 on macOS/simulator) pairs with **multiple relays at once** (staging + production), each registration independent and revocation per-relay. Distinct audience: technical operators, not end users. See [docs/design-plans/2026-06-26-admin-companion-app.md](docs/design-plans/2026-06-26-admin-companion-app.md) (Wave 7) and [ADR-0017](docs/architecture/decisions/0017-multi-relay-admin-pairings.md).
++- **What:** a separate iOS app for the relay **operator** (generate/share claim codes, pair/revoke admin devices via per-device Secure-Enclave signed requests). One global admin device key (Secure-Enclave-backed on real devices, software P-256 on macOS/simulator) pairs with **multiple relays at once** (staging + production), each registration independent and revocation per-relay. Distinct audience: technical operators, not end users. See [docs/archive/design-plans/2026-06-26-admin-companion-app.md](docs/archive/design-plans/2026-06-26-admin-companion-app.md) (Wave 7) and [ADR-0017](docs/architecture/decisions/0017-multi-relay-admin-pairings.md).
+ - **Register:** product, but the inverse of Obsign's lane — cool-slate dark ground, sealing-wax gold accent carried from Obsign, monospace-forward; reports the literal truth rather than hiding the machinery.
+ - **Anti-references (hard "don'ts"):** hacker cosplay / terminal kitsch · consumer-app friendliness (Obsign's lane) · crypto/web3 hype · enterprise dashboard / chart-soup · low-contrast dark-theme mush.
+ - **Status:** Phase 6 ([MM-190](https://linear.app/atbb/issue/MM-190/phase-6-companion-app-scaffold-admin-device-key-app)) scaffolded the Tauri app **and built the Brass Console design system**: the token layer (`apps/admin-companion/src/lib/styles/{tokens,fonts,base}.css`, forked OKLCH, every text pair verified WCAG 2.2 AAA) plus the canonical UI primitives in `apps/admin-companion/src/lib/components/ui/` (`Button`, `StatusChip`, `CodeOutput`, `DeviceRow`, `TextField`, `ScreenShell`), exercised at the `/preview` route and documented in `DESIGN.md` §5. Phase 7 (MM-194) added the pairing + request-signing client, **Phase 8 (MM-195) landed the operator screens**, and a follow-on multi-server phase made the app pair with several relays at once: Pair (QR/manual + required nickname), Home (biometric-gated claim code for the *active* server, tappable identity block → inline switcher), and Settings (per-server list with per-entry rename / revoke-on-server / forget-locally, global admin key, biometric toggle), plus the error-state matrix and the biometric (`tauri-plugin-biometric`) + share-sheet (`tauri-plugin-sharesheet`) mobile plugins. Pairings persist as one versioned JSON keychain item (`admin-pairings`) with a Rust-owned active pointer, so the server the UI shows and the one an unqualified command acts on cannot diverge. Still open: re-run `/impeccable document` in scan mode against `apps/admin-companion/` to emit the `.impeccable/design.json` sidecar, and the on-simulator demo (needs a Mac/Xcode). App-specific contracts (IPC surface, pairing document): [apps/admin-companion/CLAUDE.md](apps/admin-companion/CLAUDE.md).
+diff --git a/apps/admin-companion/CLAUDE.md b/apps/admin-companion/CLAUDE.md
+index 80be8f20..5792c8d0 100644
+--- a/apps/admin-companion/CLAUDE.md
++++ b/apps/admin-companion/CLAUDE.md
+@@ -10,7 +10,7 @@ backend, communicating through Tauri IPC. The operator-facing console for an ezp
+ relay: generate/share account claim codes, pair admin devices via QR, and revoke
+ devices. A **separate product** from identity-wallet (Obsign) with its own
+ terminal-native design register — see [PRODUCT.md](PRODUCT.md) / [DESIGN.md](DESIGN.md)
+-and the design plan [docs/design-plans/2026-06-26-admin-companion-app.md](../../docs/design-plans/2026-06-26-admin-companion-app.md).
++and the design plan [docs/archive/design-plans/2026-06-26-admin-companion-app.md](../../docs/archive/design-plans/2026-06-26-admin-companion-app.md).
+ 
+ The relay side (pairing/auth/device endpoints, Phases 1–5) is already shipped. This
+ app is built across Phases 6–8.
+diff --git a/apps/admin-companion/PRODUCT.md b/apps/admin-companion/PRODUCT.md
+index d16d3b47..b5b18526 100644
+--- a/apps/admin-companion/PRODUCT.md
++++ b/apps/admin-companion/PRODUCT.md
+@@ -6,7 +6,7 @@
+ > identity-wallet (Obsign, `apps/identity-wallet/PRODUCT.md`) and deliberately speaks a different
+ > design language, because its audience and its job are different.
+ >
+-> See the design plan: `docs/design-plans/2026-06-26-admin-companion-app.md`.
++> See the design plan: `docs/archive/design-plans/2026-06-26-admin-companion-app.md`.
+ 
+ ## Register
+ 
+diff --git a/bruno/list_repos.bru b/bruno/list_repos.bru
+index dd4d0da2..e0907749 100644
+--- a/bruno/list_repos.bru
++++ b/bruno/list_repos.bru
+@@ -16,7 +16,7 @@ params:query {
+ }
+ 
+ vars:pre-request {
+-  baseUrl: http://localhost:8080
++  baseUrl: https://ezpds-staging.up.railway.app
+   limit: 500
+-  cursor:
++  cursor: 
+ }
+diff --git a/docs/architecture/decisions/README.md b/docs/architecture/decisions/README.md
+index 4f49e66c..8fcf5cd6 100644
+--- a/docs/architecture/decisions/README.md
++++ b/docs/architecture/decisions/README.md
+@@ -52,3 +52,6 @@ understand why the architecture is the way it is.
+ | [0015](0015-ci-on-github-actions.md) | Accepted | Host CI on GitHub Actions (leaving the tangled spindle) |
+ | [0016](0016-dynamic-lexicon-permission-set-resolution.md) | Accepted | Dynamic Lexicon-based permission-set resolution, not a static scope table |
+ | [0017](0017-multi-relay-admin-pairings.md) | Accepted | One global admin device key across N relays; pairings in a single versioned keychain document with a Rust-owned active pointer |
++| [0018](0018-admin-signed-request-envelope.md) | Accepted | Admin auth via per-device P-256 signed-request envelopes; master token stays as break-glass |
++| [0019](0019-authmd-agent-authentication.md) | Accepted | Adopt the auth.md convention (self-registration, human claim ceremony, jwt-bearer exchange) as the agent-auth surface |
++| [0020](0020-set-revocation-trusted-issuers.md) | Accepted | Provider-driven agent revocation via Security Event Tokens, gated on the existing `trusted_issuers` list |
+diff --git a/docs/design-plans/2026-06-26-admin-companion-app.md b/docs/archive/design-plans/2026-06-26-admin-companion-app.md
+similarity index 100%
+rename from docs/design-plans/2026-06-26-admin-companion-app.md
+rename to docs/archive/design-plans/2026-06-26-admin-companion-app.md
+diff --git a/docs/design-plans/2026-07-03-read-after-write.md b/docs/archive/design-plans/2026-07-03-read-after-write.md
+similarity index 100%
+rename from docs/design-plans/2026-07-03-read-after-write.md
+rename to docs/archive/design-plans/2026-07-03-read-after-write.md
+diff --git a/docs/design-plans/2026-07-05-wallet-outbound-migration.md b/docs/archive/design-plans/2026-07-05-wallet-outbound-migration.md
+similarity index 100%
+rename from docs/design-plans/2026-07-05-wallet-outbound-migration.md
+rename to docs/archive/design-plans/2026-07-05-wallet-outbound-migration.md
+diff --git a/docs/design-plans/2026-07-07-code-quality-hardening.md b/docs/archive/design-plans/2026-07-07-code-quality-hardening.md
+similarity index 100%
+rename from docs/design-plans/2026-07-07-code-quality-hardening.md
+rename to docs/archive/design-plans/2026-07-07-code-quality-hardening.md
+diff --git a/docs/design-plans/2026-07-07-custos-mcp-server.md b/docs/archive/design-plans/2026-07-07-custos-mcp-server.md
+similarity index 100%
+rename from docs/design-plans/2026-07-07-custos-mcp-server.md
+rename to docs/archive/design-plans/2026-07-07-custos-mcp-server.md
+diff --git a/docs/design-plans/2026-07-07-v01-operational-proof.md b/docs/archive/design-plans/2026-07-07-v01-operational-proof.md
+similarity index 100%
+rename from docs/design-plans/2026-07-07-v01-operational-proof.md
+rename to docs/archive/design-plans/2026-07-07-v01-operational-proof.md
+diff --git a/docs/design-plans/2026-07-07-v01-strategy-recommendations.md b/docs/archive/design-plans/2026-07-07-v01-strategy-recommendations.md
+similarity index 94%
+rename from docs/design-plans/2026-07-07-v01-strategy-recommendations.md
+rename to docs/archive/design-plans/2026-07-07-v01-strategy-recommendations.md
+index a02b6424..36d3ad0a 100644
+--- a/docs/design-plans/2026-07-07-v01-strategy-recommendations.md
++++ b/docs/archive/design-plans/2026-07-07-v01-strategy-recommendations.md
+@@ -20,12 +20,12 @@ What remains is not feature work. It falls into three buckets, each with its own
+    `crates/pds`, and the canonical live bsky.social migration validation run (MM-241).
+    *The code is done; the proof is not.*
+ 
+-2. **[Agent Scope Enforcement](../archive/design-plans/2026-07-07-agent-scope-enforcement.md)** — safety-critical,
++2. **[Agent Scope Enforcement](2026-07-07-agent-scope-enforcement.md)** — safety-critical,
+    do **before** any agent exists in the wild. Today an agent credential functionally grants full
+    `com.atproto.access`; per-identity `granted_scopes` are stored but not meaningfully enforced
+    through the granular scope grammar.
+ 
+-3. **[Wallet Agent Consent and Audit](../archive/design-plans/2026-07-07-wallet-agent-consent-and-audit.md)** — the
++3. **[Wallet Agent Consent and Audit](2026-07-07-wallet-agent-consent-and-audit.md)** — the
+    product-thesis play. Claim-ceremony approval in Obsign, a "My agents" screen with revocation,
+    and an immutable agent-action audit log.
+ 
+diff --git a/docs/design-plans/2026-07-09-agent-provider-revocation-set.md b/docs/archive/design-plans/2026-07-09-agent-provider-revocation-set.md
+similarity index 100%
+rename from docs/design-plans/2026-07-09-agent-provider-revocation-set.md
+rename to docs/archive/design-plans/2026-07-09-agent-provider-revocation-set.md
+diff --git a/docs/design-plans/2026-07-09-post-commit-block-gc.md b/docs/archive/design-plans/2026-07-09-post-commit-block-gc.md
+similarity index 100%
+rename from docs/design-plans/2026-07-09-post-commit-block-gc.md
+rename to docs/archive/design-plans/2026-07-09-post-commit-block-gc.md
+diff --git a/docs/implementation-plans/2026-07-03-read-after-write/phase_01.md b/docs/archive/implementation-plans/2026-07-03-read-after-write/phase_01.md
+similarity index 100%
+rename from docs/implementation-plans/2026-07-03-read-after-write/phase_01.md
+rename to docs/archive/implementation-plans/2026-07-03-read-after-write/phase_01.md
+diff --git a/docs/implementation-plans/2026-07-03-read-after-write/phase_02.md b/docs/archive/implementation-plans/2026-07-03-read-after-write/phase_02.md
+similarity index 100%
+rename from docs/implementation-plans/2026-07-03-read-after-write/phase_02.md
+rename to docs/archive/implementation-plans/2026-07-03-read-after-write/phase_02.md
+diff --git a/docs/implementation-plans/2026-07-03-read-after-write/phase_03.md b/docs/archive/implementation-plans/2026-07-03-read-after-write/phase_03.md
+similarity index 100%
+rename from docs/implementation-plans/2026-07-03-read-after-write/phase_03.md
+rename to docs/archive/implementation-plans/2026-07-03-read-after-write/phase_03.md
+diff --git a/docs/implementation-plans/2026-07-03-read-after-write/phase_04.md b/docs/archive/implementation-plans/2026-07-03-read-after-write/phase_04.md
+similarity index 100%
+rename from docs/implementation-plans/2026-07-03-read-after-write/phase_04.md
+rename to docs/archive/implementation-plans/2026-07-03-read-after-write/phase_04.md
+diff --git a/docs/implementation-plans/2026-07-03-read-after-write/phase_05.md b/docs/archive/implementation-plans/2026-07-03-read-after-write/phase_05.md
+similarity index 100%
+rename from docs/implementation-plans/2026-07-03-read-after-write/phase_05.md
+rename to docs/archive/implementation-plans/2026-07-03-read-after-write/phase_05.md
+diff --git a/docs/implementation-plans/2026-07-03-read-after-write/phase_06.md b/docs/archive/implementation-plans/2026-07-03-read-after-write/phase_06.md
+similarity index 100%
+rename from docs/implementation-plans/2026-07-03-read-after-write/phase_06.md
+rename to docs/archive/implementation-plans/2026-07-03-read-after-write/phase_06.md
+diff --git a/docs/implementation-plans/2026-07-03-read-after-write/phase_07.md b/docs/archive/implementation-plans/2026-07-03-read-after-write/phase_07.md
+similarity index 100%
+rename from docs/implementation-plans/2026-07-03-read-after-write/phase_07.md
+rename to docs/archive/implementation-plans/2026-07-03-read-after-write/phase_07.md
+diff --git a/docs/implementation-plans/2026-07-03-read-after-write/test-requirements.md b/docs/archive/implementation-plans/2026-07-03-read-after-write/test-requirements.md
+similarity index 100%
+rename from docs/implementation-plans/2026-07-03-read-after-write/test-requirements.md
+rename to docs/archive/implementation-plans/2026-07-03-read-after-write/test-requirements.md
+diff --git a/docs/implementation-plans/2026-07-05-wallet-outbound-migration/phase_01.md b/docs/archive/implementation-plans/2026-07-05-wallet-outbound-migration/phase_01.md
+similarity index 100%
+rename from docs/implementation-plans/2026-07-05-wallet-outbound-migration/phase_01.md
+rename to docs/archive/implementation-plans/2026-07-05-wallet-outbound-migration/phase_01.md
+diff --git a/docs/implementation-plans/2026-07-05-wallet-outbound-migration/phase_02.md b/docs/archive/implementation-plans/2026-07-05-wallet-outbound-migration/phase_02.md
+similarity index 100%
+rename from docs/implementation-plans/2026-07-05-wallet-outbound-migration/phase_02.md
+rename to docs/archive/implementation-plans/2026-07-05-wallet-outbound-migration/phase_02.md
+diff --git a/docs/implementation-plans/2026-07-05-wallet-outbound-migration/phase_03.md b/docs/archive/implementation-plans/2026-07-05-wallet-outbound-migration/phase_03.md
+similarity index 100%
+rename from docs/implementation-plans/2026-07-05-wallet-outbound-migration/phase_03.md
+rename to docs/archive/implementation-plans/2026-07-05-wallet-outbound-migration/phase_03.md
+diff --git a/docs/implementation-plans/2026-07-05-wallet-outbound-migration/phase_04.md b/docs/archive/implementation-plans/2026-07-05-wallet-outbound-migration/phase_04.md
+similarity index 100%
+rename from docs/implementation-plans/2026-07-05-wallet-outbound-migration/phase_04.md
+rename to docs/archive/implementation-plans/2026-07-05-wallet-outbound-migration/phase_04.md
+diff --git a/docs/implementation-plans/2026-07-05-wallet-outbound-migration/phase_05.md b/docs/archive/implementation-plans/2026-07-05-wallet-outbound-migration/phase_05.md
+similarity index 100%
+rename from docs/implementation-plans/2026-07-05-wallet-outbound-migration/phase_05.md
+rename to docs/archive/implementation-plans/2026-07-05-wallet-outbound-migration/phase_05.md
+diff --git a/docs/implementation-plans/2026-07-05-wallet-outbound-migration/phase_06.md b/docs/archive/implementation-plans/2026-07-05-wallet-outbound-migration/phase_06.md
+similarity index 100%
+rename from docs/implementation-plans/2026-07-05-wallet-outbound-migration/phase_06.md
+rename to docs/archive/implementation-plans/2026-07-05-wallet-outbound-migration/phase_06.md
+diff --git a/docs/implementation-plans/2026-07-05-wallet-outbound-migration/phase_07.md b/docs/archive/implementation-plans/2026-07-05-wallet-outbound-migration/phase_07.md
+similarity index 100%
+rename from docs/implementation-plans/2026-07-05-wallet-outbound-migration/phase_07.md
+rename to docs/archive/implementation-plans/2026-07-05-wallet-outbound-migration/phase_07.md
+diff --git a/docs/implementation-plans/2026-07-05-wallet-outbound-migration/test-requirements.md b/docs/archive/implementation-plans/2026-07-05-wallet-outbound-migration/test-requirements.md
+similarity index 100%
+rename from docs/implementation-plans/2026-07-05-wallet-outbound-migration/test-requirements.md
+rename to docs/archive/implementation-plans/2026-07-05-wallet-outbound-migration/test-requirements.md
+diff --git a/docs/test-plans/2026-07-03-read-after-write.md b/docs/archive/test-plans/2026-07-03-read-after-write.md
+similarity index 100%
+rename from docs/test-plans/2026-07-03-read-after-write.md
+rename to docs/archive/test-plans/2026-07-03-read-after-write.md
+diff --git a/docs/test-plans/2026-07-05-wallet-outbound-migration.md b/docs/archive/test-plans/2026-07-05-wallet-outbound-migration.md
+similarity index 100%
+rename from docs/test-plans/2026-07-05-wallet-outbound-migration.md
+rename to docs/archive/test-plans/2026-07-05-wallet-outbound-migration.md
+diff --git a/docs/test-plans/2026-07-09-agent-provider-revocation-set.md b/docs/archive/test-plans/2026-07-09-agent-provider-revocation-set.md
+similarity index 100%
+rename from docs/test-plans/2026-07-09-agent-provider-revocation-set.md
+rename to docs/archive/test-plans/2026-07-09-agent-provider-revocation-set.md
+diff --git a/docs/validation/2026-07-07-mm-241-live-migration.md b/docs/validation/2026-07-07-mm-241-live-migration.md
+index 764e1081..9ee58d4b 100644
+--- a/docs/validation/2026-07-07-mm-241-live-migration.md
++++ b/docs/validation/2026-07-07-mm-241-live-migration.md
+@@ -7,8 +7,8 @@ the real bsky.social, and permanent `did:plc` state.
+ 
+ - Ticket: [MM-241](https://linear.app/malpercio/issue/MM-241) (the canonical MM-207 e2e; the
+   one unvalidated leg of the migration epic)
+-- Design: [ADR-0002](../architecture/decisions/0002-account-migration.md),
+-  design plan [v0.1 operational proof](../design-plans/2026-07-07-v01-operational-proof.md)
++- Design: [ADR-0002](../architecture/decisions/0002-wallet-authorized-account-migration.md),
++  design plan [v0.1 operational proof](../archive/design-plans/2026-07-07-v01-operational-proof.md)
+   (op-proof.AC4)
+ - Tooling: [`tools/interop`](../../tools/interop/README.md) (`migrate perform` / `migrate
+   verify`), the Obsign wallet (inbound leg), `curl` + `jq` for the plc.directory audit checks
+- Current branch: main
+- Recent commits: 6c9eddc0 feat(admin): in-flight device-transfer visibility/cancel — admin routes + Transfers screen (MM-259) (#182)
+d524f52c feat(admin): Account detail screen — move usage/storage off the moderation screen (MM-277) (#181)
+968934f6 feat(admin): operator credential revocation — revoke-credentials route + moderation sweep (MM-257) (#180)
+306fc4eb feat(admin): claim/invite-code inventory — list + revoke routes and Codes screen (MM-256) (#178)
+f7b79ecc feat(admin): account listing/search — GET /v1/admin/accounts + Accounts screen (MM-255) (#179)
+1707a985 docs: steer point-in-time restores to the debug-kit sandbox (MM-276) (#177)
+3c8158b4 feat: operator debug kit — sqlite3 in image + private-network runbooks (MM-250) (#172)
+2148e634 feat(wallet): Settings screen with System/Light/Dark appearance toggle (MM-249) (#174)
+91ede977 Admin companion: per-account usage/storage dashboards (MM-253) (#176)
+1190d7a5 fix(wallet): distinguish auth-session cancel from network/callback failures (MM-239) (#175)
+
+## Your task
+
+Based on the above changes, create a single git commit.
+
+You have the capability to call multiple tools in a single response. Stage and create the commit using a single message. Do not use any other tools or do anything else. Do not send any other text or messages besides these tool calls.
+
+
+ARGUMENTS: Commit the v0.1 closeout docs change set (3 new ADRs + log index + design-plan archive sweep + link fixes); exclude bruno files
