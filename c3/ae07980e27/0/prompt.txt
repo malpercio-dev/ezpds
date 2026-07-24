@@ -1,0 +1,97 @@
+Context: This summary will be shown in a list to help users and Claude choose which conversations are relevant.
+
+Please write a concise, factual summary of this conversation. Output ONLY the summary - no preamble. Claude will see this summary when searching previous conversations for useful memories and information.
+
+Summarize what happened in 2-4 sentences. Be factual and specific. Output in <summary></summary> tags.
+
+Include:
+- What was built/changed/discussed (be specific)
+- Key technical decisions or approaches
+- Problems solved or current state
+
+Exclude:
+- Apologies, meta-commentary, or your questions
+- Raw logs or debug output
+- Generic descriptions - focus on what makes THIS conversation unique
+
+Good:
+<summary>Built JWT authentication for React app with refresh tokens and protected routes. Fixed token expiration bug by implementing refresh-during-request logic.</summary>
+
+Bad:
+<summary>I apologize. The conversation discussed authentication and various approaches were considered...</summary>
+
+User: It looks like admin companion builds are failing on main in github actions, let's figure it out
+
+Agent: I'll investigate the admin-companion build failures on main. Let me start by looking at the recent GitHub Actions runs.
+
+The workflow file reads fine, but the `gh` CLI failed with a TLS error — likely a sandbox restriction on network/certificate access. Let me retry with the sandbox disabled.
+
+The most recent run (29968644666) failed. Interestingly it was triggered by a **wallet** commit (MM-444), which makes sense given the path filters include `Cargo.lock` and the shared `swift-rs-patch`. Let me dig into the failure logs.
+
+The log dump has "UNKNOWN STEP" labels, so I need to find the actual error. Let me search the failed log for the error signature.
+
+Found the real error. It's **not** admin-companion's own code — it's a `swift-rs` build failure. Let me capture the key evidence and check whether the wallet lane (which shares the exact same build path) is also affected, since that distinguishes an environment regression from an app-specific bug.
+
+Now this is a critical finding. Let me lay out what the evidence shows so far:
+
+`★ Insight ─────────────────────────────────────`
+**Same commit, same runner image, same reusable workflow — divergent results.** The MM-444 push (`f3ca1f0d`) built *successfully* on the wallet lane (`iOS · TestFlight`, run `...663`, 16m) but *failed* on admin-companion (run `...666`) — at the exact same time, on the identical `macos-26-arm64` image `20260715.0248`. Both lanes compile the same vendored `swift-rs` fork. When one arm of a fan-out passes and its twin fails with a **`clang: Segmentation fault: 11`** during Swift *manifest* compilation, that's the signature of a non-deterministic toolchain crash, not an app-specific code defect.
+`─────────────────────────────────────────────────`
+
+Let me confirm this by checking the earlier admin-companion failure (MM-434, 2026-07-20) and looking at the build.rs that panicked.
+
+The AGENTS.md troubleshooting section is illuminating. The `--disable-sandbox` swift-rs fork exists precisely because SPM's manifest compilation is fragile on macOS 26 (Tahoe). But this failure is a *new* mode: a `clang` **segfault** during that same manifest compile, not the old `sandbox_apply EPERM`.
+
+Let me check the earlier MM-434 admin failure (was it a different cause?), read the shared reusable workflow, and look at the upstream-bugs doc — in parallel.
+
+This clears up the picture completely. Let me record the key distinction:
+
+`★ Insight ─────────────────────────────────────`
+**Two unrelated admin-companion failures, only one still open.** The 2026-07-20 (MM-434) failure was a *codesign/entitlements* error (`cannot read entitlement data`) — already fixed by the very next commit ("iOS: fix TestFlight signing…"). The 2026-07-23 (MM-444) failure is a completely different, brand-new mode: a `clang` segfault deep inside the shared `swift-rs` build. Don't conflate consecutive red X's — each needs its own root cause.
+`─────────────────────────────────────────────────`
+
+Let me check the upstream-bugs doc for any institutional knowledge about this segfault class before I make a recommendation.
+
+I now have a complete, well-supported diagnosis. Here's what's going on.
+
+## Diagnosis: a transient `clang` segfault in the shared `swift-rs` build — not an admin-companion bug
+
+**The failure** (run [29968644666](https://github.com/malpercio-dev/ezpds/actions/runs/29968644666), commit `f3ca1f0d`, MM-444) died in the `just admin-ipa` step:
+
+```
+error: failed to run custom build command for `tauri v2.11.0`
+  error: 'swift-rs': Invalid manifest (compiled with: [.../swiftc ... -target x86_64-apple-macosx14.0 ... Package.swift ...])
+  clang: error: unable to execute command: Segmentation fault: 11
+  clang: error: linker command failed due to signal (use -v to see invocation)
+  thread 'main' panicked at apps/identity-wallet/swift-rs-patch/src-rs/build.rs:285:17:
+  Failed to compile swift package Tauri
+```
+
+The crash is in SwiftPM's **manifest compilation** — the step where `swiftc`/`clang` link a tiny throwaway executable just to *evaluate* `Package.swift`. `clang` crashed with `Segmentation fault: 11`. That's a **toolchain internal crash**, not a "your code is wrong" error, and it's in the vendored `swift-rs` fork that's shared by *both* iOS apps — nothing admin-companion-specific runs here.
+
+**The decisive evidence it's transient, not a real regression:**
+
+| | Wallet lane (`iOS · TestFlight`) | Admin lane (`Admin Companion · TestFlight`) |
+|---|---|---|
+| Commit | `f3ca1f0d` (MM-444) | `f3ca1f0d` (MM-444) — same |
+| Runner image | `macos-26-arm64` `20260715.0248` | same |
+| Triggered | 2026-07-23 00:17:08Z | same push, same second |
+| swift-rs build | identical | identical |
+| **Result** | ✅ **success** (16m) | ❌ segfault |
+
+The *identical* build — same commit, same runner image, same `swift-rs`, same Xcode 26.5 — compiled the same manifest and **passed on the sibling lane at the same moment**. A defect in the code path would fail both. Only one crashed, on its own physical runner → a **non-deterministic `clang` segfault**.
+
+A couple more corroborating points:
+- The `_ipa` recipe ([just/ios.just:84](just/ios.just:84)) and the workflow have **no retry** — a single clang crash fails the whole lane.
+- The prior admin red X (MM-434, 2026-07-20) was a *different, already-fixed* problem (an entitlements/codesign error), so this segfault is a **first-time, single occurrence**, not a recurring pattern yet.
+- This is a *new* symptom of the same fragile area the repo already documents ([docs/ios-upstream-bugs.md](docs/ios-upstream-bugs.md) Bug 1): SwiftPM manifest compilation on macOS 26 is where the `--disable-sandbox` fork lives. The sandbox `EPERM` is fixed; this is a fresh flake in the same spot.
+
+So: **main isn't broken — the admin-companion lane hit a flaky toolchain crash.** The wallet build for the same commit is already in TestFlight.
+
+Here's how we can proceed — the choice is yours since re-running triggers a TestFlight upload and hardening is a code change:
+
+Good — re-run to unblock now, plus a durable retry-hardening PR. Let me set up task tracking, kick off the re-run first (it runs ~15 min, so I'll work on the hardening while it goes), and start branching.
+
+Re-run triggered. Let me confirm it's queued/running and set up my task list.
+
+The re-run is `in_progress`. Now let me build the hardening while it runs (~15 min). Let me set up tasks and read the exact recipe I'll harden.
