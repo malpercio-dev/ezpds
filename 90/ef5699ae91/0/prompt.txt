@@ -1,2 +1,0 @@
-1. Got a 200 response, good to go
-2. I have another session already crunching on 290
