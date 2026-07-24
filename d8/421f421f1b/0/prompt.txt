@@ -1,0 +1,832 @@
+Context: This summary will be shown in a list to help users and Claude choose which conversations are relevant.
+
+Please write a concise, factual summary of this conversation. Output ONLY the summary - no preamble. Claude will see this summary when searching previous conversations for useful memories and information.
+
+Summarize what happened in 2-4 sentences. Be factual and specific. Output in <summary></summary> tags.
+
+Include:
+- What was built/changed/discussed (be specific)
+- Key technical decisions or approaches
+- Problems solved or current state
+
+Exclude:
+- Apologies, meta-commentary, or your questions
+- Raw logs or debug output
+- Generic descriptions - focus on what makes THIS conversation unique
+
+Good:
+<summary>Built JWT authentication for React app with refresh tokens and protected routes. Fixed token expiration bug by implementing refresh-during-request logic.</summary>
+
+Bad:
+<summary>I apologize. The conversation discussed authentication and various approaches were considered...</summary>
+
+User: Work on Linear issue MM-289:
+
+Suggested branch name: malpercio/mm-289-wallet-inbound-migration-source-pds-plc-operations-cannot-be
+
+<issue identifier="MM-289">
+<title>Wallet inbound migration: source-PDS PLC operations cannot be authorized over OAuth — needs a full-session (password) source login</title>
+<description>
+## Found during the <issue id="10c8aa2a-f2fe-433f-9ba4-fed81b554e7a" href="https://linear.app/malpercio/issue/MM-241/validate-live-bskysocial-migration-round-trip-canonical-mm-207-e2e">MM-241</issue> live run (second blocker on leg (a), past <issue id="eb690a7a-0158-4110-a739-961e04f15781" href="https://linear.app/malpercio/issue/MM-288/wallet-oauth-fails-against-third-party-authorization-servers-redirect">MM-288</issue>)
+
+With the <issue id="eb690a7a-0158-4110-a739-961e04f15781" href="https://linear.app/malpercio/issue/MM-288/wallet-oauth-fails-against-third-party-authorization-servers-redirect">MM-288</issue> fix live, the wallet's inbound flow completes the source OAuth login against [bsky.social](<http://bsky.social>) and then fails at the email-verification step: **"failed to send verification email."**
+
+## Root cause — a protocol wall, not a wiring bug
+
+`request_claim_verification` POSTs `com.atproto.identity.requestPlcOperationSignature` through the source-PDS OAuth client ([claim.rs](<http://claim.rs>) → `pds_client::request_plc_operation_signature`). The token carries `atproto transition:generic` — the **maximum** [bsky.social](<http://bsky.social>) can grant (`scopes_supported: [atproto, transition:email, transition:generic, transition:chat.bsky]`; no granular scopes).
+
+Per the atproto OAuth spec, `transition:generic` is app-password-equivalent and grants **"no account management actions: change handle, change email, delete or deactivate account, migrate account."** Bluesky's PDS gates the PLC-op endpoints behind full-session access. So **no OAuth token [bsky.social](<http://bsky.social>) issues can drive PLC operations** — this is exactly why goat's migration flow asks for the account password (legacy `createSession` = full access). The wallet flattens the insufficient-scope rejection into the misleading email-send error (same error-surfacing gap noted on <issue id="eb690a7a-0158-4110-a739-961e04f15781" href="https://linear.app/malpercio/issue/MM-288/wallet-oauth-fails-against-third-party-authorization-servers-redirect">MM-288</issue>).
+
+## Why our testing missed it
+
+Same pattern as <issue id="eb690a7a-0158-4110-a739-961e04f15781" href="https://linear.app/malpercio/issue/MM-288/wallet-oauth-fails-against-third-party-authorization-servers-redirect">MM-288</issue>: Custos is deliberately laxer — `oauth_scopes::allows_identity` accepts `transition:generic` ("preserves pre-granular behavior", crates/pds/src/auth/oauth_scopes.rs:826-831), so the claim/inbound flows validate green against our own PDS. [bsky.social](<http://bsky.social>) is the first spec-strict counterparty.
+
+## Fix direction
+
+For the **source-PDS leg of inbound migration**, the wallet needs a full-session auth path: password `createSession` against the source → Bearer-mode client. The infrastructure already exists — `OAuthClient::new_bearer` (built for the migration *destination* session, ADR-0002 work). Notes:
+
+* An **app password is also insufficient** (same restriction class); it must be the real account password. Honest UX copy required — a security wallet asking for the [bsky.social](<http://bsky.social>) password needs to say why (the protocol offers no delegated grant for identity ops; goat has the same requirement), and the password should be used for one `createSession` and never stored.
+* Scope the password path to inbound migration's source login only; OAuth remains the auth for everything OAuth can do.
+* Fold in the PAR/XRPC **error-surfacing** follow-up from <issue id="eb690a7a-0158-4110-a739-961e04f15781" href="https://linear.app/malpercio/issue/MM-288/wallet-oauth-fails-against-third-party-authorization-servers-redirect">MM-288</issue>: this failure surfaced as "failed to send verification email" when the server said "insufficient scope."
+
+## Policy question to record (not necessarily change)
+
+Custos's `transition:generic → identity ops` allowance is what keeps the wallet's *claim* flow working against our own PDS. Decide deliberately whether to keep that divergence (document in the auth CLAUDE.md / possibly an ADR note) or tighten to spec and move the wallet to full-session for claim as well.
+
+## <issue id="10c8aa2a-f2fe-433f-9ba4-fed81b554e7a" href="https://linear.app/malpercio/issue/MM-241/validate-live-bskysocial-migration-round-trip-canonical-mm-207-e2e">MM-241</issue> impact
+
+Leg (a) cannot be driven by the wallet UI until this lands. Sanctioned path for the run: `goat account migrate` drives the transfer (it uses password createSession — same privilege reality), then the wallet **claim flow** against staging inserts the device key as `rotationKeys[0]` — verified viable at the code level (staging accepts the wallet's `transition:generic` token for identity ops per `allows_identity`). Record driver as "goat + wallet claim".
+</description>
+<team name="Mal's Machinations"/>
+<label>Bug</label>
+<label>Mobile: Identity Wallet</label>
+<project name="ezpds">An easy-to-host PDS on the ATProtocol, MacOS. Grandma-approved.</project>
+<issue-relations>
+<related>
+<issue-ref identifier="MM-241" title="Validate live bsky.social migration round trip (canonical MM-207 e2e)"/>
+<issue-ref identifier="MM-288" title="Wallet OAuth fails against third-party authorization servers: redirect scheme violates the reverse-FQDN rule"/>
+</related>
+</issue-relations>
+</issue>
+
+Agent: I'll start by invoking the linear-workflow skill since we're beginning work on a Linear issue.
+
+---
+
+User: Base directory for this skill: /Users/jacob.zweifel/.claude/skills/linear-workflow
+
+# Linear Development Workflow
+
+This skill manages the full lifecycle of working on a Linear issue: from picking it up through opening a PR.
+
+## Starting Work on an Issue
+
+When the user indicates they want to work on a Linear issue (e.g., "Let's work on MM-42"):
+
+1. **Parse the issue identifier** from the user's message. The pattern is `MM-` followed by a number.
+
+2. **Fetch the issue details** from Linear using the `get_issue` tool with the parsed identifier. Display a brief summary to the user: title, description (truncated if long), priority, and any existing labels.
+
+3. **Update the issue in Linear:**
+   - Set the status to **"In Progress"**
+   - Assign it to **"me"** (the authenticated user)
+
+   Use the `save_issue` tool with the issue's `id`, `state: "In Progress"`, and `assignee: "me"`.
+
+4. **Create a git branch from a fresh base** using the issue's suggested branch name:
+   - The `get_issue` response includes a `branchName` field — use that as the branch name.
+   - **Fetch first, then branch from the remote tip — never from a possibly-stale local HEAD:**
+     `git fetch origin main && git checkout -b <branchName> origin/main`
+     A stale base silently duplicates work that already merged (hours lost rebuilding an already-shipped backend is the known failure mode).
+   - If the branch already exists locally, check it out, then run `git log --oneline <branchName>..origin/main` and surface to the user how far behind the base is.
+
+5. **Verify sibling work is in the base.** If the issue depends on or overlaps sibling issues already marked Done in Linear, confirm their PRs are actually present in the branch base (e.g. `git log --oneline origin/main | grep -i mm-nnn`, or check for the files/routes they added) before concluding any related feature is "missing". **"Linear says Done but the code isn't here" is a hard stop-and-verify signal — it almost always means your base is stale, not that the feature needs building.**
+
+6. **Confirm to the user** what happened: issue assigned, status updated, branch created/checked out (and from which base commit). Then ask what they'd like to tackle first, or summarize the issue so they can dive in.
+
+## Opening a PR (Auto-transition to "In Review")
+
+When the user asks to open a PR, create a pull request, or you detect that a PR is being created for a branch associated with a Linear issue:
+
+1. **Identify the Linear issue** from the current branch name. Linear branch names typically contain the issue identifier (e.g., `malpercio/mm-42-fix-the-thing`). Extract the `MM-XXX` portion.
+
+2. **Create the PR** as the user requests (follow normal PR creation workflow).
+
+3. **After the PR is successfully created**, update the Linear issue:
+   - Set the status to **"In Review"**
+   - Attach the PR URL as a link on the issue using the `links` field in `save_issue`
+
+   Use `save_issue` with the issue's `id`, `state: "In Review"`, and `links: [{"url": "<pr-url>", "title": "Pull Request"}]`.
+
+4. **Confirm** to the user that the issue has been moved to "In Review" and the PR link has been attached.
+
+## Important Notes
+
+- Always fetch the issue first to confirm it exists and get the full `id` (UUID) needed for updates.
+- If the issue is already "In Progress" and assigned, skip those updates and just create the branch.
+- If branch creation fails (e.g., uncommitted changes), inform the user and suggest next steps rather than silently failing.
+- The PR-to-"In Review" transition should happen automatically whenever a PR is opened during a session where the user started work on a Linear issue. Track the active issue identifier throughout the session.
+
+
+ARGUMENTS: MM-289
+
+Agent: Let me fetch the issue details and check the current git state in parallel.
+
+Branch `claude/mm-289-wallet-plc-oauth-e31c11` already exists for this issue. Let me fetch the issue details and verify the base is fresh.
+
+The issue is already set to **In Progress** and assigned to me (Malpercio), and the branch `claude/mm-289-wallet-plc-oauth-e31c11` is checked out — sitting exactly on `origin/main` (0 commits behind, 0 ahead), so the base is fresh. No workflow updates needed there.
+
+Let me update the memory that MM-288 has landed and mark a chapter, then dig into the code.
+
+Now let me explore the codebase to understand the current state of the migration/claim flow. Let me look at the key files mentioned in the issue.
+
+Let me read the core files to understand the current flow. I'll start with `claim.rs`, `pds_client.rs`, and `oauth_client.rs`.
+
+This is a rich, well-documented codebase. Let me share an initial insight and then dig into the specific mechanism.
+
+`★ Insight ─────────────────────────────────────`
+The bug is a **protocol wall, not a wiring defect**. In `claim.rs`, the source-PDS login goes through a full OAuth PKCE+DPoP flow (`prepare_pds_auth`/`complete_pds_auth`), and the PAR request hardcodes `scope: "atproto transition:generic"` (line 646). Per the atproto OAuth spec, `transition:generic` is *app-password-equivalent* — it explicitly excludes account-management/identity operations. So `requestPlcOperationSignature` and `signPlcOperation` (both PLC ops) are unreachable via any OAuth token bsky.social can mint.
+
+The reason it works against our own Custos is a deliberate laxness: `oauth_scopes::allows_identity` accepts `transition:generic`. bsky.social is the first spec-strict counterparty the wallet has hit — same "testing missed it" pattern as MM-288.
+
+The fix leans on infrastructure already built for the *outbound* migration destination: `OAuthClient::new_bearer` (Bearer-mode, no DPoP), created from a legacy `createSession` rather than an OAuth flow.
+`─────────────────────────────────────────────────`
+
+Let me examine the auth-client infrastructure and how the migration destination session is built, to see exactly what I can reuse.
+
+The Bearer-mode `OAuthClient` is already complete and battle-tested (refresh via `com.atproto.server.refreshSession`, no DPoP dance). Now let me see how the migration destination builds its Bearer session, and whether `createSession` exists anywhere. Let me look at the relevant XRPC helpers in `pds_client.rs` and the orchestrator's destination-account logic.
+
+The `&&` chain stopped because `createSession` has no matches (grep exits non-zero). That's already a useful finding — **there is no `createSession` implementation yet**. Let me re-run with proper separators.
+
+zsh is expanding the glob. Let me quote the patterns.
+
+Confirmed: **`createSession` does not exist yet** — I'll need to add it. Let me read the XRPC helper section of `pds_client.rs` (the PLC-op functions and the migration `create_account` response shape) to match the existing pattern.
+
+Now let me understand the frontend import/claim flow — this is where the significant UX decision lives (asking for a password vs. OAuth). Let me read the relevant screens and the state machine.
+
+Let me read the import-flow section of the state machine and the two key screens.
+
+Let me look at the frontend IPC wrapper for the PDS-auth dance and the `EmailVerificationScreen`, then check the PDS-side policy code the issue references.
+
+Let me check whether our own Custos PDS supports `createSession` (the claim flow can target Custos too), and read the exact policy code the issue references.
+
+I now have the complete picture. Let me capture the key insight before surfacing the one genuine design fork.
+
+`★ Insight ─────────────────────────────────────`
+**What's reusable vs. what's missing.** The Bearer-mode `OAuthClient` (`new_bearer`, refresh via `com.atproto.server.refreshSession`) is fully built and tested — it was created for the *outbound* migration destination session. So the "authenticated client" half already exists. What's missing is the bootstrap: there's **no `com.atproto.server.createSession` call anywhere** in the wallet (the destination account uses service-auth `createAccount`, never a password login).
+
+**Custos supports it too.** `crates/pds/src/app.rs:340` routes `com.atproto.server.createSession`, so a password path works against both bsky.social *and* our own PDS — meaning a single password-login path can replace the OAuth source login universally, not just for bsky.social.
+
+**The email step stays.** Password login replaces only the *auth* step (the `pds_auth` screen). `requestPlcOperationSignature` still emails a confirmation token that `signPlcOperation` consumes — that's a second factor independent of auth mode, so the `email_verification` screen is unchanged.
+`─────────────────────────────────────────────────`
+
+The mechanism is clear and the fix direction is well-specified. There's one genuine fork that shapes the whole implementation (and the issue explicitly flags a related policy decision as "decide deliberately"), so let me confirm both before writing code.
+
+The user chose **replace with password** and **tighten Custos to spec**. Tightening has real blast radius, so before I touch `allows_identity` I need to verify exactly how the identity endpoints enforce scope and — critically — that a full password session still passes (and that nothing else in Custos silently relies on the lax allowance). Let me map that.
+
+`require_identity` passes if `scope == SCOPE_ACCESS || allows_identity(...)`. So the safety of tightening hinges on what `scope_claim` a **full password session** carries. Let me trace `SCOPE_ACCESS` and how `scope_claim` is set for a legacy `createSession` full session vs. an OAuth `transition:generic` grant.
+
+This is the decisive safety check. Let me confirm the exact `require_identity` gate and the full-session scope, plus read the tests I'll need to update and the AppState/registration wiring.
+
+Safety confirmed decisively:
+
+`★ Insight ─────────────────────────────────────`
+A main-password `createSession` mints `scope = "com.atproto.access"` (`SCOPE_ACCESS`), and `require_identity` short-circuits to `Ok` whenever `scope == SCOPE_ACCESS` — *before* `allows_identity` is even consulted. So removing the `transition:generic` shortcut from `allows_identity` is invisible to full sessions. And an **app-password** session gets `app_pass_scope` (neither `SCOPE_ACCESS` nor `transition:generic`), so `allows_identity` already returns `false` for it — the "app password is also insufficient" rule is already enforced. The tightening's *entire* behavioral delta is: OAuth `transition:generic` tokens lose identity-op access — exactly the spec-conformance intended, and nothing the wallet relies on after we move claim to password full-session.
+`─────────────────────────────────────────────────`
+
+Let me read the tests to update, the AppState field, and the command registration.
+
+Let me read the test block containing line 1281 to update it correctly, then I'll lay out the plan.
+
+Line 1281 is in `granular_permission_checks_match_resources` — it tests a *granular* `identity:handle` token, which stays valid. Only line 1301 (transition:generic) needs flipping. I now have the complete plan. Let me mark the chapter and start with the self-contained PDS-side change.
+
+Here's the plan I'll execute, across four layers:
+
+`★ Insight ─────────────────────────────────────`
+The change is small at each layer but spans the whole stack — the discipline is keeping each layer's contract honest:
+- **Custos (PDS):** surgically drop the `transition:generic` shortcut from `allows_identity` only (not `allows_email`/`allows_account`, which stay app-password-equivalent and which the outbound migration's OAuth deactivate still relies on).
+- **Wallet backend:** add the missing `createSession` bootstrap, feed it into the *existing* `new_bearer` client, and delete the now-dead OAuth PDS-auth machinery from `claim.rs`.
+- **Wallet frontend:** swap the "Authenticate with PDS" button for an honest password screen, and stop swallowing the server's real error.
+`─────────────────────────────────────────────────`
+
+Let me start with the PDS tightening — the most self-contained piece.
+
+Now update the test that asserted the old (lax) behavior, and add a focused regression test:
+
+Let me verify `SCOPE_ACCESS` is reachable inside the test module (it's a `use super::jwt::...` import in the parent):
+
+`use super::*` at line 1001 brings in the parent's `SCOPE_ACCESS` binding — good. PDS side is done (I'll compile it in a batch shortly). Now the wallet backend. Let me study `describe_server` (a similar unauthenticated PDS call) to match the pattern, and find where request/response types live.
+
+Let me see the `PdsClientError` enum and the request/response type area to place the new type.
+
+I'll add a typed `InvalidCredentials` variant so the claim layer can surface a wrong-password distinctly. First let me find every exhaustive `match` on `PdsClientError` that a new variant would break.
+
+`map_pds_error_to_resolve` (claim.rs:328) is the exhaustive one; the others use catch-all arms (the compiler will flag any I miss). Let me add the typed variant, its response type, and the `create_session` method.
+
+Now add the `CreateSessionResponse` type next to `CreateAccountResponse`, and the `create_session` method after `describe_server`:
+
+Now the largest piece — `claim.rs`. Let me first map every reference to the OAuth PDS-auth machinery I'm removing (including tests), so I delete cleanly.
+
+Let me check which tests in `claim.rs` exercise the removed OAuth machinery:
+
+The removed OAuth helpers aren't unit-tested in `claim.rs` (no `test_prepare_pds_auth` etc.), so deletion is clean. Let me read the `request_claim_verification` tests before I change its error surfacing, to keep them compatible.
+
+The 500-test expects `NetworkError`, so my classifier must only special-case insufficient-scope. Now let me make the `claim.rs` edits. First the module header and imports:
+
+Now update the `ClaimState` doc comments and remove the `PendingPdsLogin` struct:
+
+Now update the `ClaimError` enum — replace `OauthRejected` (its only producer is being deleted) with the two new honest-error variants:
+
+Now add the `InvalidCredentials` arm to `map_pds_error_to_resolve`:
+
+Now the large replacement. Let me get the exact current boundaries of the OAuth PDS-auth block (line numbers shifted after my edits):
+
+The block spans lines 329–813. I'll splice it precisely with a script (too large for a literal match). Let me write the replacement to a scratch file, then splice.
+
+Splice succeeded. Now update `request_claim_verification_impl` error surfacing and the `start_pds_auth` doc references. Let me read the current state of that region:
+
+Now the last `start_pds_auth` reference in `sign_and_verify_claim`'s doc:
+
+Now wire the backend: remove `pending_pds_login` from `AppState` and update the command registration. Let me read the relevant `oauth.rs` region:
+
+Now check the other `oauth.rs` reference to `complete_pds_auth`:
+
+`parse_callback_url` is still used by the create flow and the outbound migration source auth — just fix the stale doc reference:
+
+Now the `lib.rs` command registration:
+
+Now let me add tests for the new command and error variants. Let me view an existing `ClaimError` serialization test to match the pattern:
+
+Now add serialization tests for the two new error variants:
+
+Let me verify `PdsClient::new()` exists (used in my tests) before compiling:
+
+Backend Rust done. Now the frontend. Let me read the `ipc.ts` `ClaimError` type and the `startPdsAuth`/related region:
+
+Now read the full `startPdsAuth` region in `ipc.ts` to replace it:
+
+Those diagnostics are pre-existing LSP config noise (module resolution without the project tsconfig), not from my edit — `pnpm check` uses the real config. Now replace `startPdsAuth` with the password-based `authenticateSourcePds`:
+
+Let me verify `classifyAuthSessionRejection` is still used (by the migration orchestrator source-auth) so it's not orphaned:
+
+The helper is still used (migration source-auth, line 815). Two stale comment references to `startPdsAuth` remain — let me fix them:
+
+Now the centerpiece — rewriting `PdsAuthScreen.svelte` as an honest password screen. Let me first check the `TextField` primitive's props:
+
+`TextField` spreads `...rest` onto the input, so `type="password"`, `autocomplete`, and `aria-label` all pass through. Now let me write the new password screen with honest, calm copy per the DESIGN brief.
+
+Now wire the new props in `+page.svelte`:
+
+Now fix `EmailVerificationScreen.svelte` — the misleading "Failed to send verification email" catch-all that swallowed the real insufficient-scope error:
+
+Frontend is done. Now the critical step: verify it all compiles. Given the worktree has no cargo, let me recall the exact recipe from memory for running cargo via the main checkout's devenv.
+
+I have the recipe. Let me verify compilation + tests. I'll start with the wallet crate (where most changes are) — this needs the sandbox disabled and the main checkout's devenv. Running it in the background so I can write docs while it compiles.
+
+While that compiles, let me write the docs. First, check the ADR log format and next number:
+
+Let me check the ADR README index format so I add an entry consistently:
+
+Now I'll write ADR-0021 capturing the deliberate policy decision (the issue asked to record it):
+
+Let me check the wallet build/test result:
+
+The build is still compiling (piped through `tail`, so output arrives only at completion). Let me update `apps/identity-wallet/CLAUDE.md` meanwhile. Let me find all the contract statements that changed:
+
+The wallet crate compiled and tests passed (exit 0). Let me confirm the test summary:
+
+The wallet crate: **327 passed, 0 failed** — including my new `authenticate_source_pds` and error-classification tests. Now let me kick off the PDS crate tests (the `allows_identity` tightening) in the background while I finish the CLAUDE.md updates.
+
+Now the CLAUDE.md updates. Let me apply them precisely:
+
+Now the main `claim.rs` Exposes contract (line 42):
+
+Now the `pds_client.rs` contract — add `create_session`, its response type, and the new error variant:
+
+Now the Guarantees line (103) and the two Key-Decisions lines (325, 336, 337):
+
+Now the Invariants line (377), and the Key Files lines (408, 412, 416, 430):
+
+Let me verify I haven't orphaned the OAuth `PdsClient` methods (`pds_par`, `pds_token_exchange`, `build_pds_authorize_url`) — the outbound migration orchestrator should still use them:
+
+The migration orchestrator still uses all those `PdsClient` OAuth methods — no dead code. And the PDS `oauth_scopes` tests just completed (exit 0). Let me confirm that result:
+
+PDS `oauth_scopes`: **37 passed** including both new/updated tests. But my filter only ran `oauth_scopes` — I must check whether any *route-level* PDS test drives an identity endpoint with a `transition:generic` token (which would now correctly 403). Let me search:
+
+Only `oauth_scopes.rs` couples `transition:generic` to identity logic — the other hits are metadata/token-issuance (advertising the scope), and the identity route tests use full sessions, so none regress. Now let me run the stricter gate — clippy `-D warnings` on both crates (the CI gate) plus the full PDS test suite. I'll touch changed files first to defeat stale-target caching, per the worktree memory.
+
+While clippy compiles, let me run the frontend checks (`pnpm check` + `pnpm test`) — independent of cargo, so concurrent is fine. First I need to ensure the worktree's frontend has `node_modules`:
+
+No node_modules — I'll install then run check + test, in the background (needs network, so sandbox off):
+
+Both background checks are running. Let me use the time to sweep for any lingering references to removed symbols across the frontend and tests:
+
+Two findings: `OAUTH_REJECTED` at ipc.ts:789 belongs to `MigrationError` (the outbound orchestrator's own error — correct, leave it). But `auth-session-errors.test.ts` still tests the removed `startPdsAuth` — that will break `pnpm test`. Let me read and fix it:
+
+The frontend job exited **0** — but that's surprising given the test file imports the removed `startPdsAuth`. Let me read the actual output to understand what ran:
+
+The pipe-to-`tail` masked the real exit code (the PIPESTATUS gotcha from memory) — `pnpm check` actually **failed** with 2 real issues:
+1. `auth-session-errors.test.ts` imports the removed `startPdsAuth`.
+2. A reactivity warning in my `PdsAuthScreen.svelte` (`$state(handle)` captures only the initial prop value).
+
+Let me fix both. First, the test file — drop the obsolete `startPdsAuth` block, keep `startSourceAuth`:
+
+Clippy also went through a `tail` pipe, so I must verify its output content, not trust the exit code. Let me finish the frontend fixes first, then verify clippy properly. Remove the `startPdsAuth` describe block:
+
+Let me update the now-inaccurate file header comment (only one wrapper remains):
+
+Now fix the `PdsAuthScreen.svelte` reactivity warning — indirect the prop through a plain local so `$state` doesn't reference the reactive prop directly:
+
+Now let me verify clippy's *actual* output (the exit code was masked by the `tail` pipe):
+
+Clippy: clean "Finished" (no `-D warnings` violations) across both crates — and I made no Rust changes after it ran. Now let me re-run the frontend check + test properly (no `tail` pipe masking the exit code this time), now that node_modules is installed:
+
+`pnpm check`: **0 errors**, `pnpm test`: **56 passed**. Only the reactivity warning remains — my `const` indirection just moved it. This is a deliberate one-time capture (the `handle` prop is fixed for this screen's lifetime), so the sanctioned expression is a `svelte-ignore` acknowledgement. Let me use that:
+
+Now let me verify formatting on the changed Rust files (package-scoped `cargo fmt`, since `--all` breaks in worktrees per memory) and re-confirm the frontend check is warning-free:
+
+Frontend check is now **0 errors, 0 warnings**. rustfmt found 2 formatting nits in my new code — let me auto-format them:
+
+rustfmt clean now. Let me run the **full** PDS test suite (not just `oauth_scopes`) to be rigorous that the `allows_identity` tightening breaks no route-level test:
+
+**Full PDS suite: 1733 passed, 0 failed.** The tightening breaks nothing. All gates are green:
+
+- **PDS**: clippy clean, `oauth_scopes` + full suite (1733) pass, rustfmt clean
+- **Wallet Rust**: 327 tests pass, clippy clean, rustfmt clean
+- **Frontend**: `pnpm check` 0 errors/0 warnings, `pnpm test` 56 pass
+
+Let me clean up scratch logs and do a final review of the complete diff:
+
+The diff is coherent — net −138 lines (removing the OAuth PAR/token machinery, adding the leaner password path). Let me do a final visual review of the two critical new backend pieces (post-rustfmt) to confirm correctness:
+
+Both final forms are correct. Let me update the project memory that tracks the MM-241/288/289 chain, since this is a project-status fact useful across sessions:
+
+MM-289 is implemented and fully verified. Here's what landed, across the stack:
+
+## What changed
+
+**Custos (PDS) — tightened to spec** ([oauth_scopes.rs](crates/pds/src/auth/oauth_scopes.rs))
+- `allows_identity` no longer accepts `transition:generic`. Identity/PLC ops now require a granular `identity:*` grant or a full `com.atproto.access` session. `allows_email`/`allows_account`/`allows_repo`/etc. are untouched, so the outbound-migration orchestrator's OAuth source token (repo/blob/status) is unaffected.
+
+**Wallet backend** ([pds_client.rs](apps/identity-wallet/src-tauri/src/pds_client.rs), [claim.rs](apps/identity-wallet/src-tauri/src/claim.rs))
+- New `create_session` (the missing password-login bootstrap) → feeds the existing `OAuthClient::new_bearer`.
+- New `authenticate_source_pds` command replaces the OAuth PDS login (`prepare_pds_auth`/`complete_pds_auth` + PAR/token-exchange helpers deleted — net −138 lines).
+- Honest errors: `SOURCE_AUTH_FAILED` (wrong password) and `InsufficientScope` (surfaced distinctly instead of the misleading "failed to send verification email").
+
+**Wallet frontend** ([PdsAuthScreen.svelte](apps/identity-wallet/src/lib/components/onboarding/PdsAuthScreen.svelte), [EmailVerificationScreen.svelte](apps/identity-wallet/src/lib/components/onboarding/EmailVerificationScreen.svelte), [ipc.ts](apps/identity-wallet/src/lib/ipc.ts))
+- "Authenticate with PDS" button → a password screen that says *why* a security wallet is asking, and that the password is used once and never stored.
+
+**Docs** — [ADR-0021](docs/architecture/decisions/0021-identity-ops-require-full-session.md) records the policy decision you chose (tighten to spec), plus CLAUDE.md contract updates.
+
+## Verification (all green)
+| Gate | Result |
+|---|---|
+| PDS `cargo test -p pds` | **1733 passed, 0 failed** |
+| Wallet `cargo test -p identity-wallet` | **327 passed, 0 failed** |
+| clippy `-D warnings` (both crates) | clean |
+| rustfmt (package-scoped) | clean |
+| `pnpm check` | 0 errors, 0 warnings |
+| `pnpm test` | **56 passed** |
+
+`★ Insight ─────────────────────────────────────`
+The safety of the "tighten to spec" decision rested on one detail: `require_identity` short-circuits on `scope == SCOPE_ACCESS` *before* consulting `allows_identity`. A password `createSession` mints exactly that scope — so full sessions sail through, app-password sessions were already refused, and the *only* behavioral delta is OAuth `transition:generic` losing identity-op access. That's why 1733 PDS tests passed with zero changes to any route test.
+`─────────────────────────────────────────────────`
+
+## One thing I'd value your eye on — the security copy
+
+The issue explicitly flagged "honest UX copy required," and that's your product voice, so here's my draft (please tell me if you'd tune it):
+
+> **Sign in to your PDS** — *Adding this device as a recovery key is an identity change, and the AT Protocol lets only a full sign-in authorize one.*
+> Your PDS only permits identity changes with your **account password** — the protocol has no way to delegate this one action, which is why migration tools ask for it too.
+> Your password is sent only to {pdsUrl}, used once to open a session, and never stored on this device or seen by Obsign. An app password won't work here.
+
+Want me to **open the PR** (I'll move MM-289 to "In Review" and attach the link), or would you like to refine the copy or review the diff first?
+
+---
+
+User: The draft is great! Please open a PR
+
+Agent: The linear-workflow skill (already active) covers the PR → "In Review" transition. Let me commit, push, open the PR, then update Linear.
+
+First, the commit:
+
+Committed. Now push the branch and open the PR:
+
+The push went to **tangled** (`origin`), but the project's PRs and CI live on **GitHub** (per the recent PR numbers #185–187 and the GitHub Actions CI). Let me inspect the remotes to push to GitHub and open the PR there:
+
+`origin` dual-pushes to both GitHub (`mal.github.com` alias) and tangled — so the branch should be on GitHub too. Let me confirm it landed on GitHub, then open the PR there:
+
+The branch is on GitHub at commit `9e667527`. Now let me open the PR:
+
+PR opened: **https://github.com/malpercio-dev/ezpds/pull/190**. Now, per the linear-workflow skill, let me move MM-289 to "In Review" and attach the PR link:
+
+Done. MM-289 is shipped and tracked.
+
+## PR opened & Linear updated
+
+- **PR:** [malpercio-dev/ezpds#190](https://github.com/malpercio-dev/ezpds/pull/190) — `fix(wallet): password source login for claim PLC ops; tighten Custos identity scope (MM-289)`
+- **Linear MM-289:** moved to **In Review**, PR attached as a link.
+
+The branch pushed to both remotes (GitHub `mal.github.com` alias + tangled) via `origin`'s dual-push; the PR lives on GitHub, where CI (GitHub Actions) and the Railway "Wait for CI" gate run.
+
+`★ Insight ─────────────────────────────────────`
+One thing worth knowing for next time: `git push origin` here fans out to **two** remotes (GitHub + tangled), but the terminal only echoed tangled's "Welcome to this knot!" banner — GitHub's push scrolled by silently. That's why I verified with `git ls-remote` against the GitHub alias before running `gh pr create`: a push that *looks* like it only hit tangled can still have landed on GitHub, and vice-versa. In this dual-remote setup, confirm the ref is where you think it is before opening the PR.
+`─────────────────────────────────────────────────`
+
+## What CI will now run
+The GitHub Actions `ios-pr-check` lane will compile both apps and run the frontend `pnpm check`/tests plus the Rust unit tests on the macOS host target, and `ci.yml` runs the full `ci-pds` gate — all of which I've already reproduced locally green (pds 1733, wallet 327, clippy/fmt clean, `pnpm check` 0/0, `pnpm test` 56).
+
+One open item that's **not** part of this PR (it's MM-241's, tracked in the issue): the live bsky.social round-trip still needs the MM-288 canonical client metadata deployed to *production* plus a new wallet build — this PR removes the second protocol blocker, but the production deploy is the remaining gate before leg (a) can be driven end-to-end.
+
+Want me to do anything else — e.g., watch the CI run on the PR, or start on a follow-up?
+
+---
+
+User: Watch CI and for coderabbit review
+
+Agent: I'll watch PR #190's CI and wait for CodeRabbit's review. Let me first snapshot the current state:
+
+Current state: frontend checks **pass**, GitGuardian **pass**; PDS gate + iOS compiles + CodeRabbit still **pending**. Conveniently, **CodeRabbit surfaces as its own status check** — so "no pending checks" signals both CI *and* the CodeRabbit review are done. Let me launch a background poll that exits on that condition (it'll re-invoke me automatically):
+
+The monitor is running in the background — it polls every 60s and will re-invoke me the moment all checks settle (CI jobs finish *and* CodeRabbit's review completes, since CodeRabbit reports as its own status check).
+
+While it watches, here's the current picture:
+
+| Check | Status |
+|---|---|
+| Frontend check (identity-wallet) | ✅ pass |
+| Frontend check (admin-companion) | ✅ pass |
+| GitGuardian | ✅ pass |
+| PDS gate (fmt, clippy, test, audit) | ⏳ pending |
+| iOS compile (identity-wallet) | ⏳ pending |
+| iOS compile (admin-companion) | ⏳ pending |
+| CodeRabbit | ⏳ pending |
+
+The iOS compile lane is the long pole (~15–20 min on the macOS runner). CodeRabbit has posted its "review in progress" placeholder but no findings yet.
+
+When the monitor fires, I'll pull the final CI verdict and run the **pr-review-comments** skill to fetch CodeRabbit's full findings in one batch, then triage them for you. I'll report back as soon as it completes — nothing further needed from you now.
+
+---
+
+User: Review is in
+
+Agent: The `pr-review-comments` skill is exactly for this — fetching all of CodeRabbit's findings in one batch to triage. Let me invoke it.
+
+---
+
+User: Base directory for this skill: /Users/jacob.zweifel/.claude/skills/pr-review-comments
+
+# Batch PR Review-Comment Triage
+
+Pull every unresolved review thread on the current PR in one command, then triage the batch. The user should never have to paste review comments one at a time.
+
+## Fetch unresolved threads
+
+Determine the PR number for the current branch (`gh pr view --json number -q .number`), then:
+
+```bash
+gh api graphql -f query='
+query($owner:String!,$repo:String!,$pr:Int!){
+  repository(owner:$owner,name:$repo){
+    pullRequest(number:$pr){
+      reviewThreads(first:100){
+        nodes{
+          isResolved isOutdated path line
+          comments(first:30){nodes{author{login} body url}}
+        }
+      }
+    }
+  }
+}' -F owner=<owner> -F repo=<repo> -F pr=<number> \
+| jq '[.data.repository.pullRequest.reviewThreads.nodes[]
+       | select(.isResolved==false)
+       | {path, line, isOutdated,
+          comments: [.comments.nodes[] | {author: .author.login, url, body}]}]'
+```
+
+Also fetch top-level (non-thread) review bodies and issue comments if the bot posts summaries there:
+
+```bash
+gh pr view <number> --json reviews,comments
+```
+
+## Triage the batch
+
+For each unresolved thread, classify before fixing anything:
+
+1. **Correctness / security / portability** — verify the claim against the actual code, then fix if real. Automated reviewers assert confidently and are sometimes wrong; refute with evidence when they are.
+2. **Legitimate but out of scope** — file a follow-up issue rather than growing the PR.
+3. **Pure style nit / preference** — decline with a one-line reason.
+
+Present the full disposition table (thread → classification → action) to the user in ONE message before applying fixes, so they approve the batch rather than each item. Note that every fix-commit re-triggers CI and (for assertive bots like CodeRabbit) a fresh review round that tends to find one more micro-nit — batch fixes into a single commit where possible.
+
+## Resolving threads
+
+After pushing fixes, reply/resolve via:
+
+```bash
+gh api graphql -f query='mutation($id:ID!){resolveReviewThread(input:{threadId:$id}){thread{isResolved}}}' -F id=<threadId>
+```
+
+(Include `id` in the reviewThreads query above if you plan to resolve threads programmatically.)
+
+
+ARGUMENTS: 190
+
+Agent: Let me fetch all unresolved review threads (with thread IDs for later resolution), the top-level review bodies, and the final CI status in one batch:
+
+One unresolved finding. Let me also pull CodeRabbit's top-level review/summary and the final CI verdict to complete the picture:
+
+CI is **fully green** and CodeRabbit's review is in (`CHANGES_REQUESTED`, 1 finding). Here's the complete picture:
+
+## CI — all green ✅
+| Check | Result |
+|---|---|
+| PDS gate (fmt, clippy, test, audit) | ✅ pass (4m33s) |
+| iOS compile (identity-wallet) | ✅ pass (6m59s) |
+| iOS compile (admin-companion) | ✅ pass (7m27s) |
+| Frontend check (both apps) | ✅ pass |
+| CodeRabbit | ✅ "Review completed" |
+| GitGuardian | ✅ pass |
+
+*(A stale duplicate "CodeRabbit pending" status row lingers — the authoritative "Review completed" is the real one; my background monitor will just time out on it, harmless.)*
+
+## CodeRabbit — 1 finding, and it's a **real correctness gap**
+
+| Thread | Classification | Verdict |
+|---|---|---|
+| `pds_client.rs:721` — 401 handling flattens **`AuthFactorTokenRequired`** (email-2FA) into `InvalidCredentials` | Correctness (legit) | **Confirmed — worth fixing** |
+
+I verified it against the code. My `create_session` maps *every* 401 to `InvalidCredentials` → `SourceAuthFailed` ("wrong password"). But bsky.social returns `AuthFactorTokenRequired` (a 401) when the account has **email 2FA** enabled — and since we correctly forbid app passwords (they can't do identity ops), 2FA-enabled accounts are *forced* down the main-password path where 2FA applies. So a large share of real bsky.social users would hit this and see a misleading "wrong password" with no way forward.
+
+This is exactly the kind of "works against our lax PDS, breaks against bsky.social" gap MM-289 exists to close — so I lean toward fixing it properly in this PR. But it grows the PR into 2FA territory, which is your call:
+
+The user chose **full 2FA support**. Let me implement it end-to-end. First I'll re-read the rustfmt-modified regions I need to edit (backend), then wire the frontend.
+
+Now let me add `authFactorToken` support and 2FA detection to `create_session`:
+
+Now add the `AuthFactorTokenRequired` variant to the error enum and the `error_code_is` helper:
+
+Now update `claim.rs`. Let me re-read the current `authenticate_source_pds` command + impl and the `ClaimError` enum (post-rustfmt):
+
+Now update the command signature, doc, and impl to thread `auth_factor_token` and map the 2FA error:
+
+Now add the `ClaimError::TwoFactorRequired` variant and the `map_pds_error_to_resolve` arm:
+
+Now update the backend tests — the two `authenticate_source_pds_impl` calls need the new arg, plus add a 2FA test and a serialization test. Let me read the current tests:
+
+Let me see the end of the wrong-password test to add a 2FA test after it:
+
+Now add a serialization test for `TwoFactorRequired` alongside the other `ClaimError` serialization tests:
+
+Backend 2FA support is complete. Now the frontend — first `ipc.ts` (thread the token + add the error code):
+
+Now the `PdsAuthScreen.svelte` — add the 2FA-code step. Let me read the current file and restructure it:
+
+Now add the 2FA-code UI branch to the template:
+
+The 2FA UI is wired. Let me verify the backend compiles + tests pass (including the new 2FA test), then the frontend. Let me run the wallet crate test:
+
+While that compiles, let me update the CLAUDE.md docs for the 2FA additions:
+
+Wallet test completed (exit 0). Let me confirm the count and the new 2FA tests, and finish the CLAUDE.md invariant line:
+
+**329 passed** — both new 2FA tests green (the `swift-rs` warnings are from the vendored dep, not my code). Let me finish the CLAUDE.md invariant line:
+
+Backend 2FA is green (329 tests). Now the final gates for this round — clippy + rustfmt on the wallet crate, and the frontend check + test. Let me run clippy (background) and the frontend (background) concurrently:
+
+Both verification jobs (clippy+fmt, and frontend check+test) are running in the background and will re-invoke me on completion. Here's where the 2FA work stands:
+
+**Done + verified so far:**
+- Backend: `create_session` accepts `authFactorToken`, detects `AuthFactorTokenRequired` (2FA) vs. wrong-password 401 → new `PdsClientError::AuthFactorTokenRequired` → `ClaimError::TwoFactorRequired`. **Wallet tests: 329 passed** (incl. 2 new 2FA tests).
+- Frontend: `PdsAuthScreen` now has a two-step flow — password → (if 2FA) a code screen ("your account has email two-factor… enter the code {pds} emailed you") → re-submit with the code. `ClaimError` union + `authenticateSourcePds(…, authFactorToken?)` updated.
+- Docs: CLAUDE.md contracts updated for both new error variants.
+
+**In flight:** clippy `-D warnings` + rustfmt (wallet), and `pnpm check` + `pnpm test`.
+
+Once those land green, I'll commit + push (CI re-runs automatically), then reply to and resolve CodeRabbit's thread. I'll report back when the gates finish.
+
+---
+
+User: <task-notification>
+<task-id>bcqug2i4g</task-id>
+<tool-use-id>toolu_01TPYg31zVz4H9HSpaVsFonM</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-jacob-zweifel-workspace-malpercio-dev-ezpds--claude-worktrees-mm-253-admin-companion-scope-8ace10/8eebd272-6f6e-4253-a261-70aaeb03272b/tasks/bcqug2i4g.output</output-file>
+<status>completed</status>
+<summary>Background command "Frontend check + test (2FA changes)" completed (exit code 0)</summary>
+</task-notification>
+
+Agent: Frontend job completed (exit 0). Let me read its result and check whether clippy has finished too:
+
+Frontend: **0 errors/0 warnings, 56 tests pass**. Clippy+fmt just completed (exit 0) — let me confirm both markers:
+
+Clippy passed (`CLIPPY_OK` printed; the `swift-rs` warnings are the vendored dep). But `FMT_OK` is missing — rustfmt wants to reformat my `error_code_is` chain (the `&&` chain stopped there; the notification's "exit 0" was `tail` masking it again). Let me apply rustfmt and re-check:
+
+rustfmt clean now, both crates. **All 2FA gates green:** wallet 329 tests, clippy clean, fmt clean, `pnpm check` 0/0, `pnpm test` 56. Let me commit and push the follow-up:
+
+Both remotes updated; GitHub tip confirmed at `92e7b3d8`. Now let me reply to CodeRabbit's thread (explaining the fix) and resolve it:
+
+Reply posted and thread **resolved** ✅. The new commit `92e7b3d8` will trigger a fresh CI run and a new CodeRabbit round. Let me snapshot the new round and re-arm the monitor (this time ignoring the flaky duplicate "CodeRabbit" status row so it settles reliably):
+
+The new round is running (frontend checks already pass). Let me re-arm a smarter monitor — it exits when the GitHub Actions checks settle **and** CodeRabbit's review completes (looking for its "pass"/Review-completed line, immune to the flaky duplicate "pending" row):
+
+The 2FA follow-up is committed, pushed, and CodeRabbit's thread is resolved. Here's the state:
+
+## CodeRabbit finding — fixed & resolved ✅
+| | |
+|---|---|
+| Finding | Email-2FA (`AuthFactorTokenRequired`) flattened into "wrong password" |
+| Fix | Full 2FA support — commit `92e7b3d8` |
+| Thread | [Replied + resolved](https://github.com/malpercio-dev/ezpds/pull/190#discussion_r3563025076) |
+
+**What the fix does:** `create_session` takes an optional `authFactorToken` and distinguishes `AuthFactorTokenRequired` from a wrong-password 401 → `ClaimError::TwoFactorRequired`. The sign-in screen now has a second step: if the account has email 2FA, it prompts for the emailed code and re-submits (a rejected code stays on the step with an honest message). This closes a real hole — since we forbid app passwords (they can't do identity ops), 2FA accounts are *forced* onto the main-password path, so without this a large share of bsky.social users couldn't import at all.
+
+**Local gates (this round):** wallet 329 tests (2 new), clippy `-D warnings` clean, rustfmt clean, `pnpm check` 0/0, `pnpm test` 56.
+
+## Now watching the new CI + CodeRabbit round
+The push re-triggered everything. Frontend checks already pass; PDS gate + iOS compiles + CodeRabbit are running. My re-armed monitor will re-invoke me when the new round settles — I'll confirm CI is green and pull any fresh CodeRabbit comments (assertive bots often surface one more micro-nit on a re-review), triaging them the same way. Nothing needed from you meanwhile.
+
+*(Note: an earlier monitor from the first round may still fire a stale "timeout" — I'll disregard it; the one watching commit `92e7b3d8` is authoritative.)*
+
+---
+
+User: <task-notification>
+<task-id>bkk8uk8ob</task-id>
+<tool-use-id>toolu_01RLXBo3qxNjTHuffe971hhR</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-jacob-zweifel-workspace-malpercio-dev-ezpds--claude-worktrees-mm-253-admin-companion-scope-8ace10/8eebd272-6f6e-4253-a261-70aaeb03272b/tasks/bkk8uk8ob.output</output-file>
+<status>completed</status>
+<summary>Background command "Poll PR #190 checks until none pending (CI + CodeRabbit)" completed (exit code 0)</summary>
+</task-notification>
+
+Agent: That's the **old** monitor (bkk8uk8ob) completing. Since `gh pr checks` always reflects the PR head (now `92e7b3d8`), an exit-0 means it captured a fully-settled state for the new commit. Let me read what it saw:
+
+The old monitor actually caught the **new** round (run IDs `2913777047x` = commit `92e7b3d8`), and it's **fully green** — CodeRabbit re-review passed (8m3s) too. Let me check whether CodeRabbit's re-review surfaced any *new* findings:
+
+CodeRabbit's re-review surfaced **4 new findings** (including a Critical and a Major) — the deeper pass. Let me pull the full text of each to triage properly:
+
+Both monitors confirm the new round is **fully green** (CodeRabbit re-review passed at 8m3s). The deeper second pass found 4 new findings — and they're good ones. Let me verify the doc-sync claim's exact locations before I present the disposition:
+
+Verified all four against the code. CI on `92e7b3d8` is **fully green** (CodeRabbit re-review passed too). The second pass found 4 legitimate issues — importantly a **Critical** and a **Major** I'd want fixed regardless. Here's the disposition:
+
+## Disposition — CodeRabbit re-review (all confirmed, all quick)
+
+| # | Finding | Sev | Verified | Action |
+|---|---|---|---|---|
+| 1 | `create_session` POSTs the password without checking `pds_url` is HTTPS (it comes from the DID doc → could be `http://`) | 🔴 Critical | ✅ real — no scheme check | **Fix**: reject non-HTTPS (allow loopback for dev/tests) |
+| 2 | `authenticate_source_pds_impl` binds the Bearer client from any 200 without checking `session.did == claim.did` | 🟠 Major | ✅ real — `CreateSessionResponse.did` exists but is unused | **Fix**: reject account mismatch |
+| 3 | CLAUDE.md inventories out of sync (line 42 omits `TWO_FACTOR_REQUIRED`; the `PdsClientError` list at 375 omits recent variants) | 🟡 Minor | ✅ partly — line 42 + 375 real; line 89 is a general note, not an inventory | **Fix**: sync 42 + 375 |
+| 4 | 2FA field uses `inputmode="numeric"` — too narrow for arbitrary PDSs (`authFactorToken` is any string) | 🟡 Minor | ✅ real | **Fix**: `inputmode="text"` |
+
+All four are correct and low-risk — I'll fix the batch in one commit. Starting with the two security fixes. First, the HTTPS guard in `create_session`:
+
+Now add the guard at the top of `create_session`:
+
+Now the claim-layer changes: thread `expected_did` for the DID-match check, and map the two new errors. Let me read the current impl:
+
+Now add the DID-match check between obtaining the session and building the Bearer client:
+
+Now add the two new `ClaimError` variants and the `map_pds_error_to_resolve` arm:
+
+Now update the three existing test calls to pass `expected_did`, and add new tests. Let me update them:
+
+Now the other two existing test calls (wrong-password and 2FA) need the `expected_did` arg:
+
+Now serialization tests for the two new `ClaimError` variants:
+
+Now the frontend. First `ipc.ts` — add the two new error codes:
+
+Now `PdsAuthScreen.svelte` — add the two error cases and fix the 2FA input keyboard:
+
+Now sync the CLAUDE.md inventories (Fix 3). Line 42 `ClaimError` list:
+
+Now the invariant lines (375 PdsClientError, 377 ClaimError). Let me read them:
+
+Line 375 references a "TypeScript `PdsClientError.code` union" — but the claim-internal variants never reach the frontend (they're wrapped into `ClaimError`). Let me make line 375 accurate and complete:
+
+All 4 fixes implemented. Let me verify — compile + test the wallet crate (this also confirms httpmock's `base_url()` is loopback so the HTTPS guard doesn't break existing tests):
+
+While that compiles, let me run the frontend check + test in the background:
+
+All 4 fixes are implemented; verification (wallet compile+test, and frontend check+test) is running in the background and will re-invoke me on completion.
+
+**Implemented this round:**
+1. 🔴 **HTTPS guard** — `create_session` refuses to POST the password unless `pds_url` is HTTPS (loopback excepted for dev/tests) → `PdsClientError::InsecurePdsUrl` → `ClaimError::InsecureSourceUrl`.
+2. 🟠 **Account-match guard** — `authenticate_source_pds_impl` now takes `expected_did` and rejects a session whose `did` ≠ the claim's DID → `ClaimError::AccountMismatch`.
+3. 🟡 **Doc sync** — CLAUDE.md lines 42/48/375/377 now list every current `ClaimError`/`PdsClientError` variant, with a note on which are claim-internal.
+4. 🟡 **2FA keyboard** — `inputmode="numeric"` → `"text"` (arbitrary-PDS tokens aren't necessarily numeric).
+
+Added 4 backend tests (DID-mismatch, insecure-URL, + 2 serialization) and honest UI copy for the two new error states. Once the gates come back green I'll commit + push (single batched commit, per the review-triage playbook), then reply to and resolve all four CodeRabbit threads. Reporting back on completion.
+
+---
+
+User: <task-notification>
+<task-id>b8ag114ww</task-id>
+<tool-use-id>toolu_01XVggvt4qh4aizDuaQKQYd6</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-jacob-zweifel-workspace-malpercio-dev-ezpds--claude-worktrees-mm-253-admin-companion-scope-8ace10/8eebd272-6f6e-4253-a261-70aaeb03272b/tasks/b8ag114ww.output</output-file>
+<status>completed</status>
+<summary>Background command "Compile + test wallet crate with the 4 review fixes" completed (exit code 0)</summary>
+</task-notification>
+
+Agent: Wallet test completed (exit 0). Let me confirm the count and that the new guard tests pass (and existing httpmock-based tests still work under the HTTPS guard):
+
+**333 passed** — all 4 new guard tests pass, and the existing httpmock tests still work (so its `base_url` is loopback, guard allows it). The lifetime warning is the vendored `swift-rs` again, not my code. Let me check the frontend result, then run the strict clippy+fmt gate:
+
+All green: **CLIPPY_OK + FMT_OK** (the two warnings are vendored `swift-rs`), frontend **0/0 + 56 tests**, wallet **333 tests**. Let me commit and push the batched review fixes:
+
+Pushed; GitHub tip `5098b4b1`. Now let me reply to and resolve all 4 CodeRabbit threads:
+
+All 4 threads replied to and **resolved** ✅. The push (`5098b4b1`) re-triggers CI + a CodeRabbit round. Let me re-arm the monitor for the new commit:
+
+Round 2 is committed, pushed, and all four CodeRabbit threads are **resolved**. Monitor re-armed for `5098b4b1`.
+
+## Round 2 recap — CodeRabbit's deeper pass paid off
+| # | Finding | Sev | Status |
+|---|---|---|---|
+| 1 | Password sent without HTTPS check on `pds_url` | 🔴 Critical | ✅ Fixed + resolved |
+| 2 | Session bound without verifying `session.did` matches the claim | 🟠 Major | ✅ Fixed + resolved |
+| 3 | 2FA field `inputmode="numeric"` too narrow | 🟡 Minor | ✅ Fixed + resolved |
+| 4 | CLAUDE.md error inventories out of sync | 🟡 Minor | ✅ Fixed + resolved |
+
+**Gates (round 2):** wallet 333 tests, clippy `-D warnings` clean, rustfmt clean, `pnpm check` 0/0, `pnpm test` 56. Both security guards have dedicated tests.
+
+`★ Insight ─────────────────────────────────────`
+The Critical was the standout: the source PDS endpoint is read from the DID document, which is attacker-influenceable (a user's own `atproto_pds` service entry). Sending the account password there over `http://` would leak it in cleartext. This is a distinct trust boundary from the OAuth flow (DPoP/PKCE never transmit a reusable secret) — the moment you introduce password `createSession`, "is this endpoint HTTPS?" becomes a live question. CodeRabbit caught a real consequence of the architectural shift this PR makes, not a surface nit.
+`─────────────────────────────────────────────────`
+
+## On convergence
+We've now done two fix rounds. Assertive bots often surface one more micro-nit each round, so this could ping-pong. My plan: watch this round; if it comes back clean (or only trivial/subjective nits I'd decline), I'll call it done and report. If it surfaces another *substantive* correctness/security issue, I'll triage and fix it the same way.
+
+Want me to keep that loop running to green, or stop after this round settles and hand you a summary regardless of what CodeRabbit says? I'll continue watching either way and report back when `5098b4b1` settles.
+
+---
+
+User: <task-notification>
+<task-id>b2vcgc3wm</task-id>
+<tool-use-id>toolu_01TmNjNcktckLxGRvYnt5icr</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-jacob-zweifel-workspace-malpercio-dev-ezpds--claude-worktrees-mm-253-admin-companion-scope-8ace10/8eebd272-6f6e-4253-a261-70aaeb03272b/tasks/b2vcgc3wm.output</output-file>
+<status>completed</status>
+<summary>Background command "Monitor CI + CodeRabbit for commit 5098b4b1" completed (exit code 0)</summary>
+</task-notification>
+
+Agent: The monitor for `5098b4b1` settled. Let me read the CI result and check whether CodeRabbit's round-3 review surfaced anything new:
+
+Converged. Round 3 is **fully green and clean** — CodeRabbit's re-review found **0 new issues** (unresolved threads: 0), and every CI check passes on the final commit `5098b4b1`.
+
+## Final state — PR #190 ready for human review
+
+**CI (commit `5098b4b1`), all green:**
+| Check | Result |
+|---|---|
+| PDS gate (fmt, clippy, test, audit) | ✅ 4m44s |
+| iOS compile (identity-wallet / admin-companion) | ✅ 8m37s / 15m11s |
+| Frontend check (both apps) | ✅ |
+| CodeRabbit | ✅ 6m16s — no new comments |
+| GitGuardian | ✅ |
+
+**CodeRabbit: converged** — 0 unresolved threads. All 5 findings across the two review rounds were verified against the code, fixed, and resolved with a reply.
+
+## The whole arc
+| Commit | What |
+|---|---|
+| `9e667527` | Core fix: password source login + Custos scope tightening (ADR-0021) |
+| `92e7b3d8` | Round 1: email-2FA support (`AuthFactorTokenRequired`) |
+| `5098b4b1` | Round 2: HTTPS guard (Critical) + account-match guard (Major) + 2 nits |
+
+Notably, CodeRabbit earned its keep — the HTTPS and account-match guards it surfaced are real security properties that the shift to password `createSession` introduced, not surface nits.
+
+## Where MM-289 stands
+- **Issue:** In Review, PR linked.
+- **PR:** green CI, CodeRabbit converged, all threads resolved — awaiting your human approval/merge.
+- **Still outside this PR** (MM-241's gate, unchanged): the live bsky.social round-trip needs the MM-288 canonical client metadata deployed to *production* + a fresh wallet build. This PR removes the second protocol blocker; the production deploy remains.
+
+No background monitors are still running. Nothing needs your action unless you want me to do anything further — otherwise it's ready for you to merge when you're happy with it.
+
+---
+
+User: Merged
+
+Agent: PR #190 merged. Let me verify the merge landed, then move the Linear issue to Done and update memory. Let me load the Linear tool schemas I'll need and confirm the merge in parallel:
+
+Merged as squash commit `4fecfded` on `main` (`state: MERGED`). Let me move MM-289 to **Done** and update memory to reflect the merge:
+
+MM-289 is now **Done** (`completedAt` set). Let me update the memory to reflect the merge:
+
+All wrapped up. MM-289 is fully landed:
+
+- **Merged:** squash commit [`4fecfded`](https://github.com/malpercio-dev/ezpds/pull/190) on `main` (PR #190)
+- **Linear MM-289:** → **Done** (completed 04:25 UTC)
+- **Memory:** updated to reflect the merge (both the project note and the index)
+
+## What the merge to `main` sets in motion (no action needed from you)
+- **Staging deploys** — Railway watches `main`, so staging Custos now runs the tightened `allows_identity`. Safe: the only behavioral change is OAuth `transition:generic` losing identity-op access, and the wallet's own claim flow moved to the password path in the same PR, so there's no wallet regression (and no third-party OAuth client relies on the old laxness).
+- **TestFlight build** — the push-to-`main` iOS lane will build & upload a new Obsign wallet carrying the password source login (+ 2FA / HTTPS / account-match guards).
+- **Production is untouched** — it tracks `vX.Y.Z` tags, not `main` merges.
+
+## Where this leaves MM-241 (leg a)
+MM-289 removes the *second* protocol blocker (the code side is now done and merged). The remaining gate is unchanged and belongs to MM-288: bsky.social fetches the canonical client metadata from the **production** host, so a live round-trip still needs that production deploy + the new wallet build from TestFlight. Against **staging**, the sanctioned "goat + wallet claim" path is now viable at runtime, not just at the code level.
+
+If you'd like, I can:
+- **Update MM-241** with a note that its MM-289 blocker is cleared (leaving the production-deploy gate called out), or
+- **Clean up** the merged local branch `claude/mm-289-wallet-plc-oauth-e31c11`.
+
+Otherwise, MM-289 is complete — nothing else pending.
