@@ -1,0 +1,1 @@
+We're about to close the final v0.1 issue in linear, the PR is in review. How did we do against our initial goals and designs? Were any other decisions made that warrant ADRs? Is there anything missing before we start to close out the milestone?
