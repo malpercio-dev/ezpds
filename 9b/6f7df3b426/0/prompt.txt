@@ -1,0 +1,18 @@
+Context: This summary will be shown in a list to help users and Claude choose which conversations are relevant.
+
+Please write a concise, factual summary that synthesizes these part-summaries into one cohesive paragraph. Focus on what was accomplished and any notable technical decisions or challenges. Output in <summary></summary> tags. Claude will see this summary when searching previous conversations for useful memories and information.
+
+Part summaries:
+1. Executed an implementation plan for read-after-write proxying in a PDS codebase. Phase 1 established a configuration seam (cdn_url field), extracted shared proxy logic, scaffolded the read_after_write module, and wired NSID branching—but compilation failed initially due to incorrect reqwest API usage and missing imports, which were then fixed. Phase 2 added DID-scoped commit queries and LocalRecords selection logic with `get_records_since_rev`, though code review revealed missing integration tests for key acceptance criteria (AC5.1/AC5.2/AC5.3 covering record write/delete/missing-header cases).
+2. Completed code review and fixes for Phases 2–4 of read-after-write feature implementation in Bluesky PDS. Phase 2 had a critical `indexed_at` bug (global timestamp applied to all records instead of per-key time) caught only by missing integration tests; Phase 3 had a lexicon shape bug in `recordWithMedia` nesting plus untested HTTP paths; Phase 4 (profile munges) passed review with zero issues. All tests now pass and code is production-ready through profile munging; feed munges (Phase 5) in progress.
+3. Implemented read-after-write synchronization for ATProto PDS (phases 5–7): feed injection (getTimeline, getAuthorFeed, getActorLikes), profile refresh, thread reconstruction from 400 NotFound, and fallback ladder. All 7 AC groups tested end-to-end; 55 integration + unit tests pass, clippy clean, docs/Bruno current. Fixed 2 critical code-review issues (FCIS mislabel, 200-status override bug masking genuine NotFound) and swept 9 minor issues across phases 5–7. Feature merged after holistic pass.
+4. Completed read-after-write feature (MM-226) across 7 phases with rigorous review: all 27 acceptance criteria covered by automated tests, cross-phase integration verified clean, and human test plan generated. Pushed PR #105; addressed 6 CodeRabbit findings (3 genuine bugs fixed: `cdn_url` trailing slash, lag-header scope, test robustness; 3 skipped with reasoning). CI green, awaiting CodeRabbit re-review to clear stale bot verdict.
+5. Verified and completed merge of PR #105 (read-after-write feature MM-226) to main. Cleaned up the worktree and local branch, with staging deployment now in flight; human test plan preserved for on-staging validation.
+
+Good:
+<summary>Built conversation search system with JavaScript, sqlite-vec, and local embeddings. Implemented hierarchical summarization for long conversations. System archives conversations permanently and provides semantic search via CLI.</summary>
+
+Bad:
+<summary>This conversation synthesizes several topics discussed across multiple parts...</summary>
+
+Your summary (max 200 words):
