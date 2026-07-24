@@ -1,0 +1,1 @@
+Thanks! While going through the login flows I noticed that I get redirected to a page hosted by the relay to login to the app, and it is using an older design. Can we take a look and bring any pages in the relay up-to-date as well? mockups first ideally
