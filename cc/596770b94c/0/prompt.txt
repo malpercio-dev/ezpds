@@ -1,0 +1,45 @@
+Work on Linear issue MM-402:
+
+Suggested branch name: malpercio/mm-402-wallet-app-password-surface-scoped-bluesky-app-login
+
+<issue identifier="MM-402">
+<title>Wallet app-password surface: scoped "Bluesky app login" credential for passwordless sovereign accounts</title>
+<description>
+## Problem
+
+The official Bluesky app logs into a third-party PDS with password `createSession` — it does not use ATProto OAuth for [non-bsky.social](<http://non-bsky.social>) hosts. A key-sovereign Custos account is deliberately passwordless (no main password to type), so after migrating a real identity onto production (<issue id="1a708492-47f0-4bb5-b572-fbca5bbd0af4" href="https://linear.app/malpercio/issue/MM-394/migrate-real-identity-on-plcmalperciodev-didplc-to-production">MM-394</issue>) there is no way to sign the official app into it. This is the daily-driver gap: the sovereign identity works, but the flagship client can't log in.
+
+## What already exists (server side — no PDS changes expected)
+
+* `createSession` **app-password fallback (V031):** a supplied password is tried against the account's app passwords when the main password doesn't match — including for mobile accounts with **no** main password (`crates/pds/src/routes/create_session.rs`).
+* **Scope bounding is already the "only Bluesky things" property:** an app-password session carries `com.atproto.appPass` (or `appPassPrivileged`), which cannot touch account management, PLC/identity ops, agent surfaces, or app-password management itself; chat (DMs) requires the `privileged` flag at mint time. The credential can post/like/follow and proxy to the AppView — nothing sovereign.
+* **Mint/list/revoke routes:** `com.atproto.server.createAppPassword` / `listAppPasswords` / `revokeAppPassword`, all requiring a full-access token — which the wallet's sovereign passwordless session (<issue id="814e9039-1031-4e90-9e40-cc74b1cc2c0e" href="https://linear.app/malpercio/issue/MM-306/sovereign-passwordless-login-mint-a-custos-session-from-a-device-key">MM-306</issue>) provides.
+
+## What's missing (wallet)
+
+A management surface in the identity wallet. Sketch:
+
+1. **IPC + Rust:** `create_app_password(did, name, privileged)` / `list_app_passwords(did)` / `revoke_app_password(did, name)` via `SessionProvider::full_access_client` (a `NeedsUnlock` maps to the usual `sovereignLogin` cue). Thin XRPC wrappers in `pds_client.rs`.
+2. **UI:** an "App passwords" (or "Connect the Bluesky app") screen reachable from the identity detail / settings: mint (biometric-gated — it creates a durable login credential), show the generated `xxxx-xxxx-xxxx-xxxx` secret **once** with copy, list existing with created-at, revoke per entry.
+3. **Framing/UX:** name the surface around the job ("Sign in to Bluesky and other apps"), with copy explaining what the credential can and cannot do (posts yes; identity/keys/agents no; DMs only if the privileged toggle is on). This keeps the sovereign story honest: the password is a bounded client credential, never a recovery or account-control path.
+4. Harness fake handlers for the new IPC commands (registry coverage is enforced), Bruno untouched (routes exist).
+
+## Acceptance
+
+* A passwordless sovereign account can mint a named app password in the wallet, sign the official Bluesky app into the Custos PDS with `handle` + that password, and post.
+* The same credential is refused by account-owner surfaces (agents list/revoke, PLC-op endpoints, app-password management) — verify the scope gates hold end-to-end.
+* Revoking from the wallet kills the Bluesky app's session (revocation deletes the app password's sessions/refresh tokens atomically).
+* Field-validated against the <issue id="1a708492-47f0-4bb5-b572-fbca5bbd0af4" href="https://linear.app/malpercio/issue/MM-394/migrate-real-identity-on-plcmalperciodev-didplc-to-production">MM-394</issue> production identity as the closing check.
+</description>
+<team name="Mal's Machinations"/>
+<label>Wave 2: Auth</label>
+<project name="ezpds">An easy-to-host PDS on the ATProtocol, MacOS. Grandma-approved.</project>
+<issue-relations>
+<related>
+<issue-ref identifier="MM-394" title="Migrate real identity on-plc.malpercio.dev (did:plc) to production obsign.org"/>
+<issue-ref identifier="MM-306" title="Sovereign passwordless login — mint a Custos session from a device-key signature over the DID's rotation set (migrated accounts have no password by design)"/>
+</related>
+</issue-relations>
+</issue>
+
+Open a PR linked to the linear issue when complete
