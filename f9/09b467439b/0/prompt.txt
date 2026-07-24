@@ -1,0 +1,1 @@
+Is there a query I can quickly run in sqlite3 to correct the hosted-did:web row? update if it exists else insert?
