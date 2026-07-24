@@ -10,6 +10,11 @@ drift-proof inventory of every setting is the
 [generated configuration reference](/operator/reference/config/), produced
 directly from the server's configuration types.
 
+Some of these settings change what your server *advertises* to clients, not just
+how it behaves: `describeServer` names the capabilities this deployment offers,
+and clients enable features accordingly. See
+[Capabilities](/operator/capabilities/) for which settings those are.
+
 ## Secrets
 
 These are injected at runtime and never baked into the image:

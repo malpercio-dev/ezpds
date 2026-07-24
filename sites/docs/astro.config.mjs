@@ -50,6 +50,7 @@ export default defineConfig({
             { label: 'Running a relay', slug: 'operator/running-a-relay' },
             { label: 'Console screens', slug: 'operator/screens' },
             { label: 'Configuration', slug: 'operator/configuration' },
+            { label: 'Capabilities', slug: 'operator/capabilities' },
             { label: 'Backups & restore', slug: 'operator/backups' },
             { label: 'Moderation', slug: 'operator/moderation' },
             { label: 'Master-key disaster runbook', slug: 'operator/master-key-runbook' },
@@ -57,6 +58,7 @@ export default defineConfig({
               label: 'Reference',
               items: [
                 { label: 'HTTP & XRPC API', slug: 'operator/reference/api' },
+                { label: 'Capabilities', slug: 'operator/reference/capabilities' },
                 { label: 'Configuration', slug: 'operator/reference/config' },
                 { label: 'Mobile IPC commands', slug: 'operator/reference/ipc' },
               ],

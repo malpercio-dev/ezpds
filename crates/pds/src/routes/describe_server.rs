@@ -1,8 +1,9 @@
 // pattern: Imperative Shell
 //
 // Gathers: server metadata from config
-// Processes: none (response shape maps 1:1 from config fields)
-// Returns: JSON matching com.atproto.server.describeServer Lexicon
+// Processes: capability derivation delegated to the pure `capabilities` module
+// Returns: JSON matching com.atproto.server.describeServer Lexicon, plus the `custos`
+//          capability extension
 
 use axum::{
     extract::State,
@@ -11,6 +12,7 @@ use axum::{
 use serde::Serialize;
 
 use crate::app::AppState;
+use crate::capabilities;
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -23,6 +25,18 @@ struct DescribeServerResponse {
     links: Option<ServerLinks>,
     #[serde(skip_serializing_if = "Option::is_none")]
     contact: Option<Contact>,
+    /// Off-lexicon Custos extension. Lexicon objects are open — a client that does not
+    /// know this field ignores it — and a single distinctively-named key avoids the
+    /// collision hazard of a generic name the lexicon authority could later claim
+    /// (millipds already ships a top-level `version` with different semantics).
+    custos: CustosExtension,
+}
+
+/// What this deployment is and what it offers. See `crate::capabilities`.
+#[derive(Serialize)]
+struct CustosExtension {
+    version: &'static str,
+    capabilities: Vec<&'static str>,
 }
 
 #[derive(Serialize)]
@@ -64,6 +78,10 @@ pub async fn describe_server(State(state): State<AppState>) -> impl IntoResponse
         phone_verification_required: false,
         links,
         contact,
+        custos: CustosExtension {
+            version: capabilities::VERSION,
+            capabilities: capabilities::advertised(config),
+        },
     })
 }
 
@@ -259,5 +277,83 @@ mod tests {
         let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
 
         assert!(json.get("contact").is_none());
+    }
+
+    async fn describe(state: AppState) -> serde_json::Value {
+        let response = app(state)
+            .oneshot(
+                Request::builder()
+                    .uri("/xrpc/com.atproto.server.describeServer")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        let body = axum::body::to_bytes(response.into_body(), 4096)
+            .await
+            .unwrap();
+        serde_json::from_slice(&body).unwrap()
+    }
+
+    #[tokio::test]
+    async fn describe_server_carries_the_custos_extension() {
+        let json = describe(test_state().await).await;
+
+        assert_eq!(json["custos"]["version"], env!("CARGO_PKG_VERSION"));
+        assert!(
+            json["custos"]["capabilities"].is_array(),
+            "capabilities must be an array, got {}",
+            json["custos"]["capabilities"]
+        );
+    }
+
+    #[tokio::test]
+    async fn describe_server_capabilities_track_the_running_config() {
+        // The shared test config has no master key, so the two capabilities that need one
+        // are withheld; the inherent ones are always offered.
+        let json = describe(test_state().await).await;
+        let capabilities: Vec<String> =
+            serde_json::from_value(json["custos"]["capabilities"].clone()).unwrap();
+
+        assert!(!capabilities.contains(&"createCeremony".to_string()));
+        assert!(!capabilities.contains(&"escrow".to_string()));
+        assert!(capabilities.contains(&"sovereignSessions".to_string()));
+        assert!(capabilities.contains(&"walletConsent".to_string()));
+        assert!(capabilities.contains(&"didWebHosting".to_string()));
+    }
+
+    #[tokio::test]
+    async fn describe_server_advertises_master_key_capabilities_when_configured() {
+        let base = test_state().await;
+        let mut config = (*base.config).clone();
+        config.signing_key_master_key = Some(common::Sensitive(zeroize::Zeroizing::new([9u8; 32])));
+        let state = AppState {
+            config: Arc::new(config),
+            ..base
+        };
+
+        let json = describe(state).await;
+        let capabilities: Vec<String> =
+            serde_json::from_value(json["custos"]["capabilities"].clone()).unwrap();
+
+        assert!(capabilities.contains(&"createCeremony".to_string()));
+        assert!(capabilities.contains(&"escrow".to_string()));
+    }
+
+    #[tokio::test]
+    async fn describe_server_still_carries_every_lexicon_field() {
+        // The extension is additive: a client that ignores `custos` sees exactly the
+        // response it saw before.
+        let json = describe(test_state().await).await;
+
+        for field in [
+            "did",
+            "availableUserDomains",
+            "inviteCodeRequired",
+            "phoneVerificationRequired",
+        ] {
+            assert!(json.get(field).is_some(), "missing lexicon field {field}");
+        }
     }
 }

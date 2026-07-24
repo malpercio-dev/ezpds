@@ -17,6 +17,7 @@ pub mod migration_orchestrator;
 pub mod oauth;
 pub mod oauth_client;
 pub mod oauth_consent;
+pub mod pds_capabilities;
 pub mod pds_client;
 pub mod plc_monitor;
 pub mod recovery;
@@ -967,8 +968,53 @@ async fn save_pds_url(
         tracing::error!(error = %e, "failed to save PDS URL to Keychain");
         PdsConfigError::KeychainError
     })?;
-    state.set_custos_client(normalized);
+    state.set_custos_client(normalized.clone());
+
+    // Re-read what this host offers rather than trusting a cached answer: the user has
+    // just deliberately pointed the wallet at it, which is exactly when a stale verdict
+    // (from an earlier configuration of the same host, or a probe made while it was down)
+    // would be wrong. Best-effort — an unreachable host here only costs a later re-probe,
+    // and the health check above already established the URL is usable.
+    pds_capabilities::forget(&normalized);
+    let capabilities = pds_capabilities::probe(state.pds_client(), &normalized).await;
+    tracing::info!(
+        url = %normalized,
+        version = ?capabilities.version,
+        capabilities = ?capabilities.capabilities,
+        "configured PDS capabilities"
+    );
+
     Ok(())
+}
+
+/// Report what the configured PDS advertises, so the frontend can offer only the features
+/// that host actually supports.
+///
+/// Answers from the per-host cache when it has one (populated by `save_pds_url` and by
+/// every other describeServer call the wallet makes), otherwise describes the server once.
+///
+/// A host that advertises nothing — every PDS that is not Custos, and a Custos deployment
+/// with capabilities switched off — reports an empty list rather than failing. **A host
+/// that cannot be reached reports the same empty list**: the caller learns "no capabilities
+/// to offer", which is the safe way to degrade, not "this feature is definitively absent".
+#[tauri::command]
+async fn get_pds_capabilities(
+    state: tauri::State<'_, oauth::AppState>,
+    pds_url: Option<String>,
+) -> Result<pds_capabilities::ServerCapabilities, PdsConfigError> {
+    let url = match pds_url {
+        Some(url) => normalize_pds_url(&url)?,
+        None => match keychain::load_pds_url() {
+            Some(url) => url,
+            None => {
+                // No PDS configured yet: nothing to ask, and no error to report — the
+                // frontend is in exactly the state where it offers no host-gated features.
+                return Ok(pds_capabilities::ServerCapabilities::none());
+            }
+        },
+    };
+
+    Ok(pds_capabilities::probe(state.pds_client(), &url).await)
 }
 
 /// Return the list of managed DIDs currently stored in the Keychain.
@@ -1314,6 +1360,7 @@ pub fn run() {
             get_device_key_id,
             get_pds_url,
             save_pds_url,
+            get_pds_capabilities,
             get_appearance_preference,
             set_appearance_preference,
             diagnostics::export_diagnostics,

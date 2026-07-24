@@ -12,15 +12,20 @@ use axum::{
 use serde::Serialize;
 
 use crate::app::AppState;
+use crate::capabilities::IDENTIFYING_VERSION;
 
 #[derive(Serialize)]
 struct HealthResponse {
+    /// Self-identifying `custos vX.Y.Z`, not a bare version number: this endpoint is what
+    /// third-party atproto diagnostic tooling reads to fingerprint an implementation, and
+    /// a bare version says nothing about which software is answering. See
+    /// `crate::capabilities::IDENTIFYING_VERSION`.
     version: &'static str,
     db: &'static str,
 }
 
 pub async fn health(State(state): State<AppState>) -> impl IntoResponse {
-    let version = env!("CARGO_PKG_VERSION");
+    let version = IDENTIFYING_VERSION;
     match sqlx::query("SELECT 1").execute(&state.db).await {
         Ok(_) => (StatusCode::OK, Json(HealthResponse { version, db: "ok" })),
         Err(e) => {
@@ -68,7 +73,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn health_version_is_cargo_pkg_version() {
+    async fn health_version_is_self_identifying() {
         let response = app(test_state().await)
             .oneshot(
                 Request::builder()
@@ -83,7 +88,10 @@ mod tests {
             .await
             .unwrap();
         let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
-        assert_eq!(json["version"], env!("CARGO_PKG_VERSION"));
+        assert_eq!(
+            json["version"],
+            concat!("custos v", env!("CARGO_PKG_VERSION"))
+        );
     }
 
     #[tokio::test]
@@ -131,7 +139,10 @@ mod tests {
             .unwrap();
         let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
         assert_eq!(json["db"], "error");
-        assert_eq!(json["version"], env!("CARGO_PKG_VERSION"));
+        assert_eq!(
+            json["version"],
+            concat!("custos v", env!("CARGO_PKG_VERSION"))
+        );
     }
 
     #[tokio::test]

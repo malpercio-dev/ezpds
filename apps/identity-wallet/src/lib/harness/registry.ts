@@ -110,6 +110,7 @@ export type CommandName =
   | 'check_handle_resolution'
   | 'get_pds_url'
   | 'save_pds_url'
+  | 'get_pds_capabilities'
   // oauth.ts
   | 'prepare_oauth_flow'
   | 'plugin:auth-session|start'
@@ -346,6 +347,10 @@ export function buildRegistry(state: WalletState): Registry {
       state.pdsUrl = String(args.url ?? '');
       return null;
     },
+    // The fake host stands in for a fully-featured Custos. Edit
+    // `window.__harness.state().pdsCapabilities` to drive the screens the way a
+    // reference PDS would (no `custos` extension at all → no capabilities).
+    get_pds_capabilities: () => state.pdsCapabilities,
 
     // ── oauth (create-flow login; faked in every mode) ───────────────────────
     prepare_oauth_flow: () => ({

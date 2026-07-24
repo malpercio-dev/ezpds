@@ -118,6 +118,24 @@ per host; an absent field means no capabilities — standard-lexicon behavior �
 which cleanly covers every implementation surveyed above. `_health` becomes
 self-identifying (`custos v0.8.1`).
 
+**Shipped.** The server-side source of truth is `crates/pds/src/capabilities.rs`:
+a `CAPABILITIES` table whose entries carry the wire name, the config that gates
+the capability, a one-line summary, and the predicate that reads the live
+`Config` — the same condition the routes themselves enforce, so advertisement
+cannot promise what a caller would be refused. Today `createCeremony` and
+`escrow` require a configured master key (both store material under the master
+KEK), `agents` requires at least one `[agent_auth]` registration flow to be
+enabled (all off by default), and `sovereignSessions` / `walletConsent` /
+`didWebHosting` are inherent to running Custos. That table also feeds the
+generated operator reference page and a CI gate (`just capability-docs-check`)
+that fails if a capability is added, renamed, or re-gated without the
+hand-written operator capabilities page moving in the same change. On the wallet
+side, `pds_capabilities.rs` holds the per-host cache, warmed by *every*
+`describe_server` call rather than a dedicated probe, and surfaced to the
+frontend as `getPdsCapabilities()`; a failed probe reports no capabilities and is
+deliberately **not** cached, so a transient outage never freezes into a permanent
+verdict.
+
 ### Phase 0a — mode-select honesty ([MM-453](https://linear.app/malpercio/issue/MM-453))
 
 `ModeSelectScreen` renames "Add an identity" → **"Create an identity"**, and

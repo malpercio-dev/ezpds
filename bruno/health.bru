@@ -13,3 +13,12 @@ get {
 vars:pre-request {
   baseUrl: http://localhost:8080
 }
+
+docs {
+  Liveness probe. 200 with `{"version": "custos v0.8.1", "db": "ok"}` when the database
+  pool answers, 503 with `"db": "error"` when it does not.
+
+  `version` is self-identifying (`custos vX.Y.Z`), not a bare version number: this is the
+  endpoint third-party AT Protocol diagnostic tooling reads to fingerprint an
+  implementation, and the same shape millipds reports.
+}

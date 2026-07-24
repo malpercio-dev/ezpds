@@ -15,6 +15,7 @@ mod blob_gc;
 mod blob_mirror;
 mod blob_scrub;
 mod blob_store;
+mod capabilities;
 mod code_gen;
 mod crawler;
 mod db;

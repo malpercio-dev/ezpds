@@ -27,7 +27,10 @@ The PDS container expects the following environment variables and mounts:
 - **`/data`** - Host directory bind-mounted for SQLite database persistence. The PDS creates `relay.db` and `relay.db-shm`/`relay.db-wal` (WAL files) inside. Must be writable by the container's non-root user (uid 10001). Host permissions should be `0750` or `0755`.
 
 ### Health Check
-- **`GET /xrpc/_health`** - Simple liveness probe (returns 200 OK). Container runtimes can use this for health checks and automated restarts.
+- **`GET /xrpc/_health`** - Simple liveness probe (returns 200 OK). Container runtimes can use this for health checks and automated restarts. The body is `{"version": "custos vX.Y.Z", "db": "ok"}` — the version string is deliberately self-identifying rather than a bare number, because this is the endpoint third-party ATProto diagnostic tooling reads to fingerprint an implementation (millipds reports `millipds v…` the same way; the reference PDS returns a bare commit hash naming no software).
+
+### Advertised Capabilities
+`GET /xrpc/com.atproto.server.describeServer` returns the standard lexicon fields plus a `custos` object naming the running version and the capabilities **this** deployment offers, so clients feature-gate on what the server can actually do instead of calling an endpoint and interpreting the failure. The set is derived from the running configuration — most notably, `createCeremony` and `escrow` are advertised only when `EZPDS_SIGNING_KEY_MASTER_KEY` is set, and `agents` only when at least one `[agent_auth]` registration flow is enabled. The capability table in `crates/pds/src/capabilities.rs` is the source of truth (and a CI gate, `just capability-docs-check`, keeps the operator documentation in step with it); the operator-facing explanation of each capability lives on the docs site at `/operator/capabilities/` (`sites/docs/src/content/docs/operator/capabilities.md`).
 
 ## Railway Deployment
 
