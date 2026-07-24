@@ -1,0 +1,173 @@
+<task-notification>
+<task-id>a46cd0bac19e02586</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-jacob-zweifel-workspace-malpercio-dev-ezpds--claude-worktrees-exciting-ardinghelli-6e9eeb/ee686e48-6c83-4e5b-a0fa-53ae45617a1e/tasks/a46cd0bac19e02586.output</output-file>
+<status>completed</status>
+<summary>Agent "Analyzing test coverage + generating test plan" finished</summary>
+<note>A task-notification fires each time this agent stops with no live background children of its own. The user can send it another message and resume it, so the same task-id may notify more than once.</note>
+<result>All 55 read_after_write tests pass (plus the service_proxy AC7.1 test). I've now independently verified every AC-mapped test both exists and genuinely exercises its criterion's behavior. Phase 1 passes. Here is the full report.
+
+---
+
+## Coverage Validation
+
+**Automated Criteria:** 27 | **Covered:** 27 | **Missing:** 0
+
+I read every mapped test and confirmed each makes non-vacuous assertions against the behavior its AC describes (not just adjacent code). I also ran the `read_after_write` + `service_proxy` test suites: **55 passed / 0 failed**.
+
+### Covered
+
+| Criterion | Test (file) | Genuinely verifies |
+|-----------|-------------|--------------------|
+| AC1.1 | `get_timeline_ac1_1_injects_local_post_at_top` (munge.rs) | Real repo write → asserts injected post is `feed[0]` with requester DID + `post1` uri |
+| AC1.2 | `get_author_feed_ac1_2_injects_own_posts_when_actor_is_requester` (munge.rs) | Actor-guard positive branch: own post injected when `actor == requester` |
+| AC1.3 | `get_actor_likes_ac1_3_refreshes_author_only` (munge.rs) | Feed length unchanged (no insertion); requester author refreshed to "Fresh Display Name", other user's left "Old Other Name" |
+| AC1.4 | `post_view_includes_author_and_zero_counts` (viewer.rs) | author.did + `like/reply/repostCount == 0` |
+| AC1.5 | `post_view_hydrates_image_embed_locally` / `..._external_embed_locally` (viewer.rs) | `#view` type + thumb/fullsize/external card contain the blob CID |
+| AC1.6 | `get_author_feed_ac1_6_no_injection_for_other_actor` (munge.rs) | Byte-equal passthrough: `assert_eq!(result, original_feed)` (divergence #2 negative branch) |
+| AC1.7 | `get_timeline_ac1_7_multiple_posts_chronological_order` (munge.rs) + `insert_posts_in_feed_maintains_chronological_order` (viewer.rs) | Two writes → newest-first `indexedAt` ordering invariant across whole feed |
+| AC2.1 | `test_pipethrough_munged_ac2_1_...` (mod.rs) | Full handler: local `displayName`/`description` override stale AppView + `Atproto-Upstream-Lag` present |
+| AC2.2 | `test_pipethrough_munged_ac2_2_getprofiles_overwrites_requester_only` (mod.rs) | `profiles[0]` (requester) overwritten, `profiles[1]` (other) untouched |
+| AC2.3 | `update_profile_detailed_overwrites_all_fields` (viewer.rs) | All four fields (displayName/description/avatar/banner) overwritten from local record |
+| AC2.4 | `image_url_formats_correctly` (viewer.rs) | `/img/avatar/plain/{did}/{cid}@jpeg` exact format |
+| AC2.5 | `test_pipethrough_munged_ac2_5_no_local_profile` (mod.rs) | Fresh rev + no local write → AppView `displayName` unchanged, **no** lag header |
+| AC3.1 | `test_pipethrough_munged_ac3_1_getpostthread_notfound_reconstructs` (mod.rs) + `..._nonlocal_notfound_stays_400` regression | 400 NotFound → 200 `threadViewPost` for own post; **and** a non-local NotFound correctly stays 400 (guards the masking bug) |
+| AC3.2 | `test_pipethrough_munged_ac3_2_getpostthread_splices_own_replies` (mod.rs) | Local reply appears in `thread.replies` |
+| AC3.3 | `test_pipethrough_munged_ac3_3_getpostthread_other_user_unchanged` (mod.rs) | Other user's thread passthrough, `replies.len() == 0` |
+| AC4.1 | `test_pipethrough_munged_ac4_1_non_json_body_passthrough` (mod.rs) | Non-JSON upstream + fresh local write → 200, body returned verbatim (no 500) |
+| AC4.2 | `test_pipethrough_munged_ac4_2_quote_post_with_failed_get_posts` (mod.rs) + `hydrate_quotes_degrades_to_empty_on_appview_5xx` (viewer.rs) | Quote post still injected + renders `#viewNotFound` when getPosts fails (divergence #1) |
+| AC4.3 | `local_lag_ms_*` (mod.rs) | `None` empty, `Some(&gt;0)` for past ts, oldest-record wins |
+| AC4.4 | `test_pipethrough_munged_ac4_4_no_lag_when_current` (mod.rs) | rev current / no unindexed → no lag header |
+| AC5.1 | `test_get_records_since_rev_ac5_1_...` (mod.rs) + `recent_commits_for_did_returns_did_commits_newest_first` (firehose_seq.rs) | Real writes bucket profile+2 posts; support query is DID-scoped, commit-only, newest-first |
+| AC5.2 | `test_get_records_since_rev_ac5_2_excludes_deleted_records` (mod.rs) | Create-then-delete → `count == 0`, absent from posts |
+| AC5.3 | `test_get_records_since_rev_ac5_3_none_header_rev_returns_empty` (mod.rs) | `header_rev = None` → empty LocalRecords |
+| AC6.1 | image/external embed tests + `record_with_media_embed_nests_full_record_view_and_media` (viewer.rs) | Local hydration, no AppView call; recordWithMedia wrapper shape preserved |
+| AC6.2 | `hydrate_quotes_fetches_from_appview_and_populates_map` (success) + `..._degrades_to_empty_on_appview_5xx` / `record_embed_view_not_found_when_quote_missing` (failure) (viewer.rs) | Real wiremock getPosts → `#viewRecord`; 5xx → `#viewNotFound`, post survives |
+| AC7.1 | `non_munged_appbsky_nsid_streams_verbatim` + `read_after_write_nsids_return_appview_response_verbatim` (service_proxy.rs) | Full router: `getFollows` streams verbatim; chat/moderation covered by pre-existing `chat_request_does_not_hit_appview` / `proxies_create_report_to_labeler_...` |
+
+### Notes (non-blocking)
+
+- **AC1.1/1.2/1.3/1.6/1.7** call the munge functions directly rather than through `pipethrough_munged`. This is acceptable — they still exercise the real selection path (`get_records_since_rev` over actual `repo_seq` commits from HTTP writes) and the real munge logic. The end-to-end HTTP wiring for the feed NSIDs is covered transitively by the AC2/AC3/AC4 `pipethrough_munged` integration tests plus AC7.1's router-level routing test.
+- **AC7.1** asserts the streaming path returns the AppView body unmodified but (per its own code comment) does not assert *absence* of the `Atproto-Upstream-Lag` header on the fast path. Minor: the lag header is only ever emitted from `pipethrough_munged`, which the non-munged NSID never enters, so this is structurally impossible rather than untested. Not a gap.
+
+**Result: PASS**
+
+---
+
+## Human Test Plan
+
+The 5 HV-* items exist because wiremock can reproduce the AppView's response *shape* but not the *real* AppView/CDN behavior the mechanisms depend on. These require a **deployed, federated ezpds PDS** with a real account, pointed at the real Bluesky AppView (`https://api.bsky.app`) and CDN (`https://cdn.bsky.app`).
+
+### Prerequisites
+
+- A deployed ezpds PDS federated into the atproto network (per `docs/project_federation_readiness.md`: `EZPDS_PUBLIC_URL` set to the DID-doc `serviceEndpoint`, wildcard DNS + TLS live, blobs publicly resolvable via `getBlob`).
+- A real account on that PDS with a valid session (full-access token).
+- `[appview] url = https://api.bsky.app` (default) and `EZPDS_APPVIEW_CDN_URL` default (`https://cdn.bsky.app`).
+- `curl`, a real Bluesky client (official app or a web client) authenticated to the PDS account.
+- Baseline confidence: `nix develop --impure --accept-flake-config -c cargo test -p pds read_after_write` green (55/55, confirmed).
+
+### HV-1 — Real AppView emits `atproto-repo-rev` (underpins AC5.1, AC7.1, AC4.4)
+
+Purpose: the entire selection boundary keys off this header; wiremock sets it by fiat.
+
+| Step | Action | Expected |
+|------|--------|----------|
+| 1 | `curl -i -H "Authorization: Bearer &lt;token&gt;" "https://&lt;pds-host&gt;/xrpc/app.bsky.actor.getProfile?actor=&lt;your-did&gt;"` | 200; response headers include `atproto-repo-rev: &lt;value&gt;` |
+| 2 | Note the header value; compare it (TID string-ordering) against your account's current repo rev (from a fresh local commit, e.g. after a `putRecord`) | Header value is a repo rev (TID) that string-compares sensibly (`&lt;=` current head) |
+| 3 | Repeat for `getTimeline` | Header present on this endpoint too |
+
+If the header is absent, read-after-write silently no-ops (the AC5.3 empty-LocalRecords path). This check confirms it does not.
+
+### HV-2 — Fresh avatar/banner/image CDN URLs resolve to real images (confirms AC2.4, AC1.5, AC2.3)
+
+Purpose: AC2.4/AC1.5 assert the constructed URL *string*; only a live CDN first-fetch proves bytes load.
+
+| Step | Action | Expected |
+|------|--------|----------|
+| 1 | From a real client, set a **new** avatar and banner on the PDS account | Write succeeds |
+| 2 | Immediately (before AppView indexes) `curl -H "Authorization: Bearer &lt;token&gt;" "https://&lt;pds-host&gt;/xrpc/app.bsky.actor.getProfile?actor=&lt;your-did&gt;"` | Munged response's `avatar`/`banner` are `https://cdn.bsky.app/img/{avatar,banner}/plain/&lt;did&gt;/&lt;cid&gt;@jpeg` |
+| 3 | Open those URLs in a browser (allow a few seconds for CDN first-fetch warm-up) | Actual images render (CDN lazily fetched the blob from your PDS) |
+| 4 | Create a post with an image embed; immediately fetch own `getTimeline`; open the embed `thumb`/`fullsize` URLs | Images render |
+
+### HV-3 — Real AppView returns `400 NotFound` for a just-created post (confirms AC3.1)
+
+Purpose: AC3.1's whole trigger is the real AppView not yet knowing a post; wiremock returns a canned 400.
+
+| Step | Action | Expected |
+|------|--------|----------|
+| 1 | Create a top-level post from a real client | Write succeeds; note its `at://` uri |
+| 2 | **Immediately** (sub-indexing-lag window) `curl -i -H "Authorization: Bearer &lt;token&gt;" "https://&lt;pds-host&gt;/xrpc/app.bsky.feed.getPostThread?uri=&lt;encoded-uri&gt;"` | 200 with a locally-reconstructed `threadViewPost` whose `post.uri == &lt;uri&gt;` and `post.author.did == &lt;your-did&gt;` |
+| 3 | To confirm the upstream really would have been 400: temporarily `curl` `https://api.bsky.app/xrpc/app.bsky.feed.getPostThread?uri=&lt;uri&gt;` directly (no PDS) in the same window | Direct AppView call returns `400 {"error":"NotFound"}` (vs. empty thread / blockedPost / other) |
+| 4 | If timing is missed, retry with a fresh post, or point at a known-lagging AppView | Window eventually caught |
+
+### HV-4 — Real `getPosts` shape maps into a quote `#viewRecord` (confirms AC6.2 success branch)
+
+Purpose: wiremock returns a hand-authored getPosts body; confirm the real shape hydrates correctly.
+
+| Step | Action | Expected |
+|------|--------|----------|
+| 1 | Create a **quote post** referencing a real, already-indexed post (from any account) | Write succeeds |
+| 2 | Immediately fetch own `getTimeline` (or `getAuthorFeed?actor=&lt;your-did&gt;`) through the PDS | The quote renders as a populated `app.bsky.embed.record#viewRecord` — has author, record value, embeds, labels — **not** `#viewNotFound` |
+| 3 | View the same post in a real Bluesky client | Quoted card renders correctly with author + text |
+
+### HV-5 — End-to-end "your own fresh write appears immediately" (Definition of Done; spans AC1/AC2/AC3)
+
+Purpose: the headline product guarantee, only fully demonstrable against real AppView lag.
+
+| Step | Action | Expected |
+|------|--------|----------|
+| 1 | From a real client on the PDS account, create a post | Appears **immediately** at the top of own `getTimeline`, in own `getAuthorFeed`, and in its own `getPostThread` — before the AppView indexes it |
+| 2 | Edit displayName + description + avatar | Own `getProfile` reflects all three immediately |
+| 3 | While the AppView is still behind, inspect response headers on the munged calls | `Atproto-Upstream-Lag` header present (ms since oldest merged record) |
+| 4 | Wait for the AppView to catch up (poll until `atproto-repo-rev` &gt;= your write's rev), re-fetch | `Atproto-Upstream-Lag` header **disappears**; content still correct |
+| 5 | In any response that also contains other users' data (e.g. a timeline), inspect their entries | Other users' posts/profiles are byte-for-byte untouched (only your own records are merged) |
+
+### Divergences (already automated — no live check needed for the divergence itself)
+
+- **viewNotFound-instead-of-drop** (AC4.2 / AC6.2 failure): `hydrate_quotes_degrades_to_empty_on_appview_5xx`, `record_embed_view_not_found_when_quote_missing` — pass.
+- **getAuthorFeed actor-guard** (AC1.2 positive / AC1.6 negative): `get_author_feed_ac1_2_...`, `get_author_feed_ac1_6_no_injection_for_other_actor` (byte-equal passthrough) — pass. HV-4 only confirms the *success* field-parity, not the divergence.
+
+### Traceability
+
+| AC | Automated test | Manual step |
+|----|----------------|-------------|
+| AC1.1 | `get_timeline_ac1_1_injects_local_post_at_top` | HV-5 step 1 |
+| AC1.2 | `get_author_feed_ac1_2_injects_own_posts_when_actor_is_requester` | HV-5 step 1 |
+| AC1.3 | `get_actor_likes_ac1_3_refreshes_author_only` | HV-5 step 5 |
+| AC1.4 | `post_view_includes_author_and_zero_counts` | HV-5 step 1 |
+| AC1.5 | `post_view_hydrates_{image,external}_embed_locally` | HV-2 step 4 |
+| AC1.6 | `get_author_feed_ac1_6_no_injection_for_other_actor` | HV-5 step 5 |
+| AC1.7 | `get_timeline_ac1_7_multiple_posts_chronological_order` | HV-5 step 1 |
+| AC2.1 | `test_pipethrough_munged_ac2_1_...` | HV-5 step 2/3 |
+| AC2.2 | `test_pipethrough_munged_ac2_2_getprofiles_overwrites_requester_only` | HV-5 step 5 |
+| AC2.3 | `update_profile_detailed_overwrites_all_fields` | HV-2 / HV-5 step 2 |
+| AC2.4 | `image_url_formats_correctly` | HV-2 step 2/3 |
+| AC2.5 | `test_pipethrough_munged_ac2_5_no_local_profile` | HV-5 step 4 |
+| AC3.1 | `test_pipethrough_munged_ac3_1_...` + `..._nonlocal_notfound_stays_400` | HV-3 |
+| AC3.2 | `test_pipethrough_munged_ac3_2_getpostthread_splices_own_replies` | HV-5 step 1 |
+| AC3.3 | `test_pipethrough_munged_ac3_3_getpostthread_other_user_unchanged` | HV-5 step 5 |
+| AC4.1 | `test_pipethrough_munged_ac4_1_non_json_body_passthrough` | — |
+| AC4.2 | `test_pipethrough_munged_ac4_2_...` + `hydrate_quotes_degrades_to_empty_on_appview_5xx` | — |
+| AC4.3 | `local_lag_ms_*` | HV-5 step 3/4 |
+| AC4.4 | `test_pipethrough_munged_ac4_4_no_lag_when_current` | HV-1 / HV-5 step 4 |
+| AC5.1 | `test_get_records_since_rev_ac5_1_...` + `recent_commits_for_did_returns_did_commits_newest_first` | HV-1 |
+| AC5.2 | `test_get_records_since_rev_ac5_2_excludes_deleted_records` | — |
+| AC5.3 | `test_get_records_since_rev_ac5_3_none_header_rev_returns_empty` | HV-1 (absence path) |
+| AC6.1 | `post_view_hydrates_*` + `record_with_media_embed_nests_full_record_view_and_media` | HV-2 step 4 |
+| AC6.2 | `hydrate_quotes_fetches_from_appview_and_populates_map` + `..._degrades_to_empty_on_appview_5xx` | HV-4 |
+| AC7.1 | `non_munged_appbsky_nsid_streams_verbatim` + `read_after_write_nsids_return_appview_response_verbatim` | HV-1 |
+
+---
+
+### Relevant file paths
+
+- Test requirements: `/Users/jacob.zweifel/workspace/malpercio-dev/ezpds/.claude/worktrees/exciting-ardinghelli-6e9eeb/docs/implementation-plans/2026-07-03-read-after-write/test-requirements.md`
+- `/Users/jacob.zweifel/workspace/malpercio-dev/ezpds/.claude/worktrees/exciting-ardinghelli-6e9eeb/crates/pds/src/read_after_write/mod.rs` (AC2.1/2.2/2.5, AC3.*, AC4.*, AC5.*)
+- `/Users/jacob.zweifel/workspace/malpercio-dev/ezpds/.claude/worktrees/exciting-ardinghelli-6e9eeb/crates/pds/src/read_after_write/munge.rs` (AC1.1/1.2/1.3/1.6/1.7)
+- `/Users/jacob.zweifel/workspace/malpercio-dev/ezpds/.claude/worktrees/exciting-ardinghelli-6e9eeb/crates/pds/src/read_after_write/viewer.rs` (AC1.4/1.5, AC2.3/2.4, AC6.*)
+- `/Users/jacob.zweifel/workspace/malpercio-dev/ezpds/.claude/worktrees/exciting-ardinghelli-6e9eeb/crates/pds/src/routes/service_proxy.rs` (AC7.1)
+- `/Users/jacob.zweifel/workspace/malpercio-dev/ezpds/.claude/worktrees/exciting-ardinghelli-6e9eeb/crates/pds/src/db/firehose_seq.rs` (AC5.1 support)
+
+**Bottom line: Phase 1 PASS — all 27 automated ACs are covered by tests that genuinely exercise the criterion (independently verified by reading each test and running the suite: 55 passed / 0 failed). No vacuous or tautological tests found. The 5 HV-* items are correctly human-only (real AppView/CDN behavior wiremock cannot reproduce) and are captured in the plan above.**</result>
+<usage><subagent_tokens>136874</subagent_tokens><tool_uses>13</tool_uses><duration_ms>170361</duration_ms></usage>
+</task-notification>
