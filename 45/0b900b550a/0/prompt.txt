@@ -1,0 +1,71 @@
+<task-notification>
+<task-id>adba5d6901e91a398</task-id>
+<tool-use-id>toolu_0146yeo7JMb2AB4YCcnbos1w</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-jacob-zweifel-workspace-malpercio-dev-ezpds--claude-worktrees-exciting-ardinghelli-6e9eeb/ee686e48-6c83-4e5b-a0fa-53ae45617a1e/tasks/adba5d6901e91a398.output</output-file>
+<status>completed</status>
+<summary>Agent "Fixing Phase 6 review issues" finished</summary>
+<note>A task-notification fires each time this agent stops with no live background children of its own. The user can send it another message and resume it, so the same task-id may notify more than once.</note>
+<result>Good - only the Nix warning, no code warnings or errors. Let me create a final summary of what was fixed:
+
+## Summary
+
+I have successfully fixed both issues identified in the code review for Phase 6 of read-after-write:
+
+### Issue 1: Critical - 200 Status Override Masking Genuine NotFound
+
+**Location:** `crates/pds/src/read_after_write/mod.rs` lines 418-422
+
+**Root Cause:** The status override was firing on `is_thread_not_found` alone, without confirming that the munged output actually contained a reconstructed thread. This meant a genuine NotFound whose requested_uri was NOT a local post would be returned as HTTP 200 carrying the AppView's error body, violating the lexicon.
+
+**Fix Applied:** Added a check for actual reconstruction:
+```rust
+let reconstructed = munged.get("thread").map(|t| !t.is_null()).unwrap_or(false);
+let response_status = if is_thread_not_found &amp;&amp; status.is_client_error() &amp;&amp; reconstructed {
+    axum::http::StatusCode::OK
+} else {
+    status
+};
+```
+
+Now the override only applies when:
+1. `is_thread_not_found` (the AppView returned a 400 NotFound for getPostThread)
+2. `status.is_client_error()` (original was a 4xx)
+3. **AND** `reconstructed` (the munged output has a non-null thread field)
+
+**Verification:** 
+- The new regression test `get_post_thread_notfound_regression_nonlocal_post_stays_400` verifies that NotFound for non-local posts stays 400
+- The existing AC3.1 test still passes, confirming reconstruction works for local posts
+
+### Issue 2: Important - Dead Sort Code in Case A Reply Splice
+
+**Location:** `crates/pds/src/read_after_write/munge.rs` lines 174-176
+
+**Root Cause:** The `replies_to_add.sort_by(|a, b| b.0.cmp(&amp;a.0))` was immediately discarded by end-appending the sorted items to the existing thread.replies array. The sort order had no effect.
+
+**Fix Applied:** Removed the dead sort code and clarified with a comment that end-append is the intentional best-effort behavior per acceptance criteria:
+```rust
+// Insert into replies: appending to the end is intentionally best-effort (shallow).
+// A full merge-sort is not required by the acceptance criteria.
+```
+
+**Verification:** All tests pass, including AC3.2 which tests reply splicing.
+
+### Test Results
+
+- **New regression test:** `get_post_thread_notfound_regression_nonlocal_post_stays_400` - PASS
+- **AC3.1 test:** `test_pipethrough_munged_ac3_1_getpostthread_notfound_reconstructs` - PASS
+- **AC3.2 test:** `test_pipethrough_munged_ac3_2_getpostthread_splices_own_replies` - PASS
+- **AC3.3 test:** `test_pipethrough_munged_ac3_3_getpostthread_other_user_unchanged` - PASS
+- **Full test suite:** 1345/1345 tests passing
+- **Clippy:** No warnings or errors (with -D warnings)
+
+### Files Modified
+
+1. `/Users/jacob.zweifel/workspace/malpercio-dev/ezpds/.claude/worktrees/exciting-ardinghelli-6e9eeb/crates/pds/src/read_after_write/mod.rs`
+2. `/Users/jacob.zweifel/workspace/malpercio-dev/ezpds/.claude/worktrees/exciting-ardinghelli-6e9eeb/crates/pds/src/read_after_write/munge.rs`
+
+### Commit
+
+SHA: `b68bff54` - "fix(pds): address code review feedback for read-after-write phase 6"</result>
+<usage><subagent_tokens>113316</subagent_tokens><tool_uses>37</tool_uses><duration_ms>325628</duration_ms></usage>
+</task-notification>
