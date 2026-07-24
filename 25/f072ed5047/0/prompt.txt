@@ -1,0 +1,1 @@
+I do have EZPDS_SERVER_DID set to did:web:obsign.org, is that meaningful at all or can I change it as well?
