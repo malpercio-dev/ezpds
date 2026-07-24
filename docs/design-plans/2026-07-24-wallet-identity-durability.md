@@ -124,9 +124,16 @@ pub fn delete_item_synced(account: &str) -> Result<(), KeychainError>;
 
 built on `set_generic_password_options` / `generic_password(PasswordOptions)` with
 `kSecAttrSynchronizable = true`. Synchronizable and non-synchronizable items with the same
-service+account are **distinct records** — a synced write does not update a legacy
-non-synced item, and a default-query read will not find a synced item. That makes the
-read path a two-step (synced first, then legacy) and the backfill explicit; see §2.3.
+service+account are **distinct records**. Apple's `SecItem.h` is explicit:
+
+> To add a new item which can be synced to other devices, or to obtain synchronizable
+> results from a query, supply this key with a value of `kCFBooleanTrue`. If the key is
+> not supplied, or has a value of `kCFBooleanFalse`, then no synchronizable items will be
+> added or returned.
+
+So a synced write does not update a legacy non-synced item, and a default-query read will
+never find a synced item. That makes the read path a two-step (synced first, then legacy)
+and the backfill explicit; see §2.3.
 
 Accessibility stays at the framework default (`kSecAttrAccessibleWhenUnlocked`).
 `…ThisDeviceOnly` is mutually exclusive with syncing, and Share 1 must be readable
@@ -164,6 +171,36 @@ deletes the legacy slot — same discipline as the existing migration, for the s
 
 Recovery's auto-load (`start_share_recovery`) then reads synced → per-DID legacy →
 global legacy, in that order.
+
+**Copy, never flip in place.** `SecItem.h` documents `kSecAttrSynchronizable` for
+*targeting* synced items during update/delete ("Updating or deleting items using the
+`kSecAttrSynchronizable` key will affect all copies of the item, not just the one on your
+local device") but does **not** document changing an existing item's synchronizability in
+place. Treat an in-place flip as unsupported. Copying is the safer construction regardless:
+the legacy slot may be the only surviving copy of that share, so the migration must never
+mutate or delete it.
+
+### 2.3.1 What the backfill cannot reach
+
+The backfill runs on-device, so it only reaches a device that **both** still holds Share 1
+**and** launches the fixed build at least once. Three consequences, none of which the fix
+can engineer away:
+
+- **Users who have already lost their device are not helped.** This change cannot reach
+  backward; those accounts remain on Share 2 + Share 3 for the life of the identity. MM-460
+  protects the installed base from the moment they update, not the existing casualties. Any
+  user-facing framing of the fix has to say that plainly rather than implying a retroactive
+  repair.
+- **A user who updates and opens the app is protected silently** from that launch onward,
+  with no action required of them.
+- **iCloud Keychain must be enabled on the account.** With it off, the item is written
+  carrying the attribute and propagates nowhere; enabling it later syncs the item with no
+  further app involvement.
+
+The last point is the sharp edge behind §2.4: "we wrote it with the sync flag set" and "it
+reached your Apple account" are different claims, and the app can only ever verify the
+first. That gap is a copy problem, not a code problem — but it is the difference between a
+user who thinks they are covered and one who is.
 
 ### 2.4 Honest sync status
 
