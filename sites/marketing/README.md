@@ -61,7 +61,24 @@ shadows); visible focus ring on every interactive element (aubergine on light,
 gold on dark); matte gold, never metallic; `prefers-reduced-motion` honored;
 fonts self-hosted in `assets/fonts/` (copied from
 `apps/identity-wallet/static/fonts/`), no runtime CDN; no JavaScript beyond
-the one self-hosted, cookieless analytics `<script>` (see "Analytics" below).
+the one self-hosted, cookieless analytics `<script>` (see "Analytics" below)
+and the small inline waitlist-form handler on `index.html` (see "Waitlist"
+below) — still no third-party scripts, ever.
+
+## Waitlist
+
+`index.html` carries the TestFlight interest form (`#waitlist`), posting
+directly to the production Custos's public **`waitlist` capability**
+(`POST https://pds.obsign.org/waitlist` — unauthenticated, CORS-open,
+rate-limited; see the operator capabilities doc). Email required, atproto
+handle optional; the handle is interest signal only (never resolved, never
+touched as an account). The inline script is progressive enhancement — a
+`<noscript>` note covers the no-JS case — and reports a single Umami custom
+event on success (`waitlist-signup`, carrying only a `hasHandle` boolean; no
+PII enters the analytics plane, per ADR-0029). The hero CTA click is tracked
+as `waitlist-cta` via `data-umami-event`. The form goes live when the
+production PDS sets `EZPDS_WAITLIST_ENABLED=true`; until then submissions get
+the honest "isn't open right now" message (the endpoint 404s).
 
 ## Analytics
 

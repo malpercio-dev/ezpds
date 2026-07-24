@@ -106,6 +106,14 @@ pub const CAPABILITIES: &[Capability] = &[
         summary: "Custos serves an opted-in account's did:web document at the account's own domain and propagates edits to relays.",
         enabled: |_| true,
     },
+    Capability {
+        name: "waitlist",
+        control: "waitlist.enabled",
+        summary: "Public interest-signup waitlist: unauthenticated email (+ optional atproto handle) signups a marketing page can post to, readable back by the operator.",
+        // The public signup route 404s unless the waitlist is enabled; the admin
+        // readout stays available regardless (it reads data already collected).
+        enabled: |config| config.waitlist.enabled,
+    },
 ];
 
 /// The capability names this deployment offers, in [`CAPABILITIES`] order.
@@ -217,6 +225,16 @@ mod tests {
 
         config.agent_auth.anonymous_enabled = true;
         assert!(advertised(&config).contains(&"agents"));
+    }
+
+    #[tokio::test]
+    async fn waitlist_requires_the_config_switch() {
+        let mut config = base_config().await;
+        assert!(!config.waitlist.enabled);
+        assert!(!advertised(&config).contains(&"waitlist"));
+
+        config.waitlist.enabled = true;
+        assert!(advertised(&config).contains(&"waitlist"));
     }
 
     #[tokio::test]

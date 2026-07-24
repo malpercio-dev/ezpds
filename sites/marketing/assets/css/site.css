@@ -479,6 +479,74 @@ h3 {
   text-wrap: pretty;
 }
 
+/* ── Waitlist form ────────────────────────────────────────────────────── */
+.waitlist-form {
+  max-width: 620px;
+}
+.waitlist-fields {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: var(--space-md);
+  margin-bottom: var(--space-md);
+}
+@media (max-width: 640px) {
+  .waitlist-fields {
+    grid-template-columns: 1fr;
+  }
+}
+.waitlist-form .field label {
+  display: block;
+  font-size: var(--text-label);
+  line-height: var(--leading-label);
+  font-weight: 600;
+  margin-bottom: var(--space-xs);
+}
+.waitlist-form .field-req {
+  font-weight: 400;
+  color: var(--color-muted);
+}
+.waitlist-form input {
+  width: 100%;
+  min-height: 44px;
+  padding: 10px 12px;
+  font-family: var(--font-sans);
+  font-size: var(--text-body);
+  color: var(--color-ink);
+  background: var(--color-bg);
+  border: 1px solid var(--color-line);
+  border-radius: var(--radius-md);
+}
+.waitlist-form input::placeholder {
+  color: var(--color-muted);
+}
+.waitlist-form button[disabled] {
+  opacity: 0.6;
+  cursor: default;
+}
+/* Status is never color alone: each state pairs its color with a glyph + text. */
+.form-status {
+  margin-top: var(--space-md);
+  font-size: var(--text-data);
+  line-height: var(--leading-data);
+  min-height: 1.4em;
+}
+.form-status.is-success {
+  color: var(--color-safe);
+  font-weight: 600;
+}
+.form-status.is-error {
+  color: var(--color-critical);
+  font-weight: 600;
+}
+.waitlist-privacy {
+  margin-top: var(--space-lg);
+  max-width: 68ch;
+  font-size: var(--text-label);
+  line-height: var(--leading-body);
+  color: var(--color-muted);
+  text-wrap: pretty;
+}
+
 /* ── Cards (flat at rest: parchment + hairline, no shadow) ────────────── */
 .card-grid {
   display: grid;

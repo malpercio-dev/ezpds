@@ -55,6 +55,7 @@ Every path registered by the server is listed here. For `/xrpc/` endpoints, use 
 | `/v1/admin/request-crawl` | Custos HTTP |
 | `/v1/admin/transfers` | Custos HTTP |
 | `/v1/admin/transfers/{id}/cancel` | Custos HTTP |
+| `/v1/admin/waitlist` | Custos HTTP |
 | `/v1/agents` | Custos HTTP |
 | `/v1/agents/claim-preview` | Custos HTTP |
 | `/v1/agents/{registration_id}/audit` | Custos HTTP |
@@ -79,6 +80,7 @@ Every path registered by the server is listed here. For `/xrpc/` endpoints, use 
 | `/v1/transfer/accept` | Custos HTTP |
 | `/v1/transfer/complete` | Custos HTTP |
 | `/v1/transfer/initiate` | Custos HTTP |
+| `/waitlist` | Custos HTTP |
 | `/xrpc/_health` | AT Protocol XRPC |
 | `/xrpc/app.bsky.actor.getPreferences` | AT Protocol XRPC |
 | `/xrpc/app.bsky.actor.putPreferences` | AT Protocol XRPC |

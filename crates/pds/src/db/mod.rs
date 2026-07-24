@@ -33,6 +33,7 @@ pub mod server_stats;
 pub mod sessions;
 pub mod sovereign_session_nonces;
 pub mod transfers;
+pub mod waitlist;
 
 use migrations::{Migration, MIGRATIONS};
 use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions};

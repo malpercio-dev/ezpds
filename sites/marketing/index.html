@@ -72,6 +72,7 @@
         <nav class="site-nav" aria-label="Site">
           <a href="#how">How it works</a>
           <a href="#answers">Plain answers</a>
+          <a href="#waitlist">Waitlist</a>
           <a href="custos/">Custos</a>
           <a href="https://github.com/malpercio-dev/ezpds">GitHub</a>
         </nav>
@@ -92,8 +93,8 @@
             or provider can take your identity, block your exit, or hold it hostage.
           </p>
           <div class="hero-actions">
-            <a class="btn btn-primary" href="https://github.com/malpercio-dev/ezpds">Get the source</a>
-            <a class="btn btn-secondary" href="custos/">Run your own server</a>
+            <a class="btn btn-primary" href="#waitlist" data-umami-event="waitlist-cta">Join the TestFlight waitlist</a>
+            <a class="btn btn-secondary" href="https://github.com/malpercio-dev/ezpds">Get the source</a>
           </div>
           <p class="hero-honesty">
             Open source, and in active development: iOS builds ship via TestFlight.
@@ -287,6 +288,64 @@
         </div>
       </section>
 
+      <!-- TestFlight waitlist: posts to the PDS's public `waitlist` capability
+           (POST /waitlist — unauthenticated, CORS-open, rate-limited). -->
+      <section class="section-alt" id="waitlist">
+        <div class="container">
+          <h2>Be first in line for the TestFlight.</h2>
+          <p class="section-intro">
+            Obsign is opening to early testers. Leave an email and we&rsquo;ll send
+            you the TestFlight invite when your spot opens. Already on Bluesky or the
+            AT&nbsp;Protocol? Add your handle &mdash; bringing an existing account is
+            exactly what Obsign is built for, and it helps us know how many of you
+            are coming with one.
+          </p>
+          <form class="waitlist-form" novalidate>
+            <div class="waitlist-fields">
+              <div class="field">
+                <label for="waitlist-email">Email <span class="field-req">(required)</span></label>
+                <input
+                  id="waitlist-email"
+                  name="email"
+                  type="email"
+                  required
+                  autocomplete="email"
+                  inputmode="email"
+                  placeholder="you@example.com"
+                />
+              </div>
+              <div class="field">
+                <label for="waitlist-handle">AT&nbsp;Protocol handle <span class="field-req">(optional)</span></label>
+                <input
+                  id="waitlist-handle"
+                  name="handle"
+                  type="text"
+                  autocomplete="off"
+                  autocapitalize="none"
+                  spellcheck="false"
+                  placeholder="alice.bsky.social"
+                />
+              </div>
+            </div>
+            <button class="btn btn-primary" type="submit">Join the waitlist</button>
+            <p class="form-status" role="status" aria-live="polite"></p>
+            <noscript>
+              <p class="form-status is-error">
+                <span aria-hidden="true">&#9651;</span> This form needs JavaScript to
+                submit. You can also reach us through the project&rsquo;s
+                <a href="https://github.com/malpercio-dev/ezpds">GitHub</a>.
+              </p>
+            </noscript>
+          </form>
+          <p class="waitlist-privacy">
+            One email when the TestFlight opens &mdash; nothing else, and no sharing.
+            Your address lives on our own server (Custos, naturally), and your handle
+            is only ever read as a &ldquo;coming with an existing account&rdquo; signal
+            &mdash; we don&rsquo;t touch the account itself.
+          </p>
+        </div>
+      </section>
+
       <!-- Custos band: the operator's room in the same house -->
       <div class="register-custos">
         <section id="custos">
@@ -324,5 +383,80 @@
         </div>
       </div>
     </footer>
+
+    <!-- Waitlist form: posts to the production Custos's public `waitlist` capability.
+         Progressive enhancement only — the noscript note covers the no-JS case. The
+         Umami event carries a hasHandle boolean and nothing else (ADR-0029: no PII
+         in the analytics plane). -->
+    <script>
+      (function () {
+        var form = document.querySelector('.waitlist-form');
+        if (!form) return;
+        var endpoint = 'https://pds.obsign.org/waitlist';
+        var status = form.querySelector('.form-status');
+        var button = form.querySelector('button[type="submit"]');
+
+        function show(kind, glyph, message) {
+          status.className = 'form-status ' + kind;
+          status.textContent = '';
+          var g = document.createElement('span');
+          g.setAttribute('aria-hidden', 'true');
+          g.textContent = glyph + ' ';
+          status.appendChild(g);
+          status.appendChild(document.createTextNode(message));
+        }
+
+        form.addEventListener('submit', function (event) {
+          event.preventDefault();
+          var email = form.elements.email.value.trim();
+          var handle = form.elements.handle.value.trim();
+          if (!email) {
+            show('is-error', '△', 'An email address is where the invite goes — we need one.');
+            form.elements.email.focus();
+            return;
+          }
+          button.disabled = true;
+          show('', '', 'Sending…');
+
+          var body = { email: email };
+          if (handle) body.handle = handle;
+          fetch(endpoint, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(body),
+          })
+            .then(function (response) {
+              button.disabled = false;
+              if (response.ok) {
+                show('is-success', '✓', "You're on the list. We'll email you when your spot opens.");
+                form.elements.email.value = '';
+                form.elements.handle.value = '';
+                if (window.umami) umami.track('waitlist-signup', { hasHandle: !!handle });
+                return;
+              }
+              if (response.status === 429) {
+                show('is-error', '△', 'Too many attempts from this connection — please try again in a few minutes.');
+              } else if (response.status === 404) {
+                show('is-error', '△', "The waitlist isn't open right now — check back soon.");
+              } else {
+                return response.json().then(
+                  function (json) {
+                    var message = (json && json.error && json.error.message) ||
+                      "That didn't go through — check the address and try again.";
+                    show('is-error', '△', message);
+                  },
+                  function () {
+                    show('is-error', '△', "That didn't go through — check the address and try again.");
+                  }
+                );
+              }
+            })
+            .catch(function () {
+              button.disabled = false;
+              show('is-error', '△', "We couldn't reach the server — please try again in a moment.");
+            });
+        });
+      })();
+    </script>
   </body>
 </html>
