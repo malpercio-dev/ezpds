@@ -1,0 +1,112 @@
+Work on Linear issue MM-355:
+
+Suggested branch name: malpercio/mm-355-migration-identity-leg-submit-reconcile-ambiguouslost
+
+<issue identifier="MM-355">
+<title>Migration identity-leg submit: reconcile ambiguous/lost-response PLC submit before retry</title>
+<description>
+## Problem
+
+The outbound-migration identity-leg submit (`migrate::submit_migration_op_cmd`) is not resilient to an **ambiguous / lost-response** PLC submission. Because a PLC operation is `prev`-chained and non-idempotent, `submit_migration_op_cmd` `.take()`s the signed op under the lock (to prevent a double-POST) and clears `migration_state` only *after* a confirmed 200.
+
+If [plc.directory](<http://plc.directory>) commits the op but the HTTP response is lost (mobile network drop), the wallet lands in a dead-end state:
+
+* `migration_state = Some { signed_op: None }` (op was taken, but state not cleared because no success was observed).
+* The frontend (`MigrationReviewScreen.svelte`) sees a transport error, so its `submitted` flag stays `false`.
+* On retry, `approve()` re-calls `submitMigrationOp` → `submit_migration_op_cmd` finds `signed_op == None` → returns terminal `MIGRATION_NOT_READY` ("no signed op; build the migration operation first").
+* `finalizeMigration` also can't proceed: its gate requires `migration_state == None`, but it's `Some`.
+
+The account is **not** broken (the source is still active and the identity op did land, so the DID points at the destination), but the in-app migration is stranded and needs manual recovery.
+
+This is **pre-existing** (the pre-<issue id="c241fe54-9a79-4403-a428-8e4fdc64be89" href="https://linear.app/malpercio/issue/MM-354/migration-cutover-persist-destination-sovereign-session-before-source">MM-354</issue> `approve()` had the same re-submit-on-retry behavior) and is upstream of the <issue id="c241fe54-9a79-4403-a428-8e4fdc64be89" href="https://linear.app/malpercio/issue/MM-354/migration-cutover-persist-destination-sovereign-session-before-source">MM-354</issue> cutover, so it was deliberately left out of that PR (see <pull-request id="3505a4f2-76ee-49d6-a809-2de4d00f96dc" href="https://linear.app/malpercio/review/featwallet-persist-destination-sovereign-session-before-source-66d203513560">malpercio-dev/ezpds#235</pull-request> — CodeRabbit thread on `MigrationReviewScreen.svelte`).
+
+## Proposed fix
+
+Reconcile the identity op's landed-state before deciding to re-submit vs. proceed:
+
+* On a submit failure (or on entry to `submit_migration_op_cmd` with an already-taken `signed_op`), fetch the DID's PLC audit log and check whether the migration op already landed (current `atproto_pds` service == destination, or the latest non-nullified op matches the built op).
+* If **landed** → clear `migration_state`, return the equivalent `ClaimResult`, and let the flow continue to `finalizeMigration` (which is now idempotent per <issue id="c241fe54-9a79-4403-a428-8e4fdc64be89" href="https://linear.app/malpercio/issue/MM-354/migration-cutover-persist-destination-sovereign-session-before-source">MM-354</issue>).
+* If **not landed** → the op can be safely rebuilt (`build_migration_op`) and re-submitted, since `prev` is unchanged.
+* Wire the frontend retry to this reconciliation rather than blindly re-invoking `submitMigrationOp`.
+
+Sibling to <issue id="91456924-d043-4164-baa8-112e1ff1e865" href="https://linear.app/malpercio/issue/MM-299/migration-mode-createaccount-is-not-resumable-a-mid-flight-failure">MM-299</issue> (migration-mode createAccount resumability). Add mock tests for the landed/not-landed reconciliation branches.
+
+## Non-goals
+
+* No change to the <issue id="c241fe54-9a79-4403-a428-8e4fdc64be89" href="https://linear.app/malpercio/issue/MM-354/migration-cutover-persist-destination-sovereign-session-before-source">MM-354</issue> cutover ordering (activate → sovereign session → persist → deactivate → Finalized), which already handles its own idempotent retry.
+</description>
+<team name="Mal's Machinations"/>
+<label>Bug</label>
+<label>Mobile: Identity Wallet</label>
+<label>Wave 3: Key Sovereignty</label>
+<project name="ezpds">An easy-to-host PDS on the ATProtocol, MacOS. Grandma-approved.</project>
+<parent-issue identifier="MM-306">
+<id>814e9039-1031-4e90-9e40-cc74b1cc2c0e</id>
+<title>Sovereign passwordless login — mint a Custos session from a device-key signature over the DID's rotation set (migrated accounts have no password by design)</title>
+<description>
+## Outcome
+
+A managed identity hosted by Custos can obtain and later renew a standard full-access session by proving control of a key in the DID's **current PLC rotation set**. Migrated accounts remain passwordless by design, and migration never deactivates the source until the destination credential is durable.
+
+## Why
+
+After outbound migration, the destination account has `password_hash = NULL`. Once the wallet's in-memory destination session is lost, full-access operations such as `updateHandle`, app-password management, email changes, PLC-operation requests, account deactivation, and agent management are unreachable. The concrete instance that exposed this was `did:plc:u7j7xdhvkwx3xlf6xjkbpdn7` during <issue id="10c8aa2a-f2fe-433f-9ba4-fed81b554e7a" href="https://linear.app/malpercio/issue/MM-241/validate-live-bskysocial-migration-round-trip-canonical-mm-207-e2e">MM-241</issue> leg (b).
+
+A PLC rotation key is the identity-owner credential and is stronger than a password. Passwords remain optional break-glass credentials; migration must not collect one by default.
+
+## Protocol decision
+
+Use a one-request, timestamped proof at `POST /v1/sessions/sovereign`, rather than a stored two-step challenge.
+
+The wallet signs one canonical, domain-separated envelope binding the destination server DID, method/path, account DID, signing-key DID, timestamp, and random nonce. Custos:
+
+1. requires a locally hosted active account;
+2. reads the latest non-nullified PLC audit-log operation from [plc.directory](<http://plc.directory>);
+3. requires the signing key in that operation's `rotationKeys`;
+4. verifies the curve-appropriate signature;
+5. atomically consumes DID + nonce within a bounded timestamp window;
+6. issues the same full-access access/refresh session as password `createSession`.
+
+The authoritative rotation set comes from PLC operation state, **not** the cached W3C DID document, which does not reliably expose `rotationKeys`. Any current rotation key qualifies under PLC semantics, including a Custos-held rotation key; that grants Custos no new power over data it already hosts.
+
+## Child issues
+
+1. <issue id="2b2651ac-c6a4-4374-80f0-323be617de6d" href="https://linear.app/malpercio/issue/MM-350/sovereign-sessions-reusable-full-access-session-issuer-and-replay">MM-350</issue> **— server foundation:** reusable full-session issuer plus dedicated sovereign replay persistence/sweeping.
+2. <issue id="25aa82ae-c063-4c30-afb1-bd8d65182211" href="https://linear.app/malpercio/issue/MM-351/custos-post-v1sessionssovereign-with-current-plc-rotation-key">MM-351</issue> **— verified endpoint:** current PLC rotation-set lookup, dual-curve signature verification, rate limiting, route/Bruno contract, and integration tests. Blocked by <issue id="2b2651ac-c6a4-4374-80f0-323be617de6d" href="https://linear.app/malpercio/issue/MM-350/sovereign-sessions-reusable-full-access-session-issuer-and-replay">MM-350</issue>.
+3. <issue id="79f7ec05-e3d8-4682-bdd9-cf2f190664af" href="https://linear.app/malpercio/issue/MM-352/wallet-per-did-sovereign-login-client-and-keychain-session-persistence">MM-352</issue> **— wallet credential plumbing:** per-DID signed client, versioned `oauth-tokens` Keychain storage, Bearer-client construction, and biometric-gated IPC. Blocked by <issue id="25aa82ae-c063-4c30-afb1-bd8d65182211" href="https://linear.app/malpercio/issue/MM-351/custos-post-v1sessionssovereign-with-current-plc-rotation-key">MM-351</issue>.
+4. <issue id="adcfe489-abaf-4914-b2c6-2d89472dd9b7" href="https://linear.app/malpercio/issue/MM-353/wallet-restore-refresh-and-passwordlessly-renew-per-identity-custos">MM-353</issue> **— session lifecycle:** restore, refresh, coalesce, and passwordlessly renew per-identity sessions after restart. This is the child that directly unblocks <issue id="c41f0839-9de0-4215-be44-c94a5267f033" href="https://linear.app/malpercio/issue/MM-305/wallet-change-handle-flow-wallet-signed-alsoknownas-plc-op">MM-305</issue>. Blocked by <issue id="79f7ec05-e3d8-4682-bdd9-cf2f190664af" href="https://linear.app/malpercio/issue/MM-352/wallet-per-did-sovereign-login-client-and-keychain-session-persistence">MM-352</issue>.
+5. <issue id="c241fe54-9a79-4403-a428-8e4fdc64be89" href="https://linear.app/malpercio/issue/MM-354/migration-cutover-persist-destination-sovereign-session-before-source">MM-354</issue> **— safe migration cutover:** activate destination → sovereign login → persist → deactivate source → Finalized, with retry/crash ordering tests. Blocked by <issue id="79f7ec05-e3d8-4682-bdd9-cf2f190664af" href="https://linear.app/malpercio/issue/MM-352/wallet-per-did-sovereign-login-client-and-keychain-session-persistence">MM-352</issue>.
+
+## Delivery order
+
+`MM-350 → MM-351 → MM-352 → { MM-353, MM-354 }`
+
+<issue id="adcfe489-abaf-4914-b2c6-2d89472dd9b7" href="https://linear.app/malpercio/issue/MM-353/wallet-restore-refresh-and-passwordlessly-renew-per-identity-custos">MM-353</issue> and <issue id="c241fe54-9a79-4403-a428-8e4fdc64be89" href="https://linear.app/malpercio/issue/MM-354/migration-cutover-persist-destination-sovereign-session-before-source">MM-354</issue> can proceed independently once the wallet client/storage contract exists.
+
+## Definition of done
+
+* Current P-256 and secp256k1 PLC rotation keys can mint a full session; fossil/non-rotation keys cannot.
+* Replay, cross-PDS replay, stale/future timestamp, inactive-account, and [plc.directory](<http://plc.directory>) failure paths fail closed.
+* Per-DID tokens survive app restart, refresh safely, and never cross identities/PDS audiences.
+* Biometric cancellation signs/sends nothing.
+* Migration persists the destination credential before touching the source account.
+* A restarted wallet can perform a full-access operation for the migrated DID with no password.
+* <issue id="c41f0839-9de0-4215-be44-c94a5267f033" href="https://linear.app/malpercio/issue/MM-305/wallet-change-handle-flow-wallet-signed-alsoknownas-plc-op">MM-305</issue> is unblocked.
+
+## Related work
+
+* <issue id="6a949579-cfaf-4f69-b1b6-a02777c3775f" href="https://linear.app/malpercio/issue/MM-304/verify-service-auth-jwt-rejects-es256k-bsky-minted-createaccount">MM-304</issue> supplied the reusable dual-curve verification pattern.
+* <issue id="91456924-d043-4164-baa8-112e1ff1e865" href="https://linear.app/malpercio/issue/MM-299/migration-mode-createaccount-is-not-resumable-a-mid-flight-failure">MM-299</issue> made migration-mode destination account creation resumable.
+* <issue id="236f7ee6-538c-460b-8055-d97e34a54b26" href="https://linear.app/malpercio/issue/MM-302/outbound-migration-source-login-must-be-a-full-session-bsky-refuses">MM-302</issue> established why the source migration login still needs a full session on reference PDSes.
+* <issue id="586111c2-5b25-4759-947b-214560b6bb5b" href="https://linear.app/malpercio/issue/MM-309/operator-account-repair-ops-for-the-brass-console-correct-email-issue">MM-309</issue> remains the separate operator break-glass/account-repair surface.
+</description>
+</parent-issue>
+<issue-relations>
+<related>
+<issue-ref identifier="MM-354" title="Migration cutover: persist destination sovereign session before source deactivation"/>
+<issue-ref identifier="MM-299" title="Migration-mode createAccount is not resumable — a mid-flight failure strands the migration with a 409"/>
+</related>
+</issue-relations>
+</issue>
+
+Open a PR when you are done and ensure it is linked to the linear issue
