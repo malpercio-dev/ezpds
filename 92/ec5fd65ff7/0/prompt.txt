@@ -1,0 +1,70 @@
+<task-notification>
+<task-id>ae7e19a4f5e1891bc</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-jacob-zweifel-workspace-malpercio-dev-ezpds--claude-worktrees-exciting-ardinghelli-6e9eeb/ee686e48-6c83-4e5b-a0fa-53ae45617a1e/tasks/ae7e19a4f5e1891bc.output</output-file>
+<status>completed</status>
+<summary>Agent "Reviewing Phase 4 profile munges" finished</summary>
+<note>A task-notification fires each time this agent stops with no live background children of its own. The user can send it another message and resume it, so the same task-id may notify more than once.</note>
+<result>No ticket/AC references in comments. The `ac2_1`-style tokens appear only in test function names (a traceability convention in test identifiers, not comments), which is acceptable — the AGENTS.md rule targets `// MM-123` / `// AC2.1:` comments in source, not test function names.
+
+I have everything I need. Here is my review.
+
+---
+
+# Code Review: Read-After-Write Phase 4 — Profile Munges
+
+## Status
+**APPROVED**
+
+## Issue Summary
+**Critical: 0 | Important: 0 | Minor: 0**
+
+## Verification Evidence
+```
+Tests:   cargo test -p pds read_after_write  → ok. 32 passed; 0 failed; 0 ignored (1294 filtered out)
+Clippy:  cargo clippy -p pds --all-targets -- -D warnings  → Finished, exit 0, zero warnings
+Source scan: grep for // MM-/AC comment refs in read_after_write/*.rs → none (only test fn names)
+```
+(Run via the worktree manifest in the main checkout's devenv, sandbox disabled for the nix daemon socket.)
+
+## Plan Alignment
+
+### Implemented Requirements
+- Task 1 — `pipethrough_munged` full best-effort pipeline + NSID dispatch — ✓ (`mod.rs:209-382`)
+- Task 2 — `get_profile` munge (None profile / did mismatch guards, else `update_profile_detailed`) — ✓ (`munge.rs:10-25`)
+- Task 3 — `get_profiles` munge (requester-only overwrite, others untouched) — ✓ (`munge.rs:27-46`); `update_profile_detailed` made `pub(crate)` — ✓ (`viewer.rs:91`)
+- AC2.1 (stale getProfile + fresh local profile → local fields + lag header) — ✓ integration test `test_pipethrough_munged_ac2_1...`
+- AC2.2 (getProfiles batch, requester-only overwrite) — ✓ integration test `test_pipethrough_munged_ac2_2...`
+- AC2.5 (no local profile → passthrough, no lag header) — ✓ integration test `test_pipethrough_munged_ac2_5...`
+
+### Deviations from Plan
+- None material. The commit-label vs. content mismatch you flagged is confirmed: `dd77e218` ("getProfiles read-after-write munge") only changed `viewer.rs` visibility; the `get_profiles` body landed in `5646ad94` alongside `get_profile`. Traceability-only — as pre-noted, at most Minor, and it does not affect the merged tree. Not counted as an issue.
+
+## Focus-Area Findings
+
+**1. Best-effort fallback ladder — correct.** Every failure path returns the buffered *original* bytes with preserved `status` + `content-type`, never dropping the client's response or 500ing: non-2xx (`mod.rs:252`), JSON parse error (`267`), `local.count == 0` (`289`), account-not-found (`306`), account lookup error (`320`), and serialize error (`348`) all rebuild `Response::builder().status(status)` + content_type + `Body::from(body_bytes)`. The only genuine non-original error return is when `upstream.bytes().await` itself fails (`244`) — correct, since there are no bytes to pass through. `atproto-repo-rev` is read via `HeaderMap::get("atproto-repo-rev")`, which the `http` crate matches case-insensitively, so any casing the AppView sends resolves; the AC2.1 test proves the end-to-end read against a real `insert_header`.
+
+**2. AC2.2 byte-identical others — correct.** `get_profiles` mutates only entries whose `did == requester` (`munge.rs:37-43`); every other array entry is left exactly as received. Reserialization normalizes key order within objects (serde_json `Value` = `BTreeMap`), deterministically and identically on both sides, and the test asserts on parsed values, so no reordering risk.
+
+**3. Lag header — correct &amp; reference-parity.** `Atproto-Upstream-Lag` is attached only on the munged path (`mod.rs:371`), gated on `local_lag_ms(&amp;local).is_some()`, and never on any passthrough branch. Spelling/casing exact. I verified against the reference PDS (`read-after-write/util.ts`): it likewise attaches the header whenever local records exist after munge — regardless of whether the munge actually altered the body — so the case where `getProfile` for another actor (or a posts-only local set) returns an unmodified body *with* a lag header is intended reference behavior, not a defect.
+
+**4. Dispatch — harmless.** The four not-yet-implemented NSIDs return `parsed` (a faithful reserialization of the AppView JSON), reachable only when `local.count &gt; 0` and JSON parse succeeded, so no field is stripped versus the original. `get_profile`'s `original["did"] == requester` guard (`munge.rs:20`) correctly prevents overwriting another user's profile view with the requester's local record.
+
+**5. FCIS — correct.** `munge.rs` = `// pattern: Functional Core`, `mod.rs`/`viewer.rs` = `// pattern: Imperative Shell`, `types.rs` = `// pattern: Functional Core`. No `// MM-`/`// AC:` comment refs in any source file (the `ac2_1` tokens are confined to test function names, which the hard rule does not cover).
+
+## Skills Applied
+- `coding-effectively` (+ `howto-functional-vs-imperative`, `defense-in-depth`, `writing-good-tests`): FCIS separation verified; error space fully modeled (best-effort ladder degrades to original on every fault, no swallowed-then-wrong-result path); integration tests are genuine end-to-end (MockServer + real local write + real `get_records_since_rev`), not mock-behavior assertions.
+- Reference-parity cross-check against the Bluesky reference PDS for the lag-header semantics.
+
+## Decision
+
+**APPROVED FOR MERGE** — All quality gates met: 32/32 tests pass, clippy clean, plan Tasks 1–3 and AC2.1/2.2/2.5 implemented and genuinely tested, FCIS and source-hygiene rules satisfied, and the best-effort fallback ladder is sound and reference-accurate.
+
+Relevant files:
+- `/Users/jacob.zweifel/workspace/malpercio-dev/ezpds/.claude/worktrees/exciting-ardinghelli-6e9eeb/crates/pds/src/read_after_write/mod.rs`
+- `/Users/jacob.zweifel/workspace/malpercio-dev/ezpds/.claude/worktrees/exciting-ardinghelli-6e9eeb/crates/pds/src/read_after_write/munge.rs`
+- `/Users/jacob.zweifel/workspace/malpercio-dev/ezpds/.claude/worktrees/exciting-ardinghelli-6e9eeb/crates/pds/src/read_after_write/viewer.rs`
+
+Non-blocking note for the author (no action required this phase): the `dd77e218` commit message describes getProfiles but the getProfiles logic actually landed in `5646ad94` — pure traceability drift, harmless to the merged tree.</result>
+<usage><subagent_tokens>125668</subagent_tokens><tool_uses>18</tool_uses><duration_ms>157695</duration_ms></usage>
+</task-notification>
