@@ -1,0 +1,13 @@
+Would it make sense to migrate the obsign.org PDS to pds.obsign.org? If so, can we continue to offer handles at obsign.org instead of pds.obsign.org? what implications does that have for our current deployment strategy, also considering that railway limits us to 2 custom domains, which we currently have *.obsign.org and obsign.org pointed to the custos deployment. that may make discovery ulltimately easier as we can host marketing etc sites at obsign.org instead of about.obsign.org. what do you think?
+
+---
+
+I do have EZPDS_SERVER_DID set to did:web:obsign.org, is that meaningful at all or can I change it as well?
+
+---
+
+Is there a query I can quickly run in sqlite3 to correct the hosted-did:web row? update if it exists else insert?
+
+---
+
+The query for the current document returned nothing. Let's implement option b here
