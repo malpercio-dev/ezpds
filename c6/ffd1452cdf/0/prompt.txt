@@ -1,0 +1,452 @@
+## Context
+
+- Current git status: On branch main
+Your branch is up to date with 'origin/main'.
+
+Changes not staged for commit:
+  (use "git add <file>..." to update what will be committed)
+  (use "git restore <file>..." to discard changes in working directory)
+	modified:   apps/identity-wallet/AGENTS.md
+	modified:   apps/identity-wallet/src-tauri/src/pds_client.rs
+
+Untracked files:
+  (use "git add <file>..." to include in what will be committed)
+	devenv.lock
+
+no changes added to commit (use "git add" and/or "git commit -a")
+- Current git diff (staged and unstaged changes): diff --git a/apps/identity-wallet/AGENTS.md b/apps/identity-wallet/AGENTS.md
+index d5100726..6af323a2 100644
+--- a/apps/identity-wallet/AGENTS.md
++++ b/apps/identity-wallet/AGENTS.md
+@@ -1,7 +1,7 @@
+ # Obsign (identity-wallet) Mobile App
+ 
+ Last verified: 2026-07-08
+-Last updated: 2026-07-17
++Last updated: 2026-07-18
+ 
+ ## Purpose
+ 
+@@ -486,7 +486,7 @@ Full setup (mirror dual-push, App Store Connect, GitHub secrets) and gotchas:
+ - `apps/identity-wallet/app-icon.svg` -- the Obsign app icon's vector source of truth (the SealEmblem wax seal + shield-check; rationale in the root DESIGN.md §6); `app-icon.png` is its 1024×1024 render and the input `cargo tauri icon` consumes (Patch G regenerates the gitignored AppIcon asset catalog from it after every `cargo tauri ios init`). To change the icon: edit the SVG, re-render the PNG at 1024×1024 (e.g. resvg), commit both, re-run `just ios-postinit`
+ - `apps/identity-wallet/AppIcon.icon/` -- the layered Icon Composer document for the iOS 26 Liquid Glass icon: `icon.json` (fill gradient + one group: shield.svg over seal.svg, specular on, neutral shadow) + `Assets/*.svg` layers split from `app-icon.svg` with NO baked drop shadows (Liquid Glass supplies lighting/shadow). Referenced in place by the XcodeGen template (`scripts/ios/project.yml`, with a `fileTypes` mapping so the .icon package stays one file); Xcode 26 prefers it over the same-named appiconset, which remains the older-toolchain fallback. Compiled/validated by actool in `just ios-pr-check` (`just _icon-compile`); `just ios-check` verifies the rendered registration. Keep layer geometry in sync with the master SVG when the icon changes
+ - `src/lib/ipc/` -- Per-domain typed TypeScript wrappers for all Tauri IPC commands, split into `account.ts`, `oauth.ts`, `appearance.ts`, `diagnostics.ts`, `claim.ts`, `identity.ts`, `monitor.ts`, `recovery.ts`, `migration.ts`, `handle-change.ts`, `agents.ts` (plus the generic `isCodedError` IPC-error guard in `errors.ts`), all re-exported from `index.ts`; page components import from `$lib/ipc`
+-- `src-tauri/src/diagnostics.rs` -- in-app, in-memory **network-error breadcrumb log** the user exports from Settings (redacted by construction — operation name, server host, HTTP status, short atproto/transport error code only; never tokens, bodies, handles, or DIDs). A process-global ring buffer (`OnceLock<Mutex<VecDeque>>`, cap 200, unit-of-global like `IdentityStore`) so the deep network seams record without threading a Tauri `State`: `record_server`/`record_transport`/`transport_category` are called from `pds_client::classify_xrpc_response` (every non-2xx server verdict + its mid-read transport drop) and `plc_monitor` (background-check unreachable). The `export_diagnostics` command renders it to plain text; nothing persists to disk and the user initiates every share, so there is no passive collection to opt out of. **Current capture scope:** server-verdict errors across all `PdsClient` XRPC calls + the monitor's transport case; pure connect/timeout failures on the create-flow (`http.rs` `CustosClient`) and other transport sites are a documented follow-up
++- `src-tauri/src/diagnostics.rs` -- in-app, in-memory **network-error breadcrumb log** the user exports from Settings (redacted by construction — operation name, server host, HTTP status, short atproto/transport error code only; never tokens, bodies, handles, or DIDs). A process-global ring buffer (`OnceLock<Mutex<VecDeque>>`, cap 200, unit-of-global like `IdentityStore`) so the deep network seams record without threading a Tauri `State`: `record_server`/`record_transport`/`transport_category` are called from `pds_client::classify_xrpc_response` (every non-2xx server verdict + its mid-read transport drop), `pds_client::note_transport_failure` (every `PdsClient` `.send()`/body-read `reqwest::Error` — the connect/DNS/TLS/timeout class that never yields a server verdict, so it never reaches `classify_xrpc_response`; host taken from the request URL, or omitted on the well-known handle-resolve path where the host IS the handle), and `plc_monitor` (background-check unreachable). The `export_diagnostics` command renders it to plain text; nothing persists to disk and the user initiates every share, so there is no passive collection to opt out of. **Current capture scope:** server-verdict errors across all `PdsClient` XRPC calls, **every `PdsClient` transport failure** (`.send()` + body-read), and the monitor's transport case. Remaining follow-up: pure connect/timeout failures on the create-flow (`http.rs` `CustosClient`) and the `OAuthClient`-based XRPC helpers (which route through a different client)
+ - `src/lib/biometric.ts` -- `authenticateBiometric(reason)`: the Face ID / Touch ID (or device-passcode) user-presence gate that precedes irreversible signing IPC calls (sovereign login, agent claim/revoke, migration/did:web submission). A policy gate, not an `invoke()` wrapper — imports the mobile-only `@tauri-apps/plugin-biometric` dynamically and fails closed; tested by `biometric.test.ts`
+ - `src/lib/components/onboarding/` -- Seventeen onboarding screen components (ModeSelectScreen, PdsConfigScreen, ClaimCodeScreen, EmailScreen, HandleScreen, PasswordScreen, LoadingScreen, DIDCeremonyScreen, DIDSuccessScreen, ShamirBackupScreen, HandleRegistrationScreen, AuthenticatingScreen, IdentityInputScreen, PdsAuthScreen, EmailVerificationScreen, ReviewOperationScreen, ClaimSuccessScreen). The two source-PDS password logins — `PdsAuthScreen` (claim) and `MigrationSourceAuthScreen` (outbound migration) — are thin wrappers over one shared `SourcePasswordAuthScreen` base (form + 2FA branch + shared error switch + styles), each supplying only its copy, IPC fn, and flow-specific error codes (MM-303)
+ - `src/lib/components/home/` -- Ten home screen components (IdentityListHome, DIDDocumentScreen, ChangeHandleScreen, AlertDetailScreen, RecoveryOverrideScreen, MyAgentsScreen, AgentDetailScreen, AgentClaimApprovalScreen, SettingsScreen, RemoveIdentityScreen) plus DIDAvatar utility component
+diff --git a/apps/identity-wallet/src-tauri/src/pds_client.rs b/apps/identity-wallet/src-tauri/src/pds_client.rs
+index beb30093..1d1b5a46 100644
+--- a/apps/identity-wallet/src-tauri/src/pds_client.rs
++++ b/apps/identity-wallet/src-tauri/src/pds_client.rs
+@@ -331,6 +331,30 @@ async fn classify_xrpc_response(context: &str, resp: reqwest::Response) -> PdsCl
+     classify_xrpc_error(status.as_u16(), retry_after, &body)
+ }
+ 
++/// Record a redacted transport-failure breadcrumb for the user-exportable diagnostics log.
++///
++/// This is the transport-side companion to [`classify_xrpc_response`]. A connect/DNS/TLS/timeout
++/// failure or a mid-read body drop never produces a server *verdict*, so it never reaches
++/// `classify_xrpc_response` — without this, the entire "couldn't reach the server" class
++/// (`NetworkError`/`PdsUnreachable`) leaves no breadcrumb, which is exactly what made the re-key
++/// `NETWORK_ERROR` undiagnosable from the exported log. Every `reqwest::Error` site that returns a
++/// connectivity-class error funnels through here.
++///
++/// Only the *host* of `url` is recorded — never the path or query. On plc.directory reads the DID
++/// lives in the path, so callers must pass the full request URL and let this extract the host. When
++/// the host itself is sensitive (a handle domain on the well-known resolve path), pass `None` for
++/// `url` and the breadcrumb records no host.
++fn note_transport_failure(op: &str, url: Option<&str>, e: &reqwest::Error) {
++    let host = url
++        .and_then(|u| reqwest::Url::parse(u).ok())
++        .and_then(|parsed| parsed.host_str().map(str::to_string));
++    crate::diagnostics::record_transport(
++        op,
++        host.as_deref(),
++        crate::diagnostics::transport_category(e),
++    );
++}
++
+ /// PLC operation data for a DID.
+ ///
+ /// Combines fields from the W3C DID Document (`GET /{did}`) and the PLC audit log
+@@ -703,14 +727,12 @@ impl PdsClient {
+         let url = format!("{}/{}", self.plc_directory_url, did);
+ 
+         // Fetch the DID document from plc.directory
+-        let response =
+-            self.client
+-                .get(&url)
+-                .send()
+-                .await
+-                .map_err(|e| PdsClientError::NetworkError {
+-                    message: format!("failed to fetch DID document: {}", e),
+-                })?;
++        let response = self.client.get(&url).send().await.map_err(|e| {
++            note_transport_failure("discover_pds", Some(&url), &e);
++            PdsClientError::NetworkError {
++                message: format!("failed to fetch DID document: {}", e),
++            }
++        })?;
+ 
+         match response.status() {
+             s if s == 404 => return Err(PdsClientError::DidNotFound),
+@@ -749,8 +771,11 @@ impl PdsClient {
+             .timeout(Duration::from_secs(5))
+             .send()
+             .await
+-            .map_err(|e| PdsClientError::PdsUnreachable {
+-                reason: format!("failed to reach PDS endpoint: {}", e),
++            .map_err(|e| {
++                note_transport_failure("discover_pds", Some(pds_endpoint), &e);
++                PdsClientError::PdsUnreachable {
++                    reason: format!("failed to reach PDS endpoint: {}", e),
++                }
+             })?;
+ 
+         Ok((pds_endpoint.to_string(), doc))
+@@ -791,6 +816,7 @@ impl PdsClient {
+ 
+         let response = self.client.get(&url).send().await.map_err(|e| {
+             tracing::error!(url = %url, error = %e, "OAuth metadata fetch failed");
++            note_transport_failure("discover_auth_server", Some(&url), &e);
+             PdsClientError::NetworkError {
+                 message: format!("failed to fetch OAuth metadata: {}", e),
+             }
+@@ -859,8 +885,11 @@ impl PdsClient {
+             .timeout(Duration::from_secs(30))
+             .send()
+             .await
+-            .map_err(|e| PdsClientError::PdsUnreachable {
+-                reason: format!("failed to reach PDS: {}", e),
++            .map_err(|e| {
++                note_transport_failure("describeServer", Some(&url), &e);
++                PdsClientError::PdsUnreachable {
++                    reason: format!("failed to reach PDS: {}", e),
++                }
+             })?;
+ 
+         if !response.status().is_success() {
+@@ -872,8 +901,11 @@ impl PdsClient {
+         response
+             .json::<DescribeServerResponse>()
+             .await
+-            .map_err(|e| PdsClientError::PdsUnreachable {
+-                reason: format!("failed to parse describeServer response: {}", e),
++            .map_err(|e| {
++                note_transport_failure("describeServer", Some(&url), &e);
++                PdsClientError::PdsUnreachable {
++                    reason: format!("failed to parse describeServer response: {}", e),
++                }
+             })
+     }
+ 
+@@ -928,8 +960,11 @@ impl PdsClient {
+             .json(&request_body)
+             .send()
+             .await
+-            .map_err(|e| PdsClientError::NetworkError {
+-                message: format!("createSession request failed: {}", e),
++            .map_err(|e| {
++                note_transport_failure("createSession", Some(&url), &e);
++                PdsClientError::NetworkError {
++                    message: format!("createSession request failed: {}", e),
++                }
+             })?;
+ 
+         let status = response.status();
+@@ -1034,8 +1069,11 @@ impl PdsClient {
+             .form(&form_data)
+             .send()
+             .await
+-            .map_err(|e| PdsClientError::NetworkError {
+-                message: format!("PAR request failed: {}", e),
++            .map_err(|e| {
++                note_transport_failure("pds_par", Some(&par_url), &e);
++                PdsClientError::NetworkError {
++                    message: format!("PAR request failed: {}", e),
++                }
+             })?;
+ 
+         let status = response.status();
+@@ -1091,8 +1129,11 @@ impl PdsClient {
+             .form(&form_data)
+             .send()
+             .await
+-            .map_err(|e| PdsClientError::OauthFailed {
+-                message: format!("token exchange request failed: {}", e),
++            .map_err(|e| {
++                note_transport_failure("pds_token_exchange", Some(token_url), &e);
++                PdsClientError::OauthFailed {
++                    message: format!("token exchange request failed: {}", e),
++                }
+             })
+     }
+ 
+@@ -1124,14 +1165,12 @@ impl PdsClient {
+     /// Calls `GET {plc_directory_url}/{did}/log/audit` and returns the raw JSON string.
+     pub async fn fetch_audit_log(&self, did: &str) -> Result<String, PdsClientError> {
+         let url = format!("{}/{}/log/audit", self.plc_directory_url, did);
+-        let resp =
+-            self.client
+-                .get(&url)
+-                .send()
+-                .await
+-                .map_err(|e| PdsClientError::NetworkError {
+-                    message: format!("failed to fetch audit log: {}", e),
+-                })?;
++        let resp = self.client.get(&url).send().await.map_err(|e| {
++            note_transport_failure("fetch_audit_log", Some(&url), &e);
++            PdsClientError::NetworkError {
++                message: format!("failed to fetch audit log: {}", e),
++            }
++        })?;
+ 
+         match resp.status() {
+             s if s == 404 => return Err(PdsClientError::DidNotFound),
+@@ -1143,8 +1182,11 @@ impl PdsClient {
+             _ => {}
+         }
+ 
+-        resp.text().await.map_err(|e| PdsClientError::NetworkError {
+-            message: format!("failed to read audit log response: {}", e),
++        resp.text().await.map_err(|e| {
++            note_transport_failure("fetch_audit_log", Some(&url), &e);
++            PdsClientError::NetworkError {
++                message: format!("failed to read audit log response: {}", e),
++            }
+         })
+     }
+ 
+@@ -1160,14 +1202,12 @@ impl PdsClient {
+         did: &str,
+     ) -> Result<serde_json::Value, PdsClientError> {
+         let url = format!("{}/{}/data", self.plc_directory_url, did);
+-        let resp =
+-            self.client
+-                .get(&url)
+-                .send()
+-                .await
+-                .map_err(|e| PdsClientError::NetworkError {
+-                    message: format!("failed to fetch PLC data document: {}", e),
+-                })?;
++        let resp = self.client.get(&url).send().await.map_err(|e| {
++            note_transport_failure("fetch_plc_data_document", Some(&url), &e);
++            PdsClientError::NetworkError {
++                message: format!("failed to fetch PLC data document: {}", e),
++            }
++        })?;
+ 
+         match resp.status() {
+             s if s == 404 => return Err(PdsClientError::DidNotFound),
+@@ -1179,8 +1219,11 @@ impl PdsClient {
+             _ => {}
+         }
+ 
+-        resp.json().await.map_err(|e| PdsClientError::NetworkError {
+-            message: format!("failed to parse PLC data document: {}", e),
++        resp.json().await.map_err(|e| {
++            note_transport_failure("fetch_plc_data_document", Some(&url), &e);
++            PdsClientError::NetworkError {
++                message: format!("failed to parse PLC data document: {}", e),
++            }
+         })
+     }
+ 
+@@ -1199,8 +1242,11 @@ impl PdsClient {
+             .json(operation)
+             .send()
+             .await
+-            .map_err(|e| PdsClientError::NetworkError {
+-                message: format!("failed to post plc operation: {}", e),
++            .map_err(|e| {
++                note_transport_failure("post_plc_operation", Some(&url), &e);
++                PdsClientError::NetworkError {
++                    message: format!("failed to post plc operation: {}", e),
++                }
+             })?;
+ 
+         if resp.status().is_success() {
+@@ -1243,20 +1289,23 @@ impl PdsClient {
+             .timeout(Duration::from_secs(300))
+             .send()
+             .await
+-            .map_err(|e| PdsClientError::NetworkError {
+-                message: format!("failed to fetch repo CAR: {}", e),
++            .map_err(|e| {
++                note_transport_failure("getRepo", Some(&url), &e);
++                PdsClientError::NetworkError {
++                    message: format!("failed to fetch repo CAR: {}", e),
++                }
+             })?;
+ 
+         if !resp.status().is_success() {
+             return Err(classify_xrpc_response("getRepo", resp).await);
+         }
+ 
+-        resp.bytes()
+-            .await
+-            .map(|b| b.to_vec())
+-            .map_err(|e| PdsClientError::NetworkError {
++        resp.bytes().await.map(|b| b.to_vec()).map_err(|e| {
++            note_transport_failure("getRepo", Some(&url), &e);
++            PdsClientError::NetworkError {
+                 message: format!("failed to read repo CAR bytes: {}", e),
+-            })
++            }
++        })
+     }
+ 
+     /// Fetch a blob by DID and CID (auth: none).
+@@ -1283,20 +1332,23 @@ impl PdsClient {
+             .timeout(Duration::from_secs(300))
+             .send()
+             .await
+-            .map_err(|e| PdsClientError::NetworkError {
+-                message: format!("failed to fetch blob: {}", e),
++            .map_err(|e| {
++                note_transport_failure("getBlob", Some(&url), &e);
++                PdsClientError::NetworkError {
++                    message: format!("failed to fetch blob: {}", e),
++                }
+             })?;
+ 
+         if !resp.status().is_success() {
+             return Err(classify_xrpc_response("getBlob", resp).await);
+         }
+ 
+-        resp.bytes()
+-            .await
+-            .map(|b| b.to_vec())
+-            .map_err(|e| PdsClientError::NetworkError {
++        resp.bytes().await.map(|b| b.to_vec()).map_err(|e| {
++            note_transport_failure("getBlob", Some(&url), &e);
++            PdsClientError::NetworkError {
+                 message: format!("failed to read blob bytes: {}", e),
+-            })
++            }
++        })
+     }
+ 
+     /// Reserve a signing key for a DID on the PDS (auth: none, idempotent).
+@@ -1320,8 +1372,11 @@ impl PdsClient {
+             .json(&body)
+             .send()
+             .await
+-            .map_err(|e| PdsClientError::NetworkError {
+-                message: format!("failed to reserve signing key: {}", e),
++            .map_err(|e| {
++                note_transport_failure("reserveSigningKey", Some(&url), &e);
++                PdsClientError::NetworkError {
++                    message: format!("failed to reserve signing key: {}", e),
++                }
+             })?;
+ 
+         if !resp.status().is_success() {
+@@ -1337,8 +1392,11 @@ impl PdsClient {
+         resp.json::<ReserveSigningKeyResponse>()
+             .await
+             .map(|r| r.signing_key)
+-            .map_err(|e| PdsClientError::NetworkError {
+-                message: format!("failed to parse reserve_signing_key response: {}", e),
++            .map_err(|e| {
++                note_transport_failure("reserveSigningKey", Some(&url), &e);
++                PdsClientError::NetworkError {
++                    message: format!("failed to parse reserve_signing_key response: {}", e),
++                }
+             })
+     }
+ 
+@@ -1375,8 +1433,11 @@ impl PdsClient {
+             .json(&body)
+             .send()
+             .await
+-            .map_err(|e| PdsClientError::NetworkError {
+-                message: format!("delete_account failed: {}", e),
++            .map_err(|e| {
++                note_transport_failure("deleteAccount", Some(&url), &e);
++                PdsClientError::NetworkError {
++                    message: format!("delete_account failed: {}", e),
++                }
+             })?;
+ 
+         if resp.status().is_success() {
+@@ -1470,6 +1531,9 @@ async fn try_resolve_dns(handle: &str) -> Result<Option<String>, PdsClientError>
+                 Ok(None)
+             } else {
+                 tracing::warn!(dns_name = %dns_name, error = %e, "DNS TXT lookup failed");
++                // Host is omitted: the DNS name embeds the handle, which the diagnostics log
++                // must never capture. The fixed `"dns"` category is enough to show the class.
++                crate::diagnostics::record_transport("resolve_handle_dns", None, "dns");
+                 Err(PdsClientError::NetworkError {
+                     message: format!("DNS lookup failed: {}", e),
+                 })
+@@ -1496,6 +1560,8 @@ async fn try_resolve_http(
+                     }
+                     Err(e) => {
+                         tracing::warn!(url = %url, error = %e, "HTTP well-known body read failed");
++                        // Host omitted: the well-known URL's host IS the handle domain.
++                        note_transport_failure("resolve_handle_http", None, &e);
+                         Err(PdsClientError::NetworkError {
+                             message: format!("failed to read response body: {}", e),
+                         })
+@@ -1515,6 +1581,8 @@ async fn try_resolve_http(
+         }
+         Err(e) => {
+             tracing::warn!(url = %url, error = %e, "HTTP well-known request failed");
++            // Host omitted: the well-known URL's host IS the handle domain.
++            note_transport_failure("resolve_handle_http", None, &e);
+             Err(PdsClientError::NetworkError {
+                 message: format!("HTTP request failed: {}", e),
+             })
+@@ -4491,4 +4559,38 @@ mod tests {
+             e => panic!("Expected RateLimited, got: {:?}", e),
+         }
+     }
++
++    /// A pure transport failure (connection refused) must leave a breadcrumb in the exportable
++    /// diagnostics log. This is the regression guard for the gap that made the re-key
++    /// `NETWORK_ERROR` invisible: `fetch_audit_log`'s `.send()` never yields a server verdict, so
++    /// it never reaches `classify_xrpc_response` — the breadcrumb has to be recorded at the
++    /// transport site itself. Also proves the recorded line stays redacted (the DID in the request
++    /// path must not appear).
++    #[tokio::test]
++    async fn transport_failure_records_a_diagnostics_breadcrumb() {
++        // Port 1 on loopback refuses immediately: a connect-class transport failure, no server.
++        let client = PdsClient::new_for_test("http://127.0.0.1:1".to_string());
++        let err = client
++            .fetch_audit_log("did:plc:diagbreadcrumb")
++            .await
++            .unwrap_err();
++        assert!(
++            matches!(err, PdsClientError::NetworkError { .. }),
++            "expected NetworkError, got {err:?}"
++        );
++
++        let report = crate::diagnostics::export();
++        assert!(
++            report.contains("fetch_audit_log"),
++            "op name missing from report:\n{report}"
++        );
++        assert!(
++            report.contains("transport"),
++            "transport origin missing from report:\n{report}"
++        );
++        assert!(
++            !report.contains("diagbreadcrumb"),
++            "DID leaked into the redacted report:\n{report}"
++        );
++    }
+ }
+- Current branch: main
+
+## Your task
+
+Based on the above changes:
+
+1. Create a new branch if on main
+2. Create a single commit with an appropriate message
+3. Push the branch to origin
+4. Create a pull request using `gh pr create`
+5. You have the capability to call multiple tools in a single response. You MUST do all of the above in a single message. Do not use any other tools or do anything else. Do not send any other text or messages besides these tool calls.
