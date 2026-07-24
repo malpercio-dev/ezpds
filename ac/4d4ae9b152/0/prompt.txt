@@ -1,0 +1,13 @@
+```v/ezpds/apps/identity-wallet/src-tauri/gen/apple/build/identity-wallet_iOS.xcarchive/Products/Applications/Obsign.app/Obsign
+2026-06-24 17:46:48.618 xcodebuild[98106:14979056] [MT] IDEDistribution: -[IDEDistributionLogging _createLoggingBundleAtPath:]: Created bundle at path "/var/folders/6f/s0q439cd5qz6_w8ld1_hnz2m0000gn/T/identity-wallet_iOS_2026-06-24_17-46-48.618.xcdistributionlogs".
+error: exportArchive Cloud signing permission error
+
+error: exportArchive No profiles for 'dev.malpercio.identitywallet' were found
+
+** EXPORT FAILED **
+
+       Error failed to export iOS app: command ["xcodebuild"] exited with code 70
+error: Recipe `ios-ipa` failed on line 86 with exit code 1```
+
+
+something I need to do in the xcode project?
