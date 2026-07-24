@@ -1,0 +1,9 @@
+In the Obsign iOS app (Tauri v2, `apps/identity-wallet/` in the ezpds repo), after completing the relay OAuth login flow the browser redirect now correctly opens the app via the deep-link callback (`dev.malpercio.identitywallet:/oauth/callback?code=...&state=...`) and `oauth::handle_deep_link` runs — BUT the UI shows no logged-in identity detail on the home screen afterward.
+
+Investigate why the post-login home state doesn't render the authenticated identity. Likely areas:
+- `src-tauri/src/oauth.rs`: `start_oauth_flow` / `handle_deep_link` (the `pending_auth` oneshot channel, token exchange, storing the OAuth session), and whether an `auth_ready` Tauri event is emitted after login.
+- `src/routes/+page.svelte`: the two-flow state machine — the transition into `authenticating` → `home`, and whether it waits on / listens for the auth completion.
+- The `auth_ready` event listener on the frontend, and startup token-restore behavior.
+- `src-tauri/src/home.rs` `load_home_data` (always-Ok pattern) + `loadHomeData()` in `src/lib/ipc.ts`, and the home components (`IdentityListHome`, `HomeScreen`) — whether they're invoked and what they render when a session exists vs not.
+
+Reproduce by running onboarding through the OAuth login on a device or simulator and observing the home screen after the redirect returns to the app. Note: the deep-link callback itself works now (the custom URL scheme is registered via `src-tauri/Info.ios.plist` `CFBundleURLTypes`; runtime delivery via `lib.rs` `deep_link().on_open_url → oauth::handle_deep_link`). Goal: after a successful login, the home screen shows the user's identity (handle, DID, session info).
