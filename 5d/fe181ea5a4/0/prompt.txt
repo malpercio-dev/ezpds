@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>bajto3m8x</task-id>
+<tool-use-id>toolu_01MwZ9XuUuTY5b69qT7QFwwX</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-jacob-zweifel-workspace-malpercio-dev-ezpds/b04fdddb-b074-44f0-903d-4509966d974e/tasks/bajto3m8x.output</output-file>
+<status>completed</status>
+<summary>Background command "Fresh CI watch on latest head until settled" completed (exit code 0)</summary>
+</task-notification>
