@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>b9v1wwbjg</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-jacob-zweifel-workspace-malpercio-dev-ezpds/cead9993-b6df-435d-9881-b381a7fc7d57/tasks/b9v1wwbjg.output</output-file>
+<status>failed</status>
+<summary>Background command "Poll relay for up to 15 minutes after requestCrawl" failed with exit code 1</summary>
+</task-notification>
