@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>bcjg65yte</task-id>
+<tool-use-id>toolu_011KZzLrHd4KLhCgCYY5zGuF</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-jacob-zweifel-workspace-malpercio-dev-ezpds/0358c4eb-9759-45c9-b431-6ff75866f75b/tasks/bcjg65yte.output</output-file>
+<status>completed</status>
+<summary>Background command "Wait for rerun of PR 351 checks" completed (exit code 0)</summary>
+</task-notification>
