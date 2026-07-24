@@ -245,6 +245,23 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn explicit_default_port_still_matches_the_server_document() {
+        // `Host: test.example.com:443` names the same origin as the bare host; the shared
+        // `request_host` normalization must keep it matching the derived server DID.
+        let response = app(test_state().await)
+            .oneshot(did_json_request("test.example.com:443"))
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let served: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(served["id"], "did:web:test.example.com");
+    }
+
+    #[tokio::test]
     async fn server_document_wins_over_a_coincidental_account_row() {
         let state = test_state().await;
         // An account row bearing the server's own DID must never shadow the config-derived

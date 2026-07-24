@@ -21,6 +21,19 @@ pub fn request_host(headers: &HeaderMap, uri: &Uri) -> Option<String> {
         .and_then(|v| v.to_str().ok())
         .map(str::to_owned)
         .or_else(|| uri.authority().map(|a| a.to_string()))
+        .map(|host| strip_default_port(&host).to_owned())
+}
+
+/// Drop an explicit default port from a host: `example.com:443` names the same origin as
+/// `example.com`, but verbatim it would key a different did:web DID / handle and miss every
+/// lookup. Non-default ports are preserved — `did:web:host%3A8080` is a legitimately distinct
+/// DID. Both 443 and 80 are treated as default (TLS terminates at the deploy proxy, so the
+/// original scheme is not observable here; these well-known routes are only reachable on
+/// standard ports either way).
+fn strip_default_port(host: &str) -> &str {
+    host.strip_suffix(":443")
+        .or_else(|| host.strip_suffix(":80"))
+        .unwrap_or(host)
 }
 
 #[cfg(test)]
@@ -61,6 +74,29 @@ mod tests {
         let h = HeaderMap::new();
         let uri: Uri = "https://example.com/path".parse().unwrap();
         assert_eq!(request_host(&h, &uri).as_deref(), Some("example.com"));
+    }
+
+    #[test]
+    fn default_ports_are_stripped() {
+        let uri: Uri = "/".parse().unwrap();
+        for host in ["example.com:443", "example.com:80"] {
+            let h = headers(&[("host", host)]);
+            assert_eq!(request_host(&h, &uri).as_deref(), Some("example.com"));
+        }
+    }
+
+    #[test]
+    fn non_default_port_is_preserved() {
+        let h = headers(&[("host", "example.com:8080")]);
+        let uri: Uri = "/".parse().unwrap();
+        assert_eq!(request_host(&h, &uri).as_deref(), Some("example.com:8080"));
+    }
+
+    #[test]
+    fn ipv6_literal_default_port_is_stripped() {
+        let h = headers(&[("host", "[::1]:443")]);
+        let uri: Uri = "/".parse().unwrap();
+        assert_eq!(request_host(&h, &uri).as_deref(), Some("[::1]"));
     }
 
     #[test]
