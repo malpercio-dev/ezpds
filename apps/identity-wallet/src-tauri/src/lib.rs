@@ -676,7 +676,15 @@ async fn prepare_did_web_ceremony(
     let context = load_did_ceremony_context()?;
     let repo_key = fetch_repo_signing_key(&state, &context.pending_token).await?;
     Ok(DidWebPreparation {
-        device_key_multibase: context.device_key.multibase,
+        // The server validates the document's #device against the did:key's multicodec-prefixed
+        // multibase (`rotation_key_public` with "did:key:" stripped), so the bare compressed-point
+        // encoding in `DevicePublicKey::multibase` can never satisfy it.
+        device_key_multibase: context
+            .device_key
+            .key_id
+            .strip_prefix("did:key:")
+            .unwrap_or(&context.device_key.key_id)
+            .to_string(),
         repo_key_multibase: repo_key
             .key_id
             .strip_prefix("did:key:")
