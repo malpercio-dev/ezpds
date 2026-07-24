@@ -1,0 +1,2129 @@
+Context: This summary will be shown in a list to help users and Claude choose which conversations are relevant.
+
+Please write a concise, factual summary of this conversation. Output ONLY the summary - no preamble. Claude will see this summary when searching previous conversations for useful memories and information.
+
+Summarize what happened in 2-4 sentences. Be factual and specific. Output in <summary></summary> tags.
+
+Include:
+- What was built/changed/discussed (be specific)
+- Key technical decisions or approaches
+- Problems solved or current state
+
+Exclude:
+- Apologies, meta-commentary, or your questions
+- Raw logs or debug output
+- Generic descriptions - focus on what makes THIS conversation unique
+
+Good:
+<summary>Built JWT authentication for React app with refresh tokens and protected routes. Fixed token expiration bug by implementing refresh-during-request logic.</summary>
+
+Bad:
+<summary>I apologize. The conversation discussed authentication and various approaches were considered...</summary>
+
+User: We have an admin-companion app that is both singular purpose (it creates claim codes) and bound to a single server. One of these is easy, let's expand the app to allow multiple servers and expose some sort of switcher. The second is a little harder. Look at the XRPC shape and determine if there is anything that might be useful to expose in the admin app
+
+Agent: I'm using the **starting-a-design-plan** skill to structure this — it front-loads exactly what we need here: codebase investigation (the admin app's server binding + the PDS XRPC surface) before we commit to a design for the switcher and any new admin capabilities.
+
+---
+
+User: Base directory for this skill: /Users/jacob.zweifel/.claude/plugins/cache/ed3d-plugins/ed3d-plan-and-execute/1.10.3/skills/starting-a-design-plan
+
+# Starting a Design Plan
+
+## Overview
+
+Orchestrate the complete design workflow from initial idea to implementation-ready documentation through six structured phases: context gathering, clarification, definition of done, brainstorming, design documentation, and planning handoff.
+
+**Core principle:** Progressive information gathering -> clear understanding -> creative exploration -> validated design -> documented plan.
+
+**Announce at start:** "I'm using the starting-a-design-plan skill to guide us through the design process."
+
+## Quick Reference
+
+| Phase | Key Activities | Output |
+|-------|---------------|--------|
+| **1. Context Gathering** | Ask for freeform description, constraints, goals, URLs, files | Initial context bundle |
+| **2. Clarification** | Invoke asking-clarifying-questions skill | Disambiguated requirements |
+| **3. Definition of Done** | Synthesize and confirm deliverables before brainstorming | Confirmed success criteria |
+| **4. Brainstorming** | Invoke brainstorming skill | Validated design (in conversation) |
+| **5. Design Documentation** | Invoke writing-design-plans skill | Committed design document |
+| **6. Planning Handoff** | Offer to invoke writing-plans skill | Implementation plan (optional) |
+
+## The Process
+
+**REQUIRED: Create task tracker at start**
+
+Use TaskCreate to create todos for each phase (or TodoWrite in older Claude Code versions):
+
+- Phase 1: Context Gathering (initial information collected)
+- (conditional) Read project design guidance (if `.ed3d/design-plan-guidance.md` exists)
+- Phase 2: Clarification (requirements disambiguated)
+- Phase 3: Definition of Done (deliverables confirmed)
+- Phase 4: Brainstorming (design validated)
+- Phase 5: Design Documentation (design written to docs/design-plans/)
+- Phase 6: Planning Handoff (implementation plan offered/created)
+
+Use TaskUpdate to mark each phase as in_progress when working on it, completed when finished (or TodoWrite in older versions).
+
+### Phase 1: Context Gathering
+
+**Never skip this phase.** Even if the user provides detailed information, ask for anything missing.
+
+Use TaskUpdate to mark Phase 1 as in_progress.
+
+**Ask the user to provide (freeform, not AskUserQuestion):**
+
+"I need some information to start the design process. Please provide what you have:
+
+**What are you designing?**
+- High-level description of what you want to build
+- Goals or success criteria
+- Any known constraints or requirements
+
+**Context materials (very helpful if available):**
+- URLs to relevant documentation, APIs, or examples
+- File paths to existing code or specifications in this repository
+- Any research you've already done
+
+**Project state:**
+- Are you starting fresh or extending existing functionality?
+- Are there existing patterns in the codebase I should follow?
+- Any architectural decisions already made?
+
+Share whatever details you have. We'll clarify anything unclear in the next step."
+
+**Progressive prompting:** If user already provided some of this information, acknowledge what you have and ask only for what's missing.
+
+**Example:**
+"You mentioned OAuth2 integration. I have the high-level goal. To help design this effectively, I need:
+- Any constraints (regulatory, existing auth system, etc.)
+- URLs to the OAuth2 provider's documentation (if you have them)
+- Whether this is for human users, service accounts, or both"
+
+Mark Phase 1 as completed when you have initial context.
+
+### Between Phase 1 and Phase 2: Check for Project Guidance
+
+Before clarification, check for project-specific design guidance.
+
+**Check if `.ed3d/design-plan-guidance.md` exists:**
+
+Use the Read tool to check if `.ed3d/design-plan-guidance.md` exists in the session's working directory.
+
+**If the file exists:**
+
+1. Use TaskCreate to add: "Read project design guidance from [absolute path to .ed3d/design-plan-guidance.md]"
+   - Set this task as blocked by Phase 1 (Context Gathering)
+   - Update Phase 2 (Clarification) to be blocked by this new task
+2. Mark the task in_progress
+3. Read the file and incorporate the guidance into your understanding
+4. Mark the task completed
+5. Proceed to Phase 2
+
+**If the file does not exist:**
+
+Proceed directly to Phase 2. Do not create a task or mention the missing file.
+
+**What project guidance provides:**
+- Domain-specific terminology to use in clarification
+- Architectural constraints or preferences
+- Technologies that are required, preferred, or forbidden
+- Stakeholders and their priorities
+- Project conventions that designs must follow
+
+The guidance informs what questions you ask during clarification.
+
+### Phase 2: Clarification
+
+Use TaskUpdate to mark Phase 2 as in_progress.
+
+**REQUIRED SUB-SKILL:** Use ed3d-plan-and-execute:asking-clarifying-questions
+
+Announce: "I'm using the asking-clarifying-questions skill to make sure I understand your requirements correctly."
+
+The clarification skill will:
+- Use subagents to try to disambiguate before raising questions to the user
+- Disambiguate technical terms ("OAuth2" -> which flow?)
+- Identify scope boundaries ("users" -> humans? services? both?)
+- Clarify assumptions ("integrate with X" -> which version?)
+- Understand constraints ("must use Y" -> why?)
+
+**Output:** Clear understanding of what user means, ready to confirm Definition of Done.
+
+Mark Phase 2 as completed when requirements are disambiguated.
+
+### Phase 3: Definition of Done
+
+Before brainstorming the *how*, lock in the *what*. Brainstorming explores texture and approach — it assumes the goal is already clear.
+
+Use TaskUpdate to mark Phase 3 as in_progress.
+
+**Synthesize the Definition of Done from context gathered so far:**
+
+From Phases 1-2 (Context Gathering and Clarification), you should be able to infer or extract:
+- What the deliverables are (what gets built/changed)
+- What success looks like (how we know it's done)
+- What's explicitly out of scope
+
+**If the Definition of Done is clear:**
+
+State it back to the user and confirm using AskUserQuestion:
+
+```
+Question: "Before we explore approaches, let me confirm what success looks like:"
+Options:
+  - "Yes, that's right" (Definition of Done is accurate)
+  - "Needs adjustment" (User will clarify what's missing or wrong)
+```
+
+Present the Definition of Done as a brief statement (2-4 sentences) covering:
+- Primary deliverable(s)
+- Success criteria
+- Key exclusions (if any were discussed)
+
+**If the Definition of Done is unclear:**
+
+Ask targeted questions to nail it down. Use AskUserQuestion when there are discrete options, or open-ended questions when you need the user to describe their vision.
+
+Examples of clarifying questions:
+- "What's the primary deliverable here — is it [X] or [Y]?"
+- "How will you know this is done? What would you test or demonstrate?"
+- "You mentioned [feature]. Is that in scope for this design, or a future addition?"
+
+**Do not proceed to brainstorming until Definition of Done is confirmed.**
+
+#### Create Design Document Immediately After Confirmation
+
+**REQUIRED:** Once the user confirms the Definition of Done, create the design document file immediately. This captures the DoD at full fidelity before brainstorming begins.
+
+##### Step 1: Get Design Plan Name
+
+The slug becomes part of all acceptance criteria identifiers (e.g., `my-feature.AC1.1`) and appears in test names. Ask the user to choose it explicitly.
+
+**Generate 2-3 suggested slugs** based on the conversation context. Good slugs are:
+- Lowercase with hyphens (no spaces, underscores, or special characters)
+- **Terse but unambiguous** — prefer short forms that don't create confusion (e.g., `authn` not `authentication`, but not `auth` since that's ambiguous with `authz`)
+- Recognizable months later
+
+**Use AskUserQuestion:**
+
+```
+Question: "What should we call this design plan? The name becomes the prefix for all acceptance criteria (e.g., `{slug}.AC1.1`) and appears in test names.
+
+If you have a ticketing system, you can use the ticket name (e.g., PROJ-1234)."
+
+Options:
+  - "[auto-generated-slug-1]" (e.g., "oauth2-svc-authn")
+  - "[auto-generated-slug-2]" (e.g., "svc-authn")
+  - "[auto-generated-slug-3]" (if meaningfully different)
+```
+
+**If user selects "Other":** They can provide any name. Normalize it:
+- Ticket names (pattern: `UPPERCASE-DIGITS`, e.g., `PROJ-1234`): keep as-is
+- Descriptive names: lowercase, hyphens for spaces, strip invalid characters (e.g., "My Cool Feature" → `my-cool-feature`)
+
+##### Step 2: Create File
+
+**File location:** `docs/design-plans/YYYY-MM-DD-{slug}.md`
+
+Use today's date and the user-chosen slug.
+
+**Initial file contents:**
+
+```markdown
+# [Feature Name] Design
+
+## Summary
+<!-- TO BE GENERATED after body is written -->
+
+## Definition of Done
+[The confirmed Definition of Done - copy exactly as confirmed with user]
+
+## Acceptance Criteria
+<!-- TO BE GENERATED and validated before glossary -->
+
+## Glossary
+<!-- TO BE GENERATED after body is written -->
+```
+
+**Why write immediately:**
+- Captures Definition of Done at peak resolution (right after user confirmation)
+- Prevents fidelity loss during brainstorming conversation
+- Creates working document that grows incrementally
+- Acceptance Criteria, Summary, and Glossary filled in later by writing-design-plans skill
+
+Mark Phase 3 as completed when user confirms the Definition of Done AND the file is created.
+
+### Phase 4: Brainstorming
+
+With clear understanding from Phases 1-3, explore design alternatives and validate the approach.
+
+Use TaskUpdate to mark Phase 4 as in_progress.
+
+**REQUIRED SUB-SKILL:** Use ed3d-plan-and-execute:brainstorming
+
+Announce: "I'm using the brainstorming skill to explore design alternatives and validate the approach."
+
+**Pass context to brainstorming:**
+- Information gathered in Phase 1
+- Clarifications from Phase 2
+- Confirmed Definition of Done from Phase 3
+- This reduces Phase 1 of brainstorming (Understanding) since much is already known
+
+The brainstorming skill will:
+- Complete any remaining understanding gaps (Phase 1)
+- Propose 2-3 architectural approaches (Phase 2)
+- Present design incrementally for validation (Phase 3)
+- Use research agents for codebase patterns and external knowledge
+
+**Output:** Validated design held in conversation context.
+
+Mark Phase 4 as completed when design is validated.
+
+### Phase 5: Design Documentation
+
+Append the validated design to the document created in Phase 3.
+
+Use TaskUpdate to mark Phase 5 as in_progress.
+
+**REQUIRED SUB-SKILL:** Use ed3d-plan-and-execute:writing-design-plans
+
+Announce: "I'm using the writing-design-plans skill to complete the design document."
+
+**Important:** The design document already exists from Phase 3 with:
+- Title
+- Summary placeholder
+- Confirmed Definition of Done
+- Acceptance Criteria placeholder
+- Glossary placeholder
+
+The writing-design-plans skill will:
+- Append body sections (Architecture, Existing Patterns, Implementation Phases, Additional Considerations) to the existing file
+- Structure with implementation phases (<=8 recommended)
+  - DO NOT pad out phases in order to reach the number of 8. 8 is the maximum, not the target.
+- Document existing patterns followed
+- Generate Acceptance Criteria (success + failure cases for each DoD item), get human validation
+- Generate Summary and Glossary to replace placeholders
+- Commit to git
+
+**Output:** Committed design document ready for implementation planning.
+
+Mark Phase 5 as completed when design document is committed.
+
+### Phase 6: Planning Handoff
+
+After design is documented, guide user to create implementation plan in fresh context.
+
+Use TaskUpdate to mark Phase 6 as in_progress.
+
+**Do NOT create implementation plan directly.** The user needs to /clear context first.
+
+Announce design completion and provide next steps:
+
+```
+Design complete! Design document committed to `docs/design-plans/[filename]`.
+
+Ready to create the implementation plan? This requires fresh context to work effectively.
+
+**IMPORTANT: Copy the command below BEFORE running /clear (it will erase this conversation).**
+
+(1) Copy this command now:
+```
+/ed3d-plan-and-execute:start-implementation-plan @docs/design-plans/[full-filename].md .
+```
+(the `.` at the end is necessary or else Claude Code will eat the command and do the wrong thing.)
+
+(2) Clear your context:
+```
+/clear
+```
+
+(3) Paste and run the copied command.
+
+The start-implementation-plan command will create detailed tasks, set up a branch, and prepare for execution.
+```
+
+**Why /clear instead of continuing:**
+- Implementation planning needs fresh context for codebase investigation
+- Long conversations accumulate context that degrades quality
+- /clear gives the next phase a clean slate
+
+Mark Phase 6 as completed after providing instructions.
+
+## When to Revisit Earlier Phases
+
+You can and should go backward when:
+- Phase 2 reveals fundamental gaps -> Return to Phase 1
+- Phase 3 reveals unclear deliverables -> Return to Phase 2 for more clarification
+- Phase 4 uncovers new constraints -> Return to Phase 1, 2, or 3
+- User questions approach during Phase 4 -> Return to Phase 2
+- Phase 4 changes the Definition of Done -> Return to Phase 3 to reconfirm
+- Design documentation reveals missing details -> Return to Phase 4
+
+**Don't force forward linearly** when going backward gives better results.
+
+## Common Rationalizations - STOP
+
+| Excuse | Reality |
+|--------|---------|
+| "User provided details, can skip context gathering" | Always run Phase 1. Ask for what's missing. |
+| "Requirements are clear, skip clarification" | Clarification prevents misunderstandings. Always run Phase 2. |
+| "I know what done looks like, skip confirmation" | Confirm Definition of Done explicitly. Always run Phase 3. |
+| "Simple idea, skip brainstorming" | Brainstorming explores alternatives. Always run Phase 4. |
+| "Design is in conversation, don't need documentation" | Documentation is contract with writing-implementation-plans. Always run Phase 5. |
+| "Can invoke implementation planning directly" | Must /clear first. Provide copy-then-clear workflow. |
+| "I can combine phases for efficiency" | Each phase has distinct purpose. Run all six. |
+| "User knows what they want, less structure needed" | Structure ensures nothing is missed. Follow all phases. |
+
+**All of these mean: STOP. Run all six phases in order.**
+
+## Key Principles
+
+| Principle | Application |
+|-----------|-------------|
+| **Never skip brainstorming** | Even with detailed specs, always run Phase 4 (may be shorter) |
+| **Progressive prompting** | Ask for less if user already provided some context |
+| **Clarify before ideating** | Phase 2 prevents building the wrong thing |
+| **Lock in the goal before exploring** | Phase 3 confirms what "done" means before brainstorming the how |
+| **All brains in skills** | This skill orchestrates; sub-skills contain domain expertise |
+| **Task tracking** | YOU MUST create todos with TaskCreate and update with TaskUpdate for all phases (or TodoWrite in older versions) |
+| **Flexible progression** | Go backward when needed to fill gaps |
+
+
+ARGUMENTS: Expand admin-companion to support multiple servers with a switcher; survey the PDS XRPC route surface for additional admin-relevant capabilities worth exposing in the app
+
+Agent: No project-specific design guidance file exists, so I'll proceed with the standard six phases. Setting up the task tracker now.
+
+---
+
+User: Base directory for this skill: /Users/jacob.zweifel/.claude/plugins/cache/ed3d-plugins/ed3d-research-agents/1.0.1/skills/investigating-a-codebase
+
+# Investigating a Codebase
+
+## Overview
+
+Understand current codebase state to ground planning and design decisions in reality, not assumptions. Find existing patterns, verify design assumptions, and provide definitive answers about what exists and where.
+
+## When to Use
+
+**Use for:**
+- Verifying design assumptions before implementation ("Design assumes auth.ts exists - verify")
+- Finding existing patterns to follow ("How do we currently handle API errors?")
+- Locating features or code ("Where is user authentication implemented?")
+- Understanding component architecture ("How does the routing system work?")
+- Confirming existence definitively ("Does feature X exist or not?")
+- Preventing hallucination about file paths and structure
+
+**Don't use for:**
+- Information available in external docs (use internet research)
+- Questions answered by reading 1-2 specific known files (use Read directly)
+- General programming questions not specific to this codebase
+
+## Core Investigation Workflow
+
+1. **Start with entry points** - main files, index, package.json, config
+2. **Use multiple search strategies** - Glob patterns, Grep keywords, Read files
+3. **Follow traces** - imports, references, component relationships
+4. **Verify don't assume** - confirm file locations and structure
+5. **Report definitively** - exact paths or "not found" with search strategy
+
+## Verifying Design Assumptions
+
+When given design assumptions to verify:
+
+1. **Extract assumptions** - list what design expects to exist
+2. **Search for each** - file paths, functions, patterns, dependencies
+3. **Compare reality vs expectation** - matches, discrepancies, additions, missing
+4. **Report explicitly**:
+   - ✓ Confirmed: "Design assumption correct: auth.ts:42 has login()"
+   - ✗ Discrepancy: "Design assumes auth.ts, found auth/index.ts instead"
+   - \+ Addition: "Found logout() not mentioned in design"
+   - \- Missing: "Design expects resetPassword(), not found"
+
+**Why this matters:** Prevents implementation plans based on wrong assumptions about codebase structure.
+
+## Quick Reference
+
+| Task | Strategy |
+|------|----------|
+| **Where is X** | Glob likely names → Grep keywords → Read matches |
+| **How does X work** | Find entry point → Follow imports → Read implementation |
+| **What patterns exist** | Find examples → Compare implementations → Extract conventions |
+| **Does X exist** | Multiple searches → Definitive yes/no → Evidence |
+| **Verify assumptions** | Extract claims → Search each → Compare reality vs expectation |
+
+## Investigation Strategies
+
+**Multiple search approaches:**
+- Glob for file patterns across codebase
+- Grep for keywords, function names, imports
+- Read key files to understand implementation
+- Follow imports and references for relationships
+- Check package.json, config files for dependencies
+
+**Don't stop at first result:**
+- Explore multiple paths to verify findings
+- Cross-reference different areas of codebase
+- Confirm patterns are consistent not one-off
+- Follow both usage and definition traces
+
+**Verify everything:**
+- Never assume file locations - always verify with Read/Glob
+- Never assume structure - explore and confirm
+- Document search strategy when reporting "not found"
+- Distinguish "doesn't exist" from "couldn't locate"
+
+## Reporting Findings
+
+**Lead with direct answer:**
+- Answer the question first
+- Supporting details second
+- Evidence with exact file paths and line numbers
+
+**Provide actionable intelligence:**
+- Exact file paths (src/auth/login.ts:42), not vague locations
+- Relevant code snippets showing current patterns
+- Dependencies and versions when relevant
+- Configuration files and current settings
+- Naming, structure, and testing conventions
+
+**Handle "not found" confidently:**
+- "Feature X does not exist" is valid and useful
+- Explain what you searched and where you looked
+- Suggest related code as starting point
+- Report negative findings prevents hallucination
+
+## Common Mistakes
+
+| Mistake | Fix |
+|---------|-----|
+| Assuming file locations | Always verify with Read/Glob before reporting |
+| Stopping at first result | Explore multiple paths to verify findings |
+| Vague locations ("in auth folder") | Exact paths (src/auth/index.ts:42) |
+| Not documenting search strategy | Explain what was checked when reporting "not found" |
+| Confusing "not found" types | Distinguish "doesn't exist" from "couldn't locate" |
+| Skipping design assumption comparison | Explicitly report: confirmed/discrepancy/addition/missing |
+| Reporting assumptions as facts | Only report what was verified in codebase |
+
+
+ARGUMENTS: Understand admin-companion server binding and PDS XRPC route surface before designing multi-server support
+
+Agent: Now dispatching two codebase-investigator agents in parallel — one to map how admin-companion binds to its single server today, one to enumerate the PDS XRPC route surface and its auth model.
+
+Both investigators are off and running in the background. While they map the code, let me complete Phase 1 with the context only you can provide — you've already given me the high-level goal (multi-server + switcher, plus an XRPC survey for new operator capabilities), so I just need the gaps:
+
+`★ Insight ─────────────────────────────────────`
+The reason "bound to a single server" is the harder-feeling half is that it's not just a stored URL — the admin-companion's trust model is a **per-device Secure-Enclave key paired to one relay**. Multi-server means deciding whether one device key gets paired to N servers, or each server binding gets its own enclave key. That choice ripples into the keychain layout, the unpair/revoke flow, and what "switching" even means.
+`─────────────────────────────────────────────────`
+
+**1. Scale and shape of "multiple servers":** Is this you personally running 2–3 environments (e.g., staging + production of ezpds.com), or an operator persona managing many unrelated relays? That changes whether the switcher is a lightweight toggle or a full server-list management screen.
+
+**2. Scope of the second ask:** When I survey the XRPC surface — do you want that analysis to *feed this design* (i.e., we pick 1–3 operator features and design them into the app alongside the switcher), or is this design multi-server-only, with the XRPC findings delivered as a recommendation for follow-up issues?
+
+**3. Constraints I should honor:**
+- Do existing paired installs (yours, on TestFlight) need a seamless migration of their stored single-server pairing, or is re-pairing acceptable?
+- Any server-side changes on the table for this design, or should the app work against the PDS as it exists today?
+
+**4. Anything already decided?** Prior thoughts on the switcher UX, or a Linear issue/wave this should land under (Wave 7 hardening? a new MM issue)?
+
+Share whatever you have — anything still fuzzy we'll pin down in the clarification step, and I'll fold in the two codebase reports as soon as they land.
+
+---
+
+User: <task-notification>
+<task-id>a564133b2b4caaf42</task-id>
+<tool-use-id>toolu_014c75SpUwDW6eovu5YaHWaN</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-jacob-zweifel-workspace-malpercio-dev-ezpds--claude-worktrees-optimistic-mcnulty-3870f7/07d58e39-cd68-4bf7-9bbd-909ec50a4186/tasks/a564133b2b4caaf42.output</output-file>
+<status>completed</status>
+<summary>Agent "Map admin-companion server binding" finished</summary>
+<note>A task-notification fires each time this agent stops with no live background children of its own. The user can send it another message and resume it, so the same task-id may notify more than once.</note>
+<result>Perfect. Now I have all the information I need. Let me compile a comprehensive, detailed report with exact file paths and line numbers.
+
+---
+
+## Admin Companion App: Single-Server Architecture Map
+
+Based on systematic investigation of the codebase, here is a precise map of how the admin-companion app is currently bound to a single server:
+
+### 1. **Server/Relay URL Storage**
+
+**Location &amp; Persistence:**
+- **Keychain account:** `/apps/admin-companion/src-tauri/src/keychain.rs`, line 108
+  - Account name: `"admin-relay-url"` (constant `RELAY_URL_ACCOUNT`)
+  - Stored as UTF-8 string via `store_item()` (line 131–134)
+  - Persisted in iOS Keychain under service `"ezpds-admin-companion"` (line 27)
+  
+- **Pairing struct:** `/apps/admin-companion/src-tauri/src/keychain.rs`, lines 117–123
+  ```rust
+  pub struct Pairing {
+    pub device_id: String,
+    pub relay_url: String,    // ← Single relay URL per pairing
+    pub label: String,
+  }
+  ```
+
+- **Retrieval:** `get_pairing()` at line 145–157 reads a single `Option&lt;Pairing&gt;` (not an array)
+  - Returns `None` if device not paired, or `Some(Pairing { … })` if paired
+  - No mechanism to store or iterate over multiple pairings
+
+**Format:** Plain HTTP(S) URL (e.g., `"https://relay.example"`), trimmed, no base path (line 307–312 in `relay_client.rs`)
+
+---
+
+### 2. **Pairing Model**
+
+**Device Key Scope:**
+- **Global to the app, not per-pairing** (`/apps/admin-companion/src-tauri/src/device_key.rs`, lines 69–73)
+  - Software path: stored once under `DEVICE_KEY_PRIV_ACCOUNT = "admin-device-key-priv"` (line 69)
+  - Secure Enclave path: stored once under `DEVICE_KEY_PUB_ACCOUNT` + `DEVICE_KEY_APP_LABEL_ACCOUNT` (lines 70–73)
+  - `get_or_create()` returns the same `DevicePublicKey` on every call (idempotent, line 117–147 or 190–271)
+
+**Pairing Identification:**
+- **Relay-assigned device ID** + **relay URL** + **operator-chosen label**
+- Device ID uniquely identifies this phone *to a specific relay* (sent as `X-Admin-Device` header)
+- Device key is reused on re-pair to the same relay (so the relay recognizes a returning device by its public key)
+
+**Keychain Persistence:**
+- `store_pairing(device_id, relay_url, label)` — line 131–135
+- Three separate accounts written atomically:
+  - `admin-device-label` (line 112)
+  - `admin-device-id` (line 106)
+  - `admin-relay-url` (line 108) — written **last** (line 134) for fail-closed semantics
+- **Device key is NOT cleared on unpair** (line 161, comment: *"a re-pair is recognised by the same public key"*)
+- **Biometric preference survives unpair** (`admin-biometric-enabled`, lines 182–195) — it is device-scoped, not pairing-scoped
+
+**No Multi-Pairing Support:**
+- `get_pairing()` returns `Option&lt;Pairing&gt;`, not `Vec&lt;Pairing&gt;` (line 145)
+- `clear_pairing()` deletes all three pairing accounts (lines 163–171)
+- Frontend assumes exactly one active pairing at any time
+
+---
+
+### 3. **Request Signing Client**
+
+**Location:** `/apps/admin-companion/src-tauri/src/relay_client.rs`, lines 127–158 (pure `build_signed_request()`) and lines 242–252 (imperative `send()` wrapper)
+
+**Input Requirements:**
+- `Pairing { device_id, relay_url, … }` — sourced from `keychain::get_pairing()` (line 189, 211–213, 222)
+- Method, path, body, timestamp, nonce
+- Relay URL is extracted from the single stored pairing and used to construct the full URL (line 142: `join_url(&amp;pairing.relay_url, path)`)
+
+**Assumptions of Single Server:**
+1. Line 142: `let url = join_url(&amp;pairing.relay_url, path)?;` — takes the relay URL from the current pairing
+2. Line 188: `generate_claim_code()` assumes a paired device exists; throws `NotPaired` if none (line 189)
+3. Line 221–229: `revoke_self()` fetches the pairing once and uses its relay URL (line 222)
+4. Lines 306–312: `join_url()` validates and joins the relay URL directly into request construction — no indirection or selection logic
+
+**Golden Tests (Proof-by-Contract):**
+- `/apps/admin-companion/src-tauri/src/relay_client.rs`, lines 413–454
+  - Tests hardcode a single relay URL (`"https://relay.example"`) and verify signatures against it
+  - No test scenarios with multiple relays
+
+---
+
+### 4. **Screens &amp; Stores (Frontend)**
+
+**Routes:**
+- `src/routes/+page.svelte` (Home) — line 4: `import { pairingState, generateClaimCode, type Pairing }`
+  - Line 21: `let pairing = $state&lt;Pairing | null | 'loading' | 'error'&gt;('loading');` — singular pairing, no array
+  - Line 35: `pairing = await pairingState();` — loads the one pairing or `null`
+  - Lines 76–78: derives `isPaired` from a single pairing object
+
+- `src/routes/pair/+page.svelte` (Pair) — lines 21–23
+  - `let relayUrl = $state('');` — singular field, not an array of servers
+  - Pairing flow fills in the relay URL and pairing code, calls `pairDevice()` once (line 105–115 in settings)
+  - No UI for managing multiple relay options
+
+- `src/routes/settings/+page.svelte` (Settings) — line 36
+  - `let pairing = $state&lt;Pairing | null | 'loading' | 'error'&gt;('loading');` — singular pairing
+  - Line 51: `const [key, pair, bio] = await Promise.allSettled([…, pairingState(), …]);` — fetches one pairing
+  - Lines 148–150: displays `paired.relayUrl` in Settings; no switcher, no list
+
+**Stores/State Management:**
+- **No persistent Svelte store** — all state flows through IPC commands
+- Frontend calls `pairingState()` directly on `onMount` (Home line 30, Settings line 50)
+- Relay URL is read-only on the UI; it's persisted server-side after pairing (line 182 in `relay_client.rs`)
+
+**UI Components:**
+- `src/lib/components/ui/` — 8 primitives (confirmed via directory listing):
+  - `Button.svelte` — primary/secondary variants
+  - `TextField.svelte` — text input with label
+  - `CodeOutput.svelte` — monospace code display with optional share affordance
+  - `StatusChip.svelte` — status badge (active/pending/revoked/error/info)
+  - `ErrorState.svelte` — error recovery UI with CTA (pair/retry/none)
+  - `Toggle.svelte` — switch for biometric gate (line 21–23 in Settings)
+  - `DeviceRow.svelte` — device list row (present but not wired into any screen yet)
+  - `ScreenShell.svelte` — page wrapper with title and action buttons
+
+**No Global State or Stores:**
+- No `context` or Svelte store (no `export const pairing = writable&lt;Pairing&gt;()`)
+- Every screen independently calls `pairingState()` and holds its own local `pairing` state
+
+---
+
+### 5. **Tauri Commands (Rust Backend)**
+
+**File:** `/apps/admin-companion/src-tauri/src/lib.rs`
+
+**Commands Exposed:**
+1. Line 17–20: `get_or_create_device_key()` → `DevicePublicKey`
+2. Line 26–28: `sign_with_device_key(data)` → `Vec&lt;u8&gt;` (signature)
+3. Line 34–40: `pair_device(relay_url, pairing_code, label)` — pairs to a single relay
+4. Line 45–47: `pairing_state()` → `Option&lt;Pairing&gt;` — returns the one pairing or null
+5. Line 52–54: `generate_claim_code()` — uses the stored pairing's relay URL (reads `get_pairing()` internally)
+6. Line 60–62: `revoke_self()` — revokes this device on the stored relay; clears pairing
+7. Line 68–70: `unpair()` — local-only forget without contacting relay
+8. Line 76–78: `biometric_enabled()` → `bool`
+9. Line 82–84: `set_biometric_enabled(enabled)` → `()`
+
+**Single-Server Assumptions:**
+- All commands that touch the relay (pair, generate_claim_code, revoke_self) operate on exactly one pairing
+- `pair_device()` accepts `relay_url` as a parameter, but it **overwrites** any existing relay URL in the keychain (line 182 in `relay_client.rs`: `keychain::store_pairing()` replaces the old pairing)
+- No command to list multiple pairings or switch between them
+- No command to delete a specific pairing by relay URL (only `unpair()`, which deletes the current one)
+
+---
+
+### 6. **Unpair/Revoke Flow**
+
+**Location:** `/apps/admin-companion/src-tauri/src/relay_client.rs`, lines 221–239
+
+**revoke_self() (Server-side self-revoke):**
+```rust
+pub async fn revoke_self() -&gt; Result&lt;(), RelayClientError&gt; {
+    let pairing = keychain::get_pairing()?.ok_or(RelayClientError::NotPaired)?;
+    let path = format!("/v1/admin/devices/{}/revoke", pairing.device_id);
+    let signed = build_signed_request(&amp;pairing, "POST", &amp;path, b"", …)?;
+    ensure_success(send(signed).await?).await?;
+    keychain::clear_pairing()?;  // ← Clears all three pairing accounts
+    Ok(())
+}
+```
+
+**unpair() (Local-only fallback):**
+```rust
+pub fn unpair() -&gt; Result&lt;(), RelayClientError&gt; {
+    keychain::clear_pairing()?;
+    Ok(())
+}
+```
+
+**What Needs Scoping per Server (for multi-server):**
+- Revocation must target a *specific* relay (the one the device is paired to that relay with)
+- The path itself includes `pairing.device_id`, so path-binding is per-relay already
+- Clearing pairing must only clear the credentials for *that relay*, not all servers
+- Device key persists (re-pair to the same relay reuses it), but pairing state (device_id, relay_url, label) is per-relay
+
+---
+
+### 7. **UI Primitives Available (Brass Console Design System)**
+
+**Existing Components in `src/lib/components/ui/`:**
+
+| Component | Purpose |
+|-----------|---------|
+| **Button.svelte** | Primary (gold) / Secondary (slate) variants, 44×44pt min |
+| **TextField.svelte** | Text input with label, supports dynamic type scaling |
+| **CodeOutput.svelte** | Monospace code display with Copy + optional iOS Share affordance |
+| **StatusChip.svelte** | Status badge (active, pending, revoked, error, info) with glyph + label + surface |
+| **ErrorState.svelte** | Classified error UI (not-paired / unreachable / revoked) with recovery CTA |
+| **Toggle.svelte** | User-presence gate toggle (position-based, on/off text, never color-only) |
+| **DeviceRow.svelte** | Device list row (present but not yet wired into a screen) |
+| **ScreenShell.svelte** | Page wrapper with title, back affordance, action button slot |
+
+**Design System Available:**
+- OKLCH token layer in `src/lib/styles/tokens.css` (sealing-wax gold, cool slate, status ramp)
+- All components use `var(--color-*)`, `var(--font-*)`, `var(--space-*)` — no hardcoded hex/px
+- Status never color-alone: always glyph + text + position (line 71 in PRODUCT.md)
+- WCAG 2.2 AAA contrast verified for all text pairs
+
+---
+
+### 8. **Hints of Multi-Server Ambitions**
+
+**Search results:**
+- **No TODO/FIXME/XXX comments** mentioning multi-server, multiple relays, or a switcher
+- **No array types** for relays or pairings in code
+- **DeviceRow.svelte exists but is unused** — present in the UI kit but not imported into any screen
+  - Likely prepared for a future "device management" screen that could become "relay/pairing management" in the multi-server model
+
+**Negative Finding (Definitive):**
+- Single-server architecture is **intentional and complete**
+- No scaffolding or placeholder types exist for multi-server support
+- The app design assumes one relay per phone, one device per relay (the identity-wallet pattern mirrored here)
+
+---
+
+### 9. **Product &amp; Design Contracts (Relevant to Adding Switcher)**
+
+**From PRODUCT.md (lines 27–36):**
+- App scope: "Generate and share account claim codes," "Enroll this device," "Manage paired admin devices" — **on a single relay**
+- No mention of multi-relay administration
+- "The operator reaches for this app in two modes: on-the-go admin (fast, low-drama) and loss response (rare, deliberate)"
+- Loss response includes "revoke that device from another paired device or the laptop" — implies a primary admin surface (the laptop) and a convenience app (this phone); multi-relay is not the framing
+
+**From DESIGN.md (§1, line 139–152):**
+- Register: "terminal-native operator console," "exact, dense, and fast"
+- "Speed is the feature" — core loop is "mint a claim code, share it" in seconds
+- Adding a server switcher must preserve this speed and density; no "pick a relay first" indirection
+
+**From CLAUDE.md (lines 29–51):**
+- Contracts are explicit: the relay client persists `device_id`, `relay_url`, `label` after pairing
+- Signing is deterministic (RFC 6979) and must stay in lockstep with the relay's verifier
+- Device key is persistent (survives unpair), pairing state is ephemeral
+
+---
+
+## Summary: Scope of Multi-Server Refactoring
+
+To add multi-server support, these areas become **per-relay** instead of **global:**
+
+1. **Keychain:**
+   - Instead of fixed accounts (`admin-device-id`, `admin-relay-url`, `admin-device-label`), store an array of pairings keyed by relay URL or a stable ID
+   - Device key remains **global and reused** (line 161 in keychain.rs comment: *"a re-pair is recognised by the same public key"*)
+   - Biometric preference remains **global** (line 162: *"it's a device setting, not pairing state"*)
+
+2. **Commands:**
+   - `pair_device()` — already accepts relay_url; change store to append instead of replace
+   - `pairing_state()` — return `Vec&lt;Pairing&gt;` or add a new `list_pairings()` command
+   - Add `select_pairing(relay_url)` or `switch_relay()` to set the "active" relay
+   - `generate_claim_code()` — read from the "active" pairing instead of the only one
+   - `revoke_self()` — target a specific relay (parameter), not the assumed-only one
+
+3. **Frontend:**
+   - Home screen: add relay/pairing selector (dropdown or switcher chip) before the Generate button
+   - Settings: show a list of paired relays with revoke/unpair per relay; add "Pair another relay" affordance
+   - Error handling: tag errors with which relay failed (so a clock-skew on relay A doesn't block relay B)
+
+4. **UI:**
+   - DeviceRow component is ready to be repurposed as a RelayRow (device-id → relay-url + device-count + unpair CTA)
+   - Existing ErrorState + StatusChip + Toggle work for per-relay states
+   - No new design components needed; density remains
+
+**No single-server gotchas hidden elsewhere** — the architecture is clean and separable.</result>
+<usage><subagent_tokens>91715</subagent_tokens><tool_uses>19</tool_uses><duration_ms>113208</duration_ms></usage>
+</task-notification>
+
+Agent: The admin-companion map is in — good news: the architecture is cleanly separable. The device key is already global and reused across pairings by design, so multi-server mostly means turning the keychain's single `(device_id, relay_url, label)` triple into a list plus an "active pairing" pointer; the signing client already takes the pairing as input. The unused `DeviceRow` primitive is even sitting there ready to become a server-list row.
+
+The XRPC route survey is still running, and I'm still waiting on your answers to the four Phase 1 questions above (scale of "multiple servers", whether new operator features are in-scope for this design, migration/server-side constraints, and any prior decisions).
+
+---
+
+User: <task-notification>
+<task-id>ad6900f7fb63c30b6</task-id>
+<tool-use-id>toolu_01Bx5QqZzxC9hVJVLnHB15Rq</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-jacob-zweifel-workspace-malpercio-dev-ezpds--claude-worktrees-optimistic-mcnulty-3870f7/07d58e39-cd68-4bf7-9bbd-909ec50a4186/tasks/ad6900f7fb63c30b6.output</output-file>
+<status>completed</status>
+<summary>Agent "Enumerate PDS XRPC route surface" finished</summary>
+<note>A task-notification fires each time this agent stops with no live background children of its own. The user can send it another message and resume it, so the same task-id may notify more than once.</note>
+<result>Perfect. Based on my investigation, I now have enough information to produce the comprehensive report. Let me compile the findings:
+
+## Complete PDS Route Survey &amp; Admin Authentication Model
+
+Based on systematic investigation of `crates/pds/src/app.rs` (router registration, lines 241-489), `crates/pds/CLAUDE.md` (module architecture), auth guards in `crates/pds/src/auth/guards.rs`, and the Bruno HTTP collection (106 routes), here is the exhaustive survey:
+
+### 1. **COMPLETE ROUTE TABLE (by functional module)**
+
+**Organized by domain/purpose with method, path, and authentication model:**
+
+#### **OAuth &amp; Session Management (Public + User Session Auth)**
+| Method | Path | Purpose | Auth |
+|--------|------|---------|------|
+| GET/POST | `/oauth/authorize` | OAuth consent screen | Public |
+| POST | `/oauth/par` | Pushed Authorization Request | Public |
+| POST | `/oauth/token` | OAuth token endpoint | Public |
+| POST | `/oauth/token` + DPoP | DPoP-protected token refresh | Public + DPoP proof |
+| GET | `/oauth/jwks` | JWKS for OAuth token verification | Public |
+| GET | `/.well-known/oauth-authorization-server` | OAuth server metadata | Public |
+| GET | `/.well-known/oauth-protected-resource` | Protected resource metadata | Public |
+| GET | `/oauth/client-metadata.json` | Client metadata | Public |
+| POST | `/xrpc/com.atproto.server.createSession` | Password + app-password login | Public |
+| POST | `/xrpc/com.atproto.server.refreshSession` | Refresh access token | Session (refresh token) |
+| GET | `/xrpc/com.atproto.server.getSession` | Get current session info | Session (access token) |
+| POST | `/xrpc/com.atproto.server.deleteSession` | Revoke session | Session |
+
+#### **Account Management (User Authed)**
+| Method | Path | Purpose | Auth |
+|--------|------|---------|------|
+| POST | `/xrpc/com.atproto.server.createAccount` | Create account (standard signup) | Public (with invite code) |
+| POST | `/v1/accounts` | Create account (native mobile signup) | Public (with claim code) |
+| POST | `/v1/accounts/mobile` | Create account (mobile-specific) | Public |
+| POST | `/v1/accounts/claim-codes` | Consume claim code | Public |
+| POST | `/v1/accounts/sessions` | Provisioning session (email/pwd) | Public |
+| GET | `/xrpc/com.atproto.server.checkAccountStatus` | Account status for migration | Session |
+| POST | `/xrpc/com.atproto.server.deactivateAccount` | Self-service deactivation | Session |
+| POST | `/xrpc/com.atproto.server.activateAccount` | Reactivate deactivated account | Session |
+| POST | `/xrpc/com.atproto.server.requestAccountDelete` | Request account deletion (email token) | Session |
+| POST | `/xrpc/com.atproto.server.deleteAccount` | Permanently delete account | Public (email token + password in body) |
+
+#### **Email &amp; Password Management (User Authed)**
+| Method | Path | Purpose | Auth |
+|--------|------|---------|------|
+| POST | `/xrpc/com.atproto.server.requestPasswordReset` | Email password-reset token | Public (rate-limited by identifier) |
+| POST | `/xrpc/com.atproto.server.resetPassword` | Reset password with token | Public (email token in body) |
+| POST | `/xrpc/com.atproto.server.requestEmailConfirmation` | Email email-confirm token | Session |
+| POST | `/xrpc/com.atproto.server.confirmEmail` | Confirm email with token | Session |
+| POST | `/xrpc/com.atproto.server.requestEmailUpdate` | Start email change workflow | Session |
+| POST | `/xrpc/com.atproto.server.updateEmail` | Update email address | Session |
+
+#### **App Passwords &amp; Multi-Device Session Management (User Authed)**
+| Method | Path | Purpose | Auth |
+|--------|------|---------|------|
+| POST | `/xrpc/com.atproto.server.createAppPassword` | Mint named app password (can be privileged) | Session (full access scope only) |
+| GET | `/xrpc/com.atproto.server.listAppPasswords` | List app passwords for account | Session (full access scope only) |
+| POST | `/xrpc/com.atproto.server.revokeAppPassword` | Revoke named app password | Session (full access scope only) |
+
+#### **Identity/Handle/DID Management (Mixed)**
+| Method | Path | Purpose | Auth |
+|--------|------|---------|------|
+| GET | `/.well-known/atproto-did` | Public DID document lookup (`.well-known` fallback) | Public |
+| GET | `/xrpc/com.atproto.identity.resolveHandle` | Resolve handle → DID | Public |
+| GET | `/xrpc/com.atproto.identity.resolveDid` | Resolve DID → document | Public |
+| GET | `/xrpc/com.atproto.identity.resolveIdentity` | Resolve DID + bidirectional handle proof | Public |
+| POST | `/xrpc/com.atproto.identity.refreshIdentity` | Refresh a DID's cached document | Public |
+| POST | `/xrpc/com.atproto.identity.updateHandle` | Update account handle | Session |
+| POST | `/v1/handles` | Create handle | Public (with claim code) |
+| DELETE | `/v1/handles/{handle}` | Delete handle | Session |
+| GET | `/xrpc/com.atproto.identity.getRecommendedDidCredentials` | Recommended fields for a new PLC op | Session |
+
+#### **PLC Operation Signing (Interop/Migration Path)**
+| Method | Path | Purpose | Auth |
+|--------|------|---------|------|
+| POST | `/xrpc/com.atproto.identity.requestPlcOperationSignature` | Email PLC-op signing token | Session |
+| POST | `/xrpc/com.atproto.identity.signPlcOperation` | Sign a PLC operation with server-held rotation key | Session + email token |
+| POST | `/xrpc/com.atproto.identity.submitPlcOperation` | Submit signed PLC op to plc.directory | Session |
+
+#### **DID &amp; Signing Key Creation (Mobile Provisioning)**
+| Method | Path | Purpose | Auth |
+|--------|------|---------|------|
+| POST | `/v1/dids` | Create a new DID (mobile client ceremony) | Pending session |
+| GET | `/v1/dids/{did}` | Get DID document | Public |
+| POST | `/xrpc/com.atproto.server.reserveSigningKey` | Reserve a signing key for standard migration | Public |
+| GET | `/v1/repo-signing-key` | Issue repo signing key for mobile account | Pending session |
+
+#### **Repo Write Operations (User Authed, Rate-Limited)**
+| Method | Path | Purpose | Auth |
+|--------|------|---------|------|
+| POST | `/xrpc/com.atproto.repo.createRecord` | Create a record | Session |
+| GET | `/xrpc/com.atproto.repo.getRecord` | Read a record | Session (or public w/ repo auth) |
+| POST | `/xrpc/com.atproto.repo.putRecord` | Update a record | Session |
+| POST | `/xrpc/com.atproto.repo.deleteRecord` | Delete a record | Session |
+| GET | `/xrpc/com.atproto.repo.listRecords` | List records in a collection | Session (or public) |
+| GET | `/xrpc/com.atproto.repo.describeRepo` | Repo metadata (collection list) | Session (or public) |
+| POST | `/xrpc/com.atproto.repo.applyWrites` | Batch atomic writes | Session |
+
+#### **Blob Management (Mixed)**
+| Method | Path | Purpose | Auth |
+|--------|------|---------|------|
+| POST | `/xrpc/com.atproto.repo.uploadBlob` | Upload a blob | Session |
+| GET | `/xrpc/com.atproto.sync.getBlob` | Download a blob | Public (DID scope-checked) |
+| GET | `/xrpc/com.atproto.sync.listBlobs` | List a repo's blobs | Public (or Session) |
+| GET | `/xrpc/com.atproto.repo.listMissingBlobs` | Find blobs referenced but not uploaded | Session |
+
+#### **Repo Sync (Public, Rate-Exempt)**
+| Method | Path | Purpose | Auth |
+|--------|------|---------|------|
+| GET | `/xrpc/com.atproto.sync.getLatestCommit` | Get repo commit head | Public |
+| GET | `/xrpc/com.atproto.sync.getBlocks` | Get repo blocks by CID | Public |
+| GET | `/xrpc/com.atproto.sync.getRecord` | Get record + proof (CAR) | Public |
+| GET | `/xrpc/com.atproto.sync.getRepo` | Export full repo as CAR | Public (incremental via `since` TID) |
+| GET | `/xrpc/com.atproto.sync.getRepoStatus` | Repo hosting status (`active`/`deactivated`) | Public |
+| GET | `/xrpc/com.atproto.sync.listRepos` | List all repos on this PDS | Public (paginated) |
+| GET | `/xrpc/com.atproto.sync.subscribeRepos` | Firehose subscription (WebSocket) | Public (rate-exempt) |
+| POST | `/xrpc/com.atproto.repo.importRepo` | Import a repo CAR (migration) | Session (deactivated account precondition) |
+
+#### **Service Auth &amp; Preferences (User Authed)**
+| Method | Path | Purpose | Auth |
+|--------|------|---------|------|
+| GET | `/xrpc/com.atproto.server.getServiceAuth` | Mint inter-service JWT (signed by repo key) | Session |
+| GET | `/xrpc/app.bsky.actor.getPreferences` | Get stored user preferences | Session |
+| POST | `/xrpc/app.bsky.actor.putPreferences` | Store user preferences | Session |
+
+#### **Device Management &amp; Transfer (Mobile)**
+| Method | Path | Purpose | Auth |
+|--------|------|---------|------|
+| POST | `/v1/devices` | Register a new device | Pending or full session |
+| GET | `/v1/devices/{id}/pds` | Get device's PDS node ID (Iroh tunnel) | Public |
+| POST | `/v1/transfer/initiate` | Initiate planned device swap | Session |
+| POST | `/v1/transfer/accept` | Accept device swap (new device) | Code (no bearer auth) |
+| POST | `/v1/transfer/complete` | Complete device swap | Session (source) or transfer-device token (target) |
+
+#### **ADMIN SURFACE: Operator-Only Endpoints (Static Master Token OR Device-Signed)**
+| Method | Path | Purpose | Auth | Notes |
+|--------|------|---------|------|-------|
+| POST | `/v1/admin/pairing-codes` | Mint pairing code for new admin device | **Master token only** (break-glass) | Single-use, short-lived (1-60 min, default 5) |
+| POST | `/v1/admin/devices` | Register admin device via pairing code | Pairing code + P-256 self-signature | Consumes code, stores public key for signed requests |
+| GET | `/v1/admin/devices` | List paired admin devices | **Master token OR device signature** | Shows id, label, platform, `isActive`, `lastSeenAt` |
+| POST | `/v1/admin/devices/{id}/revoke` | Revoke a paired device | **Master token OR device signature** | Idempotent 200; revoked device gets 403 on auth |
+| GET | `/v1/accounts/{id}/usage` | Account usage metrics (operator dashboard) | **Master token only** | Records, commits, blobs counts; last active; unfiltered by deactivation |
+| GET | `/v1/accounts/{id}/storage` | Account blob storage metrics | **Master token only** | Blob count, total bytes, quota used %; largest blob info |
+| POST | `/xrpc/com.atproto.admin.updateSubjectStatus` | Apply/clear account-level takedown | **Master token OR device signature** | Repo-ref only (`did:plc:...`); emits `#account` firehose event |
+| GET | `/xrpc/com.atproto.admin.getSubjectStatus` | Get account takedown status | **Master token OR device signature** | Reports `takedown` (bool) and `deactivated` state |
+
+#### **Invite Codes (Admin Authed)**
+| Method | Path | Purpose | Auth |
+|--------|------|---------|------|
+| POST | `/xrpc/com.atproto.server.createInviteCode` | Mint single-use invite code (standard) | Master token |
+| POST | `/xrpc/com.atproto.server.createInviteCodes` | Mint batch invite codes (standard) | Master token |
+| GET | `/xrpc/com.atproto.server.getAccountInviteCodes` | List invite codes for account (always empty) | Session |
+
+#### **Signup/Temp Endpoints (Public + Utility)**
+| Method | Path | Purpose | Auth |
+|--------|------|---------|------|
+| GET | `/xrpc/com.atproto.temp.checkHandleAvailability` | Handle availability check | Public |
+| GET | `/xrpc/com.atproto.temp.checkSignupQueue` | Signup queue status (always `activated: true`) | Public |
+
+#### **Relay/PDS Signing Keys (Operator)**
+| Method | Path | Purpose | Auth |
+|--------|------|---------|------|
+| GET | `/v1/pds/keys` (alias: `/v1/relay/keys`) | Get current PDS signing key | Master token |
+| POST | `/v1/pds/keys` (alias: `/v1/relay/keys`) | Create/rotate PDS signing key | Master token |
+
+#### **Server Info &amp; Health (Public)**
+| Method | Path | Purpose | Auth |
+|--------|------|---------|------|
+| GET | `/xrpc/com.atproto.server.describeServer` | Server capabilities + config | Public |
+| GET | `/xrpc/_health` | Health check (rate-exempt) | Public |
+| GET | `/` | Landing page | Public |
+
+#### **Catch-All Proxy (Conditional)**
+| Method | Path | Purpose | Auth |
+|--------|------|---------|------|
+| GET/POST | `/xrpc/{method}` (app.bsky.\*) | AppView proxy (feeds, profiles, search) | Session (access token required) |
+| GET/POST | `/xrpc/{method}` (chat.bsky.\*) | Chat service proxy (direct messages) | Session (full access or privileged app password) |
+| GET/POST | `/xrpc/{method}` (com.atproto.moderation.\*) | Moderation labeler proxy (per `atproto-proxy` header) | Session + target validation (SSRF-guarded) |
+
+**Read-after-write munging (AppView branches):**
+- `app.bsky.actor.{getProfile,getProfiles}`
+- `app.bsky.feed.{getTimeline,getAuthorFeed,getPostThread,getActorLikes}`
+- These buffer the AppView response and merge requester's unindexed records.
+
+#### **Static Assets**
+| Method | Path | Purpose | Auth |
+|--------|------|---------|------|
+| GET | `/static/{*path}` | Embedded fonts, future web UI | Public |
+
+---
+
+### 2. **AUTH MODEL BY ROUTE CATEGORY**
+
+#### **Admin Device Signature Verification (lines 260-330 in `guards.rs`)**
+
+Admin companions authenticate via **signed requests**, not bearer tokens:
+- **Headers sent with each request:**
+  - `x-admin-device` — device ID (stored in `admin_devices` table)
+  - `x-admin-timestamp` — Unix seconds (verified ±60s window, prevents replay)
+  - `x-admin-nonce` — unique per request (verified atomic INSERT to prevent replay)
+  - `x-admin-signature` — base64url-no-pad P-256 ECDSA signature over the canonical envelope
+
+- **Canonical signing envelope (source of truth in `guards.rs:112-121`):**
+  ```
+  method ‖ "\n" ‖ path ‖ "\n" ‖ timestamp ‖ "\n" ‖ nonce ‖ "\n" ‖ sha256_hex(body)
+  ```
+  (Example: `POST\n/v1/admin/devices/abc-123/revoke\n1719476000\nnonce-xyz\naf123...`)
+
+- **Verification flow in `verify_admin_device_request` (lines 260-330):**
+  1. Parse headers → fail generic 401 if missing/malformed
+  2. Lookup device by `x-admin-device` → fail 401 if unknown, 403 if revoked (explicit server-side cutoff)
+  3. Verify timestamp is within ±60s window → fail 401 if stale
+  4. Reconstruct canonical envelope; verify P-256 signature over it → fail 401 if bad
+  5. Atomic INSERT nonce (INSERT OR IGNORE); fail 401 if already seen (replay protection)
+  6. Best-effort bump `last_seen_at` on device (liveness)
+
+- **Key security properties:**
+  - Route/method bound into signature (cannot reuse signature on different endpoint)
+  - Body SHA-256 hash bound (cannot alter body)
+  - Nonce + timestamp bound (cannot replay old requests)
+  - 60s clock-skew window (bounded replay window + clock-drift tolerance)
+  - Device revocation is explicit (403 return path) so operator can cut off compromised phone without app interaction
+
+#### **Routes That Accept Device Signature (Currently 4)**
+
+In `app.rs` line 337-342 comment and `guards.rs` lines 182-216:
+```
+require_admin(…)  → accepts master token OR device signature
+require_admin_json(…) → accepts master token OR device signature + enforces JSON media type
+```
+
+**Currently wired into:**
+1. `/v1/admin/devices` (GET list) — line 458 in app.rs
+2. `/v1/admin/devices/{id}/revoke` (POST) — line 460
+3. `/xrpc/com.atproto.admin.updateSubjectStatus` (POST) — line 340
+4. `/xrpc/com.atproto.admin.getSubjectStatus` (GET) — line 344
+
+**NOT wired:**
+- `/v1/admin/pairing-codes` (POST) — master token only (break-glass), intentional
+- `/v1/accounts/{id}/usage` (GET) — master token only (no device signature support today)
+- `/v1/accounts/{id}/storage` (GET) — master token only
+- Invite code endpoints (`createInviteCode`, `createInviteCodes`) — master token only
+- `/v1/pds/keys` — master token only
+
+#### **Auth Scopes (JWT/OAuth)**
+
+Three levels (from `auth/jwt.rs`):
+- `com.atproto.access` — full access (password login, or full-scope OAuth)
+- `com.atproto.appPass` — limited app password (scoped by permission set)
+- `com.atproto.appPassPrivileged` — privileged app password (includes chat access, can be scoped)
+
+**Enforcement:**
+- Chat proxy (`chat.bsky.*`) requires full access OR privileged app password (lines 589-598 in app.rs)
+- Moderation proxy (`com.atproto.moderation.*`) requires access-scope token to proceed (line 575)
+- App password creation/listing/revocation requires full-access scope (lines 270-271 in CLAUDE.md)
+
+#### **Rate Limiting**
+
+Three families (lines 24-151 in CLAUDE.md):
+1. **Global per-IP** — 3000 requests/5min; exempt: `getRepo`, `subscribeRepos`, `_health`
+2. **Per-endpoint per-IP** — tighter on signup/login routes: `createAccount`, `createSession`, `resetPassword`, `updateHandle`, `/v1/accounts[/mobile]`
+3. **Per-account write points** — create=3, update=2, delete=1 over hourly + daily window; keyed by verified DID (not token subject)
+
+---
+
+### 3. **OPERATOR-RELEVANT ENDPOINTS (What the Companion App Should Access)**
+
+**Today, the admin-companion already calls (from Phase 8):**
+- `POST /v1/admin/pairing-codes` — mint pairing code (master token only)
+- `POST /v1/admin/devices` — register device (pairing code + self-sig)
+- `GET /v1/admin/devices` — list devices (device-signed; supports revocation UI)
+- `POST /v1/admin/devices/{id}/revoke` — revoke device (device-signed; idempotent)
+- `POST /xrpc/com.atproto.admin.updateSubjectStatus` — takedown/clear (device-signed)
+- `GET /xrpc/com.atproto.admin.getSubjectStatus` — view takedown status (device-signed)
+
+**Other operator-useful endpoints NOT called today (would need device-signature wiring):**
+- `GET /v1/accounts/{id}/usage` — account metrics (records, commits, blobs, last active)
+- `GET /v1/accounts/{id}/storage` — storage quota/usage
+- `POST /xrpc/com.atproto.server.createInviteCode` — issue invite codes (currently master token only)
+- `POST /xrpc/com.atproto.server.createInviteCodes` — batch invite codes (currently master token only)
+
+---
+
+### 4. **GAPS: Operator-Relevant Data With No Route**
+
+**DB tables with no exposed endpoint:**
+
+1. **`admin_devices` table** — Device list/revoke are covered; no gaps.
+
+2. **`accounts` table:**
+   - ❌ **NO route to list all accounts** (would need pagination, filter by status)
+   - ❌ **NO route to get account by handle** (only by DID via `GET /v1/dids/{did}`)
+   - ✓ Account status (active/deactivated/suspended/taken_down) viewable via `getSubjectStatus` if you know the DID
+
+3. **`claim_codes` table:**
+   - ✓ Codes are minted via `/v1/accounts/claim-codes` (public, consumed on signup)
+   - ❌ **NO operator route to list/revoke/view unused codes** (would need visibility into issue pool)
+
+4. **`invite_codes` table:**
+   - ✓ Codes are minted via `createInviteCode` (master token) and `createInviteCodes` (master token)
+   - ❌ **NO route to list all codes** (would need pagination, status/expiry view)
+
+5. **`sessions` table:**
+   - ❌ **NO operator route to list/revoke sessions** for an account (only users can via `deleteSession`)
+
+6. **`app_passwords` table:**
+   - ❌ **NO operator route to revoke an account's app passwords** (only users can)
+
+7. **`firehose` / `repo_seq` table:**
+   - ✓ WebSocket subscription `subscribeRepos` streams all events (public)
+   - ❌ **NO operator route to query event log by DID/timestamp range** or to **reset cursor** for a relay
+
+8. **`blobs` table:**
+   - ✓ `account_storage` endpoint gives totals + largest blob
+   - ❌ **NO operator route to list all blobs for an account** (would show CIDs, sizes, upload timestamps)
+
+9. **`transfers` table** (planned device swaps):
+   - ✓ Client-driven `transfer_initiate`, `transfer_accept`, `transfer_complete`
+   - ❌ **NO operator route to view in-flight transfers** or to cancel one
+
+10. **`oauth_*` tables** (clients, auth codes, tokens):
+    - ❌ **NO operator visibility** into OAuth clients or active grants (useful for security/audit)
+
+11. **Server operational metrics:**
+    - ❌ **NO `/metrics` endpoint** (database row counts, request latency, GC state, blob GC status)
+    - ❌ **NO firehose lag metric** (how far behind live a relay is)
+
+---
+
+### 5. **SECURITY DOCS ON ADMIN BOUNDARY**
+
+**Reference documents:**
+- **`docs/security/tauri-ipc-boundary.md`** (lines 1-117, verified 2026-07-05)
+  - Capability allowlist spec for identity-wallet and admin-companion
+  - Admin-companion has minimal surface: `log:default` plugin permission only (no core APIs, no events)
+  - Identity-wallet has `core:event:default` (auth_ready, plc_alert) + `auth-session:default` (OAuth)
+  - Both explicitly exclude `core:default` (no window control, no file I/O)
+  - Guard: `just cap-check` verifies JSON compliance; manual denial test with dev tools on simulator
+
+- **No dedicated admin-auth doc** — authorization model lives inline:
+  - `crates/pds/src/auth/guards.rs` (lines 32-330) — admin token + device signature verification
+  - `crates/pds/CLAUDE.md` (lines 207-214) — `auth/guards.rs` pattern comment + rule that auth/ has no route knowledge
+  - Route handlers document auth requirement inline (e.g., `account_usage.rs` line 44 comment)
+
+- **Implicit principles:**
+  - Master token is break-glass / root of trust (only for pairing-code mint)
+  - Device signatures are scoped to specific devices and routes (method+path bound into signature)
+  - Revoked devices return 403 (explicit server-side cutoff, no app interaction required)
+  - Nonce + timestamp prevent replay (60s window bounds window + enables clock-skew tolerance)
+  - Every admin failure path returns generic 401 (no enumeration)
+
+---
+
+### 6. **SUMMARY: What Admin-Companion Can Do Today vs What Needs Wiring**
+
+**Currently callable with device signature (4 routes):**
+1. List devices + metadata (active status, last seen)
+2. Revoke a device (idempotent, 404 on unknown)
+3. Apply/clear takedown on an account (emits firehose frame)
+4. View takedown status
+
+**Could be exposed to device-signed requests with NO server code changes** (already `require_admin`-guarded, just need app to call):
+- `GET /v1/accounts/{id}/usage` — switch from `require_admin_token` to `require_admin`
+- `GET /v1/accounts/{id}/storage` — switch from `require_admin_token` to `require_admin`
+
+**Would need NEW server work to expose to device signatures:**
+- Admin operations beyond account status (invite code management, session revocation, device transfer audit)
+- Operator dashboard features (account list, code inventory, metrics)
+- Firehose cursor reset / event log queries
+- Blob inventory per account
+
+---
+
+**File paths (exact) for verification:**
+- `crates/pds/src/app.rs:241-489` — Router assembly, all route registrations
+- `crates/pds/src/auth/guards.rs:32-386` — Admin auth implementations
+- `crates/pds/src/routes/admin_devices.rs` — Pairing + device registration/revocation
+- `crates/pds/src/routes/account_usage.rs` — Usage metrics (master token only today)
+- `crates/pds/src/routes/account_storage.rs` — Storage metrics (master token only today)
+- `crates/pds/src/routes/update_subject_status.rs` — Takedown endpoint (device-sig support)
+- `bruno/*.bru` (106 files) — CI-enforced route parity verification
+- `docs/security/tauri-ipc-boundary.md:1-117` — Capability security boundary spec</result>
+<usage><subagent_tokens>93603</subagent_tokens><tool_uses>18</tool_uses><duration_ms>141647</duration_ms></usage>
+</task-notification>
+
+Agent: Both investigations are complete — here's the full picture, including the answer to your XRPC question.
+
+## What the survey found
+
+**The app's single-server binding is shallow.** One keychain triple (`admin-device-id`, `admin-relay-url`, `admin-device-label`) in [keychain.rs:106-134](apps/admin-companion/src-tauri/src/keychain.rs), a signing client that already takes the `Pairing` as an input parameter, and screens that each load `pairingState()` locally. The device key is deliberately **global and reused across pairings** (a re-pair is recognized by the same public key), and the biometric toggle is device-scoped — so multi-server is mostly "turn one pairing into a list plus an active-pairing pointer." No hidden singletons elsewhere.
+
+**The XRPC surface has real operator features waiting, in three tiers of effort:**
+
+**Tier 1 — zero server changes, the routes already accept the app's device signature:**
+- `GET /v1/admin/devices` + `POST /v1/admin/devices/{id}/revoke` — the app can already call these, but has **no device-list screen**. This is the "loss response" mode PRODUCT.md promises ("revoke that device from another paired device"), and the unused `DeviceRow` primitive is sitting in the UI kit waiting for exactly this.
+- `POST /xrpc/com.atproto.admin.updateSubjectStatus` + `GET .../getSubjectStatus` — account takedown/restore is **already device-signed on the server** ([app.rs:337-344](crates/pds/src/app.rs)) with no app UI at all.
+
+**Tier 2 — one-line server guard swaps** (`require_admin_token` → `require_admin`):
+- `GET /v1/accounts/{id}/usage` and `GET /v1/accounts/{id}/storage` — per-account records/commits/blobs/last-active and storage-quota metrics, currently master-token-only for no structural reason.
+- Invite-code minting (`createInviteCode`/`createInviteCodes`) is also master-token-only today, same swap if wanted.
+
+**Tier 3 — needs new server routes:** account *listing* (you can only query by DID today), claim/invite-code inventory, operator session/app-password revocation, in-flight transfer visibility, and server metrics. Real work, separate design.
+
+`★ Insight ─────────────────────────────────────`
+The admin auth model is what makes Tier 1/2 so cheap: every admin request is a P-256 signature over `method‖path‖timestamp‖nonce‖sha256(body)`, verified per-device with replay protection ([guards.rs:260-330](crates/pds/src/auth/guards.rs)). Because the *route guard* — not the endpoint logic — decides "master token vs. device signature," expanding what the phone can do is usually a guard swap, not a new auth mechanism. That's the payoff of the route-isolation rule in the PDS architecture.
+`─────────────────────────────────────────────────`
+
+One discrepancy I'll verify during design: the two reports disagree slightly on which route the app's existing "generate claim code" button hits — the route survey didn't surface a device-signed claim-code mint endpoint, yet the app clearly does it. Likely a missed route in the sweep; I'll pin it down before we write anything.
+
+## Where I need you
+
+My four Phase 1 questions are still open, and the survey sharpens the second one considerably:
+
+1. **Scale:** 2–3 environments of your own (staging/prod), or many unrelated relays?
+2. **Scope:** multi-server-only, with the XRPC findings spun off as follow-up issues — or fold **Tier 1** (device list/revoke + takedown UI, zero server work) and/or **Tier 2** (usage/storage dashboards, one-line guard swaps) into this design? Tier 1 pairs naturally with a switcher, since a server-detail screen wants something to show.
+3. **Constraints:** must existing TestFlight installs migrate their stored pairing seamlessly, or is re-pairing acceptable? Any server-side changes allowed (relevant if Tier 2 is in)?
+4. **Anything decided already** — switcher UX ideas, target Linear wave/issue?
+
+---
+
+User: 1. right now it is just me, running multiple environments, so I'm just looking to make my own life easier. no where near making a product of this yet I think heh
+2. XRPC recommendations for follow-up issues
+3. I don't mind repairing. If we need server changes, that's fine, it's just me
+4. No prior decisions
+
+If we make any ADR worthy decisions, be sure to document them
+
+Agent: Got it — personal tool, multiple environments, switcher-only scope with XRPC findings as follow-up recommendations, re-pairing acceptable, and ADR-worthy decisions get documented in `docs/architecture/decisions/`. That completes context gathering.
+
+I'm using the asking-clarifying-questions skill to make sure I understand your requirements correctly before we brainstorm.
+
+---
+
+User: Base directory for this skill: /Users/jacob.zweifel/.claude/plugins/cache/ed3d-plugins/ed3d-plan-and-execute/1.10.3/skills/asking-clarifying-questions
+
+# Asking Clarifying Questions
+
+## Overview
+
+Bridge the gap between raw user input and structured brainstorming by understanding what the user actually means, not what they said.
+
+**Core principle:** Resolve contradictions first, then disambiguate. Conflicting goals must be reconciled before technical clarification - otherwise you're precisely defining the wrong thing.
+
+**Announce at start:** "I'm using the asking-clarifying-questions skill to make sure I understand your requirements correctly."
+
+## When to Use
+
+Use this skill:
+- After gathering initial context from user
+- Before starting brainstorming or design exploration
+- When user mentions technical terms that could mean multiple things
+- When scope boundaries are unclear
+- When assumptions need verification
+
+Do NOT use for:
+- Exploring design alternatives (that's brainstorming)
+- Proposing architectures (that's brainstorming)
+- Validating completed designs (that's brainstorming Phase 3)
+- Asking for initial requirements (that's starting-a-design-plan Phase 1)
+
+## Before Clarifying
+
+Try to answer your own questions and disambiguate from the context of the working directory. Use available subagents, such as `codebase-investigator`, to explore for existing work that can help explain the the subject under clarification. When you recognize elements such as common technologies or proper nouns, use `combined-researcher` instead to synthesize both the codebase and internet searches.
+
+You may have other skills or MCPs containing useful information, such as connections to remote datastores used for product management purposes. You should send out `haiku-general-purpose` subagents to investigate them when they're appropriate.
+
+## What to Clarify
+
+### 0. Contradictions (First Pass)
+
+Before disambiguating technical details, scan for logical contradictions in requirements. If the user has stated mutually exclusive goals, resolve these first - technical clarification is wasted effort if the foundation shifts.
+
+**Look for:**
+
+Explicit contradictions (user stated both):
+- "Real-time updates" + "batch processing is fine" → Which is the actual need?
+- "Keep it simple" + "handle every edge case" → Trade-off not acknowledged
+- "Use existing patterns" + "complete rewrite" → Mutually exclusive approaches
+- "No external dependencies" + "integrate with Stripe" → Implicit contradiction
+
+Impossible combinations:
+- "Offline-first" + "always-current data" → Physics problem
+- "Fast to build" + "infinitely extensible" → Classic impossible triangle
+- "Zero latency" + "synchronous validation" → Can't have both
+- "No breaking changes" + "fundamental redesign" → Pick one
+
+Unacknowledged trade-offs:
+- "Simple" often conflicts with "flexible"
+- "Fast" often conflicts with "thorough"
+- "Cheap" often conflicts with "custom"
+- "Secure" often conflicts with "convenient"
+
+**How to surface:**
+
+Don't accuse - illuminate the tension:
+- "I notice you mentioned X and Y - these can pull in different directions. Which takes priority?"
+- "There's a trade-off between A and B here. Which matters more for this project?"
+- "These two goals sometimes conflict - how should I balance them when they do?"
+
+**Why first:**
+- Contradictions reveal unconfronted trade-offs
+- Resolving them changes what "right" means
+- Technical disambiguation without this = building the wrong thing precisely
+
+**After contradictions are resolved**, proceed to technical clarification.
+
+### 1. Technical Terminology
+
+When user mentions technical terms, disambiguate what they actually mean.
+
+**Examples:**
+
+User says "OAuth2" -> Ask: Which flow?
+- Authorization code flow (for human users with browser redirect)
+- Client credentials flow (for service-to-service auth)
+- Both, depending on the use case
+
+User says "database" -> Ask: Which kind?
+- SQL (PostgreSQL, MySQL) for structured data
+- NoSQL (MongoDB, DynamoDB) for flexible schema
+- Already determined by existing infrastructure
+
+User says "caching" -> Ask: What layer?
+- Application-level (Redis, Memcached)
+- HTTP caching (CDN, browser cache)
+- Database query caching
+
+**Use AskUserQuestion for these** - present specific options with trade-offs.
+
+### 2. Scope Boundaries
+
+When user mentions broad concepts, identify what's included and excluded.
+
+**Examples:**
+
+User says "users" -> Ask: Who exactly?
+- Human users logging in via web browser
+- Service accounts for API access
+- Both, with different authentication flows
+- Internal employees vs external customers
+
+User says "integrate with X" -> Ask: What parts?
+- Just authentication
+- Full data sync
+- Specific API endpoints
+- Real-time webhooks vs batch imports
+
+User says "reporting" -> Ask: What scope?
+- Basic data export (CSV, Excel)
+- Interactive dashboards
+- Scheduled automated reports
+- Real-time analytics
+
+**Use AskUserQuestion** - present distinct scope options.
+
+### 3. Assumptions and Constraints
+
+When user states requirements, verify the underlying reasons and constraints.
+
+**Examples:**
+
+User says "must use library X" -> Ask: Why?
+- Regulatory requirement (cannot change)
+- Existing team expertise (preference, not hard requirement)
+- Already in use elsewhere (consistency benefit)
+- Misconception (might have better options)
+
+User says "needs to be fast" -> Ask: How fast?
+- Sub-100ms response time (hard requirement)
+- Faster than current implementation (relative improvement)
+- Perception of speed (optimistic UI, loading states)
+- Actual performance bottleneck identified
+
+User says "should follow pattern Y" -> Ask: Which aspect?
+- Exact implementation (strict consistency)
+- General approach (flexible adaptation)
+- Just using same libraries (tooling consistency)
+- Not actually required (outdated guideline)
+
+**Use open-ended questions** for understanding "why" - allows user to explain context.
+
+### 4. Version and API Specifics
+
+When user mentions external services or libraries, verify current state.
+
+**Examples:**
+
+User says "integrate with Stripe" -> Check:
+- Which Stripe API version (latest? specific?)
+- Payment Intents API or older Charges API
+- Which features needed (one-time, subscriptions, both)
+- Already have Stripe account setup
+
+User says "use React Router" -> Check:
+- React Router v5 or v6 (breaking changes between versions)
+- Already in use in codebase (follow existing patterns)
+- Browser Router vs Hash Router vs Memory Router
+
+**Quick agent queries for factual checks:**
+- "What version of X exists?" -> Quick web search or codebase check
+- "What's the current API?" -> Internet research for docs
+- "Is Y already in use?" -> Codebase investigation
+
+**Don't do deep research** - save that for brainstorming. Just verify basics.
+
+### 5. Definition of Done (Required Final Step)
+
+**Before handing off to brainstorming, you MUST establish the Definition of Done.**
+
+The Definition of Done answers: "What does success look like? What are the deliverables?"
+
+**After resolving contradictions and clarifying requirements:**
+
+1. **Infer the Definition of Done** from context gathered so far:
+   - What will exist when this is complete?
+   - What will users/systems be able to do?
+   - What are the concrete deliverables?
+
+2. **If you have a firm grasp**, state it back and confirm:
+   ```
+   Use AskUserQuestion:
+   "Based on our discussion, here's what I understand success looks like:
+
+   [State the definition of done in 2-4 bullet points]
+
+   Does this capture what you're trying to achieve?"
+
+   Options:
+   - "Yes, that's right" (proceed to brainstorming)
+   - "Partially, but..." (user will clarify)
+   - "No, let me explain..." (user will reframe)
+   ```
+
+3. **If the deliverables are still ambiguous**, ask targeted questions:
+   - "What should exist when this is done?"
+   - "How will you know this succeeded?"
+   - "What's the minimum viable deliverable?"
+
+**Why this matters:** Brainstorming explores *how* to achieve the goal. The goal must be locked in first. Otherwise you're exploring texture without knowing what shape you're filling.
+
+**The Definition of Done becomes part of the output bundle** and will appear prominently at the top of the final design document.
+
+## Question Techniques
+
+### Use AskUserQuestion for Choices
+
+When there are 2-4 distinct options with trade-offs:
+
+```
+Question: "Which OAuth2 flow are you targeting?"
+Options:
+  - "Authorization code flow" (human users with browser redirect)
+  - "Client credentials flow" (service-to-service automated auth)
+  - "Both flows" (supports human users AND service accounts)
+```
+
+**Benefits:**
+- Forces explicit choice
+- Shows trade-offs clearly
+- Prevents vague "maybe both" responses
+- Structured for decision-making
+
+### Use Open-Ended Questions for Why
+
+When you need to understand reasoning or context:
+
+"Why is X a requirement?"
+"What problem does Y solve?"
+"What happens if we don't include Z?"
+
+**Benefits:**
+- Uncovers hidden constraints
+- Reveals user's mental model
+- Identifies assumptions to challenge
+- Provides context for brainstorming
+
+### Use Quick Queries for Facts
+
+When you need to verify something factual:
+
+- Dispatch codebase-investigator: "Is library X already in use?"
+- Quick web search: "What's the current version of API Y?"
+- File read: "Check package.json for existing auth dependencies"
+
+**Don't get distracted** - these are quick checks, not research projects.
+
+## Output: Context Bundle for Brainstorming
+
+After clarification, create a clear summary to pass to brainstorming:
+
+**Resolved trade-offs:**
+- Speed over flexibility (chose simple implementation, accept less configurability)
+- Security over convenience (chose strict validation, accept more friction)
+- Consistency over ideal (chose existing patterns, accept suboptimal in isolation)
+
+**Clarified requirements:**
+- OAuth2 client credentials flow (service-to-service)
+- External customers only (not internal employees)
+- Stripe Payment Intents API (latest version)
+- Must comply with PCI DSS Level 1 (regulatory constraint)
+- "Fast" means sub-200ms p99 response time (measured requirement)
+
+**Verified assumptions:**
+- React Router v6 already in use (follow existing patterns)
+- PostgreSQL database (existing infrastructure)
+- No existing auth system (greenfield)
+
+**Scope boundaries:**
+- IN: Service account creation, token issuance, token validation
+- OUT: Human user login, SSO integration, password management
+
+This bundle gives brainstorming a concrete, unambiguous starting point.
+
+## Common Mistakes
+
+| Mistake | Fix |
+|---------|-----|
+| Ignoring contradictions in requirements | Surface conflicting goals before technical clarification |
+| Accepting vague terms at face value | Disambiguate every technical term |
+| Assuming scope without verification | Ask explicit boundary questions |
+| Not questioning "must have" requirements | Understand WHY behind constraints |
+| Doing deep research during clarification | Quick checks only, save research for brainstorming |
+| Proposing solutions while clarifying | Stay in understanding mode, no design yet |
+| Skipping clarification when "seems clear" | Always clarify, assumptions are dangerous |
+
+## When to Stop Clarifying
+
+Stop and move to brainstorming when:
+- Contradictions are resolved (trade-offs explicitly chosen)
+- Technical terms are disambiguated
+- Scope boundaries are explicit
+- Constraints are understood (not just stated)
+- Assumptions are verified
+- No major ambiguities remain
+
+**You don't need perfect information** - just enough to brainstorm effectively.
+
+If brainstorming reveals new ambiguities, you can return to clarification.
+
+## Integration with Design Workflow
+
+This skill sits between context gathering and brainstorming:
+
+```
+Context Gathering (starting-a-design-plan Phase 1)
+  -> User provides: "Build OAuth2 integration for our API"
+
+Clarification (this skill)
+  -> Disambiguate: Which OAuth2 flow? What scope? Why OAuth2?
+  -> Output: Service accounts, client credentials, PCI compliance
+
+Brainstorming (starting-a-design-plan Phase 3)
+  -> Explore: Architecture options, library choices, implementation phases
+  -> Uses clarified requirements as foundation
+```
+
+**Purpose:** Ensure brainstorming builds the right thing, not the wrong thing well.
+
+
+ARGUMENTS: Multi-server support + switcher for admin-companion; personal tool (2-3 environments); re-pair OK; server changes allowed; XRPC survey delivered as follow-up recommendations only
+
+Agent: Before asking anything, let me resolve the one factual discrepancy myself — which route the existing claim-code button hits.
+
+Requirements are clear. Now locking in the Definition of Done before we explore approaches:
+
+Definition of Done confirmed, slug chosen. Creating the design document skeleton now to capture it at full fidelity:
+
+I'm using the brainstorming skill to explore design alternatives and validate the approach.
+
+---
+
+User: Base directory for this skill: /Users/jacob.zweifel/.claude/plugins/cache/ed3d-plugins/ed3d-plan-and-execute/1.10.3/skills/brainstorming
+
+# Brainstorming Ideas Into Designs
+
+## Overview
+
+Transform rough ideas into fully-formed designs through structured questioning and alternative exploration.
+
+**Core principle:** Ask questions to understand, explore alternatives, present design incrementally for validation.
+
+**Announce at start:** "I'm using the brainstorming skill to refine your idea into a design."
+
+## Quick Reference
+
+| Phase | Key Activities | Tool Usage | Output |
+|-------|---------------|------------|--------|
+| **1. Understanding** | Ask questions (one at a time) | AskUserQuestion for choices, agents for research | Purpose, constraints, criteria |
+| **2. Exploration** | Propose 2-3 approaches | AskUserQuestion for approach selection, agents for patterns | Architecture options with trade-offs |
+| **3. Design Presentation** | Present in 200-300 word sections | Open-ended questions | Complete design with validation |
+
+## The Process
+
+**REQUIRED: Create task tracker at start**
+
+Use TaskCreate to create todos for each phase (or TodoWrite in older Claude Code versions):
+
+- Phase 1: Understanding (purpose, constraints, criteria gathered)
+- Phase 2: Exploration (2-3 approaches proposed and evaluated)
+- Phase 3: Design Presentation (design validated in sections)
+
+Use TaskUpdate to mark each phase as in_progress when working on it, completed when finished (or TodoWrite in older versions).
+
+## Research Agents
+
+**DO NOT perform deep research yourself. Delegate to specialized agents.**
+
+### When to Use codebase-investigator
+
+**Use codebase-investigator when you need to:**
+- Understand how existing features are implemented
+- Find where specific functionality lives in the codebase
+- Identify existing patterns to follow
+- Verify assumptions about codebase structure
+- Check if a feature already exists
+
+**Example delegation:**
+```
+Question: "How is authentication currently implemented?"
+Action: Dispatch codebase-investigator with: "Find authentication implementation, including file locations, patterns used, and dependencies"
+```
+
+### When to Use internet-researcher
+
+**Use @agent-ed3d-research-agents:internet-researcher when available. Otherwise use WebSearch/WebFetch aggressively.**
+
+**Use internet research when you need to:**
+- Find current API documentation for external services
+- Research library capabilities and best practices
+- Compare technology options
+- Understand current community recommendations
+- Find code examples and patterns from documentation
+- Verify "what's the latest version" type questions
+- Look up "how do people solve X" patterns
+
+**Example delegation (with agent):**
+```
+Question: "What's the recommended way to handle file uploads with this framework?"
+Action: Dispatch internet-researcher with: "Find current best practices for file uploads in [framework], including official docs and common patterns"
+```
+
+**Example without agent (use WebSearch):**
+```
+Question: "What's the current Stripe API for subscriptions?"
+Action: Use WebSearch for: "Stripe subscriptions API latest version 2025"
+Then use WebFetch to read the official docs
+```
+
+**When to use internet research:**
+- External API documentation (always get latest)
+- "How do people solve X?" (community patterns)
+- Library comparison (which one is maintained?)
+- Best practices (what's current recommendation?)
+- Version checking (what's latest?)
+
+**Don't overdo it:**
+- Don't research things Claude already knows well
+- Don't research project-specific code (use codebase-investigator)
+- Don't research for every small decision
+
+**Balance:** Use research for external knowledge and current information. Use Claude's existing knowledge for general programming concepts.
+
+### Research Protocol
+
+**If codebase pattern exists:**
+1. Use codebase-investigator to find it
+2. Unless pattern is clearly unwise, assume it's the correct approach
+3. Design should follow existing patterns for consistency
+
+**If no codebase pattern exists:**
+1. Use internet research to find external patterns
+2. Present 2-3 approaches from research in Phase 2
+3. Let user choose which pattern to adopt
+
+**If agent/research can't find answer:**
+- Redirect question to user via AskUserQuestion
+- Explain what was searched and not found
+- Present as a design decision for user to make
+
+**Be persistent with research:**
+- If first query doesn't yield results, refine the question
+- Try alternative search terms or approaches
+- Don't give up after one attempt
+
+## Phase 1: Understanding
+
+**Before asking questions:**
+
+1. **Investigate current state** - DON'T do this yourself:
+   - Dispatch codebase-investigator to verify project structure
+   - Ask investigator to find existing architecture and patterns
+   - Ask investigator to identify constraints from current codebase
+   - Review investigator's findings before proceeding
+
+2. **Then gather requirements:**
+   - Use TaskUpdate to mark Phase 1 as in_progress
+   - Ask ONE question at a time to refine the idea
+   - **Use AskUserQuestion tool** when you have multiple choice options
+   - **Use agents** when you need to verify technical information
+   - Gather: Purpose, constraints, success criteria
+   - Mark Phase 1 as completed when understanding is clear
+
+**Example using AskUserQuestion:**
+```
+Question: "Where should the authentication data be stored?"
+Options:
+  - "Session storage" (clears on tab close, more secure)
+  - "Local storage" (persists across sessions, more convenient)
+  - "Cookies" (works with SSR, compatible with older approach)
+```
+
+**When to delegate vs ask user:**
+- "Where is auth implemented?" -> codebase-investigator
+- "What auth library should we use?" -> internet-researcher (if not in codebase)
+- "Do you want JWT or sessions?" -> AskUserQuestion (design decision)
+
+**Ask only useful, coherent, and effective questions:**
+Do not ask a question when only one answer is useful, coherent, and effective. For example, in an auth system with magic links and social logins:
+
+```
+Example (WRONG):
+What should happen when a logged-in user requests a magic link for their own email address?
+
+1. Send new magic link (allow re-login)
+   User can request magic links even when logged in. Useful for re-authentication or session refresh scenarios.
+2. Return error or redirect to home
+   Logged-in users can't request magic links. They must log out first. Simpler, prevents confusion.
+3. Silent success (no email sent)
+   Say 'check your email' but don't send anything. Prevents leaking login state but may confuse legitimate users.
+```
+
+In this case, only #1 is a useful, coherent, and effective option. Option #2 doesn't make any sense (magic links can be used to verify emails after a social login) and #3 is aggressively bad (lies to the user).
+
+```
+Example (WRONG):
+How should the magic link token verification be structured?
+
+1. Single-use token with immediate session creation
+   Token is consumed on first click, session created immediately. Simple flow. User can't re-click the link. Standard pattern for passwordless auth.
+2. Token valid for multiple users within TTL
+   Token can be used multiple times within 15 minutes. Allows re-clicking link if session cookie is lost. More complex state management.
+3. Token with idempotent verification
+   First use creates session, subsequent uses within TTL return same session. Safe re-clicking, prevents double-session creation. Moderate complexity.
+```
+
+No reasonably secure system would do either options #2 or #3. The way this question is written obviously indicates one acceptable answer and the other two answers are trap answers. Do not suggest trap answers for human users.
+
+**If you want to ask a question where there is only one useful, coherent, and effective path, state your assumption and continue onward.**
+
+**Do not ask questions just to ask them. If you have no useful, coherent, and effective questions, cease asking questions.**
+
+**If starting-a-design-plan already gathered context:**
+- Phase 1 may be very short
+- Focus on remaining unknowns
+- Don't re-ask questions already answered in clarification
+- Still complete Phase 1 (don't skip it)
+
+## Phase 2: Exploration
+
+**Before proposing approaches:**
+
+1. **Research existing patterns** - DON'T do this yourself:
+   - Dispatch codebase-investigator: "Find similar features and patterns used"
+   - If similar feature exists, base one approach on that pattern
+   - If no codebase pattern, use internet research: "Find recommended approaches for [problem]"
+   - Review research findings before proposing
+
+2. **Then propose approaches:**
+   - Use TaskUpdate to mark Phase 2 as in_progress
+   - Propose 2-3 different approaches based on research
+   - At least one approach should follow codebase patterns (if they exist)
+   - For each: Core architecture, trade-offs, complexity assessment
+   - **Use AskUserQuestion tool** to present approaches as structured choices
+   - Mark Phase 2 as completed when approach is selected
+
+**Example using AskUserQuestion:**
+```
+Question: "Which architectural approach should we use?"
+Options:
+  - "Event-driven with message queue" (matches existing notification system, scalable, complex setup)
+  - "Direct API calls with retry logic" (simple, synchronous, easier to debug)
+  - "Hybrid with background jobs" (balanced, moderate complexity, best of both)
+```
+
+**Research integration:**
+- If codebase has pattern -> Present it as primary option (unless unwise)
+- If no codebase pattern -> Present internet research findings
+- If research yields nothing -> Ask user for direction
+
+## Phase 3: Design Presentation
+
+- Use TaskUpdate to mark Phase 3 as in_progress
+- Present in 200-300 word sections
+- Cover: Architecture, components, data flow, error handling, testing
+- **Use research agents if you need to verify technical details during presentation**
+- Ask after each section: "Does this look right so far?" (open-ended)
+- Use open-ended questions here to allow freeform feedback
+- Mark Phase 3 as completed when all sections validated
+
+**Level of detail:** Present architecture and components, not implementation code.
+
+- **Contracts/interfaces: OK.** If a component exposes an API or interface that other systems depend on, show the shape (types, method signatures, request/response formats).
+- **Implementation code: NOT OK.** Function bodies, algorithms, and executable logic belong in implementation plans, not design.
+
+The distinction: contracts define boundaries between components. Implementation defines behavior within components. Brainstorming validates the boundaries; implementation planning fills in the behavior.
+
+**Output:** Validated design held in conversation context, ready for documentation.
+
+## Question Patterns
+
+### When to Use AskUserQuestion Tool
+
+**Use AskUserQuestion for:**
+- Phase 1: Clarifying questions with 2-4 clear options
+- Phase 2: Architectural approach selection (2-3 alternatives)
+- Any decision with distinct, mutually exclusive choices
+- When options have clear trade-offs to explain
+- When agent research yields no answer (present as open decision)
+
+**Benefits:**
+- Structured presentation of options with descriptions
+- Clear trade-off visibility for partner
+- Forces explicit choice (prevents vague "maybe both" responses)
+
+### When to Use Open-Ended Questions
+
+**Use open-ended questions for:**
+- Phase 3: Design validation ("Does this look right so far?")
+- When you need detailed feedback or explanation
+- When partner should describe their own requirements
+- When structured options would limit creative input
+
+**Example decision flow:**
+- "What authentication method?" -> Use AskUserQuestion (2-4 options)
+- "Does this design handle your use case?" -> Open-ended (validation)
+
+### When to Use Research Agents
+
+**Use codebase-investigator for:**
+- "How is X implemented?" -> Agent finds and reports
+- "Where does Y live?" -> Agent locates files
+- "What pattern exists for Z?" -> Agent identifies pattern
+
+**Use internet research for:**
+- "What's the current API for X?" -> Research finds docs
+- "How do other projects solve Y?" -> Research finds patterns
+- "What libraries exist for Z?" -> Research compares options
+
+**Don't do deep research yourself** - you'll consume context and may hallucinate. Delegate to agents or use web tools.
+
+## When to Revisit Earlier Phases
+
+```dot
+digraph revisit_phases {
+    rankdir=LR;
+    "New constraint revealed?" [shape=diamond];
+    "Partner questions approach?" [shape=diamond];
+    "Requirements unclear?" [shape=diamond];
+    "Return to Phase 1" [shape=box, style=filled, fillcolor="#ffcccc"];
+    "Return to Phase 2" [shape=box, style=filled, fillcolor="#ffffcc"];
+    "Continue forward" [shape=box, style=filled, fillcolor="#ccffcc"];
+
+    "New constraint revealed?" -> "Return to Phase 1" [label="yes"];
+    "New constraint revealed?" -> "Partner questions approach?" [label="no"];
+    "Partner questions approach?" -> "Return to Phase 2" [label="yes"];
+    "Partner questions approach?" -> "Requirements unclear?" [label="no"];
+    "Requirements unclear?" -> "Return to Phase 1" [label="yes"];
+    "Requirements unclear?" -> "Continue forward" [label="no"];
+}
+```
+
+**You can and should go backward when:**
+- Partner reveals new constraint during Phase 2 or 3 -> Return to Phase 1
+- Validation shows fundamental gap in requirements -> Return to Phase 1
+- Partner questions approach during Phase 3 -> Return to Phase 2
+- Something doesn't make sense -> Go back and clarify
+- Agent research reveals constraint you didn't know -> Reassess phase
+
+**Don't force forward linearly** when going backward would give better results.
+
+## Common Rationalizations - STOP
+
+These are violations of the skill requirements:
+
+| Excuse | Reality |
+|--------|---------|
+| "Idea is simple, can skip exploring alternatives" | Always propose 2-3 approaches. Comparison reveals issues. |
+| "Partner knows what they want, can skip questions" | Questions reveal hidden constraints. Always ask. |
+| "I'll present whole design at once for efficiency" | Incremental validation catches problems early. |
+| "Checklist is just a suggestion" | Create task todos with TaskCreate. Track progress properly. |
+| "I can research this quickly myself" | Use agents or web tools. You'll hallucinate or consume excessive context. |
+| "Agent didn't find it on first try, must not exist" | Be persistent. Refine query and try again. |
+| "Partner said yes, done with brainstorming" | Design is in conversation. Next step is documentation. |
+| "I know this codebase, don't need investigator" | You don't know current state. Always verify. |
+| "Obvious solution, skip research" | Codebase may have established pattern. Check first. |
+| "Don't need internet research for this" | External knowledge and current docs matter. Research when relevant. |
+| "I'll show the implementation so partner understands" | Show contracts/interfaces, not implementation. Implementation planning generates code later. |
+
+**All of these mean: STOP. Follow the requirements exactly.**
+
+## Key Principles
+
+| Principle | Application |
+|-----------|-------------|
+| **One question at a time** | YOU MUST ask single questions in Phase 1, use AskUserQuestion for choices |
+| **Delegate research** | YOU MUST use agents or web tools for codebase and internet research, never do it yourself |
+| **Be persistent with research** | If search doesn't find answer, refine query and try again before asking user |
+| **Follow existing patterns** | If codebase pattern exists and is reasonable, design must follow it |
+| **Structured choices** | YOU MUST use AskUserQuestion tool for 2-4 options with trade-offs |
+| **YAGNI ruthlessly** | Remove unnecessary features from all designs |
+| **Explore alternatives** | YOU MUST propose 2-3 approaches before settling |
+| **Incremental validation** | Present design in sections, validate each - never all at once |
+| **Task tracking** | YOU MUST create task todos at start with TaskCreate, update with TaskUpdate as you progress (or TodoWrite in older versions) |
+| **Flexible progression** | Go backward when needed - flexibility > rigidity |
+| **Internet research matters** | Use research agents or web tools for external knowledge and current information |
+
+## After Brainstorming
+
+When Phase 3 is complete, announce:
+
+"Design is validated and ready for documentation."
+
+**Next step:** The orchestrating skill (starting-a-design-plan) will invoke writing-design-plans to document this design.
+
+**You do NOT:**
+- Write design document (that's writing-design-plans)
+- Set up worktrees (that's later in workflow)
+- Create implementation plans (that's writing-plans)
+
+**You DO:**
+- Hold validated design in conversation context
+- Have clear understanding of architecture, components, and approach
+- Know which existing patterns were followed (from investigation)
+
+
+ARGUMENTS: admin-multi-server: multi-relay pairings + one-tap switcher for admin-companion. Context gathered (codebase maps of admin-companion keychain/relay_client/screens and PDS route surface), requirements clarified (nickname per server, free switch with loud identity), DoD confirmed and captured in docs/design-plans/2026-07-06-admin-multi-server.md
+
+Agent: `★ Insight ─────────────────────────────────────`
+Reading [keychain.rs](apps/admin-companion/src-tauri/src/keychain.rs) confirmed something the design can lean on: the module already exposes generic `store_item`/`get_item`/`delete_item` primitives over `security_framework::passwords`, with an in-memory test double swapped in under `#[cfg(test)]`. That means whichever multi-pairing layout we pick, it composes from existing primitives — no new keychain plumbing, and the test harness comes for free. Notably, the `passwords` convenience API has no "enumerate all accounts for a service" call, which quietly weights the decision toward a single JSON document over N dynamic account names.
+`─────────────────────────────────────────────────`
+
+While the researcher finishes, one status note: pairing state is explicitly documented as *not secret* (device id and URL are public identifiers) — it lives in the keychain for atomic-clear convenience, which leaves room to consider whether the pairing list even belongs there. I'll fold the research findings into 2–3 concrete approaches next.
+
+---
+
+User: <task-notification>
+<task-id>a414c1f175ac22a09</task-id>
+<tool-use-id>toolu_01FXJTV8ccnRru27hhcrBncs</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-jacob-zweifel-workspace-malpercio-dev-ezpds--claude-worktrees-optimistic-mcnulty-3870f7/07d58e39-cd68-4bf7-9bbd-909ec50a4186/tasks/a414c1f175ac22a09.output</output-file>
+<status>completed</status>
+<summary>Agent "Research iOS multi-credential keychain patterns" finished</summary>
+<note>A task-notification fires each time this agent stops with no live background children of its own. The user can send it another message and resume it, so the same task-id may notify more than once.</note>
+<result>Perfect. Now I have comprehensive information to provide a thorough recommendation. Let me compile the findings:
+
+## Research Findings: iOS Keychain Storage Models for Multi-Pairing Credentials
+
+Based on current best practices and iOS Keychain documentation (2025-2026), here are my findings for your two candidate models:
+
+---
+
+### Model 1: Single JSON Document in One Keychain Item
+
+**Size Limits:**
+- **Soft limit:** 4 KB (practical sweet spot)
+- **Hard limit:** 16 MB (documented maximum)
+- Most sources recommend treating 2-4 KB as safe for credentials
+
+For a versioned JSON payload with 2-5 pairings (~500 bytes per pairing + overhead), a single item is well within safe limits.
+
+**Atomicity &amp; Consistency:**
+- **SecItemUpdate atomicity:** NOT guaranteed to be atomic. Apple documents this as working in multithreaded contexts but NOT as an atomic operation. Single-item updates will succeed or fail as a whole, but there's no documented guarantee against partial success in edge cases.
+- **Corruption risk:** LOW for a single item. JSONEncoder/Decoder + SecItemUpdate is a stable pattern. The entire payload updates as one unit.
+- **Common pattern:** YES—versioned-JSON-in-one-item is well-established for small credential sets (seen in multi-account apps like 1Password, Proton Mail workflow).
+
+**Pros:**
+- Single atomic operation (single SecItemUpdate call)
+- Simple enumeration (no query needed for active state)
+- Version-forward compatible (embed version in JSON)
+- Industry-standard pattern for small credential bundles
+
+**Cons:**
+- If corruption occurs, entire pairing set is affected
+- No granular updates (must read-modify-write full payload)
+- Slightly more complex JSON handling in Rust
+
+---
+
+### Model 2: Multiple Keychain Items with Dynamic Account Names
+
+**Enumeration (SecItemCopyMatching):**
+- **Supported:** YES. You can enumerate all items for a service using `kSecMatchLimitAll` + `kSecReturnAttributes` + `kSecReturnData` in the query dictionary.
+- **Rust support:** The `security-framework` crate provides bindings to `SecItemCopyMatching`, though high-level enumeration wrappers are limited. You'll likely need to work with the low-level `security_framework_sys` C bindings for full control.
+- **Query example:**
+  ```rust
+  // Pseudocode: kSecClass: kSecClassGenericPassword
+  // kSecAttrService: "com.yourapp.admin-pairing"
+  // kSecMatchLimit: kSecMatchLimitAll
+  // kSecReturnAttributes: true, kSecReturnData: true
+  ```
+
+**Partial-Write Consistency:**
+- **Risk:** MODERATE. If you update multiple items and the app crashes mid-operation, some items may be updated while others remain stale. Orphaned items (e.g., a deleted pairing whose index entry wasn't removed) are a real concern.
+- **Orphaned item cleanup:** iOS does NOT auto-clean orphaned keychain items on app uninstall (they persist if the pairing was shared with other apps, or indefinitely otherwise). You must handle cleanup explicitly.
+- **Best practice:** Add a "version" or "last-modified-timestamp" to the index item. On app startup, validate consistency: any pairing IDs in the index must have corresponding keychain items, and vice versa.
+
+**Pros:**
+- Granular updates (update only the pairing you need)
+- Easier individual pairing deletion (no read-modify-write)
+- Scales better if you move beyond 5 pairings later
+
+**Cons:**
+- Multiple SecItemUpdate calls = higher crash-during-update risk
+- Enumeration requires careful query construction
+- Orphaned items can accumulate
+- Slightly more Rust FFI complexity (lower-level security_framework_sys)
+
+---
+
+### Active Pairing Pointer
+
+**Recommendation:** Store in `UserDefaults`, NOT Keychain.
+
+**Rationale:**
+- The active pairing ID is **not a secret**—it's just a selection state.
+- UserDefaults is designed for non-sensitive preferences (hence the common pattern: "store account IDs in UserDefaults, secrets in Keychain").
+- Keeps the Keychain focused on credentials; reduces unrelated churn.
+- Simpler logic: no need to update a "current" keychain item on every switch.
+
+---
+
+### Rust `security-framework` Crate Capabilities
+
+**Status (2025-2026):**
+- ✓ Supports iOS and macOS
+- ✓ Provides password entry read/write/delete operations
+- ✓ Bindings available to `SecItemCopyMatching` (via `security_framework_sys`)
+- ⚠️ High-level enumeration wrappers are minimal; you'll need to construct `CFDictionary` queries directly or use the low-level sys bindings
+- ⚠️ iOS-specific limitations: No documented differences from macOS, but iOS Security framework is the same API surface
+
+**Library note:** The `security-framework` crate is actively maintained and the primary Rust option for keychain access on iOS/macOS.
+
+---
+
+## Recommendation: Model 1 (Single JSON Item) for Your Use Case
+
+**Reasoning:**
+
+1. **Your dataset is tiny:** 2-5 pairings × ~500 bytes = well under the 4 KB soft limit. No scaling concerns.
+2. **Atomicity matters here:** A crash during a multi-item update could leave the pairing list in an inconsistent state (e.g., index points to a deleted pairing). A single SecItemUpdate eliminates this risk.
+3. **Simpler Rust implementation:** One FFI call to SecItemUpdate, one query to SecItemCopyMatching. Less surface area for bugs.
+4. **Established pattern:** Multi-account password managers use this exact approach for small credential sets.
+5. **No enumeration complexity:** You already know the service name; you don't need to query all items. Just fetch the one "admin-pairings" item.
+
+**Implementation pattern:**
+```rust
+// On startup: fetch one item (account: "admin-pairings", service: bundle ID)
+// Deserialize JSON to Vec&lt;AdminPairing&gt; + active ID
+// On pairing change: update JSON, SecItemUpdate once
+// Store active pairing ID separately in UserDefaults (non-secret)
+```
+
+**Caveat:** If you ever need &gt;5 pairings or per-pairing revocation without affecting others, switch to Model 2. But the Keychain inheritance risk and orphaned-item hazard make Model 2 harder to defend in code review right now.
+
+---
+
+## Sources:
+- [SecItemCopyMatching Apple Developer Documentation](https://developer.apple.com/documentation/security/secitemcopymatching(_:_:))
+- [Seamlessly Manage Multiple User Accounts in iOS with Keychain](https://medium.com/@leekiereloo/seamlessly-manage-multiple-user-accounts-in-ios-with-keychain-9ed080638a25)
+- [Keychain Best Practices for Storing Sensitive Data](https://medium.com/@ios-interview/keychain-best-practices-for-storing-sensitive-data-ios-development-a27d2d3ed34b)
+- [Understanding Keychain Storage in iOS: A Complete Guide](https://medium.com/@anshikapathak06/understanding-keychain-storage-in-ios-a-complete-guide-for-secure-data-handling-ecdd16289a00)
+- [storage-framework crates.io](https://crates.io/crates/security-framework)
+- [Keychain Items – Apple Developer Documentation](https://developer.apple.com/documentation/security/keychain-items)
+- [Security Keychain Data Protection – Apple Support](https://support.apple.com/guide/security/keychain-data-protection-secb0694df1a/web)
+- [iOS Keychain vs UserDefaults: where to store tokens](https://ptkd.com/journal/ios-keychain-vs-userdefaults-storing-tokens)
+- [Storage options on iOS compared](https://www.donnywals.com/storage-options-on-ios-compared/)
+- [iOS keychain cleanup and access groups support](https://www.browserstack.com/docs/app-automate/appium/advanced-features/ios-keychain-support)</result>
+<usage><subagent_tokens>55668</subagent_tokens><tool_uses>15</tool_uses><duration_ms>81714</duration_ms></usage>
+</task-notification>
+
+Agent: The research is back and it's decisive. For a 2–5 pairing set, the recommendation is a **single versioned JSON keychain item** (well under the ~4 KB comfort zone, one atomic `SecItemUpdate`, an established multi-account pattern) over multiple dynamic-account items (partial-write inconsistency, orphaned items, and — the codebase-specific kicker — the `security_framework::passwords` convenience API the app already uses has no "enumerate accounts" call, so per-relay items would force a drop to raw `security_framework_sys` FFI).
+
+One place I'd diverge from the researcher: they suggested UserDefaults for the active-server pointer. This app has no UserDefaults plumbing at all — the existing non-secret preference (`admin-biometric-enabled`) already lives in the keychain, so embedding `active` inside the same JSON document follows the codebase pattern and keeps switch = one atomic write.
+
+That leaves one genuine architectural fork — **who owns "active"** — which shapes every IPC signature:
+
+Approach locked: single versioned JSON keychain document, Rust-owned active pointer.
+
+Now I'll present the design in sections for validation. **Section 1 of 5: Data model & keychain layout.**
+
+The keychain keeps its existing service (`ezpds-admin-companion`) and all device-key accounts unchanged — the P-256 key stays global, one key registered independently with each relay. The three legacy pairing accounts (`admin-device-id`, `admin-relay-url`, `admin-device-label`) are replaced by a single account, `admin-pairings`, holding a versioned JSON document:
+
+```json
+{
+  "version": 1,
+  "active": "b7e2…",
+  "pairings": [
+    { "id": "b7e2…", "nickname": "staging", "relayUrl": "https://…", "deviceId": "…", "deviceLabel": "Jacob's iPhone" }
+  ]
+}
+```
+
+- `id` is a locally generated UUID — stable even if you later re-pair the same relay URL (the relay assigns a fresh `deviceId` on re-pair, and URLs aren't reliable identities).
+- **Invariants** enforced by the Rust module: `active` always references an existing pairing id, or is absent when the list is empty; every mutation is a read-modify-write of the whole document ending in one atomic keychain write.
+- Nicknames are required but not unique — the host is always displayed beneath the nickname, so duplicates disambiguate themselves.
+- **Legacy state:** on first load, if the old triple exists it's deleted (one-time cleanup, no migration per the DoD). The relay-side device entry from the old pairing remains registered; after re-pairing you can revoke the stale row from the relay's device list.
+- `admin-biometric-enabled` is untouched — still a device setting.
+
+`★ Insight ─────────────────────────────────────`
+Keying pairings by a local UUID rather than relay URL decouples the app's notion of "a server I know" from both identities that can churn: the relay-assigned `deviceId` (changes on re-pair) and the URL (staging hosts get renamed). It's the same move the PDS itself makes by keying accounts on DID rather than handle.
+`─────────────────────────────────────────────────`
+
+Does this look right so far?
