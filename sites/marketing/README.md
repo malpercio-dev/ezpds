@@ -21,7 +21,7 @@ sources (`assets/og/*.src.html`) use the same forked tokens and self-hosted
 fonts as the pages — Obsign in the Sealed-Credential register, Custos in the
 Brass Console. Regenerate with `assets/og/render.sh` (headless Chrome + the
 pure-Node `pngcrop.mjs`; the script documents the 717→630 headless-crop trick).
-`og:image` URLs are absolute against `about.obsign.org`.
+`og:image` URLs are absolute against `obsign.org` (the apex).
 
 ## Design derivation
 
@@ -75,7 +75,7 @@ site, either mobile app, the PDS backend, or any auth/PII surface.
 
 Umami's own website-level "Domain" setting is cosmetic only (it filters
 self-referrals out of the referrer list; it does not gate the collection
-API), so the embed carries `data-domains="about.obsign.org"` — Umami's
+API), so the embed carries `data-domains="obsign.org"` — Umami's
 client-side hostname allowlist — to keep this site's non-production
 deployments (Railway staging, local previews) from reporting into the
 production dashboard.
@@ -94,7 +94,7 @@ Production is a Caddy container (`Dockerfile` + `Caddyfile`) deployed as its own
 Railway service — a second service in the PDS's Railway project, scoped to this
 directory (`Root Directory = sites/marketing`) so it stays independent of the
 repo-root `railway.toml`. The `Caddyfile` handles gzip/zstd, clean URLs, and
-cache/security headers. Full setup — including pointing `about.obsign.org` at
+cache/security headers. Full setup — including pointing the `obsign.org` apex at
 it — is in [docs/deploy.md](../../docs/deploy.md) → "Marketing Site". To run the
 container exactly as deployed:
 
