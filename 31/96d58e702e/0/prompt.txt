@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>bnpk2hatv</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-jacob-zweifel-workspace-malpercio-dev-ezpds/cead9993-b6df-435d-9881-b381a7fc7d57/tasks/bnpk2hatv.output</output-file>
+<status>completed</status>
+<summary>Background command "Watch production CI then poll pds.obsign.org health for 0.8.1" completed (exit code 0)</summary>
+</task-notification>
