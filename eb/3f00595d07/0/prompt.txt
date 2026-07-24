@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>b9ey6eaod</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-jacob-zweifel-workspace-malpercio-dev-ezpds/00ef4afd-87f5-4f84-908b-60302e7f879a/tasks/b9ey6eaod.output</output-file>
+<status>completed</status>
+<summary>Background command "Watch PR 192 merge, then the TestFlight build for the merge commit" completed (exit code 0)</summary>
+</task-notification>
