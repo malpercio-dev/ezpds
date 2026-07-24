@@ -6,6 +6,7 @@ pub mod claim;
 pub mod device_key;
 pub mod diagnostics;
 pub mod disaster_recovery;
+pub mod endpoint_repair;
 pub mod handle_change;
 pub mod http;
 pub mod identity_removal;
@@ -1381,6 +1382,7 @@ pub fn run() {
             session_provider::ensure_identity_session,
             handle_change::change_handle_cmd,
             handle_change::get_identity_handle_domains,
+            endpoint_repair::repair_hosting_endpoint,
             share_recovery::start_share_recovery,
             share_recovery::add_recovery_share,
             share_recovery::remove_recovery_share,

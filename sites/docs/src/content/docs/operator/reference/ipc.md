@@ -77,6 +77,7 @@ Source: `apps/identity-wallet/src/lib/ipc/`
 | `register_handle` | App command |
 | `rekey_in_progress_cmd` | App command |
 | `remove_recovery_share` | App command |
+| `repair_hosting_endpoint` | App command |
 | `request_claim_verification` | App command |
 | `request_escrow_release` | App command |
 | `request_identity_removal` | App command |

@@ -8,6 +8,7 @@
     onmigrate,
     onrecoverpds,
     onchangehandle,
+    onrepairendpoint,
     onrotatekey,
     onapppasswords,
     onagents,
@@ -27,6 +28,9 @@
     /** Only passed for a wallet-custodied did:plc (device key in the rotation set) —
      *  gates the sovereign change-handle entry point (device-key-signed alsoKnownAs op). */
     onchangehandle?: () => void;
+    /** Only passed for a wallet-custodied did:plc — gates the sovereign endpoint-repair
+     *  entry point (device-key-signed atproto_pds repoint when the server changed hostname). */
+    onrepairendpoint?: () => void;
     /** Only passed for a wallet-custodied did:plc — gates the sovereign repo signing-key
      *  rotation entry point (device-key-signed key-swap op via the hosting PDS). */
     onrotatekey?: () => void;
@@ -169,6 +173,10 @@
 
   {#if onchangehandle}
     <button class="action" onclick={onchangehandle}>Change handle</button>
+  {/if}
+
+  {#if onrepairendpoint}
+    <button class="action" onclick={onrepairendpoint}>Repair hosting endpoint</button>
   {/if}
 
   {#if onrotatekey}
