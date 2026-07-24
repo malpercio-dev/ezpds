@@ -18,9 +18,21 @@ docs {
   # GET /.well-known/did.json
 
   Serves the DID document for a Custos-hosted `did:web` account, keyed on the request Host
-  (`X-Forwarded-Host` → `Host` → `:authority`) mapped to `did:web:{host}`. The document is returned
-  only when that account has opted in to managed hosting and is in an active lifecycle; otherwise a
-  host that isn't opted in returns 404 exactly like an unknown one (no opt-in existence oracle).
+  (`X-Forwarded-Host` → `Host` → `:authority`, with an explicit `:443`/`:80` default port stripped)
+  mapped to `did:web:{host}`. The document is returned only when that account has opted in to managed
+  hosting and is in an active lifecycle; otherwise a host that isn't opted in returns 404 exactly
+  like an unknown one (no opt-in existence oracle).
+
+  ## The server's own DID (exception)
+
+  One host is not account-gated: when the request Host maps to the server's own DID — the same DID
+  `com.atproto.server.describeServer` advertises (a configured `server_did`, or `did:web:{public
+  host}` derived from the public URL) — the route synthesizes a service-only document from config
+  rather than reading storage, and returns it before the account lookup. This keeps the server
+  identity resolving across a public-URL migration with no database row, and a coincidental account
+  bearing that DID can never shadow it. The synthesized document carries only `@context`, `id`, and
+  an `#atproto_pds` service pointing at the public URL — no verification methods, since inter-service
+  auth is verified against per-account `#atproto` keys, never a server key.
 
   ## Response (200)
 
