@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>bgqje58d3</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-jacob-zweifel-workspace-malpercio-dev-ezpds/51edb752-2d71-4f7f-ae69-aa630ac6a6fd/tasks/bgqje58d3.output</output-file>
+<status>failed</status>
+<summary>Background command "Clean build + clippy + tests for the relay (background)" failed with exit code 101</summary>
+</task-notification>
