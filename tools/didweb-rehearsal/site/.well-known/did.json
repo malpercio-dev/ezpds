@@ -1,3 +1,30 @@
 {
-  "note": "placeholder — replace this entire file with the exact document the wallet's did:web ceremony composes, byte-for-byte (2-space indent, trailing newline). See tools/didweb-rehearsal/README.md."
+  "@context": [
+    "https://www.w3.org/ns/did/v1"
+  ],
+  "id": "did:web:rehersal-production.up.railway.app",
+  "alsoKnownAs": [
+    "at://rehersal.ezpds-staging.up.railway.app"
+  ],
+  "verificationMethod": [
+    {
+      "id": "did:web:rehersal-production.up.railway.app#device",
+      "type": "Multikey",
+      "controller": "did:web:rehersal-production.up.railway.app",
+      "publicKeyMultibase": "zj4QVAguXuCBhNbEsz8vBti8NqLRvZC7Z1Kaz5Ds6XHyk"
+    },
+    {
+      "id": "did:web:rehersal-production.up.railway.app#atproto",
+      "type": "Multikey",
+      "controller": "did:web:rehersal-production.up.railway.app",
+      "publicKeyMultibase": "zDnaerRo2VgL7kTNjanYF4ZVieHdGqt9bfxEJEFdGjpbZfRuA"
+    }
+  ],
+  "service": [
+    {
+      "id": "did:web:rehersal-production.up.railway.app#atproto_pds",
+      "type": "AtprotoPersonalDataServer",
+      "serviceEndpoint": "https://ezpds-staging.up.railway.app"
+    }
+  ]
 }
