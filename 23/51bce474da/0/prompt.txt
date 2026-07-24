@@ -1,1 +1,0 @@
-Got any ideas on how we can add CI to the iOS app? Ideally we'd build+sign+package+deploy somewhere I can easily OTA install onto my device. With the repo being on tangled.org right now, I know SaaS integration possibilities are thin/non-existent. setting up a github mirror is a possibility on the table
