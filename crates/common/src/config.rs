@@ -446,7 +446,8 @@ fn default_admin_nonce_max_age_secs() -> u64 {
 /// Handle names reserved for infrastructure by default (see [`Config::reserved_handles`]).
 ///
 /// `identitywallet` is the wallet's canonical OAuth client_id host
-/// (`identitywallet.obsign.org`); `about` is the marketing subdomain (`about.obsign.org`).
+/// (`identitywallet.obsign.org`); `about` is the marketing site's retired subdomain — still
+/// reserved so the name can never be claimed as a user handle and impersonate infrastructure.
 /// An operator can replace the whole list via config; these are the safe defaults for the
 /// reference deployment.
 pub fn default_reserved_handles() -> Vec<String> {

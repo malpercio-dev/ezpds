@@ -5,7 +5,7 @@ import starlight from '@astrojs/starlight';
 // https://astro.build/config
 export default defineConfig({
   // Canonical origin for the deployed docs service (mirrors the marketing
-  // site's about.obsign.org). Only affects absolute URLs (sitemap, canonical,
+  // site's obsign.org apex). Only affects absolute URLs (sitemap, canonical,
   // Open Graph); the build is fully static and host-agnostic otherwise.
   site: 'https://docs.obsign.org',
   integrations: [

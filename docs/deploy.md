@@ -13,7 +13,7 @@ The PDS container expects the following environment variables and mounts:
 ### Environment Variables
 - **`EZPDS_PUBLIC_URL`** (required) - Public HTTPS URL of the PDS (e.g., `https://PDS.example.com`)
 - **`EZPDS_AVAILABLE_USER_DOMAINS`** (required) - Comma-separated list of allowed handle domains (e.g., `example.com,example.bsky.social`)
-- **`EZPDS_RESERVED_HANDLES`** (optional, default `identitywallet,about`) - Comma-separated handle names (first DNS label) that may never be claimed under a served domain — infrastructure hostnames in the user-handle wildcard space (e.g. `identitywallet.obsign.org`, `about.obsign.org`). Compared case-insensitively. Set to an explicit empty value to reserve nothing.
+- **`EZPDS_RESERVED_HANDLES`** (optional, default `identitywallet,about`) - Comma-separated handle names (first DNS label) that may never be claimed under a served domain — infrastructure hostnames in the user-handle wildcard space (e.g. `identitywallet.obsign.org`; `about` stays reserved even though the marketing site now lives at the apex — retiring a subdomain must not open it up for handle impersonation). Compared case-insensitively. Set to an explicit empty value to reserve nothing.
 - **`EZPDS_SIGNING_KEY_MASTER_KEY`** (required) - 64-character hex string (32 bytes); the key-encryption key (KEK) that wraps every at-rest secret in the SQLite DB (the per-account repo signing keys plus the OAuth, JWT, and Iroh keys). **Back it up separately from the database backup** — losing it is a disaster distinct from losing the DB. See [Master-Key (KEK) Backup and Disaster Recovery](#master-key-kek-backup-and-disaster-recovery).
 - **`EZPDS_ADMIN_TOKEN`** (required) - Bearer token for admin-only endpoints (e.g., rotation key claiming)
 - **`EZPDS_DATA_DIR`** (optional, default `/data`) - Directory where `relay.db` is persisted. Set by the Dockerfile ENV; can be overridden if the data volume is mounted elsewhere. Must be writable by the container process.
@@ -227,23 +227,22 @@ The repo-root `railway.toml` is **PDS-specific** — it builds the `pds` binary 
   safety; harmless if you'd rather keep all services uniformly gated.
 - **No volume, no environment variables.** Railway injects `PORT`; Caddy binds it.
 
-### Domain: `about.obsign.org`
+### Domain: `obsign.org` (apex)
 
-`obsign.org` + `*.obsign.org` are already Railway custom domains on the **PDS** service (DNS at
-Cloudflare). Because of the wildcard, `about.obsign.org` currently resolves to the PDS. To route
-it to the marketing service instead:
+The marketing site serves at the **apex** (2026-07-24, part of the `pds.obsign.org` hostname
+migration). Railway custom domains: the **PDS** service holds `pds.obsign.org` + `*.obsign.org`
+(the wildcard must stay on the PDS — it serves the Host-keyed handle well-knowns and the wallet's
+canonical `identitywallet.obsign.org` client metadata); the **marketing** service holds
+`obsign.org`. An exact hostname on one service takes routing priority over a wildcard on another,
+so the apex routes to marketing without touching the wildcard.
 
-1. In the **marketing** service → Settings → Networking, add the custom domain
-   `about.obsign.org`. An **exact** hostname on one service takes routing priority over a
-   **wildcard** (`*.obsign.org`) on another, so this steals just `about` without touching the
-   wildcard or the PDS.
-2. DNS: the `*.obsign.org` wildcard record already covers `about` at the DNS layer, so no new
-   Cloudflare record is strictly required. Adding an explicit `about` CNAME (matching however the
-   wildcard is proxied — keep the same orange/grey-cloud mode as the working wildcard) is clearer
-   and avoids surprises if the wildcard is ever narrowed.
-3. Verify: `curl -I https://about.obsign.org/` returns Caddy's 200 (not the PDS), and
-   `https://about.obsign.org/custos/` loads the Custos page. If it still hits the PDS, the exact
-   domain didn't register on the marketing service — re-check step 1.
+The former `about.obsign.org` binding was replaced by the apex. If a stale `about` CNAME still
+exists at Cloudflare it will fail TLS against Railway (no matching binding) — delete the record,
+or re-add `about.obsign.org` on the marketing service as a redirect if old links matter.
+
+Verify: `curl -I https://obsign.org/` returns Caddy's 200 with the Obsign landing page, and
+`https://obsign.org/custos/` loads the Custos page; `curl https://pds.obsign.org/xrpc/_health`
+still answers from the PDS.
 
 ### Local check
 
