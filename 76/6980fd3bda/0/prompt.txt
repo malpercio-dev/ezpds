@@ -1,0 +1,1 @@
+Hm, let's troubleshoot. I saw the request, input the code, but when I go to approve with face id, I see error: "approval did not go through. your server could not complete the approval. Nothing was granted -- you can try again."
