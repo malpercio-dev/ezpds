@@ -1,0 +1,106 @@
+## Context
+
+- Current git status: On branch docs/agent-auth-session-token
+Your branch is behind 'origin/main' by 1 commit, and can be fast-forwarded.
+  (use "git pull" to update your local branch)
+
+Changes not staged for commit:
+  (use "git add <file>..." to update what will be committed)
+  (use "git restore <file>..." to discard changes in working directory)
+	modified:   bruno/agent_claim_confirm.bru
+	modified:   crates/pds/CLAUDE.md
+	modified:   docs/deploy.md
+
+no changes added to commit (use "git add" and/or "git commit -a")
+- Current git diff (staged and unstaged changes): diff --git a/bruno/agent_claim_confirm.bru b/bruno/agent_claim_confirm.bru
+index 0ca34353..06df0150 100644
+--- a/bruno/agent_claim_confirm.bru
++++ b/bruno/agent_claim_confirm.bru
+@@ -28,9 +28,10 @@ docs {
+   # POST /agent/identity/claim/confirm
+ 
+   The human-in-the-loop gate of the auth.md claim ceremony (spec Step 4). The account owner —
+-  authenticated with a **full-access** session/OAuth token (app-password and agent-derived tokens
+-  are refused) — submits the `user_code` the agent showed them. This is the wallet-facing surface
+-  (Obsign's claim-approval screen).
++  authenticated with either a **wallet session token** (the opaque `sessions`-table token Obsign
++  holds; what the claim-approval screen sends) or a **full-access** OAuth/XRPC access token
++  (app-password and agent-derived tokens are refused) — submits the `user_code` the agent showed
++  them. Same dual-credential owner guard as the `/v1/agents` surface.
+ 
+   On success the server binds the registration to the caller's DID (for an ownerless `anonymous`
+   identity — a registration already bound at registration time may be confirmed only by that owner),
+@@ -49,8 +50,7 @@ docs {
+ 
+   ## Errors
+ 
+-  - 401 (XRPC envelope): missing/invalid bearer token
+-  - 401 invalid_token: the token is not full access (e.g. an app password)
++  - 401 invalid_token: missing/invalid credential, or a token below full access (e.g. an app password)
+   - 403 access_denied: agent-derived token, a revoked identity, or a code bound to another account
+   - 400 invalid_request: missing `user_code`, or `registration_id` doesn't match the code
+   - 400 invalid_user_code: unknown code
+diff --git a/crates/pds/CLAUDE.md b/crates/pds/CLAUDE.md
+index 5f11559b..b9c5f5e0 100644
+--- a/crates/pds/CLAUDE.md
++++ b/crates/pds/CLAUDE.md
+@@ -1,6 +1,6 @@
+ # PDS Crate (Custos)
+ 
+-Last verified: 2026-07-05
++Last verified: 2026-07-13
+ 
+ ## Purpose
+ 
+@@ -221,7 +221,7 @@ Pure authentication logic and middleware. Submodules:
+ | `agent_assertion.rs` | Mixed (unavoidable) | Shared auth.md agent machinery used by both `routes/agent_identity.rs` and `routes/agent_claim.rs` (routes can't import each other): service-signed `identity_assertion` minting, the claim-block / verification-URI / sqlite-datetime helpers, the auth.md-style `AgentAuthError` (`{error, error_description}`) response type, and `record_agent_audit` (append one V040 agent audit event; shared by the registration/claim routes and the token endpoint) |
+ | `dpop.rs` | Mixed (unavoidable) | DPoP proof validation, nonce store |
+ | `extractors.rs` | Imperative Shell | `AuthenticatedUser` axum extractor |
+-| `guards.rs` | Imperative Shell | Route-level auth guards: `require_admin`/`require_admin_token`/`require_admin_json` (master token OR signed companion-device request), `require_session`, `require_pending_session`, `require_device_token`; the admin-device request-signing envelope + self-signature verification. Reads request headers and queries `sessions`/`devices`/`admin_devices`; owns no schema |
++| `guards.rs` | Imperative Shell | Route-level auth guards: `require_admin`/`require_admin_token`/`require_admin_json` (master token OR signed companion-device request), `require_session`, `require_pending_session`, `require_device_token`, and `authenticate_account_owner` (the account-holder agent surfaces' dual credential — wallet session token first, then a full-access OAuth/XRPC access token; agent-derived and app-password tokens refused; returns a vocab-neutral `OwnerAuthError` that `/v1/agents/*` maps to XRPC `ApiError`s and the claim-confirm gate maps to auth.md errors); the admin-device request-signing envelope + self-signature verification. Reads request headers and queries `sessions`/`devices`/`admin_devices`; owns no schema |
+ | `issuer_trust.rs` | Mixed (unavoidable) | Shared trusted-issuer verification for the two provider-signed auth.md tokens: an **ID-JAG** (`routes/agent_identity.rs`) and a **SET** (`routes/agent_event.rs`). Routes can't import each other, so the issuer selection (`select_issuer`), inline-PEM/JWKS key resolution, and generic signature+`iss`/`aud`(+`exp`) verification (`verify_trusted_jwt`) live here, returning a neutral `TrustedJwtError` each caller maps to its own vocab. Also owns `REVOKED_EVENT_TYPE` (shared by the SET handler + the AS metadata's `events_supported`) |
+ | `jwt.rs` | Functional Core | JWT parsing, scope validation, access/refresh token verification, HS256 token issuance |
+ | `password.rs` | Functional Core | `hash_password`, `verify_password` (argon2id) |
+@@ -285,9 +285,9 @@ One file per HTTP endpoint. Each handler is a thin Imperative Shell:
+ | `oauth_server_metadata.rs` | `GET /.well-known/oauth-authorization-server` |
+ | `oauth_jwks.rs` | `GET /oauth/jwks` |
+ | `agent_identity.rs` | `POST /agent/identity` — auth.md agent registration (spec Step 3). Dispatches on request `type`: **service_auth** (`login_hint` → start a claim ceremony bound to the matching account, return `claim_token` + claim block), **identity_assertion** (verify an ID-JAG against the `[agent_auth] trusted_issuers` list — signature/`iss`/`aud`/`exp`/`auth_time`, the verification key from the matched issuer's inline `public_key_pem` (static trust) or its `jwks_url` fetched+cached via `jwks.rs` and indexed by the ID-JAG `kid` (dynamic trust) — then mint a service-signed assertion for a confirmed `(iss,sub)`, or return `interaction_required` for a first-seen binding), and **anonymous** (register an ownerless identity — `agent_identities.did` is NULL until a claim binds one, V038 — mint a pre-claim assertion carrying `[agent_auth] pre_claim_scopes`, return it + a `claim_token`; the identity stays `active`/unclaimed, so its assertion can't yet be exchanged at the token endpoint). Every flow is opt-in per operator (all off by default); OAuth-style `{error, error_description}` failures use the auth.md codes (`service_auth_not_enabled`/`anonymous_not_enabled`/`issuer_not_enabled`/`login_required`/`interaction_required`/`invalid_grant`/`access_denied`). The `identity_assertion` status model: `active` = registered, awaiting claim confirmation; `claimed` = confirmed. The minted assertion's `scope` is the registration's stored `granted_scopes` **clamped to the operator's current `[agent_auth] granted_scopes`** (`auth/oauth_scopes::intersect_scope_tokens`) — a conservative granular profile by default (repo writes + blobs, no `account:*`/`identity:*`/full-access), so an agent-derived token is bounded by the same per-route scope checks as an OAuth token. Narrowing the config narrows subsequently minted assertions without re-registration; the mint never exceeds what was stored |
+-| `agent_claim.rs` | `POST /agent/identity/claim` + `POST /agent/identity/claim/confirm` — the auth.md claim ceremony (spec Step 4). **Initiate** (public; the `claim_token` is the agent's credential, like a device pairing code) starts/resumes a ceremony: validates the token (`invalid_claim_token`/`claim_expired`/`claimed_or_in_flight`), then idempotently re-emits an in-flight `user_code` or opens a fresh `agent_claim_attempts` row, returning `{registration_id, claim_attempt_id, status, expires_at, claim_attempt{user_code, expires_in, verification_uri, interval}}`. **Confirm** (full-access session/OAuth token; app-pass + agent-derived callers refused) is the human gate: the account owner submits the `user_code`, and one transaction consumes the attempt (`complete_agent_claim_attempt`) + claims the identity (`db::agent_auth::claim_agent_identity`) — binding the caller's DID for an ownerless `anonymous` registration (a pre-bound `service_auth`/`identity_assertion` registration may be confirmed only by that owner, else `access_denied`), minting the post-claim `identity_assertion` (owner DID, current `granted_scopes`), and flipping `active → claimed` so the assertion exchanges at the token endpoint. Uses the auth.md-style `{error, error_description}` body for ceremony errors. The machine-pollable claim grant (`urn:workos:agent-auth:grant-type:claim`) that lets a `service_auth`/`anonymous` agent auto-collect the minted credential lives at the token endpoint (`oauth_token.rs::handle_claim_polling`); an `identity_assertion` agent instead collects it by re-issuing `POST /agent/identity` |
++| `agent_claim.rs` | `POST /agent/identity/claim` + `POST /agent/identity/claim/confirm` — the auth.md claim ceremony (spec Step 4). **Initiate** (public; the `claim_token` is the agent's credential, like a device pairing code) starts/resumes a ceremony: validates the token (`invalid_claim_token`/`claim_expired`/`claimed_or_in_flight`), then idempotently re-emits an in-flight `user_code` or opens a fresh `agent_claim_attempts` row, returning `{registration_id, claim_attempt_id, status, expires_at, claim_attempt{user_code, expires_in, verification_uri, interval}}`. **Confirm** (wallet session token or full-access OAuth/XRPC token via `auth::guards::authenticate_account_owner` — the same dual-credential owner guard as `/v1/agents`, so Obsign's opaque session token works; app-pass + agent-derived callers refused, every auth rejection in the auth.md error shape) is the human gate: the account owner submits the `user_code`, and one transaction consumes the attempt (`complete_agent_claim_attempt`) + claims the identity (`db::agent_auth::claim_agent_identity`) — binding the caller's DID for an ownerless `anonymous` registration (a pre-bound `service_auth`/`identity_assertion` registration may be confirmed only by that owner, else `access_denied`), minting the post-claim `identity_assertion` (owner DID, current `granted_scopes`), and flipping `active → claimed` so the assertion exchanges at the token endpoint. Uses the auth.md-style `{error, error_description}` body for ceremony errors. The machine-pollable claim grant (`urn:workos:agent-auth:grant-type:claim`) that lets a `service_auth`/`anonymous` agent auto-collect the minted credential lives at the token endpoint (`oauth_token.rs::handle_claim_polling`); an `identity_assertion` agent instead collects it by re-issuing `POST /agent/identity` |
+ | `agent_event.rs` | `POST /agent/event/notify` — the auth.md `events_endpoint` (SET receiver). Accepts a **Security Event Token** (RFC 8417) pushed by a trusted identity provider (`application/secevent+jwt`, RFC 8935) and revokes the matching `identity_assertion` registration — the provider-initiated counterpart to `agents.rs`'s owner-driven revoke. Verified against the **same** `[agent_auth] trusted_issuers` list as ID-JAGs (`auth/issuer_trust.rs`), so gating is implicit: with no trusted issuers a readable-but-untrusted `iss` is `invalid_issuer` (a missing/unreadable `iss` is `invalid_request`). The SET's `iss`+`sub` (top-level, or a `subject` in the event payload) key the `(issuer, subject)` lookup; the RFC 8417-required `iat`/`jti` and JSON-object `events` payloads are structurally validated (`invalid_request` if malformed), and the `events` claim must carry `REVOKED_EVENT_TYPE`. Revocation reuses `revoke_agent_identity` + a `Revoked` audit event (`detail.source = "provider_set"`) atomically, exactly like `agents.rs::revoke_agent`. Idempotent: an unknown/already-revoked subject is still `202` (no oracle, replay-safe, no `jti` store). Errors use the RFC 8935 `{err, description}` body + `Content-Language` (`invalid_request`/`invalid_issuer`/`authentication_failed`), distinct from the XRPC and auth.md envelopes |
+-| `agents.rs` | `GET /v1/agents`, `POST /v1/agents/claim-preview`, `POST /v1/agents/{registration_id}/revoke`, `GET /v1/agents/{registration_id}/audit` — per-account agent management for the wallet's "My agents" surface (account-holder routes, not admin ones). Auth is a shared owner guard accepting **either** a wallet session token (`require_session`) or a full-access OAuth/XRPC access token (the `transfer/complete` dual-credential posture); agent-derived and app-password credentials are refused — an agent must never list, preview, audit, or revoke agents, including itself. Unknown and foreign registration ids are a uniform 404 (no cross-account existence oracle). **list** returns each identity's type/issuer/subject/scopes/status plus `lastUsedAt` (newest activity audit event). **claim-preview** answers "what would confirming this `user_code` grant?" — registration type + the operator's current canonicalized `granted_scopes` — so the wallet shows the grant *before* the biometric approval gate; authorization mirrors confirm, every failure shape is the same 404, and it shares the confirm endpoint's rate-limit budget (same code-guessing surface). **revoke** flips `status = 'revoked'` and writes the `revoked` audit event atomically; idempotent (a repeat is 200 with no duplicate event). **audit** pages the V040 trail newest-first with a rowid cursor |
++| `agents.rs` | `GET /v1/agents`, `POST /v1/agents/claim-preview`, `POST /v1/agents/{registration_id}/revoke`, `GET /v1/agents/{registration_id}/audit` — per-account agent management for the wallet's "My agents" surface (account-holder routes, not admin ones). Auth is the shared owner guard `auth::guards::authenticate_account_owner` accepting **either** a wallet session token or a full-access OAuth/XRPC access token (the `transfer/complete` dual-credential posture; also the claim-confirm gate's guard); agent-derived and app-password credentials are refused — an agent must never list, preview, audit, or revoke agents, including itself. Unknown and foreign registration ids are a uniform 404 (no cross-account existence oracle). **list** returns each identity's type/issuer/subject/scopes/status plus `lastUsedAt` (newest activity audit event). **claim-preview** answers "what would confirming this `user_code` grant?" — registration type + the operator's current canonicalized `granted_scopes` — so the wallet shows the grant *before* the biometric approval gate; authorization mirrors confirm, every failure shape is the same 404, and it shares the confirm endpoint's rate-limit budget (same code-guessing surface). **revoke** flips `status = 'revoked'` and writes the `revoked` audit event atomically; idempotent (a repeat is 200 with no duplicate event). **audit** pages the V040 trail newest-first with a rowid cursor |
+ | `oauth_templates.rs` | Pure HTML rendering helpers (Functional Core, no handler) |
+ | `oauth_errors.rs` | Shared `OAuthTokenError` — the RFC 6749 §5.2 `{error, error_description}` responder (with the `use_dpop_nonce` header path) used by `oauth_token.rs` and `oauth_revoke.rs` (Functional Core, no handler) |
+ | `static_assets.rs` | `GET /static/*path` — embedded brand fonts (woff2/ttf via `include_bytes!`) and future web-UI assets |
+diff --git a/docs/deploy.md b/docs/deploy.md
+index fd7662ed..06877e50 100644
+--- a/docs/deploy.md
++++ b/docs/deploy.md
+@@ -19,6 +19,7 @@ The PDS container expects the following environment variables and mounts:
+ - **`EZPDS_DATA_DIR`** (optional, default `/data`) - Directory where `relay.db` is persisted. Set by the Dockerfile ENV; can be overridden if the data volume is mounted elsewhere. Must be writable by the container process.
+ - **`PORT`** (optional, default `8080`) - Port to listen on inside the container
+ - **`EZPDS_IROH_ENABLED`** (optional, default `false`) - Set to `true` to bind the Iroh QUIC tunnel alongside the HTTP server, letting devices reach the PDS through NAT by dialing its node id. The node id is advertised via `GET /v1/devices/:id/pds` and is **stable across restarts only when `EZPDS_SIGNING_KEY_MASTER_KEY` is set** (otherwise the identity is ephemeral and rotates each boot). Iroh uses outbound UDP and the n0 discovery/relay servers for NAT traversal.
++- **`EZPDS_AGENT_AUTH_SERVICE_AUTH_ENABLED`** (optional, default `false`) - Opt-in for the auth.md `service_auth` agent-registration flow (`POST /agent/identity` with a `login_hint` email → claim ceremony the account owner confirms in Obsign). Every agent-registration flow is off by default; the discovery surface (AS metadata, `/auth.md`) is served regardless, and a disabled flow answers its `*_not_enabled` error instead of acting. Sibling knobs (`anonymous_enabled`, trusted issuers, TTLs, granted scopes) are documented on `[agent_auth]` in `crates/common/src/config.rs`. The Custos MCP server's self-onboarding depends on this flag.
+ 
+ ### Volumes
+ - **`/data`** - Host directory bind-mounted for SQLite database persistence. The PDS creates `relay.db` and `relay.db-shm`/`relay.db-wal` (WAL files) inside. Must be writable by the container's non-root user (uid 10001). Host permissions should be `0750` or `0755`.
+@@ -39,6 +40,7 @@ The PDS container expects the following environment variables and mounts:
+ | `EZPDS_AVAILABLE_USER_DOMAINS` | Railway dashboard | Deployment-specific |
+ | `EZPDS_SIGNING_KEY_MASTER_KEY` | Railway dashboard (sealed) | Secret — never in git |
+ | `EZPDS_ADMIN_TOKEN` | Railway dashboard (sealed) | Secret — never in git |
++| `EZPDS_AGENT_AUTH_SERVICE_AUTH_ENABLED` | Railway dashboard | Per-environment opt-in; `true` on production since 2026-07-13 (agent onboarding / Custos MCP) |
+ | `EZPDS_DATA_DIR` | Not needed in Railway | Already set to `/data` by Dockerfile `ENV` |
+ | `PORT` | Not needed in Railway | Railway injects it automatically; PDS falls through to this |
+ | Volume mount | Railway dashboard | Railway infra — no `railway.toml` equivalent |
+- Current branch: docs/agent-auth-session-token
+
+## Your task
+
+Based on the above changes:
+
+1. Create a new branch if on main
+2. Create a single commit with an appropriate message
+3. Push the branch to origin
+4. Create a pull request using `gh pr create`
+5. You have the capability to call multiple tools in a single response. You MUST do all of the above in a single message. Do not use any other tools or do anything else. Do not send any other text or messages besides these tool calls.
