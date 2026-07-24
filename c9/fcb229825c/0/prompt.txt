@@ -1,0 +1,1 @@
+sync and push main. for linear hygiene, I'd like to consider removing the now completed wave labels, and pulling an archive of tickets locally so we can free up linear space (the free plan is limited to 250 issues)
