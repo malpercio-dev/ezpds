@@ -1,0 +1,58 @@
+Base directory for this skill: /Users/jacob.zweifel/.claude/skills/pr-review-comments
+
+# Batch PR Review-Comment Triage
+
+Pull every unresolved review thread on the current PR in one command, then triage the batch. The user should never have to paste review comments one at a time.
+
+## Fetch unresolved threads
+
+Determine the PR number for the current branch (`gh pr view --json number -q .number`), then:
+
+```bash
+gh api graphql -f query='
+query($owner:String!,$repo:String!,$pr:Int!){
+  repository(owner:$owner,name:$repo){
+    pullRequest(number:$pr){
+      reviewThreads(first:100){
+        nodes{
+          isResolved isOutdated path line
+          comments(first:30){nodes{author{login} body url}}
+        }
+      }
+    }
+  }
+}' -F owner=<owner> -F repo=<repo> -F pr=<number> \
+| jq '[.data.repository.pullRequest.reviewThreads.nodes[]
+       | select(.isResolved==false)
+       | {path, line, isOutdated,
+          comments: [.comments.nodes[] | {author: .author.login, url, body}]}]'
+```
+
+Also fetch top-level (non-thread) review bodies and issue comments if the bot posts summaries there:
+
+```bash
+gh pr view <number> --json reviews,comments
+```
+
+## Triage the batch
+
+For each unresolved thread, classify before fixing anything:
+
+1. **Correctness / security / portability** — verify the claim against the actual code, then fix if real. Automated reviewers assert confidently and are sometimes wrong; refute with evidence when they are.
+2. **Legitimate but out of scope** — file a follow-up issue rather than growing the PR.
+3. **Pure style nit / preference** — decline with a one-line reason.
+
+Present the full disposition table (thread → classification → action) to the user in ONE message before applying fixes, so they approve the batch rather than each item. Note that every fix-commit re-triggers CI and (for assertive bots like CodeRabbit) a fresh review round that tends to find one more micro-nit — batch fixes into a single commit where possible.
+
+## Resolving threads
+
+After pushing fixes, reply/resolve via:
+
+```bash
+gh api graphql -f query='mutation($id:ID!){resolveReviewThread(input:{threadId:$id}){thread{isResolved}}}' -F id=<threadId>
+```
+
+(Include `id` in the reviewThreads query above if you plan to resolve threads programmatically.)
+
+
+ARGUMENTS: 148
