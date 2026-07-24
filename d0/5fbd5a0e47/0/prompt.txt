@@ -1,0 +1,1 @@
+hm, merged and got the latest testflight on my device. when I sign in to my current pds, the bsky pds screen shows with an authorize screen requesting an oauth token as far as I can see. Shouldn't I be getting a login screen requesting that I input my username and password?
