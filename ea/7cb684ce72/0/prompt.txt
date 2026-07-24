@@ -1,0 +1,96 @@
+<task-notification>
+<task-id>a377f84c551a2db05</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-jacob-zweifel-workspace-malpercio-dev-ezpds--claude-worktrees-exciting-ardinghelli-6e9eeb/ee686e48-6c83-4e5b-a0fa-53ae45617a1e/tasks/a377f84c551a2db05.output</output-file>
+<status>completed</status>
+<summary>Agent "Reviewing Phase 7 hardening + docs" finished</summary>
+<note>A task-notification fires each time this agent stops with no live background children of its own. The user can send it another message and resume it, so the same task-id may notify more than once.</note>
+<result>Confirmed: there are two `// 4.` step comments (line 323 and line 338). Minor cosmetic numbering issue. 
+
+I have enough to deliver the review. Let me compile my findings. Let me do one final check: the mod.rs header comment "in later phases" staleness and whether `content_type` on the non-JSON passthrough could mislabel. AC4.1 sets upstream content-type `text/plain` and the passthrough forwards `content_type` (captured at line 273), so the client gets `text/plain` back — correct.
+
+Let me verify the AC4.2 test truly exercises a getPosts failure (the mock only mounts getTimeline, so getPosts returns a 404 from the mock server → hydrate_quotes degrades). Confirmed by design: the MockServer has no getPosts route mounted, so that call fails and the quote degrades. Good.
+
+Now, the final review.
+
+# Code Review: Read-After-Write Phase 7 (Hardening, Docs, Bruno)
+
+## Status
+**APPROVED**
+
+## Issue Summary
+**Critical: 0 | Important: 1 | Minor: 3**
+
+## Verification Evidence
+```
+Tests (read_after_write):  cargo test -p pds read_after_write        → ok. 55 passed; 0 failed
+Tests (service_proxy):     cargo test -p pds routes::service_proxy   → ok. 21 passed; 0 failed
+Clippy:                    cargo clippy -p pds --all-targets -D warnings → Finished, 0 warnings
+Rustfmt (phase 7 files):   rustfmt --check on mod/munge/viewer/service_proxy → all 4 CLEAN
+Bruno parity:              just bruno-check → all 87 registered routes covered; no stale .bru
+```
+Note: `cargo fmt -p pds --check` reports drift in `crates/pds/src/db/firehose_seq.rs` — but that file is **not** in the Phase 7 diff (`git diff --name-only ee23f1b1 d23ab8e5`) and the drift exists on the base commit. Pre-existing, out of scope for this review. All four Phase 7 source files are individually rustfmt-clean.
+
+## Plan Alignment
+
+### Implemented Requirements
+- Task 1 — Fallback ladder + buffer cap (`mod.rs`): ✓ `MAX_MUNGE_RESPONSE_BODY = 10 MiB`, two-layer cap, full ladder, 3 new AC4.x tests
+- Task 2 — Fast-path regression assertion (`service_proxy.rs`): ✓ `non_munged_appbsky_nsid_streams_verbatim` with `.expect(1)` mock
+- Task 3 — Bruno (6 `.bru`, seq 86–91): ✓ unique seqs, format consistent, `bruno-check` green
+- Task 4 — Docs (`crates/pds/CLAUDE.md`): ✓ module section, config knobs, `Last verified: 2026-07-03`
+
+### AC coverage (holistic pass — all 7 groups have ≥1 test)
+- AC1 (feed injection) → `munge.rs` `get_timeline_ac1_*`, `get_author_feed_ac1_*`, `get_actor_likes_ac1_3`
+- AC2 (profile munge) → `mod.rs` `ac2_1/ac2_2/ac2_5`
+- AC3 (thread reconstruct/splice) → `mod.rs` `ac3_1/ac3_2/ac3_3` + non-local-stays-400
+- AC4 (fallback/lag) → `mod.rs` `ac4_1/ac4_2/ac4_4`
+- AC5 (record selection) → `mod.rs` `ac5_1/ac5_2/ac5_3`
+- AC6 (embed hydration) → `viewer.rs` `post_view_hydrates_image/external_embed_locally`, `record_embed_view_not_found_when_quote_missing`, `hydrate_quotes_degrades_to_empty_on_appview_5xx`
+- AC7 (fast path) → `service_proxy.rs` `non_munged_appbsky_nsid_streams_verbatim`, `read_after_write_nsids_return_appview_response_verbatim`
+
+### Focus-area findings
+1. **Buffer cap** — see Important issue below. Overflow returns a clean `500` envelope (not truncated body, no panic); the `content_length()` early-bail is correct.
+2. **AC4.1 genuine** ✓ — asserts `body_str == "not valid json at all"` (byte-identical) AND status 200. Forwards the upstream `text/plain` content-type.
+3. **AC4.4 genuine** ✓ — no local writes → `local.count == 0` → passthrough, asserts no `Atproto-Upstream-Lag` header. (The `UPDATE ... repo_root_cid = current_rev` line is superfluous since there are no writes anyway — see Minor.)
+4. **AC4.2 genuine** ✓ — MockServer mounts only `getTimeline`, so the `getPosts` hydration call fails → empty `QuoteMap` → `hydrate_record_embed` falls to `#viewNotFound`; the quote-post is still injected (asserted present). The `#viewNotFound` degradation itself is directly asserted by the viewer unit tests.
+5. **AC7.1** ✓ — `READ_AFTER_WRITE_NSIDS` is exactly the six NSIDs (`app.rs:482`), unchanged; `.expect(1)` proves `getFollows` reached the AppView via streaming `proxy_xrpc`.
+6. **Bruno** ✓ — seqs 86–91 unique among themselves; format matches (`meta/get/auth:bearer/params:query/docs`). Pre-existing seq dupes elsewhere in the collection are unrelated.
+7. **Docs** ✓ — accurate: `munge.rs` (single file), NSID list correct, header `Atproto-Upstream-Lag`, config defaults all match `crates/common/src/config.rs` (`https://api.bsky.app`, `did:web:api.bsky.app#bsky_appview`, `https://cdn.bsky.app`), `pub(crate)` note correct.
+8. **FCIS/pattern comments** ✓ — all four submodules carry correct pattern comments; no `MM-` / `// AC` refs in comments (only in test function names, which is allowed).
+
+## Important Issues (count: 1)
+
+- **Issue**: The "two-layer buffer cap" does not bound peak memory when the upstream omits or lies about `Content-Length`. `upstream.bytes().await` (`mod.rs:296`) fully buffers the entire body into memory *before* the post-buffer length check at line 299. `reqwest::Response::bytes()` has no internal size limit, so a chunked-encoded or `Content-Length`-absent response is buffered in full regardless of `MAX_MUNGE_RESPONSE_BODY`; the check then rejects it *after* the allocation.
+- **Location**: `crates/pds/src/read_after_write/mod.rs:282-309`
+- **Impact**: Under a broken/malicious AppView (or MITM) using chunked transfer, the cap provides correctness (rejects oversized) but not memory-DoS protection. The `content_length()` early-bail only helps honest upstreams.
+- **Assessment**: This is **plan-sanctioned** — phase_07.md line 48 explicitly calls it "a guard, not a hard bound," and the upstream is the trusted configured AppView. The overflow path is safe (clean `500`, no panic/truncation). Flagging because the code comment ("guards against unbounded buffering") slightly overstates the guarantee.
+- **Fix (optional, for a future hardening pass)**: bound the read itself — stream `bytes_stream()` accumulating up to `MAX+1` and reject on exceed, or use `http-body-util`'s `Limited`. Not required to merge given the trust boundary; consider tightening the doc-comment wording to say the cap bounds the *accepted* size, not peak buffering, when content-length is absent.
+
+## Minor Issues (count: 3)
+
+- **Stale header comment**: `mod.rs:1-5` still says "in Phase 1 this is a behavioral no-op … (in later phases) merge" — this is the final phase and the merge is fully implemented. Update to describe current behavior.
+- **Duplicate step number**: two `// 4.` comments in `pipethrough_munged` (`mod.rs:323` and `mod.rs:338`); the second should be `// 5.` and subsequent steps renumbered. Cosmetic.
+- **Superfluous test setup**: AC4.4 test (`mod.rs:1753-1758`) runs `UPDATE accounts SET repo_root_cid = current_rev` to "match the AppView rev," but the account has no local writes so `local.count` is already 0 without it. The line is harmless but muddles what the test proves (it passes on the count==0 path, not on a rev-equality path). Consider a comment clarifying, or removing the UPDATE.
+
+## Skills Applied
+- `writing-good-tests`: verified integration tests use real writes + MockServer (managed DB real, unmanaged AppView mocked); AC4.1 asserts real behavior (byte-identical body) not mock existence; AC7.1 uses `.expect(1)` to assert the streaming path was actually hit. No test-only production methods, no arbitrary sleeps.
+- Project conventions (AGENTS.md / crates/pds/CLAUDE.md): pattern comments present, no ticket refs in source, Bruno parity maintained, docs freshness date updated.
+
+## Decision
+
+**APPROVED FOR MERGE**
+
+All acceptance criteria (AC1–AC7) are covered by passing tests; clippy and the Phase 7 files' rustfmt are clean; Bruno parity is green; docs match code. The one Important issue (peak-memory bound under chunked upstream) is explicitly scoped by the plan as a guard against a trusted upstream and fails safely — it does not block merge. The three Minor items are cosmetic/doc-hygiene and can be swept opportunistically.
+
+Relevant files:
+- `/Users/jacob.zweifel/workspace/malpercio-dev/ezpds/.claude/worktrees/exciting-ardinghelli-6e9eeb/crates/pds/src/read_after_write/mod.rs`
+- `/Users/jacob.zweifel/workspace/malpercio-dev/ezpds/.claude/worktrees/exciting-ardinghelli-6e9eeb/crates/pds/src/read_after_write/viewer.rs`
+- `/Users/jacob.zweifel/workspace/malpercio-dev/ezpds/.claude/worktrees/exciting-ardinghelli-6e9eeb/crates/pds/src/routes/service_proxy.rs`
+- `/Users/jacob.zweifel/workspace/malpercio-dev/ezpds/.claude/worktrees/exciting-ardinghelli-6e9eeb/crates/pds/src/app.rs` (READ_AFTER_WRITE_NSIDS, line 482)
+- `/Users/jacob.zweifel/workspace/malpercio-dev/ezpds/.claude/worktrees/exciting-ardinghelli-6e9eeb/crates/common/src/config.rs` (AppView defaults, lines 353–363)
+- `/Users/jacob.zweifel/workspace/malpercio-dev/ezpds/.claude/worktrees/exciting-ardinghelli-6e9eeb/crates/pds/CLAUDE.md`
+- `/Users/jacob.zweifel/workspace/malpercio-dev/ezpds/.claude/worktrees/exciting-ardinghelli-6e9eeb/bruno/app-bsky-{feed-getTimeline,feed-getAuthorFeed,feed-getPostThread,feed-getActorLikes,actor-getProfile,actor-getProfiles}.bru`
+
+Note for the orchestrator: this review found issues (1 Important, 3 Minor). Per the review cycle, that is technically **CHANGES REQUIRED** if you require zero issues before proceeding. My engineering judgment is that none block merge — the Important item is plan-sanctioned and fails safely, and the Minor items are cosmetic. Your call on whether to sweep them now or defer.</result>
+<usage><subagent_tokens>143716</subagent_tokens><tool_uses>33</tool_uses><duration_ms>303618</duration_ms></usage>
+</task-notification>
