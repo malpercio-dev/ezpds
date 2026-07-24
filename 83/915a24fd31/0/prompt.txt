@@ -1,0 +1,17 @@
+hm much further. I _thought_ I set up the secrets correctly... 
+
+```
+Run just ios-upload
+  
+uploading apps/identity-wallet/src-tauri/gen/apple/build/arm64/Obsign.ipa to TestFlight...
+Running altool at path '/Applications/Xcode_16.4.app/Contents/SharedFrameworks/ContentDeliveryServices.framework/Frameworks/AppStoreService.framework/Support/altool'...
+2026-06-25 01:49:23.507 ERROR: [altool.6000004581C0] Error uploading 'apps/identity-wallet/src-tauri/gen/apple/build/arm64/Obsign.ipa'.
+2026-06-25 01:49:23.507 ERROR: [altool.6000004581C0] Unable to upload archive. Failed to authenticate for session: (
+    "Error Domain=ITunesConnectionAuthenticationErrorDomain Code=-26000 \"Failure to authenticate.\" UserInfo={NSLocalizedRecoverySuggestion=Failure to authenticate., NSLocalizedDescription=Failure to authenticate., NSLocalizedFailureReason=App Store operation failed.}"
+) (-1011)
+ {
+    NSLocalizedDescription = "Unable to upload archive.";
+    NSLocalizedFailureReason = "Failed to authenticate for session: (\n    \"Error Domain=ITunesConnectionAuthenticationErrorDomain Code=-26000 \\\"Failure to authenticate.\\\" UserInfo={NSLocalizedRecoverySuggestion=Failure to authenticate., NSLocalizedDescription=Failure to authenticate., NSLocalizedFailureReason=App Store operation failed.}\"\n)";
+}
+```
+```
