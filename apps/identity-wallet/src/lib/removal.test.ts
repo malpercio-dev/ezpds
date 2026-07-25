@@ -47,4 +47,15 @@ describe('identity-removal IPC wrappers', () => {
     expect(invoke).toHaveBeenCalledWith('tombstone_identity', { did });
     expect(outcome.wasLastIdentity).toBe(false);
   });
+
+  // A did:web has no PLC tombstone, so the backend reports `tombstoneCid: null`. The
+  // wrapper must surface that null verbatim — RemoveIdentityScreen switches on it to show
+  // the "take your did.json down" epilogue instead of claiming a network-wide retirement.
+  it('surfaces a null tombstoneCid for a did:web removal', async () => {
+    const webDid = 'did:web:example.com';
+    invoke.mockResolvedValue({ tombstoneCid: null, wasLastIdentity: true });
+    const outcome = await confirmIdentityRemoval(webDid, 'hunter2', 'CODE123');
+    expect(outcome.tombstoneCid).toBeNull();
+    expect(outcome.wasLastIdentity).toBe(true);
+  });
 });

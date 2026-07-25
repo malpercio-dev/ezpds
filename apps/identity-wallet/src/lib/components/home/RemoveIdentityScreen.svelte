@@ -13,6 +13,7 @@
   } from '$lib/ipc';
   import { authenticateBiometric } from '$lib/biometric';
   import { truncateDid } from '$lib/did-doc-utils';
+  import { didWebDocumentUrl } from '$lib/did-web';
   import Button from '$lib/components/ui/Button.svelte';
   import TextField from '$lib/components/ui/TextField.svelte';
   import Spinner from '$lib/components/ui/Spinner.svelte';
@@ -36,15 +37,39 @@
   // warn → confirm (code + password) → (on partial failure) tombstone_retry.
   // forget_confirm is the local-only escape hatch, reachable whenever the server-side
   // deletion can't proceed (the account no longer exists on its PDS).
+  // web_epilogue is the did:web terminal state: the removal succeeded, but the last step
+  // — taking the DID's document off the domain — belongs to the user, not the wallet.
   type Phase =
     | 'warn'
     | 'requesting'
     | 'confirm'
     | 'working'
     | 'tombstone_retry'
-    | 'forget_confirm';
+    | 'forget_confirm'
+    | 'web_epilogue';
   let phase = $state<Phase>('warn');
   let error = $state<string | null>(null);
+
+  // A did:web has no PLC tombstone: it is retired by removing its document from the
+  // domain, which the wallet has no control over. That single fact drives every copy
+  // branch on this screen — what the warning promises, whether the "also retire on the
+  // network" advanced option exists at all, and how a removal ends.
+  let isDidWeb = $derived(did.startsWith('did:web:'));
+  // The document's authoritative URL, for a concrete instruction rather than a vague one.
+  // `didWebDocumentUrl` throws on a malformed identifier — fall back to naming no URL
+  // rather than blocking the epilogue over cosmetics.
+  let didWebDocUrl = $derived.by(() => {
+    if (!isDidWeb) return null;
+    try {
+      return didWebDocumentUrl(did);
+    } catch {
+      return null;
+    }
+  });
+
+  // Carried from the successful removal into `web_epilogue`, so the Done button routes
+  // exactly where an immediate `oncomplete` would have.
+  let epilogueWasLast = $state(false);
 
   let code = $state('');
   let password = $state('');
@@ -95,6 +120,8 @@
   // Advanced escape-hatch options, revealed behind a disclosure. `alsoTombstone` upgrades the
   // local-only wipe into a full network retirement (sign + publish a did:plc tombstone) for an
   // advanced user who is certain they want to torch the identity everywhere, not just here.
+  // Offered for a did:plc only: there is no did:web tombstone to publish, so the option would
+  // promise a network-wide retirement the wallet cannot perform.
   let showAdvanced = $state(false);
   let alsoTombstone = $state(false);
 
@@ -182,11 +209,13 @@
       return; // gate declined — nothing sent.
     }
 
-    workingMessage = 'Deleting your account and retiring the identity…';
+    workingMessage = isDidWeb
+      ? 'Deleting your account and removing this identity…'
+      : 'Deleting your account and retiring the identity…';
     phase = 'working';
     try {
       const outcome: RemovalOutcome = await confirmIdentityRemoval(did, password, code.trim());
-      oncomplete(outcome.wasLastIdentity);
+      finishRemoval(outcome);
     } catch (raw: unknown) {
       console.error('confirmIdentityRemoval failed:', raw);
       hold.state.progress = 0;
@@ -202,7 +231,27 @@
     }
   }
 
-  /** Resume path: retry only the tombstone + local wipe. Biometric-gated. */
+  /**
+   * End a successful removal.
+   *
+   * A tombstone-less outcome (`tombstoneCid: null` — a did:web) is NOT finished from the
+   * user's point of view: the DID keeps resolving until its document leaves the domain, so
+   * the screen says so instead of silently returning to the identity list as if the
+   * identity had been retired network-wide.
+   */
+  function finishRemoval(outcome: RemovalOutcome) {
+    if (outcome.tombstoneCid === null) {
+      epilogueWasLast = outcome.wasLastIdentity;
+      phase = 'web_epilogue';
+      return;
+    }
+    oncomplete(outcome.wasLastIdentity);
+  }
+
+  /**
+   * Resume path: retry the remaining work — the tombstone + local wipe for a did:plc, the
+   * local wipe alone for a did:web (which has no tombstone to retry). Biometric-gated.
+   */
   async function retryTombstone() {
     error = null;
     try {
@@ -210,11 +259,13 @@
     } catch {
       return;
     }
-    workingMessage = 'Retiring the identity on the network…';
+    workingMessage = isDidWeb
+      ? 'Finishing local cleanup…'
+      : 'Retiring the identity on the network…';
     phase = 'working';
     try {
       const outcome: RemovalOutcome = await tombstoneIdentity(did);
-      oncomplete(outcome.wasLastIdentity);
+      finishRemoval(outcome);
     } catch (raw: unknown) {
       console.error('tombstoneIdentity failed:', raw);
       error = messageFor(raw);
@@ -290,9 +341,14 @@
 
 <div class="screen">
   <div class="appbar">
+    <!--
+      In `web_epilogue` the identity is already gone, so returning to its detail screen would
+      show a stale surface. Back there means the same thing Done does: leave the removed
+      identity behind.
+    -->
     <button
       class="back"
-      onclick={onback}
+      onclick={() => (phase === 'web_epilogue' ? oncomplete(epilogueWasLast) : onback())}
       disabled={phase === 'requesting' || phase === 'working'}
       aria-label="Back"
     >
@@ -319,9 +375,18 @@
       </div>
       <ul class="consequences">
         <li><strong>Delete your account</strong> and all its data on your PDS.</li>
-        <li><strong>Retire the identity on the network</strong> by tombstoning its DID — it can never be reactivated or migrated.</li>
+        {#if !isDidWeb}
+          <li><strong>Retire the identity on the network</strong> by tombstoning its DID — it can never be reactivated or migrated.</li>
+        {/if}
         <li><strong>Erase its keys</strong> from this device.</li>
       </ul>
+      {#if isDidWeb}
+        <p class="note">
+          This identity is a <span class="mono">did:web</span>, so there is no DID tombstone to
+          publish. It keeps resolving until you take its document down — we'll show you exactly
+          what to remove once the account is deleted.
+        </p>
+      {/if}
       <p class="note">
         We'll email a confirmation code to the account address. You'll enter that code and your
         password to confirm.
@@ -365,10 +430,41 @@
       <div class="hero">
         <h1 class="hero-title">Almost done</h1>
         <p class="hero-sub">
-          Your account was deleted, but retiring the identity on the network didn't finish. Your
-          keys are still on this device — retry to complete removal.
+          {#if isDidWeb}
+            Your account was deleted, but erasing this identity's keys from this device didn't
+            finish. Retry to complete removal.
+          {:else}
+            Your account was deleted, but retiring the identity on the network didn't finish. Your
+            keys are still on this device — retry to complete removal.
+          {/if}
         </p>
       </div>
+    {:else if phase === 'web_epilogue'}
+      <div class="hero">
+        <h1 class="hero-title">One step is yours</h1>
+        <p class="hero-sub">
+          Your account is deleted and this identity's keys are erased from this device. The DID
+          itself keeps resolving for as long as its document stays published.
+        </p>
+      </div>
+      <ul class="consequences">
+        <li>
+          <strong>Take down the DID document</strong>
+          {#if didWebDocUrl}
+            at <span class="mono">{didWebDocUrl}</span>
+          {/if}
+          — delete it, blank it, or serve <span class="mono">410 Gone</span> — to retire this
+          identity network-wide.
+        </li>
+        <li>
+          <strong>If your server published it for you</strong>, deleting the account already
+          stopped it being served, and there is nothing left for you to do.
+        </li>
+      </ul>
+      <p class="note">
+        The wallet can't do this part for you — it never had control of the domain. Until the
+        document is gone, anyone can still resolve this DID to its last published state.
+      </p>
     {:else if phase === 'forget_confirm'}
       <div class="hero">
         <h1 class="hero-title">
@@ -402,21 +498,32 @@
         {/if}
       </p>
 
-      <button class="toggle" onclick={() => { showAdvanced = !showAdvanced; }}>
-        {showAdvanced ? 'Hide advanced options' : 'Advanced options'}
-      </button>
-      {#if showAdvanced}
-        <label class="advanced-check">
-          <input type="checkbox" bind:checked={alsoTombstone} />
-          <span class="check-body">
-            <span class="check-title">Also retire this identity on the network</span>
-            <span class="check-desc">
-              Sign and publish a did:plc tombstone so the identity is permanently retired
-              everywhere, not just on this device. Requires this device to still hold one of the
-              identity's rotation keys.
+      {#if isDidWeb}
+        <p class="note">
+          There is no network-wide retirement the wallet can perform for a
+          <span class="mono">did:web</span>: it is retired by taking its document
+          {#if didWebDocUrl}
+            at <span class="mono">{didWebDocUrl}</span>
+          {/if}
+          off the domain, which only whoever controls that domain can do.
+        </p>
+      {:else}
+        <button class="toggle" onclick={() => { showAdvanced = !showAdvanced; }}>
+          {showAdvanced ? 'Hide advanced options' : 'Advanced options'}
+        </button>
+        {#if showAdvanced}
+          <label class="advanced-check">
+            <input type="checkbox" bind:checked={alsoTombstone} />
+            <span class="check-body">
+              <span class="check-title">Also retire this identity on the network</span>
+              <span class="check-desc">
+                Sign and publish a did:plc tombstone so the identity is permanently retired
+                everywhere, not just on this device. Requires this device to still hold one of the
+                identity's rotation keys.
+              </span>
             </span>
-          </span>
-        </label>
+          </label>
+        {/if}
       {/if}
     {/if}
 
@@ -456,8 +563,12 @@
       </button>
     {:else if phase === 'tombstone_retry'}
       <Button onclick={retryTombstone}>Retry</Button>
-      <button class="link-action" onclick={startForget}>Remove from this device instead</button>
+      {#if !isDidWeb}
+        <button class="link-action" onclick={startForget}>Remove from this device instead</button>
+      {/if}
       <Button variant="secondary" onclick={onback}>Close</Button>
+    {:else if phase === 'web_epilogue'}
+      <Button onclick={() => oncomplete(epilogueWasLast)}>Done</Button>
     {:else if phase === 'forget_confirm'}
       <button
         class="hold"
@@ -591,6 +702,14 @@
     color: var(--color-muted);
     line-height: 1.5;
     margin: 0;
+  }
+
+  /* Literal machine strings inline in prose — a DID method, a document URL, an HTTP status.
+     Wraps anywhere because a did:web document URL is long and must never widen the screen. */
+  .mono {
+    font-family: var(--font-mono);
+    font-size: 0.95em;
+    word-break: break-all;
   }
 
   .form {

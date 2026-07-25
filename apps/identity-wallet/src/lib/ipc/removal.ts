@@ -6,6 +6,11 @@ import type { UnlockReason } from './identity';
 // Permanent removal of a managed identity: delete the account on the PDS, tombstone
 // the did:plc on plc.directory, and wipe local Keychain material. Backs the
 // RemoveIdentityScreen. Mirrors `identity_removal.rs`.
+//
+// Method-aware: only a did:plc has a tombstone. A did:web is deleted on the PDS and
+// wiped locally, with no plc.directory step — retiring the DID network-wide means taking
+// its `did.json` off the domain, which only its operator can do. The backend reports that
+// as a null `tombstoneCid`.
 
 /**
  * Error returned by the identity-removal commands.
@@ -41,8 +46,12 @@ export type RemovalError =
  * Matches `RemovalOutcome` in `identity_removal.rs` (`#[serde(rename_all = "camelCase")]`).
  */
 export interface RemovalOutcome {
-  /** CID of the submitted did:plc tombstone operation. */
-  tombstoneCid: string;
+  /**
+   * CID of the submitted did:plc tombstone operation, or `null` when the removed DID has
+   * no tombstone leg (a did:web). `null` is the cue to show the "take your did.json down"
+   * epilogue rather than claim the identity was retired network-wide.
+   */
+  tombstoneCid: string | null;
   /** `true` if this was the last managed identity — the UI returns to onboarding. */
   wasLastIdentity: boolean;
 }
@@ -57,7 +66,8 @@ export const requestIdentityRemoval = (did: string): Promise<void> =>
 
 /**
  * Step 2 — confirm removal. Deletes the account on the PDS (using the account
- * `password` + emailed `token`), then tombstones the did:plc and wipes local material.
+ * `password` + emailed `token`), then runs the method-appropriate tail: tombstone the
+ * did:plc and wipe locally, or — for a did:web — wipe locally with no PLC step at all.
  * A wrong password/code rejects with `INVALID_TOKEN` and mutates nothing, so the UI can
  * re-prompt. MUST be gated behind {@link authenticateBiometric} by the caller.
  */
@@ -70,7 +80,8 @@ export const confirmIdentityRemoval = (
 /**
  * Resume path — the PDS account was already deleted but the tombstone or local wipe
  * failed (the single-use deletion token is spent, so re-running confirm would fail).
- * Retries only the tombstone + wipe. MUST be gated behind {@link authenticateBiometric}.
+ * Retries only the tombstone + wipe; for a did:web (which has no tombstone) it retries
+ * the local wipe alone. MUST be gated behind {@link authenticateBiometric}.
  */
 export const tombstoneIdentity = (did: string): Promise<RemovalOutcome> =>
   invoke('tombstone_identity', { did });
