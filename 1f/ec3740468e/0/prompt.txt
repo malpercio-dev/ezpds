@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>b89y7lh6a</task-id>
+<tool-use-id>toolu_01DLrwZu5hkfQaL45NQVrEVd</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-jacob-zweifel-workspace-malpercio-dev-ezpds/fbf38cc2-991d-4f97-ba94-553a0bd332e4/tasks/b89y7lh6a.output</output-file>
+<status>failed</status>
+<summary>Background command "Poll PR #37 until CodeRabbit review completes" failed with exit code 1</summary>
+</task-notification>
