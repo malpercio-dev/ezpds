@@ -1,0 +1,45 @@
+<task-notification>
+<task-id>a571a8de7bcaf0233</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-jacob-zweifel-workspace-malpercio-dev-ezpds--claude-worktrees-awesome-lamport-bf2e56/d99ceb90-e7e1-42a0-bc40-c5ae3369966b/tasks/a571a8de7bcaf0233.output</output-file>
+<status>completed</status>
+<summary>Agent "Implement Phase 2 setup legs" finished</summary>
+<note>A task-notification fires each time this agent stops with no live background children of its own. The user can send it another message and resume it, so the same task-id may notify more than once.</note>
+<result>## Summary
+
+I implemented Phase 2 (remainder) of the MM-232 wallet outbound-migration backend using strict TDD (each function's test written first, confirmed RED via compile failure, then implemented to GREEN).
+
+**Files changed** (all unstaged, not committed, per instructions):
+- `/Users/jacob.zweifel/workspace/malpercio-dev/ezpds/.claude/worktrees/awesome-lamport-bf2e56/apps/identity-wallet/src-tauri/src/migrate.rs` — bulk of the new code (+1310 lines)
+- `/Users/jacob.zweifel/workspace/malpercio-dev/ezpds/.claude/worktrees/awesome-lamport-bf2e56/apps/identity-wallet/src-tauri/src/claim.rs` — minimal visibility change (private → `pub(crate)`)
+- `/Users/jacob.zweifel/workspace/malpercio-dev/ezpds/.claude/worktrees/awesome-lamport-bf2e56/apps/identity-wallet/src-tauri/src/lib.rs` — registered 4 new commands in `invoke_handler!`
+
+**New XRPC helpers** (module-level `async fn` in `migrate.rs`):
+- `describe_server(pds_client: &amp;PdsClient, base_url: &amp;str) -&gt; Result&lt;String, MigrateError&gt;`
+- `reserve_signing_key(pds_client: &amp;PdsClient, base_url: &amp;str, did: &amp;str) -&gt; Result&lt;(), MigrateError&gt;`
+- `get_service_auth(source_oauth_client: &amp;OAuthClient, aud: &amp;str, lxm: &amp;str) -&gt; Result&lt;String, MigrateError&gt;`
+- `create_dest_account(dest_base_url: &amp;str, service_jwt: &amp;str, did: &amp;str, handle: &amp;str, email: &amp;str) -&gt; Result&lt;BearerSession, MigrateError&gt;`
+
+**New orchestrator functions + Tauri commands**:
+- `prepare_migration(...) -&gt; Result&lt;MigrationPathDecision, MigrateError&gt;` / `#[tauri::command] prepare_migration_cmd`
+- `migration_prepare_source_auth_impl(...) -&gt; Result&lt;OAuthPrepared, MigrateError&gt;` / `#[tauri::command] migration_prepare_source_auth_cmd`
+- `migration_complete_source_auth_impl(...) -&gt; Result&lt;(), MigrateError&gt;` / `#[tauri::command] migration_complete_source_auth_cmd`
+- `migration_create_dest_account_impl(...) -&gt; Result&lt;(), MigrateError&gt;` / `#[tauri::command] migration_create_dest_account_cmd`
+
+**`claim.rs` visibility changes**: `PdsParWithRetryParams` (struct + fields), `pds_par_with_retry`, `pds_exchange_code_with_retry` changed from private to `pub(crate)` so `migrate.rs` reuses the exact PAR/token-exchange-with-nonce-retry dance rather than duplicating it.
+
+**MigrateError variants**: none added — all new error paths map onto existing variants (`NetworkError`, `PlcDirectoryError`, `MigrationNotReady`, `IdentityNotFound`).
+
+**Test coverage** (all new, httpmock-based, `_impl`-pattern for Tauri-state-coupled commands): source DID-doc endpoint extraction, `describe_server`/`reserve_signing_key`/`get_service_auth`/`create_dest_account` success + rejection paths, `prepare_migration` populating full `MigrationState` + rejecting a missing stored DID doc, source-auth prepare/complete (PAR discovery, CSRF validation, OAuthClient storage, pending-login clearing), and dest-account creation success/rejection/idempotent-retry-safety/missing-source-auth guard.
+
+**Final test run**: `cargo test -p identity-wallet --lib` → `test result: ok. 263 passed; 0 failed; 6 ignored; 0 measured; 0 filtered out`. `cargo fmt -p identity-wallet` applied. `cargo build -p identity-wallet` succeeds.
+
+**Clippy note**: `cargo clippy -p identity-wallet --all-targets -- -D warnings` reports 5 pre-existing `deprecated httpmock::Mock::hits()` errors in `oauth_client.rs` and `pds_client.rs` — files untouched by this diff (confirmed via `git diff --stat`), so these are not regressions from this work.
+
+**Deviations/uncertainties for review**:
+1. `migration_prepare_source_auth_cmd`/`migration_complete_source_auth_cmd` reuse the *same* `AppState.pending_pds_login` slot the claim flow uses (per the design's stated auth model — only one PDS auth flow runs at a time). I didn't add a discriminator distinguishing "this pending login is for claim vs. migration"; if a user could somehow have both flows in-flight simultaneously this would be ambiguous, but the existing claim flow has the same single-slot assumption, so I mirrored it rather than introducing new state shape.
+2. `migration_complete_source_auth_cmd` does **not** take `tauri::AppHandle` and does not emit any event (unlike `claim::complete_pds_auth`'s vestigial `pds_auth_ready`) — the design doc doesn't mention an equivalent event for migration, so I omitted it; the frontend is expected to advance on the command's `Result` resolving.
+3. `create_dest_account` uses a fresh `reqwest::Client::new()` per call rather than threading through `PdsClient`'s pooled client, since the design explicitly calls out "a plain reqwest client or a helper" and the service-JWT bearer auth doesn't fit `PdsClient`'s (unauthenticated) or `OAuthClient`'s (DPoP) shapes.
+4. I did not add `migration_verify_cmd`/data-transfer commands (Phase 3 scope) — only Phase 2's setup legs (`detect_migration_path` was pre-existing; `prepare_migration`, source auth, dest account creation are new).</result>
+<usage><subagent_tokens>302197</subagent_tokens><tool_uses>81</tool_uses><duration_ms>666367</duration_ms></usage>
+</task-notification>
