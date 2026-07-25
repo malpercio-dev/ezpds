@@ -1,0 +1,35 @@
+{
+  "cli_version": "0.8.42",
+  "checkpoint_id": "1038d966d6f3",
+  "strategy": "manual-commit",
+  "branch": "release-0.8.3",
+  "checkpoints_count": 1,
+  "files_touched": [
+    "CHANGELOG.md",
+    "Cargo.lock",
+    "Cargo.toml",
+    "changelog.d/labeler-headers.fixed.md",
+    "changelog.d/mm-460.fixed.md",
+    "changelog.d/mm-471.fixed.md",
+    "sites/docs/src/content/docs/operator/reference/api.md",
+    "sites/docs/src/content/docs/operator/reference/capabilities.md",
+    "sites/docs/src/content/docs/operator/reference/config.md",
+    "sites/docs/src/content/docs/operator/reference/ipc.md"
+  ],
+  "sessions": [
+    {
+      "metadata": "/10/38d966d6f3/0/metadata.json",
+      "transcript": "/10/38d966d6f3/0/full.jsonl",
+      "compact_transcript": "/10/38d966d6f3/0/transcript.jsonl",
+      "content_hash": "/10/38d966d6f3/0/content_hash.txt",
+      "prompt": "/10/38d966d6f3/0/prompt.txt"
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 21,
+    "cache_creation_tokens": 90473,
+    "cache_read_tokens": 857463,
+    "output_tokens": 2894,
+    "api_call_count": 11
+  }
+}
