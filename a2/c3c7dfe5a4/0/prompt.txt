@@ -1,0 +1,1 @@
+set EZPDS_EMAIL_SMTP_PORT=2525 and RUST_LOG=info,noq_udp=error on custos-obsign
