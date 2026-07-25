@@ -54,6 +54,11 @@ docs {
     - `totalBytes` — total bytes of the account's owned blobs.
     - `quotaUsedPct` — `totalBytes` as a percentage of `quotaBytes`, carried per row so
       the console renders a capacity readout per account in one request per page.
+    - `didWebHosting` — whether Custos serves this account's did:web document from
+      `/.well-known/did.json`. Only ever true for a `did:web` account that opted in.
+      Carried per row because the opt-in gates a serve path that 404s
+      indistinguishably from an unknown host when it is off — so without this flag,
+      "not hosted" and "hosting is broken" are the same observation from outside.
     - `flags` — labels currently in force from watched labelers, newest first; each is
       `{val, labelerDid, cts}` (label value, labeler DID, the labeler's creation
       timestamp). Empty when the account is unflagged or labeler watching is off.

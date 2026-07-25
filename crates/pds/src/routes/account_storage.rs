@@ -45,6 +45,16 @@ pub struct StorageResponse {
     /// this account references but another uploaded is owned-not-uploaded, and one it uploaded
     /// that only another account still owns is uploaded-not-owned. Treat a gap as a reason to
     /// look, not a verdict.
+    ///
+    /// This witness does **not** survive destruction of the bytes, and must not be read as if
+    /// it did. A physical row is deleted with its last owner, taking its uploader attribution
+    /// with it, so when GC is what destroyed the blobs these figures reach zero too. What the
+    /// pair makes legible is the diagnosis, not the presence of a fault: against zero owned
+    /// blobs, a nonzero `uploaded_blob_count` says the bytes are on disk and the ownership
+    /// rows are what went missing, while zero here as well says the bytes themselves are
+    /// gone. Read `uploaded_blob_count == 0` as "nothing is left", never as "nothing was ever
+    /// here" — that second reading is exactly the wrong conclusion in the incident these
+    /// fields exist for.
     uploaded_blob_count: i64,
     uploaded_blob_bytes: i64,
     /// The per-account storage quota in bytes (`[blobs] max_storage_per_account`). Tiers are
