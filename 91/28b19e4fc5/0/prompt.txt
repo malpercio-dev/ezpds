@@ -1,0 +1,35 @@
+<ci-monitor-event>malpercio-dev/ezpds PR #109 has 1 new review comment:
+- coderabbitai[bot]: <!-- This is an auto-generated reply by CodeRabbit -->
+> [!TIP]
+> For best results, initiate chat on the files or code changes.
+
+<details>
+<summary>🧩 Analysis chain</summary>
+
+🏁 Script executed:
+
+```shell
+#!/bin/bash
+git log --oneline -5
+git show 6ef66bf0 --stat 2>/dev/null || echo "commit not found, checking latest"
+sed -n '1,140p' scripts/capability-check.sh
+echo "---DOC---"
+sed -n '80,120p' docs/security/tauri-ipc-boundary.md
+```
+
+Length of output: 9690
+
+---
+
+</details>
+
+Verified both fixes in commit 6ef66bf0:
+
+- `check_schema()` now positively asserts `mobile-schema.json` is referenced (in addition to still rejecting `desktop-schema.json`), so a dropped/renamed schema ref is caught, not just a desktop regression.
+- The doc's intro no longer claims "no catchable exception type" — it correctly states there's no typed result a test can assert on, while acknowledging the promise does reject. The manual denial step now frames the check around observing denial (console error + failed call) vs. app commands resolving, resolving the earlier inconsistency.
+
+Both changes look correct and consistent with the rest of the script/doc. Thanks for the quick turnaround.
+
+<!-- <review_comment_addressed> -->
+
+Please address the feedback and push a fix. Then, for each inline comment you addressed (those with a comment_id), post a one-line reply on the thread via `gh api` saying what you changed (or why you didn't). End each reply with the line "_🤖 Addressed by [Claude Code](https://claude.com/claude-code)_" so reviewers can see it was automated. Then resolve the thread. Skip replies for comments you didn't act on.</ci-monitor-event>
