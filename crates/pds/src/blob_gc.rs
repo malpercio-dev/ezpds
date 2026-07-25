@@ -132,13 +132,13 @@ pub async fn run_blob_gc(state: &AppState) -> GcStats {
     // will not reclaim the physical row or file for any other owner either.
     match blobs::list_expired_temp_owners(&state.db).await {
         Ok(expired) => {
+            // Tallied per DID rather than logged per CID: the account this guard was written
+            // for held 534 expired blobs, and a line each would emit 534 warnings every pass,
+            // burying the signals this sweep exists to surface.
+            let mut skipped: HashMap<String, u64> = HashMap::new();
             for (did, cid) in expired {
                 if unreconciled.contains(&did) {
-                    tracing::warn!(
-                        did = %did,
-                        cid = %cid,
-                        "blob GC: skipping sweep for an account whose reconcile failed this pass"
-                    );
+                    *skipped.entry(did).or_insert(0) += 1;
                     continue;
                 }
                 match sweep_expired_owner(state, &did, &cid).await {
@@ -151,6 +151,13 @@ pub async fn run_blob_gc(state: &AppState) -> GcStats {
                         tracing::warn!(error = %e, did = %did, cid = %cid, "blob GC: failed to sweep expired blob reference");
                     }
                 }
+            }
+            for (did, blobs_skipped) in skipped {
+                tracing::warn!(
+                    did = %did,
+                    blobs_skipped,
+                    "blob GC: account's reconcile failed this pass; its expired blobs were left uncollected"
+                );
             }
         }
         Err(e) => {
