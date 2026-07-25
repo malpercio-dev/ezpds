@@ -1,0 +1,33 @@
+{
+  "cli_version": "0.8.42",
+  "checkpoint_id": "adc14331fe52",
+  "strategy": "manual-commit",
+  "branch": "claude/wallet-didweb-removal-flow-e1c3f0",
+  "checkpoints_count": 1,
+  "files_touched": [
+    "apps/identity-wallet/AGENTS.md",
+    "apps/identity-wallet/src-tauri/src/identity_removal.rs",
+    "apps/identity-wallet/src/lib/components/home/RemoveIdentityScreen.svelte",
+    "apps/identity-wallet/src/lib/harness/registry.ts",
+    "apps/identity-wallet/src/lib/ipc/removal.ts",
+    "apps/identity-wallet/src/lib/removal.test.ts",
+    "apps/identity-wallet/src/routes/+page.svelte",
+    "changelog.d/mm-464.fixed.md"
+  ],
+  "sessions": [
+    {
+      "metadata": "/ad/c14331fe52/0/metadata.json",
+      "transcript": "/ad/c14331fe52/0/full.jsonl",
+      "compact_transcript": "/ad/c14331fe52/0/transcript.jsonl",
+      "content_hash": "/ad/c14331fe52/0/content_hash.txt",
+      "prompt": ""
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 204,
+    "cache_creation_tokens": 352501,
+    "cache_read_tokens": 31866549,
+    "output_tokens": 51749,
+    "api_call_count": 109
+  }
+}
