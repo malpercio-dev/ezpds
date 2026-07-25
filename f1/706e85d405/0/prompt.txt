@@ -1,7 +1,0 @@
-<task-notification>
-<task-id>b4nycc1uz</task-id>
-<tool-use-id>REDACTED</tool-use-id>
-<output-file>/private/tmp/claude-501/-Users-jacob-zweifel-workspace-malpercio-dev-ezpds/cead9993-b6df-435d-9881-b381a7fc7d57/tasks/b4nycc1uz.output</output-file>
-<status>completed</status>
-<summary>Background command "Watch PR 406 checks to completion" completed (exit code 0)</summary>
-</task-notification>

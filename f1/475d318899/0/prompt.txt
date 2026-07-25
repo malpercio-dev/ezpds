@@ -1,0 +1,74 @@
+Context: This summary will be shown in a list to help users and Claude choose which conversations are relevant.
+
+Please write a concise, factual summary of this conversation. Output ONLY the summary - no preamble. Claude will see this summary when searching previous conversations for useful memories and information.
+
+Summarize what happened in 2-4 sentences. Be factual and specific. Output in <summary></summary> tags.
+
+Include:
+- What was built/changed/discussed (be specific)
+- Key technical decisions or approaches
+- Problems solved or current state
+
+Exclude:
+- Apologies, meta-commentary, or your questions
+- Raw logs or debug output
+- Generic descriptions - focus on what makes THIS conversation unique
+
+Good:
+<summary>Built JWT authentication for React app with refresh tokens and protected routes. Fixed token expiration bug by implementing refresh-during-request logic.</summary>
+
+Bad:
+<summary>I apologize. The conversation discussed authentication and various approaches were considered...</summary>
+
+User: Work on Linear issue MM-280:
+
+Suggested branch name: malpercio/mm-280-labeler-watching-flag-hosted-accounts-notify-the-operator
+
+<issue identifier="MM-280">
+<title>Labeler watching: flag hosted accounts + notify the operator</title>
+<description>
+Inspired by [brookie.blog](<http://brookie.blog>)'s [PDS Operator](<https://tangled.org/brookie.blog/pds-operator>) — its headline feature is "watches labelers and DMs you when an account gets flagged," with flagged accounts floating to the top of the account list.
+
+We have nothing like this. The loop:
+
+**Server (relay/PDS side)**
+
+* Configurable list of watched labeler DIDs (any labeler, not just Bluesky's — PDS Operator makes this pluggable).
+* Subscribe to each labeler's label stream (or poll `com.atproto.label.queryLabels`), match label events against hosted DIDs, persist flagged state per account.
+* Expose flagged state on the operator accounts listing (`GET /v1/admin/accounts`) so clients can sort flagged accounts first.
+
+**admin-companion (Brass Console)**
+
+* Accounts screen: flagged accounts sort to the top with an explicit flag indicator (label value + labeler + time — never color alone, per DESIGN.md).
+* Notification when a hosted account gets flagged. PDS Operator DMs the operator on Bluesky; for us the natural channel is APNs push to paired admin devices — but that's a larger lift (push infra), so an in-app flagged-accounts badge is a reasonable first slice, with push as a follow-on.
+
+This is the most valuable single feature of the set — it turns the accounts list from a neutral roster into a spam/abuse triage view.
+</description>
+<team name="Mal's Machinations"/>
+<label>Feature</label>
+<label>Mobile: Admin Companion</label>
+<project name="ezpds">An easy-to-host PDS on the ATProtocol, MacOS. Grandma-approved.</project>
+<issue-relations><related><issue-ref identifier="MM-284" title="Decide + surface human signup invite management in Brass Console"/></related></issue-relations>
+</issue>
+
+<comment-thread comment-id="c1a755a4-8601-4b00-9b7f-43379e0fd9b6">
+<comment author="Malpercio" created-at="2026-07-10T22:45:24.250Z">
+Read the PDS Operator source ([tangled.org](<http://tangled.org>) allowlisted; scraped via blob pages since the git knot `knot1.tangled.sh` is still blocked). Implementation notes worth stealing:
+
+**Architecture** — a background syncer keeps a local SQLite cache of accounts + labels: full reconcile on startup and every 15 min, plus live streams in between (`com.atproto.sync.subscribeRepos` for account/handle changes → 5s-debounced dirty refresh; `com.atproto.label.subscribeLabels` per labeler with the cursor persisted across restarts). Half-dead sockets are caught with a 30s ping/pong watchdog → terminate → reconnect. The cache is explicitly rebuildable, not a source of truth.
+
+**Labeler config** — `labelers.json`: `{name, did, labels: [watchlist]}`; empty watchlist = every label from that labeler counts. Labeler endpoint resolved from the DID doc (`#atproto_labeler` service); human-readable label names pulled from the labeler's published `app.bsky.labeler.service/self` record (`labelValueDefinitions` locales), so the UI shows "Platform Abuse & Manipulation" not `platform-manipulation`.
+
+**Label semantics** — apply in `cts` order; honor `neg` (retraction) and `exp` (expiration); only account-level labels (`uri` starting `did:`); only labels on hosted DIDs.
+
+**Gotcha** — Ozone's `queryLabels` silently returns *nothing* (not an error) past 20 `uriPatterns` per request, so backfill batches must cap at 20.
+
+**Notification hygiene** — a per-labeler `labels_seeded` flag suppresses notifications on the first backfill (otherwise every pre-existing flag DMs at once); after that, only genuinely new (did, val) pairs notify. Their channel is a Bluesky DM (sender account + DM-enabled app password, service-proxied via `did:web:api.bsky.chat#bsky_chat`, rich-text facet mention + deep link into the dashboard). For us: APNs push or in-app badge, but keep the seeding trick.
+
+**Flag sort** — accounts query computes `is_flagged` via a SQL `EXISTS` over the labels table restricted to watched (src, val) pairs, then `ORDER BY is_flagged DESC, indexed_at DESC`, and returns `flaggedTotal` alongside `total` for a badge count.
+</comment>
+</comment-thread>
+
+Please open a PR linked to the linear issue when complete. For the notification aspect of this, defer it behind the APNs design we already have a linear issue before, but do create a linear issue for us to follow up and add the PN later
+
+Agent: I'll start by activating the Linear workflow skill since we're working on MM-280.
