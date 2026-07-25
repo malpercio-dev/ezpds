@@ -1,0 +1,177 @@
+Context: This summary will be shown in a list to help users and Claude choose which conversations are relevant.
+
+Please write a concise, factual summary of this conversation. Output ONLY the summary - no preamble. Claude will see this summary when searching previous conversations for useful memories and information.
+
+Summarize what happened in 2-4 sentences. Be factual and specific. Output in <summary></summary> tags.
+
+Include:
+- What was built/changed/discussed (be specific)
+- Key technical decisions or approaches
+- Problems solved or current state
+
+Exclude:
+- Apologies, meta-commentary, or your questions
+- Raw logs or debug output
+- Generic descriptions - focus on what makes THIS conversation unique
+
+Good:
+<summary>Built JWT authentication for React app with refresh tokens and protected routes. Fixed token expiration bug by implementing refresh-during-request logic.</summary>
+
+Bad:
+<summary>I apologize. The conversation discussed authentication and various approaches were considered...</summary>
+
+User: Let's take a look at MM-207 and ensure that we have fully implemented the issue, all of it's subissues are complete
+
+Agent: I'm using the linear-workflow skill since we're picking up a Linear issue (MM-207).
+
+---
+
+User: Base directory for this skill: /Users/jacob.zweifel/.claude/skills/linear-workflow
+
+# Linear Development Workflow
+
+This skill manages the full lifecycle of working on a Linear issue: from picking it up through opening a PR.
+
+## Starting Work on an Issue
+
+When the user indicates they want to work on a Linear issue (e.g., "Let's work on MM-42"):
+
+1. **Parse the issue identifier** from the user's message. The pattern is `MM-` followed by a number.
+
+2. **Fetch the issue details** from Linear using the `get_issue` tool with the parsed identifier. Display a brief summary to the user: title, description (truncated if long), priority, and any existing labels.
+
+3. **Update the issue in Linear:**
+   - Set the status to **"In Progress"**
+   - Assign it to **"me"** (the authenticated user)
+
+   Use the `save_issue` tool with the issue's `id`, `state: "In Progress"`, and `assignee: "me"`.
+
+4. **Create a git branch** using the issue's suggested branch name:
+   - The `get_issue` response includes a `branchName` field — use that as the branch name.
+   - Create the branch from the current HEAD: `git checkout -b <branchName>`
+   - If the branch already exists locally, just check it out instead of creating it.
+
+5. **Confirm to the user** what happened: issue assigned, status updated, branch created/checked out. Then ask what they'd like to tackle first, or summarize the issue so they can dive in.
+
+## Opening a PR (Auto-transition to "In Review")
+
+When the user asks to open a PR, create a pull request, or you detect that a PR is being created for a branch associated with a Linear issue:
+
+1. **Identify the Linear issue** from the current branch name. Linear branch names typically contain the issue identifier (e.g., `malpercio/mm-42-fix-the-thing`). Extract the `MM-XXX` portion.
+
+2. **Create the PR** as the user requests (follow normal PR creation workflow).
+
+3. **After the PR is successfully created**, update the Linear issue:
+   - Set the status to **"In Review"**
+   - Attach the PR URL as a link on the issue using the `links` field in `save_issue`
+
+   Use `save_issue` with the issue's `id`, `state: "In Review"`, and `links: [{"url": "<pr-url>", "title": "Pull Request"}]`.
+
+4. **Confirm** to the user that the issue has been moved to "In Review" and the PR link has been attached.
+
+## Important Notes
+
+- Always fetch the issue first to confirm it exists and get the full `id` (UUID) needed for updates.
+- If the issue is already "In Progress" and assigned, skip those updates and just create the branch.
+- If branch creation fails (e.g., uncommitted changes), inform the user and suggest next steps rather than silently failing.
+- The PR-to-"In Review" transition should happen automatically whenever a PR is opened during a session where the user started work on a Linear issue. Track the active issue identifier throughout the session.
+
+
+ARGUMENTS: MM-207 — verify full implementation and that all subissues are complete
+
+Agent: MM-207 is the account-migration epic, already In Progress and assigned. Now let me pull its subissues.
+
+The interop CLI has a full outbound migration harness. Let me check the inbound direction (ezpds as destination) and any epic comments noting remaining work.
+
+No comments on the epic. Let me check test coverage for the inbound (ezpds-as-destination) handshake — the last piece of the epic's scope.
+
+Verification complete. Here's the full picture:
+
+## MM-207 audit: implementation is complete; one epic-level validation remains unexecuted
+
+**All 10 subissues are Done in Linear**, and I verified each maps to merged code, not just a closed ticket:
+
+| Area | Issues | Evidence in code |
+|---|---|---|
+| Server XRPC surface (the 9 endpoints the epic listed as absent) | MM-218, MM-219, MM-220, MM-221, MM-222 | All registered in [app.rs](crates/pds/src/app.rs:267) (`createAccount`, `checkAccountStatus`, `reserveSigningKey`, the four `identity.*` PLC endpoints, `importRepo`, `listMissingBlobs`), each with a dedicated route file carrying 4–10 inline tests |
+| Wallet-authorized path (the differentiator) | MM-229 (self-signed PLC leg), MM-230 (path detection), MM-228 (orchestration), MM-232 (UI) | Merged via commits `6ef11ae0`, PR #119, PR #122 — all on `main` |
+| ezpds-as-source outbound | MM-231 | PR #120 added a 488-line end-to-end test ([outbound_migration_test.rs](crates/pds/src/routes/outbound_migration_test.rs)) |
+| Email gate for the interop path | MM-211 (not a child, but the epic flagged it as a blocker) | Done via PR #114 — [request_plc_operation_signature.rs](crates/pds/src/routes/request_plc_operation_signature.rs) now mints a 1-hour token and delivers it through the pluggable `EmailSender` (SMTP for real delivery) |
+
+The interop CLI also gained live-network commands: `interop migrate perform` and `migrate verify` drive a real self-signed outbound migration against a deployment ([migrate.js](tools/interop/src/migrate.js)).
+
+`★ Insight ─────────────────────────────────────`
+The epic's two-path custody model (ADR-0002) is why the subissue split looks lopsided: the five *server* tickets exist purely for **interop** (so goat/official clients can migrate off ezpds the standard way), while the four *wallet* tickets implement the flagship path where the Secure-Enclave key self-signs the PLC op — no email token, no cooperation from the old PDS. Both halves had to land for the epic's "credible exit" claim to hold.
+`─────────────────────────────────────────────────`
+
+**The one thing not done:** the epic's "canonical end-to-end test" — the live **bsky.social round trip** (import a bsky identity into ezpds → migrate out self-signed → migrate back). No child issue tracks it, the interop CLI only has an *outbound* migration driver (no inbound-from-bsky.social command), and I found no record of it being run. It needs real-world resources: a live deployment and a real bsky.social account.
+
+So: **implementation scope is fully covered; the epic is still In Progress only because that live validation hasn't been performed.** Two ways to close this out:
+
+1. **Run the round trip** — spin up the interop flow against staging with a bsky.social account (would likely mean adding an inbound-migration command to the interop CLI first), then close MM-207 with the results recorded.
+2. **Close the epic now** and file the live round-trip as a separate validation ticket, treating MM-207 as the implementation epic it structurally is.
+
+I'd lean toward option 2 — the round trip is an operational validation with external dependencies, and keeping a 10/10-children-done epic open for it muddies the wave status. Want me to close MM-207 and file the round-trip ticket, or leave it as-is?
+
+---
+
+User: round trip is a good idea, I have two servers, one is staging and one is production hah. If there are no outstanding visible gaps without testing it, let's wrap up the epic, promote to production, and I'll report back when I complete my test
+
+Agent: Let me wrap up the Linear side and then look at what a production promotion requires from the current release state.
+
+MM-241 filed for the round-trip validation. The `gh` call hit a TLS error from the sandbox's network interception — retrying outside the sandbox (you can manage this via `/sandbox`).
+
+CI is **failing on main's tip** (`c1045470`, the bruno staging-env commit) — that blocks everything since Railway gates on CI. Let me see what broke.
+
+That grep caught test noise. Let me pull the actual vulnerability section of the audit output.
+
+Both gates pass locally — audit is clean (exit 0, only the 18 pre-existing allowed "unmaintained" warnings). Committing and opening the release PR:
+
+Dual push-URLs — GitHub got it too (the `tail -3` just cut off the first push's output). Creating the PR:
+
+Here's where everything stands while CI runs:
+
+**Done so far:**
+- **MM-207 closed as Done** — all 10 subissues verified complete in both Linear and code (9 server XRPC endpoints registered and tested, wallet self-signed leg, path detection, orchestration, Obsign UI, ezpds-as-source e2e test, and the MM-211 email gate).
+- **MM-241 filed** — the live bsky.social round-trip validation you'll be running, with the leg-by-leg plan and acceptance criteria (plc.directory audit-log custody checks after each leg). It notes the interop CLI covers the outbound self-signed leg (`migrate perform`/`verify`) but the inbound leg is driven from the wallet or standard tooling.
+- **Found and fixed the blocker for promotion:** main's tip was red in CI — not from any code change, but because RUSTSEC-2026-0204 (`crossbeam-epoch` < 0.9.20) landed in the RustSec DB after the last green commit. [PR #123](https://github.com/malpercio-dev/ezpds/pull/123) bumps `crossbeam-epoch` to 0.9.20 (lockfile-only) and sets the workspace version to **0.4.0** for the migration release. `lock-check` and `audit` verified locally; auto-merge is armed.
+
+**Next (automatic once CI is green):** the PR squash-merges → Railway deploys **staging** from main → I'll run `just release` (tags `v0.4.0`) and `just deploy-production v0.4.0` from the main checkout, which advances the `production` branch Railway watches.
+
+I'll pick this up as soon as the merge lands.
+
+---
+
+User: <task-notification>
+<task-id>b2nqgb0al</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-jacob-zweifel-workspace-malpercio-dev-ezpds--claude-worktrees-eager-rosalind-47863e/47308f93-d352-49b8-bd28-5c43e3abdf7d/tasks/b2nqgb0al.output</output-file>
+<status>completed</status>
+<summary>Background command "Poll PR #123 until merged (30s interval, 30min cap)" completed (exit code 0)</summary>
+</task-notification>
+
+Agent: PR #123 is merged — staging is deploying via Railway's main watch. Now cutting the release tag from the main checkout:
+
+Production branch advanced to `v0.4.0`. One last gate: the CI run on `production` (including the `verify-release` tag-match check) must go green before Railway deploys. Watching it:
+
+The release train is fully dispatched — here's the state of everything:
+
+- **PR #123 merged** → staging is deploying `v0.4.0` from `main` now.
+- **`v0.4.0` tagged** on the merged main commit and pushed to GitHub + tangled.
+- **`production` advanced** `cac13299 → de0be8d7` (a fast-forward, as required). Railway deploys production as soon as the production-branch CI — including the `verify-release` job that confirms the `v0.4.0` tag matches the workspace version — goes green. I'm watching that run in the background and will confirm when it passes.
+
+I'll report back when the production gate is green.
+
+---
+
+User: <task-notification>
+<task-id>bpjs50rsc</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-jacob-zweifel-workspace-malpercio-dev-ezpds--claude-worktrees-eager-rosalind-47863e/47308f93-d352-49b8-bd28-5c43e3abdf7d/tasks/bpjs50rsc.output</output-file>
+<status>completed</status>
+<summary>Background command "Watch production-branch CI run to completion" completed (exit code 0)</summary>
+</task-notification>
+
+Agent: Production CI is green — Railway is deploying now. Let me grab the production URL and confirm the new version once it's up.
+
+Production CI passed (including `verify-release`), and Railway is building the `v0.4.0` image now. I'm polling `relay.ezpds.com/xrpc/_health` in the background and will confirm the moment it reports 0.4.0.
