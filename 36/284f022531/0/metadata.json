@@ -1,0 +1,86 @@
+{
+  "cli_version": "0.8.42",
+  "checkpoint_id": "36284f022531",
+  "session_id": "88316797-babd-46d9-a25b-f9e18583db1d",
+  "strategy": "manual-commit",
+  "created_at": "2026-07-25T22:32:32.216414Z",
+  "branch": "claude/blob-observability-ownership-loss-484498",
+  "checkpoints_count": 1,
+  "files_touched": [
+    "crates/pds/src/db/blobs.rs",
+    "crates/pds/src/db/server_stats.rs",
+    "crates/pds/src/db/accounts.rs",
+    "crates/pds/src/routes/admin_health.rs",
+    "crates/pds/src/routes/account_storage.rs",
+    "crates/pds/src/routes/admin_list_accounts.rs",
+    "changelog.d/mm-474.added.md",
+    "docs/provisioning-api-spec.md",
+    "crates/pds/AGENTS.md"
+  ],
+  "agent": "Claude Code",
+  "model": "",
+  "turn_id": "030930310c53",
+  "compact_transcript_start": 0,
+  "token_usage": {
+    "input_tokens": 130,
+    "cache_creation_tokens": 237866,
+    "cache_read_tokens": 13785707,
+    "output_tokens": 31594,
+    "api_call_count": 70
+  },
+  "skill_events_version": 1,
+  "skill_events": [
+    {
+      "id": "claude-skill-toolu_01DNHEqkZXyUNQ7S2Nun7i1A",
+      "event_type": "tool_invocation",
+      "skill": {
+        "name": "linear-workflow"
+      },
+      "source": {
+        "agent": "claude-code",
+        "signal": "skill_tool_use",
+        "confidence": "explicit"
+      },
+      "turn_id": "030930310c53",
+      "transcript_anchor": {
+        "unit": "line",
+        "start": 18,
+        "end": 19,
+        "entry_ids": [
+          "767b0d53-88d1-4381-9d1c-c297a83476c5"
+        ],
+        "tool_use_id": "toolu_01DNHEqkZXyUNQ7S2Nun7i1A"
+      },
+      "native": {
+        "tool_name": "Skill",
+        "tool_use_id": "toolu_01DNHEqkZXyUNQ7S2Nun7i1A"
+      },
+      "collapse": {
+        "target": "tool_pair",
+        "label": "Skill: linear-workflow",
+        "default_collapsed": true
+      }
+    }
+  ],
+  "initial_attribution": {
+    "calculated_at": "2026-07-25T22:32:32.169721Z",
+    "agent_lines": 375,
+    "agent_removed": 8,
+    "human_added": 1,
+    "human_modified": 0,
+    "human_removed": 0,
+    "total_committed": 376,
+    "total_lines_changed": 385,
+    "agent_percentage": 99.48051948051948,
+    "metric_version": 2
+  },
+  "prompt_attributions": [
+    {
+      "checkpoint_number": 1,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 0,
+      "agent_lines_removed": 0
+    }
+  ]
+}

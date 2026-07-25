@@ -1,0 +1,52 @@
+Work on Linear issue MM-474:
+
+Suggested branch name: malpercio/mm-474-blob-observability-ownership-loss-is-indistinguishable-from
+
+<issue identifier="MM-474">
+<title>Blob observability: ownership loss is indistinguishable from byte loss</title>
+<description>
+## Summary
+
+Diagnosing the <issue id="6a22b24b-7904-49cc-b5dd-e4d5386b8b54" href="https://linear.app/malpercio/issue/MM-472/blob-gc-destroys-the-blobs-of-any-account-whose-reconcile-fails">MM-472</issue> blob loss required a production SQLite shell, because **every operator-reachable blob read path goes through** `blob_owners`. None of them can distinguish "ownership rows lost, bytes intact" from "bytes destroyed".
+
+| Surface | Source |
+| -- | -- |
+| `GET /v1/admin/accounts` → `totalBytes` | `blob_owners JOIN blobs` (`db/accounts.rs`) |
+| `GET /v1/accounts/:id/storage` | identical SQL (`db/blobs.rs::account_storage_bytes`) |
+| `com.atproto.sync.listBlobs` | `list_blob_cids` → `blob_owners` |
+| `com.atproto.repo.listMissingBlobs` | `present_cids` → `blob_owners` |
+| `com.atproto.sync.getBlob` | ownership-scoped `get_owned_blob` |
+
+`blob_scrub` walks the blob directory for orphans, but its definition of orphan is "a file with no `blobs` row" — and `blob_gc` deletes the physical row and the file together, so that path never catches this class either.
+
+## Second gap: a failing sweep looks healthy
+
+`blob_gc` logged `errors=1` every 30 minutes for ~6 hours before destroying 534 blobs, and the pass still reported "blob GC pass complete" and recorded a fresh `blob_gc_last_run_timestamp`. The documented operator signal is a *stale* timestamp, which never happened here — the pass completed every time, it just silently skipped the one account that mattered.
+
+There is nothing an operator could have alerted on short of reading WARN lines.
+
+## Third gap: Custos-hosted did:web is invisible
+
+`accounts.did_web_hosting_enabled_at` is not in `AdminAccountRow` and not returned by `GET /v1/admin/accounts`. Reading it needs a DB shell. This becomes load-bearing once it gates did:web sovereign sessions (see the did:web authority issue) — an account would be refused a login path with no way to see why from the admin surface.
+
+## Proposed scope
+
+1. Surface physical-vs-owned divergence somewhere an operator can see it. Options: add physical blob count/bytes alongside the ownership figures on `GET /v1/accounts/:id/storage`, or a dedicated integrity readout on `GET /v1/admin/health`.
+2. Make `errors > 0` in a sweep pass distinguishable from a clean pass in `sweep_status` / metrics, so it is alertable. Consider a per-sweep `errors` counter and last-error timestamp beside the existing `completed_at`/`swept`.
+3. Add `didWebHosting: bool` to `AdminAccountRow` and the listing response (one more correlated scalar in the existing per-row subquery pattern).
+
+## Note
+
+Item 2 is arguably the highest-value item here. The <issue id="6a22b24b-7904-49cc-b5dd-e4d5386b8b54" href="https://linear.app/malpercio/issue/MM-472/blob-gc-destroys-the-blobs-of-any-account-whose-reconcile-fails">MM-472</issue> fix stops the deletion, but the general lesson is that a sweep which skips work is not "complete", and the current reporting cannot express that.
+</description>
+<team name="Mal's Machinations"/>
+<label>Wave 7: Hardening</label>
+<label>Improvement</label>
+<project name="ezpds">An easy-to-host PDS on the ATProtocol, MacOS. Grandma-approved.</project>
+<issue-relations>
+<related>
+<issue-ref identifier="MM-473" title="atrium-repo entries_prefixed over-scans: listRecords 500s, and would serve foreign records but for one fallback"/>
+<issue-ref identifier="MM-472" title="blob_gc destroys the blobs of any account whose reconcile fails"/>
+</related>
+</issue-relations>
+</issue>
