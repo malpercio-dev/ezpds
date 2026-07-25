@@ -1,0 +1,13 @@
+I think the information architecture in the two apps, but especially the identity wallet, needs some work. let's brainstorm, quiz me on some pain points and proposed alternatives, and let's try to come up with something even better. apply any impeccable skills that may be useful
+
+---
+
+let's try to craete the linear issues again
+
+---
+
+it's definitely authed. I'm not sure what's happening. can you try a subagent?
+
+---
+
+restarted. try again?

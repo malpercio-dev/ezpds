@@ -1,0 +1,26 @@
+{
+  "cli_version": "0.8.42",
+  "checkpoint_id": "4e973ccd248e",
+  "strategy": "manual-commit",
+  "branch": "claude/identity-wallet-ia-35c861",
+  "checkpoints_count": 4,
+  "files_touched": [
+    "docs/design-plans/2026-07-24-wallet-information-architecture.md"
+  ],
+  "sessions": [
+    {
+      "metadata": "/4e/973ccd248e/0/metadata.json",
+      "transcript": "/4e/973ccd248e/0/full.jsonl",
+      "compact_transcript": "/4e/973ccd248e/0/transcript.jsonl",
+      "content_hash": "/4e/973ccd248e/0/content_hash.txt",
+      "prompt": "/4e/973ccd248e/0/prompt.txt"
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 74,
+    "cache_creation_tokens": 692753,
+    "cache_read_tokens": 7493390,
+    "output_tokens": 45765,
+    "api_call_count": 40
+  }
+}
