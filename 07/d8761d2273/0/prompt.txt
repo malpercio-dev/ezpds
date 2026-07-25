@@ -1,0 +1,15 @@
+```
+neSA=$(curl -s "https://obsign.org/xrpc/com.atproto.server.getServiceAuth?aud=did:web:video.bsky.app&lxm=app.bsky.video.getJobStatus" \
+  -H "Authorization: Bearer $ACCESS" | jq -r .token)
+curl -s "https://video.bsky.app/xrpc/app.bsky.video.getJobStatus?jobId=d9a3hf1u56es72om7ppg" \
+  -H "Authorization: Bearer $SA" | jq .
+{
+  "jobStatus": {
+    "did": "did:plc:g4spbqpi4gvfudtrph3xup7x",
+    "error": "video processing error for job: d9a3hf1u56es72om7ppg",
+    "jobId": "d9a3hf1u56es72om7ppg",
+    "message": "Failed to process video",
+    "state": "JOB_STATE_FAILED"
+  }
+}
+```
