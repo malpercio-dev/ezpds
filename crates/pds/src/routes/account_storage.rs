@@ -32,6 +32,38 @@ pub struct StorageResponse {
     blob_count: i64,
     /// Total bytes occupied by those blobs.
     total_bytes: i64,
+    /// Physical blob rows recording this account as their *uploader* (`blobs.account_did`),
+    /// and their bytes — a second witness beside the ownership figures above.
+    ///
+    /// `blob_count`/`total_bytes` come from `blob_owners`, as does every other blob surface
+    /// an operator can reach, so ownership rows vanishing and blobs being reclaimed look
+    /// identical everywhere else. These read the physical table directly: if an account
+    /// reports zero owned blobs while hundreds are still attributed to it here, the reclaim
+    /// path never took them and its ownership rows are what went missing.
+    ///
+    /// What this witnesses is **non-reclamation**, not bytes, and it must not be read as a
+    /// byte-presence check. The physical row and its file are deleted together, so a surviving
+    /// row means the blob never went through reclamation — but a file destroyed out of band
+    /// (corruption, a partial restore, a manual delete) leaves its row behind and still counts
+    /// here. Whether the files exist and hash correctly is `blob_scrub`'s question, reported on
+    /// `GET /v1/admin/health` under `sweeps.blobScrub`.
+    ///
+    /// Divergence is **not** by itself a fault. Blobs are content-addressed and shared: a CID
+    /// this account references but another uploaded is owned-not-uploaded, and one it uploaded
+    /// that only another account still owns is uploaded-not-owned. Treat a gap as a reason to
+    /// look, not a verdict.
+    ///
+    /// Nor does this witness survive reclamation, which is the other way to misread it. A
+    /// physical row goes with its last owner, taking its uploader attribution along, so when
+    /// GC is what collected the blobs these figures reach zero too. What the pair makes legible
+    /// is the diagnosis, not the presence of a fault: against zero owned blobs, a nonzero
+    /// `uploaded_blob_count` says the rows survived and the ownership rows are what went
+    /// missing, while zero here as well says the blobs went through the reclaim path. Read
+    /// `uploaded_blob_count == 0` as "nothing is left", never as "nothing was ever here" —
+    /// that second reading is exactly the wrong conclusion in the incident these fields exist
+    /// for.
+    uploaded_blob_count: i64,
+    uploaded_blob_bytes: i64,
     /// The per-account storage quota in bytes (`[blobs] max_storage_per_account`). Tiers are
     /// not yet differentiated in v0.1, so every account reports the same configured quota.
     quota_bytes: i64,
@@ -73,6 +105,14 @@ pub async fn account_storage(
             ApiError::new(ErrorCode::InternalError, "failed to load account storage")
         })?;
 
+    let (uploaded_blob_count, uploaded_blob_bytes) =
+        crate::db::blobs::account_uploaded_blob_metrics(&state.db, &did)
+            .await
+            .map_err(|e| {
+                tracing::error!(error = %e, did = %did, "failed to load uploaded blob metrics");
+                ApiError::new(ErrorCode::InternalError, "failed to load account storage")
+            })?;
+
     let largest_blob = crate::db::blobs::account_largest_blob(&state.db, &did)
         .await
         .map_err(|e| {
@@ -94,6 +134,8 @@ pub async fn account_storage(
     Ok(Json(StorageResponse {
         blob_count,
         total_bytes,
+        uploaded_blob_count,
+        uploaded_blob_bytes,
         quota_bytes,
         quota_used_pct,
         largest_blob,
@@ -171,6 +213,42 @@ mod tests {
         let (status, body) = get_storage(&app, "did:plc:ghost", Some(ADMIN)).await;
         assert_eq!(status, StatusCode::NOT_FOUND);
         assert_eq!(body["error"]["code"], "NOT_FOUND");
+    }
+
+    /// Diagnosing a real blob loss needed a production SQLite shell precisely because this
+    /// endpoint could only speak through `blob_owners`. With the uploader witness beside it,
+    /// "ownership rows gone, blobs never reclaimed" is legible over HTTP.
+    #[tokio::test]
+    async fn ownership_loss_is_visible_as_owned_zero_beside_nonzero_uploaded() {
+        let state = test_state_with_admin_token().await;
+        let app = crate::app::app(state.clone());
+        let did = "did:plc:storageorphaned";
+        insert_account(&state.db, did).await;
+        insert_blob(&state.db, did, "bafkeepone", 100).await;
+        insert_blob(&state.db, did, "bafkeeptwo", 250).await;
+
+        let (status, body) = get_storage(&app, did, Some(ADMIN)).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["blobCount"], 2);
+        assert_eq!(body["uploadedBlobCount"], 2);
+        assert_eq!(body["uploadedBlobBytes"], 350);
+
+        sqlx::query("DELETE FROM blob_owners WHERE account_did = ?")
+            .bind(did)
+            .execute(&state.db)
+            .await
+            .unwrap();
+
+        let (status, body) = get_storage(&app, did, Some(ADMIN)).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["blobCount"], 0, "every ownership-scoped figure zeroes");
+        assert_eq!(body["totalBytes"], 0);
+        assert!(body["largestBlob"].is_null());
+        assert_eq!(
+            body["uploadedBlobCount"], 2,
+            "the physical rows survived, still naming this account as uploader"
+        );
+        assert_eq!(body["uploadedBlobBytes"], 350);
     }
 
     #[tokio::test]

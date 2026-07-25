@@ -134,6 +134,41 @@ pub async fn account_blob_metrics(
     Ok(row)
 }
 
+/// Physical blob rows this account *uploaded*, and their total bytes, as `(count, bytes)`.
+///
+/// The second witness beside [`account_blob_metrics`]. Every other blob read path in the PDS
+/// — quota, storage metrics, `listBlobs`, `listMissingBlobs`, `getBlob` — resolves through
+/// `blob_owners`, so a lost set of ownership rows and a set of reclaimed blobs look identical
+/// from every one of them. This reads `blobs.account_did` instead, the first-uploader column
+/// V039 kept for diagnostics and nothing has read since: a physical row reported here outlived
+/// its ownership rows.
+///
+/// What that witnesses is **non-reclamation**, not bytes. `delete_blob_if_unowned` deletes the
+/// physical row and the file together, so a surviving row means the blob never went through
+/// the reclaim path — which is exactly the distinction `blob_owners` cannot draw. It is not
+/// evidence the file is present: a row whose file was destroyed out of band (corruption, a
+/// partial restore, a manual delete) still counts here. Verifying the files themselves against
+/// their rows is `blob_scrub`'s job, and it has its own alarm channel
+/// (`blob_scrub_flagged_total`, plus the scrub's sweep entry on `GET /v1/admin/health`).
+///
+/// It is **not** a corrected ownership count either, and the two figures diverge for benign
+/// reasons:
+/// a CID first uploaded by another account but referenced by this one is owned-not-uploaded,
+/// and a CID this account uploaded that another account now solely owns is
+/// uploaded-not-owned. Read a divergence as a prompt to look, not as a fault.
+pub async fn account_uploaded_blob_metrics(
+    pool: &SqlitePool,
+    account_did: &str,
+) -> Result<(i64, i64), sqlx::Error> {
+    let row: (i64, i64) = sqlx::query_as(
+        "SELECT COUNT(*), COALESCE(SUM(size_bytes), 0) FROM blobs WHERE account_did = ?",
+    )
+    .bind(account_did)
+    .fetch_one(pool)
+    .await?;
+    Ok(row)
+}
+
 /// Return the account's largest owned blob as `(cid, size_bytes)`, or `None` when it has none.
 ///
 /// Ties on size are broken by CID (lexicographic) so the result is deterministic.
@@ -503,6 +538,93 @@ mod tests {
 
     async fn insert_test_account(pool: &SqlitePool) -> String {
         insert_account(pool, "did:plc:testblob").await
+    }
+
+    /// The divergence the whole readout exists for: strip the ownership rows and every
+    /// ownership-scoped query reports an empty account, while the uploader attribution still
+    /// shows the blobs were never reclaimed.
+    #[tokio::test]
+    async fn uploaded_metrics_survive_ownership_loss_that_zeroes_owned_metrics() {
+        let pool = test_pool().await;
+        let did = insert_test_account(&pool).await;
+        for (cid, size) in [("bafkone", 100_i64), ("bafktwo", 250)] {
+            insert_blob(
+                &pool,
+                cid,
+                &did,
+                "image/jpeg",
+                size,
+                &format!("blobs/ba/{cid}"),
+                "2030-01-01 00:00:00",
+            )
+            .await
+            .unwrap();
+        }
+
+        assert_eq!(account_blob_metrics(&pool, &did).await.unwrap(), (2, 350));
+        assert_eq!(
+            account_uploaded_blob_metrics(&pool, &did).await.unwrap(),
+            (2, 350),
+            "a healthy account agrees on both witnesses"
+        );
+
+        sqlx::query("DELETE FROM blob_owners WHERE account_did = ?")
+            .bind(&did)
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        assert_eq!(
+            account_blob_metrics(&pool, &did).await.unwrap(),
+            (0, 0),
+            "the ownership-scoped view cannot tell this from reclaimed blobs"
+        );
+        assert_eq!(
+            account_uploaded_blob_metrics(&pool, &did).await.unwrap(),
+            (2, 350),
+            "the surviving physical rows say the reclaim path never took these blobs"
+        );
+    }
+
+    /// Content addressing means the two witnesses legitimately disagree, so the readout must
+    /// not be mistaken for a corrected ownership count.
+    #[tokio::test]
+    async fn uploaded_metrics_exclude_blobs_owned_but_uploaded_by_another_account() {
+        let pool = test_pool().await;
+        let uploader = insert_account(&pool, "did:plc:uploader").await;
+        let sharer = insert_account(&pool, "did:plc:sharer").await;
+
+        insert_blob(
+            &pool,
+            "bafkshared",
+            &uploader,
+            "image/jpeg",
+            400,
+            "blobs/ba/bafkshared",
+            "2030-01-01 00:00:00",
+        )
+        .await
+        .unwrap();
+        // The sharer's repo references the same CID, so it owns it without having uploaded it.
+        upsert_owner_referenced(&pool, &sharer, "bafkshared", 1)
+            .await
+            .unwrap();
+
+        assert_eq!(
+            account_blob_metrics(&pool, &sharer).await.unwrap(),
+            (1, 400)
+        );
+        assert_eq!(
+            account_uploaded_blob_metrics(&pool, &sharer).await.unwrap(),
+            (0, 0),
+            "owned-not-uploaded is benign sharing, not a fault"
+        );
+        assert_eq!(
+            account_uploaded_blob_metrics(&pool, &uploader)
+                .await
+                .unwrap(),
+            (1, 400)
+        );
     }
 
     #[tokio::test]

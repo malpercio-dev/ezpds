@@ -24,6 +24,26 @@ pub struct ServerStats {
     /// Physical blob rows (one per stored CID, shared across owners) and their total bytes.
     pub blob_count: i64,
     pub blob_bytes: i64,
+    /// Physical blob rows that no `blob_owners` row claims, and their total bytes — the
+    /// integrity readout for ownership loss.
+    ///
+    /// Under healthy operation this is ~0: blob GC deletes the physical row together with the
+    /// last ownership row (`delete_blob_if_unowned`), so a row outlives its owners only for
+    /// the moments between those two statements. A standing nonzero value is the state no
+    /// other surface can express — never reclaimed, yet claimed by nobody — because every
+    /// operator-facing blob query resolves through `blob_owners` and would report the same
+    /// zero for a reclaimed blob as for an orphaned one. `blob_scrub` doesn't cover it either:
+    /// its orphan definition is a *file* with no `blobs` row, and this is a `blobs` row with
+    /// no owner.
+    ///
+    /// This counts rows, so it says nothing about whether those rows' files are present and
+    /// hash correctly — that is `blob_scrub`'s question, answered on its own sweep entry in
+    /// this same payload. The two are complementary halves of blob integrity, not substitutes.
+    ///
+    /// A small transient value during a GC pass is normal; a value that persists across passes
+    /// is not.
+    pub blob_unowned_count: i64,
+    pub blob_unowned_bytes: i64,
     /// Physical repo-block rows (MST nodes + records, one per stored CID).
     pub block_count: i64,
     /// Retained firehose event-log rows (`repo_seq`) — the replayable backlog.
@@ -67,6 +87,13 @@ pub async fn server_stats(db: &SqlitePool) -> Result<ServerStats, sqlx::Error> {
             .fetch_one(db)
             .await?;
 
+    let (blob_unowned_count, blob_unowned_bytes): (i64, i64) = sqlx::query_as(
+        "SELECT COUNT(*), COALESCE(SUM(size_bytes), 0) FROM blobs b \
+         WHERE NOT EXISTS (SELECT 1 FROM blob_owners o WHERE o.cid = b.cid)",
+    )
+    .fetch_one(db)
+    .await?;
+
     let block_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM blocks")
         .fetch_one(db)
         .await?;
@@ -83,6 +110,8 @@ pub async fn server_stats(db: &SqlitePool) -> Result<ServerStats, sqlx::Error> {
         accounts_takendown: accounts.takendown,
         blob_count,
         blob_bytes,
+        blob_unowned_count,
+        blob_unowned_bytes,
         block_count,
         firehose_events,
     })
@@ -192,5 +221,64 @@ mod tests {
         assert_eq!(stats.blob_bytes, 350);
         assert_eq!(stats.block_count, 1);
         assert_eq!(stats.firehose_events, 1);
+    }
+
+    /// The one thing no ownership-scoped surface can say: bytes are stored, nobody claims
+    /// them. An owned blob must not count, or the readout would alarm on healthy storage.
+    #[tokio::test]
+    async fn unowned_blobs_are_counted_apart_from_owned_ones() {
+        let db = pool().await;
+        insert_account(&db, "did:plc:owner", None, None, None).await;
+        for (cid, size) in [("bafkowned", 100_i64), ("bafkorphan", 250)] {
+            sqlx::query(
+                "INSERT INTO blobs (cid, account_did, mime_type, size_bytes, storage_path)
+                 VALUES (?, 'did:plc:owner', 'application/octet-stream', ?, ?)",
+            )
+            .bind(cid)
+            .bind(size)
+            .bind(format!("ba/{cid}"))
+            .execute(&db)
+            .await
+            .unwrap();
+        }
+        // Only one of the two carries an ownership row. The other is the shape this readout
+        // exists for: the file and its physical row survive, the `blob_owners` row does not.
+        sqlx::query(
+            "INSERT INTO blob_owners (account_did, cid, ref_count, temp_until)
+             VALUES ('did:plc:owner', 'bafkowned', 1, NULL)",
+        )
+        .execute(&db)
+        .await
+        .unwrap();
+
+        let stats = server_stats(&db).await.unwrap();
+        assert_eq!(stats.blob_count, 2, "both physical rows still exist");
+        assert_eq!(stats.blob_bytes, 350);
+        assert_eq!(stats.blob_unowned_count, 1);
+        assert_eq!(stats.blob_unowned_bytes, 250);
+    }
+
+    #[tokio::test]
+    async fn fully_owned_storage_reports_no_unowned_blobs() {
+        let db = pool().await;
+        insert_account(&db, "did:plc:owner", None, None, None).await;
+        sqlx::query(
+            "INSERT INTO blobs (cid, account_did, mime_type, size_bytes, storage_path)
+             VALUES ('bafkowned', 'did:plc:owner', 'application/octet-stream', 100, 'ba/bafkowned')",
+        )
+        .execute(&db)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO blob_owners (account_did, cid, ref_count, temp_until)
+             VALUES ('did:plc:owner', 'bafkowned', 1, NULL)",
+        )
+        .execute(&db)
+        .await
+        .unwrap();
+
+        let stats = server_stats(&db).await.unwrap();
+        assert_eq!(stats.blob_unowned_count, 0);
+        assert_eq!(stats.blob_unowned_bytes, 0);
     }
 }

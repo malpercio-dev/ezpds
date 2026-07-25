@@ -59,6 +59,23 @@ struct StorageCounts {
     /// Physical blob rows (one per stored CID, shared across owners).
     blob_count: i64,
     blob_bytes: i64,
+    /// Of those, the rows no `blob_owners` row claims, and their bytes — the blob-integrity
+    /// readout for ownership loss.
+    ///
+    /// Every operator-reachable blob surface (this endpoint's own `blobBytes` aside, plus the
+    /// account listing, per-account storage, `listBlobs`, `listMissingBlobs`, `getBlob`)
+    /// resolves through `blob_owners`, so all of them report the same zero whether an
+    /// account's ownership rows were lost or its blobs were reclaimed. These two fields are
+    /// the only place the difference is visible: never reclaimed, claimed by nobody.
+    ///
+    /// Expect ~0. GC deletes a physical row with its last owner, so a row is unowned only
+    /// between those two statements — a value that survives across sweeps is the alarm, and
+    /// unlike a stale `blobGc.completedAt` it does not require the sweep to have stopped.
+    ///
+    /// A row count, not a byte-presence check: whether these rows' files exist and hash
+    /// correctly is `blobScrub`'s question, reported under `sweeps` in this same payload.
+    blob_unowned_count: i64,
+    blob_unowned_bytes: i64,
     /// Physical repo-block rows (MST nodes + records).
     block_count: i64,
 }
@@ -203,6 +220,8 @@ pub async fn admin_health(
         storage: StorageCounts {
             blob_count: stats.blob_count,
             blob_bytes: stats.blob_bytes,
+            blob_unowned_count: stats.blob_unowned_count,
+            blob_unowned_bytes: stats.blob_unowned_bytes,
             block_count: stats.block_count,
         },
         firehose: FirehoseState {
@@ -284,6 +303,8 @@ mod tests {
         assert_eq!(json["accounts"]["flagged"], 0);
         assert_eq!(json["storage"]["blobCount"], 0);
         assert_eq!(json["storage"]["blobBytes"], 0);
+        assert_eq!(json["storage"]["blobUnownedCount"], 0);
+        assert_eq!(json["storage"]["blobUnownedBytes"], 0);
         assert_eq!(json["storage"]["blockCount"], 0);
         assert_eq!(json["firehose"]["currentSeq"], 0);
         assert_eq!(json["firehose"]["subscribers"], 0);
@@ -301,6 +322,49 @@ mod tests {
         assert_eq!(json["sweeps"]["agentClaimSweep"], serde_json::Value::Null);
         assert_eq!(json["sweeps"]["adminNonceSweep"], serde_json::Value::Null);
         assert_eq!(json["sweeps"]["labelerWatch"], serde_json::Value::Null);
+    }
+
+    /// The server-wide half of the integrity readout: a physical row nobody owns. `blobCount`
+    /// alone cannot express it — it counts the orphan and the healthy blob identically.
+    #[tokio::test]
+    async fn health_separates_unowned_physical_blobs_from_owned_ones() {
+        let state = test_state_with_admin_token().await;
+        sqlx::query(
+            "INSERT INTO accounts (did, email, password_hash, created_at, updated_at) \
+             VALUES ('did:plc:bo', 'bo@example.com', NULL, datetime('now'), datetime('now'))",
+        )
+        .execute(&state.db)
+        .await
+        .unwrap();
+        for (cid, size) in [("bafkowned", 100_i64), ("bafkorphan", 250)] {
+            sqlx::query(
+                "INSERT INTO blobs (cid, account_did, mime_type, size_bytes, storage_path) \
+                 VALUES (?, 'did:plc:bo', 'image/jpeg', ?, ?)",
+            )
+            .bind(cid)
+            .bind(size)
+            .bind(format!("blobs/ba/{cid}"))
+            .execute(&state.db)
+            .await
+            .unwrap();
+        }
+        sqlx::query(
+            "INSERT INTO blob_owners (account_did, cid, ref_count, temp_until) \
+             VALUES ('did:plc:bo', 'bafkowned', 1, NULL)",
+        )
+        .execute(&state.db)
+        .await
+        .unwrap();
+
+        let (status, json) = get_health(app(state), Some("test-admin-token")).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(json["storage"]["blobCount"], 2);
+        assert_eq!(json["storage"]["blobBytes"], 350);
+        assert_eq!(json["storage"]["blobUnownedCount"], 1);
+        assert_eq!(
+            json["storage"]["blobUnownedBytes"], 250,
+            "unreclaimed rows that no account claims — the only field that can say so"
+        );
     }
 
     #[tokio::test]

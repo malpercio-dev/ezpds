@@ -30,16 +30,45 @@ docs {
     exactly, plus `flagged` — accounts carrying at least one in-force label
     from a watched labeler (orthogonal to the lifecycle buckets; always 0 when
     labeler watching is off). `flagged` is the console's badge count.
-  - `storage` — `{blobCount, blobBytes, blockCount}`; physical rows (blobs are
-    shared across owners and counted once).
+  - `storage` — `{blobCount, blobBytes, blobUnownedCount, blobUnownedBytes,
+    blockCount}`; physical rows (blobs are shared across owners and counted
+    once). `blobUnownedCount`/`blobUnownedBytes` are the subset of those rows
+    that **no** `blob_owners` row claims — stored blob rows nobody owns. Every other
+    operator-reachable blob surface (the account listing, per-account storage,
+    `listBlobs`, `listMissingBlobs`, `getBlob`) resolves through `blob_owners`,
+    so all of them report the same zero whether an account's ownership rows were
+    lost or its blobs were reclaimed; this pair is the only place the difference
+    is visible server-wide. It counts rows: whether those rows' files are present
+    and hash correctly is `sweeps.blobScrub`'s question, not this pair's.
+
+    Expect ~0: GC deletes a physical row with its last owner, so a row is unowned
+    only between those two statements. A value that **survives across sweeps** is
+    the alarm — and unlike a stale `blobGc.completedAt`, it does not require the
+    sweep to have stopped in order to show.
   - `firehose` — `{currentSeq, subscribers, retainedEvents,
     backfillWindowSeconds}`; `backfillWindowSeconds` is the age of the oldest
     retained event (`null` when the log is empty).
-  - `sweeps` — `{blobGc, firehoseGc, accountReaper, agentClaimSweep,
-    adminNonceSweep, labelerWatch}`, each `{completedAt, swept}` (unix seconds
-    + items acted on) or `null` until that sweep's first completed pass after
-    boot (`labelerWatch` stays `null` while labeler watching is off; its
-    `swept` counts label rows changed). A failed pass records nothing, so a
-    stale `completedAt` is the operator's signal that passes are not
-    completing.
+  - `sweeps` — `{blobGc, blobMirror, blobScrub, firehoseGc, accountReaper,
+    agentClaimSweep, adminNonceSweep, labelerWatch}`, each
+    `{completedAt, swept, errors}` (unix seconds, items acted on, failures hit)
+    or `null` until that sweep's first completed pass after boot. `blobMirror`
+    stays `null` while the mirror is not configured and `labelerWatch` while
+    labeler watching is off, both like an idle sweep; `blobMirror`'s `swept`
+    counts bucket objects synced (uploads + deletes), `blobScrub`'s counts
+    unhealed integrity problems flagged that pass, and `labelerWatch`'s counts
+    label rows changed.
+
+    A sweep reports two **independent** faults, because they call for different
+    responses. A pass that fails outright records nothing, so a stale
+    `completedAt` means passes are not completing at all — the sweep is dead. A
+    fresh `completedAt` carrying a nonzero `errors` means the pass ran and
+    skipped part of its work: for blob GC, an account whose reconcile failed is
+    excluded from the sweep and leaks disk until the fault is fixed. `errors`
+    counts failed *operations*, not the work they cost — one failed account is
+    1, however many of its blobs go uncollected — so it is a count of broken
+    subjects, never a severity. Sweeps with no per-item error path always
+    report 0.
+
+    Both are literal facts, per this endpoint's no-verdicts rule; the thresholds
+    that turn either into an alarm belong to the client.
 }
