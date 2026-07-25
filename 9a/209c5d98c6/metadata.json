@@ -1,0 +1,30 @@
+{
+  "cli_version": "0.8.42",
+  "checkpoint_id": "9a209c5d98c6",
+  "strategy": "manual-commit",
+  "branch": "claude/mm-460-wallet-share-icloud-sync-5c0c90",
+  "checkpoints_count": 1,
+  "files_touched": [
+    "apps/identity-wallet/src/lib/components/onboarding/RecoverStartScreen.svelte",
+    "changelog.d/mm-460.fixed.md",
+    "docs/archive/design-plans/2026-07-17-key-recovery-from-shares.md",
+    "docs/mobile-architecture-spec.md",
+    "sites/docs/src/content/docs/user/backup.md"
+  ],
+  "sessions": [
+    {
+      "metadata": "/9a/209c5d98c6/0/metadata.json",
+      "transcript": "/9a/209c5d98c6/0/full.jsonl",
+      "compact_transcript": "/9a/209c5d98c6/0/transcript.jsonl",
+      "content_hash": "/9a/209c5d98c6/0/content_hash.txt",
+      "prompt": "/9a/209c5d98c6/0/prompt.txt"
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 38,
+    "cache_creation_tokens": 384995,
+    "cache_read_tokens": 7892548,
+    "output_tokens": 15571,
+    "api_call_count": 20
+  }
+}
