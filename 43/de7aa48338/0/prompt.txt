@@ -1,5 +1,0 @@
-```
-ign: [dev.malpercio.identitywallet:app] [identity_wallet::claim] verifying PLC operation signature did=did:plc:u7j7xdhvkwx3xlf6xjkbpdn7 authorized_keys=2
-2026-07-11 19:03:10.932342-0400 0xa2102b   Error       0x0                  67156  0    Obsign: [dev.malpercio.identitywallet:app] [identity_wallet::claim] PLC operation signature verification failed did=did:plc:u7j7xdhvkwx3xlf6xjkbpdn7 error=plc operation failed: no authorized rotation key verified the signature: key[0]: public key is not a P-256 key (wrong multicodec prefix); key[1]: public key is not a P-256 key (wrong multicodec prefix)
-2026-07-11 19:03:10.932342-0400 0xa2102b   Error       0x0                  67156  0    Obsign: [dev.malpercio.identitywallet:app] [identity_wallet::claim] PLC operation signature verification failed did=did:plc:u7j7xdhvkwx3xlf6xjkbpdn7 error=plc operation failed: no authorized rotation key verified the signature: key[0]: public key is not a P-256 key (wrong multicodec prefix); key[1]: public key is not a P-256 key (wrong multicodec prefix)
-```
