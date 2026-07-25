@@ -1,0 +1,88 @@
+{
+  "cli_version": "0.8.42",
+  "checkpoint_id": "fa443b345b91",
+  "session_id": "92e49456-e61d-4d8e-94d1-71309b531a29",
+  "strategy": "manual-commit",
+  "created_at": "2026-07-25T00:33:29.472258Z",
+  "branch": "claude/mm-460-wallet-share-icloud-sync-5c0c90",
+  "checkpoints_count": 1,
+  "files_touched": [
+    "apps/identity-wallet/src-tauri/src/keychain.rs",
+    "apps/identity-wallet/src-tauri/src/rekey.rs",
+    "apps/identity-wallet/src-tauri/src/lib.rs",
+    "apps/identity-wallet/src-tauri/src/share_recovery.rs",
+    "apps/identity-wallet/src/lib/components/onboarding/ShamirBackupScreen.svelte",
+    "apps/identity-wallet/src/lib/components/onboarding/RecoverStartScreen.svelte",
+    "sites/docs/src/content/docs/user/backup.md",
+    "sites/docs/src/content/docs/user/screens.md",
+    "docs/archive/design-plans/2026-07-17-key-recovery-from-shares.md",
+    "apps/identity-wallet/src-tauri/src/identity_store.rs",
+    "changelog.d/mm-460.fixed.md"
+  ],
+  "agent": "Claude Code",
+  "model": "",
+  "turn_id": "2e562d21beba",
+  "compact_transcript_start": 0,
+  "token_usage": {
+    "input_tokens": 274,
+    "cache_creation_tokens": 344187,
+    "cache_read_tokens": 38591356,
+    "output_tokens": 79716,
+    "api_call_count": 146
+  },
+  "skill_events_version": 1,
+  "skill_events": [
+    {
+      "id": "claude-skill-toolu_01HtEiCicDBUAYYxk9p2rarW",
+      "event_type": "tool_invocation",
+      "skill": {
+        "name": "linear-workflow"
+      },
+      "source": {
+        "agent": "claude-code",
+        "signal": "skill_tool_use",
+        "confidence": "explicit"
+      },
+      "turn_id": "2e562d21beba",
+      "transcript_anchor": {
+        "unit": "line",
+        "start": 18,
+        "end": 19,
+        "entry_ids": [
+          "7ca371d4-9112-4d18-a1ff-3849c3ef09c4"
+        ],
+        "tool_use_id": "toolu_01HtEiCicDBUAYYxk9p2rarW"
+      },
+      "native": {
+        "tool_name": "Skill",
+        "tool_use_id": "toolu_01HtEiCicDBUAYYxk9p2rarW"
+      },
+      "collapse": {
+        "target": "tool_pair",
+        "label": "Skill: linear-workflow",
+        "default_collapsed": true
+      }
+    }
+  ],
+  "initial_attribution": {
+    "calculated_at": "2026-07-25T00:33:29.357463Z",
+    "agent_lines": 789,
+    "agent_removed": 92,
+    "human_added": 6,
+    "human_modified": 0,
+    "human_removed": 0,
+    "total_committed": 795,
+    "total_lines_changed": 890,
+    "agent_percentage": 98.98876404494382,
+    "metric_version": 2
+  },
+  "prompt_attributions": [
+    {
+      "checkpoint_number": 1,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 0,
+      "agent_lines_removed": 0
+    }
+  ]
+}

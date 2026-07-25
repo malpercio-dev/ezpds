@@ -1,0 +1,36 @@
+{
+  "cli_version": "0.8.42",
+  "checkpoint_id": "fa443b345b91",
+  "strategy": "manual-commit",
+  "branch": "claude/mm-460-wallet-share-icloud-sync-5c0c90",
+  "checkpoints_count": 1,
+  "files_touched": [
+    "apps/identity-wallet/src-tauri/src/identity_store.rs",
+    "apps/identity-wallet/src-tauri/src/keychain.rs",
+    "apps/identity-wallet/src-tauri/src/lib.rs",
+    "apps/identity-wallet/src-tauri/src/rekey.rs",
+    "apps/identity-wallet/src-tauri/src/share_recovery.rs",
+    "apps/identity-wallet/src/lib/components/onboarding/RecoverStartScreen.svelte",
+    "apps/identity-wallet/src/lib/components/onboarding/ShamirBackupScreen.svelte",
+    "changelog.d/mm-460.fixed.md",
+    "docs/archive/design-plans/2026-07-17-key-recovery-from-shares.md",
+    "sites/docs/src/content/docs/user/backup.md",
+    "sites/docs/src/content/docs/user/screens.md"
+  ],
+  "sessions": [
+    {
+      "metadata": "/fa/443b345b91/0/metadata.json",
+      "transcript": "/fa/443b345b91/0/full.jsonl",
+      "compact_transcript": "/fa/443b345b91/0/transcript.jsonl",
+      "content_hash": "/fa/443b345b91/0/content_hash.txt",
+      "prompt": "/fa/443b345b91/0/prompt.txt"
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 274,
+    "cache_creation_tokens": 344187,
+    "cache_read_tokens": 38591356,
+    "output_tokens": 79716,
+    "api_call_count": 146
+  }
+}
