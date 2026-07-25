@@ -1,0 +1,15 @@
+from the sim: 
+
+```
+6:31:37 PM [vite] Internal server error: Failed to resolve import "@tauri-apps/plugin-biometric" from "src/lib/ipc.ts". Does the file exist?
+  Plugin: vite:import-analysis
+  File: /Users/jacob.zweifel/workspace/malpercio-dev/ezpds/apps/identity-wallet/src/lib/ipc.ts:884:26
+  75 |    let plugin;
+  76 |    try {
+  77 |      plugin = await import("@tauri-apps/plugin-biometric");
+     |                            ^
+  78 |    } catch {
+  79 |      return;
+```
+
+no luck with console
