@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>bl4gsl9v1</task-id>
+<tool-use-id>toolu_01Vf3Zs8RxP1Mdg4thLMd854</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-jacob-zweifel-workspace-malpercio-dev-ezpds/e14e454c-c592-4d1c-a1a3-c4845a1bea84/tasks/bl4gsl9v1.output</output-file>
+<status>completed</status>
+<summary>Background command "Watch PR 219 checks to completion" completed (exit code 0)</summary>
+</task-notification>
