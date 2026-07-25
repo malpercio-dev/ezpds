@@ -1,0 +1,1 @@
+did some interactions. killed and reopened, it was fine. video upload in app says "an error occurred while uploading the video. Profile not found". an image seems to work though. the video issue may also be the same issue that has me seeing "handle.invalid". due to the missing wildcard in staging, these tests may be better with a production account
