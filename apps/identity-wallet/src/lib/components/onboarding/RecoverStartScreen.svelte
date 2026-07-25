@@ -107,9 +107,10 @@
              set up by an older version of Obsign never had it marked for syncing —
              nothing can repair that after the original device is gone. -->
         <p class="hint">
-          Share 1 reaches a new device through iCloud Keychain. It won't be here if iCloud
-          Keychain is off, or if this identity was set up by an older version of Obsign that
-          kept Share 1 on one device. Your saved Share 3 covers this.
+          Share 1 reaches a new device only through iCloud Keychain. It won't be here if
+          iCloud Keychain is off, if this identity was set up by an older version of Obsign
+          that kept Share 1 on one device, or if it simply hasn't arrived. Your saved Share 3
+          covers this.
         </p>
       {/if}
     </div>

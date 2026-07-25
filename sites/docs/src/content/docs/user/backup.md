@@ -67,8 +67,8 @@ Obsign marks Share 1 for iCloud Keychain sync, but it cannot see whether Apple
 delivered it. Two cases leave a new device without it:
 
 - **iCloud Keychain is switched off** on your Apple account. Turning it on later
-  syncs the share with no further action in Obsign — but only from a device that
-  still holds it.
+  lets the share sync with no further action in Obsign — but only from a device
+  that still holds it.
 - **The identity was set up by an older version of Obsign**, which kept Share 1
   on a single device. Updating and opening the app on a device that still holds
   that share fixes it from then on. If that device is already gone, nothing can

@@ -423,14 +423,14 @@ The root rotation key's recovery seed is split into 2-of-3 Shamir shares:
 
   ------------- ---------------------------------- ----------------------------------------------------------------------------------------------------------
   **Share**     **Location**                       **Availability**
-  **Share 1**   iCloud Keychain                    Survives phone loss if iCloud account is intact. Available on any Apple device signed into the same iCloud.
+  **Share 1**   iCloud Keychain                    Written marked for sync; reaches other devices only if iCloud Keychain is on. Delivery is unobservable.
   **Share 2**   PDS escrow                       Retrieved via account authentication (email + password or OAuth). Available as long as PDS is operational.
   **Share 3**   User's choice (device-local or BIP-39)   Device-local: stored on designated backup device. BIP-39 phrase: paper or USB backup. User's responsibility.
   ------------- ---------------------------------- ----------------------------------------------------------------------------------------------------------
 
 **7.2 Recovery Scenarios**
 
--   **Lost phone, iCloud intact:** Share 1 + Share 2 = recovery. Install app on new phone, authenticate to iCloud and PDS, reconstruct root key in new Secure Enclave. If share 3 is device-local on another device, access it there for redundancy.
+-   **Lost phone, iCloud Keychain delivered Share 1:** Share 1 + Share 2 = recovery. Install app on new phone, authenticate to iCloud and PDS, reconstruct root key in new Secure Enclave. If share 3 is device-local on another device, access it there for redundancy. Share 1's arrival is a precondition, not a given — the app marks it for sync and cannot confirm delivery, so treat this path as available only once the new device actually shows the share. Where it does not, this collapses to the Share 2 + Share 3 case below.
 
 -   **Lost phone, iCloud compromised:** Share 2 + Share 3 = recovery. Authenticate to PDS, retrieve device-local share from backup device or enter BIP-39 recovery phrase. Same key reconstruction flow.
 

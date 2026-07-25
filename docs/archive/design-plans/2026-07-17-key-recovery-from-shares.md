@@ -23,8 +23,14 @@ reconstruction ceremony as a **hard prerequisite** for removing the password.
 > escrow-assisted path was unavailable on a replacement device. The wallet now writes
 > Share 1 to the synchronizable store, reads it synced-slot-first, and backfills existing
 > device-local shares at launch. Read those steps as describing the intended and
-> now-implemented behavior — with the caveat the fix cannot remove: an identity whose only
-> device is already lost was never reached by the backfill and stays on Share 2 + Share 3.
+> now-implemented behavior, with two caveats the fix cannot remove: the word
+> "automatically" describes the *write*, not delivery — iOS exposes no signal for whether
+> a share reached the Apple account, and with iCloud Keychain switched off it reaches
+> nothing; and an identity whose only device was already lost was never reached by the
+> backfill, so it stays on Share 2 + Share 3.
+>
+> The body below is left as written — archived plans are immutable historical records
+> (see [`../README.md`](../README.md)), so corrections are noted here rather than edited in.
 
 ## Problem
 
