@@ -1,0 +1,9 @@
+MM-472 added an `errors` field to every sweep entry in `GET /v1/admin/health` (see `SweepState` in crates/pds/src/routes/admin_health.rs and `SweepRun` in crates/pds/src/sweep_status.rs). It reports how many items a sweep skipped due to errors — for blob GC, accounts whose reconcile failed, which are deliberately excluded from the sweep and leak disk until fixed.
+
+The admin-companion operator console does not surface it yet. `HealthSweepRun` in apps/admin-companion/src-tauri/src/relay_client.rs has only `completed_at` and `swept` (it is not deny_unknown_fields, so nothing breaks today — the field is simply dropped). Add `errors: u64` there, thread it through apps/admin-companion/src/lib/ipc.ts and the harness state in apps/admin-companion/src/lib/harness/state.ts, and render it on the Status screen (apps/admin-companion/src/routes/status/+page.svelte).
+
+Design note: a fresh `completedAt` with nonzero `errors` is a different fault from a stale `completedAt` — "one account is broken" vs "the sweep is dead" — and the two should read differently in the UI. Per the app's DESIGN.md, status must never be signalled by colour alone. Related: MM-474 (blob observability).
+
+---
+
+the pr has landed in main

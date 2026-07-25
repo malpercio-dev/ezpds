@@ -1,0 +1,34 @@
+{
+  "cli_version": "0.8.42",
+  "checkpoint_id": "c2c80d20708b",
+  "strategy": "manual-commit",
+  "branch": "claude/mm-472-admin-sweep-errors",
+  "checkpoints_count": 1,
+  "files_touched": [
+    "apps/admin-companion/AGENTS.md",
+    "apps/admin-companion/src-tauri/src/relay_client.rs",
+    "apps/admin-companion/src/lib/harness/state.test.ts",
+    "apps/admin-companion/src/lib/harness/state.ts",
+    "apps/admin-companion/src/lib/health.test.ts",
+    "apps/admin-companion/src/lib/health.ts",
+    "apps/admin-companion/src/lib/ipc.ts",
+    "apps/admin-companion/src/routes/status/+page.svelte",
+    "changelog.d/mm-472-admin-sweep-errors.added.md"
+  ],
+  "sessions": [
+    {
+      "metadata": "/c2/c80d20708b/0/metadata.json",
+      "transcript": "/c2/c80d20708b/0/full.jsonl",
+      "compact_transcript": "/c2/c80d20708b/0/transcript.jsonl",
+      "content_hash": "/c2/c80d20708b/0/content_hash.txt",
+      "prompt": "/c2/c80d20708b/0/prompt.txt"
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 156,
+    "cache_creation_tokens": 413342,
+    "cache_read_tokens": 11235425,
+    "output_tokens": 40360,
+    "api_call_count": 83
+  }
+}
