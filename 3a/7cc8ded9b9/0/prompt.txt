@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>b5tirkhot</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-jacob-zweifel-workspace-malpercio-dev-ezpds--claude-worktrees-mm-259-7adc9b/dc1c745d-1c67-4801-bb36-e9007d43ea69/tasks/b5tirkhot.output</output-file>
+<status>failed</status>
+<summary>Background command "Run remaining ci-pds gate steps" failed with exit code 101</summary>
+</task-notification>
