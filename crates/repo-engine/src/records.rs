@@ -422,7 +422,31 @@ where
     // prefix scan to this exact collection (so `app.bsky.feed.post` won't match
     // `app.bsky.feed.postx`).
     let prefix = format!("{collection}/");
-    let strip = |key: &str| key.strip_prefix(&prefix).unwrap_or(key).to_string();
+
+    /// What to do with one key yielded by the prefix scan.
+    enum Scan {
+        /// The key is in the collection; carry its rkey (the prefix stripped).
+        Take(String),
+        /// The key sorts before the prefix range — keep scanning.
+        Skip,
+        /// The key sorts past the prefix range — nothing further can match.
+        Stop,
+    }
+
+    // atrium-repo's `entries_prefixed` is not a reliable filter: a leaf whose key is *shorter*
+    // than the prefix bypasses its bounds check entirely and is yielded verbatim, so the stream
+    // can carry keys from unrelated collections. Every key is therefore re-checked here against
+    // the prefix, and a key belongs to this collection only if `strip_prefix` succeeds.
+    //
+    // Because MST keys arrive in ascending lexicographic order, a key that sorts *after* the
+    // prefix without carrying it also sorts after every possible member of the collection —
+    // the scan can stop there, which additionally bounds a small collection's page to its own
+    // size rather than to `limit` entries of whatever follows it in the tree.
+    let classify = |key: &str| match key.strip_prefix(prefix.as_str()) {
+        Some(rkey) => Scan::Take(rkey.to_string()),
+        None if key > prefix.as_str() => Scan::Stop,
+        None => Scan::Skip,
+    };
 
     // Collect up to `limit + 1` post-cursor entries — the extra one tells us whether more
     // records remain (and thus whether to emit a cursor) without reading the whole page.
@@ -440,7 +464,11 @@ where
             while let Some(res) = stream.next().await {
                 let (key, cid) =
                     res.map_err(|e| RecordError::Repo(format!("list entries: {e}")))?;
-                all.push((strip(&key), cid));
+                match classify(&key) {
+                    Scan::Take(rkey) => all.push((rkey, cid)),
+                    Scan::Skip => continue,
+                    Scan::Stop => break,
+                }
             }
             for (rkey, cid) in all.into_iter().rev() {
                 if cursor.is_some_and(|c| rkey.as_str() >= c) {
@@ -457,7 +485,11 @@ where
             while let Some(res) = stream.next().await {
                 let (key, cid) =
                     res.map_err(|e| RecordError::Repo(format!("list entries: {e}")))?;
-                let rkey = strip(&key);
+                let rkey = match classify(&key) {
+                    Scan::Take(rkey) => rkey,
+                    Scan::Skip => continue,
+                    Scan::Stop => break,
+                };
                 if cursor.is_some_and(|c| rkey.as_str() <= c) {
                     continue;
                 }
@@ -1398,6 +1430,105 @@ mod tests {
 
         // Three records total, spanning two collections.
         assert_eq!(count_records(&mut repo).await.unwrap(), 3);
+    }
+
+    /// Seed a repo whose MST holds a long-named collection alongside keys *shorter* than that
+    /// collection's prefix, one sorting before it and one after. atrium-repo's prefix scan
+    /// yields short keys unconditionally, so this is the shape that leaks foreign records into
+    /// a `listRecords` page.
+    async fn create_short_key_neighbour_repo() -> (Repository<MemoryBlockStore>, CommitSigner) {
+        let (mut repo, signer) = create_test_repo("did:plc:shortkeys").await;
+        for key in [
+            // Sorts before the target prefix, and is shorter than it.
+            "aa.bb.cc/self",
+            "dev.cocore.compute.paymentAuthorization/r1",
+            "dev.cocore.compute.paymentAuthorization/r2",
+            "dev.cocore.compute.paymentAuthorization/r3",
+            // Sort after the target prefix, and are shorter than it.
+            "zz.aa.bb/self",
+            "zz.cc.dd/self",
+        ] {
+            put_record_json(&mut repo, &signer, key, &serde_json::json!({ "k": key }))
+                .await
+                .unwrap();
+        }
+        (repo, signer)
+    }
+
+    const SHORT_KEY_COLLECTION: &str = "dev.cocore.compute.paymentAuthorization";
+
+    /// A page must contain only the requested collection's records, at every limit — including
+    /// limits larger than the collection (the case `blob_gc` always hits, paging at 100).
+    #[tokio::test]
+    async fn list_records_never_leaks_neighbouring_collections() {
+        let (mut repo, _signer) = create_short_key_neighbour_repo().await;
+
+        for reverse in [false, true] {
+            for limit in 1..=8 {
+                let page = list_records_json(&mut repo, SHORT_KEY_COLLECTION, limit, None, reverse)
+                    .await
+                    .unwrap_or_else(|e| {
+                        panic!("limit {limit} reverse {reverse} must not error: {e}")
+                    });
+                let mut rkeys: Vec<&str> = page.records.iter().map(|r| r.rkey.as_str()).collect();
+                assert_eq!(
+                    rkeys.len(),
+                    limit.min(3),
+                    "limit {limit} reverse {reverse}: page size"
+                );
+                rkeys.sort_unstable();
+                assert!(
+                    rkeys.iter().all(|k| ["r1", "r2", "r3"].contains(k)),
+                    "limit {limit} reverse {reverse}: foreign rkeys leaked: {rkeys:?}"
+                );
+                // Each record's value must be the one stored under this collection's key.
+                for rec in &page.records {
+                    assert_eq!(
+                        rec.value["k"],
+                        serde_json::json!(format!("{SHORT_KEY_COLLECTION}/{}", rec.rkey)),
+                        "record value must belong to the requested collection"
+                    );
+                }
+            }
+        }
+    }
+
+    /// The cursor/`has_more` derivation must reflect the collection's real size, not the
+    /// over-scanned stream: a limit at or above the record count ends the listing.
+    #[tokio::test]
+    async fn list_records_cursor_reflects_real_collection_size() {
+        let (mut repo, _signer) = create_short_key_neighbour_repo().await;
+
+        for reverse in [false, true] {
+            for limit in 3..=8 {
+                let page = list_records_json(&mut repo, SHORT_KEY_COLLECTION, limit, None, reverse)
+                    .await
+                    .unwrap();
+                assert!(
+                    page.cursor.is_none(),
+                    "limit {limit} reverse {reverse}: listing is exhausted, no cursor expected"
+                );
+            }
+            // A short page still hands back a cursor, and paging through it yields the rest.
+            let first = list_records_json(&mut repo, SHORT_KEY_COLLECTION, 2, None, reverse)
+                .await
+                .unwrap();
+            let cursor = first.cursor.expect("2 of 3 records leaves more to fetch");
+            let second =
+                list_records_json(&mut repo, SHORT_KEY_COLLECTION, 2, Some(&cursor), reverse)
+                    .await
+                    .unwrap();
+            let mut all: Vec<String> = first
+                .records
+                .iter()
+                .chain(second.records.iter())
+                .map(|r| r.rkey.clone())
+                .collect();
+            assert_eq!(all.len(), 3, "reverse {reverse}: paging must cover the set");
+            all.sort();
+            assert_eq!(all, vec!["r1", "r2", "r3"]);
+            assert!(second.cursor.is_none());
+        }
     }
 
     #[tokio::test]
