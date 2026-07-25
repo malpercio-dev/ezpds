@@ -34,6 +34,16 @@ EOF
 cat > crates/pds/src/lib.rs <<'EOF'
 pub fn shipped() {}
 EOF
+# set-version also restamps the generated operator reference pages, so the fixture carries the
+# real generator plus symlinks to the real sources it parses. Only Cargo.toml (the version it
+# stamps) is fixture-local, so the assertion below proves the stamp tracks the bumped version.
+cp "$repo_root/scripts/generate-docs-reference.mjs" scripts/
+mkdir -p crates/common/src apps/identity-wallet/src/lib apps/admin-companion/src/lib
+ln -s "$repo_root/crates/pds/src/app.rs" crates/pds/src/app.rs
+ln -s "$repo_root/crates/pds/src/capabilities.rs" crates/pds/src/capabilities.rs
+ln -s "$repo_root/crates/common/src/config.rs" crates/common/src/config.rs
+ln -s "$repo_root/apps/identity-wallet/src/lib/ipc" apps/identity-wallet/src/lib/ipc
+ln -s "$repo_root/apps/admin-companion/src/lib/ipc.ts" apps/admin-companion/src/lib/ipc.ts
 git add .
 git commit -qm base
 base="$(git rev-parse HEAD)"
@@ -78,6 +88,15 @@ test "$(grep -n '^## \[' CHANGELOG.md | head -1 | cut -d: -f2-)" = '## [1.1.0] -
 test ! -e changelog.d/mm-358.added.md
 test ! -e changelog.d/mm-358.fixed.md
 test -e changelog.d/README.md
+
+# A version bump alone makes every version-stamped reference page stale; set-version must
+# leave them regenerated, or `just docs-check` reds the first CI run of every release PR.
+for page in api capabilities config ipc; do
+  generated="sites/docs/src/content/docs/operator/reference/$page.md"
+  test -e "$generated" || { echo "✗ set-version did not generate $generated" >&2; exit 1; }
+  grep -q 'Generated from source for ezpds \*\*v1\.1\.0\*\*' "$generated" \
+    || { echo "✗ $generated is not stamped with the bumped version" >&2; exit 1; }
+done
 
 # The release roll-up commit changes shipped surfaces (Cargo.toml/Cargo.lock) yet carries no
 # fragment, because set-version just consumed them all. The gate must recognize this shape and

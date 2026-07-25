@@ -108,8 +108,15 @@ mv Cargo.toml.tmp Cargo.toml
 # Resync the lockfile so the new workspace-crate versions land in Cargo.lock and
 # `just lock-check` stays green (cargo metadata resolves without upgrading other deps).
 cargo metadata --format-version 1 >/dev/null
+# The published operator reference pages carry a "Generated from source for ezpds vX.Y.Z"
+# stamp, so bumping the version makes all four stale by definition. Regenerate them here
+# (the same generator `just docs-generate` runs) or `just docs-check` fails every release PR
+# on its first CI run. The resulting diff is just the four stamp lines.
+node scripts/generate-docs-reference.mjs >/dev/null
 mv "$changelog_tmp" "$changelog"
 rm "${fragments[@]}"
-echo "✓ workspace version set to $version and ${#fragments[@]} changelog fragment(s) rolled up —"
-echo "  commit Cargo.toml + Cargo.lock + CHANGELOG.md + changelog.d/, open a PR,"
+echo "✓ workspace version set to $version, ${#fragments[@]} changelog fragment(s) rolled up,"
+echo "  and the generated operator reference pages restamped —"
+echo "  commit Cargo.toml + Cargo.lock + CHANGELOG.md + changelog.d/ +"
+echo "  sites/docs/src/content/docs/operator/reference/{api,capabilities,config,ipc}.md, open a PR,"
 echo "  then run 'just release' from main once it's merged."
