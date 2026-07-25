@@ -22,6 +22,58 @@ use crate::app::AppState;
 /// anything larger is almost certainly a mistake, so it is rejected rather than buffered.
 const MAX_PROXY_BODY: usize = 1024 * 1024; // 1 MiB
 
+/// Client request headers forwarded verbatim to the upstream, matching the reference PDS's
+/// pipethrough.
+///
+/// `atproto-accept-labelers` is the load-bearing one. It names the labelers the caller
+/// subscribes to, and the AppView applies **only** those — when the header is absent it falls
+/// back to its own default moderation service alone. Dropping the header therefore strips every
+/// subscribed labeler's labels from posts and profiles, and does so invisibly: the client cannot
+/// distinguish "this content carries no labels" from "the labelers were never asked". The other
+/// two are content negotiation the upstream owns (`accept-language` selects localized upstream
+/// copy; `x-bsky-topics` carries the client's topic context for feed ranking).
+///
+/// The inbound `Authorization` is deliberately *not* in this list — it is replaced with the
+/// minted service-auth JWT above.
+const REQ_HEADERS_TO_FORWARD: [&str; 3] = [
+    "accept-language",
+    "atproto-accept-labelers",
+    "x-bsky-topics",
+];
+
+/// Upstream response headers forwarded back to the client, matching the reference PDS's
+/// pipethrough.
+///
+/// `atproto-content-labelers` reports which labelers were actually applied (the response-side
+/// counterpart of `atproto-accept-labelers`, which clients read back to confirm their
+/// subscription set took effect); `atproto-repo-rev` is the AppView's indexing frontier for this
+/// repo; `retry-after` carries upstream backpressure the client is expected to honor rather than
+/// retry straight through. `content-type` is handled separately by each caller, since both
+/// response paths already need it for their own body handling.
+const RES_HEADERS_TO_FORWARD: [&str; 3] = [
+    "atproto-repo-rev",
+    "atproto-content-labelers",
+    "retry-after",
+];
+
+/// Copy the forwarded subset of an upstream response's headers onto a response builder.
+///
+/// Shared by the streaming path ([`proxy_xrpc`]) and the buffered read-after-write munge path
+/// (`read_after_write::pipethrough_munged`), so which headers a client sees never depends on
+/// which of the two served the request — or, within the munge path, on which rung of its
+/// fallback ladder fired.
+pub(crate) fn forward_response_headers(
+    mut builder: axum::http::response::Builder,
+    upstream: &reqwest::header::HeaderMap,
+) -> axum::http::response::Builder {
+    for name in RES_HEADERS_TO_FORWARD {
+        if let Some(value) = upstream.get(name) {
+            builder = builder.header(name, value);
+        }
+    }
+    builder
+}
+
 /// Returns true when an [`axum::body::to_bytes`] error was caused by the body exceeding the
 /// length limit (rather than the body stream failing). `to_bytes` wraps the over-limit case as
 /// an [`http_body_util::LengthLimitError`] in the error's source chain.
@@ -115,6 +167,11 @@ pub(crate) async fn proxy_request(
             outbound = outbound.header(name, val);
         }
     }
+    for name in REQ_HEADERS_TO_FORWARD {
+        if let Some(val) = parts.headers.get(name) {
+            outbound = outbound.header(name, val);
+        }
+    }
     outbound = outbound
         .header(header::AUTHORIZATION, format!("Bearer {service_jwt}"))
         .header("atproto-proxy", proxy_did);
@@ -171,18 +228,20 @@ pub async fn proxy_xrpc(
         Err(resp) => return resp,
     };
 
-    // Map status and content-type, then stream the body through without buffering it.
+    // Map status and headers, then stream the body through without buffering it.
     let status =
         StatusCode::from_u16(upstream.status().as_u16()).unwrap_or(StatusCode::BAD_GATEWAY);
-    let content_type = upstream.headers().get(header::CONTENT_TYPE).cloned();
+    let upstream_headers = upstream.headers().clone();
+    let content_type = upstream_headers.get(header::CONTENT_TYPE).cloned();
     // A 3xx is passed through, not followed (the hardened client disables redirects), but is
     // useless to the caller without its Location — forward it so "passed through verbatim" holds.
-    let location = upstream.headers().get(header::LOCATION).cloned();
+    let location = upstream_headers.get(header::LOCATION).cloned();
 
     let mut builder = Response::builder().status(status);
     if let Some(content_type) = content_type {
         builder = builder.header(header::CONTENT_TYPE, content_type);
     }
+    builder = forward_response_headers(builder, &upstream_headers);
     if status.is_redirection() {
         if let Some(location) = location {
             builder = builder.header(header::LOCATION, location);
@@ -478,6 +537,107 @@ mod tests {
         assert_eq!(claims["iss"], TEST_DID);
         assert_eq!(claims["aud"], expected_aud);
         assert_eq!(claims["lxm"], "app.bsky.notification.listNotifications");
+    }
+
+    #[tokio::test]
+    async fn forwards_the_clients_labeler_subscription_headers_upstream() {
+        // `atproto-accept-labelers` is how a client tells the AppView which labelers it
+        // subscribes to. The AppView applies ONLY the labelers named there, so a PDS that drops
+        // the header silently strips every subscribed labeler's labels from posts and profiles.
+        let server = MockServer::start().await;
+        let state = state_with_appview(&server.uri()).await;
+        let auth = bearer(&state);
+
+        Mock::given(method("GET"))
+            .and(path("/xrpc/app.bsky.feed.getFeed"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({})))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let labelers = "did:plc:ar7c4by46qjdydhdevvrndac;redact, did:plc:someotherlabeler";
+        let response = app(state)
+            .oneshot(
+                Request::builder()
+                    .uri("/xrpc/app.bsky.feed.getFeed")
+                    .header("authorization", &auth)
+                    .header("atproto-accept-labelers", labelers)
+                    .header("accept-language", "en-GB,en;q=0.9")
+                    .header("x-bsky-topics", "topic-a")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let requests = server.received_requests().await.unwrap();
+        let forwarded = requests
+            .iter()
+            .find(|r| r.url.path() == "/xrpc/app.bsky.feed.getFeed")
+            .expect("AppView received the proxied request");
+
+        let header = |name: &str| -> Option<String> {
+            forwarded
+                .headers
+                .get(name)
+                .map(|v| v.to_str().unwrap().to_string())
+        };
+
+        assert_eq!(
+            header("atproto-accept-labelers").as_deref(),
+            Some(labelers),
+            "the caller's subscribed labelers must reach the AppView verbatim"
+        );
+        assert_eq!(header("accept-language").as_deref(), Some("en-GB,en;q=0.9"));
+        assert_eq!(header("x-bsky-topics").as_deref(), Some("topic-a"));
+    }
+
+    #[tokio::test]
+    async fn forwards_upstream_label_and_rev_headers_back_to_the_client() {
+        // The response-side counterpart: `atproto-content-labelers` reports which labelers were
+        // actually applied, `atproto-repo-rev` the AppView's indexing frontier, and `retry-after`
+        // upstream backpressure. All three are meaningless to the client if the PDS eats them.
+        let server = MockServer::start().await;
+        let state = state_with_appview(&server.uri()).await;
+        let auth = bearer(&state);
+
+        Mock::given(method("GET"))
+            .and(path("/xrpc/app.bsky.feed.getFeed"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(serde_json::json!({}))
+                    .insert_header("atproto-content-labelers", "did:plc:labeler;redact")
+                    .insert_header("atproto-repo-rev", "3lk2abcd")
+                    .insert_header("retry-after", "30"),
+            )
+            .mount(&server)
+            .await;
+
+        let response = app(state)
+            .oneshot(
+                Request::builder()
+                    .uri("/xrpc/app.bsky.feed.getFeed")
+                    .header("authorization", &auth)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let header = |name: &str| -> Option<String> {
+            response
+                .headers()
+                .get(name)
+                .map(|v| v.to_str().unwrap().to_string())
+        };
+        assert_eq!(
+            header("atproto-content-labelers").as_deref(),
+            Some("did:plc:labeler;redact")
+        );
+        assert_eq!(header("atproto-repo-rev").as_deref(), Some("3lk2abcd"));
+        assert_eq!(header("retry-after").as_deref(), Some("30"));
     }
 
     #[tokio::test]

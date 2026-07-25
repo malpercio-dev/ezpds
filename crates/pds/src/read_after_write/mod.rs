@@ -34,6 +34,36 @@ use repo_engine::Repository;
 /// memory bound. Tightening it to a streamed bounded read is a future hardening step.
 const MAX_MUNGE_RESPONSE_BODY: usize = 10 * 1024 * 1024;
 
+/// Build a response carrying the upstream's status, content type, and forwarded headers.
+///
+/// Every rung of `pipethrough_munged`'s fallback ladder returns through here, so the headers a
+/// client sees never depend on *which* rung fired — a munge that degraded to the buffered
+/// original still carries the upstream's `atproto-content-labelers`/`atproto-repo-rev`, exactly
+/// as the streaming path would have. `context` names the rung for the error log if the builder
+/// itself fails.
+fn passthrough_response(
+    status: axum::http::StatusCode,
+    content_type: Option<&axum::http::HeaderValue>,
+    upstream_headers: &reqwest::header::HeaderMap,
+    body: axum::body::Bytes,
+    nsid: &str,
+    context: &str,
+) -> Response {
+    let mut builder = Response::builder().status(status);
+    if let Some(content_type) = content_type {
+        builder = builder.header(header::CONTENT_TYPE, content_type);
+    }
+    builder = crate::routes::service_proxy::forward_response_headers(builder, upstream_headers);
+
+    match builder.body(Body::from(body)) {
+        Ok(resp) => resp,
+        Err(err) => {
+            tracing::error!(error = %err, nsid, context, "failed to build proxy response");
+            ApiError::new(ErrorCode::InternalError, "response build failed").into_response()
+        }
+    }
+}
+
 /// Build the requester's unindexed LocalRecords relative to the AppView's indexed rev.
 /// Returns an empty LocalRecords when `header_rev` is None (missing header) or nothing is newer.
 pub(crate) async fn get_records_since_rev(
@@ -268,12 +298,13 @@ pub(crate) async fn pipethrough_munged(
         Err(resp) => return resp,
     };
 
-    // 1. Capture status, content-type, and atproto-repo-rev header
+    // 1. Capture status, content-type, and atproto-repo-rev header. The full upstream header map
+    // is kept so every exit below can forward the same subset the streaming path forwards.
     let status = axum::http::StatusCode::from_u16(upstream.status().as_u16())
         .unwrap_or(axum::http::StatusCode::BAD_GATEWAY);
-    let content_type = upstream.headers().get(header::CONTENT_TYPE).cloned();
-    let header_rev = upstream
-        .headers()
+    let upstream_headers = upstream.headers().clone();
+    let content_type = upstream_headers.get(header::CONTENT_TYPE).cloned();
+    let header_rev = upstream_headers
         .get("atproto-repo-rev")
         .and_then(|h| h.to_str().ok())
         .map(|s| s.to_string());
@@ -323,17 +354,14 @@ pub(crate) async fn pipethrough_munged(
 
     // 4. If status is not success and not a thread NotFound, return the buffered response unchanged
     if !status.is_success() && !is_thread_not_found {
-        let mut builder = Response::builder().status(status);
-        if let Some(content_type) = content_type {
-            builder = builder.header(header::CONTENT_TYPE, content_type);
-        }
-        return match builder.body(Body::from(body_bytes)) {
-            Ok(resp) => resp,
-            Err(err) => {
-                tracing::error!(error = %err, nsid, "failed to build error proxy response");
-                ApiError::new(ErrorCode::InternalError, "response build failed").into_response()
-            }
-        };
+        return passthrough_response(
+            status,
+            content_type.as_ref(),
+            &upstream_headers,
+            body_bytes,
+            nsid,
+            "upstream error",
+        );
     }
 
     // 5. Parse body as serde_json::Value
@@ -341,17 +369,14 @@ pub(crate) async fn pipethrough_munged(
         Ok(val) => val,
         Err(err) => {
             tracing::warn!(error = %err, nsid, "failed to parse upstream body as JSON");
-            let mut builder = Response::builder().status(status);
-            if let Some(content_type) = content_type {
-                builder = builder.header(header::CONTENT_TYPE, content_type);
-            }
-            return match builder.body(Body::from(body_bytes)) {
-                Ok(resp) => resp,
-                Err(err) => {
-                    tracing::error!(error = %err, nsid, "failed to build parse-error proxy response");
-                    ApiError::new(ErrorCode::InternalError, "response build failed").into_response()
-                }
-            };
+            return passthrough_response(
+                status,
+                content_type.as_ref(),
+                &upstream_headers,
+                body_bytes,
+                nsid,
+                "parse error",
+            );
         }
     };
 
@@ -360,17 +385,14 @@ pub(crate) async fn pipethrough_munged(
 
     // If local.count == 0 -> return buffered original (no lag header)
     if local.count == 0 {
-        let mut builder = Response::builder().status(status);
-        if let Some(content_type) = content_type {
-            builder = builder.header(header::CONTENT_TYPE, content_type);
-        }
-        return match builder.body(Body::from(body_bytes)) {
-            Ok(resp) => resp,
-            Err(err) => {
-                tracing::error!(error = %err, nsid, "failed to build no-local proxy response");
-                ApiError::new(ErrorCode::InternalError, "response build failed").into_response()
-            }
-        };
+        return passthrough_response(
+            status,
+            content_type.as_ref(),
+            &upstream_headers,
+            body_bytes,
+            nsid,
+            "no local records",
+        );
     }
 
     // 7. Get the handle and build LocalViewer
@@ -378,31 +400,25 @@ pub(crate) async fn pipethrough_munged(
         Ok(Some(account)) => account.handle,
         Ok(None) => {
             tracing::warn!(did, "account not found for local viewer");
-            let mut builder = Response::builder().status(status);
-            if let Some(content_type) = content_type {
-                builder = builder.header(header::CONTENT_TYPE, content_type);
-            }
-            return match builder.body(Body::from(body_bytes)) {
-                Ok(resp) => resp,
-                Err(err) => {
-                    tracing::error!(error = %err, nsid, "failed to build viewer-lookup proxy response");
-                    ApiError::new(ErrorCode::InternalError, "response build failed").into_response()
-                }
-            };
+            return passthrough_response(
+                status,
+                content_type.as_ref(),
+                &upstream_headers,
+                body_bytes,
+                nsid,
+                "viewer lookup",
+            );
         }
         Err(err) => {
             tracing::warn!(error = %err, did, "failed to get session account for local viewer");
-            let mut builder = Response::builder().status(status);
-            if let Some(content_type) = content_type {
-                builder = builder.header(header::CONTENT_TYPE, content_type);
-            }
-            return match builder.body(Body::from(body_bytes)) {
-                Ok(resp) => resp,
-                Err(err) => {
-                    tracing::error!(error = %err, nsid, "failed to build viewer-error proxy response");
-                    ApiError::new(ErrorCode::InternalError, "response build failed").into_response()
-                }
-            };
+            return passthrough_response(
+                status,
+                content_type.as_ref(),
+                &upstream_headers,
+                body_bytes,
+                nsid,
+                "viewer error",
+            );
         }
     };
 
@@ -434,17 +450,14 @@ pub(crate) async fn pipethrough_munged(
         Ok(bytes) => bytes,
         Err(err) => {
             tracing::warn!(error = %err, nsid, "failed to serialize munged response");
-            let mut builder = Response::builder().status(status);
-            if let Some(content_type) = content_type {
-                builder = builder.header(header::CONTENT_TYPE, content_type);
-            }
-            return match builder.body(Body::from(body_bytes)) {
-                Ok(resp) => resp,
-                Err(err) => {
-                    tracing::error!(error = %err, nsid, "failed to build serialize-error proxy response");
-                    ApiError::new(ErrorCode::InternalError, "response build failed").into_response()
-                }
-            };
+            return passthrough_response(
+                status,
+                content_type.as_ref(),
+                &upstream_headers,
+                body_bytes,
+                nsid,
+                "serialize error",
+            );
         }
     };
 
@@ -461,6 +474,7 @@ pub(crate) async fn pipethrough_munged(
     if let Some(content_type) = content_type {
         builder = builder.header(header::CONTENT_TYPE, content_type);
     }
+    builder = crate::routes::service_proxy::forward_response_headers(builder, &upstream_headers);
 
     // Advertise upstream lag only when the munge actually merged the requester's records into
     // this response (i.e. the body changed). A pure passthrough of another user's data carries no
@@ -1116,6 +1130,120 @@ mod tests {
         assert_eq!(
             body["displayName"], "Other User",
             "the other user's profile must be returned untouched"
+        );
+    }
+
+    /// Drive `pipethrough_munged` against a mock AppView that stamps the label/rev headers,
+    /// returning the response. `write_own_profile` decides which rung of the fallback ladder
+    /// runs: with a local write the response is genuinely munged, without one it short-circuits
+    /// to the buffered original.
+    async fn munged_response_with_label_headers(
+        write_own_profile: bool,
+    ) -> axum::response::Response {
+        use std::sync::Arc;
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let did = "did:plc:labelheaders_requester";
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/xrpc/app.bsky.actor.getProfile"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    // Old rev so a local write (when made) counts as unindexed.
+                    .insert_header("atproto-repo-rev", "0")
+                    .insert_header("atproto-content-labelers", "did:plc:somelabeler;redact")
+                    .set_body_json(serde_json::json!({
+                        "did": did,
+                        "handle": "requester.bsky.social",
+                        "displayName": "Indexed Name",
+                    })),
+            )
+            .mount(&server)
+            .await;
+
+        let state = crate::routes::test_utils::state_with_master_key().await;
+        seed_account_with_repo(&state.db, did).await;
+        sqlx::query("INSERT INTO handles (handle, did, created_at) VALUES (?, ?, datetime('now'))")
+            .bind("requester.bsky.social")
+            .bind(did)
+            .execute(&state.db)
+            .await
+            .unwrap();
+
+        let app = crate::app::app(state.clone());
+        let token = access_jwt(&state.jwt_secret, did);
+
+        if write_own_profile {
+            let profile_req = put_record_request(
+                did,
+                "app.bsky.actor.profile",
+                "self",
+                serde_json::json!({ "record": { "displayName": "My Own Fresh Name" } }),
+                Some(&token),
+            );
+            let profile_resp = app.clone().oneshot(profile_req).await.unwrap();
+            assert!(
+                profile_resp.status().is_success(),
+                "profile write setup must succeed"
+            );
+        }
+
+        let mut state = state.clone();
+        let mut config = (*state.config).clone();
+        config.appview.url = server.uri();
+        state.config = Arc::new(config);
+
+        let req = axum::http::Request::builder()
+            .method(axum::http::Method::POST)
+            .uri(format!("/xrpc/app.bsky.actor.getProfile?actor={did}"))
+            .header("Content-Type", "application/json")
+            .header("Authorization", format!("Bearer {token}"))
+            .body(axum::body::Body::from(""))
+            .unwrap();
+
+        pipethrough_munged(&state, "app.bsky.actor.getProfile", did, req).await
+    }
+
+    #[tokio::test]
+    async fn test_pipethrough_munged_forwards_label_headers_when_it_munges() {
+        // Merging the requester's unindexed profile must not cost them the AppView's report of
+        // which labelers were applied — read-after-write rewrites the body, not the headers.
+        let resp = munged_response_with_label_headers(true).await;
+        assert_eq!(resp.status(), axum::http::StatusCode::OK);
+        assert!(
+            resp.headers().get("Atproto-Upstream-Lag").is_some(),
+            "test premise: this response was actually munged"
+        );
+        assert_eq!(
+            resp.headers()
+                .get("atproto-content-labelers")
+                .map(|v| v.to_str().unwrap()),
+            Some("did:plc:somelabeler;redact"),
+        );
+        assert_eq!(
+            resp.headers()
+                .get("atproto-repo-rev")
+                .map(|v| v.to_str().unwrap()),
+            Some("0"),
+        );
+    }
+
+    #[tokio::test]
+    async fn test_pipethrough_munged_forwards_label_headers_on_passthrough() {
+        // The same must hold on the fallback rungs: a response that degraded to the buffered
+        // original carries exactly the headers the streaming path would have forwarded.
+        let resp = munged_response_with_label_headers(false).await;
+        assert_eq!(resp.status(), axum::http::StatusCode::OK);
+        assert!(
+            resp.headers().get("Atproto-Upstream-Lag").is_none(),
+            "test premise: nothing was merged, so this is a passthrough rung"
+        );
+        assert_eq!(
+            resp.headers()
+                .get("atproto-content-labelers")
+                .map(|v| v.to_str().unwrap()),
+            Some("did:plc:somelabeler;redact"),
         );
     }
 
