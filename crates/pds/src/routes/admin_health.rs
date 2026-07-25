@@ -112,10 +112,13 @@ struct SweepState {
     /// Items acted on by that pass (deleted blobs, pruned seq rows, reaped accounts,
     /// expired claim attempts).
     swept: u64,
-    /// Items that pass skipped due to an error. A fresh `completedAt` with a nonzero
-    /// `errors` is a pass that ran but did not do its whole job — for blob GC, an account
-    /// whose reconcile failed is excluded from the sweep and leaks disk until the fault is
-    /// fixed. Sweeps with no per-item error path always report `0`.
+    /// Failures that pass hit. A fresh `completedAt` with a nonzero `errors` is a pass that
+    /// ran but did not do its whole job — for blob GC, an account whose reconcile failed is
+    /// excluded from the sweep and leaks disk until the fault is fixed. Sweeps with no
+    /// per-item error path always report `0`.
+    ///
+    /// Counts failed operations, not the work they cost: one failed account is `1` however
+    /// many of its blobs go uncollected.
     errors: u64,
 }
 

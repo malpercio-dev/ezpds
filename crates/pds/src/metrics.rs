@@ -50,11 +50,18 @@ pub mod names {
     pub const BLOB_GC_SWEPT: &str = "blob_gc_swept";
     /// Gauge: unix timestamp (seconds) of the last completed blob-GC run.
     pub const BLOB_GC_LAST_RUN_TIMESTAMP: &str = "blob_gc_last_run_timestamp";
-    /// Counter (`_total`): accounts and blobs the blob-GC pass skipped due to an error. A
-    /// nonzero value means the pass ran but did not do its whole job — an account whose
-    /// reconcile failed is deliberately excluded from the sweep and leaks disk until the
-    /// underlying fault is fixed, so this is the operator's alarm that something needs
-    /// attention even though the pass timestamp stays fresh.
+    /// Counter (`_total`): blob-GC failures this pass. Two kinds share the counter, since
+    /// both mean the same thing to an operator — the pass ran but left work undone: one per
+    /// account whose reconcile errored, and one per expired ownership row the sweep failed to
+    /// delete.
+    ///
+    /// It counts *failures*, not skipped blobs. An account whose reconcile fails is excluded
+    /// from the sweep entirely and contributes exactly 1 however many blobs it holds — the
+    /// account that motivated this counter would report 1 while leaving 534 blobs
+    /// uncollected. The per-account blob count is on the `blobs_skipped` log field.
+    ///
+    /// A nonzero value is the alarm that something needs attention even though the pass
+    /// timestamp stays fresh; a skipped account leaks disk until its fault is fixed.
     pub const BLOB_GC_ERRORS: &str = "blob_gc_errors";
     /// Counter (`_total`): bucket objects the blob-mirror sweep synced (uploads + deletes).
     pub const BLOB_MIRROR_SYNCED: &str = "blob_mirror_synced";
@@ -358,6 +365,7 @@ mod tests {
         metrics
             .blob_gc_last_run_timestamp
             .record(1_700_000_000.0, &[]);
+        metrics.blob_gc_errors.add(1, &[]);
 
         let rendered = metrics.render().unwrap().unwrap();
 
@@ -384,6 +392,16 @@ mod tests {
         assert!(
             rendered.contains("blob_gc_last_run_timestamp"),
             "missing blob_gc_last_run_timestamp gauge in:\n{rendered}"
+        );
+        // Operators alert on this name directly, so pin its exact rendered form: the counter
+        // is constructed without `_total` and the exporter appends it.
+        assert!(
+            rendered.contains("blob_gc_errors_total"),
+            "missing/mis-suffixed blob_gc_errors_total in:\n{rendered}"
+        );
+        assert!(
+            !rendered.contains("blob_gc_errors_total_total"),
+            "double _total suffix in:\n{rendered}"
         );
     }
 

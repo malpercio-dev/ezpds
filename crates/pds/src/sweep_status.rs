@@ -28,10 +28,13 @@ pub struct SweepRun {
     /// Rows/files acted on by the pass (deleted blobs, pruned seq rows, reaped accounts,
     /// expired claim attempts).
     pub swept: u64,
-    /// Items the pass skipped due to an error. A completed pass with `errors > 0` did run,
-    /// but did not do its whole job — the distinction a stale `completed_at` alone cannot
-    /// draw between "one subject is broken" and "the sweep is dead". Sweeps that have no
-    /// per-item error path leave this `0`.
+    /// Failures the pass hit. A completed pass with `errors > 0` did run, but did not do its
+    /// whole job — the distinction a stale `completed_at` alone cannot draw between "one
+    /// subject is broken" and "the sweep is dead". Sweeps that have no per-item error path
+    /// leave this `0`.
+    ///
+    /// This counts failed *operations*, not the work they cost. For blob GC one failed
+    /// account is 1, however many of its blobs go uncollected as a result.
     pub errors: u64,
 }
 
