@@ -33,12 +33,13 @@ docs {
   - `storage` — `{blobCount, blobBytes, blobUnownedCount, blobUnownedBytes,
     blockCount}`; physical rows (blobs are shared across owners and counted
     once). `blobUnownedCount`/`blobUnownedBytes` are the subset of those rows
-    that **no** `blob_owners` row claims — stored bytes nobody owns. Every other
+    that **no** `blob_owners` row claims — stored blob rows nobody owns. Every other
     operator-reachable blob surface (the account listing, per-account storage,
     `listBlobs`, `listMissingBlobs`, `getBlob`) resolves through `blob_owners`,
     so all of them report the same zero whether an account's ownership rows were
-    lost or its bytes were destroyed; this pair is the only place the difference
-    is visible server-wide.
+    lost or its blobs were reclaimed; this pair is the only place the difference
+    is visible server-wide. It counts rows: whether those rows' files are present
+    and hash correctly is `sweeps.blobScrub`'s question, not this pair's.
 
     Expect ~0: GC deletes a physical row with its last owner, so a row is unowned
     only between those two statements. A value that **survives across sweeps** is

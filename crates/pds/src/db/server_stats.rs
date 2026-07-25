@@ -30,10 +30,15 @@ pub struct ServerStats {
     /// Under healthy operation this is ~0: blob GC deletes the physical row together with the
     /// last ownership row (`delete_blob_if_unowned`), so a row outlives its owners only for
     /// the moments between those two statements. A standing nonzero value is the state no
-    /// other surface can express — bytes intact, ownership gone — because every operator-facing
-    /// blob query resolves through `blob_owners` and would report the same zero for destroyed
-    /// bytes as for orphaned ones. `blob_scrub` doesn't cover it either: its orphan definition
-    /// is a *file* with no `blobs` row, and this is a `blobs` row with no owner.
+    /// other surface can express — never reclaimed, yet claimed by nobody — because every
+    /// operator-facing blob query resolves through `blob_owners` and would report the same
+    /// zero for a reclaimed blob as for an orphaned one. `blob_scrub` doesn't cover it either:
+    /// its orphan definition is a *file* with no `blobs` row, and this is a `blobs` row with
+    /// no owner.
+    ///
+    /// This counts rows, so it says nothing about whether those rows' files are present and
+    /// hash correctly — that is `blob_scrub`'s question, answered on its own sweep entry in
+    /// this same payload. The two are complementary halves of blob integrity, not substitutes.
     ///
     /// A small transient value during a GC pass is normal; a value that persists across passes
     /// is not.

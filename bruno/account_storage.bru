@@ -28,21 +28,29 @@ docs {
   - `uploadedBlobCount` / `uploadedBlobBytes` — physical blob rows recording this
     account as their *uploader*, and their bytes. A second witness beside the two
     figures above: those come from `blob_owners`, as does every other blob surface
-    an operator can reach, so ownership rows vanishing and bytes being destroyed
+    an operator can reach, so ownership rows vanishing and blobs being reclaimed
     look identical everywhere else. These read the physical table directly.
+
+    What they witness is **non-reclamation**, not bytes. Reclaim deletes the physical
+    row and its file together, so a surviving row means the blob never went through
+    that path. A file destroyed out of band (corruption, a partial restore, a manual
+    delete) leaves its row behind and still counts here — whether the files exist and
+    hash correctly is the blob scrub's question, reported by `GET /v1/admin/health`
+    under `sweeps.blobScrub`.
 
     Blobs are shared, so a gap in either direction is benign on its own — a CID this
     account references but another uploaded, or one it uploaded that only another
     account still owns. Treat it as a prompt to look, not a verdict.
 
     Read the pair together against `blobCount`:
-    - `blobCount = 0`, `uploadedBlobCount > 0` — the bytes are on disk and the
-      account's **ownership rows** are what went missing.
-    - `blobCount = 0`, `uploadedBlobCount = 0` — the **bytes themselves** are gone.
+    - `blobCount = 0`, `uploadedBlobCount > 0` — the blobs were never reclaimed and
+      the account's **ownership rows** are what went missing.
+    - `blobCount = 0`, `uploadedBlobCount = 0` — the physical rows are gone too, so
+      the blobs went through the reclaim path.
 
     Note the second case: a physical row is deleted with its last owner, taking its
     uploader attribution with it, so this witness reaches zero too when GC is what
-    destroyed the blobs. `uploadedBlobCount = 0` means "nothing is left", **not**
+    collected the blobs. `uploadedBlobCount = 0` means "nothing is left", **not**
     "nothing was ever here".
   - `quotaBytes` — the per-account storage quota (`[blobs] max_storage_per_account`).
     Tiers are not yet differentiated in v0.1, so every account reports the same

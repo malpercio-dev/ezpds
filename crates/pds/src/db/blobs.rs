@@ -138,12 +138,21 @@ pub async fn account_blob_metrics(
 ///
 /// The second witness beside [`account_blob_metrics`]. Every other blob read path in the PDS
 /// — quota, storage metrics, `listBlobs`, `listMissingBlobs`, `getBlob` — resolves through
-/// `blob_owners`, so a lost set of ownership rows and a set of destroyed bytes look identical
+/// `blob_owners`, so a lost set of ownership rows and a set of reclaimed blobs look identical
 /// from every one of them. This reads `blobs.account_did` instead, the first-uploader column
-/// V039 kept for diagnostics and nothing has read since: bytes still on disk report here even
-/// when their ownership rows are gone.
+/// V039 kept for diagnostics and nothing has read since: a physical row reported here outlived
+/// its ownership rows.
 ///
-/// It is **not** a corrected ownership count, and the two figures diverge for benign reasons:
+/// What that witnesses is **non-reclamation**, not bytes. `delete_blob_if_unowned` deletes the
+/// physical row and the file together, so a surviving row means the blob never went through
+/// the reclaim path — which is exactly the distinction `blob_owners` cannot draw. It is not
+/// evidence the file is present: a row whose file was destroyed out of band (corruption, a
+/// partial restore, a manual delete) still counts here. Verifying the files themselves against
+/// their rows is `blob_scrub`'s job, and it has its own alarm channel
+/// (`blob_scrub_flagged_total`, plus the scrub's sweep entry on `GET /v1/admin/health`).
+///
+/// It is **not** a corrected ownership count either, and the two figures diverge for benign
+/// reasons:
 /// a CID first uploaded by another account but referenced by this one is owned-not-uploaded,
 /// and a CID this account uploaded that another account now solely owns is
 /// uploaded-not-owned. Read a divergence as a prompt to look, not as a fault.
@@ -533,7 +542,7 @@ mod tests {
 
     /// The divergence the whole readout exists for: strip the ownership rows and every
     /// ownership-scoped query reports an empty account, while the uploader attribution still
-    /// shows the bytes are there.
+    /// shows the blobs were never reclaimed.
     #[tokio::test]
     async fn uploaded_metrics_survive_ownership_loss_that_zeroes_owned_metrics() {
         let pool = test_pool().await;
@@ -568,12 +577,12 @@ mod tests {
         assert_eq!(
             account_blob_metrics(&pool, &did).await.unwrap(),
             (0, 0),
-            "the ownership-scoped view cannot tell this from destroyed bytes"
+            "the ownership-scoped view cannot tell this from reclaimed blobs"
         );
         assert_eq!(
             account_uploaded_blob_metrics(&pool, &did).await.unwrap(),
             (2, 350),
-            "the physical rows are the surviving evidence the bytes are still stored"
+            "the surviving physical rows say the reclaim path never took these blobs"
         );
     }
 

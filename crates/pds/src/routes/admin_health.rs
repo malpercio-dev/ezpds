@@ -65,12 +65,15 @@ struct StorageCounts {
     /// Every operator-reachable blob surface (this endpoint's own `blobBytes` aside, plus the
     /// account listing, per-account storage, `listBlobs`, `listMissingBlobs`, `getBlob`)
     /// resolves through `blob_owners`, so all of them report the same zero whether an
-    /// account's ownership rows were lost or its bytes were destroyed. These two fields are
-    /// the only place the difference is visible: bytes still on disk, claimed by nobody.
+    /// account's ownership rows were lost or its blobs were reclaimed. These two fields are
+    /// the only place the difference is visible: never reclaimed, claimed by nobody.
     ///
     /// Expect ~0. GC deletes a physical row with its last owner, so a row is unowned only
     /// between those two statements — a value that survives across sweeps is the alarm, and
     /// unlike a stale `blobGc.completedAt` it does not require the sweep to have stopped.
+    ///
+    /// A row count, not a byte-presence check: whether these rows' files exist and hash
+    /// correctly is `blobScrub`'s question, reported under `sweeps` in this same payload.
     blob_unowned_count: i64,
     blob_unowned_bytes: i64,
     /// Physical repo-block rows (MST nodes + records).
@@ -360,7 +363,7 @@ mod tests {
         assert_eq!(json["storage"]["blobUnownedCount"], 1);
         assert_eq!(
             json["storage"]["blobUnownedBytes"], 250,
-            "bytes on disk that no account claims — the only field that can say so"
+            "unreclaimed rows that no account claims — the only field that can say so"
         );
     }
 
