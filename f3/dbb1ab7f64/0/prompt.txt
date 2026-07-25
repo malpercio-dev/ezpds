@@ -1,0 +1,9 @@
+```
+› curl -s "https://video.bsky.app/xrpc/app.bsky.video.getUploadLimits" \
+  -H "Authorization: Bearer $SA" | jq .
+{
+  "canUpload": false,
+  "error": "profile_not_found",
+  "message": "Profile not found"
+}
+```
