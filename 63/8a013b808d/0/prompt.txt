@@ -1,0 +1,1 @@
+Alright, I've set the password in production. are we ready to attempt to migrate the identity back to bsky?
