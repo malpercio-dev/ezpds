@@ -1,0 +1,195 @@
+<ci-monitor-event>malpercio-dev/ezpds PR #109 has 1 new review comment:
+- coderabbitai[bot] (commented): 
+
+> [!CAUTION]
+> Some comments are outside the diff and can’t be posted inline due to platform limitations.
+> 
+> 
+> 
+> <details>
+> <summary>⚠️ Outside diff range comments (2)</summary><blockquote>
+> 
+> <details>
+> <summary>docs/security/tauri-ipc-boundary.md (2)</summary><blockquote>
+> 
+> `100-109`: _🎯 Functional Correctness_ | _🟡 Minor_ | _⚡ Quick win_
+> 
+> **Use the denial signal, not promise rejection.** Denied Tauri calls surface as a console `"<command> not allowed"` message, not a catchable rejection, so reword this step to describe observing the denial error while app commands still resolve.
+> 
+> <details>
+> <summary>🤖 Prompt for AI Agents</summary>
+> 
+> ```
+> Verify each finding against current code. Fix only still-valid issues, skip the
+> rest with a brief reason, keep changes minimal, and validate.
+> 
+> In `@docs/security/tauri-ipc-boundary.md` around lines 100 - 109, The manual
+> denial-check step describes the wrong signal for blocked Tauri IPC calls. Update
+> the guidance in the denylist verification section to say that unauthorized
+> invocations of `@tauri-apps/api` commands (for example via
+> `getCurrentWindow().setTitle`) should be observed as a console `"<command> not
+> allowed"` denial message, while allowed app commands like `list_identities` and
+> `pairing_state` continue to resolve. Keep the emphasis on observing the denial
+> error in dev tools rather than waiting for a promise rejection, and make sure
+> the wording matches the `tauri-ipc-boundary` manual check flow.
+> ```
+> 
+> </details>
+> 
+> <!-- cr-comment:v1:55696c232107daa5f7d1aca8 -->
+> 
+> ---
+> 
+> `94-98`: _🎯 Functional Correctness_ | _🟡 Minor_ | _⚡ Quick win_
+> 
+> **Reword the schema guard to match the actual check.** The CI script only rejects `desktop-schema.json`; it doesn’t prove every capability references `mobile-schema.json`. Either tighten the script or narrow the doc to the negative check.
+> 
+> <details>
+> <summary>Suggested wording</summary>
+> 
+> ```diff
+> -   the mobile schema is referenced;
+> +   no capability references `desktop-schema.json`;
+> ```
+> </details>
+> 
+> <details>
+> <summary>🤖 Prompt for AI Agents</summary>
+> 
+> ```
+> Verify each finding against current code. Fix only still-valid issues, skip the
+> rest with a brief reason, keep changes minimal, and validate.
+> 
+> In `@docs/security/tauri-ipc-boundary.md` around lines 94 - 98, The “Static
+> minimality lock” description is too broad for what `scripts/capability-check.sh`
+> actually enforces. Update the docs text near the `cap-check` / `just ci-pds`
+> explanation to state the real schema guard: the script rejects
+> `desktop-schema.json` (rather than proving every capability references
+> `mobile-schema.json`), or alternatively tighten the script if you want the
+> stronger claim. Keep the rest of the `core:default` and `withGlobalTauri` checks
+> aligned with the existing `cap-check` behavior.
+> ```
+> 
+> </details>
+> 
+> <!-- cr-comment:v1:50f6252249da16269e624f56 -->
+> 
+> </blockquote></details>
+> 
+> </blockquote></details>
+
+<details>
+<summary>🤖 Prompt for all review comments with AI agents</summary>
+
+```
+Verify each finding against current code. Fix only still-valid issues, skip the
+rest with a brief reason, keep changes minimal, and validate.
+
+Outside diff comments:
+In `@docs/security/tauri-ipc-boundary.md`:
+- Around line 100-109: The manual denial-check step describes the wrong signal
+for blocked Tauri IPC calls. Update the guidance in the denylist verification
+section to say that unauthorized invocations of `@tauri-apps/api` commands (for
+example via `getCurrentWindow().setTitle`) should be observed as a console
+`"<command> not allowed"` denial message, while allowed app commands like
+`list_identities` and `pairing_state` continue to resolve. Keep the emphasis on
+observing the denial error in dev tools rather than waiting for a promise
+rejection, and make sure the wording matches the `tauri-ipc-boundary` manual
+check flow.
+- Around line 94-98: The “Static minimality lock” description is too broad for
+what `scripts/capability-check.sh` actually enforces. Update the docs text near
+the `cap-check` / `just ci-pds` explanation to state the real schema guard: the
+script rejects `desktop-schema.json` (rather than proving every capability
+references `mobile-schema.json`), or alternatively tighten the script if you
+want the stronger claim. Keep the rest of the `core:default` and
+`withGlobalTauri` checks aligned with the existing `cap-check` behavior.
+```
+
+</details>
+
+---
+
+<details>
+<summary>ℹ️ Review info</summary>
+
+<details>
+<summary>⚙️ Run configuration</summary>
+
+**Configuration used**: Organization UI
+
+**Review profile**: ASSERTIVE
+
+**Plan**: Pro Plus
+
+**Run ID**: `15de71a5-f96a-4d19-ac9b-aec31beeebf3`
+
+</details>
+
+<details>
+<summary>📥 Commits</summary>
+
+Reviewing files that changed from the base of the PR and between 5be9d3f610f9350a3b65388700fb69c28b24d84d and 165e5bafeb3170ed0f78df87c2aeaab4c4c1fec4.
+
+</details>
+
+<details>
+<summary>📒 Files selected for processing (1)</summary>
+
+* `docs/security/tauri-ipc-boundary.md`
+
+</details>
+
+</details>
+
+<details>
+<summary>📜 Review details</summary>
+
+<details>
+<summary>⏰ Context from checks skipped due to timeout. (3)</summary>
+
+* GitHub Check: iOS compile (admin-companion)
+* GitHub Check: iOS compile (identity-wallet)
+* GitHub Check: PDS gate (fmt, clippy, test, audit)
+
+</details>
+
+<details>
+<summary>🧰 Additional context used</summary>
+
+<details>
+<summary>📓 Path-based instructions (2)</summary>
+
+<details>
+<summary>docs/**/*.md</summary>
+
+
+**📄 CodeRabbit inference engine (AGENTS.md)**
+
+> Use the planning and design documents under `docs/` for ticket traceability and implementation plans rather than source comments.
+
+Files:
+- `docs/security/tauri-ipc-boundary.md`
+
+</details>
+<details>
+<summary>**/*.md</summary>
+
+
+**📄 CodeRabbit inference engine (AGENTS.md)**
+
+> Use Markdown documentation to capture design plans, implementation plans, and broader project status rather than embedding that information in source code.
+
+Files:
+- `docs/security/tauri-ipc-boundary.md`
+
+</details>
+
+</details>
+
+</details>
+
+</details>
+
+<!-- This is an auto-generated comment by CodeRabbit for review status -->
+
+Please address the feedback and push a fix. Then, for each inline comment you addressed (those with a comment_id), post a one-line reply on the thread via `gh api` saying what you changed (or why you didn't). End each reply with the line "_🤖 Addressed by [Claude Code](https://claude.com/claude-code)_" so reviewers can see it was automated. Then resolve the thread. Skip replies for comments you didn't act on.</ci-monitor-event>
