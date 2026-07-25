@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>bua0a6hyv</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-jacob-zweifel-workspace-malpercio-dev-ezpds/fbf38cc2-991d-4f97-ba94-553a0bd332e4/tasks/bua0a6hyv.output</output-file>
+<status>completed</status>
+<summary>Background command "Poll PR #37 until CodeRabbit completes (fixed variable)" completed (exit code 0)</summary>
+</task-notification>
