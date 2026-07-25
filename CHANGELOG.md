@@ -7,6 +7,41 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Changes are collected in `changelog.d/` during development and inserted here when
 `just set-version` prepares a release. There is intentionally no `Unreleased` section.
 
+## [0.8.2] - 2026-07-24
+
+### Added
+
+- An existing did:web identity can now be brought into the wallet: the "bring an existing did:web" path resolves the domain's live DID document, registers the identity, and opens the migration flow — previously it failed with "DID is not managed by this wallet."
+
+- The wallet's background backup task now refreshes your repo (posts) snapshot as well as your media mirror, so an opted-in identity's posts stay backed up to iCloud without opening the app — no longer only on the next launch. The two backups opt in independently: you can enable one mirror and not the other, and each pass runs off-foreground in the same scheduled wake-up.
+
+- Custos now tells clients what it can do: `com.atproto.server.describeServer` carries a `custos` object with the running version and the capabilities that deployment actually offers (identity creation, recovery escrow, passwordless sessions, agents, wallet-confirmed consent, did:web hosting), derived from the live configuration rather than assumed. Obsign reads and caches it per host, so features are offered based on what a server supports instead of being attempted and failing — and a server that sends nothing, like the reference PDS or bsky.social, is handled as having no Custos capabilities rather than as an error. `GET /xrpc/_health` now identifies itself as `custos vX.Y.Z` instead of a bare version number, matching what third-party AT Protocol diagnostic tooling reads. Operators: see the new [Capabilities](https://docs.obsign.org/operator/capabilities/) page for what each capability means and how it is controlled.
+
+- Custos can now run a public interest-signup waitlist (the `waitlist` capability, `[waitlist] enabled` / `EZPDS_WAITLIST_ENABLED`, off by default): an unauthenticated, CORS-open, rate-limited `POST /waitlist` accepts an email plus an optional atproto handle for a marketing page's signup form — idempotent per email, handle never resolved — and `GET /v1/admin/waitlist` reads the list back for the operator; the Obsign marketing site now carries the TestFlight signup form posting to it.
+
+
+### Changed
+
+- The wallet's welcome screen now says what its buttons actually do: "Create an identity" and "Import an identity". The second is a correction rather than a rewording — that button has always started the flow that puts your device's key in charge of an identity hosted somewhere else, which is the front door for anyone arriving from bsky.social or a self-hosted PDS; it was labelled "Move an identity to another PDS", which is a different feature and lives on the identity's own screen. Creating an identity also now checks up front whether the server you configured can actually do it: creation requires your device to author the identity's first record and hold its master key from that moment, which a standard ATProtocol server cannot accept, so a server that does not advertise the Custos create ceremony gets an honest explanation on the server screen — before you fill in a claim code, an email and a handle — with import one tap away on the server you already chose. A server the wallet simply could not reach is treated as a question it failed to ask, not as an answer: that shows a retryable error rather than telling you your server cannot create identities.
+
+
+### Fixed
+
+- Creating or migrating a did:web identity no longer fails verification of the published did.json: the wallet composed the document's `#device` key in a bare encoding the server could never match against the submitted device key (the server compares the multicodec-prefixed did:key form), so every live did:web ceremony was rejected with a generic "document does not match" error. Both the creation ceremony and the migration identity leg now publish the same did:key encoding the server verifies.
+
+- Migrating a did:web identity no longer dead-ends at the start screen with "couldn't verify this identity's keys": the migration path detector asked plc.directory for the identity's PLC audit log, which a did:web identity does not have, so detection always failed. A did:web identity now takes the wallet-driven path directly — its identity leg is the domain's did.json edit, which the wallet composes and verifies.
+
+- Migrating a did:web identity to another PDS no longer fails — the wallet now resolves the source DID from the domain's own did.json instead of plc.directory, and the final cutover persists the destination session directly since a did:web account has no PLC rotation keys.
+
+- Resolving a did:web identity's hosting PDS no longer fails with a generic network error — the wallet now recognizes the absolute-form service ids ("did:web:host#atproto_pds") that did:web documents carry, alongside plc.directory's bare "#atproto_pds" form.
+
+- Bluesky direct messages now work for Custos-hosted accounts — the service-auth tokens the server mints for chat-service proxying carry the jti nonce Bluesky's chat service requires for replay protection.
+
+- The wallet now alternates which iCloud backup mirror runs first in each background wake-up, preventing posts or media from being repeatedly delayed when iOS limits background processing time.
+
+- A did:web identity can now be removed from the wallet. The permanent-removal flow was did:plc-only: the entry point was hidden for a did:web, because behind it the removal always tried to publish a PLC tombstone — an operation a did:web has no directory log for, which would have deleted the account and then stranded the identity in a "retry" state that could never succeed. Removal is now method-aware: a did:web is deleted on its PDS and erased from the device with no PLC step, and the wallet says plainly that the last step — taking the DID's `did.json` off the domain — is yours, since it never had control of that domain.
+
+
 ## [0.8.1] - 2026-07-24
 
 ### Added
