@@ -1,0 +1,1 @@
+migrating the bsky pds account in. connect to your pds step. it is attempting to connect directly to the mushroom `fibercap.us-west.host.bsky.network` however I'm pretty sure we need to go through their gateway. the app also showed a "network error" when I clicked the button to launch the login flow
