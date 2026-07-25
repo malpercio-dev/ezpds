@@ -1,0 +1,15 @@
+```Running altool at path '/Applications/Xcode.app/Contents/SharedFrameworks/ContentDelivery.framework/Resources/altool'...
+
+2026-06-24 18:19:57.942 ERROR: [ContentDelivery.Uploader.104B67710]
+=======================================
+UPLOAD FAILED with 1 error
+=======================================
+Failed to upload package.
+2026-06-24 18:19:57.943 ERROR: [altool.104B67710] Validation failed (409) Invalid bundle structure. The “Obsign.app/libapp.a” binary file is not permitted. Your app cannot contain standalone executables or libraries, other than a valid CFBundleExecutable of supported bundles. For details, visit: https://developer.apple.com/documentation/bundleresources/placing_content_in_a_bundle (ID: a9bdae80-9e08-44ad-bb7e-f109b0e8e540)
+   NSUnderlyingError : Validation failed (-19241) Invalid bundle structure. The “Obsign.app/libapp.a” binary file is not permitted. Your app cannot contain standalone executables or libraries, other than a valid CFBundleExecutable of supported bundles. For details, visit: https://developer.apple.com/documentation/bundleresources/placing_content_in_a_bundle
+      status : 409
+      detail : Invalid bundle structure. The “Obsign.app/libapp.a” binary file is not permitted. Your app cannot contain standalone executables or libraries, other than a valid CFBundleExecutable of supported bundles. For details, visit: https://developer.apple.com/documentation/bundleresources/placing_content_in_a_bundle
+      id : a9bdae80-9e08-44ad-bb7e-f109b0e8e540
+      code : STATE_ERROR.VALIDATION_ERROR
+      title : Validation failed
+   iris-code : STATE_ERROR.VALIDATION_ERROR```
