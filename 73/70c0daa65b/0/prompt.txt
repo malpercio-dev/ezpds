@@ -1,0 +1,969 @@
+<task-notification>
+<task-id>a334940a4d6873c67</task-id>
+<tool-use-id>toolu_01AQo8wzEaaAYbkgWSSJby3b</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-jacob-zweifel-workspace-malpercio-dev-ezpds--claude-worktrees-awesome-lamport-bf2e56/d99ceb90-e7e1-42a0-bc40-c5ae3369966b/tasks/a334940a4d6873c67.output</output-file>
+<status>completed</status>
+<summary>Agent "Map interop CLI migration flow" finished</summary>
+<note>A task-notification fires each time this agent stops with no live background children of its own. The user can send it another message and resume it, so the same task-id may notify more than once.</note>
+<result>Perfect. Now I have a comprehensive picture. Let me generate the detailed report.
+
+---
+
+## COMPREHENSIVE MIGRATION SEQUENCE REPORT
+
+Based on thorough analysis of the reference implementation, I've extracted the exact end-to-end call sequence for **outbound migration (ezpds as source → destination PDS)**. This report provides the verbatim code, precise HTTP details, and authentication flow you need to port to Rust.
+
+### **1. THE FULL ORDERED CALL SEQUENCE**
+
+The test in `outbound_migration_test.rs` exercises this exact sequence. I'll trace each step:
+
+#### **Step 1: Reserve Signing Key (Destination)**
+
+```rust
+// From outbound_migration_test.rs line 207-218
+let reserve_resp = dest_app
+    .clone()
+    .oneshot(bearer_json(
+        "POST",
+        "/xrpc/com.atproto.server.reserveSigningKey".to_string(),
+        None,
+        serde_json::json!({ "did": MIGRATING_DID }),
+    ))
+    .await
+    .unwrap();
+assert_eq!(reserve_resp.status(), StatusCode::OK, "reserveSigningKey");
+```
+
+**Details:**
+- **Endpoint:** `POST /xrpc/com.atproto.server.reserveSigningKey`
+- **Target:** Destination PDS
+- **Authentication:** None (public endpoint)
+- **Request Body:** `{ "did": "&lt;migrating-did&gt;" }`
+- **Response:** `{ signingKey: "&lt;did:key:...&gt;" }`
+- **Purpose:** Pre-registers a P-256 repo signing key for the migrating account so the destination can verify `createAccount` migrations signed by the source
+
+---
+
+#### **Step 2: Get Service Auth JWT (Source)**
+
+```rust
+// From outbound_migration_test.rs line 220-240
+let dest_did = dest_state.config.resolve_server_did();
+let service_auth_resp = source_app
+    .clone()
+    .oneshot(bearer(
+        "GET",
+        format!(
+            "/xrpc/com.atproto.server.getServiceAuth?aud={dest_did}&amp;lxm=com.atproto.server.createAccount"
+        ),
+        Some(&amp;source_token),
+        Body::empty(),
+    ))
+    .await
+    .unwrap();
+assert_eq!(service_auth_resp.status(), StatusCode::OK, "getServiceAuth");
+let migration_token = body_json(service_auth_resp).await["token"]
+    .as_str()
+    .unwrap()
+    .to_string();
+```
+
+**Details:**
+- **Endpoint:** `GET /xrpc/com.atproto.server.getServiceAuth`
+- **Target:** Source PDS
+- **Authentication:** Bearer token (accessJwt from the account being migrated)
+- **Query Parameters:**
+  - `aud=&lt;destination-server-did&gt;` — the receiving PDS's DID
+  - `lxm=com.atproto.server.createAccount` — the lexicon method being authorized
+- **Response:** `{ token: "&lt;jwt&gt;" }`
+- **JWT Details:**
+  - Signed by the source PDS using the migrating account's repo signing key (`#atproto` verification method)
+  - Payload includes:
+    - `aud` (audience) = destination server DID
+    - `lxm` (lexicon method) = `com.atproto.server.createAccount`
+    - `exp` (expiration) = short-lived (typically 1 hour or less)
+    - `iss` (issuer) = source server DID
+    - `sub` (subject) = migrating account DID
+- **Purpose:** Cryptographic proof that the source PDS authorized this specific account to migrate to this specific destination
+
+---
+
+#### **Step 3: Create Account (Migration Mode, Destination)**
+
+```rust
+// From outbound_migration_test.rs line 242-263
+let create_resp = dest_app
+    .clone()
+    .oneshot(bearer_json(
+        "POST",
+        "/xrpc/com.atproto.server.createAccount".to_string(),
+        Some(&amp;migration_token),
+        serde_json::json!({
+            "handle": HANDLE,
+            "email": "migrant@example.com",
+            "did": MIGRATING_DID,
+        }),
+    ))
+    .await
+    .unwrap();
+assert_eq!(
+    create_resp.status(),
+    StatusCode::OK,
+    "createAccount (migration mode) must accept a real getServiceAuth token from an \
+     independently configured source server"
+);
+let create_json = body_json(create_resp).await;
+let dest_token = create_json["accessJwt"].as_str().unwrap().to_string();
+```
+
+**Details:**
+- **Endpoint:** `POST /xrpc/com.atproto.server.createAccount`
+- **Target:** Destination PDS
+- **Authentication:** Bearer token (the service-auth JWT from step 2)
+- **Request Body:**
+  ```json
+  {
+    "handle": "&lt;migrating-handle&gt;",
+    "email": "&lt;email@example.com&gt;",
+    "did": "&lt;migrating-did&gt;"
+  }
+  ```
+  - `did` field presence triggers migration mode (standard onboarding has no `did`)
+  - `inviteCode` is NOT required in migration mode (invitation codes are for standard signup)
+  - `password` is NOT sent (the account already has credentials on the source)
+  - `verificationMethod` and `plcOp` are NOT sent (the source's signing key is used)
+- **Destination Verification:**
+  - Verifies the JWT signature against the migrating DID's current `#atproto` verification method (from a resolved DID document)
+  - Confirms the JWT's `aud` matches the destination's server DID
+  - Confirms the JWT's `lxm` is `com.atproto.server.createAccount`
+  - Confirms the JWT's `sub` matches the request's `did`
+- **Response:** `{ accessJwt, refreshJwt, handle, did, didDoc }`
+  - Both JWTs are issued by the DESTINATION
+  - Account is created in **DEACTIVATED** state (no repo yet)
+  - These tokens authenticate all subsequent destination operations
+- **Purpose:** Atomic creation of a deactivated, repo-less account on the destination
+
+---
+
+#### **Step 4: Export Repo from Source**
+
+```rust
+// From outbound_migration_test.rs line 265-278
+let car_resp = source_app
+    .clone()
+    .oneshot(bearer(
+        "GET",
+        format!("/xrpc/com.atproto.sync.getRepo?did={MIGRATING_DID}"),
+        None,
+        Body::empty(),
+    ))
+    .await
+    .unwrap();
+assert_eq!(car_resp.status(), StatusCode::OK, "source getRepo");
+let car_bytes = body_bytes(car_resp).await;
+```
+
+**Details:**
+- **Endpoint:** `GET /xrpc/com.atproto.sync.getRepo`
+- **Target:** Source PDS
+- **Authentication:** None required (public sync endpoint)
+- **Query Parameters:**
+  - `did=&lt;migrating-did&gt;` — the account to export
+  - Optional `since=&lt;tid&gt;` for incremental exports (not used in initial migration)
+- **Response:** Raw CAR file bytes (no JSON wrapper)
+- **CAR Contents:** Complete merkle-tree commit history with all referenced blocks; the root CID is the current commit tree state
+- **Purpose:** Full repo snapshot for transfer to destination
+
+---
+
+#### **Step 5: Import Repo to Destination**
+
+```rust
+// From outbound_migration_test.rs line 279-293
+let import_resp = dest_app
+    .clone()
+    .oneshot(bearer(
+        "POST",
+        "/xrpc/com.atproto.repo.importRepo".to_string(),
+        Some(&amp;dest_token),
+        Body::from(car_bytes),
+    ))
+    .await
+    .unwrap();
+assert_eq!(
+    import_resp.status(),
+    StatusCode::OK,
+    "destination importRepo"
+);
+```
+
+**Details:**
+- **Endpoint:** `POST /xrpc/com.atproto.repo.importRepo`
+- **Target:** Destination PDS
+- **Authentication:** Bearer token (accessJwt from step 3)
+- **Request Body:** Raw CAR file bytes (Content-Type: application/vnd.ipld.car)
+- **Preconditions:**
+  - Account must exist and be **DEACTIVATED** (only migration allows repo import)
+  - Account must still have no repo blocks
+- **Operation:**
+  - Parse and validate the CAR file
+  - Extract all blocks and store them in the destination's block store
+  - Update the account's `repo_root` (current commit CID) and `repo_rev` (sequence number)
+  - Do NOT yet activate the account
+- **Response:** `{ root: "&lt;root-cid&gt;" }` confirming the imported root
+- **Purpose:** Atomic repo installation while account remains offline
+
+---
+
+#### **Step 6a: List Blobs from Source**
+
+```rust
+// From outbound_migration_test.rs line 296-312
+let list_blobs_resp = source_app
+    .clone()
+    .oneshot(bearer(
+        "GET",
+        format!("/xrpc/com.atproto.sync.listBlobs?did={MIGRATING_DID}"),
+        None,
+        Body::empty(),
+    ))
+    .await
+    .unwrap();
+assert_eq!(list_blobs_resp.status(), StatusCode::OK, "source listBlobs");
+let cids: Vec&lt;String&gt; = body_json(list_blobs_resp).await["cids"]
+    .as_array()
+    .unwrap()
+    .iter()
+    .map(|v| v.as_str().unwrap().to_string())
+    .collect();
+```
+
+**Details:**
+- **Endpoint:** `GET /xrpc/com.atproto.sync.listBlobs`
+- **Target:** Source PDS
+- **Authentication:** None required (public sync endpoint)
+- **Query Parameters:**
+  - `did=&lt;migrating-did&gt;` — which repo's blobs to list
+  - Optional `cursor=&lt;cursor&gt;` for pagination (continues from previous response)
+- **Response:**
+  ```json
+  {
+    "cids": ["bafy...", "bafy...", ...],
+    "cursor": "&lt;next-cursor&gt;"  // present only if more blobs exist
+  }
+  ```
+- **Paging:** Caller must check for `cursor` in response; if present, iterate again with `cursor=&lt;cursor&gt;` until no cursor is returned (all blobs fetched)
+- **Purpose:** Enumerate every blob CID referenced by the repo
+
+---
+
+#### **Step 6b: Download Each Blob from Source**
+
+```rust
+// From outbound_migration_test.rs line 319-360
+for cid in &amp;cids {
+    let get_blob_resp = source_app
+        .clone()
+        .oneshot(bearer(
+            "GET",
+            format!("/xrpc/com.atproto.sync.getBlob?did={MIGRATING_DID}&amp;cid={cid}"),
+            None,
+            Body::empty(),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(
+        get_blob_resp.status(),
+        StatusCode::OK,
+        "source getBlob {cid}"
+    );
+    let blob_bytes = body_bytes(get_blob_resp).await;
+
+    let upload_resp = dest_app
+        .clone()
+        .oneshot(bearer(
+            "POST",
+            "/xrpc/com.atproto.repo.uploadBlob".to_string(),
+            Some(&amp;dest_token),
+            Body::from(blob_bytes),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(
+        upload_resp.status(),
+        StatusCode::OK,
+        "destination uploadBlob {cid}"
+    );
+    let reuploaded_cid = body_json(upload_resp).await["blob"]["ref"]["$link"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    assert_eq!(
+        &amp;reuploaded_cid, cid,
+        "content-addressing must round-trip the CID"
+    );
+}
+```
+
+**Details:**
+- **Source Download:**
+  - **Endpoint:** `GET /xrpc/com.atproto.sync.getBlob`
+  - **Target:** Source PDS
+  - **Authentication:** None required (public sync endpoint)
+  - **Query Parameters:**
+    - `did=&lt;migrating-did&gt;`
+    - `cid=&lt;blob-cid&gt;`
+  - **Response:** Raw blob bytes (binary; no JSON wrapper)
+- **Destination Upload:**
+  - **Endpoint:** `POST /xrpc/com.atproto.repo.uploadBlob`
+  - **Target:** Destination PDS
+  - **Authentication:** Bearer token (accessJwt from step 3)
+  - **Request Body:** Raw blob bytes (Content-Type: application/octet-stream or auto-detected)
+  - **Response:** `{ blob: { ref: { $link: "&lt;cid&gt;" }, mimeType, size } }`
+  - **Content Addressing:** The blob's CID is deterministic (hash of content); must match the original CID exactly
+- **Termination Condition:** Continue looping `listBlobs` calls with pagination until no `cursor` is returned, then perform `uploadBlob` for every CID collected across all pages
+- **Purpose:** Transfer all media/binary data referenced by the repo
+
+---
+
+#### **Step 6c: Verify Blob Completeness**
+
+```rust
+// From outbound_migration_test.rs line 362-384
+let missing_resp = dest_app
+    .clone()
+    .oneshot(bearer(
+        "GET",
+        "/xrpc/com.atproto.repo.listMissingBlobs".to_string(),
+        Some(&amp;dest_token),
+        Body::empty(),
+    ))
+    .await
+    .unwrap();
+assert_eq!(
+    missing_resp.status(),
+    StatusCode::OK,
+    "destination listMissingBlobs"
+);
+assert_eq!(
+    body_json(missing_resp).await["blobs"]
+        .as_array()
+        .unwrap()
+        .len(),
+    0,
+    "every referenced blob must have been transferred"
+);
+```
+
+**Details:**
+- **Endpoint:** `GET /xrpc/com.atproto.repo.listMissingBlobs`
+- **Target:** Destination PDS
+- **Authentication:** Bearer token (accessJwt from step 3)
+- **No Query Parameters**
+- **Response:**
+  ```json
+  {
+    "blobs": [
+      { "cid": "&lt;missing-cid&gt;", "recordUri": "at://&lt;did&gt;/collection/rkey" },
+      ...
+    ],
+    "cursor": "&lt;next-cursor&gt;"  // present only if more missing blobs exist
+  }
+  ```
+- **Algorithm:** The destination walks its MST (merkle search tree), extracts blob references from record `embed` fields, and diffs against what has been uploaded
+- **Termination:** Poll this endpoint (with pagination if `cursor` present) until the `blobs` array is empty
+- **Purpose:** Confirm all blobs have been transferred before activation
+
+---
+
+#### **Step 7: Check Account Status**
+
+```rust
+// From outbound_migration_test.rs line 387-407
+let status_resp = dest_app
+    .clone()
+    .oneshot(bearer(
+        "GET",
+        "/xrpc/com.atproto.server.checkAccountStatus".to_string(),
+        Some(&amp;dest_token),
+        Body::empty(),
+    ))
+    .await
+    .unwrap();
+assert_eq!(
+    status_resp.status(),
+    StatusCode::OK,
+    "destination checkAccountStatus"
+);
+let status_json = body_json(status_resp).await;
+assert_eq!(status_json["activated"], false, "not yet activated");
+assert_eq!(status_json["indexedRecords"], 2);
+assert_eq!(status_json["expectedBlobs"], 1);
+assert_eq!(status_json["importedBlobs"], 1);
+```
+
+**Details:**
+- **Endpoint:** `GET /xrpc/com.atproto.server.checkAccountStatus`
+- **Target:** Destination PDS
+- **Authentication:** Bearer token (accessJwt from step 3)
+- **Response:**
+  ```json
+  {
+    "activated": false,
+    "validDid": true,
+    "indexedRecords": 2,
+    "expectedBlobs": 1,
+    "importedBlobs": 1
+  }
+  ```
+  - `activated`: Boolean; false while deactivated, true after activation
+  - `validDid`: Whether the DID document is valid and reachable
+  - `indexedRecords`: Count of records in the imported repo
+  - `expectedBlobs`: Total blob references in the repo
+  - `importedBlobs`: Blobs successfully uploaded
+- **Purpose:** Pre-activation audit confirming import readiness; fail if `importedBlobs &lt; expectedBlobs`
+
+---
+
+#### **Step 8: Activate Account (Destination)**
+
+```rust
+// From outbound_migration_test.rs line 408-423
+let activate_resp = dest_app
+    .clone()
+    .oneshot(bearer(
+        "POST",
+        "/xrpc/com.atproto.server.activateAccount".to_string(),
+        Some(&amp;dest_token),
+        Body::empty(),
+    ))
+    .await
+    .unwrap();
+assert_eq!(
+    activate_resp.status(),
+    StatusCode::OK,
+    "destination activateAccount"
+);
+```
+
+**Details:**
+- **Endpoint:** `POST /xrpc/com.atproto.server.activateAccount`
+- **Target:** Destination PDS
+- **Authentication:** Bearer token (accessJwt from step 3)
+- **Request Body:** Empty JSON (`{}`)
+- **Preconditions:**
+  - Account must be deactivated
+  - Repo must be imported
+  - All blobs must be uploaded
+- **Operation:**
+  - Clear the `deactivated_at` flag from the account
+  - Emit a `#sync` firehose frame with the commit-block CAR (for relay anchor)
+  - Emit an `#account` (active) firehose event to announce the account is live
+- **Response:** `{ activated: true }`
+- **Idempotency:** Calling `activateAccount` on an already-active account returns 200 but emits no firehose event (no-op)
+- **Purpose:** Bring the account live and announce it to the network
+
+---
+
+#### **Step 9: Verify Repo is Readable on Destination**
+
+```rust
+// From outbound_migration_test.rs line 424-445
+let get_record_resp = dest_app
+    .clone()
+    .oneshot(bearer(
+        "GET",
+        format!(
+            "/xrpc/com.atproto.repo.getRecord?did={MIGRATING_DID}&amp;collection=app.bsky.feed.post&amp;rkey=hello"
+        ),
+        None,
+        Body::empty(),
+    ))
+    .await
+    .unwrap();
+assert_eq!(
+    get_record_resp.status(),
+    StatusCode::OK,
+    "migrated record must be servable"
+);
+assert_eq!(
+    body_json(get_record_resp).await["value"]["text"],
+    "migrating out"
+);
+```
+
+**Details:**
+- **Endpoint:** `GET /xrpc/com.atproto.repo.getRecord`
+- **Target:** Destination PDS
+- **Authentication:** None required (public read endpoint)
+- **Query Parameters:**
+  - `did=&lt;migrating-did&gt;`
+  - `collection=&lt;nsid&gt;` (e.g., `app.bsky.feed.post`)
+  - `rkey=&lt;key&gt;` (the record's TID/key)
+- **Response:** `{ value: &lt;record&gt;, ...metadata }`
+- **Purpose:** Confirm the destination is serving the migrated account's records
+
+---
+
+#### **Step 10: Deactivate Account (Source)**
+
+```rust
+// From outbound_migration_test.rs line 447-470
+let mut source_firehose = source_state.firehose.subscribe();
+let deactivate_resp = source_app
+    .clone()
+    .oneshot(bearer(
+        "POST",
+        "/xrpc/com.atproto.server.deactivateAccount".to_string(),
+        Some(&amp;source_token),
+        Body::empty(),
+    ))
+    .await
+    .unwrap();
+assert_eq!(
+    deactivate_resp.status(),
+    StatusCode::OK,
+    "source deactivateAccount"
+);
+let crate::firehose::FirehoseEvent::Account(event) = source_firehose.try_recv().unwrap() else {
+    panic!("expected an #account firehose event announcing the source's deactivation");
+};
+assert_eq!(event.did, MIGRATING_DID);
+assert!(!event.active);
+assert_eq!(event.status.as_deref(), Some("deactivated"));
+```
+
+**Details:**
+- **Endpoint:** `POST /xrpc/com.atproto.server.deactivateAccount`
+- **Target:** Source PDS
+- **Authentication:** Bearer token (accessJwt from the account being migrated)
+- **Request Body:**
+  ```json
+  {}
+  ```
+  - Optional `deleteAfter=&lt;ISO8601-datetime&gt;` (triggers eventual account deletion; omitted in migration)
+- **Operation:**
+  - Set `deactivated_at` on the account
+  - Emit an `#account` firehose event (active=false, status="deactivated")
+  - Source remains readable via public sync endpoints (`getRepo`, `getBlob`, `listBlobs`)
+- **Response:** `{ deactivated: true }`
+- **Idempotency:** Calling `deactivateAccount` on an already-deactivated account returns 200 but emits no firehose event
+- **Purpose:** Announce the account is no longer actively served by the source
+
+---
+
+#### **Step 10b: Confirm Source Remains Readable**
+
+```rust
+// From outbound_migration_test.rs line 474-487
+let post_deactivation_repo = source_app
+    .oneshot(bearer(
+        "GET",
+        format!("/xrpc/com.atproto.sync.getRepo?did={MIGRATING_DID}"),
+        None,
+        Body::empty(),
+    ))
+    .await
+    .unwrap();
+assert_eq!(
+    post_deactivation_repo.status(),
+    StatusCode::OK,
+    "getRepo must keep serving a deactivated account's repo"
+);
+```
+
+**Details:**
+- **Endpoint:** `GET /xrpc/com.atproto.sync.getRepo`
+- **Target:** Source PDS
+- **Authentication:** None required (public sync endpoint)
+- **Guarantee:** The source MUST continue serving the deactivated repo; migrations may retry blob fetches across the deactivation boundary
+- **Purpose:** Safety: allow the migration tool to tolerate transient failures by retrying without a timeout
+
+---
+
+### **2. SERVICE-AUTH JWT HANDOFF (PRECISE DETAILS)**
+
+The service-auth JWT is the cryptographic anchor of the entire migration. Here's the exact flow:
+
+#### **Minting on Source (getServiceAuth)**
+
+From `get_service_auth.rs` in the PDS crate (referenced in CLAUDE.md):
+
+- **Caller:** Migration tool or interop wallet
+- **Call:** `GET /xrpc/com.atproto.server.getServiceAuth?aud=&lt;dest-did&gt;&amp;lxm=com.atproto.server.createAccount`
+- **Auth:** Requires a valid accessJwt for the account being migrated
+- **PDS Action:**
+  1. Verify the JWT is valid and the subject (account DID) is active
+  2. Look up the account's repo signing key (the `#atproto` verification method)
+  3. Build a JWT payload:
+     ```json
+     {
+       "aud": "&lt;destination-server-did&gt;",
+       "lxm": "com.atproto.server.createAccount",
+       "sub": "&lt;migrating-account-did&gt;",
+       "iss": "&lt;source-server-did&gt;",
+       "exp": &lt;now + 3600&gt;
+     }
+     ```
+  4. Sign with ES256 (P-256 ECDSA) using the account's repo signing key
+  5. Return: `{ token: "&lt;jwt&gt;" }`
+
+#### **Verifying on Destination (createAccount migration mode)**
+
+From `create_account_xrpc.rs` in the PDS crate (referenced in CLAUDE.md):
+
+- **Caller:** Migration tool
+- **Call:** `POST /xrpc/com.atproto.server.createAccount` with Bearer token set to the JWT
+- **Destination Action:**
+  1. Extract the JWT from the `Authorization: Bearer &lt;jwt&gt;` header
+  2. Decode the JWT header and payload (verify structure)
+  3. Fetch the migrating DID document (from plc.directory or local cache) to get its current verification methods
+  4. Extract the `#atproto` key from the DID document
+  5. Verify the JWT signature using the `#atproto` public key
+  6. Confirm the JWT's `aud` matches **this destination server's DID**
+  7. Confirm the JWT's `lxm` is **exactly** `com.atproto.server.createAccount`
+  8. Confirm the JWT's `exp` is in the future (not expired)
+  9. Extract the `sub` (subject) and confirm it matches the request body's `did` field
+  10. If all checks pass, create the deactivated account
+
+#### **Key Points:**
+
+- **Signature covers:** `aud`, `lxm`, `sub`, `iss`, `exp` — changing any of these invalidates the signature
+- **Audience scoping:** The destination PDS must verify the JWT's `aud` matches its own server DID; otherwise a JWT for destination #1 could be replayed to destination #2
+- **Method scoping:** The JWT is scoped to `com.atproto.server.createAccount` only; it cannot be used to call other endpoints
+- **Expiration:** Short-lived (typically 1 hour or less with `lxm`; shorter without); migration tools must complete the flow quickly
+- **Signing key:** The **account's repo signing key** (the per-account key issued by the source or the PDS), NOT the rotation key. This allows any PDS to issue service-auth tokens for its accounts
+
+---
+
+### **3. createAccount MIGRATION MODE (EXACT BODY)**
+
+From the Bruno test file `create_account_xrpc_migration.bru`:
+
+```json
+{
+  "handle": "alice.migrated.example",
+  "email": "alice@example.com",
+  "did": "did:plc:outboundmigrant2222222",
+  "inviteCode": null
+}
+```
+
+#### **Field Semantics:**
+
+- **`did` (required for migration mode):** The DID being migrated. Its presence triggers migration mode.
+- **`handle` (required):** The handle on the destination. Can differ from the source handle.
+- **`email` (required):** Contact email for the account on the destination.
+- **`inviteCode` (optional, not in migration mode):** Only required if `inviteCodeRequired: true` in the destination's config. Migrations bypass this.
+- **`password`, `verificationMethod`, `plcOp` (omitted in migration mode):** These are standard-mode fields; migration mode has no password, handles the verification method via the source, and does NOT create a new genesis op.
+
+#### **Response:**
+
+```json
+{
+  "accessJwt": "&lt;jwt&gt;",
+  "refreshJwt": "&lt;jwt&gt;",
+  "handle": "alice.migrated.example",
+  "did": "did:plc:outboundmigrant2222222",
+  "didDoc": { ... }
+}
+```
+
+- **`accessJwt` / `refreshJwt`:** Issued by the **destination**; authenticate all subsequent calls to the destination
+- **`didDoc`:** The resolved DID document from plc.directory (or local cache)
+- **Status:** Account is created in **DEACTIVATED** state (no repo, no activation event yet)
+
+---
+
+### **4. REPO + BLOB TRANSFER (PRECISE LOOP)**
+
+#### **Repo Transfer (single call):**
+
+```rust
+// Step 4: Fetch full CAR from source
+let car_bytes = GET /xrpc/com.atproto.sync.getRepo?did=&lt;did&gt;
+
+// Step 5: Import CAR to destination
+POST /xrpc/com.atproto.repo.importRepo (destination, dest_token, car_bytes)
+```
+
+**Single-step:** No paging, no resumption needed. The entire repo is returned in one response.
+
+#### **Blob Transfer (paginated loop):**
+
+```rust
+// Step 6a: Initialize
+let mut cursor = None;
+let mut all_cids = Vec::new();
+
+// Loop until no more blobs
+loop {
+    // Build query
+    let query = if let Some(c) = &amp;cursor {
+        format!("/xrpc/com.atproto.sync.listBlobs?did={}&amp;cursor={}", did, c)
+    } else {
+        format!("/xrpc/com.atproto.sync.listBlobs?did={}", did)
+    };
+    
+    // Step 6a: Fetch page of CIDs
+    let list_resp = GET &lt;query&gt; (source, public)
+    let list_json = parse_json(list_resp)
+    
+    // Extract CIDs from this page
+    let page_cids: Vec&lt;String&gt; = list_json["cids"].as_array()
+        .unwrap()
+        .iter()
+        .map(|v| v.as_str().unwrap().to_string())
+        .collect();
+    all_cids.extend(page_cids.clone());
+    
+    // Step 6b: Download and upload each blob in this page
+    for cid in page_cids {
+        let blob_bytes = GET /xrpc/com.atproto.sync.getBlob?did={}&amp;cid={} (source, public)
+        POST /xrpc/com.atproto.repo.uploadBlob (destination, dest_token, blob_bytes)
+    }
+    
+    // Check for pagination
+    if let Some(next_cursor) = list_json.get("cursor").and_then(|v| v.as_str()) {
+        cursor = Some(next_cursor.to_string());
+    } else {
+        break;  // No more pages
+    }
+}
+
+// Step 6c: Verify completeness
+loop {
+    let missing_resp = GET /xrpc/com.atproto.repo.listMissingBlobs (destination, dest_token)
+    let missing_json = parse_json(missing_resp)
+    
+    if missing_json["blobs"].as_array().unwrap().is_empty() {
+        break;  // All blobs uploaded
+    }
+    
+    // If missing exist, error/retry
+    if let Some(next_cursor) = missing_json.get("cursor").and_then(|v| v.as_str()) {
+        // Continue checking for more missing blobs
+        cursor = Some(next_cursor.to_string());
+    } else {
+        break;  // No more missing-blob pages, but array was non-empty → migration failed
+    }
+}
+```
+
+#### **Termination Condition:**
+
+1. `listBlobs` returns a response with no `cursor` field → all CIDs fetched
+2. All CIDs downloaded and uploaded
+3. `listMissingBlobs` returns an empty `blobs` array across all pages → transfer complete
+
+---
+
+### **5. PREFERENCES TRANSFER**
+
+Not explicitly shown in the test (no record operations), but the pattern is:
+
+```rust
+// Fetch preferences from source
+let prefs_resp = GET /xrpc/app.bsky.actor.getPreferences (source, source_token);
+let prefs_json = parse_json(prefs_resp);
+
+// Upload preferences to destination
+POST /xrpc/app.bsky.actor.putPreferences (destination, dest_token, prefs_json);
+```
+
+- **Endpoint:** `GET /xrpc/app.bsky.actor.getPreferences` (source), `POST /xrpc/app.bsky.actor.putPreferences` (destination)
+- **Auth:** Session token (account-level auth)
+- **Format:** Raw preference JSON (opaque blob, PDS does not interpret)
+- **Timing:** Can occur at any point; typically after repo/blobs are complete but before activation
+
+---
+
+### **6. PLC IDENTITY LEG (SELF-SIGNED MIGRATION)**
+
+#### **Wallet-Authorized Path (from `migrate.rs`):**
+
+The wallet does NOT call PDS endpoints for identity. Instead:
+
+1. **Fetch recommended credentials from destination:**
+   ```rust
+   // Called by the wallet
+   let creds_resp = GET /xrpc/com.atproto.identity.getRecommendedDidCredentials
+       (destination, dest_oauth_client)
+   ```
+   Response:
+   ```json
+   {
+     "rotationKeys": [
+       "did:key:z...",       // [0] device key (wallet-held)
+       "did:key:z..."        // [1] destination's per-account signing key
+     ],
+     "verificationMethods": {
+       "atproto": "did:key:z..."  // [1], same as rotationKeys[1]
+     },
+     "services": {
+       "atproto_pds": {
+         "type": "AtprotoPersonalDataServer",
+         "endpoint": "https://dest.example.com"
+       }
+     }
+   }
+   ```
+
+2. **Build DID-repointing operation locally (NO PDS CALL):**
+   - Fetch the current audit log from plc.directory for the DID
+   - Extract `prev` (the latest operation CID in the audit log)
+   - Build a new operation with:
+     - `prev: &lt;latest-cid&gt;`
+     - `rotationKeys: [device-key, dest-rotation-key]`
+     - `verificationMethods.atproto: dest-rotation-key`
+     - `services.atproto_pds.endpoint: https://dest.example.com`
+     - Preserve `alsoKnownAs` (handles)
+   - Apply the strict pre-sign guard (`guard_migration_op` from migrate.rs)
+
+3. **Sign operation with device key:**
+   ```rust
+   // From migrate.rs
+   let unsigned_bytes = dag_cbor_encode(&amp;operation);
+   let signature = device_key.sign(&amp;unsigned_bytes);
+   let signed_op = {
+     ...operation,
+     "sig": base64url(signature)
+   };
+   ```
+
+4. **Submit to plc.directory (NO PDS CALL):**
+   ```rust
+   POST https://plc.directory/{did}
+   body: signed_op (JSON)
+   ```
+
+#### **Interop (PDS-Signed) Path (from the test, step 2):**
+
+The OLD PDS signs the operation using the `signPlcOperation` XRPC endpoint:
+
+1. **Request signature token (email verification):**
+   ```rust
+   POST /xrpc/com.atproto.identity.requestPlcOperationSignature
+       (source, source_token, {})
+   // Triggers email to account's verified address
+   ```
+
+2. **Sign operation on old PDS:**
+   ```rust
+   POST /xrpc/com.atproto.identity.signPlcOperation
+       (source, source_token, {
+         email_token: &lt;token&gt;,
+         operation: &lt;partial-op&gt;
+       })
+   // Returns signed_op ready to submit to plc.directory
+   ```
+
+3. **Submit to plc.directory:**
+   ```rust
+   POST https://plc.directory/{did}
+   body: signed_op
+   ```
+
+#### **Key Difference:**
+
+- **Wallet-authorized:** Identity operation is built and signed **locally**; plc.directory is the only network call. Source PDS has no role.
+- **Interop:** Operation is built locally, but signed by the **old PDS** using an email token. Old PDS must be alive and cooperative.
+
+---
+
+### **7. VERIFY + FINALIZE (PRECISE SEQUENCE)**
+
+From the test (steps 7–10):
+
+```rust
+// Step 7: Check status before activation
+let status = GET /xrpc/com.atproto.server.checkAccountStatus
+    (destination, dest_token)
+// Must have: activated=false, importedBlobs==expectedBlobs
+
+// Step 8: Activate destination
+POST /xrpc/com.atproto.server.activateAccount
+    (destination, dest_token, {})
+// Account is now live; firehose emits #sync + #account
+
+// Step 9: Verify readability
+GET /xrpc/com.atproto.repo.getRecord
+    (destination, public, did, collection, rkey)
+// Confirms repo is served
+
+// Step 10: Deactivate source
+POST /xrpc/com.atproto.server.deactivateAccount
+    (source, source_token, {})
+// Firehose emits #account (active=false)
+
+// Step 10b: Confirm source remains readable
+GET /xrpc/com.atproto.sync.getRepo
+    (source, public, did)
+// Must still succeed
+```
+
+#### **Polling Loop (if needed):**
+
+If `checkAccountStatus` shows incomplete blobs, the tool must:
+
+1. Call `listMissingBlobs` to identify which blobs are missing
+2. Re-call `getBlob` from source for those CIDs
+3. Re-call `uploadBlob` to destination
+4. Loop back to step 1 until all blobs are uploaded
+
+---
+
+### **8. STATE &amp; RESUMABILITY**
+
+The Node interop CLI does NOT persist migration state between steps:
+
+```javascript
+// From account.js, createAccount():
+const persist = (fields) =&gt; {
+    state.accounts[name] = { ...(state.accounts[name] ?? {}), ...fields };
+    saveState(state);
+    return state.accounts[name];
+};
+```
+
+**State persistence is for account provisioning, not migration.** The CLI:
+
+- Creates ONE account at a time
+- Runs the steps sequentially in a single process
+- If a step fails, the operator retries manually by re-invoking the CLI
+
+**Idempotency &amp; Retry:**
+
+- **`reserveSigningKey`:** Idempotent (returns the same key if called multiple times)
+- **`createAccount` (migration mode):** Idempotent per `did` + `handle` + `email` (409 if account already exists)
+- **`importRepo`:** Idempotent (overwrites existing repo blocks)
+- **`uploadBlob`:** Idempotent (same CID always produces the same blob record)
+- **`activateAccount`:** Idempotent (no-op if already active, no firehose event)
+- **`deactivateAccount`:** Idempotent (no-op if already deactivated, no firehose event)
+
+**No resumption capability:** If the migration fails mid-blob-transfer, the tool retries from the beginning of the blob loop (all blobs, not just missing ones). The destination's blob store deduplicates by CID, so re-uploading is safe.
+
+---
+
+### **SUMMARY TABLE**
+
+| Step | Method | Endpoint | Target | Auth | Input | Output |
+|------|--------|----------|--------|------|-------|--------|
+| 1 | POST | `/xrpc/com.atproto.server.reserveSigningKey` | Destination | None | `{did}` | `{signingKey}` |
+| 2 | GET | `/xrpc/com.atproto.server.getServiceAuth` | Source | source_token | `aud=..., lxm=com.atproto.server.createAccount` | `{token: jwt}` |
+| 3 | POST | `/xrpc/com.atproto.server.createAccount` | Destination | jwt (Bearer) | `{handle, email, did}` | `{accessJwt, refreshJwt, ...}` |
+| 4 | GET | `/xrpc/com.atproto.sync.getRepo` | Source | None | `did=...` | CAR bytes |
+| 5 | POST | `/xrpc/com.atproto.repo.importRepo` | Destination | dest_token | CAR bytes | `{root}` |
+| 6a | GET | `/xrpc/com.atproto.sync.listBlobs` | Source | None | `did=..., cursor?` | `{cids, cursor?}` |
+| 6b | GET | `/xrpc/com.atproto.sync.getBlob` | Source | None | `did=..., cid=...` | blob bytes |
+| 6b | POST | `/xrpc/com.atproto.repo.uploadBlob` | Destination | dest_token | blob bytes | `{blob: {ref}}` |
+| 6c | GET | `/xrpc/com.atproto.repo.listMissingBlobs` | Destination | dest_token | (none) | `{blobs, cursor?}` |
+| 7 | GET | `/xrpc/com.atproto.server.checkAccountStatus` | Destination | dest_token | (none) | `{activated, indexedRecords, ...}` |
+| 8 | POST | `/xrpc/com.atproto.server.activateAccount` | Destination | dest_token | `{}` | `{activated: true}` |
+| 10 | POST | `/xrpc/com.atproto.server.deactivateAccount` | Source | source_token | `{}` | `{deactivated: true}` |
+
+---
+
+This is the complete, working end-to-end sequence. Every step is verbatim from the reference test. Port it leg-by-leg to Rust with this as your spec.</result>
+<usage><subagent_tokens>93471</subagent_tokens><tool_uses>17</tool_uses><duration_ms>112521</duration_ms></usage>
+</task-notification>
