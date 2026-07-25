@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>bxw12cnvj</task-id>
+<tool-use-id>toolu_01JZFXnKSTuu9twvpGccc6gd</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-jacob-zweifel-workspace-malpercio-dev-ezpds/e14e454c-c592-4d1c-a1a3-c4845a1bea84/tasks/bxw12cnvj.output</output-file>
+<status>completed</status>
+<summary>Background command "Poll staging until MM-310 deploy serves the fresh DID doc" completed (exit code 0)</summary>
+</task-notification>
