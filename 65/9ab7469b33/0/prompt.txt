@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>b0tw5tnqa</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-jacob-zweifel-workspace-malpercio-dev-ezpds/e14e454c-c592-4d1c-a1a3-c4845a1bea84/tasks/b0tw5tnqa.output</output-file>
+<status>completed</status>
+<summary>Background command "Poll production redeploy to terminal status" completed (exit code 0)</summary>
+</task-notification>
