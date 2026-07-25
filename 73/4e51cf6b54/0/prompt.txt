@@ -1,1 +1,0 @@
-Currently we have a mirror on Tangled.org configured. First, it has a bunch of stale branches laying around that were merged long ago and no longer exist on github. second, is it possible to configure the push mirror to mirror only the main branch?
