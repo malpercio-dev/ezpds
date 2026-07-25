@@ -1,0 +1,26 @@
+{
+  "cli_version": "0.8.42",
+  "checkpoint_id": "81613f11068a",
+  "strategy": "manual-commit",
+  "branch": "claude/blob-gc-reconcile-failure-bdaa15",
+  "checkpoints_count": 4,
+  "files_touched": [
+    "crates/pds/src/blob_gc.rs"
+  ],
+  "sessions": [
+    {
+      "metadata": "/81/613f11068a/0/metadata.json",
+      "transcript": "/81/613f11068a/0/full.jsonl",
+      "compact_transcript": "/81/613f11068a/0/transcript.jsonl",
+      "content_hash": "/81/613f11068a/0/content_hash.txt",
+      "prompt": "/81/613f11068a/0/prompt.txt"
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 27,
+    "cache_creation_tokens": 21007,
+    "cache_read_tokens": 3384628,
+    "output_tokens": 5401,
+    "api_call_count": 14
+  }
+}

@@ -1,0 +1,122 @@
+{
+  "cli_version": "0.8.42",
+  "checkpoint_id": "81613f11068a",
+  "session_id": "f91fc39e-8a46-45f9-96a5-b3f69bd06389",
+  "strategy": "manual-commit",
+  "created_at": "2026-07-25T19:31:05.389267Z",
+  "branch": "claude/blob-gc-reconcile-failure-bdaa15",
+  "checkpoints_count": 4,
+  "save_step_count": 1,
+  "files_touched": [
+    "crates/pds/src/blob_gc.rs"
+  ],
+  "agent": "Claude Code",
+  "model": "",
+  "turn_id": "1dfd72998c60",
+  "checkpoint_transcript_start": 457,
+  "transcript_lines_at_start": 457,
+  "compact_transcript_start": 107,
+  "token_usage": {
+    "input_tokens": 27,
+    "cache_creation_tokens": 21007,
+    "cache_read_tokens": 3384628,
+    "output_tokens": 5401,
+    "api_call_count": 14
+  },
+  "skill_events_version": 1,
+  "skill_events": [
+    {
+      "id": "claude-skill-toolu_01DUFAYqnjevz92vKWXQfELX",
+      "event_type": "tool_invocation",
+      "skill": {
+        "name": "linear-workflow"
+      },
+      "source": {
+        "agent": "claude-code",
+        "signal": "skill_tool_use",
+        "confidence": "explicit"
+      },
+      "turn_id": "1dfd72998c60",
+      "transcript_anchor": {
+        "unit": "line",
+        "start": 18,
+        "end": 19,
+        "entry_ids": [
+          "ab740020-1637-4bdb-b8b8-5a27e0aeaab6"
+        ],
+        "tool_use_id": "toolu_01DUFAYqnjevz92vKWXQfELX"
+      },
+      "native": {
+        "tool_name": "Skill",
+        "tool_use_id": "toolu_01DUFAYqnjevz92vKWXQfELX"
+      },
+      "collapse": {
+        "target": "tool_pair",
+        "label": "Skill: linear-workflow",
+        "default_collapsed": true
+      }
+    },
+    {
+      "id": "claude-skill-toolu_0192R4BEb1YGpM2jyJfZYDxT",
+      "event_type": "tool_invocation",
+      "skill": {
+        "name": "pr-review-comments"
+      },
+      "source": {
+        "agent": "claude-code",
+        "signal": "skill_tool_use",
+        "confidence": "explicit"
+      },
+      "turn_id": "1dfd72998c60",
+      "transcript_anchor": {
+        "unit": "line",
+        "start": 487,
+        "end": 488,
+        "entry_ids": [
+          "a5f5c058-11ae-490f-bf64-8b8abef68c4e"
+        ],
+        "tool_use_id": "toolu_0192R4BEb1YGpM2jyJfZYDxT"
+      },
+      "native": {
+        "tool_name": "Skill",
+        "tool_use_id": "toolu_0192R4BEb1YGpM2jyJfZYDxT"
+      },
+      "collapse": {
+        "target": "tool_pair",
+        "label": "Skill: pr-review-comments",
+        "default_collapsed": true
+      }
+    }
+  ],
+  "session_metrics": {
+    "turn_count": 11
+  },
+  "initial_attribution": {
+    "calculated_at": "2026-07-25T19:31:05.330685Z",
+    "agent_lines": 12,
+    "agent_removed": 5,
+    "human_added": 0,
+    "human_modified": 0,
+    "human_removed": 0,
+    "total_committed": 12,
+    "total_lines_changed": 17,
+    "agent_percentage": 100,
+    "metric_version": 2
+  },
+  "prompt_attributions": [
+    {
+      "checkpoint_number": 1,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 0,
+      "agent_lines_removed": 0
+    },
+    {
+      "checkpoint_number": 2,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 12,
+      "agent_lines_removed": 5
+    }
+  ]
+}
