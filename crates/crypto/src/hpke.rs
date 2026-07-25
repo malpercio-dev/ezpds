@@ -1,7 +1,7 @@
 // pattern: Functional Core
 
-//! HPKE sealing for push notifications, and the padding arithmetic that hides plaintext
-//! length from the relay and from Apple.
+//! HPKE sealing for push notifications, and the padding arithmetic that quantizes plaintext
+//! length before the relay and Apple see it.
 //!
 //! The ciphersuite is **pinned**, never negotiated: DHKEM(P-256, HKDF-SHA256) +
 //! HKDF-SHA256 + AES-256-GCM in RFC 9180 `mode_auth`. The pin is forced by the receiving
