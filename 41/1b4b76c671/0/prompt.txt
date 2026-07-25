@@ -1,0 +1,8 @@
+```
+Findings (minor)
+The two empty-prefix call sites deserve a one-line warning comment. list_missing_blobs.rs:153 and check_account_status.rs:151 are safe only because "" degenerates the broken upstream bounds check into a full walk. Nothing at those sites says so. The next person who narrows one to a real prefix reintroduces this bug with no test in that crate to catch it — a comment like "empty prefix only: entries_prefixed is unreliable for non-empty prefixes, see list_records_json" closes that trap for one line each.
+"Fixes MM-473" will auto-close the ticket, but the upstream report is still outstanding. The PR body acknowledges it; make sure it lands somewhere that survives the close — its own small ticket, or a checklist item on MM-474 — so it doesn't evaporate on merge. The report is worth filing: other atrium-repo consumers won't have the accidental fail-closed mangling and would get silently wrong results.
+Nit: Scan::Take(String) allocates per entry, same as the old strip; fine. And strip_prefix yielding Some("") for a hypothetical key exactly equal to "collection/" would produce an empty rkey — impossible in a valid atproto MST, not worth guarding.
+```
+
+Don't worry about recording the upstream issue, I'm on it.

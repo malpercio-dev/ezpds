@@ -1,0 +1,27 @@
+{
+  "cli_version": "0.8.42",
+  "checkpoint_id": "411b4b76c671",
+  "strategy": "manual-commit",
+  "branch": "claude/mm-473-entries-prefixed-overscan-be8512",
+  "checkpoints_count": 1,
+  "files_touched": [
+    "crates/pds/src/routes/check_account_status.rs",
+    "crates/pds/src/routes/list_missing_blobs.rs"
+  ],
+  "sessions": [
+    {
+      "metadata": "/41/1b4b76c671/0/metadata.json",
+      "transcript": "/41/1b4b76c671/0/full.jsonl",
+      "compact_transcript": "/41/1b4b76c671/0/transcript.jsonl",
+      "content_hash": "/41/1b4b76c671/0/content_hash.txt",
+      "prompt": "/41/1b4b76c671/0/prompt.txt"
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 7,
+    "cache_creation_tokens": 58767,
+    "cache_read_tokens": 681582,
+    "output_tokens": 1644,
+    "api_call_count": 4
+  }
+}
