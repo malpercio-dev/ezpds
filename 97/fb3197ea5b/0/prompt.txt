@@ -1,0 +1,8 @@
+<ci-monitor-event>malpercio-dev/ezpds PR #109 has 1 new review comment:
+- coderabbitai[bot] on scripts/capability-check.sh [comment_id=3525150054]: `@malpercio-dev`, confirmed — pinning the check to the exact `../gen/schemas/mobile-schema.json` path closes the gap. Thanks for the quick turnaround.
+
+<!-- <review_comment_addressed> -->
+
+<!-- This is an auto-generated reply by CodeRabbit -->
+
+Please address the feedback and push a fix. Then, for each inline comment you addressed (those with a comment_id), post a one-line reply on the thread via `gh api` saying what you changed (or why you didn't). End each reply with the line "_🤖 Addressed by [Claude Code](https://claude.com/claude-code)_" so reviewers can see it was automated. Then resolve the thread. Skip replies for comments you didn't act on.</ci-monitor-event>
