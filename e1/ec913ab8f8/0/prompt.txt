@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>bsvtjxars</task-id>
+<tool-use-id>toolu_01XSiZ8SUZoA5UHvc2BoQTwY</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-jacob-zweifel-workspace-malpercio-dev-ezpds/fbf38cc2-991d-4f97-ba94-553a0bd332e4/tasks/bsvtjxars.output</output-file>
+<status>completed</status>
+<summary>Background command "Poll for CodeRabbit re-review to complete" completed (exit code 0)</summary>
+</task-notification>
