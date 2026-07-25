@@ -1,0 +1,40 @@
+<task-notification>
+<task-id>a3c9b1ac26c170c7f</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-jacob-zweifel-workspace-malpercio-dev-ezpds--claude-worktrees-awesome-lamport-bf2e56/d99ceb90-e7e1-42a0-bc40-c5ae3369966b/tasks/a3c9b1ac26c170c7f.output</output-file>
+<status>completed</status>
+<summary>Agent "Generate Summary and Glossary" finished</summary>
+<note>A task-notification fires each time this agent stops with no live background children of its own. The user can send it another message and resume it, so the same task-id may notify more than once.</note>
+<result>Now I have the full picture. Let me generate the three sections.
+
+## Summary
+
+This design wires up the wallet's existing self-signed identity leg (`detect_migration_path`, `build_migration_op`, `submit_migration_op` from MM-229/MM-230) into a complete, user-facing outbound account migration — the wallet drives every step itself, with no dependency on the `tools/interop` CLI. The approach follows the same **command-per-leg pipeline** already established by `claim.rs`: migration state is parked server-side in the Tauri app (`MigrationState`), and the Svelte frontend advances through the flow by calling one `#[tauri::command]` per leg (detect path, authenticate to source, provision destination, transfer repo/blobs/preferences, verify, build and submit the PLC op, activate/deactivate). Each leg is independently idempotent, so a failure just means retrying from the top rather than needing mid-transfer resumption logic.
+
+The trickiest new piece is the auth model: migration spans three different credential types in sequence — the wallet's existing DPoP `OAuthClient` session against the *source* PDS, an unauthenticated public client for reading the source's repo/blobs, and a **bearer session** on the *destination* (obtained via a source-signed service-auth JWT passed to `createAccount`) that authorizes every subsequent destination call. Since the wallet's current HTTP client only speaks DPoP, this design adds a new `BearerClient` plus a shared `AuthedXrpc` trait so both client types can serve the same generic XRPC helpers. Everything downstream of that — the PLC-diff review screen, the biometric approval gate, and the progress/success/error screens — reuses existing wallet UI primitives (`DiffRow`, `OnboardingShell`, `Button`, etc.) rather than introducing new visual patterns, and the scope is deliberately limited to the wallet-authorized (self-signed) migration path from ADR-0002; the PDS-signed ("interop") path is detected and honestly reported as unsupported rather than attempted.
+
+## Glossary
+
+- **PDS**: Personal Data Server — the ATProto server that hosts a user's repo, blobs, and account; migration moves a user from a source PDS to a destination PDS.
+- **DID**: Decentralized Identifier — the user's permanent identity string; migration keeps the DID the same and repoints which PDS it resolves to.
+- **PLC operation / plc.directory**: A signed, chained record submitted to the `did:plc` directory service that updates a DID's document (keys, service endpoints). The migration's "identity leg" is one such operation that repoints `atproto_pds` to the new PDS.
+- **Rotation keys**: The keys authorized to sign PLC operations for a DID. "Self-signed" migration means the wallet itself holds a rotation key for the DID and can sign the repoint operation directly.
+- **DPoP**: Demonstrating Proof-of-Possession — the sender-constrained OAuth token binding used by the wallet's existing `OAuthClient` session with a PDS (as opposed to a plain bearer token).
+- **Service-auth JWT**: A short-lived JWT minted by one PDS (via `getServiceAuth`) that authorizes a specific action (here, `createAccount`) on another service, scoped by audience (`aud`) and method (`lxm`).
+- **Bearer session**: A plain `accessJwt`/`refreshJwt` session (no DPoP binding) returned by the destination's `createAccount`; used to authorize all subsequent destination-side calls.
+- **CAR file**: Content Addressable aRchive — the binary format used to transfer an entire repo (the user's signed record tree) in one payload via `getRepo`/`importRepo`.
+- **Blob**: A binary attachment (e.g., image) referenced from repo records but stored/transferred separately via `listBlobs`/`getBlob`/`uploadBlob`.
+- **MST**: Merkle Search Tree — the data structure underlying an ATProto repo; mentioned implicitly wherever "repo" transfer is discussed, since CAR files encode it.
+- **Deactivated account**: An account state on a PDS where the account exists (has a DID, can receive data) but isn't yet the authoritative/live endpoint for that DID; the destination is created deactivated and only activated after the identity leg succeeds.
+- **ADR-0002**: The architecture decision record defining the two migration paths (self-signed vs. PDS-signed/interop); this design implements only path 1 (self-signed).
+- **Obsign**: The product name for the identity-wallet iOS app where this flow is built.
+- **DiffRow**: A shared wallet UI primitive that renders a before/after diff (added/removed keys, changed endpoints); reused here to show the exact PLC operation change before biometric approval.
+- **OnboardingShell**: A shared wallet UI primitive/layout wrapper used across onboarding-style flows (claim, and now migration) for consistent screen structure.
+- **MigrationState**: The Tauri app's in-memory state struct (`AppState.migration_state`) that threads data (DID, destination URL, session, signed op, etc.) between the sequential per-leg commands.
+- **Tauri IPC**: The command/event bridge between the Svelte frontend and the Rust backend in the Tauri app; each migration leg is exposed as a `#[tauri::command]`, and blob-transfer progress is streamed back via a Tauri event.
+
+## Omitted Terms
+
+WCAG 2.2 AAA, Tauri (the framework itself), XRPC, biometric authentication / Face ID / Touch ID, OAuth, JWT (generic), handle, repo, preferences, `httpmock`, Svelte/SvelteKit, IPC (generic), reqwest</result>
+<usage><subagent_tokens>66621</subagent_tokens><tool_uses>1</tool_uses><duration_ms>26987</duration_ms></usage>
+</task-notification>
