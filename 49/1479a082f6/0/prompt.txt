@@ -1,0 +1,1 @@
+I was able to log in to the bluesky app with an account I minted on staging. it asked for age and email verification. I don't think the email verification worked but it doesn't seem to matter, seems to be an appview thing
