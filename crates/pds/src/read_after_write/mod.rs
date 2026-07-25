@@ -1153,6 +1153,7 @@ mod tests {
                     // Old rev so a local write (when made) counts as unindexed.
                     .insert_header("atproto-repo-rev", "0")
                     .insert_header("atproto-content-labelers", "did:plc:somelabeler;redact")
+                    .insert_header("retry-after", "30")
                     .set_body_json(serde_json::json!({
                         "did": did,
                         "handle": "requester.bsky.social",
@@ -1227,6 +1228,12 @@ mod tests {
                 .map(|v| v.to_str().unwrap()),
             Some("0"),
         );
+        assert_eq!(
+            resp.headers()
+                .get("retry-after")
+                .map(|v| v.to_str().unwrap()),
+            Some("30"),
+        );
     }
 
     #[tokio::test]
@@ -1244,6 +1251,18 @@ mod tests {
                 .get("atproto-content-labelers")
                 .map(|v| v.to_str().unwrap()),
             Some("did:plc:somelabeler;redact"),
+        );
+        assert_eq!(
+            resp.headers()
+                .get("atproto-repo-rev")
+                .map(|v| v.to_str().unwrap()),
+            Some("0"),
+        );
+        assert_eq!(
+            resp.headers()
+                .get("retry-after")
+                .map(|v| v.to_str().unwrap()),
+            Some("30"),
         );
     }
 
