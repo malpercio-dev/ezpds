@@ -1,0 +1,104 @@
+This session is being continued from a previous conversation that ran out of context. The summary below covers the earlier portion of the conversation.
+
+Summary:
+1. Primary Request and Intent:
+   - Initial: "Let's look for a wave 7 issue to start on" → picked MM-232 (Wallet: outbound migration UI (Obsign)).
+   - "Go ahead and do any reading and brainstorming you need so that you have enough information to implement" (with model switched to claude-opus-4-8).
+   - Scope decision (via AskUserQuestion): build the **full end-to-end** wallet outbound migration (backend + UI) rather than UI-only, AND **integrate biometric now**.
+   - "Keep going through the backend phases!" then "keep going into the frontend please!" — implement all phases.
+   - "let's run impeccable" — run the /impeccable design-polish skill on the migration screens.
+   - "Open the PR please!" — create the PR, move Linear issue to In Review.
+   - "we have a review as well as some conflicts" — handle CodeRabbit review + merge conflicts.
+   - Reconciliation decision (via AskUserQuestion): "Rebuild UI on main's orchestrator" — since PR #119 had merged a duplicate orchestrator to main, drop my parallel backend and rebuild the UI on top of main's.
+   - "CodeRabbit review is back in... for the comments that did not get resolved, if it is something that we are not going to fix output a disposition table for me to review."
+   - Most recent: "file an issue for #2, also CI is failing" — file a Linear issue for the declined source-auth finding, and fix/diagnose the failing CI.
+
+2. Key Technical Concepts:
+   - ATProto account migration (ADR-0002 wallet-authorized/self-signed path 1 vs PDS-signed interop path 2).
+   - Tauri v2 iOS app (Obsign identity-wallet): SvelteKit 2 + Svelte 5 frontend, Rust backend, IPC via `invoke()` (only in `ipc.ts`).
+   - Command-per-leg orchestration; MigrationState parked in AppState behind tokio Mutex.
+   - DPoP (RFC 9449) — the `htu` claim must exclude query strings (§4.2).
+   - Two ATProto auth models: DPoP-OAuth vs plain Bearer session (createAccount returns bearer). Main's OAuthClient has `AuthMode::{Dpop, Bearer}` + `new_bearer()` + `post_bytes()` for CAR/blobs.
+   - Service-auth JWT handoff (getServiceAuth aud/lxm → createAccount Bearer).
+   - `tauri-plugin-biometric` (mobile-target-gated, `#[cfg(mobile)]`, dynamic JS import `@tauri-apps/plugin-biometric`), NSFaceIDUsageDescription, capabilities/mobile.json.
+   - WCAG 2.2 AAA; status never by color alone (glyph + word + position).
+   - TDD (RED-GREEN-REFACTOR), httpmock for Rust tests.
+   - CI: GitHub Actions — PDS gate (Linux, `just ci-pds`, EXCLUDES identity-wallet/admin-companion), iOS compile lanes (macos), Frontend check lanes. CodeRabbit review bot.
+   - Worktree cargo: no local .devenv; run via main checkout's toolchain with CARGO_TARGET_DIR reuse + sandbox disabled.
+
+3. Files and Code Sections:
+   - `docs/design-plans/2026-07-06-wallet-outbound-migration.md` — committed design plan (8cf19840). NOTE: this was removed by the reset-to-main and NOT re-added (it described the now-discarded parallel backend).
+   - `apps/identity-wallet/src-tauri/src/migration_orchestrator.rs` — **main's canonical orchestrator (from PR #119)**, the one now driven by the UI. Commands: `prepare_migration`, `prepare_source_auth`/`complete_source_auth`, `create_destination_account`, `transfer_repo`, `transfer_blobs`, `transfer_preferences`, `verify_import`, `arm_identity_leg`, `finalize_migration`. Error enum `MigrationError` (MIGRATION_NOT_READY, DESTINATION_UNREACHABLE, SOURCE_AUTH_FAILED, SERVICE_AUTH_FAILED, ACCOUNT_CREATION_FAILED, DESTINATION_CONFLICT, REPO_TRANSFER_FAILED, BLOB_TRANSFER_FAILED, PREFERENCES_TRANSFER_FAILED, VERIFICATION_INCOMPLETE{imported,expected}, ACTIVATION_FAILED, DEACTIVATION_FAILED, NETWORK_ERROR). No blob-progress event.
+   - `apps/identity-wallet/src-tauri/src/oauth_client.rs` — added DPoP htu fix in BOTH `send_with_dpop` and `send_bytes`. The fix: `let htu = url.split('?').next().unwrap_or(url);` then `make_proof(method, htu, nonce, ...)`. Added test `dpop_htu_excludes_query_string` + matcher `dpop_htu_has_no_query`. Main's version already had AuthMode Dpop/Bearer.
+   - `apps/identity-wallet/src-tauri/src/lib.rs` — restructured builder for `#[cfg(mobile)] let builder = builder.plugin(tauri_plugin_biometric::init());`.
+   - `apps/identity-wallet/src-tauri/Cargo.toml` — added `[target.'cfg(any(target_os = "ios", target_os = "android"))'.dependencies] tauri-plugin-biometric = "2"`.
+   - `apps/identity-wallet/src-tauri/capabilities/mobile.json` — new, `"permissions": ["biometric:default"]`, platforms iOS/android.
+   - `apps/identity-wallet/src-tauri/Info.ios.plist` — added NSFaceIDUsageDescription.
+   - `apps/identity-wallet/package.json` — added `"@tauri-apps/plugin-biometric": "^2"`.
+   - `apps/identity-wallet/src/lib/ipc.ts` — added `authenticateBiometric`. Latest (CodeRabbit-fixed) version:
+     ```ts
+     export const authenticateBiometric = async (reason: string): Promise<void> => {
+       let plugin: typeof import('@tauri-apps/plugin-biometric');
+       try {
+         plugin = await import('@tauri-apps/plugin-biometric');
+       } catch {
+         return; // npm package unavailable — nothing to gate against.
+       }
+       let available: boolean;
+       try {
+         available = (await plugin.checkStatus()).isAvailable;
+       } catch {
+         return; // plugin command not registered (desktop/host build) — no gate to enforce here.
+       }
+       if (!available) return; // no enrolled hardware (e.g. a bare simulator).
+       await plugin.authenticate(reason, { allowDeviceCredential: true });
+     };
+     ```
+   - 5 screens in `apps/identity-wallet/src/lib/components/onboarding/`: MigrationStartScreen, MigrationSourceAuthScreen, MigrationProgressScreen, MigrationReviewScreen, MigrationSuccessScreen — rewired to main's API.
+     - MigrationStartScreen: props `{did, onnext, onback}`, collects destPdsUrl+email+inviteCode; calls `detectMigrationPath` then `prepareMigration`. FIXED: per-call try/catch (detect vs prepare) so errors aren't mislabeled.
+     - MigrationProgressScreen: props `{did, email, inviteCode, onnext, onerror}`; sequence createDestinationAccount → transferRepo → transferBlobs → transferPreferences → verifyImport; per-leg checklist; NO blob-progress event. FIXED: `runLeg` now `if (legStates[id] === 'done') return;` to resume-not-repeat on Retry.
+     - MigrationReviewScreen: props `{did, onnext, oncancel}`; loadOp = `armIdentityLeg(did)` then `buildMigrationOp(did)`; approve() = `authenticateBiometric` → `submitMigrationOp` → `finalizeMigration` → onnext. Handles both MigrationError + MigrateError via `describeError`; `loadErrorIsTerminal` + `TERMINAL_CODES` set hides Retry on terminal.
+   - `apps/identity-wallet/src/routes/+page.svelte` — migration step wiring (migration_start/source_auth/progress/review/success), entry point on DIDDocumentScreen gated to `selectedDeviceKeyIsRoot === true`. FIXED: removed dead write-only state `migrationDecision`, `migrationVerifyStatus`, `migrationError` + orphaned type imports (MigrationPathDecision, AccountStatus, MigrationError); onerror is now a no-op comment.
+   - `apps/identity-wallet/src/lib/components/home/DIDDocumentScreen.svelte` + `IdentityListHome.svelte` — entry point (onmigrate prop; onselect passes deviceKeyIsRoot).
+
+4. Errors and fixes:
+   - **MigrationState never populated (initial discovery):** at my branch base, `migrate.rs` only had the identity leg. This led me to conclude the backend was missing and (per user) build a full parallel backend. LATER discovered the real cause: my branch predated PR #119's merge.
+   - **Hanging blob test (Phase 3):** a pagination test's page-1 listBlobs mock matched page-2 requests (httpmock FIFO first-match-wins) → infinite loop. Fixed by reordering mocks (cursor-specific first) + hardening impl to treat empty cursor as end-of-pages.
+   - **DUPLICATE ORCHESTRATOR (major):** PR #119 (MM-228) merged `migration_orchestrator.rs` to main after I branched — my entire backend duplicated it. Resolved by user decision: reset to main, keep only UI+biometric+htu fix.
+   - **CodeRabbit round 2 (5 fixes applied):** send_bytes htu missing; authenticateBiometric fails-closed-on-desktop (JS import always succeeds so checkStatus rejects on desktop where mobile plugin unregistered → blocked dev; fixed by catching checkStatus→proceed, a deliberate reversal of round-1's fail-closed advice, chosen because production iOS is gated either way); progress Retry re-ran completed legs (409/DESTINATION_CONFLICT); start-screen detect/prepare error mislabel; +page dead state.
+   - **CI failure:** PDS gate failed in 5s at "Install just" step with `Unexpected HTTP response: 403` — transient infra (setup-just rate-limited), NOT my code (PDS gate excludes identity-wallet). Fixed by re-running the failed job.
+   - `--force-with-lease` rejected "stale info" (no tracking ref because I pushed via URL) → used plain `--force`.
+
+5. Problem Solving:
+   - Verified all backend Rust changes: 301 lib tests pass on host (after reset, my htu test + main's suite). Frontend: pnpm check 0 errors 0 warnings, pnpm test 25/25. cap-check ✓, lock-check ✓ (Cargo.lock += one line `tauri-plugin-biometric`).
+   - Established the worktree cargo run pattern and pnpm pattern (see Key Concepts).
+
+6. All user messages:
+   - "Let's look for a wave 7 issue to start on"
+   - "Go ahead and do any reading and brainstorming you need so that you have enough information to implement"
+   - (AskUserQuestion) chose "Full end-to-end incl. data transfer" + "Integrate now" (biometric)
+   - "Keep going through the backend phases!" (this was rendered as the option "keep going through the backend phases")
+   - "keep going into the frontend please!"
+   - "let's run impeccable"
+   - "Open the PR please!"
+   - "we have a review as well as some conflicts"
+   - (AskUserQuestion) chose "Rebuild UI on main's orchestrator (Recommended)"
+   - "CodeRabbit review is back in, but was unable to post it's comments inline, we'll have to read the summary. for the comments that did not get resolved, if it is something that we are not going to fix output a disposition table for me to review"
+   - "file an issue for #2, also CI is failing"
+
+7. Pending Tasks:
+   - None explicitly outstanding beyond the just-completed items. Implicitly: monitor CI re-run (PDS gate re-running; iOS compile lanes pending).
+
+8. Current Work:
+   Immediately before this summary, I addressed message 10 ("file an issue for #2, also CI is failing"):
+   - Diagnosed the CI failure: `gh run view --job 85449246179 --log-failed` showed the PDS gate died at "Install just" with `##[error]Unexpected HTTP response: 403` — transient setup-just infra failure, unrelated to my identity-wallet changes (PDS gate excludes identity-wallet).
+   - Re-ran the failed job: `gh run rerun 28814165975 --failed`.
+   - Filed Linear issue **MM-239** ("Migration/claim source-PDS auth: distinguish cancel from network/callback failures", labels Wave 7: Hardening + Improvement) for the declined CodeRabbit finding #2 (startSourceAuth/startPdsAuth collapse all failures into SOURCE_AUTH_FAILED "cancelled").
+   - Confirmed re-run: `gh pr checks 122` shows "PDS gate ... pending" (job 85450071921), iOS compile lanes pending.
+   The branch has 3 commits on current main: cad6b34d (htu), 78635df1 (UI+biometric), eaf9b137 (CodeRabbit fixes). PR #122 open, MM-232 In Review.
+
+9. Optional Next Step:
+   Monitor the re-run CI outcome and report back. The user's last message was "file an issue for #2, also CI is failing" — both are now handled (MM-239 filed; PDS gate re-run triggered and confirmed pending). The natural next step is to wait for the re-run + iOS compile lanes to finish and report whether CI goes green, without over-polling. I should confirm the re-run passes (or surface any genuine failure in the iOS compile lanes, which DO exercise my identity-wallet changes). I will not start tangential work; if CI comes back green nothing further is required, and the remaining known gap (unchanged from throughout) is the on-simulator/Face-ID end-to-end run that needs a Mac/Xcode.
+
+If you need specific details from before compaction (like exact code snippets, error messages, or content you generated), read the full transcript at: /Users/jacob.zweifel/.claude/projects/-Users-jacob-zweifel-workspace-malpercio-dev-ezpds--claude-worktrees-awesome-lamport-bf2e56/d99ceb90-e7e1-42a0-bc40-c5ae3369966b.jsonl
+Continue the conversation from where it left off without asking the user any further questions. Resume directly — do not acknowledge the summary, do not recap what was happening, do not preface with "I'll continue" or similar. Pick up the last task as if the break never happened.
