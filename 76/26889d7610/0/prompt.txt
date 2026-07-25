@@ -1,0 +1,1 @@
+also -- do we really need a password for the handle change on the custos side? it iterates us further towards a passwordless goal, and the biometric signing of the operation is the proof that the owner is updating the handle
