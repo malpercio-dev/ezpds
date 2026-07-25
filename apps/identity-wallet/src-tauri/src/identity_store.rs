@@ -193,6 +193,13 @@ impl IdentityStore {
         // Best-effort cleanup of per-DID Keychain entries. Not-found errors are
         // expected (entry may never have been created). Transient OS errors are
         // logged but do not fail the operation — the DID is already unregistered.
+        //
+        // `recovery-share-1:{did}` is deliberately absent from this list, in both the
+        // device-local and the iCloud-synchronizable store. Removal is reached from
+        // `forget_identity_locally` too, which promises only to remove the identity from
+        // THIS device — deleting the synchronizable slot would reach every device under the
+        // Apple account and destroy a share the user may still need. A leftover share is one
+        // of three; a share deleted from every device is unrecoverable.
         let entries = [
             device_key_account(did),
             device_key_pub_account(did),

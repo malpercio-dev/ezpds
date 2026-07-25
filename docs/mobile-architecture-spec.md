@@ -423,14 +423,14 @@ The root rotation key's recovery seed is split into 2-of-3 Shamir shares:
 
   ------------- ---------------------------------- ----------------------------------------------------------------------------------------------------------
   **Share**     **Location**                       **Availability**
-  **Share 1**   iCloud Keychain                    Survives phone loss if iCloud account is intact. Available on any Apple device signed into the same iCloud.
+  **Share 1**   iCloud Keychain                    Written marked for sync; reaches other devices only if iCloud Keychain is on. Delivery is unobservable.
   **Share 2**   PDS escrow                       Retrieved via account authentication (email + password or OAuth). Available as long as PDS is operational.
   **Share 3**   User's choice (device-local or BIP-39)   Device-local: stored on designated backup device. BIP-39 phrase: paper or USB backup. User's responsibility.
   ------------- ---------------------------------- ----------------------------------------------------------------------------------------------------------
 
 **7.2 Recovery Scenarios**
 
--   **Lost phone, iCloud intact:** Share 1 + Share 2 = recovery. Install app on new phone, authenticate to iCloud and PDS, reconstruct root key in new Secure Enclave. If share 3 is device-local on another device, access it there for redundancy.
+-   **Lost phone, iCloud Keychain delivered Share 1:** Share 1 + Share 2 = recovery. Install app on new phone, authenticate to iCloud and PDS, reconstruct root key in new Secure Enclave. If share 3 is device-local on another device, access it there for redundancy. Share 1's arrival is a precondition, not a given — the app marks it for sync and cannot confirm delivery, so treat this path as available only once the new device actually shows the share. Where it does not, this collapses to the Share 2 + Share 3 case below.
 
 -   **Lost phone, iCloud compromised:** Share 2 + Share 3 = recovery. Authenticate to PDS, retrieve device-local share from backup device or enter BIP-39 recovery phrase. Same key reconstruction flow.
 
@@ -483,7 +483,7 @@ Modified existing endpoints:
   Phone lost, root key gone                    PDS and desktop continue operating. No identity operations possible.                Shamir recovery (Section 7). Reconstruct root key on new phone. Normal service is uninterrupted during recovery.
   DID update fails during PDS key rotation   Old signing key still active. New key not yet authorized.                             Retry the PLC operation. Old key continues working until rotation completes. No service interruption.
   Desktop de-enrolled while offline            PDS switches back to hosted PDS but has stale repo (last cache).                    PDS's cache becomes the new source of truth. Some recent commits may be lost if they were only on the desktop. Phone backup can supplement.
-  iCloud Keychain sync fails for Share 1       Share 1 only on local device. Phone loss leaves Shares 2 + 3.                         App verifies sync success, warns if failed. Device-local or BIP-39 backup is available as fallback.
+  iCloud Keychain sync fails for Share 1       Share 1 only on that device. Phone loss leaves Shares 2 + 3.                          iOS gives no delivery signal, so the app cannot verify sync — it writes Share 1 synchronizable and claims only that. Share 3 is the fallback.
   User wants to switch PDS providers         Standard PDS migration: provision new PDS, export repo, root key updates DID doc.   This is the credible exit story. Fully supported by ATProto's existing migration protocol.
   -------------------------------------------- ------------------------------------------------------------------------------------- -----------------------------------------------------------------------------------------------------------------------------------------------
 

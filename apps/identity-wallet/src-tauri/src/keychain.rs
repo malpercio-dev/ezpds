@@ -4,13 +4,35 @@
 //! service `"ezpds-identity-wallet"`. Use the `SERVICE` constant
 //! to ensure consistency.
 //!
+//! # Two stores, not one attribute
+//!
+//! The module exposes two families of accessors. `store_item`/`get_item`/`delete_item`
+//! address the **device-local** store: those items reach a second device by no route the
+//! wallet uses (iCloud Backup re-encrypts the keychain to the device UID and restores only
+//! to the same device). `store_item_synced`/`get_item_synced`/`delete_item_synced` address
+//! the **iCloud-synchronizable** store by setting `kSecAttrSynchronizable`.
+//!
+//! These are genuinely different stores, not one item with a flag: Apple's `SecItem.h` is
+//! explicit that an item is identified by its service + account **and** its synchronizable
+//! option, and that "if the key is not supplied … no synchronizable items will be added or
+//! returned." A value written with `store_item` is therefore invisible to `get_item_synced`
+//! and vice versa. Nothing in `SecItem.h` documents changing an existing item's
+//! synchronizability, so moving a value between the stores means copying it, never flipping
+//! it in place.
+//!
+//! Accessibility is left at the framework default (`kSecAttrAccessibleWhenUnlocked`) for
+//! synchronizable items — the `…ThisDeviceOnly` accessibility classes are mutually exclusive
+//! with syncing.
+//!
 //! In test builds (`#[cfg(test)]`), all Keychain operations are redirected to an
 //! in-memory store so that tests never touch the real macOS Keychain and never
-//! trigger a password prompt.
+//! trigger a password prompt. The test store models the two-store split faithfully —
+//! the same account in the synced and device-local namespaces is two independent values.
 
 #[cfg(not(test))]
 use security_framework::passwords::{
-    delete_generic_password, get_generic_password, set_generic_password,
+    delete_generic_password, delete_generic_password_options, generic_password,
+    get_generic_password, set_generic_password, set_generic_password_options, PasswordOptions,
 };
 
 pub const SERVICE: &str = "ezpds-identity-wallet";
@@ -19,44 +41,151 @@ pub const SERVICE: &str = "ezpds-identity-wallet";
 pub enum KeychainError {
     #[error("keychain error: {0}")]
     Security(#[from] security_framework::base::Error),
+    /// A synchronizable-store accessor was called for an account that is not on the
+    /// iCloud allowlist. Never reachable from the shipped call sites — the guard exists so
+    /// a future caller cannot quietly widen what leaves the device.
+    #[error("account {account} is not permitted in the iCloud-synchronizable keychain")]
+    SyncNotPermitted { account: String },
     /// Returned by the in-memory test store when an item is not found.
     #[cfg(test)]
     #[error("item not found")]
     NotFound,
 }
 
-/// Store arbitrary bytes in the Keychain under the given account name.
+/// Whether `account` is permitted in the **iCloud-synchronizable** Keychain store.
 ///
-/// Creates the entry if it doesn't exist, or updates it if it does.
+/// A deliberate allowlist of exactly one account family — the per-DID Shamir Share 1 slot
+/// `recovery-share-1:{did}` — because Share 1 is the only wallet secret whose entire job is
+/// to survive the loss of the device that created it. Everything else the wallet holds is
+/// device-local by design, and each exclusion is load-bearing rather than incidental:
+///
+/// * **the device key** (`device-rotation-key-*`, `{did}:device-key*`) — on a real device it
+///   is a Secure Enclave key that *cannot* leave the hardware, and the software fallback must
+///   not be more portable than the thing it stands in for. It is `rotationKeys[0]`: one
+///   device, one key, is what makes the 72-hour PLC override meaningful.
+/// * **`{did}:oauth-tokens`** — a bearer session for one device. Syncing it would put a live
+///   credential in the Apple account for no recovery benefit; a recovered wallet mints its
+///   own via sovereign login.
+/// * **`{did}:recovery-signing-key`** — the self-controlled `atproto` repo signing key. It
+///   signs commits, so a second live copy is a fork risk, not a backup.
+/// * **`ceremony-staging` / `recovery-epilogue`** — in-flight ceremony records whose whole
+///   contract is fail-closed single-device ownership. Two devices resuming one epilogue is a
+///   correctness hazard, not a convenience: each would drive the same rotation independently
+///   against a record it believes it owns. They also hold the *seed* (or two shares at once)
+///   until teardown, so syncing them would place a reconstructable secret in iCloud,
+///   collapsing the 2-of-3 threshold this whole design exists to hold.
+///
+/// Asserted by `deny_list_accounts_never_sync` below.
+pub fn syncs_to_icloud(account: &str) -> bool {
+    crate::rekey::is_recovery_share1_account(account)
+}
+
+/// Reject a synchronizable-store call for a non-allowlisted account.
+fn guard_sync_allowed(account: &str) -> Result<(), KeychainError> {
+    if syncs_to_icloud(account) {
+        Ok(())
+    } else {
+        Err(KeychainError::SyncNotPermitted {
+            account: account.to_string(),
+        })
+    }
+}
+
+/// Store bytes in the **iCloud-synchronizable** Keychain store.
+///
+/// Writes a record distinct from any same-named `store_item` record; it does not migrate,
+/// replace, or delete the device-local one. Only allowlisted accounts (see
+/// [`syncs_to_icloud`]) are accepted.
+///
+/// A successful return means the item was written carrying `kSecAttrSynchronizable` — **not**
+/// that it reached the user's Apple account. iOS exposes no delivery callback, and with
+/// iCloud Keychain switched off the attribute is recorded and propagates nowhere (enabling it
+/// later syncs the item with no further involvement from this app). User-facing copy must
+/// claim only the former.
+pub fn store_item_synced(account: &str, data: &[u8]) -> Result<(), KeychainError> {
+    guard_sync_allowed(account)?;
+    #[cfg(test)]
+    {
+        test_store::set(test_store::Scope::Synced, account, data.to_vec());
+        Ok(())
+    }
+    #[cfg(not(test))]
+    set_generic_password_options(data, synced_options(account)).map_err(KeychainError::Security)
+}
+
+/// Retrieve bytes from the **iCloud-synchronizable** Keychain store.
+///
+/// Returns `Err` with `errSecItemNotFound` when the synced slot is empty, even if a
+/// device-local item with the same account exists.
+pub fn get_item_synced(account: &str) -> Result<Vec<u8>, KeychainError> {
+    guard_sync_allowed(account)?;
+    #[cfg(test)]
+    {
+        test_store::get(test_store::Scope::Synced, account).ok_or(KeychainError::NotFound)
+    }
+    #[cfg(not(test))]
+    generic_password(synced_options(account)).map_err(KeychainError::Security)
+}
+
+/// Delete an item from the **iCloud-synchronizable** Keychain store, leaving any
+/// device-local item of the same name untouched.
+#[cfg_attr(test, allow(dead_code))]
+pub fn delete_item_synced(account: &str) -> Result<(), KeychainError> {
+    guard_sync_allowed(account)?;
+    #[cfg(test)]
+    {
+        test_store::delete(test_store::Scope::Synced, account);
+        Ok(())
+    }
+    #[cfg(not(test))]
+    delete_generic_password_options(synced_options(account)).map_err(KeychainError::Security)
+}
+
+/// Query targeting the synchronizable store for `account`.
+///
+/// `Some(true)` (never `None`) so every operation addresses exactly one store: with `None`,
+/// a set would prefer the device-local store and a get could not say which store answered.
+#[cfg(not(test))]
+fn synced_options(account: &str) -> PasswordOptions {
+    let mut options = PasswordOptions::new_generic_password(SERVICE, account);
+    options.set_access_synchronized(Some(true));
+    options
+}
+
+/// Store arbitrary bytes in the **device-local** Keychain store under the given account name.
+///
+/// Creates the entry if it doesn't exist, or updates it if it does. The value stays on this
+/// device; see [`store_item_synced`] for the iCloud-synchronizable store.
 pub fn store_item(account: &str, data: &[u8]) -> Result<(), KeychainError> {
     #[cfg(test)]
     {
-        test_store::set(account, data.to_vec());
+        test_store::set(test_store::Scope::Local, account, data.to_vec());
         Ok(())
     }
     #[cfg(not(test))]
     set_generic_password(SERVICE, account, data).map_err(KeychainError::Security)
 }
 
-/// Retrieve bytes from the Keychain for the given account name.
+/// Retrieve bytes from the **device-local** Keychain store for the given account name.
 ///
-/// Returns `Err` with `errSecItemNotFound` if no entry exists.
+/// Returns `Err` with `errSecItemNotFound` if no entry exists. Never returns a value written
+/// by [`store_item_synced`].
 pub fn get_item(account: &str) -> Result<Vec<u8>, KeychainError> {
     #[cfg(test)]
     {
-        test_store::get(account).ok_or(KeychainError::NotFound)
+        test_store::get(test_store::Scope::Local, account).ok_or(KeychainError::NotFound)
     }
     #[cfg(not(test))]
     get_generic_password(SERVICE, account).map_err(KeychainError::Security)
 }
 
-/// Delete an item from the Keychain by account name.
+/// Delete an item from the **device-local** Keychain store by account name.
 ///
 /// Returns `Ok(())` on successful deletion, or `Err` if the item doesn't exist.
 pub fn delete_item(account: &str) -> Result<(), KeychainError> {
     #[cfg(test)]
     {
-        test_store::delete(account);
+        test_store::delete(test_store::Scope::Local, account);
         Ok(())
     }
     #[cfg(not(test))]
@@ -68,6 +197,8 @@ pub fn delete_item(account: &str) -> Result<(), KeychainError> {
 pub fn is_not_found(err: &KeychainError) -> bool {
     match err {
         KeychainError::Security(e) => e.code() == -25300,
+        // Not an absence claim — the account was never addressed.
+        KeychainError::SyncNotPermitted { .. } => false,
         #[cfg(test)]
         KeychainError::NotFound => true,
     }
@@ -231,32 +362,145 @@ pub fn clear_for_test() {
 /// Thread-local storage ensures tests on different threads are fully isolated.
 /// Call `clear_for_test()` at the start of each test to handle sequential
 /// reuse of the same OS thread by the Rust test harness.
+///
+/// Keys are `(scope, account)`, mirroring the real Keychain's two-store split: the same
+/// account in `Local` and `Synced` is two independent records, and neither accessor family
+/// can see the other's value. Tests that assert the launch backfill depend on that.
 #[cfg(test)]
 mod test_store {
     use std::cell::RefCell;
     use std::collections::HashMap;
 
+    /// Which of the two Keychain stores a call addresses.
+    #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+    pub enum Scope {
+        /// The default, device-local store.
+        Local,
+        /// The `kSecAttrSynchronizable` (iCloud Keychain) store.
+        Synced,
+    }
+
     thread_local! {
-        static STORE: RefCell<HashMap<String, Vec<u8>>> = RefCell::new(HashMap::new());
+        static STORE: RefCell<HashMap<(Scope, String), Vec<u8>>> = RefCell::new(HashMap::new());
     }
 
-    pub fn get(account: &str) -> Option<Vec<u8>> {
-        STORE.with(|s| s.borrow().get(account).cloned())
+    pub fn get(scope: Scope, account: &str) -> Option<Vec<u8>> {
+        STORE.with(|s| s.borrow().get(&(scope, account.to_string())).cloned())
     }
 
-    pub fn set(account: &str, data: Vec<u8>) {
+    pub fn set(scope: Scope, account: &str, data: Vec<u8>) {
         STORE.with(|s| {
-            s.borrow_mut().insert(account.to_string(), data);
+            s.borrow_mut().insert((scope, account.to_string()), data);
         });
     }
 
-    pub fn delete(account: &str) {
+    pub fn delete(scope: Scope, account: &str) {
         STORE.with(|s| {
-            s.borrow_mut().remove(account);
+            s.borrow_mut().remove(&(scope, account.to_string()));
         });
     }
 
     pub fn clear_all() {
         STORE.with(|s| s.borrow_mut().clear());
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const DID: &str = "did:plc:sync0123456789abcdefghij";
+
+    /// The allowlist admits exactly the per-DID Share 1 slot — not the bare prefix, and not
+    /// the deprecated app-global `recovery-share-1` account (a pre-unification install's
+    /// Share 1 is read from there but never written back into iCloud under that name).
+    #[test]
+    fn only_per_did_share1_syncs() {
+        assert!(syncs_to_icloud(&crate::rekey::recovery_share1_account(DID)));
+        assert!(!syncs_to_icloud("recovery-share-1"));
+        assert!(!syncs_to_icloud("recovery-share-1:"));
+    }
+
+    /// Every secret the design keeps device-local must stay off the synchronizable store.
+    /// Adding an account here without a design decision is the failure this guards.
+    #[test]
+    fn deny_list_accounts_never_sync() {
+        let denied = [
+            // Device key — Secure Enclave on device; `rotationKeys[0]`.
+            "device-rotation-key-priv",
+            "device-rotation-key-pub",
+            "device-rotation-key-app-label",
+            &format!("{DID}:device-key"),
+            &format!("{DID}:device-key-pub"),
+            &format!("{DID}:device-key-app-label"),
+            // Live per-device credentials and the repo signing key.
+            &format!("{DID}:oauth-tokens"),
+            &format!("{DID}:recovery-signing-key"),
+            // In-flight ceremony records — these hold reconstructable seed material.
+            crate::share_ceremony::STAGING_ACCOUNT,
+            crate::share_recovery::EPILOGUE_ACCOUNT,
+            // Everything else the wallet stores, for completeness.
+            "oauth-dpop-key-priv",
+            "oauth-access-token",
+            "oauth-refresh-token",
+            "session-token",
+            "device-token",
+            "did",
+            "managed-dids",
+            "pending-removals",
+            "relay-base-url",
+            "appearance-preference",
+            &format!("{DID}:did-doc"),
+            &format!("{DID}:plc-log"),
+        ];
+        for account in denied {
+            assert!(
+                !syncs_to_icloud(account),
+                "{account} must never be written to the iCloud-synchronizable keychain"
+            );
+            assert!(
+                matches!(
+                    store_item_synced(account, b"x"),
+                    Err(KeychainError::SyncNotPermitted { .. })
+                ),
+                "{account} must be refused by the synchronizable write path"
+            );
+            assert!(matches!(
+                get_item_synced(account),
+                Err(KeychainError::SyncNotPermitted { .. })
+            ));
+            assert!(matches!(
+                delete_item_synced(account),
+                Err(KeychainError::SyncNotPermitted { .. })
+            ));
+        }
+    }
+
+    /// A refused sync call is not an "item absent" verdict — a caller must not mistake it
+    /// for one and conclude the share was never stored.
+    #[test]
+    fn sync_not_permitted_is_not_not_found() {
+        assert!(!is_not_found(&KeychainError::SyncNotPermitted {
+            account: "device-rotation-key-priv".to_string(),
+        }));
+    }
+
+    /// The two stores are independent records under one account name — the property the
+    /// copy-never-flip backfill and the synced-first read path both rest on.
+    #[test]
+    fn synced_and_local_slots_are_distinct_records() {
+        clear_for_test();
+        let account = crate::rekey::recovery_share1_account(DID);
+
+        store_item(&account, b"LEGACY").unwrap();
+        assert!(get_item_synced(&account).is_err_and(|e| is_not_found(&e)));
+
+        store_item_synced(&account, b"SYNCED").unwrap();
+        assert_eq!(get_item(&account).unwrap(), b"LEGACY");
+        assert_eq!(get_item_synced(&account).unwrap(), b"SYNCED");
+
+        // Deleting one store leaves the other intact.
+        delete_item_synced(&account).unwrap();
+        assert_eq!(get_item(&account).unwrap(), b"LEGACY");
     }
 }

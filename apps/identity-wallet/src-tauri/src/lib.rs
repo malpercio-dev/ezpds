@@ -162,7 +162,9 @@ pub struct DIDCeremonyResult {
     pub did: String,
     /// Share 3 of 3 — the user's manual backup share, in machine (base32 envelope)
     /// form, used for the QR rendering.
-    /// Share 1 has already been stored in iCloud Keychain by the Rust backend.
+    /// Share 1 has already been written by the Rust backend to the Keychain's
+    /// iCloud-synchronizable store; whether it has reached the user's Apple account is
+    /// not observable from the app.
     pub share3: String,
     /// Share 3 rendered as the BIP-39-style word phrase (same envelope bytes) — the
     /// primary human-custody rendering on the backup screen. Both share fields are empty
@@ -593,20 +595,23 @@ async fn perform_did_ceremony(
         DIDCeremonyError::KeychainError
     })?;
 
-    // Step 8: Store the wallet-generated Share 1 envelope in the durable iCloud-synced
-    // per-DID Keychain slot, then verify the write by reading it back — Share 1's durability
-    // is a precondition for tearing down the staging slot later (`confirm_share_backup`).
-    // The slot is per-DID (`recovery-share-1:{did}`, the same convention re-key uses) so a
-    // second identity's ceremony can never overwrite the first identity's Share 1.
+    // Step 8: Store the wallet-generated Share 1 envelope in the per-DID Keychain slot in the
+    // iCloud-synchronizable store, then verify the write by reading that same slot back —
+    // Share 1's durability is a precondition for tearing down the staging slot later
+    // (`confirm_share_backup`). The slot is per-DID (`recovery-share-1:{did}`, the same
+    // convention re-key uses) so a second identity's ceremony can never overwrite the first
+    // identity's Share 1, and the write carries `kSecAttrSynchronizable` so the share can
+    // reach a replacement device — the whole point of the escrow-assisted recovery path.
+    // The read-back never consults the device-local slot: only the synchronizable record
+    // counts as evidence here.
     // Uses ShareStorageFailed (not KeychainError) because the DID is already committed:
     // retrying the ceremony will hit DidAlreadyExists. The frontend can surface a distinct
     // message rather than telling the user to retry the whole ceremony.
-    let share1_account = rekey::recovery_share1_account(&create_did_resp.did);
-    keychain::store_item(&share1_account, shares.share1.as_bytes()).map_err(|e| {
+    rekey::store_share1(&create_did_resp.did, shares.share1.as_bytes()).map_err(|e| {
         tracing::error!(error = %e, "DID committed but recovery share 1 keychain write failed");
         DIDCeremonyError::ShareStorageFailed
     })?;
-    match keychain::get_item(&share1_account) {
+    match rekey::read_share1_synced(&create_did_resp.did) {
         Ok(read_back) if read_back == shares.share1.as_bytes() => {}
         Ok(_) => {
             tracing::error!("recovery share 1 read-back does not match the written value");
@@ -648,8 +653,7 @@ pub enum ShareBackupError {
 /// confirmation completes.
 #[tauri::command]
 fn confirm_share_backup(did: String) -> Result<(), ShareBackupError> {
-    let share1_account = rekey::recovery_share1_account(&did);
-    match keychain::get_item(&share1_account) {
+    match rekey::load_share1(&did) {
         Ok(bytes) if !bytes.is_empty() => {}
         Ok(_) => {
             tracing::error!(
@@ -1439,6 +1443,96 @@ fn migrate_global_share1_to_per_did() {
     }
 }
 
+/// Reconcile every managed identity's Share 1 into the two Keychain slots it should occupy.
+///
+/// Runs the two additive hops in order, so a single launch can carry a pre-unification install
+/// all the way: app-global → per-DID device-local ([`migrate_global_share1_to_per_did`]), then
+/// per-DID device-local → per-DID iCloud-synchronizable ([`backfill_synced_share1`]).
+fn reconcile_share1_slots() {
+    migrate_global_share1_to_per_did();
+    backfill_synced_share1();
+}
+
+/// Best-effort launch backfill: copy each managed identity's device-local Share 1 into the
+/// iCloud-synchronizable slot.
+///
+/// Wallet builds before the synchronizable write path wrote Share 1 with no
+/// `kSecAttrSynchronizable` attribute, which meant it never left the device that created it —
+/// so the escrow-assisted recovery path (Share 1 from iCloud + Share 2 from escrow, no
+/// user-held secret) was unavailable on a replacement device. This puts an existing share into
+/// the store that can travel.
+///
+/// **Copy, never flip.** The synchronizable and device-local records are distinct items, and
+/// `SecItem.h` documents the key for *targeting* synced items in update/delete but never for
+/// changing an item's synchronizability — so an in-place flip is unsupported. Copying is the
+/// safer shape regardless: the device-local slot may be the share's only surviving copy, and
+/// it is preserved untouched.
+///
+/// Additive and idempotent: a populated synchronizable slot is never overwritten, and only a
+/// device-local value that decodes as a valid v2 index-1 envelope is copied (a bare
+/// pre-envelope share cannot auto-load into the recovery ceremony anyway, so syncing it would
+/// spend an iCloud secret for no recovery benefit). Fully best-effort — any Keychain hiccup is
+/// logged and swallowed, never blocking launch.
+///
+/// **What this cannot reach.** It runs on-device, so it only helps a device that still holds
+/// Share 1 *and* opens this build at least once. A user whose device is already lost is not
+/// helped and stays on Share 2 + Share 3 for the life of that identity. And with iCloud
+/// Keychain switched off, the item is written carrying the attribute and propagates nowhere;
+/// enabling it later syncs it with no further involvement from this app.
+fn backfill_synced_share1() {
+    for did in share1_backfill_dids() {
+        // Never overwrite a populated synchronizable slot — a ceremony, re-key, or recovery
+        // epilogue owns it, and it is by definition at least as current as the local one.
+        match rekey::read_share1_synced(&did) {
+            Ok(bytes) if !bytes.is_empty() => continue,
+            Ok(_) => {}
+            Err(ref e) if keychain::is_not_found(e) => {}
+            Err(e) => {
+                tracing::warn!(error = %e, "share1 backfill: synced slot read failed; skipping");
+                continue;
+            }
+        }
+        // Sensitive key material — wipe the in-memory copy when this scope ends.
+        let local = match keychain::get_item(&rekey::recovery_share1_account(&did)) {
+            Ok(bytes) if !bytes.is_empty() => zeroize::Zeroizing::new(bytes),
+            Ok(_) => continue,
+            Err(ref e) if keychain::is_not_found(e) => continue,
+            Err(e) => {
+                tracing::warn!(error = %e, "share1 backfill: local slot read failed; skipping");
+                continue;
+            }
+        };
+        if share_recovery::decode_share1_envelope(&local).is_none() {
+            tracing::debug!("share1 backfill: local slot is not a v2 Share 1 envelope; skipping");
+            continue;
+        }
+        match rekey::store_share1(&did, &local) {
+            Ok(()) => tracing::info!("backfilled Share 1 into the iCloud-synchronizable slot"),
+            Err(e) => tracing::warn!(error = %e, "share1 backfill: synced slot write failed"),
+        }
+    }
+}
+
+/// The DIDs the backfill sweeps: every identity in `IdentityStore`, plus the legacy primary
+/// DID under the `"did"` account. The union matters because a pre-unification install may hold
+/// a share for a DID that was never registered in the managed-DIDs index.
+fn share1_backfill_dids() -> Vec<String> {
+    let mut dids = identity_store::IdentityStore
+        .list_identities()
+        .unwrap_or_else(|e| {
+            tracing::warn!(error = %e, "share1 backfill: managed-DID index unreadable");
+            Vec::new()
+        });
+    if let Ok(bytes) = keychain::get_item("did") {
+        if let Ok(did) = String::from_utf8(bytes) {
+            if !did.is_empty() && !dids.contains(&did) {
+                dids.push(did);
+            }
+        }
+    }
+    dids
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let builder = tauri::Builder::default()
@@ -1471,9 +1565,12 @@ pub fn run() {
                 app.state::<oauth::AppState>().set_custos_client(url);
             }
 
-            // One-time, best-effort: move a pre-unification install's global Share 1 into the
-            // primary identity's per-DID slot so share-based recovery survives the switch.
-            migrate_global_share1_to_per_did();
+            // Best-effort, idempotent: move a pre-unification install's global Share 1 into
+            // the primary identity's per-DID slot so share-based recovery survives the switch,
+            // then copy every managed identity's device-local Share 1 into the
+            // iCloud-synchronizable slot so it can reach a replacement device. Both hops are
+            // additive; neither deletes the slot it read from.
+            reconcile_share1_slots();
 
             // On relaunch: restore persisted session from Keychain and notify frontend.
             // The 300 ms delay lets the SvelteKit app boot and register its event listener
@@ -1945,7 +2042,8 @@ mod tests {
         assert!(keychain::get_item(share_ceremony::STAGING_ACCOUNT).is_ok());
 
         // Once THIS DID's Share 1 is durably stored, confirmation tears the staging slot down.
-        keychain::store_item(&rekey::recovery_share1_account(did), b"SHARE1ENVELOPE").unwrap();
+        // The synchronizable slot is what a fresh ceremony writes; the gate must see it.
+        rekey::store_share1(did, b"SHARE1ENVELOPE").unwrap();
         confirm_share_backup(did.to_string()).expect("confirmation should succeed");
         assert!(matches!(
             keychain::get_item(share_ceremony::STAGING_ACCOUNT),
@@ -2008,6 +2106,104 @@ mod tests {
             keychain::get_item(&rekey::recovery_share1_account(did)),
             Err(ref e) if keychain::is_not_found(e)
         ));
+    }
+
+    // -- device-local -> iCloud-synchronizable Share 1 backfill --
+
+    /// A real v2 index-1 Share 1 envelope, produced the way the ceremony produces one.
+    /// The backfill only copies bytes that decode as such, so fixtures must be genuine.
+    fn ceremony_share1() -> String {
+        let set =
+            share_ceremony::load_or_create("alice.example.com", "https://pds.example.com").unwrap();
+        let share1 = set.share1.to_string();
+        share_ceremony::clear_staging().unwrap();
+        share1
+    }
+
+    #[test]
+    fn backfill_copies_local_share1_into_the_synced_slot_and_keeps_the_local_one() {
+        keychain::clear_for_test();
+        let did = "did:plc:preSyncInstall";
+        let share1 = ceremony_share1();
+
+        // A build from before the synchronizable write path: Share 1 exists, but only in the
+        // device-local store, where it can never reach a replacement device.
+        identity_store::IdentityStore.add_identity(did).unwrap();
+        keychain::store_item(&rekey::recovery_share1_account(did), share1.as_bytes()).unwrap();
+        assert!(rekey::read_share1_synced(did).is_err());
+
+        backfill_synced_share1();
+
+        assert_eq!(rekey::read_share1_synced(did).unwrap(), share1.as_bytes());
+        // Copy, never move: the local slot may be the share's only surviving copy.
+        assert_eq!(
+            keychain::get_item(&rekey::recovery_share1_account(did)).unwrap(),
+            share1.as_bytes()
+        );
+
+        // Idempotent: a second launch changes nothing.
+        backfill_synced_share1();
+        assert_eq!(rekey::read_share1_synced(did).unwrap(), share1.as_bytes());
+    }
+
+    #[test]
+    fn backfill_never_overwrites_a_populated_synced_slot() {
+        keychain::clear_for_test();
+        let did = "did:plc:alreadysynced";
+
+        // A re-key or recovery epilogue owns the synchronizable slot; a stale local copy from
+        // before that rotation must not be allowed to overwrite it.
+        identity_store::IdentityStore.add_identity(did).unwrap();
+        rekey::store_share1(did, ceremony_share1().as_bytes()).unwrap();
+        let current = rekey::read_share1_synced(did).unwrap();
+        keychain::store_item(&rekey::recovery_share1_account(did), b"STALE_LOCAL").unwrap();
+
+        backfill_synced_share1();
+
+        assert_eq!(rekey::read_share1_synced(did).unwrap(), current);
+    }
+
+    #[test]
+    fn backfill_skips_a_local_slot_that_is_not_a_v2_share1_envelope() {
+        keychain::clear_for_test();
+        let did = "did:plc:bareshareinstall";
+
+        // did:web ceremonies stored a bare base32 share, which the recovery ceremony's
+        // auto-load cannot use anyway — syncing it would spend an iCloud secret for nothing.
+        identity_store::IdentityStore.add_identity(did).unwrap();
+        keychain::store_item(&rekey::recovery_share1_account(did), b"NOTANENVELOPE").unwrap();
+
+        backfill_synced_share1();
+
+        assert!(matches!(
+            rekey::read_share1_synced(did),
+            Err(ref e) if keychain::is_not_found(e)
+        ));
+    }
+
+    #[test]
+    fn backfill_reaches_a_legacy_primary_did_absent_from_the_managed_index() {
+        keychain::clear_for_test();
+        let did = "did:plc:legacyprimaryonly";
+        let share1 = ceremony_share1();
+
+        // Pre-unification install: the global slot plus a primary DID that was never
+        // registered in `managed-dids`. One launch must carry it through both hops.
+        keychain::store_item("recovery-share-1", share1.as_bytes()).unwrap();
+        keychain::store_item("did", did.as_bytes()).unwrap();
+
+        reconcile_share1_slots();
+
+        assert_eq!(rekey::read_share1_synced(did).unwrap(), share1.as_bytes());
+        // Neither source slot is disturbed.
+        assert_eq!(
+            keychain::get_item("recovery-share-1").unwrap(),
+            share1.as_bytes()
+        );
+        assert_eq!(
+            keychain::get_item(&rekey::recovery_share1_account(did)).unwrap(),
+            share1.as_bytes()
+        );
     }
 
     // -- DIDCeremonyError serialization (one test per variant) --
