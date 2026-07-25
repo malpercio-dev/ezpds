@@ -1,0 +1,1 @@
+is the http-api fairly uniform across providers? or will this be specific to mailtrap? fine either way just want to know
