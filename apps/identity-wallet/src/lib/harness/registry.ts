@@ -107,6 +107,7 @@ export type CommandName =
   | 'register_handle'
   | 'get_available_user_domains'
   | 'register_created_identity'
+  | 'import_did_web_identity'
   | 'check_handle_resolution'
   | 'get_pds_url'
   | 'save_pds_url'
@@ -340,6 +341,29 @@ export function buildRegistry(state: WalletState): Registry {
       upsertIdentity(state, identity);
       state.create = null;
       return null;
+    },
+    import_did_web_identity: (args) => {
+      // Mirror the backend's normalization: bare domain, https:// URL, or did:web form.
+      const raw = String(args.input ?? '')
+        .trim()
+        .toLowerCase()
+        .replace(/^did:web:/, '')
+        .replace(/^https?:\/\//, '')
+        .replace(/\/$/, '');
+      if (!raw || !raw.includes('.') || /[:/@]/.test(raw)) {
+        throw { code: 'INVALID_DOMAIN', message: 'enter a public domain name without a path or port' };
+      }
+      const did = `did:web:${raw}`;
+      // An imported did:web is managed but not root-key: its live document carries no
+      // #device until the migration identity leg publishes one.
+      const identity = seedIdentity({
+        handle: raw,
+        did,
+        pdsUrl: state.pdsUrl ?? DEFAULT_PDS_URL,
+        deviceKeyIsRoot: false,
+      });
+      upsertIdentity(state, identity);
+      return { did, handle: raw, pdsUrl: identity.pdsUrl };
     },
     check_handle_resolution: (): boolean => true,
     get_pds_url: (): string | null => state.pdsUrl,

@@ -57,6 +57,7 @@ Source: `apps/identity-wallet/src/lib/ipc/`
 | `get_pending_recovery_epilogue` | App command |
 | `get_repo_backup_status` | App command |
 | `get_stored_did_doc` | App command |
+| `import_did_web_identity` | App command |
 | `initiate_escrow_release` | App command |
 | `list_agents` | App command |
 | `list_app_passwords` | App command |
