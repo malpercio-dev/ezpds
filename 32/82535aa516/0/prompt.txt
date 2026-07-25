@@ -1,0 +1,1 @@
+should we tuck away the hv2 scripts in a commit so that we can easily get them later? is anything sensitive in them?
