@@ -1,0 +1,29 @@
+{
+  "cli_version": "0.8.42",
+  "checkpoint_id": "e1726e015e47",
+  "strategy": "manual-commit",
+  "branch": "release-0.8.2",
+  "checkpoints_count": 1,
+  "files_touched": [
+    "sites/docs/src/content/docs/operator/reference/api.md",
+    "sites/docs/src/content/docs/operator/reference/capabilities.md",
+    "sites/docs/src/content/docs/operator/reference/config.md",
+    "sites/docs/src/content/docs/operator/reference/ipc.md"
+  ],
+  "sessions": [
+    {
+      "metadata": "/e1/726e015e47/0/metadata.json",
+      "transcript": "/e1/726e015e47/0/full.jsonl",
+      "compact_transcript": "/e1/726e015e47/0/transcript.jsonl",
+      "content_hash": "/e1/726e015e47/0/content_hash.txt",
+      "prompt": ""
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 13,
+    "cache_creation_tokens": 5532,
+    "cache_read_tokens": 624799,
+    "output_tokens": 1681,
+    "api_call_count": 7
+  }
+}
