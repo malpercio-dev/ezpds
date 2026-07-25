@@ -1,0 +1,92 @@
+Work on Linear issue MM-370:
+
+Suggested branch name: malpercio/mm-370-create_post-end-to-end-over-the-hosted-sidecar-on-staging
+
+<issue identifier="MM-370">
+<title>create_post end-to-end over the hosted sidecar on staging (first slice)</title>
+<description>
+Wire one tool (`create_post`) through the forwarding sidecar (<issue id="db18a0e0-a4c4-4879-be36-b8c5a815ac5b" href="https://linear.app/malpercio/issue/MM-369/credential-forwarding-streamable-http-mcp-sidecar-scaffold">MM-369</issue>) using a minted sovereign child identity (<issue id="d29ebbda-fe77-4455-aaf9-fb7d131f5c5d" href="https://linear.app/malpercio/issue/MM-368/agent-as-child-identity-minting-sovereign-child-did-repo-handle-wallet">MM-368</issue>), validated live on staging. **This is the acceptance-defining slice of** <issue id="c3080e4f-8a1e-47a8-99b8-022c854299d2" href="https://linear.app/malpercio/issue/MM-356/hosted-custos-mcp-agent-as-child-identity-credential-forwarding">MM-356</issue> — the smallest thing that proves the whole model end to end.
+
+**Acceptance:**
+
+* From an MCP client, authenticate against Custos (OAuth) and have a **sovereign child agent** create a post on staging via the sidecar.
+* The post is attributed to the agent's **own DID** (not the parent's).
+* The caller's token is forwarded per-request; nothing durable is cached.
+* The existing self-hosted stdio path is unaffected (see <issue id="196e7bec-7cc4-4be0-93cd-306f671aae03" href="https://linear.app/malpercio/issue/MM-367/preserve-document-the-self-hosted-acts-as-you-stdio-mcp-path-non">MM-367</issue>).
+
+Blocked by <issue id="d29ebbda-fe77-4455-aaf9-fb7d131f5c5d" href="https://linear.app/malpercio/issue/MM-368/agent-as-child-identity-minting-sovereign-child-did-repo-handle-wallet">MM-368</issue> (minting) and <issue id="db18a0e0-a4c4-4879-be36-b8c5a815ac5b" href="https://linear.app/malpercio/issue/MM-369/credential-forwarding-streamable-http-mcp-sidecar-scaffold">MM-369</issue> (sidecar).
+</description>
+<team name="Mal's Machinations"/>
+<label>Wave 8: auth.md</label>
+<project name="ezpds">An easy-to-host PDS on the ATProtocol, MacOS. Grandma-approved.</project>
+<parent-issue identifier="MM-356">
+<id>c3080e4f-8a1e-47a8-99b8-022c854299d2</id>
+<title>Hosted Custos MCP: agent-as-child-identity + credential-forwarding sidecar</title>
+<description>
+Stub issue to spawn implementation plans from the design plan `docs/design-plans/2026-07-14-hosted-custos-mcp.md`.
+
+**Design verdict:** attribution and hosting are **independent choices**. Self-hosted "agent acts directly as me" (the shipped stdio MCP) stays first-class; for the *hosted* tier the agent becomes its **own sovereign identity** (own handle, recovery key held in the user's Obsign wallet) served by a tier that **forwards** the caller's credential rather than holding it. The only off-limits combination is hosted + acts-as-you + durable custody.
+
+**The two attribution models (both supported):**
+
+* **Acts as you (delegate)** — writes into your repo, actions carry your identity. Correct/safe for **self-hosting** (you hold your own credential); this is what `tools/mcp/` ships today and must keep working.
+* **Acts as itself (sovereign child)** — own DID/repo/handle, recovery key in the wallet, day-to-day signing delegated + revocable. The **hosted default** — even a durable bot credential can't act as you.
+
+**Scope (from the design plan):**
+
+* Preserve + document the **self-hosted acts-as-you** path (stdio today; a self-hosted HTTP sidecar later). First-class, not a fallback.
+* **Sovereign child identity** for the hosted path — own DID/repo/handle, recovery key in the wallet (reuses existing `did:plc` genesis/rotation machinery), delegated revocable signing.
+* **Credential-forwarding** hosted tier — MCP remote auth = OAuth against Custos (the existing AS); the caller's token rides each request; nothing durable is cached. Applies whether the tier is a Node sidecar or folded into axum.
+* **Sidecar first** — reuse the `tools/mcp/` tool surface, swap stdio → Streamable HTTP, singleton `AgentSession` → per-caller map, deploy as a third Railway service (`mcp.obsign.org`) over private networking. In-PDS consolidation is a possible later step, not step one.
+* **Handles:** flat subdomain now (`alice-writer.obsign.org`); nested (`writer.alice.obsign.org`) needs on-demand TLS — phase two; custom domains later via native ATProto handle verification.
+* **Deployment tiers:** co-located hosted (default, Railway private net) · self-host acts-as-you (stdio/sidecar) · host-your-own sidecar connected over **Iroh** (later).
+* **Gating:** an agent identity can only be minted as a child of an account on this PDS (entitlement falls out of the ownership graph).
+
+**Two ADRs to write alongside implementation** (next free numbers **0023 and 0024** — 0022 is now taken by `0022-did-web-for-user-owned-domains.md`):
+
+* ADR-A (0023) — Agents *may* be sovereign child identities (the hosted default); the acts-as-you delegate model stays first-class and is the self-host default. Records the attribution × hosting matrix, not a replacement.
+* ADR-B (0024) — The hosted agent tier forwards credentials; never holds durable user/agent secrets (security posture).
+
+**Explicitly deferred (do not couple to this work):** [honker.dev](<http://honker.dev>) (async agent job queue / audit-event outbox — reach for it when agents get scheduled/async behavior) and Litestream read replicas (whole-PDS geo-scaling lever; read-after-write footgun for write-heavy agents).
+
+**First implementation slice:** agent-as-child-identity minting + a credential-forwarding Streamable-HTTP sidecar for one tool (`create_post`) against staging, with ADR-0023 and ADR-0024 written alongside — without regressing the existing self-hosted acts-as-you stdio path. Break the design plan into the design → test-requirements → phases triad per `docs/archive/README.md`.
+
+Relates to ADR-0019 (auth.md agent auth), ADR-0001/0004 (client-held rotation key), the sovereign-session work (<issue id="814e9039-1031-4e90-9e40-cc74b1cc2c0e" href="https://linear.app/malpercio/issue/MM-306/sovereign-passwordless-login-mint-a-custos-session-from-a-device-key">MM-306</issue> / <issue id="25aa82ae-c063-4c30-afb1-bd8d65182211" href="https://linear.app/malpercio/issue/MM-351/custos-post-v1sessionssovereign-with-current-plc-rotation-key">MM-351</issue> — the delegation primitive this mirrors), managed-identity-hosted-on-Custos (<issue id="dffcbf51-33df-4fc6-88aa-41a1c6868bd1" href="https://linear.app/malpercio/issue/MM-279/managed-didweb-hosting-optionally-serve-didjson-for-user-owned-domains">MM-279</issue> / <issue id="2a4f70a2-a430-4ce8-a6f5-ecc2218d474f" href="https://linear.app/malpercio/issue/MM-285/wallet-didweb-ceremony-the-22-newexisting-did-selfcustos-hosted-with">MM-285</issue>), and the iroh-tunnel exploration (`docs/design-plans/2026-07-11-iroh-http-tunnel-exploration.md`).
+
+---
+
+## Breakdown (2026-07-15)
+
+This epic is decomposed into 10 children. Correction applied above: next free ADR numbers are **0023/0024**, not 0022.
+
+**Phase 0 — decisions & planning (docs)**
+
+* <issue id="b34d64f9-545d-4c85-8324-3fcfd13d4528" href="https://linear.app/malpercio/issue/MM-365/write-adr-0023-adr-0024-sovereign-child-identity-credential-forwarding">MM-365</issue> — Write ADR-0023 + ADR-0024 (sovereign child identity + credential-forwarding posture)
+* <issue id="8975c571-fca9-4a8d-a3de-16dd18b5af57" href="https://linear.app/malpercio/issue/MM-366/author-test-requirements-implementation-phases-plans-complete-the">MM-366</issue> — Author test-requirements + implementation-phases plans (complete the design triad)
+
+**Phase 1 — smallest end-to-end slice**
+
+* <issue id="d29ebbda-fe77-4455-aaf9-fb7d131f5c5d" href="https://linear.app/malpercio/issue/MM-368/agent-as-child-identity-minting-sovereign-child-did-repo-handle-wallet">MM-368</issue> — Agent-as-child-identity minting (DID + repo + handle + wallet recovery) · *blocked by* <issue id="8975c571-fca9-4a8d-a3de-16dd18b5af57" href="https://linear.app/malpercio/issue/MM-366/author-test-requirements-implementation-phases-plans-complete-the">MM-366</issue>
+* <issue id="db18a0e0-a4c4-4879-be36-b8c5a815ac5b" href="https://linear.app/malpercio/issue/MM-369/credential-forwarding-streamable-http-mcp-sidecar-scaffold">MM-369</issue> — Credential-forwarding Streamable-HTTP MCP sidecar scaffold (`mcp.obsign.org`) · *blocked by* <issue id="8975c571-fca9-4a8d-a3de-16dd18b5af57" href="https://linear.app/malpercio/issue/MM-366/author-test-requirements-implementation-phases-plans-complete-the">MM-366</issue>
+* <issue id="d5dd7dd2-19ab-42e1-8ab2-098de959551a" href="https://linear.app/malpercio/issue/MM-370/create-post-end-to-end-over-the-hosted-sidecar-on-staging-first-slice">MM-370</issue> — `create_post` end-to-end over the sidecar on staging (acceptance-defining) · *blocked by* <issue id="d29ebbda-fe77-4455-aaf9-fb7d131f5c5d" href="https://linear.app/malpercio/issue/MM-368/agent-as-child-identity-minting-sovereign-child-did-repo-handle-wallet">MM-368</issue>*,* <issue id="db18a0e0-a4c4-4879-be36-b8c5a815ac5b" href="https://linear.app/malpercio/issue/MM-369/credential-forwarding-streamable-http-mcp-sidecar-scaffold">MM-369</issue>
+* <issue id="196e7bec-7cc4-4be0-93cd-306f671aae03" href="https://linear.app/malpercio/issue/MM-367/preserve-document-the-self-hosted-acts-as-you-stdio-mcp-path-non">MM-367</issue> — Preserve + document the self-hosted acts-as-you stdio path (non-regression)
+
+**Phase 2+ — later tiers (tracked, not-now)**
+
+* <issue id="e78477cb-df5d-4dc6-bfb3-14010880261b" href="https://linear.app/malpercio/issue/MM-371/nested-agent-handles-writeraliceobsignorg-via-on-demand-tls">MM-371</issue> — Nested handles (`writer.alice.obsign.org`) via on-demand TLS · *blocked by* <issue id="d29ebbda-fe77-4455-aaf9-fb7d131f5c5d" href="https://linear.app/malpercio/issue/MM-368/agent-as-child-identity-minting-sovereign-child-did-repo-handle-wallet">MM-368</issue>
+* <issue id="372cab99-587a-4874-9209-904545683961" href="https://linear.app/malpercio/issue/MM-372/custom-domains-for-agent-identities-via-native-atproto-handle">MM-372</issue> — Custom domains via native ATProto handle verification · *blocked by* <issue id="d29ebbda-fe77-4455-aaf9-fb7d131f5c5d" href="https://linear.app/malpercio/issue/MM-368/agent-as-child-identity-minting-sovereign-child-did-repo-handle-wallet">MM-368</issue>
+* <issue id="f8315e89-0eca-40e8-ab6d-6bea631310d3" href="https://linear.app/malpercio/issue/MM-373/host-your-own-mcp-sidecar-connected-to-the-pds-over-iroh">MM-373</issue> — Host-your-own sidecar over Iroh · *blocked by* <issue id="db18a0e0-a4c4-4879-be36-b8c5a815ac5b" href="https://linear.app/malpercio/issue/MM-369/credential-forwarding-streamable-http-mcp-sidecar-scaffold">MM-369</issue>
+* <issue id="e4fb99bf-caea-43bb-8eed-88cb4a952fc1" href="https://linear.app/malpercio/issue/MM-374/consolidate-fold-the-mcp-endpoint-into-axum-in-pds-option-a">MM-374</issue> — Fold the MCP endpoint into axum (in-PDS "option A") · *blocked by* <issue id="d5dd7dd2-19ab-42e1-8ab2-098de959551a" href="https://linear.app/malpercio/issue/MM-370/create-post-end-to-end-over-the-hosted-sidecar-on-staging-first-slice">MM-370</issue>
+
+[honker.dev](<http://honker.dev>) and Litestream read replicas remain **deferred levers**, deliberately not children (design plan §6).
+</description>
+</parent-issue>
+<issue-relations>
+<blocking><issue-ref identifier="MM-374" title="Consolidate: fold the MCP endpoint into axum (in-PDS &quot;option A&quot;)"/></blocking>
+<blocked-by>
+<issue-ref identifier="MM-369" title="Credential-forwarding Streamable-HTTP MCP sidecar scaffold (mcp.obsign.org)"/>
+<issue-ref identifier="MM-368" title="Agent-as-child-identity minting — sovereign child DID + repo + handle + wallet recovery"/>
+</blocked-by>
+<related><issue-ref identifier="MM-367" title="Preserve + document the self-hosted acts-as-you stdio MCP path (non-regression)"/></related>
+</issue-relations>
+</issue>
