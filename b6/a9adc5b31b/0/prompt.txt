@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>bgenox7mk</task-id>
+<tool-use-id>toolu_01DEiLPPKNKaiQDfgTa2o1Ke</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-jacob-zweifel-workspace-malpercio-dev-ezpds/00ef4afd-87f5-4f84-908b-60302e7f879a/tasks/bgenox7mk.output</output-file>
+<status>completed</status>
+<summary>Background command "Watch production CI + Railway deploy, then verify metadata and PAR acceptance" completed (exit code 0)</summary>
+</task-notification>
