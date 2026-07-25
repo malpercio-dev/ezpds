@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Changes are collected in `changelog.d/` during development and inserted here when
 `just set-version` prepares a release. There is intentionally no `Unreleased` section.
 
+## [0.8.3] - 2026-07-25
+
+### Fixed
+
+- Labels are visible again on posts and accounts for Custos-hosted identities. When a client asked the AppView for content, Custos dropped the `atproto-accept-labelers` header naming the labelers that account subscribes to — and the AppView applies only the labelers it is told about, falling back to its own default moderation service alone. Every label from every subscribed labeler was therefore stripped before it reached the client, with no way to tell the difference between "this content carries no labels" and "the labelers were never asked". Custos now forwards that header (along with `accept-language` and `x-bsky-topics`) upstream, and passes the AppView's `atproto-content-labelers`, `atproto-repo-rev`, and `retry-after` back to the client — on the streaming proxy path and on every fallback rung of the read-after-write path alike, matching the reference PDS.
+
+- Backup Share 1 can now sync to your other Apple devices. Every wallet Keychain write omitted the iCloud sync attribute, so the share the "lost phone, iCloud intact" recovery path depends on never left the device that created it — recovery on a new device silently needed the escrowed Share 2 *plus* the Share 3 word phrase. Share 1 is now written to the iCloud-synchronizable Keychain, read from there first, and an existing share is copied across on the next app launch. Obsign can only confirm it wrote the share with the sync attribute set; whether iCloud delivers it is Apple's to do, and with iCloud Keychain switched off it stays put. The repair runs on-device, so it cannot help an identity whose only device is already lost — the backup and recovery screens now say which shares are actually in hand rather than assuming Share 1 will be waiting.
+
+- `just set-version` now regenerates the version-stamped operator reference pages, so a release PR no longer fails `just docs-check` on its first CI run.
+
+
 ## [0.8.2] - 2026-07-24
 
 ### Added
