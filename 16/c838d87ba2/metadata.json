@@ -6,7 +6,8 @@
   "checkpoints_count": 1,
   "files_touched": [
     "apps/identity-wallet/src-tauri/src/keychain.rs",
-    "apps/identity-wallet/src/lib/components/onboarding/ShamirBackupScreen.svelte"
+    "apps/identity-wallet/src/lib/components/onboarding/ShamirBackupScreen.svelte",
+    "docs/mobile-architecture-spec.md"
   ],
   "sessions": [
     {
@@ -14,14 +15,14 @@
       "transcript": "/16/c838d87ba2/0/full.jsonl",
       "compact_transcript": "/16/c838d87ba2/0/transcript.jsonl",
       "content_hash": "/16/c838d87ba2/0/content_hash.txt",
-      "prompt": "/16/c838d87ba2/0/prompt.txt"
+      "prompt": ""
     }
   ],
   "token_usage": {
-    "input_tokens": 27,
-    "cache_creation_tokens": 330812,
-    "cache_read_tokens": 4749995,
-    "output_tokens": 6938,
-    "api_call_count": 14
+    "input_tokens": 15,
+    "cache_creation_tokens": 9411,
+    "cache_read_tokens": 2985961,
+    "output_tokens": 6491,
+    "api_call_count": 8
   }
 }
