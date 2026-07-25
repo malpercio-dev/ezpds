@@ -1,0 +1,105 @@
+<task-notification>
+<task-id>acf9cf91f222f7d0c</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-jacob-zweifel-workspace-malpercio-dev-ezpds--claude-worktrees-exciting-ardinghelli-6e9eeb/ee686e48-6c83-4e5b-a0fa-53ae45617a1e/tasks/acf9cf91f222f7d0c.output</output-file>
+<status>completed</status>
+<summary>Agent "Reviewing Phase 1 read-after-write seam" finished</summary>
+<note>A task-notification fires each time this agent stops with no live background children of its own. The user can send it another message and resume it, so the same task-id may notify more than once.</note>
+<result>Task 1 (config) compiles cleanly. The failure is entirely in the `pds` crate (Tasks 2-4's module scaffold). Task 2's `service_proxy` refactor compiles (the errors are only in `read_after_write/`). The blocker is the `read_after_write` module itself never compiled — meaning Tasks 3 and 4 were committed without ever building.
+
+I have enough evidence. Build is broken; review stops here.
+
+# Code Review: Read-After-Write Phase 1 (Interception seam, module scaffold, config)
+
+## Status
+**CHANGES REQUIRED — BUILD BROKEN**
+
+## Issue Summary
+**Critical: 4 | Important: 1 | Minor: 0**
+
+## Verification Evidence
+```
+Build (common): cargo build -p common → Finished, 0 errors  (Task 1 OK)
+Build (pds):    cargo build -p pds    → FAILED, 4 compile errors
+Tests:          NOT RUN — cannot compile pds; the Task 4 integration test never executed
+Clippy:         NOT RUN — blocked on build
+```
+
+Full failure output:
+```
+error: expected item after doc comment
+  --&gt; crates/pds/src/read_after_write/types.rs:25:1
+
+error[E0599]: no method named `into_body` found for struct `reqwest::Response`
+  --&gt; crates/pds/src/read_after_write/mod.rs:54:58
+
+error[E0599]: no method named `into_response` found for struct `ApiError`
+  --&gt; crates/pds/src/read_after_write/mod.rs:59:18
+
+error[E0599]: no method named `into_response` found for struct `ApiError`
+  --&gt; crates/pds/src/read_after_write/mod.rs:72:78
+
+error: could not compile `pds` (bin "pds") due to 4 previous errors
+```
+
+The plan's own verification steps for Task 3 (`cargo build -p pds` → "Builds without errors") and Task 4 (`cargo test -p pds`, `just ci-pds` → "all green") were **not satisfied**. This code was committed without ever building. Per review policy, verification stops here.
+
+## Plan Alignment
+
+### Implemented Requirements
+- Task 1 — `cdn_url` on `AppViewConfig` (field + serde default + `default_appview_cdn_url` + `EZPDS_APPVIEW_CDN_URL` override + `Default` impl + `validate_and_build`): ✓ implemented and compiles.
+- Task 2 — extract `proxy_request` inner, `mint_service_auth` → `pub(crate)`: ✓ implemented, compiles (no errors originate in `service_proxy.rs`); refactor faithfully preserves streaming path.
+- Task 3 — scaffold `read_after_write/` (mod/types/munge/viewer) + `mod read_after_write;` in `main.rs`: ✗ **does not compile.**
+- Task 4 — branch six NSIDs in `xrpc_handler` + integration test: ✗ branch placement is correct, but the crate does not build so the test never ran.
+
+### Deviations from Plan
+- The plan's `pipethrough_munged` sketch (lines 191-194) left the body-buffering as "... build and return the response ...". The implementor filled it in with `axum::body::to_bytes(upstream.into_body(), ...)`, but `upstream` is a `reqwest::Response`, not an axum body — `into_body()` does not exist on it. This is a **problematic deviation** (invented an API that does not exist) rather than a justified one.
+
+## Critical Issues (count: 4)
+
+- **Issue**: `reqwest::Response` has no `into_body()` method; cannot buffer the body this way.
+  - **Location**: `crates/pds/src/read_after_write/mod.rs:54`
+  - **Impact**: Compile error E0599. Crate does not build.
+  - **Fix**: Read the reqwest body directly, e.g. `match upstream.bytes().await { Ok(bytes) =&gt; bytes, Err(err) =&gt; { ... } }`. Drop the `axum::body::to_bytes` wrapper. Note `upstream.status()`/`upstream.headers()` are borrowed on lines 50/52 before the move, which is fine, but `bytes()` consumes `upstream`, so capture `status` and `content_type` first (already done).
+
+- **Issue**: `.into_response()` called on `ApiError` without `IntoResponse` in scope.
+  - **Location**: `crates/pds/src/read_after_write/mod.rs:59` and `:72`
+  - **Impact**: Compile error E0599 (×2). Crate does not build.
+  - **Fix**: Add `use axum::response::IntoResponse;` to the `use axum::{...}` block (matches how `service_proxy.rs` and other shells import it).
+
+- **Issue**: Trailing `///` doc comment in `types.rs` documents no item.
+  - **Location**: `crates/pds/src/read_after_write/types.rs:22-24`
+  - **Impact**: Compile error "expected item after doc comment". Crate does not build.
+  - **Fix**: Change the three `///` lines to plain `//` comments (it is explanatory prose about the `MungeFn` seam, not doc for a following item — the plan itself said "Document this in a comment in `types.rs`", i.e. a regular comment).
+
+## Important Issues (count: 1)
+
+- **Issue**: `just ci-pds` (`clippy --all-targets -D warnings`) was never run, and the placeholder modules use `#[allow(dead_code)] pub mod placeholder { }`. Once the build is fixed, the `pub use types::{LocalRecords, RecordDescript}` re-export in `mod.rs:11` is unused in Phase 1, and `RecordDescript`/`LocalRecords` fields are never read — these will trip `-D warnings` unless suppressed. Project memory (`feedback_run_just_ci_pds_not_bare_clippy.md`) explicitly warns that bare `cargo build` misses lints the CI gate denies, and that this exact class of miss broke a prior release.
+  - **Location**: `crates/pds/src/read_after_write/mod.rs:11`, `types.rs`
+  - **Impact**: Likely CI failure on the clippy lane even after the build compiles.
+  - **Fix**: After fixing the build, run `just ci-pds` and resolve any dead-code/unused-import warnings (e.g. `#[allow(dead_code)]` on the types, or `#[allow(unused_imports)]` on the re-export) rather than relying on `cargo build` alone.
+
+## Skills Applied
+- `ed3d-house-style:coding-effectively` — correctness over convenience; the module was committed in a non-compiling state, the opposite of "evidence before assertions."
+- `ed3d-house-style:howto-functional-vs-imperative` — FCIS pattern comments verified: `types.rs` = Functional Core ✓, `munge.rs` = Functional Core ✓, `mod.rs` = Imperative Shell ✓, `viewer.rs` = Imperative Shell ✓. Classifications are correct and appropriate (mod.rs orchestrates I/O; types.rs is pure data). No ticket/AC references found in any `.rs` file ✓.
+
+## Notes on what is sound (for the fixer)
+- **Task 1 (config)** is correct and compiles — no changes needed.
+- **Task 2 (`proxy_request` extraction)** is correct — the streaming path is preserved, error paths return `Err(Response)`, `mint_service_auth` is now `pub(crate)`. No errors originate here.
+- **Task 4 branch placement** in `app.rs:558-561` is correct: after the `AuthenticatedUser` gate (line 539) and the chat scope check, before upstream target resolution, using the bare `matches!(upstream, ProxyUpstream::AppView)` form as the plan specified. The `READ_AFTER_WRITE_NSIDS` const matches the six required NSIDs exactly.
+- **The Task 4 integration test** (`service_proxy.rs:1102-1140`) is well-formed and is a genuine behavior test, not a mock-behavior test: it drives the request through `app(state)` → `xrpc_handler` → the new branch → `pipethrough_munged`, and asserts the client receives `{"feed":[]}` verbatim with status 200. It exercises the real seam. It simply could never have run because the crate does not compile. Once the 3 build errors are fixed, this test should be run to confirm it passes.
+
+## Decision
+
+**BLOCKED — CHANGES REQUIRED**
+
+Fix the 4 Critical compile errors in `crates/pds/src/read_after_write/mod.rs` and `types.rs`, then run `cargo test -p pds` and `just ci-pds` and confirm both are green (addressing the Important clippy/dead-code concern). Re-submit for a full re-review from Step 1 — I must see passing build + test + clippy output before this phase can be approved.
+
+Relevant files:
+- `/Users/jacob.zweifel/workspace/malpercio-dev/ezpds/crates/pds/src/read_after_write/mod.rs` (3 errors: lines 13-18 missing `IntoResponse` import, line 54 `into_body`, lines 59/72)
+- `/Users/jacob.zweifel/workspace/malpercio-dev/ezpds/crates/pds/src/read_after_write/types.rs` (1 error: trailing `///` at lines 22-24)
+- `/Users/jacob.zweifel/workspace/malpercio-dev/ezpds/crates/pds/src/routes/service_proxy.rs` (Task 2 refactor + Task 4 test — sound)
+- `/Users/jacob.zweifel/workspace/malpercio-dev/ezpds/crates/pds/src/app.rs` (Task 4 branch — sound)
+- `/Users/jacob.zweifel/workspace/malpercio-dev/ezpds/crates/common/src/config.rs` (Task 1 — sound)</result>
+<usage><subagent_tokens>106242</subagent_tokens><tool_uses>15</tool_uses><duration_ms>222309</duration_ms></usage>
+</task-notification>
