@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>blv9u3vhg</task-id>
+<tool-use-id>toolu_01T9111esDsiBLSFSMfBDv84</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-jacob-zweifel-workspace-malpercio-dev-ezpds/e14e454c-c592-4d1c-a1a3-c4845a1bea84/tasks/blv9u3vhg.output</output-file>
+<status>completed</status>
+<summary>Background command "Watch CI and staging deploy window for MM-321 merge" completed (exit code 0)</summary>
+</task-notification>
