@@ -96,7 +96,8 @@
            availability is a different switch and would mislead), so this takes the plan's
            documented fallback: state the condition, don't assert it holds. -->
       <p class="part-desc">
-        Saved to your Keychain — and to your other Apple devices if iCloud Keychain is on
+        Saved to your Keychain — set to sync to your other Apple devices when iCloud Keychain
+        is on
       </p>
     </div>
   </div>

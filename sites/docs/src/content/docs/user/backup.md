@@ -24,7 +24,7 @@ option to turn it on. Right after your identity is created, Obsign shows the
 **Back up your recovery key** step, and the three shares already have their homes:
 
 - **Share 1 of 3** — saved automatically to your device's **Keychain**, marked for
-  **iCloud Keychain** sync so it reaches your other Apple devices. Obsign can
+  **iCloud Keychain** sync so it can reach your other Apple devices. Obsign can
   confirm it wrote the share; only Apple can deliver it, and with iCloud Keychain
   switched off it stays on this device.
 - **Share 2 of 3** — held in your **server's escrow**.
