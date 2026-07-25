@@ -1,0 +1,1 @@
+hm, same error and place as last time. failed at Create desgination account, "Couldn't create the account on the destination PDS.". I used a new claim code from staging
