@@ -1,0 +1,91 @@
+## Context
+
+- Current git status: On branch malpercio/mm-133-cargo-audit-policy-dependency-review-in-ci
+Changes not staged for commit:
+  (use "git add <file>..." to update what will be committed)
+  (use "git restore <file>..." to discard changes in working directory)
+	modified:   .gitignore
+	modified:   AGENTS.md
+	modified:   justfile
+
+Untracked files:
+  (use "git add <file>..." to include in what will be committed)
+	.cargo/
+
+no changes added to commit (use "git add" and/or "git commit -a")
+- Current git diff (staged and unstaged changes): diff --git a/.gitignore b/.gitignore
+index 1e9c0ce..066172c 100644
+--- a/.gitignore
++++ b/.gitignore
+@@ -5,7 +5,10 @@
+ # ignored via .devenv/). These root-level dirs appear when cargo runs outside the
+ # dev shell, or under a sandbox that redirects CARGO_HOME to the repo root. Pure
+ # regenerable registry cache (see registry/CACHEDIR.TAG), never source.
+-/.cargo/
++# Ignore the contents (not the dir itself, so the one tracked file below can be
++# re-included) and keep the committed cargo-audit policy.
++/.cargo/*
++!/.cargo/audit.toml
+ /.cargo-home-probe/
+ 
+ # IDE and editor files
+diff --git a/AGENTS.md b/AGENTS.md
+index 1cebe83..4f1db79 100644
+--- a/AGENTS.md
++++ b/AGENTS.md
+@@ -103,6 +103,7 @@ adding routes and DB queries.
+ - Workspace-level dependency versions in root Cargo.toml; crates use `{ workspace = true }`
+ - All crates share version (0.1.0) and edition (2021) via workspace.package
+ - publish = false (not intended for crates.io)
++- **Dependency hygiene (CI-gated).** `just lock-check` (`cargo metadata --locked`) fails if `Cargo.lock` drifts from the manifests, so every dependency change surfaces as a reviewable `Cargo.lock` diff; `just audit` (`cargo audit`) scans the lockfile against the RustSec advisory DB on every CI run. Accepted/ignored advisories and their rationale live in [`.cargo/audit.toml`](.cargo/audit.toml) — never pass `--ignore` on the command line. When a PR adds or bumps a dependency, explain why in the PR description.
+ - **No ticket or AC references in source code.** Do not add comments like `// MM-123`, `// AC2.1:`, or `// MM-84.AC3: description` to `.rs` files or CLAUDE.md files. Design plans and test plans in `docs/` are the right home for ticket traceability. Source code comments should describe *why* in terms of the system, not which ticket required it.
+ 
+ ## Boundaries
+diff --git a/justfile b/justfile
+index bbf3bee..99054ec 100644
+--- a/justfile
++++ b/justfile
+@@ -24,19 +24,27 @@ run-pds:
+ docker-build:
+     docker build -t pds:latest .
+ 
+-# Security audit. RUSTSEC-2023-0071 (rsa Marvin attack) has no fixed release and is
+-# pulled only transitively by sqlx-macros' compile-time MySQL backend; the pds is
+-# sqlite-only, so rsa is never exercised at runtime. Revisit when a fix ships.
++# Security audit against the RustSec advisory database. Accepted/ignored advisories
++# and their rationale live in .cargo/audit.toml (read automatically by cargo audit).
+ audit:
+-    cargo audit --ignore RUSTSEC-2023-0071
++    cargo audit
++
++# Verify Cargo.lock is in sync with the Cargo.toml manifests. `--locked` makes cargo
++# error instead of silently regenerating the lockfile, so accidental dependency drift
++# (an edited manifest with a stale lock) fails CI instead of being merged. `metadata`
++# resolves the whole workspace — including the iOS app that the Linux ci-pds build
++# excludes — so the lockfile is verified end-to-end even where it cannot be compiled.
++lock-check:
++    cargo metadata --locked --format-version 1 > /dev/null
+ 
+ # Run the full CI pipeline locally (all crates; use on macOS where the iOS app builds)
+-ci: fmt-check clippy test audit
++ci: fmt-check lock-check clippy test audit
+ 
+ # CI gate for the Linux pds pipeline (tangled spindles). Excludes the iOS app
+ # (identity-wallet), which needs the Apple/GTK toolchain absent in CI; the mobile
+ # app is built and checked via `just ios-*` on macOS.
+ ci-pds: fmt-check
++    just lock-check
+     cargo clippy --workspace --exclude identity-wallet --all-targets -- -D warnings
+     cargo test --workspace --exclude identity-wallet
+     just audit
+- Current branch: malpercio/mm-133-cargo-audit-policy-dependency-review-in-ci
+
+## Your task
+
+Based on the above changes:
+
+1. Create a new branch if on main
+2. Create a single commit with an appropriate message
+3. Push the branch to origin
+4. Create a pull request using `gh pr create`
+5. You have the capability to call multiple tools in a single response. You MUST do all of the above in a single message. Do not use any other tools or do anything else. Do not send any other text or messages besides these tool calls.
