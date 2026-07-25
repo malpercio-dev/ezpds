@@ -1,0 +1,1 @@
+file the two tickets please, urgent so we do them next. then let's peek at the production railway logs. I configured smtp as well as iroh. smtp timed out and iroh is outputting warnings
