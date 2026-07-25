@@ -1,0 +1,67 @@
+<task-notification>
+<task-id>a6e3a5bf5e2dbd86b</task-id>
+<tool-use-id>toolu_0184JuTxgkaVwLaJ7PJLn5GJ</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-jacob-zweifel-workspace-malpercio-dev-ezpds--claude-worktrees-exciting-ardinghelli-6e9eeb/ee686e48-6c83-4e5b-a0fa-53ae45617a1e/tasks/a6e3a5bf5e2dbd86b.output</output-file>
+<status>completed</status>
+<summary>Agent "Implementing Phase 1, Task 1: cdn_url config" finished</summary>
+<note>A task-notification fires each time this agent stops with no live background children of its own. The user can send it another message and resume it, so the same task-id may notify more than once.</note>
+<result>Perfect! All the existing appview tests still pass. Now let me create a comprehensive report of what was completed.
+
+## Task Completed: Add `cdn_url` to `AppViewConfig`
+
+### What Was Implemented
+
+Task 1 of the read-after-write implementation plan successfully adds CDN URL configuration to the AppView proxy settings. The implementation includes:
+
+1. **Added `cdn_url` field to `AppViewConfig` struct** (`crates/common/src/config.rs:328-340`)
+   - New field: `pub cdn_url: String`
+   - Serde default: `default_appview_cdn_url`
+   - Documentation: explains it's for building image URLs for unindexed records
+
+2. **Added `default_appview_cdn_url()` function** (`crates/common/src/config.rs:358-360`)
+   - Returns `"https://cdn.bsky.app"` (Bluesky's public CDN)
+   - Follows exact pattern of existing `default_appview_url()` and `default_appview_did()`
+
+3. **Added env override support** (`crates/common/src/config.rs:655-657`)
+   - `EZPDS_APPVIEW_CDN_URL` environment variable can override the TOML config
+   - Placed immediately after `EZPDS_APPVIEW_DID` override block as specified
+
+4. **Updated `Default` impl for `AppViewConfig`** (`crates/common/src/config.rs:345-348`)
+   - Includes `cdn_url: default_appview_cdn_url()` in struct initialization
+
+5. **Updated `validate_and_build()` function** (`crates/common/src/config.rs:825-828`)
+   - Passes the `cdn_url` field from raw config to the built `AppViewConfig`
+   - Maintains existing pattern with other appview fields (url, did)
+
+### Files Modified
+
+- `/Users/jacob.zweifel/workspace/malpercio-dev/ezpds/.claude/worktrees/exciting-ardinghelli-6e9eeb/crates/common/src/config.rs`
+
+### Verification Evidence
+
+**Build Verification:**
+```
+cargo build -p common
+→ Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.24s
+```
+
+**Config Tests Passing:**
+```
+test config::tests::appview_defaults_to_public_bsky ... ok
+test config::tests::appview_url_trailing_slash_is_trimmed ... ok
+test config::tests::appview_parses_from_toml ... ok
+test config::tests::appview_rejects_non_http_scheme ... ok
+
+test result: ok. 4 passed; 0 failed
+```
+
+All existing `AppViewConfig` construction sites compile correctly. The new field has a serde default, so TOML files without `cdn_url` continue to deserialize properly.
+
+### Git Commit
+
+**SHA:** 45c0b954
+**Message:** `feat(config): add [appview] cdn_url for read-after-write image URLs`
+
+The commit is in the current branch and ready for the next phase.</result>
+<usage><subagent_tokens>120272</subagent_tokens><tool_uses>27</tool_uses><duration_ms>165288</duration_ms></usage>
+</task-notification>
