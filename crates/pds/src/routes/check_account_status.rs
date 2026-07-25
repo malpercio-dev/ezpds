@@ -148,6 +148,9 @@ async fn count_records_and_blob_refs(
 
     let entries: Vec<(String, String)> = {
         let mut tree = repo.tree();
+        // Empty prefix only: `entries_prefixed` is an unreliable filter for a non-empty prefix
+        // (it yields any key shorter than the prefix verbatim). Narrowing this to a real prefix
+        // requires re-checking each key — see `repo_engine::list_records_json`.
         let mut stream = Box::pin(tree.entries_prefixed(""));
         let mut entries = Vec::new();
         while let Some(res) = stream.next().await {
