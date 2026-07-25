@@ -1,0 +1,32 @@
+{
+  "cli_version": "0.8.42",
+  "checkpoint_id": "caa1008fe007",
+  "strategy": "manual-commit",
+  "branch": "claude/blob-observability-ownership-loss-484498",
+  "checkpoints_count": 1,
+  "files_touched": [
+    "changelog.d/mm-474.added.md",
+    "crates/pds/AGENTS.md",
+    "crates/pds/src/db/blobs.rs",
+    "crates/pds/src/db/server_stats.rs",
+    "crates/pds/src/routes/account_storage.rs",
+    "crates/pds/src/routes/admin_health.rs",
+    "docs/provisioning-api-spec.md"
+  ],
+  "sessions": [
+    {
+      "metadata": "/ca/a1008fe007/0/metadata.json",
+      "transcript": "/ca/a1008fe007/0/full.jsonl",
+      "compact_transcript": "/ca/a1008fe007/0/transcript.jsonl",
+      "content_hash": "/ca/a1008fe007/0/content_hash.txt",
+      "prompt": "/ca/a1008fe007/0/prompt.txt"
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 189,
+    "cache_creation_tokens": 732767,
+    "cache_read_tokens": 21454341,
+    "output_tokens": 52785,
+    "api_call_count": 101
+  }
+}
