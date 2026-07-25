@@ -1,0 +1,177 @@
+<ci-monitor-event>malpercio-dev/ezpds PR #109 has 1 new review comment:
+- coderabbitai[bot] (commented): 
+
+> [!CAUTION]
+> Some comments are outside the diff and can’t be posted inline due to platform limitations.
+> 
+> 
+> 
+> <details>
+> <summary>⚠️ Outside diff range comments (1)</summary><blockquote>
+> 
+> <details>
+> <summary>scripts/capability-check.sh (1)</summary><blockquote>
+> 
+> `32-41`: _🎯 Functional Correctness_ | _🔵 Trivial_ | _⚡ Quick win_
+> 
+> **Tighten `extract_permissions` to only accept flat string entries.**  
+> `sed`/`grep` here only work for a single `permissions` array of bare strings; a second `permissions` key or any nested object/array will be parsed incorrectly and can turn this guard into a false positive/negative check. Either enforce the flat-string assumption explicitly or switch to a parser that can handle the capability JSON shape.
+> 
+> <details>
+> <summary>🤖 Prompt for AI Agents</summary>
+> 
+> ```
+> Verify each finding against current code. Fix only still-valid issues, skip the
+> rest with a brief reason, keep changes minimal, and validate.
+> 
+> In `@scripts/capability-check.sh` around lines 32 - 41, The extract_permissions
+> function currently assumes a single flat permissions array and can mis-parse
+> files with another permissions key or nested objects/arrays, so tighten its
+> input handling or replace the sed/grep pipeline with a JSON-aware parser. Update
+> extract_permissions in capability-check.sh to explicitly enforce the flat
+> string-only shape before sorting permissions, using the function name and its
+> current pipeline as the place to fix the false positive/negative behavior.
+> ```
+> 
+> </details>
+> 
+> <!-- cr-comment:v1:466c3ea90a7e29c30039ad68 -->
+> 
+> </blockquote></details>
+> 
+> </blockquote></details>
+
+<details>
+<summary>🤖 Prompt for all review comments with AI agents</summary>
+
+```
+Verify each finding against current code. Fix only still-valid issues, skip the
+rest with a brief reason, keep changes minimal, and validate.
+
+Outside diff comments:
+In `@scripts/capability-check.sh`:
+- Around line 32-41: The extract_permissions function currently assumes a single
+flat permissions array and can mis-parse files with another permissions key or
+nested objects/arrays, so tighten its input handling or replace the sed/grep
+pipeline with a JSON-aware parser. Update extract_permissions in
+capability-check.sh to explicitly enforce the flat string-only shape before
+sorting permissions, using the function name and its current pipeline as the
+place to fix the false positive/negative behavior.
+```
+
+</details>
+
+---
+
+<details>
+<summary>ℹ️ Review info</summary>
+
+<details>
+<summary>⚙️ Run configuration</summary>
+
+**Configuration used**: Organization UI
+
+**Review profile**: ASSERTIVE
+
+**Plan**: Pro Plus
+
+**Run ID**: `233094f9-e8d5-4e40-acdb-fbcff15e9bea`
+
+</details>
+
+<details>
+<summary>📥 Commits</summary>
+
+Reviewing files that changed from the base of the PR and between cb9f71deebe65468eb3dbedfeea4107397749865 and 300d40e8b3825395e9f706733bf65089813f1057.
+
+</details>
+
+<details>
+<summary>📒 Files selected for processing (1)</summary>
+
+* `scripts/capability-check.sh`
+
+</details>
+
+</details>
+
+<details>
+<summary>📜 Review details</summary>
+
+<details>
+<summary>⏰ Context from checks skipped due to timeout. (1)</summary>
+
+* GitHub Check: PDS gate (fmt, clippy, test, audit)
+
+</details>
+
+<details>
+<summary>🧰 Additional context used</summary>
+
+<details>
+<summary>📓 Path-based instructions (1)</summary>
+
+<details>
+<summary>scripts/capability-check.sh</summary>
+
+
+**📄 CodeRabbit inference engine (AGENTS.md)**
+
+> Keep the Tauri IPC capability allowlists minimal: no `core:default`, no mobile schema, and `withGlobalTauri` off.
+
+Files:
+- `scripts/capability-check.sh`
+
+</details>
+
+</details><details>
+<summary>🧠 Learnings (1)</summary>
+
+<details>
+<summary>📓 Common learnings</summary>
+
+```
+Learnt from: CR
+Repo: malpercio-dev/ezpds
+
+Timestamp: 2026-07-05T15:33:05.729Z
+Learning: The app is a separate product from identity-wallet with its own terminal-native design register, and the design/token architecture is forked rather than shared verbatim.
+```
+
+```
+Learnt from: CR
+Repo: malpercio-dev/ezpds
+
+Timestamp: 2026-07-05T15:33:05.729Z
+Learning: Use the shared repo-root iOS toolchain scripts and the admin-specific wrapper conventions so the patch logic does not diverge between app lanes.
+```
+
+</details>
+
+</details>
+
+</details>
+
+<details>
+<summary>🔇 Additional comments (1)</summary><blockquote>
+
+<details>
+<summary>scripts/capability-check.sh (1)</summary><blockquote>
+
+`1-26`: LGTM!
+
+
+
+Also applies to: 43-69, 71-92, 94-130
+
+<!-- cr-comment:v1:b21b67d1bf2432e2ca48f19c -->
+
+</blockquote></details>
+
+</blockquote></details>
+
+</details>
+
+<!-- This is an auto-generated comment by CodeRabbit for review status -->
+
+Please address the feedback and push a fix. Then, for each inline comment you addressed (those with a comment_id), post a one-line reply on the thread via `gh api` saying what you changed (or why you didn't). End each reply with the line "_🤖 Addressed by [Claude Code](https://claude.com/claude-code)_" so reviewers can see it was automated. Then resolve the thread. Skip replies for comments you didn't act on.</ci-monitor-event>
