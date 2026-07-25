@@ -1,0 +1,201 @@
+Context: This summary will be shown in a list to help users and Claude choose which conversations are relevant.
+
+Please write a concise, factual summary of this conversation. Output ONLY the summary - no preamble. Claude will see this summary when searching previous conversations for useful memories and information.
+
+Summarize what happened in 2-4 sentences. Be factual and specific. Output in <summary></summary> tags.
+
+Include:
+- What was built/changed/discussed (be specific)
+- Key technical decisions or approaches
+- Problems solved or current state
+
+Exclude:
+- Apologies, meta-commentary, or your questions
+- Raw logs or debug output
+- Generic descriptions - focus on what makes THIS conversation unique
+
+Good:
+<summary>Built JWT authentication for React app with refresh tokens and protected routes. Fixed token expiration bug by implementing refresh-during-request logic.</summary>
+
+Bad:
+<summary>I apologize. The conversation discussed authentication and various approaches were considered...</summary>
+
+User: Work on Linear issue MM-460:
+
+Suggested branch name: malpercio/mm-460-wallet-share-1-is-not-actually-icloud-synced
+
+<issue identifier="MM-460">
+<title>Wallet: Share 1 is not actually iCloud-synced — kSecAttrSynchronizable is never set</title>
+<description>
+Design: `docs/design-plans/2026-07-24-wallet-identity-durability.md` §2.
+
+## The defect
+
+Every wallet Keychain write goes through `keychain::store_item` →
+`security_framework::passwords::set_generic_password`. That function builds its query from
+`PasswordOptions::new_generic_password`, which sets exactly three attributes: `kSecClass`,
+`kSecAttrService`, `kSecAttrAccount`. No `kSecAttrSynchronizable`. Grepping the whole repo for
+`synchronizable` returns zero hits in source.
+
+**So** `recovery-share-1:{did}` **never leaves the device it was written on.** A Keychain item reaches
+a different device by exactly two routes — live iCloud Keychain sync (requires the synchronizable
+attribute) or an encrypted Finder/iTunes backup. iCloud Backup re-encrypts the keychain to the
+device UID and restores only to the same device. The wallet uses neither route.
+
+## Why this matters
+
+The escrow-assisted recovery path is specified as **Share 1 (iCloud) + Share 2 (Custos escrow)**,
+requiring no user-held secret — that is the whole "lost phone, iCloud intact, zero user action"
+story. As built, that path is unavailable on a new device: recovery needs Share 2 **+ Share 3**, the
+one share a user might not have kept.
+
+The belief that it syncs is stated in five places, all of which are currently wrong:
+
+* `rekey.rs:50` — doc comment: "durable, **iCloud-synced** Share 1"
+* `ShamirBackupScreen.svelte:91` — "Saved to iCloud Keychain automatically"
+* `RecoverStartScreen.svelte:97` — "Share 1 · iCloud Keychain"
+* `sites/docs/.../user/backup.md:26`, `.../user/screens.md:33` — "your iCloud Keychain carried it to
+  the new phone"
+* `docs/archive/design-plans/2026-07-17-key-recovery-from-shares.md` §4 — "Share 1 appears
+  automatically via iCloud Keychain sync"
+
+This is an implementation gap against a design that already specified the behavior, not a design
+change.
+
+## Scope
+
+1. **Options-taking write path** in `keychain.rs` (`store_item_synced` / `get_item_synced` /
+   `delete_item_synced`) over `set_generic_password_options` with `kSecAttrSynchronizable = true`.
+   Accessibility stays at the framework default (`WhenUnlocked`) — `…ThisDeviceOnly` is mutually
+   exclusive with syncing.
+2. **Share 1 only.** Synced and non-synced items with the same service+account are *distinct**
+**records*; Apple's `SecItem.h` is explicit that "if the key is not supplied … no synchronizable
+   items will be added or returned." So the read path is synced-first-then-legacy and the backfill
+   is explicit, not optional.
+3. **Explicit deny-list, unit-tested.** The device-key scalar, `{did}:oauth-tokens`,
+   `{did}:recovery-signing-key`, `ceremony-staging`, and `recovery-epilogue` must never gain the
+   flag — see the design plan §2.2 for the reasoning on each.
+4. **Launch backfill — copy, never flip in place.** Extend the existing
+   `migrate_global_share1_to_per_did` step in `lib.rs`: for each managed DID, if the synced slot is
+   absent and a legacy slot holds a valid v2 envelope, copy it across. Additive, idempotent, never
+   deletes the legacy slot. `SecItem.h` documents the key for *targeting* synced items in
+   update/delete but never for changing an item's synchronizability, so treat an in-place flip as
+   unsupported — and copying is safer regardless, since the legacy slot may be the share's only
+   surviving copy.
+5. **Honest copy.** iOS exposes no "did this item sync" callback, so don't fake one. Degrade the
+   claim to what the code can defend, and keep Share 3's write-it-down step non-skippable.
+
+## What this fix cannot reach (design plan §2.3.1)
+
+The backfill runs on-device, so it only reaches a device that **both** still holds Share 1 **and**
+launches the fixed build at least once:
+
+* **Users who have already lost a device are not helped.** This cannot reach backward; those
+  accounts stay on Share 2 + Share 3 for the life of the identity. Any user-facing framing must say
+  so plainly rather than implying a retroactive repair.
+* A user who updates and opens the app is protected silently from that launch onward.
+* **iCloud Keychain must be enabled** on the account. With it off, the item is written carrying the
+  attribute and propagates nowhere; enabling it later syncs with no further app involvement.
+
+That last point is why scope item 5 matters more than it looks: "we wrote it with the sync flag" and
+"it reached your Apple account" are different claims, and the app can only verify the first.
+
+## Threat note
+
+Syncing Share 1 moves it from "one device" to "the user's Apple account" — the position ADR-0001 and
+ADR-0027 already designed for, and still one share short of the 2-of-3 threshold. An Apple-account
+compromise alone yields one share; it still needs escrow release (OTP-gated, 24h delay, cancellable)
+or the user's Share 3, with the device key's 72-hour override supremacy as backstop. Worth an
+explicit re-affirmation in review rather than an assumption.
+
+## Definition of done
+
+- [ ] Share 1 written with `kSecAttrSynchronizable`; reads prefer the synced slot
+- [ ] Deny-list asserted by unit test — no other account gains the flag
+- [ ] Launch backfill copies legacy → synced, idempotently, legacy preserved
+- [ ] All five copy/comment sites corrected to match what the code guarantees, including the
+      not-retroactive caveat
+- [ ] Device-verified: onboard on device A, Share 1 auto-loads into recovery on device B under the
+      same Apple account
+</description>
+<team name="Mal's Machinations"/>
+<label>Bug</label>
+<label>Security</label>
+<label>Wave 3: Key Sovereignty</label>
+<label>Mobile: Identity Wallet</label>
+<project name="ezpds">An easy-to-host PDS on the ATProtocol, MacOS. Grandma-approved.</project>
+<issue-relations>
+<related>
+<issue-ref identifier="MM-405" title="Key recovery from shares — bind the escrowed secret and build the recovery ceremony (epic)"/>
+<issue-ref identifier="MM-425" title="Device transfer: identity-layer device-key rotation for a planned device switch"/>
+<issue-ref identifier="MM-410" title="Wallet recovery ceremony: &quot;Recover existing identity&quot; onboarding path (escrow-assisted + fully sovereign) with share-rotation epilogue"/>
+<issue-ref identifier="MM-461" title="Wallet: Secure Enclave liveness probe — don't report a rotation key the enclave can't sign with"/>
+<issue-ref identifier="MM-462" title="Wallet: decouple the Keychain access group from the bundle ID before any org.obsign rename"/>
+</related>
+</issue-relations>
+</issue>
+
+please open a PR linked to the linear issue when complete
+
+Agent: I'll start by activating the Linear workflow skill, then dig into the codebase.
+
+---
+
+User: Base directory for this skill: /Users/jacob.zweifel/.claude/skills/linear-workflow
+
+# Linear Development Workflow
+
+This skill manages the full lifecycle of working on a Linear issue: from picking it up through opening a PR.
+
+## Starting Work on an Issue
+
+When the user indicates they want to work on a Linear issue (e.g., "Let's work on MM-42"):
+
+1. **Parse the issue identifier** from the user's message. The pattern is `MM-` followed by a number.
+
+2. **Fetch the issue details** from Linear using the `get_issue` tool with the parsed identifier. Display a brief summary to the user: title, description (truncated if long), priority, and any existing labels.
+
+3. **Update the issue in Linear:**
+   - Set the status to **"In Progress"**
+   - Assign it to **"me"** (the authenticated user)
+
+   Use the `save_issue` tool with the issue's `id`, `state: "In Progress"`, and `assignee: "me"`.
+
+4. **Create a git branch from a fresh base** using the issue's suggested branch name:
+   - The `get_issue` response includes a `branchName` field — use that as the branch name.
+   - **Fetch first, then branch from the remote tip — never from a possibly-stale local HEAD:**
+     `git fetch origin main && git checkout -b <branchName> origin/main`
+     A stale base silently duplicates work that already merged (hours lost rebuilding an already-shipped backend is the known failure mode).
+   - If the branch already exists locally, check it out, then run `git log --oneline <branchName>..origin/main` and surface to the user how far behind the base is.
+
+5. **Verify sibling work is in the base.** If the issue depends on or overlaps sibling issues already marked Done in Linear, confirm their PRs are actually present in the branch base (e.g. `git log --oneline origin/main | grep -i mm-nnn`, or check for the files/routes they added) before concluding any related feature is "missing". **"Linear says Done but the code isn't here" is a hard stop-and-verify signal — it almost always means your base is stale, not that the feature needs building.**
+
+6. **Confirm to the user** what happened: issue assigned, status updated, branch created/checked out (and from which base commit). Then ask what they'd like to tackle first, or summarize the issue so they can dive in.
+
+## Opening a PR (Auto-transition to "In Review")
+
+When the user asks to open a PR, create a pull request, or you detect that a PR is being created for a branch associated with a Linear issue:
+
+1. **Identify the Linear issue** from the current branch name. Linear branch names typically contain the issue identifier (e.g., `malpercio/mm-42-fix-the-thing`). Extract the `MM-XXX` portion.
+
+2. **Create the PR** as the user requests (follow normal PR creation workflow).
+
+3. **After the PR is successfully created**, update the Linear issue:
+   - Set the status to **"In Review"**
+   - Attach the PR URL as a link on the issue using the `links` field in `save_issue`
+
+   Use `save_issue` with the issue's `id`, `state: "In Review"`, and `links: [{"url": "<pr-url>", "title": "Pull Request"}]`.
+
+4. **Confirm** to the user that the issue has been moved to "In Review" and the PR link has been attached.
+
+## Important Notes
+
+- Always fetch the issue first to confirm it exists and get the full `id` (UUID) needed for updates.
+- If the issue is already "In Progress" and assigned, skip those updates and just create the branch.
+- If branch creation fails (e.g., uncommitted changes), inform the user and suggest next steps rather than silently failing.
+- The PR-to-"In Review" transition should happen automatically whenever a PR is opened during a session where the user started work on a Linear issue. Track the active issue identifier throughout the session.
+
+
+ARGUMENTS: MM-460
+
+Agent: Issue is already In Progress and assigned; the worktree branch is on top of `origin/main`. Let me read the code.
