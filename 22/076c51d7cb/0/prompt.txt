@@ -1,0 +1,587 @@
+<task-notification>
+<task-id>aec18835a4b36a99b</task-id>
+<tool-use-id>toolu_01G6uYYqZuf6zauBAxHHX5Pf</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-jacob-zweifel-workspace-malpercio-dev-ezpds--claude-worktrees-awesome-lamport-bf2e56/d99ceb90-e7e1-42a0-bc40-c5ae3369966b/tasks/aec18835a4b36a99b.output</output-file>
+<status>completed</status>
+<summary>Agent "Map migration orchestrator + IPC" finished</summary>
+<note>A task-notification fires each time this agent stops with no live background children of its own. The user can send it another message and resume it, so the same task-id may notify more than once.</note>
+<result>Perfect! Now I have all the information I need. Let me compile a comprehensive report:
+
+---
+
+## **MM-232 Backend + IPC Contract Investigation Report**
+
+### **1. Migration Orchestrator / State Machine (MM-228)**
+
+**File:** `/Users/jacob.zweifel/workspace/malpercio-dev/ezpds/.claude/worktrees/awesome-lamport-bf2e56/apps/identity-wallet/src-tauri/src/migrate.rs`
+
+#### State Machine &amp; Types
+
+The migration uses an **implicit state machine** rather than an explicit enum. The orchestrator drives three sequential operations:
+
+1. **Path Detection** → `detect_migration_path_cmd`
+2. **Build + Sign** → `build_migration_op_cmd` (parks signed op in `MigrationState`)
+3. **Submit** → `submit_migration_op_cmd` (consumes the parked op)
+
+**State Machine Enum (ADR-0002 Path Selection):**
+```rust
+pub enum MigrationPath {
+    /// The wallet holds an authorized rotation key and can self-sign the PLC op.
+    SelfSigned,
+    /// The wallet does not hold an authorized rotation key; use the PDS-signed interop path.
+    Interop,
+    /// The wallet cannot safely choose a path (for example, plc.directory is unreachable).
+    CannotDetermine,
+}
+```
+
+**Path Decision Output (sent to frontend for orchestrator):**
+```rust
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct MigrationPathDecision {
+    pub path: MigrationPath,
+    /// The wallet's per-DID device key, when available.
+    pub device_key_id: Option&lt;String&gt;,
+    /// Index of the device key in the DID's current rotationKeys, if present.
+    pub rotation_key_index: Option&lt;usize&gt;,
+    /// Human-readable explanation for UI/orchestrator logging.
+    pub reason: String,
+}
+```
+
+#### The Five Transfer Legs (Operation Ordering)
+
+The migration performs **atomic repointing** of a single PLC operation. It is NOT a multi-leg process but a **single operation** that changes:
+
+1. **rotationKeys**: Device key preserved at `[0]`, recommended keys from destination at `[1+]`
+2. **services.atproto_pds**: Changed to destination's endpoint
+3. **verificationMethods.atproto**: Changed to destination's verification method
+4. **alsoKnownAs**: **Preserved** (critical invariant)
+
+**Partial Failure Representation:**
+
+The migration doesn't track partial progress — it either succeeds entirely or fails. Resumability is NOT built in; the orchestrator retries from scratch if `submit_migration_op_cmd` fails.
+
+**Current State Extraction (from audit log):**
+```rust
+#[derive(Debug, Clone)]
+pub(crate) struct CurrentState {
+    /// CID of the latest op — becomes the new op's `prev`.
+    pub prev_cid: String,
+    /// Current rotation keys (for authorization + diff).
+    pub rotation_keys: Vec&lt;String&gt;,
+    /// Current alsoKnownAs (handle URIs) — a migration must preserve these.
+    pub also_known_as: Vec&lt;String&gt;,
+    /// Current atproto_pds endpoint, if present (for the diff's `old_endpoint`).
+    pub pds_endpoint: Option&lt;String&gt;,
+}
+```
+
+#### Serde Types Crossing IPC Boundary
+
+**`SignedMigrationOp`** (sent to frontend for review):
+```rust
+#[derive(Debug, Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct SignedMigrationOp {
+    /// Human-readable diff of what the migration op changes (endpoint + key swap).
+    pub diff: OpDiff,
+    /// The signed PLC operation JSON, ready to POST to plc.directory.
+    pub signed_op: serde_json::Value,
+}
+```
+
+**OpDiff** (shows the review changes):
+```rust
+pub struct OpDiff {
+    /// Keys being added in this operation
+    pub added_keys: Vec&lt;String&gt;,
+    /// Keys being removed in this operation
+    pub removed_keys: Vec&lt;String&gt;,
+    /// Service endpoint changes (added/removed/modified)
+    pub changed_services: Vec&lt;ServiceChange&gt;,
+    /// Previous CID (content identifier) of the DID document, or null if no prior operation
+    pub prev_cid: Option&lt;String&gt;,
+}
+
+pub struct ServiceChange {
+    pub id: String,
+    pub change_type: ChangeType,  // enum: Added | Removed | Modified
+    pub old_endpoint: Option&lt;String&gt;,
+    pub new_endpoint: Option&lt;String&gt;,
+}
+```
+
+**Error Enum (IPC):**
+```rust
+#[derive(Debug, Serialize, thiserror::Error)]
+#[serde(tag = "code", rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum MigrateError {
+    #[error("Wallet is not authorized to self-sign for this DID (no device key in current rotationKeys)")]
+    WalletNotAuthorized,
+    #[error("Migration operation rejected by pre-sign guard: {reason}")]
+    GuardRejected { reason: String },
+    #[error("Invalid recommended credentials from destination PDS: {message}")]
+    InvalidRecommendedCredentials { message: String },
+    #[error("Invalid audit log: {message}")]
+    InvalidAuditLog { message: String },
+    #[error("Local signing failed: {message}")]
+    SigningFailed { message: String },
+    #[error("plc.directory rejected the submitted operation: {message}")]
+    PlcDirectoryError { message: String },
+    #[error("A network call failed: {message}")]
+    NetworkError { message: String },
+    #[error("The DID's device key could not be found/created: {message}")]
+    IdentityNotFound { message: String },
+    #[error("No pending migration (build must run before submit), or DID mismatch: {message}")]
+    MigrationNotReady { message: String },
+}
+```
+
+---
+
+### **2. Self-Signed PLC Identity Leg (MM-229)**
+
+**File:** Same — `/Users/jacob.zweifel/workspace/malpercio-dev/ezpds/.claude/worktrees/awesome-lamport-bf2e56/apps/identity-wallet/src-tauri/src/migrate.rs`
+
+#### Function: `build_migration_op`
+
+**Signature:**
+```rust
+pub async fn build_migration_op(
+    pds_client: &amp;PdsClient,
+    dest_client: &amp;OAuthClient,
+    did: &amp;str,
+) -&gt; Result&lt;SignedMigrationOp, MigrateError&gt;
+```
+
+**Step-by-step (quoted from lines 573–678):**
+
+1. **Per-DID device key** (line 581–587):
+   ```rust
+   let device_pub = store.get_or_create_device_key(did).map_err(...)?;
+   let device_key_id = device_pub.key_id;
+   ```
+
+2. **Current audit log → prev + current state** (line 590–601):
+   - Fetches from plc.directory via `pds_client.fetch_audit_log(did)`
+   - Parses to extract rotation keys, alsoKnownAs, PDS endpoint, prev CID
+   - Strict validation: rejects empty rotationKeys, missing alsoKnownAs, non-string elements
+
+3. **Destination-recommended credentials** (line 604–608):
+   ```rust
+   let recommended = get_recommended_did_credentials(dest_client).await?;
+   ```
+   - Calls XRPC `com.atproto.identity.getRecommendedDidCredentials` on destination PDS
+   - **Requires authenticated destination OAuthClient** (provided by orchestrator)
+
+4. **Assemble proposed op** (line 610–644):
+   - Device key forced to `rotationKeys[0]`
+   - Destination's recommended rotation keys appended at `[1+]`
+   - Destination's verification methods extracted
+   - Destination's services extracted
+   - alsoKnownAs **preserved** from current state
+
+5. **Strict pre-sign guard** (line 636–646):
+   ```rust
+   guard_migration_op(&amp;inputs)?;
+   ```
+   (See section 2b below)
+
+6. **Sign locally with per-DID device key** (line 648–665):
+   ```rust
+   let sign_closure = crate::identity_store::per_did_sign_closure(did)?;
+   let signed = crypto::build_did_plc_rotation_op(
+       &amp;current.prev_cid,
+       proposed_rotation_keys.clone(),
+       proposed_vms,
+       also_known_as,
+       proposed_services,
+       sign_closure,
+   )?;
+   ```
+   - Uses device key from Keychain (via `identity_store` per-DID signing closure)
+   - NO BIOMETRIC APPROVAL HERE — approval happens AFTER `SignedMigrationOp` is built and shown to the user in the frontend UI
+
+7. **Diff for review** (line 668):
+   ```rust
+   let diff = build_migration_diff(&amp;current, &amp;proposed_rotation_keys, &amp;proposed_endpoint);
+   ```
+
+#### Function: `guard_migration_op` (Strict Pre-Sign Allowlist)
+
+**Signature &amp; Enforcement (lines 177–226):**
+```rust
+pub fn guard_migration_op(inputs: &amp;MigrationInputs) -&gt; Result&lt;(), MigrateError&gt;
+```
+
+**The Five Rules (enforced in order):**
+
+1. **Rule 2 (Authorization first):** Device key must be in current rotationKeys, else return `WalletNotAuthorized` (allows orchestrator to fall back to interop path)
+   ```rust
+   if !inputs.current_rotation_keys.contains(&amp;inputs.device_key_id) {
+       return Err(MigrateError::WalletNotAuthorized);
+   }
+   ```
+
+2. **Rule 1 (Sovereignty):** Device key must remain at `rotationKeys[0]`
+   ```rust
+   if inputs.proposed_rotation_keys.first() != Some(&amp;inputs.device_key_id) {
+       return Err(MigrateError::GuardRejected { reason: format!(...) });
+   }
+   ```
+
+3. **Rule 3 (Key allowlist):** Every rotation key after [0] must be destination-recommended
+   ```rust
+   for key in inputs.proposed_rotation_keys.iter().skip(1) {
+       if !inputs.recommended_rotation_keys.contains(key) {
+           return Err(MigrateError::GuardRejected { reason: format!(...) });
+       }
+   }
+   ```
+
+4. **Rule 4 (Handle preservation):** `alsoKnownAs` must not change
+   ```rust
+   if inputs.proposed_also_known_as != inputs.current_also_known_as {
+       return Err(MigrateError::GuardRejected { reason: ... });
+   }
+   ```
+
+5. **Rule 5 (Service allowlist):** Only `atproto_pds` may be touched
+   ```rust
+   if inputs.proposed_service_ids.len() != 1
+       || inputs.proposed_service_ids.first().map(String::as_str) != Some("atproto_pds")
+   {
+       return Err(MigrateError::GuardRejected { reason: format!(...) });
+   }
+   ```
+
+**Return:** `Ok(())` if all rules pass, else specific error.
+
+#### Biometric Approval Gate
+
+**Location:** The frontend, NOT the Rust backend.
+
+**Flow:**
+1. `buildMigrationOp()` IPC call → returns `SignedMigrationOp` with `diff` and `signed_op`
+2. Frontend displays the diff to the user (ReivewOperationScreen-like UI)
+3. User confirms with biometric (TouchID/FaceID) — this is a **native OS gesture**, not a Tauri command
+4. `submitMigrationOp()` IPC call with the signed op already in `MigrationState`
+
+**Why not in Rust:** The device key never leaves the Secure Enclave, and signing is deterministic (RFC 6979). Biometric approval is a **policy gate** (block user action after review), not a **cryptographic gate** (cannot be cryptographically enforced by the backend). Doing it in the frontend lets the user see the proposed changes before committing biometrically.
+
+---
+
+### **3. Path Detection (MM-230)**
+
+**File:** Same — `migrate.rs`
+
+#### Function: `decide_migration_path` (Pure)
+
+**Signature (lines 347–382):**
+```rust
+pub(crate) fn decide_migration_path(
+    rotation_keys: &amp;[String],
+    device_key_id: Option&lt;&amp;str&gt;,
+) -&gt; MigrationPathDecision
+```
+
+**Logic:**
+- If wallet has no device key for the DID → `Interop`
+- If device key found in rotation keys:
+  - At index 0 → `SelfSigned` (primary rotation key)
+  - At index &gt; 0 → `SelfSigned` (still authorized, just not primary)
+- If device key not in rotation keys → `Interop`
+
+**Returns:**
+```rust
+MigrationPathDecision {
+    path: MigrationPath,
+    device_key_id: Option&lt;String&gt;,
+    rotation_key_index: Option&lt;usize&gt;,
+    reason: String,
+}
+```
+
+#### Function: `detect_migration_path` (Async Wrapper)
+
+**Signature (lines 384–425):**
+```rust
+pub async fn detect_migration_path(pds_client: &amp;PdsClient, did: &amp;str) -&gt; MigrationPathDecision
+```
+
+**Steps:**
+1. Fetch audit log from plc.directory
+2. Extract current rotation keys (strict parsing)
+3. Get wallet's device key for the DID
+4. Call pure `decide_migration_path` with the three inputs
+
+**Returns:** `MigrationPathDecision` (never errors; returns `CannotDetermine` if any network/parse step fails)
+
+---
+
+### **4. Tauri IPC Commands (All Migration-Related)**
+
+**File:** `/Users/jacob.zweifel/workspace/malpercio-dev/ezpds/.claude/worktrees/awesome-lamport-bf2e56/apps/identity-wallet/src-tauri/src/migrate.rs` (lines 743–838)
+
+#### Command 1: `detect_migration_path_cmd`
+
+**Signature (lines 744–750):**
+```rust
+#[tauri::command]
+pub async fn detect_migration_path_cmd(
+    state: tauri::State&lt;'_, crate::oauth::AppState&gt;,
+    did: String,
+) -&gt; Result&lt;MigrationPathDecision, MigrateError&gt;
+```
+
+**Return type:** `MigrationPathDecision`
+
+#### Command 2: `build_migration_op_cmd`
+
+**Signature (lines 752–798):**
+```rust
+#[tauri::command]
+pub async fn build_migration_op_cmd(
+    state: tauri::State&lt;'_, crate::oauth::AppState&gt;,
+    did: String,
+) -&gt; Result&lt;SignedMigrationOp, MigrateError&gt;
+```
+
+**Key logic:**
+- Reads `MigrationState` from `AppState.migration_state` (locked)
+- Validates DID matches the one in `MigrationState` (defense-in-depth)
+- Reads `dest_oauth_client` from `MigrationState` — **this must already be populated by the orchestrator before calling this command**
+- Calls `build_migration_op(pds_client, dest_client, did)`
+- **Re-acquires lock** after the async build (re-validates DID match)
+- Parks the `signed_op` from the result into `MigrationState.signed_op`
+- Returns `SignedMigrationOp` to frontend
+
+**Errors returned:** Any `MigrateError` variant (including `MigrationNotReady` if `migration_state` is None)
+
+#### Command 3: `submit_migration_op_cmd`
+
+**Signature (lines 801–838):**
+```rust
+#[tauri::command]
+pub async fn submit_migration_op_cmd(
+    state: tauri::State&lt;'_, crate::oauth::AppState&gt;,
+    did: String,
+) -&gt; Result&lt;ClaimResult, MigrateError&gt;
+```
+
+**Key logic:**
+- **Takes (not clones)** the signed op from `MigrationState` under the lock (prevents double-submit of the same non-idempotent PLC op)
+- Validates DID matches
+- Calls `submit_migration_op(pds_client, did, signed_op)`
+- Clears `MigrationState` on success (migration complete)
+- Returns `ClaimResult` with updated DID document
+
+**Return type:** `ClaimResult` (same as claim/recovery flows)
+
+---
+
+### **5. Frontend IPC Wrapper**
+
+**File:** `/Users/jacob.zweifel/workspace/malpercio-dev/ezpds/.claude/worktrees/awesome-lamport-bf2e56/apps/identity-wallet/src/lib/ipc.ts` (lines 646–716)
+
+#### Exported Functions &amp; Types
+
+**Error type (lines 655–664):**
+```typescript
+export type MigrateError =
+  | { code: 'WALLET_NOT_AUTHORIZED' }
+  | { code: 'GUARD_REJECTED'; reason: string }
+  | { code: 'INVALID_RECOMMENDED_CREDENTIALS'; message: string }
+  | { code: 'INVALID_AUDIT_LOG'; message: string }
+  | { code: 'SIGNING_FAILED'; message: string }
+  | { code: 'PLC_DIRECTORY_ERROR'; message: string }
+  | { code: 'NETWORK_ERROR'; message: string }
+  | { code: 'IDENTITY_NOT_FOUND'; message: string }
+  | { code: 'MIGRATION_NOT_READY'; message: string };
+```
+
+**Path enum (line 677):**
+```typescript
+export type MigrationPath = 'self_signed' | 'interop' | 'cannot_determine';
+```
+
+**Decision type (lines 684–689):**
+```typescript
+export interface MigrationPathDecision {
+  path: MigrationPath;
+  deviceKeyId: string | null;
+  rotationKeyIndex: number | null;
+  reason: string;
+}
+```
+
+**Signed op type (lines 670–675):**
+```typescript
+export interface SignedMigrationOp {
+  /** Human-readable diff: the atproto_pds endpoint change plus the rotation-key swap. */
+  diff: OpDiff;
+  /** The signed PLC operation JSON, ready to POST to plc.directory. */
+  signedOp: Record&lt;string, unknown&gt;;
+}
+```
+
+**Function 1: `detectMigrationPath` (lines 696–697):**
+```typescript
+export const detectMigrationPath = (did: string): Promise&lt;MigrationPathDecision&gt; =&gt;
+  invoke('detect_migration_path_cmd', { did });
+```
+
+**Function 2: `buildMigrationOp` (lines 706–707):**
+```typescript
+export const buildMigrationOp = (did: string): Promise&lt;SignedMigrationOp&gt; =&gt;
+  invoke('build_migration_op_cmd', { did });
+```
+
+**Function 3: `submitMigrationOp` (lines 715–716):**
+```typescript
+export const submitMigrationOp = (did: string): Promise&lt;ClaimResult&gt; =&gt;
+  invoke('submit_migration_op_cmd', { did });
+```
+
+**ALL migration-related IPC is wrapped.** No raw `invoke()` calls exist in page components for migration commands.
+
+---
+
+### **6. Existing Migration Test**
+
+**File:** Same — `migrate.rs` (lines 1296–1415)
+
+**Test Name:** `test_build_and_submit_migration_self_signs_repoint` (lines 1296–1415)
+
+**Integration test demonstrating full call sequence:**
+
+```rust
+#[tokio::test]
+#[ignore] // Requires socket binding; ignore in sandboxed environments
+async fn test_build_and_submit_migration_self_signs_repoint() {
+    // 1. Set up identity + device key
+    let store = IdentityStore;
+    store.add_identity(did).expect("add_identity");
+    let device_pub = store.get_or_create_device_key(did).expect("device key generation");
+    let device_key_id = device_pub.key_id.clone();
+
+    // 2. Mock plc.directory audit log (wallet already holds rotationKeys[0])
+    // showing current state: device key at [0], old PDS key at [1]
+    let audit_log_json = serde_json::json!([{
+        "did": did,
+        "cid": "bafy_current",
+        "createdAt": "2026-07-03T00:00:00Z",
+        "nullified": false,
+        "operation": {
+            "type": "plc_operation",
+            "rotationKeys": [device_key_id, OLD_PDS],
+            "verificationMethods": { ATPROTO_VERIFICATION_METHOD_ID: "did:key:zOLDSIGN" },
+            "alsoKnownAs": [HANDLE],
+            "services": { ATPROTO_PDS_SERVICE_ID: { "type": "AtprotoPersonalDataServer", "endpoint": "https://old.pds" } },
+            "prev": "bafy_prev",
+            "sig": "placeholder"
+        }
+    }]);
+
+    // 3. Mock plc.directory (audit log fetch + op submit + DID-doc refetch)
+    let plc = MockServer::start();
+    plc.mock(|when, then| {
+        when.method(GET).path(format!("/{did}/log/audit"));
+        then.status(200).json_body(audit_log_json.clone());
+    });
+    let plc_submit_mock = plc.mock(|when, then| {
+        when.method(POST).path(format!("/{did}"));
+        then.status(200).json_body(serde_json::json!({}));
+    });
+    let plc_diddoc_mock = plc.mock(|when, then| {
+        when.method(GET).path(format!("/{did}"));
+        then.status(200).json_body(serde_json::json!({ "id": did }));
+    });
+
+    // 4. Mock destination PDS (getRecommendedDidCredentials)
+    let dest = MockServer::start();
+    dest.mock(|when, then| {
+        when.method(GET).path("/xrpc/com.atproto.identity.getRecommendedDidCredentials");
+        then.status(200).json_body(serde_json::json!({
+            "rotationKeys": [DEST_SIGN],
+            "alsoKnownAs": [HANDLE],
+            "verificationMethods": { ATPROTO_VERIFICATION_METHOD_ID: DEST_SIGN },
+            "services": { ATPROTO_PDS_SERVICE_ID: { "type": "AtprotoPersonalDataServer", "endpoint": "https://new.pds" } }
+        }));
+    });
+
+    // 5. Build the self-signed repoint op
+    let built = build_migration_op(&amp;pds_client, &amp;dest_client, did).await.expect("build_migration_op");
+
+    // 6. Verify diff reflects endpoint change + key swap
+    assert!(built.diff.added_keys.contains(&amp;DEST_SIGN.to_string()));
+    assert!(built.diff.removed_keys.contains(&amp;OLD_PDS.to_string()));
+    assert_eq!(built.diff.changed_services[0].new_endpoint.as_deref(), Some("https://new.pds"));
+
+    // 7. Verify signed op is valid: rotationKeys[0] == device key, prev chained correctly
+    let verified = crypto::verify_plc_operation(
+        &amp;serde_json::to_string(&amp;built.signed_op).expect("serialize"),
+        std::slice::from_ref(&amp;crypto::DidKeyUri(device_key_id.clone())),
+    ).expect("signed op must verify");
+    assert_eq!(verified.rotation_keys.first(), Some(&amp;device_key_id));
+    assert_eq!(verified.prev.as_deref(), Some("bafy_current"));
+    assert_eq!(verified.rotation_keys, vec![device_key_id.clone(), DEST_SIGN.to_string()]);
+
+    // 8. Submit and verify cache refresh
+    submit_migration_op(&amp;pds_client, did, &amp;built.signed_op).await.expect("submit_migration_op");
+    plc_submit_mock.assert();
+    plc_diddoc_mock.assert();
+}
+```
+
+**Call sequence demonstrated:**
+
+1. `build_migration_op(pds_client, dest_client, did)` (Rust, no IPC)
+   - Fetches current audit log from plc.directory
+   - Calls `get_recommended_did_credentials(dest_client)` on destination PDS
+   - Assembles proposed op with device key at [0] + destination keys at [1+]
+   - Runs strict pre-sign guard
+   - Signs with per-DID device key
+   - Returns `SignedMigrationOp` with diff + signed op
+
+2. `submit_migration_op(pds_client, did, signed_op)` (Rust, no IPC)
+   - POSTs signed op to plc.directory
+   - Fetches updated audit log
+   - Fetches updated DID document
+   - Caches both in IdentityStore
+   - Returns `ClaimResult`
+
+**IPC sequence (what the frontend driver sees):**
+
+```
+1. detectMigrationPath(did)
+   → returns MigrationPathDecision { path: "self_signed", ... }
+
+2. buildMigrationOp(did)
+   → returns SignedMigrationOp { diff: { addedKeys, removedKeys, changedServices, ... }, signedOp: {...} }
+   → Frontend displays the diff to the user for review
+   → User confirms with biometric
+
+3. submitMigrationOp(did)
+   → returns ClaimResult { updatedDidDoc: {...} }
+```
+
+---
+
+### **Summary Table: IPC Surface**
+
+| Command | File | Parameters | Return Type | Notes |
+|---------|------|------------|-------------|-------|
+| `detect_migration_path_cmd` | migrate.rs:744 | `did: String` | `MigrationPathDecision` | Falls back to interop if wallet not authorized |
+| `build_migration_op_cmd` | migrate.rs:752 | `did: String` | `SignedMigrationOp` | Requires `MigrationState.dest_oauth_client` pre-populated by orchestrator |
+| `submit_migration_op_cmd` | migrate.rs:801 | `did: String` | `ClaimResult` | Takes (consumes) signed op from `MigrationState`; clears state on success |
+
+**Frontend wrappers:** All three wrapped in `ipc.ts` as `detectMigrationPath()`, `buildMigrationOp()`, `submitMigrationOp()`. No raw invokes in page components.
+
+**State Management:** `AppState.migration_state` is a `tokio::sync::Mutex&lt;Option&lt;MigrationState&gt;&gt;` shared across commands (similar to recovery and claim flows).
+
+**Biometric Gate:** Frontend only (native OS gesture after showing the diff).</result>
+<usage><subagent_tokens>93846</subagent_tokens><tool_uses>9</tool_uses><duration_ms>88450</duration_ms></usage>
+</task-notification>
