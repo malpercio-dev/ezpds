@@ -1,1 +1,0 @@
-hmmm, there definitely is a LICENSE file in the repo. AGPL3.

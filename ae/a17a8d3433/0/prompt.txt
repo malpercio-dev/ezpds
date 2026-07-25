@@ -1,0 +1,7 @@
+response was:
+
+```
+{"blob":{"$type":"blob","ref":{"$link":"REDACTED"},"mimeType":"text/plain","size":5}}
+```
+
+and the video uploaded in app
