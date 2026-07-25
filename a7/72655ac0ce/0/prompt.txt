@@ -1,1 +1,0 @@
-I think it was because of a railway preview feature I enabled for warm cache builds. disabled it and it seems to have worked
