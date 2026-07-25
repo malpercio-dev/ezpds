@@ -12,6 +12,11 @@
 //! The recording sites share the sweeps' failure posture: a failed pass records nothing,
 //! so a stale (or absent) [`SweepRun`] is the operator's signal that passes are not
 //! completing — never record unconditionally at loop top.
+//!
+//! A pass that *completes* while skipping some of its subjects is a different fault, and
+//! staleness cannot express it: it records normally, with [`SweepRun::errors`] carrying the
+//! count it could not do. Blob GC is the motivating case — it excludes accounts whose
+//! reconcile failed rather than deleting blobs it could not prove were unreferenced.
 
 use std::sync::RwLock;
 
@@ -23,14 +28,25 @@ pub struct SweepRun {
     /// Rows/files acted on by the pass (deleted blobs, pruned seq rows, reaped accounts,
     /// expired claim attempts).
     pub swept: u64,
+    /// Items the pass skipped due to an error. A completed pass with `errors > 0` did run,
+    /// but did not do its whole job — the distinction a stale `completed_at` alone cannot
+    /// draw between "one subject is broken" and "the sweep is dead". Sweeps that have no
+    /// per-item error path leave this `0`.
+    pub errors: u64,
 }
 
 impl SweepRun {
-    /// A pass completing now, having swept `swept` items.
+    /// A pass completing now, having swept `swept` items with no errors.
     pub fn now(swept: u64) -> Self {
+        Self::now_with_errors(swept, 0)
+    }
+
+    /// A pass completing now, having swept `swept` items and skipped `errors` on failures.
+    pub fn now_with_errors(swept: u64, errors: u64) -> Self {
         Self {
             completed_at: chrono::Utc::now().timestamp(),
             swept,
+            errors,
         }
     }
 }
@@ -131,10 +147,12 @@ mod tests {
         status.record_blob_gc(SweepRun {
             completed_at: 1000,
             swept: 3,
+            errors: 0,
         });
         status.record_firehose_gc(SweepRun {
             completed_at: 2000,
             swept: 0,
+            errors: 0,
         });
 
         let after = status.snapshot();
@@ -150,10 +168,12 @@ mod tests {
         status.record_account_reaper(SweepRun {
             completed_at: 10,
             swept: 1,
+            errors: 0,
         });
         status.record_account_reaper(SweepRun {
             completed_at: 20,
             swept: 0,
+            errors: 0,
         });
         let snap = status.snapshot();
         assert_eq!(snap.account_reaper.unwrap().completed_at, 20);

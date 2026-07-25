@@ -50,6 +50,12 @@ pub mod names {
     pub const BLOB_GC_SWEPT: &str = "blob_gc_swept";
     /// Gauge: unix timestamp (seconds) of the last completed blob-GC run.
     pub const BLOB_GC_LAST_RUN_TIMESTAMP: &str = "blob_gc_last_run_timestamp";
+    /// Counter (`_total`): accounts and blobs the blob-GC pass skipped due to an error. A
+    /// nonzero value means the pass ran but did not do its whole job — an account whose
+    /// reconcile failed is deliberately excluded from the sweep and leaks disk until the
+    /// underlying fault is fixed, so this is the operator's alarm that something needs
+    /// attention even though the pass timestamp stays fresh.
+    pub const BLOB_GC_ERRORS: &str = "blob_gc_errors";
     /// Counter (`_total`): bucket objects the blob-mirror sweep synced (uploads + deletes).
     pub const BLOB_MIRROR_SYNCED: &str = "blob_mirror_synced";
     /// Gauge: unix timestamp (seconds) of the last completed blob-mirror run.
@@ -136,6 +142,7 @@ pub struct Metrics {
     pub proxy_requests: Counter<u64>,
     pub proxy_upstream_lag_seconds: Histogram<f64>,
     pub blob_gc_swept: Counter<u64>,
+    pub blob_gc_errors: Counter<u64>,
     pub blob_gc_last_run_timestamp: Gauge<f64>,
     pub blob_mirror_synced: Counter<u64>,
     pub blob_mirror_last_run_timestamp: Gauge<f64>,
@@ -200,6 +207,7 @@ impl Metrics {
                 .with_boundaries(LAG_BUCKETS_SECONDS.to_vec())
                 .build(),
             blob_gc_swept: meter.u64_counter(names::BLOB_GC_SWEPT).build(),
+            blob_gc_errors: meter.u64_counter(names::BLOB_GC_ERRORS).build(),
             blob_gc_last_run_timestamp: meter.f64_gauge(names::BLOB_GC_LAST_RUN_TIMESTAMP).build(),
             blob_mirror_synced: meter.u64_counter(names::BLOB_MIRROR_SYNCED).build(),
             blob_mirror_last_run_timestamp: meter
