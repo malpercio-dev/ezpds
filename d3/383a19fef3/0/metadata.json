@@ -1,0 +1,79 @@
+{
+  "cli_version": "0.8.42",
+  "checkpoint_id": "d3383a19fef3",
+  "session_id": "ab72aa9b-a5f3-4f44-b910-158b24f7566b",
+  "strategy": "manual-commit",
+  "created_at": "2026-07-25T20:23:33.028034Z",
+  "branch": "claude/mm-473-entries-prefixed-overscan-be8512",
+  "checkpoints_count": 1,
+  "files_touched": [
+    "crates/repo-engine/src/records.rs",
+    "changelog.d/mm-473.fixed.md"
+  ],
+  "agent": "Claude Code",
+  "model": "",
+  "turn_id": "ba10ee691812",
+  "compact_transcript_start": 0,
+  "token_usage": {
+    "input_tokens": 25889,
+    "cache_creation_tokens": 140271,
+    "cache_read_tokens": 2688317,
+    "output_tokens": 11520,
+    "api_call_count": 23
+  },
+  "skill_events_version": 1,
+  "skill_events": [
+    {
+      "id": "claude-skill-toolu_017PNFa7PEtNrz8EYHR4Hdpm",
+      "event_type": "tool_invocation",
+      "skill": {
+        "name": "linear-workflow"
+      },
+      "source": {
+        "agent": "claude-code",
+        "signal": "skill_tool_use",
+        "confidence": "explicit"
+      },
+      "turn_id": "ba10ee691812",
+      "transcript_anchor": {
+        "unit": "line",
+        "start": 18,
+        "end": 19,
+        "entry_ids": [
+          "502407c0-a942-437f-8efb-febce80ceeec"
+        ],
+        "tool_use_id": "toolu_017PNFa7PEtNrz8EYHR4Hdpm"
+      },
+      "native": {
+        "tool_name": "Skill",
+        "tool_use_id": "toolu_017PNFa7PEtNrz8EYHR4Hdpm"
+      },
+      "collapse": {
+        "target": "tool_pair",
+        "label": "Skill: linear-workflow",
+        "default_collapsed": true
+      }
+    }
+  ],
+  "initial_attribution": {
+    "calculated_at": "2026-07-25T20:23:32.994861Z",
+    "agent_lines": 135,
+    "agent_removed": 3,
+    "human_added": 0,
+    "human_modified": 0,
+    "human_removed": 0,
+    "total_committed": 135,
+    "total_lines_changed": 138,
+    "agent_percentage": 100,
+    "metric_version": 2
+  },
+  "prompt_attributions": [
+    {
+      "checkpoint_number": 1,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 0,
+      "agent_lines_removed": 0
+    }
+  ]
+}

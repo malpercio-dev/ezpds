@@ -1,0 +1,27 @@
+{
+  "cli_version": "0.8.42",
+  "checkpoint_id": "d3383a19fef3",
+  "strategy": "manual-commit",
+  "branch": "claude/mm-473-entries-prefixed-overscan-be8512",
+  "checkpoints_count": 1,
+  "files_touched": [
+    "changelog.d/mm-473.fixed.md",
+    "crates/repo-engine/src/records.rs"
+  ],
+  "sessions": [
+    {
+      "metadata": "/d3/383a19fef3/0/metadata.json",
+      "transcript": "/d3/383a19fef3/0/full.jsonl",
+      "compact_transcript": "/d3/383a19fef3/0/transcript.jsonl",
+      "content_hash": "/d3/383a19fef3/0/content_hash.txt",
+      "prompt": ""
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 25889,
+    "cache_creation_tokens": 140271,
+    "cache_read_tokens": 2688317,
+    "output_tokens": 11520,
+    "api_call_count": 23
+  }
+}
