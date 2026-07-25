@@ -1,0 +1,142 @@
+<ci-monitor-event>malpercio-dev/ezpds PR #109 has 1 new review comment:
+- coderabbitai[bot] (commented): 
+
+> [!CAUTION]
+> Some comments are outside the diff and can’t be posted inline due to platform limitations.
+> 
+> 
+> 
+> <details>
+> <summary>⚠️ Outside diff range comments (1)</summary><blockquote>
+> 
+> <details>
+> <summary>scripts/capability-check.sh (1)</summary><blockquote>
+> 
+> `74-86`: _🔒 Security & Privacy_ | _🔵 Trivial_ | _⚡ Quick win_
+> 
+> **Scope the schema grep to the `$schema` field, not the whole file.**
+> 
+> `grep -q 'mobile-schema\.json' "$file"` matches the string anywhere in the JSON (e.g., inside a `description` field that happens to mention it), not just the `$schema` value. A capability file with a broken/missing `$schema` key but an unrelated mention of "mobile-schema.json" in prose would silently pass this new positive check, undermining the goal of catching dropped/renamed schema references.
+> 
+> <details>
+> <summary>♻️ Proposed fix to anchor the match on the `$schema` key</summary>
+> 
+> ```diff
+>  check_schema() {
+>    local file="$1"
+>    [ -f "$file" ] || return
+> -  if grep -q 'desktop-schema\.json' "$file"; then
+> +  if grep -qP '"\$schema"\s*:\s*"[^"]*desktop-schema\.json"' "$file"; then
+>      echo "✗ $file references the desktop capability schema — both apps are iOS-only." >&2
+>      echo "  Use ../gen/schemas/mobile-schema.json." >&2
+>      fail=1
+>    fi
+> -  if ! grep -q 'mobile-schema\.json' "$file"; then
+> +  if ! grep -qP '"\$schema"\s*:\s*"[^"]*mobile-schema\.json"' "$file"; then
+>      echo "✗ $file does not reference the mobile capability schema" >&2
+>      echo "  (expected ../gen/schemas/mobile-schema.json)." >&2
+>      fail=1
+>    fi
+>  }
+> ```
+> </details>
+> 
+> <details>
+> <summary>🤖 Prompt for AI Agents</summary>
+> 
+> ```
+> Verify each finding against current code. Fix only still-valid issues, skip the
+> rest with a brief reason, keep changes minimal, and validate.
+> 
+> In `@scripts/capability-check.sh` around lines 74 - 86, The schema check in
+> check_schema is too broad because it greps the whole file, so a mention of
+> mobile-schema.json anywhere can hide a broken or missing $schema value. Update
+> the check in check_schema to validate only the $schema field for the capability
+> file, keeping the existing desktop-schema.json rejection but narrowing the
+> positive mobile-schema.json match to the actual schema key/value pair.
+> ```
+> 
+> </details>
+> 
+> <!-- cr-comment:v1:cfd93ebb864e1343a4bfc210 -->
+> 
+> </blockquote></details>
+> 
+> </blockquote></details>
+
+<details>
+<summary>🤖 Prompt for all review comments with AI agents</summary>
+
+```
+Verify each finding against current code. Fix only still-valid issues, skip the
+rest with a brief reason, keep changes minimal, and validate.
+
+Outside diff comments:
+In `@scripts/capability-check.sh`:
+- Around line 74-86: The schema check in check_schema is too broad because it
+greps the whole file, so a mention of mobile-schema.json anywhere can hide a
+broken or missing $schema value. Update the check in check_schema to validate
+only the $schema field for the capability file, keeping the existing
+desktop-schema.json rejection but narrowing the positive mobile-schema.json
+match to the actual schema key/value pair.
+```
+
+</details>
+
+---
+
+<details>
+<summary>ℹ️ Review info</summary>
+
+<details>
+<summary>⚙️ Run configuration</summary>
+
+**Configuration used**: Organization UI
+
+**Review profile**: ASSERTIVE
+
+**Plan**: Pro Plus
+
+**Run ID**: `2e79f835-0d95-4073-b63f-aac50e52a07d`
+
+</details>
+
+<details>
+<summary>📥 Commits</summary>
+
+Reviewing files that changed from the base of the PR and between 165e5bafeb3170ed0f78df87c2aeaab4c4c1fec4 and 6ef66bf03799031ba3b5e6ecb56acb4741443c14.
+
+</details>
+
+<details>
+<summary>📒 Files selected for processing (2)</summary>
+
+* `docs/security/tauri-ipc-boundary.md`
+* `scripts/capability-check.sh`
+
+</details>
+
+</details>
+
+<details>
+<summary>📜 Review details</summary>
+
+<details>
+<summary>🔇 Additional comments (1)</summary><blockquote>
+
+<details>
+<summary>docs/security/tauri-ipc-boundary.md (1)</summary><blockquote>
+
+`89-108`: LGTM!
+
+<!-- cr-comment:v1:71c6bbce1711eb34d6a7cd70 -->
+
+</blockquote></details>
+
+</blockquote></details>
+
+</details>
+
+<!-- This is an auto-generated comment by CodeRabbit for review status -->
+
+Please address the feedback and push a fix. Then, for each inline comment you addressed (those with a comment_id), post a one-line reply on the thread via `gh api` saying what you changed (or why you didn't). End each reply with the line "_🤖 Addressed by [Claude Code](https://claude.com/claude-code)_" so reviewers can see it was automated. Then resolve the thread. Skip replies for comments you didn't act on.</ci-monitor-event>
