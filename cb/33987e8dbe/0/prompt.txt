@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>b0rydnium</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-jacob-zweifel-workspace-malpercio-dev-ezpds--claude-worktrees-serene-lichterman-c2f0f0/e676500f-7f86-4e63-9b7c-3c192052075b/tasks/b0rydnium.output</output-file>
+<status>failed</status>
+<summary>Background command "Clean background poll of PR #109 CI" failed with exit code 1</summary>
+</task-notification>
