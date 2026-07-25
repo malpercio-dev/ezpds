@@ -1,0 +1,44 @@
+{
+  "cli_version": "0.8.42",
+  "checkpoint_id": "df0c91dd603e",
+  "strategy": "manual-commit",
+  "branch": "release-0.8.2",
+  "checkpoints_count": 1,
+  "files_touched": [
+    "CHANGELOG.md",
+    "Cargo.lock",
+    "Cargo.toml",
+    "changelog.d/418.fixed.md",
+    "changelog.d/419.fixed.md",
+    "changelog.d/420.fixed.md",
+    "changelog.d/422.fixed.md",
+    "changelog.d/427.added.md",
+    "changelog.d/429.fixed.md",
+    "changelog.d/mm-449.added.md",
+    "changelog.d/mm-453.changed.md",
+    "changelog.d/mm-454.added.md",
+    "changelog.d/mm-459.fixed.md",
+    "changelog.d/mm-463.added.md",
+    "changelog.d/mm-464.fixed.md",
+    "sites/docs/src/content/docs/operator/reference/api.md",
+    "sites/docs/src/content/docs/operator/reference/capabilities.md",
+    "sites/docs/src/content/docs/operator/reference/config.md",
+    "sites/docs/src/content/docs/operator/reference/ipc.md"
+  ],
+  "sessions": [
+    {
+      "metadata": "/df/0c91dd603e/0/metadata.json",
+      "transcript": "/df/0c91dd603e/0/full.jsonl",
+      "compact_transcript": "/df/0c91dd603e/0/transcript.jsonl",
+      "content_hash": "/df/0c91dd603e/0/content_hash.txt",
+      "prompt": "/df/0c91dd603e/0/prompt.txt"
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 12,
+    "cache_creation_tokens": 100621,
+    "cache_read_tokens": 494003,
+    "output_tokens": 1684,
+    "api_call_count": 6
+  }
+}
