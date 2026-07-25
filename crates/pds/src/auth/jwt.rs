@@ -307,7 +307,9 @@ pub fn verify_refresh_token_allow_expired(
 /// low-S normalizes, so pass `|bytes| signer.sign(bytes)`.
 ///
 /// Claims: `iss` = account DID, `aud` = receiving service DID (no `#fragment`), `iat`, the
-/// absolute `exp`, and — when `lxm` is `Some` — the lexicon method the token authorizes. A
+/// absolute `exp`, a random `jti` nonce (32 hex chars, reference-parity — required by services
+/// that enforce token-replay protection, e.g. Bluesky's chat service), and — when `lxm` is
+/// `Some` — the lexicon method the token authorizes. A
 /// `None` `lxm` mints a method-unrestricted token (callers should keep its `exp` short), matching
 /// `com.atproto.server.getServiceAuth`, which omits the `lxm` claim entirely when not requested.
 pub fn mint_service_auth_jwt<F>(
@@ -322,13 +324,22 @@ where
     F: FnOnce(&[u8]) -> Vec<u8>,
 {
     use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
+    use rand_core::{OsRng, RngCore};
 
     let header = serde_json::json!({ "typ": "JWT", "alg": "ES256" });
+    // A random per-token nonce, matching the reference `createServiceJwt` (16 random bytes,
+    // hex). Bluesky's chat service enforces replay protection on `jti` and rejects tokens
+    // without one, while the AppView tolerates its absence — so omitting it splits the
+    // proxy surface into working reads and broken DMs.
+    let mut jti_bytes = [0u8; 16];
+    OsRng.fill_bytes(&mut jti_bytes);
+    let jti: String = jti_bytes.iter().map(|b| format!("{b:02x}")).collect();
     let mut payload = serde_json::json!({
         "iss": iss,
         "aud": aud,
         "iat": iat,
         "exp": exp,
+        "jti": jti,
     });
     if let Some(lxm) = lxm {
         payload["lxm"] = serde_json::Value::String(lxm.to_string());
@@ -645,6 +656,11 @@ mod tests {
         assert_eq!(claims["lxm"], "app.bsky.feed.getTimeline");
         assert_eq!(claims["iat"], 1_000);
         assert_eq!(claims["exp"], 1_060);
+        // Reference-parity `jti` nonce: 32 lowercase hex chars (16 random bytes), present on
+        // every token — chat-service replay protection rejects tokens without one.
+        let jti = claims["jti"].as_str().expect("jti claim present");
+        assert_eq!(jti.len(), 32, "jti is 16 random bytes hex-encoded");
+        assert!(jti.chars().all(|c| c.is_ascii_hexdigit()));
 
         // Independent proof: the ES256 signature verifies against the key.
         let signing_input = format!("{}.{}", parts[0], parts[1]);
@@ -681,6 +697,28 @@ mod tests {
         );
         assert_eq!(claims["iss"], "did:plc:abc123");
         assert_eq!(claims["exp"], 1_060);
+    }
+
+    /// Every minted token carries a unique `jti` — two otherwise-identical mints must not
+    /// collide, or a replay-protecting verifier (Bluesky chat) would reject the second.
+    #[test]
+    fn service_auth_jwt_jti_is_unique_per_mint() {
+        let signer = repo_engine::CommitSigner::from_bytes(&[0x11u8; 32]).unwrap();
+        let mint = || {
+            let jwt = mint_service_auth_jwt(
+                |b| signer.sign(b),
+                "did:plc:abc123",
+                "did:web:api.bsky.chat",
+                Some("chat.bsky.convo.listConvos"),
+                1_000,
+                1_060,
+            );
+            let payload = jwt.split('.').nth(1).unwrap().to_string();
+            let claims: serde_json::Value =
+                serde_json::from_slice(&URL_SAFE_NO_PAD.decode(payload).unwrap()).unwrap();
+            claims["jti"].as_str().unwrap().to_string()
+        };
+        assert_ne!(mint(), mint(), "jti must be random per token");
     }
 
     /// `verify_service_auth_jwt` accepts a canonical low-S token (as minted) but rejects the
