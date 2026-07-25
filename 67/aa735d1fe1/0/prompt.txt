@@ -1,2 +1,0 @@
-1. "Network error..."
-2. App failed first, then the same succeeded in curl
