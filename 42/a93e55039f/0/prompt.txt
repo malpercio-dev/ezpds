@@ -1,7 +1,0 @@
-<task-notification>
-<task-id>bpv06cbv6</task-id>
-<tool-use-id>toolu_01Twuhs8hJybCb8JYig5Q3A3</tool-use-id>
-<output-file>/private/tmp/claude-501/-Users-jacob-zweifel-workspace-malpercio-dev-ezpds/00ef4afd-87f5-4f84-908b-60302e7f879a/tasks/bpv06cbv6.output</output-file>
-<status>completed</status>
-<summary>Background command "Run the full Linux CI gate (fmt, lock, clippy, tests, audit, deny)" completed (exit code 0)</summary>
-</task-notification>

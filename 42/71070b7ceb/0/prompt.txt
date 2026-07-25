@@ -1,0 +1,31 @@
+<ci-monitor-event>malpercio-dev/ezpds PR #109 has 1 new review comment:
+- coderabbitai[bot]: <!-- This is an auto-generated reply by CodeRabbit -->
+> [!TIP]
+> For best results, initiate chat on the files or code changes.
+
+<details>
+<summary>🧩 Analysis chain</summary>
+
+🏁 Script executed:
+
+```shell
+#!/bin/bash
+git log --oneline -10
+sed -n '1,140p' scripts/capability-check.sh
+```
+
+Length of output: 7828
+
+---
+
+</details>
+
+`@malpercio-dev` — verified in commit `97c024cb`. `assert_flat_permissions` correctly identifies any `{` appearing after the `"permissions"` key as a non-flat (scoped-object) permission and fails closed with a clear message pointing to the upgrade path, rather than silently truncating the array parse and letting a banned grant slip through. It's wired into `check_caps` before the set comparison, so all three capability files are guarded consistently.
+
+Fail-closed is the right call here given the coreutils-only constraint — no disagreement on avoiding a JSON parser dependency for this. Nice work closing this out.
+
+<!-- <review_comment_addressed> -->
+
+(=^･ω･^=)ノ
+
+Please address the feedback and push a fix. Then, for each inline comment you addressed (those with a comment_id), post a one-line reply on the thread via `gh api` saying what you changed (or why you didn't). End each reply with the line "_🤖 Addressed by [Claude Code](https://claude.com/claude-code)_" so reviewers can see it was automated. Then resolve the thread. Skip replies for comments you didn't act on.</ci-monitor-event>
