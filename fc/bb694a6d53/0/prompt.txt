@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>bkro2vqgw</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-jacob-zweifel-workspace-malpercio-dev-ezpds/e14e454c-c592-4d1c-a1a3-c4845a1bea84/tasks/bkro2vqgw.output</output-file>
+<status>completed</status>
+<summary>Background command "Watch production health until v0.4.7 serves" completed (exit code 0)</summary>
+</task-notification>
