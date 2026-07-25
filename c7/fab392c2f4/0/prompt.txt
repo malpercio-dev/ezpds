@@ -1,0 +1,290 @@
+<task-notification>
+<task-id>a213205a6af2700e8</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-jacob-zweifel-workspace-malpercio-dev-ezpds--claude-worktrees-serene-lichterman-c2f0f0/e676500f-7f86-4e63-9b7c-3c192052075b/tasks/a213205a6af2700e8.output</output-file>
+<status>completed</status>
+<summary>Agent "Audit Tauri IPC surface both apps" finished</summary>
+<note>A task-notification fires each time this agent stops with no live background children of its own. The user can send it another message and resume it, so the same task-id may notify more than once.</note>
+<result>Perfect. Now let me document the findings. Let me create a comprehensive report:
+
+Based on my systematic audit of the IPC/capability surface across both Tauri v2 iOS apps, here are the findings:
+
+---
+
+## 1. CAPABILITY FILES
+
+### identity-wallet
+
+**File:** `/apps/identity-wallet/src-tauri/capabilities/default.json` (433 bytes)
+
+```json
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "Core APIs (events, window) plus the auth-session plugin. The app's own #[tauri::command]s are not permission-gated; this grants the frontend the core defaults it relies on (event listen/emit) and the in-app OAuth `plugin:auth-session|start` command.",
+  "windows": ["main"],
+  "permissions": ["core:default", "auth-session:default"]
+}
+```
+
+**Schema note:** References `desktop-schema.json` — this is a **mismatch**. Per the code comments in `apps/identity-wallet/CLAUDE.md`, the app is iOS-only but uses the desktop schema. The app should reference `mobile-schema.json` for consistency with the platform.
+
+### admin-companion
+
+**File 1:** `/apps/admin-companion/src-tauri/capabilities/default.json` (361 bytes)
+
+```json
+{
+  "$schema": "../gen/schemas/mobile-schema.json",
+  "identifier": "default",
+  "description": "Core IPC + logging for the main window. App-defined commands (pairing, signing) are allowed by default from the local webview and need no permission here; only plugin commands are listed.",
+  "windows": ["main"],
+  "permissions": ["core:default", "log:default"]
+}
+```
+
+**File 2:** `/apps/admin-companion/src-tauri/capabilities/mobile.json` (572 bytes)
+
+```json
+{
+  "$schema": "../gen/schemas/mobile-schema.json",
+  "identifier": "mobile",
+  "description": "Mobile-only plugin commands: camera barcode/QR scanning on the Pair screen, biometric (Face ID / Touch ID) user-presence gating on signing actions, and the iOS Share Pane for a claim code. These plugins and their commands exist only on iOS/Android, so this capability is platform-gated and is skipped on the macOS host build.",
+  "platforms": ["iOS", "android"],
+  "windows": ["main"],
+  "permissions": ["barcode-scanner:default", "biometric:default", "sharesheet:default"]
+}
+```
+
+**Schema note:** Both files correctly reference `mobile-schema.json` for an iOS app.
+
+---
+
+## 2. APP-DEFINED COMMANDS (#[tauri::command])
+
+### identity-wallet (27 commands)
+
+All live in `src-tauri/src/`:
+
+| Command Name | File | Notes |
+|---|---|---|
+| `create_account` | lib.rs | Async; account creation with PDS |
+| `get_or_create_device_key` | lib.rs | Async; Secure Enclave/software P-256 key |
+| `sign_with_device_key` | lib.rs | Async; raw 64-byte P-256 signature |
+| `perform_did_ceremony` | lib.rs | Async; DID creation/promotion |
+| `register_handle` | lib.rs | Async; register handle via PDS |
+| `get_available_user_domains` | lib.rs | Async; list available domains |
+| `get_pds_url` | lib.rs | Sync; retrieve stored PDS URL from Keychain |
+| `save_pds_url` | lib.rs | Async; persist PDS URL to Keychain |
+| `list_identities` | lib.rs | Sync; return managed DIDs from `IdentityStore` |
+| `get_stored_did_doc` | lib.rs | Sync; retrieve DID document JSON |
+| `get_device_key_id` | lib.rs | Sync; return device key's did:key URI |
+| `check_handle_resolution` | lib.rs | Async; validate handle resolution |
+| `register_created_identity` | lib.rs | Async; register create-flow identity in `IdentityStore` |
+| `load_home_data` | home.rs | Async; concurrent PDS health + getSession |
+| `log_out` | home.rs | Async; Keychain wipe + session clear |
+| `prepare_oauth_flow` | oauth.rs | Async; DPoP keygen + PKCE + PAR → authorize URL |
+| `complete_oauth_flow` | oauth.rs | Async; token exchange |
+| `resolve_identity` | claim.rs | Async; resolve handle/DID to identity info via plc.directory |
+| `prepare_pds_auth` | claim.rs | Async; claim-flow PDS login setup |
+| `complete_pds_auth` | claim.rs | Async; claim-flow PDS token exchange |
+| `request_claim_verification` | claim.rs | Async; trigger email verification |
+| `sign_and_verify_claim` | claim.rs | Async; sign PLC operation + 4-point verification |
+| `submit_claim` | claim.rs | Async; POST signed op to plc.directory |
+| `check_identity_status` | plc_monitor.rs | Async; check all identities for unauthorized changes |
+| `build_recovery_override_cmd` | recovery.rs | Async; build counter-op restoring pre-unauthorized state |
+| `submit_recovery_override_cmd` | recovery.rs | Async; POST recovery override to plc.directory |
+| `build_migration_op_cmd` | migrate.rs | Async; build DID-repointing PLC op |
+| `submit_migration_op_cmd` | migrate.rs | Async; submit migration op to plc.directory |
+
+### admin-companion (9 commands)
+
+All live in `src-tauri/src/lib.rs`:
+
+| Command Name | File | Notes |
+|---|---|---|
+| `get_or_create_device_key` | lib.rs | Sync; Secure Enclave/software admin key |
+| `sign_with_device_key` | lib.rs | Sync; raw 64-byte P-256 signature |
+| `pair_device` | lib.rs | Async; self-signed POST to relay `/v1/admin/devices` |
+| `pairing_state` | lib.rs | Sync; return current pairing or null |
+| `generate_claim_code` | lib.rs | Async; signed POST to relay `/v1/accounts/claim-codes` |
+| `revoke_self` | lib.rs | Async; self-signed POST to revoke this device |
+| `unpair` | lib.rs | Sync; local-only forget pairing (fallback) |
+| `biometric_enabled` | lib.rs | Sync; read user-presence gate preference from Keychain |
+| `set_biometric_enabled` | lib.rs | Sync; persist user-presence gate toggle to Keychain |
+
+---
+
+## 3. PLUGINS REGISTERED
+
+### identity-wallet
+
+In `src-tauri/src/lib.rs::run()` (lines 868–879):
+
+```rust
+tauri::Builder::default()
+    .manage(oauth::AppState::new())
+    .plugin(
+        tauri_plugin_log::Builder::new()
+            .level(log::LevelFilter::Debug)
+            .build(),
+    )
+    .plugin(tauri_plugin_auth_session::init())
+    // ... setup &amp; invoke_handler
+```
+
+**Plugins:**
+1. `tauri_plugin_log` — logging framework
+2. `tauri_plugin_auth_session` — ASWebAuthenticationSession for in-app OAuth (vendored in `vendor/tauri-plugin-auth-session/`; custom scheme `dev.malpercio.identitywallet:/oauth/callback`)
+
+### admin-companion
+
+In `src-tauri/src/lib.rs::run()` (lines 88–99):
+
+```rust
+let builder = tauri::Builder::default()
+    .plugin(tauri_plugin_log::Builder::new().build());
+
+#[cfg(mobile)]
+let builder = builder
+    .plugin(tauri_plugin_barcode_scanner::init())
+    .plugin(tauri_plugin_biometric::init())
+    .plugin(tauri_plugin_sharesheet::init());
+
+builder
+    .invoke_handler(tauri::generate_handler![...])
+```
+
+**Plugins:**
+1. `tauri_plugin_log` — logging framework (all platforms)
+2. `tauri_plugin_barcode_scanner` — camera QR scanning (mobile-only, `#[cfg(mobile)]`)
+3. `tauri_plugin_biometric` — Face ID / Touch ID / passcode gating (mobile-only, `#[cfg(mobile)]`)
+4. `tauri_plugin_sharesheet` — iOS Share Pane (mobile-only, `#[cfg(mobile)]`, uses `@buildyourwebapp/tauri-plugin-sharesheet` on frontend)
+
+---
+
+## 4. FRONTEND IPC USAGE
+
+### identity-wallet
+
+**Core Tauri imports:**
+- `@tauri-apps/api/core` — `invoke()` (in `src/lib/ipc.ts`)
+- `@tauri-apps/api/event` — `listen()` (in `src/lib/components/home/IdentityListHome.svelte` and `src/routes/+page.svelte`)
+  - Listens for: `plc_alert` event (unauthorized PLC operations detected)
+  - Listens for: `auth_ready` event (session restored on app startup)
+
+**No other `@tauri-apps/api/*` imports found.** The app does not use window, app, dialog, or other core APIs — only `invoke()` and event `listen()`.
+
+**Frontend invokes (via `src/lib/ipc.ts` wrappers):**
+- All 27 Tauri commands listed above
+- The commands are wrapped in TypeScript with strict type safety (all parameter and return types defined)
+
+### admin-companion
+
+**Core Tauri imports:**
+- `@tauri-apps/api/core` — `invoke()` (in `src/lib/ipc.ts`)
+
+**Plugin imports (dynamically, to avoid host-build resolution):**
+- `@tauri-apps/plugin-barcode-scanner` — dynamic import in `src/lib/ipc.ts::scanQrCode()` (calls `scan()` and `cancel()`)
+- `@tauri-apps/plugin-biometric` — dynamic import in `src/lib/biometric.ts::requireUserPresence()` (calls `checkStatus()` and `authenticate()`)
+- `@buildyourwebapp/tauri-plugin-sharesheet` — dynamic import in `src/lib/share.ts::shareText()` (calls `shareText()`)
+
+**No event listeners found** — admin-companion does not use Tauri events.
+
+---
+
+## 5. tauri.conf.json SECURITY-RELATED SECTIONS
+
+### identity-wallet
+
+```json
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Obsign",
+  "version": "0.1.1",
+  "identifier": "dev.malpercio.identitywallet",
+  "build": {
+    "devUrl": "http://localhost:5173",
+    "frontendDist": "../dist"
+  },
+  "app": {
+    "windows": [
+      {
+        "title": "Obsign",
+        "width": 400,
+        "height": 600,
+        "resizable": true
+      }
+    ]
+  },
+  "bundle": {
+    "active": true,
+    "iOS": {
+      "frameworks": ["SystemConfiguration"],
+      "bundleVersion": "2"
+    }
+  }
+}
+```
+
+**Notes:**
+- No explicit `app.security` block — uses Tauri v2 defaults
+- `bundleVersion` is stamped dynamically by CI (CI overrides this to `$(date +%s)`)
+- `frameworks` lists only `SystemConfiguration` (needed by `hickory-resolver` and `reqwest` for DNS/proxy detection); **missing `AuthenticationServices`** (needed by vendored `tauri-plugin-auth-session`'s ASWebAuthenticationSession — this is added dynamically by the `just ios-postinit` patch via `OTHER_LDFLAGS` in the Xcode project, not via `tauri.conf.json`)
+
+### admin-companion
+
+```json
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Admin Companion",
+  "version": "0.1.0",
+  "identifier": "dev.malpercio.admincompanion",
+  "build": {
+    "devUrl": "http://localhost:5174",
+    "frontendDist": "../dist"
+  },
+  "app": {
+    "windows": [
+      {
+        "title": "Admin Companion",
+        "width": 400,
+        "height": 600,
+        "resizable": true
+      }
+    ]
+  },
+  "bundle": {
+    "active": true,
+    "iOS": {
+      "frameworks": ["SystemConfiguration"],
+      "bundleVersion": "1"
+    }
+  }
+}
+```
+
+**Notes:**
+- No explicit `app.security` block — uses Tauri v2 defaults
+- `frameworks` lists only `SystemConfiguration` (same rationale as identity-wallet; this app does not use the auth-session plugin)
+- No `withGlobalTauri` or other global exposure settings
+
+---
+
+## 6. EXISTING SECURITY DOCUMENTATION
+
+**Security-related docs found in `docs/`:**
+
+1. **`docs/2026-07-01-pds-phase-0.1-review-update.md`** — References MM-134 ("Tauri IPC lockdown") as a planned security hardening ticket
+2. **`docs/design-plans/2026-06-20-denix-ios-build.md`** — Mentions `security-framework` C build linking (not IPC security)
+3. **`docs/design-plans/2026-03-18-MM-145.md`** — Device key design (Secure Enclave / P-256 crypto, not IPC)
+
+**No dedicated Tauri IPC security / capability allowlist documentation exists yet.** The capability files themselves (`capabilities/default.json`, `capabilities/mobile.json`) serve as the ground truth for what's currently enabled.
+
+---
+
+## SUMMARY: SCHEMA MISMATCH FLAG
+
+**identity-wallet** currently references `desktop-schema.json` in its capability file, which is incorrect for an iOS-only app. It should use `mobile-schema.json` to match admin-companion and the platform reality. This may cause schema validation warnings or inconsistent behavior when Tauri's capability system performs schema checks.</result>
+<usage><subagent_tokens>98324</subagent_tokens><tool_uses>34</tool_uses><duration_ms>92410</duration_ms></usage>
+</task-notification>
