@@ -1,1 +1,0 @@
-What can we do to stop running in to this problem? Is there a better way of doing local worktrees? Should we look for other things to clean up?
