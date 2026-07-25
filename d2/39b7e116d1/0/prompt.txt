@@ -1,0 +1,284 @@
+<ci-monitor-event>malpercio-dev/ezpds PR #109 has 2 new review comments:
+- coderabbitai[bot] on scripts/capability-check.sh:91 [comment_id=3525147323]: _🎯 Functional Correctness_ | _🔵 Trivial_ | _💤 Low value_
+
+**Positive check doesn't verify the schema's directory, only the filename suffix.**
+
+The regex `[^"]*mobile-schema\.json` matches any value ending in `mobile-schema.json`, regardless of directory. A capability file pointing to a wrong/stale relative path (e.g. a typo'd `../old/mobile-schema.json`) would still pass, even though the error message on Line 89 implies a specific expected path (`../gen/schemas/mobile-schema.json`).
+
+<details>
+<summary>Suggested tightening</summary>
+
+```diff
+-  if ! grep -Eq '"\$schema"[[:space:]]*:[[:space:]]*"[^"]*mobile-schema\.json"' "$file"; then
++  if ! grep -Eq '"\$schema"[[:space:]]*:[[:space:]]*"\.\./gen/schemas/mobile-schema\.json"' "$file"; then
+```
+</details>
+
+<!-- suggestion_start -->
+
+<details>
+<summary>📝 Committable suggestion</summary>
+
+> ‼️ **IMPORTANT**
+> Carefully review the code before committing. Ensure that it accurately replaces the highlighted code, contains no missing lines, and has no issues with indentation. Thoroughly test & benchmark the code to ensure it meets the requirements.
+
+```suggestion
+  if ! grep -Eq '"\$schema"[[:space:]]*:[[:space:]]*"\.\./gen/schemas/mobile-schema\.json"' "$file"; then
+    echo "✗ $file's \$schema does not reference the mobile capability schema" >&2
+    echo "  (expected ../gen/schemas/mobile-schema.json)." >&2
+    fail=1
+  fi
+```
+
+</details>
+
+<!-- suggestion_end -->
+
+<details>
+<summary>🤖 Prompt for AI Agents</summary>
+
+```
+Verify each finding against current code. Fix only still-valid issues, skip the
+rest with a brief reason, keep changes minimal, and validate.
+
+In `@scripts/capability-check.sh` around lines 87 - 91, The positive schema check
+in capability-check.sh only matches the filename suffix and can miss wrong
+directories. Tighten the grep used in the schema validation block so it verifies
+the full expected relative path for "$schema", not just any value ending in
+mobile-schema.json, and keep the failure message aligned with the exact path
+expected by the check.
+```
+
+</details>
+
+<!-- fingerprinting:phantom:poseidon:beignet -->
+
+<!-- cr-indicator-types:nitpick -->
+
+<!-- cr-comment:v1:b1bc2e541fa853bd9aa3e83f -->
+
+<!-- This is an auto-generated comment by CodeRabbit -->
+- coderabbitai[bot] (changes requested): **Actionable comments posted: 1**
+
+<details>
+<summary>🤖 Prompt for all review comments with AI agents</summary>
+
+```
+Verify each finding against current code. Fix only still-valid issues, skip the
+rest with a brief reason, keep changes minimal, and validate.
+
+Inline comments:
+In `@scripts/capability-check.sh`:
+- Around line 87-91: The positive schema check in capability-check.sh only
+matches the filename suffix and can miss wrong directories. Tighten the grep
+used in the schema validation block so it verifies the full expected relative
+path for "$schema", not just any value ending in mobile-schema.json, and keep
+the failure message aligned with the exact path expected by the check.
+```
+
+</details>
+
+<details>
+<summary>🪄 Autofix (Beta)</summary>
+
+Fix all unresolved CodeRabbit comments on this PR:
+
+- [ ] <!-- {"checkboxId": "4b0d0e0a-96d7-4f10-b296-3a18ea78f0b9"} --> Push a commit to this branch (recommended)
+- [ ] <!-- {"checkboxId": "ff5b1114-7d8c-49e6-8ac1-43f82af23a33"} --> Create a new PR with the fixes
+
+</details>
+
+---
+
+<details>
+<summary>ℹ️ Review info</summary>
+
+<details>
+<summary>⚙️ Run configuration</summary>
+
+**Configuration used**: Organization UI
+
+**Review profile**: ASSERTIVE
+
+**Plan**: Pro Plus
+
+**Run ID**: `c8ffe772-bb57-4f65-9093-f469998ec105`
+
+</details>
+
+<details>
+<summary>📥 Commits</summary>
+
+Reviewing files that changed from the base of the PR and between 6ef66bf03799031ba3b5e6ecb56acb4741443c14 and cb9f71deebe65468eb3dbedfeea4107397749865.
+
+</details>
+
+<details>
+<summary>📒 Files selected for processing (1)</summary>
+
+* `scripts/capability-check.sh`
+
+</details>
+
+</details>
+
+<details>
+<summary>📜 Review details</summary>
+
+<details>
+<summary>⏰ Context from checks skipped due to timeout. (3)</summary>
+
+* GitHub Check: iOS compile (identity-wallet)
+* GitHub Check: iOS compile (admin-companion)
+* GitHub Check: PDS gate (fmt, clippy, test, audit)
+
+</details>
+
+<details>
+<summary>🧰 Additional context used</summary>
+
+<details>
+<summary>🧠 Learnings (1)</summary>
+
+<details>
+<summary>📓 Common learnings</summary>
+
+```
+Learnt from: CR
+Repo: malpercio-dev/ezpds
+
+Timestamp: 2026-07-05T15:27:17.974Z
+Learning: Use the exact Rust stable toolchain pinned in `rust-toolchain.toml` (currently 1.96.0); do not use the moving `stable` channel.
+```
+
+```
+Learnt from: CR
+Repo: malpercio-dev/ezpds
+
+Timestamp: 2026-07-05T15:27:17.974Z
+Learning: Use Cargo workspaces with resolver v2.
+```
+
+```
+Learnt from: CR
+Repo: malpercio-dev/ezpds
+
+Timestamp: 2026-07-05T15:27:17.974Z
+Learning: Use SQLite via `sqlx 0.8` with the `runtime-tokio` and `sqlite` features.
+```
+
+```
+Learnt from: CR
+Repo: malpercio-dev/ezpds
+
+Timestamp: 2026-07-05T15:27:17.974Z
+Learning: Use Nix flake + devenv for the development environment; do not install tools globally.
+```
+
+```
+Learnt from: CR
+Repo: malpercio-dev/ezpds
+
+Timestamp: 2026-07-05T15:27:17.974Z
+Learning: Always run `nix develop` from the workspace root, not from a subdirectory.
+```
+
+```
+Learnt from: CR
+Repo: malpercio-dev/ezpds
+
+Timestamp: 2026-07-05T15:27:17.974Z
+Learning: Manage the Rust toolchain with `rustup` (not Nix `rust-default`) and pin it exactly in `rust-toolchain.toml`.
+```
+
+```
+Learnt from: CR
+Repo: malpercio-dev/ezpds
+
+Timestamp: 2026-07-05T15:27:17.974Z
+Learning: Use `cargo build`, `cargo test`, `cargo clippy --workspace -- -D warnings`, and `cargo fmt --all --check` as the standard Rust validation commands.
+```
+
+```
+Learnt from: CR
+Repo: malpercio-dev/ezpds
+
+Timestamp: 2026-07-05T15:27:17.974Z
+Learning: When adding, removing, or changing any PDS route (path, method, request body, response shape, auth), update the matching Bruno collection entry in `bruno/`; new routes must get a new `.bru` file with the next sequence number.
+```
+
+```
+Learnt from: CR
+Repo: malpercio-dev/ezpds
+
+Timestamp: 2026-07-05T15:27:17.974Z
+Learning: Use Linear as the source of truth for live project status; prefer the Linear wave-status and issue-search APIs over manually scanning the backlog.
+```
+
+```
+Learnt from: CR
+Repo: malpercio-dev/ezpds
+
+Timestamp: 2026-07-05T15:27:17.974Z
+Learning: When changing dependencies, ensure `Cargo.lock` is updated and explain the dependency change in the PR description; do not use ad hoc `--ignore` flags for `cargo audit`.
+```
+
+```
+Learnt from: CR
+Repo: malpercio-dev/ezpds
+
+Timestamp: 2026-07-05T15:27:17.974Z
+Learning: Do not add ticket or acceptance-criteria references in source code comments or CLAUDE.md files; put traceability in `docs/` instead.
+```
+
+```
+Learnt from: CR
+Repo: malpercio-dev/ezpds
+
+Timestamp: 2026-07-05T15:27:17.974Z
+Learning: Never edit `flake.lock` by hand; update it only through `nix flake update`.
+```
+
+```
+Learnt from: CR
+Repo: malpercio-dev/ezpds
+
+Timestamp: 2026-07-05T15:27:17.974Z
+Learning: Never edit `devenv.local.nix`; it is for local overrides only and is gitignored.
+```
+
+```
+Learnt from: CR
+Repo: malpercio-dev/ezpds
+
+Timestamp: 2026-07-05T15:27:29.369Z
+Learning: Use the same JSON pairing payload shape: `{"relayUrl","pairingCode"}`; both QR parsing and manual entry must feed those two fields.
+```
+
+</details>
+
+</details>
+
+</details>
+
+<details>
+<summary>🔇 Additional comments (1)</summary><blockquote>
+
+<details>
+<summary>scripts/capability-check.sh (1)</summary><blockquote>
+
+`74-92`: **Schema guard correctly implements the required `mobile-schema.json` check.**
+
+This matches the PR's follow-up fix: rejecting `desktop-schema.json` (Lines 82-86) and now positively requiring `mobile-schema.json` (Lines 87-91), consistent with the doc's claim that "the mobile schema is referenced" is enforced by this script.
+
+<!-- cr-comment:v1:cbccf0b17599d8dfcf732114 -->
+
+</blockquote></details>
+
+</blockquote></details>
+
+</details>
+
+<!-- This is an auto-generated comment by CodeRabbit for review status -->
+
+Please address the feedback and push a fix. Then, for each inline comment you addressed (those with a comment_id), post a one-line reply on the thread via `gh api` saying what you changed (or why you didn't). End each reply with the line "_🤖 Addressed by [Claude Code](https://claude.com/claude-code)_" so reviewers can see it was automated. Then resolve the thread. Skip replies for comments you didn't act on.</ci-monitor-event>
