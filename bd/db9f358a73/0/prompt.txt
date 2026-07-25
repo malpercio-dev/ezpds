@@ -1,0 +1,8 @@
+<ci-monitor-event>malpercio-dev/ezpds PR #109 has 1 new review comment:
+- coderabbitai[bot] on docs/security/tauri-ipc-boundary.md:28 [comment_id=3525122824]: `@malpercio-dev` Thanks for the detailed explanation and the fix in 165e5baf — that wording is more precise. Framing it as "a window must be bound to a capability to reach the IPC layer at all" while clarifying that it's the per-command entry (not the capability itself) that's unneeded for app commands accurately reflects the Tauri v2 model. Appreciate the pipe escape for MD056 too.
+
+<!-- <review_comment_addressed> -->
+
+<!-- This is an auto-generated reply by CodeRabbit -->
+
+Please address the feedback and push a fix. Then, for each inline comment you addressed (those with a comment_id), post a one-line reply on the thread via `gh api` saying what you changed (or why you didn't). End each reply with the line "_🤖 Addressed by [Claude Code](https://claude.com/claude-code)_" so reviewers can see it was automated. Then resolve the thread. Skip replies for comments you didn't act on.</ci-monitor-event>
