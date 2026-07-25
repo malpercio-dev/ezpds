@@ -94,13 +94,24 @@
       {/if}
       <div class="row"><span class="k">DID</span><span class="v mono">{displayDid}</span></div>
       <div class="row">
-        <span class="k">Share 1 · iCloud Keychain</span>
+        <span class="k">Share 1 · Keychain</span>
         <span class="v" class:ok={target.share1Loaded}>
           {target.share1Loaded
             ? '✓ Found on this device'
             : 'Not found — you can enter a share manually'}
         </span>
       </div>
+      {#if !target.share1Loaded}
+        <!-- Name the two real reasons rather than implying the share should be here.
+             Share 1 reaches a new device only through iCloud Keychain, and identities
+             set up by an older version of Obsign never had it marked for syncing —
+             nothing can repair that after the original device is gone. -->
+        <p class="hint">
+          Share 1 reaches a new device through iCloud Keychain. It won't be here if iCloud
+          Keychain is off, or if this identity was set up by an older version of Obsign that
+          kept Share 1 on one device. Your saved Share 3 covers this.
+        </p>
+      {/if}
     </div>
     <Button onclick={() => onnext(target!)}>Continue</Button>
   {/if}
@@ -140,5 +151,11 @@
   .v.ok {
     color: var(--color-safe);
     font-weight: var(--weight-semibold);
+  }
+  .hint {
+    margin: 0;
+    font-size: var(--text-label);
+    line-height: var(--leading-body);
+    color: var(--color-muted);
   }
 </style>

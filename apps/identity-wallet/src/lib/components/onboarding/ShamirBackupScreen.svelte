@@ -88,7 +88,12 @@
     </span>
     <div>
       <p class="part-label">Share 1 of 3</p>
-      <p class="part-desc">Saved to iCloud Keychain automatically</p>
+      <!-- Honest by construction: the app can prove it wrote the share into the Keychain
+           marked for iCloud sync, but iOS gives it no way to observe whether the share
+           actually reached the Apple account — so the copy claims only the write. -->
+      <p class="part-desc">
+        Saved to your Keychain — and to your other Apple devices if iCloud Keychain is on
+      </p>
     </div>
   </div>
 

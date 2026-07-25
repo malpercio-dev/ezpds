@@ -23,7 +23,10 @@ Backup is **built into creating your identity** — there is no separate menu
 option to turn it on. Right after your identity is created, Obsign shows the
 **Back up your recovery key** step, and the three shares already have their homes:
 
-- **Share 1 of 3** — saved to your **iCloud Keychain** automatically.
+- **Share 1 of 3** — saved automatically to your device's **Keychain**, marked for
+  **iCloud Keychain** sync so it reaches your other Apple devices. Obsign can
+  confirm it wrote the share; only Apple can deliver it, and with iCloud Keychain
+  switched off it stays on this device.
 - **Share 2 of 3** — held in your **server's escrow**.
 - **Share 3 of 3** — **you** save this one. Obsign shows it as a numbered
   **word phrase** (with a QR form for machines) and a Copy button; keep it
@@ -48,15 +51,31 @@ leave it only on the phone that also holds Share 1.
 Lost the phone entirely? On a new device, choose **Recover from backup shares**
 on Obsign's first screen. Any two of your three shares bring the identity back:
 
-- **The common path** — your iCloud Share 1 loads automatically, and Obsign asks
-  your server to release its escrowed Share 2. The release is deliberately slow:
-  a single-use code is emailed to your account address, and after you enter it
-  the share stays **pending for a delay window** before it can be collected. The
-  wait is shown honestly, and a pending release can be cancelled — so a stolen
-  mailbox alone cannot quietly drain your escrow.
-- **The sovereign path** — your iCloud Share 1 plus the Share 3 word phrase you
-  saved. This path reconstructs everything locally and asks your server for
-  nothing.
+- **The common path** — Share 1 loads automatically if iCloud Keychain carried it
+  to the new device, and Obsign asks your server to release its escrowed Share 2.
+  The release is deliberately slow: a single-use code is emailed to your account
+  address, and after you enter it the share stays **pending for a delay window**
+  before it can be collected. The wait is shown honestly, and a pending release
+  can be cancelled — so a stolen mailbox alone cannot quietly drain your escrow.
+- **The sovereign path** — Share 1 plus the Share 3 word phrase you saved. This
+  path reconstructs everything locally and asks your server for nothing.
+- **Share 2 + Share 3** — the escrowed share plus your word phrase. This works
+  with no Share 1 at all, which is why saving Share 3 is not optional.
+
+:::caution[When Share 1 won't be waiting for you]
+Obsign marks Share 1 for iCloud Keychain sync, but it cannot see whether Apple
+delivered it. Two cases leave a new device without it:
+
+- **iCloud Keychain is switched off** on your Apple account. Turning it on later
+  syncs the share with no further action in Obsign — but only from a device that
+  still holds it.
+- **The identity was set up by an older version of Obsign**, which kept Share 1
+  on a single device. Updating and opening the app on a device that still holds
+  that share fixes it from then on. If that device is already gone, nothing can
+  reach back and repair it — that identity stays on Share 2 + Share 3 for good.
+
+In both cases your saved Share 3 is the way back in.
+:::
 
 Obsign verifies the reconstructed key against your identity's public record
 before anything is allowed to sign, and tells you in plain words if a share is

@@ -16,6 +16,16 @@ recovery-ceremony discussion of 2026-07-17 (capture-before-close). Builds on
 [passwordless-auth exploration](../../design-plans/2026-07-12-passwordless-auth.md), which flagged the Shamir
 reconstruction ceremony as a **hard prerequisite** for removing the password.
 
+> **Correction (2026-07-24).** §4 step 1 and §5 step 1 below say Share 1 "appears
+> automatically via iCloud Keychain sync." That was the design's intent but not what
+> shipped: every wallet Keychain write went through `set_generic_password`, which never
+> sets `kSecAttrSynchronizable`, so Share 1 stayed on the device that wrote it and the
+> escrow-assisted path was unavailable on a replacement device. The wallet now writes
+> Share 1 to the synchronizable store, reads it synced-slot-first, and backfills existing
+> device-local shares at launch. Read those steps as describing the intended and
+> now-implemented behavior — with the caveat the fix cannot remove: an identity whose only
+> device is already lost was never reached by the backfill and stays on Share 2 + Share 3.
+
 ## Problem
 
 Every layer of the stack promises share-based recovery, and none of it can currently

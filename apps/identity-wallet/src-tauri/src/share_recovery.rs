@@ -7,9 +7,11 @@
 // fresh device key at `rotationKeys[0]` on the new device.
 //
 // Two collection paths feed the same core:
-//   - escrow-assisted: Share 1 auto-loads from the iCloud-synced per-DID
-//     `recovery-share-1:{did}` slot (falling back to the legacy global slot for
-//     pre-unification identities); Share 2 arrives via the PDS escrow-release flow (initiate → email OTP →
+//   - escrow-assisted: Share 1 auto-loads from the per-DID `recovery-share-1:{did}`
+//     slot, preferring the iCloud-synchronizable copy (the only one that can reach a
+//     replacement device) and falling back to the device-local copy, then to the legacy
+//     global slot for pre-unification identities; Share 2 arrives via the PDS
+//     escrow-release flow (initiate → email OTP →
 //     release, with a cancellable pending-delay window).
 //   - fully sovereign: Share 1 (or a manually entered share) plus Share 3 (word
 //     phrase or base32/QR). This path touches ONLY plc.directory until the
@@ -48,20 +50,56 @@ pub const EPILOGUE_ACCOUNT: &str = "recovery-epilogue";
 /// The legacy app-global Share 1 slot. Share 1 now lives in the per-DID slot
 /// `recovery-share-1:{did}` (`crate::rekey::recovery_share1_account`); this literal is kept
 /// only as the auto-load fallback for identities created before the per-DID unification,
-/// whose iCloud-synced Share 1 is still under this global account.
+/// whose Share 1 is still under this global account. Read-only: the launch backfill promotes
+/// this slot's value into the per-DID slots rather than syncing it under this name.
 const RECOVERY_SHARE1_ACCOUNT: &str = "recovery-share-1";
 
-/// Read a Keychain slot and decode its bytes as an index-1 v2 share envelope, or `None` if
-/// the slot is absent, unreadable, non-UTF-8, not a valid envelope, or not Share 1. A bare
-/// legacy share (pre-envelope format) or foreign bytes are unusable for this ceremony and
-/// read as "not loaded" — manual entry covers the gap.
-fn load_share1_envelope(account: &str) -> Option<crypto::ShareEnvelope> {
-    // Sensitive key material — wipe the in-memory copy when this scope ends.
-    let bytes = zeroize::Zeroizing::new(keychain::get_item(account).ok()?);
-    let env = std::str::from_utf8(&bytes)
+/// Decode bytes as an index-1 v2 share envelope, or `None` if they are non-UTF-8, not a valid
+/// envelope, or not Share 1. A bare legacy share (pre-envelope format) or foreign bytes are
+/// unusable for this ceremony and read as "not loaded" — manual entry covers the gap.
+///
+/// Also the launch backfill's validity test: only bytes this accepts are worth copying into
+/// the iCloud-synchronizable slot, since only these can auto-load on a replacement device.
+pub(crate) fn decode_share1_envelope(bytes: &[u8]) -> Option<crypto::ShareEnvelope> {
+    let env = std::str::from_utf8(bytes)
         .ok()
         .and_then(|s| crypto::ShareEnvelope::decode_share(s).ok())?;
     (env.index() == 1).then_some(env)
+}
+
+/// Read a **device-local** Keychain slot as an index-1 v2 share envelope, or `None` if the
+/// slot is absent, unreadable, or holds anything else.
+fn load_share1_envelope(account: &str) -> Option<crypto::ShareEnvelope> {
+    // Sensitive key material — wipe the in-memory copy when this scope ends.
+    let bytes = zeroize::Zeroizing::new(keychain::get_item(account).ok()?);
+    decode_share1_envelope(&bytes)
+}
+
+/// Read the **iCloud-synchronizable** slot as an index-1 v2 share envelope. This is the slot
+/// that can arrive on a device that never ran the ceremony.
+fn load_share1_envelope_synced(account: &str) -> Option<crypto::ShareEnvelope> {
+    // Sensitive key material — wipe the in-memory copy when this scope ends.
+    let bytes = zeroize::Zeroizing::new(keychain::get_item_synced(account).ok()?);
+    decode_share1_envelope(&bytes)
+}
+
+/// Resolve this identity's Share 1 for the ceremony's auto-load, in descending order of how
+/// far the slot can travel:
+///
+///   1. the DID's iCloud-synchronizable slot — the only one that can be present on a device
+///      that never ran this identity's ceremony, and so the one the "lost phone, iCloud
+///      intact" path depends on;
+///   2. the same DID's device-local slot — populated on the device that onboarded before the
+///      synchronizable write path existed, or before its launch backfill ran;
+///   3. the deprecated app-global slot, for identities created before the per-DID unification.
+///
+/// Each tier is validated independently, so a damaged higher tier cannot shadow a good lower
+/// one.
+fn auto_load_share1(did: &str) -> Option<crypto::ShareEnvelope> {
+    let per_did = crate::rekey::recovery_share1_account(did);
+    load_share1_envelope_synced(&per_did)
+        .or_else(|| load_share1_envelope(&per_did))
+        .or_else(|| load_share1_envelope(RECOVERY_SHARE1_ACCOUNT))
 }
 
 /// Bumped only on a breaking epilogue-record format change; a mismatched version reads
@@ -239,7 +277,9 @@ pub struct CollectedShare {
 pub struct RecoveryTarget {
     pub did: String,
     pub handle: Option<String>,
-    /// Whether Share 1 auto-loaded from the iCloud-synced Keychain slot.
+    /// Whether Share 1 auto-loaded from one of the Keychain slots `auto_load_share1` reads.
+    /// False on a device the share never reached — with iCloud Keychain off, or for an
+    /// identity onboarded before Share 1 was written to the synchronizable store.
     pub share1_loaded: bool,
     pub collected: Vec<CollectedShare>,
 }
@@ -303,7 +343,7 @@ type StateSlot = tokio::sync::Mutex<Option<ShareRecoveryState>>;
 
 /// Begin a recovery ceremony for a handle or did:plc. Resolves the identifier,
 /// reads the authoritative current state from plc.directory, and auto-loads Share 1
-/// from the iCloud-synced Keychain slot when a valid v2 envelope is present.
+/// from the first Keychain slot holding a valid v2 envelope (see `auto_load_share1`).
 #[tauri::command]
 pub async fn start_share_recovery(
     state: tauri::State<'_, AppState>,
@@ -341,15 +381,10 @@ pub(crate) async fn start_impl(
         .get("atproto_pds")
         .map(|s| s.endpoint.clone());
 
-    // Share 1 auto-load: prefer the resolved DID's per-DID slot; fall back to the legacy
-    // app-global slot so an identity created before the per-DID unification (whose
-    // iCloud-synced Share 1 is still global) is recoverable on a fresh device. A valid v2
-    // index-1 envelope joins the session.
+    // Share 1 auto-load across the three slots it may occupy (see `auto_load_share1`).
+    // A valid v2 index-1 envelope joins the session.
     let mut shares = Vec::new();
-    let per_did_account = crate::rekey::recovery_share1_account(&did);
-    let share1_loaded = match load_share1_envelope(&per_did_account)
-        .or_else(|| load_share1_envelope(RECOVERY_SHARE1_ACCOUNT))
-    {
+    let share1_loaded = match auto_load_share1(&did) {
         Some(env) => {
             shares.push(StoredShare::from_envelope(&env));
             true
@@ -1102,14 +1137,16 @@ pub(crate) async fn epilogue_impl(
         }
     }
 
-    // Step 3 — rewrite the recovered DID's durable per-DID Share 1 slot, with a read-back
-    // verify (the teardown in `confirm_recovery_backup` re-checks it before destroying the
-    // record, mirroring the create-flow ceremony's invariant).
+    // Step 3 — rewrite the recovered DID's per-DID Share 1 slot in the iCloud-synchronizable
+    // store, with a read-back verify of that same slot (the teardown in
+    // `confirm_recovery_backup` re-checks it before destroying the record, mirroring the
+    // create-flow ceremony's invariant). Recovery is exactly when the new Share 1 must be able
+    // to outlive this device, so it is written synchronizable from the start.
     if !record.share1_written {
-        let share1_account = crate::rekey::recovery_share1_account(&record.did);
-        keychain::store_item(&share1_account, record.share1.as_bytes())
+        crate::rekey::store_share1(&record.did, record.share1.as_bytes())
             .map_err(map_keychain_error)?;
-        let read_back = keychain::get_item(&share1_account).map_err(map_keychain_error)?;
+        let read_back =
+            crate::rekey::read_share1_synced(&record.did).map_err(map_keychain_error)?;
         if read_back != record.share1.as_bytes() {
             return Err(ShareRecoveryError::KeychainError {
                 message: "Share 1 read-back verification failed".to_string(),
@@ -1216,7 +1253,7 @@ pub(crate) async fn confirm_backup_core(slot: &StateSlot) -> Result<(), crate::S
         }
         Err(_) => return Err(crate::ShareBackupError::KeychainError),
     };
-    match keychain::get_item(&crate::rekey::recovery_share1_account(&record.did)) {
+    match crate::rekey::load_share1(&record.did) {
         Ok(bytes) if bytes == record.share1.as_bytes() => {}
         Ok(_) => return Err(crate::ShareBackupError::ShareNotStored),
         // A missing slot means the durable write never landed; an operational Keychain
@@ -1286,6 +1323,60 @@ mod tests {
             }
         }])
         .to_string()
+    }
+
+    // ── Share 1 auto-load: which slot answers ─────────────────────────────────
+
+    /// The synchronizable slot is the only one that can be present on a replacement device,
+    /// so it must win over a device-local slot of the same name whenever both exist.
+    #[test]
+    fn auto_load_prefers_the_synchronizable_slot() {
+        keychain::clear_for_test();
+        let (synced, _) = make_split(0xAAAA_AAAA);
+        let (local, _) = make_split(0xBBBB_BBBB);
+        let account = crate::rekey::recovery_share1_account(DID);
+
+        keychain::store_item(&account, local[0].encode_share().as_bytes()).unwrap();
+        keychain::store_item_synced(&account, synced[0].encode_share().as_bytes()).unwrap();
+
+        assert_eq!(auto_load_share1(DID).unwrap().set_id(), synced[0].set_id());
+    }
+
+    /// The lower tiers still answer on the device that holds them: a device-local slot when
+    /// the backfill has not run, and the deprecated app-global slot for a pre-unification
+    /// identity. A damaged higher tier must not shadow a good lower one.
+    #[test]
+    fn auto_load_falls_through_to_local_then_global() {
+        keychain::clear_for_test();
+        let (local, _) = make_split(0xCCCC_CCCC);
+        let (global, _) = make_split(0xDDDD_DDDD);
+        let account = crate::rekey::recovery_share1_account(DID);
+
+        keychain::store_item(RECOVERY_SHARE1_ACCOUNT, global[0].encode_share().as_bytes()).unwrap();
+        assert_eq!(auto_load_share1(DID).unwrap().set_id(), global[0].set_id());
+
+        keychain::store_item(&account, local[0].encode_share().as_bytes()).unwrap();
+        assert_eq!(auto_load_share1(DID).unwrap().set_id(), local[0].set_id());
+
+        // A synchronizable slot holding unusable bytes falls through rather than blocking.
+        keychain::store_item_synced(&account, b"NOTANENVELOPE").unwrap();
+        assert_eq!(auto_load_share1(DID).unwrap().set_id(), local[0].set_id());
+    }
+
+    /// Nothing anywhere, or a Share 2/3 envelope in the slot, reads as "not loaded" — the
+    /// ceremony falls back to manual entry rather than seeding a wrong share.
+    #[test]
+    fn auto_load_reports_nothing_when_no_slot_holds_a_share1_envelope() {
+        keychain::clear_for_test();
+        assert!(auto_load_share1(DID).is_none());
+
+        let (set, _) = make_split(0xEEEE_EEEE);
+        keychain::store_item_synced(
+            &crate::rekey::recovery_share1_account(DID),
+            set[1].encode_share().as_bytes(),
+        )
+        .unwrap();
+        assert!(auto_load_share1(DID).is_none());
     }
 
     // ── Share collection: distinct, human-legible failures before any combine ──
@@ -1700,10 +1791,16 @@ mod tests {
         );
         assert_eq!(staged_after.share1, share1_before);
 
-        // Share 1 reached its durable per-DID slot and the teardown verifies it.
+        // The new Share 1 reached the per-DID slot in the iCloud-synchronizable store — the
+        // only store that can carry it to a replacement device — and the teardown verifies it.
         assert_eq!(
-            keychain::get_item(&crate::rekey::recovery_share1_account(DID)).unwrap(),
+            crate::rekey::read_share1_synced(DID).unwrap(),
             share1_before.as_bytes()
+        );
+        assert!(
+            keychain::get_item(&crate::rekey::recovery_share1_account(DID))
+                .is_err_and(|e| keychain::is_not_found(&e)),
+            "the epilogue writes the synchronizable slot, not the device-local one"
         );
         let slot = fresh_slot(DID, None);
         confirm_backup_core(&slot).await.unwrap();

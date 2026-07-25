@@ -38,12 +38,14 @@ with import one tap away.
 ## Recovering from backup shares
 
 If your phone is lost, any two of your three backup shares can bring your identity to a
-new device. Recovery starts from your handle or DID; Share 1 is loaded automatically when
-your iCloud Keychain carried it to the new phone.
+new device. Recovery starts from your handle or DID; Share 1 is loaded automatically if
+iCloud Keychain carried it to the new phone. When it didn't — iCloud Keychain was off, or
+the identity predates Obsign syncing that share — the screen says so and your saved
+Share 3 takes its place. See [2-of-3 Shamir backup](/user/backup/#recovering-with-two-shares).
 
 <figure>
   <img src="/screenshots/wallet/recover-start.png" alt="Obsign recovery start screen with a looked-up identity and Share 1 found on the device" width="280" />
-  <figcaption>Recovery starts from a handle or DID; Share 1 auto-loads from the iCloud Keychain when present.</figcaption>
+  <figcaption>Recovery starts from a handle or DID; Share 1 auto-loads from the Keychain when it is present.</figcaption>
 </figure>
 
 With one share in hand, the second can come from your server's escrow (released with an
