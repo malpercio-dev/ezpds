@@ -32,6 +32,21 @@ pub struct StorageResponse {
     blob_count: i64,
     /// Total bytes occupied by those blobs.
     total_bytes: i64,
+    /// Physical blob rows recording this account as their *uploader* (`blobs.account_did`),
+    /// and their bytes — a second witness beside the ownership figures above.
+    ///
+    /// `blob_count`/`total_bytes` come from `blob_owners`, as does every other blob surface
+    /// an operator can reach, so ownership rows vanishing and bytes being destroyed look
+    /// identical everywhere else. These read the physical table directly: if an account
+    /// reports zero owned blobs while hundreds are still attributed to it here, its bytes are
+    /// on disk and its ownership rows are what went missing.
+    ///
+    /// Divergence is **not** by itself a fault. Blobs are content-addressed and shared: a CID
+    /// this account references but another uploaded is owned-not-uploaded, and one it uploaded
+    /// that only another account still owns is uploaded-not-owned. Treat a gap as a reason to
+    /// look, not a verdict.
+    uploaded_blob_count: i64,
+    uploaded_blob_bytes: i64,
     /// The per-account storage quota in bytes (`[blobs] max_storage_per_account`). Tiers are
     /// not yet differentiated in v0.1, so every account reports the same configured quota.
     quota_bytes: i64,
@@ -73,6 +88,14 @@ pub async fn account_storage(
             ApiError::new(ErrorCode::InternalError, "failed to load account storage")
         })?;
 
+    let (uploaded_blob_count, uploaded_blob_bytes) =
+        crate::db::blobs::account_uploaded_blob_metrics(&state.db, &did)
+            .await
+            .map_err(|e| {
+                tracing::error!(error = %e, did = %did, "failed to load uploaded blob metrics");
+                ApiError::new(ErrorCode::InternalError, "failed to load account storage")
+            })?;
+
     let largest_blob = crate::db::blobs::account_largest_blob(&state.db, &did)
         .await
         .map_err(|e| {
@@ -94,6 +117,8 @@ pub async fn account_storage(
     Ok(Json(StorageResponse {
         blob_count,
         total_bytes,
+        uploaded_blob_count,
+        uploaded_blob_bytes,
         quota_bytes,
         quota_used_pct,
         largest_blob,
@@ -171,6 +196,42 @@ mod tests {
         let (status, body) = get_storage(&app, "did:plc:ghost", Some(ADMIN)).await;
         assert_eq!(status, StatusCode::NOT_FOUND);
         assert_eq!(body["error"]["code"], "NOT_FOUND");
+    }
+
+    /// Diagnosing a real blob loss needed a production SQLite shell precisely because this
+    /// endpoint could only speak through `blob_owners`. With the uploader witness beside it,
+    /// "ownership rows gone, bytes intact" is legible over HTTP.
+    #[tokio::test]
+    async fn ownership_loss_is_visible_as_owned_zero_beside_nonzero_uploaded() {
+        let state = test_state_with_admin_token().await;
+        let app = crate::app::app(state.clone());
+        let did = "did:plc:storageorphaned";
+        insert_account(&state.db, did).await;
+        insert_blob(&state.db, did, "bafkeepone", 100).await;
+        insert_blob(&state.db, did, "bafkeeptwo", 250).await;
+
+        let (status, body) = get_storage(&app, did, Some(ADMIN)).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["blobCount"], 2);
+        assert_eq!(body["uploadedBlobCount"], 2);
+        assert_eq!(body["uploadedBlobBytes"], 350);
+
+        sqlx::query("DELETE FROM blob_owners WHERE account_did = ?")
+            .bind(did)
+            .execute(&state.db)
+            .await
+            .unwrap();
+
+        let (status, body) = get_storage(&app, did, Some(ADMIN)).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["blobCount"], 0, "every ownership-scoped figure zeroes");
+        assert_eq!(body["totalBytes"], 0);
+        assert!(body["largestBlob"].is_null());
+        assert_eq!(
+            body["uploadedBlobCount"], 2,
+            "the physical rows still name this account as uploader"
+        );
+        assert_eq!(body["uploadedBlobBytes"], 350);
     }
 
     #[tokio::test]

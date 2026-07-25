@@ -49,6 +49,13 @@ pub struct AccountEntry {
     /// quota is 0). Carried per row so the console renders a capacity readout per account
     /// without a per-account storage round-trip.
     quota_used_pct: f64,
+    /// Whether Custos serves this account's did:web document (`.well-known/did.json`).
+    ///
+    /// Always false for a did:plc account. Surfaced because the flag gates a serve path that
+    /// fails *silently* when off — an account that isn't opted in 404s exactly like an unknown
+    /// host — so without it here an operator has no way to tell "not hosted" from "broken"
+    /// short of a DB shell.
+    did_web_hosting: bool,
     /// Labels currently in force on this account from watched labelers, newest first.
     /// Empty for an unflagged account (and always empty when labeler watching is off).
     flags: Vec<AccountFlag>,
@@ -197,6 +204,7 @@ pub async fn list_accounts(
                 status: row.lifecycle.as_status_str().unwrap_or("active"),
                 total_bytes: row.blob_bytes,
                 quota_used_pct,
+                did_web_hosting: row.did_web_hosting,
                 flags,
             }
         })
@@ -285,6 +293,27 @@ mod tests {
         assert!(body.get("cursor").is_none());
     }
 
+    /// The opt-in gates a serve path that 404s indistinguishably from an unknown host when
+    /// off, so the listing must state it rather than leaving it to a DB shell.
+    #[tokio::test]
+    async fn reports_managed_did_web_hosting_per_account() {
+        let state = test_state_with_admin_token().await;
+        insert_account(&state.db, "did:web:hosted.example").await;
+        insert_account(&state.db, "did:web:unhosted.example").await;
+        crate::db::dids::set_did_web_hosting(&state.db, "did:web:hosted.example", true)
+            .await
+            .unwrap();
+        let app = crate::app::app(state);
+
+        let (status, body) = list(&app, "", Some(ADMIN)).await;
+        assert_eq!(status, StatusCode::OK);
+        let accounts = body["accounts"].as_array().unwrap();
+        assert_eq!(accounts[0]["did"], "did:web:hosted.example");
+        assert_eq!(accounts[0]["didWebHosting"], true);
+        assert_eq!(accounts[1]["did"], "did:web:unhosted.example");
+        assert_eq!(accounts[1]["didWebHosting"], false);
+    }
+
     #[tokio::test]
     async fn unknown_status_filter_returns_400() {
         let state = test_state_with_admin_token().await;
@@ -335,6 +364,9 @@ mod tests {
         // No labeler flags anywhere: every row carries an empty flags array.
         assert_eq!(accounts[0]["flags"].as_array().unwrap().len(), 0);
         assert_eq!(body["flaggedTotal"], 0);
+        // Neither account opted into managed did:web hosting.
+        assert_eq!(accounts[0]["didWebHosting"], false);
+        assert_eq!(accounts[1]["didWebHosting"], false);
     }
 
     #[tokio::test]

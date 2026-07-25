@@ -912,6 +912,14 @@ pub(crate) struct AdminAccountRow {
     /// (`account_labels`, V051). Flagged accounts sort first; this bit is also half of the
     /// page cursor, since the sort key is `(flagged DESC, did ASC)`.
     pub(crate) flagged: bool,
+    /// Whether Custos serves this account's did:web document (`did_web_hosting_enabled_at`
+    /// non-NULL, V044). Derived-status doctrine, like [`lifecycle`](Self::lifecycle).
+    ///
+    /// Surfaced because the column gates a serve path (`.well-known/did.json` 404s for an
+    /// account that isn't opted in, indistinguishably from an unknown host) and reading it
+    /// otherwise needs a DB shell. Always false for a did:plc account, whose document lives
+    /// on plc.directory.
+    pub(crate) did_web_hosting: bool,
 }
 
 /// Escape SQL `LIKE` metacharacters (`%`, `_`, and the `\` escape itself) in a user-supplied
@@ -950,7 +958,7 @@ pub(crate) async fn list_accounts_admin(
     q: Option<&str>,
 ) -> Result<Vec<AdminAccountRow>, sqlx::Error> {
     // (did, handle, created_at, deactivated_at, suspended_at, taken_down_at, blob_bytes,
-    //  flagged)
+    //  flagged, did_web_hosting)
     type Row = (
         String,
         Option<String>,
@@ -959,6 +967,7 @@ pub(crate) async fn list_accounts_admin(
         Option<String>,
         Option<String>,
         i64,
+        bool,
         bool,
     );
 
@@ -970,7 +979,8 @@ pub(crate) async fn list_accounts_admin(
                 a.created_at, a.deactivated_at, a.suspended_at, a.taken_down_at, \
                 (SELECT COALESCE(SUM(b.size_bytes), 0) FROM blob_owners o \
                  JOIN blobs b ON b.cid = o.cid WHERE o.account_did = a.did), \
-                {FLAGGED_SQL} AS is_flagged \
+                {FLAGGED_SQL} AS is_flagged, \
+                a.did_web_hosting_enabled_at IS NOT NULL \
          FROM accounts a WHERE 1 = 1",
     );
     if cursor.is_some() {
@@ -1015,6 +1025,7 @@ pub(crate) async fn list_accounts_admin(
                 taken_down_at,
                 blob_bytes,
                 flagged,
+                did_web_hosting,
             )| {
                 AdminAccountRow {
                     did,
@@ -1027,6 +1038,7 @@ pub(crate) async fn list_accounts_admin(
                     ),
                     blob_bytes,
                     flagged,
+                    did_web_hosting,
                 }
             },
         )

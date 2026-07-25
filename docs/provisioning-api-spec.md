@@ -1156,8 +1156,10 @@ Blob storage metrics for an account. `:id` is the account DID. Operator-only: re
 
   ----------------------- ---------- -------------------------------------------------------
   **Field**               **Type**   **Description**
-  blobCount               integer    Total blobs stored for the account
+  blobCount               integer    Total blobs the account owns (from the per-account ownership rows)
   totalBytes              integer    Total bytes occupied by those blobs
+  uploadedBlobCount       integer    Physical blob rows recording this account as their uploader — a second witness beside the ownership figures above. Ownership rows vanishing and bytes being destroyed are indistinguishable from every other blob surface, which all resolve through ownership; this reads the physical table directly, so bytes still on disk report here even when their ownership rows are gone. Blobs are shared between accounts, so a modest gap in either direction is normal — read a divergence as a prompt to look, not a fault.
+  uploadedBlobBytes       integer    Total bytes of those physical rows
   quotaBytes              integer    Per-account storage quota (`[blobs] max_storage_per_account`). Tiers are not yet differentiated in v0.1, so every account reports the same configured quota.
   quotaUsedPct            number     totalBytes as a percentage of quotaBytes (0 when the quota is 0)
   largestBlob             object     The account\'s largest blob as `{ cid, size }`, or null when it has none
