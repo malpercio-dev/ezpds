@@ -1,7 +1,0 @@
-<task-notification>
-<task-id>bwtyw7hac</task-id>
-<tool-use-id>REDACTED</tool-use-id>
-<output-file>/private/tmp/claude-501/-Users-jacob-zweifel-workspace-malpercio-dev-ezpds/5cdb1dce-f238-4e0a-9e29-eeba3848c7d8/tasks/bwtyw7hac.output</output-file>
-<status>completed</status>
-<summary>Background command "Poll until PDS gate finishes" completed (exit code 0)</summary>
-</task-notification>
