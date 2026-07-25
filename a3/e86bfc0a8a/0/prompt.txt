@@ -1,0 +1,465 @@
+Context: This summary will be shown in a list to help users and Claude choose which conversations are relevant.
+
+Please write a concise, factual summary of this conversation. Output ONLY the summary - no preamble. Claude will see this summary when searching previous conversations for useful memories and information.
+
+Summarize what happened in 2-4 sentences. Be factual and specific. Output in <summary></summary> tags.
+
+Include:
+- What was built/changed/discussed (be specific)
+- Key technical decisions or approaches
+- Problems solved or current state
+
+Exclude:
+- Apologies, meta-commentary, or your questions
+- Raw logs or debug output
+- Generic descriptions - focus on what makes THIS conversation unique
+
+Good:
+<summary>Built JWT authentication for React app with refresh tokens and protected routes. Fixed token expiration bug by implementing refresh-during-request logic.</summary>
+
+Bad:
+<summary>I apologize. The conversation discussed authentication and various approaches were considered...</summary>
+
+User: let's use impeccable to go over all of our product surfaces and give them a round of polish for alpha release
+
+Agent: I'll start by loading the impeccable skill, then work through each UI surface — the identity wallet, the admin companion, and the marketing site.
+
+---
+
+User: Base directory for this skill: /Users/jacob.zweifel/.claude/skills/impeccable
+
+Designs and iterates production-grade frontend interfaces. Real working code, committed design choices, exceptional craft.
+
+## Setup
+
+You MUST do these steps before proceeding:
+
+1. Run `node .claude/skills/impeccable/scripts/context.mjs` once per session. If the request names or implies a file, route, or app inside a monorepo, infer the concrete path and run `node .claude/skills/impeccable/scripts/context.mjs --target <path>` instead. If you've already seen its output in this conversation, do not re-run it. The script either prints the project's PRODUCT.md (and DESIGN.md when present) as a markdown block, or tells you it's missing. Follow whatever it prints. **If it reports `NO_PRODUCT_MD`, stop and follow `reference/init.md` before doing anything else.** If the output ends with an `UPDATE_AVAILABLE` directive, follow it (ask the user once about updating, then continue). It never blocks the current task.
+2. If the user invoked a sub-command (`craft`, `shape`, `audit`, `polish`, ...), you MUST read `reference/<command>.md` next. Non-optional. The reference defines the command's flow; without it you will skip steps the user expects.
+3. Familiarize yourself with any existing design system, conventions, and components in the code. Read at least one project file (CSS / tokens / theme / a representative component or page). **Required even when you've loaded a sub-command reference in step 2.** Don't reinvent the wheel; use what's there when it works, branch out when the UX wins.
+4. Read the matching register reference. **This is non-optional; skipping it produces generic output.** If the project is marketing, a landing page, a campaign, long-form content, or a portfolio (design IS the product), read `reference/brand.md`. If it is app UI, admin, a dashboard, or a tool (design SERVES the product), read `reference/product.md`. Pick by first match: (1) task cue ("landing page" vs "dashboard"); (2) surface in focus (the page, file, or route being worked on); (3) `register` field in PRODUCT.md.
+5. **If the project is brand-new (no existing CSS tokens / theme / committed brand colors found in step 3)**, run `node .claude/skills/impeccable/scripts/palette.mjs` to receive a brand seed color and composition guidance. This is the anchor for your primary brand color. Compose the rest of the palette (bg, surface, ink, accent, muted) around it per the script's instructions. Use OKLCH throughout. **Skip this step only if step 3 found committed brand colors in existing tokens; in that case identity-preservation wins.**
+
+## Design guidance
+
+Produce ready-to-ship, production-grade code, not prototypes or starting points. Take no shortcuts unless the user asks for them (when in doubt, ask). Don't stop until arriving at a complete implementation (beautiful, responsive, fast, precise, bug-free, on brand). You take attention to detail seriously: every page, section or component crafted is battle tested using the tools available to you (browser screenshotting, computer use, etc). Claude is capable of extraordinary work. Don't hold back.
+
+### General rules
+
+#### Color
+
+- **Verify contrast.** Body text must hit ≥4.5:1 against its background; large text (≥18px or bold ≥14px) needs ≥3:1. Placeholder text needs the same 4.5:1, not the muted-gray default. The most common failure: muted gray body text on a tinted near-white. If the contrast is even close, bump the body color toward the ink end of the ramp; light gray "for elegance" is the single biggest reason AI designs feel hard to read.
+- Gray text on a colored background looks washed out. Use a darker shade of the background's own hue, or a transparency of the text color.
+
+#### Typography
+
+- Cap body line length at 65–75ch.
+- Don't pair fonts that are similar but not identical (two geometric sans-serifs, two humanist sans-serifs). Pair on a contrast axis (serif + sans, geometric + humanist) or use one family in multiple weights.
+- Hero / display heading ceiling: clamp() max ≤ 6rem (~96px). Above that the page is shouting, not designing.
+- Display heading letter-spacing floor: ≥ -0.04em. Anything tighter and letters touch; cramped, not "designed".
+- Use `text-wrap: balance` on h1–h3 for even line lengths; `text-wrap: pretty` on long prose to reduce orphans.
+
+#### Layout
+
+- Vary spacing for rhythm.
+- Cards are the lazy answer. Use them only when they're truly the best affordance. Nested cards are always wrong.
+- Flexbox for 1D, Grid for 2D. Don't default to Grid when `flex-wrap` would be simpler.
+- For responsive grids without breakpoints: `repeat(auto-fit, minmax(280px, 1fr))`.
+- Build a semantic z-index scale (dropdown → sticky → modal-backdrop → modal → toast → tooltip). Never arbitrary values like 999 or 9999.
+
+#### Motion
+- Motion should be intentional, and not be an afterthought. consider it as part of the build.
+- Don't animate CSS layout properties unless truly needed.
+- Ease out with exponential curves (ease-out-quart / quint / expo). No bounce, no elastic.
+- Use libraries for more advanced motion needs (e.g. motion, gsap, anime.js, lenis etc)
+- Reduced motion is not optional. Every animation needs a `@media (prefers-reduced-motion: reduce)` alternative: typically a crossfade or instant transition.
+- Staggering the items within one list is legitimate. The tell is the uniform reflex (one identical entrance applied to every section), not motion itself; each reveal should fit what it reveals. Suppressing the reflex is never a reason to ship a page with no motion at all.
+- Reveal animations must enhance an already-visible default. Don't gate content visibility on a class-triggered transition; transitions pause on hidden tabs and headless renderers, so the reveal never fires and the section ships blank.
+- Premium motion materials are not just transform/opacity. Blur, backdrop-filter, clip-path, mask, and shadow/glow are part of the palette when they materially improve the effect and stay smooth.
+
+#### Interaction
+
+- Dropdowns rendered with `position: absolute` inside an `overflow: hidden` or `overflow: auto` container will be clipped. Use the native `<dialog>` / popover API, `position: fixed`, or a portal to escape the stacking context.
+
+### New projects only (when no prior work exists)
+
+#### Color & Theme
+
+- Use OKLCH.
+- **The cream / sand / beige body bg is the saturated AI default of 2026.** The whole warm-neutral band (OKLCH L 0.84-0.97, C < 0.06, hue 40-100) reads as cream/sand/paper/parchment regardless of what you call it. Token names like `--paper`, `--cream`, `--sand`, `--bone`, `--flour`, `--linen`, `--parchment`, `--wheat`, `--biscuit`, `--ivory` are tells in themselves. If the brief is "warm, traditional, family-coastal-Italian" or "magazine-warm" or "editorial-restraint", DO NOT translate that into a near-white warm-tinted bg; that's the AI move. Pick: (a) a saturated brand color as the body (terracotta, oxblood, deep ochre, near-black), (b) a true off-white at chroma 0 (or chroma toward the brand's own hue, not toward warmth-by-default), or (c) a darker mid-tone tinted neutral that's clearly the brand's own. "Warmth" in the brand is carried by accent + typography + imagery, not by body bg.
+- Tinted neutrals: add 0.005–0.015 chroma toward the brand's hue. Don't default-tint toward warm or cool "because the brand feels that way"; that's the cross-project monoculture move.
+- When picking a theme: Dark vs. light is never a default. Not dark "because tools look cool dark." Not light "to be safe.".Before choosing, write one sentence of physical scene: who uses this, where, under what ambient light, in what mood. If the sentence doesn't force the answer, it's not concrete enough. Add detail until it does.
+- Pick a **color strategy** before picking colors. Four steps on the commitment axis:
+  - **Restrained**: tinted neutrals + one accent ≤10%. Product default; brand minimalism.
+  - **Committed**: one saturated color carries 30–60% of the surface. Brand default for identity-driven pages.
+  - **Full palette**: 3–4 named roles, each used deliberately. Brand campaigns; product data viz.
+  - **Drenched**: the surface IS the color. Brand heroes, campaign pages.
+
+### Absolute bans
+
+Match-and-refuse. If you're about to write any of these, rewrite the element with different structure.
+
+- **Side-stripe borders.** `border-left` or `border-right` greater than 1px as a colored accent on cards, list items, callouts, or alerts. Never intentional. Rewrite with full borders, background tints, leading numbers/icons, or nothing.
+- **Gradient text.** `background-clip: text` combined with a gradient background. Decorative, never meaningful. Use a single solid color. Emphasis via weight or size.
+- **Glassmorphism as default.** Blurs and glass cards used decoratively. Rare and purposeful, or nothing.
+- **The hero-metric template.** Big number, small label, supporting stats, gradient accent. SaaS cliché.
+- **Identical card grids.** Same-sized cards with icon + heading + text, repeated endlessly.
+- **Tiny uppercase tracked eyebrow above every section.** The 2023-era kicker (small all-caps text with wide tracking, "ABOUT" "PROCESS" "PRICING" above each heading) is now the saturated AI scaffold; it appears on 55-95% of generations regardless of brief, which is the definition of a tell. One named kicker as a deliberate brand system is voice; an eyebrow on every section is AI grammar. Choose a different cadence.
+- **Numbered section markers as default scaffolding (01 / 02 / 03).** Putting `01 · About / 02 · Process / 03 · Pricing` above every section is the eyebrow trope one tier deeper: reach for it because "landing pages do this" and you're scaffolding by reflex. Numbers earn their place when the section actually IS a sequence (a real 3-step process, an ordered flow, a typed timeline) and the order carries information the reader needs. One deliberate numbered sequence on one page is voice; numbered eyebrows on every section across the site is AI grammar.
+- **Text that overflows its container.** Long heading words plus large clamp scales plus narrow grids cause headline overflow on tablet/mobile. Test the heading copy at every breakpoint; if it overflows, reduce the clamp max or rewrite the copy. The viewport is part of the design.
+
+### The AI slop test
+
+If someone could look at this interface and say "AI made that" without doubt, it's failed. Cross-register failures are the absolute bans above. Register-specific failures live in each reference.
+
+**Category-reflex check.** Run at two altitudes; the second one catches what the first one misses.
+
+- **First-order:** if someone could guess the theme + palette from the category alone, it's the first training-data reflex. Rework the scene sentence and color strategy until the answer isn't obvious from the domain.
+- **Second-order:** if someone could guess the aesthetic family from category-plus-anti-references ("AI workflow tool that's not SaaS-cream → editorial-typographic", "fintech that's not navy-and-gold → terminal-native dark mode"), it's the trap one tier deeper. The first reflex was avoided; the second wasn't. Rework until both answers are not obvious. The brand register's [reflex-reject aesthetic lanes](reference/brand.md) list catches the currently-saturated families.
+
+## Commands
+
+| Command | Category | Description | Reference |
+|---|---|---|---|
+| `craft [feature]` | Build | Shape, then build a feature end-to-end | [reference/craft.md](reference/craft.md) |
+| `shape [feature]` | Build | Plan UX/UI before writing code | [reference/shape.md](reference/shape.md) |
+| `init` | Build | Set up project context: PRODUCT.md, DESIGN.md, live config, next steps | [reference/init.md](reference/init.md) |
+| `document` | Build | Generate DESIGN.md from existing project code | [reference/document.md](reference/document.md) |
+| `extract [target]` | Build | Pull reusable tokens and components into design system | [reference/extract.md](reference/extract.md) |
+| `critique [target]` | Evaluate | UX design review with heuristic scoring | [reference/critique.md](reference/critique.md) |
+| `audit [target]` | Evaluate | Technical quality checks (a11y, perf, responsive) | [reference/audit.md](reference/audit.md) |
+| `polish [target]` | Refine | Final quality pass before shipping | [reference/polish.md](reference/polish.md) |
+| `bolder [target]` | Refine | Amplify safe or bland designs | [reference/bolder.md](reference/bolder.md) |
+| `quieter [target]` | Refine | Tone down aggressive or overstimulating designs | [reference/quieter.md](reference/quieter.md) |
+| `distill [target]` | Refine | Strip to essence, remove complexity | [reference/distill.md](reference/distill.md) |
+| `harden [target]` | Refine | Production-ready: errors, i18n, edge cases | [reference/harden.md](reference/harden.md) |
+| `onboard [target]` | Refine | Design first-run flows, empty states, activation | [reference/onboard.md](reference/onboard.md) |
+| `animate [target]` | Enhance | Add purposeful animations and motion | [reference/animate.md](reference/animate.md) |
+| `colorize [target]` | Enhance | Add strategic color to monochromatic UIs | [reference/colorize.md](reference/colorize.md) |
+| `typeset [target]` | Enhance | Improve typography hierarchy and fonts | [reference/typeset.md](reference/typeset.md) |
+| `layout [target]` | Enhance | Fix spacing, rhythm, and visual hierarchy | [reference/layout.md](reference/layout.md) |
+| `delight [target]` | Enhance | Add personality and memorable touches | [reference/delight.md](reference/delight.md) |
+| `overdrive [target]` | Enhance | Push past conventional limits | [reference/overdrive.md](reference/overdrive.md) |
+| `clarify [target]` | Fix | Improve UX copy, labels, and error messages | [reference/clarify.md](reference/clarify.md) |
+| `adapt [target]` | Fix | Adapt for different devices and screen sizes | [reference/adapt.md](reference/adapt.md) |
+| `optimize [target]` | Fix | Diagnose and fix UI performance | [reference/optimize.md](reference/optimize.md) |
+| `live` | Iterate | Visual variant mode: pick elements in the browser, generate alternatives | [reference/live.md](reference/live.md) |
+
+Plus three management commands: `pin <command>`, `unpin <command>`, and `hooks <on|off|status|...>`, detailed below.
+
+### Routing rules
+
+1. **No argument**: the user is asking "what should I do?" Make the menu context-aware instead of static. Setup has already run `context.mjs`; if that reported `NO_PRODUCT_MD` you are already in init (setup), so finish that and skip this. Otherwise run `node .claude/skills/impeccable/scripts/context-signals.mjs` once and read its JSON, then lead with the **2-3 highest-value next commands**, each with a one-line reason pulled from the signals, followed by the full menu (the table above, grouped by category). **Never auto-run a command; the recommendation is a suggestion the user confirms.**
+
+   Reason over the signals; there is no score to obey:
+   - `setup.hasDesign` false while `setup.hasCode` true → `document` (capture the visual system).
+   - `critique.latest` is `null` → the project has never been critiqued; for a set-up project with a real surface, offering `/impeccable critique <surface>` is a strong default.
+   - `critique.latest` with a low `score` or non-zero `p0` / `p1` → `polish` (it reads that snapshot as its backlog), or re-run `critique` if the snapshot looks stale.
+   - `git.changedFiles` pointing at one surface → scope `audit` or `polish` to those files specifically, naming them.
+   - `devServer.running` true → `live` is available for in-browser iteration; if false, don't lead with `live`.
+   - Otherwise group by intent exactly as init's "Recommend starting points" step does (build new / improve what's there / iterate visually), tailored to `setup.register`.
+
+   **If `scan.targets` is non-empty, run `node .claude/skills/impeccable/scripts/detect.mjs --json <scan.targets joined by spaces>` once** (the bundled detector over local files: no network, no npx). `scan.via` tells you what they are: `git-changes` (the markup/style files in your dirty tree, the most relevant set), `source-dir` (e.g. `src`, `app`), `html`, or `root`. Fold the hits into your picks: many quality / contrast hits → `audit` or `polish`; a specific slop family → the matching command (gradient text or eyebrows → `quieter` / `typeset`, flat or gray palette → `colorize`, and so on). It's a real, current signal that beats guessing. If detect errors or the tree is large and slow, skip it and recommend the user run `audit` themselves; never block the suggestion on it.
+
+   Keep it to 2-3 pointed picks with the exact command to type. The menu stays the fallback; the recommendation is the lede.
+2. **First word matches a command** (table above OR `pin` / `unpin` / `hooks`): load its reference file and follow its instructions. Everything after the command name is the target.
+3. **First word doesn't match, but the intent clearly maps to one command** (e.g. "fix the spacing" → `layout`, "rewrite this error message" → `clarify`, "the colors feel flat" → `colorize`): load that command's reference and proceed as if invoked. If two commands could fit, ask once which.
+4. **No clear command match**: general design invocation. Apply the setup steps, the General rules, and the loaded register reference, using the full argument as context.
+
+Setup (context gathering, register) is already loaded by then; sub-commands don't re-invoke `/impeccable`.
+
+If the first word is `craft`, setup still runs first, but [reference/craft.md](reference/craft.md) owns the rest of the flow. If setup invokes `init` as a blocker, finish init, refresh context, then resume the original command and target.
+
+`teach` is a deprecated alias for `init`: if the user types it, load [reference/init.md](reference/init.md) and proceed as if they ran `init`.
+
+## Pin / Unpin
+
+**Pin** creates a standalone shortcut so `/<command>` invokes `/impeccable <command>` directly. **Unpin** removes it. The script writes to every harness directory present in the project.
+
+```bash
+node .claude/skills/impeccable/scripts/pin.mjs <pin|unpin> <command>
+```
+
+Valid `<command>` is any command from the table above. Report the script's result concisely. Confirm the new shortcut on success, relay stderr verbatim on error.
+
+## Hooks
+
+`/impeccable hooks <on|off|status|ignore-rule|ignore-file|ignore-value|reset>` manages the design detector hook for this project. The hook auto-runs the detector after direct UI file edits and surfaces findings as system reminders. Full flow is in [reference/hooks.md](reference/hooks.md); load it when the user invokes `/impeccable hooks` with any argument.
+
+ARGUMENTS: Polish pass across all product surfaces (apps/identity-wallet, apps/admin-companion, sites/marketing) for alpha release
+
+Agent: Now the register references — `product.md` for the two apps, `brand.md` for the marketing site — plus a first look at the surfaces.
+
+Let me capture the full detector output and see everything it found across all three surfaces.
+
+Quick fixes are in while the three surface reviews run in the background:
+
+- **Wallet** — [RecoveryOverrideScreen.svelte](apps/identity-wallet/src/lib/components/home/RecoveryOverrideScreen.svelte): the hold-to-confirm fill now animates `transform: scaleX()` instead of `width` (GPU-composited, no layout thrash — matters on a screen someone uses under stress). [SettingsScreen.svelte](apps/identity-wallet/src/lib/components/home/SettingsScreen.svelte): the segmented control's inner radius now uses the `--radius-sm` token instead of an ad-hoc `calc()`.
+- **Marketing** — [site.css](sites/marketing/assets/css/site.css): the twice-inlined brass hover color (which is exactly admin-companion's `primary-hover` token) is now declared once as `--color-primary-hover` in the `.register-custos` scope and referenced from both hover rules.
+
+`★ Insight ─────────────────────────────────────`
+The marketing CSS mirrors both apps' token systems as scoped custom-property blocks (`:root` = Obsign, `.register-custos` = Brass Console). The flagged literal wasn't a wrong color — it was a *missing token*: the hover shade existed in the admin app's system but hadn't been carried over, so it got inlined. That's the "name the root cause" step from the polish flow: patch the token layer, not the two call sites.
+`─────────────────────────────────────────────────`
+
+Three review agents (one per surface, each reading its own design brief) are still working; I'll triage their findings into fixes as they report back.
+
+---
+
+User: <task-notification>
+<task-id>ae612f5ade3a38386</task-id>
+<tool-use-id>toolu_01KM9p71BrDuLPoL1NyD4khY</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-jacob-zweifel-workspace-malpercio-dev-ezpds--claude-worktrees-funny-engelbart-caf2be/ae5ee004-8f2f-441c-bc0c-3f4ea25e40d0/tasks/ae612f5ade3a38386.output</output-file>
+<status>completed</status>
+<summary>Agent "Review identity-wallet for polish" finished</summary>
+<note>A task-notification fires each time this agent stops with no live background children of its own. The user can send it another message and resume it, so the same task-id may notify more than once.</note>
+<result># Obsign (identity-wallet) Pre-Alpha Design/UX Polish Review
+
+Reviewed against `PRODUCT.md` and `DESIGN.md` at the repo root. All findings below were verified by reading the actual source; no speculation. Report only — no files were edited.
+
+---
+
+## P0 — Functional / Correctness
+
+### 1. Hold-to-confirm gestures are unreachable by keyboard, Switch Control, and (functionally) VoiceOver
+**Files:** `apps/identity-wallet/src/lib/components/home/RecoveryOverrideScreen.svelte:224-237`, `apps/identity-wallet/src/lib/components/onboarding/DIDCeremonyScreen.svelte:120-133`, shared hook `apps/identity-wallet/src/lib/components/ui/use-hold-gesture.svelte.ts`
+
+Both the **recovery-override "Hold to override"** button (the single action that reclaims a hijacked identity inside the 72-hour window) and the **"Press and hold to seal"** DID-creation button wire only `onpointerdown`/`onpointerup`/`onpointerleave`/`onpointercancel`. Neither has an `onclick` or `onkeydown` handler. A keyboard user (external keyboard, Full Keyboard Access) or Switch Control user pressing Enter/Space on a focused `&lt;button&gt;` never fires `pointerdown`, so `useHoldGesture`'s `start()` never runs — the action cannot be completed at all. VoiceOver's standard double-tap activation gesture is a near-instantaneous synthetic activation, not a sustained 1.5s hold, so it cannot satisfy `HOLD_MS = 1500` either.
+
+This directly contradicts DESIGN.md's explicit AAA accessibility bar and PRODUCT.md's "Stress-resilient legibility... an unmistakable primary action" requirement for exactly this screen — the alarm/recovery path is the app's single highest-stakes interaction, and it appears to have no assistive-technology-accessible path to completion. The identical gap exists in the DID-creation ceremony, blocking onboarding itself for the same users.
+
+**Fix:** Add a keyboard/AT-accessible equivalent — e.g. an `onkeydown` handler that starts the same RAF-driven fill on `keydown` and completes on a sustained hold or on a secondary confirmation step, or provide an explicit "Hold to override" alternate confirm-dialog path exposed via `aria-describedby`/a custom action when the pointer type isn't touch/mouse.
+
+### 2. Interactive control nested inside another interactive control — likely breaks the only entry point into the attack-recovery flow
+**File:** `apps/identity-wallet/src/lib/components/home/IdentityListHome.svelte:220-238`
+
+```svelte
+&lt;button class="card" onclick={() =&gt; onselect(...)}&gt;
+  ...
+  &lt;span class="badge badge--alert" role="button" tabindex="0" onclick={...} onkeydown={...}&gt;
+    {alerts.length} {alerts.length === 1 ? 'alert' : 'alerts'}
+  &lt;/span&gt;
+  ...
+&lt;/button&gt;
+```
+
+A `role="button"`/`tabindex="0"` `&lt;span&gt;` is nested inside a real `&lt;button&gt;`. This is invalid per the HTML spec (buttons must not contain interactive content) and produces an unpredictable accessibility tree — VoiceOver/keyboard focus order and hit-testing for nested interactive elements is undefined across browsers/WebViews. I checked whether there's an alternate way to reach the alert flow: the "monitor" banner above the card list (`.monitor--alert`, same file, lines ~204-213) is a plain `&lt;div&gt;` with no click handler, and `DIDDocumentScreen` (the identity-detail screen reached by tapping the outer card) shows no alert information at all. **This nested badge appears to be the only interactive entry point into `alert_detail` → `recovery_override`** — i.e., the entire attack-response flow may be unreachable or unreliable for keyboard/Switch-Control/VoiceOver users.
+
+**Fix:** Don't nest interactive elements. Either move the alert affordance out of the card (e.g. a separate row/button above or below the identity card) or make the whole card conditionally navigate to the alert when `alerts?.length` is present, with a visually-identical badge that is `aria-hidden` (non-interactive) inside the button.
+
+---
+
+## P1 — Consistency
+
+### 3. Duplicate hero screen shown twice in a row in the create flow
+**Files:** `apps/identity-wallet/src/lib/components/onboarding/ModeSelectScreen.svelte:9-22`, `apps/identity-wallet/src/lib/components/onboarding/WelcomeScreen.svelte:9-19`, wired in `apps/identity-wallet/src/routes/+page.svelte:270-317`
+
+The flow is `mode_select` → `pds_config` → `welcome`. Both `ModeSelectScreen` and `WelcomeScreen` render the identical signet moment: title `"Obsign"`, subtitle `"Your self-sovereign identity, sealed in your pocket."`, the same `SealEmblem` shield-check icon. A user picks "Create new identity," configures a server on the intervening `PdsConfigScreen`, and is then shown the exact same branding screen again with a "Get started" button that does nothing but advance to claim-code entry. This reads as a bug (did I tap the wrong thing?) and violates the Signet Rule in DESIGN.md §3 ("Libre Caslon Display appears at most once per screen... a seal you stamp twice is a smudge") in spirit, applied across the flow. Per `CLAUDE.md`, `ModeSelectScreen` was added later as the new entry point ("The app starts at mode_select (not pds_config)"), and `WelcomeScreen` looks like the orphaned original entry point that was never trimmed.
+
+**Fix:** Remove `WelcomeScreen` from the create flow (go straight from `pds_config` to `claim_code`), or give it distinct content (e.g. summarize what's about to happen: claim code → email → handle → password) instead of repeating the app-launch branding.
+
+### 4. "Share" vs "Part" — same Shamir-split concept, two different nouns across screens
+**Files:** `apps/identity-wallet/src/lib/components/onboarding/ShamirBackupScreen.svelte:58,60-62,70,76` vs `apps/identity-wallet/src/lib/components/home/RecoveryInfoScreen.svelte:20,31,45,55`
+
+`ShamirBackupScreen` (shown during onboarding) calls the three pieces of the recovery secret **"Part 1 of 3"** / **"Part 3 of 3"** ("Your recovery key has been split into 3 parts..."). `RecoveryInfoScreen` (shown later from Home → Recovery info, describing the exact same three pieces of the exact same key) calls them **"Share 1 of 3"** / **"Share 2 of 3"** / **"Share 3 of 3"** ("...any 2 of 3 recovery shares"). This is a direct violation of copy-consistency dimension #1 — a user who reads "Part 3" during setup and later looks for "Part 3" on the Recovery info screen will not find it; they'll find "Share 3" instead, with no cross-reference. Compounding this, onboarding never mentions "Part/Share 2 of 3" (the Custos-held share) at all, while `RecoveryInfoScreen` explains all three — so the concept is both mis-named and incompletely introduced.
+
+**Fix:** Standardize on one noun (suggest "Share," since `RecoveryInfoScreen` already frames the threshold as "2 of 3 recovery shares") in both screens, and consider mentioning all three shares (including the Custos-held one) during onboarding for a complete mental model.
+
+### 5. "Approve/Revoke with Face ID" hardcodes a biometric modality the code doesn't guarantee
+**Files:** `apps/identity-wallet/src/lib/components/home/MyAgentsScreen.svelte:285`, `apps/identity-wallet/src/lib/components/home/AgentClaimApprovalScreen.svelte:237`, `apps/identity-wallet/src/lib/components/onboarding/MigrationReviewScreen.svelte:210`
+
+All three buttons read `"Revoke with Face ID"` / `"Approve with Face ID"` / `"Waiting for Face ID…"`. The underlying `authenticateBiometric()` (documented in `apps/identity-wallet/src/lib/ipc.ts:860-875`) explicitly supports Touch ID and, via `allowDeviceCredential`, the device passcode — not just Face ID. On a Touch-ID iPhone/iPad, or a passcode-fallback flow, the button text states something factually untrue. PRODUCT.md's Brand Personality is explicit: **"Honest, never hype... No... false reassurance."** Misstating the authentication mechanism in a security-consent UI is a precision violation, and it's not a one-off — it's the same wrong assumption baked into three separate screens.
+
+**Fix:** Use a generic label ("Approve with biometrics" / "Revoke with biometrics") or query the actual enrolled biometry type from the platform and label dynamically ("Face ID" / "Touch ID" / "Passcode").
+
+### 6. "Opening browser for..." copy is stale — the app no longer uses a browser for OAuth
+**Files:** `apps/identity-wallet/src/lib/components/onboarding/AuthenticatingScreen.svelte:30`, `apps/identity-wallet/src/lib/components/onboarding/PdsAuthScreen.svelte:57`, `apps/identity-wallet/src/lib/components/onboarding/MigrationSourceAuthScreen.svelte:60`
+
+All three OAuth entry screens show `"Opening browser for authentication…"` / `"Opening browser for PDS authentication…"` / `"Opening browser for your current PDS…"`. Per `apps/identity-wallet/CLAUDE.md`, the app migrated off `tauri-plugin-deep-link` (which opened Safari) to `tauri-plugin-auth-session`'s `ASWebAuthenticationSession` specifically **because** "iOS Safari will not auto-launch the app from a server-side redirect." The user never leaves the app to a browser — they see an in-app auth sheet. This is stale copy left over from the old implementation, present identically in three places.
+
+**Fix:** Change to something accurate and calm, e.g. "Opening secure sign-in…" or "Connecting to your PDS…".
+
+### 7. Entire create-account funnel has no back navigation
+**Files:** `apps/identity-wallet/src/lib/components/onboarding/PdsConfigScreen.svelte`, `WelcomeScreen.svelte`, `ClaimCodeScreen.svelte`, `EmailScreen.svelte`, `HandleScreen.svelte`, `PasswordScreen.svelte` (none accept an `onback` prop — verified via grep, zero matches), wired in `+page.svelte:314-341`
+
+Once a user picks "Create new identity," the six-screen sequence `pds_config → welcome → claim_code → email → handle → password` has **no way to go back** to correct an earlier field (e.g., a mistyped email noticed while typing the password). By contrast, the parallel **import** flow (`IdentityInputScreen`, `PdsAuthScreen`, `EmailVerificationScreen`, `ReviewOperationScreen`) wires `onback`/`oncancel` at every step. DESIGN.md's Navigation section frames "a single back affordance" as a baseline expectation of the app's state-machine flow; PRODUCT.md frames setup as "deliberate, careful, not urgent" — the total absence of an escape hatch in the highest-stakes flow (creating a security identity, including a password) contradicts that. This is asymmetric with the import flow and looks unintentional rather than designed.
+
+**Fix:** Thread `onback` through the create-flow screens the same way the import flow does, or at minimum add it to `EmailScreen`/`HandleScreen`/`PasswordScreen` so a typo doesn't force an app restart.
+
+### 8. "Back" text-button touch target is well under the app's own 44×44pt minimum
+**Files:** `apps/identity-wallet/src/lib/components/ui/OnboardingShell.svelte:47-60`, `apps/identity-wallet/src/lib/components/home/DIDDocumentScreen.svelte:131-144`, `RecoveryInfoScreen.svelte:74-87`, `AlertDetailScreen.svelte:84-97`, `RecoveryOverrideScreen.svelte:259-271`
+
+All five components duplicate the identical `.back` CSS:
+```css
+.back {
+  display: inline-flex; align-items: center; gap: 3px;
+  background: none; border: none;
+  font-size: var(--text-body); font-weight: var(--weight-medium);
+  padding: var(--space-xs) 0;  /* 4px top/bottom, 0 left/right */
+}
+```
+With an 18px chevron icon and 1rem/1.55-line-height text and only 4px top/bottom padding, the tappable height is roughly 32-33px — well below PRODUCT.md's explicit **"44×44pt minimum touch targets (iOS HIG) — especially for the irreversible recovery-override action."** `RecoveryOverrideScreen` is named specifically in that requirement, and its back button has this exact defect (plus zero horizontal padding, making the tap target hug the text tightly on both axes).
+
+**Fix:** Add `min-height: 44px` and horizontal padding (e.g. `padding: var(--space-sm) var(--space-xs)`) to the shared `.back` pattern; better, extract it into a shared `BackButton` component (see finding #12) so the fix lands once.
+
+### 9. Circular icon-only buttons also sit below the 44pt minimum
+**Files:** `apps/identity-wallet/src/lib/components/home/IdentityListHome.svelte:312-328` (`.icon-btn`, refresh + settings), `MyAgentsScreen.svelte:396-408` (`.back`), `AgentClaimApprovalScreen.svelte:269-280` (`.back`), `SettingsScreen.svelte:141-153` (`.back`)
+
+All four are `width: 38px; height: 38px` circular buttons — closer to the target than finding #8 but still under the documented 44×44pt minimum.
+
+**Fix:** Bump to 44×44px (visually keep the icon glyph the same size; grow the hit area via padding).
+
+### 10. `--color-ink-faint` used for real text, contradicting its own documented purpose
+**File:** `apps/identity-wallet/src/lib/components/home/MyAgentsScreen.svelte:723-727`
+
+```css
+.entry-when {
+  font-family: var(--font-mono);
+  font-size: var(--text-data);
+  color: var(--color-ink-faint);
+}
+```
+`.entry-when` renders the audit-trail timestamp text (e.g. "Jul 10, 2:30 PM") for every agent activity entry. `tokens.css:40` documents `--color-ink-faint` explicitly as `/* non-text glyphs (chevrons); never for text */` — it's a light `L=0.74` (light appearance) tone deliberately excluded from the AAA-verified text set (`ink`, `ink-soft`, `muted` are the verified text tones). Using it for real, load-bearing text (a security audit-trail timestamp) both violates the design system's own documented rule and is very likely to fail AA/AAA contrast against the white/parchment background it sits on (`--color-bg`/`--color-surface`). This is the only place in the reviewed code where `ink-faint` is applied to a text node rather than an icon (`.chev` in the same file and in `IdentityListHome.svelte:520` are the correct icon usages).
+
+**Fix:** Change `.entry-when` to `color: var(--color-muted)` (the token designed for secondary text/metadata, already used for `.entry-d` two lines above).
+
+### 11. Literal cryptographic keys are truncated with a hardcoded 24-char slice, contradicting the "Literal-Truth Rule"
+**Files:** `apps/identity-wallet/src/lib/components/home/RecoveryOverrideScreen.svelte:192,195`, `apps/identity-wallet/src/lib/components/onboarding/ReviewOperationScreen.svelte:75,78`, `apps/identity-wallet/src/lib/components/onboarding/MigrationReviewScreen.svelte:176,179`, and (differently) `apps/identity-wallet/src/lib/components/home/DIDDocumentScreen.svelte:83-84`
+
+All three "review the diff" screens (the exact places where the design brief says the machinery should be verifiable) render key values as `value="{key.slice(0, 24)}…"` — a hardcoded 24-character JS slice with a literal ellipsis, fed into `DiffRow`, which already applies `word-break: break-all` for full values. DESIGN.md §3 states the Literal-Truth Rule in absolute terms: **"Every cryptographic value... is set in JetBrains Mono... Always wraps with break-all; never truncates a key silently."** `DIDDocumentScreen.svelte:83` compounds this with a second, independent truncation on verification-method keys (`.slice(0, 20)…` *and* CSS `text-overflow: ellipsis` on top of the already-sliced string) — a value can be truncated twice over. This is exactly the screen where a user under attack is asked to trust that the shown key matches the one they expect; a silently truncated value undermines that trust, even though a Copy affordance exists as a workaround.
+
+**Fix:** Drop the manual `.slice()` truncation on these four review/diff screens; let `DiffRow`'s existing `break-all` mono rendering show the full key. For `DIDDocumentScreen`'s verification-key list, either show the full value with `break-all` or make the truncation a single explicit "Show full key" disclosure rather than a silent double-truncation.
+
+---
+
+## P2 — Cosmetic / Polish
+
+### 12. `Back` button pattern duplicated verbatim across 6+ files instead of a shared primitive
+**Files:** `OnboardingShell.svelte:47-60`, `DIDDocumentScreen.svelte:131-144`, `RecoveryInfoScreen.svelte:74-87`, `AlertDetailScreen.svelte:84-97`, `RecoveryOverrideScreen.svelte:259-275`
+
+Identical markup (`ChevronLeftIcon` + "Back" text) and near-identical CSS (`display: inline-flex; gap: 3px; background: none; border: none; color: var(--color-accent); font-size: var(--text-body); font-weight: var(--weight-medium); padding: var(--space-xs) 0;`) is copy-pasted six times, including the accessibility gap in finding #8. `AlertDetailScreen.svelte:26` is also missing the `aria-label="Back"` the other five carry (harmless today since visible "Back" text supplies the accessible name, but it's an inconsistency that would bite if the visible text ever changes).
+
+**Fix:** Extract a `BackButton.svelte` primitive alongside the existing `ui/` set (`Button`, `TextField`, `Spinner`, etc.) so the touch-target fix in finding #8 and future style changes land in one place.
+
+### 13. Raw error code shown to the user with no framing
+**File:** `apps/identity-wallet/src/routes/+page.svelte:511-518`
+
+The `auth_failed` step is the one place in the app that falls back to a bare error code instead of a translated message:
+```svelte
+&lt;OnboardingShell title="Authentication failed" subtitle="We couldn't complete authentication. Please try again."&gt;
+  {#if authError}&lt;span class="code"&gt;{authError.code}&lt;/span&gt;{/if}
+  ...
+```
+Every other error surface in the codebase (`DIDCeremonyScreen`, `AgentClaimApprovalScreen`, `MigrationReviewScreen`, etc.) maps error codes to a specific human sentence via a `switch`. Here, a raw `SCREAMING_SNAKE_CASE` code (e.g. `TOKEN_EXCHANGE_FAILED`) is displayed with no label ("Error code:") and no context — it reads like leaked debug output rather than the deliberate "cryptographic truth one tap away" progressive disclosure the design brief calls for elsewhere.
+
+**Fix:** Either map `OAuthError.code` to a friendly sentence per the pattern used everywhere else, or explicitly label the raw code (e.g. `&lt;span class="code"&gt;Error code: {authError.code}&lt;/span&gt;`) so it reads as an intentional technical detail rather than an omission.
+
+### 14. `ClaimCodeScreen` reimplements input styling instead of composing `TextField`
+**File:** `apps/identity-wallet/src/lib/components/onboarding/ClaimCodeScreen.svelte:24-37,44-74`
+
+The 6-character code field is a raw `&lt;input class="code-input"&gt;` with hand-rolled CSS that duplicates `TextField`'s base styles (`padding: var(--space-md)`, `border: 1px solid var(--color-line)`, `border-radius: var(--radius-md)`, `:focus-visible { border-color: var(--color-accent) }`, `.error { border-color: var(--color-critical) }`) plus its own extras (letter-spacing, uppercase, center alignment). `TextField.svelte` already exposes a `mono` prop and passes through arbitrary `...rest` attributes (`maxlength`, `autocapitalize`, etc.), so nearly all of this could be `&lt;TextField mono ...&gt;` with one extra wrapper class for the letter-spacing/uppercase/centering, instead of re-deriving the base input chrome from scratch.
+
+**Fix:** Compose `TextField` with an additional class for the code-specific styling rather than duplicating its base rules.
+
+### 15. `MigrationProgressScreen` uses plain Unicode glyphs instead of the app's SVG icon system
+**File:** `apps/identity-wallet/src/lib/components/onboarding/MigrationProgressScreen.svelte:52-63,173`
+
+Every other status indicator in the app (safe/warning/critical/expired badges, checkmarks, alert triangles) is a hand-drawn inline SVG matching a consistent stroke weight and style. This screen instead uses bare Unicode characters (`○ ◐ ✓ ✕`) for its five migration-leg states, which render in the system/emoji font rather than the app's visual language and can vary in size/weight/baseline across devices. Not a functional bug (paired with `statusWord()` text, so accessible), but a visible break from the icon system used everywhere else.
+
+**Fix:** Swap the four glyphs for small inline SVGs consistent with the rest of the app (a spinner/circle-outline/check/x set already exists as patterns elsewhere in the codebase to copy from).
+
+### 16. Widespread off-scale spacing values in newer home-screen components
+**Files:** `IdentityListHome.svelte` (e.g. `.monitor { gap: 13px; padding: 15px 16px; }`, `.card { padding: 15px 14px 15px 15px; }`, `.icon-btn { width: 38px; height: 38px; }`), `MyAgentsScreen.svelte`, `SettingsScreen.svelte`, `AgentClaimApprovalScreen.svelte` (similar `13px`/`14px`/`15px`/`38px`/`42px` literals)
+
+`tokens.css` defines a spacing scale of `--space-xs/sm/md/lg/xl/2xl = 4/8/16/24/32/48px`, but the newer home-screen "card" components consistently use ad hoc values (12, 13, 14, 15, 16, 38, 42px) rather than composing from the scale. This looks like a deliberate, consistent design decision within these specific components (a tighter information density for list rows) rather than scattered mistakes — but it is a literal deviation from the documented token scale that the design brief says "never hardcode... values that should be tokens" was meant to prevent.
+
+**Fix:** If the tighter density is intentional, consider adding an intermediate token (e.g. `--space-sm-lg` or similar) so the scale documents the pattern instead of each component reinventing slightly different numbers; otherwise snap these to the nearest existing token.
+
+### 17. `Button.svelte` doesn't expose a `loading` state, and every screen re-implements it inline
+**File:** `apps/identity-wallet/src/lib/components/ui/Button.svelte:5-16`
+
+DESIGN.md §5 requires "Every interactive component ships its full state set — default, hover, focus-visible, active, disabled, loading, error." `Button` supports `disabled` but has no `loading` prop; instead, roughly a dozen call sites (`SettingsScreen`, `AgentClaimApprovalScreen`, `MyAgentsScreen`, `ReviewOperationScreen`, etc.) manually compose `&lt;Button disabled={x}&gt;{#if x}&lt;Spinner/&gt; Loading…{:else}Label{/if}&lt;/Button&gt;` by hand each time. It's applied consistently, so it's not a correctness bug, but centralizing it as a `loading` prop on `Button` (rendering the `Spinner` + dimming internally) would remove ~10 duplicated call sites and guarantee the pattern can't drift.
+
+**Fix (optional, low priority):** Add `loading?: boolean` to `Button.svelte` that swaps in `Spinner` and forces `disabled`.
+
+### 18. `Button.svelte` has no explicit `:hover` rule
+**File:** `apps/identity-wallet/src/lib/components/ui/Button.svelte:36-57`
+
+DESIGN.md §5 specifies "Hover → Deep Wax; active → Deep Wax + 1px inset" for the primary button. The component only implements `:active:not(:disabled)`. Low real-world impact since this is a touch-first iOS app, but worth a `:hover` rule (behind `@media (hover: hover)`) for correctness on the simulator/trackpad and to match the written spec exactly.
+
+---
+
+## Dimensions checked and found CLEAN
+
+- **Dead code (console.log/TODO/FIXME):** grep across all `.svelte`/`.ts` under `src/` found zero `console.log`, zero `TODO`/`FIXME`/`XXX`/`HACK` comments, and no commented-out code blocks (one legitimate `eslint-disable-next-line` in `ShamirBackupScreen.svelte:86`).
+- **Reduced motion:** Handled globally and correctly — `base.css:61-70` collapses all `animation`/`transition` durations under `prefers-reduced-motion: reduce`, so every per-component animation (spinner spin, pulse, shimmer skeletons, seal-stamp/ping, hold-fill transition) inherits the override automatically with no per-component gaps needed.
+- **Border-left/right colored stripes:** grep for `border-left`/`border-right` across all components returned zero matches — the "no colored side-stripe" rule (DESIGN.md §7) is honored everywhere; status is consistently conveyed via full tonal grounds + leading icons (`DiffRow`, `UrgencyBadge`, status badges).
+- **Invalid `Button` variant usage:** grepped every `variant=` call site; only `"primary"` (default) and `"secondary"` are ever passed — no dead/broken variant references.
+- **Hex colors:** no hardcoded hex values found in any reviewed component; all color usage goes through `var(--color-*)` tokens.
+- **Empty/error/loading states:** present and reasonably thorough almost everywhere reviewed — `IdentityListHome`, `MyAgentsScreen`, and `HandleScreen` all have deliberate skeleton-loading, empty, and retry-capable error states; `RecoveryOverrideScreen` and `MigrationReviewScreen` distinguish terminal vs. retryable errors explicitly.
+- **VoiceOver labeling for icon-only buttons:** every icon-only button checked (`refresh`, `settings`, agent-detail `back`, checkmarks, close icons) carries an `aria-label` or `aria-hidden="true"` on the decorative SVG paired with visible text — with the one caveat noted in finding #2 (nested interactive elements) and the minor omission in finding #12 (`AlertDetailScreen`'s back button).
+- **`UrgencyBadge`'s "safe" mapping to `--color-info` instead of `--color-safe`:** initially looked like a bug, but it's a deliberately commented design decision (`UrgencyBadge.svelte:45`: "safe = calm slate, NOT green: an active attack is never 'all clear', only 'time remaining'") — correct as written, not a defect.
+
+---
+
+## Summary
+
+| Severity | Count | Theme |
+|---|---|---|
+| P0 | 2 | Hold-to-confirm gestures unreachable via keyboard/AT; nested interactive control on the sole entry point to the alert/recovery flow |
+| P1 | 9 | Duplicate onboarding hero screen; "Share" vs "Part" terminology split; hardcoded "Face ID" copy (×3); stale "browser" OAuth copy (×3); missing back-nav across the entire create flow; sub-44pt touch targets (two clusters); off-token text color on real text; silent key truncation on review/diff screens (×3 screens) |
+| P2 | 7 | Raw error code with no label; one-off input styling instead of `TextField`; non-SVG status glyphs; widespread off-scale spacing in newer components; missing `loading`/`hover` states on `Button` |
+
+The most consequential findings are the two P0s and finding #7/#11, because they sit directly on the app's highest-stakes paths (identity creation and attack recovery) that the design brief calls out by name as needing the highest assurance bar. Everything else is genuine but lower-stakes polish.</result>
+<usage><subagent_tokens>267051</subagent_tokens><tool_uses>65</tool_uses><duration_ms>495135</duration_ms></usage>
+</task-notification>
+
+Agent: The wallet review is back with two genuine P0 accessibility findings on the highest-stakes paths. Let me triage and fix. First, the key files: the hold-gesture hook, the home list with the nested button, the onboarding shell, and the flow wiring.
+
+Now the restructure — markup first, then styles:
+
+All five screens use `OnboardingShell`, which already supports `onback` — so this is clean prop threading. Applying to each:
+
+Now I can thread `onback` through all five screens and rewire the flow:
+
+Now the copy/consistency batch. Let me pull the exact strings:
+
+Now reading the remaining fix targets so I can batch-edit them:
+
+Wallet code fixes are done. Now update the flow documentation and kick off the wallet type-check while I move to the admin app:
+
+Now the admin app. First the P0 — failed pagination wiping the loaded list in Codes and Transfers. Let me read both, plus the Accounts screen's correct pattern:
+
+Same treatment for Transfers:
+
+Now the Pair screen prose and the preview-gallery gap:
+
+Now the Custos page:
+
+Now the CSS fixes — the mobile-nav P0, nav tap targets, the `code` word-break, and dead rules:
+
+Mobile checks all pass. Now the Custos page:
+
+The polish round is complete. All three surfaces got fixes, both apps pass `pnpm check` + unit tests, the design detector is clean apart from deliberate em-dashes, and the marketing site is verified in a real browser at phone and desktop widths. Nothing is committed yet — 43 files changed, ready for your review with `git diff`.
+
+## What was found and fixed
+
+**Identity wallet (Obsign)** — the review surfaced two real P0 accessibility gaps on the app's highest-stakes paths, both fixed:
+- **Hold-to-confirm was keyboard-unreachable.** The "Hold to override" recovery button and the DID sealing ceremony only listened to pointer events, so hardware-keyboard / Full Keyboard Access users could never complete them. The shared [use-hold-gesture.svelte.ts](apps/identity-wallet/src/lib/components/ui/use-hold-gesture.svelte.ts) hook now supports holding Enter/Space (VoiceOver users already had a path via the standard double-tap-and-hold pass-through).
+- **Nested interactive elements on the alert entry point.** The tappable alert badge lived *inside* the identity card `<button>` — invalid HTML and the only route into the recovery flow. It's now a full-width "Review N unauthorized changes" strip fused below the card: valid, and a much bigger target for someone under attack.
+- Consistency and honesty fixes: removed the duplicate `WelcomeScreen` hero (the create flow showed the same branding screen twice), threaded **Back navigation through the entire create funnel** (previously a mistyped email meant restarting the app), unified "Part"/"Share" terminology and added the missing Share 2 row on the backup screen, replaced hardcoded "Face ID" button labels with modality-neutral wording, updated stale "Opening browser…" OAuth copy (the app uses an in-app sheet now), removed all silent key truncations on the review/diff screens (the Literal-Truth rule), fixed all sub-44px touch targets, and fixed a token misuse (`ink-faint` on real text).
+
+**Admin companion (Brass Console)** — one P0: a failed "Load more" in Codes and Transfers **wiped the entire loaded list** and its retry restarted pagination from scratch. Both now keep the rows and show the error inline, matching the Accounts screen's pattern. Also: `--color-muted` on raised surfaces swapped to `ink-soft` per the token file's own contrast contract (DeviceRow, TextField placeholder, three fact sheets), silent CSS ellipses on literal data replaced with wrapping or explicit `shortenId()` (now shared in [format.ts](apps/admin-companion/src/lib/format.ts) instead of duplicated), refresh/paging labels unified ("Refresh" / "Load more"), the Pair screen's stray "relay" prose changed to "server", `:active` press feedback added to all tappable rows, `ScreenShell`'s back button and the filter chips raised to the 44px floor, a Devices empty state added, and `AccountRow` added to the `/preview` gallery.
+
+**Marketing site** — the P0 was the header nav clipping off-viewport at phone widths (GitHub link reduced to a visible "G"); it now wraps onto its own row, verified at 375px with 44px-tall links and no horizontal scroll. The **"Get Obsign for iOS" button that actually linked to the GitHub repo is now honestly labeled "Get the source"** — swap it back with a real TestFlight link when one exists. Also: the Obsign footer now cross-links to Custos, both pages got `og:`/`twitter:` social-card tags, ~30 filler em-dashes became commas/colons/parentheses (the deliberate ones stay), `word-break: break-all` on `<code>` was relaxed so `rotationKeys[1]` stops splitting mid-word, plus the grammar nits and the brass hover token from earlier.
+
+`★ Insight ─────────────────────────────────────`
+A pattern across all three reports: nearly every defect clustered in the *newest* wave of each surface — the admin screens built in July drifted from patterns the June screens had established, and the wallet's newer home components used off-scale spacing the onboarding screens never did. Design systems don't decay uniformly; they decay at the growth edge. That's an argument for running exactly this kind of cross-screen consistency pass after each feature wave, not just before release.
+`─────────────────────────────────────────────────`
+
+## Deliberately not done (needs your call or a follow-up)
+
+- **Two-tap arm/confirm consistency (admin):** Moderation uses arm → restated-target confirm → biometric for destructive actions; Settings/Devices/Codes/Transfers go straight to biometric. All five are equally irreversible, so the split looks like wave drift — but whether to *extend* the arm step everywhere or *relax* Moderation is a product decision I didn't make for you.
+- I spawned a task chip for the wallet's P2 refactors (shared `BackButton` primitive, `ClaimCodeScreen` on `TextField`, SVG status glyphs in `MigrationProgressScreen`) — one click to run it in a fresh worktree.
+- Left alone: the wallet's tighter 13–15px spacing in home-screen cards (consistent enough to look deliberate; worth a token if you want to bless it), and the admin gate hints that say "Confirm with Face ID" (consistent within that app; same modality caveat as the wallet buttons if you want it changed).
+
+One housekeeping note: the review agents created an untracked `.claude/launch.json` (a static-server entry I reused for browser verification) — keep or discard as you like. The marketing preview is still running on port 8123 if you want to click around.
