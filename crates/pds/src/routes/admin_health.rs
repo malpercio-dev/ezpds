@@ -97,8 +97,13 @@ struct SweepStates {
 }
 
 /// One sweep's last completed pass; `null` at the response level until the first pass
-/// completes after boot (each sweep first runs one full interval after startup). A stale
-/// `completedAt` — not an error field — is the signal that passes are failing.
+/// completes after boot (each sweep first runs one full interval after startup).
+///
+/// The two failure modes are reported on separate channels, because they call for different
+/// operator responses: a stale `completedAt` means passes are not completing at all, while a
+/// fresh `completedAt` with a nonzero `errors` means the pass ran and skipped part of its
+/// work. Both are literal facts, per this route's no-verdicts rule — the thresholds that turn
+/// them into an alarm belong to the client.
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 struct SweepState {
@@ -107,6 +112,14 @@ struct SweepState {
     /// Items acted on by that pass (deleted blobs, pruned seq rows, reaped accounts,
     /// expired claim attempts).
     swept: u64,
+    /// Failures that pass hit. A fresh `completedAt` with a nonzero `errors` is a pass that
+    /// ran but did not do its whole job — for blob GC, an account whose reconcile failed is
+    /// excluded from the sweep and leaks disk until the fault is fixed. Sweeps with no
+    /// per-item error path always report `0`.
+    ///
+    /// Counts failed operations, not the work they cost: one failed account is `1` however
+    /// many of its blobs go uncollected.
+    errors: u64,
 }
 
 impl From<SweepRun> for SweepState {
@@ -114,6 +127,7 @@ impl From<SweepRun> for SweepState {
         Self {
             completed_at: run.completed_at,
             swept: run.swept,
+            errors: run.errors,
         }
     }
 }
@@ -311,6 +325,7 @@ mod tests {
             .record_labeler_watch(crate::sweep_status::SweepRun {
                 completed_at: 1_760_000_000,
                 swept: 2,
+                errors: 0,
             });
 
         let router = app(state);
@@ -334,18 +349,21 @@ mod tests {
         state.sweeps.record_blob_gc(crate::sweep_status::SweepRun {
             completed_at: 1_750_000_000,
             swept: 7,
+            errors: 0,
         });
         state
             .sweeps
             .record_blob_mirror(crate::sweep_status::SweepRun {
                 completed_at: 1_750_000_100,
                 swept: 3,
+                errors: 0,
             });
         state
             .sweeps
             .record_blob_scrub(crate::sweep_status::SweepRun {
                 completed_at: 1_750_000_200,
                 swept: 1,
+                errors: 0,
             });
 
         let router = app(state);
@@ -364,5 +382,29 @@ mod tests {
         assert_eq!(json["sweeps"]["blobScrub"]["completedAt"], 1_750_000_200);
         assert_eq!(json["sweeps"]["blobScrub"]["swept"], 1);
         assert_eq!(json["sweeps"]["firehoseGc"], serde_json::Value::Null);
+    }
+
+    /// A pass that ran but skipped work must be distinguishable from a clean one. Blob GC
+    /// excludes accounts whose reconcile failed, so its `completedAt` stays fresh while
+    /// blobs go uncollected — `errors` is the only field that reports it.
+    #[tokio::test]
+    async fn health_reports_a_completed_sweep_that_skipped_work() {
+        let state = test_state_with_admin_token().await;
+        state
+            .sweeps
+            .record_blob_gc(crate::sweep_status::SweepRun::now_with_errors(4, 2));
+
+        let router = app(state);
+        let (status, json) = get_health(router, Some("test-admin-token")).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(json["sweeps"]["blobGc"]["swept"], 4);
+        assert_eq!(
+            json["sweeps"]["blobGc"]["errors"], 2,
+            "a fresh completedAt with skipped accounts must still surface the errors"
+        );
+        assert!(
+            json["sweeps"]["blobGc"]["completedAt"].as_i64().unwrap() > 0,
+            "the pass did complete — staleness is not the signal here"
+        );
     }
 }

@@ -15,7 +15,9 @@
 //!    a reference that has lost its last record is *released* — its grace clock starts.
 //! 2. **Sweep** — delete every ownership row whose grace period has expired and which the
 //!    account no longer references (`temp_until < now AND ref_count = 0`); when a CID's last
-//!    ownership row goes, delete the physical metadata row and the filesystem file.
+//!    ownership row goes, delete the physical metadata row and the filesystem file. Accounts
+//!    whose reconcile errored this pass are **excluded**: their references were never computed,
+//!    so their pins were never written, and sweeping them would delete live blobs.
 //!
 //! Recomputing references from the MST each pass makes the collector authoritative rather than
 //! trusting an incrementally maintained counter: a blob that is still reachable from any repo
@@ -24,7 +26,7 @@
 //! expired on a *later* pass than the one that released it, leaving a window for in-flight
 //! uploads and writes.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::time::Duration;
 
 use tokio::task::JoinHandle;
@@ -102,6 +104,10 @@ pub async fn run_blob_gc(state: &AppState) -> GcStats {
             return stats;
         }
     };
+    // DIDs whose references we could not compute this pass. Their `temp_until` pins were never
+    // cleared, so to the global sweep below they are indistinguishable from an account that
+    // genuinely references nothing — hence they must be excluded from it by name.
+    let mut unreconciled: HashSet<String> = HashSet::new();
     for did in candidate_dids {
         match reconcile_account(state, &did).await {
             Ok((reconciled, released)) => {
@@ -111,15 +117,30 @@ pub async fn run_blob_gc(state: &AppState) -> GcStats {
             Err(e) => {
                 stats.errors += 1;
                 tracing::warn!(error = %e, did = %did, "blob GC: reconcile failed; account skipped");
+                unreconciled.insert(did);
             }
         }
     }
 
     // Phase 2: sweep ownership rows whose grace period has expired; reclaim the physical row
     // and file once a CID's last owner is gone.
+    //
+    // Fail closed on a failed reconcile: an account whose live references we could not compute
+    // is skipped entirely, so it leaks disk until the underlying fault is fixed rather than
+    // having its blobs irreversibly deleted. Skipping per-DID also protects shared bytes — a
+    // CID a skipped account still owns can never lose its last owner, so `delete_blob_if_unowned`
+    // will not reclaim the physical row or file for any other owner either.
     match blobs::list_expired_temp_owners(&state.db).await {
         Ok(expired) => {
+            // Tallied per DID rather than logged per CID: the account this guard was written
+            // for held 534 expired blobs, and a line each would emit 534 warnings every pass,
+            // burying the signals this sweep exists to surface.
+            let mut skipped: HashMap<String, u64> = HashMap::new();
             for (did, cid) in expired {
+                if unreconciled.contains(&did) {
+                    *skipped.entry(did).or_insert(0) += 1;
+                    continue;
+                }
                 match sweep_expired_owner(state, &did, &cid).await {
                     Ok((owner_expired, file_deleted)) => {
                         stats.expired += u64::from(owner_expired);
@@ -131,6 +152,13 @@ pub async fn run_blob_gc(state: &AppState) -> GcStats {
                     }
                 }
             }
+            for (did, blobs_skipped) in skipped {
+                tracing::warn!(
+                    did = %did,
+                    blobs_skipped,
+                    "blob GC: account's reconcile failed this pass; its expired blobs were left uncollected"
+                );
+            }
         }
         Err(e) => {
             // The whole expiry sweep was skipped, so this pass did not complete — return
@@ -141,13 +169,24 @@ pub async fn run_blob_gc(state: &AppState) -> GcStats {
         }
     }
 
-    if stats.deleted > 0 || stats.expired > 0 || stats.released > 0 || stats.errors > 0 {
-        tracing::info!(
+    if stats.errors > 0 {
+        // Not "complete": accounts were skipped and their blobs deliberately left
+        // uncollected. Logging this at info as a clean pass is what let the production
+        // incident run for six hours with `errors=1` on every line and nothing escalating.
+        tracing::warn!(
             reconciled = stats.reconciled,
             released = stats.released,
             expired = stats.expired,
             deleted = stats.deleted,
             errors = stats.errors,
+            "blob GC pass incomplete: accounts were skipped and their blobs left uncollected"
+        );
+    } else if stats.deleted > 0 || stats.expired > 0 || stats.released > 0 {
+        tracing::info!(
+            reconciled = stats.reconciled,
+            released = stats.released,
+            expired = stats.expired,
+            deleted = stats.deleted,
             "blob GC pass complete"
         );
     } else {
@@ -160,14 +199,25 @@ pub async fn run_blob_gc(state: &AppState) -> GcStats {
     // A failed pass (the early returns above) deliberately does not touch the
     // timestamp: a stale `blob_gc_last_run_timestamp` is the operator's signal that
     // sweeps are not completing.
+    //
+    // A pass with `errors > 0` still records: it ran, and it did collect for every healthy
+    // account. What it did *not* do is complete for the accounts it skipped, and that is
+    // reported on its own channel — `blob_gc_errors_total` and the sweep snapshot's `errors`
+    // — so an operator can distinguish "one account is broken" (fresh timestamp, nonzero
+    // errors) from "GC is dead" (stale timestamp) without reading logs. The production
+    // incident this guards against ran six clean-looking passes with `errors=1` throughout.
     state.metrics.blob_gc_swept.add(stats.deleted, &[]);
+    state.metrics.blob_gc_errors.add(stats.errors, &[]);
     state
         .metrics
         .blob_gc_last_run_timestamp
         .record(crate::metrics::unix_now(), &[]);
     state
         .sweeps
-        .record_blob_gc(crate::sweep_status::SweepRun::now(stats.deleted));
+        .record_blob_gc(crate::sweep_status::SweepRun::now_with_errors(
+            stats.deleted,
+            stats.errors,
+        ));
 
     stats
 }
@@ -665,6 +715,76 @@ mod tests {
         let stats = run_blob_gc(&state).await;
         assert_eq!(stats.deleted, 1);
         assert!(!blob_file_exists(&state, &cid));
+    }
+
+    /// A reconcile failure must never cost the account its blobs. A's repo walk errors, so its
+    /// live references were never computed and its pins never written; the global sweep must
+    /// skip A by name while still collecting healthy B's expired orphan.
+    #[tokio::test]
+    async fn gc_skips_sweep_for_an_account_whose_reconcile_failed() {
+        let (state, _dir) = gc_state().await;
+        let did_a = "did:plc:gcbroken";
+        let did_b = "did:plc:gchealthy";
+        seed_account_with_repo(&state.db, did_a).await;
+        seed_account_with_repo(&state.db, did_b).await;
+
+        // Both accounts hold an expired, unreferenced blob. Distinct bytes so neither CID's
+        // survival can be explained by the other account still owning it.
+        let blob_a = add_blob(
+            &state,
+            did_a,
+            b"broken account bytes",
+            "2020-01-01T00:00:00Z",
+        )
+        .await;
+        let blob_b = add_blob(
+            &state,
+            did_b,
+            b"healthy account bytes",
+            "2020-01-01T00:00:00Z",
+        )
+        .await;
+
+        // Break A's repo walk by pointing its root at a CID with no block behind it. A blob's
+        // CID is ideal: structurally valid (so it parses, and the failure lands in the repo
+        // walk rather than in CID parsing) but stored in `blobs`, never in the block store, so
+        // `Repository::open` cannot load it. That is the production shape — a repo walk that
+        // errors — and it must not be reproduced by pointing A at *another account's* root:
+        // `blocks` is a globally content-addressed byte store with only `block_owners` scoped
+        // per account, so A would happily read B's block and reconcile successfully.
+        sqlx::query("UPDATE accounts SET repo_root_cid = ? WHERE did = ?")
+            .bind(&blob_a)
+            .bind(did_a)
+            .execute(&state.db)
+            .await
+            .unwrap();
+
+        let stats = run_blob_gc(&state).await;
+        assert_eq!(stats.errors, 1, "A's reconcile must have failed");
+        assert_eq!(stats.expired, 1, "only B's ownership row is swept");
+        assert_eq!(stats.deleted, 1, "only B's blob is collected");
+
+        // A: ownership row, physical row, and file all survive the pass untouched.
+        let owner_a = blobs::get_owner(&state.db, did_a, &blob_a)
+            .await
+            .unwrap()
+            .expect("a failed reconcile must not cost the account its ownership row");
+        assert!(
+            owner_a.temp_until.is_some(),
+            "the grace clock stays armed — the account leaks until the fault is fixed"
+        );
+        assert!(blobs::get_blob_by_cid(&state.db, &blob_a)
+            .await
+            .unwrap()
+            .is_some());
+        assert!(blob_file_exists(&state, &blob_a), "A's bytes must survive");
+
+        // B: collected normally — one account's fault does not stall the whole sweep.
+        assert!(blobs::get_blob_by_cid(&state.db, &blob_b)
+            .await
+            .unwrap()
+            .is_none());
+        assert!(!blob_file_exists(&state, &blob_b));
     }
 
     /// Pre-V039 implicit sharing: B's record references a stored blob B has no ownership row
