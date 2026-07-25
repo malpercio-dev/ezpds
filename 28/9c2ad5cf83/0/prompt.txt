@@ -1,0 +1,128 @@
+This session is being continued from a previous conversation that ran out of context. The summary below covers the earlier portion of the conversation.
+
+Summary:
+1. Primary Request and Intent:
+   The session began as a v0.1 milestone closeout for the ezpds repo (ATProto PDS "Custos" + iOS identity wallet "Obsign") and evolved into live debugging of the MM-241 canonical migration test. Explicit user requests, in order:
+   - Assess v0.1 against initial goals/designs; identify decisions warranting ADRs; identify what's missing before closing the milestone.
+   - "Draft the ADR, execute the two borderline backfills. then do the archive sweep. after, show me an updated list."
+   - "reopn 241 so I can run it, I didn't realize it got closed. commit the doc change set. revert the list_repos change but lets track the production env. after, show me the updated list."
+   - "MM-258 is merged. touch up the stale docs and file the ticket to wire sweep stale nonces."
+   - "sync and push main. for linear hygiene, I'd like to consider removing the now completed wave labels, and pulling an archive of tickets locally so we can free up linear space (the free plan is limited to 250 issues)."
+   - Correction: "there definitely is a LICENSE file in the repo. AGPL3." (I had wrongly claimed none existed.)
+   - "It looks like the archive worked! are both ezpds-staging.up.railway.app and obsign.org ready to receive transfers?"
+   - "can you read the env vars with the railway cli? do we have both envs properly configured?"
+   - Then a sequence of live MM-241 leg (a) failures the user reported, each requiring diagnosis/fix: OAuth "network error" at PDS connect (→MM-288); user chose `identitywallet.obsign.org` over my `identitywallet.malpercio.dev` suggestion; "failed to send verification email" (→MM-289, user fixed in another session); token submission "network error" (→MM-291, MM-293); "Verification failed: … not a P-256 key" (→MM-294).
+   - Release/promotion requests: "mm-288 just landed in main. let's watch staging roll out and then get ready to go to prod so we can run the test again"; "I ran `just deploy-production v0.4.2`"; "MM-289 is done. let's check staging and get the changes promoted to production if needed for the test."
+   - Most recently: "both have been merged" (PRs #194 MM-293 and #195 MM-294).
+
+2. Key Technical Concepts:
+   - ATProto: PLC operations (DAG-CBOR canonical encoding, rotation keys, signPlcOperation/requestPlcOperationSignature, low-S ECDSA), did:key multicodec prefixes (P-256 `[0x80,0x24]`/`zDn…`; secp256k1 `[0xe7,0x01]`/`zQ3…`; ed25519 `[0xed,0x01]`), did:plc audit logs, account migration (ADR-0002 wallet-authorized path).
+   - atproto OAuth: reverse-FQDN rule for private-use redirect schemes with discoverable client metadata; `transition:generic` = app-password-equivalent, excludes "migrate account"; bsky.social entryway vs sharded mushroom PDS hosts (fibercap.us-west.host.bsky.network); RFC 9728 protected-resource discovery.
+   - No-input XRPC procedures must receive NO request body (reference PDS rejects with InvalidRequest).
+   - bsky.social email tokens: format `XXXXX-XXXXX` (dash required), each requestPlcOperationSignature invalidates prior tokens; force-closing the wallet loses in-memory ClaimState.
+   - Recurring meta-pattern: everywhere Custos is laxer than the reference PDS, a wallet interop bug hid (MM-288 redirect rule, MM-289 identity scope, MM-291 body validation) — captured in MM-292.
+   - iOS debugging: tauri_plugin_log → unified log, subsystem `dev.malpercio.identitywallet`; `xcrun simctl spawn booted log show --predicate 'subsystem == "dev.malpercio.identitywallet"'`; `just ios-dev` sim builds use local source.
+   - Release flow: set-version PR → merge → `just release` (tag) → `just deploy-production vX.Y.Z`; Railway "Wait for CI"; production = obsign.org custom domain (railway subdomain dead); `identitywallet.obsign.org` routes to production via `*.obsign.org` wildcard.
+   - Environment: devenv tools at `$REPO/.devenv/profile/bin`; cargo-deny at `/nix/store/REDACTED.19.0/bin`; railway CLI at `~/.railway/bin`; git/network need `dangerouslyDisableSandbox: true`; dual push remotes (GitHub canonical + tangled mirror, tangled drifted after a force-push on main and needs manual re-sync); Bash writes to Linear hard-blocked (use plugin:linear MCP); shell cwd persists between Bash calls.
+
+3. Files and Code Sections:
+   - `docs/architecture/decisions/0018-admin-signed-request-envelope.md`, `0019-authmd-agent-authentication.md`, `0020-set-revocation-trusted-issuers.md` + README log — backfilled ADRs (committed `ec06e18f`). ADR-0021 (identity ops require full session) was added by the user's MM-289 work.
+   - `docs/archive/{design,test,implementation}-plans/` — archive sweep of 9 design plans, 3 test plans, 2 implementation-plan dirs (git mv); all active plan dirs now empty.
+   - `docs/validation/2026-07-07-mm-241-live-migration.md` — the MM-241 runbook; fixed production URLs to obsign.org twice (#185's merge reverted them once); results table still blank pending the run.
+   - `linear-export/mm-issues.json` + `summary.json` — full 282-issue Linear export (gitignored; PUBLIC repo — never commit).
+   - `apps/identity-wallet/src-tauri/src/oauth_client.rs` — added (MM-291):
+     ```rust
+     pub async fn post_no_body(&self, path: &str) -> Result<Response, OAuthError> {
+         let url = format!("{}/{}", self.base_url, path.trim_start_matches('/'));
+         self.execute_with_retry(reqwest::Method::POST, &url, None::<&()>).await
+     }
+     ```
+   - `apps/identity-wallet/src-tauri/src/pds_client.rs` — request_plc_operation_signature and activate_account switched to post_no_body; tests assert empty body AND no Content-Type.
+   - `apps/identity-wallet/src-tauri/src/claim.rs` — added (MM-293):
+     ```rust
+     fn ensure_claim_device_key(did: &str) -> Result<crate::device_key::DevicePublicKey, ClaimError> {
+         use crate::identity_store::{IdentityStore, IdentityStoreError};
+         match IdentityStore.add_identity(did) {
+             Ok(()) | Err(IdentityStoreError::IdentityAlreadyExists) => {}
+             Err(e) => { tracing::error!(did = %did, error = %e, "claim device-key registration failed");
+                 return Err(ClaimError::VerificationFailed { message: format!("failed to prepare device key: {}", e) }); }
+         }
+         IdentityStore.get_or_create_device_key(did).map_err(|e| { tracing::error!(did = %did, error = %e, "claim device-key creation failed");
+             ClaimError::VerificationFailed { message: format!("failed to prepare device key: {}", e) } })
+     }
+     ```
+     replacing the broken block that mapped IdentityNotFound → NetworkError; regression test `ensure_claim_device_key_registers_fresh_did`.
+   - `crates/crypto/src/keys.rs` — added `pub(crate) const SECP256K1_MULTICODEC_PREFIX: &[u8] = &[0xe7, 0x01];`
+   - `crates/crypto/src/plc.rs` (MM-294, the most recent code work) — verify_signature_with_key now takes raw `sig_bytes: &[u8]` and dispatches:
+     ```rust
+     fn verify_signature_with_key(key: &DidKeyUri, message: &[u8], sig_bytes: &[u8]) -> Result<(), String> {
+         let multikey_bytes = decode_did_key_multikey(key)?;
+         match multikey_bytes.get(..2) {
+             Some(prefix) if prefix == P256_MULTICODEC_PREFIX => verify_p256_sec1(&multikey_bytes[2..], message, sig_bytes),
+             Some(prefix) if prefix == SECP256K1_MULTICODEC_PREFIX => verify_k256_sec1(&multikey_bytes[2..], message, sig_bytes),
+             _ => Err("unsupported did:key type (multicodec prefix is neither P-256 nor secp256k1)".to_string()),
+         }
+     }
+     ```
+     with helpers `decode_did_key_multikey`, `verify_p256_sec1`, `verify_k256_sec1` (both enforce low-S); `verify_p256_signature` kept strictly P-256 with explicit prefix guard (admin-envelope security boundary); callers verify_plc_operation/verify_genesis_op pass raw sig bytes. Five new tests including the golden test `verify_plc_operation_real_bsky_signed_op` with the real bsky-signed op JSON (prev bafyreifh2p5yz5kvv652zpv2kqly3p2xdlvzkenyzt2n3s5brfvaq74vsu, rotationKeys REDACTED / REDACTED, sig REDACTED).
+   - `Cargo.toml` (workspace) + `crates/crypto/Cargo.toml` — added `k256 = { version = "0.13", features = ["ecdsa"] }` (verification only; deny gate passed).
+   - `crates/crypto/CLAUDE.md` — contracts updated: both-curve verification, verify-only secp256k1 invariant, verify_p256_signature strictly P-256.
+   - `.gitignore` — added `linear-export/`, `.claude/settings.local.json`, `.claude/scratch_*.log`.
+   - Memory file `project_wallet_canonical_oauth_client.md` updated (production deploy done; leg (a) needs only new wallet build — now superseded by MM-293/294 too).
+
+4. Errors and fixes:
+   - Claimed no LICENSE file existed (from stale v01-issue-plan "TBD" note) — user corrected: AGPL-3.0 exists. Fixed MM-287 ticket premise and added resolution note to the plan doc (`c200ac61`, later re-applied after force-push as `0453102f`).
+   - `main` was force-pushed (dropped 3 of my doc commits); re-applied the license note; two URL fixes returned via #186. Tangled mirror still refuses fast-forward — pending manual sync.
+   - Permission classifier blocked `just deploy-production v0.4.2` ("get ready" ≠ deploy) — user ran it themselves; later promotions I ran with explicit user authorization.
+   - `just release` refused on dirty tree (untracked `.claude/`) — gitignored machine-local files (`dc57eedd`).
+   - Vite error `Failed to resolve import "@tauri-apps/plugin-biometric"` in sim — stale node_modules; fixed with `CI=true pnpm install` in apps/identity-wallet.
+   - Sim log stream flooded/empty with wrong filters — correct tap: `log show --predicate 'subsystem == "dev.malpercio.identitywallet"'`.
+   - `just ci-pds` failed fmt-check (unformatted test line) — `cargo fmt -p crypto`; then failed `deny` (cargo-deny not on PATH) — used `/nix/store/REDACTED.19.0/bin`; `just deny` → "bans ok, licenses ok, sources ok". Note: piping gate output through `tail` masked a failing exit once — check exit codes explicitly.
+   - PATH gotchas: shell cwd persists; `export PATH="$PWD/.devenv/profile/bin:$PATH"` fails if cwd isn't repo root.
+   - User pasted the bsky test-account password into chat — flagged for rotation (still pending on user).
+
+5. Problem Solving:
+   Five sequential MM-241 leg (a) blockers, each diagnosed and fixed: MM-288 (client_id/redirect reverse-FQDN; fix = canonical `https://identitywallet.obsign.org/oauth/client-metadata.json` + `org.obsign.identitywallet:` scheme; verified via live PAR returning request_uri; shipped v0.4.2), MM-289 (transition:generic can't authorize PLC ops; password createSession source login + ADR-0021; user-fixed; shipped v0.4.3), MM-291 (empty JSON body on no-input procedures; post_no_body; PR #192), MM-293 (device-key lookup before DID registration; ensure_claim_device_key; PR #194), MM-294 (P-256-only verification vs bsky's secp256k1 keys; k256 curve dispatch + golden test; PR #195). Plus MM-290 (error surfacing, other session) and MM-292 (Custos strictness parity, backlog). Milestone closeout artifacts: ADRs 0018–0020, archive sweep, MM-241 reopened, Linear export/archival guidance.
+
+6. All user messages:
+   - "We're about to close the final v0.1 issue in linear, the PR is in review. How did we do against our initial goals and designs? Were any other decisions made that warrant ADRs? Is there anything missing before we start to close out the milestone?"
+   - "Draft the ADR, execute the two borderline backfills. then do the archive sweep. after, show me an updated list so we can decide next move"
+   - "reopn 241 so I can run it, I didn't realize it got closed. commit the doc change set. revert the list_repos change but lets track the production env. after, show me the updated list"
+   - "MM-258 is merged. touch up the stale docs and file the ticket to wire sweep stale nonces"
+   - "sync and push main. for linear hygiene, I'd like to consider removing the now completed wave labels, and pulling an archive of tickets locally so we can free up linear space (the free plan is limited to 250 issues)"
+   - "oh I had no idea archived issues didn't count towards the limit. I deleted a bunch of atbb issues needlessly. oh well. it does appear that I can't manually archive, and issues need to have been closed for a month to go in the archive, so I may still need to do some deletions. knock out 3 and 4 / hmmm, there definitely is a LICENSE file in the repo. AGPL3."
+   - "It looks like the archive worked! are both ezpds-staging.up.railway.app and obsign.org ready to receive transfers?"
+   - "can you read the env vars with the railway cli? do we have both envs properly configured?"
+   - "migrating the bsky pds account in. connect to your pds step. it is attempting to connect directly to the mushroom `fibercap.us-west.host.bsky.network` however I'm pretty sure we need to go through their gateway. the app also showed a "network error" when I clicked the button to launch the login flow"
+   - "hm, I don't love that, I'd much rather it be identitywallet.obsign.org. that's going to require a lot of changes. ahhhhh c'est la vie."
+   - "mm-288 just landed in main. let's watch staging roll out and then get ready to go to prod so we can run the test again"
+   - "railway staging deploy done"
+   - "I ran `just deploy-production v0.4.2`"
+   - "MM-289 is done. let's check staging and get the changes promoted to production if needed for the test"
+   - "hm, made it to an email verification page, 'failed to send verification email'"
+   - "which two curls?"
+   - (curl output paste including test-account credentials: identifier malpercio-obsign.bsky.social, password JDZw3if3l!rox1 — SECURITY: password is in transcript, rotation recommended and still pending; did:plc:u7j7xdhvkwx3xlf6xjkbpdn7; getRecommended 200 with zQ3 keys; token typos InvalidToken; "KDDPS-HOVLC" with dash → 200 signed op) "I had force closed, relaunched, and proceeded directly through the flow, failure happened near immediately. I have around 4 emails"
+   - "Now we have a network error when submitting the verification code for the plc operation"
+   - "1. 'Network error...' 2. App failed first, then the same succeeded in curl"
+   - (curl paste: fresh token 200; signPlcOperation replay with stand-in zDna key at rotationKeys[0] → 200, ordering preserved)
+   - "hm, copypasting the exact token with the dash in the app fails, but succeeds with curl. somethings up"
+   - "from the sim: [vite plugin-biometric import error] no luck with console"
+   - "hmm, I didn't see any error output in the terminal"
+   - "It did show the same 'Network error'. I ran the command in a second terminal and no such lines matching your keywords appeared. here's everything I got howver: [massive unified-log paste containing the one sign_and_verify_claim entry line]"
+   - (screenshot + log paste) "Verification failed: signature verification failed: plc operation failed: no authorized rotation key verified the signature: key[0]: public key is not a P-256 key (wrong multicodec prefix); key[1]: …"
+   - "both have been merged"
+
+7. Pending Tasks:
+   - User retests MM-241 leg (a) with the new TestFlight build (optionally sim-verify first from merged main; do NOT submit from sim — software key would become rotationKeys[0]); record both runbook pass conditions; then legs (b)/(c) via interop CLI; close MM-241 with the filled-in record.
+   - Note: MM-293/MM-294 are wallet-build-only; no production deploy needed for them.
+   - User to rotate the bsky test-account password (pasted into transcript).
+   - Backlog (not blocking): MM-292 (Custos strictness parity), tangled mirror manual re-sync, Linear wave labels/milestones for MM-278–285, milestone-map v0.2 reconciliation, Linear-side archival of Done issues (user says manual archive unavailable / needs 1-month closure, may need some deletions), release cut after MM-241 passes.
+
+8. Current Work:
+   User reported "both have been merged" (PR #194 = MM-293 claim device-key registration; PR #195 = MM-294 secp256k1 verification). I moved MM-293 and MM-294 to Done in Linear and started background watcher `b07cxuibu` that fetches origin/main's tip commit and polls `gh run list --workflow "iOS · TestFlight"` every 60s until a run with `headSha == main tip` completes with success, echoing "TESTFLIGHT BUILD WITH MM-293+MM-294 UPLOADED" (or failure). The watcher was just launched; no user-facing wrap-up message has been sent for this turn yet.
+
+9. Optional Next Step:
+   When watcher `b07cxuibu` fires (read `/private/tmp/claude-501/-Users-jacob-zweifel-workspace-malpercio-dev-ezpds/00ef4afd-87f5-4f84-908b-60302e7f879a/tasks/b07cxuibu.output`), report the TestFlight result to the user and hand off the retest checklist: install the new build; optionally sim-verify first ("verify this fix in the simulator first, from this branch, for free… if it gets past token entry to the ReviewOperationScreen, the fix is proven end-to-end… then cancel at the review screen"); on the phone, run "Bring an identity" with a fresh token (newest email, exact `XXXXX-XXXXX` format), confirm the review screen shows exactly one key insertion at rotationKeys[0], submit, then record the runbook's two pass conditions (plc.directory audit log custody + handle/DID/repo resolution against staging). This directly continues the user's "both have been merged" message and my in-flight watcher.
+
+If you need specific details from before compaction (like exact code snippets, error messages, or content you generated), read the full transcript at: /Users/jacob.zweifel/.claude/projects/-Users-jacob-zweifel-workspace-malpercio-dev-ezpds/00ef4afd-87f5-4f84-908b-60302e7f879a.jsonl
+Continue the conversation from where it left off without asking the user any further questions. Resume directly — do not acknowledge the summary, do not recap what was happening, do not preface with "I'll continue" or similar. Pick up the last task as if the break never happened.
