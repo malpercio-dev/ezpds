@@ -68,10 +68,12 @@ pub enum KeychainError {
 ///   own via sovereign login.
 /// * **`{did}:recovery-signing-key`** — the self-controlled `atproto` repo signing key. It
 ///   signs commits, so a second live copy is a fork risk, not a backup.
-/// * **`ceremony-staging` / `recovery-epilogue`** — in-flight ceremony records that hold the
-///   *seed* (or two shares at once) until teardown. Syncing them would place a
-///   reconstructable secret in iCloud, collapsing the 2-of-3 threshold this whole design
-///   exists to hold.
+/// * **`ceremony-staging` / `recovery-epilogue`** — in-flight ceremony records whose whole
+///   contract is fail-closed single-device ownership. Two devices resuming one epilogue is a
+///   correctness hazard, not a convenience: each would drive the same rotation independently
+///   against a record it believes it owns. They also hold the *seed* (or two shares at once)
+///   until teardown, so syncing them would place a reconstructable secret in iCloud,
+///   collapsing the 2-of-3 threshold this whole design exists to hold.
 ///
 /// Asserted by `deny_list_accounts_never_sync` below.
 pub fn syncs_to_icloud(account: &str) -> bool {

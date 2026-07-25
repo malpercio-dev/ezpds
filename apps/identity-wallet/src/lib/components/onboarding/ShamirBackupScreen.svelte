@@ -90,7 +90,11 @@
       <p class="part-label">Share 1 of 3</p>
       <!-- Honest by construction: the app can prove it wrote the share into the Keychain
            marked for iCloud sync, but iOS gives it no way to observe whether the share
-           actually reached the Apple account — so the copy claims only the write. -->
+           actually reached the Apple account — so the copy claims only the write.
+           The design plan hoped to at least surface whether iCloud Keychain is enabled for
+           the account; iOS publishes no API for that toggle either (iCloud Drive / KVS
+           availability is a different switch and would mislead), so this takes the plan's
+           documented fallback: state the condition, don't assert it holds. -->
       <p class="part-desc">
         Saved to your Keychain — and to your other Apple devices if iCloud Keychain is on
       </p>
