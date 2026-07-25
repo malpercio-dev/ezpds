@@ -13,6 +13,31 @@ export type IdentityStoreError =
 export const listIdentities = (): Promise<string[]> =>
   invoke('list_identities');
 
+// ── Existing did:web import ─────────────────────────────────────────────────
+
+export type ImportDidWebError =
+  | { code: 'INVALID_DOMAIN'; message: string }
+  | { code: 'DOCUMENT_NOT_FOUND' }
+  | { code: 'INVALID_DOCUMENT'; message: string }
+  | { code: 'PDS_UNREACHABLE' }
+  | { code: 'NETWORK_ERROR'; message: string }
+  | { code: 'KEYCHAIN_ERROR' };
+
+export type ImportedDidWebIdentity = {
+  did: string;
+  handle: string | null;
+  pdsUrl: string;
+};
+
+/**
+ * Bring an EXISTING did:web identity under wallet management by resolving its live
+ * document and registering it in the identity store — the prerequisite for the
+ * method-agnostic flows (outbound migration first among them). Accepts a bare domain,
+ * an https:// URL, or a did:web identifier.
+ */
+export const importDidWebIdentity = (input: string): Promise<ImportedDidWebIdentity> =>
+  invoke('import_did_web_identity', { input });
+
 export const getStoredDidDoc = (did: string): Promise<Record<string, unknown> | null> =>
   invoke('get_stored_did_doc', { did });
 

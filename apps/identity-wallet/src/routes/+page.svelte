@@ -51,7 +51,7 @@
   import OAuthConsentApprovalScreen from '$lib/components/home/OAuthConsentApprovalScreen.svelte';
   import SettingsScreen from '$lib/components/home/SettingsScreen.svelte';
   import RemoveIdentityScreen from '$lib/components/home/RemoveIdentityScreen.svelte';
-  import { createAccount, confirmShareBackup, confirmRekey, confirmRecoveryBackup, getPendingRecoveryEpilogue, registerCreatedIdentity, listIdentities, listPendingRemovals, getStoredDidDoc, checkIdentityStatus, getBlobBackupStatus, runBlobBackup, getRepoBackupStatus, runRepoBackup, isCodedError, type CreateAccountError, type OAuthError, type IdentityInfo, type VerifiedClaimOp, type ClaimResult, type RekeyResult, type UnauthorizedChange, type CollectedShare } from '$lib/ipc';
+  import { createAccount, confirmShareBackup, confirmRekey, confirmRecoveryBackup, getPendingRecoveryEpilogue, registerCreatedIdentity, importDidWebIdentity, listIdentities, listPendingRemovals, getStoredDidDoc, checkIdentityStatus, getBlobBackupStatus, runBlobBackup, getRepoBackupStatus, runRepoBackup, isCodedError, type CreateAccountError, type OAuthError, type IdentityInfo, type VerifiedClaimOp, type ClaimResult, type RekeyResult, type UnauthorizedChange, type CollectedShare } from '$lib/ipc';
   import { authenticateBiometric } from '$lib/biometric';
   import { normalizePlcDocToW3c, extractHandle, extractPdsFromPlcDoc } from '$lib/did-doc-utils';
   import IdentityListHome from '$lib/components/home/IdentityListHome.svelte';
@@ -503,12 +503,17 @@
   {:else if step === 'did_web_existing'}
     <DidWebDomainScreen
       bind:value={didWebDomain}
-      onnext={() => {
-        migrationDid = didWebFromDomain(didWebDomain);
+      onnext={async () => {
+        // Bring the existing did:web under wallet management first — the migration
+        // flow's path detection only classifies a MANAGED did:web as self-signed.
+        // The screen renders any thrown coded error inline.
+        const imported = await importDidWebIdentity(didWebDomain);
+        migrationDid = imported.did;
         goTo('migration_start');
       }}
       onback={() => goTo('did_web_path')}
     />
+
   {:else if step === 'identity_input'}
     <IdentityInputScreen
       bind:value={form.handleOrDid}
