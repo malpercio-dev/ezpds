@@ -1,15 +1,16 @@
 // pattern: Mixed (Functional Core types + Imperative Shell commands)
 //
 // Permanent identity removal: the wallet-side counterpart to the PDS's
-// `requestAccountDelete`/`deleteAccount` endpoints plus a did:plc tombstone.
+// `requestAccountDelete`/`deleteAccount` endpoints plus, for a did:plc, a tombstone.
 //
 // A removal has three network/local effects, applied in a strict order:
 //   1. deleteAccount   — the PDS purges all account data and emits an `#account`
 //                        (`status="deleted"`) firehose frame relays consume.
-//   2. plc_tombstone   — the wallet signs a tombstone with the DID's device key
-//                        (rotationKeys[0]) and POSTs it to plc.directory, so the
-//                        did:plc itself is retired network-wide (the PDS cannot do
-//                        this — it never holds the rotation key, ADR-0001).
+//                        Method-agnostic.
+//   2. plc_tombstone   — did:plc ONLY. The wallet signs a tombstone with the DID's
+//                        device key (rotationKeys[0]) and POSTs it to plc.directory,
+//                        so the did:plc itself is retired network-wide (the PDS cannot
+//                        do this — it never holds the rotation key, ADR-0001).
 //   3. local wipe      — `IdentityStore::remove_identity` deletes every per-DID
 //                        Keychain entry.
 //
@@ -18,6 +19,17 @@
 // tombstone submit fails, the account is already deleted (its single-use email token
 // spent) but the device key survives — the UI resumes via `tombstone_identity`, which
 // retries only the tombstone + wipe.
+//
+// Method-awareness (step 2): a did:web has no PLC log and no tombstone operation — it
+// dies when its document leaves the domain, an operator action outside the wallet's
+// control. So a non-did:plc removal skips step 2 entirely and goes straight from the
+// deleteAccount to the local wipe, never contacting plc.directory (whose audit-log fetch
+// 404s for any DID it does not host). Routing a did:web through the tombstone leg would
+// wedge the flow permanently: the account would be gone and its single-use email code
+// spent, while the wipe — gated behind a submit that can never succeed — never runs and
+// the pending-removal marker never clears, so every launch re-offers a doomed retry. The
+// branch lives in `retire_and_wipe` rather than at the command boundary because
+// `tombstone_identity` (the resume path the marker routes to) reaches the same core.
 
 use serde::Serialize;
 
@@ -173,8 +185,11 @@ pub enum RemovalError {
 #[derive(Debug, Serialize, Clone, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct RemovalOutcome {
-    /// The CID of the submitted did:plc tombstone operation.
-    pub tombstone_cid: String,
+    /// The CID of the submitted did:plc tombstone operation, or `None` when the removed
+    /// DID has no tombstone leg (a did:web — there is no PLC operation, so there is no CID
+    /// to report). Reporting the absence is what lets the UI show the did:web epilogue
+    /// instead of claiming a network-wide retirement that did not happen.
+    pub tombstone_cid: Option<String>,
     /// `true` if the removed DID was the last managed identity — the UI returns to
     /// onboarding rather than the identity list.
     pub was_last_identity: bool,
@@ -241,11 +256,40 @@ where
     wipe()
 }
 
+/// `true` if `did` is a did:plc — the only method with a plc.directory log to tombstone.
+///
+/// Every other method (today: did:web) reaches plc.directory only to be 404'd, so the
+/// tombstone leg is skipped rather than attempted. This is the single place the removal
+/// flow decides "does this DID have a tombstone", so the command boundary, the resume
+/// path, and the reported `RemovalOutcome` can never disagree about it.
+fn has_plc_tombstone(did: &str) -> bool {
+    did.starts_with("did:plc:")
+}
+
+/// Retire the DID as far as the wallet can, then wipe local Keychain material.
+///
+/// The method-aware entry point shared by `confirm_identity_removal` (after the PDS
+/// account is deleted) and `tombstone_identity` (the resume path, where the account is
+/// already gone):
+///   - **did:plc** → build + sign + submit the tombstone, then wipe. Returns the CID.
+///   - **anything else** (did:web) → wipe only, never touching plc.directory. Returns
+///     `None`: retiring the DID network-wide means taking its document off the domain,
+///     which is the operator's action, not the wallet's.
+async fn retire_and_wipe(
+    pds_client: &PdsClient,
+    did: &str,
+) -> Result<Option<String>, RemovalError> {
+    if !has_plc_tombstone(did) {
+        wipe_local(&IdentityStore, did)?;
+        return Ok(None);
+    }
+    tombstone_and_wipe(pds_client, did).await.map(Some)
+}
+
 /// Build + sign + submit the did:plc tombstone, then wipe local Keychain material.
 ///
-/// Shared by `confirm_identity_removal` (after the PDS account is deleted) and
-/// `tombstone_identity` (the resume path, where the account is already gone). Returns
-/// the tombstone CID on success.
+/// did:plc only — reached exclusively through [`retire_and_wipe`], which owns the method
+/// branch. Returns the tombstone CID on success.
 async fn tombstone_and_wipe(pds_client: &PdsClient, did: &str) -> Result<String, RemovalError> {
     let store = IdentityStore;
 
@@ -384,8 +428,8 @@ fn no_identities_remain() -> Result<bool, RemovalError> {
         })
 }
 
-/// Compute the `RemovalOutcome` after a successful `tombstone_and_wipe`.
-fn removal_outcome(tombstone_cid: String) -> Result<RemovalOutcome, RemovalError> {
+/// Compute the `RemovalOutcome` after a successful `retire_and_wipe`.
+fn removal_outcome(tombstone_cid: Option<String>) -> Result<RemovalOutcome, RemovalError> {
     Ok(RemovalOutcome {
         tombstone_cid,
         was_last_identity: no_identities_remain()?,
@@ -422,7 +466,8 @@ pub async fn request_identity_removal(
 /// `password` is the account password (set during the DID ceremony); `token` is the
 /// emailed confirmation code. `deleteAccount` is attempted FIRST, so a wrong
 /// password/code (`InvalidToken`) leaves everything intact and the UI re-prompts. Once
-/// the account is deleted, the tombstone + wipe run via `tombstone_and_wipe`.
+/// the account is deleted, `retire_and_wipe` runs the method-appropriate tail: the
+/// tombstone + wipe for a did:plc, the wipe alone for a did:web.
 #[tauri::command]
 pub async fn confirm_identity_removal(
     state: tauri::State<'_, crate::oauth::AppState>,
@@ -453,8 +498,8 @@ pub async fn confirm_identity_removal(
         tracing::warn!(did = %did, error = %e, "failed to persist pending-removal marker after deleteAccount");
     }
 
-    // 2 + 3. Tombstone the did:plc, then wipe local material.
-    let tombstone_cid = tombstone_and_wipe(state.pds_client(), &did).await?;
+    // 2 + 3. Retire the DID (tombstone, did:plc only), then wipe local material.
+    let tombstone_cid = retire_and_wipe(state.pds_client(), &did).await?;
     clear_removal_pending_best_effort(&did);
     removal_outcome(tombstone_cid)
 }
@@ -463,15 +508,17 @@ pub async fn confirm_identity_removal(
 ///
 /// Used when `confirm_identity_removal` deleted the account but the tombstone or wipe
 /// failed: the single-use deletion token is already spent, so re-running `confirm`
-/// would 401 at `deleteAccount`. `tombstone_and_wipe` is idempotent — if the tombstone
+/// would 401 at `deleteAccount`. `retire_and_wipe` is idempotent — if the tombstone
 /// already landed (the DID's head is a tombstone), it does a wipe-only retry rather than
 /// submitting a second, doomed operation; otherwise it completes the tombstone + wipe.
+/// For a did:web there is no tombstone to retry at all, so the resume is the local wipe
+/// alone: it cannot loop forever against a plc.directory that never hosted the DID.
 #[tauri::command]
 pub async fn tombstone_identity(
     state: tauri::State<'_, crate::oauth::AppState>,
     did: String,
 ) -> Result<RemovalOutcome, RemovalError> {
-    let tombstone_cid = tombstone_and_wipe(state.pds_client(), &did).await?;
+    let tombstone_cid = retire_and_wipe(state.pds_client(), &did).await?;
     clear_removal_pending_best_effort(&did);
     removal_outcome(tombstone_cid)
 }
@@ -574,7 +621,7 @@ mod tests {
     #[test]
     fn removal_outcome_serializes_camel_case() {
         let outcome = RemovalOutcome {
-            tombstone_cid: "bafyfake".to_string(),
+            tombstone_cid: Some("bafyfake".to_string()),
             was_last_identity: true,
         };
         let v = serde_json::to_value(&outcome).unwrap();
@@ -585,6 +632,25 @@ mod tests {
         assert_eq!(
             v.get("wasLastIdentity").and_then(|b| b.as_bool()),
             Some(true)
+        );
+    }
+
+    /// A tombstone-less removal reports `tombstoneCid: null` rather than omitting the key
+    /// or inventing a CID — the frontend switches its epilogue on exactly this.
+    #[test]
+    fn removal_outcome_serializes_absent_tombstone_as_null() {
+        let outcome = RemovalOutcome {
+            tombstone_cid: None,
+            was_last_identity: false,
+        };
+        let v = serde_json::to_value(&outcome).unwrap();
+        assert!(
+            v.get("tombstoneCid").is_some_and(|c| c.is_null()),
+            "tombstoneCid must be present and null, got {v}"
+        );
+        assert_eq!(
+            v.get("wasLastIdentity").and_then(|b| b.as_bool()),
+            Some(false)
         );
     }
 
@@ -756,6 +822,94 @@ mod tests {
         // second "forget" (or one against a DID some other path already removed) never wedges.
         let was_last = forget_identity_locally("did:plc:never".to_string()).unwrap();
         assert!(was_last, "an empty wallet reports wasLast=true");
+    }
+
+    // ── did:web removal: no tombstone leg, no wedge ───────────────────────────
+    //
+    // A did:web has no plc.directory log. Routing it through the tombstone path would
+    // 404 on the audit-log fetch, leaving the wipe (gated behind a submit that can never
+    // succeed) unrun and the pending marker uncleared — the account gone, its single-use
+    // email code spent, and every launch re-offering a doomed retry. These pin the branch
+    // that makes that state unreachable.
+
+    #[test]
+    fn tombstone_leg_is_did_plc_only() {
+        assert!(has_plc_tombstone("did:plc:abc123"));
+        assert!(!has_plc_tombstone("did:web:example.com"));
+        assert!(!has_plc_tombstone("did:web:rehearsal.example%3A8080"));
+    }
+
+    /// The load-bearing assertion: a did:web removal never touches plc.directory. The
+    /// mock server is registered to answer *anything*, so a stray request would be a hit.
+    #[tokio::test]
+    async fn did_web_retire_never_contacts_plc_directory() {
+        crate::keychain::clear_for_test();
+        let store = IdentityStore;
+        store.add_identity("did:web:example.com").unwrap();
+
+        let server = httpmock::MockServer::start();
+        let catch_all = server.mock(|when, then| {
+            when.any_request();
+            then.status(200).body("{}");
+        });
+        let pds_client = PdsClient::new_for_test(server.base_url());
+
+        let cid = retire_and_wipe(&pds_client, "did:web:example.com")
+            .await
+            .expect("a did:web removal completes without a tombstone");
+
+        assert_eq!(cid, None, "a did:web removal reports no tombstone CID");
+        catch_all.assert_calls(0);
+        assert!(
+            store.list_identities().unwrap().is_empty(),
+            "the local wipe still ran — it is the whole tail of a did:web removal"
+        );
+    }
+
+    /// The wedge regression: a did:web whose removal was interrupted after `deleteAccount`
+    /// resolves on the resume path (the marker clears, no tombstone), instead of being
+    /// re-offered forever.
+    #[tokio::test]
+    async fn did_web_resume_clears_the_pending_marker() {
+        crate::keychain::clear_for_test();
+        let store = IdentityStore;
+        store.add_identity("did:web:example.com").unwrap();
+        // What `confirm_identity_removal` leaves behind when the app dies post-delete.
+        mark_removal_pending("did:web:example.com").unwrap();
+
+        let server = httpmock::MockServer::start();
+        let catch_all = server.mock(|when, then| {
+            when.any_request();
+            then.status(200).body("{}");
+        });
+        let pds_client = PdsClient::new_for_test(server.base_url());
+
+        let cid = retire_and_wipe(&pds_client, "did:web:example.com")
+            .await
+            .unwrap();
+        clear_removal_pending_best_effort("did:web:example.com");
+
+        assert_eq!(cid, None);
+        catch_all.assert_calls(0);
+        assert!(
+            load_pending_removals().is_empty(),
+            "the marker cleared without a tombstone — no permanent retry state"
+        );
+        assert!(store.list_identities().unwrap().is_empty());
+    }
+
+    /// A did:web wipe is idempotent for the same reason `forget_identity_locally` is: a DID
+    /// some earlier partial run already removed must not fail the resume.
+    #[tokio::test]
+    async fn did_web_retire_is_idempotent_for_an_already_wiped_did() {
+        crate::keychain::clear_for_test();
+        let server = httpmock::MockServer::start();
+        let pds_client = PdsClient::new_for_test(server.base_url());
+
+        let cid = retire_and_wipe(&pds_client, "did:web:never.example")
+            .await
+            .expect("wiping an unregistered DID is success, not an error");
+        assert_eq!(cid, None);
     }
 
     #[test]

@@ -741,9 +741,7 @@
             goTo('recovery_rebuild_start');
           }
         : undefined}
-      onremove={selectedDid?.startsWith('did:plc:')
-        ? () => goTo('remove_identity')
-        : undefined}
+      onremove={() => goTo('remove_identity')}
     />
 
   {:else if step === 'remove_identity'}

@@ -1151,7 +1151,9 @@ function removeIdentity(state: WalletState, did: string): RemovalOutcome {
   const before = state.identities.length;
   state.identities = state.identities.filter((i) => i.did !== did);
   return {
-    tombstoneCid: `bafyharnesstombstone${did.slice(-6)}`,
+    // A did:web has no PLC tombstone, so the real backend reports no CID for one. Mirroring
+    // that here is what lets the harness reach RemoveIdentityScreen's did:web epilogue.
+    tombstoneCid: did.startsWith('did:web:') ? null : `bafyharnesstombstone${did.slice(-6)}`,
     wasLastIdentity: before > 0 && state.identities.length === 0,
   };
 }
