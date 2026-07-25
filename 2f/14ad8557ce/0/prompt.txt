@@ -1,0 +1,83 @@
+Context: This summary will be shown in a list to help users and Claude choose which conversations are relevant.
+
+Please write a concise, factual summary of this conversation. Output ONLY the summary - no preamble. Claude will see this summary when searching previous conversations for useful memories and information.
+
+Summarize what happened in 2-4 sentences. Be factual and specific. Output in <summary></summary> tags.
+
+Include:
+- What was built/changed/discussed (be specific)
+- Key technical decisions or approaches
+- Problems solved or current state
+
+Exclude:
+- Apologies, meta-commentary, or your questions
+- Raw logs or debug output
+- Generic descriptions - focus on what makes THIS conversation unique
+
+Good:
+<summary>Built JWT authentication for React app with refresh tokens and protected routes. Fixed token expiration bug by implementing refresh-during-request logic.</summary>
+
+Bad:
+<summary>I apologize. The conversation discussed authentication and various approaches were considered...</summary>
+
+User: Let’s look for a wave 7 issue to start on, maybe something that needs to be done on a mac as we have a linux cloud agent running too
+
+Agent: I'll help you find a Wave 7 issue that's a good fit for a Mac (leaving Linux-friendly work for the cloud agent). Let me query Linear for the current Wave 7 status.
+
+I'll query Wave 7 issues in the MM team, filtering for ones that are still open (not Done).
+
+The exact label name may differ. Let me check the available Wave labels.
+
+The label is "Wave 7: Hardening". Let me pull those issues.
+
+The result is large. Let me parse it for just the open issues, extracting identifier, title, and state.
+
+The state and identifier fields didn't map. Let me inspect the actual field structure and filter to open, Mac-relevant issues.
+
+Now I have the picture. There are **12 open Wave 7 issues**, and they split cleanly by where they need to run:
+
+`★ Insight ─────────────────────────────────────`
+- **The Mac/Linux split maps to the crate boundary.** Per AGENTS.md, the iOS wallet crates only compile on macOS (they need the Apple toolchain + Xcode), while the PDS/XRPC server crates are exactly what the Linux `just ci-pds` gate builds. So "Mac-specific" ≈ the `Wallet:` / `Tauri` issues; "Linux-friendly" ≈ the `XRPC` / `Server` / auth-scopes issues.
+- **This gives a natural division of labor:** hand the server-side Wave 7 work (auth scopes MM-235/236/237, sync v1.1 MM-234, server migration MM-231, email MM-211) to the Linux cloud agent, and take a wallet/Tauri issue here on the Mac.
+`─────────────────────────────────────────────────`
+
+The Mac-appropriate open issues are:
+
+| Issue | Pri | Title | Notes |
+|-------|-----|-------|-------|
+| [MM-228](https://linear.app/malpercio/issue/MM-228) | **High** | Wallet: outbound migration orchestration (state machine) | Foundational piece of the migration epic |
+| [MM-232](https://linear.app/malpercio/issue/MM-232) | Med | Wallet: outbound migration UI (Obsign) | Frontend, likely depends on 228 |
+| [MM-230](https://linear.app/malpercio/issue/MM-230) | Med | Wallet: migration path detection (self-signed vs interop) | Likely depends on 228 |
+| [MM-134](https://linear.app/malpercio/issue/MM-134) | Med | Tauri IPC lockdown — minimal allowlist | **Self-contained** security hardening, no epic dependency |
+
+Let me pull details on the two best candidates — the high-priority foundational wallet piece and the self-contained one — plus the epic for dependency context.
+
+This clarifies the dependency picture significantly:
+
+`★ Insight ─────────────────────────────────────`
+- **MM-228 (the high-value wallet piece) is blocked**, not startable: it's `blockedBy` MM-220 (`importRepo`/`listMissingBlobs`) and MM-218 (`createAccount` existing-DID) — both **server-side XRPC** tickets. Those are perfect Linux-cloud-agent work, and doing them there would *unblock* the Mac wallet work.
+- **MM-134 (Tauri IPC lockdown) has zero blockers** (`blockedBy: []`) — the only dependency is the Cargo workspace from Wave 0, long done. It's the cleanest "start now on the Mac" pick, and it's pure Mac/Tauri territory.
+`─────────────────────────────────────────────────`
+
+One thing to verify before recommending MM-134: that ticket was written **2026-03-08**, when the plan still referenced a `crates/app-desktop/` shell and Tauri v1's `tauri.allowlist`. The project has since moved entirely to **Tauri v2** iOS apps, and Tauri v2 replaced `allowlist` with a **capabilities/permissions (ACL)** system. Let me confirm the current config shape so I can gauge how much reframing the ticket needs.
+
+Confirmed my read: the `app-desktop` crate the ticket names is **gone**, and both apps now use Tauri v2's `capabilities/*.json` ACL system. So MM-134's intent (least-privilege IPC boundary) is still valid, but its specifics are stale and need reframing to Tauri v2. Let me peek at the current capability files to gauge scope.
+
+I now have everything I need to recommend. Here's the landscape.
+
+## Summary: Wave 7 has 12 open issues, split by toolchain
+
+**Mac-native (wallet/Tauri — need Xcode, belong here):**
+- **MM-134** — Tauri IPC lockdown (Med) — ✅ **unblocked**
+- **MM-228** — Wallet migration orchestration state machine (High) — ❌ blocked
+- MM-232 / MM-230 — Wallet migration UI + path detection (Med) — depend on MM-228
+
+**Linux-friendly (server/XRPC — ideal for the cloud agent):**
+- MM-235/236/237/225 (auth scopes), MM-234 (sync v1.1), MM-231 (server migration), MM-211 (email), and notably **MM-218 + MM-220** (the XRPC endpoints that *block* MM-228)
+
+`★ Insight ─────────────────────────────────────`
+- **The dependency graph almost designs the division of labor for you.** MM-228 (the flagship "credible exit" wallet flow) is `blockedBy` MM-218 (`createAccount` existing-DID) and MM-220 (`importRepo`/`listMissingBlobs`) — both pure server XRPC. Put the **Linux agent on MM-218/MM-220**, and it unblocks the Mac's highest-value wallet work while you make progress on something else.
+- **MM-134 is the only unblocked Mac task**, and it fits the repo's "practice-what-you-preach" security posture (AGENTS.md). Caveat: the ticket is from March and is **stale** — it names a `crates/app-desktop/` shell (deleted) and Tauri v1's `tauri.allowlist` (replaced by v2's `capabilities/*.json` ACL). The *intent* — least-privilege IPC boundary — is live; both apps currently grant the broad `core:default`, which a hardening pass would narrow + document.
+`─────────────────────────────────────────────────`
+
+Given your setup (Mac here + Linux cloud agent), my recommendation: **take MM-134 here now** (unblocked, Mac-native, self-contained), and **point the Linux agent at MM-218/MM-220** so MM-228 unblocks for a follow-up. Let me confirm the pick before I kick off the Linear workflow.
