@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>b16pyyk1e</task-id>
+<tool-use-id>toolu_01TBnEaGYT7EEiBXJmEcyEwE</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-jacob-zweifel-workspace-malpercio-dev-ezpds--claude-worktrees-serene-lichterman-c2f0f0/e676500f-7f86-4e63-9b7c-3c192052075b/tasks/b16pyyk1e.output</output-file>
+<status>failed</status>
+<summary>Background command "Poll CI on current head 6ef66bf0 to green" failed with exit code 1</summary>
+</task-notification>
