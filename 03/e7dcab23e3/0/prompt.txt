@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>bevj314td</task-id>
+<tool-use-id>toolu_01XteaZ52HMcAaSBXNhau3xV</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-jacob-zweifel-workspace-malpercio-dev-ezpds/02fd7e8b-2819-45db-9859-53e734e45665/tasks/bevj314td.output</output-file>
+<status>completed</status>
+<summary>Background command "Pre-validate the locked release build of relay (background)" completed (exit code 0)</summary>
+</task-notification>
