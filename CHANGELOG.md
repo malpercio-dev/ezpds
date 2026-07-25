@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Changes are collected in `changelog.d/` during development and inserted here when
 `just set-version` prepares a release. There is intentionally no `Unreleased` section.
 
+## [0.8.4] - 2026-07-25
+
+### Added
+
+- A blob GC pass that skipped accounts now reports it: the new `blob_gc_errors_total` metric and an `errors` field on each sweep in `GET /v1/admin/health` distinguish a pass that ran but left work undone from one that is not completing at all (which still shows as a stale timestamp).
+
+
+### Fixed
+
+- Blob garbage collection no longer deletes the blobs of an account whose repo walk failed. Previously, when reconciling an account errored, that account's blobs were never pinned permanent and the sweep collected them once their upload grace expired — destroying the ownership row, the stored blob, and the file, and then propagating those deletions to the mirror bucket. The sweep now excludes any account that failed to reconcile in the same pass, so blobs whose references could not be computed are never collected; such an account retains its blobs until the underlying fault is fixed.
+
+- Listing the records of a collection no longer fails, or risks returning another collection's records, when the repository holds record keys shorter than the requested collection name. The underlying repository library's prefix scan yields such keys even though they fall outside the requested range; every key is now re-checked against the collection prefix and the scan stops as soon as it passes the end of that range, which also makes listing a small collection cheaper. Because the leak previously surfaced as an error, listing a collection could fail permanently for an affected account and, in turn, block blob reconciliation for it.
+
+
 ## [0.8.3] - 2026-07-25
 
 ### Fixed
