@@ -1,0 +1,1 @@
+go ahead and write the updates into a doc. I've got another session working on MM-310
