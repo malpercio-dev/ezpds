@@ -118,8 +118,11 @@
         </dl>
       </section>
 
-      <!-- A sweep that stops completing records nothing, so its line simply ages —
-           this panel is where that staleness becomes visible. -->
+      <!-- Two faults per sweep, told apart by name in `sweepLine`: a pass that fails
+           outright records nothing, so its line simply ages (`stale` — the sweep is
+           dead), while a pass that ran but skipped work reports it on its own channel
+           (`failed <n>` — one subject is broken, on a living sweep). This panel is
+           where both become visible. -->
       <section class="panel" aria-labelledby="sweeps-label">
         <span id="sweeps-label" class="label">Background sweeps</span>
         <dl class="facts">

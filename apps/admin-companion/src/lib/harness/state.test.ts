@@ -43,12 +43,32 @@ describe('admin harness state', () => {
     expect(activeRelay(state)).toBe(relay);
   });
 
-  it('degraded health has a stale sweep and no reaper run', () => {
+  // Degraded exists to put every sweep state on screen at once, so the Status screen can
+  // be read against all of them together. Crucially the two faults are carried by
+  // DIFFERENT rows: staleness alone cannot express "the sweep is alive but skipping
+  // work", so collapsing both onto one row would hide exactly the distinction the row
+  // is there to draw.
+  it('degraded health shows every sweep state at once', () => {
     const healthy = healthyServer(3);
     const degraded = healthyServer(3, { degraded: true });
+
+    // Never ran.
     expect(degraded.sweeps.accountReaper).toBeNull();
-    // The degraded blobGc completed much longer ago than the healthy one.
-    expect(degraded.sweeps.blobGc!.completedAt).toBeLessThan(healthy.sweeps.blobGc!.completedAt);
+
+    // Stale: completed much longer ago than the healthy fixture, and cleanly so — a
+    // sweep that is dead reports no errors, because a failed pass records nothing.
+    expect(degraded.sweeps.firehoseGc!.completedAt).toBeLessThan(
+      healthy.sweeps.firehoseGc!.completedAt
+    );
+    expect(degraded.sweeps.firehoseGc!.errors).toBe(0);
+
+    // Alive but leaking: a FRESH timestamp carrying errors — blob GC skipped an account
+    // whose reconcile failed, so its blobs go uncollected until the fault is fixed.
+    expect(degraded.sweeps.blobGc!.completedAt).toBe(healthy.sweeps.blobGc!.completedAt);
+    expect(degraded.sweeps.blobGc!.errors).toBeGreaterThan(0);
+
+    // A healthy readout reports no failures anywhere.
+    expect(healthy.sweeps.blobGc!.errors).toBe(0);
   });
 
   it('device keys are deterministic per seed', () => {

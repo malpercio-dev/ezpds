@@ -1348,6 +1348,17 @@ pub struct HealthSweepRun {
     pub completed_at: i64,
     /// Items acted on by that pass.
     pub swept: u64,
+    /// Failures the pass hit — a completed pass with `errors > 0` ran but did not do its
+    /// whole job, the distinction a stale `completed_at` alone cannot draw between "one
+    /// subject is broken" and "the sweep is dead". Counts failed *operations*, not the work
+    /// they cost: for blob GC one account whose reconcile failed is 1, however many of its
+    /// blobs go uncollected as a result.
+    ///
+    /// Defaulted because one admin device pairs with several relays at once and they upgrade
+    /// independently — a relay predating this field must still parse, reporting no failures
+    /// rather than blanking the whole Status screen.
+    #[serde(default)]
+    pub errors: u64,
 }
 
 /// The relay-status readout — the response shape of `GET /v1/admin/relay-status`
@@ -3205,10 +3216,10 @@ mod tests {
             "storage": {"blobCount": 12, "blobBytes": 345678, "blockCount": 900},
             "firehose": {"currentSeq": 42, "subscribers": 2, "retainedEvents": 40, "backfillWindowSeconds": 3600},
             "sweeps": {
-                "blobGc": {"completedAt": 1750000000, "swept": 7},
+                "blobGc": {"completedAt": 1750000000, "swept": 7, "errors": 2},
                 "firehoseGc": null,
                 "accountReaper": null,
-                "agentClaimSweep": {"completedAt": 1750000100, "swept": 0}
+                "agentClaimSweep": {"completedAt": 1750000100, "swept": 0, "errors": 0}
             }
         }"#;
         let health: ServerHealth = serde_json::from_str(json).expect("deserialize");
@@ -3232,10 +3243,20 @@ mod tests {
             Some(HealthSweepRun {
                 completed_at: 1_750_000_000,
                 swept: 7,
+                errors: 2,
             })
         );
         assert_eq!(health.sweeps.firehose_gc, None);
         assert_eq!(health.sweeps.agent_claim_sweep.unwrap().swept, 0);
+
+        // One admin device pairs with several relays at once and they upgrade independently,
+        // so a relay predating the sweep-error channel omits `errors`. It must default to
+        // "no failures reported" rather than failing the parse and blanking the whole
+        // Status screen for every relay in the pairing set.
+        let old_run: HealthSweepRun =
+            serde_json::from_str(r#"{"completedAt": 1750000000, "swept": 7}"#)
+                .expect("deserialize pre-error-channel sweep run");
+        assert_eq!(old_run.errors, 0);
 
         // An empty firehose log reports `null` — that must read as None.
         let empty_window: HealthFirehose = serde_json::from_str(
@@ -3249,6 +3270,7 @@ mod tests {
         assert_eq!(value["uptimeSeconds"], 86_400);
         assert_eq!(value["firehose"]["backfillWindowSeconds"], 3_600);
         assert_eq!(value["sweeps"]["blobGc"]["completedAt"], 1_750_000_000i64);
+        assert_eq!(value["sweeps"]["blobGc"]["errors"], 2);
         assert_eq!(value["sweeps"]["firehoseGc"], serde_json::Value::Null);
     }
 

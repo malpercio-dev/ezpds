@@ -280,9 +280,14 @@ export interface ServerHealth {
   };
   /**
    * Last completed pass per background sweep; null until that sweep's first completed
-   * pass after boot (each first runs one full interval after startup). A failed pass
-   * records nothing, so a stale `completedAt` — not an error field — is the signal
-   * that passes are not completing.
+   * pass after boot (each first runs one full interval after startup).
+   *
+   * Two independent fault channels, because they call for different operator responses:
+   * a stale `completedAt` means passes are not completing at all (a pass that fails
+   * outright records nothing, so its line simply ages), while a fresh `completedAt`
+   * carrying a nonzero `errors` means the pass ran and skipped part of its work. The
+   * relay reports both as literal facts and derives no verdict — the thresholds that
+   * turn either into an alarm are ours, in `$lib/health`'s `sweepLine`.
    */
   sweeps: {
     blobGc: SweepRun | null;
@@ -292,10 +297,20 @@ export interface ServerHealth {
   };
 }
 
-/** One completed sweep pass: unix seconds + items acted on. */
+/** One completed sweep pass: unix seconds + items acted on + failures hit. */
 export interface SweepRun {
   completedAt: number;
   swept: number;
+  /**
+   * Failures the pass hit; 0 for sweeps with no per-item error path. Counts failed
+   * *operations*, not the work they cost — for blob GC one account whose reconcile
+   * failed is 1, however many of its blobs go uncollected as a result. So this is a
+   * count of broken subjects, never a severity measure.
+   *
+   * Always present over IPC: the Rust seam defaults it, so a relay predating the field
+   * reports 0 rather than failing the readout.
+   */
+  errors: number;
 }
 
 /**

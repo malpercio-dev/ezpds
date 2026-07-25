@@ -113,9 +113,18 @@ export function healthyServer(
 ): ServerHealth {
   const degraded = opts?.degraded ?? false;
   // A completed sweep: recent when healthy, >24h stale when degraded (the staleness glyph).
-  const sweep = (offsetSecs: number, swept: number) => ({
+  const sweep = (offsetSecs: number, swept: number, errors = 0) => ({
     completedAt: FIXED_NOW_UNIX - (degraded ? 60 * 60 * 30 : offsetSecs),
     swept,
+    errors,
+  });
+  // A sweep that is alive but skipping work — the OTHER fault, which staleness cannot
+  // express. Deliberately keeps its fresh timestamp even when degraded, so the degraded
+  // scenario shows both faults side by side rather than collapsing them into one look.
+  const sweepWithErrors = (offsetSecs: number, swept: number, errors: number) => ({
+    completedAt: FIXED_NOW_UNIX - offsetSecs,
+    swept,
+    errors,
   });
   return {
     version: '0.5.0',
@@ -139,8 +148,10 @@ export function healthyServer(
       retainedEvents: accounts * 50,
       backfillWindowSeconds: accounts > 0 ? 3600 : null,
     },
+    // Degraded shows all four sweep states at once: blob GC alive but leaking one
+    // account's blobs, two sweeps gone stale, and one that has never run.
     sweeps: {
-      blobGc: sweep(300, 3),
+      blobGc: degraded ? sweepWithErrors(300, 3, 1) : sweep(300, 3),
       firehoseGc: sweep(600, 12),
       accountReaper: degraded ? null : sweep(900, 0),
       agentClaimSweep: sweep(1200, 1),

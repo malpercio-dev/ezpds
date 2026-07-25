@@ -1,7 +1,7 @@
 # Admin Companion (operator console) Mobile App
 
 Last verified: 2026-07-10
-Last updated: 2026-07-17 (documented the server-wide admin audit log — `list_audit` IPC + the Audit screen)
+Last updated: 2026-07-25 (Status screen surfaces each sweep's `errors` count as a named `failed <n>` fault, distinct from `stale`)
 
 ## Purpose
 
@@ -96,8 +96,10 @@ share sheet, and server-side self-revoke (Phase 8). Wired:
   `get_server_health` (a signed `GET /v1/admin/health` for an id-addressed pairing — the
   Status screen's data source: version/uptime, account counts by lifecycle, blob/block
   totals, firehose state, and background-sweep last-runs as `ServerHealth`, a by-value
-  copy of the wire shape pinned by a deserialization test; the relay reports literal
-  facts only, so all staleness judgment is client-side),
+  copy of the wire shape pinned by a deserialization test; each sweep run carries both
+  `swept` and an `errors` count — `serde(default)`ed, so a relay predating the sweep-error
+  channel still parses, relays in one pairing set upgrading independently — and the relay
+  reports literal facts only, so all staleness and failure judgment is client-side),
   `list_claim_codes`/`revoke_claim_code` (the claim-code inventory: a signed
   `GET /v1/accounts/claim-codes` — bare path signed, pagination `cursor` appended to the URL
   only, like the moderation GET — and a signed `POST /v1/accounts/claim-codes/revoke` whose
@@ -241,7 +243,14 @@ share sheet, and server-side self-revoke (Phase 8). Wired:
   reports raw facts with no verdicts, so all presentation judgment lives in
   `src/lib/health.ts` (Functional Core, unit-tested): `formatDuration` (uptime/ages),
   `formatBackfillWindow` (`null` → "empty log"), and `sweepLine` (`not yet run` vs
-  `<age> ago · swept <n>`, with a trailing `!` staleness glyph at ≥24h — glyph, never color alone).
+  `<age> ago · swept <n>`). A sweep has TWO independent faults and `sweepLine` names each
+  so they can be told apart — `stale` at an age ≥24h (a pass that fails outright records
+  nothing, so the sweep is dead) and `failed <n>` for any nonzero `errors` (the pass ran
+  but skipped work: for blob GC an account whose reconcile failed, whose blobs go
+  uncollected until the fault is fixed). Both faults add one trailing `!` to the line —
+  glyph + text, never color alone; the names are load-bearing, since an unlabelled marker
+  could not say which fault it meant on a row carrying both. `errors` counts broken
+  *subjects*, not the work they cost, so it gets no severity dressing and no threshold.
   Reached from Home's Status button),
   **Transfers** (`src/routes/transfers/` — in-flight planned device swaps on ONE relay: every
   transfer that can still advance, newest first, with `src/lib/transfers.ts` (Functional Core:
