@@ -1,0 +1,208 @@
+<task-notification>
+<task-id>a72d4f73e9721f92a</task-id>
+<tool-use-id>toolu_01Fk8uhRw7MoqkYXSHCrbiwC</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-jacob-zweifel-workspace-malpercio-dev-ezpds--claude-worktrees-serene-lichterman-c2f0f0/e676500f-7f86-4e63-9b7c-3c192052075b/tasks/a72d4f73e9721f92a.output</output-file>
+<status>completed</status>
+<summary>Agent "Tauri v2 ACL hardening best practices" finished</summary>
+<note>A task-notification fires each time this agent stops with no live background children of its own. The user can send it another message and resume it, so the same task-id may notify more than once.</note>
+<result>Perfect. Now I have comprehensive information. Let me compile the findings report:
+
+---
+
+## Tauri v2 Capabilities &amp; Permissions Research Report
+
+Based on official Tauri v2 documentation and verified sources, here are the findings on hardening the IPC boundary with a minimal least-privilege allowlist:
+
+### 1. **Tauri v2 Capabilities &amp; Permissions (ACL) Model**
+
+**Capabilities** are the core security boundary mechanism in Tauri v2. They control fine-grained access to the IPC layer between frontend (WebView) and backend (Rust).
+
+**Key architecture:**
+- Capabilities define *which permissions are granted or denied for which windows or webviews*
+- Windows/webviews without matching capabilities have **zero IPC access** — complete sandbox
+- Configuration files live in `src-tauri/capabilities/` as JSON or TOML
+- Can be defined inline in `tauri.conf.json` or as separate files
+
+**Capability Schema properties** ([v2.tauri.app/reference/acl/capability/](https://v2.tauri.app/reference/acl/capability/)):
+- `identifier` (required): unique string ID (e.g., `main-user-files-write`)
+- `permissions` (required): array of `plugin:permission-name` entries
+- `windows`: target specific windows by exact name or glob patterns (`main`, `admin-*`)
+- `webviews`: explicitly target webviews for multi-webview windows
+- `platforms`: array of OS targets (`macOS`, `windows`, `linux`, `android`, `iOS`)
+- `remote`: URLPattern for remote URL access (e.g., `https://*.mydomain.dev`)
+- `description`: human-readable explanation
+- `local` (default: true): whether capability applies to local bundled URLs
+
+**Source:** [v2.tauri.app/reference/acl/capability/](https://v2.tauri.app/reference/acl/capability/), [v2.tauri.app/security/capabilities/](https://v2.tauri.app/security/capabilities/)
+
+---
+
+### 2. **`core:default` Composition** ⚠️ Critical Finding
+
+The `core:default` permission set automatically bundles **nine default permission sets** across all core framework features:
+
+**Complete `core:default` bundle** includes ([v2.tauri.app/reference/acl/core-permissions/](https://v2.tauri.app/reference/acl/core-permissions/)):
+
+| Category | Default Includes | Scope |
+|----------|------------------|-------|
+| **`core:app:default`** | `version`, `name`, `tauri_version` (metadata only) | App metadata, theming queries |
+| **`core:event:default`** | `listen`, `unlisten`, `emit`, `emit_to` | Event system (all pub/sub) |
+| **`core:image:default`** | Image creation, loading from bytes/paths, RGBA access, size queries | Image operations |
+| **`core:menu:default`** | Create, append, remove, check, enable, icons, accelerators | Full menu manipulation |
+| **`core:path:default`** | `resolve`, `normalize`, `join`, `basename`, `dirname`, `extension`, `is_absolute` | Path utilities |
+| **`core:resources:default`** | `close` only (minimal) | Resource lifecycle |
+| **`core:tray:default`** | Creation, icon/menu/tooltip/title, visibility, click behavior | System tray operations |
+| **`core:webview:default`** | `get_all_webviews`, position/size queries, dev tools toggle | Webview queries (limited) |
+| **`core:window:default`** | 40+ permissions covering position, sizing, state, decoration, focus, theme, dragging | Window management (extensive) |
+
+**All permissions use `allow-*` and `deny-*` variants** for dual-mode control. Deny takes priority.
+
+**Key observation:** Removing `core:default` entirely and specifying only `allow-*` permissions for needed commands is the minimal-surface approach.
+
+**Source:** [v2.tauri.app/reference/acl/core-permissions/](https://v2.tauri.app/reference/acl/core-permissions/)
+
+---
+
+### 3. **Least-Privilege Hardening Guidance**
+
+Official best practice: *"For better security it is recommended to only give the necessary capabilities to each window."*
+
+**Steps to minimize IPC surface**:
+
+1. **Remove blanket `core:default`** — Do not use the bundled permission set; enumerate only needed commands
+2. **Create window-scoped capabilities** — Define separate capability files for each window with distinct privilege levels:
+   ```json
+   {
+     "identifier": "main-window-restricted",
+     "windows": ["main"],
+     "platforms": ["iOS"],
+     "permissions": [
+       "core:window:allow-set-title",
+       "core:event:allow-emit"
+     ],
+     "description": "Minimal IPC for main iOS window"
+   }
+   ```
+
+3. **Use platform-gating** — Restrict capabilities to target platforms only:
+   ```json
+   "platforms": ["iOS"]
+   ```
+   This prevents iOS apps from exposing desktop-only features.
+
+4. **Avoid `remote` unless necessary** — URLPattern-based remote access should be explicit and scoped
+
+5. **Webview sandboxing** — If multi-webview, create separate minimal capabilities per webview
+
+6. **No `withGlobalTauri` for untrusted contexts** — The `app &gt; withGlobalTauri` setting (migrated from `build &gt; withGlobalTauri` in v1) exposes `window.__TAURI__` globally. Pair it with strict per-window capabilities so even with global access, only allowed commands work.
+
+**Security model dependency**: Capabilities work *at the IPC router level*. The framework validates capability membership before command dispatch. No `withGlobalTauri` bypass exists—capabilities are enforced regardless.
+
+**Source:** [v2.tauri.app/learn/security/capabilities-for-windows-and-platforms/](https://v2.tauri.app/learn/security/capabilities-for-windows-and-platforms/), [v2.tauri.app/security/](https://v2.tauri.app/security/)
+
+---
+
+### 4. **Testing &amp; Verification Story** ⚠️ Honest Assessment
+
+**Build-time validation:** Tauri auto-generates JSON schemas (`gen/schemas/` for both `desktop-schema.json` and `mobile-schema.json`) for IDE autocomplete. This catches YAML/JSON syntax errors but **does NOT validate capability membership statically**.
+
+**Runtime denial behavior:**
+- When a window lacks a capability for a command, the IPC call is rejected
+- Error surface: `"[command] not allowed"` appears in browser console ([github.com/tauri-apps/tauri issue #12325](https://github.com/tauri-apps/tauri/issues/12325))
+- The promise/callback fails; no hard exception, graceful denial
+
+**Testing verification in practice:**
+1. **No official `tauri::test` ACL validation** — Tauri v2 does not provide a built-in test harness that pre-verifies capability coverage
+2. **Practical verification:** Define test capabilities files in `src-tauri/capabilities/` and manually invoke commands from different windows/contexts, watching browser console for denial errors
+3. **Isolation pattern** ([v2.tauri.app/concept/inter-process-communication/isolation/](https://v2.tauri.app/concept/inter-process-communication/isolation/)): Framework provides isolation boundaries; developers validate scopes at the Rust level (e.g., file operation validations)
+
+**Honest limitation:** There is **no clean runtime-test story for ACL enforcement**. The practical verification is:
+- Build-time: capability schema validation only (syntax)
+- Runtime: manual testing with browser dev tools, checking console for denial errors
+- Code review: auditing capability files to ensure minimal surface
+
+**Source:** [v2.tauri.app/security/](https://v2.tauri.app/security/), [github.com/tauri-apps/tauri](https://github.com/tauri-apps/tauri) issue threads
+
+---
+
+### 5. **Mobile Specifics (iOS &amp; Android)** 
+
+**Schema differences:**
+- Mobile apps use `../gen/schemas/mobile-schema.json` (auto-generated)
+- Desktop apps use `../gen/schemas/desktop-schema.json`
+- Same capability structure; platform field filters to `iOS` or `android`
+
+**Platform-only plugins** (mobile-exclusive features):
+- **iOS-only:** biometric (`tauri-plugin-biometric`), sharesheet (`tauri-plugin-sharesheet`), various iOS-native APIs
+- **Android-only:** equivalent native capabilities via Kotlin/Java plugins
+- Each plugin ships its own default permissions; developers can restrict or extend
+
+**Capability gating example:**
+```json
+{
+  "identifier": "ios-biometric",
+  "windows": ["main"],
+  "platforms": ["iOS"],
+  "permissions": ["tauri-plugin-biometric:allow-authenticate"]
+}
+```
+
+**Plugin architecture:**
+- iOS: Swift plugins extend Tauri's `Plugin` class; functions marked with `@objc` are callable
+- Android: Kotlin plugins extend `app.tauri.plugin.Plugin`; methods marked with `@Command` are callable
+- Both support permission checking via `checkPermissions`/`requestPermissions` for OS-level permissions (biometric auth, camera, location, etc.)
+
+**Critical for iOS apps:** Platform gating in capabilities avoids desktop-only command exposure on mobile builds.
+
+**Source:** [v2.tauri.app/develop/plugins/develop-mobile/](https://v2.tauri.app/develop/plugins/develop-mobile/), [v2.tauri.app/security/capabilities/](https://v2.tauri.app/security/capabilities/), [v2.tauri.app/plugin/barcode-scanner/](https://v2.tauri.app/plugin/barcode-scanner/) (example mobile plugin)
+
+---
+
+## Summary Table: `core:default` Replacement Checklist
+
+When replacing `core:default` with minimal allowlist:
+
+| Module | Minimal Allow Set | Notes |
+|--------|-------------------|-------|
+| **Window** | `core:window:allow-set-title` + position/sizing as needed | 60+ default perms; enumerate only what's used |
+| **Event** | `core:event:allow-emit` + `core:event:allow-listen` | Pair only if app needs runtime pub/sub |
+| **Path** | `core:path:allow-resolve` only | Don't grant unless path manipulation needed |
+| **Menu** | Nothing (define custom plugin commands) | Menu usually backend-owned; avoid frontend access |
+| **Tray** | Nothing (system tray usually backend) | Avoid if possible |
+| **Image** | Only if frontend image processing required | Heavy surface; consider backend ops |
+| **App** | `core:app:allow-version` (metadata only) | Metadata leak is minimal risk |
+| **Webview** | `core:webview:allow-get-all-webviews` if multi-webview | Query-only, low risk |
+| **Resources** | Nothing (resource close rarely needed frontend) | Minimal surface |
+| **Platform gate** | Add `"platforms": ["iOS"]` to all | Prevents desktop-only commands on mobile |
+
+---
+
+## Flags &amp; Caveats
+
+✅ **Strengths:**
+- Official docs are clear and comprehensive (v2.tauri.app is well-maintained)
+- Capability system is robust; no IPC bypasses documented
+- Platform-gating is straightforward and enforced
+
+⚠️ **Weaknesses &amp; Gaps:**
+1. No automated ACL validation tooling — capability verification relies on manual testing
+2. Runtime denial errors are console-only (no exception type to programmatically catch)
+3. v1 (allowlist) guidance online is outdated; ensure you're reading v2 docs
+4. No documented integration-test pattern for verifying capabilities denied
+5. `withGlobalTauri` documentation could stress that it doesn't bypass capability checks (it doesn't, but phrasing is subtle)
+
+**Recommendation:** Audit your current apps' `tauri.conf.json` or capability files to check for `core:default` use. Remove it, enumerate needed permissions, test by attempting disallowed commands in dev tools and confirming console denial.
+
+---
+
+## Official Sources
+
+- [Tauri v2 Security Overview](https://v2.tauri.app/security/)
+- [Capabilities Reference](https://v2.tauri.app/reference/acl/capability/)
+- [Core Permissions Reference](https://v2.tauri.app/reference/acl/core-permissions/)
+- [Capabilities for Windows &amp; Platforms](https://v2.tauri.app/learn/security/capabilities-for-windows-and-platforms/)
+- [Permissions Documentation](https://v2.tauri.app/security/permissions/)
+- [Mobile Plugin Development](https://v2.tauri.app/develop/plugins/develop-mobile/)
+- [Tauri v2 Stable Release Blog](https://v2.tauri.app/blog/tauri-20/)</result>
+<usage><subagent_tokens>55420</subagent_tokens><tool_uses>19</tool_uses><duration_ms>95515</duration_ms></usage>
+</task-notification>
