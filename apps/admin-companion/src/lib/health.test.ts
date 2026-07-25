@@ -39,22 +39,62 @@ describe('sweepLine', () => {
   });
 
   it('renders age and swept count for a completed pass', () => {
-    expect(sweepLine({ completedAt: NOW - 4 * 60, swept: 7 }, NOW)).toBe('4m 0s ago · swept 7');
+    expect(sweepLine({ completedAt: NOW - 4 * 60, swept: 7, errors: 0 }, NOW)).toBe(
+      '4m 0s ago · swept 7',
+    );
   });
 
   it('keeps a healthy quiet pass visible as swept 0', () => {
-    expect(sweepLine({ completedAt: NOW - 30, swept: 0 }, NOW)).toBe('30s ago · swept 0');
+    expect(sweepLine({ completedAt: NOW - 30, swept: 0, errors: 0 }, NOW)).toBe(
+      '30s ago · swept 0',
+    );
   });
 
-  it('marks a pass older than 24h with the staleness glyph', () => {
-    expect(sweepLine({ completedAt: NOW - 86_400, swept: 2 }, NOW)).toBe('1d 0h ago · swept 2 !');
+  it('marks a pass older than 24h stale, naming the fault', () => {
+    expect(sweepLine({ completedAt: NOW - 86_400, swept: 2, errors: 0 }, NOW)).toBe(
+      '1d 0h ago · swept 2 · stale !',
+    );
     // Just under the threshold: no marker.
-    expect(sweepLine({ completedAt: NOW - 86_399, swept: 2 }, NOW)).toBe(
+    expect(sweepLine({ completedAt: NOW - 86_399, swept: 2, errors: 0 }, NOW)).toBe(
       '23h 59m ago · swept 2',
     );
   });
 
   it('clamps a completedAt slightly in the future (clock skew) to 0s, unmarked', () => {
-    expect(sweepLine({ completedAt: NOW + 10, swept: 1 }, NOW)).toBe('0s ago · swept 1');
+    expect(sweepLine({ completedAt: NOW + 10, swept: 1, errors: 0 }, NOW)).toBe(
+      '0s ago · swept 1',
+    );
+  });
+
+  // The sweep is alive and collecting, but one account's reconcile failed, so that
+  // account is excluded and leaks disk. A fresh timestamp must not read as "all clear"
+  // just because staleness is the older, more familiar signal.
+  it('reports a fresh pass that skipped work as failed, not stale', () => {
+    const line = sweepLine({ completedAt: NOW - 4 * 60, swept: 7, errors: 1 }, NOW);
+    expect(line).toBe('4m 0s ago · swept 7 · failed 1 !');
+    expect(line).not.toContain('stale');
+  });
+
+  it('reports errors with no staleness threshold — one skipped subject is worth saying', () => {
+    expect(sweepLine({ completedAt: NOW - 30, swept: 0, errors: 3 }, NOW)).toBe(
+      '30s ago · swept 0 · failed 3 !',
+    );
+  });
+
+  // Both faults at once must stay separable: an unlabelled marker could not say which
+  // one it meant, which is the whole reason each fault carries its own name.
+  it('names both faults independently when a stale pass also skipped work', () => {
+    const line = sweepLine({ completedAt: NOW - 86_400, swept: 2, errors: 1 }, NOW);
+    expect(line).toBe('1d 0h ago · swept 2 · failed 1 · stale !');
+    expect(line).toContain('failed 1');
+    expect(line).toContain('stale');
+  });
+
+  it('carries every fault as text, never color, and marks the line just once', () => {
+    const both = sweepLine({ completedAt: NOW - 86_400, swept: 2, errors: 1 }, NOW);
+    // One attention glyph per line, regardless of how many faults are named.
+    expect(both.match(/!/g)).toHaveLength(1);
+    // A healthy line stays unmarked, so the glyph means something.
+    expect(sweepLine({ completedAt: NOW - 30, swept: 0, errors: 0 }, NOW)).not.toContain('!');
   });
 });
