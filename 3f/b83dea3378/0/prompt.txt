@@ -1,0 +1,7 @@
+```2026-06-24 18:38:53.887  INFO: [ContentDelivery.Uploader.100EDF710]
+==========================================
+UPLOAD SUCCEEDED with no errors
+Delivery UUID: 869f2a16-8362-42ea-83cc-8f3381baa8b3
+Transferred 5992674 bytes in 6.250 seconds (958.76KB/s, 7.670Mbps)
+==========================================
+No errors uploading archive at 'apps/identity-wallet/src-tauri/gen/apple/build/arm64/Obsign.ipa'.```
