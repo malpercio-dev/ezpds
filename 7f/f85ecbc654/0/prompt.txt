@@ -1,1 +1,0 @@
-The query for the current document returned nothing. Let's implement option b here
