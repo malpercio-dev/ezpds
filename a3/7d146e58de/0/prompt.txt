@@ -1,0 +1,33 @@
+<ci-monitor-event>malpercio-dev/ezpds PR #109 has 1 new review comment:
+- coderabbitai[bot]: <!-- This is an auto-generated reply by CodeRabbit -->
+> [!TIP]
+> For best results, initiate chat on the files or code changes.
+
+<details>
+<summary>🧩 Analysis chain</summary>
+
+🏁 Script executed:
+
+```shell
+#!/bin/bash
+git log --oneline -8
+sed -n '1,140p' scripts/capability-check.sh
+```
+
+Length of output: 6801
+
+---
+
+</details>
+
+Verified in commit cb9f71de: `check_schema()` now anchors both the positive and negative checks to `"$schema"[:space:]*:[:space:]*"[^"]*...schema.json"`, so a stray mention of `mobile-schema.json` in an unrelated field (e.g., description) can no longer satisfy the check, and the same anchor prevents a false negative on `desktop-schema.json`.
+
+Also agreed on the `grep -E` vs `grep -P` call — since `withGlobalTauri` and `mobile.json` checks and the parity scripts already commit to coreutils/BSD-grep portability for the macOS `just ci` lane, staying ERE-only here is the right tradeoff to avoid introducing a lane-specific dependency.
+
+Good fix — this closes the loop on the schema guard.
+
+<!-- <review_comment_addressed> -->
+
+(=^･ω･^=) ノ
+
+Please address the feedback and push a fix. Then, for each inline comment you addressed (those with a comment_id), post a one-line reply on the thread via `gh api` saying what you changed (or why you didn't). End each reply with the line "_🤖 Addressed by [Claude Code](https://claude.com/claude-code)_" so reviewers can see it was automated. Then resolve the thread. Skip replies for comments you didn't act on.</ci-monitor-event>
