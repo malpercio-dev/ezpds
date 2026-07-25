@@ -1,0 +1,1 @@
+excellent! in the live migration validation document, please remove any references to "jacob" and replace with "mal" or "malpercio". remember that I go by those names in this repository
