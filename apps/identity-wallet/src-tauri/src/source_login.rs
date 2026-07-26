@@ -43,10 +43,6 @@ pub(crate) enum SourceLoginError {
 /// Shared core: run `createSession` against the source PDS and build a full-session Bearer
 /// `OAuthClient`, enforcing the account-match guard. Extracted so both source-login paths share one
 /// implementation and one behavioral test suite.
-///
-/// `expected_did` is the DID being claimed/migrated: the session the PDS returns MUST be for that
-/// account, or the caller signed in to the wrong one and we refuse to bind those credentials rather
-/// than act against the wrong identity. The password is used for one request and never stored.
 pub(crate) async fn authenticate_source_password(
     pds_client: &crate::pds_client::PdsClient,
     pds_url: &str,
@@ -55,6 +51,47 @@ pub(crate) async fn authenticate_source_password(
     password: &str,
     auth_factor_token: Option<&str>,
 ) -> Result<OAuthClient, SourceLoginError> {
+    let session = create_source_session(
+        pds_client,
+        pds_url,
+        expected_did,
+        identifier,
+        password,
+        auth_factor_token,
+    )
+    .await?;
+
+    OAuthClient::new_bearer(session.access_jwt, session.refresh_jwt, pds_url.to_string()).map_err(
+        |e| {
+            tracing::error!(error = %e, "failed to build Bearer client from source session");
+            SourceLoginError::NetworkError {
+                message: "failed to build source session client".to_string(),
+            }
+        },
+    )
+}
+
+/// The `createSession` half of [`authenticate_source_password`], returning the raw JWT pair
+/// instead of a client.
+///
+/// A password unlock ([`crate::password_unlock`]) must **persist** the pair into the DID's
+/// `{did}:oauth-tokens` record so the session provider's refresh ladder owns it from then on,
+/// and an `OAuthClient` deliberately does not surrender its tokens. Splitting here keeps the
+/// guards that matter — HTTPS-only, one-shot password, and the account-match check below —
+/// on every source-login path rather than duplicating them per caller.
+///
+/// `expected_did` is the DID being claimed/migrated/unlocked: the session the PDS returns MUST be
+/// for that account, or the caller signed in to the wrong one and we refuse to bind those
+/// credentials rather than act against the wrong identity. The password is used for one request
+/// and never stored.
+pub(crate) async fn create_source_session(
+    pds_client: &crate::pds_client::PdsClient,
+    pds_url: &str,
+    expected_did: &str,
+    identifier: &str,
+    password: &str,
+    auth_factor_token: Option<&str>,
+) -> Result<crate::pds_client::CreateSessionResponse, SourceLoginError> {
     let session = pds_client
         .create_session(pds_url, identifier, password, auth_factor_token)
         .await
@@ -98,14 +135,7 @@ pub(crate) async fn authenticate_source_password(
         return Err(SourceLoginError::AccountMismatch);
     }
 
-    OAuthClient::new_bearer(session.access_jwt, session.refresh_jwt, pds_url.to_string()).map_err(
-        |e| {
-            tracing::error!(error = %e, "failed to build Bearer client from source session");
-            SourceLoginError::NetworkError {
-                message: "failed to build source session client".to_string(),
-            }
-        },
-    )
+    Ok(session)
 }
 
 #[cfg(test)]

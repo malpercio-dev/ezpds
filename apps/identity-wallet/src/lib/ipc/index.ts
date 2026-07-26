@@ -14,6 +14,7 @@ export * from './appearance';
 export * from './diagnostics';
 export * from './claim';
 export * from './identity';
+export * from './password-unlock';
 export * from './monitor';
 export * from './recovery';
 export * from './share-recovery';

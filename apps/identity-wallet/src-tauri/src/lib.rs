@@ -17,6 +17,7 @@ pub mod migration_orchestrator;
 pub mod oauth;
 pub mod oauth_client;
 pub mod oauth_consent;
+pub mod password_unlock;
 pub mod pds_capabilities;
 pub mod pds_client;
 pub mod plc_monitor;
@@ -1696,6 +1697,8 @@ pub fn run() {
             disaster_recovery::recovery_transfer_repo,
             sovereign_session::sovereign_login,
             session_provider::ensure_identity_session,
+            password_unlock::get_identity_unlock_route,
+            password_unlock::unlock_identity_with_password,
             handle_change::change_handle_cmd,
             handle_change::get_identity_handle_domains,
             endpoint_repair::repair_hosting_endpoint,

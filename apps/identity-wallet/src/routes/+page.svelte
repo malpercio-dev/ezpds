@@ -52,6 +52,7 @@
   import OAuthConsentApprovalScreen from '$lib/components/home/OAuthConsentApprovalScreen.svelte';
   import SettingsScreen from '$lib/components/home/SettingsScreen.svelte';
   import RemoveIdentityScreen from '$lib/components/home/RemoveIdentityScreen.svelte';
+  import PasswordUnlockDialog from '$lib/components/home/PasswordUnlockDialog.svelte';
   import { createAccount, confirmShareBackup, confirmRekey, confirmSelfHeldKit, selfHeldKitInProgress, getPdsCapabilities, confirmRecoveryBackup, getPendingRecoveryEpilogue, registerCreatedIdentity, importDidWebIdentity, listIdentities, listPendingRemovals, getStoredDidDoc, checkIdentityStatus, getBlobBackupStatus, runBlobBackup, getRepoBackupStatus, runRepoBackup, isCodedError, type CreateAccountError, type OAuthError, type IdentityInfo, type VerifiedClaimOp, type ClaimResult, type RekeyResult, type SelfHeldKitResult, type UnauthorizedChange, type CollectedShare } from '$lib/ipc';
   import { authenticateBiometric } from '$lib/biometric';
   import { normalizePlcDocToW3c, extractHandle, extractPdsFromPlcDoc } from '$lib/did-doc-utils';
@@ -1143,6 +1144,10 @@
     </OnboardingShell>
   {/if}
 </div>
+
+<!-- Mounted once, above every step: `$lib/unlock` drives it when a locked identity's host has
+     no passwordless sign-in. Renders nothing until an unlock actually needs a password. -->
+<PasswordUnlockDialog />
 
 <style>
   .app {

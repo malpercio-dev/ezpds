@@ -148,6 +148,9 @@ export type CommandName =
   | 'get_device_key_id'
   | 'sovereign_login'
   | 'ensure_identity_session'
+  // password-unlock.ts
+  | 'get_identity_unlock_route'
+  | 'unlock_identity_with_password'
   // monitor.ts
   | 'check_identity_status'
   // recovery.ts
@@ -518,6 +521,31 @@ export function buildRegistry(state: WalletState): Registry {
       refreshExpiresAt: farFuture(),
     }),
     ensure_identity_session: (args): SessionReady => ({
+      did: didArg(args),
+      pdsUrl: findIdentity(state, didArg(args))?.pdsUrl ?? DEFAULT_PDS_URL,
+      accessExpiresAt: farFuture(),
+      refreshExpiresAt: farFuture(),
+      rotated: false,
+    }),
+    // Which unlock the identity's host can serve. Reads the same capability set the create
+    // gate does, so the `foreign-pds` scenario routes to the password prompt and a Custos
+    // scenario keeps the biometric one. An unreached probe stays SOVEREIGN — the wallet must
+    // not tell a user their server lacks a feature because it could not be asked.
+    get_identity_unlock_route: (args) => {
+      const identity = findIdentity(state, didArg(args));
+      const sovereign =
+        !state.pdsCapabilities.reached ||
+        state.pdsCapabilities.capabilities.includes('sovereignSessions');
+      return {
+        method: sovereign ? 'SOVEREIGN' : 'PASSWORD',
+        pdsUrl: identity?.pdsUrl ?? DEFAULT_PDS_URL,
+        handle: identity?.handle ?? null,
+      };
+    },
+    // The password path. Any non-empty password succeeds here; drive the failure states
+    // (`INVALID_CREDENTIALS`, `TWO_FACTOR_REQUIRED`, …) with
+    // `window.__harness.failNext('unlock_identity_with_password', { code: '…' })`.
+    unlock_identity_with_password: (args): SessionReady => ({
       did: didArg(args),
       pdsUrl: findIdentity(state, didArg(args))?.pdsUrl ?? DEFAULT_PDS_URL,
       accessExpiresAt: farFuture(),
