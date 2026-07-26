@@ -1,0 +1,58 @@
+{
+  "cli_version": "0.8.42",
+  "checkpoint_id": "31a35b68a6eb",
+  "session_id": "d22bbde9-d6c9-416b-9d5a-9d55effb5325",
+  "strategy": "manual-commit",
+  "created_at": "2026-07-26T15:55:12.989483Z",
+  "branch": "claude/bold-wing-6b1f15",
+  "checkpoints_count": 1,
+  "save_step_count": 1,
+  "files_touched": [
+    "Cargo.toml",
+    "apps/identity-wallet/src-tauri/src/blob_backup.rs",
+    "changelog.d/wallet-clippy-gate.changed.md",
+    "just/ios.just"
+  ],
+  "agent": "Claude Code",
+  "model": "",
+  "turn_id": "83024a10cd72",
+  "compact_transcript_start": 0,
+  "token_usage": {
+    "input_tokens": 54,
+    "cache_creation_tokens": 190218,
+    "cache_read_tokens": 2857670,
+    "output_tokens": 12916,
+    "api_call_count": 29
+  },
+  "session_metrics": {
+    "turn_count": 1
+  },
+  "initial_attribution": {
+    "calculated_at": "2026-07-26T15:55:12.959328Z",
+    "agent_lines": 16,
+    "agent_removed": 6,
+    "human_added": 0,
+    "human_modified": 0,
+    "human_removed": 0,
+    "total_committed": 16,
+    "total_lines_changed": 22,
+    "agent_percentage": 100,
+    "metric_version": 2
+  },
+  "prompt_attributions": [
+    {
+      "checkpoint_number": 1,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 0,
+      "agent_lines_removed": 0
+    },
+    {
+      "checkpoint_number": 2,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 16,
+      "agent_lines_removed": 6
+    }
+  ]
+}

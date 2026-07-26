@@ -1,0 +1,29 @@
+{
+  "cli_version": "0.8.42",
+  "checkpoint_id": "31a35b68a6eb",
+  "strategy": "manual-commit",
+  "branch": "claude/bold-wing-6b1f15",
+  "checkpoints_count": 1,
+  "files_touched": [
+    "Cargo.toml",
+    "apps/identity-wallet/src-tauri/src/blob_backup.rs",
+    "changelog.d/wallet-clippy-gate.changed.md",
+    "just/ios.just"
+  ],
+  "sessions": [
+    {
+      "metadata": "/31/a35b68a6eb/0/metadata.json",
+      "transcript": "/31/a35b68a6eb/0/full.jsonl",
+      "compact_transcript": "/31/a35b68a6eb/0/transcript.jsonl",
+      "content_hash": "/31/a35b68a6eb/0/content_hash.txt",
+      "prompt": "/31/a35b68a6eb/0/prompt.txt"
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 54,
+    "cache_creation_tokens": 190218,
+    "cache_read_tokens": 2857670,
+    "output_tokens": 12916,
+    "api_call_count": 29
+  }
+}

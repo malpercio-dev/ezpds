@@ -1,0 +1,13 @@
+`cargo clippy -p identity-wallet --all-targets -- -D warnings` currently fails with three pre-existing findings. They survive because `just ci-pds` runs `cargo clippy --workspace --exclude identity-wallet --exclude admin-companion` (the iOS apps need an Apple/GTK toolchain CI's Linux runner lacks), so nothing gates them.
+
+1. `apps/identity-wallet/src-tauri/src/blob_backup.rs:641` — manual implementation of `.is_multiple_of()`
+2. `apps/identity-wallet/src-tauri/src/blob_backup.rs:1272` — unnecessary use of `to_vec`
+3. `apps/identity-wallet/swift-rs-patch/src-rs/lib.rs:10` — unused import `autorelease::*` (vendored swift-rs patch; may be upstream's, check before touching — see docs/ios-upstream-bugs.md and reference memory on the MM-152 swift-rs fork decision)
+
+Running clippy for this crate locally needs the SDKROOT workaround:
+```
+export EZPDS_IOS_BUILD=1
+source apps/identity-wallet/scripts/ios-env.sh
+export SDKROOT=$(xcrun --sdk macosx --show-sdk-path)
+```
+Consider also whether the macOS iOS PR-gate lane (`.github/workflows/ios-pr-check.yml`, `just ios-pr-check`) should run clippy for these crates so this cannot re-accumulate.
