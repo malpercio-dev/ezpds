@@ -727,9 +727,7 @@
       onapppasswords={() => goTo('app_passwords')}
       onagents={() => goTo('my_agents')}
       onbackup={() => goTo('media_backup')}
-      onsignin={selectedDid?.startsWith('did:plc:')
-        ? () => goTo('oauth_consent_approval')
-        : undefined}
+      onsignin={() => goTo('oauth_consent_approval')}
       onmigrate={selectedDeviceKeyIsRoot === true
         ? () => {
             migrationDid = selectedDid ?? '';
