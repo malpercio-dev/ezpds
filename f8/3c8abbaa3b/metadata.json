@@ -1,0 +1,30 @@
+{
+  "cli_version": "0.8.42",
+  "checkpoint_id": "f83c8abbaa3b",
+  "strategy": "manual-commit",
+  "branch": "malpercio/mm-462-wallet-decouple-the-keychain-access-group-from-the-bundle-id",
+  "checkpoints_count": 1,
+  "files_touched": [
+    "AGENTS.md",
+    "changelog.d/mm-462.security.md",
+    "docs/architecture/decisions/0030-stable-keychain-group-and-frozen-icloud-container.md",
+    "scripts/bundle-identity-check.sh",
+    "scripts/ios-template-check.sh"
+  ],
+  "sessions": [
+    {
+      "metadata": "/f8/3c8abbaa3b/0/metadata.json",
+      "transcript": "/f8/3c8abbaa3b/0/full.jsonl",
+      "compact_transcript": "/f8/3c8abbaa3b/0/transcript.jsonl",
+      "content_hash": "/f8/3c8abbaa3b/0/content_hash.txt",
+      "prompt": "/f8/3c8abbaa3b/0/prompt.txt"
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 29,
+    "cache_creation_tokens": 29052,
+    "cache_read_tokens": 5250212,
+    "output_tokens": 15500,
+    "api_call_count": 16
+  }
+}
