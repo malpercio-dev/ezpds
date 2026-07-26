@@ -9,6 +9,7 @@
   import OnboardingShell from '$lib/components/ui/OnboardingShell.svelte';
   import TextField from '$lib/components/ui/TextField.svelte';
   import Button from '$lib/components/ui/Button.svelte';
+  import DestinationCapabilityNote from './DestinationCapabilityNote.svelte';
 
   let {
     did,
@@ -31,6 +32,9 @@
   // The offline-handle-domain escape hatch: when the dead PDS served the handle's
   // domain, the old handle won't resolve — the user supplies a destination-served one.
   let handleOverride = $state('');
+  // The destination URL the capability note has been asked about — set on blur, so the
+  // note never fires a request per keystroke and never reports on a half-typed host.
+  let probedPdsUrl = $state('');
 
   let checking = $state(false);
   let error = $state<string | null>(null);
@@ -167,7 +171,9 @@
       aria-label="Destination PDS URL"
       disabled={checking}
       error={error ?? undefined}
+      onblur={() => (probedPdsUrl = destPdsUrl)}
     />
+    <DestinationCapabilityNote pdsUrl={probedPdsUrl} />
     <TextField
       bind:value={email}
       type="email"
