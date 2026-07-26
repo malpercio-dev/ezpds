@@ -1,0 +1,98 @@
+{
+  "cli_version": "0.8.42",
+  "checkpoint_id": "389ab472e3f7",
+  "session_id": "6ec4208d-fc93-4d61-830a-c30452d6602a",
+  "strategy": "manual-commit",
+  "created_at": "2026-07-26T16:14:36.659413Z",
+  "branch": "claude/mm-461-enclave-liveness-probe-7f1afc",
+  "checkpoints_count": 1,
+  "save_step_count": 1,
+  "files_touched": [
+    "apps/identity-wallet/AGENTS.md",
+    "apps/identity-wallet/src-tauri/src/identity_store.rs",
+    "apps/identity-wallet/src/lib/components/home/DIDDocumentScreen.svelte",
+    "apps/identity-wallet/src/lib/components/home/IdentityListHome.svelte",
+    "apps/identity-wallet/src/lib/harness/registry.ts",
+    "apps/identity-wallet/src/lib/harness/scenarios.ts",
+    "apps/identity-wallet/src/lib/harness/state.ts",
+    "apps/identity-wallet/src/lib/ipc/identity.ts",
+    "apps/identity-wallet/src/routes/+page.svelte",
+    "changelog.d/mm-461.fixed.md"
+  ],
+  "agent": "Claude Code",
+  "model": "",
+  "turn_id": "80c5d506d5e0",
+  "compact_transcript_start": 0,
+  "token_usage": {
+    "input_tokens": 178,
+    "cache_creation_tokens": 520665,
+    "cache_read_tokens": 20116265,
+    "output_tokens": 46229,
+    "api_call_count": 95
+  },
+  "skill_events_version": 1,
+  "skill_events": [
+    {
+      "id": "claude-skill-toolu_013BcSU9HkCZtQz32Fkvhhgg",
+      "event_type": "tool_invocation",
+      "skill": {
+        "name": "linear-workflow"
+      },
+      "source": {
+        "agent": "claude-code",
+        "signal": "skill_tool_use",
+        "confidence": "explicit"
+      },
+      "turn_id": "80c5d506d5e0",
+      "transcript_anchor": {
+        "unit": "line",
+        "start": 18,
+        "end": 19,
+        "entry_ids": [
+          "901c83fc-81a4-4dc9-a31d-4e5f7d2f18a4"
+        ],
+        "tool_use_id": "toolu_013BcSU9HkCZtQz32Fkvhhgg"
+      },
+      "native": {
+        "tool_name": "Skill",
+        "tool_use_id": "toolu_013BcSU9HkCZtQz32Fkvhhgg"
+      },
+      "collapse": {
+        "target": "tool_pair",
+        "label": "Skill: linear-workflow",
+        "default_collapsed": true
+      }
+    }
+  ],
+  "session_metrics": {
+    "turn_count": 1
+  },
+  "initial_attribution": {
+    "calculated_at": "2026-07-26T16:14:36.58189Z",
+    "agent_lines": 556,
+    "agent_removed": 39,
+    "human_added": 0,
+    "human_modified": 0,
+    "human_removed": 0,
+    "total_committed": 556,
+    "total_lines_changed": 595,
+    "agent_percentage": 100,
+    "metric_version": 2
+  },
+  "prompt_attributions": [
+    {
+      "checkpoint_number": 1,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 0,
+      "agent_lines_removed": 0
+    },
+    {
+      "checkpoint_number": 2,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 556,
+      "agent_lines_removed": 39
+    }
+  ]
+}

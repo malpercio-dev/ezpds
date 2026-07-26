@@ -1,0 +1,35 @@
+{
+  "cli_version": "0.8.42",
+  "checkpoint_id": "389ab472e3f7",
+  "strategy": "manual-commit",
+  "branch": "claude/mm-461-enclave-liveness-probe-7f1afc",
+  "checkpoints_count": 1,
+  "files_touched": [
+    "apps/identity-wallet/AGENTS.md",
+    "apps/identity-wallet/src-tauri/src/identity_store.rs",
+    "apps/identity-wallet/src/lib/components/home/DIDDocumentScreen.svelte",
+    "apps/identity-wallet/src/lib/components/home/IdentityListHome.svelte",
+    "apps/identity-wallet/src/lib/harness/registry.ts",
+    "apps/identity-wallet/src/lib/harness/scenarios.ts",
+    "apps/identity-wallet/src/lib/harness/state.ts",
+    "apps/identity-wallet/src/lib/ipc/identity.ts",
+    "apps/identity-wallet/src/routes/+page.svelte",
+    "changelog.d/mm-461.fixed.md"
+  ],
+  "sessions": [
+    {
+      "metadata": "/38/9ab472e3f7/0/metadata.json",
+      "transcript": "/38/9ab472e3f7/0/full.jsonl",
+      "compact_transcript": "/38/9ab472e3f7/0/transcript.jsonl",
+      "content_hash": "/38/9ab472e3f7/0/content_hash.txt",
+      "prompt": "/38/9ab472e3f7/0/prompt.txt"
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 178,
+    "cache_creation_tokens": 520665,
+    "cache_read_tokens": 20116265,
+    "output_tokens": 46229,
+    "api_call_count": 95
+  }
+}

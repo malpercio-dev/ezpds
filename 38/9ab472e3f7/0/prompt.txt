@@ -1,0 +1,85 @@
+Work on Linear issue MM-461:
+
+Suggested branch name: malpercio/mm-461-wallet-secure-enclave-liveness-probe-dont-report-a-rotation
+
+<issue identifier="MM-461">
+<title>Wallet: Secure Enclave liveness probe — don't report a rotation key the enclave can't sign with</title>
+<description>
+Design: `docs/design-plans/2026-07-24-wallet-identity-durability.md` §3.
+
+## The defect
+
+On a real device the per-DID device key is Secure-Enclave-backed: the private key never leaves the
+enclave, and two ordinary generic-password items are stored beside it for lookup —
+`{did}:device-key-pub` (compressed public key) and `{did}:device-key-app-label` (the SE-assigned
+`application_label`).
+
+Those two metadata items are restorable from an encrypted Finder/iTunes backup. **The enclave key is****
+****not, and never will be.** So a device restored from an encrypted backup lands in a state where the
+metadata is present and the key behind it is absent.
+
+`get_or_create_per_did_device_key`'s SE fast path (`identity_store.rs:604-623`) treats "both metadata
+items present" as proof of key existence and returns the cached public key **without touching the****
+****enclave**. Consequence:
+
+* `getDeviceKeyId` succeeds, so `IdentityListHome` / `DIDDocumentScreen` render a valid **"root key"****
+****badge** — the wallet claims custody of `rotationKeys[0]`.
+* Every actual signing attempt then dies in `per_did_sign_closure` at the enclave lookup
+  (`identity_store.rs:805`, "SE key not found") → `SIGNING_FAILED`.
+
+The user is told they hold the top rotation key while nothing they do can sign — handle change,
+migration, endpoint repair, removal, and recovery-override all fail with an error that names the
+symptom, not the cause.
+
+## The fix
+
+In the SE branch's fast path, before reporting a key: resolve the stored `application_label` against
+the enclave (the same `ItemSearchOptions` lookup `per_did_sign_closure` already performs) and confirm
+a key reference comes back.
+
+| State | Behavior |
+| -- | -- |
+| Metadata present, key resolves | Return cached public key — unchanged |
+| Metadata present, key absent | New `IdentityStoreError::DeviceKeyUnusable` |
+| Metadata absent | Generate, as today |
+
+**Do not silently mint a fresh key** in the middle case. A new key is not in the DID's `rotationKeys`,
+so it would make the badge wrong in the opposite direction — claiming authority the DID document does
+not grant. The honest answer is a distinct error that routes the identity into the recovery ceremony,
+which mints a fresh SE key and rotates it into `rotationKeys[0]` — exactly the right destination.
+
+The probe is a Keychain query, not a signing operation, so it triggers no biometric prompt. Cache the
+verdict in-process to keep the fast path fast (one lookup per DID per launch).
+
+## Frontend
+
+`DEVICE_KEY_UNUSABLE` should render an explicit degraded state — "This device can no longer sign for
+this identity — recover to restore control" — and offer the recovery ceremony. Same honesty rule the
+rest of the wallet follows: status never by color alone, never a claim the code can't back.
+
+Leaning **wait-and-offer** rather than auto-launching the ceremony on app open: the identity is not in
+danger, only this device's control of it, and an unprompted ceremony launch would be alarming.
+
+## Definition of done
+
+- [ ] SE fast path verifies enclave residency before reporting a key
+- [ ] `DeviceKeyUnusable` variant plumbed through `IdentityStoreError` → `$lib/ipc` as
+      `DEVICE_KEY_UNUSABLE`
+- [ ] Frontend renders the degraded state and routes to recovery
+- [ ] Unit test: metadata present + enclave lookup miss ⇒ `DeviceKeyUnusable`, **not** a
+      freshly-minted key and **not** a success
+</description>
+<team name="Mal's Machinations"/>
+<label>Bug</label>
+<label>Security</label>
+<label>Wave 3: Key Sovereignty</label>
+<label>Mobile: Identity Wallet</label>
+<project name="ezpds">An easy-to-host PDS on the ATProtocol, MacOS. Grandma-approved.</project>
+<issue-relations>
+<related>
+<issue-ref identifier="MM-460" title="Wallet: Share 1 is not actually iCloud-synced — kSecAttrSynchronizable is never set"/>
+<issue-ref identifier="MM-425" title="Device transfer: identity-layer device-key rotation for a planned device switch"/>
+<issue-ref identifier="MM-462" title="Wallet: decouple the Keychain access group from the bundle ID before any org.obsign rename"/>
+</related>
+</issue-relations>
+</issue>
