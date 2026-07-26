@@ -1,8 +1,9 @@
 // pattern: Imperative Shell
 //
 // Gathers: JSON signed proof + destination server DID + current time
-// Processes: syntax/freshness/local-account checks → signature verification → authoritative PLC
-//            rotation-set lookup → atomic active-account recheck + nonce consume + full session
+// Processes: syntax/freshness/local-account checks → signature verification → authoritative
+//            signing-authority lookup (identity::authority) → atomic active-account recheck +
+//            nonce consume + full session
 // Returns: the standard full-access legacy session response
 
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -15,7 +16,7 @@ use serde::{Deserialize, Serialize};
 use crate::app::AppState;
 use crate::db::accounts::active_local_account_exists;
 use crate::db::sovereign_session_nonces::insert_nonce_if_absent;
-use crate::identity::plc::fetch_current_plc_state;
+use crate::identity::authority::{authorized_signing_keys, AuthorityError};
 use crate::session_issuer::{issue_session_in_transaction, SessionKind};
 
 const NONCE_BYTES: usize = 32;
@@ -57,16 +58,6 @@ fn decode_canonical_base64url(value: &str, expected_len: usize) -> Option<Vec<u8
     (decoded.len() == expected_len && URL_SAFE_NO_PAD.encode(&decoded) == value).then_some(decoded)
 }
 
-fn is_plc_did(value: &str) -> bool {
-    let Some(suffix) = value.strip_prefix("did:plc:") else {
-        return false;
-    };
-    suffix.len() == 24
-        && suffix
-            .bytes()
-            .all(|byte| byte.is_ascii_lowercase() || (b'2'..=b'7').contains(&byte))
-}
-
 fn unix_timestamp() -> Result<i64, ApiError> {
     let seconds = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -86,11 +77,13 @@ fn unix_timestamp() -> Result<i64, ApiError> {
     })
 }
 
-/// Exchange proof from any key in a hosted DID's authoritative current PLC rotation set for a
+/// Exchange proof from a key in a hosted DID's authoritative current signing authority for a
 /// standard full-access Custos session.
 ///
-/// A Custos-held rotation key qualifies under exactly the same PLC semantics as any other current
-/// rotation key. This grants Custos no additional hosting power over an account it already hosts.
+/// Method-agnostic: a `did:plc` account's authority is its current PLC rotation set (a Custos-held
+/// rotation key qualifies under exactly the same PLC semantics as any other, granting Custos no
+/// additional power over an account it already hosts), and a self-hosted `did:web` account's is its
+/// published `#device` key. See [`crate::identity::authority`] for the policy and its rationale.
 pub async fn create_sovereign_session(
     State(state): State<AppState>,
     Json(request): Json<SovereignSessionRequest>,
@@ -111,14 +104,6 @@ pub async fn create_sovereign_session(
             &request.signing_key,
         ));
     }
-    if !is_plc_did(&request.did) {
-        return Err(rejected(
-            "invalid_account_did",
-            &request.did,
-            &request.signing_key,
-        ));
-    }
-
     let now = unix_timestamp()?;
     if now.abs_diff(request.timestamp) > SOVEREIGN_TIMESTAMP_WINDOW_SECS as u64 {
         return Err(rejected(
@@ -155,21 +140,20 @@ pub async fn create_sovereign_session(
         )
     })?;
 
-    // rotationKeys is authoritative only in the latest non-nullified PLC audit-log operation. The
-    // locally cached W3C DID document is deliberately not consulted here.
-    let plc = fetch_current_plc_state(
-        &state.http_client,
-        &state.config.plc_directory_url,
-        &request.did,
-    )
-    .await?;
-    if !plc
-        .rotation_keys
-        .iter()
-        .any(|key| key == &request.signing_key)
-    {
+    // The account's signing authority, read live from its DID method's authoritative source — the
+    // latest non-nullified PLC audit-log operation, or the published did:web document. The locally
+    // cached W3C DID document is deliberately never consulted for either method.
+    let authority = authorized_signing_keys(&state, &request.did)
+        .await
+        .map_err(|error| match error {
+            AuthorityError::Unauthorized(reason) => {
+                rejected(reason, &request.did, &request.signing_key)
+            }
+            AuthorityError::Lookup(err) => err,
+        })?;
+    if !authority.authorizes(&request.signing_key) {
         return Err(rejected(
-            "signing_key_not_current_rotation_key",
+            "signing_key_not_authorized",
             &request.did,
             &request.signing_key,
         ));
@@ -212,7 +196,7 @@ pub async fn create_sovereign_session(
     tracing::info!(
         account_did = %request.did,
         signing_key_did = %request.signing_key,
-        plc_head = %plc.cid,
+        authority = %authority.source,
         "sovereign full-access session issued"
     );
     Ok((
@@ -596,6 +580,63 @@ mod tests {
             let body = body_json(response).await;
             assert_eq!(body["error"]["message"], REJECTION_MESSAGE);
         }
+    }
+
+    /// A Custos-hosted did:web is refused before any outbound resolution, and no nonce is spent.
+    ///
+    /// `POST /v1/did-web/document` lets an account rewrite its served document under session auth,
+    /// so admitting a hosted did:web would let a stolen session install an attacker `#device` key
+    /// and bootstrap sovereign sessions — escalation with no key compromise. The mock PLC server
+    /// mounts nothing, so `plc.verify()` also proves nothing outbound was attempted.
+    #[tokio::test]
+    async fn a_custos_hosted_did_web_account_cannot_open_a_sovereign_session() {
+        let plc = MockServer::start().await;
+        let state = state_with_plc(&plc).await;
+        let did = "did:web:example.com";
+        let key = p256_key();
+        seed_account(&state, did).await;
+        sqlx::query(
+            "UPDATE accounts SET did_web_hosting_enabled_at = datetime('now') WHERE did = ?",
+        )
+        .bind(did)
+        .execute(&state.db)
+        .await
+        .unwrap();
+
+        let response = app(state.clone())
+            .oneshot(post(proof_body(&state, &key, did, now(), 15)))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+        assert_eq!(
+            body_json(response).await["error"]["message"],
+            REJECTION_MESSAGE
+        );
+        plc.verify().await;
+        let nonces: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM sovereign_session_nonces WHERE did = ?")
+                .bind(did)
+                .fetch_one(&state.db)
+                .await
+                .unwrap();
+        assert_eq!(nonces, 0);
+    }
+
+    /// A DID method with no authority source Custos can consult shares the same opaque rejection.
+    #[tokio::test]
+    async fn an_unsupported_did_method_is_rejected() {
+        let plc = MockServer::start().await;
+        let state = state_with_plc(&plc).await;
+        let did = "did:example:not-a-supported-method";
+        let key = p256_key();
+        seed_account(&state, did).await;
+
+        let response = app(state.clone())
+            .oneshot(post(proof_body(&state, &key, did, now(), 16)))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+        plc.verify().await;
     }
 
     #[tokio::test]

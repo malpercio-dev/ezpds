@@ -7,7 +7,6 @@
   import DidWebDomainScreen from '$lib/components/onboarding/DidWebDomainScreen.svelte';
   import DidWebCeremonyScreen from '$lib/components/onboarding/DidWebCeremonyScreen.svelte';
   import DidWebMigrationReviewScreen from '$lib/components/onboarding/DidWebMigrationReviewScreen.svelte';
-  import DidWebHostingScreen from '$lib/components/onboarding/DidWebHostingScreen.svelte';
   import { didWebFromDomain, type DidWebHosting } from '$lib/did-web';
   import PdsConfigScreen from '$lib/components/onboarding/PdsConfigScreen.svelte';
   import CreateUnavailableScreen from '$lib/components/onboarding/CreateUnavailableScreen.svelte';
@@ -114,7 +113,6 @@
     | 'recovery_rebuild_progress'
     | 'migration_source_auth'
     | 'migration_progress'
-    | 'migration_hosting'
     | 'migration_review'
     | 'migration_success'
     | 'recover_start'
@@ -133,8 +131,10 @@
   // affordance. Stays false on first launch, where there is no home to return to.
   let cameFromHome = $state(false);
   let form = $state({ claimCode: '', email: '', handle: '', password: '', did: '', share3: '', share3Words: '', registeredHandle: '', handleOrDid: '' });
-  let didWebHosting = $state<DidWebHosting>('self');
-  let migrationHostingChosen = $state(false);
+  // did:web hosting is self-hosted only for now: a Custos-served did.json would be rewritable
+  // under a stolen session, which is exactly the key that authorises passwordless sign-in. The
+  // `hosting` prop and its IPC plumbing stay in place so lifting the deferral is a UI change.
+  const didWebHosting: DidWebHosting = 'self';
   let identityMethod = $state<'plc' | 'web'>('plc');
   let didWebDomain = $state('');
   // The server the user configured that turned out not to run the create ceremony, held so
@@ -490,9 +490,7 @@
     />
   {:else if step === 'did_web_path'}
     <DidWebPathScreen
-      onselect={(origin, hosting) => {
-        didWebHosting = hosting;
-        migrationHostingChosen = origin === 'existing';
+      onselect={(origin) => {
         // Existing did:web identities enter the method-agnostic migration flow. New identities
         // continue through account provisioning; the ceremony uses these levers after the PDS
         // has issued its reserved repo key.
@@ -735,8 +733,6 @@
       onmigrate={selectedDeviceKeyIsRoot === true
         ? () => {
             migrationDid = selectedDid ?? '';
-            didWebHosting = 'self';
-            migrationHostingChosen = false;
             goTo('migration_start');
           }
         : undefined}
@@ -875,7 +871,7 @@
       did={migrationDid}
       email={migrationEmail}
       inviteCode={migrationInviteCode}
-      onnext={() => goTo(migrationDid.startsWith('did:web:') && !migrationHostingChosen ? 'migration_hosting' : 'migration_review')}
+      onnext={() => goTo('migration_review')}
       onerror={() => {
         // Stay on the progress screen — it surfaces the error inline and offers Retry itself,
         // rather than rewinding. The parent has nothing to do on a per-leg failure.
@@ -900,16 +896,6 @@
         oncancel={() => goTo('identity_detail')}
       />
     {/if}
-
-  {:else if step === 'migration_hosting'}
-    <DidWebHostingScreen
-      onselect={(hosting) => {
-        didWebHosting = hosting;
-        migrationHostingChosen = true;
-        goTo('migration_review');
-      }}
-      onback={() => goTo('migration_progress')}
-    />
 
   {:else if step === 'migration_success'}
     <MigrationSuccessScreen
