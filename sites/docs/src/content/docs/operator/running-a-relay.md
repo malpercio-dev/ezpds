@@ -19,9 +19,12 @@ same source these docs stamp — so the server and its documentation cannot clai
 different versions.
 
 :::note[Status is stated, not colored]
-The operator console reports health as an explicit label — `healthy`,
-`degraded`, `down` — always paired with the metric behind it, never a bare
-colored dot. A degraded server tells you _what_ degraded.
+The operator console reports raw facts — version, uptime, counts, sweep
+last-runs — and draws no `healthy`/`degraded`/`down` verdict of its own: the
+thresholds are the operator's judgment, not the API's shape. What is wrong is
+made legible in place — a troubled background sweep carries a trailing `!` glyph
+and a named fault beside its figures, never a bare colored dot. A degraded
+server tells you _what_ degraded.
 :::
 
 <figure>
@@ -29,8 +32,13 @@ colored dot. A degraded server tells you _what_ degraded.
   <figcaption>The console's server-status readout — version, uptime, account counts, storage, firehose, and background-sweep last-runs. Facts only.</figcaption>
 </figure>
 
-On a degraded relay, the same readout flags stale background sweeps with a
-trailing glyph, so _what_ degraded is legible without relying on color.
+On a degraded relay, the same readout flags each troubled background sweep with
+a trailing `!` glyph and a named fault. A sweep whose last completed pass keeps
+ageing reads `stale` — passes have stopped completing, so the sweep is dead. One
+that completed but skipped work reads `failed <n>` — it ran, yet left `n`
+subjects undone (for blob GC, an account whose reconcile failed, whose blobs go
+uncollected until the fault is fixed). The two are named so they read apart on a
+row that has both, and _what_ degraded is legible without relying on color.
 
 <figure>
   <img src="/screenshots/admin/status-degraded.png" alt="Custos operator console server-status screen for a degraded relay, with stale background sweeps flagged by a trailing glyph" width="280" />
