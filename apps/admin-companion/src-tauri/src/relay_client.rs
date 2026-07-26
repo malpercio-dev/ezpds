@@ -1189,6 +1189,15 @@ pub struct AccountStorage {
     pub quota_bytes: i64,
     pub quota_used_pct: f64,
     pub largest_blob: Option<LargestBlob>,
+    /// The physical blob rows naming this account as their first uploader — the second
+    /// reading beside the ownership figures above, which count `blob_owners` rows.
+    ///
+    /// `None` means a relay predating the field, NOT zero. The distinction is the whole
+    /// point: a real `0` beside a nonzero `blob_count` is a fact worth reading, so
+    /// collapsing an absent field into it would invent a reading the relay never took.
+    /// Serde maps a missing field to `None` for an `Option` without a `default` attribute.
+    pub uploaded_blob_count: Option<i64>,
+    pub uploaded_blob_bytes: Option<i64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, serde::Deserialize)]
@@ -1266,6 +1275,11 @@ pub struct AccountListEntry {
     /// for an unflagged account. Defaulted so a pre-labeler-watching relay still parses.
     #[serde(default)]
     pub flags: Vec<AccountFlag>,
+    /// Whether Custos serves this account's did:web document. The flag gates a serve path
+    /// that 404s indistinguishably from an unknown host when off, so it is what tells
+    /// "not hosted" apart from "broken". `None` on a relay predating the field — which
+    /// must not read as `false`, the very answer the operator came here to trust.
+    pub did_web_hosting: Option<bool>,
 }
 
 /// One in-force label on an account, as observed by the relay from a watched labeler.
@@ -1319,6 +1333,17 @@ pub struct HealthStorage {
     pub blob_count: i64,
     pub blob_bytes: i64,
     pub block_count: i64,
+    /// Stored blob rows no account claims, and their bytes. The relay expects ~0: GC drops
+    /// a physical row together with its last owner, so a row is unowned only between two
+    /// statements. A standing figure means the bytes survived and the ownership rows did
+    /// not — the fault a stale `blob_gc.completed_at` cannot express, because it fires
+    /// while the sweep is still running on schedule.
+    ///
+    /// `None` is "a relay too old to report this", never zero — and here that gap matters
+    /// more than anywhere else, since `0` is the healthy baseline the screen calls an
+    /// all-clear. Serde reads a missing field as `None` for an `Option`.
+    pub blob_unowned_count: Option<i64>,
+    pub blob_unowned_bytes: Option<i64>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, serde::Deserialize)]
@@ -2960,12 +2985,18 @@ mod tests {
                 "totalBytes": 1000,
                 "quotaBytes": 1073741824,
                 "quotaUsedPct": 0.0000931,
-                "largestBlob": { "cid": "bafblobbig", "size": 900 }
+                "largestBlob": { "cid": "bafblobbig", "size": 900 },
+                "uploadedBlobCount": 5,
+                "uploadedBlobBytes": 4096
             }"#,
         )
         .expect("storage deserializes");
         assert_eq!(storage.blob_count, 2);
         assert_eq!(storage.quota_bytes, 1_073_741_824);
+        // The uploader reading is independent of the ownership reading — content-addressed
+        // blobs are shared, so the two legitimately disagree in both directions.
+        assert_eq!(storage.uploaded_blob_count, Some(5));
+        assert_eq!(storage.uploaded_blob_bytes, Some(4096));
         assert_eq!(
             storage.largest_blob,
             Some(LargestBlob {
@@ -2988,6 +3019,15 @@ mod tests {
         assert_eq!(empty.largest_blob, None);
         let value = serde_json::to_value(&empty).expect("serialize");
         assert_eq!(value.get("largestBlob").unwrap(), &serde_json::Value::Null);
+        // A relay predating the uploader metrics omits both fields. They must arrive as
+        // `None` — "not reported" — and never as a `0` the screen would render as a real
+        // reading of "this account uploaded nothing".
+        assert_eq!(empty.uploaded_blob_count, None);
+        assert_eq!(empty.uploaded_blob_bytes, None);
+        assert_eq!(
+            value.get("uploadedBlobCount").unwrap(),
+            &serde_json::Value::Null
+        );
     }
 
     // Pins the wrapper envelopes around `AdminDevice` — `{"devices":[…]}` for the list
@@ -3132,6 +3172,7 @@ mod tests {
                 "status": "active",
                 "totalBytes": 42000,
                 "quotaUsedPct": 4.2,
+                "didWebHosting": true,
                 "flags": [{
                     "val": "spam",
                     "labelerDid": "did:plc:labeler",
@@ -3144,6 +3185,7 @@ mod tests {
                 "status": "takendown",
                 "totalBytes": 0,
                 "quotaUsedPct": 0.0,
+                "didWebHosting": false,
                 "flags": []
             }],
             "quotaBytes": 1000000,
@@ -3163,6 +3205,7 @@ mod tests {
                 status: "active".to_string(),
                 total_bytes: 42_000,
                 quota_used_pct: 4.2,
+                did_web_hosting: Some(true),
                 flags: vec![AccountFlag {
                     val: "spam".to_string(),
                     labeler_did: "did:plc:labeler".to_string(),
@@ -3191,6 +3234,10 @@ mod tests {
         assert_eq!(last_page.cursor, None);
         assert_eq!(last_page.flagged_total, 0);
         assert!(last_page.accounts[0].flags.is_empty());
+        // That same older relay omits `didWebHosting`. `None` must not collapse into
+        // `Some(false)`: the flag exists to tell "not hosted" apart from "broken", and a
+        // fabricated `false` would answer that question wrongly with full confidence.
+        assert_eq!(last_page.accounts[0].did_web_hosting, None);
 
         // And it re-serializes camelCase for IPC — the frontend sees the relay's names.
         let value = serde_json::to_value(&list).expect("serialize");
@@ -3213,7 +3260,7 @@ mod tests {
             "version": "0.4.1",
             "uptimeSeconds": 86400,
             "accounts": {"total": 5, "active": 3, "deactivated": 1, "suspended": 1, "takendown": 0, "flagged": 2},
-            "storage": {"blobCount": 12, "blobBytes": 345678, "blockCount": 900},
+            "storage": {"blobCount": 12, "blobBytes": 345678, "blockCount": 900, "blobUnownedCount": 2, "blobUnownedBytes": 4096},
             "firehose": {"currentSeq": 42, "subscribers": 2, "retainedEvents": 40, "backfillWindowSeconds": 3600},
             "sweeps": {
                 "blobGc": {"completedAt": 1750000000, "swept": 7, "errors": 2},
@@ -3236,6 +3283,18 @@ mod tests {
         .expect("deserialize pre-flag accounts");
         assert_eq!(old_accounts.flagged, 0);
         assert_eq!(health.storage.blob_bytes, 345_678);
+        assert_eq!(health.storage.blob_unowned_count, Some(2));
+        assert_eq!(health.storage.blob_unowned_bytes, Some(4_096));
+
+        // A relay predating the unowned-blob pair omits both. `None` is the only honest
+        // reading: `Some(0)` is this readout's all-clear, and an old relay has not
+        // cleared anything — it simply cannot see the condition.
+        let old_storage: HealthStorage =
+            serde_json::from_str(r#"{"blobCount": 1, "blobBytes": 2, "blockCount": 3}"#)
+                .expect("deserialize pre-unowned-pair storage");
+        assert_eq!(old_storage.blob_unowned_count, None);
+        assert_eq!(old_storage.blob_unowned_bytes, None);
+
         assert_eq!(health.firehose.current_seq, 42);
         assert_eq!(health.firehose.backfill_window_seconds, Some(3_600));
         assert_eq!(

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { formatBackfillWindow, formatDuration, sweepLine } from './health';
+import { formatBackfillWindow, formatDuration, sweepLine, unownedBlobLine } from './health';
 
 describe('formatDuration', () => {
   it('renders sub-minute durations as bare seconds', () => {
@@ -96,5 +96,53 @@ describe('sweepLine', () => {
     expect(both.match(/!/g)).toHaveLength(1);
     // A healthy line stays unmarked, so the glyph means something.
     expect(sweepLine({ completedAt: NOW - 30, swept: 0, errors: 0 }, NOW)).not.toContain('!');
+  });
+});
+
+describe('unownedBlobLine', () => {
+  // ~0 is the real baseline, not a tuned threshold: GC drops a physical row together
+  // with its last owner, so a row is unowned only between two statements.
+  it('reports a real zero as the all-clear, unmarked', () => {
+    expect(unownedBlobLine(0, 0)).toEqual({ line: 'none', alarm: false });
+  });
+
+  it('names the condition in words and marks a standing population', () => {
+    expect(unownedBlobLine(2, 4096)).toEqual({
+      line: '2 · 4.0 KiB (4096 B) · ownership lost !',
+      alarm: true,
+    });
+  });
+
+  // The distinction this whole readout turns on. Unlike the sweep `errors` field — where
+  // a missing value could safely default to 0, "no failures" — 0 HERE is the all-clear,
+  // so defaulting an absent field to it would fabricate an all-clear an old relay never
+  // gave. "not reported" is the only honest reading.
+  it('never collapses an unreported pair into the reported all-clear', () => {
+    const unreported = unownedBlobLine(null, null);
+    expect(unreported).toEqual({ line: 'not reported', alarm: false });
+    expect(unreported.line).not.toBe(unownedBlobLine(0, 0).line);
+  });
+
+  it('treats a half-reported pair as unanswered — a half-answer is no answer', () => {
+    expect(unownedBlobLine(2, null).line).toBe('not reported');
+    expect(unownedBlobLine(null, 4096).line).toBe('not reported');
+  });
+
+  // An unanswerable question is not an alarm: raising one on every older relay would
+  // train the operator to dismiss the row that actually matters.
+  it('raises the alarm only for a reported, standing population', () => {
+    expect(unownedBlobLine(null, null).alarm).toBe(false);
+    expect(unownedBlobLine(0, 0).alarm).toBe(false);
+    expect(unownedBlobLine(1, 10).alarm).toBe(true);
+  });
+
+  // Status is text + glyph + position, never color (AAA) — and the glyph means something
+  // only if the quiet states stay unmarked.
+  it('carries the state as text and marks the line exactly once', () => {
+    const alarming = unownedBlobLine(7, 900_000).line;
+    expect(alarming).toContain('ownership lost');
+    expect(alarming.match(/!/g)).toHaveLength(1);
+    expect(unownedBlobLine(0, 0).line).not.toContain('!');
+    expect(unownedBlobLine(null, null).line).not.toContain('!');
   });
 });

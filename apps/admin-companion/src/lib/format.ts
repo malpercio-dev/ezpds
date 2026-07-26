@@ -39,6 +39,43 @@ export function formatPct(pct: number): string {
 }
 
 /**
+ * The account-detail panel's uploader reading: the physical blob rows naming this account
+ * as their first uploader, beside the ownership figures the rest of the panel reports.
+ *
+ * Deliberately verdict-free — this is a *second reading*, not a warning. Blobs are
+ * content-addressed and shared, so owned-not-uploaded and uploaded-not-owned both happen
+ * in ordinary operation; a badge on that benign divergence would teach the operator to
+ * ignore the badge. The two lines sit side by side and the operator draws the conclusion.
+ *
+ * `null` (either half) is "the relay didn't report this", never zero — a reported zero
+ * beside a nonzero owned count is itself a reading worth having.
+ */
+export function uploadedBlobsLine(count: number | null, bytes: number | null): string {
+  if (count === null || bytes === null) return 'not reported';
+  return `${count} · ${formatBytes(bytes)}`;
+}
+
+/**
+ * The account row's did:web hosting indicator: whether Custos serves this account's DID
+ * document.
+ *
+ * Returns `null` — render nothing — for a did:plc account, where the question does not
+ * arise: its document lives on plc.directory and the flag is always false. Printing
+ * "not served here" on every did:plc row would be true, useless, and would bury the rows
+ * where the answer means something.
+ *
+ * For a did:web account the flag is the whole point: the serve path 404s
+ * indistinguishably from an unknown host when hosting is off, so the console is the only
+ * place that can tell "not hosted" apart from "broken". `null` hosting therefore has to
+ * say "not reported" and not guess.
+ */
+export function didWebHostingLine(did: string, hosting: boolean | null): string | null {
+  if (!did.startsWith('did:web:')) return null;
+  if (hosting === null) return 'hosting: not reported';
+  return hosting ? 'hosting: served here' : 'hosting: not served here';
+}
+
+/**
  * The account list's per-row blob-quota readout: a fixed-width, 5-cell text meter
  * followed by the literal percentage, e.g. `[▓▓░░░] 42.00%`, with a trailing ` !`
  * marker at ≥90% — `[▓▓▓▓▓] 95.10% !`.

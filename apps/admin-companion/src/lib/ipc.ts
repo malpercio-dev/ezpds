@@ -221,6 +221,19 @@ export interface AccountStorage {
   quotaBytes: number;
   quotaUsedPct: number;
   largestBlob: { cid: string; size: number } | null;
+  /**
+   * Physical blob rows naming this account as their first uploader, and their bytes — a
+   * second reading beside the ownership figures above, which count the account's
+   * `blob_owners` rows.
+   *
+   * Not a fault channel. Blobs are content-addressed and shared, so owned-not-uploaded
+   * and uploaded-not-owned both occur in normal operation; the pair is worth reading
+   * together, not comparing for equality.
+   *
+   * `null` means the relay is too old to report it — never zero, which is a real reading.
+   */
+  uploadedBlobCount: number | null;
+  uploadedBlobBytes: number | null;
 }
 
 /**
@@ -267,6 +280,22 @@ export interface ServerHealth {
     blobCount: number;
     blobBytes: number;
     blockCount: number;
+    /**
+     * Stored blob rows no account claims, and their bytes. ~0 is the real baseline: GC
+     * drops a physical row together with its last owner, so a row is unowned only between
+     * two statements. A standing figure means the bytes are intact and the ownership rows
+     * are gone.
+     *
+     * The one genuinely alertable figure on this readout, and the one that needs no
+     * threshold tuning. Unlike a stale `sweeps.blobGc.completedAt`, it fires while the
+     * sweep is still running on schedule — the exact condition that once kept a real loss
+     * invisible for six hours.
+     *
+     * `null` means the relay predates the field. That must not read as the all-clear that
+     * a reported `0` is; see `$lib/health`'s `unownedBlobLine`.
+     */
+    blobUnownedCount: number | null;
+    blobUnownedBytes: number | null;
   };
   firehose: {
     /** Highest sequenced event; 0 before the first event ever. */
@@ -402,6 +431,16 @@ export interface AccountListEntry {
   status: 'active' | 'deactivated' | 'suspended' | 'takendown';
   totalBytes: number;
   quotaUsedPct: number;
+  /**
+   * Whether Custos serves this account's did:web document. The flag gates a serve path
+   * that 404s indistinguishably from an unknown host when off, so its value is telling
+   * "not hosted" apart from "broken". Always false for a did:plc account, whose document
+   * lives on plc.directory.
+   *
+   * `null` on a relay predating the field — which must not render as `false`, the very
+   * answer the operator opened the row to trust.
+   */
+  didWebHosting: boolean | null;
   /**
    * Labels currently in force from the relay's watched labelers, newest first.
    * Empty for an unflagged account (and always empty when labeler watching is off).

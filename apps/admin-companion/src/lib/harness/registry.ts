@@ -204,6 +204,11 @@ export function buildRegistry(state: AdminState): Registry {
         quotaBytes,
         quotaUsedPct: Math.round((totalBytes / quotaBytes) * 100),
         largestBlob: { cid: `bafyharness${hashToken(did)}`, size: Math.floor(totalBytes / 3) },
+        // Deliberately NOT equal to the owned figures: blobs are content-addressed and
+        // shared, so the two readings diverge in ordinary operation and the panel has to
+        // render that calmly rather than as a discrepancy.
+        uploadedBlobCount: 1 + (hashInt(did) % 24),
+        uploadedBlobBytes: Math.floor(totalBytes * 0.8),
       };
     },
 

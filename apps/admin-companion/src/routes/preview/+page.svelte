@@ -194,6 +194,35 @@
         status="takendown"
         quota="[▓▓▓▓▓] 95.10% !"
       />
+      <!-- The three did:web hosting readings. The did:plc rows above carry no hosting
+           line at all — the question doesn't arise for them. -->
+      <div class="divider"></div>
+      <AccountRow
+        did="did:web:hosted.example"
+        handle="hosted.example"
+        status="active"
+        quota="[▓░░░░] 8.00%"
+        didWebHosting={true}
+        onclick={() => {}}
+      />
+      <div class="divider"></div>
+      <AccountRow
+        did="did:web:elsewhere.example"
+        handle="elsewhere.example"
+        status="active"
+        quota="[▓░░░░] 6.00%"
+        didWebHosting={false}
+        onclick={() => {}}
+      />
+      <div class="divider"></div>
+      <AccountRow
+        did="did:web:oldrelay.example"
+        handle="oldrelay.example"
+        status="active"
+        quota="[▓░░░░] 5.00%"
+        didWebHosting={null}
+        onclick={() => {}}
+      />
     </div>
   </section>
 

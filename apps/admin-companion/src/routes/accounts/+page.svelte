@@ -219,6 +219,7 @@
                 status={entry.status}
                 quota={quotaBar(entry.quotaUsedPct)}
                 flags={entry.flags}
+                didWebHosting={entry.didWebHosting}
                 onclick={() => openAccount(entry)}
               />
             </li>
