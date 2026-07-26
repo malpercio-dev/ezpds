@@ -1063,6 +1063,32 @@ pub async fn run_recovery_epilogue(
     epilogue_impl(state.pds_client(), skip_escrow.unwrap_or(false)).await
 }
 
+/// Does the recovered identity's current host actually offer escrow?
+///
+/// A self-held identity (the escrow-less kit, or any account on a spec-compliant non-Custos
+/// PDS) has no `/v1/recovery/escrow-share` route to deposit into. Attempting it there fails the
+/// epilogue on a leg that was never going to succeed, stranding the resumable record and
+/// blocking the Share 1 write that follows — so the epilogue reads the host's advertised
+/// capabilities and skips the leg as a fact about the server rather than a failure.
+///
+/// A host that could NOT be asked (`reached == false`) is deliberately not skipped: that is a
+/// transient outage, and silently dropping the escrow leg because the network blinked would
+/// quietly downgrade a Custos account's recovery posture. The deposit is attempted, and its own
+/// failure is retryable.
+async fn host_offers_escrow(pds: &PdsClient, did: &str) -> Result<bool, ShareRecoveryError> {
+    let current = fetch_current_state(pds, did).await?;
+    let Some(pds_url) = current
+        .services
+        .get("atproto_pds")
+        .map(|service| service.endpoint.clone())
+        .filter(|endpoint| !endpoint.is_empty())
+    else {
+        return Ok(false);
+    };
+    let capabilities = crate::pds_capabilities::probe(pds, &pds_url).await;
+    Ok(!capabilities.reached || capabilities.escrow())
+}
+
 pub(crate) async fn epilogue_impl(
     pds: &PdsClient,
     skip_escrow: bool,
@@ -1126,7 +1152,7 @@ pub(crate) async fn epilogue_impl(
     // PDS contact of the fully-sovereign path; skipping it records an explicit
     // opt-out rather than silently losing the escrow leg.
     if !record.escrow_deposited && !record.escrow_skipped {
-        if skip_escrow {
+        if skip_escrow || !host_offers_escrow(pds, &record.did).await? {
             record.escrow_skipped = true;
             save_epilogue(&record)?;
         } else {
@@ -1727,6 +1753,18 @@ mod tests {
     /// Register the identity + device key and stage an epilogue, returning the plc
     /// mock preloaded with the swap-op surface.
     fn stage_for_epilogue(recovery_key: &str) -> (MockServer, String) {
+        stage_for_epilogue_hosted_at(recovery_key, None)
+    }
+
+    /// Stage an epilogue whose DID document points at `host` (default: the plc mock itself,
+    /// which answers no `describeServer` — so the capability probe reports "could not ask" and
+    /// the escrow leg is attempted, the historical behavior — and, unlike a public hostname,
+    /// resolves nothing over the network).
+    fn stage_for_epilogue_hosted_at(
+        recovery_key: &str,
+        host: Option<&str>,
+    ) -> (MockServer, String) {
+        crate::pds_capabilities::clear_for_test();
         let store = IdentityStore;
         store.add_identity(DID).unwrap();
         let device = store.get_or_create_device_key(DID).unwrap();
@@ -1735,7 +1773,7 @@ mod tests {
         let plc = MockServer::start();
         let audit = audit_log_json(
             &[device.key_id.as_str(), recovery_key, "did:key:zPds"],
-            "https://pds.example.com",
+            host.unwrap_or(&plc.base_url()),
             "bafyprev3",
         );
         plc.mock(|when, then| {
@@ -1850,5 +1888,60 @@ mod tests {
         assert!(result.escrow_deposited);
         assert!(!result.escrow_skipped);
         assert_eq!(deposit.calls(), 1, "the NEW Share 2 must be re-escrowed");
+    }
+
+    /// A self-held identity on a spec-compliant non-Custos host has no escrow route. The
+    /// epilogue must read that off the host's advertised capabilities and skip the leg as a
+    /// fact — not attempt a deposit that fails and strands the resumable record short of the
+    /// Share 1 write.
+    #[tokio::test]
+    async fn epilogue_skips_reescrow_on_a_host_without_the_escrow_capability() {
+        crate::keychain::clear_for_test();
+        let host = MockServer::start();
+        let describe = host.mock(|when, then| {
+            when.method(httpmock::Method::GET)
+                .path("/xrpc/com.atproto.server.describeServer");
+            // A strictly spec-conformant answer: no `custos` object at all.
+            then.status(200).json_body(serde_json::json!({
+                "did": "did:web:foreign.example",
+                "availableUserDomains": [".foreign.example"],
+            }));
+        });
+
+        let (_, old_recovery_key) = make_split(0xcccc_cccc);
+        let (plc, _) = stage_for_epilogue_hosted_at(&old_recovery_key, Some(&host.base_url()));
+        plc.mock(|when, then| {
+            when.method(httpmock::Method::POST).path(format!("/{DID}"));
+            then.status(200).json_body(serde_json::json!({}));
+        });
+        // A live, unexpired session record exists — so the skip is decided by the host's
+        // capabilities, not by the absence of a session to deposit with.
+        IdentityStore
+            .store_oauth_tokens(
+                DID,
+                &crate::identity_store::SovereignTokenRecord {
+                    version: crate::identity_store::SovereignTokenRecord::VERSION,
+                    access_jwt: "test-access".to_string(),
+                    refresh_jwt: "test-refresh".to_string(),
+                    pds_url: host.base_url(),
+                    server_did: "did:web:foreign.example".to_string(),
+                    access_expires_at: Some(u64::MAX),
+                    refresh_expires_at: Some(u64::MAX),
+                    stored_at: 0,
+                },
+            )
+            .unwrap();
+
+        let result = epilogue_impl(&PdsClient::new_for_test(plc.base_url()), false)
+            .await
+            .unwrap();
+        assert!(result.escrow_skipped, "no escrow route means no escrow leg");
+        assert!(!result.escrow_deposited);
+        assert!(describe.calls() >= 1, "the host must actually be asked");
+
+        // The skip is not a stall: the epilogue ran to completion and Share 1 is durable, so
+        // the recovered identity ends fully re-anchored on shares it holds itself.
+        assert!(!result.share3_words.is_empty());
+        assert!(!crate::rekey::read_share1_synced(DID).unwrap().is_empty());
     }
 }

@@ -55,6 +55,8 @@ import type {
   DidWebPreparation,
   RekeyPreview,
   RekeyResult,
+  SelfHeldKitPreview,
+  SelfHeldKitResult,
 } from '$lib/ipc';
 import {
   DEFAULT_PDS_URL,
@@ -83,6 +85,18 @@ export type Handler = (args: Record<string, unknown>) => unknown | Promise<unkno
  */
 const HARNESS_SHARE3_ENVELOPE =
   'HARNESSSHARETHREEB2C3D4E5F6G7A2B3C4D5E6F7HARNESSQ2R3S4T5U6V7W2X3Y4Z5';
+/** Share 2's harness envelope, distinct from Share 3's so the two-share backup screen can be
+ *  read at a glance (and a screen that rendered one share twice would be visibly wrong). */
+const HARNESS_SHARE2_ENVELOPE =
+  'HARNESSSHARETWOAB2C3D4E5F6G7A2B3C4D5E6F7HARNESSQ2R3S4T5U6V7W2X3Y4Z56';
+const HARNESS_SHARE2_WORDS = [
+  'beacon', 'cobalt', 'dahlia', 'elm', 'fjord', 'gable', 'hazel',
+  'indigo', 'jetty', 'kelp', 'lichen', 'mica', 'nectar', 'obsidian',
+  'plume', 'quartz', 'rune', 'sable', 'thicket', 'umber', 'vellum',
+  'willow', 'xenon', 'yarrow', 'zenith', 'amber', 'birch', 'cinder',
+  'dune', 'estuary', 'flint', 'grove', 'harrow', 'inlet', 'jade',
+  'kiln', 'loam', 'mesa', 'nimbus', 'onyx', 'pollen', 'quiver',
+].join(' ');
 const HARNESS_SHARE3_WORDS = [
   'anchor', 'baker', 'canyon', 'delta', 'ember', 'falcon', 'garnet',
   'harbor', 'island', 'jasper', 'kettle', 'lantern', 'meadow', 'nickel',
@@ -190,6 +204,12 @@ export type CommandName =
   | 'submit_rekey_cmd'
   | 'confirm_rekey_cmd'
   | 'rekey_in_progress_cmd'
+  // self-held-kit.ts
+  | 'build_self_held_kit_cmd'
+  | 'submit_self_held_kit_cmd'
+  | 'confirm_self_held_kit_cmd'
+  | 'self_held_kit_in_progress_cmd'
+  | 'self_held_kit_escrow_offer_cmd'
   // agents.ts
   | 'list_agents'
   | 'revoke_agent'
@@ -960,6 +980,74 @@ export function buildRegistry(state: WalletState): Registry {
     rekey_in_progress_cmd: (args): boolean => {
       const identity = findIdentity(state, didArg(args));
       return Boolean(identity?.rekeyStagedRecoveryKey);
+    },
+
+    // ── self-held Shamir kit (escrow-less recovery key, MM-456) ──────────────
+    build_self_held_kit_cmd: (args): SelfHeldKitPreview => {
+      const did = didArg(args);
+      const identity = findIdentity(state, did);
+      if (!identity) throw { code: 'IDENTITY_NOT_FOUND', message: 'identity not found' };
+      if (did.startsWith('did:web:')) throw { code: 'NOT_DID_PLC' };
+      const recoveryKey = fakeRecoveryKeyId(did);
+      // Resumable: a kit already in flight is always allowed. A fresh one needs the device key
+      // at [0] and a host with no escrow route — mirroring the Rust precheck exactly, so the
+      // harness can reproduce both refusals.
+      if (!identity.selfHeldKitStagedRecoveryKey) {
+        if (identity.rotationKeys[0] !== identity.deviceKeyId) {
+          throw { code: 'WALLET_NOT_AUTHORIZED' };
+        }
+        if (state.pdsCapabilities.capabilities.includes('escrow')) {
+          throw { code: 'HOST_OFFERS_ESCROW' };
+        }
+      }
+      identity.selfHeldKitStagedRecoveryKey = recoveryKey;
+      return {
+        diff: {
+          addedKeys: [recoveryKey],
+          removedKeys: [],
+          changedServices: [],
+          prevCid: 'bafyharnesskitprev',
+        },
+        recoveryKeyId: recoveryKey,
+        pdsUrl: identity.pdsUrl,
+      };
+    },
+    submit_self_held_kit_cmd: (args): SelfHeldKitResult => {
+      const did = didArg(args);
+      const identity = findIdentity(state, did);
+      if (!identity) throw { code: 'IDENTITY_NOT_FOUND', message: 'identity not found' };
+      if (did.startsWith('did:web:')) throw { code: 'NOT_DID_PLC' };
+      const recoveryKey = identity.selfHeldKitStagedRecoveryKey ?? fakeRecoveryKeyId(did);
+      identity.selfHeldKitStagedRecoveryKey = recoveryKey;
+      // Additively insert the recovery key at [1], shifting the whole claimed tail down —
+      // idempotent, so a resumed submit whose op already landed changes nothing.
+      if (!identity.rotationKeys.includes(recoveryKey)) {
+        const [device, ...rest] = identity.rotationKeys;
+        identity.rotationKeys = [device, recoveryKey, ...rest];
+      }
+      identity.selfHeldKitInstalled = true;
+      return {
+        updatedDidDoc: makeDidDoc(identity),
+        share2: HARNESS_SHARE2_ENVELOPE,
+        share2Words: HARNESS_SHARE2_WORDS,
+        share3: HARNESS_SHARE3_ENVELOPE,
+        share3Words: HARNESS_SHARE3_WORDS,
+      };
+    },
+    confirm_self_held_kit_cmd: (args) => {
+      const identity = findIdentity(state, didArg(args));
+      if (identity) identity.selfHeldKitStagedRecoveryKey = null;
+      return null;
+    },
+    self_held_kit_in_progress_cmd: (args): boolean => {
+      const identity = findIdentity(state, didArg(args));
+      return Boolean(identity?.selfHeldKitStagedRecoveryKey);
+    },
+    self_held_kit_escrow_offer_cmd: (args): boolean => {
+      const identity = findIdentity(state, didArg(args));
+      return Boolean(
+        identity?.selfHeldKitInstalled && state.pdsCapabilities.capabilities.includes('escrow')
+      );
     },
 
     // ── agents ───────────────────────────────────────────────────────────────

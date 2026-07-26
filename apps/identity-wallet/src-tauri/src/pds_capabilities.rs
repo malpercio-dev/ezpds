@@ -179,6 +179,16 @@ pub fn cached(pds_url: &str) -> Option<ServerCapabilities> {
         .and_then(|cache| cache.get(&host_key(pds_url)).cloned())
 }
 
+/// Drop every cached answer. Tests share one process (and httpmock reuses server ports across
+/// tests), so a verdict recorded for one test's mock host can otherwise be read by a later test
+/// that happens to be handed the same address.
+#[cfg(test)]
+pub fn clear_for_test() {
+    if let Ok(mut cache) = cache().lock() {
+        cache.clear();
+    }
+}
+
 /// Drop a host's cached answer, forcing the next [`probe`] to re-ask. Called when the user
 /// re-points the wallet at a PDS, so a re-configured (or newly reachable) host is re-read.
 pub fn forget(pds_url: &str) {

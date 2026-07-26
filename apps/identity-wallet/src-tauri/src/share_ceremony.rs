@@ -48,6 +48,17 @@ fn rekey_staging_account(did: &str) -> String {
     format!("rekey-staging:{did}")
 }
 
+/// Keychain account for an in-flight *self-held kit* share set, scoped per DID.
+///
+/// A distinct slot from the re-key's, not a shared one, for the same reason the re-key's is
+/// distinct from the create ceremony's: the two flows differ in what they do with Share 2 (the
+/// re-key escrows it; the kit hands it to the user), so a set staged for one must never be
+/// picked up and completed by the other. The per-DID scoping carries the same load-bearing
+/// safety — one identity's kit can never overwrite or orphan another's.
+fn self_held_kit_staging_account(did: &str) -> String {
+    format!("self-held-kit-staging:{did}")
+}
+
 /// Bumped only on a breaking staging-record format change; a mismatched version
 /// reads as corrupt and fails closed (`StagingCorrupt`).
 const STAGING_VERSION: u32 = 1;
@@ -79,8 +90,13 @@ pub struct CeremonyShareSet {
     /// Base32 v2 envelope of Share 1 — written to the durable per-DID `recovery-share-1:{did}`
     /// slot after promotion.
     pub share1: Zeroizing<String>,
-    /// Base32 v2 envelope of Share 2 — the escrow deposit sent to Custos.
+    /// Base32 v2 envelope of Share 2 — the escrow deposit sent to Custos on the ceremony and
+    /// re-key paths, or the user's second self-held copy in the escrow-less self-held kit.
     pub share2: Zeroizing<String>,
+    /// Share 2 rendered as the BIP-39-style word phrase (identical bytes). Unused where Share 2
+    /// is escrowed — a machine deposit needs no human rendering — and the primary display form
+    /// where the user holds it.
+    pub share2_words: Zeroizing<String>,
     /// Base32 v2 envelope of Share 3 — the user's manual-backup copy (QR form).
     pub share3: Zeroizing<String>,
     /// Share 3 rendered as the BIP-39-style word phrase (identical 42 bytes).
@@ -123,16 +139,29 @@ pub fn load_or_create(handle: &str, pds_url: &str) -> Result<CeremonyShareSet, S
     load_or_create_in_account(STAGING_ACCOUNT, handle, pds_url)
 }
 
+/// Load-or-create for a self-held kit: same generation/reload semantics as
+/// [`load_or_create_for_rekey`], staged in the per-DID kit slot (see
+/// [`self_held_kit_staging_account`]), and DID-discriminated for the same reason — the set can
+/// already be bound to a landed PLC op, so nothing that can change under a live identity may
+/// be allowed to look like a different ceremony.
+pub fn load_or_create_for_self_held_kit(did: &str) -> Result<CeremonyShareSet, ShareCeremonyError> {
+    load_or_create_in_account(&self_held_kit_staging_account(did), did, did)
+}
+
 /// Load-or-create for a re-key ceremony: same generation/reload semantics as
 /// [`load_or_create`], but staged in the per-DID re-key slot (see
-/// [`rekey_staging_account`]). The `(did, pds_url)` pair is the discriminator, so a
-/// resumed re-key for the same DID always reloads the identical set — a re-key never
-/// abandons a staged set the way a create ceremony does on changed inputs.
-pub fn load_or_create_for_rekey(
-    did: &str,
-    pds_url: &str,
-) -> Result<CeremonyShareSet, ShareCeremonyError> {
-    load_or_create_in_account(&rekey_staging_account(did), did, pds_url)
+/// [`rekey_staging_account`]).
+///
+/// **The DID is the only discriminator** — deliberately, and unlike the create ceremony.
+/// A create ceremony may abandon a staged set when its inputs change, because the set is not
+/// yet bound to anything; a re-key's set can already be bound to a landed PLC op and an escrow
+/// deposit. Threading the account's live PDS endpoint in as a second discriminator (as this
+/// once did) made a hosting-endpoint change between the op landing and the user's backup
+/// confirmation look like "different ceremony, regenerate" — which would install a *second*
+/// recovery key and orphan the shares for the first. The DID cannot change under an identity,
+/// so passing it twice makes the set stable for exactly as long as it must be.
+pub fn load_or_create_for_rekey(did: &str) -> Result<CeremonyShareSet, ShareCeremonyError> {
+    load_or_create_in_account(&rekey_staging_account(did), did, did)
 }
 
 /// Shared implementation: load the staged set from `account` (bound to the
@@ -162,6 +191,7 @@ fn load_or_create_in_account(
 
     let share1 = envelopes[0].encode_share();
     let share2 = envelopes[1].encode_share();
+    let share2_words = envelopes[1].encode_share_words();
     let share3 = envelopes[2].encode_share();
     let share3_words = envelopes[2].encode_share_words();
 
@@ -185,6 +215,7 @@ fn load_or_create_in_account(
         recovery_key_id: recovery.key_id.0,
         share1,
         share2,
+        share2_words,
         share3,
         share3_words,
     })
@@ -285,6 +316,7 @@ fn load_staged(
         recovery_key_id: recovery.key_id.0,
         share1: env1.encode_share(),
         share2: env2.encode_share(),
+        share2_words: env2.encode_share_words(),
         share3: env3.encode_share(),
         share3_words: env3.encode_share_words(),
     }))
@@ -299,6 +331,21 @@ pub fn clear_staging() -> Result<(), keychain::KeychainError> {
 /// Tear down the per-DID re-key staging slot. Idempotent, like [`clear_staging`].
 pub fn clear_rekey_staging(did: &str) -> Result<(), keychain::KeychainError> {
     clear_staging_account(&rekey_staging_account(did))
+}
+
+/// Tear down the per-DID self-held-kit staging slot. Idempotent, like [`clear_staging`].
+pub fn clear_self_held_kit_staging(did: &str) -> Result<(), keychain::KeychainError> {
+    clear_staging_account(&self_held_kit_staging_account(did))
+}
+
+/// Whether a per-DID self-held-kit staging slot exists — i.e. a kit was started for this DID
+/// and has not yet been confirmed/torn down. The kit surface treats this as "finish your
+/// recovery kit", which resurfaces a kit interrupted after its PLC op landed (so the identity
+/// already shows the recovery key) but before Share 1 or the user's confirmation completed. A
+/// transient keychain read error reads as "not in progress" — fail-open for a prompt is safe,
+/// since the identity is never worse off un-prompted.
+pub fn self_held_kit_staging_exists(did: &str) -> bool {
+    keychain::get_item(&self_held_kit_staging_account(did)).is_ok()
 }
 
 /// Whether a per-DID re-key staging slot exists — i.e. a re-key was started for this DID and has
@@ -450,11 +497,11 @@ mod tests {
         keychain::clear_for_test();
         // Two identities re-keying concurrently must not share a staging slot: each
         // reloads its own set, and neither abandons the other's.
-        let a = load_or_create_for_rekey(DID_A, PDS).unwrap();
-        let b = load_or_create_for_rekey(DID_B, PDS).unwrap();
+        let a = load_or_create_for_rekey(DID_A).unwrap();
+        let b = load_or_create_for_rekey(DID_B).unwrap();
         assert_ne!(*a.share2, *b.share2, "distinct DIDs get distinct sets");
 
-        let a_again = load_or_create_for_rekey(DID_A, PDS).unwrap();
+        let a_again = load_or_create_for_rekey(DID_A).unwrap();
         assert_eq!(
             *a.share2, *a_again.share2,
             "DID A's set survives DID B's re-key staging"
@@ -466,7 +513,7 @@ mod tests {
     fn rekey_staging_does_not_collide_with_create_staging() {
         keychain::clear_for_test();
         let create = load_or_create(HANDLE, PDS).unwrap();
-        let rekey = load_or_create_for_rekey(DID_A, PDS).unwrap();
+        let rekey = load_or_create_for_rekey(DID_A).unwrap();
         assert_ne!(
             *create.share2, *rekey.share2,
             "create and re-key ceremonies use independent slots"
@@ -481,10 +528,97 @@ mod tests {
         );
     }
 
+    /// The kit and the re-key stage the SAME DID in different slots. They differ in what
+    /// Share 2 is for — escrowed there, user-held here — so a set staged by one must never be
+    /// picked up and completed by the other.
+    #[test]
+    fn self_held_kit_staging_is_independent_of_the_rekey_slot() {
+        keychain::clear_for_test();
+        let rekey = load_or_create_for_rekey(DID_A).unwrap();
+        let kit = load_or_create_for_self_held_kit(DID_A).unwrap();
+        assert_ne!(
+            *rekey.share2, *kit.share2,
+            "one DID's two ceremonies must not share a staged set"
+        );
+        assert!(self_held_kit_staging_exists(DID_A));
+
+        // Tearing down the kit leaves the re-key's set intact, and vice versa.
+        clear_self_held_kit_staging(DID_A).unwrap();
+        assert!(!self_held_kit_staging_exists(DID_A));
+        assert_eq!(
+            *load_or_create_for_rekey(DID_A).unwrap().share2,
+            *rekey.share2
+        );
+    }
+
+    #[test]
+    fn self_held_kit_staging_is_scoped_per_did_and_resumes() {
+        keychain::clear_for_test();
+        let a = load_or_create_for_self_held_kit(DID_A).unwrap();
+        let b = load_or_create_for_self_held_kit(DID_B).unwrap();
+        assert_ne!(*a.share2, *b.share2, "distinct DIDs get distinct sets");
+
+        let a_again = load_or_create_for_self_held_kit(DID_A).unwrap();
+        assert_eq!(*a.share2, *a_again.share2, "a resumed kit reuses its set");
+        assert_eq!(a.recovery_key_id, a_again.recovery_key_id);
+    }
+
+    /// Share 2's word phrase must encode the identical envelope as its base32 form — the kit
+    /// hands the user both renderings of one share, and a mismatch would hand them two.
+    #[test]
+    fn share2_words_encode_the_same_envelope() {
+        keychain::clear_for_test();
+        let set = load_or_create_for_self_held_kit(DID_A).unwrap();
+        let from_base32 = crypto::ShareEnvelope::decode_share(&set.share2).unwrap();
+        let from_words = crypto::ShareEnvelope::decode_share_words(&set.share2_words).unwrap();
+        assert_eq!(from_words.index(), 2);
+        assert_eq!(from_words.set_id(), from_base32.set_id());
+        assert_eq!(*from_words.encode_share(), *set.share2);
+
+        // Shares 2 and 3 — the two the kit's user holds — reconstruct the seed on their own.
+        let env3 = crypto::ShareEnvelope::decode_share(&set.share3).unwrap();
+        let seed = crypto::combine_envelopes(&from_words, &env3).unwrap();
+        assert_eq!(
+            crypto::derive_recovery_keypair(&seed).unwrap().key_id.0,
+            set.recovery_key_id
+        );
+    }
+
+    /// The regression that motivated the DID-only discriminator: a staged set can already be
+    /// bound to a landed PLC op, so nothing that can change under a live identity — the hosting
+    /// endpoint above all, which `endpoint_repair` and migration both rewrite — may make a
+    /// resumed ceremony look like a different one. Regenerating there would install a second
+    /// recovery key and leave the user holding shares for neither.
+    #[test]
+    fn a_hosting_endpoint_change_never_abandons_a_staged_set() {
+        keychain::clear_for_test();
+        let kit = load_or_create_for_self_held_kit(DID_A).unwrap();
+        let rekey = load_or_create_for_rekey(DID_B).unwrap();
+
+        // Whatever the account's PDS endpoint does between attempts, the set is the DID's.
+        assert_eq!(
+            *load_or_create_for_self_held_kit(DID_A).unwrap().share2,
+            *kit.share2
+        );
+        assert_eq!(
+            *load_or_create_for_rekey(DID_B).unwrap().share2,
+            *rekey.share2
+        );
+    }
+
+    #[test]
+    fn clear_self_held_kit_staging_is_idempotent() {
+        keychain::clear_for_test();
+        load_or_create_for_self_held_kit(DID_A).unwrap();
+        clear_self_held_kit_staging(DID_A).unwrap();
+        assert!(!self_held_kit_staging_exists(DID_A));
+        clear_self_held_kit_staging(DID_A).unwrap();
+    }
+
     #[test]
     fn clear_rekey_staging_is_idempotent() {
         keychain::clear_for_test();
-        load_or_create_for_rekey(DID_A, PDS).unwrap();
+        load_or_create_for_rekey(DID_A).unwrap();
         clear_rekey_staging(DID_A).unwrap();
         assert!(matches!(
             keychain::get_item(&rekey_staging_account(DID_A)),

@@ -42,6 +42,7 @@
   import EndpointRepairScreen from '$lib/components/home/EndpointRepairScreen.svelte';
   import RotateRepoKeyScreen from '$lib/components/home/RotateRepoKeyScreen.svelte';
   import RekeyReviewScreen from '$lib/components/home/RekeyReviewScreen.svelte';
+  import SelfHeldKitReviewScreen from '$lib/components/home/SelfHeldKitReviewScreen.svelte';
   import AppPasswordsScreen from '$lib/components/home/AppPasswordsScreen.svelte';
   import MediaBackupScreen from '$lib/components/home/MediaBackupScreen.svelte';
   import AlertDetailScreen from '$lib/components/home/AlertDetailScreen.svelte';
@@ -51,7 +52,7 @@
   import OAuthConsentApprovalScreen from '$lib/components/home/OAuthConsentApprovalScreen.svelte';
   import SettingsScreen from '$lib/components/home/SettingsScreen.svelte';
   import RemoveIdentityScreen from '$lib/components/home/RemoveIdentityScreen.svelte';
-  import { createAccount, confirmShareBackup, confirmRekey, confirmRecoveryBackup, getPendingRecoveryEpilogue, registerCreatedIdentity, importDidWebIdentity, listIdentities, listPendingRemovals, getStoredDidDoc, checkIdentityStatus, getBlobBackupStatus, runBlobBackup, getRepoBackupStatus, runRepoBackup, isCodedError, type CreateAccountError, type OAuthError, type IdentityInfo, type VerifiedClaimOp, type ClaimResult, type RekeyResult, type UnauthorizedChange, type CollectedShare } from '$lib/ipc';
+  import { createAccount, confirmShareBackup, confirmRekey, confirmSelfHeldKit, selfHeldKitInProgress, getPdsCapabilities, confirmRecoveryBackup, getPendingRecoveryEpilogue, registerCreatedIdentity, importDidWebIdentity, listIdentities, listPendingRemovals, getStoredDidDoc, checkIdentityStatus, getBlobBackupStatus, runBlobBackup, getRepoBackupStatus, runRepoBackup, isCodedError, type CreateAccountError, type OAuthError, type IdentityInfo, type VerifiedClaimOp, type ClaimResult, type RekeyResult, type SelfHeldKitResult, type UnauthorizedChange, type CollectedShare } from '$lib/ipc';
   import { authenticateBiometric } from '$lib/biometric';
   import { normalizePlcDocToW3c, extractHandle, extractPdsFromPlcDoc } from '$lib/did-doc-utils';
   import IdentityListHome from '$lib/components/home/IdentityListHome.svelte';
@@ -93,6 +94,9 @@
     | 'rekey_review'
     | 'rekey_backup'
     | 'rekey_success'
+    | 'self_held_kit_review'
+    | 'self_held_kit_backup'
+    | 'self_held_kit_success'
     | 'app_passwords'
     | 'media_backup'
     | 'remove_identity'
@@ -174,6 +178,47 @@
   let rekeyShare3 = $state('');
   let rekeyShare3Words = $state('');
   let rekeyBackupError = $state<string | null>(null);
+
+  // ── Self-held Shamir kit (escrow-less recovery key, MM-456) ──────────────────
+  let kitDid = $state<string | null>(null);
+  let kitShare2 = $state('');
+  let kitShare2Words = $state('');
+  let kitShare3 = $state('');
+  let kitShare3Words = $state('');
+  let kitBackupError = $state<string | null>(null);
+  /**
+   * Whether the selected identity should be offered the escrow-less kit: its host answered
+   * describeServer and advertised no `escrow`, or a kit is already mid-flight (which must be
+   * finishable even if the host's answer changes underneath it).
+   *
+   * `null` while unknown, so the entry point is withheld rather than flickering in — a host
+   * that could not be asked yields `reached: false` and no offer, which is the safe direction:
+   * a Custos user wrongly offered this would land on a dead-end HOST_OFFERS_ESCROW screen.
+   */
+  let kitOfferedForSelected = $state<boolean | null>(null);
+
+  // Fired unawaited per selection, so every write is gated on the DID still being the selected
+  // one. Selecting A then B before A resolves would otherwise show B the verdict computed for A
+  // — including offering the kit on an escrow-capable host, the exact dead end the `null` state
+  // exists to prevent.
+  async function resolveKitOffer(did: string, didDoc: Record<string, unknown>) {
+    kitOfferedForSelected = null;
+    try {
+      const inProgress = await selfHeldKitInProgress(did);
+      if (did !== selectedDid) return;
+      if (inProgress) {
+        kitOfferedForSelected = true;
+        return;
+      }
+      const pdsUrl = extractPdsFromPlcDoc(didDoc);
+      if (!pdsUrl) return;
+      const capabilities = await getPdsCapabilities(pdsUrl);
+      if (did !== selectedDid) return;
+      kitOfferedForSelected = capabilities.reached && !capabilities.capabilities.includes('escrow');
+    } catch (e) {
+      console.warn('Self-held kit offer check failed:', e);
+    }
+  }
 
   let selectedRecoveryCid = $state<string | null>(null);
   let selectedRecoveryCreatedAt = $state<string | null>(null);
@@ -440,6 +485,31 @@
     step = 'rekey_success';
   }
 
+  // Mirror of confirmRekeyBackup for the escrow-less kit. The gate is the same fail-closed
+  // one — Share 1 must be durable before the staging slot (the only local home of Shares 2
+  // and 3) is destroyed — and the copy names both shares the user just saved.
+  async function confirmSelfHeldKitBackup() {
+    kitBackupError = null;
+    try {
+      await authenticateBiometric('Confirm you have saved your recovery shares');
+    } catch (e) {
+      console.warn('Self-held kit backup confirmation biometric gate rejected:', e);
+      kitBackupError = 'Authentication was cancelled. Try again to finish your backup.';
+      return;
+    }
+    try {
+      await confirmSelfHeldKit(kitDid ?? '');
+    } catch (e) {
+      console.error('Self-held kit staging teardown failed:', e);
+      kitBackupError =
+        isCodedError(e) && e.code === 'SHARE_NOT_STORED'
+          ? 'Your automatic iCloud share is not saved yet. Try again — if this keeps happening, reopen the app before continuing.'
+          : 'Could not finalize the backup. Check device storage and try again.';
+      return;
+    }
+    step = 'self_held_kit_success';
+  }
+
   // ── Finish the recovery flow ──────────────────────────────────────────────
   //
   // Mirrors confirmBackupAndContinue: the teardown destroys the last transient home
@@ -675,6 +745,7 @@
         selectedDidDoc = didDoc;
         selectedDeviceKeyIsRoot = deviceKeyIsRoot;
         selectedDeviceKeyUnusable = deviceKeyUnusable;
+        void resolveKitOffer(did, didDoc);
         goTo('identity_detail');
       }}
       onalert={(did, changes) => {
@@ -740,6 +811,15 @@
         : undefined}
       onrotatekey={selectedDeviceKeyIsRoot === true && selectedDid?.startsWith('did:plc:')
         ? () => goTo('rotate_repo_key')
+        : undefined}
+      onrecoverykit={kitOfferedForSelected === true &&
+      selectedDeviceKeyIsRoot === true &&
+      selectedDid?.startsWith('did:plc:')
+        ? () => {
+            kitDid = selectedDid ?? '';
+            kitBackupError = null;
+            goTo('self_held_kit_review');
+          }
         : undefined}
       onapppasswords={() => goTo('app_passwords')}
       onagents={() => goTo('my_agents')}
@@ -828,6 +908,43 @@
       tone="signet"
       title="Recovery key added"
       subtitle="Your identity now has a recovery key, and your new shares are safely backed up. Nothing you rely on today has changed."
+    >
+      {#snippet icon()}
+        <SealEmblem>
+          <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" /><path d="m9 11.5 2 2 4-4" /></svg>
+        </SealEmblem>
+      {/snippet}
+      <Button onclick={() => goTo('home')}>Done</Button>
+    </OnboardingShell>
+
+  {:else if step === 'self_held_kit_review'}
+    <SelfHeldKitReviewScreen
+      did={kitDid ?? ''}
+      onback={() => goTo('identity_detail')}
+      ondone={(result: SelfHeldKitResult) => {
+        kitShare2 = result.share2;
+        kitShare2Words = result.share2Words;
+        kitShare3 = result.share3;
+        kitShare3Words = result.share3Words;
+        goTo('self_held_kit_backup');
+      }}
+    />
+
+  {:else if step === 'self_held_kit_backup'}
+    <ShamirBackupScreen
+      share2={kitShare2}
+      share2Words={kitShare2Words}
+      share3={kitShare3}
+      share3Words={kitShare3Words}
+      confirmError={kitBackupError}
+      oncomplete={confirmSelfHeldKitBackup}
+    />
+
+  {:else if step === 'self_held_kit_success'}
+    <OnboardingShell
+      tone="signet"
+      title="Recovery key added"
+      subtitle="Your identity now has a recovery key, and all three shares are in your hands. Any two of them restore it — no server has to help."
     >
       {#snippet icon()}
         <SealEmblem>

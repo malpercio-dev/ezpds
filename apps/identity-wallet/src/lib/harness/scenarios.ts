@@ -31,6 +31,8 @@ export type ScenarioName =
   | 'device-key-unusable'
   | 'rekey-eligible'
   | 'rekey-mixed'
+  | 'self-held-kit'
+  | 'self-held-kit-escrow-host'
   | 'recover-escrow'
   | 'recover-sovereign'
   | 'recover-wrong-set'
@@ -278,6 +280,53 @@ export const scenarios: Record<ScenarioName, () => WalletState> = {
       state,
       seedIdentity({ handle: 'web.example.com', did: 'did:web:web.example.com' })
     );
+    return state;
+  },
+
+  /**
+   * A claimed identity on a spec-compliant non-Custos host: device key at rotationKeys[0], a
+   * longer tail than the Custos re-key's `[device, PDS]`, no recovery key, and a host that
+   * answered describeServer advertising nothing. This is the escrow-less self-held kit's whole
+   * population — the identity detail screen offers "Add a recovery key", and the backup step
+   * hands the user Shares 2 AND 3 rather than escrowing one (MM-456).
+   */
+  'self-held-kit': () => {
+    const state = emptyWalletState();
+    state.pdsUrl = 'https://bsky.social';
+    state.pdsCapabilities = { version: null, reached: true, capabilities: [] };
+    const identity = seedIdentity({
+      handle: 'alice.bsky.social',
+      pdsUrl: 'https://bsky.social',
+      recoveryKey: false,
+    });
+    // The tail a claim leaves behind: the old host's own keys, which the kit must shift down
+    // intact rather than replace. Two of them, so the array is the length `guard_rekey_op`
+    // rejects — the shape only this flow can serve.
+    identity.rotationKeys = [
+      identity.deviceKeyId,
+      'did:key:zharnessForeignPdsKey',
+      'did:key:zharnessForeignLegacyKey',
+    ];
+    upsertIdentity(state, identity);
+    return state;
+  },
+
+  /**
+   * The same identity after the kit, now hosted somewhere that DOES advertise escrow — the
+   * upsell seam's only true state. `self_held_kit_escrow_offer_cmd` answers true here and
+   * false everywhere else, and "Add a recovery key" is withheld (there is nothing to add).
+   */
+  'self-held-kit-escrow-host': () => {
+    const state = emptyWalletState();
+    state.pdsUrl = DEFAULT_PDS_URL;
+    state.pdsCapabilities = {
+      version: '0.8.5',
+      reached: true,
+      capabilities: ['createCeremony', 'escrow', 'sovereignSessions'],
+    };
+    const identity = seedIdentity({ handle: 'alice.harness.pds.local', recoveryKey: true });
+    identity.selfHeldKitInstalled = true;
+    upsertIdentity(state, identity);
     return state;
   },
 };

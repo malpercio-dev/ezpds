@@ -10,6 +10,7 @@
     onchangehandle,
     onrepairendpoint,
     onrotatekey,
+    onrecoverykit,
     onapppasswords,
     onagents,
     onsignin,
@@ -49,6 +50,14 @@
     /** Only passed for a wallet-custodied did:plc — gates the sovereign repo signing-key
      *  rotation entry point (device-key-signed key-swap op via the hosting PDS). */
     onrotatekey?: () => void;
+    /**
+     * Only passed for a wallet-custodied did:plc whose host answered describeServer and
+     * advertises no `escrow` — gates the escrow-less self-held Shamir kit (a device-key-signed
+     * PLC op inserting a derived recovery key, with all three shares held by the user). Withheld
+     * on an escrow-capable host, where the escrow-backed ceremony is the better offer, and on a
+     * host that could not be asked, so a network blink never routes anyone to a dead end.
+     */
+    onrecoverykit?: () => void;
     /** Opens the app-password surface (sign the Bluesky app into this account). */
     onapppasswords?: () => void;
     /** Opens the "My agents" surface (consent + audit + revoke) for this identity. */
@@ -238,6 +247,10 @@
 
   {#if onrotatekey}
     <button class="action" onclick={onrotatekey}>Rotate signing key</button>
+  {/if}
+
+  {#if onrecoverykit}
+    <button class="action" onclick={onrecoverykit}>Add a recovery key</button>
   {/if}
 
   {#if onapppasswords}

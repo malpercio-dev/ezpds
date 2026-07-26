@@ -125,6 +125,19 @@ export interface FakeIdentity {
    */
   rekeyStagedRecoveryKey: string | null;
   /**
+   * The staged recovery key of an in-flight escrow-less self-held kit (MM-456), or null when
+   * none is staged. Mirrors the per-DID `self-held-kit-staging:{did}` Keychain slot — a slot
+   * distinct from the re-key's, because the two flows disagree about who keeps Share 2. Set by
+   * `build_self_held_kit`, survives `submit`, cleared by `confirm`.
+   */
+  selfHeldKitStagedRecoveryKey: string | null;
+  /**
+   * Whether this identity carries a completed self-held kit — the durable
+   * `{did}:self-held-kit` marker. Drives `self_held_kit_escrow_offer_cmd`, the upsell seam
+   * that lights up only if the identity later lands on an escrow-capable host.
+   */
+  selfHeldKitInstalled: boolean;
+  /**
    * Models a device restored from an encrypted backup: the device-key metadata came back,
    * the Secure Enclave key did not. `get_device_key_id` answers DEVICE_KEY_UNUSABLE, which
    * is the only way to reach the home screen's degraded "can no longer sign" state in a
@@ -401,6 +414,8 @@ export function seedIdentity(
     blobBackup: seedBlobBackup(did),
     repoBackup: seedRepoBackup(did),
     rekeyStagedRecoveryKey: null,
+    selfHeldKitStagedRecoveryKey: null,
+    selfHeldKitInstalled: false,
     deviceKeyUnusable: opts.deviceKeyUnusable ?? false,
   };
 }
