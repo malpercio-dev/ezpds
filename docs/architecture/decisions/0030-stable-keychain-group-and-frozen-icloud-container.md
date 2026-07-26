@@ -31,12 +31,36 @@ group, would be unrecoverable through no action of their own.
 
 This has not fired. The decision exists so that it cannot.
 
-The second force is timing. Even a correct access-group change cannot be shipped in the same
-release as the rename: a user who skips that version updates straight from "items in the
-implicit legacy group" to "app that only knows the new group", which is the original failure
-with extra steps. And an iCloud container id, unlike an access group, cannot be renamed at all —
-Apple offers no migration primitive, only the option of keeping a container whose id does not
-match the bundle id.
+The second force is that **a bundle-id rename is not an update — it is a new app.** App Store
+Connect treats the bundle id as immutable for an existing app record, so `org.obsign.*` means a
+new record, a new App ID, and on-device a separate install rather than an upgrade in place.
+That reframes both addressing schemes, and it does so asymmetrically:
+
+- The **iCloud container** is addressed by a string we can declare on *both* App IDs. The same
+  container id on the new App ID resolves to the same iCloud Drive files, wholly independent of
+  what happens to the old install. It survives the app-identity change cleanly.
+- The **Keychain** is stored per-install. `$(AppIdentifierPrefix)` expands to the *Team* id, not
+  the bundle id, which is what lets a differently-named app on the same team read the old
+  items at all — but only while those items still exist on the device. That holds if the new
+  app is installed *before* the old one is deleted (the shared-access-group case working as
+  designed). Otherwise it rests on iOS retaining Keychain items after an app is deleted, which
+  is current behavior but something Apple has previously shipped a change to and reverted. That
+  is not a footing for the device key.
+
+The third force is timing, and it is now dated. Even a correct access-group change cannot ship
+in the same release as the rename: a user who skips that version goes straight from "items in
+the implicit legacy group" to "app that only knows the new group", which is the original
+failure with extra steps. A **public TestFlight is imminent**, so the population that can be
+stranded stops being hypothetical shortly. An iCloud container id, unlike an access group,
+cannot be renamed at all — Apple offers no migration primitive, only the option of keeping a
+container whose id does not match the bundle id.
+
+Note what is *not* load-bearing here. An earlier reading justified the freeze mainly by user
+harm — a user losing their backups through no action of their own. With a single user that
+argument nearly evaporates: the container is `NSUbiquitousContainerIsDocumentScopePublic`, so
+one person can migrate it by dragging a folder in Files.app. The decision does not rest on
+that, and should not, because the property that makes it right is structural rather than
+demographic.
 
 ## Decision
 
@@ -60,10 +84,22 @@ the iCloud container id permanently.**
    afterwards. An install that never updates never migrates, so there is no date at which
    dropping it becomes safe.
 4. **The iCloud container id stays `iCloud.dev.malpercio.identitywallet` forever**, including
-   after the rename, and the mismatch with the bundle id is documented rather than fixed.
+   after the rename, and the mismatch with the bundle id is documented rather than fixed. It is
+   declared on both App IDs, which is what carries the mirrors across the app-identity change;
+   the mismatch is cosmetic and invisible (the Files.app folder is named by
+   `NSUbiquitousContainerName`, already "Obsign").
 5. The rename may not ship until the access-group change has been in a released build for at
    least one full release cycle. `scripts/bundle-identity-check.sh` pins both apps' bundle ids
    so the rename cannot land as a one-line diff, and carries that checklist at its head.
+6. **This change ships before the first public TestFlight build.** A tester who joins after it
+   writes their identity material into the stable group from their first launch and never has
+   a legacy-group-only install — which is the difference between a rename that has to migrate
+   a population and one that only has to tolerate a shrinking tail. The window for making that
+   true closes when public TestFlight opens, and does not reopen.
+7. The rename, when it comes, must be sequenced as **install the new app before deleting the
+   old**, because it is a new app record rather than an upgrade. This is a release-notes and
+   onboarding obligation, not something the app can enforce; nothing may be built that depends
+   on Keychain items outliving deletion of the old install.
 
 ## Consequences
 
@@ -72,9 +108,16 @@ the iCloud container id permanently.**
   through the explicit legacy entry.
 - MM-419's notification keys get the shared access group they need; the plumbing lands once.
 - The iCloud container id will visibly disagree with the bundle id after the rename. That is
-  accepted untidiness with a documented reason — the mirrors are content-addressed and
-  re-derivable from a live PDS, but the whole point of the disaster-recovery path is the case
-  where no live PDS exists, so a silent loss is not worth the cosmetics.
+  accepted untidiness with a documented reason: keeping it is what makes the mirrors survive
+  the new app record, and it is the only one of the two schemes that survives it *without*
+  depending on the old install's local state. (Secondarily: the mirrors are content-addressed
+  and re-derivable from a live PDS, but the whole point of the disaster-recovery path is the
+  case where no live PDS exists.)
+- The two schemes now have different risk profiles under the rename, and that asymmetry should
+  drive where future effort goes. The container is settled. The Keychain leg still depends on
+  users installing the new app before deleting the old — so if the tail of legacy-group installs
+  ever looks significant at rename time, the mitigation to reach for is a longer bake or an
+  in-app prompt, not a container change.
 - **The App ID must carry Keychain Sharing for both group names**, and the App Store
   provisioning profile must be regenerated, or TestFlight signing fails with an entitlements
   mismatch — the same operational step the iCloud container needed. This is a manual portal
@@ -104,8 +147,12 @@ and orphaning exactly the items the entry exists to protect.
 
 **Ship a one-time copy from the old iCloud container to a new `iCloud.org.obsign.*` one, keeping
 the old until verified.** Rejected. It is strictly more machinery than keeping the container id,
-runs during a window when the app may be uninstalled or offline mid-copy, and buys only that the
-container id matches the bundle id. Apple explicitly permits the mismatch.
+and it runs at the worst possible moment — during a transition that is already creating a new
+app record, in a window where the copy can be interrupted by the user deleting the old app or
+going offline. It buys only that the container id matches the bundle id, a string Apple
+explicitly permits to differ and which no user ever sees. Note this was *feasible* while there
+was one user, who could migrate by hand in Files.app; it stops being feasible the moment a
+public TestFlight opens, which is why the decision is taken now rather than deferred.
 
 **Rely on the entitlement alone and skip the CI gate.** Rejected: the rename still reads as a
 one-line diff to a reviewer, and the entitlement's array order — the actual mechanism — is

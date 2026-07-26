@@ -25,8 +25,14 @@ REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
 # --- The pins -----------------------------------------------------------------------------
 #
-# Changing either value is the rename. Before you do, ALL of the following must already have
-# shipped and baked in a released build that users have had a full release cycle to install:
+# Changing either value is the rename. A rename is NOT an update: App Store Connect treats the
+# bundle id as immutable for an existing app record, so org.obsign.* means a new record, a new
+# App ID, and on-device a separate install. Users must be told to install the new app BEFORE
+# deleting the old one — that is what keeps the legacy Keychain group readable. Nothing may
+# depend on Keychain items outliving deletion of the old install.
+#
+# Before you change a pin, ALL of the following must already have shipped and baked in a
+# released build that users have had a full release cycle to install:
 #
 #   [ ] The stable Keychain access group below is declared FIRST in the app's
 #       Entitlements.ios.plist, and has been in a shipped release — so items already live
@@ -35,8 +41,11 @@ REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 #       the bundle id moves; only the explicit entry keeps pre-rename items readable.
 #   [ ] FROZEN_ICLOUD_CONTAINER stays exactly as-is. An iCloud container id cannot be renamed;
 #       Apple permits one that does not match the bundle id (ADR-0030).
-#   [ ] The App ID carries Keychain Sharing (both groups) + the iCloud container, and the App
-#       Store provisioning profile has been regenerated. Otherwise signing fails.
+#   [ ] BOTH App IDs (old and new) carry Keychain Sharing for both groups + the same iCloud
+#       container, and the App Store provisioning profile has been regenerated. Otherwise
+#       signing fails, or the new app cannot see the old app's items and backups.
+#   [ ] The release notes / onboarding tell users to install the new app before deleting the
+#       old one. The app cannot enforce this.
 #
 # A rename shipped in the same release as the access-group change strands anyone who skips
 # that version. The bake time is the point.
