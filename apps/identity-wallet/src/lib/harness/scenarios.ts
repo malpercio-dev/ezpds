@@ -92,6 +92,17 @@ export const scenarios: Record<ScenarioName, () => WalletState> = {
       state,
       seedIdentity({ handle: 'alice.harness.pds.local', deviceKeyUnusable: true })
     );
+    // The same loss on a did:web, where the ceremony does not apply: a did:web has no
+    // rotation keys to rotate into, so the card must state the domain-side remedy rather
+    // than offer a flow `start_share_recovery` refuses outright.
+    upsertIdentity(
+      state,
+      seedIdentity({
+        handle: 'web.example.com',
+        did: 'did:web:web.example.com',
+        deviceKeyUnusable: true,
+      })
+    );
     return state;
   },
 

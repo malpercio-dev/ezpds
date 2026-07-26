@@ -693,6 +693,10 @@
         // DID is prefilled rather than routed around: the user still sees which
         // identity they are recovering, and every downstream step is the ordinary,
         // already-tested flow. `cameFromHome` keeps the back path at the home list.
+        //
+        // did:plc only — `start_share_recovery` refuses any other method, so a did:web
+        // must never reach here; the card withholds the offer and states its own remedy.
+        if (!did.startsWith('did:plc:')) return;
         cameFromHome = true;
         form.handleOrDid = did;
         goTo('recover_start');
@@ -755,7 +759,7 @@
         : undefined}
       onremove={() => goTo('remove_identity')}
       deviceKeyUnusable={selectedDeviceKeyUnusable}
-      onrecover={selectedDeviceKeyUnusable
+      onrecover={selectedDeviceKeyUnusable && selectedDid?.startsWith('did:plc:')
         ? () => {
             cameFromHome = true;
             form.handleOrDid = selectedDid ?? '';

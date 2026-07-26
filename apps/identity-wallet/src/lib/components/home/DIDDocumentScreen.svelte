@@ -27,7 +27,11 @@
      * as an explanation rather than a missing feature.
      */
     deviceKeyUnusable?: boolean;
-    /** Enter the recovery ceremony — the flow that restores this device's ability to sign. */
+    /**
+     * Enter the recovery ceremony — the flow that restores this device's ability to sign.
+     * did:plc only: the ceremony rotates a fresh key into `rotationKeys[0]`, which a did:web
+     * does not have. Callers must withhold it for a did:web, which gets its own remedy above.
+     */
     onrecover?: () => void;
     /** Only passed when the device key is the DID's root rotation key — gates the
      *  wallet-authorized outbound migration entry point (ADR-0002 path 1). */
@@ -113,17 +117,36 @@
       </span>
       <div class="didweb-body">
         <p class="didweb-t">This device can no longer sign for this identity</p>
-        <p class="didweb-s">
-          Its key lived in this device's Secure Enclave, which a backup can never restore —
-          so a restored or replaced device arrives without it. <strong>The identity itself is
-          unaffected</strong>: it is intact on the public record, and your recovery shares still
-          control it. Only this device's ability to act for it is gone, which is why changing the
-          handle, migrating, and repairing the endpoint are unavailable here.
-          Recovering issues a new key on this device and installs it as the identity's top
-          rotation key.
-        </p>
-        {#if onrecover}
-          <button class="recover-btn" onclick={onrecover}>Recover this identity</button>
+        {#if isWebDid}
+          <!-- No recovery ceremony here: it works by rotating a fresh key into
+               rotationKeys[0] via a PLC operation, and a did:web has no rotation keys —
+               `start_share_recovery` refuses a non-did:plc identifier outright. The remedy
+               is the domain, the same place all of a did:web's authority comes from. -->
+          <p class="didweb-s">
+            Its key lived in this device's Secure Enclave, which a backup can never restore —
+            so a restored or replaced device arrives without it. <strong>The identity itself is
+            unaffected</strong>: it lives at your domain, and control of that domain is what
+            defends it. Only this device's ability to act for it is gone.
+          </p>
+          <p class="didweb-s">
+            A did:web has no rotation keys, so there is no recovery ceremony to run. To give
+            this device a working key again: remove the identity here (which only forgets it
+            locally — it publishes nothing), import it again to issue a fresh key, then publish
+            that key in your domain's <code>did.json</code>.
+          </p>
+        {:else}
+          <p class="didweb-s">
+            Its key lived in this device's Secure Enclave, which a backup can never restore —
+            so a restored or replaced device arrives without it. <strong>The identity itself is
+            unaffected</strong>: it is intact on the public record, and your recovery shares still
+            control it. Only this device's ability to act for it is gone, which is why changing the
+            handle, migrating, and repairing the endpoint are unavailable here.
+            Recovering issues a new key on this device and installs it as the identity's top
+            rotation key.
+          </p>
+          {#if onrecover}
+            <button class="recover-btn" onclick={onrecover}>Recover this identity</button>
+          {/if}
         {/if}
       </div>
     </div>

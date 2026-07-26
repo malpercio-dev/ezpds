@@ -234,13 +234,22 @@
    * recovery-override flow, which signs a counter-operation with this device's key —
    * the exact key that is gone. Offering it first would send the user into a flow that
    * cannot complete. Recovery restores signing, and the alert is still there afterwards.
+   *
+   * The share-recovery ceremony is structurally did:plc-only — it works by rotating a
+   * fresh key into `rotationKeys[0]` via a PLC operation, and a did:web has no rotation
+   * keys (`start_share_recovery` refuses a non-`did:plc:` identifier outright). A did:web
+   * whose key is gone therefore gets its own state rather than an offer that dead-ends —
+   * and rather than nothing, which is the very failure this whole change exists to fix.
    */
   function activeStrip(
     card: IdentityCard,
     alerts: UnauthorizedChange[] | undefined,
     rekeyOffered: boolean
-  ): 'unusable' | 'alert' | 'rekey' | null {
-    if (card.deviceKeyUnusable && onrecover) return 'unusable';
+  ): 'unusable' | 'unusable-web' | 'alert' | 'rekey' | null {
+    if (card.deviceKeyUnusable) {
+      if (isDidWeb(card.did)) return 'unusable-web';
+      if (onrecover) return 'unusable';
+    }
     if (alerts?.length) return 'alert';
     if (rekeyOffered) return 'rekey';
     return null;
@@ -292,8 +301,11 @@
             <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="11" width="18" height="10" rx="2"/><path d="M7 11V7a5 5 0 0 1 9.3-2.5"/><path d="m2 2 20 20"/></svg>
           </span>
           <span class="monitor-body">
+            <!-- "can't sign for", not "needs recovery": a did:web among these has no recovery
+                 ceremony to run, so the summary states the loss both methods share and leaves
+                 the remedy to each card, where it differs. -->
             <span class="monitor-t">
-              {unusableCount === 1 ? '1 identity needs' : `${unusableCount} identities need`} recovery on this device
+              This device can't sign for {unusableCount === 1 ? '1 identity' : `${unusableCount} identities`}
             </span>
             <span class="monitor-s">
               {#if alertCount > 0}
@@ -346,7 +358,7 @@
           {@const alerts = alertData.get(card.did)}
           {@const strip = activeStrip(card, alerts, Boolean(onrekey && rekeyEligible.get(card.did)))}
           <div class="card-group">
-          <button class="card" class:card--alert={strip === 'alert'} class:card--rekey={strip === 'rekey'} class:card--unusable={strip === 'unusable'} onclick={() => onselect(card.did, didDocs.get(card.did) ?? {}, card.deviceKeyIsRoot, card.deviceKeyUnusable)}>
+          <button class="card" class:card--alert={strip === 'alert'} class:card--rekey={strip === 'rekey'} class:card--unusable={strip === 'unusable' || strip === 'unusable-web'} onclick={() => onselect(card.did, didDocs.get(card.did) ?? {}, card.deviceKeyIsRoot, card.deviceKeyUnusable)}>
             <DIDAvatar did={card.did} handle={card.handle ?? 'Unknown'} />
             <span class="info">
               <span class="handle">{card.handle ? '@' + card.handle : 'Unknown handle'}</span>
@@ -360,6 +372,14 @@
                     <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M3 12h18"/><path d="M12 3a13 13 0 0 1 3.4 9A13 13 0 0 1 12 21a13 13 0 0 1-3.4-9A13 13 0 0 1 12 3z"/></svg>
                     did:web
                   </span>
+                  {#if card.deviceKeyUnusable}
+                    <!-- The method badge names what the identity is, not whether this device
+                         can act for it. A did:web with a dead key must say so too. -->
+                    <span class="badge badge--unusable">
+                      <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="11" width="18" height="10" rx="2"/><path d="M7 11V7a5 5 0 0 1 9.3-2.5"/><path d="m2 2 20 20"/></svg>
+                      Can't sign
+                    </span>
+                  {/if}
                 {:else if card.deviceKeyUnusable}
                   <!-- Not "Unknown" (which reads as a lookup that failed) and not "Not root"
                        (the DID document still lists this device's key first). The key is gone
@@ -400,6 +420,20 @@
               <span class="strip-body">
                 <span class="strip-t">This device can no longer sign for this identity</span>
                 <span class="strip-s">Recover to restore control</span>
+              </span>
+              <svg class="strip-chev" width="8" height="14" viewBox="0 0 11 18" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m2 1 7 8-7 8"/></svg>
+            </button>
+          {:else if strip === 'unusable-web'}
+            <!-- No ceremony to offer: a did:web has no rotation keys to rotate into. The
+                 remedy is domain-side, so this opens the identity where it is explained. -->
+            <button
+              class="unusable-strip"
+              onclick={() => onselect(card.did, didDocs.get(card.did) ?? {}, card.deviceKeyIsRoot, card.deviceKeyUnusable)}
+            >
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="11" width="18" height="10" rx="2"/><path d="M7 11V7a5 5 0 0 1 9.3-2.5"/><path d="m2 2 20 20"/></svg>
+              <span class="strip-body">
+                <span class="strip-t">This device can no longer sign for this identity</span>
+                <span class="strip-s">See what to do</span>
               </span>
               <svg class="strip-chev" width="8" height="14" viewBox="0 0 11 18" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m2 1 7 8-7 8"/></svg>
             </button>
