@@ -1,0 +1,44 @@
+Work on Linear issue MM-476:
+
+Suggested branch name: malpercio/mm-476-brass-console-render-the-blob-integrity-readout-and-didweb
+
+<issue identifier="MM-476">
+<title>Brass Console: render the blob-integrity readout and did:web hosting flag</title>
+<description>
+<issue id="e95731ec-2922-4ebe-9ec4-27c836063e28" href="https://linear.app/malpercio/issue/MM-474/blob-observability-ownership-loss-is-indistinguishable-from-byte-loss">MM-474</issue> (PR #441) added three operator readouts to the API. None of them are rendered by the admin-companion app yet, so they are JSON an operator has to curl for — which is most of the gap <issue id="e95731ec-2922-4ebe-9ec4-27c836063e28" href="https://linear.app/malpercio/issue/MM-474/blob-observability-ownership-loss-is-indistinguishable-from-byte-loss">MM-474</issue> set out to close.
+
+Same shape as the <issue id="6a22b24b-7904-49cc-b5dd-e4d5386b8b54" href="https://linear.app/malpercio/issue/MM-472/blob-gc-destroys-the-blobs-of-any-account-whose-reconcile-fails">MM-472</issue> → #439 split: the relay-side signal landed first, the console-side rendering followed separately.
+
+## The fields
+
+| Endpoint | Fields | What they mean |
+| -- | -- | -- |
+| `GET /v1/admin/health` | `storage.blobUnownedCount`, `storage.blobUnownedBytes` | Stored blobs no account claims. Expect ~0 — GC drops a physical row with its last owner, so a row is unowned only between two statements. A standing value means bytes intact, ownership gone. |
+| `GET /v1/accounts/:id/storage` | `uploadedBlobCount`, `uploadedBlobBytes` | Physical rows naming this account as uploader, beside the ownership figures. |
+| `GET /v1/admin/accounts` | `didWebHosting` | Whether Custos serves this account's did:web document. |
+
+## Suggested scope
+
+1. **Status screen** — surface `blobUnownedCount`/`Bytes` in the storage block. This one is genuinely alertable: it needs no threshold tuning (~0 is the real baseline), and unlike a stale `blobGc.completedAt` it fires while the sweep is still running on schedule — the exact condition that made the original loss invisible for six hours. Worth a distinct treatment from the ordinary blob counts, not another neutral row.
+2. **Account detail / storage** — show the uploaded figures beside the owned ones. Divergence here is **not** a fault by itself: blobs are content-addressed and shared, so owned-not-uploaded and uploaded-not-owned both occur normally. Present it as a second reading, not a warning — a red badge on benign sharing would train the operator to ignore it.
+3. **Account list/detail** — a `didWebHosting` indicator. The flag gates a serve path that 404s indistinguishably from an unknown host when off, so its value is telling "not hosted" apart from "broken".
+
+## Constraints
+
+* Brass Console brief: `apps/admin-companion/PRODUCT.md` + `DESIGN.md` (terminal-native, cool-slate/gold, monospace-forward — **not** the Obsign register). Target `/impeccable` at `apps/admin-companion` so it loads the right brief.
+* Status never by colour alone (WCAG 2.2 AAA): pair any integrity state with text + icon + position, the way the sweep rows already name `failed <n>` versus `stale`.
+* Older relays predating these fields must degrade to "not reported" rather than failing the screen — the same posture #439 took for the sweep `errors` field.
+</description>
+<team name="Mal's Machinations"/>
+<label>Wave 7: Hardening</label>
+<label>Improvement</label>
+<project name="ezpds">An easy-to-host PDS on the ATProtocol, MacOS. Grandma-approved.</project>
+<issue-relations>
+<related>
+<issue-ref identifier="MM-474" title="Blob observability: ownership loss is indistinguishable from byte loss"/>
+<issue-ref identifier="MM-472" title="blob_gc destroys the blobs of any account whose reconcile fails"/>
+</related>
+</issue-relations>
+</issue>
+
+Please open a PR linked to the linear issue when complete

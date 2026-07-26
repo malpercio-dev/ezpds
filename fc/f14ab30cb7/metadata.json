@@ -1,0 +1,41 @@
+{
+  "cli_version": "0.8.42",
+  "checkpoint_id": "fcf14ab30cb7",
+  "strategy": "manual-commit",
+  "branch": "claude/mm-476-console-blob-integrity-24246e",
+  "checkpoints_count": 1,
+  "files_touched": [
+    "apps/admin-companion/AGENTS.md",
+    "apps/admin-companion/src-tauri/src/relay_client.rs",
+    "apps/admin-companion/src/lib/components/ui/AccountRow.svelte",
+    "apps/admin-companion/src/lib/flags.test.ts",
+    "apps/admin-companion/src/lib/format.test.ts",
+    "apps/admin-companion/src/lib/format.ts",
+    "apps/admin-companion/src/lib/harness/registry.ts",
+    "apps/admin-companion/src/lib/harness/state.ts",
+    "apps/admin-companion/src/lib/health.test.ts",
+    "apps/admin-companion/src/lib/health.ts",
+    "apps/admin-companion/src/lib/ipc.ts",
+    "apps/admin-companion/src/routes/account/+page.svelte",
+    "apps/admin-companion/src/routes/accounts/+page.svelte",
+    "apps/admin-companion/src/routes/preview/+page.svelte",
+    "apps/admin-companion/src/routes/status/+page.svelte",
+    "changelog.d/mm-476.added.md"
+  ],
+  "sessions": [
+    {
+      "metadata": "/fc/f14ab30cb7/0/metadata.json",
+      "transcript": "/fc/f14ab30cb7/0/full.jsonl",
+      "compact_transcript": "/fc/f14ab30cb7/0/transcript.jsonl",
+      "content_hash": "/fc/f14ab30cb7/0/content_hash.txt",
+      "prompt": "/fc/f14ab30cb7/0/prompt.txt"
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 218,
+    "cache_creation_tokens": 221510,
+    "cache_read_tokens": 20731365,
+    "output_tokens": 45963,
+    "api_call_count": 116
+  }
+}

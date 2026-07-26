@@ -1,0 +1,93 @@
+{
+  "cli_version": "0.8.42",
+  "checkpoint_id": "fcf14ab30cb7",
+  "session_id": "93565bf0-0f07-4466-a66f-fb399bc9adb8",
+  "strategy": "manual-commit",
+  "created_at": "2026-07-26T21:49:19.119105Z",
+  "branch": "claude/mm-476-console-blob-integrity-24246e",
+  "checkpoints_count": 1,
+  "files_touched": [
+    "apps/admin-companion/src-tauri/src/relay_client.rs",
+    "apps/admin-companion/src/lib/ipc.ts",
+    "apps/admin-companion/src/lib/health.ts",
+    "apps/admin-companion/src/lib/format.ts",
+    "apps/admin-companion/src/lib/format.test.ts",
+    "apps/admin-companion/src/lib/health.test.ts",
+    "apps/admin-companion/src/routes/status/+page.svelte",
+    "apps/admin-companion/src/routes/account/+page.svelte",
+    "apps/admin-companion/src/lib/components/ui/AccountRow.svelte",
+    "apps/admin-companion/src/routes/accounts/+page.svelte",
+    "apps/admin-companion/src/routes/preview/+page.svelte",
+    "apps/admin-companion/src/lib/harness/state.ts",
+    "apps/admin-companion/src/lib/harness/registry.ts",
+    "apps/admin-companion/src/lib/flags.test.ts",
+    "changelog.d/mm-476.added.md",
+    "apps/admin-companion/AGENTS.md"
+  ],
+  "agent": "Claude Code",
+  "model": "",
+  "turn_id": "39b64ed2e1b4",
+  "compact_transcript_start": 0,
+  "token_usage": {
+    "input_tokens": 218,
+    "cache_creation_tokens": 221510,
+    "cache_read_tokens": 20731365,
+    "output_tokens": 45963,
+    "api_call_count": 116
+  },
+  "skill_events_version": 1,
+  "skill_events": [
+    {
+      "id": "claude-skill-toolu_01DRRdC48JPDNmMFNGrKJ7PQ",
+      "event_type": "tool_invocation",
+      "skill": {
+        "name": "linear-workflow"
+      },
+      "source": {
+        "agent": "claude-code",
+        "signal": "skill_tool_use",
+        "confidence": "explicit"
+      },
+      "turn_id": "39b64ed2e1b4",
+      "transcript_anchor": {
+        "unit": "line",
+        "start": 18,
+        "end": 19,
+        "entry_ids": [
+          "780064ed-9129-4719-9ec3-72f905f47a3f"
+        ],
+        "tool_use_id": "toolu_01DRRdC48JPDNmMFNGrKJ7PQ"
+      },
+      "native": {
+        "tool_name": "Skill",
+        "tool_use_id": "toolu_01DRRdC48JPDNmMFNGrKJ7PQ"
+      },
+      "collapse": {
+        "target": "tool_pair",
+        "label": "Skill: linear-workflow",
+        "default_collapsed": true
+      }
+    }
+  ],
+  "initial_attribution": {
+    "calculated_at": "2026-07-26T21:49:19.04933Z",
+    "agent_lines": 470,
+    "agent_removed": 15,
+    "human_added": 0,
+    "human_modified": 0,
+    "human_removed": 0,
+    "total_committed": 470,
+    "total_lines_changed": 485,
+    "agent_percentage": 100,
+    "metric_version": 2
+  },
+  "prompt_attributions": [
+    {
+      "checkpoint_number": 1,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 0,
+      "agent_lines_removed": 0
+    }
+  ]
+}
