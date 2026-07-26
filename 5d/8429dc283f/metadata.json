@@ -1,0 +1,29 @@
+{
+  "cli_version": "0.8.42",
+  "checkpoint_id": "5d8429dc283f",
+  "strategy": "manual-commit",
+  "branch": "claude/mm-461-enclave-liveness-probe-7f1afc",
+  "checkpoints_count": 1,
+  "files_touched": [
+    "apps/identity-wallet/src/lib/components/home/DIDDocumentScreen.svelte",
+    "apps/identity-wallet/src/lib/components/home/IdentityListHome.svelte",
+    "apps/identity-wallet/src/lib/harness/scenarios.ts",
+    "apps/identity-wallet/src/routes/+page.svelte"
+  ],
+  "sessions": [
+    {
+      "metadata": "/5d/8429dc283f/0/metadata.json",
+      "transcript": "/5d/8429dc283f/0/full.jsonl",
+      "compact_transcript": "/5d/8429dc283f/0/transcript.jsonl",
+      "content_hash": "/5d/8429dc283f/0/content_hash.txt",
+      "prompt": "/5d/8429dc283f/0/prompt.txt"
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 37,
+    "cache_creation_tokens": 23334,
+    "cache_read_tokens": 6321173,
+    "output_tokens": 12481,
+    "api_call_count": 20
+  }
+}
