@@ -3,7 +3,7 @@
   "checkpoint_id": "a448cbd37041",
   "strategy": "manual-commit",
   "branch": "malpercio/mm-462-wallet-decouple-the-keychain-access-group-from-the-bundle-id",
-  "checkpoints_count": 1,
+  "checkpoints_count": 3,
   "files_touched": [
     "AGENTS.md",
     "apps/identity-wallet/AGENTS.md",
@@ -22,13 +22,20 @@
       "compact_transcript": "/a4/48cbd37041/0/transcript.jsonl",
       "content_hash": "/a4/48cbd37041/0/content_hash.txt",
       "prompt": "/a4/48cbd37041/0/prompt.txt"
+    },
+    {
+      "metadata": "/a4/48cbd37041/1/metadata.json",
+      "transcript": "/a4/48cbd37041/1/full.jsonl",
+      "compact_transcript": "/a4/48cbd37041/1/transcript.jsonl",
+      "content_hash": "/a4/48cbd37041/1/content_hash.txt",
+      "prompt": "/a4/48cbd37041/1/prompt.txt"
     }
   ],
   "token_usage": {
-    "input_tokens": 3963,
-    "cache_creation_tokens": 221470,
-    "cache_read_tokens": 6595823,
-    "output_tokens": 29004,
-    "api_call_count": 35
+    "input_tokens": 3966,
+    "cache_creation_tokens": 798016,
+    "cache_read_tokens": 7170740,
+    "output_tokens": 31149,
+    "api_call_count": 37
   }
 }
