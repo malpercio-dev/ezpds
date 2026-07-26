@@ -24,6 +24,7 @@ export * from './endpoint-repair';
 export * from './handle-change';
 export * from './rotation';
 export * from './rekey';
+export * from './self-held-kit';
 export * from './agents';
 export * from './oauth-consent';
 export * from './qr-scan';

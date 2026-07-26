@@ -543,6 +543,11 @@ mod tests {
             // In-flight ceremony records — these hold reconstructable seed material.
             crate::share_ceremony::STAGING_ACCOUNT,
             crate::share_recovery::EPILOGUE_ACCOUNT,
+            &format!("rekey-staging:{DID}"),
+            &format!("self-held-kit-staging:{DID}"),
+            // The self-held-kit marker: not secret, but nothing outside the Share 1
+            // family belongs in the synchronizable store.
+            &crate::self_held_kit::self_held_kit_account(DID),
             // Everything else the wallet stores, for completeness.
             "oauth-dpop-key-priv",
             "oauth-access-token",

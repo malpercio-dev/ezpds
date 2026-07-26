@@ -170,6 +170,25 @@ existing rotation keys. The existing sovereign recovery ceremony then works
 unchanged (its epilogue skips re-escrow on hosts without the `escrow`
 capability). The upsell seam is a single post-completion prompt, not pressure.
 
+**Shipped.** `apps/identity-wallet/src-tauri/src/self_held_kit.rs`, with
+`guard_self_held_kit_op` as the seventh strict allowlist. The one design decision
+the plan left open was resolved by *gating* rather than layering: the flow refuses
+with `HOST_OFFERS_ESCROW` on a host advertising `escrow`, so the two ceremonies
+are disjoint by capability and `rekey.rs` is untouched. A host that could not be
+*asked* is deliberately not refused — `probe` does not cache an unreachable
+verdict, and treating an outage as "escrow exists" would strand a user behind a
+network blink on the one flow that needs no server. The same asymmetry now governs
+the recovery epilogue's re-escrow leg (`share_recovery::host_offers_escrow`):
+answered-and-no-escrow skips as a fact about the server, unreachable still
+attempts, because silently dropping the leg would downgrade a Custos account's
+posture. Shares 2 and 3 both reach the user through the create ceremony's
+`ShamirBackupScreen`, which gained an optional `share2` prop — passing it is what
+turns "save one share" into "save two" and replaces the escrow line. The upsell
+seam is the durable `{did}:self-held-kit` marker plus
+`self_held_kit_escrow_offer_cmd`, true only once the identity's *current* host
+advertises `escrow`; by construction it is never true right after a kit completes.
+Harness scenarios: `self-held-kit`, `self-held-kit-escrow-host`.
+
 ### Phase 2 — foreign-PDS sessions ([MM-457](https://linear.app/malpercio/issue/MM-457))
 
 `SessionProvider`'s `NeedsUnlock` gains a second resolution: on hosts without

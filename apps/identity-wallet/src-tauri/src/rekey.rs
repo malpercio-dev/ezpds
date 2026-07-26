@@ -479,18 +479,14 @@ async fn deposit_escrow_share(
 /// by reading that same slot back — Share 1's durability is the precondition for tearing down
 /// the staging slot later. The read-back deliberately never falls back to the device-local
 /// slot, so a stale legacy copy cannot stand in for a synchronizable write that failed.
-fn store_and_verify_share1(did: &str, share1: &str) -> Result<(), RekeyError> {
-    store_share1(did, share1.as_bytes()).map_err(|e| RekeyError::ShareStorageFailed {
-        message: format!("keychain write failed: {e}"),
-    })?;
+/// Shared by every escrow-less and escrow-backed path that installs a recovery key; the
+/// failure is a bare message so each flow can wrap it in its own `ShareStorageFailed`.
+pub(crate) fn store_and_verify_share1(did: &str, share1: &str) -> Result<(), String> {
+    store_share1(did, share1.as_bytes()).map_err(|e| format!("keychain write failed: {e}"))?;
     match read_share1_synced(did) {
         Ok(read_back) if read_back == share1.as_bytes() => Ok(()),
-        Ok(_) => Err(RekeyError::ShareStorageFailed {
-            message: "recovery share 1 read-back does not match the written value".to_string(),
-        }),
-        Err(e) => Err(RekeyError::ShareStorageFailed {
-            message: format!("recovery share 1 read-back failed: {e}"),
-        }),
+        Ok(_) => Err("recovery share 1 read-back does not match the written value".to_string()),
+        Err(e) => Err(format!("recovery share 1 read-back failed: {e}")),
     }
 }
 
@@ -662,7 +658,8 @@ pub async fn submit_rekey(pds_client: &PdsClient, did: &str) -> Result<RekeyResu
     deposit_escrow_share(&session.client, &shares.share2).await?;
 
     // Step 3: overwrite the durable per-DID Share 1 slot with the new Share 1 (verified).
-    store_and_verify_share1(did, &shares.share1)?;
+    store_and_verify_share1(did, &shares.share1)
+        .map_err(|message| RekeyError::ShareStorageFailed { message })?;
 
     // Step 4: refresh the cached PLC log + DID document (PLC *data* shape — the home card reads
     // rotationKeys; caching the W3C form instead strips them and degrades the card, so the

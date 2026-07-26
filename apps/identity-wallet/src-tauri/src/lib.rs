@@ -24,6 +24,7 @@ pub mod recovery;
 pub mod rekey;
 pub mod repo_backup;
 pub mod rotate_repo_key;
+pub mod self_held_kit;
 pub mod session_provider;
 pub mod share_ceremony;
 pub mod share_recovery;
@@ -1663,6 +1664,11 @@ pub fn run() {
             rekey::submit_rekey_cmd,
             rekey::confirm_rekey_cmd,
             rekey::rekey_in_progress_cmd,
+            self_held_kit::build_self_held_kit_cmd,
+            self_held_kit::submit_self_held_kit_cmd,
+            self_held_kit::confirm_self_held_kit_cmd,
+            self_held_kit::self_held_kit_in_progress_cmd,
+            self_held_kit::self_held_kit_escrow_offer_cmd,
             recovery::submit_recovery_override_cmd,
             identity_removal::request_identity_removal,
             identity_removal::confirm_identity_removal,

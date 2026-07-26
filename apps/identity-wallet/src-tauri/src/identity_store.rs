@@ -221,6 +221,7 @@ impl IdentityStore {
             recovery_signing_key_account(did),
             crate::blob_backup::backup_enabled_account(did),
             crate::repo_backup::backup_enabled_account(did),
+            crate::self_held_kit::self_held_kit_account(did),
         ];
 
         for entry in entries {
