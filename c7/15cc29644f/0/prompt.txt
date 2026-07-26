@@ -1,0 +1,15 @@
+<system-reminder>
+The user started your suggested background task task_294af81f ("Fix pre-existing clippy warnings in identity-wallet") in a separate local session. It is running independently. You will be notified here when it ends.
+</system-reminder>
+
+What do I need to configure in the portal?
+
+---
+
+```
+› security cms -D -i /Users/jacob.zweifel/Downloads/Obsign_App_Store\ \(1\).mobileprovision | plutil -p - | grep -A3 keychain-access-groups
+    "keychain-access-groups" => [
+      0 => "6U6Y3HQ9DH.*"
+      1 => "com.apple.token"
+    ]
+```
