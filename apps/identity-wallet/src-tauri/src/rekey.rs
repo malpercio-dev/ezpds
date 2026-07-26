@@ -45,9 +45,6 @@ use crate::pds_client::{PdsClient, PdsClientError};
 use crate::session_provider::{SessionError, SessionProvider, UnlockReason};
 use crypto::PlcService;
 
-/// The atproto PDS service id — its endpoint is the per-DID staging discriminator.
-const ATPROTO_PDS_SERVICE_ID: &str = "atproto_pds";
-
 /// Account-name prefix of the per-DID Share 1 slot. The single source of the
 /// `recovery-share-1:{did}` naming, consumed by `keychain::syncs_to_icloud`.
 const RECOVERY_SHARE1_PREFIX: &str = "recovery-share-1:";
@@ -416,21 +413,20 @@ async fn fetch_current_state(
     })
 }
 
-/// The account's PDS endpoint — the stable per-DID discriminator for the staging slot.
-fn pds_endpoint(current: &CurrentHandleState) -> String {
-    current
-        .services
-        .get(ATPROTO_PDS_SERVICE_ID)
-        .map(|s| s.endpoint.clone())
-        .unwrap_or_default()
-}
-
 /// The proposed rotation keys for a re-key: recovery inserted at [1], device kept at [0].
+///
+/// Total on purpose, for the same reason as `self_held_kit::proposed_kit_keys`: the shell
+/// computes the proposal before the guard runs, and a resumed re-key skips the eligibility
+/// precheck, so an audit log yielding no rotation keys must reach `WalletNotAuthorized` rather
+/// than an indexing panic in a signing path.
 fn proposed_rekey_keys(current_rotation_keys: &[String], recovery_key_id: &str) -> Vec<String> {
+    let Some((device_key, tail)) = current_rotation_keys.split_first() else {
+        return Vec::new();
+    };
     let mut keys = Vec::with_capacity(current_rotation_keys.len() + 1);
-    keys.push(current_rotation_keys[0].clone());
+    keys.push(device_key.clone());
     keys.push(recovery_key_id.to_string());
-    keys.extend_from_slice(&current_rotation_keys[1..]);
+    keys.extend_from_slice(tail);
     keys
 }
 
@@ -509,7 +505,6 @@ pub async fn build_rekey(pds_client: &PdsClient, did: &str) -> Result<RekeyPrevi
         })?;
 
     let current = fetch_current_state(pds_client, did).await?;
-    let pds_url = pds_endpoint(&current);
 
     // Eligibility precheck BEFORE generating/staging anything: a fresh re-key requires the 2-key
     // old model, but a re-key already in flight (a staging slot exists) is always resumable — even
@@ -520,7 +515,7 @@ pub async fn build_rekey(pds_client: &PdsClient, did: &str) -> Result<RekeyPrevi
         return Err(RekeyError::AlreadyRekeyed);
     }
 
-    let shares = crate::share_ceremony::load_or_create_for_rekey(did, &pds_url).map_err(|e| {
+    let shares = crate::share_ceremony::load_or_create_for_rekey(did).map_err(|e| {
         RekeyError::ShareGenerationFailed {
             message: e.to_string(),
         }
@@ -577,11 +572,10 @@ pub async fn submit_rekey(pds_client: &PdsClient, did: &str) -> Result<RekeyResu
         })?;
 
     let current = fetch_current_state(pds_client, did).await?;
-    let pds_url = pds_endpoint(&current);
 
     // Reload the exact staged set built in the preview (durable across app kills). This is the
     // only home of the new seed material until the ceremony is confirmed.
-    let shares = crate::share_ceremony::load_or_create_for_rekey(did, &pds_url).map_err(|e| {
+    let shares = crate::share_ceremony::load_or_create_for_rekey(did).map_err(|e| {
         RekeyError::ShareGenerationFailed {
             message: e.to_string(),
         }
@@ -1011,6 +1005,21 @@ mod tests {
         assert!(matches!(
             guard_rekey_op(&inputs),
             Err(RekeyError::GuardRejected { .. })
+        ));
+    }
+
+    /// A resumed re-key skips the eligibility precheck, so the proposal is built before the
+    /// guard runs — an empty key set must refuse cleanly rather than panic while signing.
+    #[test]
+    fn empty_rotation_keys_refuse_rather_than_panic() {
+        assert!(proposed_rekey_keys(&[], RECOVERY).is_empty());
+
+        let mut inputs = ok_inputs();
+        inputs.current_rotation_keys = Vec::new();
+        inputs.proposed_rotation_keys = proposed_rekey_keys(&[], RECOVERY);
+        assert!(matches!(
+            guard_rekey_op(&inputs),
+            Err(RekeyError::WalletNotAuthorized)
         ));
     }
 

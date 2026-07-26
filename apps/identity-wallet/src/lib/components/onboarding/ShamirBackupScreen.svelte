@@ -60,10 +60,13 @@
   // (mirrors hardware wallet recovery key display conventions).
   const formatCode = (code: string) => code.match(/.{1,4}/g)?.join(' ') ?? code;
 
+  // Encoded per share, not per screen: a failure on one share must not discard another's
+  // already-rendered QR. With two self-held shares the all-or-nothing form would have let a
+  // single encoder hiccup blank both, and this screen is the user's one chance to capture them.
   onMount(async () => {
-    try {
-      const rendered: Record<number, string> = {};
-      for (const share of selfHeld) {
+    const rendered: Record<number, string> = {};
+    for (const share of selfHeld) {
+      try {
         // The QR always carries the compact machine form — both forms encode the
         // identical share envelope, and base32 keeps the QR in alphanumeric mode.
         rendered[share.index] = await QRCode.toString(share.code, {
@@ -71,12 +74,12 @@
           width: 200,
           margin: 2,
         });
+      } catch {
+        // Only this share loses its QR; its text and copy button remain intact.
+        qrFailed = true;
       }
-      qrSvgs = rendered;
-    } catch {
-      // QR generation failed — share text and copy button remain the primary backup methods.
-      qrFailed = true;
     }
+    qrSvgs = rendered;
   });
 
   async function copyShare(share: SelfHeldShare) {

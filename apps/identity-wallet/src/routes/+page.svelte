@@ -197,16 +197,23 @@
    */
   let kitOfferedForSelected = $state<boolean | null>(null);
 
+  // Fired unawaited per selection, so every write is gated on the DID still being the selected
+  // one. Selecting A then B before A resolves would otherwise show B the verdict computed for A
+  // — including offering the kit on an escrow-capable host, the exact dead end the `null` state
+  // exists to prevent.
   async function resolveKitOffer(did: string, didDoc: Record<string, unknown>) {
     kitOfferedForSelected = null;
     try {
-      if (await selfHeldKitInProgress(did)) {
+      const inProgress = await selfHeldKitInProgress(did);
+      if (did !== selectedDid) return;
+      if (inProgress) {
         kitOfferedForSelected = true;
         return;
       }
       const pdsUrl = extractPdsFromPlcDoc(didDoc);
       if (!pdsUrl) return;
       const capabilities = await getPdsCapabilities(pdsUrl);
+      if (did !== selectedDid) return;
       kitOfferedForSelected = capabilities.reached && !capabilities.capabilities.includes('escrow');
     } catch (e) {
       console.warn('Self-held kit offer check failed:', e);

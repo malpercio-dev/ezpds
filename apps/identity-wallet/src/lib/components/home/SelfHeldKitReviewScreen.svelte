@@ -81,9 +81,11 @@
     }
   }
 
-  // No session pre-flight, unlike every sibling identity screen: this flow talks to
-  // plc.directory and nothing else, so there is no session that could be locked and nothing to
-  // unlock. Offering an unlock here would imply the server is involved, which it is not.
+  // No session pre-flight, unlike every sibling identity screen: every step that touches the
+  // identity is plc.directory, and the one request that reaches the hosting PDS is the public
+  // `describeServer` capability probe behind `buildSelfHeldKit`. Neither carries a credential,
+  // so there is no session that could be locked and nothing to unlock; offering an unlock here
+  // would imply an authenticated server role this flow does not have.
   async function submit() {
     if (phase.kind !== 'ready') return;
     const { preview } = phase;
@@ -144,8 +146,8 @@
         <li><strong>Shares 2 and 3</strong> — yours to save, in the next step</li>
       </ul>
       <p class="reassure">
-        {hostOf(phase.preview.pdsUrl)} doesn’t hold recovery shares, so none of this is sent to it.
-        Any two of the three shares restore this identity.
+        {hostOf(phase.preview.pdsUrl)} doesn’t hold recovery shares, so no share and no part of
+        your recovery key is ever sent to it. Any two of the three shares restore this identity.
       </p>
     </div>
 

@@ -23,9 +23,13 @@
 //      threshold: the sovereign recovery path (`share_recovery.rs`) already reconstructs from
 //      any two shares with zero PDS involvement.
 //
-// NO NETWORK PEER BUT plc.directory. There is no session, no escrow `PUT`, no `/v1/*` call —
-// only the audit-log read, the op submit, the post-op cache refresh, and one `describeServer`
-// probe to prove the host is not offering escrow (where the richer `rekey.rs` flow belongs).
+// WHAT THIS TALKS TO. Every step that touches the identity is plc.directory: the audit-log
+// read, the op submit, the post-op cache refresh. There is no session, no escrow `PUT`, and no
+// `/v1/*` call. The one request that does reach the hosting PDS is the public, unauthenticated
+// `describeServer` capability probe (often served from the process cache, so frequently no
+// request at all) used to prove the host is not offering escrow — where the richer `rekey.rs`
+// flow belongs. It carries no recovery material and no credential, but it is a request, and
+// user-facing copy must not claim the PDS is never contacted.
 //
 // WHY A NEW GUARD, NOT A FLAG ON `guard_rekey_op`. That guard requires the current layout be
 // exactly `[device, PDS]` — the pre-inversion Custos migration shape — and treats anything
@@ -271,11 +275,19 @@ pub(crate) fn build_kit_diff(recovery_key_id: &str, prev_cid: &str) -> OpDiff {
 ///
 /// The single source of the shape both the guard checks and the shell proposes — computing it
 /// twice would let the two drift into a guard that validates a different op than the one signed.
+///
+/// Total on purpose. The shell computes this BEFORE the guard runs, and on a resumed kit the
+/// root-key precheck is skipped, so a malformed audit log yielding no rotation keys would reach
+/// an indexing panic in a signing path instead of the clean `WalletNotAuthorized` rule 1 exists
+/// to return. An empty input therefore yields an empty proposal, which rule 1 rejects first.
 fn proposed_kit_keys(current_rotation_keys: &[String], recovery_key_id: &str) -> Vec<String> {
+    let Some((device_key, tail)) = current_rotation_keys.split_first() else {
+        return Vec::new();
+    };
     let mut keys = Vec::with_capacity(current_rotation_keys.len() + 1);
-    keys.extend_from_slice(&current_rotation_keys[..1]);
+    keys.push(device_key.clone());
     keys.push(recovery_key_id.to_string());
-    keys.extend_from_slice(&current_rotation_keys[1..]);
+    keys.extend_from_slice(tail);
     keys
 }
 
@@ -422,12 +434,11 @@ pub async fn build_self_held_kit(
         require_no_escrow_capability(pds_client, &pds_url).await?;
     }
 
-    let shares =
-        crate::share_ceremony::load_or_create_for_self_held_kit(did, &pds_url).map_err(|e| {
-            SelfHeldKitError::ShareGenerationFailed {
-                message: e.to_string(),
-            }
-        })?;
+    let shares = crate::share_ceremony::load_or_create_for_self_held_kit(did).map_err(|e| {
+        SelfHeldKitError::ShareGenerationFailed {
+            message: e.to_string(),
+        }
+    })?;
 
     // Run the strict guard only while the recovery key is not yet on-chain — i.e. this build
     // would additively insert it. On a resumed kit whose op already landed, the key is present
@@ -492,16 +503,14 @@ pub async fn submit_self_held_kit(
             })?;
 
     let current = fetch_current_state(pds_client, did).await?;
-    let pds_url = pds_endpoint(&current);
 
     // Reload the exact staged set built in the preview (durable across app kills). Until the
     // confirmation gate this is the only home of the new seed material.
-    let shares =
-        crate::share_ceremony::load_or_create_for_self_held_kit(did, &pds_url).map_err(|e| {
-            SelfHeldKitError::ShareGenerationFailed {
-                message: e.to_string(),
-            }
-        })?;
+    let shares = crate::share_ceremony::load_or_create_for_self_held_kit(did).map_err(|e| {
+        SelfHeldKitError::ShareGenerationFailed {
+            message: e.to_string(),
+        }
+    })?;
     let recovery_key_id = shares.recovery_key_id.clone();
 
     // Step 1: post the additive rotation op — unless it already landed (a resumed kit).
@@ -889,6 +898,21 @@ mod tests {
                 OTHER.to_string(),
             ]
         );
+    }
+
+    /// The shell builds the proposal before the guard runs, and a resumed kit skips the
+    /// root-key precheck — so this must return a clean refusal, never panic on an empty slice.
+    #[test]
+    fn empty_rotation_keys_refuse_rather_than_panic() {
+        assert!(proposed_kit_keys(&[], RECOVERY).is_empty());
+
+        let mut inputs = ok_inputs();
+        inputs.current_rotation_keys = Vec::new();
+        inputs.proposed_rotation_keys = proposed_kit_keys(&[], RECOVERY);
+        assert!(matches!(
+            guard_self_held_kit_op(&inputs),
+            Err(SelfHeldKitError::WalletNotAuthorized)
+        ));
     }
 
     #[test]
