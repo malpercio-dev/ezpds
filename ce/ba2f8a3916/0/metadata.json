@@ -1,0 +1,57 @@
+{
+  "cli_version": "0.8.42",
+  "checkpoint_id": "ceba2f8a3916",
+  "session_id": "541fc1c1-a413-47f4-80b3-cde4740d3ec7",
+  "strategy": "manual-commit",
+  "created_at": "2026-07-26T02:00:06.518084Z",
+  "branch": "release-0.8.5",
+  "checkpoints_count": 1,
+  "files_touched": [
+    "CHANGELOG.md",
+    "Cargo.lock",
+    "Cargo.toml",
+    "changelog.d/mm-472-admin-sweep-errors.added.md",
+    "changelog.d/mm-474.added.md",
+    "changelog.d/mm-475.added.md",
+    "changelog.d/mm-475.security.md",
+    "sites/docs/src/content/docs/operator/reference/api.md",
+    "sites/docs/src/content/docs/operator/reference/capabilities.md",
+    "sites/docs/src/content/docs/operator/reference/config.md",
+    "sites/docs/src/content/docs/operator/reference/ipc.md"
+  ],
+  "agent": "Claude Code",
+  "model": "",
+  "turn_id": "9e6e146ea71b",
+  "compact_transcript_start": 0,
+  "token_usage": {
+    "input_tokens": 19,
+    "cache_creation_tokens": 89929,
+    "cache_read_tokens": 761070,
+    "output_tokens": 2415,
+    "api_call_count": 10
+  },
+  "initial_attribution": {
+    "calculated_at": "2026-07-26T02:00:06.506165Z",
+    "agent_lines": 27,
+    "agent_removed": 15,
+    "human_added": 0,
+    "human_modified": 0,
+    "human_removed": 0,
+    "total_committed": 27,
+    "total_lines_changed": 42,
+    "agent_percentage": 100,
+    "metric_version": 2
+  },
+  "prompt_attributions": [
+    {
+      "checkpoint_number": 1,
+      "user_lines_added": 5,
+      "user_lines_removed": 0,
+      "agent_lines_added": 0,
+      "agent_lines_removed": 0,
+      "user_added_per_file": {
+        ".impeccable/config.local.json": 5
+      }
+    }
+  ]
+}
