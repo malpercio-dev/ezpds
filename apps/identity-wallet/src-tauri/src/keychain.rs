@@ -24,6 +24,27 @@
 //! synchronizable items — the `…ThisDeviceOnly` accessibility classes are mutually exclusive
 //! with syncing.
 //!
+//! # Which access group items land in
+//!
+//! An item's address has a third dimension beyond service + account: the **access group**.
+//! With no `keychain-access-groups` entitlement it defaults to the implicit
+//! `$(AppIdentifierPrefix)<bundle-id>` group — i.e. the access group *is* the bundle id,
+//! and renaming the bundle makes every stored item invisible with no error and no recovery
+//! path short of the share ceremony.
+//!
+//! `Entitlements.ios.plist` therefore declares the group explicitly, and the array order is
+//! the mechanism: iOS files an item into the **first** entitled group when a write does not
+//! name one, and searches **every** entitled group when a read does not name one. Because no
+//! accessor here sets `kSecAttrAccessGroup`, writes land in [`STABLE_ACCESS_GROUP`] and reads
+//! span stable-then-legacy for free. That is deliberate — resolving the literal group string
+//! in Rust would mean discovering the team's `AppIdentifierPrefix` at runtime, adding a
+//! failure mode to every Keychain call to re-implement what the OS already guarantees.
+//!
+//! The invariant that *is* worth enforcing is the entitlement's shape, which no call site can
+//! observe; `entitlement_declares_stable_group_first` asserts it against the tracked plist at
+//! compile time, and `just bundle-identity-check` re-asserts it alongside the bundle id and
+//! the iCloud container. See ADR-0030.
+//!
 //! In test builds (`#[cfg(test)]`), all Keychain operations are redirected to an
 //! in-memory store so that tests never touch the real macOS Keychain and never
 //! trigger a password prompt. The test store models the two-store split faithfully —
@@ -36,6 +57,25 @@ use security_framework::passwords::{
 };
 
 pub const SERVICE: &str = "ezpds-identity-wallet";
+
+/// The Keychain access group every new item is written to, minus the team's
+/// `$(AppIdentifierPrefix)`.
+///
+/// Deliberately not derived from the bundle id, so a `dev.malpercio.*` → `org.obsign.*`
+/// rename cannot move it. Must stay **first** in `Entitlements.ios.plist`'s
+/// `keychain-access-groups` array — that position is what makes it the write target.
+pub const STABLE_ACCESS_GROUP: &str = "org.obsign.shared";
+
+/// The group items were written to before [`STABLE_ACCESS_GROUP`] existed: the implicit
+/// `$(AppIdentifierPrefix)<bundle-id>` group of the original `dev.malpercio.identitywallet`
+/// bundle.
+///
+/// Pinned as a literal rather than read from `tauri.conf.json`'s current identifier —
+/// deriving it would let a rename quietly redefine "legacy" to the new bundle id and orphan
+/// exactly the items this exists to keep reachable. It must remain declared for as long as
+/// any install may still hold items there, which is indefinitely: an install that never
+/// updates never migrates.
+pub const LEGACY_ACCESS_GROUP: &str = "dev.malpercio.identitywallet";
 
 #[derive(Debug, thiserror::Error)]
 pub enum KeychainError {
@@ -410,6 +450,63 @@ mod tests {
     use super::*;
 
     const DID: &str = "did:plc:sync0123456789abcdefghij";
+
+    /// The tracked entitlements, embedded at compile time so this assertion cannot drift
+    /// from the file that actually ships (`ios-postinit`'s Patch H installs this exact
+    /// content into the generated project).
+    const ENTITLEMENTS: &str = include_str!("../Entitlements.ios.plist");
+
+    /// The `<string>` values of the `keychain-access-groups` array, in declaration order.
+    fn declared_access_groups() -> Vec<String> {
+        let after_key = ENTITLEMENTS
+            .split_once("<key>keychain-access-groups</key>")
+            .expect("Entitlements.ios.plist declares no keychain-access-groups")
+            .1;
+        let array = after_key
+            .split_once("<array>")
+            .and_then(|(_, rest)| rest.split_once("</array>"))
+            .expect("keychain-access-groups is not followed by an <array>")
+            .0;
+        array
+            .split("<string>")
+            .skip(1)
+            .map(|entry| {
+                entry
+                    .split_once("</string>")
+                    .expect("unterminated <string> in keychain-access-groups")
+                    .0
+                    .trim()
+                    .to_string()
+            })
+            .collect()
+    }
+
+    /// The entitlement's shape is the whole mechanism, and no Rust call site can observe it:
+    /// the stable group must be FIRST (iOS writes new items to the first entitled group) and
+    /// the legacy group must still be present (a read that names no group searches every
+    /// entitled group, which is what keeps pre-rename items reachable). Dropping or
+    /// reordering either entry orphans live identity material silently.
+    #[test]
+    fn entitlement_declares_stable_group_first() {
+        let groups = declared_access_groups();
+        assert_eq!(
+            groups.first().map(String::as_str),
+            Some(format!("$(AppIdentifierPrefix){STABLE_ACCESS_GROUP}").as_str()),
+            "the stable group must be first — it is what makes it the write target; got {groups:?}"
+        );
+        assert!(
+            groups.contains(&format!("$(AppIdentifierPrefix){LEGACY_ACCESS_GROUP}")),
+            "the legacy group must stay declared or pre-rename items become unreachable; got {groups:?}"
+        );
+    }
+
+    /// The stable group must not track the bundle id — if it did, a rename would move it and
+    /// the entitlement would be decoration.
+    #[test]
+    fn stable_group_is_not_the_bundle_id() {
+        assert_ne!(STABLE_ACCESS_GROUP, LEGACY_ACCESS_GROUP);
+        assert!(!ENTITLEMENTS.contains("$(CFBundleIdentifier)"));
+    }
 
     /// The allowlist admits exactly the per-DID Share 1 slot — not the bare prefix, and not
     /// the deprecated app-global `recovery-share-1` account (a pre-unification install's

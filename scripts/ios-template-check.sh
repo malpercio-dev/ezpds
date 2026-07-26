@@ -113,7 +113,11 @@ done
 WALLET_ENT="${REPO_ROOT}/apps/identity-wallet/src-tauri/Entitlements.ios.plist"
 WALLET_CONTAINER='iCloud.dev.malpercio.identitywallet'
 if [ -f "${WALLET_ENT}" ]; then
-  for key in 'com.apple.developer.ubiquity-container-identifiers' 'com.apple.developer.icloud-services' "${WALLET_CONTAINER}"; do
+  # The container is matched in its <string> form: the file's explanatory comments quote the
+  # bare id, so a plain substring match would be satisfied by prose alone and keep passing after
+  # the real entitlement was deleted. `just bundle-identity-check` validates the same contract
+  # against the parsed nodes.
+  for key in 'com.apple.developer.ubiquity-container-identifiers' 'com.apple.developer.icloud-services' "<string>${WALLET_CONTAINER}</string>"; do
     if ! grep -qF -- "${key}" "${WALLET_ENT}"; then
       echo "ios-template-check: FAIL — wallet Entitlements.ios.plist lost '${key}' (the iCloud Drive blob backup mirror needs it)" >&2
       fail=1
