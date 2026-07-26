@@ -1,0 +1,32 @@
+{
+  "cli_version": "0.8.42",
+  "checkpoint_id": "34781f3f115d",
+  "strategy": "manual-commit",
+  "branch": "claude/mm-456-shamir-escrow-less-recovery-adc920",
+  "checkpoints_count": 1,
+  "files_touched": [
+    "AGENTS.md",
+    "apps/identity-wallet/AGENTS.md",
+    "crates/pds/AGENTS.md",
+    "crates/pds/src/db/AGENTS.md",
+    "scripts/changelog-check.sh",
+    "scripts/changelog-test.sh",
+    "scripts/ticket-ref-check.sh"
+  ],
+  "sessions": [
+    {
+      "metadata": "/34/781f3f115d/0/metadata.json",
+      "transcript": "/34/781f3f115d/0/full.jsonl",
+      "compact_transcript": "/34/781f3f115d/0/transcript.jsonl",
+      "content_hash": "/34/781f3f115d/0/content_hash.txt",
+      "prompt": "/34/781f3f115d/0/prompt.txt"
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 27,
+    "cache_creation_tokens": 9847,
+    "cache_read_tokens": 5667083,
+    "output_tokens": 5437,
+    "api_call_count": 14
+  }
+}
