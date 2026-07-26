@@ -1,0 +1,27 @@
+{
+  "cli_version": "0.8.42",
+  "checkpoint_id": "939604f10422",
+  "strategy": "manual-commit",
+  "branch": "claude/mm-461-enclave-liveness-probe-7f1afc",
+  "checkpoints_count": 1,
+  "files_touched": [
+    "apps/identity-wallet/src-tauri/src/identity_store.rs",
+    "apps/identity-wallet/src-tauri/src/keychain.rs"
+  ],
+  "sessions": [
+    {
+      "metadata": "/93/9604f10422/0/metadata.json",
+      "transcript": "/93/9604f10422/0/full.jsonl",
+      "compact_transcript": "/93/9604f10422/0/transcript.jsonl",
+      "content_hash": "/93/9604f10422/0/content_hash.txt",
+      "prompt": "/93/9604f10422/0/prompt.txt"
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 26,
+    "cache_creation_tokens": 10460,
+    "cache_read_tokens": 4087347,
+    "output_tokens": 5663,
+    "api_call_count": 14
+  }
+}
