@@ -89,14 +89,50 @@ check_identifier() {
 check_identifier identity-wallet "${WALLET_BUNDLE_ID}"
 check_identifier admin-companion "${ADMIN_BUNDLE_ID}"
 
-# --- 2. The access-group net ---------------------------------------------------------------
-# Extract the keychain-access-groups <string> values in declaration order. Order is the
-# mechanism: iOS writes a new item into the FIRST entitled group and searches EVERY entitled
-# group on a read that names none.
-groups="$(
-  sed -n '/<key>keychain-access-groups<\/key>/,/<\/array>/p' "${WALLET_ENT}" |
+# --- plist reading ---------------------------------------------------------------------------
+# Every check below reads ACTIVE plist nodes, never raw file text. Both plists carry long
+# explanatory comments that quote the very values being asserted — including the frozen
+# container id — so a whole-file grep is satisfied by the prose alone and keeps reporting OK
+# after the real entitlement is deleted. The gate would then be strictly worse than nothing:
+# it would vouch for a contract it had stopped checking.
+
+# Echo a plist with XML comments removed, so prose can never satisfy an assertion.
+strip_xml_comments() {
+  awk '
+    BEGIN { inc = 0 }
+    {
+      line = $0; out = ""
+      while (1) {
+        if (inc) {
+          p = index(line, "-->")
+          if (p == 0) { line = ""; break }
+          line = substr(line, p + 3); inc = 0
+        } else {
+          p = index(line, "<!--")
+          if (p == 0) { out = out line; break }
+          out = out substr(line, 1, p - 1)
+          line = substr(line, p + 4); inc = 1
+        }
+      }
+      print out
+    }
+  ' "$1"
+}
+
+# The <string> values of the collection introduced by <key>NAME</key>, in declaration order.
+plist_strings_for_key() {
+  printf '%s\n' "$2" |
+    sed -n "/<key>$1<\/key>/,/<\/array>/p" |
     sed -n 's/.*<string>\(.*\)<\/string>.*/\1/p'
-)"
+}
+
+WALLET_ENT_NODES="$(strip_xml_comments "${WALLET_ENT}")"
+WALLET_INFO_NODES="$(strip_xml_comments "${WALLET_INFO}")"
+
+# --- 2. The access-group net ---------------------------------------------------------------
+# Order is the mechanism: iOS writes a new item into the FIRST entitled group and searches
+# EVERY entitled group on a read that names none.
+groups="$(plist_strings_for_key 'keychain-access-groups' "${WALLET_ENT_NODES}")"
 if [ -z "${groups}" ]; then
   note "wallet Entitlements.ios.plist declares no keychain-access-groups — every item would
   land in the implicit \$(AppIdentifierPrefix)<bundle-id> group, which a rename destroys."
@@ -127,12 +163,20 @@ done
 # --- 3. The iCloud container is frozen, not derived from the bundle id ----------------------
 # Checked against the literal, NOT against the current bundle id: deriving it would let a
 # rename silently redefine "correct" and orphan the backups this exists to protect.
-if ! grep -qF -- "${FROZEN_ICLOUD_CONTAINER}" "${WALLET_ENT}"; then
-  note "wallet Entitlements.ios.plist no longer names the frozen iCloud container
+for ent_key in 'com.apple.developer.icloud-container-identifiers' \
+               'com.apple.developer.ubiquity-container-identifiers'; do
+  if ! plist_strings_for_key "${ent_key}" "${WALLET_ENT_NODES}" |
+       grep -qxF -- "${FROZEN_ICLOUD_CONTAINER}"; then
+    note "wallet Entitlements.ios.plist's ${ent_key} no longer lists the frozen iCloud container
   '${FROZEN_ICLOUD_CONTAINER}'. A container id cannot be renamed; changing it orphans the repo
   CAR snapshot and the blob mirror (ADR-0030)."
-fi
-if ! grep -qF -- "${FROZEN_ICLOUD_CONTAINER}" "${WALLET_INFO}"; then
+  fi
+done
+# In Info.ios.plist the container is a <key> inside the NSUbiquitousContainers dict, not a
+# <string>, so this reads keys rather than values.
+if ! printf '%s\n' "${WALLET_INFO_NODES}" |
+     sed -n '/<key>NSUbiquitousContainers<\/key>/,/<\/dict>/p' |
+     grep -qF -- "<key>${FROZEN_ICLOUD_CONTAINER}</key>"; then
   note "wallet Info.ios.plist's NSUbiquitousContainers no longer names
   '${FROZEN_ICLOUD_CONTAINER}' — the mirror would vanish from the Files app."
 fi

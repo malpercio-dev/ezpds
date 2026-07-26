@@ -125,7 +125,7 @@ the iCloud container id permanently.**
   is usable while the bundle id is still `dev.malpercio.*`. Verified against the wallet's
   current App Store profile on 2026-07-26; re-check after any profile change with:
 
-  ```
+  ```bash
   security cms -D -i <profile>.mobileprovision | plutil -p - | grep -A3 keychain-access-groups
   ```
 
