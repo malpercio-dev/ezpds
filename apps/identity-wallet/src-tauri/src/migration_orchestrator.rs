@@ -15,6 +15,7 @@
 // session on a spec-strict PDS such as bsky.social. Mirrors `claim::authenticate_source_pds`.
 
 use crate::oauth_client::OAuthClient;
+use crate::pds_capabilities::ServerCapabilities;
 use serde::Serialize;
 use std::path::Path;
 use std::sync::Arc;
@@ -1551,18 +1552,31 @@ async fn ensure_sovereign_session_persisted(
         .map_err(map_sovereign_error)
 }
 
-/// Ensure a migrated did:web identity has a durably persisted destination session.
+/// Ensure a migrated identity has a durably persisted destination session, built from the
+/// Bearer pair the destination already issued during the migration `createAccount`.
 ///
-/// A did:web account has no PLC rotation keys, so the sovereign mint
-/// (`/v1/sessions/sovereign`, rotation-key-signed) is unavailable to it. The
-/// Bearer session the destination issued during the migration is the account's
-/// only credential — this persists that pair to the Keychain so it survives the
-/// app process, and it must succeed *before* the source is deactivated.
+/// This is the finalize path for every destination that cannot mint a sovereign session,
+/// for either of two reasons:
+///
+/// * **The identity has no rotation keys.** A did:web account has no PLC rotation set, so
+///   the rotation-key-signed mint is impossible regardless of who hosts it.
+/// * **The host does not serve one.** `/v1/sessions/sovereign` is a Custos route; a
+///   reference PDS, bsky.social, or any other spec-compliant host has no such endpoint.
+///
+/// In both cases the Bearer pair from `createAccount` is the account's only credential.
+/// Persisting it into the same versioned `{did}:oauth-tokens` record `sovereign_login`
+/// writes is what makes it survive the app process — and from that write on, the session
+/// provider restores, refreshes, and host-change-discards it identically no matter which
+/// path minted it. Post-cutover re-unlock then rides the password `createSession` route
+/// (`password_unlock`), which is exactly what a non-Custos host serves.
+///
+/// It must succeed *before* the source is deactivated, so a failure here aborts the
+/// cutover with the source still active.
 ///
 /// Idempotency mirrors `ensure_sovereign_session_persisted`: an existing record
 /// whose refresh token is still unexpired is left untouched, so a resumed
 /// finalize never clobbers a durable credential with a possibly-staler one.
-async fn ensure_didweb_session_persisted(
+async fn ensure_bearer_session_persisted(
     store: &crate::identity_store::IdentityStore,
     did: &str,
     dest_client: &OAuthClient,
@@ -1581,7 +1595,7 @@ async fn ensure_didweb_session_persisted(
             .refresh_expires_at
             .is_some_and(|exp| (exp as i64) > now)
         {
-            tracing::info!(did = %did, "did:web session already persisted; skipping");
+            tracing::info!(did = %did, "destination bearer session already persisted; skipping");
             return Ok(());
         }
     }
@@ -1633,13 +1647,50 @@ async fn ensure_didweb_session_persisted(
         })
 }
 
-/// Tauri command: run the safe cutover — activate the destination, mint + persist its
-/// sovereign session, deactivate the source, then advance to Finalized.
+/// Which durable destination credential this finalize should persist.
+///
+/// The sovereign mint (`/v1/sessions/sovereign`) needs two things that are not always
+/// present: PLC rotation keys to sign the proof with, and a host that serves the route.
+/// This is the pure decision over both, so the reasoning is testable without a PDS.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DestinationCredential {
+    /// Mint a fresh rotation-key-signed session against the destination.
+    Sovereign,
+    /// Persist the Bearer pair the destination already issued at `createAccount`.
+    Bearer,
+}
+
+/// Decide which credential the cutover should durably persist.
+///
+/// * A **did:web** identity has no PLC rotation set, so nothing can sign the sovereign
+///   proof — Bearer regardless of host.
+/// * A host that **answered** describeServer and does not advertise `sovereignSessions`
+///   has no such route; attempting the mint would 404 *after* the identity op already
+///   landed, which is the whole failure this branch removes.
+/// * A host that could **not be asked** keeps today's sovereign behavior. Step 1 of the
+///   cutover (`activateAccount`) has already succeeded against this host by the time this
+///   is read, so `reached: false` here means a describeServer hiccup, not a dead server —
+///   and inferring "no sovereign sessions" from a blink would silently downgrade a Custos
+///   destination's credential on the strength of a fact never established.
+fn destination_credential(did: &str, destination: &ServerCapabilities) -> DestinationCredential {
+    if did.starts_with("did:web:") {
+        return DestinationCredential::Bearer;
+    }
+    if destination.reached && !destination.sovereign_sessions() {
+        return DestinationCredential::Bearer;
+    }
+    DestinationCredential::Sovereign
+}
+
+/// Tauri command: run the safe cutover — activate the destination, durably persist its
+/// session, deactivate the source, then advance to Finalized.
 ///
 /// Gate: ensure_phase_did(..., IdentityArmed) → defense-in-depth: migration_state
 /// must be cleared (None) to prove the identity op was submitted; if Some → MIGRATION_NOT_READY.
-/// The sovereign-session mint runs against the DID's *current* PLC rotation set (the identity op
-/// has already landed) using a fresh device-key proof; the frontend re-gates biometric before
+///
+/// Which credential gets persisted is [`destination_credential`]'s call. On the sovereign
+/// branch the mint runs against the DID's *current* PLC rotation set (the identity op has
+/// already landed) using a fresh device-key proof; the frontend re-gates biometric before
 /// every finalize invocation, so a resumed attempt obtains fresh authorization before that
 /// signature (and the idempotent skip means an already-persisted session signs nothing at all).
 #[tauri::command]
@@ -1647,70 +1698,96 @@ pub async fn finalize_migration(
     state: tauri::State<'_, crate::oauth::AppState>,
     did: String,
 ) -> Result<(), MigrationError> {
-    tracing::info!(did = %did, "finalize_migration: activate → sovereign session → deactivate");
-
-    // Proof material for the sovereign-session mint (imperative shell: clock + RNG).
+    // Proof material for the sovereign-session mint (imperative shell: clock + RNG). Minted
+    // here rather than inside the core so the core stays deterministic under test.
     let now = crate::sovereign_session::unix_timestamp().map_err(map_sovereign_error)?;
+    let nonce = crate::sovereign_session::fresh_nonce();
 
-    // A did:web identity has no PLC rotation keys, so the sovereign mint is impossible for it;
-    // persist the migration-issued destination Bearer session instead. Snapshot the destination
-    // coordinates up front — the closure runs after `finalize_migration_core`'s own phase/client
-    // gates, so a missing client here surfaces through those gates, never through the closure.
-    if did.starts_with("did:web:") {
-        let (dest_client, dest_pds_url, dest_server_did) = {
-            let orchestration = state.orchestration_state.lock().await;
-            match orchestration.as_ref() {
-                Some(mig) => (
-                    mig.dest_client.clone(),
-                    mig.dest_pds_url.clone(),
-                    mig.dest_did.clone(),
-                ),
-                None => (None, String::new(), String::new()),
-            }
-        };
-        let session_did = did.clone();
-        return finalize_migration_core(
-            &state.orchestration_state,
-            &state.migration_state,
-            &did,
-            || async move {
-                let dest_client =
-                    dest_client.ok_or_else(|| MigrationError::AccountCreationFailed {
-                        message: "destination client not authenticated".into(),
-                    })?;
-                ensure_didweb_session_persisted(
-                    &crate::identity_store::IdentityStore,
-                    &session_did,
-                    &dest_client,
-                    &dest_pds_url,
-                    &dest_server_did,
-                    now,
-                )
-                .await
-            },
-        )
+    finalize_migration_impl(
+        &state.orchestration_state,
+        &state.migration_state,
+        state.pds_client(),
+        &did,
+        now,
+        &nonce,
+    )
+    .await
+}
+
+/// Core of [`finalize_migration`], parameterized over the two mutexes, the PDS client, and the
+/// clock/nonce, so the whole capability-probe → branch → cutover path is drivable against mock
+/// servers without a Tauri `State`. The command above is then only `State` unwrapping.
+///
+/// Snapshots the destination coordinates, asks the destination what it can do, and dispatches
+/// to whichever credential [`destination_credential`] selects. Both branches run through the
+/// same [`finalize_migration_core`], so the strict activate → durable credential → deactivate
+/// ordering and the phase advance are identical no matter which credential is persisted.
+async fn finalize_migration_impl(
+    orchestration_state: &tokio::sync::Mutex<Option<OutboundMigrationState>>,
+    migration_state: &tokio::sync::Mutex<Option<crate::migrate::MigrationState>>,
+    pds_client: &crate::pds_client::PdsClient,
+    did: &str,
+    now: i64,
+    nonce: &str,
+) -> Result<(), MigrationError> {
+    tracing::info!(did = %did, "finalize_migration: activate → destination session → deactivate");
+
+    // Snapshot the destination coordinates up front — the closure runs after
+    // `finalize_migration_core`'s own phase/client gates, so a missing client here surfaces
+    // through those gates, never through the closure.
+    let (dest_client, dest_pds_url, dest_server_did) = {
+        let orchestration = orchestration_state.lock().await;
+        match orchestration.as_ref() {
+            Some(mig) => (
+                mig.dest_client.clone(),
+                mig.dest_pds_url.clone(),
+                mig.dest_did.clone(),
+            ),
+            None => (None, String::new(), String::new()),
+        }
+    };
+
+    // Reads the per-host cache `prepare_migration`'s describeServer already warmed, so this
+    // is normally a lock and a map lookup rather than a request.
+    let destination_capabilities = if dest_pds_url.is_empty() {
+        ServerCapabilities::none()
+    } else {
+        crate::pds_capabilities::probe(pds_client, &dest_pds_url).await
+    };
+
+    if destination_credential(did, &destination_capabilities) == DestinationCredential::Bearer {
+        tracing::info!(
+            did = %did,
+            dest_pds_url = %dest_pds_url,
+            "destination cannot mint a sovereign session; persisting the createAccount bearer pair"
+        );
+        return finalize_migration_core(orchestration_state, migration_state, did, || async move {
+            let dest_client = dest_client.ok_or_else(|| MigrationError::AccountCreationFailed {
+                message: "destination client not authenticated".into(),
+            })?;
+            ensure_bearer_session_persisted(
+                &crate::identity_store::IdentityStore,
+                did,
+                &dest_client,
+                &dest_pds_url,
+                &dest_server_did,
+                now,
+            )
+            .await
+        })
         .await;
     }
 
-    let nonce = crate::sovereign_session::fresh_nonce();
-    let pds_client = state.pds_client();
-    let session_did = did.clone();
-
-    finalize_migration_core(
-        &state.orchestration_state,
-        &state.migration_state,
-        &did,
-        || async move {
-            ensure_sovereign_session_persisted(
-                pds_client,
-                &crate::identity_store::IdentityStore,
-                &session_did,
-                now,
-                &nonce,
-            )
-            .await
-        },
-    )
+    finalize_migration_core(orchestration_state, migration_state, did, || async move {
+        ensure_sovereign_session_persisted(
+            pds_client,
+            &crate::identity_store::IdentityStore,
+            did,
+            now,
+            nonce,
+        )
+        .await
+    })
     .await
 }
 
@@ -3732,7 +3809,7 @@ mod tests {
         let _ = store.remove_identity(did);
     }
 
-    /// A JWT carrying the full claim set `ensure_didweb_session_persisted` validates.
+    /// A JWT carrying the full claim set `ensure_bearer_session_persisted` validates.
     fn make_session_jwt(sub: &str, aud: &str, exp: u64) -> String {
         use base64::engine::general_purpose::URL_SAFE_NO_PAD;
         use base64::Engine;
@@ -3747,7 +3824,7 @@ mod tests {
     // Happy path: the destination Bearer pair is validated (sub == did, aud == destination)
     // and persisted with the claim-derived expiries. No network, no signature.
     #[tokio::test]
-    async fn test_ensure_didweb_session_persisted_stores_bearer_pair() {
+    async fn test_ensure_bearer_session_persisted_stores_bearer_pair() {
         let did = "did:web:rehearsal.example";
         crate::keychain::clear_for_test();
         let store = crate::identity_store::IdentityStore;
@@ -3762,7 +3839,7 @@ mod tests {
         )
         .unwrap();
 
-        ensure_didweb_session_persisted(
+        ensure_bearer_session_persisted(
             &store,
             did,
             &client,
@@ -3787,11 +3864,113 @@ mod tests {
         let _ = store.remove_identity(did);
     }
 
+    fn capabilities(reached: bool, names: &[&str]) -> ServerCapabilities {
+        ServerCapabilities {
+            reached,
+            version: None,
+            capabilities: names.iter().map(|name| name.to_string()).collect(),
+        }
+    }
+
+    // The credential decision, over every combination that reaches it. The did:plc rows are
+    // the point of this change: the same DID finalizes differently depending only on whether
+    // the destination advertises the route that would have to serve the mint.
+    #[test]
+    fn test_destination_credential_matrix() {
+        let plc = "did:plc:subject";
+        let web = "did:web:subject.example";
+
+        // Custos destination: unchanged from before this branch existed.
+        assert_eq!(
+            destination_credential(
+                plc,
+                &capabilities(
+                    true,
+                    &[crate::pds_capabilities::capability::SOVEREIGN_SESSIONS]
+                )
+            ),
+            DestinationCredential::Sovereign
+        );
+        // A reference PDS / bsky.social answers describeServer with no `custos` object.
+        assert_eq!(
+            destination_credential(plc, &capabilities(true, &[])),
+            DestinationCredential::Bearer
+        );
+        // A Custos deployment running with sovereign sessions switched off is the same case.
+        assert_eq!(
+            destination_credential(
+                plc,
+                &capabilities(true, &[crate::pds_capabilities::capability::ESCROW])
+            ),
+            DestinationCredential::Bearer
+        );
+        // Never asked: keep today's behavior rather than infer an absence from silence.
+        assert_eq!(
+            destination_credential(plc, &ServerCapabilities::none()),
+            DestinationCredential::Sovereign
+        );
+
+        // A did:web has no rotation keys to sign the proof with — host is irrelevant.
+        for destination in [
+            capabilities(
+                true,
+                &[crate::pds_capabilities::capability::SOVEREIGN_SESSIONS],
+            ),
+            capabilities(true, &[]),
+            ServerCapabilities::none(),
+        ] {
+            assert_eq!(
+                destination_credential(web, &destination),
+                DestinationCredential::Bearer
+            );
+        }
+    }
+
+    // The Phase 3 case end to end at the persistence seam: a did:plc account migrating onto a
+    // non-Custos host stores the createAccount pair into the same `{did}:oauth-tokens` record
+    // `sovereign_login` writes, which is what lets `session_provider` restore and refresh it
+    // afterwards with no knowledge of which path minted it.
+    #[tokio::test]
+    async fn test_ensure_bearer_session_persisted_serves_a_did_plc_on_a_foreign_host() {
+        let did = "did:plc:foreignhost";
+        crate::keychain::clear_for_test();
+        let store = crate::identity_store::IdentityStore;
+        store.add_identity(did).unwrap();
+
+        let access = make_session_jwt(did, "did:web:reference.example", 9_000);
+        let refresh = make_session_jwt(did, "did:web:reference.example", 20_000);
+        let client = OAuthClient::new_bearer(
+            access.clone(),
+            refresh.clone(),
+            "https://reference.example".into(),
+        )
+        .unwrap();
+
+        ensure_bearer_session_persisted(
+            &store,
+            did,
+            &client,
+            "https://reference.example",
+            "did:web:reference.example",
+            1_000,
+        )
+        .await
+        .expect("a did:plc bearer pair persists exactly like a did:web one");
+
+        let record = store.load_oauth_tokens(did).unwrap().unwrap();
+        assert_eq!(record.access_jwt, access);
+        assert_eq!(record.refresh_jwt, refresh);
+        assert_eq!(record.pds_url, "https://reference.example");
+        assert_eq!(record.refresh_expires_at, Some(20_000));
+
+        let _ = store.remove_identity(did);
+    }
+
     // Idempotency: an existing record with an unexpired refresh token short-circuits before any
     // token validation — proven by handing a client whose tokens would FAIL validation (wrong sub)
     // and still getting Ok with the original record intact.
     #[tokio::test]
-    async fn test_ensure_didweb_session_persisted_skips_when_valid_record_exists() {
+    async fn test_ensure_bearer_session_persisted_skips_when_valid_record_exists() {
         let did = "did:web:rehearsal.example";
         crate::keychain::clear_for_test();
         let store = crate::identity_store::IdentityStore;
@@ -3814,7 +3993,7 @@ mod tests {
         let client =
             OAuthClient::new_bearer(wrong.clone(), wrong, "https://pds.example".into()).unwrap();
 
-        ensure_didweb_session_persisted(
+        ensure_bearer_session_persisted(
             &store,
             did,
             &client,
@@ -3833,7 +4012,7 @@ mod tests {
 
     // A session pair whose subject is not the migrated DID must never be persisted under it.
     #[tokio::test]
-    async fn test_ensure_didweb_session_persisted_rejects_sub_mismatch() {
+    async fn test_ensure_bearer_session_persisted_rejects_sub_mismatch() {
         let did = "did:web:rehearsal.example";
         crate::keychain::clear_for_test();
         let store = crate::identity_store::IdentityStore;
@@ -3843,7 +4022,7 @@ mod tests {
         let client =
             OAuthClient::new_bearer(wrong.clone(), wrong, "https://pds.example".into()).unwrap();
 
-        let result = ensure_didweb_session_persisted(
+        let result = ensure_bearer_session_persisted(
             &store,
             did,
             &client,
@@ -3864,7 +4043,7 @@ mod tests {
     // A session pair minted for a different server (audience mismatch on both the server DID and
     // the PDS URL) is refused.
     #[tokio::test]
-    async fn test_ensure_didweb_session_persisted_rejects_aud_mismatch() {
+    async fn test_ensure_bearer_session_persisted_rejects_aud_mismatch() {
         let did = "did:web:rehearsal.example";
         crate::keychain::clear_for_test();
         let store = crate::identity_store::IdentityStore;
@@ -3875,7 +4054,7 @@ mod tests {
             OAuthClient::new_bearer(foreign.clone(), foreign, "https://pds.example".into())
                 .unwrap();
 
-        let result = ensure_didweb_session_persisted(
+        let result = ensure_bearer_session_persisted(
             &store,
             did,
             &client,
@@ -4367,6 +4546,183 @@ mod tests {
             "migrated DID must have a persisted destination session"
         );
 
+        let _ = store.remove_identity(did);
+    }
+
+    // The Phase 3 promise, end to end through the production seam: a did:plc account whose
+    // destination is a spec-compliant non-Custos PDS finalizes without ever calling
+    // /v1/sessions/sovereign, and lands a durable credential all the same.
+    //
+    // The sibling of the happy-path test's step 9, but driven through `finalize_migration_impl`
+    // — the whole snapshot → capability probe → branch → cutover path, everything the Tauri
+    // command does bar unwrapping `State`. The destination's describeServer carries no `custos`
+    // object, which is what every reference PDS / bsky.social answers, so the branch is chosen
+    // from a real probe of a real response rather than from an injected verdict.
+    #[tokio::test]
+    #[ignore] // Requires socket binding; ignore in sandboxed environments
+    async fn test_finalize_migration_impl_uses_bearer_on_a_non_custos_destination() {
+        let did = "did:plc:noncustosdest";
+
+        let store = crate::identity_store::IdentityStore;
+        let _ = store.remove_identity(did);
+        store.add_identity(did).expect("add_identity");
+
+        // httpmock reuses ports across tests, so a verdict another test recorded for this
+        // address would otherwise be read here instead of the mock below being asked.
+        crate::pds_capabilities::clear_for_test();
+
+        let source = MockServer::start();
+        let source_url = source.base_url();
+        let dest = MockServer::start();
+        let dest_url = dest.base_url();
+        let plc = MockServer::start();
+
+        // The pair `createAccount` issues — sub == did, aud == the destination, both readable
+        // JWTs, since the Bearer branch validates that binding before persisting.
+        let session_jwt = |exp: u64| {
+            use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+            use base64::Engine;
+            let payload = URL_SAFE_NO_PAD.encode(
+                serde_json::to_vec(&serde_json::json!({
+                    "exp": exp,
+                    "sub": did,
+                    "aud": dest_url.as_str(),
+                }))
+                .unwrap(),
+            );
+            format!("e30.{payload}.sig")
+        };
+        let access_jwt = session_jwt(9_999_999_999);
+        let refresh_jwt = session_jwt(9_999_999_998);
+
+        dest.mock(|when, then| {
+            when.method(httpmock::Method::POST)
+                .path("/xrpc/com.atproto.server.reserveSigningKey");
+            then.status(200)
+                .json_body(serde_json::json!({ "signingKey": "did:key:zDEST" }));
+        });
+        source.mock(|when, then| {
+            when.method(httpmock::Method::GET)
+                .path("/xrpc/com.atproto.server.getServiceAuth");
+            then.status(200)
+                .json_body(serde_json::json!({ "token": make_bearer_jwt(9999999999) }));
+        });
+        let create_account = dest.mock(|when, then| {
+            when.method(httpmock::Method::POST)
+                .path("/xrpc/com.atproto.server.createAccount");
+            then.status(200).json_body(serde_json::json!({
+                "accessJwt": &access_jwt,
+                "refreshJwt": &refresh_jwt,
+                "handle": "alice.test",
+                "did": did,
+            }));
+        });
+
+        // The whole point: a describeServer with NO `custos` object — a real answer meaning
+        // "this host advertises nothing", which is what the reference PDS returns.
+        let describe = dest.mock(|when, then| {
+            when.method(httpmock::Method::GET)
+                .path("/xrpc/com.atproto.server.describeServer");
+            then.status(200).json_body(serde_json::json!({
+                "did": "did:web:reference",
+                "availableUserDomains": [".reference.example"],
+            }));
+        });
+
+        let activate = dest.mock(|when, then| {
+            when.method(httpmock::Method::POST)
+                .path("/xrpc/com.atproto.server.activateAccount");
+            then.status(200);
+        });
+        let deactivate = source.mock(|when, then| {
+            when.method(httpmock::Method::POST)
+                .path("/xrpc/com.atproto.server.deactivateAccount");
+            then.status(200);
+        });
+
+        // Registered so a call can be counted, and deliberately never expected to be hit.
+        // A non-Custos host would 404 this path; the assertion below is the PR's core claim.
+        let sovereign = dest.mock(|when, then| {
+            when.method(httpmock::Method::POST)
+                .path(crypto::SOVEREIGN_SESSION_PATH);
+            then.status(404);
+        });
+
+        let pds_client = crate::pds_client::PdsClient::new_for_test(plc.base_url());
+        let source_client = Arc::new(bearer_client_at(source_url.clone()));
+
+        let dest_client = create_destination_account_impl(
+            &pds_client,
+            &source_client,
+            &dest_url,
+            "did:web:reference",
+            did,
+            "alice.test",
+            "alice@example.com",
+            None,
+            None,
+        )
+        .await
+        .expect("createAccount against the non-Custos destination should succeed");
+        create_account.assert();
+
+        let orchestration = tokio::sync::Mutex::new(Some(OutboundMigrationState {
+            did: did.into(),
+            source_pds_url: source_url.clone(),
+            dest_pds_url: dest_url.clone(),
+            dest_did: "did:web:reference".into(),
+            handle: "alice.test".into(),
+            source_client: Some(source_client.clone()),
+            dest_client: Some(dest_client),
+            phase: MigrationPhase::IdentityArmed,
+            accepted_blob_loss: Vec::new(),
+            recovery: false,
+        }));
+        let migration_state = tokio::sync::Mutex::new(None); // identity op already submitted
+
+        finalize_migration_impl(
+            &orchestration,
+            &migration_state,
+            &pds_client,
+            did,
+            1_720_000_000,
+            "nonce",
+        )
+        .await
+        .expect("the cutover must complete against a non-Custos destination");
+
+        assert!(
+            describe.calls() >= 1,
+            "the destination must actually be asked what it supports"
+        );
+        assert_eq!(
+            sovereign.calls(),
+            0,
+            "/v1/sessions/sovereign must never be called for a destination that does not serve it"
+        );
+        assert_eq!(activate.calls(), 1, "destination must be activated");
+        assert_eq!(deactivate.calls(), 1, "source must be deactivated");
+        assert_eq!(
+            orchestration.lock().await.as_ref().unwrap().phase,
+            MigrationPhase::Finalized
+        );
+
+        // The credential is durable and is exactly the pair createAccount issued.
+        let record = store
+            .load_oauth_tokens(did)
+            .expect("record loads")
+            .expect("the cutover must leave a persisted destination session");
+        assert_eq!(record.access_jwt, access_jwt);
+        assert_eq!(record.refresh_jwt, refresh_jwt);
+        assert_eq!(record.server_did, "did:web:reference");
+        assert!(
+            crate::sovereign_session::stored_bearer_client(did)
+                .expect("stored session should load")
+                .is_some(),
+            "a client must be reconstructible from the persisted record alone"
+        );
+
+        crate::pds_capabilities::clear_for_test();
         let _ = store.remove_identity(did);
     }
 

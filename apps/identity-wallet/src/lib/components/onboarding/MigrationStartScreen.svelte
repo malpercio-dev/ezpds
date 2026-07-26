@@ -8,6 +8,7 @@
   import OnboardingShell from '$lib/components/ui/OnboardingShell.svelte';
   import TextField from '$lib/components/ui/TextField.svelte';
   import Button from '$lib/components/ui/Button.svelte';
+  import DestinationCapabilityNote from './DestinationCapabilityNote.svelte';
 
   let {
     did,
@@ -30,6 +31,10 @@
   let destPdsUrl = $state('');
   let email = $state('');
   let inviteCode = $state('');
+
+  // The destination URL the capability note has been asked about — set on blur, so the
+  // note never fires a request per keystroke and never reports on a half-typed host.
+  let probedPdsUrl = $state('');
 
   let checking = $state(false);
   // Field-level error (shown inline near the destination PDS field).
@@ -151,7 +156,9 @@
       aria-label="Destination PDS URL"
       disabled={checking}
       error={error ?? undefined}
+      onblur={() => (probedPdsUrl = destPdsUrl)}
     />
+    <DestinationCapabilityNote pdsUrl={probedPdsUrl} />
     <TextField
       bind:value={email}
       type="email"
