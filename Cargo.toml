@@ -133,6 +133,18 @@ hmac = "0.12"
 # HKDF-SHA256 for deriving the recovery keypair from the escrow seed (same RustCrypto family as
 # sha2/hmac, already resolved transitively via reqwest/rustls).
 hkdf = "0.12"
+# RFC 9180 HPKE for the notification relay's sealed payloads (crypto). 0.13, not 0.14:
+# 0.14 pulls its own p256 0.14 / aes-gcm 0.11 / hkdf 0.13 line (plus p384 + p521, which its
+# coarse `nistp` feature can't exclude), compiling a second major of three crypto crates the
+# workspace deliberately keeps single-major. 0.13 resolves onto the existing p256 0.13 /
+# aes-gcm 0.10 / hkdf 0.12 and its per-curve `p256` feature drags in nothing else. Same RFC,
+# same pinned suite. default-features = false drops x25519.
+hpke = { version = "0.13", default-features = false, features = ["alloc", "p256"] }
+# hpke 0.13 takes its CSPRNG from rand_core 0.9 — already in the workspace tree alongside 0.6 and
+# 0.10, so this adds no new major. It depends on rand_core with default features off, so
+# `OsRng` isn't compiled in; this renamed alias turns the `os_rng` feature on for that same 0.9
+# crate rather than adding a second copy. Renamed because `rand_core` above is the 0.6 line.
+rand_core_os = { package = "rand_core", version = "0.9", features = ["os_rng"] }
 zeroize = "1"
 urlencoding = "2"
 # QR-code matrix generation for the wallet-confirmed OAuth consent page (pds): the consent page

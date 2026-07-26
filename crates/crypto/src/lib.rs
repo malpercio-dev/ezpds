@@ -1,6 +1,7 @@
 // crypto: signing, Shamir secret sharing, DID operations.
 
 pub mod error;
+pub mod hpke;
 pub mod keys;
 mod mnemonic;
 pub mod oauth_consent;
@@ -10,6 +11,11 @@ pub mod shamir;
 pub mod sovereign_session;
 
 pub use error::CryptoError;
+pub use hpke::{
+    base64url_len, open_notification, pad_len_for_bucket, plaintext_pad_len, public_key_for_secret,
+    seal_notification, SealedNotification, APNS_MAX_PAYLOAD_BYTES, NOTIFY_AAD, NOTIFY_INFO,
+    PADDING_BUCKETS,
+};
 pub use keys::{
     decrypt_private_key, decrypt_secret_bytes, derive_recovery_keypair, encrypt_private_key,
     encrypt_secret_bytes, generate_p256_keypair, DidKeyUri, P256Keypair,

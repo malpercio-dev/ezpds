@@ -56,6 +56,12 @@ deny = [
     { name = "tower-http", version = ">=0.7" },
     # reqwest: opentelemetry 0.32 unified the tree on reqwest 0.13; the older 0.12 was dropped.
     { name = "reqwest", version = "<0.13" },
+    # hpke: pinned to 0.13. 0.14 switches to p256 0.14 / aes-gcm 0.11 / hkdf 0.13 and its coarse
+    # `nistp` feature also drags in p384 + p521 — a second major of three crypto crates the
+    # workspace deliberately keeps single-major (root Cargo.toml). Both versions implement the
+    # same RFC 9180 suite, so the bump buys nothing; if it is ever taken, take it together with
+    # the p256/aes-gcm/hkdf lines rather than forking them.
+    { name = "hpke", version = ">=0.14" },
     # tonic: unified on 0.14 alongside opentelemetry 0.32; the older 0.12 was dropped.
     { name = "tonic", version = "<0.14" },
 ]

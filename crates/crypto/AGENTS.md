@@ -1,6 +1,6 @@
 # Crypto Crate
 
-Last verified: 2026-07-17
+Last verified: 2026-07-25
 
 ## Purpose
 Provides cryptographic primitives for the ezpds workspace: P-256 key generation,
@@ -196,6 +196,45 @@ pub fn granted_scope_hash(granted_scope: &str) -> String  // lowercase-hex SHA-2
 - The wallet-confirmed OAuth-consent counterpart of the sovereign-session encoder (same length-prefixed, domain-versioned `Vec<u8>` shape). Binds the pending request's `request_id`, `client_id`, the `decision` (`approve`/`deny`), and a SHA-256 hash of the canonical granted-scope string, so a signed approval cannot be replayed onto a different request, flipped from a denial, or widened to a larger scope set.
 - `OAUTH_CONSENT_DOMAIN` (`org.obsign.custos.oauth-consent.v1`), `OAUTH_CONSENT_METHOD`, `OAUTH_CONSENT_APPROVE_PATH`, and `OAUTH_CONSENT_DECISION_{APPROVE,DENY}` expose the pinned protocol constants. Golden vector: `test-vectors/oauth-consent-envelope-v1.json` (shared with the wallet client).
 
+**`seal_notification`** / **`open_notification`** / **`public_key_for_secret`**
+
+```rust
+pub fn seal_notification(
+    sender_private_key: &[u8; 32],   // instance notification sender key (raw P-256 scalar)
+    recipient_public_key: &[u8],     // device notification key, SEC1 compressed (33) or uncompressed (65)
+    plaintext: &[u8],
+) -> Result<SealedNotification, CryptoError>
+
+pub fn open_notification(
+    recipient_private_key: &[u8; 32],
+    sender_public_key: &[u8],
+    enc: &[u8],
+    ct: &[u8],
+) -> Result<Vec<u8>, CryptoError>
+
+pub fn public_key_for_secret(private_key: &[u8; 32]) -> Result<Vec<u8>, CryptoError>
+```
+
+- RFC 9180 HPKE for the notification relay's sealed push payloads. The suite is **pinned, never negotiated**: DHKEM(P-256, HKDF-SHA256) + HKDF-SHA256 + AES-256-GCM, `mode_auth`, `info = NOTIFY_INFO` (`ezpds/notify/1`), `aad = NOTIFY_AAD` (empty). The pin is forced by the receiver — CryptoKit ships exactly one P-256 HPKE suite (`P256_SHA256_AES_GCM_256`) — so there is no downgrade lattice and a suite change means a new `info` string, not a negotiated parameter.
+- `mode_auth` is what makes the relay a blind courier: `open` only succeeds if the sealer held the pinned sender private key, so the relay can drop/duplicate pushes but cannot author authentic-looking content.
+- `seal_notification` derives the sender public key from the scalar itself (callers never supply a possibly-mismatched point) and returns `SealedNotification { enc, ct }` — `enc` is always a 65-byte uncompressed SEC1 point, `ct` is the ciphertext with the 16-byte GCM tag appended. Encapsulation is randomized: two seals of the same plaintext share no bytes.
+- `open_notification` collapses **every** failure — malformed key, wrong sender, wrong recipient, tampered ciphertext — into one opaque `CryptoError::Decryption` (no oracle), matching `decrypt_private_key`'s posture.
+- `public_key_for_secret` derives the uncompressed SEC1 point for a stored sender scalar, so callers never re-derive it with a differently-encoded point.
+- Golden vectors: `tests/fixtures/notify/hpke-notify-v1.json` (self-generated — RFC 9180 A.3 is AES-128, not this suite; see that directory's README), exercised by `tests/notify_hpke_vectors.rs` and cross-verified against CryptoKit on-device in the wallet phase.
+
+**`pad_len_for_bucket`** / **`plaintext_pad_len`** / **`base64url_len`**
+
+```rust
+pub fn pad_len_for_bucket(unpadded_serialized_len: usize) -> Option<usize>
+pub fn plaintext_pad_len(unpadded_ct_len: usize, unpadded_serialized_len: usize) -> Option<usize>
+pub fn base64url_len(n: usize) -> usize
+```
+
+- Padding arithmetic for the notification envelope, quantizing observable length so it cannot fingerprint the notification kind. Buckets (`PADDING_BUCKETS` = `{1024, 2048, 3584}`) are defined on the **serialized APNs request body** — the only length an observer measures — not on the plaintext.
+- `pad_len_for_bucket` returns the serialized bytes needed to reach the smallest bucket that fits, or `None` when even the largest won't — an unsendable payload the caller must shrink rather than send unpadded. `APNS_MAX_PAYLOAD_BYTES` (4096) is Apple's own cap; every bucket sits below it, so padding never pushes a body over.
+- `plaintext_pad_len` pulls that budget back through base64url expansion into the number of `0x20` bytes to append to the plaintext's `pad` field. Base64's 3-bytes-to-4-characters step makes some budgets unreachable (deltas of 1, 5, 9, …), so it returns the largest pad that does not overshoot: the body lands on its bucket or at most one byte under.
+- All three are pure and total (no panics, no allocation); `base64url_len` is pinned against the real encoder for n ∈ [0, 200).
+
 **`build_did_plc_rotation_op`**
 ```rust
 pub fn build_did_plc_rotation_op<F>(
@@ -343,6 +382,11 @@ pub fn diff_audit_logs(cached: &[AuditEntry], current: &[AuditEntry]) -> Vec<Aud
 - `nullified`: whether plc.directory considers this operation invalidated
 - `operation`: the raw signed PLC operation as a JSON `Value` — pass to `verify_plc_operation` to validate cryptographically
 
+**`SealedNotification`**
+- `enc`: HPKE encapsulated key — always 65 bytes (uncompressed SEC1 P-256 point)
+- `ct`: ciphertext with the 16-byte AES-256-GCM tag appended
+- Both travel unpadded-base64url in the APNs envelope's `ezpds` object
+
 **`ShamirShare`**
 - `index`: u8 in [1, 3] (not secret)
 - `data`: `Zeroizing<[u8; 32]>` (zeroized on drop)
@@ -359,13 +403,15 @@ pub fn diff_audit_logs(cached: &[AuditEntry], current: &[AuditEntry]) -> Vec<Aud
 ### Format guarantees
 
 - **did:key**: P-256 multicodec varint `[0x80, 0x24]` + compressed point, multibase base58btc encoded
+- **Notification envelope (v1)**: HPKE DHKEM(P-256, HKDF-SHA256) + HKDF-SHA256 + AES-256-GCM, `mode_auth`, `info = b"ezpds/notify/1"`, empty `aad`. `enc` = 65-byte uncompressed SEC1 point (87 base64url chars); `ct` = plaintext + 16-byte tag. Pinned by `tests/fixtures/notify/hpke-notify-v1.json` — regenerating those vectors is a wire-format change.
 - **Encryption**: `base64(nonce(12) || ciphertext(32) || tag(16))` = 80 base64 chars; fresh nonce per call
 - **did:plc genesis op sig**: base64url (no padding) decoding to exactly 64 bytes (r‖s, big-endian, low-S canonical). `build_did_plc_genesis_op` low-S normalizes its own signature; external-signer callbacks must return low-S themselves.
 - **Low-S enforced on verify (both curves)**: every verification path (`verify_genesis_op`, `verify_plc_operation`, `verify_p256_signature`) rejects non-canonical high-S signatures on P-256 and secp256k1 alike, matching `@atproto/crypto`/plc.directory strict verification. Because DIDs/CIDs are derived from the *signed* CBOR, accepting a malleated high-S twin would let one signature yield a second valid op with a different DID/CID.
 - **secp256k1 is verify-only**: `SECP256K1_MULTICODEC_PREFIX` (`[0xe7, 0x01]`, `zQ3…`) exists for verifying ops signed by the reference ecosystem; nothing in this crate generates or signs with secp256k1 keys.
 
 ## Dependencies
-- **Uses**: p256 (ECDSA/key generation), k256 (secp256k1 ECDSA — verification only, for ops signed by the reference ecosystem), aes-gcm (AES-256-GCM), multibase (base58btc encoding), rand_core (OS RNG), base64 (storage encoding), zeroize (secret cleanup), ciborium (CBOR serialization for did:plc), data-encoding (base32-lowercase for DIDs; base32 uppercase for share envelopes), sha2 (SHA-256), hkdf (HKDF-SHA256 for recovery-key derivation), serde/serde_json (struct serialization)
+
+- **Uses**: hpke (RFC 9180 sealing for notification payloads; 0.13 deliberately, so it resolves onto the workspace's p256 0.13 / aes-gcm 0.10 / hkdf 0.12 rather than forking a second major of each — guard-banned in `deny.toml`), rand_core_os (renamed rand_core 0.9 with `os_rng`, the CSPRNG hpke 0.13 expects), p256 (ECDSA/key generation), k256 (secp256k1 ECDSA — verification only, for ops signed by the reference ecosystem), aes-gcm (AES-256-GCM), multibase (base58btc encoding), rand_core (OS RNG), base64 (storage encoding), zeroize (secret cleanup), ciborium (CBOR serialization for did:plc), data-encoding (base32-lowercase for DIDs; base32 uppercase for share envelopes), sha2 (SHA-256), hkdf (HKDF-SHA256 for recovery-key derivation), serde/serde_json (struct serialization)
 - **Used by**: `crates/pds/` (key generation, did:plc genesis building and verification in POST /v1/dids; sovereign-session canonical proof encoding and dual-curve verification; `crates/pds/src/plc_ops.rs` shares the interop PLC-signing surface's audit-log fetch + service parsing; `routes/sign_plc_operation.rs`/`routes/submit_plc_operation.rs` build/verify rotation ops via `build_did_plc_rotation_op`/`verify_plc_operation`), `apps/identity-wallet/` (external signer genesis op building in DID ceremony; shared sovereign-session encoder for the wallet client)
 
 ## Invariants
@@ -389,4 +435,5 @@ pub fn diff_audit_logs(cached: &[AuditEntry], current: &[AuditEntry]) -> Vec<Aud
 - `src/oauth_consent.rs` - canonical wallet-confirmed OAuth-consent approval/denial signed-envelope encoder, `granted_scope_hash`, and protocol constants
 - `src/shamir.rs` - Shamir Secret Sharing (split/combine, GF(2^8) arithmetic) + share envelope v2 (`ShareEnvelope`, base32/mnemonic encode-decode, `split_secret_into_envelopes`/`combine_envelopes`)
 - `src/mnemonic.rs` - BIP-39-style 256-word list + byte↔word encoding for the human-custody Share 3 (module-private; used by `shamir.rs`)
+- `src/hpke.rs` - HPKE seal/open for notification payloads (pinned suite) + serialized-body padding arithmetic
 - `src/error.rs` - CryptoError enum
