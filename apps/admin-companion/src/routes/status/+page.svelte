@@ -4,7 +4,7 @@
   import { getServerHealth, type Pairing, type PairingsState, type ServerHealth } from '$lib/ipc';
   import { serverIdentity } from '$lib/server-identity';
   import { formatBytes } from '$lib/format';
-  import { formatDuration, formatBackfillWindow, sweepLine } from '$lib/health';
+  import { formatDuration, formatBackfillWindow, sweepLine, unownedBlobLine } from '$lib/health';
   import { loadPinnedPairing } from '$lib/pinned-pairing';
   import { classifyRelayError, type ErrorView } from '$lib/errors';
   import ScreenShell from '$lib/components/ui/ScreenShell.svelte';
@@ -94,6 +94,16 @@
         </dl>
       </section>
 
+      <!-- The unowned pair is the one alertable figure on this screen, so it does not sit
+           in the neutral run of counts above: it gets its own named row plus, when a
+           population is actually reported, a stated consequence beneath the grid. It is
+           strictly more sensitive than the `blob GC` sweep line below — staleness can only
+           report a sweep that stopped, while this fires with the sweep running exactly on
+           schedule, which is how a real loss once stayed invisible for six hours. -->
+      {@const unowned = unownedBlobLine(
+        health.storage.blobUnownedCount,
+        health.storage.blobUnownedBytes,
+      )}
       <section class="panel" aria-labelledby="storage-label">
         <span id="storage-label" class="label">Storage</span>
         <dl class="facts">
@@ -101,7 +111,20 @@
           <dd>{health.storage.blobCount} · {formatBytes(health.storage.blobBytes)}</dd>
           <dt>repo blocks</dt>
           <dd>{health.storage.blockCount}</dd>
+          <dt>unowned blobs</dt>
+          <dd class:dd--alarm={unowned.alarm}>{unowned.line}</dd>
         </dl>
+        {#if unowned.alarm}
+          <p class="alarm" role="status">
+            <span aria-hidden="true">⚑</span>
+            <span>
+              Stored blobs that no account claims. Expect none: collection drops a blob and
+              its last owner together, so a standing count means the bytes survived and the
+              ownership records did not. Check this server's blob bookkeeping before the
+              next collection pass runs.
+            </span>
+          </p>
+        {/if}
       </section>
 
       <section class="panel" aria-labelledby="firehose-label">
@@ -194,5 +217,21 @@
     font-size: var(--text-data);
     color: var(--color-ink-soft);
     overflow-wrap: anywhere;
+  }
+  /* The alarm tone lifts a reported unowned population out of the neutral run of counts.
+     It is the LAST cue, never the only one: the value already names the condition
+     ("ownership lost !") and the explanation below the grid restates it in words, so the
+     row reads identically with color removed (AAA). Qualified with `.facts` so it
+     outranks the `.facts dd` base rule above. */
+  .facts dd.dd--alarm {
+    color: var(--color-warning);
+  }
+  .alarm {
+    display: flex;
+    gap: var(--space-xs);
+    margin: 0;
+    font-size: var(--text-label);
+    line-height: var(--leading-body);
+    color: var(--color-warning);
   }
 </style>

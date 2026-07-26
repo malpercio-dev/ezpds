@@ -19,6 +19,7 @@ function account(did: string, flags: AccountFlag[] = []): AccountListEntry {
     status: 'active',
     totalBytes: 0,
     quotaUsedPct: 0,
+    didWebHosting: false,
     flags,
   };
 }

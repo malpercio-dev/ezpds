@@ -1,7 +1,7 @@
 # Admin Companion (operator console) Mobile App
 
 Last verified: 2026-07-10
-Last updated: 2026-07-25 (Status screen surfaces each sweep's `errors` count as a named `failed <n>` fault, distinct from `stale`)
+Last updated: 2026-07-26 (console renders the blob-integrity readouts: unowned blobs on Status, uploaded figures on Account detail, did:web hosting on the account row)
 
 ## Purpose
 
@@ -84,7 +84,9 @@ share sheet, and server-side self-revoke (Phase 8). Wired:
   `{subject: {$type, did}, takedown: {applied}}`, pinned because the relay's subject parse is
   deny-unknown-fields), `get_account_usage`/`get_account_storage` (signed GETs against
   `/v1/accounts/{did}/usage`/`…/storage` for an id-addressed pairing; the DID rides in the
-  *path*, so it is inside the signed envelope — a metrics signature is bound to its account),
+  *path*, so it is inside the signed envelope — a metrics signature is bound to its account;
+  `AccountStorage` also carries `uploadedBlobCount`/`uploadedBlobBytes`, the first-uploader
+  reading beside the ownership figures),
   `list_accounts` (signed `GET /v1/admin/accounts` for an id-addressed pairing: flagged
   accounts first then DID order, opaque-cursor pagination + derived-status filter +
   handle/DID substring search, each row carrying its watched-labeler `flags` and the page
@@ -92,14 +94,21 @@ share sheet, and server-side self-revoke (Phase 8). Wired:
   paging/filter query params are appended after signing, so every page reuses the same
   envelope shape — `AccountList`/`AccountListEntry`/`AccountFlag` are by-value copies of
   the wire shape pinned by a deserialization test, with the flag fields `serde(default)`ed
-  so a pre-labeler-watching relay still parses),
+  so a pre-labeler-watching relay still parses, and a per-row `didWebHosting` — whether
+  Custos serves that account's did:web document),
   `get_server_health` (a signed `GET /v1/admin/health` for an id-addressed pairing — the
   Status screen's data source: version/uptime, account counts by lifecycle, blob/block
   totals, firehose state, and background-sweep last-runs as `ServerHealth`, a by-value
   copy of the wire shape pinned by a deserialization test; each sweep run carries both
   `swept` and an `errors` count — `serde(default)`ed, so a relay predating the sweep-error
   channel still parses, relays in one pairing set upgrading independently — and the relay
-  reports literal facts only, so all staleness and failure judgment is client-side),
+  reports literal facts only, so all staleness and failure judgment is client-side. The
+  storage block also carries the unowned-blob pair `blobUnownedCount`/`blobUnownedBytes`.
+  These three newer readouts — the unowned pair, the uploader pair, and `didWebHosting` —
+  are modelled as `Option`/nullable rather than `serde(default)`ed, the opposite choice from
+  the sweep `errors` field, because for each of them the zero/false value is a meaningful
+  reading; defaulting would put words in an older relay's mouth, so they degrade to
+  "not reported" instead),
   `list_claim_codes`/`revoke_claim_code` (the claim-code inventory: a signed
   `GET /v1/accounts/claim-codes` — bare path signed, pagination `cursor` appended to the URL
   only, like the moderation GET — and a signed `POST /v1/accounts/claim-codes/revoke` whose
@@ -191,13 +200,28 @@ share sheet, and server-side self-revoke (Phase 8). Wired:
   monospace blob-quota readout
   (`format.ts` `quotaBar`: `[▓▓░░░] 42.00%`, fill floors — a cell lights only when fully
   earned — with a ` !` glyph at ≥90%, never color alone) rendered by the `ui/AccountRow.svelte`
-  primitive (DeviceRow's register + the quota line; lifecycle chip per row). Pinned to a single
+  primitive (DeviceRow's register + the quota line; lifecycle chip per row). A did:web row
+  additionally carries a **hosting line** (`format.ts` `didWebHostingLine`): whether Custos
+  serves that account's DID document — `served here` / `not served here` / `not reported`,
+  in the same muted register as the quota, because hosting-off is a configuration and not a
+  fault. Rendered ONLY for did:web accounts: the question does not arise for did:plc (whose
+  document lives on plc.directory), and answering it on every row would bury the rows where
+  the answer means something. The flag gates a serve path that 404s indistinguishably from
+  an unknown host when off, so this line is what tells "not hosted" apart from "broken" —
+  which is also why an older relay's `null` must read as `not reported` and never as `false`. Pinned to a single
   pairing at entry like Devices/Moderation; tapping a row hands the DID to **Account detail** via
   `?server=…&did=…` — replacing DID-pasting as the entry point for per-account work),
   **Account detail** (`src/routes/account/` — the read-only inspection home for one account:
   identity facts plus the **Usage & storage** readout panel — records/commits/blobs/stored
   bytes/last-active plus blob quota (used-of-total + %) and largest blob, byte figures via
-  `format.ts` `formatBytes`/`formatPct` — moved here from the moderation screen so a read-only
+  `format.ts` `formatBytes`/`formatPct`, and the **uploaded-blob figures**
+  (`format.ts` `uploadedBlobsLine`) — the physical rows naming this account as first
+  uploader, beside the ownership figures every other line reports. Deliberately verdict-free
+  and unmarked: blobs are content-addressed and shared, so owned-not-uploaded and
+  uploaded-not-owned both occur normally, and a badge on that benign divergence would only
+  teach the operator to ignore badges. A note beneath the grid says so in words. `null`
+  (older relay) reads as `not reported`, never as 0, which is itself a real reading —
+  moved here from the moderation screen so a read-only
   inspection task no longer lives on a destructively-framed screen. Pinned to a single pairing
   at entry (`?server=…&did=…`); nothing here signs — a "Take down or restore" entry point hands
   the same pin + DID to Moderation, which pre-fills the lookup field and runs the lookup
@@ -251,6 +275,18 @@ share sheet, and server-side self-revoke (Phase 8). Wired:
   glyph + text, never color alone; the names are load-bearing, since an unlabelled marker
   could not say which fault it meant on a row carrying both. `errors` counts broken
   *subjects*, not the work they cost, so it gets no severity dressing and no threshold.
+  The Storage panel additionally carries the **unowned-blob readout** (`health.ts`
+  `unownedBlobLine`) — stored blob rows no account claims. It is the one alertable figure
+  on this screen and the only one carrying a verdict, so it sits apart from the neutral
+  counts: its own named row, plus a stated consequence beneath the grid when a population
+  is actually reported. It needs no threshold (collection drops a physical row together
+  with its last owner, so ~0 is the real baseline) and is strictly more sensitive than the
+  `blobGc` sweep line beside it, which can only report a sweep that *stopped* — this one
+  fires with the sweep running on schedule. Three outcomes stay distinct and must never be
+  collapsed: `not reported` (relay predates the field), `none` (a reported zero — the
+  all-clear), and a marked line. Note the contrast with the sweep `errors` field, which
+  safely defaults a missing value to 0: here 0 IS the all-clear, so defaulting would
+  fabricate one, which is why the IPC seam carries these as nullable rather than defaulted.
   Reached from Home's Status button),
   **Transfers** (`src/routes/transfers/` — in-flight planned device swaps on ONE relay: every
   transfer that can still advance, newest first, with `src/lib/transfers.ts` (Functional Core:

@@ -141,6 +141,11 @@ export function healthyServer(
       blobCount: accounts * 12,
       blobBytes: accounts * 4_500_000,
       blockCount: accounts * 340,
+      // Healthy is a REPORTED zero (the all-clear), not an absent field. Degraded shows
+      // the standing population that means bytes intact, ownership gone — the alarm the
+      // sweep rows cannot raise, since blob GC keeps completing on schedule beside it.
+      blobUnownedCount: degraded ? 534 : 0,
+      blobUnownedBytes: degraded ? 1_207_959_552 : 0,
     },
     firehose: {
       currentSeq: accounts * 1000,
@@ -181,16 +186,26 @@ export function makeAdminDevice(
 /** Build a fake account row. */
 export function makeAccount(
   seed: string,
-  opts?: { status?: AccountListEntry['status']; handle?: string | null; flags?: AccountFlag[] }
+  opts?: {
+    status?: AccountListEntry['status'];
+    handle?: string | null;
+    flags?: AccountFlag[];
+    /** Override the generated did:plc — used to seed a did:web account. */
+    did?: string;
+    /** `null` stands in for a relay predating the flag. */
+    didWebHosting?: boolean | null;
+  }
 ): AccountListEntry {
   return {
-    did: fakeAccountDid(seed),
+    did: opts?.did ?? fakeAccountDid(seed),
     handle: opts?.handle ?? `${seed}.harness.relay`,
     createdAt: FIXED_NOW,
     status: opts?.status ?? 'active',
     totalBytes: 4_500_000 + hashInt(seed) % 40_000_000,
     quotaUsedPct: hashInt(seed) % 100,
     flags: opts?.flags ?? [],
+    // did:plc accounts are never Custos-hosted — their document lives on plc.directory.
+    didWebHosting: opts?.didWebHosting ?? false,
   };
 }
 
@@ -286,7 +301,14 @@ export function seedRelay(opts: {
   const flaggedCount = Math.min(opts.flagged ?? 0, accountCount);
   const accounts = Array.from({ length: accountCount }, (_, i) => {
     const flagged = i >= accountCount - flaggedCount;
+    // One did:web account per relay, so the hosting line has somewhere to appear — it is
+    // suppressed on did:plc rows, where the question doesn't arise. Degraded seeds it as
+    // NOT served, the reading the flag exists to tell apart from a broken serve path.
+    const didWeb = i === 1;
     return makeAccount(`${seed}:acct${i}`, {
+      did: didWeb ? `did:web:acct${i}.${seed}.example` : undefined,
+      handle: didWeb ? `acct${i}.${seed}.example` : undefined,
+      didWebHosting: didWeb ? !opts.degraded : false,
       status: i === 0 && opts.degraded ? 'suspended' : 'active',
       // The first flagged account carries two labels so the row shows a stack.
       flags: flagged

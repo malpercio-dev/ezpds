@@ -15,7 +15,7 @@
     type IssuedResetToken,
   } from '$lib/ipc';
   import { serverIdentity } from '$lib/server-identity';
-  import { formatBytes, formatPct } from '$lib/format';
+  import { formatBytes, formatPct, uploadedBlobsLine } from '$lib/format';
   import { loadPinnedPairing, pinnedHref } from '$lib/pinned-pairing';
   import { classifyRelayError, type ErrorView } from '$lib/errors';
   import { createArmedAction } from '$lib/armed-action.svelte';
@@ -185,6 +185,13 @@
           <dd>{formatBytes(metricsView.usage.storageBytes)}</dd>
           <dt>last active</dt>
           <dd>{metricsView.usage.lastActive}</dd>
+          <dt>uploaded blobs</dt>
+          <dd>
+            {uploadedBlobsLine(
+              metricsView.storage.uploadedBlobCount,
+              metricsView.storage.uploadedBlobBytes,
+            )}
+          </dd>
           <dt>blob quota</dt>
           <dd>
             {formatBytes(metricsView.storage.totalBytes)} of {formatBytes(
@@ -202,6 +209,16 @@
             {/if}
           </dd>
         </dl>
+        <!-- "uploaded blobs" is a SECOND reading, not a fault channel: every other figure
+             here counts what this account owns, while that one counts the stored blobs it
+             first uploaded. Blobs are content-addressed and shared, so the two diverge in
+             both directions in ordinary use — a badge on that benign difference would only
+             teach the operator to ignore badges. Stated plainly, no tone, no marker. -->
+        <p class="note">
+          Blobs are stored once and shared, so an account can own blobs it never uploaded
+          and can have uploaded blobs it no longer owns. The two figures are separate
+          readings, not a check against each other.
+        </p>
       {/if}
     </section>
 

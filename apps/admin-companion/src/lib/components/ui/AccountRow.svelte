@@ -1,6 +1,6 @@
 <script lang="ts">
   import StatusChip, { type Status } from './StatusChip.svelte';
-  import { shortenId } from '$lib/format';
+  import { didWebHostingLine, shortenId } from '$lib/format';
   import { flagLine } from '$lib/flags';
   import type { AccountFlag } from '$lib/ipc';
 
@@ -18,6 +18,7 @@
     status,
     quota,
     flags = [],
+    didWebHosting = null,
     onclick,
   }: {
     did: string;
@@ -28,8 +29,17 @@
     quota: string;
     /** In-force watched-labeler labels, newest first (empty = unflagged). */
     flags?: AccountFlag[];
+    /**
+     * Whether Custos serves this account's did:web document; null when the relay predates
+     * the field. Rendered only for a did:web account — see format.ts `didWebHostingLine`.
+     */
+    didWebHosting?: boolean | null;
     onclick?: () => void;
   } = $props();
+
+  // A neutral fact line, not a status: hosting off is a normal configuration, and the row
+  // says so only where the question arises (did:web). `null` for a did:plc account.
+  const hosting = $derived(didWebHostingLine(did, didWebHosting));
 
   // Lifecycle → chip tone/glyph/label. Precedence and vocabulary come from the relay;
   // this only picks the register: deactivated is a dormant (warning) state the user
@@ -55,6 +65,9 @@
     </div>
     <span class="id">{shortenId(did)}</span>
     <span class="quota">{quota}</span>
+    {#if hosting}
+      <span class="hosting">{hosting}</span>
+    {/if}
     {#each flags as flag (flag.labelerDid + flag.val)}
       <span class="flag">
         <span aria-hidden="true">⚑</span>
@@ -133,6 +146,14 @@
     font-size: var(--text-label);
     color: var(--color-ink-soft);
     white-space: pre;
+  }
+  /* The did:web hosting line: deliberately the same muted register as the quota readout.
+     Hosting off is a configuration, not a fault — giving it a tone would make every
+     unhosted did:web account look broken, the exact confusion the flag exists to end. */
+  .hosting {
+    font-family: var(--font-mono);
+    font-size: var(--text-label);
+    color: var(--color-ink-soft);
   }
   /* A labeler flag: the caution tone, but the meaning is carried by the ⚑ glyph, the
      literal "flagged:" text, and the row's position — never the color alone. */

@@ -5,6 +5,7 @@
 // lives here, where it is unit-testable, not in the API shape.
 
 import type { SweepRun } from '$lib/ipc';
+import { formatBytes } from '$lib/format';
 
 /**
  * Render a duration in seconds as a compact `uptime`-style figure: `47s` under a
@@ -88,4 +89,49 @@ export function sweepLine(run: SweepRun | null, nowSeconds: number): string {
   if (age >= 86_400) parts.push('stale');
   const attention = run.errors > 0 || age >= 86_400 ? ' !' : '';
   return `${parts.join(' · ')}${attention}`;
+}
+
+/** The Storage panel's unowned-blob readout: a fact line plus whether it wants attention. */
+export interface UnownedBlobReadout {
+  /** The monospace value for the fact sheet. */
+  line: string;
+  /**
+   * True only for a *reported*, standing unowned population. False for both "none" and
+   * "not reported" — an unanswerable question is not an alarm, and raising one on every
+   * older relay would train the operator to dismiss the row that matters.
+   */
+  alarm: boolean;
+}
+
+/**
+ * Stored blob rows that no account claims — the Status screen's one genuinely alertable
+ * storage figure, and the only one here that carries a verdict.
+ *
+ * Why it needs no threshold: GC deletes a physical blob row together with its last owner,
+ * so a row is unowned only in the window between two statements. ~0 is therefore the real
+ * baseline, not a tuned target, and any standing figure means the same thing — the bytes
+ * survived and the ownership rows did not. That is strictly more sensitive than the
+ * `blobGc` sweep line beside it: staleness can only report a sweep that stopped, while
+ * this fires with the sweep running exactly on schedule, which is how a real loss once
+ * stayed invisible for six hours.
+ *
+ * Contract (pinned by health.test.ts):
+ * - Three outcomes, never collapsed: `not reported` (relay predates the field — `null`),
+ *   `none` (a real, reported zero), and a populated line.
+ * - `null` NEVER renders as `none`. A reported zero is this readout's all-clear; an older
+ *   relay has cleared nothing, it simply cannot see the condition.
+ * - A populated line names the condition in words and ends with the ` !` attention glyph
+ *   (`sweepLine`/`quotaBar`'s convention) — status is text + glyph + position, never color.
+ */
+export function unownedBlobLine(
+  count: number | null,
+  bytes: number | null,
+): UnownedBlobReadout {
+  // Either half missing means the relay didn't report the pair; a half-answer is no answer.
+  if (count === null || bytes === null) return { line: 'not reported', alarm: false };
+  if (count <= 0) return { line: 'none', alarm: false };
+  return {
+    line: `${count} · ${formatBytes(bytes)} · ownership lost !`,
+    alarm: true,
+  };
 }
