@@ -16,6 +16,13 @@
     (Apple Developer portal: enable the iCloud capability with this container and
     regenerate the App Store provisioning profile, or TestFlight signing fails
     with an entitlements mismatch).
+
+    The container id is FROZEN at `iCloud.dev.malpercio.identitywallet` and must
+    stay that way even after the bundle id is renamed to org.obsign.*. An iCloud
+    container id cannot be renamed, and Apple permits one that does not match the
+    bundle id; changing it would orphan the repo CAR snapshot and the blob mirror —
+    the disaster-recovery source — silently, in an app that comes up looking like a
+    clean install. See ADR-0030.
   -->
   <key>com.apple.developer.icloud-container-identifiers</key>
   <array>
@@ -28,6 +35,40 @@
   <key>com.apple.developer.ubiquity-container-identifiers</key>
   <array>
     <string>iCloud.dev.malpercio.identitywallet</string>
+  </array>
+
+  <!--
+    Keychain access groups — the decoupling that makes a bundle-id rename survivable.
+
+    Without this key every wallet Keychain item lands in the IMPLICIT group
+    `$(AppIdentifierPrefix)dev.malpercio.identitywallet`, i.e. the access group IS the
+    bundle id. Renaming the bundle would make every existing item — device keys,
+    Share 1, sessions, the managed-DID index — invisible, silently, with the app
+    presenting as a clean install. See ADR-0030.
+
+    ORDER IS LOAD-BEARING. iOS files a new item into the FIRST entry of this array
+    when the caller does not name a group, and searches EVERY entitled group when a
+    read does not name one. So:
+
+      [0] org.obsign.shared    — the stable group. Does not track the bundle id, so a
+                                 rename cannot move it. New items are written here.
+                                 Also the shared group MM-419's notification keys need.
+      [1] dev.malpercio.…      — the legacy group, implicit until now. Listed EXPLICITLY
+                                 so it stays readable after the bundle id moves, when it
+                                 would otherwise stop being implicit and vanish.
+
+    Neither entry may be removed or reordered while any install may still hold items in
+    the legacy group. `just bundle-identity-check` and keychain.rs's
+    `entitlement_declares_stable_group_first` test enforce both.
+
+    Like the iCloud container, this entitlement must exist on the App ID (Apple Developer
+    portal: enable Keychain Sharing with both group names, regenerate the App Store
+    provisioning profile) or TestFlight signing fails with an entitlements mismatch.
+  -->
+  <key>keychain-access-groups</key>
+  <array>
+    <string>$(AppIdentifierPrefix)org.obsign.shared</string>
+    <string>$(AppIdentifierPrefix)dev.malpercio.identitywallet</string>
   </array>
 </dict>
 </plist>

@@ -185,6 +185,15 @@ swift-rs-check:
 ios-template-check:
     scripts/ios-template-check.sh
 
+# Refuse a bundle-id rename that arrives without its migration. The wallet's bundle id used to
+# double as the Keychain access group AND the iCloud container id, and both fail SILENTLY when
+# it moves — the app comes up looking like a clean install with every device key, Share 1, and
+# backup unreachable. Pins both apps' identifiers, asserts the stable access group is declared
+# first with the legacy one still present, and asserts the iCloud container stays frozen.
+# Runs on Linux — greps only. See ADR-0030.
+bundle-identity-check:
+    scripts/bundle-identity-check.sh
+
 # Install dependencies for the interop CLI (tools/interop) — one-time setup.
 interop-setup:
     cd tools/interop && pnpm install
@@ -240,7 +249,7 @@ mcp-sidecar-test:
 # Adding a check here covers `just ci` (macOS/full) and `just ci-pds` (Linux) at once —
 # the old design re-stated all twelve checks in each, so a gate added to one and
 # forgotten in the other was a silent gap.
-checks: fmt-check lock-check bruno-check docs-check changelog-check changelog-test font-check cap-check capability-docs-check ticket-ref-check runbook-parity-check auth-seam-check ssrf-client-check gc-guard-check ios-paths-check swift-rs-check ios-template-check
+checks: fmt-check lock-check bruno-check docs-check changelog-check changelog-test font-check cap-check capability-docs-check ticket-ref-check runbook-parity-check auth-seam-check ssrf-client-check gc-guard-check ios-paths-check swift-rs-check ios-template-check bundle-identity-check
 
 # Run the full CI pipeline locally (all crates; use on macOS where the iOS app builds)
 ci: checks clippy test audit deny
