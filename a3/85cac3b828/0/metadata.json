@@ -1,0 +1,88 @@
+{
+  "cli_version": "0.8.42",
+  "checkpoint_id": "a385cac3b828",
+  "session_id": "e8af716f-1e6f-4751-8d73-29c081fdda42",
+  "strategy": "manual-commit",
+  "created_at": "2026-07-26T14:16:45.676067Z",
+  "branch": "malpercio/mm-462-wallet-decouple-the-keychain-access-group-from-the-bundle-id",
+  "checkpoints_count": 2,
+  "files_touched": [
+    "docs/architecture/decisions/0030-stable-keychain-group-and-frozen-icloud-container.md",
+    "scripts/bundle-identity-check.sh",
+    "apps/identity-wallet/AGENTS.md"
+  ],
+  "agent": "Claude Code",
+  "model": "",
+  "turn_id": "540ce8030519",
+  "checkpoint_transcript_start": 240,
+  "transcript_lines_at_start": 240,
+  "compact_transcript_start": 48,
+  "token_usage": {
+    "input_tokens": 23,
+    "cache_creation_tokens": 244751,
+    "cache_read_tokens": 2605008,
+    "output_tokens": 10319,
+    "api_call_count": 12
+  },
+  "skill_events_version": 1,
+  "skill_events": [
+    {
+      "id": "claude-skill-toolu_01LFGvhwEUZKocTUdGHenfnC",
+      "event_type": "tool_invocation",
+      "skill": {
+        "name": "linear-workflow"
+      },
+      "source": {
+        "agent": "claude-code",
+        "signal": "skill_tool_use",
+        "confidence": "explicit"
+      },
+      "turn_id": "540ce8030519",
+      "transcript_anchor": {
+        "unit": "line",
+        "start": 26,
+        "end": 27,
+        "entry_ids": [
+          "e912cee8-153f-464a-b167-0d26da39e9f7"
+        ],
+        "tool_use_id": "toolu_01LFGvhwEUZKocTUdGHenfnC"
+      },
+      "native": {
+        "tool_name": "Skill",
+        "tool_use_id": "toolu_01LFGvhwEUZKocTUdGHenfnC"
+      },
+      "collapse": {
+        "target": "tool_pair",
+        "label": "Skill: linear-workflow",
+        "default_collapsed": true
+      }
+    }
+  ],
+  "session_metrics": {
+    "turn_count": 2
+  },
+  "initial_attribution": {
+    "calculated_at": "2026-07-26T14:16:45.618696Z",
+    "agent_lines": 73,
+    "agent_removed": 17,
+    "human_added": 0,
+    "human_modified": 0,
+    "human_removed": 0,
+    "total_committed": 73,
+    "total_lines_changed": 90,
+    "agent_percentage": 100,
+    "metric_version": 2
+  },
+  "prompt_attributions": [
+    {
+      "checkpoint_number": 1,
+      "user_lines_added": 5,
+      "user_lines_removed": 0,
+      "agent_lines_added": 0,
+      "agent_lines_removed": 0,
+      "user_added_per_file": {
+        ".impeccable/config.local.json": 5
+      }
+    }
+  ]
+}

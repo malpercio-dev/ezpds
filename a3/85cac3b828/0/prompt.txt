@@ -1,0 +1,5 @@
+I’m the only user of the app does that change the calculus on the container at all?
+
+---
+
+n=1 is not a durable assumption, I want to open a public TestFlight soon. Go ahead and amend the ADR
