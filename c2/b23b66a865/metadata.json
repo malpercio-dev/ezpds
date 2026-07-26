@@ -1,0 +1,38 @@
+{
+  "cli_version": "0.8.42",
+  "checkpoint_id": "c2b23b66a865",
+  "strategy": "manual-commit",
+  "branch": "claude/mm-457-foreign-pds-password-0c3df0",
+  "checkpoints_count": 1,
+  "files_touched": [
+    "apps/identity-wallet/AGENTS.md",
+    "apps/identity-wallet/src-tauri/src/lib.rs",
+    "apps/identity-wallet/src-tauri/src/password_unlock.rs",
+    "apps/identity-wallet/src-tauri/src/source_login.rs",
+    "apps/identity-wallet/src/lib/components/home/ChangeHandleScreen.svelte",
+    "apps/identity-wallet/src/lib/components/home/PasswordUnlockDialog.svelte",
+    "apps/identity-wallet/src/lib/harness/registry.ts",
+    "apps/identity-wallet/src/lib/ipc/index.ts",
+    "apps/identity-wallet/src/lib/ipc/password-unlock.ts",
+    "apps/identity-wallet/src/lib/unlock.test.ts",
+    "apps/identity-wallet/src/lib/unlock.ts",
+    "apps/identity-wallet/src/routes/+page.svelte",
+    "changelog.d/mm-457.added.md"
+  ],
+  "sessions": [
+    {
+      "metadata": "/c2/b23b66a865/0/metadata.json",
+      "transcript": "/c2/b23b66a865/0/full.jsonl",
+      "compact_transcript": "/c2/b23b66a865/0/transcript.jsonl",
+      "content_hash": "/c2/b23b66a865/0/content_hash.txt",
+      "prompt": "/c2/b23b66a865/0/prompt.txt"
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 241,
+    "cache_creation_tokens": 317382,
+    "cache_read_tokens": 32751805,
+    "output_tokens": 61500,
+    "api_call_count": 128
+  }
+}
