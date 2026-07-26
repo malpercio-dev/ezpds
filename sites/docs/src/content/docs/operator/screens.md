@@ -118,8 +118,12 @@ verdict.
   <figcaption>One relay's health as it reports it — facts only.</figcaption>
 </figure>
 
-On a degraded relay, stale background sweeps are flagged with a trailing glyph — status is
-never signalled by colour alone.
+On a degraded relay, a troubled background sweep is flagged with a trailing `!` glyph and a
+named fault — `stale` when its passes have stopped completing (the sweep is dead), or
+`failed <n>` when a pass ran but recorded `n` errors (for blob GC, an account whose
+reconcile failed is skipped, so its blobs stay uncollected — and its disk unreclaimed —
+until the fault is fixed). Naming each fault keeps the two
+legible apart on a row that carries both; status is never signalled by colour alone.
 
 <figure>
   <img src="/screenshots/admin/status-degraded.png" alt="Custos console server status for a degraded relay with stale-sweep glyphs" width="280" />
