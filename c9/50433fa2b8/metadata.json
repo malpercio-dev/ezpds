@@ -1,0 +1,33 @@
+{
+  "cli_version": "0.8.42",
+  "checkpoint_id": "c950433fa2b8",
+  "strategy": "manual-commit",
+  "branch": "claude/mm-456-shamir-escrow-less-recovery-adc920",
+  "checkpoints_count": 2,
+  "files_touched": [
+    "apps/identity-wallet/AGENTS.md",
+    "apps/identity-wallet/src-tauri/src/rekey.rs",
+    "apps/identity-wallet/src-tauri/src/self_held_kit.rs",
+    "apps/identity-wallet/src-tauri/src/share_ceremony.rs",
+    "apps/identity-wallet/src/lib/components/home/SelfHeldKitReviewScreen.svelte",
+    "apps/identity-wallet/src/lib/components/onboarding/ShamirBackupScreen.svelte",
+    "apps/identity-wallet/src/routes/+page.svelte",
+    "changelog.d/mm-456.added.md"
+  ],
+  "sessions": [
+    {
+      "metadata": "/c9/50433fa2b8/0/metadata.json",
+      "transcript": "/c9/50433fa2b8/0/full.jsonl",
+      "compact_transcript": "/c9/50433fa2b8/0/transcript.jsonl",
+      "content_hash": "/c9/50433fa2b8/0/content_hash.txt",
+      "prompt": "/c9/50433fa2b8/0/prompt.txt"
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 33,
+    "cache_creation_tokens": 394936,
+    "cache_read_tokens": 5946742,
+    "output_tokens": 18110,
+    "api_call_count": 17
+  }
+}

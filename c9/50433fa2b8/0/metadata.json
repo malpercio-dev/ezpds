@@ -1,0 +1,90 @@
+{
+  "cli_version": "0.8.42",
+  "checkpoint_id": "c950433fa2b8",
+  "session_id": "4d2d3539-c21a-40d3-87f2-31b868d328ff",
+  "strategy": "manual-commit",
+  "created_at": "2026-07-26T20:06:35.097575Z",
+  "branch": "claude/mm-456-shamir-escrow-less-recovery-adc920",
+  "checkpoints_count": 2,
+  "files_touched": [
+    "apps/identity-wallet/AGENTS.md",
+    "apps/identity-wallet/src-tauri/src/rekey.rs",
+    "apps/identity-wallet/src-tauri/src/self_held_kit.rs",
+    "apps/identity-wallet/src-tauri/src/share_ceremony.rs",
+    "apps/identity-wallet/src/lib/components/home/SelfHeldKitReviewScreen.svelte",
+    "apps/identity-wallet/src/lib/components/onboarding/ShamirBackupScreen.svelte",
+    "apps/identity-wallet/src/routes/+page.svelte",
+    "changelog.d/mm-456.added.md"
+  ],
+  "agent": "Claude Code",
+  "model": "",
+  "turn_id": "4acf47b1bbb3",
+  "checkpoint_transcript_start": 505,
+  "transcript_lines_at_start": 505,
+  "compact_transcript_start": 122,
+  "token_usage": {
+    "input_tokens": 33,
+    "cache_creation_tokens": 394936,
+    "cache_read_tokens": 5946742,
+    "output_tokens": 18110,
+    "api_call_count": 17
+  },
+  "skill_events_version": 1,
+  "skill_events": [
+    {
+      "id": "claude-skill-toolu_013cEfNuDQqTtXdZg1hjhunR",
+      "event_type": "tool_invocation",
+      "skill": {
+        "name": "pr-review-comments"
+      },
+      "source": {
+        "agent": "claude-code",
+        "signal": "skill_tool_use",
+        "confidence": "explicit"
+      },
+      "turn_id": "4acf47b1bbb3",
+      "transcript_anchor": {
+        "unit": "line",
+        "start": 533,
+        "end": 534,
+        "entry_ids": [
+          "5ab4e06b-9b5e-421b-aef4-635b0545e84b"
+        ],
+        "tool_use_id": "toolu_013cEfNuDQqTtXdZg1hjhunR"
+      },
+      "native": {
+        "tool_name": "Skill",
+        "tool_use_id": "toolu_013cEfNuDQqTtXdZg1hjhunR"
+      },
+      "collapse": {
+        "target": "tool_pair",
+        "label": "Skill: pr-review-comments",
+        "default_collapsed": true
+      }
+    }
+  ],
+  "session_metrics": {
+    "turn_count": 2
+  },
+  "initial_attribution": {
+    "calculated_at": "2026-07-26T20:06:34.971563Z",
+    "agent_lines": 149,
+    "agent_removed": 80,
+    "human_added": 0,
+    "human_modified": 0,
+    "human_removed": 0,
+    "total_committed": 149,
+    "total_lines_changed": 229,
+    "agent_percentage": 100,
+    "metric_version": 2
+  },
+  "prompt_attributions": [
+    {
+      "checkpoint_number": 1,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 0,
+      "agent_lines_removed": 0
+    }
+  ]
+}
