@@ -1,0 +1,27 @@
+{
+  "cli_version": "0.8.42",
+  "checkpoint_id": "bac95b4719fe",
+  "strategy": "manual-commit",
+  "branch": "mm-475-didweb-signin-entry",
+  "checkpoints_count": 22,
+  "files_touched": [
+    "apps/identity-wallet/src/routes/+page.svelte",
+    "changelog.d/mm-475.fixed.md"
+  ],
+  "sessions": [
+    {
+      "metadata": "/ba/c95b4719fe/0/metadata.json",
+      "transcript": "/ba/c95b4719fe/0/full.jsonl",
+      "compact_transcript": "/ba/c95b4719fe/0/transcript.jsonl",
+      "content_hash": "/ba/c95b4719fe/0/content_hash.txt",
+      "prompt": "/ba/c95b4719fe/0/prompt.txt"
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 1284,
+    "cache_creation_tokens": 3174350,
+    "cache_read_tokens": 64168043,
+    "output_tokens": 200564,
+    "api_call_count": 192
+  }
+}

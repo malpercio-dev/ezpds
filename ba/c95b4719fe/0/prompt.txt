@@ -1,0 +1,244 @@
+When we migrated did:web:malpercio.dev to pds.obsign.org, was there a step to create a password? I'm attempting an oauth login and I don't _think_ I have a password set (at least from peeking at the accounts table). should did:web account support sovereign sessions, passwordless, just as did:plc accounts have access to?
+
+---
+
+um, here's my live did.json document, I do have a #device key:
+
+```
+{
+  "@context": [
+    "https://www.w3.org/ns/did/v1"
+  ],
+  "alsoKnownAs": [
+    "at://malpercio.dev"
+  ],
+  "id": "did:web:malpercio.dev",
+  "service": [
+    {
+      "id": "did:web:malpercio.dev#atproto_pds",
+      "serviceEndpoint": "https://pds.obsign.org",
+      "type": "AtprotoPersonalDataServer"
+    }
+  ],
+  "verificationMethod": [
+    {
+      "controller": "did:web:malpercio.dev",
+      "id": "did:web:malpercio.dev#device",
+      "publicKeyMultibase": "REDACTED",
+      "type": "Multikey"
+    },
+    {
+      "controller": "did:web:malpercio.dev",
+      "id": "did:web:malpercio.dev#atproto",
+      "publicKeyMultibase": "REDACTED",
+      "type": "Multikey"
+    }
+  ]
+}
+```
+
+---
+
+You're looking at the wrong linear tool, there's another that you can use. I don't know why it is like this. I think what we should do is accept only the exact {did}#device, match what create_did.rs does, and reject outright as malformed. Since custos-hosted did:webs have some complications at the moment, let's hide them from the wallet flows and allow users to only select into the two self-hosted flows, until a time when they are needed and we've had more time to think about it. how does all that sound to you, does it sound like a reasonable and secure selection?
+
+---
+
+here is the result for my account. is this field even returned on the GET accounts admin endpoint?
+
+```
+{
+      "did": "did:web:malpercio.dev",
+      "handle": "malpercio.dev",
+      "createdAt": "2026-07-25 01:51:43",
+      "status": "active",
+      "totalBytes": 0,
+      "quotaUsedPct": 0.0,
+      "flags": []
+    }
+```
+
+---
+
+it appears to be null, I had no data returned from the query. we should add the flag. I also meant to ask you about the bytes. I very clearly have blobs, I can see them in bsky, and they did migrate over originally. I am not sure why it is now showing a count of 0
+
+---
+
+here is the result:
+
+```
+0|0|REDACTED|0
+```
+
+If the blobs aren't already in the mirror, I certainly have them in icluod
+
+---
+
+I'm running the restore right now. attached is a screenshot of the logs
+
+---
+
+restore complete, ran your recommended query. attached a screenshot of the reconcile failed logs. start filing issues as needed please
+
+---
+
+let's do the checking on listRecords and getRepo, I'd like to verify the root cause since we're talking about my account here heh
+
+---
+
+Please run your test!
+
+---
+
+Is there anything else we should do to confirm root cause before I have another session start in on the linear issues?
+
+---
+
+interesting to know the bug exists upstream. I thought other pdses and tools around the ecosystem were using atrium-repo as well. I'll get another session going on MM-472
+
+---
+
+question from the implementation
+
+---
+
+give a quick look over the Pr for 462: https://github.com/malpercio-dev/ezpds/pull/437
+
+---
+
+let's also review the PR for 473: https://github.com/malpercio-dev/ezpds/pull/438
+
+---
+
+let's now review https://github.com/malpercio-dev/ezpds/pull/441
+
+---
+
+okay, we've merged the three blob related fixes, and gc looks stable. anything else we should check before we remove the manual fix?
+
+---
+
+here's the output from the admin health endpoint: 
+
+```
+{
+  "version": "0.8.4",
+  "uptimeSeconds": 15442,
+  "accounts": {
+    "total": 9,
+    "active": 2,
+    "deactivated": 2,
+    "suspended": 0,
+    "takendown": 5,
+    "flagged": 0
+  },
+  "storage": {
+    "blobCount": 540,
+    "blobBytes": 57364553,
+    "blockCount": 8142
+  },
+  "firehose": {
+    "currentSeq": 85,
+    "subscribers": 11,
+    "retainedEvents": 43,
+    "backfillWindowSeconds": 551998
+  },
+  "sweeps": {
+    "blobGc": {
+      "completedAt": 1785028896,
+      "swept": 0,
+      "errors": 0
+    },
+    "blobMirror": {
+      "completedAt": 1785029791,
+      "swept": 0,
+      "errors": 0
+    },
+    "blobScrub": null,
+    "firehoseGc": {
+      "completedAt": 1785028891,
+      "swept": 0,
+      "errors": 0
+    },
+    "accountReaper": {
+      "completedAt": 1785028891,
+      "swept": 0,
+      "errors": 0
+    },
+    "agentClaimSweep": {
+      "completedAt": 1785029791,
+      "swept": 0,
+      "errors": 0
+    },
+    "adminNonceSweep": {
+      "completedAt": 1785028891,
+      "swept": 0,
+      "errors": 0
+    },
+    "labelerWatch": null
+  }
+}
+```
+
+---
+
+I think we're good on the mirror:
+
+```
+2026-07-25T08:03:59.593244Z  INFO pds::blob_mirror: blob mirror pass complete uploaded=0 deleted=534 errors=0
+2026-07-25T13:50:29.277077Z  INFO pds: blob restore-on-boot complete: volume and mirror bucket agree
+2026-07-25T13:50:29.277148Z  INFO pds: blob-mirror sweep started interval_secs=300 bucket="obsign-blobstore-backup-el8vsu"
+2026-07-25T17:45:43.907674Z  INFO pds::blob_mirror: blob mirror pass complete uploaded=233 deleted=0 errors=0
+2026-07-25T17:50:46.040979Z  INFO pds::blob_mirror: blob mirror pass complete uploaded=300 deleted=0 errors=0
+2026-07-25T21:21:31.790277Z  INFO pds: blob restore-on-boot complete: volume and mirror bucket agree
+2026-07-25T21:21:31.790351Z  INFO pds: blob-mirror sweep started interval_secs=300 bucket="obsign-blobstore-backup-el8vsu"
+```
+
+---
+
+475 just landed in main, let's take a look
+
+---
+
+we're up, but too soon for the health check I think. I'm about to try an oauth session now.
+
+```
+{
+  "version": "0.8.5",
+  "uptimeSeconds": 152,
+  "accounts": {
+    "total": 9,
+    "active": 2,
+    "deactivated": 2,
+    "suspended": 0,
+    "takendown": 5,
+    "flagged": 0
+  },
+  "storage": {
+    "blobCount": 540,
+    "blobBytes": 57364553,
+    "blobUnownedCount": 0,
+    "blobUnownedBytes": 0,
+    "blockCount": 8142
+  },
+  "firehose": {
+    "currentSeq": 85,
+    "subscribers": 11,
+    "retainedEvents": 43,
+    "backfillWindowSeconds": 555311
+  },
+  "sweeps": {
+    "blobGc": null,
+    "blobMirror": null,
+    "blobScrub": null,
+    "firehoseGc": null,
+    "accountReaper": null,
+    "agentClaimSweep": null,
+    "adminNonceSweep": null,
+    "labelerWatch": null
+  }
+}
+```
+
+---
+
+Hm, did we miss something with the wallet implementation? I've updated, but there is no option to scan a QR code with the did:web identity
