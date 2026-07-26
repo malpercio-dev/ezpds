@@ -48,6 +48,17 @@ git add .
 git commit -qm base
 base="$(git rev-parse HEAD)"
 
+# AGENTS.md is documentation even when nested beneath a runtime source directory, so it must
+# not make a documentation-only change require a release-note fragment.
+mkdir -p crates/pds/src/db
+cat > crates/pds/src/db/AGENTS.md <<'EOF'
+# Database guidance
+EOF
+git add crates/pds/src/db/AGENTS.md
+git commit -qm nested-agents-doc
+scripts/changelog-check.sh "$base" >"$tmp/agents.out" 2>&1
+grep -q 'no shipped surfaces changed' "$tmp/agents.out"
+
 cat > crates/pds/src/lib.rs <<'EOF'
 pub fn shipped_change() {}
 EOF
@@ -134,4 +145,4 @@ git add changelog.d
 git commit -qm own-fragment
 scripts/changelog-check.sh "$base_stale" >/dev/null
 
-echo "✓ changelog gate, release roll-up, and added-fragment presence behavior"
+echo "✓ changelog gate, nested AGENTS.md exemption, release roll-up, and added-fragment presence behavior"
