@@ -10,8 +10,9 @@
 //   POST /oauth/authorize/complete         — browser exchanges an approved request for the code
 //
 // Approval is proven with a canonical device-key envelope in the `sovereign_session` mold
-// (`crypto::encode_oauth_consent_envelope`), verified against the account's **authoritative** PLC
-// `rotationKeys` — never the cached DID doc. The envelope binds `request_id`, `client_id`, the
+// (`crypto::encode_oauth_consent_envelope`), verified against the account's **authoritative**
+// current signing authority (`identity::authority` — a did:plc rotation set, or a self-hosted
+// did:web's `#device` key) — never the cached DID doc. The envelope binds `request_id`, `client_id`, the
 // decision, and a hash of the granted scope set, so an approval cannot be replayed onto a different
 // request, flipped from a denial, or widened. Replay of the same envelope onto its own request is
 // stopped by the single-use guarded status transition (the request_id binding + single-use row
@@ -36,7 +37,7 @@ use crate::db::pending_oauth_authorizations::{
     get_pending_by_request_id, get_pending_by_user_code, insert_oauth_consent_audit_event,
     OAuthConsentAuditEventType,
 };
-use crate::identity::plc::fetch_current_plc_state;
+use crate::identity::authority::{authorized_signing_keys, AuthorityError};
 use crate::routes::oauth_templates::{build_code_redirect, error_page};
 
 const SIGNATURE_BYTES: usize = 64;
@@ -52,16 +53,6 @@ fn decode_canonical_base64url(value: &str, expected_len: usize) -> Option<Vec<u8
     (decoded.len() == expected_len && URL_SAFE_NO_PAD.encode(&decoded) == value).then_some(decoded)
 }
 
-fn is_plc_did(value: &str) -> bool {
-    let Some(suffix) = value.strip_prefix("did:plc:") else {
-        return false;
-    };
-    suffix.len() == 24
-        && suffix
-            .bytes()
-            .all(|byte| byte.is_ascii_lowercase() || (b'2'..=b'7').contains(&byte))
-}
-
 /// A request that is no longer approvable — absent, terminal, or lapsed — maps to one uniform
 /// response so the caller can't probe request state beyond "pending or not".
 fn not_approvable() -> ApiError {
@@ -71,8 +62,8 @@ fn not_approvable() -> ApiError {
     )
 }
 
-/// Signature / PLC / binding failures share one message so the surface reveals nothing about which
-/// check failed.
+/// Signature / authority / binding failures share one message so the surface reveals nothing about
+/// which check failed.
 fn approval_rejected() -> ApiError {
     ApiError::new(
         ErrorCode::AuthenticationRequired,
@@ -237,7 +228,7 @@ pub struct ApprovalResponse {
 }
 
 /// `POST /oauth/authorize/approve` — verify a device-key-signed approve/deny envelope against the
-/// account's authoritative PLC rotation set and terminate the request accordingly.
+/// account's authoritative current signing authority and terminate the request accordingly.
 pub async fn post_authorization_approve(
     State(state): State<AppState>,
     Json(request): Json<ApprovalRequest>,
@@ -247,9 +238,6 @@ pub async fn post_authorization_approve(
         .and_then(|bytes| <[u8; SIGNATURE_BYTES]>::try_from(bytes).ok())
         .ok_or_else(approval_rejected)?;
     if decode_canonical_base64url(&request.nonce, NONCE_BYTES).is_none() {
-        return Err(approval_rejected());
-    }
-    if !is_plc_did(&request.did) {
         return Err(approval_rejected());
     }
     let approve = match request.decision.as_str() {
@@ -290,8 +278,8 @@ pub async fn post_authorization_approve(
     let stored_scope = reduce_granted_scope(&pending.requested_scope, signed_scope);
 
     // 5. Verify the envelope signature, then confirm the signing key is in the account's
-    //    authoritative current PLC rotation set (never the cached DID doc). Signature first, so an
-    //    invalid signature never triggers the outbound PLC fetch.
+    //    authoritative current signing authority (never the cached DID doc). Signature first, so an
+    //    invalid signature never triggers the outbound authority lookup.
     let server_did = state.config.resolve_server_did();
     let envelope = crypto::encode_oauth_consent_envelope(
         &server_did,
@@ -308,13 +296,13 @@ pub async fn post_authorization_approve(
     crypto::verify_did_key_signature(&signing_key, &envelope, &signature)
         .map_err(|_| approval_rejected())?;
 
-    let plc = fetch_current_plc_state(
-        &state.http_client,
-        &state.config.plc_directory_url,
-        &request.did,
-    )
-    .await?;
-    if !plc.rotation_keys.iter().any(|k| k == &request.signing_key) {
+    let authority = authorized_signing_keys(&state, &request.did)
+        .await
+        .map_err(|error| match error {
+            AuthorityError::Unauthorized(_) => approval_rejected(),
+            AuthorityError::Lookup(err) => err,
+        })?;
+    if !authority.authorizes(&request.signing_key) {
         return Err(approval_rejected());
     }
 
@@ -366,7 +354,7 @@ pub async fn post_authorization_approve(
         account_did = %request.did,
         client_id = %pending.client_id,
         decision = %request.decision,
-        plc_head = %plc.cid,
+        authority = %authority.source,
         "wallet-confirmed OAuth consent decision recorded"
     );
     Ok(Json(ApprovalResponse {

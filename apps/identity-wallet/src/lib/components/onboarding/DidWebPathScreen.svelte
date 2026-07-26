@@ -1,17 +1,16 @@
 <script lang="ts">
   import OnboardingShell from '$lib/components/ui/OnboardingShell.svelte';
-  import type { DidWebHosting, DidWebOrigin } from '$lib/did-web';
-  let { onselect, onback }: { onselect: (origin: DidWebOrigin, hosting: DidWebHosting) => void; onback: () => void } = $props();
+  import type { DidWebOrigin } from '$lib/did-web';
+  let { onselect, onback }: { onselect: (origin: DidWebOrigin) => void; onback: () => void } = $props();
 </script>
 
-<OnboardingShell title="Set up your domain identity" subtitle="Choose what exists today and who will serve the DID document." {onback}>
+<OnboardingShell title="Set up your domain identity" subtitle="Choose what exists today. You will serve the DID document from your own domain." {onback}>
   <div class="grid">
-    <button onclick={() => onselect('new', 'custos')}><strong>New · Custos-hosted</strong><span>Compose a new document, then point your domain to Custos.</span></button>
-    <button onclick={() => onselect('new', 'self')}><strong>New · Self-hosted</strong><span>Export did.json and publish it on your own web host.</span></button>
-    <button onclick={() => onselect('existing', 'custos')}><strong>Existing · Custos-hosted</strong><span>Migrate the account, then transfer document hosting.</span></button>
-    <button onclick={() => onselect('existing', 'self')}><strong>Existing · Self-hosted</strong><span>Review, export, and publish the key and service changes.</span></button>
+    <button onclick={() => onselect('new')}><strong>New identity</strong><span>Compose a new did.json, then export and publish it on your own web host.</span></button>
+    <button onclick={() => onselect('existing')}><strong>Existing identity</strong><span>Review, export, and publish the key and service changes.</span></button>
   </div>
-  <p class="truth"><strong>Key protection:</strong> Custos-hosted changes require your device key. With self-hosting, the key detects unapproved changes but cannot prevent your web host from serving them.</p>
+  <p class="truth"><strong>Key protection:</strong> your device key signs every change and detects unapproved ones, but it cannot prevent your web host from serving them. Your domain remains the root of trust — and your exit.</p>
+  <p class="truth"><strong>Custos-hosted domains are unavailable for now.</strong> If Custos served your did.json, anyone holding a stolen session could rewrite the very key that authorises passwordless sign-in. We would rather offer nothing than offer that.</p>
 </OnboardingShell>
 
 <style>
