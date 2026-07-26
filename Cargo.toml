@@ -1,6 +1,7 @@
 [workspace]
 members = [
     "crates/pds",
+    "crates/notify-relay",
     "crates/repo-engine",
     "crates/crypto",
     "crates/common",

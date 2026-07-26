@@ -66,6 +66,7 @@ Release flow: `just set-version X.Y.Z` (PR) → merge → `just release` (cuts/p
 - `apps/identity-wallet/` - Tauri v2 mobile app (iOS) — Obsign identity wallet
 - `apps/admin-companion/` - Tauri v2 mobile app (iOS) — operator console ("Brass Console")
 - `crates/pds/` - PDS / Custos server (axum-based)
+- `crates/notify-relay/` - Notification relay (own binary + SQLite DB): the blind courier a self-hosted Custos instance enrolls with over iroh (`ezpds/notify/0`) to get opaque push handles for its devices, so payloads HPKE-sealed on the instance reach APNs without the relay ever seeing plaintext or keys. Enrollment is closed by default and gated on operator-minted single-use codes (`notify-relay mint-code --ttl`); `open_enrollment` opens it for a self-run relay. See its AGENTS.md
 - `crates/repo-engine/` - ATProto repo engine
 - `crates/crypto/` - Cryptographic operations (P-256 key generation, did:key derivation, AES-256-GCM encryption, did:plc genesis ops and verification)
 - `crates/common/` - Shared types and utilities
