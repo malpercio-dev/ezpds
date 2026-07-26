@@ -696,7 +696,9 @@ fn enclave_holds_key(app_label: &[u8]) -> Result<bool, String> {
             results.into_iter().next(),
             Some(SearchResult::Ref(Reference::Key(_)))
         )),
-        Err(e) if crate::keychain::is_not_found(&e) => Ok(false),
+        // A raw `security_framework` error here, not the `KeychainError` wrapper
+        // `is_not_found` takes — this queries the Security framework directly.
+        Err(e) if e.code() == crate::keychain::ERR_SEC_ITEM_NOT_FOUND => Ok(false),
         Err(e) => Err(format!("SE key lookup failed: {e}")),
     }
 }
