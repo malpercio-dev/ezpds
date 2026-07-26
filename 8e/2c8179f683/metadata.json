@@ -1,0 +1,33 @@
+{
+  "cli_version": "0.8.42",
+  "checkpoint_id": "8e2c8179f683",
+  "strategy": "manual-commit",
+  "branch": "malpercio/mm-475-didweb-sovereign-sessions-and-wallet-confirmed-oauth-consent",
+  "checkpoints_count": 1,
+  "files_touched": [
+    "apps/identity-wallet/src/lib/components/onboarding/DidWebPathScreen.svelte",
+    "changelog.d/mm-475.added.md",
+    "changelog.d/mm-475.security.md",
+    "crates/pds/src/identity/authority.rs",
+    "crates/pds/src/identity/mod.rs",
+    "crates/pds/src/routes/oauth_consent.rs",
+    "crates/pds/src/routes/sovereign_session.rs",
+    "docs/architecture/decisions/0022-did-web-for-user-owned-domains.md"
+  ],
+  "sessions": [
+    {
+      "metadata": "/8e/2c8179f683/0/metadata.json",
+      "transcript": "/8e/2c8179f683/0/full.jsonl",
+      "compact_transcript": "/8e/2c8179f683/0/transcript.jsonl",
+      "content_hash": "/8e/2c8179f683/0/content_hash.txt",
+      "prompt": "/8e/2c8179f683/0/prompt.txt"
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 148,
+    "cache_creation_tokens": 266271,
+    "cache_read_tokens": 18765910,
+    "output_tokens": 32469,
+    "api_call_count": 80
+  }
+}

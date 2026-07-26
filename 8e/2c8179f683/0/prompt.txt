@@ -1,0 +1,76 @@
+Work on Linear issue MM-475:
+
+Suggested branch name: malpercio/mm-475-didweb-sovereign-sessions-and-wallet-confirmed-oauth-consent
+
+<issue identifier="MM-475">
+<title>did:web sovereign sessions and wallet-confirmed OAuth consent</title>
+<description>
+## Summary
+
+Both passwordless auth paths are hard-gated to `did:plc`, so a `did:web` account has no way to authenticate at all when it carries no password — which every wallet-migrated account does, since the migration `createAccount` request has no `password` field and the server stores NULL for it by design.
+
+* `POST /v1/sessions/sovereign` — `is_plc_did` gate (`routes/sovereign_session.rs`)
+* `POST /oauth/authorize/approve` — same gate (`routes/oauth_consent.rs`)
+* the password consent form folds NULL into `VerifyResult::WrongPassword` (`routes/oauth_authorize.rs`)
+
+## Why this is more than a login inconvenience
+
+`SessionProvider::full_access_client` is the seam every authenticated wallet operation on a Custos-hosted identity goes through, and its ladder ends at `NeedsUnlock` → biometric sovereign login. `restore_blob_backup` sits on that seam and has its own `SessionExpired` variant that tells the frontend to run exactly that login.
+
+So for a passwordless `did:web` account, **the wallet's own iCloud media restore is reachable only while the refresh chain from migration survives.** Once it lapses, sovereign login 401s on the `is_plc_did` gate and the recovery path is gone. This was on the critical path during the <issue id="6a22b24b-7904-49cc-b5dd-e4d5386b8b54" href="https://linear.app/malpercio/issue/MM-472/blob-gc-destroys-the-blobs-of-any-account-whose-reconcile-fails">MM-472</issue> recovery.
+
+## The change is one lookup
+
+Signature verification is already method-agnostic — `crypto::verify_did_key_signature` on a `did:key:` URI, accepting P-256 and secp256k1. The only PLC-specific step is the authority lookup:
+
+```rust
+let plc = fetch_current_plc_state(...).await?;
+if !plc.rotation_keys.iter().any(|key| key == &request.signing_key) { ... }
+```
+
+The did:web counterpart primitive already exists: `identity::resolution::resolve_web_did_document` does a live, SSRF-guarded, cache-bypassing HTTPS fetch — the structural mirror of `fetch_current_plc_state`.
+
+The wallet side needs nothing. `sovereign_login_impl` never inspects the DID method.
+
+## Decided policy
+
+**Authority set is exactly** `{did}#device`**, and nothing else.** Not "any verificationMethod": `#atproto`'s private key is Custos-held, so a broader set would let this server sign its own sovereign-session envelope for an account it hosts. `create_did.rs` already enforces `#device` specifically when promoting a new did:web, so this keeps one rule across both paths.
+
+**Match** `create_did.rs`**'s predicate** — `type == "Multikey"`, `controller == did`, exact `{did}#device` id. Difference in shape: `has_key` *verifies* a known key by comparing `publicKeyMultibase`; the authority lookup *discovers* it, so it extracts that field instead. Note the VM carries bare multibase while PLC stores `did:key:` URIs — render `format!("did:key:{}", multibase)` before comparing.
+
+**Reject a document with multiple** `#device`**-shaped entries as malformed.** Duplicate `id` values already violate DID Core. Fail closed.
+
+**Resolve live, never from cache.** The `did_documents` cache is writable by `POST /v1/did-web/document`.
+
+**Gate on self-hosted only, server-side.** `POST /v1/did-web/document` lets an account rewrite its served document under session auth, so for a Custos-hosted did:web a stolen session could install an attacker `#device` key and bootstrap sovereign sessions — a privilege escalation with no key compromise. did:plc has no equivalent hole (rewriting the rotation set needs an existing rotation key, and [plc.directory](<http://plc.directory>) is external).
+
+The gate is exact rather than approximate: `POST /v1/did-web/document` already refuses unless hosting is enabled (`routes/did_web_hosting.rs`), so `did_web_hosting_enabled_at IS NULL` **is** the condition "no session-authed rewrite is possible", with no gap in either direction.
+
+Enforcement must be server-side in the authority lookup. Hiding the Custos-hosted shapes in the wallet is a sensible default but is not a security boundary — `enable_managed_hosting` is already a plumbed parameter on both wallet flows, and the route stays live for any other client and for accounts that already opted in.
+
+## Scope
+
+1. New `crates/pds/src/identity/authority.rs` — `authorized_signing_keys(state, did)`, dispatching did:plc → existing `fetch_current_plc_state` path, did:web → `resolve_web_did_document` + the `#device` policy + hosting gate. Lives in `identity/` because routes may not import one another.
+2. Delete the `is_plc_did` gates in `sovereign_session.rs` and `oauth_consent.rs`; both switch to the shared lookup. Their existing `rejected()` / `approval_rejected()` helpers already collapse every failure to one opaque message, so no new enumeration surface.
+3. Wallet: stop offering the two Custos-hosted did:web shapes (of the four in ADR-0022), deferring them until the document-rewrite circularity is resolved.
+4. ADR-0022 amendment recording the `#device`-only policy, the hosting gate and why it is exact, and the deferral.
+5. Changelog fragment — both routes are shipped surfaces.
+
+## Later upgrade path
+
+Making `#device` immutable across a `/v1/did-web/document` edit would let the hosting gate be dropped and all four ADR-0022 shapes supported, without redesigning anything.
+
+## Interim
+
+Keep a password set on `did:web:malpercio.dev` until this ships, purely as a second key to the door.
+</description>
+<team name="Mal's Machinations"/>
+<label>Security</label>
+<label>Feature</label>
+<label>did:web</label>
+<label>Wave 3: Key Sovereignty</label>
+<project name="ezpds">An easy-to-host PDS on the ATProtocol, MacOS. Grandma-approved.</project>
+<issue-relations><related><issue-ref identifier="MM-472" title="blob_gc destroys the blobs of any account whose reconcile fails"/></related></issue-relations>
+</issue>
+
+Open a pr linked to the linear issue when complete
