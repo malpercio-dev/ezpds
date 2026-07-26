@@ -28,6 +28,7 @@ export type ScenarioName =
   | 'migration-in-flight'
   | 'agent-connected'
   | 'app-password-minted'
+  | 'device-key-unusable'
   | 'rekey-eligible'
   | 'rekey-mixed'
   | 'recover-escrow'
@@ -76,6 +77,32 @@ export const scenarios: Record<ScenarioName, () => WalletState> = {
     const state = emptyWalletState();
     state.pdsUrl = DEFAULT_PDS_URL;
     upsertIdentity(state, seedIdentity({ handle: 'alice.harness.pds.local' }));
+    return state;
+  },
+
+  /**
+   * A device restored from an encrypted backup: the device-key metadata restored, the
+   * Secure Enclave key could not. The wallet must not claim custody of rotationKeys[0]
+   * it cannot sign with — the card shows "Can't sign" and offers the recovery ceremony.
+   */
+  'device-key-unusable': () => {
+    const state = emptyWalletState();
+    state.pdsUrl = DEFAULT_PDS_URL;
+    upsertIdentity(
+      state,
+      seedIdentity({ handle: 'alice.harness.pds.local', deviceKeyUnusable: true })
+    );
+    // The same loss on a did:web, where the ceremony does not apply: a did:web has no
+    // rotation keys to rotate into, so the card must state the domain-side remedy rather
+    // than offer a flow `start_share_recovery` refuses outright.
+    upsertIdentity(
+      state,
+      seedIdentity({
+        handle: 'web.example.com',
+        did: 'did:web:web.example.com',
+        deviceKeyUnusable: true,
+      })
+    );
     return state;
   },
 

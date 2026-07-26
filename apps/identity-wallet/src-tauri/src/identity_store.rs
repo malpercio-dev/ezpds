@@ -35,6 +35,17 @@ pub enum IdentityStoreError {
     KeyGenerationFailed,
     #[error("serialization error: {message}")]
     SerializationError { message: String },
+    /// The DID's device-key metadata is present but the key it names is gone from
+    /// the Secure Enclave — the state a device restored from an encrypted backup
+    /// lands in, since the metadata items restore and an enclave key never can.
+    ///
+    /// Reported instead of a public key (which would claim custody of a rotation
+    /// key nothing can sign with) and instead of a freshly-minted key (which is
+    /// absent from the DID's `rotationKeys`, so it would claim authority the DID
+    /// document does not grant). Recovery is the honest destination: it mints a
+    /// new enclave key and rotates it into `rotationKeys[0]`.
+    #[error("device key is no longer usable on this device")]
+    DeviceKeyUnusable,
 }
 
 /// Versioned full-access Bearer session stored in a managed DID's `oauth-tokens` slot.
@@ -550,6 +561,67 @@ impl IdentityStore {
     }
 }
 
+// ── Secure Enclave fast-path decision ──────────────────────────────────────────
+//
+// The enclave branch below only compiles for a real iOS device, so its decision
+// logic is factored out here — free of `cfg`, Keychain, and `security-framework`
+// — and unit-tested on the host. The branch supplies the effects (two Keychain
+// reads and the enclave lookup); this decides what they mean.
+
+/// Normalized outcome of one Keychain metadata read.
+// Constructed only by the Secure-Enclave branch (real iOS device) and by tests;
+// the host build compiles it for those tests alone.
+#[allow(dead_code)]
+#[derive(Debug)]
+pub(crate) enum MetadataItem {
+    Present(Vec<u8>),
+    Absent,
+    /// A transient OS failure — distinct from `Absent`, which would otherwise
+    /// license overwriting live key material.
+    Failed(String),
+}
+
+/// What the Secure Enclave fast path should do after reading its metadata.
+#[allow(dead_code)]
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum SeFastPath {
+    /// Metadata present and the enclave still holds the key it names.
+    UseCached(Vec<u8>),
+    /// No usable metadata — mint a fresh enclave key.
+    Generate,
+}
+
+/// Decide the fast path from the two metadata reads and an enclave liveness probe.
+///
+/// `enclave_holds` is called only when both metadata items are present, and only
+/// then does its verdict matter — the probe is a Keychain query rather than a
+/// signing operation, so it costs no biometric prompt.
+///
+/// A partially-present pair (one item without the other) cannot sign either, but
+/// it is not the restore scenario (a restore brings both back together): it is a
+/// half-finished generation, whose other half this same function is about to
+/// write. Generating is the existing behavior and the correct one.
+#[allow(dead_code)]
+pub(crate) fn classify_se_fast_path(
+    pub_item: MetadataItem,
+    label_item: MetadataItem,
+    enclave_holds: impl FnOnce(&[u8]) -> Result<bool, String>,
+) -> Result<SeFastPath, IdentityStoreError> {
+    match (pub_item, label_item) {
+        (MetadataItem::Failed(message), _) | (_, MetadataItem::Failed(message)) => {
+            Err(IdentityStoreError::KeychainError { message })
+        }
+        (MetadataItem::Present(compressed), MetadataItem::Present(app_label)) => {
+            match enclave_holds(&app_label) {
+                Ok(true) => Ok(SeFastPath::UseCached(compressed)),
+                Ok(false) => Err(IdentityStoreError::DeviceKeyUnusable),
+                Err(message) => Err(IdentityStoreError::KeychainError { message }),
+            }
+        }
+        _ => Ok(SeFastPath::Generate),
+    }
+}
+
 // ── Per-DID device key implementation ──────────────────────────────────────────
 
 #[cfg(any(target_os = "macos", all(target_os = "ios", target_env = "sim")))]
@@ -597,6 +669,66 @@ fn get_or_create_per_did_device_key(did: &str) -> Result<DevicePublicKey, Identi
     Ok(crate::device_key::make_device_public_key(compressed))
 }
 
+/// Normalize a Keychain read into the `classify_se_fast_path` input.
+#[cfg(all(target_os = "ios", not(target_env = "sim")))]
+fn read_metadata(account: &str) -> MetadataItem {
+    match crate::keychain::get_item(account) {
+        Ok(bytes) => MetadataItem::Present(bytes),
+        Err(e) if crate::keychain::is_not_found(&e) => MetadataItem::Absent,
+        Err(e) => MetadataItem::Failed(e.to_string()),
+    }
+}
+
+/// Ask the enclave whether it still holds the key `app_label` names — the same
+/// `ItemSearchOptions` lookup `per_did_sign_closure` performs at signing time,
+/// minus the signature. `Ok(false)` means the query succeeded and found nothing.
+#[cfg(all(target_os = "ios", not(target_env = "sim")))]
+fn enclave_holds_key(app_label: &[u8]) -> Result<bool, String> {
+    use security_framework::item::{ItemClass, ItemSearchOptions, Reference, SearchResult};
+
+    match ItemSearchOptions::new()
+        .class(ItemClass::key())
+        .application_label(app_label)
+        .load_refs(true)
+        .search()
+    {
+        Ok(results) => Ok(matches!(
+            results.into_iter().next(),
+            Some(SearchResult::Ref(Reference::Key(_)))
+        )),
+        // A raw `security_framework` error here, not the `KeychainError` wrapper
+        // `is_not_found` takes — this queries the Security framework directly.
+        Err(e) if e.code() == crate::keychain::ERR_SEC_ITEM_NOT_FOUND => Ok(false),
+        Err(e) => Err(format!("SE key lookup failed: {e}")),
+    }
+}
+
+/// DIDs whose enclave key has been confirmed present this launch.
+///
+/// Only *positive* verdicts are cached. A cached negative would outlive the
+/// recovery ceremony that mints a fresh enclave key in the same session, leaving
+/// the wallet insisting it cannot sign with a key it just created.
+#[cfg(all(target_os = "ios", not(target_env = "sim")))]
+static ENCLAVE_PROBE_PASSED: std::sync::OnceLock<
+    std::sync::Mutex<std::collections::HashSet<String>>,
+> = std::sync::OnceLock::new();
+
+#[cfg(all(target_os = "ios", not(target_env = "sim")))]
+fn enclave_probe_cached(did: &str) -> bool {
+    ENCLAVE_PROBE_PASSED
+        .get_or_init(Default::default)
+        .lock()
+        .map(|seen| seen.contains(did))
+        .unwrap_or(false)
+}
+
+#[cfg(all(target_os = "ios", not(target_env = "sim")))]
+fn remember_enclave_probe(did: &str) {
+    if let Ok(mut seen) = ENCLAVE_PROBE_PASSED.get_or_init(Default::default).lock() {
+        seen.insert(did.to_string());
+    }
+}
+
 #[cfg(all(target_os = "ios", not(target_env = "sim")))]
 fn get_or_create_per_did_device_key(did: &str) -> Result<DevicePublicKey, IdentityStoreError> {
     use security_framework::{
@@ -608,25 +740,28 @@ fn get_or_create_per_did_device_key(did: &str) -> Result<DevicePublicKey, Identi
     let pub_account = device_key_pub_account(did);
     let label_account = device_key_app_label_account(did);
 
-    // Fast path: check both metadata accounts — if both present, return cached public key.
-    // This avoids SE hardware interaction on every call after first generation.
-    match (
-        crate::keychain::get_item(&pub_account),
-        crate::keychain::get_item(&label_account),
-    ) {
-        (Ok(compressed), Ok(_)) => {
-            // Both present — fast path. Return the cached public key.
-            return Ok(crate::device_key::make_device_public_key(&compressed));
-        }
-        (Err(e), _) | (_, Err(e)) if !crate::keychain::is_not_found(&e) => {
-            // Transient OS error — do not fall through to generation.
-            return Err(IdentityStoreError::KeychainError {
-                message: e.to_string(),
-            });
-        }
-        _ => {
-            // One or both missing — fall through to generate.
-        }
+    // Fast path: read both metadata accounts, then confirm the enclave still holds
+    // the key the label names before reporting it. The metadata items are ordinary
+    // generic-password entries and restore from an encrypted device backup; the
+    // enclave key does not and never will, so "metadata present" is not proof of
+    // key existence — it is exactly the state a restored device wakes up in.
+    let verdict = classify_se_fast_path(
+        read_metadata(&pub_account),
+        read_metadata(&label_account),
+        |app_label| {
+            if enclave_probe_cached(did) {
+                return Ok(true);
+            }
+            let holds = enclave_holds_key(app_label)?;
+            if holds {
+                remember_enclave_probe(did);
+            }
+            Ok(holds)
+        },
+    )?;
+
+    if let SeFastPath::UseCached(compressed) = verdict {
+        return Ok(crate::device_key::make_device_public_key(&compressed));
     }
 
     // Generate a new SE-backed P-256 key.
@@ -703,6 +838,10 @@ fn get_or_create_per_did_device_key(did: &str) -> Result<DevicePublicKey, Identi
             message: e.to_string(),
         }
     })?;
+
+    // The key was just created in this process, so the fast path may trust it for
+    // the rest of the launch without re-querying.
+    remember_enclave_probe(did);
 
     Ok(crate::device_key::make_device_public_key(&compressed))
 }
@@ -972,6 +1111,102 @@ mod tests {
         };
         let json5 = serde_json::to_string(&err5).expect("serialization failed");
         assert!(json5.contains(r#""code":"SERIALIZATION_ERROR""#));
+
+        let err6 = IdentityStoreError::DeviceKeyUnusable;
+        let json6 = serde_json::to_string(&err6).expect("serialization failed");
+        assert!(json6.contains(r#""code":"DEVICE_KEY_UNUSABLE""#));
+    }
+
+    // ── Secure Enclave fast-path decision ─────────────────────────────────────
+    //
+    // The enclave branch itself compiles only for a real iOS device; these cover
+    // the decision it delegates here, on every host.
+
+    // The restore case: an encrypted-backup restore brings both metadata items
+    // back while leaving the enclave key behind. Reporting the cached public key
+    // would claim custody of rotationKeys[0] that no signature can back, and
+    // minting a fresh key would claim authority the DID document never granted.
+    #[test]
+    fn se_fast_path_metadata_present_but_enclave_empty_is_unusable() {
+        let result = classify_se_fast_path(
+            MetadataItem::Present(vec![0x02; 33]),
+            MetadataItem::Present(b"app-label".to_vec()),
+            |_| Ok(false),
+        );
+
+        assert!(
+            matches!(result, Err(IdentityStoreError::DeviceKeyUnusable)),
+            "expected DeviceKeyUnusable, got {result:?}"
+        );
+    }
+
+    #[test]
+    fn se_fast_path_returns_cached_key_when_enclave_resolves() {
+        let result = classify_se_fast_path(
+            MetadataItem::Present(vec![0x03; 33]),
+            MetadataItem::Present(b"app-label".to_vec()),
+            |label| {
+                assert_eq!(label, b"app-label");
+                Ok(true)
+            },
+        );
+
+        assert_eq!(result.unwrap(), SeFastPath::UseCached(vec![0x03; 33]));
+    }
+
+    // No metadata means no key was ever generated for this DID — nothing to
+    // probe, and nothing a fresh key could contradict.
+    #[test]
+    fn se_fast_path_generates_when_metadata_absent() {
+        let result = classify_se_fast_path(MetadataItem::Absent, MetadataItem::Absent, |_| {
+            panic!("enclave must not be probed when there is no label to probe with")
+        });
+
+        assert_eq!(result.unwrap(), SeFastPath::Generate);
+    }
+
+    // Half-written metadata is an interrupted generation, not a restore; the
+    // pair always returns together from a backup.
+    #[test]
+    fn se_fast_path_generates_when_metadata_is_partial() {
+        let result = classify_se_fast_path(
+            MetadataItem::Present(vec![0x02; 33]),
+            MetadataItem::Absent,
+            |_| panic!("enclave must not be probed without a label"),
+        );
+
+        assert_eq!(result.unwrap(), SeFastPath::Generate);
+    }
+
+    // A transient OS failure must never be read as "absent" — that would license
+    // overwriting a key that is merely temporarily unreadable.
+    #[test]
+    fn se_fast_path_surfaces_keychain_failure_instead_of_generating() {
+        let result = classify_se_fast_path(
+            MetadataItem::Failed("errSecInteractionNotAllowed".into()),
+            MetadataItem::Present(b"app-label".to_vec()),
+            |_| panic!("enclave must not be probed after a failed metadata read"),
+        );
+
+        assert!(matches!(
+            result,
+            Err(IdentityStoreError::KeychainError { .. })
+        ));
+    }
+
+    // A failed probe is not a verdict of absence either.
+    #[test]
+    fn se_fast_path_failed_probe_is_not_unusable() {
+        let result = classify_se_fast_path(
+            MetadataItem::Present(vec![0x02; 33]),
+            MetadataItem::Present(b"app-label".to_vec()),
+            |_| Err("SE key lookup failed".into()),
+        );
+
+        assert!(matches!(
+            result,
+            Err(IdentityStoreError::KeychainError { .. })
+        ));
     }
 
     // ── Per-DID device key ─────────────────────────────────────────────────────

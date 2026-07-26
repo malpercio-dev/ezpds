@@ -8,7 +8,15 @@ export type IdentityStoreError =
   | { code: 'IDENTITY_ALREADY_EXISTS' }
   | { code: 'KEYCHAIN_ERROR'; message: string }
   | { code: 'KEY_GENERATION_FAILED'; message: string }
-  | { code: 'SERIALIZATION_ERROR'; message: string };
+  | { code: 'SERIALIZATION_ERROR'; message: string }
+  /**
+   * This device's key for the identity is gone from the Secure Enclave, while the
+   * metadata naming it survived (an encrypted-backup restore does exactly this).
+   * The identity itself is intact — only this device's control of it is lost — so
+   * the honest surface is a degraded state that offers recovery, never a root-key
+   * badge and never a signing attempt that will fail.
+   */
+  | { code: 'DEVICE_KEY_UNUSABLE' };
 
 export const listIdentities = (): Promise<string[]> =>
   invoke('list_identities');

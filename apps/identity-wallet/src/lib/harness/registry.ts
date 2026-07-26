@@ -487,6 +487,8 @@ export function buildRegistry(state: WalletState): Registry {
     },
     get_device_key_id: (args): string => {
       const identity = findIdentity(state, didArg(args));
+      // The enclave-liveness verdict, not a lookup failure: metadata present, key gone.
+      if (identity?.deviceKeyUnusable) throw { code: 'DEVICE_KEY_UNUSABLE' };
       return identity ? identity.deviceKeyId : fakeDeviceKeyId(didArg(args));
     },
     sovereign_login: (args): SovereignLoginResult => ({

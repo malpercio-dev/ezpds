@@ -15,9 +15,24 @@
     onsignin,
     onbackup,
     onremove,
+    deviceKeyUnusable = false,
+    onrecover,
   }: {
     didDoc: Record<string, unknown>;
     onback: () => void;
+    /**
+     * The Secure Enclave no longer holds this identity's device key. Every signing entry
+     * point above is already withheld (they gate on the device key being root, which can
+     * no longer be established) — this says *why* they are gone, so their absence reads
+     * as an explanation rather than a missing feature.
+     */
+    deviceKeyUnusable?: boolean;
+    /**
+     * Enter the recovery ceremony — the flow that restores this device's ability to sign.
+     * did:plc only: the ceremony rotates a fresh key into `rotationKeys[0]`, which a did:web
+     * does not have. Callers must withhold it for a did:web, which gets its own remedy above.
+     */
+    onrecover?: () => void;
     /** Only passed when the device key is the DID's root rotation key — gates the
      *  wallet-authorized outbound migration entry point (ADR-0002 path 1). */
     onmigrate?: () => void;
@@ -94,6 +109,48 @@
     Back
   </button>
   <h1 class="title">DID document</h1>
+
+  {#if deviceKeyUnusable}
+    <div class="didweb didweb--warn" role="note">
+      <span class="didweb-ic" aria-hidden="true">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="11" width="18" height="10" rx="2"/><path d="M7 11V7a5 5 0 0 1 9.3-2.5"/><path d="m2 2 20 20"/></svg>
+      </span>
+      <div class="didweb-body">
+        <p class="didweb-t">This device can no longer sign for this identity</p>
+        {#if isWebDid}
+          <!-- No recovery ceremony here: it works by rotating a fresh key into
+               rotationKeys[0] via a PLC operation, and a did:web has no rotation keys —
+               `start_share_recovery` refuses a non-did:plc identifier outright. The remedy
+               is the domain, the same place all of a did:web's authority comes from. -->
+          <p class="didweb-s">
+            Its key lived in this device's Secure Enclave, which a backup can never restore —
+            so a restored or replaced device arrives without it. <strong>The identity itself is
+            unaffected</strong>: it lives at your domain, and control of that domain is what
+            defends it. Only this device's ability to act for it is gone.
+          </p>
+          <p class="didweb-s">
+            A did:web has no rotation keys, so there is no recovery ceremony to run. To give
+            this device a working key again: remove the identity here (which only forgets it
+            locally — it publishes nothing), import it again to issue a fresh key, then publish
+            that key in your domain's <code>did.json</code>.
+          </p>
+        {:else}
+          <p class="didweb-s">
+            Its key lived in this device's Secure Enclave, which a backup can never restore —
+            so a restored or replaced device arrives without it. <strong>The identity itself is
+            unaffected</strong>: it is intact on the public record, and your recovery shares still
+            control it. Only this device's ability to act for it is gone, which is why changing the
+            handle, migrating, and repairing the endpoint are unavailable here.
+            Recovering issues a new key on this device and installs it as the identity's top
+            rotation key.
+          </p>
+          {#if onrecover}
+            <button class="recover-btn" onclick={onrecover}>Recover this identity</button>
+          {/if}
+        {/if}
+      </div>
+    </div>
+  {/if}
 
   {#if isWebDid}
     <div class="didweb" role="note">
@@ -252,6 +309,27 @@
     border: 1px solid var(--color-line);
     border-radius: var(--radius-lg);
     padding: var(--space-md);
+  }
+  /* Same notice shell as the did:web note; the warning tone marks a state that needs
+     action, while the icon and the copy carry the meaning on their own. */
+  .didweb--warn {
+    background: var(--color-warning-surface);
+  }
+  .didweb--warn .didweb-ic {
+    color: var(--color-warning);
+  }
+  .recover-btn {
+    align-self: flex-start;
+    margin-top: var(--space-xs);
+    min-height: var(--size-tap-target);
+    padding: 0 var(--space-md);
+    background: var(--color-bg);
+    color: var(--color-ink);
+    border: 1px solid var(--color-line);
+    border-radius: var(--radius-md);
+    font-size: var(--text-label);
+    font-weight: var(--weight-semibold);
+    cursor: pointer;
   }
   .didweb-ic {
     width: 34px;
