@@ -56,6 +56,7 @@ done < <(git diff --name-only --diff-filter=A "${base_ref}...HEAD" -- "$fragment
 
 changed_files="$(git diff --name-only "${base_ref}...HEAD")"
 shipped_files="$(printf '%s\n' "$changed_files" | awk '
+  /(^|\/)AGENTS\.md$/ { next }
   /^Cargo\.toml$/ || /^Cargo\.lock$/ || /^Dockerfile$/ || /^railway\.toml$/ { print; next }
   /^nix\/module\.nix$/ { print; next }
   /^sites\/marketing\// { print; next }
