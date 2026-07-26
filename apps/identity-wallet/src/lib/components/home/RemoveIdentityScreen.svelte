@@ -6,11 +6,11 @@
     tombstoneIdentity,
     listPendingRemovals,
     forgetIdentityLocally,
-    sovereignLogin,
     isCodedError,
     type RemovalError,
     type RemovalOutcome,
   } from '$lib/ipc';
+  import { unlockIdentity, isUnlockCancelled } from '$lib/unlock';
   import { authenticateBiometric } from '$lib/biometric';
   import { truncateDid } from '$lib/did-doc-utils';
   import { didWebDocumentUrl } from '$lib/did-web';
@@ -138,7 +138,9 @@
   }
 
   /** Translate a typed RemovalError (or any throwable) into a display string. */
-  function messageFor(raw: unknown): string {
+  function messageFor(raw: unknown): string | null {
+    // A dismissed unlock prompt is the user's decision, not a failure: say nothing.
+    if (isUnlockCancelled(raw)) return null;
     if (isCodedError(raw)) {
       const err = raw as RemovalError;
       switch (err.code) {
@@ -179,10 +181,11 @@
       await requestIdentityRemoval(did);
       phase = 'confirm';
     } catch (raw: unknown) {
-      // A locked identity: run the passwordless unlock (biometric-gated) once, then retry.
+      // A locked identity: run the host's unlock (biometric sovereign login on Custos, a
+      // password prompt on any other host) once, then retry.
       if (isCodedError(raw) && (raw as RemovalError).code === 'SESSION_REQUIRED') {
         try {
-          await sovereignLogin(did);
+          await unlockIdentity(did);
           await requestIdentityRemoval(did);
           phase = 'confirm';
           return;

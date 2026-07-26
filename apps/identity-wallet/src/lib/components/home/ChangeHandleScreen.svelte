@@ -10,10 +10,10 @@
     getIdentityHandleDomains,
     changeHandle,
     ensureIdentitySession,
-    sovereignLogin,
     isCodedError,
     type HandleChangeError,
   } from '$lib/ipc';
+  import { unlockIdentity, isUnlockCancelled } from '$lib/unlock';
 
   let {
     did,
@@ -71,7 +71,9 @@
     }
   }
 
-  function messageFor(raw: unknown): string {
+  function messageFor(raw: unknown): string | null {
+    // A dismissed unlock prompt is the user's decision, not a failure: say nothing.
+    if (isUnlockCancelled(raw)) return null;
     if (!isCodedError(raw)) return 'Something went wrong. Please try again.';
     const err = raw as HandleChangeError;
     switch (err.code) {
@@ -108,13 +110,14 @@
     phase = { kind: 'working' };
 
     try {
-      // Pre-flight the session with no prompt. If it's locked, unlock it passwordlessly
-      // (biometric) BEFORE the change-handle biometric — avoids a wasted prompt.
+      // Pre-flight the session with no prompt. If it's locked, unlock it (biometric on a
+      // Custos host, password prompt elsewhere) BEFORE the change-handle biometric —
+      // avoids a wasted prompt.
       try {
         await ensureIdentitySession(did);
       } catch (e) {
         if (isCodedError(e) && e.code === 'NEEDS_UNLOCK') {
-          await sovereignLogin(did);
+          await unlockIdentity(did);
         } else {
           throw e;
         }
@@ -126,7 +129,7 @@
       } catch (e) {
         // A live token can lapse between the pre-flight and the command. Unlock once and retry.
         if (isCodedError(e) && e.code === 'SESSION_LOCKED') {
-          await sovereignLogin(did);
+          await unlockIdentity(did);
           result = await changeHandle(did, fullHandle);
         } else {
           throw e;
@@ -136,7 +139,8 @@
       phase = { kind: 'success', handle: fullHandle };
     } catch (e) {
       console.error('[ChangeHandleScreen] change handle failed:', e);
-      phase = { kind: 'ready', domains, error: messageFor(e) };
+      // A dismissed unlock returns to the form with no error — the user chose not to proceed.
+      phase = { kind: 'ready', domains, error: messageFor(e) ?? undefined };
     }
   }
 

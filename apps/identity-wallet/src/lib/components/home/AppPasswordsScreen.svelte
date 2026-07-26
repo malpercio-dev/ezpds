@@ -13,12 +13,12 @@
     createAppPassword,
     revokeAppPassword,
     ensureIdentitySession,
-    sovereignLogin,
     isCodedError,
     type AppPasswordEntry,
     type AppPasswordCreated,
     type AppPasswordsError,
   } from '$lib/ipc';
+  import { unlockIdentity, isUnlockCancelled } from '$lib/unlock';
 
   let {
     did,
@@ -33,7 +33,7 @@
   // in. The session it opens is scope-bounded: Bluesky things yes, sovereign things no.
 
   let loading = $state(true);
-  // The list couldn't load because the identity's session needs a passwordless unlock.
+  // The list couldn't load because the identity's session needs an unlock.
   let locked = $state(false);
   let loadError = $state<string | null>(null);
   let passwords = $state<AppPasswordEntry[]>([]);
@@ -57,7 +57,9 @@
 
   let nameValid = $derived(name.trim().length > 0);
 
-  function messageFor(raw: unknown): string {
+  function messageFor(raw: unknown): string | null {
+    // A dismissed unlock prompt is the user's decision, not a failure: say nothing.
+    if (isUnlockCancelled(raw)) return null;
     if (!isCodedError(raw)) return 'Something went wrong. Please try again.';
     const err = raw as AppPasswordsError;
     switch (err.code) {
@@ -98,9 +100,9 @@
 
   async function unlockAndReload() {
     try {
-      await sovereignLogin(did);
+      await unlockIdentity(did);
     } catch (e) {
-      console.error('[AppPasswordsScreen] sovereign login failed:', e);
+      console.error('[AppPasswordsScreen] unlock failed:', e);
       return;
     }
     await load();
@@ -112,13 +114,14 @@
     creating = true;
     createError = null;
     try {
-      // Pre-flight the session with no prompt. If it's locked, unlock it passwordlessly
-      // (biometric) BEFORE the mint's own biometric gate — avoids a wasted prompt.
+      // Pre-flight the session with no prompt. If it's locked, unlock it (biometric on a
+      // Custos host, password prompt elsewhere) BEFORE the mint's own biometric gate —
+      // avoids a wasted prompt.
       try {
         await ensureIdentitySession(did);
       } catch (e) {
         if (isCodedError(e) && e.code === 'NEEDS_UNLOCK') {
-          await sovereignLogin(did);
+          await unlockIdentity(did);
         } else {
           throw e;
         }
@@ -130,7 +133,7 @@
       } catch (e) {
         // A live token can lapse between the pre-flight and the command. Unlock once and retry.
         if (isCodedError(e) && e.code === 'SESSION_LOCKED') {
-          await sovereignLogin(did);
+          await unlockIdentity(did);
           result = await createAppPassword(did, trimmed, privileged);
         } else {
           throw e;
@@ -187,7 +190,7 @@
         await revokeAppPassword(did, entryName);
       } catch (e) {
         if (isCodedError(e) && e.code === 'SESSION_LOCKED') {
-          await sovereignLogin(did);
+          await unlockIdentity(did);
           await revokeAppPassword(did, entryName);
         } else {
           throw e;
@@ -245,7 +248,7 @@
   {:else if locked}
     <div class="notice notice--locked">
       <p class="notice-text notice-text--ink">
-        This identity is locked. Unlock it with your device key to manage app passwords.
+        This identity is locked. Unlock it to manage app passwords.
       </p>
       <Button onclick={unlockAndReload}>Unlock</Button>
     </div>

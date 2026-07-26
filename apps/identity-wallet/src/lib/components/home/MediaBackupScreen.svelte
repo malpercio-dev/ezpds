@@ -15,7 +15,6 @@
     setRepoBackupEnabled,
     runRepoBackup,
     ensureIdentitySession,
-    sovereignLogin,
     isCodedError,
     type BlobBackupStatus,
     type BlobBackupRunReport,
@@ -25,6 +24,7 @@
     type RepoBackupRunReport,
     type RepoBackupError,
   } from '$lib/ipc';
+  import { unlockIdentity, isUnlockCancelled } from '$lib/unlock';
 
   let {
     did,
@@ -71,7 +71,9 @@
     return cid.length > 16 ? `${cid.slice(0, 8)}…${cid.slice(-6)}` : cid;
   }
 
-  function messageFor(raw: unknown): string {
+  function messageFor(raw: unknown): string | null {
+    // A dismissed unlock prompt is the user's decision, not a failure: say nothing.
+    if (isUnlockCancelled(raw)) return null;
     if (!isCodedError(raw)) return 'Something went wrong. Please try again.';
     const err = raw as BlobBackupError;
     switch (err.code) {
@@ -261,13 +263,14 @@
     restoreReport = null;
     backupReport = null;
     try {
-      // Pre-flight the session with no prompt. If it's locked, unlock it passwordlessly
-      // (biometric) BEFORE the restore's own biometric gate — avoids a wasted prompt.
+      // Pre-flight the session with no prompt. If it's locked, unlock it (biometric on a
+      // Custos host, password prompt elsewhere) BEFORE the restore's own biometric gate —
+      // avoids a wasted prompt.
       try {
         await ensureIdentitySession(did);
       } catch (e) {
         if (isCodedError(e) && e.code === 'NEEDS_UNLOCK') {
-          await sovereignLogin(did);
+          await unlockIdentity(did);
         } else {
           throw e;
         }
@@ -277,10 +280,9 @@
       try {
         report = await restoreBlobBackup(did);
       } catch (e) {
-        // A live token can lapse between the pre-flight and the command. Unlock once
-        // (passwordless biometric sovereign login) and retry.
+        // A live token can lapse between the pre-flight and the command. Unlock once and retry.
         if (isCodedError(e) && e.code === 'SESSION_LOCKED') {
-          await sovereignLogin(did);
+          await unlockIdentity(did);
           report = await restoreBlobBackup(did);
         } else {
           throw e;

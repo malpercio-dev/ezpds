@@ -54,6 +54,7 @@ Source: `apps/identity-wallet/src/lib/ipc/`
 | `get_blob_backup_status` | App command |
 | `get_device_key_id` | App command |
 | `get_identity_handle_domains` | App command |
+| `get_identity_unlock_route` | App command |
 | `get_pds_capabilities` | App command |
 | `get_pds_url` | App command |
 | `get_pending_recovery_epilogue` | App command |
@@ -113,6 +114,7 @@ Source: `apps/identity-wallet/src/lib/ipc/`
 | `transfer_blobs` | App command |
 | `transfer_preferences` | App command |
 | `transfer_repo` | App command |
+| `unlock_identity_with_password` | App command |
 | `verify_import` | App command |
 | `verify_recovery_shares` | App command |
 
