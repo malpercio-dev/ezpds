@@ -1,0 +1,89 @@
+{
+  "cli_version": "0.8.42",
+  "checkpoint_id": "a448cbd37041",
+  "session_id": "e8af716f-1e6f-4751-8d73-29c081fdda42",
+  "strategy": "manual-commit",
+  "created_at": "2026-07-26T04:01:21.233332Z",
+  "branch": "malpercio/mm-462-wallet-decouple-the-keychain-access-group-from-the-bundle-id",
+  "checkpoints_count": 1,
+  "files_touched": [
+    "apps/identity-wallet/src-tauri/Entitlements.ios.plist",
+    "apps/identity-wallet/src-tauri/src/keychain.rs",
+    "scripts/bundle-identity-check.sh",
+    "justfile",
+    "docs/architecture/decisions/0030-stable-keychain-group-and-frozen-icloud-container.md",
+    "docs/architecture/decisions/README.md",
+    "changelog.d/mm-462.security.md",
+    "apps/identity-wallet/AGENTS.md",
+    "AGENTS.md"
+  ],
+  "agent": "Claude Code",
+  "model": "",
+  "turn_id": "0098dd4c596a",
+  "compact_transcript_start": 0,
+  "token_usage": {
+    "input_tokens": 3963,
+    "cache_creation_tokens": 221470,
+    "cache_read_tokens": 6595823,
+    "output_tokens": 29004,
+    "api_call_count": 35
+  },
+  "skill_events_version": 1,
+  "skill_events": [
+    {
+      "id": "claude-skill-toolu_01LFGvhwEUZKocTUdGHenfnC",
+      "event_type": "tool_invocation",
+      "skill": {
+        "name": "linear-workflow"
+      },
+      "source": {
+        "agent": "claude-code",
+        "signal": "skill_tool_use",
+        "confidence": "explicit"
+      },
+      "turn_id": "0098dd4c596a",
+      "transcript_anchor": {
+        "unit": "line",
+        "start": 26,
+        "end": 27,
+        "entry_ids": [
+          "e912cee8-153f-464a-b167-0d26da39e9f7"
+        ],
+        "tool_use_id": "toolu_01LFGvhwEUZKocTUdGHenfnC"
+      },
+      "native": {
+        "tool_name": "Skill",
+        "tool_use_id": "toolu_01LFGvhwEUZKocTUdGHenfnC"
+      },
+      "collapse": {
+        "target": "tool_pair",
+        "label": "Skill: linear-workflow",
+        "default_collapsed": true
+      }
+    }
+  ],
+  "initial_attribution": {
+    "calculated_at": "2026-07-26T04:01:21.193331Z",
+    "agent_lines": 414,
+    "agent_removed": 3,
+    "human_added": 0,
+    "human_modified": 0,
+    "human_removed": 0,
+    "total_committed": 414,
+    "total_lines_changed": 417,
+    "agent_percentage": 100,
+    "metric_version": 2
+  },
+  "prompt_attributions": [
+    {
+      "checkpoint_number": 1,
+      "user_lines_added": 5,
+      "user_lines_removed": 0,
+      "agent_lines_added": 0,
+      "agent_lines_removed": 0,
+      "user_added_per_file": {
+        ".impeccable/config.local.json": 5
+      }
+    }
+  ]
+}

@@ -1,0 +1,77 @@
+Work on Linear issue MM-462:
+
+Suggested branch name: malpercio/mm-462-wallet-decouple-the-keychain-access-group-from-the-bundle-id
+
+<issue identifier="MM-462">
+<title>Wallet: decouple the Keychain access group from the bundle ID before any org.obsign rename</title>
+<description>
+Design: `docs/design-plans/2026-07-24-wallet-identity-durability.md` §4.
+
+## The loaded footgun
+
+`Entitlements.ios.plist` declares no `keychain-access-groups`, so every wallet Keychain item lands in
+the **implicit** group `$(AppIdentifierPrefix)dev.malpercio.identitywallet`. The access group *is* the
+bundle ID.
+
+Meanwhile the product is branded **Obsign**, the OAuth client is `org.obsign.identitywallet`, and
+`Info.ios.plist` already carries a legacy `dev.malpercio.identitywallet` `CFBundleURLTypes` entry
+beside the `org.obsign` one — the rename is clearly contemplated.
+
+Renaming the bundle ID changes **two independent addressing schemes at once**:
+
+1. **Keychain access group** → every existing item becomes invisible. Device keys, Share 1, sessions,
+   the managed-DID index: all still on disk, none reachable.
+2. **iCloud container** — `iCloud.dev.malpercio.identitywallet`, hardcoded in `Entitlements.ios.plist`
+   and `Info.ios.plist`'s `NSUbiquitousContainers` → the repo CAR snapshot and blob mirror go with it.
+
+Both fail **silently**. The app comes up looking like a clean install. A user who hadn't kept Share 3,
+and whose Share 1 lived only in the old access group, would be unrecoverable through no action of
+their own — one line of JSON, total loss.
+
+This has not fired. The point of the issue is to make sure it cannot.
+
+## Scope
+
+**Step 1 — decouple the group, now, ahead of any rename.** Declare an explicit
+`keychain-access-groups` entitlement naming a stable group that does not track the bundle ID; have
+`keychain.rs` write to it and read stable-then-legacy. Worth doing on its own merits — <issue id="07520598-040f-4915-aa10-28ab0f60965d" href="https://linear.app/malpercio/issue/MM-419/notify-59-wallet-notification-keys-registration-sender-key-re-pinning">MM-419</issue>
+(notification keys) already needs a shared access group, so the plumbing lands once.
+
+**The ordering constraint is absolute:** the app must read from both groups and write to the new one
+for at least one full release cycle *before* the bundle ID moves. A rename shipped in the same release
+as the group change strands anyone who skips that version.
+
+**Step 2 — container decision.** An iCloud container ID cannot be renamed. Recommendation: **keep the****
+****existing container ID** after the bundle rename (Apple permits a container ID that doesn't match the
+bundle ID) and document why it doesn't match. The mirrors are content-addressed and re-derivable, but
+silently losing the disaster-recovery source (<issue id="621bb5e2-39d0-4e98-abc0-e5f93fbe56e1" href="https://linear.app/malpercio/issue/MM-451/wallet-sovereign-disaster-recovery-rebuild-account-from-icloud-backup">MM-451</issue>'s input) isn't worth the tidiness. Record the
+decision in an ADR — it outlives this plan and constrains all future bundle work.
+
+**Step 3 — a gate that fails the build.** Add a `just ci` check asserting the bundle identifier in
+both apps' `tauri.conf.json` stays consistent with the entitlements' container ID and declared access
+group, so a rename can never land as a one-line diff without the migration.
+
+## Definition of done
+
+- [ ] Explicit `keychain-access-groups` entitlement; `keychain.rs` writes stable, reads
+      stable-then-legacy
+- [ ] Documented + enforced ordering: group change ships and bakes before any rename
+- [ ] Container decision recorded as an ADR
+- [ ] CI gate rejecting a bundle-ID change unaccompanied by the migration
+</description>
+<team name="Mal's Machinations"/>
+<label>Security</label>
+<label>Wave 3: Key Sovereignty</label>
+<label>Mobile: Identity Wallet</label>
+<project name="ezpds">An easy-to-host PDS on the ATProtocol, MacOS. Grandma-approved.</project>
+<issue-relations>
+<related>
+<issue-ref identifier="MM-461" title="Wallet: Secure Enclave liveness probe — don't report a rotation key the enclave can't sign with"/>
+<issue-ref identifier="MM-460" title="Wallet: Share 1 is not actually iCloud-synced — kSecAttrSynchronizable is never set"/>
+<issue-ref identifier="MM-419" title="Notify 5/9: wallet notification keys + registration + sender-key re-pinning"/>
+<issue-ref identifier="MM-451" title="Wallet: sovereign disaster-recovery — rebuild account from iCloud backup when the source PDS is gone"/>
+</related>
+</issue-relations>
+</issue>
+
+Open a pr linked to the linear issue when complete
