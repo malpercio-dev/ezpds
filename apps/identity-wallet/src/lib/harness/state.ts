@@ -124,6 +124,13 @@ export interface FakeIdentity {
    * survives `submit_rekey`, and is cleared by `confirm_rekey`. Drives `rekey_in_progress`.
    */
   rekeyStagedRecoveryKey: string | null;
+  /**
+   * Models a device restored from an encrypted backup: the device-key metadata came back,
+   * the Secure Enclave key did not. `get_device_key_id` answers DEVICE_KEY_UNUSABLE, which
+   * is the only way to reach the home screen's degraded "can no longer sign" state in a
+   * browser that has no enclave to empty.
+   */
+  deviceKeyUnusable: boolean;
 }
 
 /** Transient state for the multi-step import (claim) flow. */
@@ -367,6 +374,7 @@ export function seedIdentity(
     did?: string;
     deviceKeyIsRoot?: boolean;
     recoveryKey?: boolean;
+    deviceKeyUnusable?: boolean;
   }
 ): FakeIdentity {
   const pdsUrl = opts.pdsUrl ?? DEFAULT_PDS_URL;
@@ -393,6 +401,7 @@ export function seedIdentity(
     blobBackup: seedBlobBackup(did),
     repoBackup: seedRepoBackup(did),
     rekeyStagedRecoveryKey: null,
+    deviceKeyUnusable: opts.deviceKeyUnusable ?? false,
   };
 }
 

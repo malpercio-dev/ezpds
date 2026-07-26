@@ -2,7 +2,8 @@
   import { onMount, onDestroy } from 'svelte';
   import { listen, type UnlistenFn } from '@tauri-apps/api/event';
   import { listIdentities, getStoredDidDoc,
-    refreshDidDoc, getDeviceKeyId, checkIdentityStatus, rekeyInProgress, type UnauthorizedChange, type IdentityStatus } from '$lib/ipc';
+    refreshDidDoc, getDeviceKeyId, checkIdentityStatus, rekeyInProgress, isCodedError,
+    type UnauthorizedChange, type IdentityStatus } from '$lib/ipc';
   import {
     extractPdsFromPlcDoc,
     extractHandle,
@@ -23,14 +24,26 @@
     onalert,
     onsettings,
     onrekey,
+    onrecover,
   }: {
     onadd: () => void;
-    onselect: (did: string, didDoc: Record<string, unknown>, deviceKeyIsRoot: boolean | null) => void;
+    onselect: (
+      did: string,
+      didDoc: Record<string, unknown>,
+      deviceKeyIsRoot: boolean | null,
+      deviceKeyUnusable: boolean
+    ) => void;
     onalert?: (did: string, changes: UnauthorizedChange[]) => void;
     /** Open the Settings screen. */
     onsettings?: () => void;
     /** Start the old-model re-key upgrade for a did:plc identity. */
     onrekey?: (did: string) => void;
+    /**
+     * Enter the recovery ceremony for an identity this device can no longer sign for.
+     * Offered, never auto-launched: the identity is not in danger, only this device's
+     * control of it, and an unprompted ceremony on app open would read as an alarm.
+     */
+    onrecover?: (did: string) => void;
   } = $props();
 
   interface IdentityCard {
@@ -38,6 +51,12 @@
     handle: string | null;
     pdsUrl: string | null;
     deviceKeyIsRoot: boolean | null;
+    /**
+     * The Secure Enclave no longer holds this identity's device key (`DEVICE_KEY_UNUSABLE`).
+     * Distinct from `deviceKeyIsRoot === null`, which only means the custody question could
+     * not be answered; this is a definite answer — the key is gone.
+     */
+    deviceKeyUnusable: boolean;
   }
 
   let identities = $state<IdentityCard[]>([]);
@@ -55,6 +74,12 @@
   let alertCount = $derived(
     Array.from(alertData.values()).reduce((n, changes) => n + changes.length, 0)
   );
+
+  // Identities this device can no longer sign for. Named in the summary banner so it can
+  // never read "All identities secure" over a card that says otherwise — and placed ahead of
+  // the alert banner for the same reason the strips are ordered that way: the override flow
+  // an alert leads to needs the key that is missing.
+  let unusableCount = $derived(identities.filter((c) => c.deviceKeyUnusable).length);
 
   // PLC monitoring only watches did:plc identities (a did:web DID has no plc.directory audit log,
   // so `plc_monitor` is a no-op for it). Only claim "Watching the public record" when at least one
@@ -81,10 +106,21 @@
 
       for (const did of dids) {
         try {
-          let [docResult, keyIdResult] = await Promise.all([
-            getStoredDidDoc(did),
-            getDeviceKeyId(did),
-          ]);
+          // The device key is asked for separately from the doc so a DEVICE_KEY_UNUSABLE
+          // verdict is caught as the specific, actionable state it is rather than
+          // collapsing the whole card into the generic degraded branch below.
+          let deviceKeyUnusable = false;
+          let keyIdResult = '';
+          let docResult = await getStoredDidDoc(did);
+          try {
+            keyIdResult = await getDeviceKeyId(did);
+          } catch (e) {
+            if (isCodedError(e) && e.code === 'DEVICE_KEY_UNUSABLE') {
+              deviceKeyUnusable = true;
+            } else {
+              throw e;
+            }
+          }
 
           // Cache self-heal: earlier builds cached DID docs without rotationKeys
           // (the W3C shape), which starves the custody badge and hides the migrate
@@ -100,7 +136,11 @@
 
           const handle = docResult ? extractHandle(docResult) : null;
           const pdsUrl = docResult ? extractPdsFromPlcDoc(docResult) : null;
-          const deviceKeyIsRoot = docResult ? isDeviceKeyRoot(docResult, keyIdResult) : null;
+          // With no usable key there is no custody claim to make in either direction:
+          // the badge must not say "root key" (nothing can sign) and must not say
+          // "not root" (the DID document still lists this device's key at the top).
+          const deviceKeyIsRoot =
+            docResult && !deviceKeyUnusable ? isDeviceKeyRoot(docResult, keyIdResult) : null;
 
           if (docResult) {
             didDocs.set(did, docResult);
@@ -124,6 +164,7 @@
             handle,
             pdsUrl,
             deviceKeyIsRoot,
+            deviceKeyUnusable,
           });
         } catch (e) {
           console.error(`Failed to load identity ${did}:`, e);
@@ -133,6 +174,7 @@
             handle: null,
             pdsUrl: null,
             deviceKeyIsRoot: null,
+            deviceKeyUnusable: false,
           });
         }
       }
@@ -183,6 +225,26 @@
     if (deviceKeyIsRoot === false) return 'Not root';
     return 'Unknown';
   }
+
+  /**
+   * Which single strip a card shows beneath it. Only one is offered at a time so the
+   * card never presents two competing calls to action.
+   *
+   * `unusable` outranks `alert` deliberately: the alert strip's destination is the
+   * recovery-override flow, which signs a counter-operation with this device's key —
+   * the exact key that is gone. Offering it first would send the user into a flow that
+   * cannot complete. Recovery restores signing, and the alert is still there afterwards.
+   */
+  function activeStrip(
+    card: IdentityCard,
+    alerts: UnauthorizedChange[] | undefined,
+    rekeyOffered: boolean
+  ): 'unusable' | 'alert' | 'rekey' | null {
+    if (card.deviceKeyUnusable && onrecover) return 'unusable';
+    if (alerts?.length) return 'alert';
+    if (rekeyOffered) return 'rekey';
+    return null;
+  }
 </script>
 
 {#if loading}
@@ -224,7 +286,26 @@
         <Button onclick={onadd}>Create or import</Button>
       </div>
     {:else}
-      {#if alertCount === 0 && watchingPlc}
+      {#if unusableCount > 0}
+        <div class="monitor monitor--attention">
+          <span class="monitor-ic" aria-hidden="true">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="11" width="18" height="10" rx="2"/><path d="M7 11V7a5 5 0 0 1 9.3-2.5"/><path d="m2 2 20 20"/></svg>
+          </span>
+          <span class="monitor-body">
+            <span class="monitor-t">
+              {unusableCount === 1 ? '1 identity needs' : `${unusableCount} identities need`} recovery on this device
+            </span>
+            <span class="monitor-s">
+              {#if alertCount > 0}
+                {alertCount} unauthorized {alertCount === 1 ? 'change' : 'changes'} also need review — recover first, so the override can be signed
+              {:else}
+                {unusableCount === 1 ? 'Its key is' : 'Their keys are'} gone from this device;
+                the {unusableCount === 1 ? 'identity itself is' : 'identities themselves are'} unaffected
+              {/if}
+            </span>
+          </span>
+        </div>
+      {:else if alertCount === 0 && watchingPlc}
         <div class="monitor monitor--safe">
           <span class="monitor-ic" aria-hidden="true">
             <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><path d="m9 12 2 2 4-4"/></svg>
@@ -263,9 +344,9 @@
       <div class="cards">
         {#each identities as card (card.did)}
           {@const alerts = alertData.get(card.did)}
-          {@const showRekey = Boolean(onrekey && rekeyEligible.get(card.did) && !alerts?.length)}
+          {@const strip = activeStrip(card, alerts, Boolean(onrekey && rekeyEligible.get(card.did)))}
           <div class="card-group">
-          <button class="card" class:card--alert={alerts?.length} class:card--rekey={showRekey} onclick={() => onselect(card.did, didDocs.get(card.did) ?? {}, card.deviceKeyIsRoot)}>
+          <button class="card" class:card--alert={strip === 'alert'} class:card--rekey={strip === 'rekey'} class:card--unusable={strip === 'unusable'} onclick={() => onselect(card.did, didDocs.get(card.did) ?? {}, card.deviceKeyIsRoot, card.deviceKeyUnusable)}>
             <DIDAvatar did={card.did} handle={card.handle ?? 'Unknown'} />
             <span class="info">
               <span class="handle">{card.handle ? '@' + card.handle : 'Unknown handle'}</span>
@@ -278,6 +359,14 @@
                   <span class="badge badge--web">
                     <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M3 12h18"/><path d="M12 3a13 13 0 0 1 3.4 9A13 13 0 0 1 12 21a13 13 0 0 1-3.4-9A13 13 0 0 1 12 3z"/></svg>
                     did:web
+                  </span>
+                {:else if card.deviceKeyUnusable}
+                  <!-- Not "Unknown" (which reads as a lookup that failed) and not "Not root"
+                       (the DID document still lists this device's key first). The key is gone
+                       from this device: name that, and never colour alone. -->
+                  <span class="badge badge--unusable">
+                    <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="11" width="18" height="10" rx="2"/><path d="M7 11V7a5 5 0 0 1 9.3-2.5"/><path d="m2 2 20 20"/></svg>
+                    Can't sign
                   </span>
                 {:else}
                   <span
@@ -300,14 +389,27 @@
             </span>
             <svg class="chev" width="9" height="16" viewBox="0 0 11 18" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m2 1 7 8-7 8"/></svg>
           </button>
-          {#if alerts?.length}
-            <button class="alert-strip" onclick={() => onalert?.(card.did, alerts ?? [])}>
+          {#if strip === 'unusable'}
+            <!-- The honest degraded state: this device's key for the identity is gone, so
+                 nothing it does can sign. Recovery mints a fresh Secure Enclave key and
+                 rotates it into rotationKeys[0] — the right destination, offered rather
+                 than launched. Seal-toned, not the critical palette: the identity itself
+                 is intact; only this device's control of it is not. -->
+            <button class="unusable-strip" onclick={() => onrecover?.(card.did)}>
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="11" width="18" height="10" rx="2"/><path d="M7 11V7a5 5 0 0 1 9.3-2.5"/><path d="m2 2 20 20"/></svg>
+              <span class="strip-body">
+                <span class="strip-t">This device can no longer sign for this identity</span>
+                <span class="strip-s">Recover to restore control</span>
+              </span>
+              <svg class="strip-chev" width="8" height="14" viewBox="0 0 11 18" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m2 1 7 8-7 8"/></svg>
+            </button>
+          {:else if strip === 'alert' && alerts}
+            <button class="alert-strip" onclick={() => onalert?.(card.did, alerts)}>
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M7.86 2h8.28L22 7.86v8.28L16.14 22H7.86L2 16.14V7.86z"/><path d="M12 8v4"/><path d="M12 16h.01"/></svg>
               Review {alerts.length} unauthorized {alerts.length === 1 ? 'change' : 'changes'}
               <svg class="strip-chev" width="8" height="14" viewBox="0 0 11 18" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m2 1 7 8-7 8"/></svg>
             </button>
-          {/if}
-          {#if showRekey}
+          {:else if strip === 'rekey'}
             <!-- Calm, non-alarmist upgrade prompt (this is an improvement, not an incident): a
                  seal-toned strip, deliberately NOT the critical/alert palette. Yields to an active
                  alert strip, which takes priority for the same card. -->
@@ -427,6 +529,21 @@
   }
   .monitor--web .monitor-s {
     color: var(--color-muted);
+  }
+  /* A state needing action, not an incident on the identity: the warning tone, matching the
+     card's badge and strip, never the critical/alert palette. Follows the same per-part
+     colouring as the other banner variants. */
+  .monitor--attention {
+    background: var(--color-warning-surface);
+  }
+  .monitor--attention .monitor-ic {
+    color: var(--color-warning);
+  }
+  .monitor--attention .monitor-t {
+    color: var(--color-warning);
+  }
+  .monitor--attention .monitor-s {
+    color: var(--color-ink-soft);
   }
   .monitor--alert {
     background: var(--color-critical-surface);
@@ -554,6 +671,13 @@
     background: var(--color-surface-sunk);
     color: var(--color-muted);
   }
+  /* A definite loss of local signing ability, not an incident on the identity — the warning
+     tone, not the critical one. The label and the struck-lock icon carry the meaning; the
+     colour only reinforces it. */
+  .badge--unusable {
+    background: var(--color-warning-surface);
+    color: var(--color-warning);
+  }
   /* Neutral method badge for did:web — not a status, so it borrows the aubergine accent, not a
      safe/warning color. */
   .badge--web {
@@ -570,7 +694,8 @@
     border-bottom-right-radius: 0;
   }
   /* Same fuse for the calm re-key upgrade strip. */
-  .card--rekey {
+  .card--rekey,
+  .card--unusable {
     border-bottom-left-radius: 0;
     border-bottom-right-radius: 0;
   }
@@ -628,6 +753,50 @@
   }
   .rekey-strip .strip-chev {
     color: var(--color-accent);
+  }
+
+  /* Two-line strip: the state, then what to do about it. Seal-toned like the re-key strip
+     rather than the alert palette — the identity is intact, only this device's control of
+     it is not, and an alarm here would misstate the stakes. */
+  .unusable-strip {
+    display: flex;
+    align-items: center;
+    gap: var(--space-sm);
+    width: 100%;
+    min-height: var(--size-tap-target);
+    padding: 10px 15px;
+    background: var(--color-seal-tint);
+    color: var(--color-accent);
+    border: 1px solid var(--color-line);
+    border-top: none;
+    border-bottom-left-radius: var(--radius-xl);
+    border-bottom-right-radius: var(--radius-xl);
+    text-align: left;
+    cursor: pointer;
+    transition: border-color var(--duration-base) var(--ease-standard);
+  }
+  .unusable-strip:active {
+    border-color: var(--color-accent);
+  }
+  .unusable-strip .strip-chev {
+    color: var(--color-accent);
+    margin-left: auto;
+  }
+  .unusable-strip > svg:first-child {
+    flex-shrink: 0;
+  }
+  .strip-body {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+  }
+  .strip-t {
+    font-size: var(--text-label);
+    font-weight: var(--weight-semibold);
+  }
+  .strip-s {
+    font-size: var(--text-caption);
+    color: var(--color-muted);
   }
 
   .chev {

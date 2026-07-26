@@ -160,6 +160,9 @@
   let selectedDid = $state<string | null>(null);
   let selectedDidDoc = $state<Record<string, unknown> | null>(null);
   let selectedDeviceKeyIsRoot = $state<boolean | null>(null);
+  // The selected identity's device key is gone from the Secure Enclave; the detail
+  // screen explains the signing entries it is already withholding.
+  let selectedDeviceKeyUnusable = $state(false);
 
   let selectedAlertDid = $state<string | null>(null);
   let selectedAlertChanges = $state<UnauthorizedChange[]>([]);
@@ -667,10 +670,11 @@
   {:else if step === 'home'}
     <IdentityListHome
       onadd={() => { cameFromHome = true; goTo('mode_select'); }}
-      onselect={(did, didDoc, deviceKeyIsRoot) => {
+      onselect={(did, didDoc, deviceKeyIsRoot, deviceKeyUnusable) => {
         selectedDid = did;
         selectedDidDoc = didDoc;
         selectedDeviceKeyIsRoot = deviceKeyIsRoot;
+        selectedDeviceKeyUnusable = deviceKeyUnusable;
         goTo('identity_detail');
       }}
       onalert={(did, changes) => {
@@ -683,6 +687,15 @@
         rekeyDid = did;
         rekeyBackupError = null;
         goTo('rekey_review');
+      }}
+      onrecover={(did) => {
+        // The recovery ceremony's own entry screen resolves the identifier, so the
+        // DID is prefilled rather than routed around: the user still sees which
+        // identity they are recovering, and every downstream step is the ordinary,
+        // already-tested flow. `cameFromHome` keeps the back path at the home list.
+        cameFromHome = true;
+        form.handleOrDid = did;
+        goTo('recover_start');
       }}
     />
 
@@ -741,6 +754,14 @@
           }
         : undefined}
       onremove={() => goTo('remove_identity')}
+      deviceKeyUnusable={selectedDeviceKeyUnusable}
+      onrecover={selectedDeviceKeyUnusable
+        ? () => {
+            cameFromHome = true;
+            form.handleOrDid = selectedDid ?? '';
+            goTo('recover_start');
+          }
+        : undefined}
     />
 
   {:else if step === 'remove_identity'}

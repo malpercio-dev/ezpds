@@ -28,6 +28,7 @@ export type ScenarioName =
   | 'migration-in-flight'
   | 'agent-connected'
   | 'app-password-minted'
+  | 'device-key-unusable'
   | 'rekey-eligible'
   | 'rekey-mixed'
   | 'recover-escrow'
@@ -76,6 +77,21 @@ export const scenarios: Record<ScenarioName, () => WalletState> = {
     const state = emptyWalletState();
     state.pdsUrl = DEFAULT_PDS_URL;
     upsertIdentity(state, seedIdentity({ handle: 'alice.harness.pds.local' }));
+    return state;
+  },
+
+  /**
+   * A device restored from an encrypted backup: the device-key metadata restored, the
+   * Secure Enclave key could not. The wallet must not claim custody of rotationKeys[0]
+   * it cannot sign with — the card shows "Can't sign" and offers the recovery ceremony.
+   */
+  'device-key-unusable': () => {
+    const state = emptyWalletState();
+    state.pdsUrl = DEFAULT_PDS_URL;
+    upsertIdentity(
+      state,
+      seedIdentity({ handle: 'alice.harness.pds.local', deviceKeyUnusable: true })
+    );
     return state;
   },
 
