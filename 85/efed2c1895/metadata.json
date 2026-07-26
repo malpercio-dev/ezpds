@@ -1,0 +1,28 @@
+{
+  "cli_version": "0.8.42",
+  "checkpoint_id": "85efed2c1895",
+  "strategy": "manual-commit",
+  "branch": "claude/mm-458-phase-3-any-pds-0c238d",
+  "checkpoints_count": 1,
+  "files_touched": [
+    "apps/identity-wallet/AGENTS.md",
+    "apps/identity-wallet/src-tauri/src/migration_orchestrator.rs",
+    "changelog.d/mm-458.added.md"
+  ],
+  "sessions": [
+    {
+      "metadata": "/85/efed2c1895/0/metadata.json",
+      "transcript": "/85/efed2c1895/0/full.jsonl",
+      "compact_transcript": "/85/efed2c1895/0/transcript.jsonl",
+      "content_hash": "/85/efed2c1895/0/content_hash.txt",
+      "prompt": "/85/efed2c1895/0/prompt.txt"
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 37,
+    "cache_creation_tokens": 236789,
+    "cache_read_tokens": 4999968,
+    "output_tokens": 15190,
+    "api_call_count": 20
+  }
+}
