@@ -85,6 +85,36 @@ describe('unlockIdentity', () => {
     expect(isUnlockCancelled(new Error('boom'))).toBe(false);
   });
 
+  // The single-slot invariant itself lives in PasswordUnlockDialog (there is one dialog, so it
+  // owns the slot), and this repo has no Svelte component-test setup — `$lib` tests are
+  // pure-logic only. What is covered here is the half that lives in this module: that a prompt
+  // superseding its predecessor propagates out to the *first* caller as a cancellation rather
+  // than leaving its `await` pending forever.
+  it('propagates a superseded prompt to the first caller as a cancellation', async () => {
+    getIdentityUnlockRoute.mockResolvedValue(passwordRoute);
+    // Stand in for the real dialog: one prompt slot, and taking it cancels whoever held it.
+    let held: { reject: (reason: unknown) => void } | null = null;
+    unregister = registerPasswordUnlockPrompt(
+      () =>
+        new Promise<void>((_resolve, reject) => {
+          held?.reject({ code: UNLOCK_CANCELLED });
+          held = { reject };
+        }),
+    );
+
+    const first = unlockIdentity(DID);
+    const firstSettled = first.then(
+      () => 'resolved',
+      (e) => e,
+    );
+    await Promise.resolve();
+    void unlockIdentity(DID).catch(() => {});
+
+    // Without the hand-off the assertion below never runs — the promise stays pending and the
+    // test times out, which is exactly the user-visible symptom (an operation that never ends).
+    expect(isUnlockCancelled(await firstSettled)).toBe(true);
+  });
+
   it('fails loudly rather than silently when no prompt is mounted', async () => {
     getIdentityUnlockRoute.mockResolvedValue(passwordRoute);
 
