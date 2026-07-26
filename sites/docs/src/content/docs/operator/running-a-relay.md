@@ -35,9 +35,9 @@ server tells you _what_ degraded.
 On a degraded relay, the same readout flags each troubled background sweep with
 a trailing `!` glyph and a named fault. A sweep whose last completed pass keeps
 ageing reads `stale` — passes have stopped completing, so the sweep is dead. One
-that completed but skipped work reads `failed <n>` — it ran, yet left `n`
-subjects undone (for blob GC, an account whose reconcile failed, whose blobs go
-uncollected until the fault is fixed). The two are named so they read apart on a
+that completed but skipped work reads `failed <n>` — it ran, yet recorded `n`
+errors (for blob GC, an account whose reconcile failed is skipped, so its blobs
+stay uncollected until the fault is fixed). The two are named so they read apart on a
 row that has both, and _what_ degraded is legible without relying on color.
 
 <figure>

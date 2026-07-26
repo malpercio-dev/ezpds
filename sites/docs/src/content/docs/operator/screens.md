@@ -120,8 +120,9 @@ verdict.
 
 On a degraded relay, a troubled background sweep is flagged with a trailing `!` glyph and a
 named fault — `stale` when its passes have stopped completing (the sweep is dead), or
-`failed <n>` when a pass ran but left `n` subjects undone (for blob GC, an account whose
-reconcile failed leaks disk until the fault is fixed). Naming each fault keeps the two
+`failed <n>` when a pass ran but recorded `n` errors (for blob GC, an account whose
+reconcile failed is skipped, so its blobs stay uncollected — and its disk unreclaimed —
+until the fault is fixed). Naming each fault keeps the two
 legible apart on a row that carries both; status is never signalled by colour alone.
 
 <figure>
