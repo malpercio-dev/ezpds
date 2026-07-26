@@ -61,9 +61,12 @@
     the legacy group. `just bundle-identity-check` and keychain.rs's
     `entitlement_declares_stable_group_first` test enforce both.
 
-    Like the iCloud container, this entitlement must exist on the App ID (Apple Developer
-    portal: enable Keychain Sharing with both group names, regenerate the App Store
-    provisioning profile) or TestFlight signing fails with an entitlements mismatch.
+    UNLIKE the iCloud container above, this needs no Apple Developer portal registration:
+    `keychain-access-groups` is not an App ID capability, and a provisioning profile already
+    authorizes the entire team prefix through a `<TeamID>.*` wildcard — which is why
+    `org.obsign.shared` signs fine while the bundle id is still `dev.malpercio.*`. Confirm
+    after any profile change with:
+      security cms -D -i <profile>.mobileprovision | plutil -p - | grep -A3 keychain-access-groups
   -->
   <key>keychain-access-groups</key>
   <array>

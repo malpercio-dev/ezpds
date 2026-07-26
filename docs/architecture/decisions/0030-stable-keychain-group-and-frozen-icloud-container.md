@@ -118,10 +118,19 @@ the iCloud container id permanently.**
   users installing the new app before deleting the old — so if the tail of legacy-group installs
   ever looks significant at rename time, the mitigation to reach for is a longer bake or an
   in-app prompt, not a container change.
-- **The App ID must carry Keychain Sharing for both group names**, and the App Store
-  provisioning profile must be regenerated, or TestFlight signing fails with an entitlements
-  mismatch — the same operational step the iCloud container needed. This is a manual portal
-  action that CI cannot perform or verify.
+- **No Apple Developer portal work and no profile regeneration are required.** Unlike the
+  iCloud container, `keychain-access-groups` is not a registerable App ID capability: an App
+  Store provisioning profile already authorizes the whole team prefix via a `<TeamID>.*`
+  wildcard, so any group we name under it is covered — which is also why `org.obsign.shared`
+  is usable while the bundle id is still `dev.malpercio.*`. Verified against the wallet's
+  current App Store profile on 2026-07-26; re-check after any profile change with:
+
+  ```
+  security cms -D -i <profile>.mobileprovision | plutil -p - | grep -A3 keychain-access-groups
+  ```
+
+  The team prefix is therefore doing double duty — it is both the authorization boundary and
+  the addressing prefix. That is the property the whole design rests on.
 - A rename now requires a deliberate edit to the gate's pins in the same PR. That is friction
   by design; the gate's header is where the migration checklist lives.
 - Entitlement order is now load-bearing in a way that reads as cosmetic. Two independent

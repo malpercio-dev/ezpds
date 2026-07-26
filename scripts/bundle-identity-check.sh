@@ -41,9 +41,11 @@ REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 #       the bundle id moves; only the explicit entry keeps pre-rename items readable.
 #   [ ] FROZEN_ICLOUD_CONTAINER stays exactly as-is. An iCloud container id cannot be renamed;
 #       Apple permits one that does not match the bundle id (ADR-0030).
-#   [ ] BOTH App IDs (old and new) carry Keychain Sharing for both groups + the same iCloud
-#       container, and the App Store provisioning profile has been regenerated. Otherwise
-#       signing fails, or the new app cannot see the old app's items and backups.
+#       (The access groups themselves need NO portal registration — a provisioning profile
+#       authorizes the whole team prefix via a `<TeamID>.*` wildcard. Only iCloud does.)
+#   [ ] BOTH App IDs (old and new) have the iCloud capability enabled with the SAME container
+#       id below. This is the step that carries the backups across, and it is easy to skip
+#       because the container will not match the new bundle id — that mismatch is correct.
 #   [ ] The release notes / onboarding tell users to install the new app before deleting the
 #       old one. The app cannot enforce this.
 #
