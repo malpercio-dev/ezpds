@@ -309,7 +309,7 @@ pub(crate) mod tests {
             .connect(harness.server_addr(), ALPN)
             .await
             .expect("connect");
-        let mut ask = |request: Request| {
+        let ask = |request: Request| {
             let conn = conn.clone();
             async move {
                 let (mut send, mut recv) = conn.open_bi().await.expect("open_bi");
