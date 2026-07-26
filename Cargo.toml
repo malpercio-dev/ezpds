@@ -13,6 +13,12 @@ members = [
 exclude = [
     "apps/identity-wallet/vendor/tauri-plugin-auth-session",
     "apps/admin-companion/vendor/tauri-plugin-sharesheet",
+    # The swift-rs fork below is upstream's source plus one `--disable-sandbox` flag; it is
+    # kept byte-minimal against upstream so the patch stays trivially re-appliable. As a path
+    # dep it would otherwise be auto-promoted to a workspace member and linted, and upstream's
+    # own warts (a `pub use` of a module holding only a `#[macro_export]` macro, which is
+    # published at the crate root anyway) would fail `clippy -D warnings` on code we do not own.
+    "apps/identity-wallet/swift-rs-patch",
 ]
 resolver = "2"
 

@@ -638,7 +638,7 @@ pub(crate) async fn run_backup_core(
         report.fetched_bytes += bytes.len() as u64;
         // Checkpoint periodically so an interrupted run resumes near where it
         // stopped (see MANIFEST_SAVE_EVERY for why not per-blob).
-        if report.fetched % MANIFEST_SAVE_EVERY == 0 {
+        if report.fetched.is_multiple_of(MANIFEST_SAVE_EVERY) {
             save_manifest(root, did, &manifest).await?;
         }
     }
@@ -1269,7 +1269,7 @@ mod tests {
                 when.method(GET)
                     .path("/xrpc/com.atproto.sync.getBlob")
                     .query_param("cid", &cid_listed);
-                then.status(200).body(b"corrupted replacement".to_vec());
+                then.status(200).body(b"corrupted replacement");
             })
             .await;
         server
