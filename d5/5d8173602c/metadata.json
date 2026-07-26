@@ -1,0 +1,27 @@
+{
+  "cli_version": "0.8.42",
+  "checkpoint_id": "d55d8173602c",
+  "strategy": "manual-commit",
+  "branch": "claude/mm-457-foreign-pds-password-0c3df0",
+  "checkpoints_count": 1,
+  "files_touched": [
+    "apps/identity-wallet/src/lib/components/home/PasswordUnlockDialog.svelte",
+    "apps/identity-wallet/src/lib/unlock.test.ts"
+  ],
+  "sessions": [
+    {
+      "metadata": "/d5/5d8173602c/0/metadata.json",
+      "transcript": "/d5/5d8173602c/0/full.jsonl",
+      "compact_transcript": "/d5/5d8173602c/0/transcript.jsonl",
+      "content_hash": "/d5/5d8173602c/0/content_hash.txt",
+      "prompt": "/d5/5d8173602c/0/prompt.txt"
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 71,
+    "cache_creation_tokens": 325655,
+    "cache_read_tokens": 12973658,
+    "output_tokens": 27915,
+    "api_call_count": 38
+  }
+}
