@@ -1,0 +1,36 @@
+{
+  "cli_version": "0.8.42",
+  "checkpoint_id": "0bf968ea55f0",
+  "strategy": "manual-commit",
+  "branch": "claude/mm-456-shamir-escrow-less-recovery-adc920",
+  "checkpoints_count": 1,
+  "files_touched": [
+    "apps/identity-wallet/src-tauri/src/identity_store.rs",
+    "apps/identity-wallet/src-tauri/src/rekey.rs",
+    "apps/identity-wallet/src-tauri/src/self_held_kit.rs",
+    "apps/identity-wallet/src-tauri/src/share_ceremony.rs",
+    "apps/identity-wallet/src-tauri/src/share_recovery.rs",
+    "apps/identity-wallet/src/lib/components/home/SelfHeldKitReviewScreen.svelte",
+    "apps/identity-wallet/src/lib/harness/self-held-kit.test.ts",
+    "apps/identity-wallet/src/lib/ipc/self-held-kit.ts",
+    "apps/identity-wallet/src/routes/+page.svelte",
+    "changelog.d/mm-456.added.md",
+    "docs/design-plans/2026-07-24-obsign-without-custos.md"
+  ],
+  "sessions": [
+    {
+      "metadata": "/0b/f968ea55f0/0/metadata.json",
+      "transcript": "/0b/f968ea55f0/0/full.jsonl",
+      "compact_transcript": "/0b/f968ea55f0/0/transcript.jsonl",
+      "content_hash": "/0b/f968ea55f0/0/content_hash.txt",
+      "prompt": "/0b/f968ea55f0/0/prompt.txt"
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 217,
+    "cache_creation_tokens": 345241,
+    "cache_read_tokens": 32683594,
+    "output_tokens": 77489,
+    "api_call_count": 116
+  }
+}

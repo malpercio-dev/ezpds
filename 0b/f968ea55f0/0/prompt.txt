@@ -1,0 +1,78 @@
+Work on Linear issue MM-456:
+
+Suggested branch name: malpercio/mm-456-phase-1-self-held-shamir-kit-escrow-less-recovery-key
+
+<issue identifier="MM-456">
+<title>Phase 1: Self-held Shamir kit — escrow-less recovery-key install for foreign-hosted identities</title>
+<description>
+Part of <issue id="d5cb6e3d-f781-4ecb-aebf-c954915b3708" href="https://linear.app/malpercio/issue/MM-452/obsign-without-custos-first-class-any-pds-wallet-support-epic">MM-452</issue>. Design: `docs/design-plans/2026-07-24-obsign-without-custos.md` §Phase 1.
+
+## What
+
+Give a claimed, foreign-hosted identity the same recovery-seed protection Custos accounts get from the <issue id="5ec229fb-5497-4ace-8295-ad2b83985a7a" href="https://linear.app/malpercio/issue/MM-405/key-recovery-from-shares-bind-the-escrowed-secret-and-build-the">MM-405</issue> ceremony — minus the escrow, which has no home on a non-Custos PDS.
+
+A new re-key variant for identities where the device key holds `rotationKeys[0]` but the host is not Custos:
+
+1. Client-side seed + 2-of-3 split — reuses `share_ceremony.rs` wholesale (generation is already pre-network).
+2. Derive the recovery keypair (`derive_recovery_keypair`) and device-key-sign a rotation op inserting it into `rotationKeys` directly after the device key — a pure [plc.directory](<http://plc.directory>) operation, same shape `rekey.rs` signs today.
+3. **No escrow deposit.** Share 1 → iCloud Keychain per-DID slot (existing convention); Shares 2 **and** 3 → the user (offline/manual backup). Alternatively presentable as "you hold two shares"; the recovery ceremony's sovereign path (Shares 1+3 — or here, any two) already works with zero PDS involvement.
+
+## Why it's a new guard, not a flag
+
+`guard_rekey_op` requires the current layout be exactly `[device, PDS]` (the pre-inversion Custos migration) and the flow hard-requires the `PUT /v1/recovery/escrow-share` leg. A claimed identity has arbitrary existing rotation keys. The new guard (seventh strict allowlist): device key stays at `[0]`, the derived recovery key is inserted (additive only), every other rotation key, verificationMethods, alsoKnownAs, and services byte-identical.
+
+## Upsell seam (build the hook, not the pressure)
+
+After the kit completes, a single optional prompt: "escrow one share with Custos for assisted recovery" — routing into the existing escrow machinery **if** the identity later migrates to a host advertising the `escrow` capability (<issue id="e2abaa52-2747-4daf-8c10-209294bd5183" href="https://linear.app/malpercio/issue/MM-454/phase-0b-custos-capability-extension-in-describeserver-self">MM-454</issue>). No nagging afterwards.
+
+## Acceptance criteria
+
+1. Foreign-hosted root-key did:plc identities can install a derived recovery key at `rotationKeys[1]` with no Custos/PDS calls ([plc.directory](<http://plc.directory>) only).
+2. The staging/teardown contract matches the create ceremony's (fail-closed staging, read-back-verified Share 1, explicit backup confirmation before the staging slot is destroyed).
+3. The existing "Recover existing identity" ceremony recovers such an identity from any two self-held shares end-to-end; its epilogue skips re-escrow cleanly when the host lacks the `escrow` capability.
+4. `rekey.rs`'s existing Custos path is untouched; the harness gains scenarios for the new flow.
+</description>
+<team name="Mal's Machinations"/>
+<label>Security</label>
+<label>Feature</label>
+<label>Wave 3: Key Sovereignty</label>
+<label>Wave 9: Obsign Anywhere</label>
+<label>Mobile: Identity Wallet</label>
+<project name="ezpds">An easy-to-host PDS on the ATProtocol, MacOS. Grandma-approved.</project>
+<parent-issue identifier="MM-452">
+<id>d5cb6e3d-f781-4ecb-aebf-c954915b3708</id>
+<title>Obsign without Custos — first-class any-PDS wallet support (epic)</title>
+<description>
+## Strategy
+
+Broaden Obsign's market beyond Custos-hosted accounts: a user on the reference PDS, [bsky.social](<http://bsky.social>), or any spec-compliant PDS should get real, honest value from the wallet — Secure-Enclave root key, PLC monitoring + 72h override, user-held repo/media backup, self-held Shamir recovery — with Custos capabilities (escrow-assisted recovery, passwordless sovereign sessions, agents, wallet-confirmed consent) as the opt-in upgrade rather than a lock-in. Rescue and migration must never force a stressed user onto Custos.
+
+Design doc: `docs/design-plans/2026-07-24-obsign-without-custos.md` (survey of what already works without Custos, the ecosystem describeServer survey, the capability-extension design, and phase rationale).
+
+## As-built starting point (verified 2026-07-24, v0.8.1)
+
+Already works on any PDS today: the claim/import flow (device key → `rotationKeys[0]` via standard lexicons), PLC monitoring + recovery override ([plc.directory](<http://plc.directory>) only), repo + blob backup (public sync endpoints, no session), endpoint repair, sovereign share-based recovery (Shares 1+3), and disaster recovery **into a Custos destination**.
+
+Custos-locked today: create ceremony, Shamir generation/re-key (fused to `/v1/dids` + escrow), sovereign sessions (and everything downstream: app passwords, change handle, removal, blob restore), agents/consent, and the rescue/migration **destination** (finalize unconditionally mints `/v1/sessions/sovereign`).
+
+## Phases (one child issue each)
+
+* Phase 0a — mode-select honesty: "Create an identity" / "Import an identity" + non-Custos create gate
+* Phase 0b — `custos` capability extension in describeServer + self-identifying `_health`
+* Phase 0c — positioning + live validation of the any-PDS arc (claim → backup → rescue)
+* Phase 1 — self-held Shamir kit for foreign-hosted identities (escrow-less re-key)
+* Phase 2 — foreign-PDS session provider (password `createSession` unlock path)
+* Phase 3 — any-PDS rescue/migration destination (capability-gated finalize)
+
+Parked (needs its own design pass, deliberately not in this epic): "create-then-sovereignize" — creating a brand-new account on a reference PDS via standard `createAccount` then immediately running the claim ceremony.
+</description>
+</parent-issue>
+<issue-relations>
+<related>
+<issue-ref identifier="MM-405" title="Key recovery from shares — bind the escrowed secret and build the recovery ceremony (epic)"/>
+<issue-ref identifier="MM-454" title="Phase 0b: `custos` capability extension in describeServer + self-identifying `_health`"/>
+</related>
+</issue-relations>
+</issue>
+
+Please open a PR linked to the linear issue when complete
