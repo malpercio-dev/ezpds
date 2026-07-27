@@ -1,0 +1,39 @@
+{
+  "cli_version": "0.8.42",
+  "checkpoint_id": "a447e0b011bf",
+  "strategy": "manual-commit",
+  "branch": "malpercio/mm-465-wallet-ia-phase-1-identity-instrument-panel",
+  "checkpoints_count": 1,
+  "files_touched": [
+    "AGENTS.md",
+    "apps/identity-wallet/AGENTS.md",
+    "apps/identity-wallet/src/lib/components/home/AdvancedToolsScreen.svelte",
+    "apps/identity-wallet/src/lib/components/home/DIDDocumentScreen.svelte",
+    "apps/identity-wallet/src/lib/components/home/IdentityScreen.svelte",
+    "apps/identity-wallet/src/lib/components/home/ManageIdentityScreen.svelte",
+    "apps/identity-wallet/src/lib/components/home/MoveOrRebuildScreen.svelte",
+    "apps/identity-wallet/src/lib/components/home/SecurityCheckup.svelte",
+    "apps/identity-wallet/src/lib/components/ui/NavRow.svelte",
+    "apps/identity-wallet/src/lib/components/ui/StatusPanel.svelte",
+    "apps/identity-wallet/src/lib/identity-status.test.ts",
+    "apps/identity-wallet/src/lib/identity-status.ts",
+    "apps/identity-wallet/src/routes/+page.svelte",
+    "changelog.d/mm-465.changed.md"
+  ],
+  "sessions": [
+    {
+      "metadata": "/a4/47e0b011bf/0/metadata.json",
+      "transcript": "/a4/47e0b011bf/0/full.jsonl",
+      "compact_transcript": "/a4/47e0b011bf/0/transcript.jsonl",
+      "content_hash": "/a4/47e0b011bf/0/content_hash.txt",
+      "prompt": "/a4/47e0b011bf/0/prompt.txt"
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 626,
+    "cache_creation_tokens": 365996,
+    "cache_read_tokens": 43400227,
+    "output_tokens": 77007,
+    "api_call_count": 146
+  }
+}
