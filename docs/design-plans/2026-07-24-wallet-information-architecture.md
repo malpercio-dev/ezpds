@@ -1,11 +1,13 @@
 # Wallet Information Architecture — The Instrument Panel
 
-**Status: phases 1–3 shipped; 4 open.** Deliverable of a structured IA brainstorm
-(2026-07-24), tracked as MM-465–MM-470 (§9). The identity instrument panel (§2.1–§2.4,
-MM-465), the Protection surface + home strip (§2.5, MM-466), and the alarm takeover
-landing (§3, MM-467) are built; the Add-identity situation question (§4, MM-468) is not.
-§7's mapping table describes the target, which phases 1–3 have now reached for every
-row except `mode_select`.
+**Status: phases 1–4 shipped.** Deliverable of a structured IA brainstorm (2026-07-24),
+tracked as MM-465–MM-470 (§9). The identity instrument panel (§2.1–§2.4, MM-465), the
+Protection surface + home strip (§2.5, MM-466), the alarm takeover landing (§3, MM-467)
+and the Add-identity situation question (§4, MM-468 — the `mode_select` step is now
+`add_identity`, plus the `server_gone` routing screen) are all built. §7's mapping table
+describes the target, which the wallet has now reached for every row. What remains of
+this plan is the DESIGN.md §5 amendment (§6, MM-469) and the Brass Console IA review
+(§8, MM-470).
 
 Phase 3 added one rule §3 did not state. "Always dismissible" is not enough on its own:
 an alarm dismissed on launch would re-take the app on the very next foreground, which is
@@ -228,7 +230,7 @@ No screen is deleted; this is a re-homing. `+page.svelte` step names are today's
 
 | Current step(s) | Target location |
 |---|---|
-| `mode_select` | replaced by the Add-identity situation question (§4) |
+| `mode_select` | replaced by the Add-identity situation question (§4) — now the `add_identity` step, with `server_gone` for option 4 |
 | `identity_method`, `did_web_*`, `pds_config`, `create_unavailable`, `claim_code`, `email`, `handle`, `password`, `loading`, `did_ceremony`, `did_success`, `shamir_backup`, `handle_registration`, `authenticating` | unchanged ceremony flow under "Starting fresh" |
 | `identity_input`, `pds_auth`, `email_verification`, `review_operation`, `claim_success` | unchanged under "I have an account somewhere" |
 | `recover_*` | unchanged under "I lost access to my wallet" |

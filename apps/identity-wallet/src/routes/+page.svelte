@@ -1,7 +1,8 @@
 <script lang="ts">
   import { listen } from '@tauri-apps/api/event';
   import { onMount, onDestroy } from 'svelte';
-  import ModeSelectScreen from '$lib/components/onboarding/ModeSelectScreen.svelte';
+  import AddIdentityScreen from '$lib/components/onboarding/AddIdentityScreen.svelte';
+  import ServerGoneScreen from '$lib/components/onboarding/ServerGoneScreen.svelte';
   import IdentityMethodScreen from '$lib/components/onboarding/IdentityMethodScreen.svelte';
   import DidWebPathScreen from '$lib/components/onboarding/DidWebPathScreen.svelte';
   import DidWebDomainScreen from '$lib/components/onboarding/DidWebDomainScreen.svelte';
@@ -74,7 +75,11 @@
   // below the input field, so the user can correct it without an extra modal.
 
   type OnboardingStep =
-    | 'mode_select'
+    | 'add_identity'
+    // Not a flow of its own: the honest routing "My server is gone" leads to. It reads
+    // the wallet's custody and hands the user either an identity's own "Move or rebuild"
+    // door or the share recovery that has to precede one.
+    | 'server_gone'
     | 'identity_method'
     | 'did_web_path'
     | 'did_web_domain'
@@ -145,8 +150,8 @@
 
   // ── State ────────────────────────────────────────────────────────────────
 
-  let step = $state<OnboardingStep>('mode_select');
-  // True once the user has reached `mode_select` from an existing wallet (via the
+  let step = $state<OnboardingStep>('add_identity');
+  // True once the user has reached `add_identity` from an existing wallet (via the
   // home screen's "add" action), so the entry screen can offer a Back-to-home
   // affordance. Stays false on first launch, where there is no home to return to.
   let cameFromHome = $state(false);
@@ -426,11 +431,11 @@
         }
       } catch (e) {
         console.error('listIdentities failed on mount:', e);
-        // First launch (empty Keychain) or Keychain error — continue to mode_select
+        // First launch (empty Keychain) or Keychain error — continue to add_identity
       }
     }
 
-    // Legacy users (PDS URL configured but no managed-dids) stay at mode_select.
+    // Legacy users (PDS URL configured but no managed-dids) stay at add_identity.
     // PdsConfigScreen internally checks for saved PDS URL, so the "Create new
     // identity" path handles them correctly without additional logic here.
 
@@ -676,18 +681,37 @@
 </script>
 
 <div class="app">
-  {#if step === 'mode_select'}
-    <ModeSelectScreen
-      oncreate={() => goTo('identity_method')}
-      onimport={() => goTo('identity_input')}
-      onrecover={() => goTo('recover_start')}
+  {#if step === 'add_identity'}
+    <AddIdentityScreen
+      onfresh={() => goTo('identity_method')}
+      onexisting={() => goTo('identity_input')}
+      onlostwallet={() => goTo('recover_start')}
+      onservergone={() => goTo('server_gone')}
       onback={cameFromHome ? () => goTo('home') : undefined}
     />
+
+  {:else if step === 'server_gone'}
+    <ServerGoneScreen
+      onidentity={(card) => {
+        selectedDid = card.did;
+        selectedDidDoc = card.didDoc;
+        selectedDeviceKeyIsRoot = card.deviceKeyIsRoot;
+        selectedDeviceKeyUnusable = card.deviceKeyUnusable;
+        // Back out of the identity panel returns here, not to home: the user is working a
+        // list they reached deliberately, and a fixed back path would drop them out of it.
+        identityReturnStep = 'server_gone';
+        if (card.didDoc) void resolveKitOffer(card.did, card.didDoc);
+        goTo('move_or_rebuild');
+      }}
+      onlostwallet={() => goTo('recover_start')}
+      onback={() => goTo('add_identity')}
+    />
+
   {:else if step === 'identity_method'}
     <IdentityMethodScreen
       onplc={() => { identityMethod = 'plc'; goTo('pds_config'); }}
       onweb={() => { identityMethod = 'web'; goTo('did_web_path'); }}
-      onback={() => goTo('mode_select')}
+      onback={() => goTo('add_identity')}
     />
   {:else if step === 'did_web_path'}
     <DidWebPathScreen
@@ -726,7 +750,7 @@
         identityInfo = info;
         goTo('pds_auth');
       }}
-      onback={() => goTo('mode_select')}
+      onback={() => goTo('add_identity')}
     />
   {:else if step === 'pds_auth'}
     <PdsAuthScreen
@@ -770,14 +794,14 @@
         createUnavailablePdsUrl = pdsUrl;
         goTo('create_unavailable');
       }}
-      onback={() => goTo('mode_select')}
+      onback={() => goTo('add_identity')}
     />
   {:else if step === 'create_unavailable'}
     <CreateUnavailableScreen
       pdsUrl={createUnavailablePdsUrl}
       onimport={() => goTo('identity_input')}
       onchangeserver={() => goTo('pds_config')}
-      onback={() => goTo('mode_select')}
+      onback={() => goTo('add_identity')}
     />
   {:else if step === 'claim_code'}
     <ClaimCodeScreen
@@ -868,7 +892,7 @@
 
   {:else if step === 'home'}
     <IdentityListHome
-      onadd={() => { cameFromHome = true; goTo('mode_select'); }}
+      onadd={() => { cameFromHome = true; goTo('add_identity'); }}
       onselect={(did, didDoc, deviceKeyIsRoot, deviceKeyUnusable) => {
         selectedDid = did;
         selectedDidDoc = didDoc;
@@ -1045,7 +1069,7 @@
         selectedDid = null;
         selectedDidDoc = null;
         selectedDeviceKeyIsRoot = null;
-        goTo(wasLast ? 'mode_select' : 'home');
+        goTo(wasLast ? 'add_identity' : 'home');
       }}
     />
 
@@ -1239,7 +1263,7 @@
         recoveryCollected = target.collected;
         goTo('recover_shares');
       }}
-      onback={() => goTo('mode_select')}
+      onback={() => goTo('add_identity')}
     />
 
   {:else if step === 'recover_shares'}
