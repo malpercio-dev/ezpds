@@ -1,0 +1,30 @@
+{
+  "cli_version": "0.8.42",
+  "checkpoint_id": "bfc6ef889804",
+  "strategy": "manual-commit",
+  "branch": "malpercio/mm-465-wallet-ia-phase-1-identity-instrument-panel",
+  "checkpoints_count": 1,
+  "files_touched": [
+    "apps/identity-wallet/src/lib/components/home/IdentityListHome.svelte",
+    "apps/identity-wallet/src/lib/components/home/IdentityScreen.svelte",
+    "apps/identity-wallet/src/lib/harness/registry.ts",
+    "apps/identity-wallet/src/lib/identity-status.test.ts",
+    "apps/identity-wallet/src/lib/identity-status.ts"
+  ],
+  "sessions": [
+    {
+      "metadata": "/bf/c6ef889804/0/metadata.json",
+      "transcript": "/bf/c6ef889804/0/full.jsonl",
+      "compact_transcript": "/bf/c6ef889804/0/transcript.jsonl",
+      "content_hash": "/bf/c6ef889804/0/content_hash.txt",
+      "prompt": "/bf/c6ef889804/0/prompt.txt"
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 69,
+    "cache_creation_tokens": 401825,
+    "cache_read_tokens": 13738552,
+    "output_tokens": 18130,
+    "api_call_count": 36
+  }
+}
