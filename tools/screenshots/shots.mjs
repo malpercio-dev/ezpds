@@ -23,7 +23,7 @@
  */
 
 /**
- * The instant the browser clock is frozen at for every shot.
+ * The browser clock is frozen at this instant for every shot.
  *
  * Load-bearing, not cosmetic: the harness seeds relative ages off the live clock
  * (`scenarios.ts` `isoHoursAgo`, `registry.ts` `isoInHours`) precisely so an alert stays a
