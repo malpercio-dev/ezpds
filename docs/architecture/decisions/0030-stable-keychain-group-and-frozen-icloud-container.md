@@ -3,7 +3,7 @@
 - **Status:** Accepted
 - **Date:** 2026-07-26
 - **Deciders:** mal
-- **Related:** MM-462; [MM-477](https://linear.app/malpercio/issue/MM-477) (the rename itself — blocked on this shipping and baking; carries the full coupling inventory and checklist); [MM-419](https://linear.app/malpercio/issue/MM-419) (notification keys need a shared group), [MM-451](https://linear.app/malpercio/issue/MM-451) (the iCloud backup is disaster-recovery input); `docs/design-plans/2026-07-24-wallet-identity-durability.md` §4; `apps/identity-wallet/src-tauri/{Entitlements.ios.plist,Info.ios.plist,src/keychain.rs}`; `scripts/bundle-identity-check.sh`
+- **Related:** MM-462; [MM-477](https://linear.app/malpercio/issue/MM-477) (the rename itself — blocked on this shipping and baking; carries the full coupling inventory and checklist); [MM-419](https://linear.app/malpercio/issue/MM-419) (notification keys need a shared group), [MM-451](https://linear.app/malpercio/issue/MM-451) (the iCloud backup is disaster-recovery input); `docs/archive/design-plans/2026-07-24-wallet-identity-durability.md` §4; `apps/identity-wallet/src-tauri/{Entitlements.ios.plist,Info.ios.plist,src/keychain.rs}`; `scripts/bundle-identity-check.sh`
 
 ## Context
 

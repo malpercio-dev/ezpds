@@ -1,6 +1,8 @@
 # Wallet Identity Durability — Reinstall, Restore, and Redistribution
 
-**Status: design, unstarted.** Tracked as MM-460 (§2), MM-461 (§3), MM-462 (§4).
+**Status: landed.** All three fixes shipped — MM-460 (§2, PR #426), MM-461 (§3, PR #448),
+MM-462 (§4, PR #445). §5's cross-references are handoffs to work tracked elsewhere, not
+open items of this plan.
 
 Three defects in the wallet's local-persistence layer, found by auditing what actually
 survives when the app's *installation* changes rather than when the *network* fails.

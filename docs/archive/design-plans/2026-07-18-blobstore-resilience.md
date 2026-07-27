@@ -5,11 +5,11 @@ shipped:** the off-volume bucket mirror (#367), crash-durable blob writes
 (#375), the periodic integrity scrub sweep (MM-431, #376), verify-on-serve
 (MM-432, #377), and the migration-drain per-blob degradation + loss manifest
 (MM-433, #383) — plus the wallet-side iCloud blob backup as MM-434 (see that
-section). The only follow-ons still open are the two wallet-side items noted in
-the MM-434 section: the migration drain accepting the local iCloud mirror as a
-*fallback blob source* (tracked as MM-446, whose iCloud-placeholder-download
-dependency is MM-445), and `BGProcessingTask` background scheduling — polish on
-top of the shipped resilience, not core durability.
+section). The wallet-side follow-ons noted in the MM-434 section have since
+shipped too: the migration drain accepting the local iCloud mirror as a
+*fallback blob source* (MM-446, 2026-07-21), its iCloud-placeholder-download
+dependency (MM-445, 2026-07-22), and `BGProcessingTask` background scheduling
+(MM-444, 2026-07-23).
 
 The **Recommendations** and **Wallet-side option** sections below are preserved
 as the original 2026-07-18 survey, written in that day's future tense ("do (a)
@@ -19,7 +19,7 @@ rationale for what shipped, not as open work — the status above and the inline
 the two MM-434 follow-ons.
 
 Prompted by the MM-394 real-identity migration
-([validation record](../validation/2026-07-17-mm-394-real-identity-migration.md)):
+([validation record](../../validation/2026-07-17-mm-394-real-identity-migration.md)):
 the source reference PDS served repo/record/`listBlobs` reads fine while 500ing on
 **every** `getBlob` for the DID — blob metadata present, file reads failing server-side
 — and the blobs proved permanently unrecoverable (AppView CDN derivatives are
@@ -47,7 +47,7 @@ users' media, and there is no external copy anywhere on the network to heal from
   truncation, or a bad restore stays silent until a `getBlob` — or a migration drain —
   trips over it. `getBlob` buffers the whole file and returns whatever it contains
   (with `Content-Type`/CSP/`nosniff` headers; it does not currently set
-  `Cache-Control` — the [blob-handling spec](../blob-handling-spec.md) §7.3 recommends
+  `Cache-Control` — the [blob-handling spec](../../blob-handling-spec.md) §7.3 recommends
   `immutable`, which is safe only once bytes are verified). Because blobs are
   content-addressed, downstream consumers cache them as immutable regardless, so
   served corrupt bytes would stick as canonical.
@@ -79,7 +79,7 @@ Two viable shapes:
   missing" fault; rows whose blobs remain missing are surfaced (scrub alarm), not
   silently served.
 - **(b) S3-compatible backend as the primary store** — the
-  [blob-handling spec](../blob-handling-spec.md) §4 v1.0 plan (R2/Tigris/MinIO via
+  [blob-handling spec](../../blob-handling-spec.md) §4 v1.0 plan (R2/Tigris/MinIO via
   `rust-s3` or `opendal`, `storage_backend` column, local→S3 migration tool). Removes
   the volume dependency entirely and gets object-storage durability, at the cost of a
   real backend abstraction and a serving-path change.
