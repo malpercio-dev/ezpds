@@ -20,10 +20,12 @@ use crate::app::AppState;
 use super::plc::fetch_current_plc_state;
 use super::resolution::resolve_web_did_document;
 
-/// The set of `did:key:` URIs currently authorized to sign a sovereign proof for an account,
-/// plus a short description of the authority state they were read from (for the success log).
+/// The set of `did:key:` URIs currently authorized to sign a sovereign proof for an account, the
+/// handles that same authority state asserts, plus a short description of where it was read from
+/// (for the success log).
 pub struct AuthoritySet {
     keys: Vec<String>,
+    handles: Vec<String>,
     pub source: String,
 }
 
@@ -31,6 +33,33 @@ impl AuthoritySet {
     pub fn authorizes(&self, signing_key: &str) -> bool {
         self.keys.iter().any(|key| key == signing_key)
     }
+
+    /// Whether the account's authoritative state asserts `handle` in its `alsoKnownAs`.
+    ///
+    /// `handle` must already be ASCII-lowercased; the stored set is normalized on the way in, so
+    /// the comparison is case-insensitive as atproto handles require.
+    ///
+    /// This is only the *assertion* half of the atproto bidirectional handle rule. `alsoKnownAs` is
+    /// writable by whoever controls the DID, so any account can claim any handle here; a caller
+    /// binding a client-supplied handle to this account must also confirm the handle resolves back
+    /// to the DID.
+    pub fn asserts_handle(&self, handle: &str) -> bool {
+        self.handles.iter().any(|candidate| candidate == handle)
+    }
+}
+
+/// Bare, ASCII-lowercased handles from a document's `alsoKnownAs` aliases. Non-`at://` aliases are
+/// not handles and are dropped rather than compared as-is.
+///
+/// The case fold is load-bearing rather than cosmetic: `alsoKnownAs` is hand-authored — a did:web's
+/// document especially — so an account's asserted handle can carry any case, while atproto handles
+/// bind case-insensitively. Normalizing only the caller's side would silently refuse a legitimate
+/// binding whose document happens not to be lowercase.
+fn asserted_handles<'a>(aliases: impl Iterator<Item = &'a str>) -> Vec<String> {
+    aliases
+        .filter_map(|alias| alias.strip_prefix("at://"))
+        .map(str::to_ascii_lowercase)
+        .collect()
 }
 
 /// A failed authority lookup, split by who the caller should blame.
@@ -77,6 +106,7 @@ async fn plc_authority(state: &AppState, did: &str) -> Result<AuthoritySet, Auth
         .map_err(AuthorityError::Lookup)?;
     Ok(AuthoritySet {
         keys: plc.rotation_keys,
+        handles: asserted_handles(plc.also_known_as.iter().map(String::as_str)),
         source: format!("plc:{}", plc.cid),
     })
 }
@@ -108,8 +138,17 @@ async fn web_authority(state: &AppState, did: &str) -> Result<AuthoritySet, Auth
         .await
         .map_err(AuthorityError::Lookup)?;
     let device_key = device_verification_key(&document, did)?;
+    let handles = asserted_handles(
+        document
+            .get("alsoKnownAs")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter_map(Value::as_str),
+    );
     Ok(AuthoritySet {
         keys: vec![device_key],
+        handles,
         source: "did:web#device".to_string(),
     })
 }
