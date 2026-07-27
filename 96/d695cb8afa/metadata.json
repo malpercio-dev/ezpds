@@ -1,0 +1,28 @@
+{
+  "cli_version": "0.8.42",
+  "checkpoint_id": "96d695cb8afa",
+  "strategy": "manual-commit",
+  "branch": "claude/urgencybadge-state-fixtures-ebb47f",
+  "checkpoints_count": 1,
+  "files_touched": [
+    "apps/identity-wallet/AGENTS.md",
+    "apps/identity-wallet/src/lib/harness/scenarios.test.ts",
+    "apps/identity-wallet/src/lib/harness/scenarios.ts"
+  ],
+  "sessions": [
+    {
+      "metadata": "/96/d695cb8afa/0/metadata.json",
+      "transcript": "/96/d695cb8afa/0/full.jsonl",
+      "compact_transcript": "/96/d695cb8afa/0/transcript.jsonl",
+      "content_hash": "/96/d695cb8afa/0/content_hash.txt",
+      "prompt": ""
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 91,
+    "cache_creation_tokens": 208010,
+    "cache_read_tokens": 9055488,
+    "output_tokens": 13195,
+    "api_call_count": 49
+  }
+}
