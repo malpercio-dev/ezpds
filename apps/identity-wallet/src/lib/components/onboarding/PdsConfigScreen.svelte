@@ -5,6 +5,7 @@
     getPdsUrl,
     getPdsCapabilities,
     hasPdsCapability,
+    type PdsCapabilities,
     type PdsConfigError,
   } from '$lib/ipc';
   import OnboardingShell from '$lib/components/ui/OnboardingShell.svelte';
@@ -19,7 +20,12 @@
     oncreateunavailable,
     onback = undefined,
   }: {
-    onnext: () => void;
+    /**
+     * Carries the host's advertised capabilities forward, so later steps gate on the probe
+     * already performed here rather than each re-asking. `optionalPassword` is read at the
+     * handle step to decide whether a password is collected at all.
+     */
+    onnext: (capabilities: PdsCapabilities) => void;
     /**
      * The configured server does not run the create ceremony. Called with the saved URL
      * instead of `onnext`, so the flow can explain that here rather than letting the user
@@ -80,7 +86,7 @@
         oncreateunavailable(trimmed);
         return;
       }
-      onnext();
+      onnext(capabilities);
     } catch (e) {
       const err = e as PdsConfigError;
       if (err.code === 'INVALID_URL') {

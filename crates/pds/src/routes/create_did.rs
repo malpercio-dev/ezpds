@@ -47,7 +47,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::app::AppState;
 use crate::auth::guards::require_pending_session;
-use crate::auth::password::hash_password;
+use crate::auth::password::resolve_password;
 use crate::auth::token::generate_token;
 use crate::db::is_unique_violation;
 use common::{ApiError, ErrorCode};
@@ -63,7 +63,12 @@ pub struct CreateDidRequest {
     pub did_web_document: Option<String>,
     /// Initial password, stored as an argon2id PHC string.
     /// Enables `createSession` for this account after promotion.
-    pub password: String,
+    ///
+    /// Omitted entirely (JSON `null` or absent) requests a passwordless account, which the server
+    /// grants only when `accounts.password_optional` is set — the `optionalPassword` capability.
+    /// An empty string is never a request for one: see [`resolve_password`].
+    #[serde(default)]
+    pub password: Option<String>,
     /// did:key of the wallet-derived recovery rotation key (client-share ceremony).
     /// Required together with `escrow_share` for a did:plc ceremony, and must appear
     /// in the op's `rotationKeys`. Absent on the did:web ceremony (no escrow).
@@ -118,14 +123,13 @@ pub async fn create_did_handler(
             )
         })?;
 
-    // Guard: reject empty passwords before doing any expensive work.
-    // argon2 happily hashes "" — this ensures the PDS never stores a zero-length password.
-    if payload.password.is_empty() {
-        return Err(ApiError::new(
-            ErrorCode::InvalidClaim,
-            "password must not be empty",
-        ));
-    }
+    // Settle the account's password policy before doing any other work, so a request that will be
+    // refused over it is refused now. The argon2 hash this plans for is deliberately deferred to
+    // Phase 4 — see `PasswordPlan::hash`.
+    let password_plan = resolve_password(
+        payload.password.as_deref(),
+        state.config.accounts.password_optional,
+    )?;
 
     // Resolve the share-custody mode from the request shape before any state is written.
     // The two client-share fields travel together and are required for a did:plc ceremony:
@@ -331,9 +335,11 @@ pub async fn create_did_handler(
         mark_plc_registered(&state.db, &session.account_id).await?;
     }
 
-    // Phase 4: Build DID document, generate session, hash password, atomically promote.
+    // Phase 4: Build DID document, generate session, hash the password, atomically promote. The
+    // policy was settled up front; the hash happens only here, once every cheap check above has
+    // passed, so a doomed request never pays for argon2.
     let session_token = generate_token();
-    let password_hash = hash_password(&payload.password)?;
+    let password_hash = password_plan.hash()?;
     let deposit = match &custody {
         ShareCustody::ClientEscrow { envelope } => {
             // KEK-wrap the deposited envelope exactly as PUT /v1/recovery/escrow-share
@@ -360,7 +366,7 @@ pub async fn create_did_handler(
         &did_document,
         &session_token.hash,
         &deposit,
-        &password_hash,
+        password_hash.as_deref(),
         &repo_key,
         &genesis_root_str,
         &genesis_rev,
@@ -623,7 +629,9 @@ async fn check_already_promoted(db: &sqlx::SqlitePool, did: &str) -> Result<(), 
 /// envelope into `recovery_escrow` (with its `deposited` audit event) in the same
 /// transaction; the no-escrow did:web path writes no escrow. `accounts.recovery_share`
 /// stays NULL on both paths (the server no longer holds any server-generated share).
-/// `password_hash` is the argon2id PHC string for the account's password set during the ceremony.
+/// `password_hash` is the argon2id PHC string for the account's password set during the ceremony,
+/// or `None` for a passwordless account (the `optionalPassword` capability), which stores NULL —
+/// the same column state migration-mode `createAccount` has always written for OAuth-only accounts.
 #[allow(clippy::too_many_arguments)]
 async fn promote_account(
     state: &AppState,
@@ -633,7 +641,7 @@ async fn promote_account(
     did_document: &serde_json::Value,
     token_hash: &str,
     deposit: &EscrowDeposit,
-    password_hash: &str,
+    password_hash: Option<&str>,
     repo_key: &crate::db::repo_keys::RepoSigningKey,
     genesis_root: &str,
     genesis_rev: &str,
@@ -1888,6 +1896,130 @@ mod tests {
 
     // ── Password provisioning ─────────────────────────────────────────────────
 
+    /// With `accounts.password_optional` on, a ceremony that omits the password promotes the
+    /// account with a NULL `password_hash` — the same column state a migrated-in, OAuth-only
+    /// account has always had. This is the capability's whole promise: a client that reads
+    /// `optionalPassword` from `describeServer` and omits the field must actually succeed.
+    #[tokio::test]
+    async fn omitted_password_creates_a_passwordless_account_when_enabled() {
+        let base = test_state_for_did("https://plc.directory".to_string()).await;
+        let mut config = (*base.config).clone();
+        config.accounts.password_optional = true;
+        let state = AppState {
+            config: std::sync::Arc::new(config),
+            ..base
+        };
+        let db = state.db.clone();
+        let setup = insert_test_data(&db).await;
+        let (rotation_key_public, signed_op) = make_signed_op(
+            &setup.handle,
+            &state.config.public_url,
+            &setup.repo_signing_key_id,
+        );
+
+        // Pre-store the DID with a registration stamp so the ceremony takes the skip-plc path
+        // (plc.directory is never contacted from a test).
+        let signed_op_str = serde_json::to_string(&signed_op).unwrap();
+        let verified = crypto::verify_genesis_op(
+            &signed_op_str,
+            &crypto::DidKeyUri(rotation_key_public.clone()),
+        )
+        .expect("verify should succeed");
+        sqlx::query(
+            "UPDATE pending_accounts \
+             SET pending_did = ?, pending_plc_registered_at = datetime('now') \
+             WHERE id = ?",
+        )
+        .bind(&verified.did)
+        .bind(&setup.account_id)
+        .execute(&db)
+        .await
+        .expect("pre-store pending_did");
+
+        // No `password` key at all — omission, not an empty string.
+        let body = serde_json::json!({
+            "rotationKeyPublic": rotation_key_public,
+            "signedCreationOp": signed_op,
+            "recoveryKey": rotation_key_public,
+            "escrowShare": valid_escrow_share(),
+        });
+        let request = Request::builder()
+            .method("POST")
+            .uri("/v1/dids")
+            .header("Authorization", format!("Bearer {}", setup.session_token))
+            .header("Content-Type", "application/json")
+            .body(Body::from(body.to_string()))
+            .unwrap();
+
+        let response = crate::app::app(state).oneshot(request).await.unwrap();
+        assert_eq!(
+            response.status(),
+            StatusCode::OK,
+            "a passwordless ceremony should succeed when the operator allows it"
+        );
+        let body_bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let did_body: serde_json::Value = serde_json::from_slice(&body_bytes).unwrap();
+        let did = did_body["did"].as_str().unwrap().to_string();
+
+        let stored_hash: Option<String> =
+            sqlx::query_scalar("SELECT password_hash FROM accounts WHERE did = ?")
+                .bind(&did)
+                .fetch_one(&db)
+                .await
+                .unwrap();
+        assert!(
+            stored_hash.is_none(),
+            "a passwordless account stores NULL, got: {stored_hash:?}"
+        );
+    }
+
+    /// An empty password is refused even with `accounts.password_optional` on: `""` is what an
+    /// uninitialized field serializes to, so it must never be read as a request for a
+    /// passwordless account. Omission is the only way to ask.
+    #[tokio::test]
+    async fn empty_password_is_still_refused_when_passwordless_is_enabled() {
+        let base = test_state_for_did("https://plc.directory".to_string()).await;
+        let mut config = (*base.config).clone();
+        config.accounts.password_optional = true;
+        let state = AppState {
+            config: std::sync::Arc::new(config),
+            ..base
+        };
+        let db = state.db.clone();
+        let setup = insert_test_data(&db).await;
+
+        let body = serde_json::json!({
+            "rotationKeyPublic": "did:key:z123",
+            "signedCreationOp": serde_json::json!({}),
+            "password": "",
+        });
+        let request = Request::builder()
+            .method("POST")
+            .uri("/v1/dids")
+            .header("Authorization", format!("Bearer {}", setup.session_token))
+            .header("Content-Type", "application/json")
+            .body(Body::from(body.to_string()))
+            .unwrap();
+
+        let response = crate::app::app(state).oneshot(request).await.unwrap();
+        assert_eq!(
+            response.status(),
+            StatusCode::BAD_REQUEST,
+            "an empty password must be refused regardless of the passwordless policy"
+        );
+        let body_bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body_bytes).unwrap();
+        let message = json["error"]["message"].as_str().unwrap_or_default();
+        assert!(
+            message.contains("must not be empty"),
+            "the refusal should name the empty string, got: {message}"
+        );
+    }
+
     /// Account promoted with a password can authenticate via createSession.
     ///
     /// Uses the retry path (pre-stored pending_did) so plc.directory is never called,
@@ -2083,11 +2215,15 @@ mod tests {
         );
     }
 
-    /// Missing password field in request body returns 422 Unprocessable Entity.
+    /// An omitted password on a server that does not offer passwordless accounts is refused —
+    /// with a 400 naming the policy, not the 422 an absent required field used to produce.
     ///
-    /// Axum rejects deserialization of `CreateDidRequest` when a required field is absent.
+    /// The field became optional so a client *may* omit it where the operator allows that
+    /// (`accounts.password_optional`). Where they do not, omission must still fail, and the
+    /// deserializer is no longer what fails it: the account-creation policy is, which is what
+    /// lets the response say why rather than reporting an unprocessable body.
     #[tokio::test]
-    async fn missing_password_field_returns_422() {
+    async fn missing_password_field_is_refused_when_passwords_are_required() {
         let state = test_state_for_did("https://plc.directory".to_string()).await;
         let db = state.db.clone();
         let setup = insert_test_data(&db).await;
@@ -2105,11 +2241,27 @@ mod tests {
             .body(Body::from(request_body.to_string()))
             .unwrap();
 
+        // The default test state leaves `accounts.password_optional` at its default (false).
+        assert!(
+            !state.config.accounts.password_optional,
+            "this test asserts the require-a-password branch"
+        );
+
         let response = crate::app::app(state).oneshot(request).await.unwrap();
         assert_eq!(
             response.status(),
-            StatusCode::UNPROCESSABLE_ENTITY,
-            "missing password field should return 422"
+            StatusCode::BAD_REQUEST,
+            "an omitted password should be refused by policy when passwords are required"
+        );
+
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        let message = json["error"]["message"].as_str().unwrap_or_default();
+        assert!(
+            message.contains("does not offer passwordless"),
+            "the refusal should tell the client the server requires a password, got: {message}"
         );
     }
 

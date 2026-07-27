@@ -139,6 +139,32 @@ request, flipped from a denial, or widened after the fact.
 switch. Password-based browser consent continues to work for accounts that have a
 password; the wallet path is an additional, stronger route to the same grant.
 
+### `optionalPassword`
+
+An account can be created on this server with no password at all. A client that
+sees this capability may omit the password field entirely when creating an
+account; the account is stored with no password hash and authenticates
+afterwards through its device key — wallet-confirmed OAuth consent and sovereign
+sessions — plus app passwords for standard AT Protocol clients like the Bluesky
+app.
+
+Passwordless accounts are not a new storage shape: accounts that migrate in from
+another server have always been stored without a password. What this capability
+changes is only whether a *new* account may be created that way.
+
+An **empty** password is refused whether or not this is enabled, and that is
+deliberate: an empty string is what an uninitialised form field sends, so
+accepting one would let a client bug create an account with no credential that
+nobody asked for. Omitting the field is the only way to ask.
+
+**Controlled by:** `accounts.password_optional`. Off by default — a passwordless
+account depends on device-key custody you cannot verify on the account holder's
+behalf, so a deployment whose users are not all running the identity wallet
+should keep the password required. Enable it with `[accounts] password_optional =
+true` (`EZPDS_ACCOUNTS_PASSWORD_OPTIONAL`) and the capability appears. Turning it
+back off stops new passwordless accounts being created; it does not affect
+accounts that already have no password, which keep working exactly as before.
+
 ### `didWebHosting`
 
 Custos serves an opted-in account's `did:web` document at the account's own

@@ -45,4 +45,12 @@ docs {
 
   For a did:web request, remove the `recoveryKey`/`escrowShare` lines from the body above and
   send `didWebDocument` instead of `signedCreationOp`.
+
+  `password` is optional, but only when the server advertises the `optionalPassword` capability
+  in `describeServer` (`[accounts] password_optional = true`). To create a passwordless account,
+  **remove the `password` line entirely** — the account is stored with no password hash and
+  authenticates through its device key (wallet consent, sovereign sessions) plus app passwords.
+  An empty string is rejected whether or not the capability is enabled: it is what an
+  uninitialised field sends, so omission is the only way to ask. Against a server without the
+  capability, an omitted password is a 400.
 }

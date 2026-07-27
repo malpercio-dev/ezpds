@@ -27,7 +27,7 @@ use serde::{Deserialize, Serialize};
 use common::{ApiError, ErrorCode};
 
 use crate::app::AppState;
-use crate::auth::password::hash_password;
+use crate::auth::password::{hash_password, resolve_password};
 use crate::auth::service_auth::verify_service_auth_resolving_key;
 use crate::db::is_unique_violation;
 use crate::db::repo_keys::{
@@ -106,15 +106,18 @@ async fn create_account_new(
     state: &AppState,
     payload: &CreateAccountRequest,
 ) -> Result<Json<CreateAccountResponse>, ApiError> {
-    // New-account mode creates a fresh identity on this server: require email + password and a
-    // handle on a served domain. The email is normalized (trim + lowercase) so it matches the
-    // reference PDS's storage/lookup behavior.
+    // New-account mode creates a fresh identity on this server: require email, settle the
+    // password against the operator's policy, and require a handle on a served domain. The email
+    // is normalized (trim + lowercase) so it matches the reference PDS's storage/lookup behavior.
     let email = crate::uniqueness::normalize_email(require_email(payload)?);
-    let password = payload
-        .password
-        .as_deref()
-        .filter(|p| !p.is_empty())
-        .ok_or_else(|| ApiError::new(ErrorCode::InvalidClaim, "password must not be empty"))?;
+    // Shared with the native `/v1/dids` ceremony so the two creation paths cannot diverge on
+    // whether a password is required, or on what an empty string means. Cheap by construction —
+    // the argon2 hash waits until every local check below has passed, because this endpoint is
+    // unauthenticated and bounded only by a per-IP rate limit.
+    let password_plan = resolve_password(
+        payload.password.as_deref(),
+        state.config.accounts.password_optional,
+    )?;
     if let Err(msg) = crate::identity::handle::validate_handle(
         &payload.handle,
         &state.config.available_user_domains,
@@ -231,7 +234,9 @@ async fn create_account_new(
     .await?;
 
     let did_document = crate::identity::genesis::build_did_document(&verified)?;
-    let password_hash = hash_password(password)?;
+    // Only now, with the handle validated and the genesis op verified, is the argon2 hash worth
+    // paying for — the same point in the flow it occupied before the policy split.
+    let password_hash = password_plan.hash()?;
 
     let session = promote_new_account(
         state,
@@ -239,7 +244,7 @@ async fn create_account_new(
             did: &did,
             email: &email,
             handle: &payload.handle,
-            password_hash: &password_hash,
+            password_hash: password_hash.as_deref(),
             did_document: &did_document,
             repo_key: &repo_key,
             genesis_root: &genesis_root_str,
@@ -267,7 +272,9 @@ struct NewAccountPromotion<'a> {
     did: &'a str,
     email: &'a str,
     handle: &'a str,
-    password_hash: &'a str,
+    /// `None` for a passwordless account (the `optionalPassword` capability) — stores NULL,
+    /// the same column state migration mode has always written for OAuth-only accounts.
+    password_hash: Option<&'a str>,
     did_document: &'a serde_json::Value,
     repo_key: &'a RepoSigningKey,
     genesis_root: &'a str,

@@ -100,10 +100,14 @@ export type DIDCeremonyError = {
  *
  * On success, the DID and new session token are stored in Keychain by the Rust backend.
  * On failure, the Promise rejects with a `DIDCeremonyError`.
+ *
+ * `password` is `null` for a passwordless account, which the Rust side turns into an omitted
+ * field rather than an empty string — only hosts advertising `optionalPassword` accept it.
+ * Never pass `''`: the server refuses it, deliberately, under either policy.
  */
 export const performDIDCeremony = (
   handle: string,
-  password: string,
+  password: string | null,
 ): Promise<DIDCeremonyResult> =>
   invoke('perform_did_ceremony', { handle, password });
 
@@ -135,10 +139,14 @@ export type DidWebPreparation = {
 export const prepareDidWebCeremony = (): Promise<DidWebPreparation> =>
   invoke('prepare_did_web_ceremony');
 
-/** Verify the live did:web bytes and promote the pending account. */
+/**
+ * Verify the live did:web bytes and promote the pending account.
+ *
+ * `password` is `null` for a passwordless account — see `performDIDCeremony`.
+ */
 export const completeDidWebCeremony = (
   documentText: string,
-  password: string,
+  password: string | null,
   enableManagedHosting: boolean,
 ): Promise<DIDCeremonyResult> =>
   invoke('complete_did_web_ceremony', { documentText, password, enableManagedHosting });
@@ -270,6 +278,7 @@ export type PdsCapability =
   | 'agents'
   | 'walletConsent'
   | 'didWebHosting'
+  | 'optionalPassword'
   | (string & {});
 
 /** What a PDS advertises. Every PDS that is not Custos reports no capabilities. */

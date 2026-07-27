@@ -11,7 +11,8 @@
     onsuccess,
   }: {
     handle: string;
-    password: string;
+    /** `null` requests a passwordless account; the field is then omitted from the PDS request. */
+    password: string | null;
     onsuccess: (result: import('$lib/ipc').DIDCeremonyResult) => void;
   } = $props();
 
@@ -46,9 +47,12 @@
   async function beginCeremony() {
     phase = 'sealing';
     hold.state.progress = 1;
-    // Defense-in-depth: guard against an empty password reaching the PDS.
-    // The PasswordScreen enforces ≥8 chars, but this makes the ceremony self-contained.
-    if (!password || password.length === 0) {
+    // Defense-in-depth: guard against an EMPTY password reaching the PDS (the server refuses
+    // one under either policy, and it is what an uninitialized field serializes to). `null` is
+    // different and legitimate — it is how a passwordless account is requested against a host
+    // advertising `optionalPassword`, and the field is then omitted from the request entirely.
+    // The PasswordScreen enforces ≥8 chars; this keeps the ceremony self-contained.
+    if (password !== null && password.length === 0) {
       error = { code: 'DID_CREATION_FAILED', message: 'Password is required.' };
       phase = 'error';
       return;
