@@ -1,7 +1,10 @@
 # Wallet-Held MST Repo Backup to iCloud
 
-**Status: core shipped (MM-447, 2026-07-23 — PR #394, in v0.7.2). Follow-ons open;
-plan retained for them.** This plan proposed — and the wallet now ships — a
+**Status: landed.** Core shipped as MM-447 (2026-07-23 — PR #394, in v0.7.2), followed by
+the `transfer_repo` iCloud-mirror fallback (MM-448, PR #404), background repo passes via
+`BGProcessingTask` (MM-449, PR #411), and the sovereign disaster-recovery rebuild (MM-451).
+Only MM-450 (block-level incremental backup) remains, and it is an On Ice, trigger-gated
+optimization rather than in-flight work. This plan proposed — and the wallet now ships — a
 `repo_backup.rs` module in the identity wallet that mirrors a user's ATProto repo
 (their signed commit + MST + records — the CAR) into their iCloud Drive, as the
 sibling of the user-held blob backup (`blob_backup.rs`, MM-434). It closed the last

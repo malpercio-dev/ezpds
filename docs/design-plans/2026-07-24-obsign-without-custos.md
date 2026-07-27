@@ -246,7 +246,7 @@ Related: [ADR-0001](../architecture/decisions/0001-client-held-rotation-key-cust
 (full-session requirement), the key-recovery design
 ([2026-07-17-key-recovery-from-shares.md](../archive/design-plans/2026-07-17-key-recovery-from-shares.md)),
 the repo-backup design
-([2026-07-22-wallet-repo-icloud-backup.md](2026-07-22-wallet-repo-icloud-backup.md)),
+([2026-07-22-wallet-repo-icloud-backup.md](../archive/design-plans/2026-07-22-wallet-repo-icloud-backup.md)),
 and the passwordless exploration
 ([2026-07-12-passwordless-auth.md](2026-07-12-passwordless-auth.md), MM-312 —
 orthogonal, Custos-side).

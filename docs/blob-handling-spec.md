@@ -11,7 +11,7 @@ Companion to: Provisioning API Spec, Mobile Architecture Spec, Data Migration Sp
 > replicate off-volume to an S3-compatible bucket mirror with restore-on-boot,
 > the write path is crash-durable (temp file + fsync + atomic rename), and a
 > periodic integrity scrub sweeps for row/file mismatches. See
-> [design-plans/2026-07-18-blobstore-resilience.md](design-plans/2026-07-18-blobstore-resilience.md)
+> [archive/design-plans/2026-07-18-blobstore-resilience.md](archive/design-plans/2026-07-18-blobstore-resilience.md)
 > for what shipped and what remains, and [deploy.md](deploy.md) for the
 > operator-facing configuration.
 

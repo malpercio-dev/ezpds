@@ -52,7 +52,7 @@ The product launches mobile-first. The PDS is a full PDS before any desktop is i
 > (`apps/identity-wallet/src-tauri/src/repo_backup.rs`, MM-447) — the self-custody
 > sibling of the blob backup. The PDS stays the authoritative copy; the snapshot is a
 > disaster-recovery/export artifact fetched over public `getRepo`, not a second writer.
-> See [the design plan](design-plans/2026-07-22-wallet-repo-icloud-backup.md).
+> See [the design plan](archive/design-plans/2026-07-22-wallet-repo-icloud-backup.md).
 
 **Phase: Desktop-Enrolled (v0.2)**
 - PDS behavior: XRPC proxy + signer — forwards writes to desktop, signs commits, serves reads from cache

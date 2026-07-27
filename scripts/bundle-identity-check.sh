@@ -15,7 +15,7 @@
 #
 # This gate pins each app's identifier and asserts the net is in place, so the rename has to be
 # a deliberate edit to this file — which is where the checklist lives. See ADR-0030 and
-# docs/design-plans/2026-07-24-wallet-identity-durability.md §4.
+# docs/archive/design-plans/2026-07-24-wallet-identity-durability.md §4.
 #
 # Linux-runnable (greps only); part of `just ci` / `just ci-pds`.
 set -euo pipefail
