@@ -59,6 +59,37 @@ a:hover {
   text-decoration: underline;
 }
 
+/* The UA stylesheet sets `font: 400 13.333px Arial` on form controls, and `font` is a
+   shorthand — so it overrides the family, size, and weight `body` establishes, for the
+   control AND everything inside it. Without this, every button in the app renders in
+   Arial: the identity cards, the nav rows, the protection strip. The wallet self-hosts
+   Public Sans and routes all type through tokens precisely so the type system is the type
+   system; a control is not an exception to it. Size and weight are still set per component,
+   which is why the omission stayed invisible for so long — only the family gave it away. */
+button,
+input,
+select,
+textarea {
+  font: inherit;
+  color: inherit;
+}
+
+/* Available to assistive tech, absent from the visual design. For the cases where the
+   sighted cue is carried by something a screen reader cannot use — a shimmer placeholder,
+   a colour, an icon — and the meaning has to be restated in words. Clipped rather than
+   `display: none` or `visibility: hidden`, both of which remove it from the a11y tree too. */
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  border: 0;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
 /* AAA focus: a visible aubergine ring on every interactive element, never removed. */
 :where(a, button, input, select, textarea, summary, [role='button'], [tabindex]):focus-visible {
   outline: 2px solid var(--color-accent);

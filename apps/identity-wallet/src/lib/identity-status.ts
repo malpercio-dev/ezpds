@@ -85,11 +85,16 @@ export function deriveIdentityPanelState(
  *
  * `plcCheckSucceeded` is `!IdentityStatus.checkFailed` — the monitor's report of whether
  * plc.directory answered. It is the right input for a did:plc and a meaningless one for a
- * did:web, which has no PLC audit log at all: `PlcMonitor::check_all` does not filter by
- * DID method, so it asks plc.directory about every managed DID and a did:web's audit-log
- * fetch fails there *every* sweep. Passing that through would tell a did:web user their
- * public record could not be reached when they have no public record — the exact opposite
- * of the honesty the unverified state exists to provide.
+ * did:web, which has no PLC audit log at all.
+ *
+ * `PlcMonitor::check_all` omits a did:web from the sweep entirely (it has nothing to
+ * report, so it reports nothing), which means the caller's `plcCheckSucceeded` for one is
+ * never a reading — it is whatever the screen initialized before the first check, and
+ * `IdentityScreen` initializes `false` on purpose so a did:plc cannot open green unearned.
+ * Read literally, that would tell a did:web user their public record could not be reached
+ * when they have no public record: the exact opposite of the honesty the unverified state
+ * exists to provide. This short-circuit is what stops it, so it is load-bearing rather
+ * than belt-and-braces even now that the backend no longer claims a failed check.
  *
  * So a did:web is verified by construction. Its protection is control of its domain, which
  * no directory sweep observes in either direction.

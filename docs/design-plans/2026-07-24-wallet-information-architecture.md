@@ -1,7 +1,21 @@
 # Wallet Information Architecture — The Instrument Panel
 
-**Status: design, unstarted.** Deliverable of a structured IA brainstorm (2026-07-24);
-no implementation in this change. Tracked as MM-465–MM-470 (§9).
+**Status: phases 1–2 shipped; 3–4 open.** Deliverable of a structured IA brainstorm
+(2026-07-24), tracked as MM-465–MM-470 (§9). The identity instrument panel (§2.1–§2.4,
+MM-465) and the Protection surface + home strip (§2.5, MM-466) are built; the alarm
+takeover landing (§3, MM-467) and the Add-identity situation question (§4, MM-468) are
+not. §7's mapping table describes the target, which phases 1–2 have now reached for every
+row except `mode_select`.
+
+One decision was made during phase 2 that this document left open. §2.5 asks the
+Protection list to reorder "by urgency" without saying which of the wallet's two existing
+orderings that means. It follows the **identity panel's** rule — rank by what is *true*,
+so an active unauthorized change leads — rather than the home card strips' rule, which
+ranks by what to do *next* and puts a dead device key first (the recovery override an
+alarm leads to is signed with the very key that is missing). The sequencing that rule
+protects is not lost: it moves into the summary copy, which says to recover first when an
+alarmed wallet also holds an unusable key. Ordering states severity; the sentence states
+the order of operations.
 
 The identity wallet grew feature-by-feature, so its structure mirrors the Rust IPC
 modules, not user intent: each backend module got a screen, and each screen got a button

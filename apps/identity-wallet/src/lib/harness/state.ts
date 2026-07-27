@@ -11,7 +11,7 @@
  * and bound agents), plus the transient state the multi-step create / claim /
  * migration flows thread across commands.
  */
-import type { UnauthorizedChange } from '$lib/ipc';
+import type { SweepRecord, UnauthorizedChange } from '$lib/ipc';
 import type {
   AgentSummary,
   AgentAuditEvent,
@@ -308,6 +308,12 @@ export interface WalletState {
     wifiOnly: boolean;
   };
   identities: FakeIdentity[];
+  /**
+   * The PLC monitor's sweep log, newest first — what the Protection surface reads back.
+   * Appended to by `check_identity_status` (the fake's only real sweep) and seeded with
+   * the unattended passes a browser has no timer to run; see `recordFakeSweep`.
+   */
+  monitorSweeps: SweepRecord[];
   create: CreateFlow | null;
   claim: ClaimFlow | null;
   migration: MigrationFlow | null;
@@ -342,6 +348,7 @@ export function emptyWalletState(): WalletState {
       wifiOnly: false,
     },
     identities: [],
+    monitorSweeps: [],
     create: null,
     claim: null,
     migration: null,

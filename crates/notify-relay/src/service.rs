@@ -13,16 +13,22 @@ use std::sync::Arc;
 
 use sqlx::SqlitePool;
 
+use crate::apns::{ApnsClient, PushRequest};
 use crate::config::Config;
 use crate::db;
 use crate::protocol::{PushOutcome, Request, Response};
 use crate::rate_limit::{Bucket, RateLimiter};
 
-/// Everything an RPC needs: the store, the operator's policy, and the limiter.
+/// Everything an RPC needs: the store, the operator's policy, the limiter, and — once the
+/// operator has wired an APNs key up — the leg to Apple.
 pub struct RelayService {
     pub db: SqlitePool,
     pub config: Arc<Config>,
     pub limits: RateLimiter,
+    /// `None` on a relay with no APNs credentials configured. Every other RPC still works,
+    /// so an operator can enroll instances and collect handles before the key exists;
+    /// pushes answer `apnsError` until it does.
+    apns: Option<ApnsClient>,
 }
 
 /// Bytes of randomness behind a push handle. 128 bits: unguessable, and short enough that
@@ -32,7 +38,20 @@ const HANDLE_BYTES: usize = 16;
 impl RelayService {
     pub fn new(db: SqlitePool, config: Arc<Config>) -> Self {
         let limits = RateLimiter::new(config.rate_limits.clone());
-        Self { db, config, limits }
+        Self {
+            db,
+            config,
+            limits,
+            apns: None,
+        }
+    }
+
+    /// Attach the APNs leg. Separate from `new` because loading the operator's `.p8` is
+    /// fallible I/O that `main.rs` must be able to refuse to start over — a relay that
+    /// silently came up unable to push would look healthy and deliver nothing.
+    pub fn with_apns(mut self, apns: Option<ApnsClient>) -> Self {
+        self.apns = apns;
+        self
     }
 
     /// Dispatch one request from `node_id` (the QUIC peer's verified identity).
@@ -47,7 +66,14 @@ impl RelayService {
                     .await
             }
             Request::DropHandle { handle } => self.drop_handle(node_id, &handle).await,
-            Request::Push { handle, .. } => self.push(node_id, &handle).await,
+            Request::Push {
+                handle,
+                kid,
+                enc,
+                ct,
+                ttl_secs,
+                ..
+            } => self.push(node_id, &handle, kid, &enc, &ct, ttl_secs).await,
         }
     }
 
@@ -155,34 +181,82 @@ impl RelayService {
         }
     }
 
-    async fn push(&self, node_id: &str, handle: &str) -> Response {
+    /// Deliver one sealed payload, reporting what became of it.
+    ///
+    /// Every failure travels as a `PushOutcome` rather than an error shape: each one is a
+    /// normal result the instance acts on — `unregistered` prunes a registration,
+    /// `throttled` backs off, `tooLarge` is a sender bug to fix.
+    ///
+    /// The request's `priority` and `ping` fields are not consulted yet. Ping mode is its
+    /// own phase — it replaces the whole envelope with `content-available` and changes the
+    /// push type — and until it lands every push is a user-visible alert at priority 10.
+    /// Honouring a caller's `priority: 5` on an alert envelope would ask Apple to delay a
+    /// banner the device is meant to show immediately.
+    async fn push(
+        &self,
+        node_id: &str,
+        handle: &str,
+        kid: u32,
+        enc: &str,
+        ct: &str,
+        ttl_secs: Option<u32>,
+    ) -> Response {
         match db::enrollments::is_enrolled(&self.db, node_id).await {
             Ok(true) => {}
-            Ok(false) => {
-                return Response::Pushed {
-                    outcome: PushOutcome::NotEnrolled,
-                }
-            }
+            Ok(false) => return pushed(PushOutcome::NotEnrolled),
             Err(e) => return internal(e, "failed to check enrollment"),
         }
         if !self.limits.check(node_id, Bucket::Push) {
-            return Response::Pushed {
-                outcome: PushOutcome::Throttled,
-            };
+            return pushed(PushOutcome::Throttled);
         }
 
-        match db::handles::resolve_handle(&self.db, node_id, handle).await {
-            Ok(Some(_)) => Response::Pushed {
-                // The APNs pipeline lands in the next phase; until then a well-formed push
-                // to a real handle is honestly reported as an upstream failure rather than
-                // as a delivery that never happened.
-                outcome: PushOutcome::ApnsError,
-            },
-            Ok(None) => Response::Pushed {
-                outcome: PushOutcome::UnknownHandle,
-            },
-            Err(e) => internal(e, "failed to resolve handle"),
+        let row = match db::handles::resolve_handle(&self.db, node_id, handle).await {
+            Ok(Some(row)) => row,
+            Ok(None) => return pushed(PushOutcome::UnknownHandle),
+            Err(e) => return internal(e, "failed to resolve handle"),
+        };
+        // Charged only once the handle has resolved, so probing for another node's handles
+        // cannot spend a budget, and only against a handle the caller demonstrably owns.
+        if !self.limits.check(handle, Bucket::HandlePush) {
+            return pushed(PushOutcome::Throttled);
         }
+
+        let Some(apns) = self.apns.as_ref() else {
+            // No credentials configured. Reported as an upstream failure rather than a
+            // delivery, because from the instance's side that is exactly what it is.
+            tracing::warn!(%node_id, "push refused: this relay has no APNs credentials");
+            return pushed(PushOutcome::ApnsError);
+        };
+
+        let outcome = apns
+            .send(&PushRequest {
+                device_token: &row.apns_token,
+                topic: &row.apns_topic,
+                kid,
+                enc,
+                ct,
+                ttl_secs,
+            })
+            .await;
+
+        // A delivery timestamp is the only thing a push writes, and only on success:
+        // `last_push_at` answers "did this registration recently work?", and a refused
+        // push is not evidence that it did.
+        //
+        // On `unregistered` the row is deliberately left standing. The instance deletes
+        // its own registration on receipt and stops pushing; keeping the handle here means
+        // a retry after a lost response still answers `unregistered` rather than the
+        // ambiguous `unknownHandle`. The row goes away when the device re-registers (which
+        // rotates the handle) or when the instance drops it.
+        if outcome == PushOutcome::Delivered {
+            if let Err(e) = db::handles::touch_last_push(&self.db, node_id, handle).await {
+                // Cosmetic bookkeeping. The notification is already with Apple, so failing
+                // the RPC over this would report a delivery that happened as one that
+                // did not.
+                tracing::warn!(error = %e, "failed to record a delivery timestamp");
+            }
+        }
+        pushed(outcome)
     }
 
     /// The shared gate for every RPC but `enroll`: enrolled first, then charged.
@@ -204,6 +278,12 @@ fn generate_handle() -> String {
     let mut bytes = [0u8; HANDLE_BYTES];
     rand_core::RngCore::fill_bytes(&mut rand_core::OsRng, &mut bytes);
     data_encoding::BASE64URL_NOPAD.encode(&bytes)
+}
+
+/// Wrap a push outcome in its response. Every push answers `pushed` — the outcome carries
+/// the whole story, so a push never returns one of the shared refusal shapes.
+fn pushed(outcome: PushOutcome) -> Response {
+    Response::Pushed { outcome }
 }
 
 /// Log a storage failure and answer with a shape that reveals nothing about it.
@@ -491,8 +571,11 @@ mod tests {
         );
     }
 
+    /// A relay brought up before its APNs key exists still enrolls instances and mints
+    /// handles; only the delivery leg is missing, and it says so rather than claiming a
+    /// delivery that never happened.
     #[tokio::test]
-    async fn push_reports_an_upstream_failure_until_the_apns_pipeline_lands() {
+    async fn a_relay_with_no_apns_credentials_reports_an_upstream_failure() {
         let service = service(true).await;
         service
             .handle("node-a", Request::Enroll { claim_code: None })
@@ -560,6 +643,123 @@ mod tests {
                 .await,
             Response::Throttled,
             "the enroll spent the single registration token"
+        );
+    }
+
+    /// The per-handle budget is what protects a *device* from an instance bug that loops
+    /// on one registration, so it has to bite well before the node budget does — and it
+    /// must not take the node's other handles down with it.
+    #[tokio::test]
+    async fn one_handles_exhausted_budget_leaves_the_nodes_other_handles_pushable() {
+        let mut config = load_from_env_only(&HashMap::new()).expect("defaults");
+        config.open_enrollment = true;
+        config.rate_limits.handle_pushes_per_hour = 1;
+        config.rate_limits.handle_pushes_burst = 1;
+        let service = RelayService::new(db::test_pool().await, Arc::new(config));
+        service
+            .handle("node-a", Request::Enroll { claim_code: None })
+            .await;
+
+        let mut handles = Vec::new();
+        for token in ["tok-phone", "tok-tablet"] {
+            let Response::Handle { handle } = service
+                .handle(
+                    "node-a",
+                    Request::RegisterHandle {
+                        apns_token: token.into(),
+                        apns_topic: "org.obsign.app".into(),
+                    },
+                )
+                .await
+            else {
+                panic!("expected a handle");
+            };
+            handles.push(handle);
+        }
+
+        let push = |handle: &str| Request::Push {
+            handle: handle.to_owned(),
+            kid: 1,
+            enc: "e".into(),
+            ct: "c".into(),
+            priority: None,
+            ttl_secs: None,
+            ping: None,
+        };
+
+        // No APNs credentials here, so a push that gets *past* the limiter answers
+        // `apnsError` — which is precisely how a throttle is told apart from a delivery
+        // attempt in this test.
+        assert_eq!(
+            service.handle("node-a", push(&handles[0])).await,
+            Response::Pushed {
+                outcome: PushOutcome::ApnsError
+            }
+        );
+        assert_eq!(
+            service.handle("node-a", push(&handles[0])).await,
+            Response::Pushed {
+                outcome: PushOutcome::Throttled
+            },
+            "the first handle's single token is spent"
+        );
+        assert_eq!(
+            service.handle("node-a", push(&handles[1])).await,
+            Response::Pushed {
+                outcome: PushOutcome::ApnsError
+            },
+            "a second device on the same node must have its own budget"
+        );
+    }
+
+    /// An unknown handle is refused before the per-handle bucket is touched, so probing
+    /// for another node's handles cannot create — let alone spend — a budget for one.
+    #[tokio::test]
+    async fn probing_an_unknown_handle_does_not_spend_its_budget() {
+        let mut config = load_from_env_only(&HashMap::new()).expect("defaults");
+        config.open_enrollment = true;
+        config.rate_limits.handle_pushes_per_hour = 1;
+        config.rate_limits.handle_pushes_burst = 1;
+        let service = RelayService::new(db::test_pool().await, Arc::new(config));
+        for node in ["node-a", "node-b"] {
+            service
+                .handle(node, Request::Enroll { claim_code: None })
+                .await;
+        }
+        let Response::Handle { handle } = service
+            .handle(
+                "node-a",
+                Request::RegisterHandle {
+                    apns_token: "tok".into(),
+                    apns_topic: "org.obsign.app".into(),
+                },
+            )
+            .await
+        else {
+            panic!("expected a handle");
+        };
+
+        let push = Request::Push {
+            handle: handle.clone(),
+            kid: 1,
+            enc: "e".into(),
+            ct: "c".into(),
+            priority: None,
+            ttl_secs: None,
+            ping: None,
+        };
+        assert_eq!(
+            service.handle("node-b", push.clone()).await,
+            Response::Pushed {
+                outcome: PushOutcome::UnknownHandle
+            }
+        );
+        assert_eq!(
+            service.handle("node-a", push).await,
+            Response::Pushed {
+                outcome: PushOutcome::ApnsError
+            },
+            "node B's probe must not have spent the owner's single per-handle token"
         );
     }
 

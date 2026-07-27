@@ -106,7 +106,10 @@ atrium-repo = "0.1.8"
 
 # Crypto (crypto)
 # rsky-crypto = "0.2"
-p256 = { version = "0.13", features = ["ecdsa", "pkcs8"] }
+# pem: the notify-relay reads Apple's APNs token-auth key straight off disk as a PKCS#8
+# PEM `.p8` file, which is the only form Apple hands out. It enables pem-rfc7468, already
+# in the tree at 0.7 via the same RustCrypto stack, so it adds no crate and no new major.
+p256 = { version = "0.13", features = ["ecdsa", "pkcs8", "pem"] }
 # secp256k1 verification only (PLC ops signed by the reference ecosystem — bsky.social's
 # rotation keys are zQ3…/secp256k1); signing stays P-256. Same RustCrypto family as p256.
 k256 = { version = "0.13", features = ["ecdsa"] }

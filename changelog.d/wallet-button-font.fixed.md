@@ -1,0 +1,1 @@
+Text on buttons throughout the wallet — identity cards, navigation rows, status strips — was rendering in Arial instead of the app's own typeface, because browsers force their default font onto controls unless told otherwise. Every button now uses the same type as the rest of the app.

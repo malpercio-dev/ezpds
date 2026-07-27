@@ -1,8 +1,9 @@
 // pattern: Mixed (Functional Core types + Imperative Shell commands)
 use crate::identity_store::IdentityStore;
 use crate::pds_client::PdsClient;
+use chrono::{DateTime, SecondsFormat, Utc};
 use crypto::{diff_audit_logs, parse_audit_log, verify_plc_operation, AuditEntry, DidKeyUri};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::time::Duration;
 use tauri::{Emitter, Manager};
 use tokio::time::{interval, MissedTickBehavior};
@@ -24,12 +25,18 @@ pub struct UnauthorizedChange {
 }
 
 /// Result of checking a single identity's PLC status.
+///
+/// Only monitored identities appear. A DID whose method has no PLC audit log is absent
+/// from the sweep entirely rather than present with a verdict — see [`is_monitorable`].
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct IdentityStatus {
     pub did: String,
     /// True when the monitor could not reach plc.directory or parse the audit log.
     /// The frontend should show a degraded-monitoring indicator instead of "all clear."
+    ///
+    /// This means what it says: a question was asked and went unanswered. It is never set
+    /// for an identity the monitor had no business asking about.
     pub check_failed: bool,
     pub unauthorized_changes: Vec<UnauthorizedChange>,
 }
@@ -44,6 +51,23 @@ pub enum MonitorError {
     IdentityStoreError { message: String },
     #[error("Failed to parse audit log: {message}")]
     ParseError { message: String },
+}
+
+/// Whether this monitor has anything to say about `did`.
+///
+/// What the monitor does is diff an identity's PLC audit log, which lives at
+/// `plc.directory/{did}/log/audit` and exists only for a `did:plc:`. A `did:web` is anchored
+/// by control of a domain, and the directory holds no record of it to fetch, diff, or find a
+/// forged operation in — the fetch 404s every pass.
+///
+/// So a non-`did:plc:` identity is skipped rather than checked-and-failed. Reporting
+/// `check_failed` for one would spend a mobile round trip on a question with no answer and
+/// then state something untrue: not "the directory was unreachable" but "we asked the wrong
+/// registry". The wallet's honest position on a `did:web` is that it has nothing to report,
+/// which the sweep expresses by leaving it out — both frontend consumers already treat an
+/// absent DID as "no news", where a `check_failed` verdict would have to be explained away.
+fn is_monitorable(did: &str) -> bool {
+    did.starts_with("did:plc:")
 }
 
 pub struct PlcMonitor<'a> {
@@ -65,6 +89,13 @@ impl<'a> PlcMonitor<'a> {
 
         let mut statuses = Vec::new();
         for did in &dids {
+            if !is_monitorable(did) {
+                tracing::debug!(
+                    did = did.as_str(),
+                    "identity has no PLC audit log; omitted from the sweep"
+                );
+                continue;
+            }
             match self.check_for_changes(did).await {
                 Ok(unauthorized) => {
                     statuses.push(IdentityStatus {
@@ -218,11 +249,236 @@ fn identify_signing_key(
 
 const MONITOR_INTERVAL_SECS: u64 = 15 * 60; // 15 minutes
 
+// ── Sweep history ───────────────────────────────────────────────────────────
+//
+// The monitor is the wallet's one continuously-running defence, and until now a
+// *successful* pass left no trace: only detections were recorded (the cached audit log,
+// the `plc_alert` event). So the app could assert that it was watching the public record
+// but could never show it, which wastes the trust the work is actually earning. This
+// records what each pass did, so the Protection surface can show protection happening.
+//
+// Nothing here is secret — it is counts and timestamps about DIDs the Keychain already
+// indexes in plaintext under `managed-dids`.
+
+/// What started a sweep. The distinction is the point of the log: a user asking "is this
+/// thing actually running?" is asking about the background timer specifically, and a burst
+/// of foreground checks must not be able to answer for it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum SweepTrigger {
+    /// The unattended timer (`MONITOR_INTERVAL_SECS`).
+    Background,
+    /// A check the app asked for — opening the app, foregrounding it, opening a screen.
+    Foreground,
+}
+
+/// One completed pass over every managed identity.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SweepRecord {
+    /// ISO 8601 (UTC, second resolution) — when the pass finished.
+    pub at: String,
+    pub trigger: SweepTrigger,
+    /// Identities the sweep asked plc.directory about.
+    pub identities_checked: u32,
+    /// Of those, the ones the directory did not answer for.
+    pub identities_failed: u32,
+    /// Unauthorized changes standing at the end of the pass, across all identities.
+    pub unauthorized_found: u32,
+}
+
+/// When the directory last answered for one identity.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct IdentityLastChecked {
+    pub did: String,
+    /// ISO 8601 of the most recent sweep in which the directory answered for this DID, or
+    /// `None` if it never has. A failed sweep leaves the previous value standing — the last
+    /// verification is still a fact, and overwriting it with the failure would erase the
+    /// only thing the row can honestly say.
+    pub last_verified_at: Option<String>,
+}
+
+/// The whole user-visible record of the monitor's work.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MonitorHistory {
+    /// Newest first, capped at `MAX_SWEEP_RECORDS`.
+    pub sweeps: Vec<SweepRecord>,
+    /// One entry per identity in the most recent sweep, in that sweep's order.
+    pub identities: Vec<IdentityLastChecked>,
+    /// How often the unattended sweep runs. Filled from `MONITOR_INTERVAL_SECS` on every
+    /// read rather than trusted from the stored record: the constant is the truth, and a
+    /// record written by an older build must not report a cadence the app no longer keeps.
+    #[serde(default)]
+    pub interval_secs: u64,
+}
+
+/// Keychain account holding the serialized [`MonitorHistory`].
+const HISTORY_ACCOUNT: &str = "monitor-history";
+
+/// Roughly five hours of unattended sweeps — enough to show a cadence without turning the
+/// Protection surface into a scroll.
+const MAX_SWEEP_RECORDS: usize = 20;
+
+/// Foreground checks closer together than this collapse into one entry.
+///
+/// The app checks on launch, on foreground, and on entering the identity screen, so a
+/// minute of ordinary navigation can fire half a dozen identical passes. Left alone they
+/// would push every background sweep out of a 20-entry log — the log would stop answering
+/// the one question it exists for. Background sweeps are 15 minutes apart and so never
+/// collapse into each other.
+const COALESCE_SECS: i64 = 5 * 60;
+
+/// Fold a completed sweep into the history. Pure — the Keychain round trip is the caller's.
+pub fn fold_sweep(
+    prev: MonitorHistory,
+    statuses: &[IdentityStatus],
+    trigger: SweepTrigger,
+    at: DateTime<Utc>,
+) -> MonitorHistory {
+    let at_iso = at.to_rfc3339_opts(SecondsFormat::Secs, true);
+
+    let record = SweepRecord {
+        at: at_iso.clone(),
+        trigger,
+        identities_checked: statuses.len() as u32,
+        identities_failed: statuses.iter().filter(|s| s.check_failed).count() as u32,
+        unauthorized_found: statuses
+            .iter()
+            .map(|s| s.unauthorized_changes.len() as u32)
+            .sum(),
+    };
+
+    // Only the entries for identities in THIS sweep survive, so a removed identity leaves
+    // the log the moment the next sweep runs — the managed-DIDs index stays the one source
+    // of which identities exist, and this record can never resurrect a forgotten DID.
+    let identities = statuses
+        .iter()
+        .map(|s| IdentityLastChecked {
+            did: s.did.clone(),
+            last_verified_at: if s.check_failed {
+                prev.identities
+                    .iter()
+                    .find(|e| e.did == s.did)
+                    .and_then(|e| e.last_verified_at.clone())
+            } else {
+                Some(at_iso.clone())
+            },
+        })
+        .collect();
+
+    let mut sweeps = prev.sweeps;
+    if coalesces_into(sweeps.first(), &record, at) {
+        sweeps[0] = record;
+    } else {
+        sweeps.insert(0, record);
+        sweeps.truncate(MAX_SWEEP_RECORDS);
+    }
+
+    MonitorHistory {
+        sweeps,
+        identities,
+        interval_secs: MONITOR_INTERVAL_SECS,
+    }
+}
+
+/// Whether `next` is a repeat of the newest entry close enough in time to replace it
+/// rather than be listed beside it. Identical outcome and trigger only — a sweep that
+/// found something new, or failed where the last one didn't, is a different event and is
+/// always listed, however quickly it followed.
+fn coalesces_into(newest: Option<&SweepRecord>, next: &SweepRecord, at: DateTime<Utc>) -> bool {
+    let Some(newest) = newest else { return false };
+    if newest.trigger != next.trigger
+        || newest.identities_checked != next.identities_checked
+        || newest.identities_failed != next.identities_failed
+        || newest.unauthorized_found != next.unauthorized_found
+    {
+        return false;
+    }
+    // An unparseable stored timestamp is treated as too old to coalesce with: listing one
+    // extra line is the harmless direction, silently swallowing a sweep is not.
+    match DateTime::parse_from_rfc3339(&newest.at) {
+        Ok(prev_at) => (at - prev_at.with_timezone(&Utc)).num_seconds() < COALESCE_SECS,
+        Err(_) => false,
+    }
+}
+
+/// Read the stored history. Best-effort by design.
+///
+/// A missing, unreadable, or corrupt record reads as empty. This is the opposite of the
+/// fail-closed contract on `ceremony-staging` and `recovery-epilogue`, and deliberately so:
+/// those records may hold the only copy of recovery material, so refusing to proceed
+/// protects the user. This one holds counts and timestamps. Erroring on it would cost the
+/// user the sweep that is running right now to preserve a readout of sweeps already past.
+fn load_history() -> MonitorHistory {
+    match crate::keychain::get_item(HISTORY_ACCOUNT) {
+        Ok(bytes) => serde_json::from_slice(&bytes).unwrap_or_else(|e| {
+            tracing::warn!(error = %e, "monitor history unreadable, starting a fresh log");
+            MonitorHistory::default()
+        }),
+        Err(_) => MonitorHistory::default(),
+    }
+}
+
+/// Serializes the load → fold → store round trip.
+///
+/// The unattended timer and a foreground check are separate tasks on a multi-threaded
+/// runtime, and each resumes from an awaited `check_all` — so two passes can reach this
+/// function at the same moment. Interleaved, the later store would be built from a history
+/// read before the earlier one landed, silently dropping a pass from the log and rolling an
+/// identity's `last_verified_at` backwards. Fail-soft is right for a write that *fails*; a
+/// lost update leaves no trace at all, which on the surface that exists to evidence the
+/// background sweep is the one loss worth a lock.
+///
+/// Same unit-of-global shape as `pds_capabilities` and `diagnostics`. Nothing awaits while
+/// it is held, so a `std::sync::Mutex` is the right primitive.
+static HISTORY_LOCK: std::sync::OnceLock<std::sync::Mutex<()>> = std::sync::OnceLock::new();
+
+/// Fold a completed sweep into the stored history. Never fails a sweep: a write failure is
+/// logged and dropped, because losing the readout must not lose the protection.
+fn record_sweep(statuses: &[IdentityStatus], trigger: SweepTrigger) {
+    // A poisoned lock guards no invariant worth preserving here — the record is rebuilt
+    // from the Keychain on every call — so recover rather than propagate a panic into the
+    // monitor.
+    let _guard = HISTORY_LOCK
+        .get_or_init(|| std::sync::Mutex::new(()))
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    let next = fold_sweep(load_history(), statuses, trigger, Utc::now());
+    match serde_json::to_vec(&next) {
+        Ok(bytes) => {
+            if let Err(e) = crate::keychain::store_item(HISTORY_ACCOUNT, &bytes) {
+                tracing::warn!(error = %e, "failed to store monitor history");
+            }
+        }
+        Err(e) => tracing::warn!(error = %e, "failed to serialize monitor history"),
+    }
+}
+
+/// Tauri IPC command: what the monitor has been doing.
+///
+/// Synchronous and stateless like the other `IdentityStore`-adjacent reads — the Keychain
+/// is a blocking API and there is no network here.
+#[tauri::command]
+pub fn get_monitor_history() -> MonitorHistory {
+    MonitorHistory {
+        interval_secs: MONITOR_INTERVAL_SECS,
+        ..load_history()
+    }
+}
+
 /// Run a single monitoring cycle. Extracted from the loop for testability.
 /// Returns the list of identity statuses with any alerts.
 pub async fn run_monitoring_cycle(monitor: &PlcMonitor<'_>) -> Vec<IdentityStatus> {
     match monitor.check_all().await {
-        Ok(statuses) => statuses,
+        Ok(statuses) => {
+            // Recorded only on a completed pass. A `check_all` that could not even list the
+            // managed identities did not sweep anything, and logging it as a zero-identity
+            // sweep would read as "nothing to check" — the reassuring inverse of the truth.
+            record_sweep(&statuses, SweepTrigger::Background);
+            statuses
+        }
         Err(e) => {
             tracing::warn!(error = %e, "Monitoring cycle check_all failed");
             vec![]
@@ -277,6 +533,7 @@ pub async fn check_identity_status(
 ) -> Result<Vec<IdentityStatus>, MonitorError> {
     let monitor = PlcMonitor::new(state.pds_client());
     let statuses = monitor.check_all().await?;
+    record_sweep(&statuses, SweepTrigger::Foreground);
     emit_if_alerts(&app, &statuses);
     Ok(statuses)
 }
@@ -394,6 +651,213 @@ mod tests {
         let json = serde_json::to_value(&err).expect("serialize");
         assert_eq!(json["code"], "PARSE_ERROR");
         assert_eq!(json["message"], "invalid json");
+    }
+
+    // ── Sweep history (pure fold) ──────────────────────────────────────────
+
+    fn at(iso: &str) -> DateTime<Utc> {
+        DateTime::parse_from_rfc3339(iso)
+            .expect("test timestamp")
+            .with_timezone(&Utc)
+    }
+
+    fn status(did: &str, check_failed: bool, alerts: usize) -> IdentityStatus {
+        IdentityStatus {
+            did: did.to_string(),
+            check_failed,
+            unauthorized_changes: (0..alerts)
+                .map(|n| UnauthorizedChange {
+                    cid: format!("bafy{n}"),
+                    created_at: "2026-07-26T00:00:00Z".to_string(),
+                    signing_key: None,
+                    operation: serde_json::json!({}),
+                })
+                .collect(),
+        }
+    }
+
+    #[test]
+    fn fold_records_counts_and_verification_times() {
+        let history = fold_sweep(
+            MonitorHistory::default(),
+            &[
+                status("did:plc:a", false, 0),
+                status("did:plc:b", true, 0),
+                status("did:plc:c", false, 2),
+            ],
+            SweepTrigger::Background,
+            at("2026-07-26T10:00:00Z"),
+        );
+
+        assert_eq!(history.sweeps.len(), 1);
+        let sweep = &history.sweeps[0];
+        assert_eq!(sweep.identities_checked, 3);
+        assert_eq!(sweep.identities_failed, 1);
+        assert_eq!(sweep.unauthorized_found, 2);
+        assert_eq!(sweep.trigger, SweepTrigger::Background);
+        assert_eq!(sweep.at, "2026-07-26T10:00:00Z");
+
+        assert_eq!(
+            history.identities[0].last_verified_at.as_deref(),
+            Some("2026-07-26T10:00:00Z")
+        );
+        // The directory did not answer for B, so B has never been verified.
+        assert_eq!(history.identities[1].last_verified_at, None);
+        assert_eq!(history.interval_secs, MONITOR_INTERVAL_SECS);
+    }
+
+    /// A failed check must not erase the identity's last successful verification — that
+    /// timestamp is still true, and dropping it would make a transient outage look like an
+    /// identity the wallet has never checked.
+    #[test]
+    fn failed_check_preserves_the_previous_verification_time() {
+        let first = fold_sweep(
+            MonitorHistory::default(),
+            &[status("did:plc:a", false, 0)],
+            SweepTrigger::Background,
+            at("2026-07-26T10:00:00Z"),
+        );
+        let second = fold_sweep(
+            first,
+            &[status("did:plc:a", true, 0)],
+            SweepTrigger::Background,
+            at("2026-07-26T10:15:00Z"),
+        );
+
+        assert_eq!(
+            second.identities[0].last_verified_at.as_deref(),
+            Some("2026-07-26T10:00:00Z")
+        );
+    }
+
+    /// A removed identity leaves the log on the next sweep: only DIDs the sweep actually
+    /// covered are carried forward.
+    #[test]
+    fn identities_absent_from_a_sweep_are_dropped() {
+        let first = fold_sweep(
+            MonitorHistory::default(),
+            &[status("did:plc:a", false, 0), status("did:plc:b", false, 0)],
+            SweepTrigger::Background,
+            at("2026-07-26T10:00:00Z"),
+        );
+        let second = fold_sweep(
+            first,
+            &[status("did:plc:a", false, 0)],
+            SweepTrigger::Background,
+            at("2026-07-26T10:15:00Z"),
+        );
+
+        assert_eq!(second.identities.len(), 1);
+        assert_eq!(second.identities[0].did, "did:plc:a");
+    }
+
+    /// A burst of identical foreground checks — the app opening, then two screens asking —
+    /// is one event in the log, not three. Otherwise ordinary navigation evicts every
+    /// background sweep and the log stops answering "is the unattended check running?".
+    #[test]
+    fn identical_foreground_checks_coalesce() {
+        let mut history = MonitorHistory::default();
+        for minute in ["10:00:00", "10:00:20", "10:01:00"] {
+            history = fold_sweep(
+                history,
+                &[status("did:plc:a", false, 0)],
+                SweepTrigger::Foreground,
+                at(&format!("2026-07-26T{minute}Z")),
+            );
+        }
+
+        assert_eq!(history.sweeps.len(), 1);
+        assert_eq!(history.sweeps[0].at, "2026-07-26T10:01:00Z");
+    }
+
+    /// Coalescing is bounded by time, by trigger, and by outcome — each of these is a
+    /// distinct event the user is entitled to see listed.
+    #[test]
+    fn distinct_sweeps_are_never_coalesced() {
+        let base = fold_sweep(
+            MonitorHistory::default(),
+            &[status("did:plc:a", false, 0)],
+            SweepTrigger::Foreground,
+            at("2026-07-26T10:00:00Z"),
+        );
+
+        // Same trigger and outcome, but past the window.
+        let later = fold_sweep(
+            base.clone(),
+            &[status("did:plc:a", false, 0)],
+            SweepTrigger::Foreground,
+            at("2026-07-26T10:06:00Z"),
+        );
+        assert_eq!(later.sweeps.len(), 2);
+
+        // Within the window, but the background timer is a different kind of event.
+        let other_trigger = fold_sweep(
+            base.clone(),
+            &[status("did:plc:a", false, 0)],
+            SweepTrigger::Background,
+            at("2026-07-26T10:00:30Z"),
+        );
+        assert_eq!(other_trigger.sweeps.len(), 2);
+
+        // Within the window and the same trigger, but this pass found something.
+        let new_finding = fold_sweep(
+            base,
+            &[status("did:plc:a", false, 1)],
+            SweepTrigger::Foreground,
+            at("2026-07-26T10:00:30Z"),
+        );
+        assert_eq!(new_finding.sweeps.len(), 2);
+        assert_eq!(new_finding.sweeps[0].unauthorized_found, 1);
+    }
+
+    #[test]
+    fn sweep_log_is_capped_newest_first() {
+        let mut history = MonitorHistory::default();
+        for n in 0..(MAX_SWEEP_RECORDS + 5) {
+            history = fold_sweep(
+                history,
+                &[status("did:plc:a", false, 0)],
+                SweepTrigger::Background,
+                at("2026-07-26T00:00:00Z") + chrono::Duration::minutes(15 * n as i64),
+            );
+        }
+
+        assert_eq!(history.sweeps.len(), MAX_SWEEP_RECORDS);
+        let newest = at(&history.sweeps[0].at);
+        let oldest = at(&history.sweeps[MAX_SWEEP_RECORDS - 1].at);
+        assert!(newest > oldest, "sweeps must be ordered newest first");
+    }
+
+    /// The wire shape the Protection surface reads.
+    #[test]
+    fn monitor_history_serializes_camel_case() {
+        let history = fold_sweep(
+            MonitorHistory::default(),
+            &[status("did:plc:a", false, 0)],
+            SweepTrigger::Foreground,
+            at("2026-07-26T10:00:00Z"),
+        );
+
+        let json = serde_json::to_value(&history).expect("serialize");
+        assert_eq!(json["sweeps"][0]["trigger"], "foreground");
+        assert_eq!(json["sweeps"][0]["identitiesChecked"], 1);
+        assert_eq!(json["sweeps"][0]["identitiesFailed"], 0);
+        assert_eq!(json["sweeps"][0]["unauthorizedFound"], 0);
+        assert_eq!(json["identities"][0]["did"], "did:plc:a");
+        assert_eq!(
+            json["identities"][0]["lastVerifiedAt"],
+            "2026-07-26T10:00:00Z"
+        );
+        assert_eq!(json["intervalSecs"], MONITOR_INTERVAL_SECS);
+    }
+
+    /// A record written before `interval_secs` existed still loads; the reader supplies the
+    /// current cadence.
+    #[test]
+    fn history_without_interval_deserializes() {
+        let stored = serde_json::json!({ "sweeps": [], "identities": [] });
+        let history: MonitorHistory = serde_json::from_value(stored).expect("deserialize");
+        assert_eq!(history.interval_secs, 0);
     }
 
     // ── Behavior tests: check_for_changes ──────────────────────────────────
@@ -727,6 +1191,45 @@ mod tests {
 
         let changes = monitor.check_for_changes(did).await.expect("check failed");
         assert_eq!(changes.len(), 0, "Empty audit log should return no changes");
+    }
+
+    /// Only a did:plc has a PLC audit log to monitor.
+    #[test]
+    fn only_did_plc_is_monitorable() {
+        assert!(is_monitorable("did:plc:abc123"));
+        assert!(!is_monitorable("did:web:example.com"));
+        // The prefix check is anchored, so a did:web whose domain merely mentions did:plc
+        // is still not monitorable.
+        assert!(!is_monitorable("did:web:did:plc:decoy.example"));
+    }
+
+    /// A did:web is omitted from the sweep rather than reported as a failed check, and no
+    /// request is spent asking plc.directory about a DID it has never heard of.
+    #[tokio::test]
+    async fn did_web_identity_is_omitted_from_sweep() {
+        use httpmock::prelude::*;
+
+        let did = "did:web:monitor-skip.example";
+        let store = IdentityStore;
+        let _ = store.add_identity(did);
+
+        let mock_server = MockServer::start();
+        let client = PdsClient::new_for_test(mock_server.base_url());
+        let monitor = PlcMonitor::new(&client);
+
+        // Any audit-log fetch for this DID would land here. It must never be reached.
+        let audit_mock = mock_server.mock(|when, then| {
+            when.method(GET).path(format!("/{did}/log/audit"));
+            then.status(404);
+        });
+
+        let statuses = monitor.check_all().await.expect("check_all failed");
+
+        assert!(
+            !statuses.iter().any(|s| s.did == did),
+            "a did:web must not appear in the sweep at all, and above all not as check_failed"
+        );
+        audit_mock.assert_calls(0);
     }
 
     /// Multi-identity: both identities authorized, no alerts.

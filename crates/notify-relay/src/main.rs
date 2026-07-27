@@ -11,6 +11,7 @@ use std::sync::Arc;
 use anyhow::Context;
 use clap::Parser;
 
+mod apns;
 mod config;
 mod db;
 mod identity;
@@ -141,11 +142,22 @@ async fn run_serve(config_path: Option<PathBuf>) -> anyhow::Result<()> {
     let config = Arc::new(load_config(config_path)?);
     let pool = open_store(&config).await?;
 
+    // Before binding anything: a configured-but-unreadable APNs key is a hard startup
+    // failure, not a warning. A relay that came up looking healthy and then answered
+    // `apnsError` to every push would be far harder to diagnose than a refusal to start.
+    let apns = apns::ApnsClient::new(&config.apns).context("failed to load APNs credentials")?;
+    if apns.is_none() {
+        tracing::warn!(
+            "no APNs credentials configured — enrollment and handle registration work, \
+             but every push will answer apnsError until apns.key_path/key_id/team_id are set"
+        );
+    }
+
     let secret = identity::load_or_create_secret_key(&config.secret_key_path)?;
     let endpoint = transport::bind(secret, config.ipv6).await?;
     let node_id = endpoint.id().to_string();
 
-    let service = Arc::new(service::RelayService::new(pool, Arc::clone(&config)));
+    let service = Arc::new(service::RelayService::new(pool, Arc::clone(&config)).with_apns(apns));
     let accept = transport::spawn_accept_loop(endpoint.clone(), service);
 
     tracing::info!(
