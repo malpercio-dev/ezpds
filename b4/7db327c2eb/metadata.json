@@ -1,0 +1,35 @@
+{
+  "cli_version": "0.8.42",
+  "checkpoint_id": "b47db327c2eb",
+  "strategy": "manual-commit",
+  "branch": "claude/wallet-ia-phase-2-protection-dddc32",
+  "checkpoints_count": 1,
+  "files_touched": [
+    "AGENTS.md",
+    "apps/identity-wallet/AGENTS.md",
+    "apps/identity-wallet/src-tauri/src/plc_monitor.rs",
+    "apps/identity-wallet/src/lib/components/home/IdentityListHome.svelte",
+    "apps/identity-wallet/src/lib/components/home/ProtectionScreen.svelte",
+    "apps/identity-wallet/src/lib/identity-cards.ts",
+    "apps/identity-wallet/src/lib/protection.test.ts",
+    "apps/identity-wallet/src/lib/protection.ts",
+    "apps/identity-wallet/src/lib/styles/base.css",
+    "changelog.d/wallet-button-font.fixed.md"
+  ],
+  "sessions": [
+    {
+      "metadata": "/b4/7db327c2eb/0/metadata.json",
+      "transcript": "/b4/7db327c2eb/0/full.jsonl",
+      "compact_transcript": "/b4/7db327c2eb/0/transcript.jsonl",
+      "content_hash": "/b4/7db327c2eb/0/content_hash.txt",
+      "prompt": "/b4/7db327c2eb/0/prompt.txt"
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 109,
+    "cache_creation_tokens": 490167,
+    "cache_read_tokens": 28784816,
+    "output_tokens": 31944,
+    "api_call_count": 58
+  }
+}
