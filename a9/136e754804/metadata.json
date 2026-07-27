@@ -1,0 +1,31 @@
+{
+  "cli_version": "0.9.0",
+  "checkpoint_id": "a9136e754804",
+  "strategy": "manual-commit",
+  "branch": "claude/mm-419-wallet-notification-keys-9a6ced",
+  "checkpoints_count": 2,
+  "files_touched": [
+    "apps/identity-wallet/src-tauri/src/notifications.rs",
+    "apps/identity-wallet/src/lib/harness/notifications.test.ts",
+    "apps/identity-wallet/src/lib/harness/registry.ts",
+    "apps/identity-wallet/src/lib/harness/state.ts",
+    "apps/identity-wallet/src/routes/+page.svelte",
+    "changelog.d/mm-419.added.md"
+  ],
+  "sessions": [
+    {
+      "metadata": "/a9/136e754804/0/metadata.json",
+      "transcript": "/a9/136e754804/0/full.jsonl",
+      "compact_transcript": "/a9/136e754804/0/transcript.jsonl",
+      "content_hash": "/a9/136e754804/0/content_hash.txt",
+      "prompt": "/a9/136e754804/0/prompt.txt"
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 85,
+    "cache_creation_tokens": 949760,
+    "cache_read_tokens": 20863619,
+    "output_tokens": 25405,
+    "api_call_count": 43
+  }
+}
