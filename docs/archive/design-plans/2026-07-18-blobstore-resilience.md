@@ -126,10 +126,10 @@ destination refused it — so a single dead blob no longer parks the migration a
 the user makes an informed skip instead of abandoning the run. Verification
 tolerates the accepted skips, and the progress screen shows the specific per-blob
 failure detail (fetch-from-source vs upload-to-destination) rather than a generic
-"couldn't transfer one or more blobs." The one piece from this recommendation
-still open is having the drain fall back to the wallet's local iCloud mirror
-(§"Wallet-side option") when the source PDS fails `getBlob` — see that section's
-"Still open" note.
+"couldn't transfer one or more blobs." The remaining piece from this
+recommendation — having the drain fall back to the wallet's local iCloud mirror
+(§"Wallet-side option") when the source PDS fails `getBlob` — shipped afterwards
+as MM-446.
 
 Original survey text: already noted in the MM-394 record,
 `MigrationError::BlobTransferFailed` carries the failing CID and direction, but
@@ -145,9 +145,10 @@ makes an informed skip instead of abandoning the run.
 design — opt-in mirror with size shown, CID-verified incremental sync, per-blob-degrading
 restore, tracked iCloud entitlements riding the XcodeGen template, and a harness fake.
 The ubiquity container is reached via `objc2-foundation`'s `NSFileManager` binding rather
-than a swift-rs bridge (same call, no new Swift build surface). Still open from this
-section: the migration drain's local-mirror fallback source, and `BGProcessingTask`
-background scheduling.
+than a swift-rs bridge (same call, no new Swift build surface). The two follow-ons from
+this section shipped afterwards: the migration drain's local-mirror fallback source
+(MM-446, with its placeholder-download dependency MM-445) and `BGProcessingTask`
+background scheduling (MM-444).
 
 A complement to the server tiers above, not a substitute — but it is the only layer
 that survives *the PDS itself* failing, which is exactly the MM-394 scenario (the
