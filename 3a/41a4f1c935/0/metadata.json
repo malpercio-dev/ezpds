@@ -1,0 +1,114 @@
+{
+  "cli_version": "0.8.42",
+  "checkpoint_id": "3a41a4f1c935",
+  "session_id": "2a78f2a9-0291-4ce2-be4b-b6961179c544",
+  "strategy": "manual-commit",
+  "created_at": "2026-07-27T03:01:37.74015Z",
+  "branch": "malpercio/mm-482-harness-alert-active-scenario-ages-into-an-expired-recovery",
+  "checkpoints_count": 3,
+  "files_touched": [
+    "tools/screenshots/shots.mjs"
+  ],
+  "agent": "Claude Code",
+  "model": "",
+  "turn_id": "b0f7739bff4c",
+  "checkpoint_transcript_start": 448,
+  "transcript_lines_at_start": 448,
+  "compact_transcript_start": 109,
+  "token_usage": {
+    "input_tokens": 24,
+    "cache_creation_tokens": 11435,
+    "cache_read_tokens": 3683812,
+    "output_tokens": 7415,
+    "api_call_count": 13
+  },
+  "skill_events_version": 1,
+  "skill_events": [
+    {
+      "id": "claude-skill-toolu_01JjAoYsX5FHu2LoT9M7jYZV",
+      "event_type": "tool_invocation",
+      "skill": {
+        "name": "linear-workflow"
+      },
+      "source": {
+        "agent": "claude-code",
+        "signal": "skill_tool_use",
+        "confidence": "explicit"
+      },
+      "turn_id": "b0f7739bff4c",
+      "transcript_anchor": {
+        "unit": "line",
+        "start": 375,
+        "end": 376,
+        "entry_ids": [
+          "64e73236-2d79-4495-abd9-1a99b1e3c165"
+        ],
+        "tool_use_id": "toolu_01JjAoYsX5FHu2LoT9M7jYZV"
+      },
+      "native": {
+        "tool_name": "Skill",
+        "tool_use_id": "toolu_01JjAoYsX5FHu2LoT9M7jYZV"
+      },
+      "collapse": {
+        "target": "tool_pair",
+        "label": "Skill: linear-workflow",
+        "default_collapsed": true
+      }
+    },
+    {
+      "id": "claude-skill-toolu_01DDL7Y6qX6cDgn9P9FEPefo",
+      "event_type": "tool_invocation",
+      "skill": {
+        "name": "pr-review-comments"
+      },
+      "source": {
+        "agent": "claude-code",
+        "signal": "skill_tool_use",
+        "confidence": "explicit"
+      },
+      "turn_id": "b0f7739bff4c",
+      "transcript_anchor": {
+        "unit": "line",
+        "start": 487,
+        "end": 488,
+        "entry_ids": [
+          "341c5277-76ba-4fc7-821d-7e20d2141b69"
+        ],
+        "tool_use_id": "toolu_01DDL7Y6qX6cDgn9P9FEPefo"
+      },
+      "native": {
+        "tool_name": "Skill",
+        "tool_use_id": "toolu_01DDL7Y6qX6cDgn9P9FEPefo"
+      },
+      "collapse": {
+        "target": "tool_pair",
+        "label": "Skill: pr-review-comments",
+        "default_collapsed": true
+      }
+    }
+  ],
+  "session_metrics": {
+    "turn_count": 4
+  },
+  "initial_attribution": {
+    "calculated_at": "2026-07-27T03:01:37.67498Z",
+    "agent_lines": 1,
+    "agent_removed": 1,
+    "human_added": 0,
+    "human_modified": 0,
+    "human_removed": 0,
+    "total_committed": 1,
+    "total_lines_changed": 2,
+    "agent_percentage": 100,
+    "metric_version": 2
+  },
+  "prompt_attributions": [
+    {
+      "checkpoint_number": 1,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 0,
+      "agent_lines_removed": 0
+    }
+  ]
+}
