@@ -1,0 +1,30 @@
+Work on Linear issue MM-467:
+
+Suggested branch name: malpercio/mm-467-wallet-ia-phase-3-alarm-takeover-landing
+
+<issue identifier="MM-467">
+<title>Wallet IA phase 3 — alarm takeover landing</title>
+<description>
+Third phase of the mode-based wallet IA (design: `docs/design-plans/2026-07-24-wallet-information-architecture.md` §3).
+
+When an unauthorized change is active and the app opens/foregrounds, land **directly on the alarm surface** — zero navigation between phone-unlock and the one clear action:
+
+* One identity in alarm → its alarm surface (the critical status panel expanded, i.e. today's `alert_detail` content).
+* Multiple identities in alarm → Protection surface in alarm mode, most urgent first.
+* Always dismissible ("Not now") to a home rendered in alarm state (protection strip becomes a pinned critical banner, affected cards elevated). One clear action *offered*, never a lock-in — calm under alarm.
+* **Landing precedence**: an in-progress ceremony resume (recovery epilogue, pending removal tombstone retry, mid-migration) still wins the launch decision — interrupted key-material handling outranks re-showing a known alarm. The alarm banner still renders inside those flows' chrome where safe.
+
+Touches the launch/`visibilitychange` decision ordering in `+page.svelte`; no IPC changes.
+</description>
+<team name="Mal's Machinations"/>
+<project name="ezpds">An easy-to-host PDS on the ATProtocol, MacOS. Grandma-approved.</project>
+<issue-relations>
+<related>
+<issue-ref identifier="MM-466" title="Wallet IA phase 2 — Protection surface + home strip"/>
+<issue-ref identifier="MM-465" title="Wallet IA phase 1 — identity instrument panel"/>
+<issue-ref identifier="MM-485" title="Archive discipline: 3 shipped design plan(s) awaiting move to docs/archive/"/>
+</related>
+</issue-relations>
+</issue>
+
+Please open a pr linked to linear when complete

@@ -1,0 +1,83 @@
+{
+  "cli_version": "0.8.42",
+  "checkpoint_id": "0d2a62e91e28",
+  "session_id": "54b8eabe-9035-48e3-9c7f-e1d2e678c56c",
+  "strategy": "manual-commit",
+  "created_at": "2026-07-27T18:45:21.36915Z",
+  "branch": "claude/wallet-ia-phase-3-alarm-6f826e",
+  "checkpoints_count": 1,
+  "files_touched": [
+    "apps/identity-wallet/src/lib/alarm-landing.ts",
+    "apps/identity-wallet/src/lib/alarm-landing.test.ts",
+    "apps/identity-wallet/src/lib/components/home/AlertDetailScreen.svelte",
+    "apps/identity-wallet/src/routes/+page.svelte",
+    "changelog.d/mm-467.changed.md",
+    "docs/design-plans/2026-07-24-wallet-information-architecture.md"
+  ],
+  "agent": "Claude Code",
+  "model": "",
+  "turn_id": "5a71e9ec4fba",
+  "compact_transcript_start": 0,
+  "token_usage": {
+    "input_tokens": 107,
+    "cache_creation_tokens": 233289,
+    "cache_read_tokens": 11264392,
+    "output_tokens": 26146,
+    "api_call_count": 57
+  },
+  "skill_events_version": 1,
+  "skill_events": [
+    {
+      "id": "claude-skill-toolu_01BX9auGbvfyHHTamx4qW1Hz",
+      "event_type": "tool_invocation",
+      "skill": {
+        "name": "linear-workflow"
+      },
+      "source": {
+        "agent": "claude-code",
+        "signal": "skill_tool_use",
+        "confidence": "explicit"
+      },
+      "turn_id": "5a71e9ec4fba",
+      "transcript_anchor": {
+        "unit": "line",
+        "start": 18,
+        "end": 19,
+        "entry_ids": [
+          "b04b2898-6d49-40c5-bd71-3a509feb28ab"
+        ],
+        "tool_use_id": "toolu_01BX9auGbvfyHHTamx4qW1Hz"
+      },
+      "native": {
+        "tool_name": "Skill",
+        "tool_use_id": "toolu_01BX9auGbvfyHHTamx4qW1Hz"
+      },
+      "collapse": {
+        "target": "tool_pair",
+        "label": "Skill: linear-workflow",
+        "default_collapsed": true
+      }
+    }
+  ],
+  "initial_attribution": {
+    "calculated_at": "2026-07-27T18:45:21.329327Z",
+    "agent_lines": 193,
+    "agent_removed": 9,
+    "human_added": 4,
+    "human_modified": 0,
+    "human_removed": 0,
+    "total_committed": 197,
+    "total_lines_changed": 209,
+    "agent_percentage": 96.65071770334929,
+    "metric_version": 2
+  },
+  "prompt_attributions": [
+    {
+      "checkpoint_number": 1,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 0,
+      "agent_lines_removed": 0
+    }
+  ]
+}
