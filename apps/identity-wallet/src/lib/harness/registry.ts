@@ -21,6 +21,8 @@ import type {
   SessionReady,
   SovereignLoginResult,
   IdentityStatus,
+  MonitorHistory,
+  SweepRecord,
   SignedRecoveryOp,
   SignedRotationOp,
   RecoveryTarget,
@@ -154,6 +156,7 @@ export type CommandName =
   | 'unlock_identity_with_password'
   // monitor.ts
   | 'check_identity_status'
+  | 'get_monitor_history'
   // recovery.ts
   | 'build_recovery_override_cmd'
   | 'submit_recovery_override_cmd'
@@ -561,12 +564,42 @@ export function buildRegistry(state: WalletState): Registry {
     // `check_failed: true` on every single sweep. A fake that answered `false` for a
     // did:web would be kinder than the real thing in exactly the place a screen is most
     // likely to get the did:web copy wrong.
-    check_identity_status: (): IdentityStatus[] =>
-      state.identities.map((i) => ({
+    check_identity_status: (): IdentityStatus[] => {
+      const statuses = state.identities.map((i) => ({
         did: i.did,
         checkFailed: isDidWeb(i.did),
         unauthorizedChanges: i.alerts,
-      })),
+      }));
+      recordFakeSweep(state, statuses, 'foreground');
+      return statuses;
+    },
+
+    get_monitor_history: (): MonitorHistory => {
+      // The browser has no 15-minute timer, so a scenario meant to depict a wallet that
+      // has been running for a while would otherwise show an empty log — the one reading
+      // the Protection surface must not give when protection IS happening. Seed the
+      // unattended passes the fake cannot run, once, on first read.
+      if (state.monitorSweeps.length === 0 && state.identities.length > 0) {
+        const statuses = state.identities.map((i) => ({
+          did: i.did,
+          checkFailed: isDidWeb(i.did),
+          unauthorizedChanges: i.alerts,
+        }));
+        for (const minutesAgo of [30, 15]) {
+          recordFakeSweep(state, statuses, 'background', Date.now() - minutesAgo * 60_000);
+        }
+      }
+
+      return {
+        sweeps: state.monitorSweeps,
+        identities: state.identities.map((i) => ({
+          did: i.did,
+          // A did:web is never verified against plc.directory, exactly as in the backend.
+          lastVerifiedAt: isDidWeb(i.did) ? null : (state.monitorSweeps[0]?.at ?? null),
+        })),
+        intervalSecs: FAKE_MONITOR_INTERVAL_SECS,
+      };
+    },
 
     // ── recovery override ────────────────────────────────────────────────────
     build_recovery_override_cmd: (args): SignedRecoveryOp => {
@@ -1310,6 +1343,49 @@ function removeIdentity(state: WalletState, did: string): RemovalOutcome {
 /** An access/refresh expiry far enough out that the session never reads as expired. */
 function farFuture(): number {
   return Date.parse('2030-01-01T00:00:00.000Z');
+}
+
+/** The cadence the fake reports, mirroring `MONITOR_INTERVAL_SECS` in plc_monitor.rs. */
+const FAKE_MONITOR_INTERVAL_SECS = 15 * 60;
+
+/** Newest-first cap, mirroring `MAX_SWEEP_RECORDS` in plc_monitor.rs. */
+const FAKE_MAX_SWEEPS = 20;
+
+/**
+ * Append a sweep to the fake log, coalescing an identical foreground repeat the way the
+ * backend's `fold_sweep` does. Mirrored rather than shared because the fold lives in Rust:
+ * a fake that let every screen entry push its own entry would show a log the real app
+ * never produces, and the Protection surface would look correct here and wrong on device.
+ */
+function recordFakeSweep(
+  state: WalletState,
+  statuses: IdentityStatus[],
+  trigger: 'background' | 'foreground',
+  atMs: number = Date.now()
+) {
+  const at = new Date(Math.floor(atMs / 1000) * 1000).toISOString().replace(/\.000Z$/, 'Z');
+  const record: SweepRecord = {
+    at,
+    trigger,
+    identitiesChecked: statuses.length,
+    identitiesFailed: statuses.filter((s) => s.checkFailed).length,
+    unauthorizedFound: statuses.reduce((n, s) => n + s.unauthorizedChanges.length, 0),
+  };
+
+  const newest = state.monitorSweeps[0];
+  const sameOutcome =
+    newest !== undefined &&
+    newest.trigger === record.trigger &&
+    newest.identitiesChecked === record.identitiesChecked &&
+    newest.identitiesFailed === record.identitiesFailed &&
+    newest.unauthorizedFound === record.unauthorizedFound &&
+    atMs - Date.parse(newest.at) < 5 * 60_000;
+
+  if (sameOutcome) {
+    state.monitorSweeps[0] = record;
+  } else {
+    state.monitorSweeps = [record, ...state.monitorSweeps].slice(0, FAKE_MAX_SWEEPS);
+  }
 }
 
 function isoInHours(hours: number): string {
