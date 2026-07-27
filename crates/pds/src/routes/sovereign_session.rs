@@ -497,6 +497,12 @@ mod tests {
         }
     }
 
+    /// A timestamp outside the acceptance window is refused before the outbound authority lookup.
+    ///
+    /// "Before the lookup" is asserted against the mock server's **request log**, not against
+    /// `verify()`: `verify()` only checks mounted mock expectations, and this server mounts none,
+    /// so it would pass however many requests arrived. The recorded request set is the only thing
+    /// that actually witnesses the absence of an outbound call.
     #[tokio::test]
     async fn stale_and_future_timestamps_are_rejected_before_plc_lookup() {
         for (timestamp, fill) in [
@@ -513,7 +519,14 @@ mod tests {
                 .await
                 .unwrap();
             assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
-            plc.verify().await;
+            assert_eq!(
+                plc.received_requests()
+                    .await
+                    .expect("request recording is on by default")
+                    .len(),
+                0,
+                "a timestamp outside the window must not reach plc.directory"
+            );
         }
     }
 
@@ -586,8 +599,9 @@ mod tests {
     ///
     /// `POST /v1/did-web/document` lets an account rewrite its served document under session auth,
     /// so admitting a hosted did:web would let a stolen session install an attacker `#device` key
-    /// and bootstrap sovereign sessions — escalation with no key compromise. The mock PLC server
-    /// mounts nothing, so `plc.verify()` also proves nothing outbound was attempted.
+    /// and bootstrap sovereign sessions — escalation with no key compromise. The mock PLC server's
+    /// recorded request set proves nothing outbound was attempted (`verify()` would not: it only
+    /// checks mounted mock expectations, and this server mounts none).
     #[tokio::test]
     async fn a_custos_hosted_did_web_account_cannot_open_a_sovereign_session() {
         let plc = MockServer::start().await;
@@ -612,7 +626,14 @@ mod tests {
             body_json(response).await["error"]["message"],
             REJECTION_MESSAGE
         );
-        plc.verify().await;
+        assert_eq!(
+            plc.received_requests()
+                .await
+                .expect("request recording is on by default")
+                .len(),
+            0,
+            "a Custos-hosted did:web must not reach plc.directory"
+        );
         let nonces: i64 =
             sqlx::query_scalar("SELECT COUNT(*) FROM sovereign_session_nonces WHERE did = ?")
                 .bind(did)
@@ -636,7 +657,14 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
-        plc.verify().await;
+        assert_eq!(
+            plc.received_requests()
+                .await
+                .expect("request recording is on by default")
+                .len(),
+            0,
+            "an unsupported DID method must not reach plc.directory"
+        );
     }
 
     #[tokio::test]
