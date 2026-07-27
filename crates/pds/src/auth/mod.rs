@@ -11,6 +11,7 @@ pub mod password;
 pub mod permission_sets;
 pub mod rate_limit;
 pub mod service_auth;
+pub mod signed_proof;
 pub mod signing_key;
 pub mod token;
 pub mod validation;

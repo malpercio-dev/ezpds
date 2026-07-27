@@ -25,11 +25,11 @@ use axum::{
     http::StatusCode,
     response::{IntoResponse, Json, Response},
 };
-use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
 use common::{ApiError, ErrorCode, SOVEREIGN_TIMESTAMP_WINDOW_SECS};
 use serde::{Deserialize, Serialize};
 
 use crate::app::AppState;
+use crate::auth::signed_proof::{decode_canonical_base64url, NONCE_BYTES, SIGNATURE_BYTES};
 use crate::auth::token::generate_token;
 use crate::db::oauth::store_authorization_code;
 use crate::db::pending_oauth_authorizations::{
@@ -40,18 +40,11 @@ use crate::db::pending_oauth_authorizations::{
 use crate::identity::authority::{authorized_signing_keys, AuthorityError};
 use crate::routes::oauth_templates::{build_code_redirect, error_page};
 
-const SIGNATURE_BYTES: usize = 64;
-const NONCE_BYTES: usize = 32;
 /// Minimum spacing between accepted status polls for one request; a faster poll gets the
 /// `slow_down` 429 the page's JS backs off on (the `claim_polling` discipline).
 const STATUS_POLL_MIN_INTERVAL: Duration = Duration::from_secs(2);
 
 // ── Shared helpers ──────────────────────────────────────────────────────────────
-
-fn decode_canonical_base64url(value: &str, expected_len: usize) -> Option<Vec<u8>> {
-    let decoded = URL_SAFE_NO_PAD.decode(value).ok()?;
-    (decoded.len() == expected_len && URL_SAFE_NO_PAD.encode(&decoded) == value).then_some(decoded)
-}
 
 /// A request that is no longer approvable — absent, terminal, or lapsed — maps to one uniform
 /// response so the caller can't probe request state beyond "pending or not".
@@ -467,6 +460,7 @@ mod tests {
     use super::*;
     use axum::body::Body;
     use axum::http::Request;
+    use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
     use p256::ecdsa::{signature::Signer as _, Signature as P256Signature, SigningKey};
     use serde_json::{json, Value};
     use tower::ServiceExt;

@@ -1,0 +1,1 @@
+The canonical base64url check that keeps a signed device-key proof from being re-spelled into a fresh nonce now lives in one shared module instead of being copied into each of the three routes that verify such proofs (passwordless session issuance, wallet-confirmed OAuth consent, and passwordless account deletion), so the three can no longer drift apart. Behaviour is unchanged.

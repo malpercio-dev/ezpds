@@ -9,18 +9,16 @@
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use axum::{extract::State, http::StatusCode, response::Json};
-use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
 use common::{ApiError, ErrorCode, SOVEREIGN_TIMESTAMP_WINDOW_SECS};
 use serde::{Deserialize, Serialize};
 
 use crate::app::AppState;
+use crate::auth::signed_proof::{decode_canonical_base64url, NONCE_BYTES, SIGNATURE_BYTES};
 use crate::db::accounts::active_local_account_exists;
 use crate::db::sovereign_session_nonces::insert_nonce_if_absent;
 use crate::identity::authority::{authorized_signing_keys, AuthorityError};
 use crate::session_issuer::{issue_session_in_transaction, SessionKind};
 
-const NONCE_BYTES: usize = 32;
-const SIGNATURE_BYTES: usize = 64;
 const REJECTION_MESSAGE: &str = "sovereign session proof rejected";
 
 #[derive(Deserialize)]
@@ -51,11 +49,6 @@ fn rejected(reason: &'static str, did: &str, signing_key: &str) -> ApiError {
         "sovereign session proof rejected"
     );
     ApiError::new(ErrorCode::AuthenticationRequired, REJECTION_MESSAGE)
-}
-
-fn decode_canonical_base64url(value: &str, expected_len: usize) -> Option<Vec<u8>> {
-    let decoded = URL_SAFE_NO_PAD.decode(value).ok()?;
-    (decoded.len() == expected_len && URL_SAFE_NO_PAD.encode(&decoded) == value).then_some(decoded)
 }
 
 fn unix_timestamp() -> Result<i64, ApiError> {
