@@ -556,6 +556,7 @@ mod tests {
             "device-token",
             "did",
             "managed-dids",
+            "forgotten-dids",
             "pending-removals",
             "monitor-history",
             "relay-base-url",

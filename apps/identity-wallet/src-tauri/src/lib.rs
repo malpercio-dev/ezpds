@@ -1455,6 +1455,79 @@ fn reconcile_share1_slots() {
     backfill_synced_share1();
 }
 
+/// Best-effort launch repair: register the primary DID in `IdentityStore` if the create flow
+/// finished without it.
+///
+/// The create flow persists its DID under the legacy `"did"` account during the ceremony
+/// (`perform_did_ceremony`, step 7) and only later registers it in the managed index via
+/// `register_created_identity`. The home screen lists identities from the managed index alone,
+/// so if that later step does not land — a Keychain fault, or the app never reaching it — the
+/// identity exists, is funded with keys and shares, and is invisible. Nothing retried it: the
+/// state survived relaunch, and the only exit was the share-recovery ceremony, which re-adds
+/// the DID as a side effect of rebuilding an identity that was never actually lost.
+///
+/// This closes that hole from the other side. The DID is written *before* the fragile step, so
+/// it is always on hand; re-registering it is idempotent and additive.
+///
+/// **Never resurrects a forgotten identity.** Nothing clears the legacy `"did"` account — not
+/// local removal, not migration — so "absent from the managed index" alone cannot distinguish
+/// a stranded create from a deliberate `forget_identity_locally`. The tombstone index
+/// (`IdentityStore::is_forgotten`) carries that intent, and it fails closed: an unreadable
+/// tombstone index means no re-registration.
+///
+/// The DID document is deliberately not rebuilt here. `IdentityListHome` already treats a
+/// missing document as a refresh trigger and re-fetches it from plc.directory on first render,
+/// which needs neither the handle nor the PDS URL at launch.
+fn reconcile_created_identity() {
+    let did = match keychain::get_item("did") {
+        Ok(bytes) => match String::from_utf8(bytes) {
+            Ok(did) if !did.is_empty() => did,
+            Ok(_) => return,
+            Err(_) => {
+                tracing::warn!("identity reconcile: stored DID is not valid UTF-8; skipping");
+                return;
+            }
+        },
+        // No primary DID recorded: a fresh install, or an import-only wallet.
+        _ => return,
+    };
+
+    let store = identity_store::IdentityStore;
+    match store.list_identities() {
+        Ok(dids) if dids.contains(&did) => return,
+        Ok(_) => {}
+        Err(e) => {
+            tracing::warn!(error = %e, "identity reconcile: managed-DID index unreadable; skipping");
+            return;
+        }
+    }
+
+    if store.is_forgotten(&did) {
+        tracing::debug!(
+            did = %did,
+            "identity reconcile: DID was unregistered on purpose; leaving it out"
+        );
+        return;
+    }
+
+    if let Err(e) = store.add_identity(&did) {
+        tracing::warn!(did = %did, error = %e, "identity reconcile: add_identity failed");
+        return;
+    }
+
+    // Mirrors `register_created_identity`: the create flow's genesis op was signed with the
+    // global device key, so alias the per-DID key to it. Non-fatal — the identity lists either
+    // way; only the "root key" badge and PLC-monitor classification degrade without it.
+    if let Err(e) = store.adopt_global_device_key(&did) {
+        tracing::warn!(did = %did, error = %e, "identity reconcile: adopt_global_device_key failed");
+    }
+
+    tracing::info!(
+        did = %did,
+        "identity reconcile: re-registered a created identity missing from the managed index"
+    );
+}
+
 /// Best-effort launch backfill: copy each managed identity's device-local Share 1 into the
 /// iCloud-synchronizable slot.
 ///
@@ -1573,6 +1646,11 @@ pub fn run() {
             // iCloud-synchronizable slot so it can reach a replacement device. Both hops are
             // additive; neither deletes the slot it read from.
             reconcile_share1_slots();
+
+            // Best-effort, idempotent: re-register a created identity whose create flow
+            // persisted its DID but never reached the managed index, so it stops being
+            // invisible on the home screen. Skips DIDs the user unregistered on purpose.
+            reconcile_created_identity();
 
             // On relaunch: restore persisted session from Keychain and notify frontend.
             // The 300 ms delay lets the SvelteKit app boot and register its event listener
@@ -2213,6 +2291,92 @@ mod tests {
         assert_eq!(
             keychain::get_item(&rekey::recovery_share1_account(did)).unwrap(),
             share1.as_bytes()
+        );
+    }
+
+    // -- created-identity reconciliation --
+
+    #[test]
+    fn reconcile_registers_a_created_identity_missing_from_the_managed_index() {
+        keychain::clear_for_test();
+        let did = "did:plc:strandedcreate";
+
+        // The state the reported bug leaves behind: the ceremony persisted the DID, but
+        // `register_created_identity` never landed, so the home screen lists nothing.
+        keychain::store_item("did", did.as_bytes()).unwrap();
+        assert!(identity_store::IdentityStore
+            .list_identities()
+            .unwrap()
+            .is_empty());
+
+        reconcile_created_identity();
+
+        assert_eq!(
+            identity_store::IdentityStore.list_identities().unwrap(),
+            vec![did.to_string()]
+        );
+    }
+
+    #[test]
+    fn reconcile_never_resurrects_a_deliberately_forgotten_identity() {
+        keychain::clear_for_test();
+        let did = "did:plc:forgottenonpurpose";
+
+        // Forgetting an identity locally leaves the legacy "did" slot untouched, so the
+        // tombstone is the only thing standing between the user's decision and a relaunch
+        // putting the identity straight back on the home screen.
+        keychain::store_item("did", did.as_bytes()).unwrap();
+        identity_store::IdentityStore.add_identity(did).unwrap();
+        identity_store::IdentityStore.remove_identity(did).unwrap();
+
+        reconcile_created_identity();
+
+        assert!(identity_store::IdentityStore
+            .list_identities()
+            .unwrap()
+            .is_empty());
+    }
+
+    #[test]
+    fn reconcile_is_idempotent_and_never_duplicates() {
+        keychain::clear_for_test();
+        let did = "did:plc:idempotentreconcile";
+        keychain::store_item("did", did.as_bytes()).unwrap();
+
+        reconcile_created_identity();
+        reconcile_created_identity();
+
+        assert_eq!(
+            identity_store::IdentityStore.list_identities().unwrap(),
+            vec![did.to_string()]
+        );
+    }
+
+    #[test]
+    fn reconcile_is_a_no_op_without_a_primary_did() {
+        keychain::clear_for_test();
+
+        // A fresh install, or an import-only wallet: nothing to reconcile from.
+        reconcile_created_identity();
+
+        assert!(identity_store::IdentityStore
+            .list_identities()
+            .unwrap()
+            .is_empty());
+    }
+
+    #[test]
+    fn reconcile_leaves_an_already_registered_identity_alone() {
+        keychain::clear_for_test();
+        let did = "did:plc:alreadyregistered";
+        keychain::store_item("did", did.as_bytes()).unwrap();
+        identity_store::IdentityStore.add_identity(did).unwrap();
+
+        reconcile_created_identity();
+
+        assert_eq!(
+            identity_store::IdentityStore.list_identities().unwrap(),
+            vec![did.to_string()]
         );
     }
 

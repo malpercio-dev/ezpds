@@ -341,9 +341,21 @@ export function buildScenario(name: string): WalletState {
   return isScenarioName(name) ? scenarios[name]() : scenarios[DEFAULT_SCENARIO]();
 }
 
+/**
+ * An ISO timestamp `hours` before now — measured against the *live* clock, deliberately.
+ *
+ * The recovery-window UI reads these fixtures against `Date.now()` (`$lib/deadline`'s
+ * `getUrgency`/`formatCountdown`, via `$lib/identity-status`), so a fixed base instant is
+ * not a fixed *age*: it ages out. Pinned to a literal date, `isoHoursAgo(2)` stops being a
+ * two-hour-old alert the moment real time passes it, and once 72 hours have elapsed the
+ * `alert-active` scenario renders "Recovery window closed" — the one preset that exists to
+ * demonstrate a live alarm no longer demonstrating one.
+ *
+ * Determinism for the docs screenshots is owned by the capture driver, not by a constant
+ * here: `tools/screenshots/capture.mjs` freezes the page clock to `FIXED_CLOCK` before the
+ * harness installs, so `Date.now()` there is that instant and every seeded age resolves
+ * identically on every run.
+ */
 function isoHoursAgo(hours: number): string {
-  // Fixed reference clock keeps scenarios deterministic in tests; the exact instant
-  // is irrelevant — only the relative age matters to the recovery-window UI.
-  const base = Date.parse('2026-07-15T12:00:00.000Z');
-  return new Date(base - hours * 3600_000).toISOString();
+  return new Date(Date.now() - hours * 3600_000).toISOString();
 }

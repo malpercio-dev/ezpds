@@ -16,6 +16,19 @@ use serde::{Deserialize, Serialize};
 
 const MANAGED_DIDS_ACCOUNT: &str = "managed-dids";
 
+/// Index of DIDs the user has deliberately unregistered from *this* device.
+///
+/// Launch-time reconciliation re-registers an identity whose DID is still recorded in the
+/// legacy `"did"` slot but is absent from [`MANAGED_DIDS_ACCOUNT`] — the state a create flow
+/// leaves behind when its registration step fails. Nothing clears the legacy slot on removal,
+/// so without a record of intent that reconciliation could not tell "never finished
+/// registering" from "removed on purpose", and would resurrect a forgotten identity on the
+/// next app open. This is that record.
+///
+/// Holds no secret — only DIDs, which are public identifiers — and stays device-local:
+/// forgetting an identity here is a statement about this device, not about the Apple account.
+const FORGOTTEN_DIDS_ACCOUNT: &str = "forgotten-dids";
+
 // ── Error types ────────────────────────────────────────────────────────────────
 
 /// Errors returned by `IdentityStore` operations.
@@ -161,6 +174,59 @@ impl IdentityStore {
         Ok(dids.contains(&did.to_string()))
     }
 
+    /// Load the tombstone index of deliberately-forgotten DIDs.
+    ///
+    /// Returns an empty list if the entry doesn't exist. Propagates read and parse failures
+    /// rather than defaulting to empty: the only writer is [`Self::remove_identity`], and
+    /// saving an empty list over an unreadable one would silently drop every other
+    /// tombstone. Removal is retryable; a lost tombstone is not.
+    fn load_forgotten_dids(&self) -> Result<Vec<String>, IdentityStoreError> {
+        match crate::keychain::get_item(FORGOTTEN_DIDS_ACCOUNT) {
+            Ok(bytes) => serde_json::from_slice::<Vec<String>>(&bytes).map_err(|e| {
+                tracing::error!(error = %e, "forgotten-dids Keychain entry contains invalid JSON");
+                IdentityStoreError::SerializationError {
+                    message: format!("failed to deserialize forgotten-dids: {e}"),
+                }
+            }),
+            Err(e) if crate::keychain::is_not_found(&e) => Ok(Vec::new()),
+            Err(e) => Err(IdentityStoreError::KeychainError {
+                message: e.to_string(),
+            }),
+        }
+    }
+
+    /// Save the tombstone index.
+    fn save_forgotten_dids(&self, dids: &[String]) -> Result<(), IdentityStoreError> {
+        let json =
+            serde_json::to_vec(dids).map_err(|e| IdentityStoreError::SerializationError {
+                message: format!("failed to serialize forgotten-dids: {e}"),
+            })?;
+        crate::keychain::store_item(FORGOTTEN_DIDS_ACCOUNT, &json).map_err(|e| {
+            IdentityStoreError::KeychainError {
+                message: e.to_string(),
+            }
+        })
+    }
+
+    /// Whether the user has deliberately unregistered this DID from this device.
+    ///
+    /// Consulted only by launch-time reconciliation. A DID that is currently managed is
+    /// never affected by its tombstone — [`Self::add_identity`] clears one on re-registration.
+    ///
+    /// Fails safe: an unreadable index reports `true`, so a Keychain hiccup can never let
+    /// reconciliation resurrect an identity the user removed on purpose. Withholding a
+    /// re-registration is recoverable (the user can import the identity again); resurrecting
+    /// one the user deliberately wiped from this device is not.
+    pub fn is_forgotten(&self, did: &str) -> bool {
+        match self.load_forgotten_dids() {
+            Ok(dids) => dids.iter().any(|d| d == did),
+            Err(e) => {
+                tracing::warn!(did = did, error = %e, "forgotten-dids unreadable; treating DID as forgotten");
+                true
+            }
+        }
+    }
+
     // ── Public API ─────────────────────────────────────────────────────────────
 
     /// Register a new managed identity by DID.
@@ -179,7 +245,31 @@ impl IdentityStore {
         dids.push(did.to_string());
         self.save_managed_dids(&dids)?;
 
+        // Registering an identity retracts any prior "forgotten on this device" statement.
+        // Best-effort: a surviving tombstone cannot affect a managed DID (reconciliation
+        // only ever considers DIDs absent from the managed index), so this is hygiene —
+        // it keeps the index from growing without bound and from contradicting itself.
+        self.clear_tombstone(did);
+
         Ok(())
+    }
+
+    /// Drop `did` from the tombstone index, if present. Never fails the caller.
+    fn clear_tombstone(&self, did: &str) {
+        let forgotten = match self.load_forgotten_dids() {
+            Ok(f) => f,
+            Err(e) => {
+                tracing::warn!(did = did, error = %e, "could not read forgotten-dids to clear tombstone");
+                return;
+            }
+        };
+        if !forgotten.iter().any(|d| d == did) {
+            return;
+        }
+        let remaining: Vec<String> = forgotten.into_iter().filter(|d| d != did).collect();
+        if let Err(e) = self.save_forgotten_dids(&remaining) {
+            tracing::warn!(did = did, error = %e, "could not clear tombstone for re-registered identity");
+        }
     }
 
     /// Remove a managed identity and all associated Keychain entries.
@@ -197,7 +287,20 @@ impl IdentityStore {
             return Err(IdentityStoreError::IdentityNotFound);
         }
 
-        // Remove DID from index first — this is the authoritative state change.
+        // Record the intent BEFORE touching the managed index, and fail closed if it cannot
+        // be recorded. Nothing clears the legacy `"did"` slot, so a DID removed without a
+        // tombstone is indistinguishable from one whose create flow never finished
+        // registering — and launch-time reconciliation would put it straight back. Ordering
+        // this first means the window where the DID is unmanaged and untombstoned never
+        // opens; a tombstone left behind by a removal that then fails is inert, because a
+        // still-managed DID is never a reconciliation candidate and re-registering clears it.
+        let mut forgotten = self.load_forgotten_dids()?;
+        if !forgotten.iter().any(|d| d == did) {
+            forgotten.push(did.to_string());
+            self.save_forgotten_dids(&forgotten)?;
+        }
+
+        // Remove DID from index — this is the authoritative state change.
         dids.retain(|d| d != did);
         self.save_managed_dids(&dids)?;
 
@@ -1014,6 +1117,84 @@ mod tests {
         clear_per_did_entries(did);
         clear_managed_dids();
         let _ = crate::keychain::delete_item(crate::device_key::DEVICE_KEY_PRIV_ACCOUNT);
+    }
+
+    // ── Forgotten-DID tombstones ──────────────────────────────────────────────
+
+    #[test]
+    fn removing_an_identity_tombstones_it() {
+        crate::keychain::clear_for_test();
+        let store = IdentityStore;
+        let did = "did:plc:tombstoned";
+
+        assert!(!store.is_forgotten(did), "nothing is forgotten by default");
+        store.add_identity(did).expect("add_identity");
+        store.remove_identity(did).expect("remove_identity");
+
+        assert!(store.is_forgotten(did));
+    }
+
+    #[test]
+    fn re_registering_a_forgotten_identity_retracts_its_tombstone() {
+        crate::keychain::clear_for_test();
+        let store = IdentityStore;
+        let did = "did:plc:forgottenthenreadded";
+
+        store.add_identity(did).expect("add_identity");
+        store.remove_identity(did).expect("remove_identity");
+        assert!(store.is_forgotten(did));
+
+        // Importing the identity again is a retraction of "not on this device". Leaving the
+        // tombstone would blacklist the DID for good — a later stranded create for the same
+        // identity could never be reconciled.
+        store.add_identity(did).expect("re-add_identity");
+        assert!(!store.is_forgotten(did));
+    }
+
+    #[test]
+    fn a_tombstone_names_only_the_removed_identity() {
+        crate::keychain::clear_for_test();
+        let store = IdentityStore;
+
+        store.add_identity("did:plc:goes").expect("add goes");
+        store.add_identity("did:plc:stays").expect("add stays");
+        store.remove_identity("did:plc:goes").expect("remove goes");
+
+        assert!(store.is_forgotten("did:plc:goes"));
+        assert!(!store.is_forgotten("did:plc:stays"));
+    }
+
+    #[test]
+    fn an_unreadable_tombstone_index_reports_every_did_as_forgotten() {
+        crate::keychain::clear_for_test();
+        let store = IdentityStore;
+
+        // Fail closed. Withholding a re-registration is recoverable — the user can import
+        // the identity again — but resurrecting one they deliberately wiped from this device
+        // is not, so corruption must never read as "safe to re-register".
+        crate::keychain::store_item(FORGOTTEN_DIDS_ACCOUNT, b"{not json").unwrap();
+
+        assert!(store.is_forgotten("did:plc:anything"));
+    }
+
+    #[test]
+    fn removal_fails_closed_when_the_tombstone_cannot_be_recorded() {
+        crate::keychain::clear_for_test();
+        let store = IdentityStore;
+        let did = "did:plc:tombstonewritefails";
+        store.add_identity(did).expect("add_identity");
+
+        // A corrupt tombstone index cannot be appended to without dropping the tombstones it
+        // already holds. Removal must refuse rather than unregister the DID untombstoned —
+        // that is exactly the state launch reconciliation would undo.
+        crate::keychain::store_item(FORGOTTEN_DIDS_ACCOUNT, b"{not json").unwrap();
+
+        assert!(store.remove_identity(did).is_err());
+        assert_eq!(
+            store.list_identities().expect("list_identities"),
+            vec![did.to_string()],
+            "the DID must still be managed after a refused removal"
+        );
     }
 
     // ── Identity lifecycle (add / remove / list) ──────────────────────────────

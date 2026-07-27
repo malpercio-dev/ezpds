@@ -34,5 +34,10 @@ Documentation, tests, design files, CI configuration, scripts, developer tooling
 other repository-internal changes do not trigger the presence requirement. Any fragment
 that is present is still checked for a valid name and non-empty content.
 
+The browser test harness (`apps/*/src/lib/harness/`) is developer tooling despite its
+path: it is double-gated on `import.meta.env.DEV && VITE_HARNESS` and proven absent from
+production builds by `pnpm check:harness-absence`, so the gate skips it explicitly rather
+than letting the broad `apps/*/src/` rule claim it.
+
 `just set-version X.Y.Z` groups all fragments into a dated Keep a Changelog release
 section in `CHANGELOG.md`, then deletes the consumed fragments. This README remains.
