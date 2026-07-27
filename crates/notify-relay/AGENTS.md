@@ -1,6 +1,6 @@
 # notify-relay Crate
 
-Last verified: 2026-07-26
+Last verified: 2026-07-27
 
 ## Purpose
 
@@ -29,7 +29,8 @@ src/
   protocol.rs    — the `ezpds/notify/0` wire types: `Request`/`Response`/`PushOutcome`, the ALPN, the 64 KiB cap
   transport.rs   — iroh endpoint bind + accept loop; one JSON RPC per bidi stream, FIN-delimited, 30 s deadline
   service.rs     — RPC dispatch: the authorization order and the cross-table enrollment transaction
-  rate_limit.rs  — in-memory per-node token buckets (registration + push budgets)
+  rate_limit.rs  — in-memory token buckets (registration + per-node push + per-handle push budgets)
+  apns.rs        — the APNs leg: ES256 provider token, envelope assembly, 4 KiB cap, status → outcome
   db/            — `enrollment_codes`, `enrollments`, `handles`, plus the pool/migration runner
 ```
 
@@ -54,6 +55,15 @@ an enroll with no code at all — all answer `denied`, so probing teaches nothin
 codes the operator has minted. Storage failures answer with a fixed reason and are logged,
 never reflected; an unparseable request is never echoed back.
 
+**The sealed payload is copied, never inspected.** `apns.rs` moves the RPC's `kid`/`enc`/`ct`
+into the envelope verbatim. The only secret in this crate is the operator's own APNs
+token-auth key; no instance key and no device key is ever handled here.
+
+**A push charges two budgets, and only after the handle resolves.** The per-node bucket
+bounds what one instance costs the relay; the per-handle bucket (60/h) bounds what one
+device is subjected to. Charging the per-handle bucket *before* the ownership-scoped
+resolve would let a stranger spend a device's budget by guessing handles.
+
 ## Configuration
 
 TOML file (default `./notify-relay.toml`, or `--config`/`EZPDS_NOTIFY_CONFIG`) overlaid by
@@ -70,10 +80,12 @@ everything that way and ships no file.
 | `apns.topics` | `EZPDS_NOTIFY_APNS_TOPICS` (comma-separated) | empty = any topic |
 | `apns.sandbox` | `EZPDS_NOTIFY_APNS_SANDBOX` | `false` |
 | `apns.endpoint` | `EZPDS_NOTIFY_APNS_URL` | unset (the wiremock seam) |
-| `rate_limits.*` | `EZPDS_NOTIFY_RATE_{REGISTRATIONS,PUSHES}_{PER_HOUR,BURST}` | 100/10 registrations, 1000/50 pushes per hour |
+| `rate_limits.*` | `EZPDS_NOTIFY_RATE_{REGISTRATIONS,PUSHES,HANDLE_PUSHES}_{PER_HOUR,BURST}` | 100/10 registrations, 1000/50 pushes, 60/10 per-handle pushes per hour |
 
-The `[apns]` block is parsed and validated but unused until the push pipeline lands, so an
-operator's deployment config does not change shape when pushes start working.
+APNs credentials are all-or-nothing and validated at startup: a relay whose `.p8` is
+missing or malformed refuses to start rather than coming up healthy and failing every
+push. With no credentials at all it serves every RPC but `push`, which answers `apnsError`
+— the posture for bringing a relay up before its key exists.
 
 ## Operating
 

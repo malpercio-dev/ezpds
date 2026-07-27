@@ -57,7 +57,14 @@
 
   let cards = $state<IdentityCard[]>([]);
   let alertData = $state<Map<string, UnauthorizedChange[]>>(new Map());
-  let checkFailed = $state<Set<string>>(new Set());
+  /**
+   * The DIDs the last sweep actually verified — an allowlist, not a failure list, because
+   * the sweep omits identities it has no business asking about and absence before the first
+   * pass means "not asked yet". See the same reasoning on `IdentityListHome`.
+   */
+  let sweptOk = $state<Set<string>>(new Set());
+  /** False until a sweep result has been absorbed, so "not yet" never reads as "failed". */
+  let sweepAnswered = $state(false);
   let history = $state<MonitorHistory | null>(null);
   let loading = $state(true);
   let checking = $state(false);
@@ -80,7 +87,7 @@
             handle: c.handle,
             changes: alertData.get(c.did) ?? [],
             deviceKeyUnusable: c.deviceKeyUnusable,
-            plcCheckSucceeded: !checkFailed.has(c.did),
+            plcCheckSucceeded: sweptOk.has(c.did),
             lastVerifiedAt: lastVerifiedFor(c.did),
           },
           now
@@ -89,7 +96,7 @@
     )
   );
 
-  let summary = $derived(summarize(rows, history, now));
+  let summary = $derived(summarize(rows, history, now, !sweepAnswered));
 
   function lastVerifiedFor(did: string): string | null {
     return history?.identities.find((e) => e.did === did)?.lastVerifiedAt ?? null;
@@ -113,7 +120,16 @@
         : 'Recover to restore control from this device';
     }
     if (row.isWeb) return 'Held at your own domain — no public record to watch';
-    if (!row.verified) return "Couldn't reach the public record";
+    if (!row.verified) {
+      // Before the first sweep answers there is no failure to report, only a question in
+      // flight. The row's last-verified time, if the log has one, is still true meanwhile.
+      if (!sweepAnswered) {
+        return row.lastVerifiedAt
+          ? `Checking now · last ${formatLastVerified(row.lastVerifiedAt, now).toLowerCase()}`
+          : 'Checking the public record…';
+      }
+      return "Couldn't reach the public record";
+    }
     return formatLastVerified(row.lastVerifiedAt, now);
   }
 
@@ -121,7 +137,8 @@
     alertData = new Map(
       statuses.filter((s) => s.unauthorizedChanges.length > 0).map((s) => [s.did, s.unauthorizedChanges])
     );
-    checkFailed = new Set(statuses.filter((s) => s.checkFailed).map((s) => s.did));
+    sweptOk = new Set(statuses.filter((s) => !s.checkFailed).map((s) => s.did));
+    sweepAnswered = true;
   }
 
   async function refreshHistory() {

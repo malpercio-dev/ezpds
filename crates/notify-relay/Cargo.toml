@@ -6,9 +6,9 @@ publish.workspace = true
 license.workspace = true
 
 # The notification relay: a blind courier between a self-hosted Custos instance and
-# APNs. It speaks one iroh ALPN (`ezpds/notify/0`), stores opaque push handles, and —
-# from the next phase — forwards HPKE-sealed payloads to Apple. It never sees plaintext
-# and holds no key material belonging to an instance or a device.
+# APNs. It speaks one iroh ALPN (`ezpds/notify/0`), stores opaque push handles, and
+# forwards HPKE-sealed payloads to Apple. It never sees plaintext and holds no key
+# material belonging to an instance or a device.
 [[bin]]
 name = "notify-relay"
 path = "src/main.rs"
@@ -27,6 +27,18 @@ tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 rand_core = { workspace = true }
 data-encoding = { workspace = true }
+# The APNs leg. rustls (via the workspace dep) is what negotiates HTTP/2 by ALPN against
+# api.push.apple.com — Apple's provider API is h2-only — while an http:// test endpoint
+# falls back to HTTP/1.1, which is what makes the wiremock seam work at all.
+reqwest = { workspace = true }
+# The APNs provider token is a hand-rolled ES256 JWT over this key: header {alg, kid} +
+# claims {iss, iat}, signed with the `.p8`'s P-256 key. Roughly thirty lines against a dep
+# the workspace already carries, versus pulling `jsonwebtoken` and its `ring` stack in for
+# one signature shape.
+p256 = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }
+# A stand-in APNs that asserts the headers and body Apple would see. Same version the pds
+# crate pins; not a workspace dep because those two are its only users.
+wiremock = "0.6"

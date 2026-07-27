@@ -460,6 +460,96 @@ pub(crate) mod tests {
         harness.close().await;
     }
 
+    /// The whole pipeline in one exchange: an instance dials over iroh, enrolls, registers
+    /// a device, and pushes — and a stand-in Apple receives the notification. This is the
+    /// only test that crosses every seam at once (QUIC framing, the store, the APNs leg),
+    /// so it is what catches a wiring break that each layer's own tests would miss.
+    #[tokio::test]
+    async fn a_push_travels_from_an_iroh_dial_all_the_way_to_apple() {
+        use wiremock::matchers::method;
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let apple = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(200))
+            .mount(&apple)
+            .await;
+        let (_key_dir, apns) = crate::apns::tests::client_for(&apple.uri());
+
+        let service = Arc::new(
+            RelayService::new(db::test_pool().await, test_config(true)).with_apns(Some(apns)),
+        );
+        let server = loopback_endpoint(true).await;
+        let _accept = spawn_accept_loop(server.clone(), Arc::clone(&service));
+        let client = loopback_endpoint(false).await;
+        let harness = Harness {
+            server,
+            client,
+            service,
+        };
+
+        let responses = harness
+            .call(vec![
+                Request::Enroll { claim_code: None },
+                Request::RegisterHandle {
+                    apns_token: "device-token-from-apple".into(),
+                    apns_topic: "org.obsign.identitywallet".into(),
+                },
+            ])
+            .await;
+        let Response::Handle { handle } = responses[1].clone() else {
+            panic!("expected a handle, got {:?}", responses[1]);
+        };
+
+        let pushed = harness
+            .call(vec![Request::Push {
+                handle: handle.clone(),
+                kid: 4,
+                enc: "ENCAPSULATED".into(),
+                ct: "CIPHERTEXT".into(),
+                priority: None,
+                ttl_secs: Some(120),
+                ping: None,
+            }])
+            .await;
+        assert_eq!(
+            pushed[0],
+            Response::Pushed {
+                outcome: PushOutcome::Delivered
+            }
+        );
+
+        let received = apple.received_requests().await.expect("recorded requests");
+        assert_eq!(
+            received.len(),
+            1,
+            "Apple must have been contacted exactly once"
+        );
+        assert!(
+            received[0]
+                .url
+                .path()
+                .ends_with("/device/device-token-from-apple"),
+            "the relay must resolve the handle to the device's real token: {}",
+            received[0].url
+        );
+        let body: serde_json::Value = serde_json::from_slice(&received[0].body).expect("JSON");
+        assert_eq!(body["ezpds"]["ct"], "CIPHERTEXT");
+
+        let last_push: Option<String> =
+            sqlx::query_scalar("SELECT last_push_at FROM handles WHERE handle = ?")
+                .bind(&handle)
+                .fetch_one(&harness.service.db)
+                .await
+                .expect("read the delivery stamp");
+        assert!(
+            last_push.is_some(),
+            "a delivered push must stamp the handle as recently live"
+        );
+
+        harness.close().await;
+    }
+
     #[tokio::test]
     async fn an_exhausted_budget_throttles_over_the_wire() {
         let mut config = load_from_env_only(&HashMap::new()).expect("defaults");

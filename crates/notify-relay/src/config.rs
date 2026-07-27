@@ -60,10 +60,17 @@ pub struct RateLimitConfig {
     pub registrations_per_hour: u32,
     /// Burst capacity for registration RPCs.
     pub registrations_burst: u32,
-    /// Sustained pushes per hour.
+    /// Sustained pushes per hour, across all of a node's handles.
     pub pushes_per_hour: u32,
     /// Burst capacity for pushes.
     pub pushes_burst: u32,
+    /// Sustained pushes per hour to a **single** handle. Tighter than the node budget on
+    /// purpose: the node bucket bounds what one instance costs the relay, this one bounds
+    /// what one device is subjected to, and a bug that loops on one registration is the
+    /// far likelier failure.
+    pub handle_pushes_per_hour: u32,
+    /// Burst capacity for pushes to a single handle.
+    pub handle_pushes_burst: u32,
 }
 
 impl Default for RateLimitConfig {
@@ -73,6 +80,8 @@ impl Default for RateLimitConfig {
             registrations_burst: 10,
             pushes_per_hour: 1_000,
             pushes_burst: 50,
+            handle_pushes_per_hour: 60,
+            handle_pushes_burst: 10,
         }
     }
 }
@@ -125,6 +134,8 @@ struct RawRateLimits {
     registrations_burst: Option<u32>,
     pushes_per_hour: Option<u32>,
     pushes_burst: Option<u32>,
+    handle_pushes_per_hour: Option<u32>,
+    handle_pushes_burst: Option<u32>,
 }
 
 // ── Env overlay + validation (Functional Core) ────────────────────────────
@@ -201,6 +212,14 @@ pub fn apply_env_overrides(
     if let Some(v) = env.get("EZPDS_NOTIFY_RATE_PUSHES_BURST") {
         raw.rate_limits.pushes_burst = Some(parse_u32("EZPDS_NOTIFY_RATE_PUSHES_BURST", v)?);
     }
+    if let Some(v) = env.get("EZPDS_NOTIFY_RATE_HANDLE_PUSHES_PER_HOUR") {
+        raw.rate_limits.handle_pushes_per_hour =
+            Some(parse_u32("EZPDS_NOTIFY_RATE_HANDLE_PUSHES_PER_HOUR", v)?);
+    }
+    if let Some(v) = env.get("EZPDS_NOTIFY_RATE_HANDLE_PUSHES_BURST") {
+        raw.rate_limits.handle_pushes_burst =
+            Some(parse_u32("EZPDS_NOTIFY_RATE_HANDLE_PUSHES_BURST", v)?);
+    }
     Ok(raw)
 }
 
@@ -224,22 +243,40 @@ pub fn validate_and_build(raw: RawConfig) -> Result<Config, ConfigError> {
             .rate_limits
             .pushes_burst
             .unwrap_or(defaults.pushes_burst),
+        handle_pushes_per_hour: raw
+            .rate_limits
+            .handle_pushes_per_hour
+            .unwrap_or(defaults.handle_pushes_per_hour),
+        handle_pushes_burst: raw
+            .rate_limits
+            .handle_pushes_burst
+            .unwrap_or(defaults.handle_pushes_burst),
     };
     // A bucket with a refill rate but no capacity would reject its very first request,
     // which reads as an outage rather than a limit. Disabling is expressed by the rate.
-    if rate_limits.registrations_per_hour > 0 && rate_limits.registrations_burst == 0 {
-        return Err(ConfigError::Invalid(
-            "rate_limits.registrations_burst must be greater than zero unless \
-             registrations_per_hour is zero (which disables the limiter)"
-                .into(),
-        ));
-    }
-    if rate_limits.pushes_per_hour > 0 && rate_limits.pushes_burst == 0 {
-        return Err(ConfigError::Invalid(
-            "rate_limits.pushes_burst must be greater than zero unless pushes_per_hour \
-             is zero (which disables the limiter)"
-                .into(),
-        ));
+    for (name, per_hour, burst) in [
+        (
+            "registrations",
+            rate_limits.registrations_per_hour,
+            rate_limits.registrations_burst,
+        ),
+        (
+            "pushes",
+            rate_limits.pushes_per_hour,
+            rate_limits.pushes_burst,
+        ),
+        (
+            "handle_pushes",
+            rate_limits.handle_pushes_per_hour,
+            rate_limits.handle_pushes_burst,
+        ),
+    ] {
+        if per_hour > 0 && burst == 0 {
+            return Err(ConfigError::Invalid(format!(
+                "rate_limits.{name}_burst must be greater than zero unless \
+                 {name}_per_hour is zero (which disables the limiter)"
+            )));
+        }
     }
 
     let apns = ApnsConfig {
@@ -357,6 +394,8 @@ mod tests {
             ("EZPDS_NOTIFY_RATE_REGISTRATIONS_BURST", "3"),
             ("EZPDS_NOTIFY_RATE_PUSHES_PER_HOUR", "11"),
             ("EZPDS_NOTIFY_RATE_PUSHES_BURST", "5"),
+            ("EZPDS_NOTIFY_RATE_HANDLE_PUSHES_PER_HOUR", "13"),
+            ("EZPDS_NOTIFY_RATE_HANDLE_PUSHES_BURST", "4"),
         ]))
         .expect("env-only config is valid");
 
@@ -376,6 +415,27 @@ mod tests {
         );
         assert_eq!(config.rate_limits.registrations_per_hour, 7);
         assert_eq!(config.rate_limits.pushes_burst, 5);
+        assert_eq!(config.rate_limits.handle_pushes_per_hour, 13);
+        assert_eq!(config.rate_limits.handle_pushes_burst, 4);
+    }
+
+    /// The per-handle budget is the one an operator is least likely to set, so its default
+    /// has to be right on its own: tighter than the node budget, and non-zero.
+    #[test]
+    fn the_per_handle_push_budget_is_tighter_than_the_node_budget_by_default() {
+        let limits = load_from_env_only(&env(&[]))
+            .expect("defaults are valid")
+            .rate_limits;
+        assert_eq!(limits.handle_pushes_per_hour, 60);
+        assert!(limits.handle_pushes_per_hour < limits.pushes_per_hour);
+        assert!(limits.handle_pushes_burst < limits.pushes_burst);
+    }
+
+    #[test]
+    fn a_per_handle_rate_with_no_burst_is_refused_like_the_others() {
+        let err = load_from_env_only(&env(&[("EZPDS_NOTIFY_RATE_HANDLE_PUSHES_BURST", "0")]))
+            .expect_err("zero burst under a nonzero rate rejects the first push");
+        assert!(matches!(err, ConfigError::Invalid(_)), "got {err:?}");
     }
 
     #[test]

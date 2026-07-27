@@ -55,9 +55,18 @@
   let loading = $state(true);
   let loadError = $state<string | null>(null);
   let alertData = $state<Map<string, UnauthorizedChange[]>>(new Map());
-  // Which identities the last sweep could not reach, so the strip can withhold an
-  // all-clear it did not earn rather than quietly reporting one.
-  let checkFailed = $state<Set<string>>(new Set());
+  /**
+   * The DIDs the last sweep actually verified — an allowlist, not a failure list.
+   *
+   * The sweep omits an identity it has no business asking about (a did:web), so absence
+   * cannot mean success; and before the first sweep answers, absence means "not asked
+   * yet". Deriving verification from the *presence* of a good reading is what keeps the
+   * strip from showing the all-clear green it has not earned, the same reason
+   * `IdentityScreen` starts at `plcVerified = false`.
+   */
+  let sweptOk = $state<Set<string>>(new Set());
+  /** False until a sweep result has been absorbed, so "not yet" never reads as "failed". */
+  let sweepAnswered = $state(false);
   let history = $state<MonitorHistory | null>(null);
   // Advances on a minute's tick so "checked N min ago" ages in place rather than freezing
   // at whatever it said when the screen mounted.
@@ -94,14 +103,15 @@
             handle: c.handle,
             changes: alertData.get(c.did) ?? [],
             deviceKeyUnusable: c.deviceKeyUnusable,
-            plcCheckSucceeded: !checkFailed.has(c.did),
+            plcCheckSucceeded: sweptOk.has(c.did),
             lastVerifiedAt: null,
           },
           now
         )
       ),
       history,
-      now
+      now,
+      !sweepAnswered
     )
   );
 
@@ -165,10 +175,11 @@
     return data;
   }
 
-  /** Absorb a sweep's answer: both what it found and which identities it could not reach. */
+  /** Absorb a sweep's answer: what it found, and which identities it actually verified. */
   function absorb(statuses: IdentityStatus[]) {
     alertData = toAlertMap(statuses);
-    checkFailed = new Set(statuses.filter((s) => s.checkFailed).map((s) => s.did));
+    sweptOk = new Set(statuses.filter((s) => !s.checkFailed).map((s) => s.did));
+    sweepAnswered = true;
   }
 
   /** Re-read the monitor's own log, which the check that just ran has appended to. */

@@ -121,7 +121,8 @@ export type ProtectionSummary = {
 export function summarize(
   rows: ProtectionRow[],
   history: MonitorHistory | null,
-  now: number = Date.now()
+  now: number = Date.now(),
+  sweepPending: boolean = false
 ): ProtectionSummary {
   if (rows.length === 0) {
     return {
@@ -183,6 +184,22 @@ export function summarize(
 
   const checked = lastSweepAt(history);
   if (rows.some((r) => !r.verified)) {
+    // "Not yet asked" and "asked and got no answer" are different facts, and only the
+    // second is a failure. A surface that conflated them would report a directory outage
+    // every time the app opened — and, run the other way, a wallet that inferred
+    // verification from the mere absence of a failure would show the all-clear green
+    // before the first sweep has answered, which is the unearned claim this state exists
+    // to prevent.
+    if (sweepPending) {
+      return {
+        urgency: 'safe',
+        verified: false,
+        headline: 'Checking the public record',
+        detail: checked
+          ? `Last checked ${formatCheckedAgo(checked, now)}`
+          : 'Asking plc.directory about each identity now',
+      };
+    }
     return {
       urgency: 'safe',
       verified: false,

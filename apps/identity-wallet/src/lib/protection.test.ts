@@ -165,6 +165,45 @@ describe('summarize', () => {
     expect(summary.headline).toBe('Not fully checked');
   });
 
+  /**
+   * "Not asked yet" and "asked and got no answer" are different facts. Conflating them
+   * would report a directory outage on every app open — and inferring verification from
+   * the absence of a failure would show the all-clear before the first sweep answered,
+   * which is the unearned claim the unverified state exists to prevent.
+   */
+  it('says a check is in flight rather than failed before the first sweep answers', () => {
+    const rows = [toRow(input({ did: 'did:plc:a', plcCheckSucceeded: false }), NOW)];
+
+    const pending = summarize(rows, history(), NOW, true);
+    expect(pending.verified).toBe(false);
+    expect(pending.headline).toBe('Checking the public record');
+    expect(pending.detail).toBe('Asking plc.directory about each identity now');
+
+    // Same rows, but a sweep has answered: now it is a failure, and says so.
+    expect(summarize(rows, history(), NOW, false).headline).toBe('Not fully checked');
+  });
+
+  it('keeps the previous check time visible while a check is in flight', () => {
+    const rows = [toRow(input({ did: 'did:plc:a', plcCheckSucceeded: false }), NOW)];
+    const summary = summarize(rows, history({ sweeps: [sweep({ at: '2026-07-26T11:50:00Z' })] }), NOW, true);
+
+    expect(summary.detail).toBe('Last checked 10 min ago');
+  });
+
+  /**
+   * `check_all` omits a did:web (`is_monitorable`), so it is never in `sweptOk` — but it is
+   * verified by construction and must not drag the wallet into the unverified state.
+   */
+  it('does not let an omitted did:web make the wallet read as unchecked', () => {
+    const rows = [
+      toRow(input({ did: 'did:plc:a', plcCheckSucceeded: true }), NOW),
+      toRow(input({ did: 'did:web:example.com', plcCheckSucceeded: false }), NOW),
+    ];
+
+    const summary = summarize(rows, history({ sweeps: [sweep()] }), NOW, false);
+    expect(summary).toMatchObject({ verified: true, headline: 'All identities secure' });
+  });
+
   it('claims no watch over an all-did:web wallet', () => {
     const rows = [toRow(input({ did: 'did:web:example.com', plcCheckSucceeded: false }), NOW)];
     const summary = summarize(rows, history(), NOW);
