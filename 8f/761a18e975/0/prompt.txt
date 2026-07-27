@@ -1,0 +1,1 @@
+I went through the account creation flow end-to-end successfully, however at the end, the identity did not appear in my wallet. I had to immediately recover it to get it to show up. this persisted after a force close
