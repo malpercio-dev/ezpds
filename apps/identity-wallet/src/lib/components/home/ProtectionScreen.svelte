@@ -37,6 +37,7 @@
     onback,
     onselect,
     onalert,
+    takeover = false,
   }: {
     onback: () => void;
     /** Open an identity's instrument panel. */
@@ -53,6 +54,14 @@
      * only offer is the same button.
      */
     onalert: (did: string, changes: UnauthorizedChange[]) => void;
+    /**
+     * The app landed here on its own because more than one identity is in alarm, rather
+     * than the user opening the protection strip. The takeover has to stay an offer, so
+     * the exit is labelled "Not now" in words — the ordinary circular chevron names itself
+     * only to a screen reader, which would leave a sighted user in a surface the app put
+     * them in with no visible way to decline it.
+     */
+    takeover?: boolean;
   } = $props();
 
   let cards = $state<IdentityCard[]>([]);
@@ -208,7 +217,12 @@
 </script>
 
 <div class="screen">
-  <ScreenHeader title="Protection" {onback} backLabel="Back to identities">
+  <ScreenHeader
+    title="Protection"
+    {onback}
+    backLabel="Back to identities"
+    backText={takeover ? 'Not now' : undefined}
+  >
     {#snippet actions()}
       <button
         class="icon-btn"

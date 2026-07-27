@@ -29,6 +29,7 @@ export type ScenarioName =
   | 'alert-warning'
   | 'alert-critical'
   | 'alert-expired'
+  | 'alert-multi'
   | 'migration-in-flight'
   | 'agent-connected'
   | 'app-password-minted'
@@ -165,6 +166,22 @@ export const scenarios: Record<ScenarioName, () => WalletState> = {
   // Past the window — `expired`, the ashen "the moment to act has passed" state, and the
   // only one that reaches `AlertDetailScreen`'s disabled "Recovery window expired" button.
   'alert-expired': () => alertScenario(73),
+
+  // Two identities in alarm at once — the only preset that reaches the *multi*-identity
+  // half of the launch takeover, where the app lands on Protection rather than on one
+  // identity's alarm surface, and the only way to see Protection's "Not now" exit. Their
+  // ages differ so the surface's most-urgent-first ordering is visible rather than assumed.
+  'alert-multi': () => {
+    const state = emptyWalletState();
+    state.pdsUrl = DEFAULT_PDS_URL;
+    const alice = seedIdentity({ handle: 'alice.harness.pds.local' });
+    alice.alerts = [seedAlert(alice.did, isoHoursAgo(2))];
+    const bob = seedIdentity({ handle: 'bob.harness.pds.local', deviceKeyIsRoot: false });
+    bob.alerts = [seedAlert(bob.did, isoHoursAgo(69))];
+    upsertIdentity(state, alice);
+    upsertIdentity(state, bob);
+    return state;
+  },
 
   'migration-in-flight': () => {
     const state = emptyWalletState();

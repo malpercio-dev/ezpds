@@ -13,11 +13,19 @@
     changes,
     onback,
     onoverride,
+    backLabel = 'Back',
   }: {
     did: string;
     changes: UnauthorizedChange[];
     onback: () => void;
     onoverride: (cid: string, createdAt: string) => void;
+    /**
+     * What leaving this screen is called. "Back" when the user navigated here; "Not now"
+     * when the app landed them here on launch — the takeover offers one clear action, and
+     * the way out has to read as a decision they are allowed to make, not as undoing a
+     * navigation they never performed.
+     */
+    backLabel?: string;
   } = $props();
 
   const countdown = useCountdown(60_000);
@@ -26,7 +34,7 @@
 <div class="screen">
   <button class="back" onclick={onback}>
     <ChevronLeftIcon />
-    Back
+    {backLabel}
   </button>
 
   <div class="hero">
