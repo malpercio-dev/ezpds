@@ -459,7 +459,10 @@
         </span>
         <span class="add-body">
           <span class="add-t">Add an identity</span>
-          <span class="add-s">Create new, or import an existing one</span>
+<!-- The door names the question behind it rather than pre-empting it with two of the
+               four answers — the situation screen is what sorts create from claim from
+               recovery, and listing a subset here would send the other two away. -->
+          <span class="add-s">Whatever your situation — we'll work out the rest</span>
         </span>
       </button>
 
