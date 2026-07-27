@@ -1,0 +1,84 @@
+Work on Linear issue MM-479:
+
+Suggested branch name: malpercio/mm-479-passwordless-accounts-rework-deleteaccount-to-email-token-or
+
+<issue identifier="MM-479">
+<title>Passwordless accounts: rework deleteAccount to email-token-or-wallet-signature</title>
+<description>
+Part of Phase 1 of `docs/design-plans/2026-07-12-passwordless-auth.md`. Split out of the optional-password-at-creation work so that lands independently.
+
+## Why
+
+An account with a NULL `password_hash` **cannot be deleted**. `crates/pds/src/routes/delete_account.rs` verifies the account password before consuming the single-use email token, and the no-password case is folded into the generic credential failure:
+
+```rust
+// crates/pds/src/routes/delete_account.rs (~line 76)
+// No such account, or a mobile account with no main password: nothing to verify against.
+```
+
+which returns 401. The wallet inherits this: `confirm_identity_removal` in `apps/identity-wallet/src-tauri/src/identity_removal.rs` (~line 475) takes `password` + emailed `token` and calls `delete_account` first, so a passwordless identity dead-ends at the credential check with everything intact and no path forward.
+
+Today this is latent — every account has a password. It becomes reachable the moment `accounts.password_optional` ships, which is why that flag must not reach a public beta before this does: it would mint accounts the holder can never remove.
+
+## Shape
+
+Keep the two-factor shape (something you hold + something you control), swapping the password factor for a device-key signature when the account has no password:
+
+* **Passworded account** — unchanged. Password + email token.
+* **Passwordless account** — email token + a device-key-signed canonical envelope in the `sovereign_session.rs` / `verify_admin_device_request` mold: domain-versioned string binding server DID, account DID, signing key, the delete intent, timestamp, nonce; verified against the authoritative current PLC `rotationKeys` (never the cached DID doc); nonce anti-replay.
+* Preserve the existing oracle discipline — the failure for "unknown DID", "wrong password", and "bad signature" must stay uniform, so the endpoint never becomes an account-existence or credential-shape oracle (see the comment at `delete_account.rs:37`).
+* Verify the credential factor **before** consuming the single-use email token, as today, so a bad signature never burns the token.
+
+## Wallet
+
+* `confirm_identity_removal` takes an optional password; when the identity's host advertises the optional-password capability and the account has none, sign the removal envelope instead.
+* `RemovalError::InvalidCredentials` copy currently says "invalid password or confirmation code" — needs a passwordless variant.
+* The removal flow already runs a biometric gate and a passwordless unlock (`RemovalError` carries a needs-unlock variant); reuse it rather than adding a second prompt.
+
+## Acceptance criteria
+
+* An account created with no password can be fully removed from the wallet: `deleteAccount` succeeds, the tombstone is written, local state is wiped.
+* A replayed removal envelope is refused (nonce anti-replay), and an envelope for DID A cannot delete DID B.
+* Unknown DID, wrong password, and bad signature remain indistinguishable to the caller.
+* A wrong credential does not consume the email token.
+* Passworded accounts keep working unchanged, including migrated-in accounts that arrived with a password.
+* Bruno collection updated for any body/shape change (`just bruno-check` checks paths only — the body change relies on the manual rule in AGENTS.md).
+</description>
+<team name="Mal's Machinations"/>
+<label>Security</label>
+<label>Feature</label>
+<label>Wave 2: Auth</label>
+<label>Mobile: Identity Wallet</label>
+<project name="ezpds">An easy-to-host PDS on the ATProtocol, MacOS. Grandma-approved.</project>
+<parent-issue identifier="MM-312">
+<id>ff3e493f-009c-4211-b4de-4ed9a2e7d1a4</id>
+<title>Passwordless auth: retire the account password in favor of device-key/passkey factors</title>
+<description>
+Follow-up to the passwordless design exploration captured in `docs/design-plans/2026-07-12-passwordless-auth.md` (branch `claude/passwordless-login-bc4umw`).
+
+## Why
+
+The password is already a second-class credential in this architecture: the wallet logs in via OAuth+DPoP and retains no password, the root of trust is the Secure-Enclave device key holding `rotationKeys[0]`, `accounts.password_hash` has been nullable since V008, and `createSession` already falls through to app-password verification for accounts with a NULL main password. Meanwhile password reset is dead in practice (outbound email is stubbed, <issue id="fbeb902e-c32b-400a-af47-37eccd58d65b" href="https://linear.app/malpercio/issue/MM-211/outbound-email-delivery-email-confirmationupdate-endpoints">MM-211</issue>), so the password is an unrecoverable liability posing as a recovery factor. Identity recovery never depended on it — that's the device key's 2-of-3 Shamir split.
+
+## What the password still gates (the actual work)
+
+1. **OAuth consent** (`oauth_authorize.rs`) — the wallet's own login path; a NULL-hash account cannot pass consent today. Needs a device-key-signed or passkey (WebAuthn) factor. The signed-envelope verification pattern already exists for admin-companion devices (`auth/guards.rs::verify_admin_device_request`).
+2. **Account creation** — non-empty password required in `/v1/dids` and `createAccount` new-account mode; make optional (migration mode already stores NULL).
+3. `deleteAccount` — password + email token in body; rework to email-token-or-wallet-signature for passwordless accounts.
+4. Third-party clients (Bluesky app, goat) keep working via **app passwords** minted in the wallet — zero server changes needed.
+
+## Phasing (from the design plan)
+
+* **Phase 1:** optional password at creation; device-key/passkey factor on OAuth consent; `deleteAccount` rework. Keep interop endpoints (password branch of `createSession`, standard `createAccount`) for migrated-in accounts.
+* **Phase 2:** cross-device login approval — QR-scan (wallet-initiated, phishing-resistant) first; **push-to-approve** later, once the E2E-encrypted notification relay lands (<pull-request id="34230e45-6259-4c9a-b58d-6b135adf84e3" href="https://linear.app/malpercio/review/design-exploration-e2e-encrypted-notification-relay-for-self-hosted-327f880332d1">malpercio-dev/ezpds#207</pull-request>, `docs/design-plans/2026-07-10-notification-relay.md`). Push-approve needs MFA-fatigue mitigations (origin display, number matching).
+* **Hard prerequisite (parallel):** the Shamir reconstruction ceremony (or iCloud-synced passkeys), so a lost device is not a total PDS lockout before the password escape hatch is removed.
+
+## Definition of done (exploration → plan promotion)
+
+* Full design plan with acceptance criteria promoted from the exploration doc
+* Decision recorded: passkey/WebAuthn vs device-key-signed consent as the primary factor
+* Recovery-ceremony dependency scheduled ahead of any password removal
+</description>
+</parent-issue>
+<issue-relations><related><issue-ref identifier="MM-481" title="Operator-gated optional password at account creation (optionalPassword capability)"/></related></issue-relations>
+</issue>

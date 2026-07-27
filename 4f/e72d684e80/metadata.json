@@ -1,0 +1,49 @@
+{
+  "cli_version": "0.8.42",
+  "checkpoint_id": "4fe72d684e80",
+  "strategy": "manual-commit",
+  "branch": "claude/passwordless-delete-account-206e04",
+  "checkpoints_count": 1,
+  "files_touched": [
+    "apps/identity-wallet/AGENTS.md",
+    "apps/identity-wallet/src-tauri/src/identity_removal.rs",
+    "apps/identity-wallet/src-tauri/src/lib.rs",
+    "apps/identity-wallet/src-tauri/src/pds_capabilities.rs",
+    "apps/identity-wallet/src-tauri/src/pds_client.rs",
+    "apps/identity-wallet/src/lib/components/home/RemoveIdentityScreen.svelte",
+    "apps/identity-wallet/src/lib/harness/registry.ts",
+    "apps/identity-wallet/src/lib/harness/state.ts",
+    "apps/identity-wallet/src/lib/ipc/removal.ts",
+    "bruno/delete_account.bru",
+    "changelog.d/mm-479.added.md",
+    "changelog.d/mm-479.security.md",
+    "crates/crypto/AGENTS.md",
+    "crates/crypto/src/account_delete.rs",
+    "crates/crypto/src/lib.rs",
+    "crates/pds/AGENTS.md",
+    "crates/pds/src/capabilities.rs",
+    "crates/pds/src/db/AGENTS.md",
+    "crates/pds/src/identity/authority.rs",
+    "crates/pds/src/routes/delete_account.rs",
+    "sites/docs/src/content/docs/operator/capabilities.md",
+    "sites/docs/src/content/docs/operator/reference/capabilities.md",
+    "sites/docs/src/content/docs/operator/reference/ipc.md",
+    "test-vectors/account-delete-envelope-v1.json"
+  ],
+  "sessions": [
+    {
+      "metadata": "/4f/e72d684e80/0/metadata.json",
+      "transcript": "/4f/e72d684e80/0/full.jsonl",
+      "compact_transcript": "/4f/e72d684e80/0/transcript.jsonl",
+      "content_hash": "/4f/e72d684e80/0/content_hash.txt",
+      "prompt": "/4f/e72d684e80/0/prompt.txt"
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 267,
+    "cache_creation_tokens": 1027286,
+    "cache_read_tokens": 56238060,
+    "output_tokens": 106910,
+    "api_call_count": 137
+  }
+}

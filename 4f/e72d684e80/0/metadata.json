@@ -1,0 +1,112 @@
+{
+  "cli_version": "0.8.42",
+  "checkpoint_id": "4fe72d684e80",
+  "session_id": "d49e7e81-3938-4991-bb70-403000586881",
+  "strategy": "manual-commit",
+  "created_at": "2026-07-27T15:48:11.043003Z",
+  "branch": "claude/passwordless-delete-account-206e04",
+  "checkpoints_count": 1,
+  "save_step_count": 1,
+  "files_touched": [
+    "apps/identity-wallet/AGENTS.md",
+    "apps/identity-wallet/src-tauri/src/identity_removal.rs",
+    "apps/identity-wallet/src-tauri/src/lib.rs",
+    "apps/identity-wallet/src-tauri/src/pds_capabilities.rs",
+    "apps/identity-wallet/src-tauri/src/pds_client.rs",
+    "apps/identity-wallet/src/lib/components/home/RemoveIdentityScreen.svelte",
+    "apps/identity-wallet/src/lib/harness/registry.ts",
+    "apps/identity-wallet/src/lib/harness/state.ts",
+    "apps/identity-wallet/src/lib/ipc/removal.ts",
+    "bruno/delete_account.bru",
+    "changelog.d/mm-479.added.md",
+    "changelog.d/mm-479.security.md",
+    "crates/crypto/AGENTS.md",
+    "crates/crypto/src/account_delete.rs",
+    "crates/crypto/src/lib.rs",
+    "crates/pds/AGENTS.md",
+    "crates/pds/src/capabilities.rs",
+    "crates/pds/src/db/AGENTS.md",
+    "crates/pds/src/identity/authority.rs",
+    "crates/pds/src/routes/delete_account.rs",
+    "sites/docs/src/content/docs/operator/capabilities.md",
+    "sites/docs/src/content/docs/operator/reference/capabilities.md",
+    "sites/docs/src/content/docs/operator/reference/ipc.md",
+    "test-vectors/account-delete-envelope-v1.json"
+  ],
+  "agent": "Claude Code",
+  "model": "",
+  "turn_id": "d35e36a36301",
+  "compact_transcript_start": 0,
+  "token_usage": {
+    "input_tokens": 267,
+    "cache_creation_tokens": 1027286,
+    "cache_read_tokens": 56238060,
+    "output_tokens": 106910,
+    "api_call_count": 137
+  },
+  "skill_events_version": 1,
+  "skill_events": [
+    {
+      "id": "claude-skill-toolu_011SGhXiSprg8cNGa4ES34Zg",
+      "event_type": "tool_invocation",
+      "skill": {
+        "name": "linear-workflow"
+      },
+      "source": {
+        "agent": "claude-code",
+        "signal": "skill_tool_use",
+        "confidence": "explicit"
+      },
+      "turn_id": "d35e36a36301",
+      "transcript_anchor": {
+        "unit": "line",
+        "start": 18,
+        "end": 19,
+        "entry_ids": [
+          "fbcec9a7-1567-414c-bfde-a271557c0a00"
+        ],
+        "tool_use_id": "toolu_011SGhXiSprg8cNGa4ES34Zg"
+      },
+      "native": {
+        "tool_name": "Skill",
+        "tool_use_id": "toolu_011SGhXiSprg8cNGa4ES34Zg"
+      },
+      "collapse": {
+        "target": "tool_pair",
+        "label": "Skill: linear-workflow",
+        "default_collapsed": true
+      }
+    }
+  ],
+  "session_metrics": {
+    "turn_count": 1
+  },
+  "initial_attribution": {
+    "calculated_at": "2026-07-27T15:48:10.909509Z",
+    "agent_lines": 1284,
+    "agent_removed": 116,
+    "human_added": 0,
+    "human_modified": 0,
+    "human_removed": 0,
+    "total_committed": 1284,
+    "total_lines_changed": 1400,
+    "agent_percentage": 100,
+    "metric_version": 2
+  },
+  "prompt_attributions": [
+    {
+      "checkpoint_number": 1,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 0,
+      "agent_lines_removed": 0
+    },
+    {
+      "checkpoint_number": 2,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 1284,
+      "agent_lines_removed": 116
+    }
+  ]
+}
