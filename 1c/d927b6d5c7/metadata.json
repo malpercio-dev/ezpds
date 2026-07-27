@@ -1,0 +1,26 @@
+{
+  "cli_version": "0.8.42",
+  "checkpoint_id": "1cd927b6d5c7",
+  "strategy": "manual-commit",
+  "branch": "claude/suspicious-borg-ba018a",
+  "checkpoints_count": 1,
+  "files_touched": [
+    "crates/pds/src/routes/sovereign_session.rs"
+  ],
+  "sessions": [
+    {
+      "metadata": "/1c/d927b6d5c7/0/metadata.json",
+      "transcript": "/1c/d927b6d5c7/0/full.jsonl",
+      "compact_transcript": "/1c/d927b6d5c7/0/transcript.jsonl",
+      "content_hash": "/1c/d927b6d5c7/0/content_hash.txt",
+      "prompt": "/1c/d927b6d5c7/0/prompt.txt"
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 105,
+    "cache_creation_tokens": 172277,
+    "cache_read_tokens": 3479362,
+    "output_tokens": 12546,
+    "api_call_count": 25
+  }
+}

@@ -1,0 +1,26 @@
+Three tests in `crates/pds/src/routes/sovereign_session.rs` assert "no outbound plc.directory lookup happened" using `plc.verify().await` on a `wiremock::MockServer` that has **no mocks mounted** (lines ~516, ~615, ~639):
+
+- `stale_and_future_timestamps_are_rejected_before_plc_lookup`
+- `a_custos_hosted_did_web_account_cannot_open_a_sovereign_session`
+- `an_unsupported_did_method_is_rejected`
+
+`MockServer::verify()` only checks *mounted mock expectations*. With none mounted it is vacuously true, so these assertions would pass even if the code under test started making the outbound call they exist to forbid. The second one's doc comment states the claim explicitly ("The mock PLC server mounts nothing, so `plc.verify()` also proves nothing outbound was attempted") — that comment is wrong and should be corrected too.
+
+The fix (already applied to the equivalent new test in `crates/pds/src/routes/delete_account.rs::proof::a_stale_proof_is_refused_before_any_plc_lookup`, use it as the reference) is to assert against the server's recorded request log instead:
+
+```rust
+assert_eq!(
+    plc.received_requests()
+        .await
+        .expect("request recording is on by default")
+        .len(),
+    0,
+    "<what must not reach plc.directory>"
+);
+```
+
+Request recording is on by default in wiremock 0.6 (`received_requests()` returns `None` only if explicitly disabled), so `expect` is safe.
+
+**Prove each replacement is non-vacuous** before finishing: temporarily flip the expected length to `1`, confirm the test fails with `left: 0`, then flip it back. A green test is not evidence here — that is the entire bug being fixed.
+
+Verify with `cargo test -p pds sovereign_session` and `cargo clippy -p pds --all-targets -- -D warnings`. Found via CodeRabbit on malpercio-dev/ezpds#466.
