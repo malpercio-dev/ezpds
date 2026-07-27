@@ -1,0 +1,32 @@
+{
+  "cli_version": "0.8.42",
+  "checkpoint_id": "0584ab03b658",
+  "strategy": "manual-commit",
+  "branch": "claude/epic-leakey-0b0396",
+  "checkpoints_count": 1,
+  "files_touched": [
+    "changelog.d/signed-proof-canonical-decode.changed.md",
+    "crates/pds/AGENTS.md",
+    "crates/pds/src/auth/mod.rs",
+    "crates/pds/src/auth/signed_proof.rs",
+    "crates/pds/src/routes/delete_account.rs",
+    "crates/pds/src/routes/oauth_consent.rs",
+    "crates/pds/src/routes/sovereign_session.rs"
+  ],
+  "sessions": [
+    {
+      "metadata": "/05/84ab03b658/0/metadata.json",
+      "transcript": "/05/84ab03b658/0/full.jsonl",
+      "compact_transcript": "/05/84ab03b658/0/transcript.jsonl",
+      "content_hash": "/05/84ab03b658/0/content_hash.txt",
+      "prompt": "/05/84ab03b658/0/prompt.txt"
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 65,
+    "cache_creation_tokens": 182228,
+    "cache_read_tokens": 5167513,
+    "output_tokens": 19660,
+    "api_call_count": 35
+  }
+}

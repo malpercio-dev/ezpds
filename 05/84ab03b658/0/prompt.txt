@@ -1,0 +1,9 @@
+`decode_canonical_base64url` (and the `SIGNATURE_BYTES`/`NONCE_BYTES` constants beside it) is now duplicated verbatim in three PDS route files:
+
+- crates/pds/src/routes/sovereign_session.rs
+- crates/pds/src/routes/oauth_consent.rs
+- crates/pds/src/routes/delete_account.rs
+
+It is a security primitive — it enforces that a nonce/signature is exactly N bytes in *canonical* unpadded base64url (re-encoding must reproduce the input), so a proof cannot be re-spelled into a fresh nonce. Three copies is three places for that check to drift.
+
+Per crates/pds/AGENTS.md, routes must not import from other routes; shared pure logic belongs in `auth/` (Functional Core). Hoist the function and the two constants into a small module there (e.g. `crates/pds/src/auth/signed_proof.rs`, `// pattern: Functional Core`), have all three routes use it, and move the unit coverage with it. Keep the behaviour byte-identical — every one of these routes' existing tests must still pass unchanged (`cargo test -p pds sovereign_session oauth_consent delete_account`).
