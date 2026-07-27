@@ -254,6 +254,14 @@
     } catch (raw: unknown) {
       console.error('confirmIdentityRemoval failed:', raw);
       hold.state.progress = 0;
+      // The host wants a password after all — the route probe reads a per-host cache while
+      // the confirm re-describes the server live, so the two can disagree if the identity's
+      // host changed underneath us. Correct the flag, or the screen would show the "needs
+      // your password" message with no field to type it in and a hold gesture still armed
+      // to retry the identical, still-failing request.
+      if (isCodedError(raw) && (raw as RemovalError).code === 'PASSWORD_REQUIRED') {
+        requiresPassword = true;
+      }
       if (isPostDeleteFailure(raw)) {
         // The PDS account is already gone; only the tombstone + wipe remain. The
         // single-use code is spent, so resume via tombstoneIdentity (no re-delete).

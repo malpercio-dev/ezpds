@@ -713,8 +713,12 @@ mod tests {
         }
 
         /// A stale envelope is refused before the outbound authority lookup, so a captured proof
-        /// stops being useful once its window closes. The mock server mounts nothing, so
-        /// `plc.verify()` also proves no plc.directory call was attempted.
+        /// stops being useful once its window closes.
+        ///
+        /// "Before the lookup" is asserted against the mock server's **request log**, not against
+        /// `verify()`: `verify()` only checks mounted mock expectations, and this server mounts
+        /// none, so it would pass however many requests arrived. The recorded request set is the
+        /// only thing that actually witnesses the absence of an outbound call.
         #[tokio::test]
         async fn a_stale_proof_is_refused_before_any_plc_lookup() {
             let plc = MockServer::start().await;
@@ -743,7 +747,14 @@ mod tests {
             let response = app(state).oneshot(post_req(body)).await.unwrap();
 
             assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
-            plc.verify().await;
+            assert_eq!(
+                plc.received_requests()
+                    .await
+                    .expect("request recording is on by default")
+                    .len(),
+                0,
+                "a stale proof must not reach plc.directory"
+            );
             assert!(account_exists(&db, DID).await, "account must survive");
             assert!(!token_used(&db, DID).await, "token must not be spent");
         }
