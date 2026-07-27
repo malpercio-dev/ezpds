@@ -1,0 +1,26 @@
+{
+  "cli_version": "0.8.42",
+  "checkpoint_id": "ccb73cf9bda2",
+  "strategy": "manual-commit",
+  "branch": "claude/passwordless-signup-flow-67eb14",
+  "checkpoints_count": 1,
+  "files_touched": [
+    "apps/identity-wallet/src-tauri/src/lib.rs"
+  ],
+  "sessions": [
+    {
+      "metadata": "/cc/b73cf9bda2/0/metadata.json",
+      "transcript": "/cc/b73cf9bda2/0/full.jsonl",
+      "compact_transcript": "/cc/b73cf9bda2/0/transcript.jsonl",
+      "content_hash": "/cc/b73cf9bda2/0/content_hash.txt",
+      "prompt": "/cc/b73cf9bda2/0/prompt.txt"
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 17,
+    "cache_creation_tokens": 13127,
+    "cache_read_tokens": 4424252,
+    "output_tokens": 4681,
+    "api_call_count": 9
+  }
+}
