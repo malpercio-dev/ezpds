@@ -1,0 +1,24 @@
+Work on Linear issue MM-468:
+
+Suggested branch name: malpercio/mm-468-wallet-ia-phase-4-add-identity-situation-question
+
+<issue identifier="MM-468">
+<title>Wallet IA phase 4 — Add-identity situation question</title>
+<description>
+Fourth phase of the mode-based wallet IA (design: `docs/design-plans/2026-07-24-wallet-information-architecture.md` §4).
+
+Replace `mode_select`'s door taxonomy (create/import/recover — five sibling journeys with near-synonymous names) with **one situation question** ("Add an identity — what's your situation?"):
+
+1. **Starting fresh** → create flow (did:plc/did:web method choice + `pds_config` capability gate unchanged, one level in).
+2. **I have an account somewhere** → import/claim flow.
+3. **I lost access to my wallet** → share-recovery flow.
+4. **My server is gone** → honest routing, not a flow: identity already in wallet → points at that identity's "Move or rebuild" door; wallet also lost → chains share recovery first, then rebuild (disaster recovery structurally requires wallet custody).
+
+First launch lands on this question directly; with existing identities it's reached from home's "Add identity". All downstream ceremony flows unchanged.
+</description>
+<team name="Mal's Machinations"/>
+<project name="ezpds">An easy-to-host PDS on the ATProtocol, MacOS. Grandma-approved.</project>
+<issue-relations><related><issue-ref identifier="MM-465" title="Wallet IA phase 1 — identity instrument panel"/></related></issue-relations>
+</issue>
+
+Open a pr linked to linear when complete
