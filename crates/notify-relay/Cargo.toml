@@ -1,0 +1,32 @@
+[package]
+name = "notify-relay"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+license.workspace = true
+
+# The notification relay: a blind courier between a self-hosted Custos instance and
+# APNs. It speaks one iroh ALPN (`ezpds/notify/0`), stores opaque push handles, and —
+# from the next phase — forwards HPKE-sealed payloads to Apple. It never sees plaintext
+# and holds no key material belonging to an instance or a device.
+[[bin]]
+name = "notify-relay"
+path = "src/main.rs"
+
+[dependencies]
+tokio = { workspace = true }
+iroh = { workspace = true }
+sqlx = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+toml = { workspace = true }
+clap = { workspace = true }
+anyhow = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+rand_core = { workspace = true }
+data-encoding = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }

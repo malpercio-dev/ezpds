@@ -4515,6 +4515,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "notify-relay"
+version = "0.8.5"
+dependencies = [
+ "anyhow",
+ "clap",
+ "data-encoding",
+ "iroh",
+ "rand_core 0.6.4",
+ "serde",
+ "serde_json",
+ "sqlx",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tokio",
+ "toml 0.8.23",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "nu-ansi-term"
 version = "0.50.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
