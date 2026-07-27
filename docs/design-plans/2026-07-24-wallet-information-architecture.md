@@ -5,9 +5,11 @@ tracked as MM-465–MM-470 (§9). The identity instrument panel (§2.1–§2.4, 
 Protection surface + home strip (§2.5, MM-466), the alarm takeover landing (§3, MM-467)
 and the Add-identity situation question (§4, MM-468 — the `mode_select` step is now
 `add_identity`, plus the `server_gone` routing screen) are all built. §7's mapping table
-describes the target, which the wallet has now reached for every row. What remains of
-this plan is the DESIGN.md §5 amendment (§6, MM-469) and the Brass Console IA review
-(§8, MM-470).
+describes the target, which the wallet has now reached for every row. The DESIGN.md §5
+amendment (§6, MM-469) has landed — root `DESIGN.md` now carries the navigation
+vocabulary, the panel-format status sibling, and the §1 sibling principles, so
+`/impeccable` runs inherit them. What remains of this plan is the Brass Console IA
+review (§8, MM-470).
 
 Phase 3 added one rule §3 did not state. "Always dismissible" is not enough on its own:
 an alarm dismissed on launch would re-take the app on the very next foreground, which is
@@ -215,7 +217,7 @@ identities it is reached from home's "Add identity".
 - The status panel states reuse the `UrgencyBadge` label vocabulary ("Secure", "Action
   needed", countdown, "Recovery window closed") verbatim — one vocabulary, two sizes.
 
-## 6. DESIGN.md amendment required
+## 6. DESIGN.md amendment required *(landed)*
 
 §5 "Navigation" currently reads "a calm state-machine flow, not a chrome-heavy shell…
 no tab bars". That stays true (shape C was rejected), but the section must be extended
