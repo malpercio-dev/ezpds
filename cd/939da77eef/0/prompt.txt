@@ -1,0 +1,1 @@
+Let's get a release train rolling. This should probably be a minor bump, since we're adding some new notification stuffs alongside bugfixes

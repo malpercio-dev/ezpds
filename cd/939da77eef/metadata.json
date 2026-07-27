@@ -1,0 +1,58 @@
+{
+  "cli_version": "0.9.0",
+  "checkpoint_id": "cd939da77eef",
+  "strategy": "manual-commit",
+  "branch": "release/v0.9.0",
+  "checkpoints_count": 1,
+  "files_touched": [
+    "CHANGELOG.md",
+    "Cargo.lock",
+    "Cargo.toml",
+    "changelog.d/created-identity-not-listed.fixed.md",
+    "changelog.d/mm-415.added.md",
+    "changelog.d/mm-416.added.md",
+    "changelog.d/mm-417.added.md",
+    "changelog.d/mm-418.added.md",
+    "changelog.d/mm-456.added.md",
+    "changelog.d/mm-457.added.md",
+    "changelog.d/mm-458.added.md",
+    "changelog.d/mm-461.fixed.md",
+    "changelog.d/mm-462.security.md",
+    "changelog.d/mm-465.changed.md",
+    "changelog.d/mm-466.added.md",
+    "changelog.d/mm-467.changed.md",
+    "changelog.d/mm-468.changed.md",
+    "changelog.d/mm-475.fixed.md",
+    "changelog.d/mm-476.added.md",
+    "changelog.d/mm-479.added.md",
+    "changelog.d/mm-479.security.md",
+    "changelog.d/mm-480.fixed.md",
+    "changelog.d/mm-481.added.md",
+    "changelog.d/mm-487.added.md",
+    "changelog.d/oauth-consent-login-hint.fixed.md",
+    "changelog.d/plc-monitor-did-web-skip.fixed.md",
+    "changelog.d/signed-proof-canonical-decode.changed.md",
+    "changelog.d/wallet-button-font.fixed.md",
+    "changelog.d/wallet-clippy-gate.changed.md",
+    "sites/docs/src/content/docs/operator/reference/api.md",
+    "sites/docs/src/content/docs/operator/reference/capabilities.md",
+    "sites/docs/src/content/docs/operator/reference/config.md",
+    "sites/docs/src/content/docs/operator/reference/ipc.md"
+  ],
+  "sessions": [
+    {
+      "metadata": "/cd/939da77eef/0/metadata.json",
+      "transcript": "/cd/939da77eef/0/full.jsonl",
+      "compact_transcript": "/cd/939da77eef/0/transcript.jsonl",
+      "content_hash": "/cd/939da77eef/0/content_hash.txt",
+      "prompt": "/cd/939da77eef/0/prompt.txt"
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 21,
+    "cache_creation_tokens": 99743,
+    "cache_read_tokens": 919630,
+    "output_tokens": 2983,
+    "api_call_count": 11
+  }
+}
