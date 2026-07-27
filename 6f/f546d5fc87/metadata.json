@@ -1,0 +1,26 @@
+{
+  "cli_version": "0.8.42",
+  "checkpoint_id": "6ff546d5fc87",
+  "strategy": "manual-commit",
+  "branch": "claude/wallet-ia-phase-2-protection-dddc32",
+  "checkpoints_count": 1,
+  "files_touched": [
+    "apps/identity-wallet/src/lib/harness/registry.ts"
+  ],
+  "sessions": [
+    {
+      "metadata": "/6f/f546d5fc87/0/metadata.json",
+      "transcript": "/6f/f546d5fc87/0/full.jsonl",
+      "compact_transcript": "/6f/f546d5fc87/0/transcript.jsonl",
+      "content_hash": "/6f/f546d5fc87/0/content_hash.txt",
+      "prompt": "/6f/f546d5fc87/0/prompt.txt"
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 45,
+    "cache_creation_tokens": 426196,
+    "cache_read_tokens": 9587048,
+    "output_tokens": 6281,
+    "api_call_count": 24
+  }
+}
