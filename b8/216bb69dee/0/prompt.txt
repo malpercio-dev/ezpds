@@ -1,0 +1,5 @@
+I'm trying to go through an oauth flow with my malpercio.dev account. I am getting an error "your server rejected the approval the signature could not be verified against your identity's current keys. nothing was granted" what happened?
+
+---
+
+ah ha. it did indeed show `malpercio.dev` prefilled. when I went back to the site (rpg.actor) and instead input my did, that was prefilled into the input, and then I was able to log in successfully. I think 2 sounds like the right answer

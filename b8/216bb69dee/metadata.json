@@ -1,0 +1,28 @@
+{
+  "cli_version": "0.9.0",
+  "checkpoint_id": "b8216bb69dee",
+  "strategy": "manual-commit",
+  "branch": "claude/oauth-signature-verification-086959",
+  "checkpoints_count": 3,
+  "files_touched": [
+    "changelog.d/oauth-consent-login-hint.fixed.md",
+    "crates/pds/src/identity/authority.rs",
+    "crates/pds/src/routes/oauth_consent.rs"
+  ],
+  "sessions": [
+    {
+      "metadata": "/b8/216bb69dee/0/metadata.json",
+      "transcript": "/b8/216bb69dee/0/full.jsonl",
+      "compact_transcript": "/b8/216bb69dee/0/transcript.jsonl",
+      "content_hash": "/b8/216bb69dee/0/content_hash.txt",
+      "prompt": "/b8/216bb69dee/0/prompt.txt"
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 121,
+    "cache_creation_tokens": 355247,
+    "cache_read_tokens": 18533818,
+    "output_tokens": 68192,
+    "api_call_count": 66
+  }
+}
