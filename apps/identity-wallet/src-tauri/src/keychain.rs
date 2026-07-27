@@ -558,6 +558,7 @@ mod tests {
             "managed-dids",
             "forgotten-dids",
             "pending-removals",
+            "monitor-history",
             "relay-base-url",
             "appearance-preference",
             &format!("{DID}:did-doc"),

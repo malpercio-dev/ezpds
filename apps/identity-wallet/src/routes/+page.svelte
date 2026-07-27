@@ -62,6 +62,7 @@
   import { authenticateBiometric } from '$lib/biometric';
   import { normalizePlcDocToW3c, extractHandle, extractPdsFromPlcDoc } from '$lib/did-doc-utils';
   import IdentityListHome from '$lib/components/home/IdentityListHome.svelte';
+  import ProtectionScreen from '$lib/components/home/ProtectionScreen.svelte';
   import OnboardingShell from '$lib/components/ui/OnboardingShell.svelte';
   import SealEmblem from '$lib/components/ui/SealEmblem.svelte';
   import Button from '$lib/components/ui/Button.svelte';
@@ -94,6 +95,9 @@
     | 'complete'
     | 'authenticating'
     | 'home'
+    // The app-level Defend surface, opened from home's protection strip. Sits beside
+    // `identity_detail` rather than under it: it is about the wallet, not one identity.
+    | 'protection'
     // The instrument-panel identity surface and the two doors that hang off it. Depth is
     // spelled out in step names because this flat union is the app's only spatial model:
     // identity_detail → { move_or_rebuild, manage_identity → advanced_tools }.
@@ -190,6 +194,12 @@
    * back path would eject the user out of the identity they were standing in.
    */
   let alertReturnStep = $state<OnboardingStep>('home');
+  /**
+   * Where `identity_detail` returns to — the same problem one tier up. An identity is now
+   * reachable from the home list and from the Protection surface, and a fixed back path
+   * would drop someone working through Protection's list back at the top of home.
+   */
+  let identityReturnStep = $state<OnboardingStep>('home');
 
   // ── Re-key (old-model upgrade) flow state ─────────────────────────────────
   // The re-key runs against an existing identity; the review screen produces the new Share 3,
@@ -275,7 +285,10 @@
   // ── PDS configuration and OAuth event listener ──────────────────────
 
   function handleVisibilityChange() {
-    if (document.visibilityState === 'visible' && step === 'home') {
+    // Protection is included for the same reason home is, only more so: it is the surface
+    // whose entire subject is how fresh the wallet's reading of the public record is, and
+    // it would be the worst place to sit showing an hour-old one after a foreground.
+    if (document.visibilityState === 'visible' && (step === 'home' || step === 'protection')) {
       checkIdentityStatus().catch((e) => {
         console.warn('PLC status check failed:', e);
       });
@@ -788,6 +801,7 @@
         selectedDidDoc = didDoc;
         selectedDeviceKeyIsRoot = deviceKeyIsRoot;
         selectedDeviceKeyUnusable = deviceKeyUnusable;
+        identityReturnStep = 'home';
         void resolveKitOffer(did, didDoc);
         goTo('identity_detail');
       }}
@@ -797,6 +811,7 @@
         alertReturnStep = 'home';
         goTo('alert_detail');
       }}
+      onprotection={() => goTo('protection')}
       onsettings={() => goTo('settings')}
       onrekey={(did) => {
         rekeyDid = did;
@@ -815,6 +830,28 @@
         cameFromHome = true;
         form.handleOrDid = did;
         goTo('recover_start');
+      }}
+    />
+
+  {:else if step === 'protection'}
+    <ProtectionScreen
+      onback={() => goTo('home')}
+      onselect={(did, didDoc, deviceKeyIsRoot, deviceKeyUnusable) => {
+        selectedDid = did;
+        selectedDidDoc = didDoc;
+        selectedDeviceKeyIsRoot = deviceKeyIsRoot;
+        selectedDeviceKeyUnusable = deviceKeyUnusable;
+        identityReturnStep = 'protection';
+        void resolveKitOffer(did, didDoc);
+        goTo('identity_detail');
+      }}
+      onalert={(did, changes) => {
+        selectedAlertDid = did;
+        selectedAlertChanges = changes;
+        // Back from the alarm returns here, not to home: the user was working a list, and
+        // ejecting them to the top of it after each review would lose their place in it.
+        alertReturnStep = 'protection';
+        goTo('alert_detail');
       }}
     />
 
@@ -849,7 +886,7 @@
       didDoc={selectedDidDoc ?? {}}
       deviceKeyIsRoot={selectedDeviceKeyIsRoot}
       deviceKeyUnusable={selectedDeviceKeyUnusable}
-      onback={() => goTo('home')}
+      onback={() => goTo(identityReturnStep)}
       onsignin={() => goTo('oauth_consent_approval')}
       onapppasswords={() => goTo('app_passwords')}
       onagents={() => goTo('my_agents')}

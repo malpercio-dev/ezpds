@@ -12,6 +12,7 @@
   let {
     urgency,
     verified = true,
+    label: labelOverride,
     detail,
     deadline = null,
     now = Date.now(),
@@ -26,6 +27,14 @@
      * did not verify.
      */
     verified?: boolean;
+    /**
+     * Override the state word. Only the app-level Protection surface passes this: it states
+     * the same four states over a *set* of identities ("All identities secure"), which the
+     * per-identity vocabulary cannot say. The four states, their colours, and their icons
+     * are unchanged — this is the same panel speaking about a wallet instead of a seal, not
+     * a fifth state or an escape hatch for arbitrary copy.
+     */
+    label?: string;
     /** The supporting line under the state word: what is true, or what to do about it. */
     detail: string;
     /** The recovery deadline to count down to; rendered only in the alarm states. */
@@ -38,7 +47,7 @@
     disclosure?: Snippet;
   } = $props();
 
-  let label = $derived(panelLabel(urgency, verified));
+  let label = $derived(labelOverride ?? panelLabel(urgency, verified));
   // `safe` alone does not earn the verified-green ground: an unchecked identity uses the
   // calm slate of the informational tone, which claims nothing.
   let tone = $derived(urgency === 'safe' && !verified ? 'unverified' : urgency);
