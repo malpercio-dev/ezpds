@@ -1,11 +1,21 @@
 # Wallet Information Architecture — The Instrument Panel
 
-**Status: phases 1–2 shipped; 3–4 open.** Deliverable of a structured IA brainstorm
+**Status: phases 1–3 shipped; 4 open.** Deliverable of a structured IA brainstorm
 (2026-07-24), tracked as MM-465–MM-470 (§9). The identity instrument panel (§2.1–§2.4,
-MM-465) and the Protection surface + home strip (§2.5, MM-466) are built; the alarm
-takeover landing (§3, MM-467) and the Add-identity situation question (§4, MM-468) are
-not. §7's mapping table describes the target, which phases 1–2 have now reached for every
+MM-465), the Protection surface + home strip (§2.5, MM-466), and the alarm takeover
+landing (§3, MM-467) are built; the Add-identity situation question (§4, MM-468) is not.
+§7's mapping table describes the target, which phases 1–3 have now reached for every
 row except `mode_select`.
+
+Phase 3 added one rule §3 did not state. "Always dismissible" is not enough on its own:
+an alarm dismissed on launch would re-take the app on the very next foreground, which is
+the lock-in §3 forbids arriving by a different door. So the takeover records which alarms
+it has already presented — keyed by the affected DID *and* its set of change CIDs — and
+does not interrupt for those again in the same app session. Keying on content rather than
+on the DID is what keeps that from suppressing news: a second unauthorized operation
+against an already-dismissed identity is a new alarm and interrupts again. The record is
+in-memory by design; a relaunch is a fresh chance to be told, because an attack must not
+be dismissible once, forever.
 
 One decision was made during phase 2 that this document left open. §2.5 asks the
 Protection list to reorder "by urgency" without saying which of the wallet's two existing

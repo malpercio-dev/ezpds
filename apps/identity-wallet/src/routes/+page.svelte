@@ -57,7 +57,8 @@
   import SettingsScreen from '$lib/components/home/SettingsScreen.svelte';
   import RemoveIdentityScreen from '$lib/components/home/RemoveIdentityScreen.svelte';
   import PasswordUnlockDialog from '$lib/components/home/PasswordUnlockDialog.svelte';
-  import { createAccount, confirmShareBackup, confirmRekey, confirmSelfHeldKit, selfHeldKitInProgress, getPdsCapabilities, hasPdsCapability, confirmRecoveryBackup, getPendingRecoveryEpilogue, registerCreatedIdentity, importDidWebIdentity, listIdentities, listPendingRemovals, getStoredDidDoc, checkIdentityStatus, getBlobBackupStatus, runBlobBackup, getRepoBackupStatus, runRepoBackup, isCodedError, type CreateAccountError, type PdsCapabilities, type IdentityInfo, type VerifiedClaimOp, type ClaimResult, type RekeyResult, type SelfHeldKitResult, type UnauthorizedChange, type CollectedShare } from '$lib/ipc';
+  import { createAccount, confirmShareBackup, confirmRekey, confirmSelfHeldKit, selfHeldKitInProgress, getPdsCapabilities, hasPdsCapability, confirmRecoveryBackup, getPendingRecoveryEpilogue, registerCreatedIdentity, importDidWebIdentity, listIdentities, listPendingRemovals, getStoredDidDoc, checkIdentityStatus, getBlobBackupStatus, runBlobBackup, getRepoBackupStatus, runRepoBackup, isCodedError, type CreateAccountError, type PdsCapabilities, type IdentityInfo, type VerifiedClaimOp, type ClaimResult, type RekeyResult, type SelfHeldKitResult, type UnauthorizedChange, type IdentityStatus, type CollectedShare } from '$lib/ipc';
+  import { decideAlarmLanding } from '$lib/alarm-landing';
   import { authenticateBiometric } from '$lib/biometric';
   import { normalizePlcDocToW3c, extractHandle, extractPdsFromPlcDoc } from '$lib/did-doc-utils';
   import IdentityListHome from '$lib/components/home/IdentityListHome.svelte';
@@ -281,7 +282,60 @@
 
   function goTo(next: OnboardingStep) {
     errors = {};
+    // Any navigation ends the takeover framing: from here on the user chose to be where
+    // they are, so the alarm surface's exit reads "Back" again rather than "Not now".
+    alarmTakeover = false;
     step = next;
+  }
+
+  // ── Alarm takeover landing ────────────────────────────────────────────────
+
+  /**
+   * Alarms this app session has already interrupted the user with. In memory on purpose:
+   * an alarm the user has seen should not re-take the app every time they foreground it,
+   * but a relaunch is a fresh chance to be told something is rewriting their identity.
+   * Persisting a dismissal across launches would let an attack be dismissed once, forever.
+   */
+  const shownAlarms = new Set<string>();
+
+  /** True while the current screen was landed on by the takeover, not navigated to. */
+  let alarmTakeover = $state(false);
+
+  /**
+   * Land on the alarm surface if the monitor's latest answer holds one the user has not
+   * been shown. Called only from the launch and foreground paths, and only while the app
+   * is sitting on home or Protection — an in-progress ceremony (a stranded removal, a
+   * recovery epilogue, a migration) outranks re-showing an alarm, because interrupted key
+   * material handling is the one thing more urgent than an alarm already raised.
+   */
+  function landOnAlarm(statuses: IdentityStatus[]) {
+    if (step !== 'home' && step !== 'protection') return;
+
+    const { landing, keys } = decideAlarmLanding(statuses, shownAlarms);
+    if (landing.kind === 'none') return;
+    for (const key of keys) shownAlarms.add(key);
+
+    if (landing.kind === 'identity') {
+      selectedAlertDid = landing.did;
+      selectedAlertChanges = landing.changes;
+      // Dismissal goes home, never back to the surface we bypassed on the way here.
+      alertReturnStep = 'home';
+      goTo('alert_detail');
+    } else {
+      goTo('protection');
+    }
+    alarmTakeover = true;
+  }
+
+  /** Run a foreground/launch monitor check and hand its answer to the landing decision. */
+  function checkAndLand() {
+    return checkIdentityStatus()
+      .then(landOnAlarm)
+      .catch((e) => {
+        // A check we could not take is not an all-clear, but it is also not grounds to
+        // interrupt: the home strip already reports the unverified reading.
+        console.warn('PLC status check failed:', e);
+      });
   }
 
   // ── PDS configuration and OAuth event listener ──────────────────────
@@ -291,9 +345,7 @@
     // whose entire subject is how fresh the wallet's reading of the public record is, and
     // it would be the worst place to sit showing an hour-old one after a foreground.
     if (document.visibilityState === 'visible' && (step === 'home' || step === 'protection')) {
-      checkIdentityStatus().catch((e) => {
-        console.warn('PLC status check failed:', e);
-      });
+      void checkAndLand();
     }
   }
 
@@ -348,6 +400,12 @@
         const identities = await listIdentities();
         if (identities.length > 0) {
           step = 'home';
+          // Zero navigation between phone-unlock and the one clear action: ask the monitor
+          // now and, if an identity is under attack, land on its alarm surface instead of
+          // leaving it behind a strip. Unawaited — home renders immediately and the
+          // takeover replaces it when the answer arrives, rather than holding the app on a
+          // blank screen for a directory round trip that may never come back.
+          void checkAndLand();
           // Opportunistic backup passes for opted-in identities: incremental and idempotent
           // by construction (content-addressed mirror / rev short-circuit), fire-and-forget so
           // the home screen never waits on them, and silent — failures surface the next time
@@ -1245,6 +1303,7 @@
     <AlertDetailScreen
       did={selectedAlertDid ?? ''}
       changes={selectedAlertChanges}
+      backLabel={alarmTakeover ? 'Not now' : 'Back'}
       onback={() => goTo(alertReturnStep)}
       onoverride={(cid, createdAt) => {
         selectedRecoveryCid = cid;
