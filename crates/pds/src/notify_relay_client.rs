@@ -215,9 +215,68 @@ pub enum RegistrationOwner {
     AdminDevice { admin_device_id: String },
 }
 
-/// The sender half handed to trigger sites. Cloning is cheap; dropping every clone stops the
-/// worker.
-pub type NotifySender = tokio::sync::mpsc::UnboundedSender<NotifyJob>;
+/// The sender half handed to trigger sites, paired with the queue's depth counter. Cloning is
+/// cheap; dropping every clone stops the worker.
+///
+/// The depth exists because the queue is unbounded: a relay outage cannot break a request path,
+/// but it *can* grow this queue for as long as it lasts, and before this counter that growth was
+/// only inferable from `warn!` volume. It is carried here rather than sampled from the receiver's
+/// `len()` because the receiver is moved into the worker task, out of reach of the operator
+/// health endpoint that reports the same number as JSON.
+#[derive(Clone)]
+pub struct NotifySender {
+    tx: tokio::sync::mpsc::UnboundedSender<NotifyJob>,
+    depth: Arc<QueueDepth>,
+}
+
+/// The queue's depth counter and its gauge, held separately from the sender so the worker can
+/// decrement without owning a `tx` clone — a sender inside the worker task would keep the
+/// channel open forever, and `rx.recv()` would never report the queue closed.
+struct QueueDepth {
+    /// Jobs enqueued but not yet finished. Signed so a pairing bug reads as a negative rather
+    /// than wrapping into an astronomical unsigned value on a dashboard.
+    count: std::sync::atomic::AtomicI64,
+    metrics: Arc<crate::metrics::Metrics>,
+}
+
+impl QueueDepth {
+    /// Apply a delta and publish the result to the gauge.
+    fn bump(&self, delta: i64) {
+        let depth = self
+            .count
+            .fetch_add(delta, std::sync::atomic::Ordering::Relaxed)
+            + delta;
+        self.metrics
+            .notify_queue_depth
+            .record(depth.max(0) as u64, &[]);
+    }
+}
+
+impl NotifySender {
+    /// Enqueue one job.
+    ///
+    /// Infallible from a caller's perspective: the only failure is a stopped worker, and every
+    /// trigger site treats delivery as best effort — they all discarded the old `Result`
+    /// identically. Handling it here means a dropped job is logged once instead of being
+    /// silently swallowed at five call sites.
+    pub fn send(&self, job: NotifyJob) {
+        // Increment first: a job counted only after a successful send could be drained and
+        // decremented before it was ever added, driving the depth negative under load.
+        self.depth.bump(1);
+        if self.tx.send(job).is_err() {
+            // A rejected job never entered the queue, so it must not read as outstanding —
+            // otherwise a stopped worker would look like a permanently growing backlog.
+            self.depth.bump(-1);
+            tracing::warn!("dropped a notification job: the relay worker is not running");
+        }
+    }
+
+    /// Jobs outstanding right now. Read by `GET /v1/admin/health`, which works with
+    /// `[telemetry] metrics_enabled` off — the same reason `sweep_status.rs` mirrors its gauges.
+    pub fn depth(&self) -> i64 {
+        self.depth.count.load(std::sync::atomic::Ordering::Relaxed)
+    }
+}
 
 /// Spawn the worker that drains the queue against `client`.
 ///
@@ -227,8 +286,14 @@ pub type NotifySender = tokio::sync::mpsc::UnboundedSender<NotifyJob>;
 pub fn spawn_worker(
     client: Arc<NotifyRelayClient>,
     db: sqlx::SqlitePool,
+    metrics: Arc<crate::metrics::Metrics>,
 ) -> (NotifySender, tokio::task::JoinHandle<()>) {
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<NotifyJob>();
+    let depth = Arc::new(QueueDepth {
+        count: std::sync::atomic::AtomicI64::new(0),
+        metrics,
+    });
+    let worker_depth = depth.clone();
     let handle = tokio::spawn(async move {
         while let Some(job) = rx.recv().await {
             if let Err(e) = run_job(&client, &db, job).await {
@@ -236,10 +301,15 @@ pub fn spawn_worker(
                 // design, so this is a log line, not an error path anyone recovers from.
                 tracing::warn!(error = %e, "notify relay job failed");
             }
+            // Decremented *after* the job runs, not at `recv`, so the depth counts outstanding
+            // work rather than only what is waiting. During the outage this metric exists for,
+            // each job burns the full 30s stream timeout — a single stuck job is real backlog,
+            // and a depth that read 0 through it would be reporting the wrong thing.
+            worker_depth.bump(-1);
         }
         tracing::info!("notify relay worker stopped (queue closed)");
     });
-    (tx, handle)
+    (NotifySender { tx, depth }, handle)
 }
 
 async fn run_job(
@@ -337,6 +407,95 @@ async fn prune(db: &sqlx::SqlitePool, owner: &RegistrationOwner) -> Result<(), s
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A sender whose worker never runs, so the queue depth is observable without a relay.
+    fn orphan_sender() -> NotifySender {
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<NotifyJob>();
+        // Held, not dropped: dropping the receiver would make every `send` fail.
+        std::mem::forget(rx);
+        NotifySender {
+            tx,
+            depth: Arc::new(QueueDepth {
+                count: std::sync::atomic::AtomicI64::new(0),
+                metrics: Arc::new(crate::metrics::Metrics::disabled()),
+            }),
+        }
+    }
+
+    #[test]
+    fn queue_depth_counts_enqueued_jobs() {
+        let sender = orphan_sender();
+        assert_eq!(sender.depth(), 0, "a fresh queue is empty");
+
+        for _ in 0..3 {
+            sender.send(NotifyJob::DropHandle {
+                handle: "h".to_owned(),
+            });
+        }
+        assert_eq!(sender.depth(), 3);
+
+        // A clone shares the counter — trigger sites hold clones, and each must observe the
+        // same queue rather than its own.
+        assert_eq!(sender.clone().depth(), 3);
+    }
+
+    #[test]
+    fn a_send_to_a_stopped_worker_does_not_inflate_the_depth() {
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<NotifyJob>();
+        drop(rx);
+        let sender = NotifySender {
+            tx,
+            depth: Arc::new(QueueDepth {
+                count: std::sync::atomic::AtomicI64::new(0),
+                metrics: Arc::new(crate::metrics::Metrics::disabled()),
+            }),
+        };
+
+        sender.send(NotifyJob::DropHandle {
+            handle: "h".to_owned(),
+        });
+        // A rejected job never entered the queue, so it must not be counted as outstanding —
+        // otherwise a stopped worker would read as a permanently growing backlog.
+        assert_eq!(sender.depth(), 0);
+    }
+
+    #[tokio::test]
+    async fn the_worker_decrements_the_depth_as_it_drains() {
+        // No relay is reachable, so every job fails — which is exactly the outage case the
+        // metric exists for, and the depth must still return to zero.
+        //
+        // The target is a bare node id with no address, under the `Minimal` preset's absent
+        // discovery: the dial cannot resolve and fails immediately, rather than burning the
+        // 15s DIAL_TIMEOUT twice.
+        let unreachable = crate::iroh_tunnel::loopback_endpoint(false).await;
+        let unreachable_id = unreachable.id();
+        unreachable.close().await;
+
+        let state = crate::state::test_state().await;
+        let endpoint = crate::iroh_tunnel::loopback_endpoint(false).await;
+        let client =
+            NotifyRelayClient::with_addr(endpoint.clone(), EndpointAddr::new(unreachable_id), None);
+        let (sender, _worker) = spawn_worker(
+            Arc::new(client),
+            state.db.clone(),
+            Arc::new(crate::metrics::Metrics::disabled()),
+        );
+
+        sender.send(NotifyJob::DropHandle {
+            handle: "h".to_owned(),
+        });
+        assert!(sender.depth() >= 1, "the job is outstanding once enqueued");
+
+        // The dial fails fast against an unreachable node; poll rather than sleep a fixed span.
+        for _ in 0..600 {
+            if sender.depth() == 0 {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        assert_eq!(sender.depth(), 0, "a failed job still leaves the queue");
+        endpoint.close().await;
+    }
 
     #[tokio::test]
     async fn an_unparseable_relay_node_id_is_a_config_error() {

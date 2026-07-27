@@ -96,7 +96,7 @@ pub async fn register_notifications(
     })?;
 
     if let Some(sender) = state.notify_sender.as_ref() {
-        let _ = sender.send(NotifyJob::RegisterHandle {
+        sender.send(NotifyJob::RegisterHandle {
             owner: RegistrationOwner::Account {
                 did: user.did.clone(),
                 device_uuid: payload.device_uuid.clone(),
@@ -156,7 +156,7 @@ pub async fn unregister_notifications(
         })?;
 
     if let (Some(handle), Some(sender)) = (handle, state.notify_sender.as_ref()) {
-        let _ = sender.send(NotifyJob::DropHandle { handle });
+        sender.send(NotifyJob::DropHandle { handle });
     }
 
     Ok(Json(UnregisterResponse {

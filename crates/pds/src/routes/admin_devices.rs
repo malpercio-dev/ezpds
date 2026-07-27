@@ -414,7 +414,7 @@ async fn drop_notification_registration(state: &AppState, device_id: &str) {
         tracing::warn!(error = %e, %device_id, "failed to delete an admin notification registration");
     }
     if let (Some(handle), Some(sender)) = (handle, state.notify_sender.as_ref()) {
-        let _ = sender.send(crate::notify_relay_client::NotifyJob::DropHandle { handle });
+        sender.send(crate::notify_relay_client::NotifyJob::DropHandle { handle });
     }
 }
 

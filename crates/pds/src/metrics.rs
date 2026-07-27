@@ -102,6 +102,11 @@ pub mod names {
     pub const HTTP_REQUESTS: &str = "http_requests";
     /// Counter (`_total`): `importRepo` migration imports, by [`LABEL_OUTCOME`].
     pub const MIGRATION_IMPORTS: &str = "migration_imports";
+    /// Gauge: notification jobs outstanding on the send worker's unbounded queue, counting
+    /// the one in flight. The queue is unbounded by design — a trigger must never block on a
+    /// push relay — so during a relay outage this is the only bounded-in-nothing quantity in
+    /// the process, and the signal that the outage is costing memory rather than banners.
+    pub const NOTIFY_QUEUE_DEPTH: &str = "notify_queue_depth";
 
     /// Firehose frame type: `commit`, `sync`, `account`, `identity`.
     pub const LABEL_FRAME: &str = "frame";
@@ -169,6 +174,7 @@ pub struct Metrics {
     pub rate_limit_rejections: Counter<u64>,
     pub http_requests: Counter<u64>,
     pub migration_imports: Counter<u64>,
+    pub notify_queue_depth: Gauge<u64>,
 }
 
 impl Metrics {
@@ -248,6 +254,7 @@ impl Metrics {
             rate_limit_rejections: meter.u64_counter(names::RATE_LIMIT_REJECTIONS).build(),
             http_requests: meter.u64_counter(names::HTTP_REQUESTS).build(),
             migration_imports: meter.u64_counter(names::MIGRATION_IMPORTS).build(),
+            notify_queue_depth: meter.u64_gauge(names::NOTIFY_QUEUE_DEPTH).build(),
             registry,
             _provider: provider,
         }
@@ -366,6 +373,7 @@ mod tests {
             .blob_gc_last_run_timestamp
             .record(1_700_000_000.0, &[]);
         metrics.blob_gc_errors.add(1, &[]);
+        metrics.notify_queue_depth.record(4, &[]);
 
         let rendered = metrics.render().unwrap().unwrap();
 
@@ -402,6 +410,15 @@ mod tests {
         assert!(
             !rendered.contains("blob_gc_errors_total_total"),
             "double _total suffix in:\n{rendered}"
+        );
+        // A gauge, so no `_total` — an operator alerting on queue growth needs the bare name.
+        assert!(
+            rendered.contains("notify_queue_depth"),
+            "missing notify_queue_depth gauge in:\n{rendered}"
+        );
+        assert!(
+            !rendered.contains("notify_queue_depth_total"),
+            "notify_queue_depth must render as a gauge, not a counter, in:\n{rendered}"
         );
     }
 

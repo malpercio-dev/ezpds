@@ -523,6 +523,7 @@ drops measurements at the SDK boundary, so call sites never branch.
 | `proxy_upstream_lag_seconds` | histogram | — | `read_after_write/mod.rs`, same conditional value as the `Atproto-Upstream-Lag` header |
 | `rate_limit_rejections_total` | counter | `limiter` (`global_ip`/`endpoint_ip`/`account_writes`) | `rate_limit.rs` middleware; `record_write.rs` for write points |
 | `migration_imports_total` | counter | `outcome` (`ok`/`error`) | `routes/import_repo.rs` |
+| `notify_queue_depth` | gauge | — | `notify_relay_client.rs` on both edges of the send queue: `NotifySender::send` increments, and the worker decrements **after** the job finishes, so the depth counts outstanding work rather than only what is waiting (during the relay outage this metric exists for, each job burns the full 30s stream timeout, and a single stuck job is real backlog). The queue is unbounded by design — a trigger must never block on a push relay — so this is the one quantity a prolonged outage grows without limit, previously inferable only from `warn!` volume. Not recorded at all when no relay is configured (no worker exists). `GET /v1/admin/health`'s `notifyQueueDepth` mirrors it for operators, reading the same counter directly so it works with `[telemetry] metrics_enabled` off (the `sweep_status.rs` arrangement), and reports `null` rather than `0` when the feature is unconfigured |
 
 Cardinality rule: label values are always drawn from small fixed sets or the route table —
 never from request data (raw URIs, rkeys, DIDs, hostnames).

@@ -161,7 +161,7 @@ async fn fan_out(
 
         // `send` fails only once every receiver is gone, i.e. the worker has stopped. Not
         // worth a per-device log line.
-        let _ = sender.send(NotifyJob::Push {
+        sender.send(NotifyJob::Push {
             owner: owner_of(registration.device_id),
             handle,
             kid,
