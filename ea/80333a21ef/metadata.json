@@ -1,0 +1,27 @@
+{
+  "cli_version": "0.8.42",
+  "checkpoint_id": "ea80333a21ef",
+  "strategy": "manual-commit",
+  "branch": "claude/passwordless-delete-account-206e04",
+  "checkpoints_count": 1,
+  "files_touched": [
+    "apps/identity-wallet/src/lib/components/home/RemoveIdentityScreen.svelte",
+    "crates/pds/src/routes/delete_account.rs"
+  ],
+  "sessions": [
+    {
+      "metadata": "/ea/80333a21ef/0/metadata.json",
+      "transcript": "/ea/80333a21ef/0/full.jsonl",
+      "compact_transcript": "/ea/80333a21ef/0/transcript.jsonl",
+      "content_hash": "/ea/80333a21ef/0/content_hash.txt",
+      "prompt": "/ea/80333a21ef/0/prompt.txt"
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 24,
+    "cache_creation_tokens": 23771,
+    "cache_read_tokens": 6629422,
+    "output_tokens": 7469,
+    "api_call_count": 12
+  }
+}
