@@ -1,0 +1,27 @@
+{
+  "cli_version": "0.9.0",
+  "checkpoint_id": "9bfc9582c1ec",
+  "strategy": "manual-commit",
+  "branch": "claude/designmd-navigation-amendment-dd7d8b",
+  "checkpoints_count": 1,
+  "files_touched": [
+    "DESIGN.md",
+    "docs/design-plans/2026-07-24-wallet-information-architecture.md"
+  ],
+  "sessions": [
+    {
+      "metadata": "/9b/fc9582c1ec/0/metadata.json",
+      "transcript": "/9b/fc9582c1ec/0/full.jsonl",
+      "compact_transcript": "/9b/fc9582c1ec/0/transcript.jsonl",
+      "content_hash": "/9b/fc9582c1ec/0/content_hash.txt",
+      "prompt": "/9b/fc9582c1ec/0/prompt.txt"
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 23,
+    "cache_creation_tokens": 74280,
+    "cache_read_tokens": 1131941,
+    "output_tokens": 6139,
+    "api_call_count": 12
+  }
+}
