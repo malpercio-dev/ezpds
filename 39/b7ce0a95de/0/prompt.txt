@@ -1,0 +1,78 @@
+Work on Linear issue MM-418:
+
+Suggested branch name: malpercio/mm-418-notify-49-custos-sender-config-sender-keys-registration
+
+<issue identifier="MM-418">
+<title>Notify 4/9: Custos sender — config, sender keys, registration routes, relay client, first trigger</title>
+<description>
+Phase 4 of the <issue id="b95fcd23-95fa-43f6-86a6-81defb9dda77" href="https://linear.app/malpercio/issue/MM-311/e2e-encrypted-notification-relay-for-self-hosted-custos-apns">MM-311</issue> notification relay — the PDS side. Implementation details: `docs/design-plans/2026-07-17-notification-relay-implementation.md`.
+
+## Scope
+
+* **Config:** `[notifications]` in `common::Config` — `relay: Option<String>` (node id, default None → off, the `[iroh]` posture), `enrollment_code: Option<String>`; env `EZPDS_NOTIFICATIONS_RELAY` / `EZPDS_NOTIFICATIONS_ENROLLMENT_CODE`; validation requires `[iroh] enabled`.
+* **Migrations (V052+):** `notification_sender_keys` (kid autoincrement, secret encrypted under master key per the `iroh_identity` scheme, retired_at/revoked_at), `notification_registrations` keyed **(did, device_uuid)** — NOT FK'd to the transient `devices` table (deleted at DID promotion) — and `admin_notification_registrations` keyed by `admin_devices.id`. Sender keys join `SecretFamily` in `db/kek.rs` for `rewrap-master-key`.
+* **Routes** (+ bruno, seq 124+): `POST /v1/notifications/register` + `DELETE /v1/notifications/register/{deviceUuid}` + `GET /v1/notifications/sender-keys` via `authenticate_access` (DPoP — auth-seam-check applies); `POST /v1/admin/notifications/register` + `GET /v1/admin/notifications/sender-keys` via `require_admin` signed envelope. Sender-keys responses are the re-pin surface with versioned kids; rotation = publish new alongside old, retire after overlap; revocation = immediate removal from the set.
+* **Relay client:** the PDS's first *outbound* iroh leg — `notify_relay_client` module reusing the existing `IrohState` endpoint to dial the configured node id, one stream per RPC, lazy reconnect with backoff. Sends flow through an in-process mpsc worker (fire-and-forget; in-memory queue only — a missed push is a missed banner, the app reconciles from Custos). Enroll-on-first-contact consumes the config claim code.
+* **Sending:** `notifications.rs` owns `notify_device(did, payload)` / `notify_admin_devices(payload)`: pad to bucket, HPKE-seal per registration (fan-out, one seal per device), push, delete the registration on `unregistered`.
+* **Cleanup:** `purge_account` gains the registrations delete (+ best-effort `dropHandle`); `revoke_admin_device` path cleans the admin row.
+* **First trigger:** agent claim pending (the auth.md ceremony awaiting confirmation).
+
+## Acceptance
+
+* Full loopback e2e: pds ↔ notify-relay ↔ wiremock APNs — register, seal, push; the fixture "device" opens the payload with `crypto::open_notification` and verifies sender authenticity.
+* Prune-on-410 e2e: relay returns `unregistered` → registration row deleted.
+* Rotation semantics tested: retired key still verifies, revoked key vanishes from the published set.
+* Feature entirely inert when `[notifications]` unset. `just ci-pds` + bruno parity green.
+</description>
+<team name="Mal's Machinations"/>
+<label>Feature</label>
+<label>Security</label>
+<project name="ezpds">An easy-to-host PDS on the ATProtocol, MacOS. Grandma-approved.</project>
+<parent-issue identifier="MM-311">
+<id>b95fcd23-95fa-43f6-86a6-81defb9dda77</id>
+<title>E2E-encrypted notification relay for self-hosted Custos (APNs)</title>
+<description>
+Implement the notification relay designed in [docs/design-plans/2026-07-10-notification-relay.md](<https://github.com/malpercio-dev/ezpds/blob/main/docs/design-plans/2026-07-10-notification-relay.md>) (design PR <pull-request id="34230e45-6259-4c9a-b58d-6b135adf84e3" href="https://linear.app/malpercio/review/design-exploration-e2e-encrypted-notification-relay-for-self-hosted-327f880332d1">malpercio-dev/ezpds#207</pull-request>, **merged** — the doc on `main` is the source of truth and incorporates the review hardening: claim-code enrollment authorization for the official relay, versioned sender keys with re-pin/revocation semantics, explicit v1 replay acceptance, unverified-notice rendering for unauthenticated payloads, per-handle APNs topics, serialized-request padding budget, and the post-reboot keychain window).
+
+## Problem
+
+Self-hosted Custos instances need to deliver push notifications to the official iOS apps (Obsign, admin-companion). APNs auth keys are bundle-ID-bound, so self-hosters cannot push directly — a relay is structurally required. The design makes that relay a **blind courier**: trusted for availability only.
+
+## Architecture (see design doc for full detail)
+
+* **Confidentiality:** payloads HPKE-sealed (RFC 9180, DHKEM-P256 + AES-GCM) to a per-device notification key; decrypted on-device by a Notification Service Extension (`mutable-content: 1`). Neither the relay nor Apple sees plaintext.
+* **Integrity:** HPKE Auth mode with pinned, versioned per-instance sender keys — the relay cannot forge authenticated content (it can generate detectable junk pushes and replay; v1 accepts duplicates as benign).
+* **Metadata minimization:** opaque push handles bound to the instance's iroh node id (no DIDs/handles/raw tokens at the relay), fixed-size padding budgeted against the serialized APNs request, optional content-free ping mode.
+* **Transport:** Custos ↔ relay over iroh, new `ezpds/notify/0` ALPN, reusing the persisted node identity (`iroh_identity`) and `iroh_tunnel.rs` patterns; back-channel carries APNs `410 Unregistered` pruning feedback.
+* **Sovereignty:** relay is an open-source workspace crate (`crates/notify-relay/`); any instance points at any relay via `[notifications] relay = "<node id>"`. Official relay requires a claim-code enrollment grant; open enrollment is a config option for self-run relays. Caveat: official bundle IDs require the official relay's APNs key.
+
+## Suggested phasing
+
+1. **Relay crate + Custos sender** — `crates/notify-relay/` (claim-code enrollment grants, handle store with per-handle APNs topic, APNs HTTP/2 client, per-node rate limits, serialized-request size validation with 4 KB boundary test) + `[notifications]` config, device notification-key registration route, versioned sender-key set, sealed-send on first trigger (agent claim pending). Loopback iroh e2e tests with mock APNs.
+2. **Wallet NSE** — per-device keypair + shared keychain access group, registration in onboarding, decrypt-and-render extension, unverified-notice fallback + in-app diagnostics.
+3. **Admin-companion adoption + operator docs** — ops alert triggers, self-relay runbook, metadata-minimizing ping mode.
+
+## Open questions (from the design doc)
+
+* Enrollment grant distribution for the official relay (ceremony mirrors admin-device pairing)
+* Replay hardening beyond v1's accept-duplicates posture (per-device counter + durable replay window)
+* Delivery receipts over the iroh back-channel (out of scope v1)
+* Android/FCM later (envelope is provider-agnostic)
+
+Not yet scheduled into a wave; split into per-phase issues when picked up.
+</description>
+</parent-issue>
+<issue-relations>
+<blocking>
+<issue-ref identifier="MM-421" title="Notify 7/9: admin-companion adoption — pairing-doc pinning, admin NSE, ops triggers"/>
+<issue-ref identifier="MM-422" title="Notify 8/9: metadata-minimizing ping mode"/>
+<issue-ref identifier="MM-419" title="Notify 5/9: wallet notification keys + registration + sender-key re-pinning"/>
+</blocking>
+<blocked-by>
+<issue-ref identifier="MM-417" title="Notify 3/9: relay APNs pipeline — ES256 JWT, HTTP/2 push, size validation, 410 feedback"/>
+<issue-ref identifier="MM-415" title="Notify 1/9: HPKE seal/open + padding arithmetic in crates/crypto"/>
+</blocked-by>
+</issue-relations>
+</issue>
+
+Please open a PR linked to linear when complete
