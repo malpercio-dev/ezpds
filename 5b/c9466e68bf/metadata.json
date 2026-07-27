@@ -1,0 +1,43 @@
+{
+  "cli_version": "0.8.42",
+  "checkpoint_id": "5bc9466e68bf",
+  "strategy": "manual-commit",
+  "branch": "claude/passwordless-signup-flow-67eb14",
+  "checkpoints_count": 3,
+  "files_touched": [
+    "apps/identity-wallet/src-tauri/src/lib.rs",
+    "apps/identity-wallet/src-tauri/src/pds_capabilities.rs",
+    "apps/identity-wallet/src/lib/components/onboarding/DIDCeremonyScreen.svelte",
+    "apps/identity-wallet/src/lib/components/onboarding/DidWebCeremonyScreen.svelte",
+    "apps/identity-wallet/src/lib/components/onboarding/PdsConfigScreen.svelte",
+    "apps/identity-wallet/src/lib/harness/scenarios.ts",
+    "apps/identity-wallet/src/lib/ipc/account.ts",
+    "apps/identity-wallet/src/routes/+page.svelte",
+    "bruno/create-did.bru",
+    "changelog.d/mm-481.added.md",
+    "crates/common/src/config.rs",
+    "crates/pds/src/auth/password.rs",
+    "crates/pds/src/capabilities.rs",
+    "crates/pds/src/routes/create_account_xrpc.rs",
+    "crates/pds/src/routes/create_did.rs",
+    "sites/docs/src/content/docs/operator/capabilities.md",
+    "sites/docs/src/content/docs/operator/reference/capabilities.md",
+    "sites/docs/src/content/docs/operator/reference/config.md"
+  ],
+  "sessions": [
+    {
+      "metadata": "/5b/c9466e68bf/0/metadata.json",
+      "transcript": "/5b/c9466e68bf/0/full.jsonl",
+      "compact_transcript": "/5b/c9466e68bf/0/transcript.jsonl",
+      "content_hash": "/5b/c9466e68bf/0/content_hash.txt",
+      "prompt": "/5b/c9466e68bf/0/prompt.txt"
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 2961,
+    "cache_creation_tokens": 1048927,
+    "cache_read_tokens": 70459127,
+    "output_tokens": 104618,
+    "api_call_count": 230
+  }
+}

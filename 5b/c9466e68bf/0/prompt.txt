@@ -1,0 +1,17 @@
+I'm creating a new account in the wallet against the production pds. we have support for passwordless. Why am I being asked to add a password as a part of the sign up flow?
+
+---
+
+Let's allow the operator to decide to support accounts with optional passwords, and the wallet would gate on a capability.
+
+---
+
+If an empty string is sent as password, we should always reject that as invalid, it is not possible to assume intent there in a clean way. Separate issue for the delete account rework. Also at the end of the account creation flow, Obsign opened an OAuth flow asking for a password or use a code. both of which would not be possible in a passwordless world when you are creating an account (the login opens as a takeover, and the identity is not yet in the wallet to log in with). Can we avoid showing a password prompt at OAuth for a passwordless account?
+
+---
+
+please do go ahead and file the issues, and I'm currently the only user, I will just withhold shipping the public beta until we finish this
+
+---
+
+go ahead and implement that for us and create an issue to track this work
