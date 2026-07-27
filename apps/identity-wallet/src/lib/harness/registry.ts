@@ -555,18 +555,20 @@ export function buildRegistry(state: WalletState): Registry {
     }),
 
     // ── PLC monitor ──────────────────────────────────────────────────────────
-    // `checkFailed` mirrors the backend rather than always reporting success. `check_all`
-    // does not filter by DID method: it asks plc.directory about every managed DID, and a
-    // did:web has no PLC audit log there, so its fetch fails and it comes back
-    // `check_failed: true` on every single sweep. A fake that answered `false` for a
-    // did:web would be kinder than the real thing in exactly the place a screen is most
-    // likely to get the did:web copy wrong.
+    // The sweep omits a did:web rather than reporting a verdict for it, mirroring
+    // `check_all`: the audit log it diffs exists only for a did:plc, so a did:web is
+    // skipped outright instead of asked about and marked failed. Keeping the omission
+    // here is what lets a screen's did:web branch be exercised in the browser — a fake
+    // that returned an entry (failed OR clear) would feed it a reading the real backend
+    // never produces, in exactly the place a screen is most likely to get did:web wrong.
     check_identity_status: (): IdentityStatus[] =>
-      state.identities.map((i) => ({
-        did: i.did,
-        checkFailed: isDidWeb(i.did),
-        unauthorizedChanges: i.alerts,
-      })),
+      state.identities
+        .filter((i) => !isDidWeb(i.did))
+        .map((i) => ({
+          did: i.did,
+          checkFailed: false,
+          unauthorizedChanges: i.alerts,
+        })),
 
     // ── recovery override ────────────────────────────────────────────────────
     build_recovery_override_cmd: (args): SignedRecoveryOp => {
