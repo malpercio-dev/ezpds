@@ -23,8 +23,14 @@
  */
 
 /**
- * The instant the browser clock is frozen at for every shot. Matches the reference clock the
- * harness scenarios use (`scenarios.ts` `isoHoursAgo`), so seeded ages line up predictably.
+ * The instant the browser clock is frozen at for every shot.
+ *
+ * Load-bearing, not cosmetic: the harness seeds relative ages off the live clock
+ * (`scenarios.ts` `isoHoursAgo`, `registry.ts` `isoInHours`) precisely so an alert stays a
+ * two-hour-old alert instead of ageing into an expired recovery window. Freezing the page
+ * clock here is therefore the *only* thing making those ages reproducible — the fixtures
+ * hold no reference instant of their own. Changing this value changes every countdown,
+ * age, and expiry in the committed PNGs.
  */
 export const FIXED_CLOCK = '2026-07-15T12:00:00.000Z';
 

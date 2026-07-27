@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { scenarios, buildScenario, isScenarioName, DEFAULT_SCENARIO } from './scenarios';
 import { buildRegistry } from './registry';
+import { deriveIdentityPanelState } from '../identity-status';
 
 describe('wallet harness scenarios', () => {
   it('fresh-install has no identities and no PDS configured', () => {
@@ -18,6 +19,20 @@ describe('wallet harness scenarios', () => {
   it('alert-active surfaces an unauthorized change', () => {
     const state = scenarios['alert-active']();
     expect(state.identities[0].alerts.length).toBeGreaterThan(0);
+  });
+
+  // The assertion above holds forever even when the scenario is broken: an alert seeded at a
+  // literal instant stays an alert while quietly ageing past its own 72-hour PLC recovery
+  // window, at which point the panel renders "Recovery window closed" and
+  // `AlertDetailScreen` disables the override — the one preset that exists to demonstrate a
+  // live alarm demonstrating its opposite. So assert the property that actually decays:
+  // the window is still open *now*, measured the way the UI measures it.
+  it('alert-active seeds an alarm whose recovery window is still open', () => {
+    const state = scenarios['alert-active']();
+    const panel = deriveIdentityPanelState(state.identities[0].alerts, false);
+
+    expect(panel.urgency).toBe('critical');
+    expect(panel.deadline?.getTime()).toBeGreaterThan(Date.now());
   });
 
   it('migration-in-flight parks a prepared migration', () => {

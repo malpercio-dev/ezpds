@@ -1312,7 +1312,11 @@ function farFuture(): number {
   return Date.parse('2030-01-01T00:00:00.000Z');
 }
 
+/**
+ * An ISO timestamp `hours` from now — live clock, for the same reason as `scenarios.ts`'s
+ * `isoHoursAgo`. A future offset pinned to a literal base is worse than a stale one: it
+ * lands in the past, so an expiry seeded an hour out reads as already expired.
+ */
 function isoInHours(hours: number): string {
-  const base = Date.parse('2026-07-15T12:00:00.000Z');
-  return new Date(base + hours * 3600_000).toISOString();
+  return new Date(Date.now() + hours * 3600_000).toISOString();
 }
