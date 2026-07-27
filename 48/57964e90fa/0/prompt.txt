@@ -1,0 +1,15 @@
+In `apps/identity-wallet/src/lib/harness/scenarios.ts`, `isoHoursAgo()` (around line 344) builds alert timestamps against a frozen reference clock:
+
+    const base = Date.parse('2026-07-15T12:00:00.000Z');
+
+Its comment claims "only the relative age matters to the recovery-window UI", but that is not true: `$lib/deadline`'s `getUrgency(deadline, now)` and `formatCountdown` are called with the REAL `Date.now()`. So `scenarios.ts:127`'s `alert-active` fixture (`isoHoursAgo(2)`) produces a `createdAt` whose 72-hour PLC recovery window has already elapsed in wall-clock terms. Confirmed live on 2026-07-26: switching to the `alert-active` scenario renders the identity screen's status panel as "Recovery window closed" / "Expired" instead of the intended "Under attack" + countdown.
+
+Effect: the one harness scenario that exists to demonstrate an active alarm no longer demonstrates one, so the critical alarm path (per-identity status panel, `AlertDetailScreen` countdown, the enabled "Review & Override" button) cannot be reached from the harness at all — `AlertDetailScreen` disables override when urgency is `expired`.
+
+Constraint that makes this non-trivial: the frozen clock is deliberate — `tools/screenshots/` drives the harness in fake mode and needs deterministic output, and `just docs-screenshots-check` visual-diffs the results. Simply switching `isoHoursAgo` to real `Date.now()` would make alert screenshots non-deterministic.
+
+Likely shapes for the fix (evaluate, don't assume):
+- Freeze the whole harness clock, not just the fixtures — stub `Date.now()` in `src/lib/harness/install.ts` so the UI's `now` agrees with the fixture base. This is the option that makes relative ages actually behave as the comment claims, and keeps screenshots deterministic.
+- Or make `isoHoursAgo` relative to real `Date.now()` and have the screenshot tooling pin the clock itself.
+
+Also update the misleading comment on `isoHoursAgo` either way. Verify by starting `VITE_HARNESS=fake` vite dev, running `window.__harness.scenario('alert-active')`, opening the identity, and confirming the status panel reads "Under attack" with a live countdown; then re-run `just docs-screenshots-check` (or the tooling in `tools/screenshots/`) to confirm determinism is intact.

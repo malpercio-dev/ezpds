@@ -1,0 +1,31 @@
+{
+  "cli_version": "0.8.42",
+  "checkpoint_id": "4857964e90fa",
+  "strategy": "manual-commit",
+  "branch": "malpercio/mm-482-harness-alert-active-scenario-ages-into-an-expired-recovery",
+  "checkpoints_count": 1,
+  "files_touched": [
+    "apps/identity-wallet/src/lib/harness/registry.ts",
+    "apps/identity-wallet/src/lib/harness/scenarios.test.ts",
+    "apps/identity-wallet/src/lib/harness/scenarios.ts",
+    "changelog.d/README.md",
+    "scripts/changelog-check.sh",
+    "tools/screenshots/shots.mjs"
+  ],
+  "sessions": [
+    {
+      "metadata": "/48/57964e90fa/0/metadata.json",
+      "transcript": "/48/57964e90fa/0/full.jsonl",
+      "compact_transcript": "/48/57964e90fa/0/transcript.jsonl",
+      "content_hash": "/48/57964e90fa/0/content_hash.txt",
+      "prompt": "/48/57964e90fa/0/prompt.txt"
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 157,
+    "cache_creation_tokens": 461974,
+    "cache_read_tokens": 16679769,
+    "output_tokens": 45169,
+    "api_call_count": 84
+  }
+}
