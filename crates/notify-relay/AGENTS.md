@@ -85,7 +85,9 @@ everything that way and ships no file.
 APNs credentials are all-or-nothing and validated at startup: a relay whose `.p8` is
 missing or malformed refuses to start rather than coming up healthy and failing every
 push. With no credentials at all it serves every RPC but `push`, which answers `apnsError`
-— the posture for bringing a relay up before its key exists.
+— the posture for bringing a relay up before its key exists. The `topics` allowlist is
+independent of the credentials: `register_handle` already refuses a handle whose `apnsTopic`
+is outside a non-empty served set, whether or not a `.p8` is configured.
 
 ## Operating
 
@@ -103,6 +105,10 @@ node secret key file is not, since losing it re-addresses the relay.
 1. Add the variant to `Request`/`Response` in `protocol.rs` (camelCase tags) with a test
    pinning its wire shape.
 2. Add the handler arm in `service.rs`, going through `require_enrolled` unless the RPC is
-   deliberately pre-enrollment.
+   deliberately pre-enrollment (`enroll`) or reports its refusals as an outcome rather than
+   a bare response. `push` is the latter: it inlines the enrollment probe and rate-limit
+   charge so "not enrolled" and "throttled" come back as `Pushed { outcome }`, since the
+   sender treats every push result uniformly — routing it through `require_enrolled` would
+   return the wrong response shape.
 3. If it needs a new query, add it to the owning `db/` submodule — scoped by node id.
 4. Cover it in `transport.rs`'s loopback tests, including the cross-tenant probe.
