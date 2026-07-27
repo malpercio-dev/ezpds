@@ -19,6 +19,7 @@
   import DIDSuccessScreen from '$lib/components/onboarding/DIDSuccessScreen.svelte';
   import ShamirBackupScreen from '$lib/components/onboarding/ShamirBackupScreen.svelte';
   import HandleRegistrationScreen from '$lib/components/onboarding/HandleRegistrationScreen.svelte';
+  import CreateRegistrationFailedScreen from '$lib/components/onboarding/CreateRegistrationFailedScreen.svelte';
   import AuthenticatingScreen from '$lib/components/onboarding/AuthenticatingScreen.svelte';
   import IdentityInputScreen from '$lib/components/onboarding/IdentityInputScreen.svelte';
   import PdsAuthScreen from '$lib/components/onboarding/PdsAuthScreen.svelte';
@@ -85,6 +86,7 @@
     | 'did_success'
     | 'shamir_backup'
     | 'handle_registration'
+    | 'create_registration_failed'
     | 'complete'
     | 'authenticating'
     | 'home'
@@ -421,18 +423,6 @@
     }
   }
 
-  // ── Finish the create flow ────────────────────────────────────────────────
-  //
-  // Called once the new identity's DID (form.did) and full handle both exist.
-  // Registering here is what makes the identity appear on the home screen:
-  // IdentityListHome lists identities from IdentityStore alone, and the PDS
-  // OAuth flow never writes to it — so without this call the home screen would show
-  // "No identities yet" after login.
-  //
-  // Error-handling strategy: best-effort. If registration fails we log and
-  // continue — the user keeps their identity and can refresh the card later.
-  // (Strict alternative: surface the error and let the user retry before
-  // advancing — see the accompanying notes.)
   let backupConfirmError = $state<string | null>(null);
 
   async function confirmBackupAndContinue() {
@@ -537,14 +527,41 @@
     step = 'recover_success';
   }
 
+  // Two extra attempts with a short backoff before giving up. What this guards against is a
+  // transient Keychain fault, which clears on its own far more often than it persists.
+  const REGISTER_IDENTITY_ATTEMPTS = 3;
+  const REGISTER_IDENTITY_BACKOFF_MS = 400;
+
+  async function registerCreatedIdentityWithRetry(did: string, handle: string): Promise<boolean> {
+    for (let attempt = 0; attempt < REGISTER_IDENTITY_ATTEMPTS; attempt++) {
+      if (attempt > 0) {
+        await new Promise((resolve) => setTimeout(resolve, REGISTER_IDENTITY_BACKOFF_MS * attempt));
+      }
+      try {
+        await registerCreatedIdentity(did, handle);
+        return true;
+      } catch (e) {
+        console.error(
+          `Failed to register created identity in IdentityStore (attempt ${attempt + 1}/${REGISTER_IDENTITY_ATTEMPTS}):`,
+          e
+        );
+      }
+    }
+    return false;
+  }
+
+  // Registering here is what makes the identity appear on the home screen: IdentityListHome
+  // lists identities from IdentityStore alone, and the PDS OAuth flow never writes to it.
+  //
+  // A failure is reported rather than swallowed. This step used to advance to "You're all
+  // set" no matter what, which meant a single failed write showed a success screen over an
+  // empty wallet, survived force-quit, and left the share-recovery ceremony as the only exit.
+  // The launch-time reconciliation in `reconcile_created_identity` is the backstop; this
+  // screen is what stops the app from claiming success it did not achieve in the meantime.
   async function finishCreateFlow(handle: string) {
     form.registeredHandle = handle;
-    try {
-      await registerCreatedIdentity(form.did, handle);
-    } catch (e) {
-      console.error('Failed to register created identity in IdentityStore:', e);
-    }
-    step = 'complete';
+    const registered = await registerCreatedIdentityWithRetry(form.did, handle);
+    step = registered ? 'complete' : 'create_registration_failed';
   }
 </script>
 
@@ -712,6 +729,14 @@
       did={form.did}
       onsuccess={(handle) => finishCreateFlow(handle)}
       ontimeout={(handle) => finishCreateFlow(handle)}
+    />
+
+  {:else if step === 'create_registration_failed'}
+    <CreateRegistrationFailedScreen
+      did={form.did}
+      handle={form.registeredHandle}
+      onregistered={() => { step = 'complete'; }}
+      oncontinue={() => goTo('authenticating')}
     />
 
   {:else if step === 'complete'}
