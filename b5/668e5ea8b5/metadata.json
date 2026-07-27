@@ -1,0 +1,43 @@
+{
+  "cli_version": "0.9.0",
+  "checkpoint_id": "b5668e5ea8b5",
+  "strategy": "manual-commit",
+  "branch": "claude/mm-419-wallet-notification-keys-9a6ced",
+  "checkpoints_count": 1,
+  "files_touched": [
+    "Cargo.toml",
+    "apps/admin-companion/AGENTS.md",
+    "apps/admin-companion/src-tauri/tauri.conf.json",
+    "apps/identity-wallet/AGENTS.md",
+    "apps/identity-wallet/src-tauri/Cargo.toml",
+    "apps/identity-wallet/src-tauri/Entitlements.ios.plist",
+    "apps/identity-wallet/src-tauri/src/apns.rs",
+    "apps/identity-wallet/src-tauri/src/keychain.rs",
+    "apps/identity-wallet/src-tauri/src/lib.rs",
+    "apps/identity-wallet/src-tauri/src/notifications.rs",
+    "apps/identity-wallet/src-tauri/tauri.conf.json",
+    "apps/identity-wallet/src/lib/harness/notifications.test.ts",
+    "apps/identity-wallet/src/lib/harness/registry.ts",
+    "apps/identity-wallet/src/lib/harness/state.ts",
+    "apps/identity-wallet/src/lib/ipc/index.ts",
+    "apps/identity-wallet/src/lib/ipc/notifications.ts",
+    "apps/identity-wallet/src/routes/+page.svelte",
+    "changelog.d/mm-419.added.md"
+  ],
+  "sessions": [
+    {
+      "metadata": "/b5/668e5ea8b5/0/metadata.json",
+      "transcript": "/b5/668e5ea8b5/0/full.jsonl",
+      "compact_transcript": "/b5/668e5ea8b5/0/transcript.jsonl",
+      "content_hash": "/b5/668e5ea8b5/0/content_hash.txt",
+      "prompt": "/b5/668e5ea8b5/0/prompt.txt"
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 269,
+    "cache_creation_tokens": 474210,
+    "cache_read_tokens": 50207711,
+    "output_tokens": 108244,
+    "api_call_count": 137
+  }
+}

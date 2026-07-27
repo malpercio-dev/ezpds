@@ -1,0 +1,95 @@
+{
+  "cli_version": "0.9.0",
+  "checkpoint_id": "b5668e5ea8b5",
+  "session_id": "77f0aeb9-0026-4fd6-a05a-7b630706994a",
+  "strategy": "manual-commit",
+  "created_at": "2026-07-27T20:07:11.364835Z",
+  "branch": "claude/mm-419-wallet-notification-keys-9a6ced",
+  "checkpoints_count": 1,
+  "files_touched": [
+    "apps/identity-wallet/src-tauri/src/keychain.rs",
+    "apps/identity-wallet/src-tauri/src/notifications.rs",
+    "apps/identity-wallet/src-tauri/src/lib.rs",
+    "apps/identity-wallet/src-tauri/src/apns.rs",
+    "apps/identity-wallet/src-tauri/Cargo.toml",
+    "Cargo.toml",
+    "apps/identity-wallet/src-tauri/Entitlements.ios.plist",
+    "apps/identity-wallet/src-tauri/tauri.conf.json",
+    "apps/admin-companion/src-tauri/tauri.conf.json",
+    "apps/identity-wallet/src/lib/ipc/notifications.ts",
+    "apps/identity-wallet/src/lib/ipc/index.ts",
+    "apps/identity-wallet/src/lib/harness/state.ts",
+    "apps/identity-wallet/src/lib/harness/registry.ts",
+    "apps/identity-wallet/src/routes/+page.svelte",
+    "changelog.d/mm-419.added.md",
+    "apps/identity-wallet/AGENTS.md",
+    "apps/admin-companion/AGENTS.md",
+    "apps/identity-wallet/src/lib/harness/notifications.test.ts"
+  ],
+  "agent": "Claude Code",
+  "model": "claude-opus-5",
+  "turn_id": "e900bb4e2bd9",
+  "compact_transcript_start": 0,
+  "token_usage": {
+    "input_tokens": 269,
+    "cache_creation_tokens": 474210,
+    "cache_read_tokens": 50207711,
+    "output_tokens": 108244,
+    "api_call_count": 137
+  },
+  "skill_events_version": 1,
+  "skill_events": [
+    {
+      "id": "claude-skill-toolu_013PdM9oKbXNDmmwdELmxjTr",
+      "event_type": "tool_invocation",
+      "skill": {
+        "name": "linear-workflow"
+      },
+      "source": {
+        "agent": "claude-code",
+        "signal": "skill_tool_use",
+        "confidence": "explicit"
+      },
+      "turn_id": "e900bb4e2bd9",
+      "transcript_anchor": {
+        "unit": "line",
+        "start": 18,
+        "end": 19,
+        "entry_ids": [
+          "6be156e7-271a-46af-9193-1131851f8f44"
+        ],
+        "tool_use_id": "toolu_013PdM9oKbXNDmmwdELmxjTr"
+      },
+      "native": {
+        "tool_name": "Skill",
+        "tool_use_id": "toolu_013PdM9oKbXNDmmwdELmxjTr"
+      },
+      "collapse": {
+        "target": "tool_pair",
+        "label": "Skill: linear-workflow",
+        "default_collapsed": true
+      }
+    }
+  ],
+  "initial_attribution": {
+    "calculated_at": "2026-07-27T20:07:11.248835Z",
+    "agent_lines": 2125,
+    "agent_removed": 9,
+    "human_added": 8,
+    "human_modified": 0,
+    "human_removed": 0,
+    "total_committed": 2133,
+    "total_lines_changed": 2142,
+    "agent_percentage": 99.6265172735761,
+    "metric_version": 2
+  },
+  "prompt_attributions": [
+    {
+      "checkpoint_number": 1,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 0,
+      "agent_lines_removed": 0
+    }
+  ]
+}
