@@ -1,0 +1,75 @@
+{
+  "cli_version": "0.8.42",
+  "checkpoint_id": "e98d6c18f431",
+  "session_id": "c747f649-3c87-45ca-adda-9eba3834d467",
+  "strategy": "manual-commit",
+  "created_at": "2026-07-27T02:28:42.219366Z",
+  "branch": "claude/mm-417-apns-relay-pipeline-1ab81f",
+  "checkpoints_count": 1,
+  "files_touched": [
+    "crates/notify-relay/src/apns.rs",
+    "crates/notify-relay/src/config.rs",
+    "crates/notify-relay/src/db/handles.rs",
+    "crates/notify-relay/src/main.rs",
+    "crates/notify-relay/src/transport.rs"
+  ],
+  "agent": "Claude Code",
+  "model": "",
+  "turn_id": "e127a83acff5",
+  "checkpoint_transcript_start": 428,
+  "transcript_lines_at_start": 428,
+  "compact_transcript_start": 94,
+  "token_usage": {
+    "input_tokens": 4,
+    "cache_creation_tokens": 13118,
+    "cache_read_tokens": 448112,
+    "output_tokens": 1034,
+    "api_call_count": 2
+  },
+  "skill_events_version": 1,
+  "skill_events": [
+    {
+      "id": "claude-skill-toolu_01QojBCuRRNbPmo9yLLgka3M",
+      "event_type": "tool_invocation",
+      "skill": {
+        "name": "linear-workflow"
+      },
+      "source": {
+        "agent": "claude-code",
+        "signal": "skill_tool_use",
+        "confidence": "explicit"
+      },
+      "turn_id": "e127a83acff5",
+      "transcript_anchor": {
+        "unit": "line",
+        "start": 19,
+        "end": 20,
+        "entry_ids": [
+          "ebf7951b-9014-4bf8-9097-549d3dbed84c"
+        ],
+        "tool_use_id": "toolu_01QojBCuRRNbPmo9yLLgka3M"
+      },
+      "native": {
+        "tool_name": "Skill",
+        "tool_use_id": "toolu_01QojBCuRRNbPmo9yLLgka3M"
+      },
+      "collapse": {
+        "target": "tool_pair",
+        "label": "Skill: linear-workflow",
+        "default_collapsed": true
+      }
+    }
+  ],
+  "initial_attribution": {
+    "calculated_at": "2026-07-27T02:28:42.149714Z",
+    "agent_lines": 31,
+    "agent_removed": 16,
+    "human_added": 0,
+    "human_modified": 0,
+    "human_removed": 0,
+    "total_committed": 31,
+    "total_lines_changed": 47,
+    "agent_percentage": 100,
+    "metric_version": 2
+  }
+}
