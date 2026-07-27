@@ -1,0 +1,26 @@
+{
+  "cli_version": "0.8.42",
+  "checkpoint_id": "ce9a501e1015",
+  "strategy": "manual-commit",
+  "branch": "claude/mm-417-apns-relay-pipeline-1ab81f",
+  "checkpoints_count": 1,
+  "files_touched": [
+    "crates/notify-relay/src/apns.rs"
+  ],
+  "sessions": [
+    {
+      "metadata": "/ce/9a501e1015/0/metadata.json",
+      "transcript": "/ce/9a501e1015/0/full.jsonl",
+      "compact_transcript": "/ce/9a501e1015/0/transcript.jsonl",
+      "content_hash": "/ce/9a501e1015/0/content_hash.txt",
+      "prompt": "/ce/9a501e1015/0/prompt.txt"
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 11,
+    "cache_creation_tokens": 6957,
+    "cache_read_tokens": 1446235,
+    "output_tokens": 4283,
+    "api_call_count": 6
+  }
+}
