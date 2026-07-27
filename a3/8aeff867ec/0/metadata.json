@@ -1,0 +1,116 @@
+{
+  "cli_version": "0.8.42",
+  "checkpoint_id": "a38aeff867ec",
+  "session_id": "54b8eabe-9035-48e3-9c7f-e1d2e678c56c",
+  "strategy": "manual-commit",
+  "created_at": "2026-07-27T19:35:44.458633Z",
+  "branch": "claude/wallet-ia-phase-3-alarm-6f826e",
+  "checkpoints_count": 1,
+  "files_touched": [
+    "apps/identity-wallet/src/lib/components/ui/ScreenHeader.svelte",
+    "apps/identity-wallet/src/lib/components/home/ProtectionScreen.svelte",
+    "apps/identity-wallet/src/routes/+page.svelte"
+  ],
+  "agent": "Claude Code",
+  "model": "",
+  "turn_id": "71383f83322b",
+  "checkpoint_transcript_start": 286,
+  "transcript_lines_at_start": 286,
+  "compact_transcript_start": 66,
+  "token_usage": {
+    "input_tokens": 72,
+    "cache_creation_tokens": 235823,
+    "cache_read_tokens": 9570071,
+    "output_tokens": 15191,
+    "api_call_count": 38
+  },
+  "skill_events_version": 1,
+  "skill_events": [
+    {
+      "id": "claude-skill-toolu_01BX9auGbvfyHHTamx4qW1Hz",
+      "event_type": "tool_invocation",
+      "skill": {
+        "name": "linear-workflow"
+      },
+      "source": {
+        "agent": "claude-code",
+        "signal": "skill_tool_use",
+        "confidence": "explicit"
+      },
+      "turn_id": "71383f83322b",
+      "transcript_anchor": {
+        "unit": "line",
+        "start": 18,
+        "end": 19,
+        "entry_ids": [
+          "b04b2898-6d49-40c5-bd71-3a509feb28ab"
+        ],
+        "tool_use_id": "toolu_01BX9auGbvfyHHTamx4qW1Hz"
+      },
+      "native": {
+        "tool_name": "Skill",
+        "tool_use_id": "toolu_01BX9auGbvfyHHTamx4qW1Hz"
+      },
+      "collapse": {
+        "target": "tool_pair",
+        "label": "Skill: linear-workflow",
+        "default_collapsed": true
+      }
+    },
+    {
+      "id": "claude-skill-toolu_01TS2tfojRSF3sTJSAQAxvi7",
+      "event_type": "tool_invocation",
+      "skill": {
+        "name": "pr-review-comments"
+      },
+      "source": {
+        "agent": "claude-code",
+        "signal": "skill_tool_use",
+        "confidence": "explicit"
+      },
+      "turn_id": "71383f83322b",
+      "transcript_anchor": {
+        "unit": "line",
+        "start": 292,
+        "end": 293,
+        "entry_ids": [
+          "f0cf5c27-7596-4ca6-b680-8dec3bfab61c"
+        ],
+        "tool_use_id": "toolu_01TS2tfojRSF3sTJSAQAxvi7"
+      },
+      "native": {
+        "tool_name": "Skill",
+        "tool_use_id": "toolu_01TS2tfojRSF3sTJSAQAxvi7"
+      },
+      "collapse": {
+        "target": "tool_pair",
+        "label": "Skill: pr-review-comments",
+        "default_collapsed": true
+      }
+    }
+  ],
+  "session_metrics": {
+    "turn_count": 1
+  },
+  "initial_attribution": {
+    "calculated_at": "2026-07-27T19:35:44.3818Z",
+    "agent_lines": 47,
+    "agent_removed": 2,
+    "human_added": 24,
+    "human_modified": 0,
+    "human_removed": 0,
+    "total_committed": 71,
+    "total_lines_changed": 77,
+    "agent_percentage": 63.63636363636363,
+    "metric_version": 2
+  },
+  "prompt_attributions": [
+    {
+      "checkpoint_number": 1,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 0,
+      "agent_lines_removed": 0
+    }
+  ]
+}

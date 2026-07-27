@@ -1,0 +1,28 @@
+{
+  "cli_version": "0.8.42",
+  "checkpoint_id": "a38aeff867ec",
+  "strategy": "manual-commit",
+  "branch": "claude/wallet-ia-phase-3-alarm-6f826e",
+  "checkpoints_count": 1,
+  "files_touched": [
+    "apps/identity-wallet/src/lib/components/home/ProtectionScreen.svelte",
+    "apps/identity-wallet/src/lib/components/ui/ScreenHeader.svelte",
+    "apps/identity-wallet/src/routes/+page.svelte"
+  ],
+  "sessions": [
+    {
+      "metadata": "/a3/8aeff867ec/0/metadata.json",
+      "transcript": "/a3/8aeff867ec/0/full.jsonl",
+      "compact_transcript": "/a3/8aeff867ec/0/transcript.jsonl",
+      "content_hash": "/a3/8aeff867ec/0/content_hash.txt",
+      "prompt": "/a3/8aeff867ec/0/prompt.txt"
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 72,
+    "cache_creation_tokens": 235823,
+    "cache_read_tokens": 9570071,
+    "output_tokens": 15191,
+    "api_call_count": 38
+  }
+}
