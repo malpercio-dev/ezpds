@@ -9,7 +9,8 @@
   import { composeDidWebDocument, didWebDocumentUrl, serializeDidWebDocument, type DidWebHosting } from '$lib/did-web';
   import { shareDidDocument } from '$lib/share';
 
-  let { domain, handle, password, hosting, onsuccess, onback }: { domain: string; handle: string; password: string; hosting: DidWebHosting; onsuccess: (result: DIDCeremonyResult) => void; onback: () => void } = $props();
+  // `password` is `null` for a passwordless account; the field is then omitted from the request.
+  let { domain, handle, password, hosting, onsuccess, onback }: { domain: string; handle: string; password: string | null; hosting: DidWebHosting; onsuccess: (result: DIDCeremonyResult) => void; onback: () => void } = $props();
   let document = $state<Record<string, unknown> | null>(null);
   let rendered = $state('');
   let error = $state('');

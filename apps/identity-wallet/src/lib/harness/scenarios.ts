@@ -20,6 +20,7 @@ import {
 /** The canonical wallet scenario names. */
 export type ScenarioName =
   | 'fresh-install'
+  | 'passwordless-signup'
   | 'foreign-pds'
   | 'unreachable-pds'
   | 'one-identity'
@@ -48,6 +49,25 @@ export const DEFAULT_SCENARIO: ScenarioName = 'one-identity';
 /** Every scenario builder, keyed by name. */
 export const scenarios: Record<ScenarioName, () => WalletState> = {
   'fresh-install': () => emptyWalletState(),
+
+  /**
+   * A first launch pointed at a Custos running with `accounts.password_optional` on, so it
+   * advertises `optionalPassword` and the create flow never asks for a password: the handle
+   * step submits directly, and `PasswordScreen` is not part of the flow at all.
+   *
+   * Deliberately a separate scenario rather than a capability added to `emptyWalletState`.
+   * The flag is off by default on the server, so the default fixture keeps matching a stock
+   * deployment — and every other scenario (and the docs screenshots built from them) keeps
+   * exercising the with-password path, which is still what most hosts do.
+   */
+  'passwordless-signup': () => {
+    const state = emptyWalletState();
+    state.pdsCapabilities = {
+      ...state.pdsCapabilities,
+      capabilities: [...state.pdsCapabilities.capabilities, 'optionalPassword'],
+    };
+    return state;
+  },
 
   /**
    * A first launch pointed at a spec-compliant, non-Custos PDS: it advertises no Custos

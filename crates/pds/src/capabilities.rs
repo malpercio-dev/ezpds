@@ -101,6 +101,15 @@ pub const CAPABILITIES: &[Capability] = &[
         enabled: |_| true,
     },
     Capability {
+        name: "optionalPassword",
+        control: "accounts.password_optional",
+        summary: "An account can be created here with no password at all, authenticating thereafter with its device key.",
+        // Mirrors the gate `create_did`/`createAccount` apply to an omitted password. A client
+        // that reads this and omits the field must actually succeed, so the predicate is the
+        // config flag itself — never a broader "this is Custos" condition.
+        enabled: |config| config.accounts.password_optional,
+    },
+    Capability {
         name: "didWebHosting",
         control: CONTROL_ALWAYS,
         summary: "Custos serves an opted-in account's did:web document at the account's own domain and propagates edits to relays.",

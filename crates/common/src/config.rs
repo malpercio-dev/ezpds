@@ -337,6 +337,23 @@ pub struct AccountsConfig {
     /// period, so a zero value is allowed.
     #[serde(default = "default_child_deletion_grace_secs")]
     pub child_deletion_grace_secs: u64,
+
+    /// Allow accounts to be created with no password at all (the `optionalPassword`
+    /// capability). Default `false`.
+    ///
+    /// When enabled, a client may *omit* the password field entirely at account creation and the
+    /// account is stored with a NULL `password_hash` — authenticating thereafter through the
+    /// device-key paths (wallet-confirmed OAuth consent, sovereign sessions) and through app
+    /// passwords for standard ATProto clients. An empty-string password is always rejected
+    /// regardless of this setting: it is indistinguishable from an uninitialized field, and
+    /// creating a passwordless account from what is probably a client bug is not a guess worth
+    /// making.
+    ///
+    /// Off by default because a passwordless account depends on device-key custody the operator
+    /// cannot verify on the account holder's behalf: a deployment whose users are not all running
+    /// a wallet should keep the password required.
+    #[serde(default)]
+    pub password_optional: bool,
 }
 
 impl Default for AccountsConfig {
@@ -344,6 +361,7 @@ impl Default for AccountsConfig {
         Self {
             deletion_reaper_interval_secs: default_deletion_reaper_interval_secs(),
             child_deletion_grace_secs: default_child_deletion_grace_secs(),
+            password_optional: false,
         }
     }
 }
@@ -1616,6 +1634,9 @@ pub(crate) fn apply_env_overrides(
         raw.accounts.child_deletion_grace_secs =
             parse_u64("EZPDS_ACCOUNTS_CHILD_DELETION_GRACE_SECS", v)?;
     }
+    if let Some(v) = env.get("EZPDS_ACCOUNTS_PASSWORD_OPTIONAL") {
+        raw.accounts.password_optional = parse_bool_env("EZPDS_ACCOUNTS_PASSWORD_OPTIONAL", v)?;
+    }
     if let Some(v) = env.get("EZPDS_RECOVERY_RELEASE_DELAY_SECS") {
         raw.recovery.release_delay_secs = parse_u64("EZPDS_RECOVERY_RELEASE_DELAY_SECS", v)?;
     }
@@ -2769,6 +2790,26 @@ mod tests {
         let raw = apply_env_overrides(minimal_raw(), &env).unwrap();
         let config = validate_and_build(raw).unwrap();
         assert!(config.agent_auth.service_auth_enabled);
+    }
+
+    /// Passwordless account creation is off unless an operator asks for it: a stock deployment
+    /// must keep requiring a password, since it cannot verify device-key custody on the account
+    /// holder's behalf.
+    #[test]
+    fn password_optional_defaults_to_disabled() {
+        let config = validate_and_build(minimal_raw()).unwrap();
+        assert!(!config.accounts.password_optional);
+    }
+
+    #[test]
+    fn password_optional_env_override_enables() {
+        let env = HashMap::from([(
+            "EZPDS_ACCOUNTS_PASSWORD_OPTIONAL".to_string(),
+            "true".to_string(),
+        )]);
+        let raw = apply_env_overrides(minimal_raw(), &env).unwrap();
+        let config = validate_and_build(raw).unwrap();
+        assert!(config.accounts.password_optional);
     }
 
     #[test]

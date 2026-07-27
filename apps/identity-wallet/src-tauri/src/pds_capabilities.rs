@@ -50,6 +50,8 @@ pub mod capability {
     pub const WALLET_CONSENT: &str = "walletConsent";
     /// Custos-managed hosting of an account's did:web document.
     pub const DID_WEB_HOSTING: &str = "didWebHosting";
+    /// An account can be created with no password at all.
+    pub const OPTIONAL_PASSWORD: &str = "optionalPassword";
 }
 
 /// One host's advertised capabilities, as read from its describeServer response.
@@ -122,6 +124,14 @@ impl ServerCapabilities {
     /// Does this host serve an opted-in account's did:web document?
     pub fn did_web_hosting(&self) -> bool {
         self.has(capability::DID_WEB_HOSTING)
+    }
+
+    /// May an account be created here without a password? When false — including for a host that
+    /// could not be asked — the create flow must still collect one, which is the safe direction:
+    /// a password sent to a host that would have allowed omitting it still creates a working
+    /// account, whereas omitting it against a host that requires one fails the ceremony outright.
+    pub fn optional_password(&self) -> bool {
+        self.has(capability::OPTIONAL_PASSWORD)
     }
 }
 

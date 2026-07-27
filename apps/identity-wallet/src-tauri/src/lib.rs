@@ -82,7 +82,13 @@ struct CreateDidRequest {
     #[serde(skip_serializing_if = "Option::is_none")]
     did_web_document: Option<String>,
     /// Initial password stored as an argon2id PHC string by the PDS.
-    password: String,
+    ///
+    /// `None` omits the field entirely (hence `skip_serializing_if`, not a `null`), which is how a
+    /// passwordless account is requested — a host advertising `optionalPassword` accepts it, and
+    /// any other host rejects it rather than silently creating a credential-less account. Never
+    /// send `Some("")`: the server refuses an empty string under either policy.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    password: Option<String>,
     /// did:key of the wallet-derived recovery rotation key (client-share ceremony;
     /// did:plc only). Sent together with `escrow_share`, never alone.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -500,7 +506,7 @@ async fn fetch_repo_signing_key(
 #[tauri::command]
 async fn perform_did_ceremony(
     handle: String,
-    password: String,
+    password: Option<String>,
     state: tauri::State<'_, oauth::AppState>,
 ) -> Result<DIDCeremonyResult, DIDCeremonyError> {
     let context = load_did_ceremony_context()?;
@@ -714,7 +720,7 @@ async fn prepare_did_web_ceremony(
 /// Verify a published did:web document, promote the account, and persist recovery state.
 async fn complete_did_web_ceremony(
     document_text: String,
-    password: String,
+    password: Option<String>,
     enable_managed_hosting: bool,
     state: tauri::State<'_, oauth::AppState>,
 ) -> Result<DIDCeremonyResult, DIDCeremonyError> {

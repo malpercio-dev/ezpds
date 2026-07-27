@@ -58,7 +58,7 @@
   import SettingsScreen from '$lib/components/home/SettingsScreen.svelte';
   import RemoveIdentityScreen from '$lib/components/home/RemoveIdentityScreen.svelte';
   import PasswordUnlockDialog from '$lib/components/home/PasswordUnlockDialog.svelte';
-  import { createAccount, confirmShareBackup, confirmRekey, confirmSelfHeldKit, selfHeldKitInProgress, getPdsCapabilities, confirmRecoveryBackup, getPendingRecoveryEpilogue, registerCreatedIdentity, importDidWebIdentity, listIdentities, listPendingRemovals, getStoredDidDoc, checkIdentityStatus, getBlobBackupStatus, runBlobBackup, getRepoBackupStatus, runRepoBackup, isCodedError, type CreateAccountError, type OAuthError, type IdentityInfo, type VerifiedClaimOp, type ClaimResult, type RekeyResult, type SelfHeldKitResult, type UnauthorizedChange, type CollectedShare } from '$lib/ipc';
+  import { createAccount, confirmShareBackup, confirmRekey, confirmSelfHeldKit, selfHeldKitInProgress, getPdsCapabilities, hasPdsCapability, confirmRecoveryBackup, getPendingRecoveryEpilogue, registerCreatedIdentity, importDidWebIdentity, listIdentities, listPendingRemovals, getStoredDidDoc, checkIdentityStatus, getBlobBackupStatus, runBlobBackup, getRepoBackupStatus, runRepoBackup, isCodedError, type CreateAccountError, type PdsCapabilities, type OAuthError, type IdentityInfo, type VerifiedClaimOp, type ClaimResult, type RekeyResult, type SelfHeldKitResult, type UnauthorizedChange, type CollectedShare } from '$lib/ipc';
   import { authenticateBiometric } from '$lib/biometric';
   import { normalizePlcDocToW3c, extractHandle, extractPdsFromPlcDoc } from '$lib/did-doc-utils';
   import IdentityListHome from '$lib/components/home/IdentityListHome.svelte';
@@ -159,6 +159,13 @@
   // the explanation can name it. Both the did:plc and did:web create paths pass through
   // `pds_config`, so this one gate covers each of them.
   let createUnavailablePdsUrl = $state('');
+  // What the configured host advertises, captured by the `pds_config` gate's probe so later
+  // steps read the answer instead of re-asking mid-flow.
+  let hostCapabilities = $state<PdsCapabilities | null>(null);
+  // Does this host let an account be created with no password? Drives whether `password` is a
+  // step at all. A host that advertises nothing — including one that could not be reached —
+  // reads as `false`, so the flow collects a password, which works against every server.
+  let passwordOptional = $derived(hasPdsCapability(hostCapabilities, 'optionalPassword'));
 
   // ── Import flow state ────────────────────────────────────────────────────────
   let identityInfo = $state<IdentityInfo | null>(null);
@@ -406,6 +413,25 @@
     }
   }
 
+  /**
+   * Report a submit failure on whichever step the user last typed into.
+   *
+   * The failures below are not about any one field, so they surface on the step the user was
+   * on when they pressed Continue — `password` normally, but `handle` when this host takes
+   * passwordless accounts and the password step never existed. Routing them to `password`
+   * unconditionally would strand a passwordless signup on a screen the flow does not include,
+   * with no way back.
+   */
+  function failToLastInputStep(message: string) {
+    if (passwordOptional) {
+      errors.handle = message;
+      step = 'handle';
+    } else {
+      errors.password = message;
+      step = 'password';
+    }
+  }
+
   function handleError(err: CreateAccountError) {
     switch (err.code) {
       case 'EXPIRED_CODE':
@@ -425,17 +451,14 @@
         step = 'handle';
         break;
       case 'KEYCHAIN_ERROR':
-        errors.password = "Couldn't save credentials to your device. Try again.";
-        step = 'password';
+        failToLastInputStep("Couldn't save credentials to your device. Try again.");
         break;
       case 'NETWORK_ERROR':
-        errors.password = "Couldn't reach the server. Check your connection.";
-        step = 'password';
+        failToLastInputStep("Couldn't reach the server. Check your connection.");
         break;
       case 'UNKNOWN':
       default:
-        errors.password = 'Something went wrong. Please try again.';
-        step = 'password';
+        failToLastInputStep('Something went wrong. Please try again.');
         break;
     }
   }
@@ -669,7 +692,10 @@
     />
   {:else if step === 'pds_config'}
     <PdsConfigScreen
-      onnext={() => goTo('claim_code')}
+      onnext={(capabilities) => {
+        hostCapabilities = capabilities;
+        goTo('claim_code');
+      }}
       oncreateunavailable={(pdsUrl) => {
         createUnavailablePdsUrl = pdsUrl;
         goTo('create_unavailable');
@@ -701,7 +727,7 @@
     <HandleScreen
       bind:value={form.handle}
       error={errors.handle}
-      onnext={() => goTo('password')}
+      onnext={() => (passwordOptional ? submitAccount() : goTo('password'))}
       onback={() => goTo('email')}
     />
   {:else if step === 'password'}
@@ -716,17 +742,17 @@
   {:else if step === 'did_ceremony'}
     <DIDCeremonyScreen
       handle={form.handle}
-      password={form.password}
+      password={passwordOptional ? null : form.password}
       onsuccess={(result) => { form.did = result.did; form.share3 = result.share3; form.share3Words = result.share3Words; step = 'did_success'; }}
     />
   {:else if step === 'did_web_ceremony'}
     <DidWebCeremonyScreen
       domain={didWebDomain}
       handle={form.handle}
-      password={form.password}
+      password={passwordOptional ? null : form.password}
       hosting={didWebHosting}
       onsuccess={(result) => { form.did = result.did; form.share3 = result.share3; form.share3Words = result.share3Words; step = 'did_success'; }}
-      onback={() => goTo('password')}
+      onback={() => goTo(passwordOptional ? 'handle' : 'password')}
     />
   {:else if step === 'did_success'}
     <DIDSuccessScreen
