@@ -250,12 +250,27 @@ async fn run_notification_keys(
             );
         }
         NotificationKeysCommand::Retire { kid } => {
-            store::retire_sender_key(&pool, kid).await?;
-            println!("kid {kid} retired: still published for verification, no longer seals");
+            if store::retire_sender_key(&pool, kid).await? {
+                println!("kid {kid} retired: still published for verification, no longer seals");
+            } else {
+                anyhow::bail!(
+                    "no active sender key with kid {kid} (unknown, or already retired); \
+                     `pds notification-keys list` shows the current set"
+                );
+            }
         }
         NotificationKeysCommand::Revoke { kid } => {
-            store::revoke_sender_key(&pool, kid).await?;
-            println!("kid {kid} revoked: removed from the published set");
+            // Failing loudly matters most here: an operator revoking a key believes they have
+            // just closed a compromise, and a silent no-op on a mistyped kid would leave the
+            // real key published while reading as success.
+            if store::revoke_sender_key(&pool, kid).await? {
+                println!("kid {kid} revoked: removed from the published set");
+            } else {
+                anyhow::bail!(
+                    "no published sender key with kid {kid} (unknown, or already revoked); \
+                     `pds notification-keys list` shows the current set"
+                );
+            }
         }
     }
     Ok(())

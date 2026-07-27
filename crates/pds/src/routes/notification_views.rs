@@ -100,7 +100,19 @@ pub(crate) async fn sender_keys_response(state: &AppState) -> Result<SenderKeysR
         .await
         .map_err(|e| {
             tracing::error!(error = %e, "failed to load notification sender keys");
-            ApiError::new(ErrorCode::InternalError, "failed to load sender keys")
+            match e {
+                // Distinct from the 501 above: the operator *has* opted into notifications,
+                // but the instance cannot mint or unwrap the keys that make them verifiable.
+                // A 503 says "configured but not currently able", which is the truth, and
+                // keeps a client from pinning an empty set and silently trusting nothing.
+                crate::notifications::SenderKeyError::NoMasterKey => ApiError::new(
+                    ErrorCode::ServiceUnavailable,
+                    "notifications are configured but the signing-key master key is not set",
+                ),
+                crate::notifications::SenderKeyError::Db(_) => {
+                    ApiError::new(ErrorCode::InternalError, "failed to load sender keys")
+                }
+            }
         })?;
 
     Ok(SenderKeysResponse {

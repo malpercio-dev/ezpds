@@ -395,9 +395,20 @@ async fn drop_notification_registration(state: &AppState, device_id: &str) {
 
     // Read the handle with the status-independent query: the device is already tombstoned by
     // the time this runs, so the active-only fan-out query would find nothing.
-    let handle = store::admin_registration_handle(&state.db, device_id)
-        .await
-        .unwrap_or_default();
+    let handle = match store::admin_registration_handle(&state.db, device_id).await {
+        Ok(handle) => handle,
+        Err(e) => {
+            // A failed read is not "no handle". Deleting the row anyway would destroy the only
+            // record of the handle, leaving the relay with a live route to a device the
+            // operator just cut off and no way for a retry to find it. Leave the row so a
+            // repeat revoke can still complete the cleanup.
+            tracing::error!(
+                error = %e, %device_id,
+                "could not read the admin notification handle; leaving the registration in                  place so a retry can still drop it at the relay"
+            );
+            return;
+        }
+    };
 
     if let Err(e) = store::delete_admin_registration(&state.db, device_id).await {
         tracing::warn!(error = %e, %device_id, "failed to delete an admin notification registration");

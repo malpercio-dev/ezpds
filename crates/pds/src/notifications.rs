@@ -24,6 +24,7 @@
 // turned a courtesy into an outage.
 
 use serde::Serialize;
+use zeroize::Zeroizing;
 
 use crate::app::AppState;
 use crate::db::notifications as store;
@@ -246,7 +247,7 @@ const P256_POINT_LEN: usize = 65;
 /// Lazy generation rather than a startup step: an instance that has notifications configured
 /// but never sends one should not mint key material, and the first send is the earliest
 /// moment the key is genuinely needed.
-async fn active_sender_key(state: &AppState) -> Option<(i64, [u8; 32])> {
+async fn active_sender_key(state: &AppState) -> Option<(i64, Zeroizing<[u8; 32]>)> {
     let master_key = master_key(state)?;
 
     let existing = match store::get_active_sender_key(&state.db).await {
@@ -274,7 +275,7 @@ async fn active_sender_key(state: &AppState) -> Option<(i64, [u8; 32])> {
 pub(crate) async fn generate_sender_key(
     state: &AppState,
     master_key: &[u8; 32],
-) -> Option<(i64, [u8; 32])> {
+) -> Option<(i64, Zeroizing<[u8; 32]>)> {
     let keypair = match crypto::generate_p256_keypair() {
         Ok(keypair) => keypair,
         Err(e) => {
@@ -282,8 +283,11 @@ pub(crate) async fn generate_sender_key(
             return None;
         }
     };
-    let secret: [u8; 32] = *keypair.private_key_bytes;
-    let wrapped = match crypto::encrypt_secret_bytes(&secret, master_key) {
+    // Stays in `Zeroizing` the whole way. The crypto crate deliberately hands back a wiped-on-
+    // drop buffer, and copying out into a bare `[u8; 32]` would silently discard that — leaving
+    // the instance's sender scalar in freed memory on every send.
+    let secret = keypair.private_key_bytes.clone();
+    let wrapped = match crypto::encrypt_secret_bytes(&*secret, master_key) {
         Ok(wrapped) => wrapped,
         Err(e) => {
             tracing::error!(error = %e, "failed to wrap a notification sender key");
@@ -308,25 +312,33 @@ pub(crate) async fn generate_sender_key(
 /// as well as on send matters for onboarding order: an app that fetches the set before the
 /// instance has ever sent anything would otherwise pin an empty set and be unable to verify
 /// the first notification it receives.
-pub async fn published_sender_keys(state: &AppState) -> Result<Vec<(i64, String)>, sqlx::Error> {
-    let master_key = master_key(state);
+pub async fn published_sender_keys(state: &AppState) -> Result<Vec<(i64, String)>, SenderKeyError> {
+    // No master key means no key can be minted *or* unwrapped, so the honest answer is an
+    // error, not an empty set. Answering `200 {"keys": []}` would let a client conclude it has
+    // successfully pinned nothing — and then fail to verify every notification it receives,
+    // with only a server-side warning to explain it. This is a misconfiguration; it should be
+    // as visible as one.
+    let master_key = master_key(state).ok_or(SenderKeyError::NoMasterKey)?;
 
     let mut rows = store::list_publishable_sender_keys(&state.db).await?;
     if rows.is_empty() {
-        if let Some(master_key) = master_key {
-            if generate_sender_key(state, master_key).await.is_some() {
-                rows = store::list_publishable_sender_keys(&state.db).await?;
-            }
-        }
+        generate_sender_key(state, master_key).await;
+        rows = store::list_publishable_sender_keys(&state.db).await?;
     }
 
     Ok(rows
         .into_iter()
         .filter_map(|row| {
-            let master_key = master_key?;
+            // An individual row that will not unwrap is skipped rather than fatal: it is a
+            // key this instance can no longer use, and dropping it from the published set is
+            // exactly right — but it must not take the still-good keys down with it.
             let secret = crypto::decrypt_secret_bytes(&row.secret_key_encrypted, master_key)
                 .ok()
-                .and_then(|bytes| to_scalar(&bytes))?;
+                .and_then(|bytes| to_scalar(&bytes))
+                .or_else(|| {
+                    tracing::error!(kid = row.kid, "a stored sender key will not unwrap");
+                    None
+                })?;
             // Re-derive the public half rather than storing it: one stored secret cannot
             // disagree with a separately stored public key if there is no separately stored
             // public key.
@@ -336,16 +348,27 @@ pub async fn published_sender_keys(state: &AppState) -> Result<Vec<(i64, String)
         .collect())
 }
 
-fn master_key(state: &AppState) -> Option<&[u8; 32]> {
-    let key = state.config.signing_key_master_key.as_ref().map(|s| &*s.0);
-    if key.is_none() {
-        tracing::warn!("notifications are configured but no master key is set; nothing to seal");
-    }
-    key
+/// Why the published sender-key set could not be produced.
+#[derive(Debug, thiserror::Error)]
+pub enum SenderKeyError {
+    #[error("notifications are configured but no signing-key master key is set")]
+    NoMasterKey,
+    #[error(transparent)]
+    Db(#[from] sqlx::Error),
 }
 
-fn to_scalar(bytes: &[u8]) -> Option<[u8; 32]> {
-    bytes.try_into().ok()
+/// The master KEK, if configured. Callers report its absence — logging here would emit a line
+/// per request on the read path, where the caller already turns it into a visible error.
+fn master_key(state: &AppState) -> Option<&[u8; 32]> {
+    state.config.signing_key_master_key.as_ref().map(|s| &*s.0)
+}
+
+/// Narrow a decrypted secret to a 32-byte scalar without leaving `Zeroizing`.
+///
+/// `decrypt_secret_bytes` returns a `Zeroizing<Vec<u8>>`; converting through a bare array
+/// would drop the wipe-on-drop guarantee for the copy, so the result is re-wrapped instead.
+fn to_scalar(bytes: &[u8]) -> Option<Zeroizing<[u8; 32]>> {
+    <[u8; 32]>::try_from(bytes).ok().map(Zeroizing::new)
 }
 
 fn base64url(bytes: &[u8]) -> String {

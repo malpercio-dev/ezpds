@@ -57,4 +57,7 @@ docs {
 
   - `401` — missing/invalid access token
   - `501` — this instance has no `[notifications] relay` configured
+  - `503` — a relay *is* configured but no signing-key master key is set, so the instance can
+    neither mint nor unwrap its sender keys. Deliberately an error rather than an empty set: a
+    client that pinned nothing would fail to verify every notification it later received
 }

@@ -260,13 +260,20 @@ async fn a_notification_travels_from_custos_through_the_relay_to_a_device_that_o
 
     // Apple's first request is the registration-time nothing; the push is the one with a body
     // carrying our envelope. Wait for it rather than assuming ordering.
-    let body = await_condition("the pushed APNs body", || async {
+    // Keep the raw byte length alongside the parsed value: the padding assertion below has to
+    // measure what actually crossed the wire, since parse-and-reserialize could normalize away
+    // the very size drift it is there to catch.
+    let (serialized_len, body) = await_condition("the pushed APNs body", || async {
         apple
             .received_requests()
             .await
             .unwrap_or_default()
             .into_iter()
-            .find_map(|req| serde_json::from_slice::<serde_json::Value>(&req.body).ok())
+            .find_map(|req| {
+                serde_json::from_slice::<serde_json::Value>(&req.body)
+                    .ok()
+                    .map(|parsed| (req.body.len(), parsed))
+            })
     })
     .await;
 
@@ -281,10 +288,11 @@ async fn a_notification_travels_from_custos_through_the_relay_to_a_device_that_o
         "the envelope must name the key the instance published"
     );
 
-    // The serialized body must sit exactly on a padding bucket — this is the assertion that
-    // catches the two crates disagreeing about the envelope's shape, because Custos computed
-    // the pad against its own model of these very bytes.
-    let serialized_len = serde_json::to_vec(&body).expect("re-serialize").len();
+    // The body Apple received must sit on a padding bucket — the assertion that catches the two
+    // crates disagreeing about the envelope's shape, since Custos computed the pad against its
+    // own model of these very bytes. The one-byte tolerance is not slack: base64's four-chars-
+    // per-three-bytes step makes some bucket targets unreachable, so `plaintext_pad_len`
+    // documents (and its own tests pin) landing on the bucket or one byte under it.
     assert!(
         crypto::PADDING_BUCKETS.contains(&serialized_len)
             || crypto::PADDING_BUCKETS.contains(&(serialized_len + 1)),

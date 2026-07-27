@@ -129,6 +129,11 @@ pub async fn unregister_notifications(
 ) -> Result<Json<UnregisterResponse>, ApiError> {
     let user = authenticate_access(&headers, &method, &uri, &state)?;
 
+    // Deliberately *not* gated on `require_notifications_enabled`, unlike register and
+    // sender-keys. An operator who removes the relay config leaves registrations behind; the
+    // one thing a device should still be able to do is disown its own row and have the relay
+    // told to drop the handle. Gating this would strand exactly the rows most worth removing.
+
     // Read the row before deleting so the relay handle can be dropped too — otherwise the
     // relay keeps forwarding to a device this account has explicitly disowned.
     let handle = store::list_registrations(&state.db, &user.did)
@@ -505,6 +510,39 @@ mod tests {
             crypto::p256_public_key_from_did_key(key["publicKey"].as_str().unwrap())
                 .expect("published key must decode");
         }
+    }
+
+    /// A relay configured without a master key cannot mint or unwrap sender keys. It must say
+    /// so, rather than answer 200 with an empty set — a client that pinned nothing would then
+    /// fail to verify every notification it received, with no way to tell why.
+    #[tokio::test]
+    async fn a_configured_instance_without_a_master_key_refuses_to_publish_an_empty_set() {
+        let mut state = state_with_notifications().await;
+        let mut config = (*state.config).clone();
+        config.signing_key_master_key = None;
+        state.config = Arc::new(config);
+        seed_account(&state, "did:plc:notifroutes").await;
+
+        let auth = format!("Bearer {}", token(&state, "did:plc:notifroutes"));
+        let (status, body) = call(
+            state.clone(),
+            Request::get("/v1/notifications/sender-keys")
+                .header("authorization", auth)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+
+        // 503, not the 501 an unconfigured instance returns: the operator *has* opted in, the
+        // instance simply cannot serve the keys right now.
+        assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE, "{body}");
+        assert!(
+            body["error"]["message"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("master key"),
+            "the error must name the missing master key: {body}"
+        );
     }
 
     /// An app that fetches the set before the instance has ever sent anything must still get

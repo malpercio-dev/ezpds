@@ -53,8 +53,9 @@ zeroize = { workspace = true }
 hickory-resolver = { workspace = true }
 iroh = { workspace = true }
 # The notification relay's wire protocol, shared rather than mirrored: the pds is the client
-# of the `ezpds/notify/0` ALPN this crate's library defines. Only `protocol` is exposed — the
-# relay's store and APNs client stay private to its binary.
+# of the `ezpds/notify/0` ALPN this crate's library defines. Production code here touches only
+# `protocol`; the relay's store, service, and APNs client are reachable too (the loopback e2e
+# drives a real relay in-process) and are deliberately untouched outside that test.
 notify-relay = { workspace = true }
 jsonwebtoken = { workspace = true }
 p256 = { workspace = true }

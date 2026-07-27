@@ -93,27 +93,35 @@ pub async fn insert_sender_key(
 
 /// Retire a key: stop sealing with it, keep publishing it so already-delivered payloads still
 /// verify. Idempotent — the guard keeps the original retirement timestamp.
-pub async fn retire_sender_key(pool: &SqlitePool, kid: i64) -> Result<(), sqlx::Error> {
-    sqlx::query(
+///
+/// Reports whether this call actually transitioned a row, so a caller can tell a real
+/// retirement from a no-op on an unknown or already-retired `kid`. The operator CLI prints the
+/// difference: without it, a mistyped `kid` reads as success.
+pub async fn retire_sender_key(pool: &SqlitePool, kid: i64) -> Result<bool, sqlx::Error> {
+    let result = sqlx::query(
         "UPDATE notification_sender_keys SET retired_at = datetime('now') \
          WHERE kid = ? AND retired_at IS NULL",
     )
     .bind(kid)
     .execute(pool)
     .await?;
-    Ok(())
+    Ok(result.rows_affected() > 0)
 }
 
 /// Revoke a key: remove it from the published set immediately. Idempotent.
-pub async fn revoke_sender_key(pool: &SqlitePool, kid: i64) -> Result<(), sqlx::Error> {
-    sqlx::query(
+///
+/// Reports whether this call transitioned a row, for the same reason [`retire_sender_key`]
+/// does — and it matters more here, since an operator revoking a key believes they have just
+/// closed a compromise.
+pub async fn revoke_sender_key(pool: &SqlitePool, kid: i64) -> Result<bool, sqlx::Error> {
+    let result = sqlx::query(
         "UPDATE notification_sender_keys SET revoked_at = datetime('now') \
          WHERE kid = ? AND revoked_at IS NULL",
     )
     .bind(kid)
     .execute(pool)
     .await?;
-    Ok(())
+    Ok(result.rows_affected() > 0)
 }
 
 // ── Registrations ─────────────────────────────────────────────────────────────
@@ -186,6 +194,13 @@ pub async fn list_registrations(
 }
 
 /// Record the relay handle a registration was assigned. No-op if the row is gone.
+///
+/// Deliberately **unconditional** — no `push_handle IS NULL` guard. The send worker is a
+/// single task draining a FIFO queue and awaiting each job to completion, so handle writes
+/// land in registration order and the last one is by construction the newest. That ordering
+/// is load-bearing: a guarded write would reject the *second* of two re-registrations
+/// (the first job's handle is already stored by then), stranding the handle for the
+/// superseded APNs token — the exact staleness a guard looks like it would prevent.
 pub async fn set_registration_handle(
     pool: &SqlitePool,
     did: &str,
@@ -293,6 +308,8 @@ pub async fn admin_registration_handle(
 }
 
 /// Record the relay handle an admin registration was assigned.
+///
+/// Unconditional for the same reason as [`set_registration_handle`] — one FIFO worker.
 pub async fn set_admin_registration_handle(
     pool: &SqlitePool,
     admin_device_id: &str,
@@ -413,23 +430,76 @@ mod tests {
     async fn retire_and_revoke_are_idempotent() {
         let pool = pool().await;
         let kid = insert_sender_key(&pool, "wrapped").await.unwrap();
-        retire_sender_key(&pool, kid).await.unwrap();
+        assert!(retire_sender_key(&pool, kid).await.unwrap());
         let first: Option<String> =
             sqlx::query_scalar("SELECT retired_at FROM notification_sender_keys WHERE kid = ?")
                 .bind(kid)
                 .fetch_one(&pool)
                 .await
                 .unwrap();
-        retire_sender_key(&pool, kid).await.unwrap();
-        revoke_sender_key(&pool, kid).await.unwrap();
-        revoke_sender_key(&pool, kid).await.unwrap();
-        let again: Option<String> =
-            sqlx::query_scalar("SELECT retired_at FROM notification_sender_keys WHERE kid = ?")
+        assert!(
+            !retire_sender_key(&pool, kid).await.unwrap(),
+            "a repeat retire transitions nothing"
+        );
+
+        assert!(revoke_sender_key(&pool, kid).await.unwrap());
+        let revoked_first: Option<String> =
+            sqlx::query_scalar("SELECT revoked_at FROM notification_sender_keys WHERE kid = ?")
                 .bind(kid)
                 .fetch_one(&pool)
                 .await
                 .unwrap();
+        assert!(
+            !revoke_sender_key(&pool, kid).await.unwrap(),
+            "a repeat revoke transitions nothing"
+        );
+
+        let (again, revoked_again): (Option<String>, Option<String>) = sqlx::query_as(
+            "SELECT retired_at, revoked_at FROM notification_sender_keys WHERE kid = ?",
+        )
+        .bind(kid)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
         assert_eq!(first, again, "a repeat retire must not move the timestamp");
+        assert_eq!(
+            revoked_first, revoked_again,
+            "a repeat revoke must not move the timestamp"
+        );
+    }
+
+    /// An unknown kid must report that it changed nothing — the operator CLI turns this into a
+    /// loud failure, so a mistyped kid cannot read as a successful revocation.
+    #[tokio::test]
+    async fn retiring_or_revoking_an_unknown_key_reports_no_transition() {
+        let pool = pool().await;
+        assert!(!retire_sender_key(&pool, 9999).await.unwrap());
+        assert!(!revoke_sender_key(&pool, 9999).await.unwrap());
+    }
+
+    /// The revoke cleanup runs *after* the device tombstone is stamped, so this lookup must
+    /// stay status-independent — scoping it to active devices would silently find nothing and
+    /// leave the relay holding a route to a cut-off device.
+    #[tokio::test]
+    async fn an_admin_handle_is_still_readable_after_the_device_is_revoked() {
+        let pool = pool().await;
+        seed_admin_device(&pool, "adm-1").await;
+        upsert_admin_registration(&pool, "adm-1", "pk", "tok", "org.obsign.admin")
+            .await
+            .unwrap();
+        set_admin_registration_handle(&pool, "adm-1", "handle-1")
+            .await
+            .unwrap();
+        sqlx::query("UPDATE admin_devices SET revoked_at = datetime('now') WHERE id = 'adm-1'")
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        assert_eq!(
+            admin_registration_handle(&pool, "adm-1").await.unwrap(),
+            Some("handle-1".to_owned()),
+            "the cleanup must still find the handle to drop at the relay"
+        );
     }
 
     #[tokio::test]
