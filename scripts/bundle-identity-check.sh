@@ -46,6 +46,14 @@ REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 #   [ ] BOTH App IDs (old and new) have the iCloud capability enabled with the SAME container
 #       id below. This is the step that carries the backups across, and it is easy to skip
 #       because the container will not match the new bundle id — that mismatch is correct.
+#   [ ] The NEW App ID has the Push Notifications capability enabled and its provisioning
+#       profile REGENERATED afterwards (the wallet's Entitlements.ios.plist carries
+#       `aps-environment`; a profile minted before the capability fails signing).
+#   [ ] The notification relay's `apns.topics` (EZPDS_NOTIFY_APNS_TOPICS) lists the NEW bundle
+#       id. An APNs topic IS the bundle id, so a rename silently orphans every push: the relay
+#       refuses to register a handle for an unserved topic, and the failure surfaces as
+#       notifications that simply never arrive. Keep the old id listed until no install on it
+#       remains — the relay serves both while the two coexist.
 #   [ ] The release notes / onboarding tell users to install the new app before deleting the
 #       old one. The app cannot enforce this.
 #
