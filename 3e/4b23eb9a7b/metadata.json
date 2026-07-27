@@ -1,0 +1,36 @@
+{
+  "cli_version": "0.8.42",
+  "checkpoint_id": "3e4b23eb9a7b",
+  "strategy": "manual-commit",
+  "branch": "claude/notify-custos-sender-impl-28afd0",
+  "checkpoints_count": 1,
+  "files_touched": [
+    "bruno/admin_notifications_sender_keys.bru",
+    "bruno/notifications_sender_keys.bru",
+    "crates/pds/AGENTS.md",
+    "crates/pds/Cargo.toml",
+    "crates/pds/src/db/notifications.rs",
+    "crates/pds/src/main.rs",
+    "crates/pds/src/notifications.rs",
+    "crates/pds/src/notify_e2e_test.rs",
+    "crates/pds/src/routes/admin_devices.rs",
+    "crates/pds/src/routes/notification_views.rs",
+    "crates/pds/src/routes/notifications.rs"
+  ],
+  "sessions": [
+    {
+      "metadata": "/3e/4b23eb9a7b/0/metadata.json",
+      "transcript": "/3e/4b23eb9a7b/0/full.jsonl",
+      "compact_transcript": "/3e/4b23eb9a7b/0/transcript.jsonl",
+      "content_hash": "/3e/4b23eb9a7b/0/content_hash.txt",
+      "prompt": "/3e/4b23eb9a7b/0/prompt.txt"
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 41,
+    "cache_creation_tokens": 464095,
+    "cache_read_tokens": 10213426,
+    "output_tokens": 21458,
+    "api_call_count": 22
+  }
+}
