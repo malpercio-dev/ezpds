@@ -599,6 +599,10 @@ mod tests {
     }
 
     async fn mount_audit_log(plc: &MockServer, rotation_keys: &[&str]) {
+        mount_audit_log_with_aka(plc, rotation_keys, "at://owner.example.com").await;
+    }
+
+    async fn mount_audit_log_with_aka(plc: &MockServer, rotation_keys: &[&str], aka: &str) {
         let log = json!([{
             "did": DID,
             "cid": "bafy-head",
@@ -609,7 +613,7 @@ mod tests {
                 "prev": null,
                 "rotationKeys": rotation_keys,
                 "verificationMethods": {},
-                "alsoKnownAs": ["at://owner.example.com"],
+                "alsoKnownAs": [aka],
                 "services": {}
             }
         }]);
@@ -971,6 +975,35 @@ mod tests {
                 REQUESTED_SCOPE,
                 now(),
                 8,
+            ),
+        )
+        .await;
+        assert_eq!(resp.status(), StatusCode::OK);
+    }
+
+    // Normalization has to reach both sides. `alsoKnownAs` is hand-authored — a did:web's document
+    // especially — so the account's asserted handle can carry any case, and normalizing only the
+    // hint would leave a legitimate binding silently refused.
+    #[tokio::test]
+    async fn login_hint_binds_a_mixed_case_asserted_handle() {
+        let plc = MockServer::start().await;
+        let state = setup(&plc).await;
+        let key = p256_key();
+        mount_audit_log_with_aka(&plc, &[&key.did], "at://Owner.Example.com").await;
+        let request_id = "poauth_hint_mixed_aka";
+        seed_pending(&state, request_id, Some("owner.example.com")).await;
+
+        let resp = post_json(
+            state.clone(),
+            "/oauth/authorize/approve",
+            approval_body(
+                &state,
+                &key,
+                request_id,
+                "approve",
+                REQUESTED_SCOPE,
+                now(),
+                11,
             ),
         )
         .await;

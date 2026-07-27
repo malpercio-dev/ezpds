@@ -36,6 +36,9 @@ impl AuthoritySet {
 
     /// Whether the account's authoritative state asserts `handle` in its `alsoKnownAs`.
     ///
+    /// `handle` must already be ASCII-lowercased; the stored set is normalized on the way in, so
+    /// the comparison is case-insensitive as atproto handles require.
+    ///
     /// This is only the *assertion* half of the atproto bidirectional handle rule. `alsoKnownAs` is
     /// writable by whoever controls the DID, so any account can claim any handle here; a caller
     /// binding a client-supplied handle to this account must also confirm the handle resolves back
@@ -45,12 +48,17 @@ impl AuthoritySet {
     }
 }
 
-/// Bare handles from a document's `alsoKnownAs` aliases. Non-`at://` aliases are not handles and
-/// are dropped rather than compared as-is.
+/// Bare, ASCII-lowercased handles from a document's `alsoKnownAs` aliases. Non-`at://` aliases are
+/// not handles and are dropped rather than compared as-is.
+///
+/// The case fold is load-bearing rather than cosmetic: `alsoKnownAs` is hand-authored — a did:web's
+/// document especially — so an account's asserted handle can carry any case, while atproto handles
+/// bind case-insensitively. Normalizing only the caller's side would silently refuse a legitimate
+/// binding whose document happens not to be lowercase.
 fn asserted_handles<'a>(aliases: impl Iterator<Item = &'a str>) -> Vec<String> {
     aliases
         .filter_map(|alias| alias.strip_prefix("at://"))
-        .map(ToString::to_string)
+        .map(str::to_ascii_lowercase)
         .collect()
 }
 
