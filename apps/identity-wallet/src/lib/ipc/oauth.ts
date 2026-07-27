@@ -20,6 +20,12 @@ export type OAuthError =
   | { code: 'NOT_AUTHENTICATED' };
 
 /**
+ * **Unused.** This drove the create-flow PDS login until that step was removed: the authorize
+ * page was unreachable for a passwordless account, and the session it minted was read by nothing
+ * (`AppState.oauth_session` has no readers, and every authenticated call resolves a per-DID
+ * session through `SessionProvider` instead). Kept alongside the rest of the wallet's OAuth-client
+ * machinery, which is tracked for retirement as a unit.
+ *
  * Drive the create-flow PDS login via the native in-app auth session (ASWebAuthenticationSession
  * on iOS, via the auth-session plugin). Three steps: `prepare_oauth_flow` (Rust) does PKCE + PAR
  * and returns the authorize URL; the plugin opens the in-app session and returns the

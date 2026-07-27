@@ -20,7 +20,6 @@
   import ShamirBackupScreen from '$lib/components/onboarding/ShamirBackupScreen.svelte';
   import HandleRegistrationScreen from '$lib/components/onboarding/HandleRegistrationScreen.svelte';
   import CreateRegistrationFailedScreen from '$lib/components/onboarding/CreateRegistrationFailedScreen.svelte';
-  import AuthenticatingScreen from '$lib/components/onboarding/AuthenticatingScreen.svelte';
   import IdentityInputScreen from '$lib/components/onboarding/IdentityInputScreen.svelte';
   import PdsAuthScreen from '$lib/components/onboarding/PdsAuthScreen.svelte';
   import EmailVerificationScreen from '$lib/components/onboarding/EmailVerificationScreen.svelte';
@@ -58,7 +57,7 @@
   import SettingsScreen from '$lib/components/home/SettingsScreen.svelte';
   import RemoveIdentityScreen from '$lib/components/home/RemoveIdentityScreen.svelte';
   import PasswordUnlockDialog from '$lib/components/home/PasswordUnlockDialog.svelte';
-  import { createAccount, confirmShareBackup, confirmRekey, confirmSelfHeldKit, selfHeldKitInProgress, getPdsCapabilities, hasPdsCapability, confirmRecoveryBackup, getPendingRecoveryEpilogue, registerCreatedIdentity, importDidWebIdentity, listIdentities, listPendingRemovals, getStoredDidDoc, checkIdentityStatus, getBlobBackupStatus, runBlobBackup, getRepoBackupStatus, runRepoBackup, isCodedError, type CreateAccountError, type PdsCapabilities, type OAuthError, type IdentityInfo, type VerifiedClaimOp, type ClaimResult, type RekeyResult, type SelfHeldKitResult, type UnauthorizedChange, type CollectedShare } from '$lib/ipc';
+  import { createAccount, confirmShareBackup, confirmRekey, confirmSelfHeldKit, selfHeldKitInProgress, getPdsCapabilities, hasPdsCapability, confirmRecoveryBackup, getPendingRecoveryEpilogue, registerCreatedIdentity, importDidWebIdentity, listIdentities, listPendingRemovals, getStoredDidDoc, checkIdentityStatus, getBlobBackupStatus, runBlobBackup, getRepoBackupStatus, runRepoBackup, isCodedError, type CreateAccountError, type PdsCapabilities, type IdentityInfo, type VerifiedClaimOp, type ClaimResult, type RekeyResult, type SelfHeldKitResult, type UnauthorizedChange, type CollectedShare } from '$lib/ipc';
   import { authenticateBiometric } from '$lib/biometric';
   import { normalizePlcDocToW3c, extractHandle, extractPdsFromPlcDoc } from '$lib/did-doc-utils';
   import IdentityListHome from '$lib/components/home/IdentityListHome.svelte';
@@ -93,7 +92,6 @@
     | 'handle_registration'
     | 'create_registration_failed'
     | 'complete'
-    | 'authenticating'
     | 'home'
     // The app-level Defend surface, opened from home's protection strip. Sits beside
     // `identity_detail` rather than under it: it is about the wallet, not one identity.
@@ -124,7 +122,6 @@
     | 'agent_approval'
     | 'oauth_consent_approval'
     | 'settings'
-    | 'auth_failed'
     | 'identity_input'
     | 'pds_auth'
     | 'email_verification'
@@ -183,8 +180,6 @@
   let errors = $state<{ claimCode?: string; email?: string; handle?: string; password?: string }>(
     {}
   );
-
-  let authError = $state<OAuthError | null>(null);
 
   let selectedDid = $state<string | null>(null);
   let selectedDidDoc = $state<Record<string, unknown> | null>(null);
@@ -381,7 +376,11 @@
     // PdsConfigScreen internally checks for saved PDS URL, so the "Create new
     // identity" path handles them correctly without additional logic here.
 
-    // Listen for auth_ready from PDS OAuth (existing onboarding flow).
+    // Vestigial: the create flow no longer runs an OAuth round trip, so nothing emits this
+    // on a fresh install. It still fires on relaunch for an install that completed the old
+    // flow and left global OAuth tokens in the Keychain, where it lands on the same `home`
+    // the listIdentities check above already chose. Retired with the rest of the wallet's
+    // unused OAuth-client machinery.
     listen('auth_ready', () => {
       goTo('home');
     });
@@ -792,7 +791,7 @@
       did={form.did}
       handle={form.registeredHandle}
       onregistered={() => { step = 'complete'; }}
-      oncontinue={() => goTo('authenticating')}
+      oncontinue={() => goTo('home')}
     />
 
   {:else if step === 'complete'}
@@ -806,18 +805,8 @@
           <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" /><path d="m9 11.5 2 2 4-4" /></svg>
         </SealEmblem>
       {/snippet}
-      <Button onclick={() => goTo('authenticating')}>Continue</Button>
+      <Button onclick={() => goTo('home')}>Continue</Button>
     </OnboardingShell>
-
-  {:else if step === 'authenticating'}
-    <AuthenticatingScreen
-      handle={form.registeredHandle}
-      onresolved={() => goTo('home')}
-      onfailed={(err) => {
-        authError = err;
-        goTo('auth_failed');
-      }}
-    />
 
   {:else if step === 'home'}
     <IdentityListHome
@@ -1273,14 +1262,6 @@
       onsuccess={() => goTo('home')}
     />
 
-  {:else if step === 'auth_failed'}
-    <OnboardingShell title="Authentication failed" subtitle="We couldn't complete authentication. Please try again.">
-      {#if authError}
-        <span class="code">Error code: {authError.code}</span>
-      {/if}
-      <Button onclick={() => { authError = null; goTo('authenticating'); }}>Try again</Button>
-      <Button variant="secondary" onclick={() => { authError = null; goTo('mode_select'); }}>Start over</Button>
-    </OnboardingShell>
   {/if}
 </div>
 
@@ -1304,11 +1285,5 @@
     padding-right: var(--safe-right);
     padding-bottom: var(--safe-bottom);
     padding-left: var(--safe-left);
-  }
-
-  .code {
-    font-family: var(--font-mono);
-    font-size: var(--text-data);
-    color: var(--color-muted);
   }
 </style>
