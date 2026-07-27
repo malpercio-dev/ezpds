@@ -1,0 +1,26 @@
+{
+  "cli_version": "0.8.42",
+  "checkpoint_id": "77bfd4d980d7",
+  "strategy": "manual-commit",
+  "branch": "claude/notify-custos-sender-impl-28afd0",
+  "checkpoints_count": 1,
+  "files_touched": [
+    "crates/pds/src/routes/admin_notifications.rs"
+  ],
+  "sessions": [
+    {
+      "metadata": "/77/bfd4d980d7/0/metadata.json",
+      "transcript": "/77/bfd4d980d7/0/full.jsonl",
+      "compact_transcript": "/77/bfd4d980d7/0/transcript.jsonl",
+      "content_hash": "/77/bfd4d980d7/0/content_hash.txt",
+      "prompt": "/77/bfd4d980d7/0/prompt.txt"
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 21,
+    "cache_creation_tokens": 15357,
+    "cache_read_tokens": 5702579,
+    "output_tokens": 5690,
+    "api_call_count": 11
+  }
+}
