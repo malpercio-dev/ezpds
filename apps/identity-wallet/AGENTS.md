@@ -29,7 +29,11 @@ criteria: [docs/archive/design-plans/2026-07-12-browser-harness.md](../../docs/a
   capabilities, so the create flow's gate closes and steers to import),
   `unreachable-pds` (the same empty capability list, but `reached: false` — the gate must
   show a retryable error, never the steer), `one-identity`, `multi-identity`,
-  `alert-active`, `device-key-unusable` (a device restored from an encrypted backup: the
+  `alert-active`, plus its three siblings covering the rest of the recovery-window
+  urgency ladder — `alert-warning` (~12h left), `alert-critical` (~3h left) and
+  `alert-expired` (past the window, the only way to reach `AlertDetailScreen`'s
+  disabled "Recovery window expired" button); the four differ only in how old the
+  seeded change is, since that is what `getUrgency` reads. `device-key-unusable` (a device restored from an encrypted backup: the
   device-key metadata came back, the Secure Enclave key did not — the only way to reach the
   "can no longer sign" degraded state in a browser with no enclave), `migration-in-flight`,
   `agent-connected`, `app-password-minted`, plus the share-recovery matrix:

@@ -26,6 +26,9 @@ export type ScenarioName =
   | 'one-identity'
   | 'multi-identity'
   | 'alert-active'
+  | 'alert-warning'
+  | 'alert-critical'
+  | 'alert-expired'
   | 'migration-in-flight'
   | 'agent-connected'
   | 'app-password-minted'
@@ -139,15 +142,29 @@ export const scenarios: Record<ScenarioName, () => WalletState> = {
     return state;
   },
 
-  'alert-active': () => {
-    const state = emptyWalletState();
-    state.pdsUrl = DEFAULT_PDS_URL;
-    const identity = seedIdentity({ handle: 'alice.harness.pds.local' });
-    // A recent unauthorized change so the recovery-window countdown is live.
-    identity.alerts = [seedAlert(identity.did, isoHoursAgo(2))];
-    upsertIdentity(state, identity);
-    return state;
-  },
+  // The four alert presets below are one per `deadline.ts` urgency band, and they are the
+  // ONLY way to reach three of them: `UrgencyBadge`'s state comes from how much of the
+  // 72-hour PLC recovery window is left, so the state is chosen entirely by how old the
+  // seeded change is. `alert-active` alone left `warning`, `critical`, and `expired`
+  // unreachable — including the expired branch where `AlertDetailScreen` disables the
+  // override button, which no amount of clicking could otherwise produce.
+  //
+  // Separate scenarios rather than one multi-age identity list: reaching a given state by
+  // hand is then one `window.__harness.scenario(name)` call, and each docs screenshot
+  // frames a single state rather than four competing for one viewport.
+
+  // ~70h remaining — `safe`, the calm end of the alarm register.
+  'alert-active': () => alertScenario(2),
+
+  // ~12h remaining — `warning`, the first escalation.
+  'alert-warning': () => alertScenario(60),
+
+  // ~3h remaining — `critical`, the red "act now" peak of the alarm design.
+  'alert-critical': () => alertScenario(69),
+
+  // Past the window — `expired`, the ashen "the moment to act has passed" state, and the
+  // only one that reaches `AlertDetailScreen`'s disabled "Recovery window expired" button.
+  'alert-expired': () => alertScenario(73),
 
   'migration-in-flight': () => {
     const state = emptyWalletState();
@@ -376,6 +393,22 @@ export function buildScenario(name: string): WalletState {
  * harness installs, so `Date.now()` there is that instant and every seeded age resolves
  * identically on every run.
  */
+/**
+ * One identity carrying one unauthorized change seeded `hoursAgo` in the past.
+ *
+ * The age is the whole fixture: `getUrgency` reads `createdAt + 72h` against the live
+ * clock, so the caller picks the urgency band by picking the age and nothing else varies
+ * between the four alert presets.
+ */
+function alertScenario(hoursAgo: number): WalletState {
+  const state = emptyWalletState();
+  state.pdsUrl = DEFAULT_PDS_URL;
+  const identity = seedIdentity({ handle: 'alice.harness.pds.local' });
+  identity.alerts = [seedAlert(identity.did, isoHoursAgo(hoursAgo))];
+  upsertIdentity(state, identity);
+  return state;
+}
+
 function isoHoursAgo(hours: number): string {
   return new Date(Date.now() - hours * 3600_000).toISOString();
 }

@@ -1,7 +1,14 @@
 import { describe, it, expect } from 'vitest';
-import { scenarios, buildScenario, isScenarioName, DEFAULT_SCENARIO } from './scenarios';
+import {
+  scenarios,
+  buildScenario,
+  isScenarioName,
+  DEFAULT_SCENARIO,
+  type ScenarioName,
+} from './scenarios';
 import { buildRegistry } from './registry';
 import { deriveIdentityPanelState } from '../identity-status';
+import { getDeadline, getUrgency, type Urgency } from '../deadline';
 
 describe('wallet harness scenarios', () => {
   it('fresh-install has no identities and no PDS configured', () => {
@@ -16,23 +23,36 @@ describe('wallet harness scenarios', () => {
     expect(state.pdsUrl).not.toBeNull();
   });
 
-  it('alert-active surfaces an unauthorized change', () => {
-    const state = scenarios['alert-active']();
-    expect(state.identities[0].alerts.length).toBeGreaterThan(0);
+  // Each alert preset exists to reach ONE `UrgencyBadge` state, and the state is chosen
+  // entirely by the seeded change's age against the live clock — so "an alert exists" is
+  // the one assertion that stays green while the fixture silently ages into a different
+  // band (which is exactly how `alert-active` came to render an expired window). Assert
+  // the badge urgency each fixture is *supposed* to produce, measured the way
+  // `AlertDetailScreen` measures it: `getUrgency(getDeadline(createdAt))`.
+  const alertBands: ReadonlyArray<[ScenarioName, Urgency, Urgency]> = [
+    // scenario, badge urgency (time left), panel urgency (any live alert is critical)
+    ['alert-active', 'safe', 'critical'],
+    ['alert-warning', 'warning', 'critical'],
+    ['alert-critical', 'critical', 'critical'],
+    ['alert-expired', 'expired', 'expired'],
+  ];
+
+  it.each(alertBands)('%s seeds a %s alert', (name, badgeUrgency, panelUrgency) => {
+    const state = scenarios[name]();
+    const alerts = state.identities[0].alerts;
+    expect(alerts).toHaveLength(1);
+
+    expect(getUrgency(getDeadline(alerts[0].createdAt))).toBe(badgeUrgency);
+    expect(deriveIdentityPanelState(alerts, false).urgency).toBe(panelUrgency);
   });
 
-  // The assertion above holds forever even when the scenario is broken: an alert seeded at a
-  // literal instant stays an alert while quietly ageing past its own 72-hour PLC recovery
-  // window, at which point the panel renders "Recovery window closed" and
-  // `AlertDetailScreen` disables the override — the one preset that exists to demonstrate a
-  // live alarm demonstrating its opposite. So assert the property that actually decays:
-  // the window is still open *now*, measured the way the UI measures it.
-  it('alert-active seeds an alarm whose recovery window is still open', () => {
-    const state = scenarios['alert-active']();
-    const panel = deriveIdentityPanelState(state.identities[0].alerts, false);
-
-    expect(panel.urgency).toBe('critical');
-    expect(panel.deadline?.getTime()).toBeGreaterThan(Date.now());
+  // The badge's `safe` and the panel's `safe` deliberately mean different things — "time
+  // left" versus "all clear" — so an alarmed identity must never reach the panel's.
+  it('no alert preset lets the panel report all-clear', () => {
+    for (const [name] of alertBands) {
+      const state = scenarios[name]();
+      expect(deriveIdentityPanelState(state.identities[0].alerts, false).urgency).not.toBe('safe');
+    }
   });
 
   it('migration-in-flight parks a prepared migration', () => {
