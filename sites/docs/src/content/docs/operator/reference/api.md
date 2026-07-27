@@ -49,6 +49,8 @@ Every path registered by the server is listed here. For `/xrpc/` endpoints, use 
 | `/v1/admin/devices` | Custos HTTP |
 | `/v1/admin/devices/{id}/revoke` | Custos HTTP |
 | `/v1/admin/health` | Custos HTTP |
+| `/v1/admin/notifications/register` | Custos HTTP |
+| `/v1/admin/notifications/sender-keys` | Custos HTTP |
 | `/v1/admin/pairing-codes` | Custos HTTP |
 | `/v1/admin/recovery-releases` | Custos HTTP |
 | `/v1/admin/relay-status` | Custos HTTP |
@@ -68,6 +70,9 @@ Every path registered by the server is listed here. For `/xrpc/` endpoints, use 
 | `/v1/dids/{did}` | Custos HTTP |
 | `/v1/handles` | Custos HTTP |
 | `/v1/handles/{handle}` | Custos HTTP |
+| `/v1/notifications/register` | Custos HTTP |
+| `/v1/notifications/register/{deviceUuid}` | Custos HTTP |
+| `/v1/notifications/sender-keys` | Custos HTTP |
 | `/v1/pds/keys` | Custos HTTP |
 | `/v1/recovery/escrow-share` | Custos HTTP |
 | `/v1/recovery/initiate` | Custos HTTP |

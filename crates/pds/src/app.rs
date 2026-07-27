@@ -19,6 +19,7 @@ use crate::routes::admin_devices::{
 };
 use crate::routes::admin_health::admin_health;
 use crate::routes::admin_list_accounts::list_accounts;
+use crate::routes::admin_notifications::{get_admin_sender_keys, register_admin_notifications};
 use crate::routes::admin_recovery_releases::admin_recovery_releases;
 use crate::routes::admin_relay_status::relay_status;
 use crate::routes::admin_request_crawl::request_crawl;
@@ -77,6 +78,9 @@ use crate::routes::list_blobs::list_blobs;
 use crate::routes::list_missing_blobs::list_missing_blobs;
 use crate::routes::list_records::list_records;
 use crate::routes::list_repos::list_repos;
+use crate::routes::notifications::{
+    get_sender_keys, register_notifications, unregister_notifications,
+};
 use crate::routes::oauth_authorize::{get_authorization, post_authorization};
 use crate::routes::oauth_client_metadata::oauth_client_metadata;
 use crate::routes::oauth_consent::{
@@ -513,6 +517,20 @@ pub fn app(state: AppState) -> Router {
         .route("/v1/agents/claim-preview", post(claim_preview))
         .route("/v1/agents/{registration_id}/revoke", post(revoke_agent))
         .route("/v1/agents/{registration_id}/audit", get(agent_audit_log))
+        .route("/v1/notifications/register", post(register_notifications))
+        .route(
+            "/v1/notifications/register/{deviceUuid}",
+            delete(unregister_notifications),
+        )
+        .route("/v1/notifications/sender-keys", get(get_sender_keys))
+        .route(
+            "/v1/admin/notifications/register",
+            post(register_admin_notifications),
+        )
+        .route(
+            "/v1/admin/notifications/sender-keys",
+            get(get_admin_sender_keys),
+        )
         .route("/v1/admin/accounts", get(list_accounts))
         .route("/v1/admin/accounts/{id}/email", post(set_account_email))
         .route(

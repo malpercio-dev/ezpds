@@ -1,0 +1,72 @@
+meta {
+  name: Register this admin device for push (POST /v1/admin/notifications/register)
+  type: http
+  seq: 138
+}
+
+post {
+  url: {{baseUrl}}/v1/admin/notifications/register
+  body: json
+  auth: none
+}
+
+headers {
+  X-Admin-Device: {{deviceId}}
+  X-Admin-Timestamp: {{adminTimestamp}}
+  X-Admin-Nonce: {{adminNonce}}
+  X-Admin-Signature: {{adminSignature}}
+}
+
+body:json {
+  {
+    "notificationPublicKey": "did:key:zDnaeoYytsARBq9NiBk1TbJESQcPRy5RPVvdT7FqpjrQtJ5DL",
+    "apnsToken": "740f4707bebcf74f9b7c25d48e3358945f6aa01da5ddb387462c7eaf61bb78ad",
+    "apnsTopic": "org.obsign.admincompanion"
+  }
+}
+
+vars:pre-request {
+  baseUrl: http://localhost:8080
+}
+
+docs {
+  # POST /v1/admin/notifications/register
+
+  Register an operator companion-app device to receive end-to-end-encrypted operational
+  alerts. The admin analog of `POST /v1/notifications/register`.
+
+  **This route requires a device-signed request** — the master token is refused with 400. That
+  is the security property, not a limitation: the registration is keyed by the device the
+  credential authenticates, so a device can register a push key for itself and for nothing
+  else. A credential that authenticates no particular device (the master token) could otherwise
+  redirect another device's alerts.
+
+  Sign the canonical envelope as for every admin device request:
+  `METHOD \n PATH \n TIMESTAMP \n NONCE \n sha256_hex(BODY)`, and send the
+  `X-Admin-Device` / `X-Admin-Timestamp` / `X-Admin-Nonce` / `X-Admin-Signature` headers.
+
+  ## Request
+
+  - `notificationPublicKey` — this device's P-256 `did:key`. One notification keypair per
+    device, shared across every relay it is paired with.
+  - `apnsToken` — the APNs device token (hex).
+  - `apnsTopic` — the companion app's bundle id.
+
+  ## Response (200)
+
+  ```json
+  { "status": "pending" }
+  ```
+
+  The relay handle is minted in the background, as on the account surface.
+
+  Revoking the device (`POST /v1/admin/devices/:id/revoke`) stops its alerts immediately — the
+  fan-out query joins on the revocation tombstone — and drops this registration and its relay
+  handle.
+
+  ## Errors
+
+  - `400` — the master token was used instead of a device signature, or a malformed field
+  - `401` / `403` — invalid signature, replayed nonce, or a revoked device
+  - `501` — this instance has no `[notifications] relay` configured
+}

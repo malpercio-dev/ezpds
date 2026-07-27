@@ -18,7 +18,8 @@ pub use hpke::{
 };
 pub use keys::{
     decrypt_private_key, decrypt_secret_bytes, derive_recovery_keypair, encrypt_private_key,
-    encrypt_secret_bytes, generate_p256_keypair, DidKeyUri, P256Keypair,
+    encrypt_secret_bytes, generate_p256_keypair, p256_keypair_from_secret,
+    p256_public_key_from_did_key, DidKeyUri, P256Keypair,
 };
 pub use oauth_consent::{
     encode_oauth_consent_envelope, granted_scope_hash, OAUTH_CONSENT_APPROVE_PATH,

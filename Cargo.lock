@@ -5197,6 +5197,7 @@ dependencies = [
  "k256",
  "lettre",
  "multibase",
+ "notify-relay",
  "opentelemetry",
  "opentelemetry-otlp",
  "opentelemetry-prometheus",

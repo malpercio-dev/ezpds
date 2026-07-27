@@ -11,14 +11,10 @@ use std::sync::Arc;
 use anyhow::Context;
 use clap::Parser;
 
-mod apns;
-mod config;
-mod db;
-mod identity;
-mod protocol;
-mod rate_limit;
-mod service;
-mod transport;
+// Every module lives in this crate's library target (see `lib.rs`): the Custos sender shares
+// the wire protocol, and the workspace's loopback e2e drives a real relay in-process. The
+// binary is a thin startup shell over them.
+use notify_relay::{apns, config, db, identity, service, transport};
 
 #[derive(Parser)]
 #[command(

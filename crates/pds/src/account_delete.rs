@@ -101,6 +101,7 @@ const DELETE_BY_DID: &[&str] = &[
     "DELETE FROM recovery_otps WHERE did = ?",
     "DELETE FROM recovery_audit_events WHERE did = ?",
     "DELETE FROM recovery_escrow WHERE did = ?",
+    "DELETE FROM notification_registrations WHERE did = ?",
     "DELETE FROM agent_audit_events WHERE registration_id IN (SELECT id FROM agent_identities WHERE did = ?)",
     "DELETE FROM agent_audit_events WHERE registration_id IN (SELECT id FROM agent_identities WHERE parent_did = ?)",
     "DELETE FROM agent_claim_attempts WHERE identity_id IN (SELECT id FROM agent_identities WHERE did = ?)",
@@ -147,6 +148,17 @@ pub async fn purge_account(state: &AppState, did: &str) -> Result<PurgeOutcome, 
         tracing::error!(did = %did, error = %e, "DB error deleting account");
         ApiError::new(ErrorCode::InternalError, "failed to delete account")
     };
+
+    // Collect the account's relay push handles before the transaction erases the rows that
+    // name them. The DELETE below is what actually stops this PDS from pushing; asking the
+    // relay to forget the handles is the courtesy that stops *it* holding routes to devices
+    // whose account no longer exists. Best effort — a purge must never fail on it.
+    let push_handles: Vec<String> = crate::db::notifications::list_registrations(&state.db, did)
+        .await
+        .unwrap_or_default()
+        .into_iter()
+        .filter_map(|r| r.push_handle)
+        .collect();
 
     // Step 1: acquire the sequencer lock *before* the transaction (see `Firehose::lock_emit`),
     // then delete every child row and the account row atomically.
@@ -260,6 +272,14 @@ pub async fn purge_account(state: &AppState, did: &str) -> Result<PurgeOutcome, 
         })?;
     tx.commit().await.map_err(map_err)?;
     pending.finish();
+
+    // Only once the deletion is durable: telling the relay to forget handles for an account
+    // whose purge then rolled back would strand still-registered devices.
+    if let Some(sender) = state.notify_sender.as_ref() {
+        for handle in push_handles {
+            let _ = sender.send(crate::notify_relay_client::NotifyJob::DropHandle { handle });
+        }
+    }
 
     // Announce each cascade-scheduled child's deactivation so relays stop serving its repo
     // now rather than at its reap. Best-effort AFTER the deletion transaction (the staged

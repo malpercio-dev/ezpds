@@ -76,6 +76,8 @@ pub struct Config {
     /// auth.md agent-registration knobs (per-flow enablement, issuer trust list, TTLs).
     pub agent_auth: AgentAuthConfig,
     pub iroh: IrohConfig,
+    /// Push notifications via a blind-courier relay. Off unless `relay` names a node id.
+    pub notifications: NotificationsConfig,
     pub appview: AppViewConfig,
     pub chat: ChatConfig,
     pub crawlers: CrawlersConfig,
@@ -892,6 +894,32 @@ impl Default for IrohConfig {
     }
 }
 
+/// Push-notification relay configuration.
+///
+/// Custos never talks to APNs itself — Apple's auth keys are bundle-id-bound, so a
+/// self-hosted instance structurally cannot. Instead it dials a *blind courier* relay over
+/// iroh and hands it HPKE-sealed payloads plus an opaque per-device handle. This section
+/// names that relay.
+///
+/// `relay = None` (the default) is the whole feature's off switch, mirroring `[iroh]`'s
+/// posture: no sender key is ever generated, the registration routes reject, and no
+/// outbound leg exists.
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct NotificationsConfig {
+    /// The relay's iroh node id. `None` disables notifications entirely.
+    #[serde(default)]
+    pub relay: Option<String>,
+    /// Single-use enrollment grant for a relay that gates enrollment (the official one
+    /// does; a self-run relay may set `open_enrollment` instead). Consumed by the relay on
+    /// the first successful `enroll`; harmless to leave configured afterwards, since
+    /// enrollment is idempotent for an already-enrolled node.
+    ///
+    /// [`Sensitive`] because it is a bearer grant: anyone holding it can enroll a node of
+    /// their choosing with the relay.
+    #[serde(default)]
+    pub enrollment_code: Option<Sensitive<String>>,
+}
+
 /// Bluesky AppView proxy configuration.
 ///
 /// `app.bsky.*` XRPC methods that the PDS does not handle locally are forwarded to this
@@ -1300,6 +1328,8 @@ pub(crate) struct RawConfig {
     #[serde(default)]
     pub(crate) iroh: IrohConfig,
     #[serde(default)]
+    pub(crate) notifications: NotificationsConfig,
+    #[serde(default)]
     pub(crate) appview: AppViewConfig,
     #[serde(default)]
     pub(crate) chat: ChatConfig,
@@ -1482,6 +1512,12 @@ pub(crate) fn apply_env_overrides(
     }
     if let Some(v) = env.get("EZPDS_IROH_IPV6") {
         raw.iroh.ipv6 = parse_bool_env("EZPDS_IROH_IPV6", v)?;
+    }
+    if let Some(v) = env.get("EZPDS_NOTIFICATIONS_RELAY") {
+        raw.notifications.relay = Some(v.clone());
+    }
+    if let Some(v) = env.get("EZPDS_NOTIFICATIONS_ENROLLMENT_CODE") {
+        raw.notifications.enrollment_code = Some(Sensitive(v.clone()));
     }
     if let Some(v) = env.get("EZPDS_APPVIEW_URL") {
         raw.appview.url = v.clone();
@@ -2011,6 +2047,34 @@ pub(crate) fn validate_and_build(raw: RawConfig) -> Result<Config, ConfigError> 
         ));
     }
 
+    // The notification relay is dialed over the pds's own iroh endpoint, so naming a relay
+    // without an endpoint to dial from is a misconfiguration that would otherwise surface
+    // only as silently-undelivered pushes.
+    match raw.notifications.relay.as_deref() {
+        Some("") => {
+            return Err(ConfigError::Invalid(
+                "notifications.relay must not be empty".to_string(),
+            ));
+        }
+        Some(_) if !raw.iroh.enabled => {
+            return Err(ConfigError::Invalid(
+                "notifications.relay requires iroh.enabled = true (the iroh endpoint is the dialer)"
+                    .to_string(),
+            ));
+        }
+        _ => {}
+    }
+    if raw
+        .notifications
+        .enrollment_code
+        .as_ref()
+        .is_some_and(|c| c.0.is_empty())
+    {
+        return Err(ConfigError::Invalid(
+            "notifications.enrollment_code must not be empty".to_string(),
+        ));
+    }
+
     for url in &raw.crawlers.urls {
         if !url.starts_with("http://") && !url.starts_with("https://") {
             return Err(ConfigError::Invalid(format!(
@@ -2283,6 +2347,7 @@ pub(crate) fn validate_and_build(raw: RawConfig) -> Result<Config, ConfigError> 
         oauth: raw.oauth,
         agent_auth: raw.agent_auth,
         iroh: raw.iroh,
+        notifications: raw.notifications,
         appview,
         chat,
         crawlers: raw.crawlers,
@@ -3813,6 +3878,108 @@ mod tests {
             err.to_string().contains("iroh.endpoint"),
             "error message must mention iroh.endpoint"
         );
+    }
+
+    // --- notifications config tests ---
+
+    #[test]
+    fn notifications_default_to_off() {
+        let config = validate_and_build(minimal_raw()).unwrap();
+        assert_eq!(config.notifications.relay, None);
+        assert!(config.notifications.enrollment_code.is_none());
+    }
+
+    #[test]
+    fn notifications_parse_from_toml() {
+        let toml = r#"
+            data_dir = "/var/pds"
+            public_url = "https://pds.example.com"
+            available_user_domains = ["example.com"]
+
+            [iroh]
+            enabled = true
+
+            [notifications]
+            relay = "relaynodeid123"
+            enrollment_code = "GRANT-7"
+        "#;
+        let config = validate_and_build(toml::from_str(toml).unwrap()).unwrap();
+        assert_eq!(
+            config.notifications.relay.as_deref(),
+            Some("relaynodeid123")
+        );
+        assert_eq!(
+            config.notifications.enrollment_code.as_ref().map(|c| &c.0),
+            Some(&"GRANT-7".to_string())
+        );
+    }
+
+    #[test]
+    fn env_overrides_notifications() {
+        let mut raw = minimal_raw();
+        raw.iroh.enabled = true;
+        let env = HashMap::from([
+            (
+                "EZPDS_NOTIFICATIONS_RELAY".to_string(),
+                "nodeid-from-env".to_string(),
+            ),
+            (
+                "EZPDS_NOTIFICATIONS_ENROLLMENT_CODE".to_string(),
+                "GRANT-ENV".to_string(),
+            ),
+        ]);
+        let config = validate_and_build(apply_env_overrides(raw, &env).unwrap()).unwrap();
+        assert_eq!(
+            config.notifications.relay.as_deref(),
+            Some("nodeid-from-env")
+        );
+        assert_eq!(
+            config.notifications.enrollment_code.as_ref().map(|c| &c.0),
+            Some(&"GRANT-ENV".to_string())
+        );
+    }
+
+    /// The relay is dialed *from* the pds's own iroh endpoint, so a relay without
+    /// `[iroh] enabled` would silently never deliver. Fail at startup instead.
+    #[test]
+    fn notifications_relay_requires_iroh_enabled() {
+        let mut raw = minimal_raw();
+        raw.notifications.relay = Some("relaynodeid123".to_string());
+        let err = validate_and_build(raw).unwrap_err();
+        assert!(
+            err.to_string().contains("iroh.enabled"),
+            "error must point at the missing iroh endpoint: {err}"
+        );
+    }
+
+    #[test]
+    fn notifications_empty_strings_return_errors() {
+        let mut raw = minimal_raw();
+        raw.iroh.enabled = true;
+        raw.notifications.relay = Some(String::new());
+        assert!(validate_and_build(raw)
+            .unwrap_err()
+            .to_string()
+            .contains("notifications.relay"));
+
+        let mut raw = minimal_raw();
+        raw.iroh.enabled = true;
+        raw.notifications.enrollment_code = Some(Sensitive(String::new()));
+        assert!(validate_and_build(raw)
+            .unwrap_err()
+            .to_string()
+            .contains("notifications.enrollment_code"));
+    }
+
+    /// The enrollment code is a bearer grant; `Config` derives `Debug`, so it must never
+    /// render in a log line.
+    #[test]
+    fn the_enrollment_code_is_redacted_in_debug_output() {
+        let mut raw = minimal_raw();
+        raw.iroh.enabled = true;
+        raw.notifications.enrollment_code = Some(Sensitive("GRANT-SECRET".to_string()));
+        let config = validate_and_build(raw).unwrap();
+        assert!(!format!("{config:?}").contains("GRANT-SECRET"));
     }
 
     // --- crawlers config tests ---

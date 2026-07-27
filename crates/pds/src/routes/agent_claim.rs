@@ -175,6 +175,33 @@ async fn initiate(
                     serde_json::json!({ "claim_attempt_id": attempt_id }),
                 )
                 .await?;
+
+                // The first notification trigger: an agent is waiting on this account holder
+                // to approve it, and the owner has no other way to learn that until they next
+                // open the app. Only a *fresh* attempt notifies — the resume branch above is
+                // an agent retrying or polling, and re-notifying on each poll would let an
+                // agent that holds a valid claim token spam the owner's lock screen.
+                //
+                // An `anonymous` registration has no DID yet (the claim is what binds one), so
+                // there is nobody to notify; `notify_device` is a no-op on an unknown DID
+                // anyway, but the intent is worth naming.
+                if let Some(did) = identity.did.as_deref() {
+                    crate::notifications::notify_device(
+                        state,
+                        did,
+                        crate::notifications::NotificationPayload::new(
+                            "agent_claim_pending",
+                            "Confirm agent access",
+                            "An agent is waiting for you to approve it.",
+                        )
+                        // The app deep-links straight to the confirm screen; the user_code is
+                        // deliberately absent — it is the credential the human types, and a
+                        // notification payload is not where it belongs.
+                        .with_data(serde_json::json!({ "claimAttemptId": attempt_id })),
+                    )
+                    .await;
+                }
+
                 (attempt_id, user_code, expiry)
             }
         };

@@ -1,0 +1,60 @@
+meta {
+  name: Fetch the notification sender keys to pin (GET /v1/notifications/sender-keys)
+  type: http
+  seq: 137
+}
+
+get {
+  url: {{baseUrl}}/v1/notifications/sender-keys
+  body: none
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{sessionToken}}
+}
+
+vars:pre-request {
+  baseUrl: http://localhost:8080
+}
+
+docs {
+  # GET /v1/notifications/sender-keys
+
+  The **re-pin surface**: every sender key this instance's notifications may be verified
+  against. Authenticate with the account's access token.
+
+  Notification payloads are sealed with HPKE in `mode_auth`, so opening one on the device also
+  proves it came from this instance — but only if the device holds the right public key. The
+  app fetches this set on every successful Custos contact and re-pins it; that cadence is what
+  keeps the window short when a key is revoked.
+
+  ## Response (200)
+
+  ```json
+  {
+    "keys": [
+      { "kid": 3, "publicKey": "did:key:zDnae..." },
+      { "kid": 2, "publicKey": "did:key:zDnae..." }
+    ]
+  }
+  ```
+
+  Newest first. Each sealed payload's envelope names the `kid` that sealed it.
+
+  ## Rotation semantics
+
+  - **Active** — the newest key; seals every outgoing payload. Published.
+  - **Retired** (`pds notification-keys retire <kid>`) — no longer seals, still published, so a
+    payload sealed just before a rotation still verifies on a device that has already re-pinned.
+  - **Revoked** (`pds notification-keys revoke <kid>`) — the compromise path: gone from this set
+    immediately. The next fetch is the last time a device will trust it.
+
+  An operator rotates with `pds notification-keys rotate` (publishes a new key alongside the
+  old), and retires the previous key once devices have had time to re-pin.
+
+  ## Errors
+
+  - `401` — missing/invalid access token
+  - `501` — this instance has no `[notifications] relay` configured
+}

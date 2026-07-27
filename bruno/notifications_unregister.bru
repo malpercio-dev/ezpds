@@ -1,0 +1,47 @@
+meta {
+  name: Stop pushing to this device (DELETE /v1/notifications/register/:deviceUuid)
+  type: http
+  seq: 136
+}
+
+delete {
+  url: {{baseUrl}}/v1/notifications/register/8B2F1C4E-6A3D-4F19-9C77-1E5A0D2B7F33
+  body: none
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{sessionToken}}
+}
+
+vars:pre-request {
+  baseUrl: http://localhost:8080
+}
+
+docs {
+  # DELETE /v1/notifications/register/{deviceUuid}
+
+  Stop sending push notifications to one device, and ask the relay to forget its handle so it
+  holds no route to a device this account has disowned. Authenticate with the account's access
+  token.
+
+  Only the caller's own registrations are reachable: the DID comes from the credential, never
+  from the path, so naming another account's `deviceUuid` reports `absent` and changes nothing.
+
+  Path:
+  - `deviceUuid` — the identifier used at registration.
+
+  ## Response (200)
+
+  ```json
+  { "status": "deleted" }
+  ```
+
+  `"deleted"` when a registration existed, `"absent"` when there was nothing to remove.
+  Idempotent by design — a repeat is a 200, not a 404, so the app can retry on a flaky network
+  without distinguishing "already gone" from "failed".
+
+  ## Errors
+
+  - `401` — missing/invalid access token
+}

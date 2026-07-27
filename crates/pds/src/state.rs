@@ -77,6 +77,11 @@ pub struct AppState {
     /// Bound Iroh QUIC endpoint, when `[iroh] enabled`. `None` when the tunnel is disabled.
     /// Handlers read `iroh.node_id` to advertise the pds's node id. Shared via Arc.
     pub iroh: Option<Arc<crate::iroh_tunnel::IrohState>>,
+    /// Queue handle for the notification relay worker, present only when `[notifications]
+    /// relay` names a relay. `None` is the feature's off switch at every send site: a trigger
+    /// that finds it absent does nothing at all, which is why the whole feature is inert
+    /// rather than merely quiet when unconfigured.
+    pub notify_sender: Option<crate::notify_relay_client::NotifySender>,
     /// Shared request rate-limiter state (global per-IP + per-endpoint per-IP + per-account write
     /// points). The middleware in [`crate::rate_limit`] reads it per request; the repo-write path
     /// charges write points through it. Shared via Arc.
@@ -200,6 +205,9 @@ pub async fn test_state_with_plc_url(plc_directory_url: String) -> AppState {
             oauth: OAuthConfig::default(),
             agent_auth: common::AgentAuthConfig::default(),
             iroh: IrohConfig::default(),
+            // Notifications off by default in tests, like the real default: the send path
+            // must stay inert unless a test explicitly configures a relay.
+            notifications: common::NotificationsConfig::default(),
             appview: AppViewConfig::default(),
             chat: ChatConfig::default(),
             // Tests must never make outbound crawl notifications.
@@ -251,6 +259,8 @@ pub async fn test_state_with_plc_url(plc_directory_url: String) -> AppState {
             c
         }),
         iroh: None,
+        // Notifications off in tests unless a test wires a worker itself.
+        notify_sender: None,
         rate_limiter: Arc::new(crate::rate_limit::RateLimiterState::new(&RateLimitConfig {
             enabled: false,
             ..RateLimitConfig::default()

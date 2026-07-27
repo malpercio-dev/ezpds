@@ -238,18 +238,10 @@ fn b64url(bytes: &[u8]) -> String {
     data_encoding::BASE64URL_NOPAD.encode(bytes)
 }
 
-/// The APNs body. `aps` carries the fixed, content-free notice Apple and anyone reading
-/// the wire will see; the real notification is the sealed `ezpds` block, which the
-/// device's Notification Service Extension decrypts and substitutes for the placeholder
-/// alert. `mutable-content` is what entitles the extension to run at all.
+/// The APNs body, built from the shared protocol definition so the sender's padding
+/// arithmetic is computed against exactly these bytes.
 fn build_envelope(kid: u32, enc: &str, ct: &str) -> serde_json::Value {
-    serde_json::json!({
-        "aps": {
-            "alert": { "title": "Custos", "body": "Encrypted notification" },
-            "mutable-content": 1,
-        },
-        "ezpds": { "v": 1, "kid": kid, "enc": enc, "ct": ct },
-    })
+    crate::protocol::apns_envelope(kid, enc, ct)
 }
 
 /// Serialize the envelope, refusing anything Apple would reject on size.

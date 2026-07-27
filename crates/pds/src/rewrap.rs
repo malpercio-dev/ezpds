@@ -263,6 +263,17 @@ mod tests {
         .await
         .unwrap();
 
+        // The one family with an INTEGER primary key: `kid` round-trips through the
+        // inventory's `String` id, so seeding it here also proves that cast holds.
+        sqlx::query(
+            "INSERT INTO notification_sender_keys (secret_key_encrypted, created_at) \
+             VALUES (?, datetime('now'))",
+        )
+        .bind(enc(&pt("notification_sender_keys"), key))
+        .execute(pool)
+        .await
+        .unwrap();
+
         plaintexts
     }
 
