@@ -1,0 +1,30 @@
+{
+  "cli_version": "0.8.42",
+  "checkpoint_id": "e5955dab0b03",
+  "strategy": "manual-commit",
+  "branch": "claude/unruffled-mirzakhani-9c53eb",
+  "checkpoints_count": 4,
+  "files_touched": [
+    "apps/identity-wallet/AGENTS.md",
+    "apps/identity-wallet/src-tauri/src/plc_monitor.rs",
+    "apps/identity-wallet/src/lib/harness/registry.ts",
+    "apps/identity-wallet/src/lib/identity-status.ts",
+    "changelog.d/plc-monitor-did-web-skip.fixed.md"
+  ],
+  "sessions": [
+    {
+      "metadata": "/e5/955dab0b03/0/metadata.json",
+      "transcript": "/e5/955dab0b03/0/full.jsonl",
+      "compact_transcript": "/e5/955dab0b03/0/transcript.jsonl",
+      "content_hash": "/e5/955dab0b03/0/content_hash.txt",
+      "prompt": "/e5/955dab0b03/0/prompt.txt"
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 145,
+    "cache_creation_tokens": 502561,
+    "cache_read_tokens": 17280769,
+    "output_tokens": 48620,
+    "api_call_count": 77
+  }
+}

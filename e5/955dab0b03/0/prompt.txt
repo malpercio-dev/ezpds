@@ -1,0 +1,36 @@
+In `apps/identity-wallet/src-tauri/src/plc_monitor.rs`, `PlcMonitor::check_all` iterates every DID from `IdentityStore::list_identities()` and calls `check_for_changes(did)` without filtering by DID method.
+
+`check_for_changes` starts with `self.pds_client.fetch_audit_log(did).await.map_err(...)?` — it propagates the failure rather than degrading. For a `did:web:` identity there is no PLC audit log at `plc.directory/{did}/log/audit`, so that fetch fails on every pass and `check_all` pushes `IdentityStatus { check_failed: true, unauthorized_changes: vec![] }`.
+
+Two costs:
+
+1. **Wasted network.** The background loop runs every 15 minutes (`MONITOR_INTERVAL_SECS = 900`), plus a foreground `check_identity_status` on every app resume and on opening an identity. Each pass spends one doomed round trip per did:web identity, on a mobile device.
+2. **A misleading signal.** `check_failed: true` is documented as meaning "the monitor could not reach plc.directory or parse the audit log — show a degraded-monitoring indicator instead of 'all clear'". For a did:web it does not mean that; it means a question was asked that should never have been asked. The frontend now compensates in `$lib/identity-status`'s `isVerified(did, plcCheckSucceeded)`, which forces `verified` true for a did:web — but that is a client-side patch over a backend that reports something untrue.
+
+Suggested fix: have `check_all` skip non-`did:plc:` DIDs outright. Decide deliberately what it should emit for them — omitting them from the returned `Vec<IdentityStatus>` entirely is probably right (the frontend's `absorb` already handles a DID missing from the sweep by leaving its state alone), but confirm that against `IdentityListHome`'s `toAlertMap` and `IdentityScreen`'s `absorb` before choosing. Whatever it emits must not be `check_failed: true`.
+
+If `check_all` stops reporting did:web at all, revisit whether `isVerified`'s did:web short-circuit is still load-bearing — keep it as defence in depth (it is cheap and tested), but update its doc comment, which currently explains the behavior in terms of the unfiltered sweep.
+
+Also update `apps/identity-wallet/AGENTS.md`, whose Guarantees section currently claims "`plc_monitor::check_for_changes` returns `Ok(vec![])` (not an error) when plc.directory is unreachable or the audit log cannot be parsed" — that is not what the code does; both failures return `Err` and become `check_failed: true`. That stale line is part of why this went unnoticed.
+
+Verify with `just ci-pds` (the wallet crate is excluded from that lane's tests, so also compile-check the wallet: `cargo build --lib --target aarch64-apple-ios -p identity-wallet`). Add a unit test asserting a did:web DID produces no failed status. Note the repo rule: no Linear ticket or AC references in `.rs` files or AGENTS.md.
+
+---
+
+<task-notification>
+<task-id>brbx4jn4w</task-id>
+<tool-use-id>toolu_01Hux53RjTGaDvMtRjgDVRg8</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-jacob-zweifel-workspace-malpercio-dev-ezpds--claude-worktrees-unruffled-mirzakhani-9c53eb/9d049b17-2f49-4214-9b8d-e602881e5eb2/tasks/brbx4jn4w.output</output-file>
+<status>completed</status>
+<summary>Background command "Re-run workspace clippy and tests with host toolchain env" completed (exit code 0)</summary>
+</task-notification>
+
+---
+
+<task-notification>
+<task-id>bxla0w38e</task-id>
+<tool-use-id>toolu_01816Fu3VZLZHnCV4XXGvkQu</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-jacob-zweifel-workspace-malpercio-dev-ezpds--claude-worktrees-unruffled-mirzakhani-9c53eb/9d049b17-2f49-4214-9b8d-e602881e5eb2/tasks/bxla0w38e.output</output-file>
+<status>completed</status>
+<summary>Background command "Re-run workspace clippy and tests after freeing disk" completed (exit code 0)</summary>
+</task-notification>

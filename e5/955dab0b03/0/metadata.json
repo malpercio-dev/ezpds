@@ -1,0 +1,114 @@
+{
+  "cli_version": "0.8.42",
+  "checkpoint_id": "e5955dab0b03",
+  "session_id": "9d049b17-2f49-4214-9b8d-e602881e5eb2",
+  "strategy": "manual-commit",
+  "created_at": "2026-07-27T03:17:52.821917Z",
+  "branch": "claude/unruffled-mirzakhani-9c53eb",
+  "checkpoints_count": 4,
+  "save_step_count": 4,
+  "files_touched": [
+    "apps/identity-wallet/AGENTS.md",
+    "apps/identity-wallet/src-tauri/src/plc_monitor.rs",
+    "apps/identity-wallet/src/lib/harness/registry.ts",
+    "apps/identity-wallet/src/lib/identity-status.ts",
+    "changelog.d/plc-monitor-did-web-skip.fixed.md"
+  ],
+  "agent": "Claude Code",
+  "model": "",
+  "turn_id": "f82c43fc6567",
+  "compact_transcript_start": 0,
+  "token_usage": {
+    "input_tokens": 145,
+    "cache_creation_tokens": 502561,
+    "cache_read_tokens": 17280769,
+    "output_tokens": 48620,
+    "api_call_count": 77
+  },
+  "skill_events_version": 1,
+  "skill_events": [
+    {
+      "id": "claude-skill-toolu_01QYJLKfHg9eaterxqYrR4Dh",
+      "event_type": "tool_invocation",
+      "skill": {
+        "name": "commit-commands:commit-push-pr"
+      },
+      "source": {
+        "agent": "claude-code",
+        "signal": "skill_tool_use",
+        "confidence": "explicit"
+      },
+      "turn_id": "f82c43fc6567",
+      "transcript_anchor": {
+        "unit": "line",
+        "start": 399,
+        "end": 400,
+        "entry_ids": [
+          "eac136a4-8837-4ec2-99ad-3ff4c00bb428"
+        ],
+        "tool_use_id": "toolu_01QYJLKfHg9eaterxqYrR4Dh"
+      },
+      "native": {
+        "tool_name": "Skill",
+        "tool_use_id": "toolu_01QYJLKfHg9eaterxqYrR4Dh"
+      },
+      "collapse": {
+        "target": "tool_pair",
+        "label": "Skill: commit-commands:commit-push-pr",
+        "default_collapsed": true
+      }
+    }
+  ],
+  "session_metrics": {
+    "turn_count": 4
+  },
+  "initial_attribution": {
+    "calculated_at": "2026-07-27T03:17:52.763701Z",
+    "agent_lines": 99,
+    "agent_removed": 21,
+    "human_added": 0,
+    "human_modified": 0,
+    "human_removed": 0,
+    "total_committed": 99,
+    "total_lines_changed": 120,
+    "agent_percentage": 100,
+    "metric_version": 2
+  },
+  "prompt_attributions": [
+    {
+      "checkpoint_number": 1,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 0,
+      "agent_lines_removed": 0
+    },
+    {
+      "checkpoint_number": 2,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 99,
+      "agent_lines_removed": 21
+    },
+    {
+      "checkpoint_number": 3,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 0,
+      "agent_lines_removed": 0
+    },
+    {
+      "checkpoint_number": 4,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 99,
+      "agent_lines_removed": 21
+    },
+    {
+      "checkpoint_number": 5,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 99,
+      "agent_lines_removed": 21
+    }
+  ]
+}
