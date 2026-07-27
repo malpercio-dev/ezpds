@@ -13,6 +13,7 @@
  *    asserts each is a key here — so a command added to `ipc.ts` without a handler fails
  *    `pnpm test` even if the union was not updated.
  */
+import { isDidWeb } from '$lib/did-doc-utils';
 import type {
   IdentityInfo,
   VerifiedClaimOp,
@@ -554,10 +555,16 @@ export function buildRegistry(state: WalletState): Registry {
     }),
 
     // ── PLC monitor ──────────────────────────────────────────────────────────
+    // `checkFailed` mirrors the backend rather than always reporting success. `check_all`
+    // does not filter by DID method: it asks plc.directory about every managed DID, and a
+    // did:web has no PLC audit log there, so its fetch fails and it comes back
+    // `check_failed: true` on every single sweep. A fake that answered `false` for a
+    // did:web would be kinder than the real thing in exactly the place a screen is most
+    // likely to get the did:web copy wrong.
     check_identity_status: (): IdentityStatus[] =>
       state.identities.map((i) => ({
         did: i.did,
-        checkFailed: false,
+        checkFailed: isDidWeb(i.did),
         unauthorizedChanges: i.alerts,
       })),
 

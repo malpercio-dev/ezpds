@@ -37,6 +37,10 @@
   import MigrationProgressScreen from '$lib/components/onboarding/MigrationProgressScreen.svelte';
   import MigrationReviewScreen from '$lib/components/onboarding/MigrationReviewScreen.svelte';
   import MigrationSuccessScreen from '$lib/components/onboarding/MigrationSuccessScreen.svelte';
+  import IdentityScreen from '$lib/components/home/IdentityScreen.svelte';
+  import MoveOrRebuildScreen from '$lib/components/home/MoveOrRebuildScreen.svelte';
+  import ManageIdentityScreen from '$lib/components/home/ManageIdentityScreen.svelte';
+  import AdvancedToolsScreen from '$lib/components/home/AdvancedToolsScreen.svelte';
   import DIDDocumentScreen from '$lib/components/home/DIDDocumentScreen.svelte';
   import ChangeHandleScreen from '$lib/components/home/ChangeHandleScreen.svelte';
   import EndpointRepairScreen from '$lib/components/home/EndpointRepairScreen.svelte';
@@ -88,7 +92,14 @@
     | 'complete'
     | 'authenticating'
     | 'home'
+    // The instrument-panel identity surface and the two doors that hang off it. Depth is
+    // spelled out in step names because this flat union is the app's only spatial model:
+    // identity_detail → { move_or_rebuild, manage_identity → advanced_tools }.
     | 'identity_detail'
+    | 'move_or_rebuild'
+    | 'manage_identity'
+    | 'advanced_tools'
+    | 'did_document'
     | 'change_handle'
     | 'endpoint_repair'
     | 'rotate_repo_key'
@@ -171,6 +182,12 @@
 
   let selectedAlertDid = $state<string | null>(null);
   let selectedAlertChanges = $state<UnauthorizedChange[]>([]);
+  /**
+   * Where `alert_detail` returns to. The alarm is reachable from two places — the home
+   * list's per-card strip and the identity screen's critical status panel — and a fixed
+   * back path would eject the user out of the identity they were standing in.
+   */
+  let alertReturnStep = $state<OnboardingStep>('home');
 
   // ── Re-key (old-model upgrade) flow state ─────────────────────────────────
   // The re-key runs against an existing identity; the review screen produces the new Share 3,
@@ -752,6 +769,7 @@
       onalert={(did, changes) => {
         selectedAlertDid = did;
         selectedAlertChanges = changes;
+        alertReturnStep = 'home';
         goTo('alert_detail');
       }}
       onsettings={() => goTo('settings')}
@@ -801,15 +819,63 @@
     />
 
   {:else if step === 'identity_detail'}
-    <DIDDocumentScreen
-      didDoc={selectedDidDoc ? normalizePlcDocToW3c(selectedDidDoc) : {}}
+    <IdentityScreen
+      did={selectedDid ?? ''}
+      didDoc={selectedDidDoc ?? {}}
+      deviceKeyIsRoot={selectedDeviceKeyIsRoot}
+      deviceKeyUnusable={selectedDeviceKeyUnusable}
       onback={() => goTo('home')}
+      onsignin={() => goTo('oauth_consent_approval')}
+      onapppasswords={() => goTo('app_passwords')}
+      onagents={() => goTo('my_agents')}
+      onmoveorrebuild={() => goTo('move_or_rebuild')}
+      onmanage={() => goTo('manage_identity')}
+      onalert={(changes) => {
+        selectedAlertDid = selectedDid;
+        selectedAlertChanges = changes;
+        alertReturnStep = 'identity_detail';
+        goTo('alert_detail');
+      }}
+      onrecover={selectedDeviceKeyUnusable && selectedDid?.startsWith('did:plc:')
+        ? () => {
+            cameFromHome = true;
+            form.handleOrDid = selectedDid ?? '';
+            goTo('recover_start');
+          }
+        : undefined}
+    />
+
+  {:else if step === 'move_or_rebuild'}
+    <MoveOrRebuildScreen
+      onback={() => goTo('identity_detail')}
+      onmigrate={selectedDeviceKeyIsRoot === true
+        ? () => {
+            migrationDid = selectedDid ?? '';
+            goTo('migration_start');
+          }
+        : undefined}
+      onrebuild={selectedDeviceKeyIsRoot === true && selectedDid?.startsWith('did:plc:')
+        ? () => {
+            migrationDid = selectedDid ?? '';
+            goTo('recovery_rebuild_start');
+          }
+        : undefined}
+    />
+
+  {:else if step === 'manage_identity'}
+    <ManageIdentityScreen
+      onback={() => goTo('identity_detail')}
       onchangehandle={selectedDeviceKeyIsRoot === true && selectedDid?.startsWith('did:plc:')
         ? () => goTo('change_handle')
         : undefined}
-      onrepairendpoint={selectedDeviceKeyIsRoot === true && selectedDid?.startsWith('did:plc:')
-        ? () => goTo('endpoint_repair')
-        : undefined}
+      onbackups={() => goTo('media_backup')}
+      ondiddocument={() => goTo('did_document')}
+      onadvanced={() => goTo('advanced_tools')}
+    />
+
+  {:else if step === 'advanced_tools'}
+    <AdvancedToolsScreen
+      onback={() => goTo('manage_identity')}
       onrotatekey={selectedDeviceKeyIsRoot === true && selectedDid?.startsWith('did:plc:')
         ? () => goTo('rotate_repo_key')
         : undefined}
@@ -822,38 +888,23 @@
             goTo('self_held_kit_review');
           }
         : undefined}
-      onapppasswords={() => goTo('app_passwords')}
-      onagents={() => goTo('my_agents')}
-      onbackup={() => goTo('media_backup')}
-      onsignin={() => goTo('oauth_consent_approval')}
-      onmigrate={selectedDeviceKeyIsRoot === true
-        ? () => {
-            migrationDid = selectedDid ?? '';
-            goTo('migration_start');
-          }
-        : undefined}
-      onrecoverpds={selectedDeviceKeyIsRoot === true && selectedDid?.startsWith('did:plc:')
-        ? () => {
-            migrationDid = selectedDid ?? '';
-            goTo('recovery_rebuild_start');
-          }
+      onrepairendpoint={selectedDeviceKeyIsRoot === true && selectedDid?.startsWith('did:plc:')
+        ? () => goTo('endpoint_repair')
         : undefined}
       onremove={() => goTo('remove_identity')}
-      deviceKeyUnusable={selectedDeviceKeyUnusable}
-      onrecover={selectedDeviceKeyUnusable && selectedDid?.startsWith('did:plc:')
-        ? () => {
-            cameFromHome = true;
-            form.handleOrDid = selectedDid ?? '';
-            goTo('recover_start');
-          }
-        : undefined}
+    />
+
+  {:else if step === 'did_document'}
+    <DIDDocumentScreen
+      didDoc={selectedDidDoc ? normalizePlcDocToW3c(selectedDidDoc) : {}}
+      onback={() => goTo('manage_identity')}
     />
 
   {:else if step === 'remove_identity'}
     <RemoveIdentityScreen
       did={selectedDid ?? ''}
       handle={selectedDidDoc ? (extractHandle(selectedDidDoc) ?? undefined) : undefined}
-      onback={() => goTo('identity_detail')}
+      onback={() => goTo('advanced_tools')}
       oncomplete={(wasLast) => {
         selectedDid = null;
         selectedDidDoc = null;
@@ -866,7 +917,7 @@
     <ChangeHandleScreen
       did={selectedDid ?? ''}
       currentHandle={selectedDidDoc ? extractHandle(selectedDidDoc) : null}
-      onback={() => goTo('identity_detail')}
+      onback={() => goTo('manage_identity')}
       ondone={() => goTo('home')}
     />
 
@@ -874,14 +925,14 @@
     <EndpointRepairScreen
       did={selectedDid ?? ''}
       currentEndpoint={selectedDidDoc ? extractPdsFromPlcDoc(selectedDidDoc) : null}
-      onback={() => goTo('identity_detail')}
+      onback={() => goTo('advanced_tools')}
       ondone={() => goTo('home')}
     />
 
   {:else if step === 'rotate_repo_key'}
     <RotateRepoKeyScreen
       did={selectedDid ?? ''}
-      onback={() => goTo('identity_detail')}
+      onback={() => goTo('advanced_tools')}
       ondone={() => goTo('home')}
     />
 
@@ -921,7 +972,7 @@
   {:else if step === 'self_held_kit_review'}
     <SelfHeldKitReviewScreen
       did={kitDid ?? ''}
-      onback={() => goTo('identity_detail')}
+      onback={() => goTo('advanced_tools')}
       ondone={(result: SelfHeldKitResult) => {
         kitShare2 = result.share2;
         kitShare2Words = result.share2Words;
@@ -959,7 +1010,7 @@
     <AppPasswordsScreen did={selectedDid ?? ''} onback={() => goTo('identity_detail')} />
 
   {:else if step === 'media_backup'}
-    <MediaBackupScreen did={selectedDid ?? ''} onback={() => goTo('identity_detail')} />
+    <MediaBackupScreen did={selectedDid ?? ''} onback={() => goTo('manage_identity')} />
 
   {:else if step === 'migration_start'}
     <MigrationStartScreen
@@ -972,7 +1023,7 @@
         migrationSourcePds = sourcePdsUrl;
         goTo('migration_source_auth');
       }}
-      onback={() => goTo('identity_detail')}
+      onback={() => goTo('move_or_rebuild')}
     />
 
   {:else if step === 'recovery_rebuild_start'}
@@ -984,7 +1035,7 @@
         migrationInviteCode = inviteCode;
         goTo('recovery_rebuild_progress');
       }}
-      onback={() => goTo('identity_detail')}
+      onback={() => goTo('move_or_rebuild')}
     />
 
   {:else if step === 'recovery_rebuild_progress'}
@@ -1117,7 +1168,7 @@
     <AlertDetailScreen
       did={selectedAlertDid ?? ''}
       changes={selectedAlertChanges}
-      onback={() => goTo('home')}
+      onback={() => goTo(alertReturnStep)}
       onoverride={(cid, createdAt) => {
         selectedRecoveryCid = cid;
         selectedRecoveryCreatedAt = createdAt;
