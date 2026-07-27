@@ -57,7 +57,7 @@
   import SettingsScreen from '$lib/components/home/SettingsScreen.svelte';
   import RemoveIdentityScreen from '$lib/components/home/RemoveIdentityScreen.svelte';
   import PasswordUnlockDialog from '$lib/components/home/PasswordUnlockDialog.svelte';
-  import { createAccount, confirmShareBackup, confirmRekey, confirmSelfHeldKit, selfHeldKitInProgress, getPdsCapabilities, hasPdsCapability, confirmRecoveryBackup, getPendingRecoveryEpilogue, registerCreatedIdentity, importDidWebIdentity, listIdentities, listPendingRemovals, getStoredDidDoc, checkIdentityStatus, getBlobBackupStatus, runBlobBackup, getRepoBackupStatus, runRepoBackup, isCodedError, type CreateAccountError, type PdsCapabilities, type IdentityInfo, type VerifiedClaimOp, type ClaimResult, type RekeyResult, type SelfHeldKitResult, type UnauthorizedChange, type IdentityStatus, type CollectedShare } from '$lib/ipc';
+  import { createAccount, confirmShareBackup, confirmRekey, confirmSelfHeldKit, selfHeldKitInProgress, getPdsCapabilities, hasPdsCapability, confirmRecoveryBackup, getPendingRecoveryEpilogue, registerCreatedIdentity, importDidWebIdentity, listIdentities, listPendingRemovals, getStoredDidDoc, checkIdentityStatus, getBlobBackupStatus, runBlobBackup, getRepoBackupStatus, runRepoBackup, registerForNotifications, isCodedError, type CreateAccountError, type PdsCapabilities, type IdentityInfo, type VerifiedClaimOp, type ClaimResult, type RekeyResult, type SelfHeldKitResult, type UnauthorizedChange, type IdentityStatus, type CollectedShare } from '$lib/ipc';
   import { decideAlarmLanding } from '$lib/alarm-landing';
   import { authenticateBiometric } from '$lib/biometric';
   import { normalizePlcDocToW3c, extractHandle, extractPdsFromPlcDoc } from '$lib/did-doc-utils';
@@ -422,6 +422,7 @@
               .catch((e) => {
                 console.warn('opportunistic post backup pass failed:', did, e);
               });
+            syncNotifications(did);
           }
         }
       } catch (e) {
@@ -634,6 +635,13 @@
           : 'Could not finalize the backup. Check device storage and try again.';
       return;
     }
+    // A recovery lands the identity on a new device, whose notification key its Custos has
+    // never seen — until this runs it is still sealing to a device the user no longer has. The
+    // recovered DID is not threaded this far, and sweeping the managed set is the more robust
+    // answer anyway: recovery is exactly when the wallet's idea of what it holds has changed.
+    listIdentities()
+      .then((dids) => dids.forEach(syncNotifications))
+      .catch((e) => console.warn('post-recovery push registration pass failed:', e));
     step = 'recover_success';
   }
 
@@ -671,7 +679,29 @@
   async function finishCreateFlow(handle: string) {
     form.registeredHandle = handle;
     const registered = await registerCreatedIdentityWithRetry(form.did, handle);
+    if (registered) syncNotifications(form.did);
     step = registered ? 'complete' : 'create_registration_failed';
+  }
+
+  /**
+   * Tell this identity's Custos where to send its pushes, and re-pin the sender keys it
+   * publishes. One call does both — the backend re-pins on the same contact, because the moment
+   * a device becomes reachable is the moment it needs the keys to verify what arrives.
+   *
+   * Fire-and-forget and silent, like the backup passes above: a missed registration costs
+   * banners until the next launch, never data, and there is nothing a user could usefully do
+   * about it from the screen they are on. Every ordinary "no" — a simulator with no APNs token,
+   * an identity on a host that runs no relay — comes back as an outcome rather than a rejection,
+   * so only genuine failures reach the console.
+   *
+   * Called at each onboarding flow's completion and once per app open for every managed
+   * identity. That cadence is the design's compromise-window property rather than housekeeping:
+   * a sender key the operator revokes keeps being trusted by this device until it next re-pins.
+   */
+  function syncNotifications(did: string) {
+    registerForNotifications(did).catch((e) => {
+      console.warn('push registration pass failed:', did, e);
+    });
   }
 </script>
 
@@ -751,6 +781,7 @@
       verifiedClaim={verifiedClaim!}
       onnext={(result) => {
         claimResult = result;
+        syncNotifications(identityInfo!.did);
         goTo('claim_success');
       }}
       oncancel={() => goTo('identity_input')}

@@ -127,6 +127,14 @@ objc2-foundation = "0.3"
 objc2 = "0.6"
 objc2-background-tasks = "0.3"
 block2 = "0.6"
+# UIKit + UserNotifications bindings for the wallet's APNs device-token bridge (apns.rs): iOS
+# delivers the token only to application-delegate methods, so the bridge needs the live
+# UIApplication (to register, and to reach the delegate whose class the callbacks are installed
+# on) and UNUserNotificationCenter (the permission prompt). Both are the same objc2 0.3
+# generated-bindings family as objc2-foundation and were already in the lockfile transitively
+# via the vendored auth-session plugin. iOS-only at the use site.
+objc2-ui-kit = "0.3"
+objc2-user-notifications = "0.3"
 # SCNetworkReachability WWAN flag for the wallet's "Wi-Fi only" background-backup setting
 # (bg_backup.rs) — BGProcessingTaskRequest can't express metered-network avoidance, so the
 # sweep checks the live network type at fire time. Already in the tree transitively

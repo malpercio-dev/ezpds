@@ -52,6 +52,9 @@ import type {
   RepoBackupStatus,
   RepoBackupRunReport,
   RepoExport,
+  RegistrationOutcome,
+  SenderKeyPinning,
+  NotificationDiagnostics,
   RegisterHandleResult,
   CreateAccountResult,
   DIDCeremonyResult,
@@ -243,6 +246,10 @@ export type CommandName =
   | 'set_repo_backup_enabled'
   | 'run_repo_backup'
   | 'export_repo_backup'
+  // notifications.ts
+  | 'register_for_notifications'
+  | 'refresh_notification_sender_keys'
+  | 'get_notification_diagnostics'
   // biometric plugin (driven by $lib/biometric — resolves = allow the gate)
   | 'plugin:biometric|authenticate'
   | 'plugin:biometric|status';
@@ -1329,6 +1336,69 @@ export function buildRegistry(state: WalletState): Registry {
         carBase64: btoa(`fake-car:${backup.rootCid}`),
       };
     },
+
+    // ── push notifications ───────────────────────────────────────────────────
+    // The fake models the two states a browser can genuinely be in. With no `apnsToken` (the
+    // default — a browser has no APNs) registration reports `AWAITING_APNS_TOKEN` exactly as a
+    // simulator does; set `state().notifications.apnsToken` to drive the registered path.
+    register_for_notifications: (args): RegistrationOutcome => {
+      const did = didArg(args);
+      const identity = findIdentity(state, did);
+      if (!identity) throw { code: 'IDENTITY_NOT_FOUND', message: 'identity not found' };
+      const notifications = state.notifications;
+
+      if (notifications.apnsToken === null) {
+        return {
+          status: 'AWAITING_APNS_TOKEN',
+          deviceUuid: notifications.deviceUuid,
+          notificationKeyId: null,
+        };
+      }
+      // A host that advertises no capabilities is the standard-PDS case, where the real
+      // routes answer 501 — the outcome onboarding must be able to reach without an error.
+      if (!state.pdsCapabilities.capabilities.includes('sovereignSessions')) {
+        return {
+          status: 'UNSUPPORTED',
+          deviceUuid: notifications.deviceUuid,
+          notificationKeyId: notifications.notificationKeyId,
+        };
+      }
+      if (!notifications.registeredDids.includes(did)) notifications.registeredDids.push(did);
+      // The real command re-pins on the same contact, so the fake does too.
+      notifications.pinnedHosts[identity.pdsUrl] = [
+        { kid: 1, publicKey: 'did:key:zDnaeharnesssenderkey00000000000000000000001' },
+      ];
+      return {
+        status: 'REGISTERED',
+        deviceUuid: notifications.deviceUuid,
+        notificationKeyId: notifications.notificationKeyId,
+      };
+    },
+    refresh_notification_sender_keys: (args): SenderKeyPinning => {
+      const identity = findIdentity(state, didArg(args));
+      if (!identity) throw { code: 'IDENTITY_NOT_FOUND', message: 'identity not found' };
+      const host = identity.pdsUrl;
+
+      if (!state.pdsCapabilities.capabilities.includes('sovereignSessions')) {
+        // A 501 leaves whatever was pinned exactly as it was — switching the feature off is
+        // not a revocation.
+        return { host, pinned: false, keys: state.notifications.pinnedHosts[host] ?? [] };
+      }
+      // Wholesale replacement, the property that makes a revoked key stop being trusted.
+      const keys = [
+        { kid: 1, publicKey: 'did:key:zDnaeharnesssenderkey00000000000000000000001' },
+      ];
+      state.notifications.pinnedHosts[host] = keys;
+      return { host, pinned: true, keys };
+    },
+    get_notification_diagnostics: (): NotificationDiagnostics => ({
+      deviceUuid: state.notifications.deviceUuid,
+      notificationKeyId: state.notifications.apnsToken
+        ? state.notifications.notificationKeyId
+        : null,
+      hasApnsToken: state.notifications.apnsToken !== null,
+      pinnedHosts: state.notifications.pinnedHosts,
+    }),
 
     // ── biometric plugin (allow the gate) ────────────────────────────────────
     'plugin:biometric|authenticate': () => null,

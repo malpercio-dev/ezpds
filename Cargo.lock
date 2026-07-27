@@ -3306,6 +3306,8 @@ dependencies = [
  "objc2",
  "objc2-background-tasks",
  "objc2-foundation",
+ "objc2-ui-kit",
+ "objc2-user-notifications",
  "p256",
  "rand_core 0.6.4",
  "reqwest",
@@ -4928,7 +4930,10 @@ version = "0.3.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9df9128cbbfef73cda168416ccf7f837b62737d748333bfe9ab71c245d76613e"
 dependencies = [
+ "bitflags 2.11.0",
+ "block2",
  "objc2",
+ "objc2-core-location",
  "objc2-foundation",
 ]
 

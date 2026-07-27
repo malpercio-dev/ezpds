@@ -1,4 +1,8 @@
 pub mod agents;
+/// The iOS APNs device-token bridge. iOS-only because it is nothing *but* platform plumbing:
+/// every part with logic worth testing lives in [`notifications`].
+#[cfg(target_os = "ios")]
+pub mod apns;
 pub mod app_passwords;
 pub mod bg_backup;
 pub mod blob_backup;
@@ -14,6 +18,7 @@ pub mod identity_store;
 pub mod keychain;
 pub mod migrate;
 pub mod migration_orchestrator;
+pub mod notifications;
 pub mod oauth;
 pub mod oauth_client;
 pub mod oauth_consent;
@@ -1690,6 +1695,13 @@ pub fn run() {
             #[cfg(target_os = "ios")]
             bg_backup::register_and_schedule(app.handle());
 
+            // iOS only: install the APNs device-token callbacks and ask for notification
+            // permission. Must run in `setup` — the delegate methods have to exist before iOS
+            // delivers the token, which it does shortly after launch. Off-device this is absent
+            // entirely, and every caller treats a token-less device as an ordinary state.
+            #[cfg(target_os = "ios")]
+            apns::register_for_remote_notifications(app.handle());
+
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -1741,6 +1753,9 @@ pub fn run() {
             repo_backup::export_repo_backup,
             bg_backup::get_background_backup_settings,
             bg_backup::set_background_backup_settings,
+            notifications::register_for_notifications,
+            notifications::refresh_notification_sender_keys,
+            notifications::get_notification_diagnostics,
             plc_monitor::check_identity_status,
             plc_monitor::get_monitor_history,
             recovery::build_recovery_override_cmd,

@@ -73,5 +73,20 @@
     <string>$(AppIdentifierPrefix)org.obsign.shared</string>
     <string>$(AppIdentifierPrefix)dev.malpercio.identitywallet</string>
   </array>
+
+  <!--
+    Push notifications. Without this key `registerForRemoteNotifications` never yields a device
+    token — it calls back with an error instead — so the whole notification-relay path is inert.
+    The value selects which APNs environment the token is minted for; `development` is correct
+    for debug builds and TestFlight, and Xcode's App Store export rewrites it to `production`.
+
+    Like the iCloud container above (and UNLIKE keychain-access-groups), this DOES need Apple
+    Developer portal work: enable the Push Notifications capability on the App ID and regenerate
+    the provisioning profile, or signing fails with an entitlements mismatch. The official relay
+    additionally needs an APNs auth key for this bundle id — that key is the structural reason a
+    self-hoster cannot push directly and the relay exists at all.
+  -->
+  <key>aps-environment</key>
+  <string>development</string>
 </dict>
 </plist>
