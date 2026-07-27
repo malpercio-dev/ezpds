@@ -1,0 +1,41 @@
+{
+  "cli_version": "0.8.42",
+  "checkpoint_id": "4eb1ccf776d4",
+  "strategy": "manual-commit",
+  "branch": "claude/wallet-ia-phase-2-protection-dddc32",
+  "checkpoints_count": 1,
+  "files_touched": [
+    "apps/identity-wallet/AGENTS.md",
+    "apps/identity-wallet/src-tauri/src/keychain.rs",
+    "apps/identity-wallet/src-tauri/src/lib.rs",
+    "apps/identity-wallet/src-tauri/src/plc_monitor.rs",
+    "apps/identity-wallet/src/lib/components/home/IdentityListHome.svelte",
+    "apps/identity-wallet/src/lib/components/home/ProtectionScreen.svelte",
+    "apps/identity-wallet/src/lib/components/ui/StatusPanel.svelte",
+    "apps/identity-wallet/src/lib/harness/registry.ts",
+    "apps/identity-wallet/src/lib/harness/state.ts",
+    "apps/identity-wallet/src/lib/identity-cards.ts",
+    "apps/identity-wallet/src/lib/ipc/monitor.ts",
+    "apps/identity-wallet/src/lib/protection.test.ts",
+    "apps/identity-wallet/src/lib/protection.ts",
+    "apps/identity-wallet/src/routes/+page.svelte",
+    "changelog.d/mm-466.added.md",
+    "docs/design-plans/2026-07-24-wallet-information-architecture.md"
+  ],
+  "sessions": [
+    {
+      "metadata": "/4e/b1ccf776d4/0/metadata.json",
+      "transcript": "/4e/b1ccf776d4/0/full.jsonl",
+      "compact_transcript": "/4e/b1ccf776d4/0/transcript.jsonl",
+      "content_hash": "/4e/b1ccf776d4/0/content_hash.txt",
+      "prompt": "/4e/b1ccf776d4/0/prompt.txt"
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 292,
+    "cache_creation_tokens": 396452,
+    "cache_read_tokens": 48501762,
+    "output_tokens": 104418,
+    "api_call_count": 156
+  }
+}

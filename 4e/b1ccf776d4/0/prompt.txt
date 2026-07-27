@@ -1,0 +1,27 @@
+Work on Linear issue MM-466:
+
+Suggested branch name: malpercio/mm-466-wallet-ia-phase-2-protection-surface-home-strip
+
+<issue identifier="MM-466">
+<title>Wallet IA phase 2 — Protection surface + home strip</title>
+<description>
+Second phase of the mode-based wallet IA (design: `docs/design-plans/2026-07-24-wallet-information-architecture.md` §2.5).
+
+App-level Defend surface, giving the invisible PLC monitor a visible face:
+
+* **Home protection strip**: "All identities secure · checked N min ago" (or alarm state). The strip is a **door**, not just a readout — tapping opens the Protection surface.
+* **Protection surface**: every identity's status row (tap-through to that identity's panel/alarm) + **monitor history** — when the background sweep last ran, what it checked, per-identity last-verified times. In alarm state the list reorders by urgency (most urgent first).
+* Needs a small IPC addition to expose monitor sweep timestamps/history (the only IPC change in the whole IA plan) — `plc_monitor.rs` currently records nothing user-visible about successful sweeps.
+
+Independent of phases 3–4; pairs naturally with phase 1 (<issue id="86409e5c-e57c-491c-83fc-d9cd68716848" href="https://linear.app/malpercio/issue/MM-465/wallet-ia-phase-1-identity-instrument-panel">MM-465</issue>, shared status vocabulary).
+</description>
+<team name="Mal's Machinations"/>
+<project name="ezpds">An easy-to-host PDS on the ATProtocol, MacOS. Grandma-approved.</project>
+<issue-relations>
+<related>
+<issue-ref identifier="MM-465" title="Wallet IA phase 1 — identity instrument panel"/>
+<issue-ref identifier="MM-467" title="Wallet IA phase 3 — alarm takeover landing"/>
+</related>
+</issue-relations>
+</issue>
+Open a pr linked to the linear issue when complete
