@@ -1,6 +1,6 @@
 # notify-relay Crate
 
-Last verified: 2026-07-26
+Last verified: 2026-07-27
 
 ## Purpose
 
@@ -72,8 +72,11 @@ everything that way and ships no file.
 | `apns.endpoint` | `EZPDS_NOTIFY_APNS_URL` | unset (the wiremock seam) |
 | `rate_limits.*` | `EZPDS_NOTIFY_RATE_{REGISTRATIONS,PUSHES}_{PER_HOUR,BURST}` | 100/10 registrations, 1000/50 pushes per hour |
 
-The `[apns]` block is parsed and validated but unused until the push pipeline lands, so an
-operator's deployment config does not change shape when pushes start working.
+The `[apns]` block is parsed and validated from the start so an operator's deployment config
+does not change shape when pushes start working. Its `topics` allowlist is already
+enforced — `register_handle` refuses a handle whose `apnsTopic` is outside a non-empty
+served set — while the credentials (`key_path`/`key_id`/`team_id`/`sandbox`/`endpoint`) stay
+dormant until the push pipeline lands.
 
 ## Operating
 
@@ -91,6 +94,10 @@ node secret key file is not, since losing it re-addresses the relay.
 1. Add the variant to `Request`/`Response` in `protocol.rs` (camelCase tags) with a test
    pinning its wire shape.
 2. Add the handler arm in `service.rs`, going through `require_enrolled` unless the RPC is
-   deliberately pre-enrollment.
+   deliberately pre-enrollment (`enroll`) or reports its refusals as an outcome rather than
+   a bare response. `push` is the latter: it inlines the enrollment probe and rate-limit
+   charge so "not enrolled" and "throttled" come back as `Pushed { outcome }`, since the
+   sender treats every push result uniformly — routing it through `require_enrolled` would
+   return the wrong response shape.
 3. If it needs a new query, add it to the owning `db/` submodule — scoped by node id.
 4. Cover it in `transport.rs`'s loopback tests, including the cross-tenant probe.

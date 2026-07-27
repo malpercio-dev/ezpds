@@ -6,9 +6,11 @@
 // the immutable `Config` the process runs on. The env map is passed in explicitly so tests
 // never depend on the ambient environment.
 //
-// The APNs block is parsed and validated here but unused until the APNs pipeline lands;
-// carrying it from the start means an operator's deployment config doesn't change shape
-// when pushes start working.
+// The APNs block is parsed and validated here from the start so an operator's deployment
+// config doesn't change shape when pushes start working. Its `topics` allowlist is already
+// load-bearing — `service.rs`'s `register_handle` refuses a handle for an unserved topic —
+// while the credentials (`key_path`/`key_id`/`team_id`/`sandbox`/`endpoint`) are dormant
+// until the APNs pipeline lands.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -34,7 +36,8 @@ pub struct Config {
     pub rate_limits: RateLimitConfig,
 }
 
-/// APNs credentials and the topic allowlist. Parsed now, used by the push pipeline.
+/// APNs credentials and the topic allowlist. The allowlist gates `register_handle` today;
+/// the credentials are parsed and validated now but first used by the push pipeline.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct ApnsConfig {
     /// Path to the `.p8` token-auth key.
