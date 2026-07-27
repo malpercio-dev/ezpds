@@ -1,0 +1,30 @@
+{
+  "cli_version": "0.9.0",
+  "checkpoint_id": "9e7642e3ca5c",
+  "strategy": "manual-commit",
+  "branch": "claude/notify-relay-deploy-docs-bfbeac",
+  "checkpoints_count": 1,
+  "files_touched": [
+    "changelog.d/mm-423.added.md",
+    "crates/notify-relay/Dockerfile",
+    "crates/notify-relay/docker-entrypoint.sh",
+    "docs/deploy.md",
+    "docs/operations/self-relay-runbook.md"
+  ],
+  "sessions": [
+    {
+      "metadata": "/9e/7642e3ca5c/0/metadata.json",
+      "transcript": "/9e/7642e3ca5c/0/full.jsonl",
+      "compact_transcript": "/9e/7642e3ca5c/0/transcript.jsonl",
+      "content_hash": "/9e/7642e3ca5c/0/content_hash.txt",
+      "prompt": "/9e/7642e3ca5c/0/prompt.txt"
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 56,
+    "cache_creation_tokens": 192082,
+    "cache_read_tokens": 5294742,
+    "output_tokens": 13860,
+    "api_call_count": 30
+  }
+}
