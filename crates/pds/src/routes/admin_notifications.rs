@@ -191,6 +191,11 @@ mod tests {
             crate::auth::guards::admin_request_sign_string(method, path, timestamp, nonce, body);
         let signing_key = SigningKey::from_slice(&*keypair.private_key_bytes).unwrap();
         let signature: Signature = signing_key.sign(sign_string.as_bytes());
+        // Normalize to low-S, as a real admin device must. `SigningKey::sign` does not do this
+        // for P-256, and the verifier rejects the high-S twin (ECDSA malleability: every
+        // signature has one, and accepting both would let one signature yield two valid
+        // requests). Omitting this makes the test a ~50/50 coin flip, not a clean failure.
+        let signature = signature.normalize_s().unwrap_or(signature);
         let signature = data_encoding::BASE64URL_NOPAD.encode(&signature.to_bytes());
 
         let mut builder = Request::builder()
