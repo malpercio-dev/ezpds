@@ -1,0 +1,81 @@
+{
+  "cli_version": "0.8.42",
+  "checkpoint_id": "7d5279061cc3",
+  "session_id": "465c8b99-5d8f-4c25-9d29-2882c739fed4",
+  "strategy": "manual-commit",
+  "created_at": "2026-07-27T14:33:00.128902Z",
+  "branch": "claude/oauth-consent-wallet-flow-8490ed",
+  "checkpoints_count": 1,
+  "files_touched": [
+    "apps/identity-wallet/src/routes/+page.svelte",
+    "apps/identity-wallet/AGENTS.md",
+    "apps/identity-wallet/src/lib/ipc/oauth.ts",
+    "changelog.d/mm-480.fixed.md"
+  ],
+  "agent": "Claude Code",
+  "model": "",
+  "turn_id": "dc999ac8b12b",
+  "compact_transcript_start": 0,
+  "token_usage": {
+    "input_tokens": 187,
+    "cache_creation_tokens": 268940,
+    "cache_read_tokens": 22511929,
+    "output_tokens": 45885,
+    "api_call_count": 101
+  },
+  "skill_events_version": 1,
+  "skill_events": [
+    {
+      "id": "claude-skill-toolu_01LHpez5EuuxoSNDAX4gQ5m1",
+      "event_type": "tool_invocation",
+      "skill": {
+        "name": "linear-workflow"
+      },
+      "source": {
+        "agent": "claude-code",
+        "signal": "skill_tool_use",
+        "confidence": "explicit"
+      },
+      "turn_id": "dc999ac8b12b",
+      "transcript_anchor": {
+        "unit": "line",
+        "start": 18,
+        "end": 19,
+        "entry_ids": [
+          "08a00151-9ce0-40b0-8a8c-8be38c179c02"
+        ],
+        "tool_use_id": "toolu_01LHpez5EuuxoSNDAX4gQ5m1"
+      },
+      "native": {
+        "tool_name": "Skill",
+        "tool_use_id": "toolu_01LHpez5EuuxoSNDAX4gQ5m1"
+      },
+      "collapse": {
+        "target": "tool_pair",
+        "label": "Skill: linear-workflow",
+        "default_collapsed": true
+      }
+    }
+  ],
+  "initial_attribution": {
+    "calculated_at": "2026-07-27T14:33:00.065199Z",
+    "agent_lines": 19,
+    "agent_removed": 36,
+    "human_added": 0,
+    "human_modified": 0,
+    "human_removed": 0,
+    "total_committed": 19,
+    "total_lines_changed": 110,
+    "agent_percentage": 50,
+    "metric_version": 2
+  },
+  "prompt_attributions": [
+    {
+      "checkpoint_number": 1,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 0,
+      "agent_lines_removed": 0
+    }
+  ]
+}
