@@ -1,5 +1,10 @@
 import { describe, it, expect } from 'vitest';
-import { deriveIdentityPanelState, formatCheckedAgo, panelLabel } from './identity-status';
+import {
+  deriveIdentityPanelState,
+  formatCheckedAgo,
+  isVerified,
+  panelLabel,
+} from './identity-status';
 import type { UnauthorizedChange } from './ipc';
 
 const NOW = Date.parse('2026-07-26T12:00:00Z');
@@ -94,6 +99,29 @@ describe('deriveIdentityPanelState', () => {
     // Both are true; the panel names the more severe fact. The home list's card strips
     // order the other way round because they answer "what do I do first", not "what is true".
     expect(deriveIdentityPanelState([detectedHoursAgo(1)], true, NOW).urgency).toBe('critical');
+  });
+});
+
+describe('isVerified', () => {
+  const PLC = 'did:plc:harness106zzd8';
+  const WEB = 'did:web:example.com';
+
+  it('follows the directory for a did:plc', () => {
+    expect(isVerified(PLC, true)).toBe(true);
+    expect(isVerified(PLC, false)).toBe(false);
+  });
+
+  it('holds a did:web verified even when the sweep reports a failed check', () => {
+    // `PlcMonitor::check_all` does not filter by DID method, so it asks plc.directory
+    // about a did:web too — and that fetch fails on EVERY sweep, since a did:web has no
+    // PLC audit log. Honouring that verdict would put "Not checked / couldn't reach the
+    // public record" on an identity that has no public record.
+    expect(isVerified(WEB, false)).toBe(true);
+    expect(isVerified(WEB, true)).toBe(true);
+  });
+
+  it('reads the method from the DID, not from a prefix that merely contains it', () => {
+    expect(isVerified('did:plc:notdid:web:decoy', false)).toBe(false);
   });
 });
 

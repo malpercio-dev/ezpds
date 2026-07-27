@@ -7,6 +7,7 @@
   import {
     deriveIdentityPanelState,
     formatCheckedAgo,
+    isVerified,
     type IdentityPanelState,
   } from '$lib/identity-status';
   import ScreenHeader from '$lib/components/ui/ScreenHeader.svelte';
@@ -63,19 +64,29 @@
 
   let changes = $state<UnauthorizedChange[]>([]);
   /**
-   * Whether the directory answered. Starts false — before the first check completes the
-   * wallet genuinely has not verified anything this session, and a panel that opened green
-   * and then corrected itself would be asserting an all-clear it had not yet earned.
+   * Whether plc.directory answered for this identity. Starts false — before the first
+   * check completes the wallet genuinely has not verified anything this session, and a
+   * panel that opened green and then corrected itself would be asserting an all-clear it
+   * had not yet earned.
    */
-  let verified = $state(false);
+  let plcVerified = $state(false);
   let checkedAt = $state<number | null>(null);
   let now = $state(Date.now());
   let ticker: ReturnType<typeof setInterval> | null = null;
   let unlisten: UnlistenFn | null = null;
+  /**
+   * Set synchronously by `onDestroy`, which runs before an async `onMount` can finish.
+   * Svelte does not treat an async `onMount`'s return value as a cleanup hook, so a
+   * subscription that resolves after teardown has to disarm itself.
+   */
+  let destroyed = false;
 
   let handle = $derived(extractHandle(didDoc));
   let pdsUrl = $derived(extractPdsFromPlcDoc(didDoc));
   let isWeb = $derived(isDidWeb(did));
+
+  /** Whether the state rests on a reading the wallet could actually take (see the rule). */
+  let verified = $derived(isVerified(did, plcVerified));
 
   let panel = $derived<IdentityPanelState>(
     deriveIdentityPanelState(changes, deviceKeyUnusable, now)
@@ -94,14 +105,15 @@
     if (panel.urgency === 'warning') {
       return "This device's key for this identity is gone. The identity itself is unaffected.";
     }
+    if (isWeb) {
+      // Tested before the unverified branch, not after: a did:web can never be "checked",
+      // so neither a pending nor a failed directory read is a fact about it.
+      return 'Held at your own domain. Nothing is out of place.';
+    }
     if (!verified) {
       return checkedAt === null && changes.length === 0
-        ? "Checking the public record…"
+        ? 'Checking the public record…'
         : "Couldn't reach the public record to check just now.";
-    }
-    if (isWeb) {
-      // Never claim a directory check for an identity the monitor structurally cannot watch.
-      return 'Held at your own domain. Nothing is out of place.';
     }
     return `Public record checked ${formatCheckedAgo(checkedAt ?? now, now)}.`;
   });
@@ -111,7 +123,7 @@
     const mine = statuses.find((s) => s.did === did);
     if (!mine) return;
     changes = mine.unauthorizedChanges;
-    verified = !mine.checkFailed;
+    plcVerified = !mine.checkFailed;
     if (!mine.checkFailed) checkedAt = Date.now();
   }
 
@@ -125,9 +137,18 @@
 
     // The background sweep can land while this screen is open; the panel must follow it
     // rather than hold the reading it took on entry.
-    unlisten = await listen<IdentityStatus[]>('plc_alert', (event) => {
+    const off = await listen<IdentityStatus[]>('plc_alert', (event) => {
       if (Array.isArray(event.payload)) absorb(event.payload);
     });
+    // The await above can resolve after teardown — this screen unmounts on every identity
+    // switch and on every step into a door — and by then `onDestroy` has already run with
+    // nothing to release. Disarm the late subscription itself rather than parking it in
+    // `unlisten`, where nothing would ever call it again.
+    if (destroyed) {
+      off();
+      return;
+    }
+    unlisten = off;
 
     // A minute is the resolution of both readouts the clock feeds: the countdown renders
     // whole minutes, and "checked N min ago" cannot move faster than that.
@@ -137,6 +158,7 @@
   });
 
   onDestroy(() => {
+    destroyed = true;
     if (ticker !== null) clearInterval(ticker);
     unlisten?.();
   });

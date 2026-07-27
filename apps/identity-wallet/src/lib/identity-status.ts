@@ -1,4 +1,5 @@
 import { getDeadline, getUrgency, type Urgency } from './deadline';
+import { isDidWeb } from './did-doc-utils';
 import type { UnauthorizedChange } from './ipc';
 
 /**
@@ -77,6 +78,24 @@ export function deriveIdentityPanelState(
   }
 
   return { urgency: 'safe', deadline: null, alertCount: 0 };
+}
+
+/**
+ * Whether a panel state for `did` rests on a reading the wallet could actually take.
+ *
+ * `plcCheckSucceeded` is `!IdentityStatus.checkFailed` — the monitor's report of whether
+ * plc.directory answered. It is the right input for a did:plc and a meaningless one for a
+ * did:web, which has no PLC audit log at all: `PlcMonitor::check_all` does not filter by
+ * DID method, so it asks plc.directory about every managed DID and a did:web's audit-log
+ * fetch fails there *every* sweep. Passing that through would tell a did:web user their
+ * public record could not be reached when they have no public record — the exact opposite
+ * of the honesty the unverified state exists to provide.
+ *
+ * So a did:web is verified by construction. Its protection is control of its domain, which
+ * no directory sweep observes in either direction.
+ */
+export function isVerified(did: string, plcCheckSucceeded: boolean): boolean {
+  return isDidWeb(did) || plcCheckSucceeded;
 }
 
 /**

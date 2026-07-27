@@ -69,6 +69,12 @@
   // after each load so the map stays reactive (per the `$state(new Map())` reactivity rule).
   let rekeyEligible = $state<Map<string, boolean>>(new Map());
   let unlisten: UnlistenFn | null = null;
+  /**
+   * Set synchronously by `onDestroy`, which runs before this component's async `onMount`
+   * can finish. Svelte does not treat an async `onMount`'s return value as a cleanup hook,
+   * so a subscription that resolves after teardown has to disarm itself.
+   */
+  let destroyed = false;
 
   // Total unauthorized changes across all identities, for the monitoring banner.
   let alertCount = $derived(
@@ -210,13 +216,21 @@
       .catch((e) => console.warn('Alert check failed:', e));
 
     // Listen for plc_alert events from background monitoring timer
-    unlisten = await listen<IdentityStatus[]>('plc_alert', (event) => {
+    const off = await listen<IdentityStatus[]>('plc_alert', (event) => {
       if (!Array.isArray(event.payload)) return;
       alertData = toAlertMap(event.payload);
     });
+    // Home unmounts on every step into an identity, so the await above can resolve after
+    // teardown — by which point `onDestroy` has already run with nothing to release.
+    if (destroyed) {
+      off();
+      return;
+    }
+    unlisten = off;
   });
 
   onDestroy(() => {
+    destroyed = true;
     unlisten?.();
   });
 
