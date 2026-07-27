@@ -1,10 +1,25 @@
 # PDS Deployment
 
-**Last verified:** 2026-07-17
+**Last verified:** 2026-07-27
 
 ## Overview
 
 The PDS is deployed as an OCI container (Docker/Podman) running on Railway (or any Linux host with a container runtime). Secrets are injected at container start via `environmentFile` (agenix/sops-nix on NixOS, or plain env files elsewhere). The PDS's single-instance SQLite database persists to a host-mounted `/data` volume.
+
+### Deployed services
+
+Five Railway services in one project. Each has its own section below.
+
+| Service | Source | Public surface | State |
+|---|---|---|---|
+| **PDS** (Custos) | repo-root `Dockerfile` | `obsign.org`, `pds.obsign.org`, `*.obsign.org` | `/data` volume, Litestream-replicated |
+| **Marketing site** | `sites/marketing/` | `obsign.org` apex content | none (static) |
+| **Docs site** | `sites/docs/` | `docs.obsign.org` | none (static) |
+| **MCP sidecar** | `tools/mcp-sidecar/` | `mcp.obsign.org` | none — forwards credentials, holds nothing ([ADR-0024](architecture/decisions/0024-hosted-agent-credential-forwarding.md)) |
+| **Notification relay** | `crates/notify-relay/` | **none** — dialed over iroh by node id | `/data` volume, disposable; the node key is not |
+
+The relay is the odd one out: it serves no HTTP port, so it has no domain, no health check
+path, and no public networking. See [Notification relay](#notification-relay).
 
 ## Container Runtime Contract
 
@@ -389,6 +404,92 @@ docker build -t custos-mcp-sidecar -f tools/mcp-sidecar/Dockerfile .   # repo-ro
 docker run --rm -p 8080:8080 -e MCP_SIDECAR_PDS_ORIGIN=http://host.docker.internal:8080 \
   custos-mcp-sidecar
 curl -s localhost:8080/.well-known/oauth-protected-resource   # names Custos as the AS
+```
+
+## Notification relay
+
+The notification relay (`crates/notify-relay/`) deploys as a **fourth Railway service in the
+same project**: the blind courier that carries HPKE-sealed push payloads from self-hosted
+Custos instances to APNs, because Apple's auth keys are bundle-id-bound and an instance
+structurally cannot push for itself. It shares nothing with the PDS at runtime — its own
+binary, its own SQLite database, its own iroh identity — and it never sees notification
+plaintext or any key material belonging to an instance or a device.
+
+Operator-facing runbook, including the enrollment ceremony and running a relay of your own:
+[`docs/operations/self-relay-runbook.md`](operations/self-relay-runbook.md).
+
+### Config as code
+
+| File | Role |
+|------|------|
+| `crates/notify-relay/Dockerfile` | Same builder pattern as the repo-root image, pointed at `cargo build --release --locked -p notify-relay` (the root image is single-binary, `-p pds`). Non-root runtime user, state at `/data`. **No Litestream.** |
+| `crates/notify-relay/docker-entrypoint.sh` | Materializes the two secrets from env vars into the files the relay reads, then drops privileges via `gosu`. Passes subcommands through, so `mint-code` runs through the same image. |
+| `crates/notify-relay/railway.toml` | Dockerfile builder + restart policy. **No `healthcheckPath`** — see below. |
+
+### What is different from every other service: there is no HTTP surface
+
+The relay serves no TCP port at all. It speaks QUIC over iroh and is dialed by **node id**,
+staying reachable through iroh's relay servers without inbound ingress. Three consequences
+for the Railway wiring:
+
+- **No public networking, no custom domain, no health check path.** There is nothing to
+  route to and nothing to probe. Liveness is the process plus `restartPolicyType`; the
+  readiness signal is the startup log line `notification relay listening`, which also prints
+  the node id instances dial.
+- **Railway Config File** = `crates/notify-relay/railway.toml`, with **Root Directory** left at
+  the repo root — the same wiring the MCP sidecar needs, and for the same reason: the build
+  context must be the repo root (cargo resolves every workspace member and the swift-rs
+  `[patch.crates-io]` path even for a single `-p`), so the Root-Directory trick the static
+  sites use is unavailable and the config-file setting is what stops the service inheriting
+  the PDS-specific repo-root `railway.toml`.
+- **Watch Paths** = `crates/notify-relay/**` plus the crates it builds against
+  (`crates/common/**`, `Cargo.toml`, `Cargo.lock`) — the workspace context means an unrelated
+  crate edit does not need to redeploy the relay.
+
+### Volume and secrets
+
+A volume at `/data` holds the SQLite database and the node secret key. The database is
+**disposable**: every row is re-derivable by re-enrollment, which is why there is no
+Litestream sidecar here — the design doc's Key lifecycle already accepts relay state loss.
+
+The **node secret key is not disposable**: it is the relay's address, pinned by every
+enrolled instance as `[notifications] relay = "<node id>"`. Losing it fails quietly — the
+relay comes up healthy on a fresh identity and simply never hears from anyone again. Set
+`EZPDS_NOTIFY_NODE_SECRET` so the platform's secret store, not the volume, is the source of
+truth; the entrypoint writes it 0600 and refuses to start if it disagrees with a key already
+on the volume rather than guessing which one you meant.
+
+| Variable | Value |
+|---|---|
+| `EZPDS_NOTIFY_NODE_SECRET` | 64 hex characters. The relay's identity — back it up separately, like the PDS's KEK. |
+| `EZPDS_NOTIFY_APNS_KEY_P8` | The APNs `.p8` PEM text, verbatim. Written to `/run`, never to the volume. |
+| `EZPDS_NOTIFY_APNS_KEY_ID` / `_TEAM_ID` | The key's `kid` and the Apple team id. Credentials are all-or-nothing: an incomplete or malformed set is a hard startup failure, not a warning. |
+| `EZPDS_NOTIFY_APNS_TOPICS` | Comma-separated bundle ids this relay will push to. Empty means any topic. |
+| `EZPDS_NOTIFY_APNS_SANDBOX` | `true` for Apple's sandbox host (development builds). |
+| `EZPDS_NOTIFY_OPEN_ENROLLMENT` | Leave `false` on the official relay — enrollment is by operator-minted code. |
+
+`EZPDS_NOTIFY_DATABASE_URL` and `EZPDS_NOTIFY_SECRET_KEY_PATH` are already set in the image;
+override them only if the volume mounts somewhere other than `/data`.
+
+### Enrollment codes
+
+Codes are minted at the relay's own shell — there is deliberately no remote admin surface,
+so no privileged network API exists to misconfigure:
+
+```sh
+railway ssh --service notify-relay
+notify-relay mint-code --ttl 24h
+```
+
+The ceremony (who gets a code, and what the instance operator does with it) is documented in
+the self-relay runbook. Distribution policy for the official relay is manual in v1.
+
+### Local check
+
+```sh
+docker build -t notify-relay -f crates/notify-relay/Dockerfile .   # repo-root context
+docker run --rm -v notify-relay-data:/data notify-relay            # prints the node id
+docker run --rm -v notify-relay-data:/data notify-relay mint-code --ttl 1h
 ```
 
 ## Colmena / NixOS oci-containers Deployment

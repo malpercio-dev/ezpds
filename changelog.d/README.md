@@ -27,6 +27,8 @@ The CI gate requires a fragment when a pull request changes a deployable surface
 - the deployed MCP surfaces — the stdio Custos MCP server (`tools/mcp/src/`) and the
   credential-forwarding sidecar (`tools/mcp-sidecar/src/`, plus its image/config), which
   ships as a Railway service and re-exports the stdio server's tool surface;
+- the notification relay's own image, entrypoint, and Railway config
+  (`crates/notify-relay/`), which ships as a separate service;
 - workspace runtime dependency manifests, the production image/config, or the NixOS
   runtime module.
 
