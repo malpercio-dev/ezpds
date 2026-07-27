@@ -31,10 +31,11 @@
 // branch lives in `retire_and_wipe` rather than at the command boundary because
 // `tombstone_identity` (the resume path the marker routes to) reaches the same core.
 
+use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
 use serde::Serialize;
 
 use crate::identity_store::{IdentityStore, PerDidSignError};
-use crate::pds_client::{PdsClient, PdsClientError};
+use crate::pds_client::{DeleteAccountProof, DeleteCredential, PdsClient, PdsClientError};
 use crate::session_provider::{SessionError, SessionProvider, UnlockReason};
 
 /// Keychain account holding the durable "removal in progress (post-delete)" index:
@@ -154,6 +155,21 @@ pub enum RemovalError {
     /// The PDS rejected the account password or the emailed confirmation code.
     #[error("invalid password or confirmation code")]
     InvalidToken,
+    /// The passwordless sibling of [`RemovalError::InvalidToken`]: the PDS rejected the
+    /// emailed confirmation code, or the device-key proof of ownership sent in place of a
+    /// password. The server's refusal is deliberately identical either way (it is not a
+    /// credential oracle), but the wallet knows which factors it sent, and telling the
+    /// holder to check a password they never had would send them looking for nothing.
+    #[error("invalid confirmation code")]
+    InvalidConfirmationCode,
+    /// The identity's host does not accept a device-key deletion proof, so removal needs the
+    /// account password — which this identity may not have. Reached only when the host's
+    /// advertised capabilities changed between the screen's probe and the confirm.
+    #[error("this server requires the account password to remove an identity")]
+    PasswordRequired,
+    /// The removal proof could not be signed with the identity's device key.
+    #[error("failed to sign the removal authorization: {message}")]
+    ProofSigningFailed { message: String },
     /// `deleteAccount` failed for a reason other than bad credentials.
     #[error("account deletion failed: {message}")]
     AccountDeleteFailed { message: String },
@@ -197,13 +213,23 @@ pub struct RemovalOutcome {
 
 /// Map a `deleteAccount` `PdsClientError` onto the removal error surface.
 ///
-/// A 401 (wrong password) and a 400 `INVALID_TOKEN` (bad/expired confirmation code)
-/// both collapse to `InvalidToken` — the UI re-prompts for both — while other XRPC
-/// failures are a distinct `AccountDeleteFailed`.
-fn map_delete_account_error(e: PdsClientError) -> RemovalError {
+/// A 401 (wrong credential) and a 400 `INVALID_TOKEN` (bad/expired confirmation code) both
+/// collapse to one credential failure — the UI re-prompts for both — while other XRPC failures
+/// are a distinct `AccountDeleteFailed`. The server cannot tell the two factors apart in its
+/// response (it is deliberately not a credential oracle), so `sent_password` decides which of
+/// the two copies the user sees: naming a password to an account that has none would send them
+/// looking for something that does not exist.
+fn map_delete_account_error(e: PdsClientError, sent_password: bool) -> RemovalError {
+    let invalid_credentials = || {
+        if sent_password {
+            RemovalError::InvalidToken
+        } else {
+            RemovalError::InvalidConfirmationCode
+        }
+    };
     match e {
-        PdsClientError::Unauthorized { .. } => RemovalError::InvalidToken,
-        PdsClientError::XrpcError { status: 400, .. } => RemovalError::InvalidToken,
+        PdsClientError::Unauthorized { .. } => invalid_credentials(),
+        PdsClientError::XrpcError { status: 400, .. } => invalid_credentials(),
         PdsClientError::RateLimited { retry_after, .. } => {
             RemovalError::RateLimited { retry_after }
         }
@@ -212,6 +238,77 @@ fn map_delete_account_error(e: PdsClientError) -> RemovalError {
             message: other.to_string(),
         },
     }
+}
+
+/// Build the credential the deletion request carries: the password the user typed, or — when
+/// they have none — a device-key-signed proof of ownership.
+///
+/// The proof path is gated on the host advertising `walletAccountDelete`. One `describeServer`
+/// answers both halves of what the proof needs — whether the host reads it at all, and the server
+/// DID the envelope's audience binds — so a host that cannot be reached surfaces as the network
+/// failure it is, rather than as a demand for a password the identity may not have.
+async fn build_delete_credential(
+    pds_client: &PdsClient,
+    pds_url: &str,
+    did: &str,
+    password: Option<String>,
+) -> Result<DeleteCredential, RemovalError> {
+    if let Some(password) = password.filter(|p| !p.is_empty()) {
+        return Ok(DeleteCredential::Password(password));
+    }
+
+    // The audience is the server's own DID, read from the host itself — the same binding the
+    // sovereign-session and consent envelopes use, so a proof cannot be relayed to another server.
+    let server =
+        pds_client
+            .describe_server(pds_url)
+            .await
+            .map_err(|e| RemovalError::NetworkError {
+                message: format!("could not identify the hosting server: {e}"),
+            })?;
+    let capabilities = crate::pds_capabilities::ServerCapabilities::from(server.custos.as_ref());
+    if !capabilities.wallet_account_delete() {
+        return Err(RemovalError::PasswordRequired);
+    }
+
+    // Resolve the key before signing, so membership of the managed set is enforced and the
+    // signer is unambiguously *this* identity's key (the `sovereign_session` ordering).
+    let device_key = IdentityStore.get_or_create_device_key(did).map_err(|e| {
+        RemovalError::IdentityNotFound {
+            message: e.to_string(),
+        }
+    })?;
+    let sign = crate::identity_store::per_did_sign_closure(did).map_err(|e| match e {
+        PerDidSignError::DeviceKeyNotFound { message } => {
+            RemovalError::IdentityNotFound { message }
+        }
+        PerDidSignError::SigningSetupFailed { message } => {
+            RemovalError::ProofSigningFailed { message }
+        }
+    })?;
+
+    let timestamp =
+        crate::sovereign_session::unix_timestamp().map_err(|_| RemovalError::NetworkError {
+            message: "system clock is unavailable".to_string(),
+        })?;
+    let nonce = crate::sovereign_session::fresh_nonce();
+    let envelope = crypto::encode_account_delete_envelope(
+        &server.did,
+        did,
+        &device_key.key_id,
+        timestamp,
+        &nonce,
+    );
+    let signature = sign(&envelope).map_err(|e| RemovalError::ProofSigningFailed {
+        message: e.to_string(),
+    })?;
+
+    Ok(DeleteCredential::Proof(DeleteAccountProof {
+        signing_key: device_key.key_id,
+        timestamp,
+        nonce,
+        signature: URL_SAFE_NO_PAD.encode(signature),
+    }))
 }
 
 /// Map a `requestAccountDelete` `PdsClientError` onto the removal error surface.
@@ -436,6 +533,45 @@ fn removal_outcome(tombstone_cid: Option<String>) -> Result<RemovalOutcome, Remo
     })
 }
 
+/// Which credential the removal screen must collect for this identity.
+#[derive(Debug, Serialize, Clone, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct RemovalRoute {
+    /// Whether the confirm step has to ask for the account password. False when the identity's
+    /// host accepts a device-key removal proof, which the wallet signs itself — an account
+    /// created without a password has nothing to type here, and one that has a password does
+    /// not need to.
+    pub requires_password: bool,
+    /// The identity's current hosting PDS, so the screen can name it.
+    pub pds_url: String,
+}
+
+/// Tauri command: which credential this identity's removal needs.
+///
+/// The frontend sibling of [`build_delete_credential`]'s gate, and deliberately resolved through
+/// the same `resolve_pds_url` the confirm step uses — asking a *different* host than the one the
+/// deletion will address is exactly how a screen ends up offering a field the request will ignore,
+/// or withholding one it needs.
+///
+/// A host that could not be described is reported as requiring a password: the screen must show
+/// *something*, and a field the user can leave alone is a better failure than one that is missing.
+/// The confirm step re-checks and surfaces the real network error.
+#[tauri::command]
+pub async fn get_identity_removal_route(
+    state: tauri::State<'_, crate::oauth::AppState>,
+    did: String,
+) -> Result<RemovalRoute, RemovalError> {
+    let pds_client = state.pds_client();
+    let pds_url = resolve_pds_url(pds_client, &did).await?;
+    let requires_password = !crate::pds_capabilities::probe(pds_client, &pds_url)
+        .await
+        .wallet_account_delete();
+    Ok(RemovalRoute {
+        requires_password,
+        pds_url,
+    })
+}
+
 /// Tauri command: request permanent deletion — emails a single-use confirmation code.
 ///
 /// Obtains a full-access session for `did` (the frontend runs the passwordless unlock
@@ -463,29 +599,32 @@ pub async fn request_identity_removal(
 
 /// Tauri command: confirm removal — delete on the PDS, tombstone the DID, wipe locally.
 ///
-/// `password` is the account password (set during the DID ceremony); `token` is the
-/// emailed confirmation code. `deleteAccount` is attempted FIRST, so a wrong
-/// password/code (`InvalidToken`) leaves everything intact and the UI re-prompts. Once
-/// the account is deleted, `retire_and_wipe` runs the method-appropriate tail: the
-/// tombstone + wipe for a did:plc, the wipe alone for a did:web.
+/// `password` is the account password, or `None` for an identity that has none — the
+/// wallet then signs a device-key removal proof instead, which the identity's host reads
+/// only if it advertises `walletAccountDelete`. `token` is the emailed confirmation code.
+/// `deleteAccount` is attempted FIRST, so a wrong credential leaves everything intact and
+/// the UI re-prompts. Once the account is deleted, `retire_and_wipe` runs the
+/// method-appropriate tail: the tombstone + wipe for a did:plc, the wipe alone for a did:web.
 #[tauri::command]
 pub async fn confirm_identity_removal(
     state: tauri::State<'_, crate::oauth::AppState>,
     did: String,
-    password: String,
+    password: Option<String>,
     token: String,
 ) -> Result<RemovalOutcome, RemovalError> {
     // The account's PDS base URL comes from its still-present token record (the wipe is
     // last). Falling back to live discovery keeps a stale/absent record from stranding
     // an otherwise-deletable account.
     let pds_url = resolve_pds_url(state.pds_client(), &did).await?;
+    let credential = build_delete_credential(state.pds_client(), &pds_url, &did, password).await?;
+    let sent_password = matches!(credential, DeleteCredential::Password(_));
 
     // 1. Permanently delete the account on the PDS (body-authed; no session needed).
     state
         .pds_client()
-        .delete_account(&pds_url, &did, &password, &token)
+        .delete_account(&pds_url, &did, &credential, &token)
         .await
-        .map_err(map_delete_account_error)?;
+        .map_err(|e| map_delete_account_error(e, sent_password))?;
 
     // The account is now permanently gone and the single-use email code is spent — from
     // here on, only the tombstone + local wipe remain. Persist a durable marker BEFORE the
@@ -701,34 +840,195 @@ mod tests {
         );
     }
 
-    /// A 401 from deleteAccount (wrong password) and a 400 INVALID_TOKEN (bad/expired
-    /// code) both surface as `InvalidToken`, so the UI re-prompts identically.
+    /// A 401 from deleteAccount (wrong credential) and a 400 INVALID_TOKEN (bad/expired
+    /// code) both surface as one credential failure, so the UI re-prompts identically.
     #[test]
     fn delete_account_credential_failures_map_to_invalid_token() {
         assert!(matches!(
-            map_delete_account_error(PdsClientError::Unauthorized {
-                error: Some("InvalidToken".to_string()),
-                message: "bad password".to_string(),
-            }),
+            map_delete_account_error(
+                PdsClientError::Unauthorized {
+                    error: Some("InvalidToken".to_string()),
+                    message: "bad password".to_string(),
+                },
+                true
+            ),
             RemovalError::InvalidToken
         ));
         assert!(matches!(
-            map_delete_account_error(PdsClientError::XrpcError {
-                status: 400,
-                error: Some("InvalidToken".to_string()),
-                message: "expired".to_string(),
-            }),
+            map_delete_account_error(
+                PdsClientError::XrpcError {
+                    status: 400,
+                    error: Some("InvalidToken".to_string()),
+                    message: "expired".to_string(),
+                },
+                true
+            ),
             RemovalError::InvalidToken
         ));
         // A non-credential XRPC failure is distinct.
         assert!(matches!(
-            map_delete_account_error(PdsClientError::XrpcError {
-                status: 500,
-                error: Some("InternalError".to_string()),
-                message: "oops".to_string(),
-            }),
+            map_delete_account_error(
+                PdsClientError::XrpcError {
+                    status: 500,
+                    error: Some("InternalError".to_string()),
+                    message: "oops".to_string(),
+                },
+                true
+            ),
             RemovalError::AccountDeleteFailed { .. }
         ));
+    }
+
+    /// The same opaque server refusal reads differently depending on what the wallet
+    /// actually sent: an identity with no password must never be told to check one.
+    #[test]
+    fn a_passwordless_removal_reports_the_confirmation_code_alone() {
+        for error in [
+            PdsClientError::Unauthorized {
+                error: Some("InvalidToken".to_string()),
+                message: "invalid credentials".to_string(),
+            },
+            PdsClientError::XrpcError {
+                status: 400,
+                error: Some("InvalidToken".to_string()),
+                message: "expired".to_string(),
+            },
+        ] {
+            assert!(matches!(
+                map_delete_account_error(error, false),
+                RemovalError::InvalidConfirmationCode
+            ));
+        }
+    }
+
+    /// The new variants serialize into the union the frontend switches on.
+    #[test]
+    fn passwordless_removal_errors_serialize_screaming_snake_case() {
+        for (error, code) in [
+            (
+                RemovalError::InvalidConfirmationCode,
+                "INVALID_CONFIRMATION_CODE",
+            ),
+            (RemovalError::PasswordRequired, "PASSWORD_REQUIRED"),
+            (
+                RemovalError::ProofSigningFailed {
+                    message: "enclave declined".to_string(),
+                },
+                "PROOF_SIGNING_FAILED",
+            ),
+        ] {
+            let value = serde_json::to_value(&error).unwrap();
+            assert_eq!(value.get("code").and_then(|c| c.as_str()), Some(code));
+        }
+    }
+
+    /// A host that does not advertise `walletAccountDelete` is refused before anything is
+    /// signed or sent — including a host that could not be asked at all, which is what the
+    /// unreachable server here stands for.
+    #[tokio::test]
+    async fn a_host_without_the_capability_refuses_a_passwordless_removal() {
+        crate::keychain::clear_for_test();
+        IdentityStore.add_identity("did:plc:nocapability").unwrap();
+        let server = httpmock::MockServer::start();
+        let describe = server.mock(|when, then| {
+            when.any_request();
+            then.status(200).json_body(serde_json::json!({
+                "did": "did:web:pds.example.com",
+                "availableUserDomains": [".example.com"],
+            }));
+        });
+        let pds_client = PdsClient::new_for_test(server.base_url());
+
+        let result = build_delete_credential(
+            &pds_client,
+            &server.base_url(),
+            "did:plc:nocapability",
+            None,
+        )
+        .await;
+
+        assert!(matches!(result, Err(RemovalError::PasswordRequired)));
+        // The describeServer probe is the only call made; nothing was signed or posted.
+        describe.assert_calls(1);
+    }
+
+    /// A host that *does* advertise it yields a signed proof bound to that server's DID and this
+    /// identity's device key, with a fresh 32-byte nonce.
+    #[tokio::test]
+    async fn an_advertising_host_yields_a_device_key_signed_proof() {
+        crate::keychain::clear_for_test();
+        let did = "did:plc:withcapability";
+        IdentityStore.add_identity(did).unwrap();
+        let device_key = IdentityStore.get_or_create_device_key(did).unwrap();
+        let server = httpmock::MockServer::start();
+        server.mock(|when, then| {
+            when.any_request();
+            then.status(200).json_body(serde_json::json!({
+                "did": "did:web:pds.example.com",
+                "availableUserDomains": [".example.com"],
+                "custos": { "version": "0.8.5", "capabilities": ["walletAccountDelete"] },
+            }));
+        });
+        let pds_client = PdsClient::new_for_test(server.base_url());
+
+        let credential = build_delete_credential(&pds_client, &server.base_url(), did, None)
+            .await
+            .unwrap();
+
+        let DeleteCredential::Proof(proof) = credential else {
+            panic!("an advertising host must yield a proof");
+        };
+        assert_eq!(proof.signing_key, device_key.key_id);
+        assert_eq!(
+            URL_SAFE_NO_PAD.decode(&proof.nonce).unwrap().len(),
+            32,
+            "the nonce must be 32 bytes of canonical base64url"
+        );
+
+        // The signature must verify over the exact bytes the server will reconstruct.
+        let envelope = crypto::encode_account_delete_envelope(
+            "did:web:pds.example.com",
+            did,
+            &device_key.key_id,
+            proof.timestamp,
+            &proof.nonce,
+        );
+        let signature: [u8; 64] = URL_SAFE_NO_PAD
+            .decode(&proof.signature)
+            .unwrap()
+            .try_into()
+            .expect("a 64-byte r||s signature");
+        crypto::verify_did_key_signature(
+            &crypto::DidKeyUri(device_key.key_id.clone()),
+            &envelope,
+            &signature,
+        )
+        .expect("the proof verifies against the identity's device key");
+    }
+
+    /// A typed password short-circuits the capability probe entirely: an identity that has
+    /// one is removed exactly as before, against any host.
+    #[tokio::test]
+    async fn a_typed_password_is_used_without_probing_the_host() {
+        crate::keychain::clear_for_test();
+        let server = httpmock::MockServer::start();
+        let catch_all = server.mock(|when, then| {
+            when.any_request();
+            then.status(200).body("{}");
+        });
+        let pds_client = PdsClient::new_for_test(server.base_url());
+
+        let credential = build_delete_credential(
+            &pds_client,
+            &server.base_url(),
+            "did:plc:haspassword",
+            Some("hunter2".to_string()),
+        )
+        .await
+        .unwrap();
+
+        assert!(matches!(credential, DeleteCredential::Password(p) if p == "hunter2"));
+        catch_all.assert_calls(0);
     }
 
     // ── Pending-removal marker lifecycle ──────────────────────────────────────

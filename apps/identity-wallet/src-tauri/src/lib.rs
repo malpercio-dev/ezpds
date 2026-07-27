@@ -1756,6 +1756,7 @@ pub fn run() {
             self_held_kit::self_held_kit_in_progress_cmd,
             self_held_kit::self_held_kit_escrow_offer_cmd,
             recovery::submit_recovery_override_cmd,
+            identity_removal::get_identity_removal_route,
             identity_removal::request_identity_removal,
             identity_removal::confirm_identity_removal,
             identity_removal::tombstone_identity,

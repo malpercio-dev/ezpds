@@ -337,6 +337,7 @@ export function emptyWalletState(): WalletState {
         'sovereignSessions',
         'agents',
         'walletConsent',
+        'walletAccountDelete',
         'didWebHosting',
       ],
     },

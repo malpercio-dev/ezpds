@@ -1,5 +1,6 @@
 // crypto: signing, Shamir secret sharing, DID operations.
 
+pub mod account_delete;
 pub mod error;
 pub mod hpke;
 pub mod keys;
@@ -10,6 +11,10 @@ pub mod service_auth;
 pub mod shamir;
 pub mod sovereign_session;
 
+pub use account_delete::{
+    encode_account_delete_envelope, ACCOUNT_DELETE_DOMAIN, ACCOUNT_DELETE_METHOD,
+    ACCOUNT_DELETE_PATH,
+};
 pub use error::CryptoError;
 pub use hpke::{
     base64url_len, open_notification, pad_len_for_bucket, plaintext_pad_len, public_key_for_secret,

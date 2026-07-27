@@ -24,6 +24,17 @@ export type RemovalError =
   | { code: 'REQUEST_DELETE_FAILED'; message: string }
   /** The PDS rejected the account password or the emailed confirmation code. */
   | { code: 'INVALID_TOKEN' }
+  /**
+   * The passwordless sibling of `INVALID_TOKEN`: the PDS rejected the emailed code or the
+   * device-key removal proof. The server's refusal is identical either way (it is not a
+   * credential oracle) — the wallet distinguishes them because it knows what it sent, so an
+   * identity with no password is never told to check one.
+   */
+  | { code: 'INVALID_CONFIRMATION_CODE' }
+  /** The identity's host does not accept a device-key removal proof; the password is required. */
+  | { code: 'PASSWORD_REQUIRED' }
+  /** The removal proof could not be signed with the identity's device key. */
+  | { code: 'PROOF_SIGNING_FAILED'; message: string }
   /** `deleteAccount` failed for a reason other than bad credentials. */
   | { code: 'ACCOUNT_DELETE_FAILED'; message: string }
   /** The DID's PLC audit log could not be read for the tombstone `prev`. */
@@ -57,6 +68,31 @@ export interface RemovalOutcome {
 }
 
 /**
+ * Which credential this identity's removal needs.
+ * Matches `RemovalRoute` in `identity_removal.rs` (`#[serde(rename_all = "camelCase")]`).
+ */
+export interface RemovalRoute {
+  /**
+   * Whether the confirm step must ask for the account password. `false` when the identity's
+   * host advertises `walletAccountDelete` and the wallet signs a device-key removal proof
+   * instead — an account created without a password has nothing to type, and one that has a
+   * password does not need to.
+   */
+  requiresPassword: boolean;
+  /** The identity's current hosting PDS. */
+  pdsUrl: string;
+}
+
+/**
+ * Step 0 — ask which credential removal needs on this identity's host, so the confirm step
+ * shows a password field only where one is actually used. Resolved through the same host the
+ * deletion request will address, so the screen and the request can never disagree. A host that
+ * could not be described reports `requiresPassword: true`.
+ */
+export const getIdentityRemovalRoute = (did: string): Promise<RemovalRoute> =>
+  invoke('get_identity_removal_route', { did });
+
+/**
  * Step 1 — request permanent deletion. Obtains a full-access session for the DID (the
  * caller runs `sovereignLogin` first if this rejects with `SESSION_REQUIRED`) and asks
  * the PDS to email a single-use confirmation code to the account address.
@@ -65,15 +101,19 @@ export const requestIdentityRemoval = (did: string): Promise<void> =>
   invoke('request_identity_removal', { did });
 
 /**
- * Step 2 — confirm removal. Deletes the account on the PDS (using the account
- * `password` + emailed `token`), then runs the method-appropriate tail: tombstone the
- * did:plc and wipe locally, or — for a did:web — wipe locally with no PLC step at all.
- * A wrong password/code rejects with `INVALID_TOKEN` and mutates nothing, so the UI can
- * re-prompt. MUST be gated behind {@link authenticateBiometric} by the caller.
+ * Step 2 — confirm removal. Deletes the account on the PDS, then runs the method-appropriate
+ * tail: tombstone the did:plc and wipe locally, or — for a did:web — wipe locally with no PLC
+ * step at all.
+ *
+ * `password` is `null` for an identity that has none (see {@link getIdentityRemovalRoute}); the
+ * wallet then signs a device-key removal proof instead, which only a host advertising
+ * `walletAccountDelete` accepts. A wrong credential rejects with `INVALID_TOKEN` (password sent)
+ * or `INVALID_CONFIRMATION_CODE` (proof sent) and mutates nothing, so the UI can re-prompt. MUST
+ * be gated behind {@link authenticateBiometric} by the caller.
  */
 export const confirmIdentityRemoval = (
   did: string,
-  password: string,
+  password: string | null,
   token: string,
 ): Promise<RemovalOutcome> => invoke('confirm_identity_removal', { did, password, token });
 

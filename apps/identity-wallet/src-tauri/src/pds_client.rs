@@ -606,6 +606,41 @@ pub struct CustosExtension {
     pub capabilities: Vec<String>,
 }
 
+/// A device-key-signed authorization to permanently delete an account — the credential a
+/// key-sovereign account presents to `deleteAccount` in place of a password it may never have had.
+///
+/// The bytes signed are `crypto::encode_account_delete_envelope`; the server verifies them against
+/// the identity's authoritative current rotation set. Travels inside the request body's off-lexicon
+/// `custos.proof` object.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DeleteAccountProof {
+    pub signing_key: String,
+    pub timestamp: i64,
+    pub nonce: String,
+    pub signature: String,
+}
+
+/// Which first factor a deletion request carries alongside the emailed confirmation code.
+pub enum DeleteCredential {
+    /// The account password — the standard lexicon field, the only option on a host that does
+    /// not advertise `walletAccountDelete`.
+    Password(String),
+    /// A device-key-signed proof of ownership.
+    Proof(DeleteAccountProof),
+}
+
+impl DeleteCredential {
+    /// What goes in the body's required `password` field: the password itself, or the empty
+    /// string when a proof is carrying the request instead.
+    fn password_field(&self) -> &str {
+        match self {
+            Self::Password(password) => password,
+            Self::Proof(_) => "",
+        }
+    }
+}
+
 /// Missing blob entry from listMissingBlobs.
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -1523,14 +1558,19 @@ impl PdsClient {
     /// where `token` is the single-use code minted by `requestAccountDelete` and emailed to the
     /// account. The PDS purges all local account data and emits an `#account` (`status="deleted"`)
     /// firehose frame; it does NOT touch the did:plc identity (the wallet tombstones that
-    /// separately). Not session-authed, so no `OAuthClient` is needed — but the password travels in
-    /// the body, so the endpoint is refused over a non-HTTPS URL (loopback excepted), same guard as
-    /// the password `createSession` path.
+    /// separately). Not session-authed, so no `OAuthClient` is needed — but a credential travels in
+    /// the body either way, so the endpoint is refused over a non-HTTPS URL (loopback excepted),
+    /// same guard as the password `createSession` path.
+    ///
+    /// `credential` selects the first factor. [`DeleteCredential::Proof`] additionally sends the
+    /// off-lexicon `custos.proof` object, and sends `password` as the empty string — the vendored
+    /// lexicon marks the field required, so it stays on the wire even for an account that has no
+    /// password. Only a host advertising `walletAccountDelete` reads it.
     pub async fn delete_account(
         &self,
         pds_url: &str,
         did: &str,
-        password: &str,
+        credential: &DeleteCredential,
         token: &str,
     ) -> Result<(), PdsClientError> {
         if !pds_url_is_password_safe(pds_url) {
@@ -1543,7 +1583,14 @@ impl PdsClient {
             "{}/xrpc/com.atproto.server.deleteAccount",
             pds_url.trim_end_matches('/')
         );
-        let body = serde_json::json!({ "did": did, "password": password, "token": token });
+        let mut body = serde_json::json!({
+            "did": did,
+            "password": credential.password_field(),
+            "token": token,
+        });
+        if let DeleteCredential::Proof(proof) = credential {
+            body["custos"] = serde_json::json!({ "proof": proof });
+        }
         let resp = self
             .client
             .post(&url)
