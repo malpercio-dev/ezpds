@@ -57,6 +57,14 @@ done < <(git diff --name-only --diff-filter=A "${base_ref}...HEAD" -- "$fragment
 changed_files="$(git diff --name-only "${base_ref}...HEAD")"
 shipped_files="$(printf '%s\n' "$changed_files" | awk '
   /(^|\/)AGENTS\.md$/ { next }
+  # The browser test harness sits under an apps/*/src/ path but is developer tooling, which
+  # this gate deliberately does not cover (see changelog.d/README.md). It is not merely
+  # unused in production — it is double-gated on `import.meta.env.DEV && VITE_HARNESS` and
+  # proven absent from the build by `pnpm check:harness-absence`, so no harness change can
+  # reach a user and none has a release note to write. Without this skip the broad
+  # apps/*/src/ rule below claims it, and every fixture fix has to invent a user-facing
+  # sentence about a screenshot scenario.
+  /^apps\/[^\/]+\/src\/lib\/harness\// { next }
   /^Cargo\.toml$/ || /^Cargo\.lock$/ || /^Dockerfile$/ || /^railway\.toml$/ { print; next }
   /^nix\/module\.nix$/ { print; next }
   /^sites\/marketing\// { print; next }
