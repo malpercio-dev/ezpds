@@ -24,12 +24,18 @@ pub struct UnauthorizedChange {
 }
 
 /// Result of checking a single identity's PLC status.
+///
+/// Only monitored identities appear. A DID whose method has no PLC audit log is absent
+/// from the sweep entirely rather than present with a verdict — see [`is_monitorable`].
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct IdentityStatus {
     pub did: String,
     /// True when the monitor could not reach plc.directory or parse the audit log.
     /// The frontend should show a degraded-monitoring indicator instead of "all clear."
+    ///
+    /// This means what it says: a question was asked and went unanswered. It is never set
+    /// for an identity the monitor had no business asking about.
     pub check_failed: bool,
     pub unauthorized_changes: Vec<UnauthorizedChange>,
 }
@@ -44,6 +50,23 @@ pub enum MonitorError {
     IdentityStoreError { message: String },
     #[error("Failed to parse audit log: {message}")]
     ParseError { message: String },
+}
+
+/// Whether this monitor has anything to say about `did`.
+///
+/// What the monitor does is diff an identity's PLC audit log, which lives at
+/// `plc.directory/{did}/log/audit` and exists only for a `did:plc:`. A `did:web` is anchored
+/// by control of a domain, and the directory holds no record of it to fetch, diff, or find a
+/// forged operation in — the fetch 404s every pass.
+///
+/// So a non-`did:plc:` identity is skipped rather than checked-and-failed. Reporting
+/// `check_failed` for one would spend a mobile round trip on a question with no answer and
+/// then state something untrue: not "the directory was unreachable" but "we asked the wrong
+/// registry". The wallet's honest position on a `did:web` is that it has nothing to report,
+/// which the sweep expresses by leaving it out — both frontend consumers already treat an
+/// absent DID as "no news", where a `check_failed` verdict would have to be explained away.
+fn is_monitorable(did: &str) -> bool {
+    did.starts_with("did:plc:")
 }
 
 pub struct PlcMonitor<'a> {
@@ -65,6 +88,13 @@ impl<'a> PlcMonitor<'a> {
 
         let mut statuses = Vec::new();
         for did in &dids {
+            if !is_monitorable(did) {
+                tracing::debug!(
+                    did = did.as_str(),
+                    "identity has no PLC audit log; omitted from the sweep"
+                );
+                continue;
+            }
             match self.check_for_changes(did).await {
                 Ok(unauthorized) => {
                     statuses.push(IdentityStatus {
@@ -727,6 +757,45 @@ mod tests {
 
         let changes = monitor.check_for_changes(did).await.expect("check failed");
         assert_eq!(changes.len(), 0, "Empty audit log should return no changes");
+    }
+
+    /// Only a did:plc has a PLC audit log to monitor.
+    #[test]
+    fn only_did_plc_is_monitorable() {
+        assert!(is_monitorable("did:plc:abc123"));
+        assert!(!is_monitorable("did:web:example.com"));
+        // The prefix check is anchored, so a did:web whose domain merely mentions did:plc
+        // is still not monitorable.
+        assert!(!is_monitorable("did:web:did:plc:decoy.example"));
+    }
+
+    /// A did:web is omitted from the sweep rather than reported as a failed check, and no
+    /// request is spent asking plc.directory about a DID it has never heard of.
+    #[tokio::test]
+    async fn did_web_identity_is_omitted_from_sweep() {
+        use httpmock::prelude::*;
+
+        let did = "did:web:monitor-skip.example";
+        let store = IdentityStore;
+        let _ = store.add_identity(did);
+
+        let mock_server = MockServer::start();
+        let client = PdsClient::new_for_test(mock_server.base_url());
+        let monitor = PlcMonitor::new(&client);
+
+        // Any audit-log fetch for this DID would land here. It must never be reached.
+        let audit_mock = mock_server.mock(|when, then| {
+            when.method(GET).path(format!("/{did}/log/audit"));
+            then.status(404);
+        });
+
+        let statuses = monitor.check_all().await.expect("check_all failed");
+
+        assert!(
+            !statuses.iter().any(|s| s.did == did),
+            "a did:web must not appear in the sweep at all, and above all not as check_failed"
+        );
+        audit_mock.assert_calls(0);
     }
 
     /// Multi-identity: both identities authorized, no alerts.
