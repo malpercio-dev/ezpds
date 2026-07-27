@@ -1,0 +1,71 @@
+Work on Linear issue MM-487:
+
+Suggested branch name: malpercio/mm-487-notify-expose-the-send-workers-queue-depth-as-a-metric
+
+<issue identifier="MM-487">
+<title>Notify: expose the send worker's queue depth as a metric</title>
+<description>
+Follow-up from review on <pull-request id="e7f32e23-c8ed-4199-932e-367026ce4cec" href="https://linear.app/malpercio/review/custos-sender-notification-config-sender-keys-registration-routes-49f1f8604731">malpercio-dev/ezpds#467</pull-request> (<issue id="66b34b92-3d28-4317-ab71-155977c248e9" href="https://linear.app/malpercio/issue/MM-418/notify-49-custos-sender-config-sender-keys-registration-routes-relay">MM-418</issue>).
+
+The notification send worker (`crates/pds/src/notify_relay_client.rs`) drains an **unbounded** `tokio::sync::mpsc` with a single sequential task. That is the right trade-off for a best-effort, device-count-scaled feature — the queue must never block a request path, and a missed push is a missed banner rather than lost data.
+
+But during a prolonged relay outage (a maintenance window, a misconfigured node id), the queue grows without bound in the interim, and today that is only inferable from `warn!` log volume.
+
+## Scope
+
+Expose the current queue depth as an OTel gauge, following the existing pattern in `crates/pds/src/metrics.rs`:
+
+* add the instrument + its name constant to `metrics::names`
+* record depth from the worker (send side increments, `recv` decrements — or sample `len()` if the channel type allows)
+* add the row to the metrics table in `crates/pds/AGENTS.md` (that table mirrors `metrics::names` and they change together)
+* consider surfacing it in `GET /v1/admin/health` alongside the sweep entries, so the Brass Console can show it
+
+## Why not in the original PR
+
+Out of scope for the sender phase, and it touches the metrics module, its name constants, and the operator docs table — a self-contained change that reviews better on its own.
+
+## Open question
+
+Whether an unbounded queue should stay unbounded once this is observable, or gain a cap that drops oldest-first. Dropping is consistent with the feature's best-effort posture; the metric is the prerequisite for deciding with evidence either way.
+</description>
+<team name="Mal's Machinations"/>
+<label>Feature</label>
+<project name="ezpds">An easy-to-host PDS on the ATProtocol, MacOS. Grandma-approved.</project>
+<parent-issue identifier="MM-311">
+<id>b95fcd23-95fa-43f6-86a6-81defb9dda77</id>
+<title>E2E-encrypted notification relay for self-hosted Custos (APNs)</title>
+<description>
+Implement the notification relay designed in [docs/design-plans/2026-07-10-notification-relay.md](<https://github.com/malpercio-dev/ezpds/blob/main/docs/design-plans/2026-07-10-notification-relay.md>) (design PR <pull-request id="34230e45-6259-4c9a-b58d-6b135adf84e3" href="https://linear.app/malpercio/review/design-exploration-e2e-encrypted-notification-relay-for-self-hosted-327f880332d1">malpercio-dev/ezpds#207</pull-request>, **merged** — the doc on `main` is the source of truth and incorporates the review hardening: claim-code enrollment authorization for the official relay, versioned sender keys with re-pin/revocation semantics, explicit v1 replay acceptance, unverified-notice rendering for unauthenticated payloads, per-handle APNs topics, serialized-request padding budget, and the post-reboot keychain window).
+
+## Problem
+
+Self-hosted Custos instances need to deliver push notifications to the official iOS apps (Obsign, admin-companion). APNs auth keys are bundle-ID-bound, so self-hosters cannot push directly — a relay is structurally required. The design makes that relay a **blind courier**: trusted for availability only.
+
+## Architecture (see design doc for full detail)
+
+* **Confidentiality:** payloads HPKE-sealed (RFC 9180, DHKEM-P256 + AES-GCM) to a per-device notification key; decrypted on-device by a Notification Service Extension (`mutable-content: 1`). Neither the relay nor Apple sees plaintext.
+* **Integrity:** HPKE Auth mode with pinned, versioned per-instance sender keys — the relay cannot forge authenticated content (it can generate detectable junk pushes and replay; v1 accepts duplicates as benign).
+* **Metadata minimization:** opaque push handles bound to the instance's iroh node id (no DIDs/handles/raw tokens at the relay), fixed-size padding budgeted against the serialized APNs request, optional content-free ping mode.
+* **Transport:** Custos ↔ relay over iroh, new `ezpds/notify/0` ALPN, reusing the persisted node identity (`iroh_identity`) and `iroh_tunnel.rs` patterns; back-channel carries APNs `410 Unregistered` pruning feedback.
+* **Sovereignty:** relay is an open-source workspace crate (`crates/notify-relay/`); any instance points at any relay via `[notifications] relay = "<node id>"`. Official relay requires a claim-code enrollment grant; open enrollment is a config option for self-run relays. Caveat: official bundle IDs require the official relay's APNs key.
+
+## Suggested phasing
+
+1. **Relay crate + Custos sender** — `crates/notify-relay/` (claim-code enrollment grants, handle store with per-handle APNs topic, APNs HTTP/2 client, per-node rate limits, serialized-request size validation with 4 KB boundary test) + `[notifications]` config, device notification-key registration route, versioned sender-key set, sealed-send on first trigger (agent claim pending). Loopback iroh e2e tests with mock APNs.
+2. **Wallet NSE** — per-device keypair + shared keychain access group, registration in onboarding, decrypt-and-render extension, unverified-notice fallback + in-app diagnostics.
+3. **Admin-companion adoption + operator docs** — ops alert triggers, self-relay runbook, metadata-minimizing ping mode.
+
+## Open questions (from the design doc)
+
+* Enrollment grant distribution for the official relay (ceremony mirrors admin-device pairing)
+* Replay hardening beyond v1's accept-duplicates posture (per-device counter + durable replay window)
+* Delivery receipts over the iroh back-channel (out of scope v1)
+* Android/FCM later (envelope is provider-agnostic)
+
+Not yet scheduled into a wave; split into per-phase issues when picked up.
+</description>
+</parent-issue>
+<issue-relations><related><issue-ref identifier="MM-418" title="Notify 4/9: Custos sender — config, sender keys, registration routes, relay client, first trigger"/></related></issue-relations>
+</issue>
+
+Please open a PR linked to the linear issue when complete

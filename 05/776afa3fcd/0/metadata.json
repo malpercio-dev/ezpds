@@ -1,0 +1,84 @@
+{
+  "cli_version": "0.8.42",
+  "checkpoint_id": "05776afa3fcd",
+  "session_id": "a6cdb3da-652b-4750-8187-52d6546b7d91",
+  "strategy": "manual-commit",
+  "created_at": "2026-07-27T18:55:41.993038Z",
+  "branch": "claude/notify-queue-depth-metric-781641",
+  "checkpoints_count": 1,
+  "files_touched": [
+    "crates/pds/src/metrics.rs",
+    "crates/pds/src/notify_relay_client.rs",
+    "crates/pds/src/main.rs",
+    "crates/pds/src/notify_e2e_test.rs",
+    "crates/pds/src/routes/admin_health.rs",
+    "crates/pds/AGENTS.md",
+    "changelog.d/mm-487.added.md"
+  ],
+  "agent": "Claude Code",
+  "model": "",
+  "turn_id": "00f8ecf5a74f",
+  "compact_transcript_start": 0,
+  "token_usage": {
+    "input_tokens": 75,
+    "cache_creation_tokens": 213597,
+    "cache_read_tokens": 7271642,
+    "output_tokens": 27506,
+    "api_call_count": 41
+  },
+  "skill_events_version": 1,
+  "skill_events": [
+    {
+      "id": "claude-skill-toolu_01QorqDbbKzEVYUixCeX4qBm",
+      "event_type": "tool_invocation",
+      "skill": {
+        "name": "linear-workflow"
+      },
+      "source": {
+        "agent": "claude-code",
+        "signal": "skill_tool_use",
+        "confidence": "explicit"
+      },
+      "turn_id": "00f8ecf5a74f",
+      "transcript_anchor": {
+        "unit": "line",
+        "start": 18,
+        "end": 19,
+        "entry_ids": [
+          "d55709be-c5a2-4c91-a25c-5f623290e8d7"
+        ],
+        "tool_use_id": "toolu_01QorqDbbKzEVYUixCeX4qBm"
+      },
+      "native": {
+        "tool_name": "Skill",
+        "tool_use_id": "toolu_01QorqDbbKzEVYUixCeX4qBm"
+      },
+      "collapse": {
+        "target": "tool_pair",
+        "label": "Skill: linear-workflow",
+        "default_collapsed": true
+      }
+    }
+  ],
+  "initial_attribution": {
+    "calculated_at": "2026-07-27T18:55:41.950322Z",
+    "agent_lines": 213,
+    "agent_removed": 20,
+    "human_added": 6,
+    "human_modified": 0,
+    "human_removed": 0,
+    "total_committed": 219,
+    "total_lines_changed": 245,
+    "agent_percentage": 95.10204081632652,
+    "metric_version": 2
+  },
+  "prompt_attributions": [
+    {
+      "checkpoint_number": 1,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 0,
+      "agent_lines_removed": 0
+    }
+  ]
+}

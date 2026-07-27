@@ -1,0 +1,32 @@
+{
+  "cli_version": "0.8.42",
+  "checkpoint_id": "05776afa3fcd",
+  "strategy": "manual-commit",
+  "branch": "claude/notify-queue-depth-metric-781641",
+  "checkpoints_count": 1,
+  "files_touched": [
+    "changelog.d/mm-487.added.md",
+    "crates/pds/AGENTS.md",
+    "crates/pds/src/main.rs",
+    "crates/pds/src/metrics.rs",
+    "crates/pds/src/notify_e2e_test.rs",
+    "crates/pds/src/notify_relay_client.rs",
+    "crates/pds/src/routes/admin_health.rs"
+  ],
+  "sessions": [
+    {
+      "metadata": "/05/776afa3fcd/0/metadata.json",
+      "transcript": "/05/776afa3fcd/0/full.jsonl",
+      "compact_transcript": "/05/776afa3fcd/0/transcript.jsonl",
+      "content_hash": "/05/776afa3fcd/0/content_hash.txt",
+      "prompt": "/05/776afa3fcd/0/prompt.txt"
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 75,
+    "cache_creation_tokens": 213597,
+    "cache_read_tokens": 7271642,
+    "output_tokens": 27506,
+    "api_call_count": 41
+  }
+}
