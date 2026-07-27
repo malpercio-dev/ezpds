@@ -1812,7 +1812,7 @@ mod tests {
             rotation_key_public: "did:key:z123".into(),
             signed_creation_op: Some(serde_json::json!({"type": "plc_operation"})),
             did_web_document: None,
-            password: "mysecretpassword".into(),
+            password: Some("mysecretpassword".into()),
             recovery_key: Some("did:key:zRecovery".into()),
             escrow_share: Some("SHARE2ENVELOPE".into()),
         };
@@ -1824,6 +1824,34 @@ mod tests {
         assert_eq!(json["escrowShare"], "SHARE2ENVELOPE");
     }
 
+    /// A passwordless ceremony omits `password` from the wire entirely — not `null`, not `""`.
+    ///
+    /// This is the whole contract of the `optionalPassword` capability: the server refuses an
+    /// empty string under either policy (it cannot tell one from an uninitialized field), and a
+    /// JSON `null` would deserialize to the same `None` but is a different thing to send. Only an
+    /// absent key is an unambiguous request for a passwordless account, which is what
+    /// `skip_serializing_if` buys — and nothing else here would catch its removal.
+    #[test]
+    fn create_did_request_omits_password_entirely_when_passwordless() {
+        let req = CreateDidRequest {
+            rotation_key_public: "did:key:z123".into(),
+            signed_creation_op: Some(serde_json::json!({"type": "plc_operation"})),
+            did_web_document: None,
+            password: None,
+            recovery_key: Some("did:key:zRecovery".into()),
+            escrow_share: Some("SHARE2ENVELOPE".into()),
+        };
+        let json = serde_json::to_value(&req).unwrap();
+        assert!(
+            json.get("password").is_none(),
+            "a passwordless request must omit the key, not send null or an empty string; got: {}",
+            json["password"]
+        );
+        // The rest of the ceremony is unaffected by the password's absence.
+        assert_eq!(json["rotationKeyPublic"], "did:key:z123");
+        assert_eq!(json["escrowShare"], "SHARE2ENVELOPE");
+    }
+
     /// The did:web request shape carries no client-share fields — a did:web identity has no
     /// PLC rotationKeys for a recovery key to bind to, so it promotes with no escrow.
     #[test]
@@ -1832,7 +1860,7 @@ mod tests {
             rotation_key_public: "did:key:z123".into(),
             signed_creation_op: None,
             did_web_document: Some("{}".into()),
-            password: "mysecretpassword".into(),
+            password: Some("mysecretpassword".into()),
             recovery_key: None,
             escrow_share: None,
         };
