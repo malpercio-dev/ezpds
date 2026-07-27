@@ -76,27 +76,36 @@ async fn handle_connection(incoming: Incoming, service: Arc<RelayService>) -> an
         };
         let service = Arc::clone(&service);
         let node_id = node_id.clone();
-        let exchange = async move {
-            let bytes = recv.read_to_end(MAX_MESSAGE_LEN).await?;
-            let response = match serde_json::from_slice::<Request>(&bytes) {
-                Ok(request) => service.handle(&node_id, request).await,
-                // The parse error itself is never echoed: it would reflect attacker-chosen
-                // bytes back and leak the serde shape.
-                Err(e) => {
-                    tracing::debug!(error = %e, %node_id, "unparseable notify request");
-                    Response::BadRequest {
-                        reason: "unparseable request".into(),
+        // Each stream runs in its own task, and its failures die with it. Awaiting the
+        // exchange inline instead would make one instance's RPCs queue behind each other
+        // for up to the stream deadline, and would let a single bad stream — an
+        // over-cap request, a write failure, a stall — take down the connection and every
+        // later RPC on it.
+        tokio::spawn(async move {
+            let exchange = async move {
+                let bytes = recv.read_to_end(MAX_MESSAGE_LEN).await?;
+                let response = match serde_json::from_slice::<Request>(&bytes) {
+                    Ok(request) => service.handle(&node_id, request).await,
+                    // The parse error itself is never echoed: it would reflect
+                    // attacker-chosen bytes back and leak the serde shape.
+                    Err(e) => {
+                        tracing::debug!(error = %e, %node_id, "unparseable notify request");
+                        Response::BadRequest {
+                            reason: "unparseable request".into(),
+                        }
                     }
-                }
+                };
+                let encoded = serde_json::to_vec(&response)?;
+                send.write_all(&encoded).await?;
+                send.finish()?;
+                Ok::<(), anyhow::Error>(())
             };
-            let encoded = serde_json::to_vec(&response)?;
-            send.write_all(&encoded).await?;
-            send.finish()?;
-            Ok::<(), anyhow::Error>(())
-        };
-        tokio::time::timeout(STREAM_TIMEOUT, exchange)
-            .await
-            .map_err(|_| anyhow::anyhow!("notify stream exchange timed out"))??;
+            match tokio::time::timeout(STREAM_TIMEOUT, exchange).await {
+                Ok(Ok(())) => {}
+                Ok(Err(e)) => tracing::debug!(error = %e, "notify stream failed"),
+                Err(_) => tracing::debug!("notify stream exchange timed out"),
+            }
+        });
     }
     Ok(())
 }
@@ -392,6 +401,43 @@ pub(crate) mod tests {
             "reason echoed the input: {reason}"
         );
 
+        harness.close().await;
+    }
+
+    /// A stream that blows the 64 KiB cap dies alone: the connection stays usable and the
+    /// next RPC on it is answered normally, rather than the whole peer being cut off.
+    #[tokio::test]
+    async fn an_oversized_request_does_not_kill_the_connection() {
+        let harness = Harness::start(true).await;
+
+        let answered = tokio::time::timeout(Duration::from_secs(10), async {
+            let conn = harness
+                .client
+                .connect(harness.server_addr(), ALPN)
+                .await
+                .expect("connect");
+
+            // Well past the read cap, so the relay's `read_to_end` fails on this stream.
+            let (mut send, mut recv) = conn.open_bi().await.expect("open_bi");
+            send.write_all(&vec![b'x'; MAX_MESSAGE_LEN * 2])
+                .await
+                .expect("write");
+            send.finish().expect("finish");
+            let _ = recv.read_to_end(MAX_MESSAGE_LEN).await;
+
+            // A second stream on the same connection must still be served.
+            let (mut send, mut recv) = conn.open_bi().await.expect("open_bi after oversized");
+            send.write_all(&serde_json::to_vec(&Request::Enroll { claim_code: None }).unwrap())
+                .await
+                .expect("write");
+            send.finish().expect("finish");
+            let bytes = recv.read_to_end(MAX_MESSAGE_LEN).await.expect("read");
+            serde_json::from_slice::<Response>(&bytes).expect("decode")
+        })
+        .await
+        .expect("round trip timed out");
+
+        assert_eq!(answered, Response::Ok);
         harness.close().await;
     }
 

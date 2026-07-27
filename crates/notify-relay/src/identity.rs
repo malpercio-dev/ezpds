@@ -34,15 +34,21 @@ pub fn load_or_create_secret_key(path: &Path) -> anyhow::Result<[u8; 32]> {
 
 /// Parse 64 hex characters into a 32-byte key (Functional Core).
 fn parse_hex_key(text: &str) -> Result<[u8; 32], String> {
-    if text.len() != 64 {
+    // Over bytes, not `str` slices: a corrupted file can hold a multi-byte character while
+    // still totalling 64 bytes, and slicing a `str` across its interior would panic —
+    // turning a bad key file into a crash instead of the refusal the caller expects.
+    let bytes = text.as_bytes();
+    if bytes.len() != 64 {
         return Err(format!(
             "node secret key must be 64 hex characters, found {}",
-            text.len()
+            bytes.len()
         ));
     }
     let mut key = [0u8; 32];
     for (i, byte) in key.iter_mut().enumerate() {
-        *byte = u8::from_str_radix(&text[i * 2..i * 2 + 2], 16)
+        let pair = std::str::from_utf8(&bytes[i * 2..i * 2 + 2])
+            .map_err(|_| "node secret key must be hexadecimal".to_owned())?;
+        *byte = u8::from_str_radix(pair, 16)
             .map_err(|_| "node secret key must be hexadecimal".to_owned())?;
     }
     Ok(key)
@@ -143,6 +149,16 @@ mod tests {
 
         let err = load_or_create_secret_key(&path).expect_err("0644 must be refused");
         assert!(err.to_string().contains("group or other"), "got {err}");
+    }
+
+    /// A 64-*byte* file holding a multi-byte character is refused, not a panic: the hex
+    /// parse walks bytes, so no slice ever lands inside a character.
+    #[test]
+    fn a_key_file_with_non_ascii_bytes_is_refused_without_panicking() {
+        let text = format!("é{}", "a".repeat(62)); // 2 + 62 = 64 bytes, 63 characters
+        assert_eq!(text.len(), 64);
+        let err = parse_hex_key(&text).expect_err("non-hex content must be refused");
+        assert!(err.contains("hexadecimal"), "got {err}");
     }
 
     #[test]

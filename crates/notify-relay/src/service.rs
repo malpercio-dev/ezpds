@@ -56,18 +56,28 @@ impl RelayService {
             return Response::Throttled;
         }
 
-        match db::enrollments::is_enrolled(&self.db, node_id).await {
+        if self.config.open_enrollment {
+            return match db::enrollments::insert_enrollment(&self.db, node_id, None).await {
+                // Idempotent whether or not a row was created: an open relay charges
+                // nothing, so a repeat costs the caller nothing to report as success.
+                Ok(_) => Response::Ok,
+                Err(e) => internal(e, "failed to record enrollment"),
+            };
+        }
+
+        // Everything below runs inside one transaction, enrollment probe included. Reading
+        // "already enrolled?" outside it would let two concurrent enrolls both see `false`,
+        // and the one that lost the insert would have spent its grant code for nothing.
+        let mut tx = match self.db.begin().await {
+            Ok(tx) => tx,
+            Err(e) => return internal(e, "failed to open enrollment transaction"),
+        };
+        match db::enrollments::is_enrolled(&mut *tx, node_id).await {
             // Idempotent: a node re-enrolling after a restart is not charged a code again.
+            // Dropping `tx` unread rolls back, so nothing was consumed.
             Ok(true) => return Response::Ok,
             Ok(false) => {}
             Err(e) => return internal(e, "failed to check enrollment"),
-        }
-
-        if self.config.open_enrollment {
-            return match db::enrollments::insert_enrollment(&self.db, node_id, None).await {
-                Ok(()) => Response::Ok,
-                Err(e) => internal(e, "failed to record enrollment"),
-            };
         }
 
         let Some(code) = claim_code else {
@@ -76,17 +86,18 @@ impl RelayService {
             return Response::Denied;
         };
 
-        let mut tx = match self.db.begin().await {
-            Ok(tx) => tx,
-            Err(e) => return internal(e, "failed to open enrollment transaction"),
-        };
         match db::enrollment_codes::consume_code(&mut *tx, code, node_id).await {
             Ok(true) => {}
             Ok(false) => return Response::Denied,
             Err(e) => return internal(e, "failed to redeem enrollment code"),
         }
-        if let Err(e) = db::enrollments::insert_enrollment(&mut *tx, node_id, Some(code)).await {
-            return internal(e, "failed to record enrollment");
+        match db::enrollments::insert_enrollment(&mut *tx, node_id, Some(code)).await {
+            Ok(true) => {}
+            // The row already existed despite the probe above — only reachable if another
+            // writer slipped in. Abandon the transaction (rollback), which un-redeems the
+            // code, and report the enrollment that already stands.
+            Ok(false) => return Response::Ok,
+            Err(e) => return internal(e, "failed to record enrollment"),
         }
         match tx.commit().await {
             Ok(()) => {
@@ -258,6 +269,38 @@ mod tests {
             Response::Denied,
             "a spent code must not enroll a second node"
         );
+    }
+
+    /// Re-enrolling an already-enrolled node succeeds without touching the offered code:
+    /// the enrollment probe runs inside the redemption transaction, so a restart (or a
+    /// racing second enroll) can never burn a grant that bought nothing.
+    #[tokio::test]
+    async fn re_enrolling_never_consumes_another_code() {
+        let service = service(false).await;
+        mint(&service, "GRANT-1", 3600).await;
+        mint(&service, "GRANT-2", 3600).await;
+
+        for code in ["GRANT-1", "GRANT-2"] {
+            assert_eq!(
+                service
+                    .handle(
+                        "node-a",
+                        Request::Enroll {
+                            claim_code: Some(code.to_owned())
+                        }
+                    )
+                    .await,
+                Response::Ok
+            );
+        }
+
+        let spent: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM enrollment_codes WHERE consumed_at IS NOT NULL",
+        )
+        .fetch_one(&service.db)
+        .await
+        .expect("count");
+        assert_eq!(spent, 1, "the second enroll must leave GRANT-2 redeemable");
     }
 
     #[tokio::test]

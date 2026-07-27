@@ -21,7 +21,7 @@ histories are independent).
 
 ## Module Map
 
-```
+```text
 src/
   main.rs        — CLI (serve, `mint-code --ttl`), config load, store open, endpoint bind, accept loop, shutdown
   config.rs      — TOML + `EZPDS_NOTIFY_*` env overlay, validated once into an immutable `Config`
