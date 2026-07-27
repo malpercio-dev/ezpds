@@ -105,6 +105,7 @@
             deviceKeyUnusable: c.deviceKeyUnusable,
             plcCheckSucceeded: sweptOk.has(c.did),
             lastVerifiedAt: null,
+            degraded: c.degraded,
           },
           now
         )
@@ -506,13 +507,16 @@
     align-items: center;
     gap: 13px;
     width: 100%;
+    /* Carried by both branches, not just the door, so the button and the div occupy
+       identical space — a strip that shifted by 2px depending on whether it was tappable
+       would be a layout tell for a state difference the user is not being shown. */
+    border: 1px solid transparent;
     border-radius: var(--radius-lg);
     padding: var(--space-md);
     text-align: left;
   }
   .monitor--door {
     min-height: var(--size-tap-target);
-    border: 1px solid transparent;
     cursor: pointer;
     transition: border-color var(--duration-base) var(--ease-standard);
   }

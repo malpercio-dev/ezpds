@@ -89,6 +89,7 @@
             deviceKeyUnusable: c.deviceKeyUnusable,
             plcCheckSucceeded: sweptOk.has(c.did),
             lastVerifiedAt: lastVerifiedFor(c.did),
+            degraded: c.degraded,
           },
           now
         )
@@ -108,6 +109,9 @@
 
   /** What each row says beneath the handle: its state, then the evidence behind it. */
   function rowDetail(row: ProtectionRow): string {
+    // Tested first: nothing below this line is a reading for a degraded identity, so any
+    // of it would be describing placeholder values as though they were facts.
+    if (row.degraded) return "Couldn't read this identity on this device";
     if (row.urgency === 'critical' && row.deadline) return formatCountdown(row.deadline, now);
     if (row.urgency === 'expired') return 'The window to reverse it has closed';
     if (row.urgency === 'warning') {
@@ -219,10 +223,17 @@
   </ScreenHeader>
 
   {#if loading}
-    <div class="rows" aria-hidden="true">
-      {#each [0, 1] as i (i)}
-        <SkeletonCard seal />
-      {/each}
+    <!-- The shimmer is decoration and stays hidden, but the *fact* that the screen is
+         loading is content: without it a screen-reader user hears an empty Protection
+         surface and cannot tell "still loading" from "nothing to protect" — the worst
+         possible ambiguity on this particular screen. -->
+    <div class="loading" role="status" aria-busy="true">
+      <span class="sr-only">Loading your identities and the monitor's history…</span>
+      <div class="rows" aria-hidden="true">
+        {#each [0, 1] as i (i)}
+          <SkeletonCard seal />
+        {/each}
+      </div>
     </div>
   {:else}
     <StatusPanel
@@ -280,14 +291,20 @@
     <section class="zone">
       <h2 class="zone-label">Monitor history</h2>
       <p class="zone-note">
-        {describeInterval(history?.intervalSecs ?? 0)}. Each pass compares every identity's
+        {describeInterval(history?.intervalSecs ?? null)}. Each pass compares every identity's
         public record against the copy this wallet holds, and raises the alarm if anything
         changed without your key.
       </p>
 
       {#if history && history.sweeps.length > 0}
         <ol class="log">
-          {#each history.sweeps as sweep (sweep.at + sweep.trigger)}
+          <!-- Keyed by position, not by content: `at` is second-resolution, so two passes
+               of the same trigger in one second that did NOT coalesce (their outcomes
+               differed, which is exactly when both must be listed) would collide, and a
+               duplicate key is a fatal error in Svelte rather than a render glitch. The log
+               is a wholesale-replaced snapshot with no per-item state to preserve, so
+               position is the honest key. -->
+          {#each history.sweeps as sweep, i (i)}
             <li class="log-item">
               <span class="log-ic" aria-hidden="true">
                 {#if sweep.trigger === 'background'}

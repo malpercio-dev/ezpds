@@ -58,6 +58,15 @@ describe('toRow', () => {
     expect(toRow(input({ did: 'did:plc:a', changes: [change(100)] }), NOW).urgency).toBe('expired');
   });
 
+  /**
+   * Overrides even the did:web short-circuit: that rule says a domain-anchored identity
+   * needs no directory sweep, not that an identity the wallet failed to load is fine.
+   */
+  it('is never verified when the local read failed, whatever the DID method', () => {
+    expect(toRow(input({ did: 'did:plc:a', degraded: true }), NOW).verified).toBe(false);
+    expect(toRow(input({ did: 'did:web:example.com', degraded: true }), NOW).verified).toBe(false);
+  });
+
   it('treats a did:web as verified without a directory reading', () => {
     // A did:web has no PLC audit log, so the sweep fails for it on every pass. Reporting
     // that as "not checked" would state a fact about a record it does not have.
@@ -95,6 +104,17 @@ describe('orderRows', () => {
     ];
 
     expect(orderRows(rows).map((r) => r.handle)).toEqual(['sooner.test', 'later.test']);
+  });
+
+  it('surfaces the rows it could not confirm above the ones it vouches for', () => {
+    const rows = [
+      toRow(input({ did: 'did:plc:a', handle: 'alpha.test' }), NOW),
+      toRow(input({ did: 'did:plc:z', handle: 'zeta.test', degraded: true }), NOW),
+    ];
+
+    // Both derive `safe`, so without the verified tiebreak the alphabetical fallback would
+    // bury the unreadable one beneath the identity the wallet is actually vouching for.
+    expect(orderRows(rows).map((r) => r.handle)).toEqual(['zeta.test', 'alpha.test']);
   });
 
   it('is stable for equal states, so a sweep never reshuffles the list', () => {
@@ -204,6 +224,40 @@ describe('summarize', () => {
     expect(summary).toMatchObject({ verified: true, headline: 'All identities secure' });
   });
 
+  /**
+   * The failure this guards is subtle: a degraded card's placeholders are indistinguishable
+   * from a healthy identity's values (`deviceKeyUnusable: false` is what a good key
+   * produces), so without the flag an identity the wallet could not read at all derives
+   * `safe` and gets folded into "All identities secure" — precisely what this module's
+   * header says a summary of a security state must never do.
+   */
+  it('never folds an unreadable identity into the all-clear', () => {
+    const rows = [
+      toRow(input({ did: 'did:plc:ok', handle: 'ok.test' }), NOW),
+      toRow(input({ did: 'did:plc:broken', handle: 'broken.test', degraded: true }), NOW),
+    ];
+
+    const summary = summarize(rows, history({ sweeps: [sweep()] }), NOW);
+    expect(summary.verified).toBe(false);
+    expect(summary.headline).toBe("Couldn't read 1 identity");
+    expect(summary.detail).toContain('not covered by the all-clear');
+  });
+
+  it('says plainly when nothing could be read', () => {
+    const rows = [toRow(input({ did: 'did:plc:a', degraded: true }), NOW)];
+    expect(summarize(rows, history(), NOW).detail).toContain('nothing here is confirmed');
+  });
+
+  /** A live attack on one identity still outranks a failed read of another. */
+  it('lets an alarm outrank an unreadable identity', () => {
+    const rows = [
+      toRow(input({ did: 'did:plc:broken', degraded: true }), NOW),
+      toRow(input({ did: 'did:plc:attacked', changes: [change(1)] }), NOW),
+    ];
+
+    expect(summarize(rows, history({ sweeps: [sweep()] }), NOW).urgency).toBe('critical');
+  });
+
   it('claims no watch over an all-did:web wallet', () => {
     const rows = [toRow(input({ did: 'did:web:example.com', plcCheckSucceeded: false }), NOW)];
     const summary = summarize(rows, history(), NOW);
@@ -292,5 +346,14 @@ describe('describeInterval', () => {
 
   it('degrades honestly when the cadence is unknown', () => {
     expect(describeInterval(0)).toBe('The wallet checks in the background');
+  });
+
+  /**
+   * A failed history read must not become a claim about the monitor. The backend fills
+   * `intervalSecs` from its own constant on every read, so a missing value only ever means
+   * the log could not be read — never that the monitor has no cadence.
+   */
+  it('does not state a cadence it could not read', () => {
+    expect(describeInterval(null)).toBe("Couldn't read how often the wallet has been checking");
   });
 });

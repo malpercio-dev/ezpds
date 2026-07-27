@@ -25,6 +25,12 @@ export type ProtectionInput = {
   plcCheckSucceeded: boolean;
   /** ISO 8601 of the last successful verification, from the monitor's own log. */
   lastVerifiedAt: string | null;
+  /**
+   * The wallet could not read this identity's local state at all, so the other fields are
+   * placeholders. Never `safe`: an identity we could not read is one we cannot vouch for,
+   * and the summary must not fold it into an all-clear.
+   */
+  degraded?: boolean;
 };
 
 /** One row of the Protection surface: an identity and its derived state. */
@@ -44,7 +50,12 @@ export function toRow(input: ProtectionInput, now: number = Date.now()): Protect
     urgency: panel.urgency,
     deadline: panel.deadline,
     alertCount: panel.alertCount,
-    verified: isVerified(input.did, input.plcCheckSucceeded),
+    // A failed local read is folded into `verified` rather than into the urgency, because
+    // it is the same kind of fact the unverified state already carries: not "something is
+    // wrong with this identity" but "we have no reading of it". Note this overrides even a
+    // did:web's verified-by-construction short-circuit — that rule says a domain-anchored
+    // identity needs no directory sweep, not that an identity we failed to load is fine.
+    verified: !input.degraded && isVerified(input.did, input.plcCheckSucceeded),
     isWeb: isDidWeb(input.did),
   };
 }
@@ -83,6 +94,11 @@ const URGENCY_RANK: Record<Urgency, number> = {
 export function compareRows(a: ProtectionRow, b: ProtectionRow): number {
   const byUrgency = URGENCY_RANK[b.urgency] - URGENCY_RANK[a.urgency];
   if (byUrgency !== 0) return byUrgency;
+
+  // Within one state, the rows the wallet could not confirm come first. They are the only
+  // ones the surface is not vouching for, so burying them under identities it *is* vouching
+  // for would put the least certain thing in the least seen place.
+  if (a.verified !== b.verified) return a.verified ? 1 : -1;
 
   if (a.deadline && b.deadline) {
     const byDeadline = a.deadline.getTime() - b.deadline.getTime();
@@ -168,6 +184,22 @@ export function summarize(
       verified: true,
       headline: `This device can't sign for ${count(unusable, 'identity', 'identities')}`,
       detail: `${unusable === 1 ? 'Its key is' : 'Their keys are'} gone from this device; the ${unusable === 1 ? 'identity itself is' : 'identities themselves are'} unaffected`,
+    };
+  }
+
+  // Placed ahead of the did:web and all-clear branches, both of which would otherwise
+  // speak for an identity the wallet never managed to read. Behind the alarm states,
+  // because a failed local read does not outrank a live attack on a different identity.
+  const unreadable = rows.filter((r) => r.degraded).length;
+  if (unreadable > 0) {
+    return {
+      urgency: 'safe',
+      verified: false,
+      headline: `Couldn't read ${count(unreadable, 'identity', 'identities')}`,
+      detail:
+        rows.length === unreadable
+          ? 'Nothing could be read from this device, so nothing here is confirmed. Pull to refresh, or reopen the app'
+          : `${count(unreadable, 'identity is', 'identities are')} unreadable on this device, so ${unreadable === 1 ? 'it is' : 'they are'} not covered by the all-clear below`,
     };
   }
 
@@ -272,8 +304,16 @@ export function formatClockTime(iso: string): string {
   return new Date(ms).toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' });
 }
 
-/** How the unattended cadence reads, from the interval the backend actually keeps. */
-export function describeInterval(intervalSecs: number): string {
+/**
+ * How the unattended cadence reads, from the interval the backend actually keeps.
+ *
+ * `null` is the honest answer when the history could not be read at all. The backend fills
+ * `intervalSecs` from its own constant on every read, so a missing value never means "the
+ * monitor has no cadence" — it means we did not get to ask. Stating a cadence on that basis
+ * would be asserting a fact about the monitor from a failed read of the monitor's own log.
+ */
+export function describeInterval(intervalSecs: number | null): string {
+  if (intervalSecs === null) return "Couldn't read how often the wallet has been checking";
   if (intervalSecs <= 0) return 'The wallet checks in the background';
   const minutes = Math.round(intervalSecs / 60);
   if (minutes < 60) return `The wallet checks every ${minutes} minutes while it's running`;

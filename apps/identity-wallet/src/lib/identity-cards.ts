@@ -27,6 +27,16 @@ export interface IdentityCard {
    * not be answered; this is a definite answer — the key is gone.
    */
   deviceKeyUnusable: boolean;
+  /**
+   * The local read for this identity failed, so every other field is a placeholder rather
+   * than a reading.
+   *
+   * This has to be carried explicitly because the placeholders are not distinguishable from
+   * real answers: `deviceKeyUnusable: false` is the same value a healthy key produces, and a
+   * consumer folding it into an overall state would report the identity secure on the
+   * strength of a read that never happened.
+   */
+  degraded: boolean;
 }
 
 function isDeviceKeyRoot(
@@ -77,6 +87,7 @@ export async function loadIdentityCard(did: string): Promise<IdentityCard> {
     // document still lists this device's key at the top).
     deviceKeyIsRoot: didDoc && !deviceKeyUnusable ? isDeviceKeyRoot(didDoc, keyId) : null,
     deviceKeyUnusable,
+    degraded: false,
   };
 }
 
@@ -85,7 +96,9 @@ export async function loadIdentityCard(did: string): Promise<IdentityCard> {
  *
  * An identity whose read fails becomes a degraded card rather than disappearing: a
  * security surface that silently drops an identity it could not read is the one failure
- * mode worse than showing it with unknowns.
+ * mode worse than showing it with unknowns. The card is flagged `degraded` so those
+ * unknowns cannot be mistaken for answers downstream — the placeholders below are the
+ * shape of a healthy identity, and only the flag says otherwise.
  */
 export async function loadIdentityCards(): Promise<IdentityCard[]> {
   const dids = await listIdentities();
@@ -102,6 +115,7 @@ export async function loadIdentityCards(): Promise<IdentityCard[]> {
         didDoc: null,
         deviceKeyIsRoot: null,
         deviceKeyUnusable: false,
+        degraded: true,
       });
     }
   }

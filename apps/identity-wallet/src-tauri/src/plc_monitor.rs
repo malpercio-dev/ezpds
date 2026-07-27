@@ -421,9 +421,30 @@ fn load_history() -> MonitorHistory {
     }
 }
 
+/// Serializes the load → fold → store round trip.
+///
+/// The unattended timer and a foreground check are separate tasks on a multi-threaded
+/// runtime, and each resumes from an awaited `check_all` — so two passes can reach this
+/// function at the same moment. Interleaved, the later store would be built from a history
+/// read before the earlier one landed, silently dropping a pass from the log and rolling an
+/// identity's `last_verified_at` backwards. Fail-soft is right for a write that *fails*; a
+/// lost update leaves no trace at all, which on the surface that exists to evidence the
+/// background sweep is the one loss worth a lock.
+///
+/// Same unit-of-global shape as `pds_capabilities` and `diagnostics`. Nothing awaits while
+/// it is held, so a `std::sync::Mutex` is the right primitive.
+static HISTORY_LOCK: std::sync::OnceLock<std::sync::Mutex<()>> = std::sync::OnceLock::new();
+
 /// Fold a completed sweep into the stored history. Never fails a sweep: a write failure is
 /// logged and dropped, because losing the readout must not lose the protection.
 fn record_sweep(statuses: &[IdentityStatus], trigger: SweepTrigger) {
+    // A poisoned lock guards no invariant worth preserving here — the record is rebuilt
+    // from the Keychain on every call — so recover rather than propagate a panic into the
+    // monitor.
+    let _guard = HISTORY_LOCK
+        .get_or_init(|| std::sync::Mutex::new(()))
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
     let next = fold_sweep(load_history(), statuses, trigger, Utc::now());
     match serde_json::to_vec(&next) {
         Ok(bytes) => {
