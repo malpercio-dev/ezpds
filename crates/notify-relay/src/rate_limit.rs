@@ -46,13 +46,22 @@ impl TokenBucket {
 
 /// Which budget a request spends from. Registration RPCs and pushes are separate so a
 /// chatty push load can never lock a node out of dropping a dead handle.
+///
+/// The two push budgets are charged in series and answer different questions:
+/// `Push` is keyed by node id and bounds what one instance costs the relay, while
+/// `HandlePush` is keyed by the handle and bounds what one device is subjected to. An
+/// instance with many devices must not have to choose between them.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Bucket {
     Registration,
     Push,
+    HandlePush,
 }
 
-/// The process-level limiter: one bucket per (node id, bucket kind).
+/// The process-level limiter: one bucket per (key, bucket kind), where the key is the
+/// caller's node id for every bucket but `HandlePush`, which keys on the handle itself.
+/// The two key spaces share one map safely — both are opaque strings, and a collision
+/// between a node id and a handle would still charge the right kind of bucket.
 #[derive(Debug)]
 pub struct RateLimiter {
     config: RateLimitConfig,
@@ -84,6 +93,10 @@ impl RateLimiter {
                 self.config.registrations_burst,
             ),
             Bucket::Push => (self.config.pushes_per_hour, self.config.pushes_burst),
+            Bucket::HandlePush => (
+                self.config.handle_pushes_per_hour,
+                self.config.handle_pushes_burst,
+            ),
         };
         if per_hour == 0 {
             return None;
@@ -91,14 +104,15 @@ impl RateLimiter {
         Some((burst, f64::from(per_hour) / 3600.0))
     }
 
-    /// Charge one request to `node_id`, returning false when the budget is exhausted.
-    pub fn check(&self, node_id: &str, bucket: Bucket) -> bool {
-        self.check_at(node_id, bucket, Instant::now())
+    /// Charge one request to `key` — the caller's node id, or the handle for
+    /// [`Bucket::HandlePush`]. Returns false when that budget is exhausted.
+    pub fn check(&self, key: &str, bucket: Bucket) -> bool {
+        self.check_at(key, bucket, Instant::now())
     }
 
     /// `check` against an explicit clock, so the exhaustion/refill behaviour is testable
     /// without sleeping.
-    pub fn check_at(&self, node_id: &str, bucket: Bucket, now: Instant) -> bool {
+    pub fn check_at(&self, key: &str, bucket: Bucket, now: Instant) -> bool {
         let Some((capacity, per_second)) = self.limits(bucket) else {
             return true;
         };
@@ -110,7 +124,7 @@ impl RateLimiter {
             buckets.retain(|_, b| now.saturating_duration_since(b.last_refill) < IDLE_EVICTION);
         }
         let entry = buckets
-            .entry((node_id.to_owned(), bucket))
+            .entry((key.to_owned(), bucket))
             .or_insert_with(|| TokenBucket::new(capacity, now));
         entry.take_at(capacity, per_second, now)
     }
@@ -126,6 +140,7 @@ mod tests {
             registrations_burst: burst,
             pushes_per_hour: 3600,
             pushes_burst: 2,
+            ..RateLimitConfig::default()
         })
     }
 
@@ -170,6 +185,28 @@ mod tests {
         assert!(
             limiter.check_at("node-a", Bucket::Push, now),
             "a spent registration budget must not close the push budget"
+        );
+    }
+
+    /// The per-handle bucket keys on the handle, not the node, so one device's traffic
+    /// cannot exhaust another's — the reason it exists beside the node budget at all.
+    #[test]
+    fn the_per_handle_budget_is_charged_per_handle() {
+        let limiter = RateLimiter::new(RateLimitConfig {
+            handle_pushes_per_hour: 3600,
+            handle_pushes_burst: 1,
+            ..RateLimitConfig::default()
+        });
+        let now = Instant::now();
+
+        assert!(limiter.check_at("handle-1", Bucket::HandlePush, now));
+        assert!(
+            !limiter.check_at("handle-1", Bucket::HandlePush, now),
+            "one handle's burst must be spendable only once"
+        );
+        assert!(
+            limiter.check_at("handle-2", Bucket::HandlePush, now),
+            "a second handle on the same node must have its own budget"
         );
     }
 

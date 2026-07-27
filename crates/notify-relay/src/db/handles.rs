@@ -72,6 +72,27 @@ pub async fn resolve_handle(
     }))
 }
 
+/// Record that Apple accepted a notification for this handle.
+///
+/// Scoped by node id like every other query here, so it cannot be used to probe for
+/// another node's handles by observing a write. Called only on a successful delivery:
+/// `last_push_at` is the operator's "is this registration still live?" signal, and
+/// stamping it on a refusal would make a dead device look healthy.
+pub async fn touch_last_push(
+    db: &SqlitePool,
+    node_id: &str,
+    handle: &str,
+) -> Result<(), sqlx::Error> {
+    sqlx::query(
+        "UPDATE handles SET last_push_at = datetime('now') WHERE handle = ? AND node_id = ?",
+    )
+    .bind(handle)
+    .bind(node_id)
+    .execute(db)
+    .await?;
+    Ok(())
+}
+
 /// Drop a handle owned by `node_id`. Idempotent; reports whether a row was removed so the
 /// relay can log real deletions without telling the caller anything either way.
 pub async fn drop_handle(
@@ -150,6 +171,37 @@ mod tests {
                 .is_some(),
             "the owner's handle must survive a foreign drop attempt"
         );
+    }
+
+    #[tokio::test]
+    async fn a_delivery_stamp_is_scoped_to_the_owning_node() {
+        let pool = enrolled_pool().await;
+        register_handle(&pool, "node-a", "tok", "org.obsign.app", "h1")
+            .await
+            .expect("register");
+
+        let stamp = |pool: SqlitePool| async move {
+            sqlx::query_scalar::<_, Option<String>>(
+                "SELECT last_push_at FROM handles WHERE handle = 'h1'",
+            )
+            .fetch_one(&pool)
+            .await
+            .expect("read stamp")
+        };
+        assert!(stamp(pool.clone()).await.is_none(), "unpushed to start");
+
+        touch_last_push(&pool, "node-b", "h1")
+            .await
+            .expect("a foreign touch is not an error");
+        assert!(
+            stamp(pool.clone()).await.is_none(),
+            "node B must not be able to stamp node A's handle"
+        );
+
+        touch_last_push(&pool, "node-a", "h1")
+            .await
+            .expect("owner touch");
+        assert!(stamp(pool).await.is_some(), "the owner's delivery stamps");
     }
 
     #[tokio::test]
