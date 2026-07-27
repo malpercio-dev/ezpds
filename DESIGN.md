@@ -272,11 +272,46 @@ The crown jewel and the highest-stakes UI in the app. A badge that says how safe
 
 The countdown is announced to VoiceOver as text, not implied by a colored dot. Critical and Expired must be visually distinct — alarm vs. closed — so a colorblind user under attack can never confuse "act now" with "too late."
 
+**Two sizes, one vocabulary.** The component has a badge format and a panel format (`StatusPanel`), and they are the same four states with the same labels — "Secure", "Action needed", the live countdown, "Recovery window closed" — never a paraphrase. The badge annotates an object in a list (a card in the home strip, a row on Protection); the panel *is* the top of an object's own screen, stating its state at full width before any action is offered (see Navigation). A state may not exist in one format and not the other, and the two must never disagree about the same identity: the badge is the panel's summary, so if a wall of cards says "Secure" and the panel behind one says otherwise, the badge is the bug.
+
 ### DID Avatar
 A deterministic identity mark — a hue derived by hash from the DID, so the same identity always renders the same color. Reconcile it with the system: constrain the derived color to the brand's chroma and a fixed lightness (e.g. `oklch(0.55 0.09 <hash-hue>)`), so a wall of identities reads as a coherent, muted set of seals — not rainbow confetti (which would be the playful anti-reference). The monogram initial is set in Libre Caslon Display — an engraved letter, the seal made personal.
 
 ### Navigation
-The app is a calm state-machine flow, not a chrome-heavy shell. A single back affordance (Aubergine, sentence-case "Back"), a clear screen title, and nothing competing with it. No tab bars of decorative icons, no persistent dense nav.
+The app is a calm state-machine flow, not a chrome-heavy shell. A single back affordance (Aubergine, sentence-case "Back"), a clear screen title, and nothing competing with it. No tab bars of decorative icons, no persistent dense nav. A persistent tab bar was considered and rejected on its merits, not by reflex: at the realistic one-or-two identity count the tabs sit near-empty, tab chrome has to be suppressed during every ceremony anyway, and the result reads stock-iOS.
+
+What replaces that chrome is **structure**, not nothing. The wallet is organized by the user's *tempo* — **use** (frequent, calm), **maintain** (rare, careful), **defend** (emergency) — and the vocabulary below is how that tempo becomes visible.
+
+**The instrument panel.** An identity's screen is not a menu of verbs. It opens with a full-width `StatusPanel` — the panel format of the status component above — and the actions hang off that state, in a fixed zone order:
+
+1. **Status** — the panel. Secure / Action needed / Under attack / Recovery window closed, plus the quiet "Security checkup" disclosure.
+2. **Use** — the handful of things a normal week touches, one tap each and no group chrome: sign in to an app, sign in to Bluesky, agents.
+3. **Move or rebuild** — the exit door: move to another server, rebuild from backup.
+4. **Manage identity** — the maintenance door: an everyday tier on entry, an "Advanced" vestibule below it.
+
+The order is load-bearing and does not vary by screen state. It reads as a sentence — *here is how you are, here is what you do, here is how you leave, here is how you tend it* — and an alarmed identity reorders nothing; the panel simply turns red at the top of the same list.
+
+**The exit is a door, not a repair.** "Move or rebuild" sits at the same visual weight as "Manage identity", above it. Credible exit is the product's central promise, so the affordance for leaving must be findable without spelunking — and equally must not read as an everyday verb.
+
+**The vestibule.** Protocol-level, irreversible, or identity-threatening tools (rotate repo signing key, re-key, repair endpoint, remove identity) never appear in a list you can arrive at by drifting. "Advanced" opens a plain-language framing screen first — what this tier of tools does, and that each one explains itself before anything is signed — and only then the tools. Depth is the warning; the vestibule is the consent. It is additive: every per-operation gate (warn → verify → hold-to-confirm) stays exactly as it was.
+
+**Protection.** Defend exists at both levels. Per identity it is the status panel; app-wide it is **Protection**, opened from the home strip — and the strip is a door, not a readout. Protection carries every identity's status row and the monitor history: when the sweep last ran, what it checked, when each identity was last verified. The PLC monitor works invisibly today, and protection the user cannot *see happening* earns none of the trust it deserves.
+
+**Alarm takes over; it is never a destination.** When an unauthorized change is active, opening or foregrounding the app lands directly on the alarm surface — one identity in alarm goes to its alarm surface, several go to Protection sorted most-urgent-first. Zero navigation between an unlocked phone and the one clear action. It is always dismissible ("Not now") to a home rendered in alarm state, because calm under alarm means the action is *offered*, never locked in; and an in-progress ceremony still wins the landing decision, since resuming interrupted key material outranks re-showing an alarm already seen. Nothing time-critical may live only behind a badge.
+
+**Naming.** Plain Proton/1Password register: "Protection", "Manage identity", "Advanced", "Move or rebuild". The seal metaphor lives in the visual system and the brand mark — naming a navigation surface after it would be theater.
+
+### IA principles (shared with the Brass Console)
+
+These bind both apps — the IA-level extension of the shared "practice what you preach" rigor. They are stated here in Obsign's terms; the admin-companion applies the same five to relays, operator verbs, and its own surgery tier.
+
+1. **Structure by tempo, not by module.** A screen earns its position by how often, and in what emotional state, a person reaches for it — never by which backend module implements it. Frequent+calm is one tap deep; rare+careful sits behind one deliberate door; emergency is not navigated to at all (see 4).
+2. **State leads, actions follow.** The first thing any object screen shows is that object's live status, not a menu. The screen answers "am I okay?" before "what can I do?".
+3. **Surgery gets a vestibule.** Protocol-level, irreversible, or identity-threatening operations live behind a framing screen that says plainly what this tier does, before showing the tools.
+4. **Emergencies interrupt; they are never destinations.** An active alarm restructures the surface — takeover, transformed home — rather than waiting behind navigation.
+5. **One door per depth tier.** A surface presents at most one "go deeper" affordance per tier (Use → Manage → Advanced). Two sibling doors at the same depth is the start of the next verb wall. The identity screen's "Move or rebuild" is the one deliberate exception, and it is granted for a reason no other verb can claim: leaving is the promise the product is *for*, and a promise buried one tier down is not a promise. Do not read it as licence for a third door.
+
+Full derivation, screen-by-screen mapping, and the rejected alternatives: [docs/design-plans/2026-07-24-wallet-information-architecture.md](docs/design-plans/2026-07-24-wallet-information-architecture.md).
 
 ## 6. Brand Mark & App Icon
 
