@@ -73,10 +73,12 @@ describe('wallet harness push notifications', () => {
   });
 
   it('steps aside on a host that runs no relay, without calling it a failure', () => {
-    // `foreign-pds` is a spec-compliant non-Custos host: it advertises no capabilities, which is
-    // exactly the shape whose real notification routes answer 501.
-    const state = withApnsToken(scenarios['foreign-pds']());
-    state.identities = scenarios['one-identity']().identities;
+    // `relaySupported: false` is the host's own `[notifications] relay` being unset — the
+    // condition the real routes answer 501 on. Deliberately a separate lever from the capability
+    // list: a Custos can serve sovereign sessions, the create ceremony and escrow while running
+    // no relay at all, and that combination has to be reachable here.
+    const state = withApnsToken(scenarios['one-identity']());
+    state.notifications.relaySupported = false;
     const registry = buildRegistry(state);
     const did = (registry.list_identities({}) as string[])[0];
 
@@ -137,6 +139,34 @@ describe('wallet harness push notifications', () => {
       JSON.stringify(live),
       'diagnostics are shareable — the raw APNs token must not ride along',
     ).not.toContain('aabbcc00');
+  });
+
+  it('keeps reporting the key after the APNs token goes away', () => {
+    // The real command reads the key off the Keychain scalar and never consults the token, so a
+    // device that registered and later lost its token still holds a key. Inferring one from the
+    // other here would have a Settings surface written against a state the device never enters.
+    const state = withApnsToken(scenarios['one-identity']());
+    const registry = buildRegistry(state);
+    registry.register_for_notifications({ did: (registry.list_identities({}) as string[])[0] });
+
+    state.notifications.apnsToken = null;
+
+    const after = registry.get_notification_diagnostics({}) as NotificationDiagnostics;
+    expect(after.hasApnsToken).toBe(false);
+    expect(after.notificationKeyId).toMatch(/^did:key:z/);
+  });
+
+  it('mints the key even against a relay-less host, as the real ordering does', () => {
+    // The backend mints before it talks to the host, so an UNSUPPORTED answer still leaves a key
+    // behind — and the diagnostics surface has to say so.
+    const state = withApnsToken(scenarios['one-identity']());
+    state.notifications.relaySupported = false;
+    const registry = buildRegistry(state);
+
+    registry.register_for_notifications({ did: (registry.list_identities({}) as string[])[0] });
+
+    const diagnostics = registry.get_notification_diagnostics({}) as NotificationDiagnostics;
+    expect(diagnostics.notificationKeyId).toMatch(/^did:key:z/);
   });
 
   it('refuses an unknown identity rather than registering a DID this wallet does not manage', () => {

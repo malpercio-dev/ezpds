@@ -1354,9 +1354,14 @@ export function buildRegistry(state: WalletState): Registry {
           notificationKeyId: null,
         };
       }
-      // A host that advertises no capabilities is the standard-PDS case, where the real
-      // routes answer 501 — the outcome onboarding must be able to reach without an error.
-      if (!state.pdsCapabilities.capabilities.includes('sovereignSessions')) {
+      // The real backend mints the key before it talks to the host, so it holds one even when
+      // the host turns out to serve no notification routes.
+      notifications.notificationKeyMinted = true;
+
+      // `relaySupported` is the host's own `[notifications] relay` config, which is what the
+      // real routes answer 501 on — deliberately not read off `pdsCapabilities`, which
+      // advertises nothing about notifications.
+      if (!notifications.relaySupported) {
         return {
           status: 'UNSUPPORTED',
           deviceUuid: notifications.deviceUuid,
@@ -1379,7 +1384,7 @@ export function buildRegistry(state: WalletState): Registry {
       if (!identity) throw { code: 'IDENTITY_NOT_FOUND', message: 'identity not found' };
       const host = identity.pdsUrl;
 
-      if (!state.pdsCapabilities.capabilities.includes('sovereignSessions')) {
+      if (!state.notifications.relaySupported) {
         // A 501 leaves whatever was pinned exactly as it was — switching the feature off is
         // not a revocation.
         return { host, pinned: false, keys: state.notifications.pinnedHosts[host] ?? [] };
@@ -1393,7 +1398,9 @@ export function buildRegistry(state: WalletState): Registry {
     },
     get_notification_diagnostics: (): NotificationDiagnostics => ({
       deviceUuid: state.notifications.deviceUuid,
-      notificationKeyId: state.notifications.apnsToken
+      // Read off whether a key was minted, never off the APNs token: the real command reads the
+      // Keychain scalar, so a device that registered and later lost its token still has a key.
+      notificationKeyId: state.notifications.notificationKeyMinted
         ? state.notifications.notificationKeyId
         : null,
       hasApnsToken: state.notifications.apnsToken !== null,

@@ -1242,7 +1242,7 @@
       <DidWebMigrationReviewScreen
         did={migrationDid}
         hosting={didWebHosting}
-        onnext={(result) => { migrationResult = result; goTo('migration_success'); }}
+        onnext={(result) => { migrationResult = result; syncNotifications(migrationDid); goTo('migration_success'); }}
         oncancel={() => goTo('migration_start')}
       />
     {:else}
@@ -1250,6 +1250,10 @@
         did={migrationDid}
         onnext={(result) => {
           migrationResult = result;
+          // A migration repoints the identity at a Custos that has never seen this device: no
+          // registration, no pinned sender keys. Without this the destination stays silent until
+          // some future relaunch happens to run the app-open sweep.
+          syncNotifications(migrationDid);
           goTo('migration_success');
         }}
         oncancel={() => goTo('identity_detail')}

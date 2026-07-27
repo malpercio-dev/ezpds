@@ -299,10 +299,22 @@ pub fn device_uuid() -> Result<String, NotificationsError> {
     }
 }
 
+/// Mint the device's identifier, **verifying it read back** before reporting it.
+///
+/// The same discipline the notification key and every Share 1 writer use, and for a sharper
+/// reason here: a write that reports success without persisting is indistinguishable from never
+/// having run, so the next launch mints another identifier and registers again — accumulating
+/// exactly the dead row and live relay handle per app start that [`device_uuid`] exists to
+/// prevent. Failing loudly costs one registration attempt; succeeding quietly costs one forever.
 fn mint_device_uuid() -> Result<String, NotificationsError> {
     let uuid = uuid::Uuid::new_v4().to_string();
     crate::keychain::store_item(DEVICE_UUID_ACCOUNT, uuid.as_bytes()).map_err(keychain_err)?;
-    Ok(uuid)
+    match crate::keychain::get_item(DEVICE_UUID_ACCOUNT) {
+        Ok(bytes) if bytes == uuid.as_bytes() => Ok(uuid),
+        _ => Err(NotificationsError::KeychainError {
+            message: "the device uuid did not read back after storing".to_string(),
+        }),
+    }
 }
 
 /// Load — or, on first use, generate — the device's notification keypair, returning its
@@ -314,12 +326,18 @@ fn mint_device_uuid() -> Result<String, NotificationsError> {
 /// turns every future notification into the unverified notice, with nothing anywhere saying why.
 fn load_or_create_notification_key() -> Result<String, NotificationsError> {
     if let Some(scalar) = stored_notification_scalar()? {
-        let keypair = crypto::p256_keypair_from_secret(&scalar).map_err(|e| {
-            NotificationsError::KeyGenerationFailed {
-                message: format!("stored notification key is unusable: {e}"),
-            }
-        })?;
-        return Ok(keypair.key_id.0);
+        match crypto::p256_keypair_from_secret(&scalar) {
+            Ok(keypair) => return Ok(keypair.key_id.0),
+            // A stored 32-byte value that is not a valid scalar (zero, or past the curve order)
+            // gets the same verdict as a wrong-length one: unreconstructable either way. Erroring
+            // instead would refuse every future registration forever, since nothing else ever
+            // overwrites this slot — and the only thing minting costs is payloads already sealed
+            // to a key nobody can rebuild.
+            Err(e) => tracing::warn!(
+                error = %e,
+                "stored notification key is unusable; minting a replacement"
+            ),
+        }
     }
 
     let keypair =
@@ -449,7 +467,22 @@ fn load_pins() -> PinnedSenderKeys {
 ///
 /// Wholesale for the named host — that is the revocation mechanism — and surgical across hosts,
 /// because a contact with one identity's Custos says nothing about another's.
+/// One shared document means one writer at a time.
+///
+/// `+page.svelte` fires a registration per identity **without awaiting**, and each one re-pins on
+/// the same contact, so two of these read-modify-writes genuinely overlap on Tauri's multi-thread
+/// runtime. Losing the later write is not merely a stale entry: if the discarded pass was the
+/// contact that dropped a *revoked* sender key, that host keeps trusting the revoked key until
+/// its next contact — reopening the exact window the module header says re-pinning closes.
+///
+/// A `std::sync::Mutex` deliberately: the guard is taken and released entirely inside this
+/// synchronous function and never crosses an `.await`.
+static PIN_WRITE_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 fn store_pins_for_host(host: &str, keys: &[SenderKey]) -> Result<(), NotificationsError> {
+    // A poisoned lock means some other thread panicked mid-write; the document is re-read below
+    // either way, so recovering is strictly better than propagating the panic into a re-pin.
+    let _guard = PIN_WRITE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let mut pins = load_pins();
     pins.version = PIN_DOCUMENT_VERSION;
     pins.hosts.insert(host.to_string(), keys.to_vec());
@@ -556,8 +589,12 @@ async fn full_access_session(
     pds_client: &PdsClient,
     did: &str,
 ) -> Result<crate::session_provider::ActiveSession, NotificationsError> {
+    // Not `NetworkError`: an unreadable clock is a local fault, and this module's rule is that
+    // only a transport failure may be reported as one — otherwise the screen offers connectivity
+    // advice for a problem connectivity cannot fix.
     let now = crate::sovereign_session::unix_timestamp().map_err(|_| {
-        NotificationsError::NetworkError {
+        NotificationsError::ServerError {
+            status: None,
             message: "system clock is unavailable".to_string(),
         }
     })?;
@@ -801,6 +838,50 @@ mod tests {
 
         let key_id = load_or_create_notification_key().unwrap();
         crypto::p256_public_key_from_did_key(&key_id).expect("a usable key must replace it");
+    }
+
+    /// The wedge that erroring here would create: nothing else ever overwrites this slot, so a
+    /// stored value of the right *length* but the wrong *value* would refuse every registration
+    /// for the life of the install. It gets the same verdict as a wrong-length slot.
+    #[test]
+    fn a_right_length_but_invalid_stored_scalar_is_replaced_not_fatal() {
+        for invalid in [
+            // The zero scalar — 32 bytes, not a valid private key.
+            [0u8; 32],
+            // Past the curve order (all-ones is well above P-256's n).
+            [0xffu8; 32],
+        ] {
+            crate::keychain::clear_for_test();
+            assert!(
+                crypto::p256_keypair_from_secret(&invalid).is_err(),
+                "the fixture must actually be rejected by the curve, or this proves nothing"
+            );
+            crate::keychain::store_item_after_first_unlock(NOTIFICATION_KEY_ACCOUNT, &invalid)
+                .unwrap();
+
+            let key_id = load_or_create_notification_key()
+                .expect("an unusable stored scalar must not wedge registration forever");
+            crypto::p256_public_key_from_did_key(&key_id).expect("a usable key must replace it");
+
+            // And the replacement is durable, so the next launch reuses it rather than minting
+            // a third key.
+            assert_eq!(load_or_create_notification_key().unwrap(), key_id);
+        }
+    }
+
+    /// The identifier's whole contract is that it never changes, so a write that cannot be read
+    /// back is reported rather than papered over — a silent failure would mint a fresh uuid every
+    /// launch and leave a dead server row (and a live relay handle) behind each one.
+    #[test]
+    fn a_minted_uuid_is_verified_durable_before_it_is_reported() {
+        crate::keychain::clear_for_test();
+
+        let uuid = device_uuid().unwrap();
+        assert_eq!(
+            crate::keychain::get_item(DEVICE_UUID_ACCOUNT).unwrap(),
+            uuid.as_bytes(),
+            "the reported uuid must be the one actually in the slot"
+        );
     }
 
     // ── the APNs token ──
