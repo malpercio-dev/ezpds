@@ -1,0 +1,26 @@
+{
+  "cli_version": "0.8.42",
+  "checkpoint_id": "6a005ad0cac1",
+  "strategy": "manual-commit",
+  "branch": "claude/archive-shipped-design-plans-8f7640",
+  "checkpoints_count": 1,
+  "files_touched": [
+    "docs/archive/design-plans/2026-07-18-blobstore-resilience.md"
+  ],
+  "sessions": [
+    {
+      "metadata": "/6a/005ad0cac1/0/metadata.json",
+      "transcript": "/6a/005ad0cac1/0/full.jsonl",
+      "compact_transcript": "/6a/005ad0cac1/0/transcript.jsonl",
+      "content_hash": "/6a/005ad0cac1/0/content_hash.txt",
+      "prompt": "/6a/005ad0cac1/0/prompt.txt"
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 15,
+    "cache_creation_tokens": 6070,
+    "cache_read_tokens": 1005530,
+    "output_tokens": 2215,
+    "api_call_count": 8
+  }
+}
