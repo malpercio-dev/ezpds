@@ -32,7 +32,6 @@
 // reclamation — lives in `account_delete::purge_account`, shared with the scheduled-deletion reaper.
 
 use axum::{extract::State, http::StatusCode};
-use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
 use serde::Deserialize;
 
 use common::{ApiError, ErrorCode, SOVEREIGN_TIMESTAMP_WINDOW_SECS};
@@ -40,15 +39,13 @@ use common::{ApiError, ErrorCode, SOVEREIGN_TIMESTAMP_WINDOW_SECS};
 use crate::account_delete::purge_account;
 use crate::app::AppState;
 use crate::auth::password::{verify_password, VerifyResult};
+use crate::auth::signed_proof::{decode_canonical_base64url, NONCE_BYTES, SIGNATURE_BYTES};
 use crate::auth::token::hash_bearer_token;
 use crate::db::account_deletion_tokens::consume_account_deletion_token;
 use crate::db::accounts::account_password_hash;
 use crate::db::sovereign_session_nonces::insert_nonce_if_absent;
 use crate::identity::authority::{authorized_signing_keys, AuthorityError};
 use crate::lexicon::LexiconInput;
-
-const SIGNATURE_BYTES: usize = 64;
-const NONCE_BYTES: usize = 32;
 
 #[derive(Deserialize)]
 pub struct DeleteAccountRequest {
@@ -89,13 +86,6 @@ struct DeleteProof {
 /// factors anyway.
 fn invalid_credentials() -> ApiError {
     ApiError::new(ErrorCode::Unauthorized, "invalid credentials")
-}
-
-/// Decode a value that must be exactly `expected_len` bytes in *canonical* unpadded base64url
-/// (re-encoding must reproduce the input), so a proof cannot be re-spelled into a fresh nonce.
-fn decode_canonical_base64url(value: &str, expected_len: usize) -> Option<Vec<u8>> {
-    let decoded = URL_SAFE_NO_PAD.decode(value).ok()?;
-    (decoded.len() == expected_len && URL_SAFE_NO_PAD.encode(&decoded) == value).then_some(decoded)
 }
 
 /// Verify a deletion proof: syntax, freshness, signature, then — and only then — the authoritative
