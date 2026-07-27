@@ -44,11 +44,18 @@ pub enum SecretFamily {
     /// share envelope, not a 32-byte scalar — the re-wrap sweep handles both
     /// via the generic-length `crypto::{encrypt,decrypt}_secret_bytes` pair.
     RecoveryEscrow,
+    /// The instance's versioned notification sender keys
+    /// (`notification_sender_keys`, V058). Every row is swept, including
+    /// retired and revoked ones: a retired key still verifies payloads sealed
+    /// before the rotation, and a revoked key's row is kept as a tombstone —
+    /// leaving either stranded under the old KEK would break the re-wrap's
+    /// all-or-nothing guarantee.
+    NotificationSenderKeys,
 }
 
 impl SecretFamily {
     /// Every KEK-wrapped column in the schema, in sweep order.
-    pub const ALL: [SecretFamily; 9] = [
+    pub const ALL: [SecretFamily; 10] = [
         SecretFamily::SigningKeys,
         SecretFamily::ReservedSigningKeys,
         SecretFamily::PendingAccounts,
@@ -58,6 +65,7 @@ impl SecretFamily {
         SecretFamily::IrohIdentity,
         SecretFamily::RecoveryShares,
         SecretFamily::RecoveryEscrow,
+        SecretFamily::NotificationSenderKeys,
     ];
 
     /// The owning table name, for reporting and error messages.
@@ -72,6 +80,7 @@ impl SecretFamily {
             SecretFamily::IrohIdentity => "iroh_identity",
             SecretFamily::RecoveryShares => "accounts.recovery_share",
             SecretFamily::RecoveryEscrow => "recovery_escrow",
+            SecretFamily::NotificationSenderKeys => "notification_sender_keys",
         }
     }
 
@@ -101,6 +110,12 @@ impl SecretFamily {
                 "SELECT did, recovery_share FROM accounts WHERE recovery_share IS NOT NULL"
             }
             SecretFamily::RecoveryEscrow => "SELECT did, share_encrypted FROM recovery_escrow",
+            SecretFamily::NotificationSenderKeys => {
+                // `kid` is the one INTEGER primary key in the inventory; cast so it decodes
+                // into the shared `WrappedSecretRow.id: String` like every other family. The
+                // UPDATE's text bind converts back under SQLite's INTEGER affinity.
+                "SELECT CAST(kid AS TEXT), secret_key_encrypted FROM notification_sender_keys"
+            }
         }
     }
 
@@ -131,6 +146,9 @@ impl SecretFamily {
             SecretFamily::RecoveryShares => "UPDATE accounts SET recovery_share = ? WHERE did = ?",
             SecretFamily::RecoveryEscrow => {
                 "UPDATE recovery_escrow SET share_encrypted = ? WHERE did = ?"
+            }
+            SecretFamily::NotificationSenderKeys => {
+                "UPDATE notification_sender_keys SET secret_key_encrypted = ? WHERE kid = ?"
             }
         }
     }

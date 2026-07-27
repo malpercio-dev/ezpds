@@ -34,6 +34,7 @@ Fields come from the validated Rust configuration types. Environment overrides c
 | `oauth` | — | `OAuthConfig` | No field-level description. |
 | `agent_auth` | — | `AgentAuthConfig` | auth.md agent-registration knobs (per-flow enablement, issuer trust list, TTLs). |
 | `iroh` | — | `IrohConfig` | No field-level description. |
+| `notifications` | — | `NotificationsConfig` | Push notifications via a blind-courier relay. Off unless `relay` names a node id. |
 | `appview` | — | `AppViewConfig` | No field-level description. |
 | `chat` | — | `ChatConfig` | No field-level description. |
 | `crawlers` | — | `CrawlersConfig` | No field-level description. |
@@ -101,6 +102,8 @@ Fields come from the validated Rust configuration types. Environment overrides c
 | `iroh.enabled` | `EZPDS_IROH_ENABLED` | `bool` | Whether to run the Iroh QUIC endpoint alongside the HTTP server. Off by default, so a relay (and the test suite) behaves exactly as before unless explicitly enabled. |
 | `iroh.endpoint` | `EZPDS_IROH_ENDPOINT` | `Option<String>` | Optional manual override for the advertised node id. When `None` (the default), the pds advertises its live endpoint's node id (present only while the tunnel is enabled); when set, this exact string is advertised instead. The override is read straight from config by the handler, so it applies even when `enabled` is false (i.e. with no live endpoint running). |
 | `iroh.ipv6` | `EZPDS_IROH_IPV6` | `bool` | Whether to bind the IPv6 QUIC socket. Defaults to true. Set to false on hosts with no public IPv6 egress (e.g. Railway containers, which carry internal v6 addresses but can't route them): iroh's v6 relay probes would otherwise fail with `NetworkUnreachable` forever, one WARN every ~80s, drowning real errors. IPv4 paths carry all traffic either way — this only skips the doomed v6 socket. |
+| `notifications.relay` | `EZPDS_NOTIFICATIONS_RELAY` | `Option<String>` | The relay's iroh node id. `None` disables notifications entirely. |
+| `notifications.enrollment_code` | `EZPDS_NOTIFICATIONS_ENROLLMENT_CODE` | `Option<Sensitive<String>>` | Single-use enrollment grant for a relay that gates enrollment (the official one does; a self-run relay may set `open_enrollment` instead). Consumed by the relay on the first successful `enroll`; harmless to leave configured afterwards, since enrollment is idempotent for an already-enrolled node.  [`Sensitive`] because it is a bearer grant: anyone holding it can enroll a node of their choosing with the relay. |
 | `appview.url` | `EZPDS_APPVIEW_URL` | `String` | Base URL of the AppView (scheme + authority, no trailing slash). |
 | `appview.did` | `EZPDS_APPVIEW_DID` | `String` | Service DID (with `#fragment`) of the AppView, sent as `atproto-proxy`. |
 | `appview.cdn_url` | `EZPDS_APPVIEW_CDN_URL` | `String` | Base URL of the AppView's image CDN (scheme + authority, no trailing slash), used to build avatar/banner/embed-image URLs for the account's own not-yet-indexed records. Defaults to Bluesky's public image CDN. |

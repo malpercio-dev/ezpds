@@ -29,6 +29,12 @@ mod labeler_watch;
 mod lexicon;
 mod metrics;
 mod no_input;
+mod notifications;
+// The cross-crate loopback e2e (pds ↔ notify-relay ↔ a stand-in Apple). Lives in the crate
+// rather than `tests/` because `pds` is a binary — an integration test cannot import it.
+#[cfg(test)]
+mod notify_e2e_test;
+mod notify_relay_client;
 mod platform;
 mod rate_limit;
 mod read_after_write;
@@ -89,6 +95,31 @@ enum Command {
     /// or shell history). On success, set EZPDS_SIGNING_KEY_MASTER_KEY to the
     /// new key before restarting the server.
     RewrapMasterKey,
+    /// Inspect and rotate the instance's notification sender keys — the keys devices pin to
+    /// verify that a push notification really came from this Custos instance.
+    ///
+    /// Rotation is a two-sided ceremony, which is why it is three verbs rather than one:
+    /// `rotate` publishes a new key alongside the old (both are served, the new one seals);
+    /// `retire` stops publishing a key for *sealing* while keeping it verifiable, once every
+    /// device has had time to re-pin; `revoke` removes a key from the published set at once,
+    /// for a key you believe is compromised. `list` shows the current state.
+    #[command(subcommand)]
+    NotificationKeys(NotificationKeysCommand),
+}
+
+#[derive(clap::Subcommand)]
+enum NotificationKeysCommand {
+    /// Show every sender key and its state.
+    List,
+    /// Generate a new sender key. It becomes the sealing key immediately and is published
+    /// alongside the existing ones, so devices that have not re-pinned yet keep working.
+    Rotate,
+    /// Stop sealing with a key while keeping it published for verification. Run this only
+    /// after devices have had time to re-pin (they re-pin on every Custos contact).
+    Retire { kid: i64 },
+    /// Remove a key from the published set immediately — the compromise path. Devices stop
+    /// trusting it at their next contact; anything it sealed becomes unverifiable.
+    Revoke { kid: i64 },
 }
 
 #[tokio::main]
@@ -164,14 +195,99 @@ async fn run_rewrap(config_path: Option<PathBuf>) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// The `notification-keys` subcommand family. Runs against the ordinary configured DB with
+/// migrations applied, like `rewrap-master-key`, so an operator needs no separate setup.
+async fn run_notification_keys(
+    config_path: Option<PathBuf>,
+    command: NotificationKeysCommand,
+) -> anyhow::Result<()> {
+    use db::notifications as store;
+
+    let config = load_config_auto(config_path)?;
+    let pool = db::open_pool(&to_sqlite_url(&config.database_url))
+        .await
+        .with_context(|| format!("failed to open database at {}", config.database_url))?;
+    db::run_migrations(&pool).await?;
+
+    match command {
+        NotificationKeysCommand::List => {
+            let master_key = config.signing_key_master_key.as_ref().map(|s| &*s.0);
+            let keys = store::list_publishable_sender_keys(&pool).await?;
+            if keys.is_empty() {
+                println!("no notification sender keys (one is minted on first use)");
+            }
+            for key in keys {
+                // Render the public half so an operator can eyeball it against what a device
+                // claims to have pinned — the actual question when a notification fails to
+                // verify. Without the master key the secret cannot be unwrapped, so say so
+                // rather than printing a misleading blank.
+                let public = master_key
+                    .and_then(|k| crypto::decrypt_secret_bytes(&key.secret_key_encrypted, k).ok())
+                    .and_then(|bytes| <[u8; 32]>::try_from(bytes.as_slice()).ok())
+                    .and_then(|scalar| crypto::p256_keypair_from_secret(&scalar).ok())
+                    .map(|kp| kp.key_id.0)
+                    .unwrap_or_else(|| "<unavailable: no master key configured>".to_string());
+                let state = if key.retired { "retired" } else { "active" };
+                println!("  kid {} [{}] {}", key.kid, state, public);
+            }
+        }
+        NotificationKeysCommand::Rotate => {
+            let master_key = config
+                .signing_key_master_key
+                .as_ref()
+                .map(|s| &*s.0)
+                .ok_or_else(|| anyhow::anyhow!("EZPDS_SIGNING_KEY_MASTER_KEY is not set"))?;
+            let keypair = crypto::generate_p256_keypair()?;
+            let wrapped = crypto::encrypt_secret_bytes(&*keypair.private_key_bytes, master_key)?;
+            let kid = store::insert_sender_key(&pool, &wrapped).await?;
+            println!(
+                "new notification sender key: kid {} ({})",
+                kid, keypair.key_id.0
+            );
+            println!(
+                "next: leave the previous key published until devices have re-pinned, \
+                 then `pds notification-keys retire <kid>`"
+            );
+        }
+        NotificationKeysCommand::Retire { kid } => {
+            if store::retire_sender_key(&pool, kid).await? {
+                println!("kid {kid} retired: still published for verification, no longer seals");
+            } else {
+                anyhow::bail!(
+                    "no active sender key with kid {kid} (unknown, or already retired); \
+                     `pds notification-keys list` shows the current set"
+                );
+            }
+        }
+        NotificationKeysCommand::Revoke { kid } => {
+            // Failing loudly matters most here: an operator revoking a key believes they have
+            // just closed a compromise, and a silent no-op on a mistyped kid would leave the
+            // real key published while reading as success.
+            if store::revoke_sender_key(&pool, kid).await? {
+                println!("kid {kid} revoked: removed from the published set");
+            } else {
+                anyhow::bail!(
+                    "no published sender key with kid {kid} (unknown, or already revoked); \
+                     `pds notification-keys list` shows the current set"
+                );
+            }
+        }
+    }
+    Ok(())
+}
+
 async fn run() -> anyhow::Result<()> {
     // Captured before any startup work (config load, migrations, key setup) so the health
     // endpoint's uptime reflects process start, not listen start.
     let started_at = std::time::Instant::now();
     let cli = Cli::parse();
 
-    if let Some(Command::RewrapMasterKey) = cli.command {
-        return run_rewrap(cli.config).await;
+    match cli.command {
+        Some(Command::RewrapMasterKey) => return run_rewrap(cli.config).await,
+        Some(Command::NotificationKeys(command)) => {
+            return run_notification_keys(cli.config, command).await
+        }
+        None => {}
     }
 
     let mut config = load_config_auto(cli.config)?;
@@ -326,6 +442,37 @@ async fn run() -> anyhow::Result<()> {
         None
     };
 
+    // The notification relay's outbound leg. Dials from the same endpoint the tunnel accepts
+    // on, so the instance presents one node identity — which is precisely the identity the
+    // relay authorizes. Config validation already refused a relay without `[iroh] enabled`,
+    // so a configured relay with no endpoint here would be a bug, not an operator error.
+    //
+    // Unlike the iroh bind above, an unparseable node id is the only fatal case: nothing is
+    // dialed at startup. Enrollment and connection happen lazily on the first send, so a relay
+    // that is down at boot costs nothing and heals by itself.
+    let notify_sender = match (config.notifications.relay.as_deref(), iroh.as_ref()) {
+        (Some(relay_node_id), Some(iroh_state)) => {
+            let client = notify_relay_client::NotifyRelayClient::new(
+                iroh_state.endpoint.clone(),
+                relay_node_id,
+                config
+                    .notifications
+                    .enrollment_code
+                    .as_ref()
+                    .map(|c| c.0.clone()),
+            )
+            .with_context(|| "failed to build the notification relay client")?;
+            let (sender, _worker) =
+                notify_relay_client::spawn_worker(Arc::new(client), pool.clone());
+            tracing::info!(relay = %relay_node_id, "notification relay client started");
+            Some(sender)
+        }
+        (Some(_), None) => {
+            anyhow::bail!("notifications.relay is set but the iroh endpoint is not running")
+        }
+        (None, _) => None,
+    };
+
     // Build the metrics pipeline from config before `config` is moved into the AppState's Arc,
     // and before the subsystems that record through it (crawler, firehose) are constructed.
     // A broken exporter is fatal here rather than failing every scrape at runtime.
@@ -439,6 +586,7 @@ async fn run() -> anyhow::Result<()> {
         firehose,
         crawlers,
         iroh,
+        notify_sender,
         rate_limiter,
         email,
         allow_loopback_proxy_targets: false,

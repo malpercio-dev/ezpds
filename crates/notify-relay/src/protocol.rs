@@ -98,6 +98,28 @@ pub enum Response {
     BadRequest { reason: String },
 }
 
+/// The APNs body the relay sends to Apple.
+///
+/// `aps` carries the fixed, content-free notice Apple and anyone reading the wire will see;
+/// the real notification is the sealed `ezpds` block, which the device's Notification Service
+/// Extension decrypts and substitutes for the placeholder alert. `mutable-content` is what
+/// entitles the extension to run at all.
+///
+/// This lives in the shared protocol rather than in the relay's APNs client because the
+/// **sender** needs it too: the padding buckets are defined on this body's serialized length,
+/// so Custos must model exactly the bytes the relay will emit. Two copies of this shape would
+/// mean padding arithmetic that silently misses its bucket — the exact leak padding exists to
+/// prevent.
+pub fn apns_envelope(kid: u32, enc: &str, ct: &str) -> serde_json::Value {
+    serde_json::json!({
+        "aps": {
+            "alert": { "title": "Custos", "body": "Encrypted notification" },
+            "mutable-content": 1,
+        },
+        "ezpds": { "v": 1, "kid": kid, "enc": enc, "ct": ct },
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

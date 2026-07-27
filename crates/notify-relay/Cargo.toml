@@ -9,6 +9,10 @@ license.workspace = true
 # APNs. It speaks one iroh ALPN (`ezpds/notify/0`), stores opaque push handles, and
 # forwards HPKE-sealed payloads to Apple. It never sees plaintext and holds no key
 # material belonging to an instance or a device.
+[lib]
+name = "notify_relay"
+path = "src/lib.rs"
+
 [[bin]]
 name = "notify-relay"
 path = "src/main.rs"

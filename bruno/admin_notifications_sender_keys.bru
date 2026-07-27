@@ -1,0 +1,50 @@
+meta {
+  name: Admin notification sender keys (GET /v1/admin/notifications/sender-keys)
+  type: http
+  seq: 139
+}
+
+get {
+  url: {{baseUrl}}/v1/admin/notifications/sender-keys
+  body: none
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{adminToken}}
+}
+
+vars:pre-request {
+  baseUrl: http://localhost:8080
+}
+
+docs {
+  # GET /v1/admin/notifications/sender-keys
+
+  The companion app's re-pin surface — the same published set the account surface serves, since
+  the sender keys belong to the instance, not to whoever is asking.
+
+  Admin-authed: the master token (shown here) **or** an active device's signed request. Unlike
+  registration, reading the set is a plain admin read, so the master token is accepted.
+
+  The pinned set lands in the app's `admin-pairings` keychain document and is refreshed on every
+  contact with the relay. See `GET /v1/notifications/sender-keys` for the rotation semantics.
+
+  ## Response (200)
+
+  ```json
+  {
+    "keys": [
+      { "kid": 3, "publicKey": "did:key:zDnae..." }
+    ]
+  }
+  ```
+
+  ## Errors
+
+  - `401` / `403` — missing/invalid admin credential
+  - `501` — this instance has no `[notifications] relay` configured
+  - `503` — a relay is configured but no usable sender key can be served (no master key, or
+    stored key material that will not decrypt under it — see the account-surface route's note:
+    an error, deliberately, rather than an empty set)
+}

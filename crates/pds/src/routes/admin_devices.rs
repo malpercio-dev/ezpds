@@ -385,6 +385,39 @@ pub struct RevokeDeviceResponse {
 /// Idempotent: stamping `revoked_at` only transitions a still-active device, so
 /// revoking an already-revoked device is a 200 no-op returning its current state.
 /// An unknown id is a 404.
+/// Forget a revoked device's push registration, and ask the relay to forget its handle.
+///
+/// Best effort throughout: the device is already cut off by its `revoked_at` tombstone, so
+/// everything here is tidying. Dropping the relay handle matters most — without it the relay
+/// would keep a live route to a device the operator has explicitly cut off.
+async fn drop_notification_registration(state: &AppState, device_id: &str) {
+    use crate::db::notifications as store;
+
+    // Read the handle with the status-independent query: the device is already tombstoned by
+    // the time this runs, so the active-only fan-out query would find nothing.
+    let handle = match store::admin_registration_handle(&state.db, device_id).await {
+        Ok(handle) => handle,
+        Err(e) => {
+            // A failed read is not "no handle". Deleting the row anyway would destroy the only
+            // record of the handle, leaving the relay with a live route to a device the
+            // operator just cut off and no way for a retry to find it. Leave the row so a
+            // repeat revoke can still complete the cleanup.
+            tracing::error!(
+                error = %e, %device_id,
+                "could not read the admin notification handle; leaving the registration in                  place so a retry can still drop it at the relay"
+            );
+            return;
+        }
+    };
+
+    if let Err(e) = store::delete_admin_registration(&state.db, device_id).await {
+        tracing::warn!(error = %e, %device_id, "failed to delete an admin notification registration");
+    }
+    if let (Some(handle), Some(sender)) = (handle, state.notify_sender.as_ref()) {
+        let _ = sender.send(crate::notify_relay_client::NotifyJob::DropHandle { handle });
+    }
+}
+
 pub async fn revoke_admin_device(
     State(state): State<AppState>,
     Path(id): Path<String>,
@@ -418,6 +451,12 @@ pub async fn revoke_admin_device(
         )
         .await
         .map_err(IntoResponse::into_response)?;
+
+        // Notification cleanup rides the same transition guard. The fan-out query already
+        // joins on `revoked_at`, so this is storage reclamation rather than the thing that
+        // stops the pushes — which is why a failure is logged, not propagated: a revocation
+        // must not fail because a leftover row could not be dropped.
+        drop_notification_registration(&state, &id).await;
     }
 
     let device = get_device(&state.db, &id)

@@ -1,6 +1,6 @@
 # Crypto Crate
 
-Last verified: 2026-07-25
+Last verified: 2026-07-27
 
 ## Purpose
 Provides cryptographic primitives for the ezpds workspace: P-256 key generation,
@@ -42,6 +42,17 @@ pub fn decrypt_secret_bytes(&str, &[u8; 32]) -> Result<Zeroizing<Vec<u8>>, Crypt
 - The generic-length form of `encrypt_private_key`/`decrypt_private_key`, sharing the **identical** storage envelope — `base64(nonce(12) || ciphertext || tag(16))` — so a column wrapped by either encryptor decrypts with `decrypt_secret_bytes` (and a 32-byte plaintext round-trips through any combination of the four; test-pinned). `encrypt_private_key` delegates to `encrypt_secret_bytes` internally.
 - Exists for KEK-wrapped secrets that are not 32-byte key scalars — the PDS's escrowed 42-byte Shamir share envelope, and the `rewrap-master-key` sweep which re-wraps every `SecretFamily` column through this pair regardless of plaintext length
 - Same properties as the fixed-length pair: fresh nonce per call, opaque `CryptoError::Decryption` on all failure modes (a truncated storage blob shorter than nonce + tag is refused before decryption)
+
+**`p256_keypair_from_secret`** / **`p256_public_key_from_did_key`**
+
+```rust
+pub fn p256_keypair_from_secret(private_key: &[u8; 32]) -> Result<P256Keypair, CryptoError>
+pub fn p256_public_key_from_did_key(did_key: &str) -> Result<Vec<u8>, CryptoError>
+```
+
+- The two inverses of `keypair_from_secret_key`'s encoding, added for the notification path (an instance stores only its sender *secret* and re-derives the published `did:key`; a device's registered notification key arrives as a `did:key` and must become SEC1 bytes for HPKE).
+- `p256_keypair_from_secret` lets a caller that persists only the secret re-derive the `did:key` on demand — one stored secret cannot disagree with a public key that was never stored separately. Errors on a scalar that is zero or ≥ the curve order.
+- `p256_public_key_from_did_key` validates **every layer** — URI prefix, multibase alphabet, multicodec prefix, and finally the point against the curve — returning compressed SEC1 bytes. It **rejects a non-P-256 multicodec**, notably secp256k1's `zQ3…` (otherwise a perfectly well-formed did:key in this ecosystem): the notification suite is pinned to DHKEM(P-256), so such a key would otherwise fail deep inside HPKE with an opaque error instead of at the boundary where the caller can say what is wrong.
 
 **`derive_recovery_keypair`**
 ```rust
@@ -425,7 +436,7 @@ pub fn diff_audit_logs(cached: &[AuditEntry], current: &[AuditEntry]) -> Vec<Aud
 ## Dependencies
 
 - **Uses**: hpke (RFC 9180 sealing for notification payloads; 0.13 deliberately, so it resolves onto the workspace's p256 0.13 / aes-gcm 0.10 / hkdf 0.12 rather than forking a second major of each — guard-banned in `deny.toml`), rand_core_os (renamed rand_core 0.9 with `os_rng`, the CSPRNG hpke 0.13 expects), p256 (ECDSA/key generation), k256 (secp256k1 ECDSA — verification only, for ops signed by the reference ecosystem), aes-gcm (AES-256-GCM), multibase (base58btc encoding), rand_core (OS RNG), base64 (storage encoding), zeroize (secret cleanup), ciborium (CBOR serialization for did:plc), data-encoding (base32-lowercase for DIDs; base32 uppercase for share envelopes), sha2 (SHA-256), hkdf (HKDF-SHA256 for recovery-key derivation), serde/serde_json (struct serialization)
-- **Used by**: `crates/pds/` (key generation, did:plc genesis building and verification in POST /v1/dids; sovereign-session canonical proof encoding and dual-curve verification; `crates/pds/src/plc_ops.rs` shares the interop PLC-signing surface's audit-log fetch + service parsing; `routes/sign_plc_operation.rs`/`routes/submit_plc_operation.rs` build/verify rotation ops via `build_did_plc_rotation_op`/`verify_plc_operation`), `apps/identity-wallet/` (external signer genesis op building in DID ceremony; shared sovereign-session encoder for the wallet client)
+- **Used by**: `crates/pds/` (key generation, did:plc genesis building and verification in POST /v1/dids; `seal_notification` + the padding arithmetic for outbound push notifications, with `p256_public_key_from_did_key`/`p256_keypair_from_secret` for the device-key and sender-key encodings; sovereign-session canonical proof encoding and dual-curve verification; `crates/pds/src/plc_ops.rs` shares the interop PLC-signing surface's audit-log fetch + service parsing; `routes/sign_plc_operation.rs`/`routes/submit_plc_operation.rs` build/verify rotation ops via `build_did_plc_rotation_op`/`verify_plc_operation`), `apps/identity-wallet/` (external signer genesis op building in DID ceremony; shared sovereign-session encoder for the wallet client)
 
 ## Invariants
 - Private key bytes are always wrapped in `Zeroizing` -- callers must not copy them into non-zeroizing storage

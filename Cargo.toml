@@ -211,6 +211,7 @@ tempfile = "3"
 common = { path = "crates/common" }
 crypto = { path = "crates/crypto" }
 repo-engine = { path = "crates/repo-engine" }
+notify-relay = { path = "crates/notify-relay" }
 
 # ── Local patches ─────────────────────────────────────────────────────────────
 #

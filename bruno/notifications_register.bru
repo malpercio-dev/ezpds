@@ -1,0 +1,71 @@
+meta {
+  name: Register this device for push notifications (POST /v1/notifications/register)
+  type: http
+  seq: 135
+}
+
+post {
+  url: {{baseUrl}}/v1/notifications/register
+  body: json
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{sessionToken}}
+}
+
+body:json {
+  {
+    "deviceUuid": "8B2F1C4E-6A3D-4F19-9C77-1E5A0D2B7F33",
+    "notificationPublicKey": "did:key:zDnaeoYytsARBq9NiBk1TbJESQcPRy5RPVvdT7FqpjrQtJ5DL",
+    "apnsToken": "740f4707bebcf74f9b7c25d48e3358945f6aa01da5ddb387462c7eaf61bb78ad",
+    "apnsTopic": "org.obsign.identitywallet"
+  }
+}
+
+vars:pre-request {
+  baseUrl: http://localhost:8080
+}
+
+docs {
+  # POST /v1/notifications/register
+
+  Register this device to receive end-to-end-encrypted push notifications. Authenticate with
+  the account's access token (Bearer, or DPoP for an OAuth-bound token).
+
+  Custos cannot push to Apple itself — APNs auth keys are bundle-id-bound, so a self-hosted
+  instance structurally cannot. Instead it hands HPKE-sealed payloads to a **blind courier**
+  relay along with an opaque per-device handle. The relay never sees plaintext, a DID, a
+  handle, or your APNs token in a form it can attribute to you.
+
+  ## Request
+
+  - `deviceUuid` — an app-generated stable identifier for this device. Deliberately *not* the
+    server's `devices.id`: those rows are deleted when the account's DID is promoted, so a
+    registration anchored there would die exactly when the account starts mattering.
+  - `notificationPublicKey` — the device's P-256 `did:key`. Payloads are sealed to it, so only
+    this device can open them. Generated on-device; the private half never leaves it.
+  - `apnsToken` — the APNs device token (hex), from `didRegisterForRemoteNotifications`.
+  - `apnsTopic` — the app's bundle id.
+
+  Re-registering the same `deviceUuid` replaces the row, so call this on every APNs token
+  change without accumulating stale registrations.
+
+  ## Response (200)
+
+  ```json
+  { "status": "pending" }
+  ```
+
+  Always `"pending"`: the row is stored and the relay handle is minted in the background.
+  Registration deliberately does not wait on the relay — this is one of the first calls the app
+  makes after promotion, and a push relay's uptime does not belong in the onboarding critical
+  path for a feature whose whole failure mode is a missed banner.
+
+  ## Errors
+
+  - `400` — bad `deviceUuid`, a `notificationPublicKey` that is not a P-256 `did:key`, a
+    non-hex `apnsToken`, or an `apnsTopic` that is not a bundle identifier
+  - `401` — missing/invalid access token
+  - `501` — this instance has no `[notifications] relay` configured (push is unavailable here)
+}

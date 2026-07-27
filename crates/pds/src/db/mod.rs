@@ -18,6 +18,7 @@ pub mod iroh_identity;
 pub mod jwt_secret;
 pub mod kek;
 mod migrations;
+pub mod notifications;
 pub mod oauth;
 pub mod password_reset;
 pub mod pending_oauth_authorizations;

@@ -53,6 +53,48 @@ pub fn generate_p256_keypair() -> Result<P256Keypair, CryptoError> {
     Ok(keypair_from_secret_key(&SecretKey::random(&mut OsRng)))
 }
 
+/// Rebuild a [`P256Keypair`] from a stored 32-byte private scalar.
+///
+/// Lets a caller that persists only the secret re-derive the `did:key` on demand rather than
+/// storing the public half beside it — one stored secret cannot disagree with a public key
+/// that was never stored separately.
+///
+/// Errors when the bytes are not a valid scalar (zero, or ≥ the curve order).
+pub fn p256_keypair_from_secret(private_key: &[u8; 32]) -> Result<P256Keypair, CryptoError> {
+    let secret_key = SecretKey::from_slice(private_key)
+        .map_err(|_| CryptoError::KeyGeneration("invalid P-256 private key".to_string()))?;
+    Ok(keypair_from_secret_key(&secret_key))
+}
+
+/// Decode a P-256 `did:key:z…` URI to its compressed SEC1 public-key bytes.
+///
+/// The inverse of the encoding in [`keypair_from_secret_key`]. Every layer is validated —
+/// the URI prefix, the multibase alphabet, the multicodec prefix, and finally the point
+/// itself against the curve — so a caller receives either a genuine P-256 public key or an
+/// error, never bytes that merely look like one.
+///
+/// Rejecting a non-P-256 multicodec (notably secp256k1's `zQ3…`, which is otherwise a
+/// perfectly well-formed did:key in this ecosystem) matters: the notification suite is pinned
+/// to DHKEM(P-256), so a secp256k1 key would fail deep inside HPKE with an opaque error
+/// instead of at the boundary where the caller can say what is wrong.
+pub fn p256_public_key_from_did_key(did_key: &str) -> Result<Vec<u8>, CryptoError> {
+    let invalid = |why: &str| CryptoError::KeyGeneration(format!("invalid P-256 did:key: {why}"));
+
+    let multibase_part = did_key
+        .strip_prefix("did:key:")
+        .ok_or_else(|| invalid("missing the did:key: prefix"))?;
+    let (_, multikey) =
+        multibase::decode(multibase_part).map_err(|_| invalid("not valid multibase"))?;
+    let key_bytes = multikey
+        .strip_prefix(P256_MULTICODEC_PREFIX)
+        .ok_or_else(|| invalid("not a P-256 multicodec key"))?;
+
+    // A validating decode, not a reformat: `p256` rejects off-curve and identity points.
+    let public_key =
+        p256::PublicKey::from_sec1_bytes(key_bytes).map_err(|_| invalid("not a curve point"))?;
+    Ok(public_key.to_encoded_point(true).as_bytes().to_vec())
+}
+
 /// Build the public [`P256Keypair`] representation (did:key URI, multibase public key, and
 /// zeroized private scalar) from a P-256 `SecretKey`. Shared by [`generate_p256_keypair`] and
 /// [`derive_recovery_keypair`] so both emit byte-identical did:key encodings.
@@ -254,6 +296,45 @@ pub fn decrypt_private_key(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_did_key_round_trips_back_to_its_compressed_point() {
+        let keypair = generate_p256_keypair().unwrap();
+        let decoded = p256_public_key_from_did_key(&keypair.key_id.0).unwrap();
+
+        assert_eq!(decoded.len(), 33, "compressed SEC1 is 33 bytes");
+        let (_, expected) = multibase::decode(&keypair.public_key).unwrap();
+        assert_eq!(decoded, expected);
+    }
+
+    #[test]
+    fn malformed_did_keys_are_rejected_by_layer() {
+        let keypair = generate_p256_keypair().unwrap();
+        let multibase_part = keypair.key_id.0.strip_prefix("did:key:").unwrap();
+
+        // Missing prefix, bad multibase, and a valid-multibase-but-wrong-multicodec key.
+        assert!(p256_public_key_from_did_key(multibase_part).is_err());
+        assert!(p256_public_key_from_did_key("did:key:z!!!not-base58!!!").is_err());
+
+        let secp256k1 = multibase::encode(
+            Base::Base58Btc,
+            [SECP256K1_MULTICODEC_PREFIX, &[0x02; 33]].concat(),
+        );
+        let err = p256_public_key_from_did_key(&format!("did:key:{secp256k1}")).unwrap_err();
+        assert!(
+            err.to_string().contains("multicodec"),
+            "a secp256k1 did:key must be refused at the boundary, not inside HPKE: {err}"
+        );
+
+        // Right multicodec, but the x-coordinate is larger than the field modulus, so it
+        // names no point at all. (A merely arbitrary x is a poor negative case — roughly half
+        // of them are genuine curve points.)
+        let off_curve = multibase::encode(
+            Base::Base58Btc,
+            [P256_MULTICODEC_PREFIX, &[0x02], &[0xff; 32][..]].concat(),
+        );
+        assert!(p256_public_key_from_did_key(&format!("did:key:{off_curve}")).is_err());
+    }
 
     #[test]
     fn generate_keypair_produces_valid_did_key() {

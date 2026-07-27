@@ -26,7 +26,8 @@ src/
   main.rs        — CLI (serve, `mint-code --ttl`), config load, store open, endpoint bind, accept loop, shutdown
   config.rs      — TOML + `EZPDS_NOTIFY_*` env overlay, validated once into an immutable `Config`
   identity.rs    — the persistent iroh node secret key file (64 hex chars, created 0600, refused if wider)
-  protocol.rs    — the `ezpds/notify/0` wire types: `Request`/`Response`/`PushOutcome`, the ALPN, the 64 KiB cap
+  lib.rs         — the library target. Every module below is `pub` here and the binary is a thin startup shell over them, because two other things need this code: the Custos sender shares `protocol` (a wire mismatch becomes a compile error instead of a `badRequest` in production), and the workspace's loopback end-to-end test (`crates/pds/src/notify_e2e_test.rs`) drives a *real* relay in-process — real accept loop, real store, real APNs client — rather than a stub. Module privacy is not what protects the relay: an instance reaches it over QUIC and every authorization decision is made from the verified `connection.remote_id()`
+  protocol.rs    — the `ezpds/notify/0` wire types: `Request`/`Response`/`PushOutcome`, the ALPN, the 64 KiB cap, and `apns_envelope` — the APNs body builder. That last one lives in the *protocol* rather than in `apns.rs` because the **sender** needs it too: the padding buckets are defined on this body's serialized length, so Custos must model exactly the bytes the relay will emit. Two copies of that shape would mean padding arithmetic that silently misses its bucket — the exact leak padding exists to prevent
   transport.rs   — iroh endpoint bind + accept loop; one JSON RPC per bidi stream, FIN-delimited, 30 s deadline
   service.rs     — RPC dispatch: the authorization order and the cross-table enrollment transaction
   rate_limit.rs  — in-memory token buckets (registration + per-node push + per-handle push budgets)
