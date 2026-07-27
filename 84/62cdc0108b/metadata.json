@@ -1,0 +1,29 @@
+{
+  "cli_version": "0.8.42",
+  "checkpoint_id": "8462cdc0108b",
+  "strategy": "manual-commit",
+  "branch": "claude/passwordless-signup-flow-67eb14",
+  "checkpoints_count": 1,
+  "files_touched": [
+    "changelog.d/mm-481.added.md",
+    "crates/pds/src/auth/password.rs",
+    "crates/pds/src/routes/create_account_xrpc.rs",
+    "crates/pds/src/routes/create_did.rs"
+  ],
+  "sessions": [
+    {
+      "metadata": "/84/62cdc0108b/0/metadata.json",
+      "transcript": "/84/62cdc0108b/0/full.jsonl",
+      "compact_transcript": "/84/62cdc0108b/0/transcript.jsonl",
+      "content_hash": "/84/62cdc0108b/0/content_hash.txt",
+      "prompt": "/84/62cdc0108b/0/prompt.txt"
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 49,
+    "cache_creation_tokens": 26708,
+    "cache_read_tokens": 12262521,
+    "output_tokens": 15199,
+    "api_call_count": 26
+  }
+}
