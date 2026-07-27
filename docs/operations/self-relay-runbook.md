@@ -2,27 +2,30 @@
 
 **Last verified:** 2026-07-27
 
-APNs auth keys are bound to a bundle id, so a self-hosted Custos instance cannot push to
-an iOS app itself. A relay is structurally required. This runbook takes an operator from
-nothing to a working relay of their own — and explains, honestly, where that stops short.
+Pushing to an iOS app requires an APNs auth key belonging to the Apple developer team that
+owns that app's bundle id. A self-hosted Custos instance has no such key for someone else's
+app, so it cannot push directly and a relay is structurally required. This runbook takes an
+operator from nothing to a working relay of their own — and explains, honestly, where that
+stops short.
 
-Architecture: [`docs/design-plans/2026-07-10-notification-relay.md`](../design-plans/2026-07-10-notification-relay.md).
 Crate internals: [`crates/notify-relay/AGENTS.md`](../../crates/notify-relay/AGENTS.md).
 Deploying the whole stack: [`docs/deploy.md`](../deploy.md).
 
 ## Read this first: what a self-run relay can and cannot reach
 
-A relay can only push to an app whose APNs key it holds, and Apple issues that key to the
-app's own developer account. So:
+A relay can only push to an app whose bundle id its Apple team owns. A token-auth key is
+team-scoped — one key can serve every topic under your team (or a chosen subset, if you
+created a topic-specific key) — but no key of yours authenticates a bundle id registered to
+somebody else's team. So:
 
 | You want to push to… | Works with your own relay? |
 |---|---|
 | Your own build of the wallet (your bundle id, your APNs key) | **Yes** — the whole path is yours. |
 | A sandbox topic for testing (your bundle id, development build) | **Yes** — set `apns.sandbox = true`. |
-| The official Obsign / admin-companion apps from the App Store | **No** — those bundle ids need the official relay's key. |
+| The official Obsign / admin-companion apps from the App Store | **No** — those bundle ids belong to another team, so only the official relay's key authenticates them. |
 
-That is not a limitation of the design so much as a fact about Apple's provider API, and
-it is why the official relay exists and why it is built as a **blind courier**. Payloads
+That is a fact about Apple's provider API rather than a choice this project made, and it is
+why the official relay exists and why it is built as a **blind courier**. Payloads
 arrive HPKE-sealed to a per-device key; the relay decrypts nothing, stores no DID, handle,
 or account data, and holds no key material belonging to any instance or device. Concretely:
 
@@ -34,7 +37,7 @@ or account data, and holds no key material belonging to any instance or device. 
   (HPKE Auth mode binds ciphertext to the instance's pinned sender key), or correlate a
   handle back to a person. It *can* drop, delay, or replay pushes, and it can emit junk
   that renders as the explicitly-marked unverified notice — availability failures and
-  detectable spam, not impersonation. See the design doc's Trust model.
+  detectable spam, not impersonation.
 
 If you run your own relay, you hold all of that for your own users, and you are the only
 party who can.
@@ -85,7 +88,7 @@ cargo run -p notify-relay
 
 It prints the line that matters:
 
-```
+```text
 notify-relay node id: <64 hex characters>
 ```
 
@@ -115,7 +118,7 @@ ceremony mirrors admin-device pairing, and in v1 it is deliberately manual.
 notify-relay mint-code --ttl 24h
 ```
 
-```
+```text
 enrollment code: A3F9KD-8HZQ2M-XR4TVN-9WEB6C
 expires at:      2026-07-28 18:04:11 UTC
 single use — the first node to redeem it is enrolled, and it cannot be reused
@@ -142,9 +145,11 @@ EZPDS_NOTIFICATIONS_RELAY=<node id>
 EZPDS_NOTIFICATIONS_ENROLLMENT_CODE=A3F9KD-8HZQ2M-XR4TVN-9WEB6C
 ```
 
-The code is consumed on the first successful enroll. Leaving it configured afterwards is
-harmless — enrollment is idempotent for a node that is already enrolled — and it means a
-relay that lost its database can be re-enrolled by a plain restart.
+The code is consumed on the first successful enroll. Leaving it configured afterward is
+harmless — enrollment is idempotent for a node that is already enrolled — but it is not a
+recovery mechanism: if the relay loses its database, the code goes with it, and the
+instance's stored copy is then an unknown code that answers `denied`. Recovering from that
+means minting fresh codes (see below).
 
 **Refusals are shape-uniform on purpose.** An unknown code, a spent one, an expired one,
 and an enroll with no code at all all answer `denied`. That is not an unhelpful error
@@ -217,7 +222,7 @@ docker run --rm -v relay-data:/data notify-relay mint-code --ttl 24h
 
 ### On Railway
 
-The official relay runs as a fourth Railway service beside the PDS, the docs site, and the
+The official relay runs as a separate Railway service beside the PDS, the sites, and the
 MCP sidecar. See [`docs/deploy.md`](../deploy.md) → "Notification relay" for the service
 settings; the two that are easy to get wrong:
 
@@ -228,9 +233,9 @@ settings; the two that are easy to get wrong:
   there is nothing to route to and nothing to probe. Liveness is the process plus the
   restart policy; the startup log line is the readiness signal.
 
-There is deliberately no Litestream sidecar here. Relay state is re-derivable by
-re-enrollment, which is the design's stated posture on relay state loss — so a volume is a
-convenience, and the node secret key is the only thing worth backing up.
+There is deliberately no Litestream sidecar here. Everything in the relay's database is
+rebuilt when instances re-enroll and devices re-register, so a volume is a convenience that
+saves that round of re-enrollment — the node secret key is the only thing worth backing up.
 
 ## 5. Ongoing operations
 
@@ -245,8 +250,11 @@ Nothing at the old relay decrypts anything anyway, so the migration leaks nothin
 tell the old relay's operator, since the stale handles there will keep receiving pushes
 until they are dropped.
 
-**Losing the relay's database.** Instances re-enroll and devices re-register on their next
-contact; no user data is at stake. Losing the *node secret key* is the one unrecoverable
+**Losing the relay's database.** No user data is at stake, but recovery is not automatic:
+the enrollment codes are gone too, so every instance's stored code now reads as unknown.
+Mint a fresh code per instance and have each operator set it before restarting — then
+instances re-enroll and devices re-register on their next contact. (On a relay running
+`open_enrollment`, this really is a plain restart.) Losing the *node secret key* is the one unrecoverable
 case, and it is unrecoverable in a quiet way: the relay comes up healthy on a new identity
 and simply never hears from anyone again. If it happens, generate the new identity, publish
 the new node id, and have every instance operator update their config.

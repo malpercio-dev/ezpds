@@ -408,10 +408,11 @@ curl -s localhost:8080/.well-known/oauth-protected-resource   # names Custos as 
 
 ## Notification relay
 
-The notification relay (`crates/notify-relay/`) deploys as a **fourth Railway service in the
-same project**: the blind courier that carries HPKE-sealed push payloads from self-hosted
-Custos instances to APNs, because Apple's auth keys are bundle-id-bound and an instance
-structurally cannot push for itself. It shares nothing with the PDS at runtime — its own
+The notification relay (`crates/notify-relay/`) deploys as a **separate Railway service in
+the same project**: the blind courier that carries HPKE-sealed push payloads from
+self-hosted Custos instances to APNs. Pushing to an app requires a token-auth key belonging
+to the Apple team that owns its bundle id, so a self-hosted instance structurally cannot
+push to the official apps for itself. It shares nothing with the PDS at runtime — its own
 binary, its own SQLite database, its own iroh identity — and it never sees notification
 plaintext or any key material belonging to an instance or a device.
 
@@ -449,8 +450,10 @@ for the Railway wiring:
 ### Volume and secrets
 
 A volume at `/data` holds the SQLite database and the node secret key. The database is
-**disposable**: every row is re-derivable by re-enrollment, which is why there is no
-Litestream sidecar here — the design doc's Key lifecycle already accepts relay state loss.
+**disposable**: every row is rebuilt when instances re-enroll and devices re-register,
+which is why there is no Litestream sidecar here. Losing it is not free, though — enrollment
+codes go with it, so each instance needs a freshly minted code before it can re-enroll
+(unless the relay runs `open_enrollment`).
 
 The **node secret key is not disposable**: it is the relay's address, pinned by every
 enrolled instance as `[notifications] relay = "<node id>"`. Losing it fails quietly — the

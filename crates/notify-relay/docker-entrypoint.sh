@@ -3,13 +3,17 @@
 # reads as FILES from environment variables the platform holds, then drop to the relay user.
 #
 # Why materialize at all: the relay takes its node secret key and its APNs .p8 as file
-# paths, but Railway (and most PaaS) hand out secrets as environment variables, not as
-# mounted files. Rather than teach the config layer a second delivery mechanism for each
-# secret, the container translates once, here, at the platform seam.
+# paths, while most hosting platforms hand out secrets as environment variables rather than
+# as mounted files. Rather than teach the config layer a second delivery mechanism for each
+# secret, the container translates once, here, at the platform seam. An operator who can
+# mount real files needs none of this — leave the variables unset and the paths win.
 set -e
 
+# Recursive: a fresh volume mount is root-owned, but so are the CONTENTS of a volume
+# restored from a backup or populated by an earlier root-run container. Chowning only the
+# directory would leave the relay unable to open its own database as the `relay` user.
 mkdir -p /data
-chown relay:relay /data
+chown -R relay:relay /data
 
 # The node secret key IS the relay's address: every enrolled instance has it pinned as
 # `[notifications] relay = "<node id>"`. The relay will happily generate a fresh one if the
@@ -50,6 +54,13 @@ if [ -n "${EZPDS_NOTIFY_APNS_KEY_P8:-}" ]; then
   export EZPDS_NOTIFY_APNS_KEY_PATH="${EZPDS_NOTIFY_APNS_KEY_PATH:-/run/notify-relay/apns.p8}"
 fi
 
-# `mint-code` and any other subcommand pass through, so `railway run` / `docker run <image>
-# mint-code --ttl 24h` reaches the same binary with the same config.
+# Both secrets now live in files the relay reads directly, so drop them from the
+# environment the relay inherits: a value in /proc/<pid>/environ is readable by anything
+# that can inspect the process and shows up in crash dumps and debug shells, which is a
+# strictly wider exposure than a 0600 file the relay opens once.
+unset EZPDS_NOTIFY_NODE_SECRET
+unset EZPDS_NOTIFY_APNS_KEY_P8
+
+# `mint-code` and any other subcommand pass through, so `docker run <image> mint-code
+# --ttl 24h` reaches the same binary with the same config.
 exec gosu relay /usr/local/bin/notify-relay "$@"
