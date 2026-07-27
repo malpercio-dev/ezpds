@@ -277,7 +277,7 @@ pub async fn purge_account(state: &AppState, did: &str) -> Result<PurgeOutcome, 
     // whose purge then rolled back would strand still-registered devices.
     if let Some(sender) = state.notify_sender.as_ref() {
         for handle in push_handles {
-            let _ = sender.send(crate::notify_relay_client::NotifyJob::DropHandle { handle });
+            sender.send(crate::notify_relay_client::NotifyJob::DropHandle { handle });
         }
     }
 

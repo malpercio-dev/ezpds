@@ -107,7 +107,7 @@ pub async fn register_admin_notifications(
     }
 
     if let Some(sender) = state.notify_sender.as_ref() {
-        let _ = sender.send(NotifyJob::RegisterHandle {
+        sender.send(NotifyJob::RegisterHandle {
             owner: RegistrationOwner::AdminDevice {
                 admin_device_id: device_id,
             },

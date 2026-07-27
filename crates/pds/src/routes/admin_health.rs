@@ -35,6 +35,14 @@ pub struct HealthResponse {
     storage: StorageCounts,
     firehose: FirehoseState,
     sweeps: SweepStates,
+    /// Notification jobs outstanding on the send worker's queue, counting the one in flight —
+    /// `null` when no relay is configured, which is a different fact from an empty queue.
+    ///
+    /// The queue is unbounded on purpose (a trigger must never block on a push relay), so this
+    /// is the number that grows without limit during a relay outage. Expect 0; a value that
+    /// stays high is the outage made legible, and the evidence for deciding whether the queue
+    /// should gain a drop-oldest cap.
+    notify_queue_depth: Option<i64>,
 }
 
 /// Derived-lifecycle buckets (takendown > suspended > deactivated precedence, matching the
@@ -240,6 +248,7 @@ pub async fn admin_health(
             admin_nonce_sweep: sweeps.admin_nonce_sweep.map(SweepState::from),
             labeler_watch: sweeps.labeler_watch.map(SweepState::from),
         },
+        notify_queue_depth: state.notify_sender.as_ref().map(|s| s.depth()),
     }))
 }
 
@@ -322,6 +331,9 @@ mod tests {
         assert_eq!(json["sweeps"]["agentClaimSweep"], serde_json::Value::Null);
         assert_eq!(json["sweeps"]["adminNonceSweep"], serde_json::Value::Null);
         assert_eq!(json["sweeps"]["labelerWatch"], serde_json::Value::Null);
+        // No relay configured in the test state — `null`, not `0`: an operator must be able to
+        // tell an unconfigured feature from an idle one.
+        assert_eq!(json["notifyQueueDepth"], serde_json::Value::Null);
     }
 
     /// The server-wide half of the integrity readout: a physical row nobody owns. `blobCount`

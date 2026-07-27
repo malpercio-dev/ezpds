@@ -121,8 +121,11 @@ async fn start_pds(relay_addr: EndpointAddr) -> (AppState, Endpoint) {
     let dialer = loopback_endpoint(false).await;
     let client =
         crate::notify_relay_client::NotifyRelayClient::with_addr(dialer.clone(), relay_addr, None);
-    let (sender, _worker) =
-        crate::notify_relay_client::spawn_worker(Arc::new(client), state.db.clone());
+    let (sender, _worker) = crate::notify_relay_client::spawn_worker(
+        Arc::new(client),
+        state.db.clone(),
+        state.metrics.clone(),
+    );
     state.notify_sender = Some(sender);
 
     sqlx::query(

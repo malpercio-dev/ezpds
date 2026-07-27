@@ -442,6 +442,19 @@ async fn run() -> anyhow::Result<()> {
         None
     };
 
+    // Build the metrics pipeline from config before `config` is moved into the AppState's Arc,
+    // and before the subsystems that record through it (notify worker, crawler, firehose) are
+    // constructed. A broken exporter is fatal here rather than failing every scrape at runtime.
+    let metrics = Arc::new(if config.telemetry.metrics_enabled {
+        let m = metrics::Metrics::new(&config.telemetry.service_name)
+            .with_context(|| "failed to build metrics pipeline")?;
+        tracing::info!("metrics enabled: serving Prometheus exposition at /metrics");
+        m
+    } else {
+        tracing::info!("metrics disabled: /metrics is not registered");
+        metrics::Metrics::disabled()
+    });
+
     // The notification relay's outbound leg. Dials from the same endpoint the tunnel accepts
     // on, so the instance presents one node identity — which is precisely the identity the
     // relay authorizes. Config validation already refused a relay without `[iroh] enabled`,
@@ -463,7 +476,7 @@ async fn run() -> anyhow::Result<()> {
             )
             .with_context(|| "failed to build the notification relay client")?;
             let (sender, _worker) =
-                notify_relay_client::spawn_worker(Arc::new(client), pool.clone());
+                notify_relay_client::spawn_worker(Arc::new(client), pool.clone(), metrics.clone());
             tracing::info!(relay = %relay_node_id, "notification relay client started");
             Some(sender)
         }
@@ -472,19 +485,6 @@ async fn run() -> anyhow::Result<()> {
         }
         (None, _) => None,
     };
-
-    // Build the metrics pipeline from config before `config` is moved into the AppState's Arc,
-    // and before the subsystems that record through it (crawler, firehose) are constructed.
-    // A broken exporter is fatal here rather than failing every scrape at runtime.
-    let metrics = Arc::new(if config.telemetry.metrics_enabled {
-        let m = metrics::Metrics::new(&config.telemetry.service_name)
-            .with_context(|| "failed to build metrics pipeline")?;
-        tracing::info!("metrics enabled: serving Prometheus exposition at /metrics");
-        m
-    } else {
-        tracing::info!("metrics disabled: /metrics is not registered");
-        metrics::Metrics::disabled()
-    });
 
     // Crawler notifier: after each commit, ping the configured relays/BGSes via requestCrawl.
     // The hostname advertised to crawlers is derived from the relay's public URL.
