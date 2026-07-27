@@ -123,9 +123,10 @@ pub async fn create_did_handler(
             )
         })?;
 
-    // Settle the account's password disposition before doing any expensive work, so a rejected
-    // request costs nothing and a passwordless one never reaches argon2.
-    let password_disposition = resolve_password(
+    // Settle the account's password policy before doing any other work, so a request that will be
+    // refused over it is refused now. The argon2 hash this plans for is deliberately deferred to
+    // Phase 4 — see `PasswordPlan::hash`.
+    let password_plan = resolve_password(
         payload.password.as_deref(),
         state.config.accounts.password_optional,
     )?;
@@ -334,10 +335,11 @@ pub async fn create_did_handler(
         mark_plc_registered(&state.db, &session.account_id).await?;
     }
 
-    // Phase 4: Build DID document, generate session, atomically promote. The password was
-    // resolved (and hashed, when there is one) up front, before any of the work above.
+    // Phase 4: Build DID document, generate session, hash the password, atomically promote. The
+    // policy was settled up front; the hash happens only here, once every cheap check above has
+    // passed, so a doomed request never pays for argon2.
     let session_token = generate_token();
-    let password_hash = password_disposition.as_column();
+    let password_hash = password_plan.hash()?;
     let deposit = match &custody {
         ShareCustody::ClientEscrow { envelope } => {
             // KEK-wrap the deposited envelope exactly as PUT /v1/recovery/escrow-share
@@ -364,7 +366,7 @@ pub async fn create_did_handler(
         &did_document,
         &session_token.hash,
         &deposit,
-        password_hash,
+        password_hash.as_deref(),
         &repo_key,
         &genesis_root_str,
         &genesis_rev,

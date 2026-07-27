@@ -111,8 +111,10 @@ async fn create_account_new(
     // is normalized (trim + lowercase) so it matches the reference PDS's storage/lookup behavior.
     let email = crate::uniqueness::normalize_email(require_email(payload)?);
     // Shared with the native `/v1/dids` ceremony so the two creation paths cannot diverge on
-    // whether a password is required, or on what an empty string means.
-    let password_disposition = resolve_password(
+    // whether a password is required, or on what an empty string means. Cheap by construction —
+    // the argon2 hash waits until every local check below has passed, because this endpoint is
+    // unauthenticated and bounded only by a per-IP rate limit.
+    let password_plan = resolve_password(
         payload.password.as_deref(),
         state.config.accounts.password_optional,
     )?;
@@ -232,6 +234,9 @@ async fn create_account_new(
     .await?;
 
     let did_document = crate::identity::genesis::build_did_document(&verified)?;
+    // Only now, with the handle validated and the genesis op verified, is the argon2 hash worth
+    // paying for — the same point in the flow it occupied before the policy split.
+    let password_hash = password_plan.hash()?;
 
     let session = promote_new_account(
         state,
@@ -239,7 +244,7 @@ async fn create_account_new(
             did: &did,
             email: &email,
             handle: &payload.handle,
-            password_hash: password_disposition.as_column(),
+            password_hash: password_hash.as_deref(),
             did_document: &did_document,
             repo_key: &repo_key,
             genesis_root: &genesis_root_str,

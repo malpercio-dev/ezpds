@@ -52,23 +52,32 @@ pub(crate) fn hash_password(password: &str) -> Result<String, ApiError> {
         })
 }
 
-/// What a newly created account's `accounts.password_hash` column becomes — resolved from the
-/// request shape and the operator's policy before any state is written.
-pub(crate) enum PasswordDisposition {
-    /// Store this argon2id PHC string. The account can `createSession` with a password.
-    Hashed(String),
+/// What a newly created account's `accounts.password_hash` column will become — decided from the
+/// request shape and the operator's policy, before any state is written and before any hashing.
+pub(crate) enum PasswordPlan<'a> {
+    /// Hash this password and store the PHC string. The account can `createSession` with it.
+    Hash(&'a str),
     /// Store NULL. The account authenticates through the device-key paths (wallet-confirmed
     /// OAuth consent, sovereign sessions) and through app passwords for standard clients — the
     /// same column state migration-mode `createAccount` has always written for OAuth-only accounts.
     None,
 }
 
-impl PasswordDisposition {
-    /// The value to bind to `accounts.password_hash`.
-    pub(crate) fn as_column(&self) -> Option<&str> {
+impl PasswordPlan<'_> {
+    /// Perform the argon2id hash this plan calls for, yielding the value to bind to
+    /// `accounts.password_hash`.
+    ///
+    /// Deliberately separate from [`resolve_password`], and deliberately called late. argon2 is
+    /// *designed* to be slow, so a request must first clear the cheap local checks — handle
+    /// syntax, genesis-op signature verification — before it can spend that CPU. Folding the hash
+    /// into the policy decision would let an unauthenticated caller burn it with a throwaway
+    /// password and an otherwise-garbage body, which the public `createAccount` endpoint bounds
+    /// only by a per-IP rate limit. Splitting the two keeps the cheap rejection early *and* the
+    /// expensive work late; moving the whole decision late would have sacrificed the former.
+    pub(crate) fn hash(&self) -> Result<Option<String>, ApiError> {
         match self {
-            Self::Hashed(hash) => Some(hash.as_str()),
-            Self::None => None,
+            Self::Hash(password) => hash_password(password).map(Some),
+            Self::None => Ok(None),
         }
     }
 }
@@ -77,7 +86,8 @@ impl PasswordDisposition {
 /// the field was omitted entirely) and whether the operator allows passwordless accounts
 /// (`accounts.password_optional`, advertised as the `optionalPassword` capability).
 ///
-/// Returning `Err` refuses the request outright — nothing is written.
+/// Returning `Err` refuses the request outright — nothing is written. This is cheap by design
+/// (no hashing); [`PasswordPlan::hash`] carries the expensive half and runs later.
 ///
 /// The empty string is deliberately not a way to ask for a passwordless account: `""` is what an
 /// uninitialized form field serializes to, so honoring it would let a client bug silently produce
@@ -90,7 +100,7 @@ impl PasswordDisposition {
 pub(crate) fn resolve_password(
     supplied: Option<&str>,
     password_optional: bool,
-) -> Result<PasswordDisposition, ApiError> {
+) -> Result<PasswordPlan<'_>, ApiError> {
     match supplied {
         // argon2 happily hashes "", so without this the PDS would store a zero-length password.
         // Refused under both policies: it is indistinguishable from an uninitialized field, and
@@ -99,8 +109,8 @@ pub(crate) fn resolve_password(
             ErrorCode::InvalidClaim,
             "password must not be empty; omit the field entirely to create a passwordless account",
         )),
-        Some(password) => Ok(PasswordDisposition::Hashed(hash_password(password)?)),
-        None if password_optional => Ok(PasswordDisposition::None),
+        Some(password) => Ok(PasswordPlan::Hash(password)),
+        None if password_optional => Ok(PasswordPlan::None),
         // Named separately from the empty-string case: the client sent no password at all, and
         // telling it "must not be empty" would send it looking for a bug it does not have.
         None => Err(ApiError::new(
@@ -146,10 +156,11 @@ mod tests {
     #[test]
     fn supplied_password_is_hashed_under_either_policy() {
         for password_optional in [false, true] {
-            let disposition = resolve_password(Some("hunter2hunter2"), password_optional)
+            let plan = resolve_password(Some("hunter2hunter2"), password_optional)
                 .expect("a supplied password is always accepted");
-            let hash = disposition
-                .as_column()
+            let hashed = plan.hash().expect("hashing a supplied password succeeds");
+            let hash = hashed
+                .as_deref()
                 .expect("a supplied password yields a stored hash");
             assert!(
                 hash.starts_with("$argon2id$"),
@@ -186,7 +197,10 @@ mod tests {
         let allowed =
             resolve_password(None, true).expect("omission is accepted when passwords are optional");
         assert!(
-            allowed.as_column().is_none(),
+            allowed
+                .hash()
+                .expect("planning no password cannot fail")
+                .is_none(),
             "a passwordless account stores NULL, not a hash of nothing"
         );
 
