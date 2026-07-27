@@ -908,6 +908,7 @@
 
   {:else if step === 'protection'}
     <ProtectionScreen
+      takeover={alarmTakeover}
       onback={() => goTo('home')}
       onselect={(did, didDoc, deviceKeyIsRoot, deviceKeyUnusable) => {
         selectedDid = did;
