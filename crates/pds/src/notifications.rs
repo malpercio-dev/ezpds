@@ -326,7 +326,7 @@ pub async fn published_sender_keys(state: &AppState) -> Result<Vec<(i64, String)
         rows = store::list_publishable_sender_keys(&state.db).await?;
     }
 
-    Ok(rows
+    let keys: Vec<(i64, String)> = rows
         .into_iter()
         .filter_map(|row| {
             // An individual row that will not unwrap is skipped rather than fatal: it is a
@@ -345,7 +345,17 @@ pub async fn published_sender_keys(state: &AppState) -> Result<Vec<(i64, String)
             let keypair = crypto::p256_keypair_from_secret(&secret).ok()?;
             Some((row.kid, keypair.key_id.0))
         })
-        .collect())
+        .collect();
+
+    // One invariant at the exit rather than a guard per failure path: **never publish an empty
+    // set**. Several routes lead here — lazy generation failed, every stored key is unusable,
+    // or some future path — and they all end the same way for a client, which pins nothing and
+    // then cannot verify a single notification it receives. Checking the result instead of each
+    // cause means a new failure mode is covered the day it appears.
+    if keys.is_empty() {
+        return Err(SenderKeyError::NoUsableKey);
+    }
+    Ok(keys)
 }
 
 /// Why the published sender-key set could not be produced.
@@ -353,6 +363,11 @@ pub async fn published_sender_keys(state: &AppState) -> Result<Vec<(i64, String)
 pub enum SenderKeyError {
     #[error("notifications are configured but no signing-key master key is set")]
     NoMasterKey,
+    /// A key could neither be minted nor unwrapped. Distinct from [`Self::NoMasterKey`] because
+    /// the operator fix differs: the master key is present, so this is a generation failure or
+    /// key material that no longer decrypts under it (both already logged with their cause).
+    #[error("no usable notification sender key could be produced")]
+    NoUsableKey,
     #[error(transparent)]
     Db(#[from] sqlx::Error),
 }

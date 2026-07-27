@@ -44,6 +44,7 @@ docs {
 
   - `401` / `403` — missing/invalid admin credential
   - `501` — this instance has no `[notifications] relay` configured
-  - `503` — a relay is configured but no signing-key master key is set (see the account-surface
-    route's note: an error, deliberately, rather than an empty set)
+  - `503` — a relay is configured but no usable sender key can be served (no master key, or
+    stored key material that will not decrypt under it — see the account-surface route's note:
+    an error, deliberately, rather than an empty set)
 }

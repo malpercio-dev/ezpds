@@ -57,7 +57,9 @@ docs {
 
   - `401` — missing/invalid access token
   - `501` — this instance has no `[notifications] relay` configured
-  - `503` — a relay *is* configured but no signing-key master key is set, so the instance can
-    neither mint nor unwrap its sender keys. Deliberately an error rather than an empty set: a
-    client that pinned nothing would fail to verify every notification it later received
+  - `503` — a relay *is* configured but no usable sender key can be served: either no
+    signing-key master key is set, or the stored key material will not decrypt under it (a
+    backup restored across a KEK rotation, say). Deliberately an error rather than an empty
+    set — a client that pinned nothing would fail to verify every notification it later
+    received, with nothing to tell it why. This response never carries a `keys` array
 }

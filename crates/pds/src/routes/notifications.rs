@@ -545,6 +545,41 @@ mod tests {
         );
     }
 
+    /// The other route to an empty set: the master key is present, but the stored key material
+    /// will not decrypt under it (a restored backup wrapped under a previous KEK, say). The
+    /// client must be told, not handed an empty array it would pin as authoritative.
+    #[tokio::test]
+    async fn a_stored_key_that_will_not_unwrap_is_reported_rather_than_silently_dropped() {
+        let state = state_with_notifications().await;
+        seed_account(&state, "did:plc:notifroutes").await;
+
+        // Ciphertext that is well-formed base64 but not decryptable under this master key —
+        // exactly what a KEK mismatch leaves behind.
+        store::insert_sender_key(&state.db, "bm90LWEtcmVhbC1jaXBoZXJ0ZXh0LWF0LWFsbA")
+            .await
+            .unwrap();
+
+        let auth = format!("Bearer {}", token(&state, "did:plc:notifroutes"));
+        let (status, body) = call(
+            state.clone(),
+            Request::get("/v1/notifications/sender-keys")
+                .header("authorization", auth)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+
+        assert_eq!(
+            status,
+            StatusCode::SERVICE_UNAVAILABLE,
+            "an unusable key set must not be served as an empty one: {body}"
+        );
+        assert!(
+            body["keys"].is_null(),
+            "no key array should be returned: {body}"
+        );
+    }
+
     /// An app that fetches the set before the instance has ever sent anything must still get
     /// a key to pin — otherwise it cannot verify the very first notification it receives.
     #[tokio::test]

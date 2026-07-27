@@ -109,6 +109,10 @@ pub(crate) async fn sender_keys_response(state: &AppState) -> Result<SenderKeysR
                     ErrorCode::ServiceUnavailable,
                     "notifications are configured but the signing-key master key is not set",
                 ),
+                crate::notifications::SenderKeyError::NoUsableKey => ApiError::new(
+                    ErrorCode::ServiceUnavailable,
+                    "no usable notification sender key is available",
+                ),
                 crate::notifications::SenderKeyError::Db(_) => {
                     ApiError::new(ErrorCode::InternalError, "failed to load sender keys")
                 }
