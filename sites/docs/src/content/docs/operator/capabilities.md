@@ -15,7 +15,7 @@ an extra `custos` object alongside the standard fields:
   "phoneVerificationRequired": false,
   "custos": {
     "version": "0.8.1",
-    "capabilities": ["sovereignSessions", "walletConsent", "didWebHosting"]
+    "capabilities": ["sovereignSessions", "walletConsent", "walletAccountDelete", "didWebHosting"]
   }
 }
 ```
@@ -164,6 +164,32 @@ should keep the password required. Enable it with `[accounts] password_optional 
 true` (`EZPDS_ACCOUNTS_PASSWORD_OPTIONAL`) and the capability appears. Turning it
 back off stops new passwordless accounts being created; it does not affect
 accounts that already have no password, which keep working exactly as before.
+
+### `walletAccountDelete`
+
+An account can be permanently deleted with a device-key-signed proof from one of
+its current rotation keys, in place of the account password. The emailed
+single-use confirmation code is still required — this swaps one of the two
+factors, it does not remove one.
+
+This capability is what makes `optionalPassword` safe to turn on. Deletion is the
+one operation that had no route around the password: an account created without
+one could be made, used, and migrated, but never removed, because every
+credential path answered with the same refusal and left the holder no way
+forward. The proof closes that.
+
+The signed envelope binds this server, the account, the signing key, the moment,
+and a single-use nonce, and it is verified against the identity's **authoritative**
+current rotation set read live from plc.directory — never a cached document. It is
+accepted for accounts that *do* have a password too: a current rotation key can
+already migrate or retire the identity outright, so it is the stronger credential,
+and honouring only the weaker one would make the endpoint answer differently
+depending on whether a password exists. Unknown accounts, wrong passwords, and bad
+proofs remain one indistinguishable response.
+
+**Controlled by:** always. This is the same key-sovereign trust model as
+`sovereignSessions` and has no operator switch; password-based deletion continues
+to work unchanged for accounts that have a password.
 
 ### `didWebHosting`
 

@@ -1,7 +1,8 @@
 // pattern: Imperative Shell
 //
-// The shared "which keys may sign a sovereign proof for this account" lookup, behind the two
-// passwordless auth surfaces (`POST /v1/sessions/sovereign`, `POST /oauth/authorize/approve`).
+// The shared "which keys may sign a sovereign proof for this account" lookup, behind the three
+// passwordless auth surfaces (`POST /v1/sessions/sovereign`, `POST /oauth/authorize/approve`,
+// and the deletion-proof branch of `POST /xrpc/com.atproto.server.deleteAccount`).
 // Signature verification is already method-agnostic (`crypto::verify_did_key_signature` over a
 // `did:key:` URI, P-256 and secp256k1), so the authority lookup is the only place a DID method
 // matters. It lives here rather than in either route because routes may not import one another.

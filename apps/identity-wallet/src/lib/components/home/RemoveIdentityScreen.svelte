@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import {
+    getIdentityRemovalRoute,
     requestIdentityRemoval,
     confirmIdentityRemoval,
     tombstoneIdentity,
@@ -74,7 +75,19 @@
   let code = $state('');
   let password = $state('');
 
-  let canConfirm = $derived(code.trim().length > 0 && password.length > 0);
+  // Whether this identity's host wants the account password at all. An identity created
+  // without one has nothing to type here — the wallet signs a device-key removal proof
+  // instead — so asking would be asking for something that does not exist.
+  //
+  // `routeLoaded` distinguishes "we know a password is needed" from "we have not asked
+  // yet", so the warning copy never promises a password step it may be about to drop.
+  // A failed lookup leaves `requiresPassword` true, matching the backend's own fallback.
+  let requiresPassword = $state(true);
+  let routeLoaded = $state(false);
+
+  let canConfirm = $derived(
+    code.trim().length > 0 && (!requiresPassword || password.length > 0),
+  );
 
   // If a prior attempt already deleted the PDS account but was interrupted before the
   // tombstone + wipe finished (the app was killed mid-flow), the account is gone and the
@@ -89,6 +102,15 @@
       }
     } catch (e) {
       console.warn('listPendingRemovals failed:', e);
+    }
+    try {
+      requiresPassword = (await getIdentityRemovalRoute(did)).requiresPassword;
+      routeLoaded = true;
+    } catch (e) {
+      // Leave `requiresPassword` true and `routeLoaded` false: the warning stays silent
+      // about the credential rather than promising the wrong one, and the confirm step
+      // offers the field. The confirm call re-resolves this and reports the real failure.
+      console.warn('getIdentityRemovalRoute failed:', e);
     }
   });
 
@@ -150,6 +172,12 @@
           return `Could not start deletion: ${err.message || 'unknown error'}`;
         case 'INVALID_TOKEN':
           return 'That password or confirmation code was not accepted. Check your email and try again.';
+        case 'INVALID_CONFIRMATION_CODE':
+          return 'That confirmation code was not accepted. Check your email and try again.';
+        case 'PASSWORD_REQUIRED':
+          return 'This server needs your account password to remove an identity.';
+        case 'PROOF_SIGNING_FAILED':
+          return `Could not sign the removal authorization: ${err.message || 'unknown error'}`;
         case 'ACCOUNT_DELETE_FAILED':
           return `Account deletion failed: ${err.message || 'unknown error'}`;
         case 'INVALID_AUDIT_LOG':
@@ -217,11 +245,23 @@
       : 'Deleting your account and retiring the identity…';
     phase = 'working';
     try {
-      const outcome: RemovalOutcome = await confirmIdentityRemoval(did, password, code.trim());
+      const outcome: RemovalOutcome = await confirmIdentityRemoval(
+        did,
+        requiresPassword ? password : null,
+        code.trim(),
+      );
       finishRemoval(outcome);
     } catch (raw: unknown) {
       console.error('confirmIdentityRemoval failed:', raw);
       hold.state.progress = 0;
+      // The host wants a password after all — the route probe reads a per-host cache while
+      // the confirm re-describes the server live, so the two can disagree if the identity's
+      // host changed underneath us. Correct the flag, or the screen would show the "needs
+      // your password" message with no field to type it in and a hold gesture still armed
+      // to retry the identical, still-failing request.
+      if (isCodedError(raw) && (raw as RemovalError).code === 'PASSWORD_REQUIRED') {
+        requiresPassword = true;
+      }
       if (isPostDeleteFailure(raw)) {
         // The PDS account is already gone; only the tombstone + wipe remain. The
         // single-use code is spent, so resume via tombstoneIdentity (no re-delete).
@@ -391,8 +431,13 @@
         </p>
       {/if}
       <p class="note">
-        We'll email a confirmation code to the account address. You'll enter that code and your
-        password to confirm.
+        We'll email a confirmation code to the account address.
+        {#if routeLoaded && requiresPassword}
+          You'll enter that code and your account password to confirm.
+        {:else if routeLoaded}
+          You'll enter that code to confirm — this identity is held by its key on this device,
+          not by a password.
+        {/if}
       </p>
     {:else if phase === 'requesting'}
       <div class="loading">
@@ -403,7 +448,11 @@
       <div class="hero">
         <h1 class="hero-title">Confirm removal</h1>
         <p class="hero-sub">
-          Enter the code we emailed you and your account password, then hold to remove.
+          {#if requiresPassword}
+            Enter the code we emailed you and your account password, then hold to remove.
+          {:else}
+            Enter the code we emailed you, then hold to remove. This device's key signs the rest.
+          {/if}
         </p>
       </div>
       <div class="form">
@@ -416,13 +465,15 @@
           autocorrect="off"
           placeholder="Code from your email"
         />
-        <label class="field-label" for="removal-password">Account password</label>
-        <TextField
-          id="removal-password"
-          type="password"
-          bind:value={password}
-          placeholder="Your password"
-        />
+        {#if requiresPassword}
+          <label class="field-label" for="removal-password">Account password</label>
+          <TextField
+            id="removal-password"
+            type="password"
+            bind:value={password}
+            placeholder="Your password"
+          />
+        {/if}
       </div>
     {:else if phase === 'working'}
       <div class="loading">

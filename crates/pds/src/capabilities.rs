@@ -110,6 +110,16 @@ pub const CAPABILITIES: &[Capability] = &[
         enabled: |config| config.accounts.password_optional,
     },
     Capability {
+        name: "walletAccountDelete",
+        control: CONTROL_ALWAYS,
+        summary: "An account can be permanently deleted with a device-key-signed proof from one of its current rotation keys instead of the account password.",
+        // The proof branch of `deleteAccount` has no operator switch of its own: it is the same
+        // key-sovereign trust model as `sovereignSessions`, and withholding it would leave an
+        // account created with no password permanently undeletable. Advertised separately rather
+        // than folded into `sovereignSessions` so a client asks about the surface it needs.
+        enabled: |_| true,
+    },
+    Capability {
         name: "didWebHosting",
         control: CONTROL_ALWAYS,
         summary: "Custos serves an opted-in account's did:web document at the account's own domain and propagates edits to relays.",
@@ -214,6 +224,7 @@ mod tests {
         // The capabilities that need no master key are unaffected.
         assert!(advertised.contains(&"sovereignSessions"));
         assert!(advertised.contains(&"walletConsent"));
+        assert!(advertised.contains(&"walletAccountDelete"));
         assert!(advertised.contains(&"didWebHosting"));
     }
 

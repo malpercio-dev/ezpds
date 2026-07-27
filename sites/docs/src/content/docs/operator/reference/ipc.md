@@ -54,6 +54,7 @@ Source: `apps/identity-wallet/src/lib/ipc/`
 | `get_blob_backup_status` | App command |
 | `get_device_key_id` | App command |
 | `get_identity_handle_domains` | App command |
+| `get_identity_removal_route` | App command |
 | `get_identity_unlock_route` | App command |
 | `get_monitor_history` | App command |
 | `get_pds_capabilities` | App command |

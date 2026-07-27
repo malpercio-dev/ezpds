@@ -23,10 +23,43 @@ vars:pre-request {
 }
 
 docs {
-  Permanently deletes the account named by `did` after verifying its `password` and a single-use
-  email `token` (obtained from `requestAccountDelete`). This endpoint is NOT session-authenticated:
-  the did + password + token in the body are the credentials, so a user can delete an account they
-  can no longer log a session into.
+  Permanently deletes the account named by `did` after verifying a credential factor and a
+  single-use email `token` (obtained from `requestAccountDelete`). This endpoint is NOT
+  session-authenticated: the credentials are in the body, so a user can delete an account they can
+  no longer log a session into.
+
+  The credential factor is whichever the request presents:
+
+  1. **`password`** — the standard lexicon field, as in the body above.
+
+  2. **A Custos deletion proof** — the off-lexicon `custos.proof` object, for an account created
+     with no password at all (the `optionalPassword` capability). Advertised as the
+     `walletAccountDelete` capability in `describeServer`. Send `password` as the empty string —
+     the vendored lexicon marks the field required, so it stays on the wire — and add:
+
+     ```json
+     {
+       "did": "{{did}}",
+       "password": "",
+       "token": "token-from-requestAccountDelete",
+       "custos": {
+         "proof": {
+           "signingKey": "did:key:zDnae...",
+           "timestamp": 1753600000,
+           "nonce": "<32 random bytes, canonical unpadded base64url>",
+           "signature": "<64-byte r||s, canonical unpadded base64url>"
+         }
+       }
+     }
+     ```
+
+     `signature` covers `crypto::encode_account_delete_envelope(serverDid, did, signingKey,
+     timestamp, nonce)` — the domain-versioned, length-prefixed envelope shared with the wallet
+     (golden vector: `test-vectors/account-delete-envelope-v1.json`). `signingKey` must be in the
+     account's **authoritative current** signing authority — a did:plc's live plc.directory
+     rotation set, or a self-hosted did:web's `#device` key — never merely in the cached DID
+     document. The timestamp must be within the freshness window, and each nonce is accepted once
+     per DID. A proof is accepted for a passworded account too.
 
   On success every local trace of the account is removed — repo blocks/blobs (including on-disk
   blob files), sessions, tokens, handles, DID-doc cache, preferences, app passwords, and the
@@ -35,9 +68,12 @@ docs {
   owns the rotation key and can tombstone or migrate it independently), matching ezpds's
   wallet-native model.
 
-  Credential failures (unknown DID, no password on file, wrong password) return a uniform 401; an
-  invalid/expired token returns 401; a missing field returns 400. The 200 no-op applies only when
-  the account passes the password + token checks but is purged (by the scheduled-deletion reaper or
-  a racing duplicate request) before this handler's own delete runs — an account that is already
-  fully gone before the credential check instead returns 401.
+  Every credential failure — unknown DID, no password on file, wrong password, malformed or stale
+  proof, bad signature, unauthorized signing key, replayed nonce — returns one uniform 401, so the
+  endpoint is not an account-existence or credential-shape oracle. An invalid/expired token returns
+  401; a request carrying neither a password nor a proof returns 400. No credential failure
+  consumes the email token. The 200 no-op applies only when the account passes both checks but is
+  purged (by the scheduled-deletion reaper or a racing duplicate request) before this handler's own
+  delete runs — an account that is already fully gone before the credential check instead returns
+  401.
 }

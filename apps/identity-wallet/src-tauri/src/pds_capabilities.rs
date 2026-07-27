@@ -52,6 +52,8 @@ pub mod capability {
     pub const DID_WEB_HOSTING: &str = "didWebHosting";
     /// An account can be created with no password at all.
     pub const OPTIONAL_PASSWORD: &str = "optionalPassword";
+    /// `deleteAccount` accepts a device-key-signed proof in place of the account password.
+    pub const WALLET_ACCOUNT_DELETE: &str = "walletAccountDelete";
 }
 
 /// One host's advertised capabilities, as read from its describeServer response.
@@ -132,6 +134,15 @@ impl ServerCapabilities {
     /// account, whereas omitting it against a host that requires one fails the ceremony outright.
     pub fn optional_password(&self) -> bool {
         self.has(capability::OPTIONAL_PASSWORD)
+    }
+
+    /// Will this host accept a device-key-signed proof in place of the account password when
+    /// permanently deleting an account? When false — including for a host that could not be asked —
+    /// removal must collect a password, which is the safe direction: an account that has one is
+    /// removed exactly as before, and an account that has none learns it cannot be removed here
+    /// rather than silently sending a credential the server will refuse.
+    pub fn wallet_account_delete(&self) -> bool {
+        self.has(capability::WALLET_ACCOUNT_DELETE)
     }
 }
 

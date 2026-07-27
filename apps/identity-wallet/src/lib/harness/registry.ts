@@ -172,6 +172,7 @@ export type CommandName =
   | 'get_pending_recovery_epilogue'
   | 'confirm_recovery_backup'
   // removal.ts
+  | 'get_identity_removal_route'
   | 'request_identity_removal'
   | 'confirm_identity_removal'
   | 'tombstone_identity'
@@ -767,6 +768,17 @@ export function buildRegistry(state: WalletState): Registry {
     },
 
     // ── identity removal ─────────────────────────────────────────────────────
+    // Which credential removal needs. Reads the same capability set the other host gates do,
+    // so the `foreign-pds` scenario shows the password field and a Custos scenario hides it.
+    // Unlike the unlock route, an unreached probe here means "ask for the password": the
+    // request would be refused anyway, and a field the user can ignore beats a missing one.
+    get_identity_removal_route: (args) => {
+      const identity = findIdentity(state, didArg(args));
+      return {
+        requiresPassword: !state.pdsCapabilities.capabilities.includes('walletAccountDelete'),
+        pdsUrl: identity?.pdsUrl ?? DEFAULT_PDS_URL,
+      };
+    },
     request_identity_removal: () => null,
     confirm_identity_removal: (args): RemovalOutcome => removeIdentity(state, didArg(args)),
     tombstone_identity: (args): RemovalOutcome => removeIdentity(state, didArg(args)),
