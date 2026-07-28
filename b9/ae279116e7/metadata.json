@@ -1,0 +1,29 @@
+{
+  "cli_version": "0.9.0",
+  "checkpoint_id": "b9ae279116e7",
+  "strategy": "manual-commit",
+  "branch": "malpercio/mm-491-oauth-observability",
+  "checkpoints_count": 2,
+  "files_touched": [
+    "changelog.d/mm-491.added.md",
+    "crates/pds/src/routes/oauth_errors.rs",
+    "crates/pds/src/routes/oauth_templates.rs",
+    "crates/pds/src/routes/oauth_token/authorization_code.rs"
+  ],
+  "sessions": [
+    {
+      "metadata": "/b9/ae279116e7/0/metadata.json",
+      "transcript": "/b9/ae279116e7/0/full.jsonl",
+      "compact_transcript": "/b9/ae279116e7/0/transcript.jsonl",
+      "content_hash": "/b9/ae279116e7/0/content_hash.txt",
+      "prompt": "/b9/ae279116e7/0/prompt.txt"
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 100,
+    "cache_creation_tokens": 49776,
+    "cache_read_tokens": 27383505,
+    "output_tokens": 35550,
+    "api_call_count": 50
+  }
+}

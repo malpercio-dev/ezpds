@@ -1,0 +1,5 @@
+hm, pckt.blog says "We couldn't complete the login. Please try again."
+
+---
+
+hm, I'm fairly certain I was faster than ~25s, yet it still failed with "We couldn't complete the login. Please try again."
