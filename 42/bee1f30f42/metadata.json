@@ -1,0 +1,31 @@
+{
+  "cli_version": "0.9.0",
+  "checkpoint_id": "42bee1f30f42",
+  "strategy": "manual-commit",
+  "branch": "claude/oauth-session-inconsistencies-e45722",
+  "checkpoints_count": 1,
+  "files_touched": [
+    "crates/pds/AGENTS.md",
+    "crates/pds/src/auth/mod.rs",
+    "crates/pds/src/auth/oauth_client_resolution.rs",
+    "crates/pds/src/auth/oauth_response_mode.rs",
+    "crates/pds/src/routes/oauth_authorize.rs",
+    "crates/pds/src/routes/oauth_templates.rs"
+  ],
+  "sessions": [
+    {
+      "metadata": "/42/bee1f30f42/0/metadata.json",
+      "transcript": "/42/bee1f30f42/0/full.jsonl",
+      "compact_transcript": "/42/bee1f30f42/0/transcript.jsonl",
+      "content_hash": "/42/bee1f30f42/0/content_hash.txt",
+      "prompt": "/42/bee1f30f42/0/prompt.txt"
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 31,
+    "cache_creation_tokens": 29513,
+    "cache_read_tokens": 7382128,
+    "output_tokens": 15236,
+    "api_call_count": 16
+  }
+}
