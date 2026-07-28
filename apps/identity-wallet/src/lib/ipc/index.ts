@@ -32,4 +32,5 @@ export * from './qr-scan';
 export * from './app-passwords';
 export * from './blob-backup';
 export * from './repo-backup';
+export * from './notifications';
 export { isCodedError } from './errors';

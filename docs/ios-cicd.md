@@ -72,13 +72,23 @@ git push origin main
    → **+** → **App Store Connect** (Distribution) → App ID `dev.malpercio.identitywallet`
    → select the Distribution cert from step 2 → download the `.mobileprovision`.
 
-   **iCloud capability (media backup, MM-434):** the wallet signs with the iCloud
-   Documents entitlements in `apps/identity-wallet/src-tauri/Entitlements.ios.plist`
-   (container `iCloud.dev.malpercio.identitywallet`), so the App ID must have the
-   **iCloud** capability enabled with that container assigned, and the provisioning
-   profile must be **regenerated after** the capability is added — a profile minted
-   before it will fail signing with an entitlements mismatch. Update the
-   `IOS_MOBILE_PROVISION` secret with the regenerated profile.
+   **Capabilities the wallet's entitlements demand.** Signing here is *explicit* — Tauri
+   reads the profile straight out of `IOS_MOBILE_PROVISION` — so every capability named in
+   `apps/identity-wallet/src-tauri/Entitlements.ios.plist` must be enabled on the App ID
+   **and** the profile regenerated afterwards. A profile minted before a capability was
+   added fails signing with an entitlements mismatch; regenerating is the whole point, and
+   the regenerated profile has to go back into the `IOS_MOBILE_PROVISION` secret.
+
+   - **iCloud** (media + repo backup) — enable with the container
+     `iCloud.dev.malpercio.identitywallet` assigned.
+   - **Push Notifications** (the notification relay) — enable it; the `aps-environment`
+     entitlement is what makes `registerForRemoteNotifications` return a device token at
+     all, and without it the whole relay path is inert rather than broken-looking.
+
+   Not on this list, deliberately: `keychain-access-groups` is **not** a registerable App
+   ID capability, and a provisioning profile already authorizes the whole team prefix via a
+   `<TeamID>.*` wildcard — which is why `org.obsign.shared` signs fine under a
+   `dev.malpercio.*` bundle id with no portal work at all.
 4. **API key (upload)** — Users and Access → **Integrations** → App Store Connect API →
    **Team Keys** (NOT "Individual Keys" — those don't expose an Issuer ID) → generate a key
    with the **App Manager** role (it uploads builds; Admin also works). Download the `.p8`
@@ -243,6 +253,50 @@ Everything else is identical — the template's `libapp.a` bundle exclusion, the
 `SystemConfiguration`, not `AuthenticationServices`, since it has no OAuth auth-session).
 Do the **first build locally** the same way: `just admin-release` on your Mac, with the
 admin profile's base64 in `IOS_MOBILE_PROVISION`, before trusting the cloud job.
+
+## Push notifications: three artifacts, often confused
+
+"Set up APNs" collapses three separate things that live in different places and fail in
+different ways. Keeping them apart is what makes a broken push diagnosable.
+
+**1. The app's `aps-environment` entitlement** (shipped). Enabled on the App ID and carried
+in the wallet's tracked entitlements; it is what makes `registerForRemoteNotifications`
+return a device token. Missing it means the app never obtains a token at all — the wallet
+reports `AWAITING_APNS_TOKEN` forever and registers with no server, which reads as "nothing
+happens" rather than as an error. This is the only one of the three that gates the wallet's
+own build, via the profile-regeneration rule in [step 3](#2-app-store-connect) above.
+
+**2. The Notification Service Extension's App ID** (with the extension itself). An app
+extension is a **separate bundle** (`dev.malpercio.identitywallet.<name>`), so it needs its
+own explicit App ID, its own distribution profile signed by the same team cert, and its own
+`IOS_MOBILE_PROVISION_*`-style secret — the same three-artifact shape the Admin Companion
+lane above already establishes. It does **not** need `aps-environment` (that is an app
+entitlement, not an extension one); what it needs is the shared keychain access group, which
+needs no portal work for the reason given in step 3.
+
+**3. The relay's APNs auth key** (not an app artifact at all). Certificates, Identifiers &
+Profiles → **Keys** → a new key with **Apple Push Notifications service (APNs)** enabled,
+downloadable exactly once. It configures `crates/notify-relay`, not either app:
+
+| Relay config | Env | What it is |
+|---|---|---|
+| `apns.key_path` | `EZPDS_NOTIFY_APNS_KEY_PATH` | the `.p8` file |
+| `apns.key_id` | `EZPDS_NOTIFY_APNS_KEY_ID` | the key's identifier (the JWT `kid`) |
+| `apns.team_id` | `EZPDS_NOTIFY_APNS_TEAM_ID` | the 10-character Team ID |
+| `apns.topics` | `EZPDS_NOTIFY_APNS_TOPICS` | the bundle ids this relay serves |
+
+Config validation requires the first three together, and the relay refuses to register a
+handle whose topic is outside `apns.topics`. This key is the structural reason the relay
+exists: an APNs key is team-bound, so a self-hoster cannot push to the official bundle ids
+and must route through a relay that holds it — see
+[the notification relay design](design-plans/2026-07-10-notification-relay.md).
+
+**One to watch.** The tracked entitlement sets `aps-environment` to `development`, on the
+standard understanding that an App Store export rewrites it to `production`. That has not
+been verified through Tauri's `--export-method app-store-connect` path. The symptom if it
+does not hold is quiet: registration succeeds, and the relay's pushes come back from APNs as
+`400 BadDeviceToken`. The fix is to set the tracked value to `production` and let local
+development be the exception.
 
 ## Relationship to the PDS lane
 

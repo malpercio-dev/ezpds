@@ -307,6 +307,43 @@ export interface WalletState {
     requireExternalPower: boolean;
     wifiOnly: boolean;
   };
+  /**
+   * The device's push-notification state. App-global, like the real thing: one notification
+   * keypair and one `deviceUuid` per install, because a push carries no DID and the extension
+   * would have no way to choose among per-identity keys.
+   *
+   * `apnsToken` is null by default — a browser has no APNs, which is exactly the
+   * `AWAITING_APNS_TOKEN` state the real registration path reports off-device. Set it via
+   * `window.__harness.state()` to drive the registered path.
+   */
+  notifications: {
+    deviceUuid: string;
+    notificationKeyId: string;
+    /**
+     * Whether the device has minted its notification keypair. Tracked rather than inferred from
+     * `apnsToken`, because the real `get_notification_diagnostics` reads the key straight off the
+     * Keychain scalar and never consults the token — a device that registered and later lost its
+     * token still reports its key.
+     */
+    notificationKeyMinted: boolean;
+    apnsToken: string | null;
+    /**
+     * Whether this identity's host runs a notification relay — what the real routes answer 501
+     * on when it is false.
+     *
+     * Its own flag, not a capability: the server's 501 comes from `[notifications] relay` being
+     * unset in its config, and Custos advertises no notifications capability at all. Reusing
+     * `sovereignSessions` as a proxy would both misdescribe the wire and make "a Custos with
+     * sovereign sessions but no relay" unreachable, since that flag also drives the create gate,
+     * unlock routing, and removal.
+     */
+    relaySupported: boolean;
+    /** Pinned sender keys per hosting server — `kid` is instance-scoped, so the host is part
+     *  of the key's identity. */
+    pinnedHosts: Record<string, { kid: number; publicKey: string }[]>;
+    /** DIDs whose host has been told about this device (what the register call recorded). */
+    registeredDids: string[];
+  };
   identities: FakeIdentity[];
   /**
    * The PLC monitor's sweep log, newest first — what the Protection surface reads back.
@@ -347,6 +384,19 @@ export function emptyWalletState(): WalletState {
       backgroundEnabled: true,
       requireExternalPower: false,
       wifiOnly: false,
+    },
+    notifications: {
+      deviceUuid: 'harness-device-0001',
+      notificationKeyId: 'did:key:zDnaeharnessnotificationkey000000000000000000',
+      notificationKeyMinted: false,
+      // No APNs in a browser. Leaving it null is the honest default and puts the registration
+      // path in the same `AWAITING_APNS_TOKEN` state a simulator produces.
+      apnsToken: null,
+      // The default host in the harness is a Custos with notifications configured; set this
+      // false to model a relay-less one without disturbing any other capability.
+      relaySupported: true,
+      pinnedHosts: {},
+      registeredDids: [],
     },
     identities: [],
     monitorSweeps: [],

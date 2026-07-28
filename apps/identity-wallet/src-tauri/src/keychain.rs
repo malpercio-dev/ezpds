@@ -24,6 +24,23 @@
 //! synchronizable items — the `…ThisDeviceOnly` accessibility classes are mutually exclusive
 //! with syncing.
 //!
+//! # Accessibility is not a third store
+//!
+//! [`store_item_after_first_unlock`] writes into the **same** device-local store as
+//! [`store_item`]; it differs only in the item's protection class. That is deliberate and worth
+//! stating, because the two-store split above trains the eye to read "another accessor family"
+//! as "another store": an item written by either function is found by the same [`get_item`] and
+//! removed by the same [`delete_item`], and writing one account through both accessors is one
+//! record whose class is whatever the last write set — not two.
+//!
+//! The class exists for the Notification Service Extension. An `AccessibleWhenUnlocked` item is
+//! unreadable while the screen is locked, which is exactly when a push arrives; the notification
+//! keypair and its pinned sender-key set therefore carry `AccessibleAfterFirstUnlock` so the
+//! extension can decrypt without a biometric prompt it has no way to present. Nothing else the
+//! wallet stores uses the class: it weakens at-rest protection across a reboot-and-never-unlock
+//! window, and it buys nothing for material only the foreground app reads. What it protects is
+//! notification *content* — never identity material.
+//!
 //! # Which access group items land in
 //!
 //! An item's address has a third dimension beyond service + account: the **access group**.
@@ -50,6 +67,8 @@
 //! trigger a password prompt. The test store models the two-store split faithfully —
 //! the same account in the synced and device-local namespaces is two independent values.
 
+#[cfg(not(test))]
+use security_framework::access_control::{ProtectionMode, SecAccessControl};
 #[cfg(not(test))]
 use security_framework::passwords::{
     delete_generic_password, delete_generic_password_options, generic_password,
@@ -217,6 +236,50 @@ pub fn get_item(account: &str) -> Result<Vec<u8>, KeychainError> {
     }
     #[cfg(not(test))]
     get_generic_password(SERVICE, account).map_err(KeychainError::Security)
+}
+
+/// Store bytes in the **device-local** Keychain store under `kSecAttrAccessibleAfterFirstUnlock`,
+/// so a Notification Service Extension can read them while the device is locked.
+///
+/// Same store, same account namespace, and the same [`get_item`]/[`delete_item`] on the way back
+/// out — only the protection class differs (see the module docs). Reserve it for notification
+/// material; everything else stays at the framework default.
+///
+/// The class is expressed as a `SecAccessControl` carrying the protection mode and **no**
+/// constraint flags, which is Apple's stated replacement for a bare `kSecAttrAccessible` and
+/// leaves the item readable with no user-presence check — the extension runs headless and could
+/// not answer a biometric prompt.
+///
+/// The write is delete-then-add rather than the crate's add-or-update. `SecItemUpdate` cannot
+/// change an existing item's protection class, so an update would silently keep whatever class
+/// the first write happened to set — and this accessor's whole contract is the class. Callers
+/// that need the value to be durable should read it back (the convention Share 1's writers set).
+pub fn store_item_after_first_unlock(account: &str, data: &[u8]) -> Result<(), KeychainError> {
+    #[cfg(test)]
+    {
+        test_store::set_with_accessibility(
+            test_store::Scope::Local,
+            account,
+            data.to_vec(),
+            Accessibility::AfterFirstUnlock,
+        );
+        Ok(())
+    }
+    #[cfg(not(test))]
+    {
+        // Not-found is the ordinary first-write case, so the delete's verdict is discarded; a
+        // delete that fails for any other reason surfaces on the add below.
+        let _ = delete_generic_password(SERVICE, account);
+
+        let control = SecAccessControl::create_with_protection(
+            Some(ProtectionMode::AccessibleAfterFirstUnlock),
+            0,
+        )
+        .map_err(KeychainError::Security)?;
+        let mut options = PasswordOptions::new_generic_password(SERVICE, account);
+        options.set_access_control(control);
+        set_generic_password_options(data, options).map_err(KeychainError::Security)
+    }
 }
 
 /// Delete an item from the **device-local** Keychain store by account name.
@@ -404,6 +467,28 @@ pub fn clear_for_test() {
     test_store::clear_all();
 }
 
+/// The protection class an item was written under.
+///
+/// Test-only, because it exists to be *asserted*: no shipped call site reads a class back — iOS
+/// applies it during the fetch and never reports it — so the in-memory double is the only place
+/// the notification material's locked-screen readability is checkable at all.
+#[cfg(test)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Accessibility {
+    /// The framework default every other accessor writes: readable only while unlocked.
+    WhenUnlocked,
+    /// Readable once the device has been unlocked at least once since boot — what a Notification
+    /// Service Extension needs, and what [`store_item_after_first_unlock`] sets.
+    AfterFirstUnlock,
+}
+
+/// The protection class `account` was last written under in the device-local store, or `None`
+/// when nothing is stored there.
+#[cfg(test)]
+pub fn accessibility_of(account: &str) -> Option<Accessibility> {
+    test_store::accessibility(test_store::Scope::Local, account)
+}
+
 /// In-memory Keychain substitute used exclusively in test builds.
 ///
 /// Thread-local storage ensures tests on different threads are fully isolated.
@@ -413,8 +498,15 @@ pub fn clear_for_test() {
 /// Keys are `(scope, account)`, mirroring the real Keychain's two-store split: the same
 /// account in `Local` and `Synced` is two independent records, and neither accessor family
 /// can see the other's value. Tests that assert the launch backfill depend on that.
+///
+/// Each value additionally carries the protection class its last write set. That is an
+/// attribute, never part of the address: writing one account through `store_item` and then
+/// through `store_item_after_first_unlock` leaves **one** record whose class is the second
+/// write's — which is what the real Keychain does, and the distinction the two-store split
+/// above must not be read into.
 #[cfg(test)]
 mod test_store {
+    use super::Accessibility;
     use std::cell::RefCell;
     use std::collections::HashMap;
 
@@ -427,17 +519,44 @@ mod test_store {
         Synced,
     }
 
+    /// How an item is addressed: which store, and under what account name.
+    type ItemKey = (Scope, String);
+    /// What is stored under it: the bytes, and the protection class the write set.
+    type Item = (Vec<u8>, Accessibility);
+
     thread_local! {
-        static STORE: RefCell<HashMap<(Scope, String), Vec<u8>>> = RefCell::new(HashMap::new());
+        static STORE: RefCell<HashMap<ItemKey, Item>> = RefCell::new(HashMap::new());
     }
 
     pub fn get(scope: Scope, account: &str) -> Option<Vec<u8>> {
-        STORE.with(|s| s.borrow().get(&(scope, account.to_string())).cloned())
+        STORE.with(|s| {
+            s.borrow()
+                .get(&(scope, account.to_string()))
+                .map(|(data, _)| data.clone())
+        })
+    }
+
+    pub fn accessibility(scope: Scope, account: &str) -> Option<Accessibility> {
+        STORE.with(|s| {
+            s.borrow()
+                .get(&(scope, account.to_string()))
+                .map(|(_, class)| *class)
+        })
     }
 
     pub fn set(scope: Scope, account: &str, data: Vec<u8>) {
+        set_with_accessibility(scope, account, data, Accessibility::WhenUnlocked);
+    }
+
+    pub fn set_with_accessibility(
+        scope: Scope,
+        account: &str,
+        data: Vec<u8>,
+        class: Accessibility,
+    ) {
         STORE.with(|s| {
-            s.borrow_mut().insert((scope, account.to_string()), data);
+            s.borrow_mut()
+                .insert((scope, account.to_string()), (data, class));
         });
     }
 
@@ -525,6 +644,27 @@ mod tests {
         assert!(!syncs_to_icloud("recovery-share-1:"));
     }
 
+    /// The notification slots, read from the module that owns them so a new one cannot be added
+    /// without this covering it.
+    ///
+    /// The private key is the exclusion worth naming: it is readable on a locked screen, so
+    /// syncing it would put a key that needs no passcode into the Apple account. It opens
+    /// notification content, nothing else, and a replacement device mints its own on its first
+    /// registration — there is no recovery story it could serve.
+    #[test]
+    fn notification_material_never_syncs() {
+        for account in crate::notifications::NOTIFICATION_ACCOUNTS {
+            assert!(
+                !syncs_to_icloud(account),
+                "{account} must never reach the iCloud-synchronizable keychain"
+            );
+            assert!(matches!(
+                store_item_synced(account, b"x"),
+                Err(KeychainError::SyncNotPermitted { .. })
+            ));
+        }
+    }
+
     /// Every secret the design keeps device-local must stay off the synchronizable store.
     /// Adding an account here without a design decision is the failure this guards.
     #[test]
@@ -594,6 +734,62 @@ mod tests {
         assert!(!is_not_found(&KeychainError::SyncNotPermitted {
             account: "device-rotation-key-priv".to_string(),
         }));
+    }
+
+    /// The whole point of the accessor: the item lands under the class a locked-screen
+    /// extension can read, while an ordinary `store_item` write does not.
+    #[test]
+    fn after_first_unlock_writes_carry_the_locked_screen_class() {
+        clear_for_test();
+
+        store_item("ordinary", b"x").unwrap();
+        assert_eq!(
+            accessibility_of("ordinary"),
+            Some(Accessibility::WhenUnlocked)
+        );
+
+        store_item_after_first_unlock("notification", b"y").unwrap();
+        assert_eq!(
+            accessibility_of("notification"),
+            Some(Accessibility::AfterFirstUnlock)
+        );
+    }
+
+    /// Accessibility is an attribute, not an address. The pinned sender-key set is rewritten on
+    /// every Custos contact, so a second write must replace the first in place — and must not
+    /// quietly demote the class back to the default the way a `SecItemUpdate` would.
+    #[test]
+    fn rewriting_keeps_one_record_and_holds_its_class() {
+        clear_for_test();
+
+        store_item_after_first_unlock("pinned", b"first").unwrap();
+        store_item_after_first_unlock("pinned", b"second").unwrap();
+
+        assert_eq!(get_item("pinned").unwrap(), b"second");
+        assert_eq!(
+            accessibility_of("pinned"),
+            Some(Accessibility::AfterFirstUnlock),
+            "a re-pin must not weaken the class the extension depends on"
+        );
+
+        delete_item("pinned").unwrap();
+        assert!(get_item("pinned").is_err_and(|e| is_not_found(&e)));
+        assert_eq!(accessibility_of("pinned"), None);
+    }
+
+    /// It is the same store: the ordinary read and delete reach it, so no notification account
+    /// needs a parallel accessor family (and the module docs say so).
+    #[test]
+    fn the_ordinary_accessors_reach_after_first_unlock_items() {
+        clear_for_test();
+        store_item_after_first_unlock("shared-slot", b"value").unwrap();
+
+        assert_eq!(get_item("shared-slot").unwrap(), b"value");
+        // ...and it is emphatically *not* in the synchronizable store.
+        assert!(matches!(
+            get_item_synced("shared-slot"),
+            Err(KeychainError::SyncNotPermitted { .. })
+        ));
     }
 
     /// The two stores are independent records under one account name — the property the

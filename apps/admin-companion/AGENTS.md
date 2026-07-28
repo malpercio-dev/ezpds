@@ -434,6 +434,13 @@ Host build / tests (no Xcode): `cargo build -p admin-companion`, `cargo test -p 
   (this app reuses the same swift-rs `[patch.crates-io]`).
 - **Excluded from the Linux CI gate** (`just ci-pds`) like identity-wallet: it needs the
   Apple `security-framework` toolchain. Built/checked on macOS via `just admin-*`.
+- **`bundle > iOS > minimumSystemVersion` is pinned to 17.0**, matching identity-wallet.
+  CryptoKit's HPKE API — which the notification relay's decrypt-on-arrival extension needs —
+  starts at iOS 17, and the deployment target previously rode tauri-cli's 13.0 default. This
+  app has no installed base below 17, and raising both apps together keeps the SHARED
+  XcodeGen template's `{{apple.ios-version}}` rendering the same value for either lane. The
+  operator-alert side of notifications lands in a later phase; the floor is raised now so
+  that phase is a code change rather than a deployment-target change.
 - **Grotesk UI font is provisional** (system SF Pro via `--font-sans`) until the
   `/impeccable` font pass; JetBrains Mono (the signature voice) is bundled in `static/fonts/`.
 - **App icon: `app-icon.svg` is the source of truth** (brand rationale in DESIGN.md §6);

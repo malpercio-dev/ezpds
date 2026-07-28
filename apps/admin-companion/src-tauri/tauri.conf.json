@@ -23,6 +23,7 @@
     "active": true,
     "iOS": {
       "frameworks": ["SystemConfiguration"],
+      "minimumSystemVersion": "17.0",
       "bundleVersion": "1",
       "template": "../../scripts/ios/project.yml"
     }
