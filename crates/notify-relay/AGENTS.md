@@ -101,6 +101,26 @@ Enrollment codes are minted at the relay's own shell — there is deliberately n
 admin surface. Relay state is re-derivable by re-enrollment, so backups are optional; the
 node secret key file is not, since losing it re-addresses the relay.
 
+## Deploying
+
+`Dockerfile` + `docker-entrypoint.sh` + `railway.toml` in this directory: the repo-root
+image builds a single binary (`-p pds`) and cannot cover a second one, so this is the same
+builder pattern pointed at `-p notify-relay`, built from the **repo-root context** (cargo
+resolves every workspace member even for a single `-p`). No Litestream — the database is
+disposable by design, unlike the pds's.
+
+The entrypoint exists for one seam: the relay reads its node secret key and its APNs `.p8`
+as **files**, while a PaaS hands out secrets as **environment variables**. It translates
+once, at the platform boundary, rather than teaching the config layer a second delivery
+mechanism per secret. `EZPDS_NOTIFY_NODE_SECRET` disagreeing with a key already on the
+volume is a hard startup failure: overwriting would re-address a working relay and ignoring
+it would discard the operator's intent, so neither is chosen silently.
+
+Because the relay serves no TCP port, there is no `healthcheckPath`, no domain, and no
+public networking — it is dialed over QUIC by node id. Operator runbook (enrollment
+ceremony, self-run relays, verification, failure outcomes):
+[`docs/operations/self-relay-runbook.md`](../../docs/operations/self-relay-runbook.md).
+
 ## Adding an RPC
 
 1. Add the variant to `Request`/`Response` in `protocol.rs` (camelCase tags) with a test

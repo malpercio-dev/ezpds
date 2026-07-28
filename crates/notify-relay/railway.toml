@@ -1,0 +1,20 @@
+# Railway config for the notification relay service.
+#
+# Like the MCP sidecar, this builds from the REPO ROOT context (cargo resolves the whole
+# workspace even for `-p notify-relay`), so point the service's "Railway Config File"
+# setting at this file — crates/notify-relay/railway.toml — and leave Root Directory at the
+# repo root. Without that the service would inherit the repo-root railway.toml, which is
+# PDS-specific. dockerfilePath is therefore repo-root-relative.
+#
+# See docs/operations/self-relay-runbook.md and docs/deploy.md → "Notification relay".
+[build]
+builder = "DOCKERFILE"
+dockerfilePath = "crates/notify-relay/Dockerfile"
+
+[deploy]
+restartPolicyType = "ON_FAILURE"
+restartPolicyMaxRetries = 3
+# No healthcheckPath: the relay serves no HTTP port. It is dialed over QUIC by iroh node
+# id, so Railway has nothing to probe and the service needs no public networking at all —
+# process liveness plus the restart policy is the whole health story. Watch the startup
+# log line ("notification relay listening") instead.

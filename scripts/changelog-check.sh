@@ -69,6 +69,9 @@ shipped_files="$(printf '%s\n' "$changed_files" | awk '
   /^nix\/module\.nix$/ { print; next }
   /^sites\/marketing\// { print; next }
   /^crates\/[^\/]+\/src\// || /^crates\/pds\/assets\// { print; next }
+  # The notification relay ships its own image and Railway config, the same shipped-surface
+  # status the repo-root and sidecar deploy files already carry.
+  /^crates\/notify-relay\/(Dockerfile|docker-entrypoint\.sh|railway\.toml)$/ { print; next }
   /^apps\/[^\/]+\/src\// || /^apps\/[^\/]+\/src-tauri\/src\// { print; next }
   /^apps\/[^\/]+\/static\// || /^apps\/[^\/]+\/tauri\.conf\.json$/ { print; next }
   /^tools\/mcp\/src\// { print; next }
