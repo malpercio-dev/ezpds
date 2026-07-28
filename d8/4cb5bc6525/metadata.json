@@ -1,0 +1,27 @@
+{
+  "cli_version": "0.9.0",
+  "checkpoint_id": "d84cb5bc6525",
+  "strategy": "manual-commit",
+  "branch": "malpercio/mm-490-permission-set-skip-unconvertible-entries",
+  "checkpoints_count": 1,
+  "files_touched": [
+    "changelog.d/mm-490.fixed.md",
+    "crates/pds/src/auth/permission_sets.rs"
+  ],
+  "sessions": [
+    {
+      "metadata": "/d8/4cb5bc6525/0/metadata.json",
+      "transcript": "/d8/4cb5bc6525/0/full.jsonl",
+      "compact_transcript": "/d8/4cb5bc6525/0/transcript.jsonl",
+      "content_hash": "/d8/4cb5bc6525/0/content_hash.txt",
+      "prompt": "/d8/4cb5bc6525/0/prompt.txt"
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 60,
+    "cache_creation_tokens": 41820,
+    "cache_read_tokens": 14851360,
+    "output_tokens": 21732,
+    "api_call_count": 30
+  }
+}
