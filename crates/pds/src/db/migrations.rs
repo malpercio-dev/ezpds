@@ -254,4 +254,8 @@ pub(super) static MIGRATIONS: &[Migration] = &[
         version: 58,
         sql: include_str!("migrations/V058__notifications.sql"),
     },
+    Migration {
+        version: 59,
+        sql: include_str!("migrations/V059__pending_oauth_response_mode.sql"),
+    },
 ];

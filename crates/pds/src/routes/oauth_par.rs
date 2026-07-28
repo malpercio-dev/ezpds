@@ -36,6 +36,7 @@ pub struct PARForm {
     pub code_challenge_method: Option<String>,
     pub state: Option<String>,
     pub response_type: Option<String>,
+    pub response_mode: Option<String>,
     pub scope: Option<String>,
     pub login_hint: Option<String>,
 }
@@ -77,47 +78,6 @@ impl IntoResponse for PARError {
             })),
         )
             .into_response()
-    }
-}
-
-// ── Redirect-URI policy ───────────────────────────────────────────────────────
-
-/// atproto OAuth: for a discoverable (URL) client_id, a private-use-scheme redirect
-/// URI's scheme must be the client_id host's FQDN in reverse order (e.g. client_id
-/// host `identitywallet.obsign.org` ⇒ scheme `org.obsign.identitywallet`). This binds
-/// the custom scheme to a domain the client demonstrably controls — without it, any
-/// app could register a metadata document listing another app's callback scheme.
-///
-/// The rule only applies to https client_ids (discoverable metadata): loopback-http
-/// client_ids are the spec's local-development exception with no meaningful domain,
-/// non-URL client_ids are operator-registered rows the rule predates, and http(s)
-/// redirect URIs are not private-use schemes.
-fn validate_private_use_redirect(client_id: &str, redirect_uri: &str) -> Result<(), String> {
-    let Ok(client_url) = url::Url::parse(client_id) else {
-        return Ok(());
-    };
-    if client_url.scheme() != "https" {
-        return Ok(());
-    }
-    let Ok(redirect_url) = url::Url::parse(redirect_uri) else {
-        return Ok(());
-    };
-    let scheme = redirect_url.scheme();
-    if scheme == "http" || scheme == "https" {
-        return Ok(());
-    }
-    let Some(host) = client_url.host_str() else {
-        return Ok(());
-    };
-    let reversed = host.split('.').rev().collect::<Vec<_>>().join(".");
-    if scheme.eq_ignore_ascii_case(&reversed) {
-        Ok(())
-    } else {
-        Err(format!(
-            "Private-Use URI Scheme redirect URI, for discoverable client metadata, \
-             must be the fully qualified domain name (FQDN) of the client_id, \
-             in reverse order ({reversed}:)"
-        ))
     }
 }
 
@@ -172,6 +132,14 @@ pub async fn post_par(State(state): State<AppState>, Form(form): Form<PARForm>) 
             return PARError::new("invalid_request", "response_type is required").into_response()
         }
     };
+
+    // Both advertised response modes are validated up front, so a mode this server can't
+    // answer in fails the PAR loudly instead of being silently answered in the wrong place.
+    let response_mode =
+        match crate::routes::oauth_templates::ResponseMode::parse(form.response_mode.as_deref()) {
+            Ok(m) => m,
+            Err(desc) => return PARError::new("invalid_request", desc).into_response(),
+        };
 
     // Validate & canonically normalize the requested granular scopes; a malformed
     // or unsupported scope is rejected up-front (RFC 6749 §4.1.2.1 `invalid_scope`).
@@ -237,7 +205,10 @@ pub async fn post_par(State(state): State<AppState>, Form(form): Form<PARForm>) 
         .into_response();
     }
 
-    if let Err(desc) = validate_private_use_redirect(&client_id, &redirect_uri) {
+    if let Err(desc) = crate::auth::oauth_client_resolution::validate_private_use_redirect(
+        &client_id,
+        &redirect_uri,
+    ) {
         return PARError::new("invalid_redirect_uri", desc).into_response();
     }
 
@@ -260,6 +231,7 @@ pub async fn post_par(State(state): State<AppState>, Form(form): Form<PARForm>) 
         code_challenge_method,
         state: state_param,
         response_type,
+        response_mode: response_mode.as_str().to_string(),
         scope,
         login_hint: form.login_hint.filter(|s| !s.is_empty()),
     };
@@ -873,64 +845,6 @@ mod tests {
         );
     }
 
-    // ── Reverse-FQDN rule for private-use-scheme redirect URIs ─────────────────
-
-    #[test]
-    fn private_use_redirect_scheme_must_reverse_client_id_host() {
-        use super::validate_private_use_redirect;
-
-        // Matching reverse-FQDN passes.
-        assert!(validate_private_use_redirect(
-            "https://identitywallet.obsign.org/oauth/client-metadata.json",
-            "org.obsign.identitywallet:/oauth/callback",
-        )
-        .is_ok());
-
-        // Mismatched scheme is rejected, naming the required scheme.
-        let err = validate_private_use_redirect(
-            "https://ezpds-staging.up.railway.app/oauth/client-metadata.json",
-            "dev.malpercio.identitywallet:/oauth/callback",
-        )
-        .unwrap_err();
-        assert!(
-            err.contains("app.railway.up.ezpds-staging:"),
-            "the error must name the required reverse-FQDN scheme, got: {err}"
-        );
-
-        // Scheme comparison is case-insensitive.
-        assert!(validate_private_use_redirect(
-            "https://IdentityWallet.Obsign.Org/oauth/client-metadata.json",
-            "org.obsign.identitywallet:/oauth/callback",
-        )
-        .is_ok());
-    }
-
-    #[test]
-    fn private_use_redirect_rule_exemptions() {
-        use super::validate_private_use_redirect;
-
-        // https redirect URIs are not private-use schemes.
-        assert!(validate_private_use_redirect(
-            "https://app.example.com/client-metadata.json",
-            "https://app.example.com/callback",
-        )
-        .is_ok());
-
-        // Loopback-http client_ids (local development) are exempt.
-        assert!(validate_private_use_redirect(
-            "http://localhost:8080/oauth/client-metadata.json",
-            "org.obsign.identitywallet:/oauth/callback",
-        )
-        .is_ok());
-
-        // Non-URL client_ids (operator-registered rows) are exempt.
-        assert!(validate_private_use_redirect(
-            "dev.malpercio.identitywallet",
-            "dev.malpercio.identitywallet:/oauth/callback",
-        )
-        .is_ok());
-    }
-
     #[tokio::test]
     async fn post_par_rejects_private_use_redirect_not_matching_reverse_fqdn() {
         let state = test_state().await;
@@ -1043,6 +957,74 @@ mod tests {
             response.status(),
             StatusCode::CREATED,
             "a loopback-http fetched client is exempt from the reverse-FQDN rule (local-dev exception)"
+        );
+    }
+
+    #[tokio::test]
+    async fn post_par_accepts_and_stores_response_mode_fragment() {
+        let state = test_state().await;
+        register_client(&state).await;
+
+        let response = app(state.clone())
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/oauth/par")
+                    .header("content-type", "application/x-www-form-urlencoded")
+                    .body(Body::from(par_body(&[("response_mode", "fragment")])))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(
+            response.status(),
+            StatusCode::CREATED,
+            "response_mode=fragment must be accepted (the @atproto/oauth-client-browser default)"
+        );
+        let body = axum::body::to_bytes(response.into_body(), 4096)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        let request_uri = json["request_uri"].as_str().unwrap();
+
+        // The stored params must carry the mode so the authorize/complete tail answers in it.
+        let row = crate::db::oauth::consume_par_request(&state.db, request_uri)
+            .await
+            .unwrap()
+            .expect("PAR row stored");
+        let stored: crate::db::oauth::StoredPARParams =
+            serde_json::from_str(&row.request_parameters).unwrap();
+        assert_eq!(stored.response_mode, "fragment");
+    }
+
+    #[tokio::test]
+    async fn post_par_rejects_unsupported_response_mode() {
+        let state = test_state().await;
+        register_client(&state).await;
+
+        let response = app(state)
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/oauth/par")
+                    .header("content-type", "application/x-www-form-urlencoded")
+                    .body(Body::from(par_body(&[("response_mode", "form_post")])))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let json = error_json(response).await;
+        assert_eq!(json["error"].as_str(), Some("invalid_request"));
+        assert!(
+            json["error_description"]
+                .as_str()
+                .unwrap()
+                .contains("response_mode"),
+            "the rejection must name response_mode, got: {}",
+            json["error_description"]
         );
     }
 

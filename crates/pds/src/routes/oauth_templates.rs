@@ -10,6 +10,57 @@
 use axum::http::StatusCode;
 use axum::response::{Html, Redirect};
 
+// ── Authorization response mode ───────────────────────────────────────────────
+
+/// How the authorization response's parameters are delivered to `redirect_uri`
+/// (OAuth 2.0 Multiple Response Type Encoding Practices' `response_mode`).
+///
+/// RFC 8414 gives `response_modes_supported` the default `["query", "fragment"]` when a
+/// server's metadata omits it, so browser-based clients (the official
+/// `@atproto/oauth-client-browser` defaults to `fragment`) legitimately request either.
+/// Silently dropping the parameter and answering in the query string leaves a
+/// fragment-mode client staring at an empty `location.hash` — a completed consent that
+/// never logs in.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ResponseMode {
+    Query,
+    Fragment,
+}
+
+impl ResponseMode {
+    /// Parse a request's `response_mode` value. Absent/empty defaults to `query`
+    /// (RFC 6749's response mode for the `code` response type); anything other than the
+    /// two advertised modes is rejected with the `error_description` text.
+    pub(crate) fn parse(raw: Option<&str>) -> Result<Self, &'static str> {
+        match raw.map(str::trim) {
+            None | Some("") | Some("query") => Ok(ResponseMode::Query),
+            Some("fragment") => Ok(ResponseMode::Fragment),
+            Some(_) => Err("response_mode must be \"query\" or \"fragment\""),
+        }
+    }
+
+    /// The canonical wire string, as stored in PAR params and pending consent rows.
+    pub(super) fn as_str(self) -> &'static str {
+        match self {
+            ResponseMode::Query => "query",
+            ResponseMode::Fragment => "fragment",
+        }
+    }
+
+    /// The separator that starts this mode's parameter block on `redirect_uri`.
+    ///
+    /// Registered redirect URIs cannot themselves carry a fragment (the client-metadata
+    /// rules forbid it), so `#` always starts the fragment. A query-mode redirect must
+    /// instead extend any query the redirect URI already has.
+    fn separator(self, redirect_uri: &str) -> char {
+        match self {
+            ResponseMode::Fragment => '#',
+            ResponseMode::Query if redirect_uri.contains('?') => '&',
+            ResponseMode::Query => '?',
+        }
+    }
+}
+
 // ── Public rendering functions ────────────────────────────────────────────────
 
 /// Build an OAuth error redirect (303) to `redirect_uri` with error parameters.
@@ -17,19 +68,21 @@ use axum::response::{Html, Redirect};
 /// `issuer` is emitted as the RFC 9207 `iss` parameter. The AT Protocol OAuth metadata
 /// advertises `authorization_response_iss_parameter_supported: true`, so a conformant
 /// client validates `iss` on every authorization response — including error responses
-/// (e.g. the user denying) — and rejects one that omits it.
+/// (e.g. the user denying) — and rejects one that omits it. Error responses use the
+/// same `response_mode` as a success would (a fragment-mode client only reads the
+/// fragment, so a query-string error is invisible to it).
 pub(super) fn error_redirect(
     redirect_uri: &str,
     error: &str,
     description: &str,
     state: &str,
     issuer: &str,
+    mode: ResponseMode,
 ) -> Redirect {
-    let sep = if redirect_uri.contains('?') { '&' } else { '?' };
     let url = format!(
         "{}{}error={}&error_description={}&state={}&iss={}",
         redirect_uri,
-        sep,
+        mode.separator(redirect_uri),
         encode_param(error),
         encode_param(description),
         encode_param(state),
@@ -68,12 +121,12 @@ pub(super) fn build_code_redirect(
     code: &str,
     state: &str,
     issuer: &str,
+    mode: ResponseMode,
 ) -> Redirect {
-    let sep = if redirect_uri.contains('?') { '&' } else { '?' };
     let url = format!(
         "{}{}code={}&state={}&iss={}",
         redirect_uri,
-        sep,
+        mode.separator(redirect_uri),
         encode_param(code),
         encode_param(state),
         encode_param(issuer),
@@ -114,6 +167,7 @@ pub(super) fn render_consent_page(
     state: &str,
     scope: &str,
     response_type: &str,
+    response_mode: ResponseMode,
     public_url: &str,
     login_hint: Option<&str>,
     error: Option<&str>,
@@ -191,6 +245,7 @@ pub(super) fn render_consent_page(
         ("state", state),
         ("scope", scope),
         ("response_type", response_type),
+        ("response_mode", response_mode.as_str()),
     ] {
         html.push_str(&format!(
             "      <input type=\"hidden\" name=\"{}\" value=\"{}\" />\n",
@@ -673,6 +728,7 @@ mod tests {
             "User denied access",
             "teststate",
             "https://pds.example.com",
+            ResponseMode::Query,
         );
         let location = redirect
             .into_response()
@@ -687,6 +743,128 @@ mod tests {
         assert!(
             location.contains("iss=https%3A%2F%2Fpds.example.com"),
             "error redirect must carry the iss parameter: {location}"
+        );
+    }
+
+    /// `response_mode` parsing: absent/empty defaults to `query`, both advertised modes
+    /// parse, and anything else (e.g. `form_post`) is rejected — silently coercing an
+    /// unknown mode would deliver the response somewhere the client isn't looking.
+    #[test]
+    fn response_mode_parses_the_advertised_modes_and_rejects_others() {
+        assert_eq!(ResponseMode::parse(None), Ok(ResponseMode::Query));
+        assert_eq!(ResponseMode::parse(Some("")), Ok(ResponseMode::Query));
+        assert_eq!(ResponseMode::parse(Some("query")), Ok(ResponseMode::Query));
+        assert_eq!(
+            ResponseMode::parse(Some("fragment")),
+            Ok(ResponseMode::Fragment)
+        );
+        assert!(ResponseMode::parse(Some("form_post")).is_err());
+        assert!(ResponseMode::parse(Some("Fragment")).is_err());
+    }
+
+    /// Fragment-mode responses put every parameter after `#` — a fragment-mode browser
+    /// client (the @atproto/oauth-client-browser default) only ever reads `location.hash`.
+    #[test]
+    fn fragment_mode_redirects_carry_params_in_the_fragment() {
+        let success = build_code_redirect(
+            "https://app.example.com/callback",
+            "authcode123",
+            "teststate",
+            "https://pds.example.com",
+            ResponseMode::Fragment,
+        );
+        let location = success
+            .into_response()
+            .headers()
+            .get("location")
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .to_string();
+        assert!(
+            location.starts_with("https://app.example.com/callback#code="),
+            "fragment mode must deliver the code in the URL fragment: {location}"
+        );
+        assert!(
+            !location.contains('?'),
+            "no query-string delivery: {location}"
+        );
+        assert!(location.contains("&state=teststate"), "{location}");
+        assert!(
+            location.contains("&iss=https%3A%2F%2Fpds.example.com"),
+            "{location}"
+        );
+
+        // Error responses use the same mode — a fragment-mode client never reads the query.
+        let error = error_redirect(
+            "https://app.example.com/callback",
+            "access_denied",
+            "User denied access",
+            "teststate",
+            "https://pds.example.com",
+            ResponseMode::Fragment,
+        );
+        let location = error
+            .into_response()
+            .headers()
+            .get("location")
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .to_string();
+        assert!(
+            location.starts_with("https://app.example.com/callback#error=access_denied"),
+            "{location}"
+        );
+    }
+
+    /// Query mode keeps the pre-existing behavior, including extending an existing query.
+    #[test]
+    fn query_mode_extends_an_existing_query_string() {
+        let redirect = build_code_redirect(
+            "https://app.example.com/callback?app=1",
+            "authcode123",
+            "teststate",
+            "https://pds.example.com",
+            ResponseMode::Query,
+        );
+        let location = redirect
+            .into_response()
+            .headers()
+            .get("location")
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .to_string();
+        assert!(
+            location.starts_with("https://app.example.com/callback?app=1&code="),
+            "{location}"
+        );
+    }
+
+    /// The consent form must round-trip the response mode as a hidden field — the POST
+    /// handler rebuilds every redirect from the form, so a dropped mode would silently
+    /// answer a fragment-mode client in the query string.
+    #[test]
+    fn consent_form_round_trips_the_response_mode() {
+        let html = render_consent_page(
+            "Test App",
+            "https://app.example.com/client-metadata.json",
+            "https://app.example.com/callback",
+            "challenge",
+            "S256",
+            "state",
+            "atproto",
+            "code",
+            ResponseMode::Fragment,
+            "https://pds.example.com",
+            None,
+            None,
+            None,
+        );
+        assert!(
+            html.contains("name=\"response_mode\" value=\"fragment\""),
+            "the hidden response_mode field must carry the requested mode"
         );
     }
 
@@ -705,6 +883,7 @@ mod tests {
             "state",
             "atproto transition:generic repo:app.bsky.feed.post",
             "code",
+            ResponseMode::Query,
             "https://pds.example.com",
             None,
             None,
@@ -742,6 +921,7 @@ mod tests {
             "state",
             "atproto",
             "code",
+            ResponseMode::Query,
             "https://pds.example.com",
             None,
             None,
@@ -787,6 +967,7 @@ mod tests {
             "state",
             "atproto",
             "code",
+            ResponseMode::Query,
             "https://pds.example.com",
             None,
             None,

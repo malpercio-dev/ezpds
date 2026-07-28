@@ -43,6 +43,10 @@ struct OAuthServerMetadata {
     jwks_uri: String,
     scopes_supported: Vec<String>,
     response_types_supported: Vec<String>,
+    /// Explicit rather than relying on the RFC 8414 default (`["query", "fragment"]` when
+    /// absent): the authorization endpoint really answers in both modes, and stating it
+    /// keeps the metadata honest if that ever changes.
+    response_modes_supported: Vec<String>,
     grant_types_supported: Vec<String>,
     token_endpoint_auth_methods_supported: Vec<String>,
     token_endpoint_auth_signing_alg_values_supported: Vec<String>,
@@ -85,6 +89,7 @@ pub async fn oauth_server_metadata(State(state): State<AppState>) -> impl IntoRe
             .map(String::from)
             .collect(),
         response_types_supported: vec!["code".to_string()],
+        response_modes_supported: vec!["query".to_string(), "fragment".to_string()],
         grant_types_supported: vec![
             "authorization_code".to_string(),
             "refresh_token".to_string(),
@@ -368,6 +373,18 @@ mod tests {
         assert_eq!(
             json["code_challenge_methods_supported"],
             serde_json::json!(["S256"])
+        );
+    }
+
+    #[tokio::test]
+    async fn response_modes_are_query_and_fragment() {
+        // Stated explicitly rather than leaning on the RFC 8414 absent-field default; the
+        // authorization endpoint answers in both modes (fragment is the
+        // @atproto/oauth-client-browser default).
+        let json = metadata_json().await;
+        assert_eq!(
+            json["response_modes_supported"],
+            serde_json::json!(["query", "fragment"])
         );
     }
 

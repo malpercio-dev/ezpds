@@ -11,6 +11,9 @@ use sqlx::SqlitePool;
 /// `client_metadata` is stored as a raw JSON string (RFC 7591 client metadata).
 /// Callers are responsible for serializing/deserializing the JSON.
 pub struct OAuthClientRow {
+    // client_id is redundant with the lookup key at every handler call site (kept so a
+    // row is self-describing; read by tests), same posture as created_at below.
+    #[allow(dead_code)]
     pub client_id: String,
     pub client_metadata: String,
     // created_at is unread by handlers (kept for audit value: admin listing, DCR).
@@ -355,8 +358,17 @@ pub struct StoredPARParams {
     pub code_challenge_method: String,
     pub state: String,
     pub response_type: String,
+    /// How the authorization response is delivered (`query` | `fragment`). Defaults on
+    /// deserialize so a PAR row stored before this field existed reads as `query`,
+    /// which is exactly how it was answered.
+    #[serde(default = "default_response_mode")]
+    pub response_mode: String,
     pub scope: String,
     pub login_hint: Option<String>,
+}
+
+fn default_response_mode() -> String {
+    "query".to_string()
 }
 
 /// A row from the `oauth_par_requests` table.

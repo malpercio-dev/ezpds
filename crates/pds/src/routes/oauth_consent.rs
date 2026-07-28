@@ -498,11 +498,19 @@ pub async fn post_authorization_complete(
         .into_response();
     }
 
+    // Answer in the response mode the client asked for at PAR/authorize time (carried on
+    // the pending row) — a fragment-mode browser client only ever reads `location.hash`.
+    // The stored value was validated before it was written, so an unparseable one means
+    // row tampering/drift; falling back to `query` (the protocol default) is the honest
+    // degraded answer rather than a hard failure after consent already happened.
+    let mode = crate::routes::oauth_templates::ResponseMode::parse(Some(&completed.response_mode))
+        .unwrap_or(crate::routes::oauth_templates::ResponseMode::Query);
     build_code_redirect(
         &completed.redirect_uri,
         &token.plaintext,
         &completed.state,
         &issuer,
+        mode,
     )
     .into_response()
 }
@@ -586,6 +594,7 @@ mod tests {
             code_challenge_method: "S256",
             state: "teststate",
             response_type: "code",
+            response_mode: "query",
             requested_scope: REQUESTED_SCOPE,
             login_hint,
             origin: Some("https://app.example.com"),
@@ -1104,6 +1113,7 @@ mod tests {
             code_challenge_method: "S256",
             state: "teststate",
             response_type: "code",
+            response_mode: "query",
             requested_scope: REQUESTED_SCOPE,
             login_hint: None,
             origin: None,
@@ -1140,5 +1150,81 @@ mod tests {
         )
         .await;
         assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    }
+
+    /// The completion redirect must answer in the response mode the client asked for at
+    /// PAR/authorize time (carried on the pending row) — a fragment-mode browser client
+    /// only ever reads `location.hash`.
+    #[tokio::test]
+    async fn completion_answers_in_the_stored_fragment_response_mode() {
+        let state = crate::app::test_state().await;
+        register_oauth_client(&state.db, CLIENT_ID, CLIENT_METADATA)
+            .await
+            .unwrap();
+        sqlx::query(
+            "INSERT INTO accounts (did, email, password_hash, created_at, updated_at) \
+             VALUES (?, 'owner@example.com', NULL, datetime('now'), datetime('now'))",
+        )
+        .bind(DID)
+        .execute(&state.db)
+        .await
+        .unwrap();
+
+        let request_id = "poauth_fragment_mode";
+        let new = crate::db::pending_oauth_authorizations::NewPendingOAuthAuthorization {
+            request_id,
+            user_code: "FRAG-MODE",
+            client_id: CLIENT_ID,
+            client_name: Some("Test App"),
+            redirect_uri: REDIRECT_URI,
+            code_challenge: "e3b0c44298fc1c149afb",
+            code_challenge_method: "S256",
+            state: "teststate",
+            response_type: "code",
+            response_mode: "fragment",
+            requested_scope: REQUESTED_SCOPE,
+            login_hint: None,
+            origin: None,
+            ip: None,
+            user_agent: None,
+            ttl_secs: 300,
+        };
+        crate::db::pending_oauth_authorizations::insert_pending_authorization(&state.db, &new)
+            .await
+            .unwrap();
+        // Flip straight to approved (the wallet-approval leg is covered by its own tests).
+        sqlx::query(
+            "UPDATE pending_oauth_authorizations \
+             SET status = 'approved', account_did = ?, granted_scope = 'atproto' \
+             WHERE request_id = ?",
+        )
+        .bind(DID)
+        .bind(request_id)
+        .execute(&state.db)
+        .await
+        .unwrap();
+
+        let resp = app(state)
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/oauth/authorize/complete")
+                    .header("content-type", "application/x-www-form-urlencoded")
+                    .body(Body::from(format!("request_id={request_id}")))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(resp.status(), StatusCode::SEE_OTHER);
+        let location = resp.headers().get("location").unwrap().to_str().unwrap();
+        assert!(
+            location.starts_with(&format!("{REDIRECT_URI}#code=")),
+            "fragment mode must deliver the code in the URL fragment: {location}"
+        );
+        assert!(
+            !location.contains('?'),
+            "no query-string delivery in fragment mode: {location}"
+        );
     }
 }

@@ -42,6 +42,8 @@ pub struct NewPendingOAuthAuthorization<'a> {
     pub code_challenge_method: &'a str,
     pub state: &'a str,
     pub response_type: &'a str,
+    /// `query` | `fragment` — how the completion redirect delivers its parameters (V059).
+    pub response_mode: &'a str,
     pub requested_scope: &'a str,
     pub login_hint: Option<&'a str>,
     pub origin: Option<&'a str>,
@@ -60,6 +62,8 @@ pub struct CompletedAuthorization {
     pub code_challenge: String,
     pub code_challenge_method: String,
     pub state: String,
+    /// `query` | `fragment` — the completion redirect answers in this mode (V059).
+    pub response_mode: String,
     pub granted_scope: String,
     pub account_did: String,
 }
@@ -94,9 +98,9 @@ where
     sqlx::query(
         "INSERT INTO pending_oauth_authorizations \
          (request_id, user_code, client_id, client_name, redirect_uri, code_challenge, \
-          code_challenge_method, state, response_type, requested_scope, login_hint, origin, ip, \
-          user_agent, status, created_at, expires_at) \
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', datetime('now'), \
+          code_challenge_method, state, response_type, response_mode, requested_scope, \
+          login_hint, origin, ip, user_agent, status, created_at, expires_at) \
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', datetime('now'), \
                  datetime('now', ?))",
     )
     .bind(new.request_id)
@@ -108,6 +112,7 @@ where
     .bind(new.code_challenge_method)
     .bind(new.state)
     .bind(new.response_type)
+    .bind(new.response_mode)
     .bind(new.requested_scope)
     .bind(new.login_hint)
     .bind(new.origin)
@@ -279,7 +284,7 @@ where
         "UPDATE pending_oauth_authorizations SET status = 'completed' \
          WHERE request_id = ? AND status = 'approved' \
          RETURNING client_id, redirect_uri, code_challenge, code_challenge_method, state, \
-                   granted_scope, account_did",
+                   response_mode, granted_scope, account_did",
     )
     .bind(request_id)
     .fetch_optional(executor)
@@ -298,6 +303,7 @@ where
         code_challenge: r.get("code_challenge"),
         code_challenge_method: r.get("code_challenge_method"),
         state: r.get("state"),
+        response_mode: r.get("response_mode"),
         // NOT NULL in practice: only an approved row is selected, and approval always sets it.
         granted_scope: r.try_get("granted_scope").unwrap_or_default(),
         account_did: r.try_get("account_did").unwrap_or_default(),
