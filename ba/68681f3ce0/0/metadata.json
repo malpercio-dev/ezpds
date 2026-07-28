@@ -1,0 +1,124 @@
+{
+  "cli_version": "0.9.0",
+  "checkpoint_id": "ba68681f3ce0",
+  "session_id": "b5437b58-fb9b-4395-9b76-95f399c1a325",
+  "strategy": "manual-commit",
+  "created_at": "2026-07-28T00:05:21.86714Z",
+  "branch": "claude/oauth-session-inconsistencies-e45722",
+  "checkpoints_count": 1,
+  "files_touched": [
+    "crates/pds/src/routes/oauth_templates.rs",
+    "crates/pds/src/db/oauth.rs",
+    "crates/pds/src/routes/oauth_par.rs",
+    "crates/pds/src/routes/oauth_authorize.rs",
+    "crates/pds/src/db/migrations/V059__pending_oauth_response_mode.sql",
+    "crates/pds/src/db/migrations.rs",
+    "crates/pds/src/db/pending_oauth_authorizations.rs",
+    "crates/pds/src/routes/oauth_consent.rs",
+    "crates/pds/src/routes/oauth_server_metadata.rs",
+    "crates/pds/src/auth/oauth_client_resolution.rs",
+    "changelog.d/mm-488.fixed.md",
+    "changelog.d/mm-489.fixed.md",
+    "crates/pds/AGENTS.md"
+  ],
+  "agent": "Claude Code",
+  "model": "claude-fable-5",
+  "turn_id": "1b6d88b39364",
+  "compact_transcript_start": 0,
+  "token_usage": {
+    "input_tokens": 753,
+    "cache_creation_tokens": 435329,
+    "cache_read_tokens": 44341807,
+    "output_tokens": 118658,
+    "api_call_count": 149
+  },
+  "skill_events_version": 1,
+  "skill_events": [
+    {
+      "id": "claude-skill-toolu_01JX4j3Fg8koTGWWio5FrPTZ",
+      "event_type": "tool_invocation",
+      "skill": {
+        "name": "linear-workflow"
+      },
+      "source": {
+        "agent": "claude-code",
+        "signal": "skill_tool_use",
+        "confidence": "explicit"
+      },
+      "turn_id": "1b6d88b39364",
+      "transcript_anchor": {
+        "unit": "line",
+        "start": 338,
+        "end": 339,
+        "entry_ids": [
+          "bb8f9569-50e1-49c6-a1c0-df73f373ce29"
+        ],
+        "tool_use_id": "toolu_01JX4j3Fg8koTGWWio5FrPTZ"
+      },
+      "native": {
+        "tool_name": "Skill",
+        "tool_use_id": "toolu_01JX4j3Fg8koTGWWio5FrPTZ"
+      },
+      "collapse": {
+        "target": "tool_pair",
+        "label": "Skill: linear-workflow",
+        "default_collapsed": true
+      }
+    },
+    {
+      "id": "claude-skill-toolu_01R8HgivLtba9H4LZcFStEAU",
+      "event_type": "tool_invocation",
+      "skill": {
+        "name": "commit-commands:commit-push-pr"
+      },
+      "source": {
+        "agent": "claude-code",
+        "signal": "skill_tool_use",
+        "confidence": "explicit"
+      },
+      "turn_id": "1b6d88b39364",
+      "transcript_anchor": {
+        "unit": "line",
+        "start": 771,
+        "end": 772,
+        "entry_ids": [
+          "53602083-76b2-4143-8f55-13ba5e0c272c"
+        ],
+        "tool_use_id": "toolu_01R8HgivLtba9H4LZcFStEAU"
+      },
+      "native": {
+        "tool_name": "Skill",
+        "tool_use_id": "toolu_01R8HgivLtba9H4LZcFStEAU"
+      },
+      "collapse": {
+        "target": "tool_pair",
+        "label": "Skill: commit-commands:commit-push-pr",
+        "default_collapsed": true
+      }
+    }
+  ],
+  "session_metrics": {
+    "turn_count": 1
+  },
+  "initial_attribution": {
+    "calculated_at": "2026-07-28T00:05:21.757883Z",
+    "agent_lines": 916,
+    "agent_removed": 146,
+    "human_added": 0,
+    "human_modified": 0,
+    "human_removed": 0,
+    "total_committed": 916,
+    "total_lines_changed": 1062,
+    "agent_percentage": 100,
+    "metric_version": 2
+  },
+  "prompt_attributions": [
+    {
+      "checkpoint_number": 1,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 0,
+      "agent_lines_removed": 0
+    }
+  ]
+}

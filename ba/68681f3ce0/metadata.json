@@ -1,0 +1,38 @@
+{
+  "cli_version": "0.9.0",
+  "checkpoint_id": "ba68681f3ce0",
+  "strategy": "manual-commit",
+  "branch": "claude/oauth-session-inconsistencies-e45722",
+  "checkpoints_count": 1,
+  "files_touched": [
+    "changelog.d/mm-488.fixed.md",
+    "changelog.d/mm-489.fixed.md",
+    "crates/pds/AGENTS.md",
+    "crates/pds/src/auth/oauth_client_resolution.rs",
+    "crates/pds/src/db/migrations.rs",
+    "crates/pds/src/db/migrations/V059__pending_oauth_response_mode.sql",
+    "crates/pds/src/db/oauth.rs",
+    "crates/pds/src/db/pending_oauth_authorizations.rs",
+    "crates/pds/src/routes/oauth_authorize.rs",
+    "crates/pds/src/routes/oauth_consent.rs",
+    "crates/pds/src/routes/oauth_par.rs",
+    "crates/pds/src/routes/oauth_server_metadata.rs",
+    "crates/pds/src/routes/oauth_templates.rs"
+  ],
+  "sessions": [
+    {
+      "metadata": "/ba/68681f3ce0/0/metadata.json",
+      "transcript": "/ba/68681f3ce0/0/full.jsonl",
+      "compact_transcript": "/ba/68681f3ce0/0/transcript.jsonl",
+      "content_hash": "/ba/68681f3ce0/0/content_hash.txt",
+      "prompt": "/ba/68681f3ce0/0/prompt.txt"
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 753,
+    "cache_creation_tokens": 435329,
+    "cache_read_tokens": 44341807,
+    "output_tokens": 118658,
+    "api_call_count": 149
+  }
+}

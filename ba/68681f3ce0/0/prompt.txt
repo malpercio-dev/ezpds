@@ -1,0 +1,5 @@
+So I've noticed a couple of issues with OAuth sessions with my malpercio.dev account. I can successfully log in to Tangled.org, and it appears to have kept sessions just fine over the timespan of days. I can get through the flow with rpg.actor, but when I land back at the app, I'm not actually logged in. And with pckt.blog, when I attempt to log in, I am met with "The client_id is not registered with this server" from pds.obsign.org. What's going on, why does our oauth behave differently with each?
+
+---
+
+implement both fixes. you have linear access under a different name look in memory (and stop making this mistake please)
