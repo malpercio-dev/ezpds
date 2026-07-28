@@ -1,0 +1,47 @@
+{
+  "cli_version": "0.9.0",
+  "checkpoint_id": "8eeaa1519340",
+  "strategy": "manual-commit",
+  "branch": "claude/mm-420-nse-decrypt-render-8c4f7c",
+  "checkpoints_count": 1,
+  "files_touched": [
+    "AGENTS.md",
+    "apps/identity-wallet/src-tauri/Entitlements.NSE.plist",
+    "apps/identity-wallet/src-tauri/src/lib.rs",
+    "apps/identity-wallet/src-tauri/src/notifications.rs",
+    "apps/identity-wallet/src/lib/components/home/SettingsScreen.svelte",
+    "apps/identity-wallet/src/lib/harness/state.ts",
+    "apps/identity-wallet/src/lib/ipc/notifications.ts",
+    "apps/identity-wallet/src/lib/notification-health.test.ts",
+    "apps/identity-wallet/src/lib/notification-health.ts",
+    "changelog.d/mm-420.added.md",
+    "docs/ios-cicd.md",
+    "ios/AGENTS.md",
+    "ios/NotificationService/NotificationService.swift",
+    "ios/NotificationService/NotifyBreadcrumbs.swift",
+    "ios/NotificationService/NotifyCrypto.swift",
+    "ios/NotificationService/NotifyEnvelope.swift",
+    "ios/NotificationService/NotifyKeychain.swift",
+    "ios/NotificationServiceTests/NotifyFixtureTests.swift",
+    "ios/NotificationServiceTests/NotifyResolverTests.swift",
+    "scripts/ios-template-check.sh",
+    "scripts/ios/ios-check.sh",
+    "scripts/ios/project.yml"
+  ],
+  "sessions": [
+    {
+      "metadata": "/8e/eaa1519340/0/metadata.json",
+      "transcript": "/8e/eaa1519340/0/full.jsonl",
+      "compact_transcript": "/8e/eaa1519340/0/transcript.jsonl",
+      "content_hash": "/8e/eaa1519340/0/content_hash.txt",
+      "prompt": "/8e/eaa1519340/0/prompt.txt"
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 308,
+    "cache_creation_tokens": 447775,
+    "cache_read_tokens": 55612691,
+    "output_tokens": 121915,
+    "api_call_count": 164
+  }
+}

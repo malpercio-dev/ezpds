@@ -1,0 +1,68 @@
+Work on Linear issue MM-420:
+
+Suggested branch name: malpercio/mm-420-notify-69-wallet-notification-service-extension-decrypt-and
+
+<issue identifier="MM-420">
+<title>Notify 6/9: wallet Notification Service Extension — decrypt-and-render + unverified notice</title>
+<description>
+Phase 6 of the <issue id="b95fcd23-95fa-43f6-86a6-81defb9dda77" href="https://linear.app/malpercio/issue/MM-311/e2e-encrypted-notification-relay-for-self-hosted-custos-apns">MM-311</issue> notification relay. Implementation details: `docs/design-plans/2026-07-17-notification-relay-implementation.md`.
+
+## Scope
+
+* **Xcode template:** the forked `scripts/ios/project.yml` (shared by both apps, rendered on every `cargo tauri ios init`) gains an NSE target (`{{app.name}}_NSE`, `type: app-extension`, **Swift-only** — no second Rust staticlib; decryption is CryptoKit, ~200 lines) and `keychain-access-groups` entitlements on both targets. `just ios-template-check` learns the new invariants (NSE target present, entitlements wired) so a template re-render can't silently drop them.
+* **NSE behavior:** on `mutable-content: 1` delivery, load the notification private key + pinned sender set from the shared keychain group, HPKE-open (`P256_SHA256_AES_GCM_256`, `authenticatedBy:` the key named by `kid`, `info = "ezpds/notify/1"`), replace placeholder title/body with plaintext.
+* **Failure path** (iOS cannot suppress an alert push): unknown `kid`, open failure, or post-reboot locked keychain → render the explicit **unverified notice** ("Couldn't verify a notification from your Custos instance") — never authentic-looking content — and write a diagnostic breadcrumb to a shared app-group container.
+* **Diagnostics surface:** the app reads the breadcrumbs and surfaces repeated failures in Settings (key desync / misbehaving relay made visible, per the design doc).
+* **Interop check:** on-device XCTest opens the `crates/crypto` golden fixtures with CryptoKit — the cross-implementation verification the fixtures were built for.
+
+## Acceptance
+
+* On-device demo: sealed push from a real Custos renders decrypted content; junk/replayed-junk payload renders the unverified notice; fixture cross-check passes.
+* ios-pr-check lane green (template regeneration + postinit + ios-check with the new invariants).
+</description>
+<team name="Mal's Machinations"/>
+<label>Security</label>
+<label>Feature</label>
+<label>Mobile: Identity Wallet</label>
+<project name="ezpds">An easy-to-host PDS on the ATProtocol, MacOS. Grandma-approved.</project>
+<parent-issue identifier="MM-311">
+<id>b95fcd23-95fa-43f6-86a6-81defb9dda77</id>
+<title>E2E-encrypted notification relay for self-hosted Custos (APNs)</title>
+<description>
+Implement the notification relay designed in [docs/design-plans/2026-07-10-notification-relay.md](<https://github.com/malpercio-dev/ezpds/blob/main/docs/design-plans/2026-07-10-notification-relay.md>) (design PR <pull-request id="34230e45-6259-4c9a-b58d-6b135adf84e3" href="https://linear.app/malpercio/review/design-exploration-e2e-encrypted-notification-relay-for-self-hosted-327f880332d1">malpercio-dev/ezpds#207</pull-request>, **merged** — the doc on `main` is the source of truth and incorporates the review hardening: claim-code enrollment authorization for the official relay, versioned sender keys with re-pin/revocation semantics, explicit v1 replay acceptance, unverified-notice rendering for unauthenticated payloads, per-handle APNs topics, serialized-request padding budget, and the post-reboot keychain window).
+
+## Problem
+
+Self-hosted Custos instances need to deliver push notifications to the official iOS apps (Obsign, admin-companion). APNs auth keys are bundle-ID-bound, so self-hosters cannot push directly — a relay is structurally required. The design makes that relay a **blind courier**: trusted for availability only.
+
+## Architecture (see design doc for full detail)
+
+* **Confidentiality:** payloads HPKE-sealed (RFC 9180, DHKEM-P256 + AES-GCM) to a per-device notification key; decrypted on-device by a Notification Service Extension (`mutable-content: 1`). Neither the relay nor Apple sees plaintext.
+* **Integrity:** HPKE Auth mode with pinned, versioned per-instance sender keys — the relay cannot forge authenticated content (it can generate detectable junk pushes and replay; v1 accepts duplicates as benign).
+* **Metadata minimization:** opaque push handles bound to the instance's iroh node id (no DIDs/handles/raw tokens at the relay), fixed-size padding budgeted against the serialized APNs request, optional content-free ping mode.
+* **Transport:** Custos ↔ relay over iroh, new `ezpds/notify/0` ALPN, reusing the persisted node identity (`iroh_identity`) and `iroh_tunnel.rs` patterns; back-channel carries APNs `410 Unregistered` pruning feedback.
+* **Sovereignty:** relay is an open-source workspace crate (`crates/notify-relay/`); any instance points at any relay via `[notifications] relay = "<node id>"`. Official relay requires a claim-code enrollment grant; open enrollment is a config option for self-run relays. Caveat: official bundle IDs require the official relay's APNs key.
+
+## Suggested phasing
+
+1. **Relay crate + Custos sender** — `crates/notify-relay/` (claim-code enrollment grants, handle store with per-handle APNs topic, APNs HTTP/2 client, per-node rate limits, serialized-request size validation with 4 KB boundary test) + `[notifications]` config, device notification-key registration route, versioned sender-key set, sealed-send on first trigger (agent claim pending). Loopback iroh e2e tests with mock APNs.
+2. **Wallet NSE** — per-device keypair + shared keychain access group, registration in onboarding, decrypt-and-render extension, unverified-notice fallback + in-app diagnostics.
+3. **Admin-companion adoption + operator docs** — ops alert triggers, self-relay runbook, metadata-minimizing ping mode.
+
+## Open questions (from the design doc)
+
+* Enrollment grant distribution for the official relay (ceremony mirrors admin-device pairing)
+* Replay hardening beyond v1's accept-duplicates posture (per-device counter + durable replay window)
+* Delivery receipts over the iroh back-channel (out of scope v1)
+* Android/FCM later (envelope is provider-agnostic)
+
+Not yet scheduled into a wave; split into per-phase issues when picked up.
+</description>
+</parent-issue>
+<issue-relations>
+<blocking><issue-ref identifier="MM-421" title="Notify 7/9: admin-companion adoption — pairing-doc pinning, admin NSE, ops triggers"/></blocking>
+<blocked-by><issue-ref identifier="MM-419" title="Notify 5/9: wallet notification keys + registration + sender-key re-pinning"/></blocked-by>
+</issue-relations>
+</issue>
+
+Open a PR linked to the linear issue when complete
