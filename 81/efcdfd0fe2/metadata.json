@@ -1,0 +1,27 @@
+{
+  "cli_version": "0.9.0",
+  "checkpoint_id": "81efcdfd0fe2",
+  "strategy": "manual-commit",
+  "branch": "claude/notify-relay-deploy-docs-bfbeac",
+  "checkpoints_count": 1,
+  "files_touched": [
+    "docs/deploy.md",
+    "docs/operations/self-relay-runbook.md"
+  ],
+  "sessions": [
+    {
+      "metadata": "/81/efcdfd0fe2/0/metadata.json",
+      "transcript": "/81/efcdfd0fe2/0/full.jsonl",
+      "compact_transcript": "/81/efcdfd0fe2/0/transcript.jsonl",
+      "content_hash": "/81/efcdfd0fe2/0/content_hash.txt",
+      "prompt": "/81/efcdfd0fe2/0/prompt.txt"
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 11,
+    "cache_creation_tokens": 200978,
+    "cache_read_tokens": 992193,
+    "output_tokens": 4061,
+    "api_call_count": 6
+  }
+}
