@@ -470,6 +470,7 @@ on the volume rather than guessing which one you meant.
 | `EZPDS_NOTIFY_APNS_TOPICS` | Comma-separated bundle ids this relay will push to. Empty means any topic. |
 | `EZPDS_NOTIFY_APNS_SANDBOX` | `true` for Apple's sandbox host (development builds). |
 | `EZPDS_NOTIFY_OPEN_ENROLLMENT` | Leave `false` on the official relay — enrollment is by operator-minted code. |
+| `EZPDS_NOTIFY_IPV6` | **Set `false` on Railway.** Same reason as `EZPDS_IROH_IPV6` on the PDS: Railway containers carry internal v6 addresses they cannot route, so iroh's v6 relay probes fail `NetworkUnreachable` forever — a WARN every ~80s burying real errors — while v4 carries all traffic regardless. The relay defaults to `true`, which is right on a dual-stack host and wrong here. |
 
 `EZPDS_NOTIFY_DATABASE_URL` and `EZPDS_NOTIFY_SECRET_KEY_PATH` are already set in the image;
 override them only if the volume mounts somewhere other than `/data`.

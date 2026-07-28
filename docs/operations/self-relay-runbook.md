@@ -207,6 +207,7 @@ out secrets as env vars while the relay reads them as paths:
 | `EZPDS_NOTIFY_APNS_KEY_P8` | The `.p8` PEM text, pasted verbatim (newlines and all). Written to `/run`, never to the volume. |
 | `EZPDS_NOTIFY_APNS_KEY_ID`, `EZPDS_NOTIFY_APNS_TEAM_ID`, `EZPDS_NOTIFY_APNS_TOPICS`, `EZPDS_NOTIFY_APNS_SANDBOX` | The rest of the APNs block; topics is comma-separated. |
 | `EZPDS_NOTIFY_OPEN_ENROLLMENT` | As above. |
+| `EZPDS_NOTIFY_IPV6` | Defaults to `true`. Set `false` on a host with no routable IPv6 egress — otherwise iroh's v6 relay probes fail `NetworkUnreachable` every ~80s forever, burying real errors, while v4 carries the traffic anyway. |
 
 If `EZPDS_NOTIFY_NODE_SECRET` disagrees with a key already on the volume, the container
 refuses to start rather than pick one — silently overwriting would re-address a working
