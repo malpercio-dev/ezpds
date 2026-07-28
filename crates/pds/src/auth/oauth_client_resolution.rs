@@ -12,6 +12,10 @@
 // required everywhere except loopback hosts, which may use plain http (the spec's
 // local-development exception — also what lets tests serve metadata from 127.0.0.1).
 
+use std::collections::HashMap;
+use std::sync::{Mutex, OnceLock};
+use std::time::{Duration, Instant};
+
 use url::{Host, Url};
 
 /// Upper bound on an accepted client-metadata document. Real documents are well under
@@ -21,6 +25,49 @@ const MAX_METADATA_BYTES: usize = 64 * 1024;
 /// Fetch timeout for the metadata document, independent of (and tighter than) the shared
 /// client's default: PAR is interactive and a slow metadata host shouldn't hold it long.
 const FETCH_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// How long a failed resolution is remembered before the same client_id may trigger
+/// another outbound fetch. Long enough to blunt replaying one failing URL against the
+/// unauthenticated PAR/authorize endpoints; short enough that a client developer fixing
+/// their metadata document isn't locked out meaningfully.
+const NEGATIVE_CACHE_TTL: Duration = Duration::from_secs(60);
+
+/// Bound on remembered failures so an attacker rotating client_ids can't grow the map
+/// without limit; on overflow the oldest entry is evicted (the one closest to expiry).
+const NEGATIVE_CACHE_MAX: usize = 1024;
+
+/// Recently failed resolutions, keyed by client_id. Process-local by design: this is a
+/// throttle on *our own outbound fetches*, not a correctness cache, so losing it on
+/// restart costs nothing. Successful resolutions are cached durably by the callers
+/// (`oauth_clients` rows); only failures need remembering here.
+fn negative_cache() -> &'static Mutex<HashMap<String, Instant>> {
+    static CACHE: OnceLock<Mutex<HashMap<String, Instant>>> = OnceLock::new();
+    CACHE.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// Whether this client_id failed to resolve within the negative-cache TTL.
+fn recently_failed(client_id: &str) -> bool {
+    let cache = negative_cache().lock().unwrap_or_else(|e| e.into_inner());
+    cache
+        .get(client_id)
+        .is_some_and(|at| at.elapsed() < NEGATIVE_CACHE_TTL)
+}
+
+/// Record a failed resolution, expiring stale entries and evicting the oldest on overflow.
+fn record_failure(client_id: &str) {
+    let mut cache = negative_cache().lock().unwrap_or_else(|e| e.into_inner());
+    cache.retain(|_, at| at.elapsed() < NEGATIVE_CACHE_TTL);
+    if cache.len() >= NEGATIVE_CACHE_MAX {
+        if let Some(oldest) = cache
+            .iter()
+            .min_by_key(|(_, at)| **at)
+            .map(|(k, _)| k.clone())
+        {
+            cache.remove(&oldest);
+        }
+    }
+    cache.insert(client_id.to_string(), Instant::now());
+}
 
 /// Why a URL client_id could not be resolved to a usable client-metadata document.
 ///
@@ -50,6 +97,9 @@ pub enum ClientResolutionError {
         "client metadata client_id mismatch (the document must declare the URL it is served from)"
     )]
     ClientIdMismatch,
+
+    #[error("client metadata resolution for this client_id recently failed; retry shortly")]
+    RecentlyFailed,
 }
 
 /// Validate the URL policy for a metadata-URL client_id (pure; no I/O).
@@ -104,14 +154,85 @@ fn validate_metadata_document(client_id: &str, body: &str) -> Result<(), ClientR
     Ok(())
 }
 
+/// atproto OAuth: for a discoverable (URL) client_id, a private-use-scheme redirect
+/// URI's scheme must be the client_id host's FQDN in reverse order (e.g. client_id
+/// host `identitywallet.obsign.org` ⇒ scheme `org.obsign.identitywallet`). This binds
+/// the custom scheme to a domain the client demonstrably controls — without it, any
+/// app could register a metadata document listing another app's callback scheme.
+///
+/// The rule only applies to https client_ids (discoverable metadata): loopback-http
+/// client_ids are the spec's local-development exception with no meaningful domain,
+/// non-URL client_ids are operator-registered rows the rule predates, and http(s)
+/// redirect URIs are not private-use schemes.
+///
+/// Shared policy point for both request surfaces that validate a redirect target —
+/// `routes/oauth_par.rs` and `routes/oauth_authorize.rs` (routes cannot import each
+/// other, and a security check restated per route is a check that drifts per route).
+pub(crate) fn validate_private_use_redirect(
+    client_id: &str,
+    redirect_uri: &str,
+) -> Result<(), String> {
+    let Ok(client_url) = Url::parse(client_id) else {
+        return Ok(());
+    };
+    if client_url.scheme() != "https" {
+        return Ok(());
+    }
+    let Ok(redirect_url) = Url::parse(redirect_uri) else {
+        return Ok(());
+    };
+    let scheme = redirect_url.scheme();
+    if scheme == "http" || scheme == "https" {
+        return Ok(());
+    }
+    let Some(host) = client_url.host_str() else {
+        return Ok(());
+    };
+    let reversed = host.split('.').rev().collect::<Vec<_>>().join(".");
+    if scheme.eq_ignore_ascii_case(&reversed) {
+        Ok(())
+    } else {
+        Err(format!(
+            "Private-Use URI Scheme redirect URI, for discoverable client metadata, \
+             must be the fully qualified domain name (FQDN) of the client_id, \
+             in reverse order ({reversed}:)"
+        ))
+    }
+}
+
 /// Resolve a URL client_id to its raw client-metadata JSON (validate URL → fetch →
 /// validate document). The caller decides whether/when to cache the returned JSON.
 pub async fn resolve_client_metadata(
     http: &reqwest::Client,
     client_id: &str,
 ) -> Result<String, ClientResolutionError> {
+    // URL-policy failures are pure and cost nothing — only fetch-path failures are worth
+    // remembering. Both callers (`/oauth/par`, `/oauth/authorize`) are unauthenticated,
+    // so without the negative cache, replaying one failing client_id would trigger a
+    // fresh outbound request every time (bounded only by the per-IP limiter and the
+    // fetch timeout).
     let url = validate_client_id_url(client_id)?;
 
+    if recently_failed(client_id) {
+        return Err(ClientResolutionError::RecentlyFailed);
+    }
+
+    match fetch_and_validate(http, client_id, url).await {
+        Ok(body) => Ok(body),
+        Err(e) => {
+            record_failure(client_id);
+            Err(e)
+        }
+    }
+}
+
+/// The fetch + validation pipeline behind [`resolve_client_metadata`], separated so the
+/// caller can record any failure into the negative cache in one place.
+async fn fetch_and_validate(
+    http: &reqwest::Client,
+    client_id: &str,
+    url: Url,
+) -> Result<String, ClientResolutionError> {
     let response = http
         .get(url)
         .header("Accept", "application/json")
@@ -183,6 +304,87 @@ mod tests {
             validate_client_id_url("ftp://app.example.com/m.json"),
             Err(ClientResolutionError::InsecureUrl)
         ));
+    }
+
+    /// A failed resolution is negatively cached: the second attempt for the same
+    /// client_id inside the TTL short-circuits without an outbound request. Both callers
+    /// are unauthenticated, so this is what keeps a replayed failing client_id from
+    /// turning the server into a fetch loop.
+    #[tokio::test]
+    async fn failed_resolution_is_negatively_cached() {
+        // Bind then drop a listener: a loopback port that deterministically refuses.
+        let port = {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            listener.local_addr().unwrap().port()
+        };
+        let client_id = format!("http://127.0.0.1:{port}/oauth/client-metadata.json");
+        let http = reqwest::Client::new();
+
+        let first = resolve_client_metadata(&http, &client_id).await;
+        assert!(
+            matches!(first, Err(ClientResolutionError::Fetch(_))),
+            "first attempt reports the real fetch failure: {first:?}"
+        );
+
+        let second = resolve_client_metadata(&http, &client_id).await;
+        assert!(
+            matches!(second, Err(ClientResolutionError::RecentlyFailed)),
+            "second attempt inside the TTL must short-circuit: {second:?}"
+        );
+    }
+
+    // ── Reverse-FQDN rule for private-use-scheme redirect URIs ─────────────────
+
+    #[test]
+    fn private_use_redirect_scheme_must_reverse_client_id_host() {
+        // Matching reverse-FQDN passes.
+        assert!(validate_private_use_redirect(
+            "https://identitywallet.obsign.org/oauth/client-metadata.json",
+            "org.obsign.identitywallet:/oauth/callback",
+        )
+        .is_ok());
+
+        // Mismatched scheme is rejected, naming the required scheme.
+        let err = validate_private_use_redirect(
+            "https://ezpds-staging.up.railway.app/oauth/client-metadata.json",
+            "dev.malpercio.identitywallet:/oauth/callback",
+        )
+        .unwrap_err();
+        assert!(
+            err.contains("app.railway.up.ezpds-staging:"),
+            "the error must name the required reverse-FQDN scheme, got: {err}"
+        );
+
+        // Scheme comparison is case-insensitive.
+        assert!(validate_private_use_redirect(
+            "https://IdentityWallet.Obsign.Org/oauth/client-metadata.json",
+            "org.obsign.identitywallet:/oauth/callback",
+        )
+        .is_ok());
+    }
+
+    #[test]
+    fn private_use_redirect_rule_exemptions() {
+        // https redirect URIs are not private-use schemes.
+        assert!(validate_private_use_redirect(
+            "https://app.example.com/client-metadata.json",
+            "https://app.example.com/callback",
+        )
+        .is_ok());
+
+        // Loopback-http client_ids (local development) are exempt.
+        assert!(validate_private_use_redirect(
+            "http://localhost:8080/oauth/client-metadata.json",
+            "org.obsign.identitywallet:/oauth/callback",
+        )
+        .is_ok());
+
+        // Non-URL client_ids (operator-registered rows) are exempt.
+        assert!(validate_private_use_redirect(
+            "dev.malpercio.identitywallet",
+            "dev.malpercio.identitywallet:/oauth/callback",
+        )
+        .is_ok());
     }
 
     #[test]
