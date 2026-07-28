@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Changes are collected in `changelog.d/` during development and inserted here when
 `just set-version` prepares a release. There is intentionally no `Unreleased` section.
 
+## [0.9.1] - 2026-07-27
+
+### Fixed
+
+- OAuth logins from browser-based atproto apps (which request `response_mode=fragment`, the official client library's default) now complete: the authorization response is delivered in the URL fragment when requested instead of always in the query string, and the server metadata advertises `response_modes_supported`.
+
+- Third-party atproto apps that send a direct (non-PAR) authorization request no longer fail with "client_id is not registered": the authorize endpoint now resolves an unknown URL-shaped client's metadata document live, exactly as the PAR endpoint already did, and enforces the same private-use-scheme redirect rule.
+
+
 ## [0.9.0] - 2026-07-27
 
 ### Added
