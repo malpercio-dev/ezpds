@@ -396,8 +396,16 @@ async fn fetch_lexicon_schema(
 /// Resolve and expand a single `include:<nsid>` reference into its constituent canonical
 /// granular scope tokens. `include_aud` is the `include:` token's own `?aud=` param, if any.
 ///
-/// Fails closed: any resolution, fetch, parse, or validation failure rejects the whole
-/// permission set rather than dropping just the offending entry.
+/// Fails closed at the *document* level: any resolution, fetch, or shape failure (no
+/// `defs`, not a permission-set, malformed JSON, a `blob:*/*` grant) rejects the whole
+/// set. Individual *entries* that cannot be converted to a valid scope token are instead
+/// skipped, matching the reference (`@atproto/oauth-scopes` `IncludeScope.buildPermissions`
+/// `continue`s past unconvertible entries). This matters in the wild: bsky's published
+/// `app.bsky.authCreatePosts` carries an `inheritAud` rpc entry with no `aud`, so an
+/// `include:` of it without `?aud=` has one unrenderable entry — the reference expands to
+/// the remaining grants, and failing the whole set here broke real clients' logins.
+/// Skipping only ever narrows the grant, and the display and authoritative expansions
+/// share this path, so what the user sees stays what is granted.
 pub(crate) async fn resolve_permission_set(
     state: &AppState,
     nsid: &str,
@@ -426,14 +434,36 @@ pub(crate) async fn resolve_permission_set(
         ));
     }
 
-    main.permissions
+    Ok(main
+        .permissions
         .iter()
-        .map(|entry| {
+        .filter_map(|entry| {
+            // Reference rule: an rpc entry inside a set may not pin a concrete audience —
+            // only `aud: "*"` or `inheritAud` are meaningful there. A pinned aud is
+            // dropped, not honored (`IncludeScope.parseLexPermission` returns null).
+            if let PermissionEntry::Rpc {
+                aud: Some(aud),
+                inherit_aud: _,
+                ..
+            } = entry
+            {
+                if aud != "*" {
+                    tracing::debug!(
+                        nsid,
+                        aud,
+                        "skipping permission-set rpc entry with a pinned audience"
+                    );
+                    return None;
+                }
+            }
             let raw = render_permission_entry(entry, include_aud);
-            normalize_token(&raw)
-                .ok_or_else(|| format!("\"{nsid}\" contains an invalid permission entry"))
+            let normalized = normalize_token(&raw);
+            if normalized.is_none() {
+                tracing::debug!(nsid, raw, "skipping unconvertible permission-set entry");
+            }
+            normalized
         })
-        .collect()
+        .collect())
 }
 
 #[cfg(test)]
@@ -711,23 +741,57 @@ mod tests {
         );
     }
 
+    /// The `app.bsky.authCreatePosts` shape in the wild: an `inheritAud` rpc entry with
+    /// no aud beside a plain repo grant. Included without `?aud=`, the rpc entry cannot
+    /// render a valid token — the reference skips it and keeps the rest, and failing the
+    /// whole set here broke real clients' logins (bsky serves this exact document).
     #[tokio::test]
-    async fn inherit_aud_with_no_audience_available_fails_closed() {
+    async fn inherit_aud_with_no_audience_available_skips_only_that_entry() {
         let server = MockServer::start().await;
         let nsid = "app.bsky.authFull";
         let schema = permission_set_schema(
             nsid,
             serde_json::json!([
                 { "type": "permission", "resource": "rpc", "lxm": ["app.bsky.feed.getTimeline"], "inheritAud": true },
+                { "type": "permission", "resource": "repo", "collection": ["app.bsky.feed.post"], "action": ["create"] },
             ]),
         );
         let state = state_with_mock_authority(&server, nsid, schema).await;
 
-        // No include_aud supplied, and the entry has no literal aud either.
-        let err = resolve_permission_set(&state, nsid, None)
+        // No include_aud supplied, and the rpc entry has no literal aud either.
+        let tokens = resolve_permission_set(&state, nsid, None)
             .await
-            .unwrap_err();
-        assert!(err.contains("invalid permission entry"), "got: {err}");
+            .expect("the set must still expand to its convertible entries");
+        assert_eq!(
+            tokens,
+            vec!["repo:app.bsky.feed.post?action=create".to_string()],
+            "the unrenderable rpc entry is skipped, the repo grant survives"
+        );
+    }
+
+    /// Reference rule: an rpc entry inside a permission set may not pin a concrete
+    /// audience — such an entry is dropped, never honored. `aud: "*"` stays valid.
+    #[tokio::test]
+    async fn pinned_audience_rpc_entry_is_skipped() {
+        let server = MockServer::start().await;
+        let nsid = "app.bsky.authFull";
+        let schema = permission_set_schema(
+            nsid,
+            serde_json::json!([
+                { "type": "permission", "resource": "rpc", "lxm": ["app.bsky.feed.getTimeline"], "aud": "did:web:evil.example.com" },
+                { "type": "permission", "resource": "rpc", "lxm": ["app.bsky.feed.getFeed"], "aud": "*" },
+            ]),
+        );
+        let state = state_with_mock_authority(&server, nsid, schema).await;
+
+        let tokens = resolve_permission_set(&state, nsid, None)
+            .await
+            .expect("should expand");
+        assert_eq!(
+            tokens,
+            vec!["rpc:app.bsky.feed.getFeed?aud=*".to_string()],
+            "the pinned-audience entry is dropped; the wildcard-audience one survives"
+        );
     }
 
     // ── resolve_permission_set_cached ────────────────────────────────────────
