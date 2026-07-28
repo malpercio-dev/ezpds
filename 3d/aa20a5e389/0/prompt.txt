@@ -1,0 +1,28 @@
+hm, the env vars don't seem to be intrinsically set when I shell in to the running relay, will need to source those somehow
+
+---
+
+wait, I'm sorry, I lied. they are set, the problem is, the entrypoint script writes a file and then sets a new env var within the process. so I just need to also set the apn key file path env var first
+
+---
+
+I have a node id and an enrollment code, can we try to stand up a local pds and test the connection that way?
+
+---
+
+```
+Error: account "notify-enroll" already exists in state (did: did:plc:ptsjk36rcsm4kfjr672zjgez). Pick another --name or delete it first.
+    at Module.createAccount (file:///Users/jacob.zweifel/workspace/malpercio-dev/ezpds/tools/interop/src/account.js:52:11)
+    at file:///private/tmp/claude-501/-Users-jacob-zweifel-workspace-malpercio-dev-ezpds/9f1acf75-14d9-4597-97c1-d83cf57cad82/scratchpad/notify-enroll-test.mjs:50:31
+```
+
+---
+
+I did notice a warn in the harness logs:
+
+```
+WARN endpoint{id=4c348c9581}:actor:QADv6{relay_url=https://aps1-1.relay.n0.iroh.link./}:poll_send{network_path=Ip { remote: [2a01:4ff:2f0:29c1::1]:7842, local: None } len=1200}: noq_udp: sendmsg error: Os { code: 65, kind: HostUnreachable, message: "No route to host" }, Transmit: { destination: [2a01:4ff:2f0:29c1::1]:7842, src_ip: None, ecn: Some(Ect0), len: 1200, segment_size: None }
+2026-07-28T23:36:48.785054Z  WARN endpoint{id=4c348c9581}:actor:QADv6{relay_url=https://use1-1.relay.n0.iroh.link./}:poll_send{network_path=Ip { remote: [2a01:4ff:f0:b1b3::1]:7842, local: None } len=1200}: noq_udp: sendmsg error: Os { code: 65, kind: HostUnreachable, message: "No route to host" }, Transmit: { destination: [2a01:4ff:f0:b1b3::1]:7842, src_ip: None, ecn: Some(Ect0), len: 1200, segment_size: None }
+```
+
+I think this is only because the relay is advertising an ipv6 address (and I allowed outbound ipv6 in the railway config), but my laptop/network just are not configured for that. is that correct? it _did_ successfully enroll after all

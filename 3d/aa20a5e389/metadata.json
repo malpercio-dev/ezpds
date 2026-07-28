@@ -1,0 +1,26 @@
+{
+  "cli_version": "0.9.0",
+  "checkpoint_id": "3daa20a5e389",
+  "strategy": "manual-commit",
+  "branch": "malpercio/harness-notify-passthrough",
+  "checkpoints_count": 3,
+  "files_touched": [
+    "scripts/harness-pds.mjs"
+  ],
+  "sessions": [
+    {
+      "metadata": "/3d/aa20a5e389/0/metadata.json",
+      "transcript": "/3d/aa20a5e389/0/full.jsonl",
+      "compact_transcript": "/3d/aa20a5e389/0/transcript.jsonl",
+      "content_hash": "/3d/aa20a5e389/0/content_hash.txt",
+      "prompt": "/3d/aa20a5e389/0/prompt.txt"
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 314,
+    "cache_creation_tokens": 1045204,
+    "cache_read_tokens": 33071105,
+    "output_tokens": 106655,
+    "api_call_count": 168
+  }
+}
