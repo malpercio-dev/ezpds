@@ -13,10 +13,59 @@
     shareTextNative,
     getBackgroundBackupSettings,
     setBackgroundBackupSettings,
+    getNotificationDiagnostics,
+    clearNotificationFailures,
     type BackgroundBackupSettings,
+    type NotificationDiagnostics,
   } from '$lib/ipc';
+  import {
+    summarizeNotificationFailures,
+    type NotificationHealth,
+  } from '$lib/notification-health';
 
   let { onback }: { onback: () => void } = $props();
+
+  // ── Notification health ─────────────────────────────────────────────────────
+  // The in-app half of the unverified notice. iOS will not let the Notification Service
+  // Extension suppress an alert push, so a payload this device cannot verify still shows a
+  // banner saying so — and that banner cannot say WHY. The extension leaves a breadcrumb for
+  // each one; this reads them back and states the difference between a key desync (fixable by
+  // opening the app) and a relay sending junk (grounds for switching relays).
+  let notifications = $state<NotificationDiagnostics | null>(null);
+  let notificationsUnavailable = $state(false);
+  let clearingFailures = $state(false);
+
+  const notificationHealth = $derived<NotificationHealth | null>(
+    notifications ? summarizeNotificationFailures(notifications.recentFailures) : null
+  );
+  /** Whether this device has ever minted its notification key — i.e. whether push is set up. */
+  const notificationsConfigured = $derived(notifications?.notificationKeyId != null);
+
+  async function loadNotifications() {
+    try {
+      notifications = await getNotificationDiagnostics();
+      notificationsUnavailable = false;
+    } catch (e) {
+      console.error('Failed to read notification diagnostics:', e);
+      // Say nothing rather than claim health. This surface exists for the case where something
+      // is already wrong; "No notification problems" over a failed read would be the one
+      // sentence it must never produce.
+      notifications = null;
+      notificationsUnavailable = true;
+    }
+  }
+
+  async function acknowledgeFailures() {
+    clearingFailures = true;
+    try {
+      await clearNotificationFailures();
+      await loadNotifications();
+    } catch (e) {
+      console.error('Failed to clear notification failures:', e);
+    } finally {
+      clearingFailures = false;
+    }
+  }
 
   // ── Background media-backup settings ────────────────────────────────────────
   // App-global (the background sweep is one task covering every opted-in identity).
@@ -36,6 +85,7 @@
       console.error('Failed to load media-backup settings:', e);
       // Keep the defaults; a failed read must not present a wrong state as if saved.
     }
+    await loadNotifications();
   });
 
   async function updateBgBackup(patch: Partial<BackgroundBackupSettings>) {
@@ -237,6 +287,74 @@
     {/if}
   </section>
 
+  <section class="group" aria-labelledby="notifications-title">
+    <div class="group-head">
+      <h2 class="group-title" id="notifications-title">Notifications</h2>
+      <p class="group-sub">
+        Notifications from your server arrive sealed and are opened on this iPhone. When one
+        can’t be opened, your phone still shows it — marked as unverified — and records why
+        here.
+      </p>
+    </div>
+
+    {#if notificationsUnavailable}
+      <p class="notice notice--info" role="status">
+        <span class="notice-mark" aria-hidden="true">?</span>
+        <span class="notice-text">
+          <span class="notice-headline">Couldn’t read notification status</span>
+          <span class="notice-detail">Try again after reopening Obsign.</span>
+        </span>
+      </p>
+    {:else if !notificationsConfigured}
+      <p class="notice notice--info" role="status">
+        <span class="notice-mark" aria-hidden="true">·</span>
+        <span class="notice-text">
+          <span class="notice-headline">Not set up on this iPhone yet</span>
+          <span class="notice-detail">
+            Sealed notifications start once an identity registers this device with its server.
+          </span>
+        </span>
+      </p>
+    {:else if notificationHealth}
+      <!-- The level is carried by the mark glyph, the headline wording, and the screen-reader
+           prefix — never by the tint alone (DESIGN.md: status is never colour-only). -->
+      <p
+        class="notice notice--{notificationHealth.level}"
+        role={notificationHealth.level === 'attention' ? 'alert' : 'status'}
+      >
+        <span class="notice-mark" aria-hidden="true">
+          {notificationHealth.level === 'attention'
+            ? '!'
+            : notificationHealth.level === 'info'
+              ? 'i'
+              : '✓'}
+        </span>
+        <span class="notice-text">
+          <span class="notice-headline">
+            <span class="sr-only">
+              {notificationHealth.level === 'attention'
+                ? 'Needs attention: '
+                : notificationHealth.level === 'info'
+                  ? 'For information: '
+                  : 'All clear: '}
+            </span>
+            {notificationHealth.headline}
+          </span>
+          <span class="notice-detail">{notificationHealth.detail}</span>
+          {#if notificationHealth.advice}
+            <span class="notice-advice">{notificationHealth.advice}</span>
+          {/if}
+        </span>
+      </p>
+
+      {#if notificationHealth.count > 0}
+        <Button variant="secondary" disabled={clearingFailures} onclick={acknowledgeFailures}>
+          {clearingFailures ? 'Clearing…' : 'Clear this record'}
+        </Button>
+      {/if}
+    {/if}
+  </section>
+
   <section class="group" aria-labelledby="diagnostics-title">
     <div class="group-head">
       <h2 class="group-title" id="diagnostics-title">Diagnostics</h2>
@@ -358,6 +476,75 @@
     background: var(--color-seal-pale);
     color: var(--color-ink);
     font-weight: var(--weight-semibold);
+  }
+
+  /* The notification-health readout. Three states share one shape so the surface reads the
+     same whether or not anything is wrong; what changes is the mark glyph, the wording, and
+     a tonal ground — never the tint on its own. */
+  .notice {
+    display: flex;
+    align-items: flex-start;
+    gap: var(--space-xs);
+    margin: 0;
+    padding: var(--space-sm);
+    border-radius: var(--radius-md);
+    border: 1px solid var(--color-line);
+    background: var(--color-surface-sunk);
+  }
+  .notice-mark {
+    flex: none;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 20px;
+    height: 20px;
+    margin-top: 1px;
+    border-radius: 50%;
+    border: 1.5px solid currentColor;
+    font-family: var(--font-sans);
+    font-size: 12px;
+    font-weight: var(--weight-semibold);
+    line-height: 1;
+  }
+  .notice-text {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-2xs);
+    min-width: 0;
+  }
+  .notice-headline {
+    font-family: var(--font-sans);
+    font-size: var(--text-label);
+    font-weight: var(--weight-semibold);
+    color: var(--color-ink);
+  }
+  .notice-detail,
+  .notice-advice {
+    font-size: var(--text-label);
+    color: var(--color-muted);
+  }
+  /* The action reads as an instruction, not as more description. */
+  .notice-advice {
+    color: var(--color-ink);
+  }
+  .notice--quiet {
+    background: var(--color-safe-surface);
+    border-color: var(--color-safe);
+    color: var(--color-safe);
+  }
+  .notice--quiet .notice-detail {
+    color: var(--color-safe-soft);
+  }
+  .notice--attention {
+    background: var(--color-warning-surface);
+    border-color: var(--color-warning);
+    color: var(--color-warning);
+  }
+  .notice--attention .notice-detail {
+    color: var(--color-warning-soft);
+  }
+  .notice--info {
+    color: var(--color-muted);
   }
 
   .save-error {

@@ -1756,6 +1756,7 @@ pub fn run() {
             notifications::register_for_notifications,
             notifications::refresh_notification_sender_keys,
             notifications::get_notification_diagnostics,
+            notifications::clear_notification_failures,
             plc_monitor::check_identity_status,
             plc_monitor::get_monitor_history,
             recovery::build_recovery_override_cmd,

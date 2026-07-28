@@ -266,13 +266,46 @@ reports `AWAITING_APNS_TOKEN` forever and registers with no server, which reads 
 happens" rather than as an error. This is the only one of the three that gates the wallet's
 own build, via the profile-regeneration rule in [step 3](#2-app-store-connect) above.
 
-**2. The Notification Service Extension's App ID** (with the extension itself). An app
-extension is a **separate bundle** (`dev.malpercio.identitywallet.<name>`), so it needs its
-own explicit App ID, its own distribution profile signed by the same team cert, and its own
-`IOS_MOBILE_PROVISION_*`-style secret — the same three-artifact shape the Admin Companion
-lane above already establishes. It does **not** need `aps-environment` (that is an app
-entitlement, not an extension one); what it needs is the shared keychain access group, which
-needs no portal work for the reason given in step 3.
+**2. The Notification Service Extension's App ID** (shipped — the extension itself now
+exists). An app extension is a **separate bundle**, here
+`dev.malpercio.identitywallet.NotificationService`, so it needs its own explicit App ID, its
+own distribution profile signed by the same team cert, and its own `IOS_MOBILE_PROVISION_*`-style
+secret — the same three-artifact shape the Admin Companion lane above already establishes. It
+does **not** need `aps-environment` (that is an app entitlement, not an extension one); what
+it needs is the shared keychain access group, which needs no portal work for the reason given
+in step 3.
+
+> **This is a release blocker, not a nicety.** The extension is embedded into the app bundle by
+> the XcodeGen template, so from the change that added it onward the wallet's TestFlight lane
+> archives two bundles and needs a profile for each. Until the App ID and profile below exist,
+> `just ios-ipa` (and therefore `ios-testflight.yml`) fails at signing. Nothing else is blocked:
+> `just ios-pr-check` runs no `xcodebuild` and stays green, and admin-companion is untouched —
+> the extension is deliberately gated to the wallet's bundle id in `scripts/ios/project.yml`, so
+> the console needs none of this until MM-421 widens that gate.
+
+**Setting it up** (one time, mirroring the Admin Companion list above):
+
+1. **App ID** — register `dev.malpercio.identitywallet.NotificationService`. No capabilities to
+   enable: the extension's only entitlement is `keychain-access-groups`, which a profile
+   authorizes through its `<TeamID>.*` wildcard. There is **no** App Store Connect app record —
+   an extension ships inside its host app, not beside it.
+2. **App Store provisioning profile** — a Distribution profile bound to that App ID, signed by
+   the same Apple Distribution cert the wallet already uses.
+3. **GitHub secret** — base64 of that profile, wired into the wallet lane alongside
+   `IOS_MOBILE_PROVISION`. Xcode resolves the extension's profile at archive time, so both must
+   be installed on the runner before `just ios-ipa` runs.
+
+Verify locally first — `just ios-release` on your Mac with both profiles installed — before
+trusting the cloud job, exactly as the Admin Companion section advises.
+
+**Running the extension's tests.** `ios-pr-check` stops short of `xcodebuild`, so the CryptoKit
+cross-check against `crates/crypto`'s golden HPKE vectors is not CI-gated. The template
+generates a dedicated `<app>_NSETests` scheme that builds only the extension (not the app, and
+therefore not the Rust staticlib), so it runs in seconds:
+
+```bash
+xcodebuild test -project apps/identity-wallet/src-tauri/gen/apple/*.xcodeproj -scheme Obsign_NSETests -destination 'platform=iOS Simulator,name=iPhone 17'
+```
 
 **3. The relay's APNs auth key** (not an app artifact at all). Certificates, Identifiers &
 Profiles → **Keys** → a new key with **Apple Push Notifications service (APNs)** enabled,

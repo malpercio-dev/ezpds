@@ -61,6 +61,11 @@ path_deps() {
 #   just/release.just, just/ios.just — the imported recipe files the root justfile pulls
 #                                 in (the iOS build recipes now live in just/ios.just); a
 #                                 broken import fails `just` at parse time for every lane
+#   ios/**                      — the shared Swift sources for the Notification Service
+#                                 Extension, compiled by the wallet's NSE target and its test
+#                                 bundle. Not a cargo crate, so the dependency graph cannot see
+#                                 it; a Swift compile error there breaks the macOS lane and
+#                                 nothing else would trigger it
 #   scripts/ios/**              — the shared iOS toolchain/patch scripts
 #   .github/actions/ios-setup/**— the shared runner-preamble composite action all three
 #                                 lanes use (toolchain, cache, tauri-cli pin, brew shim)
@@ -71,6 +76,7 @@ INFRA=(
   "justfile"
   "just/release.just"
   "just/ios.just"
+  "ios/**"
   "scripts/ios/**"
   ".github/actions/ios-setup/**"
   "rust-toolchain.toml"

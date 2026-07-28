@@ -250,6 +250,7 @@ export type CommandName =
   | 'register_for_notifications'
   | 'refresh_notification_sender_keys'
   | 'get_notification_diagnostics'
+  | 'clear_notification_failures'
   // biometric plugin (driven by $lib/biometric — resolves = allow the gate)
   | 'plugin:biometric|authenticate'
   | 'plugin:biometric|status';
@@ -1405,7 +1406,14 @@ export function buildRegistry(state: WalletState): Registry {
         : null,
       hasApnsToken: state.notifications.apnsToken !== null,
       pinnedHosts: state.notifications.pinnedHosts,
+      recentFailures: state.notifications.recentFailures,
     }),
+    // The real command deletes the Keychain slot the extension appends to; there is no
+    // extension in a browser, so the fake truncates the seeded list in place.
+    clear_notification_failures: (): null => {
+      state.notifications.recentFailures.length = 0;
+      return null;
+    },
 
     // ── biometric plugin (allow the gate) ────────────────────────────────────
     'plugin:biometric|authenticate': () => null,

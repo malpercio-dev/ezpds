@@ -7,10 +7,21 @@
 //   register_for_notifications(did)         — POST /v1/notifications/register
 //   refresh_notification_sender_keys(did)   — GET  /v1/notifications/sender-keys (the re-pin)
 //   get_notification_diagnostics()          — what this device holds, for Settings
+//   clear_notification_failures()           — acknowledge the extension's breadcrumbs
 //
-// Nothing here decrypts anything. The extension that does is a separate target (a later phase);
-// this module's whole job is to leave the right material in the right Keychain slots under the
-// right protection class, and to keep the pinned set fresh.
+// Nothing here decrypts anything. The Notification Service Extension that does is a separate
+// bundle (`ios/NotificationService/`, Swift + CryptoKit); this module's whole job is to leave
+// the right material in the right Keychain slots under the right protection class, and to keep
+// the pinned set fresh.
+//
+// # The one slot this module reads but does not write
+//
+// `notification-failures` runs the other way: the extension appends to it, the app reads it.
+// It exists because iOS will not let a Notification Service Extension suppress an alert push,
+// so a payload that fails to verify still produces a banner — the honest "couldn't verify"
+// notice, which on its own is a mystery. The breadcrumbs are what let Settings say whether the
+// cause is a key desync (the instance rotated and this device has not re-pinned) or a relay
+// sending junk, which are the same banner and completely different problems.
 //
 // # Why the material is device-global rather than per-DID
 //
@@ -77,6 +88,14 @@ const PINNED_SENDER_KEYS_ACCOUNT: &str = "notification-sender-keys";
 /// to put it in a registration request.
 const APNS_TOKEN_ACCOUNT: &str = "notification-apns-token";
 
+/// The Notification Service Extension's breadcrumb log — the only thing that process ever
+/// writes, and the only slot in this module the app does not author.
+///
+/// Same protection class as the key and the pins, for the same reason: the extension records a
+/// failure in the moment it happens, which is on a locked screen. Mirrored in Swift by
+/// `NotifyKeychain.failureLogAccount`; the two bundles can only agree by both spelling it.
+const FAILURE_LOG_ACCOUNT: &str = "notification-failures";
+
 /// Every account this module owns, so `keychain.rs`'s never-sync assertion is written against
 /// the list rather than a copy of it — a new slot added here is covered without anyone
 /// remembering to go and add it there too.
@@ -86,6 +105,7 @@ pub(crate) const NOTIFICATION_ACCOUNTS: &[&str] = &[
     NOTIFICATION_KEY_ACCOUNT,
     PINNED_SENDER_KEYS_ACCOUNT,
     APNS_TOKEN_ACCOUNT,
+    FAILURE_LOG_ACCOUNT,
 ];
 
 /// Version tag on the stored pin document, so a later shape change can be recognized rather
@@ -218,6 +238,65 @@ fn host_key(pds_url: &str) -> String {
     pds_url.trim().trim_end_matches('/').to_ascii_lowercase()
 }
 
+// ── The extension's breadcrumbs ──────────────────────────────────────────────
+
+/// One failure the Notification Service Extension recorded, mirroring Swift's `NotifyFailure`.
+///
+/// `reason` is a plain string, not an enum, and deliberately so: the extension is a separate
+/// bundle from this one. They ship together today, but the app is the process that has to keep
+/// reading a log written by whichever build happened to be installed — so an unrecognized
+/// reason must degrade to a generic sentence, not fail the whole read and blank a diagnostic
+/// surface whose entire job is to work when something is wrong.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NotificationFailure {
+    /// ISO 8601, from the extension's clock.
+    pub at: String,
+    /// `MALFORMED_PAYLOAD` · `KEYS_UNAVAILABLE` · `UNKNOWN_KID` · `OPEN_FAILED` ·
+    /// `MALFORMED_PLAINTEXT` — see Swift's `NotifyFailureReason`.
+    pub reason: String,
+    /// The envelope's `kid`, where the payload got far enough to have one.
+    pub kid: Option<i64>,
+}
+
+#[derive(Debug, Deserialize)]
+struct NotificationFailureLog {
+    version: u8,
+    #[serde(default)]
+    failures: Vec<NotificationFailure>,
+}
+
+/// The extension's log, newest first. Never fails.
+///
+/// Fail-open like the pin store, and for a sharper reason: this log is read precisely when
+/// notifications are already misbehaving. Erroring on a damaged record would take the one
+/// screen that explains the problem offline exactly when it is needed.
+fn load_failures() -> Vec<NotificationFailure> {
+    let raw = match crate::keychain::get_item(FAILURE_LOG_ACCOUNT) {
+        Ok(bytes) => bytes,
+        Err(e) => {
+            if !crate::keychain::is_not_found(&e) {
+                tracing::warn!(error = %e, "could not read notification failures; treating as none");
+            }
+            return Vec::new();
+        }
+    };
+    match serde_json::from_slice::<NotificationFailureLog>(&raw) {
+        Ok(log) if log.version == PIN_DOCUMENT_VERSION => log.failures,
+        Ok(log) => {
+            tracing::warn!(
+                version = log.version,
+                "notification failures were written by a different extension build; ignoring"
+            );
+            Vec::new()
+        }
+        Err(e) => {
+            tracing::warn!(error = %e, "notification failures are corrupt; ignoring");
+            Vec::new()
+        }
+    }
+}
+
 // ── Command results ──────────────────────────────────────────────────────────
 
 /// What a registration attempt actually did.
@@ -271,6 +350,12 @@ pub struct NotificationDiagnostics {
     pub has_apns_token: bool,
     /// Pinned sender keys per host, newest-first as the server published them.
     pub pinned_hosts: BTreeMap<String, Vec<SenderKey>>,
+    /// What the Notification Service Extension could not verify, newest first.
+    ///
+    /// The answer to "why do my notifications say they couldn't be verified". iOS cannot let
+    /// the extension suppress an alert push, so a key desync or a relay sending junk shows up
+    /// as a recurring unexplained banner; without this, nothing anywhere would say which.
+    pub recent_failures: Vec<NotificationFailure>,
 }
 
 // ── Device identity ──────────────────────────────────────────────────────────
@@ -764,6 +849,24 @@ pub fn get_notification_diagnostics() -> NotificationDiagnostics {
             .map(|keypair| keypair.key_id.0),
         has_apns_token: stored_apns_token().is_some(),
         pinned_hosts: load_pins().hosts,
+        recent_failures: load_failures(),
+    }
+}
+
+/// Tauri command: forget the extension's recorded failures.
+///
+/// The Settings surface needs this to be honest about the present. Once the user has re-pinned
+/// (or switched relays), the log would otherwise keep reporting a problem that is fixed until
+/// twenty more pushes have pushed it out — a diagnostic that cannot be acknowledged becomes
+/// noise, and noise is what stops the next real one from being read.
+///
+/// Idempotent, and never an error: an absent log is the state this leaves behind anyway.
+#[tauri::command]
+pub fn clear_notification_failures() {
+    if let Err(e) = crate::keychain::delete_item(FAILURE_LOG_ACCOUNT) {
+        if !crate::keychain::is_not_found(&e) {
+            tracing::warn!(error = %e, "could not clear notification failures");
+        }
     }
 }
 
@@ -1024,6 +1127,103 @@ mod tests {
         assert_eq!(empty.notification_key_id, None);
         assert!(!empty.has_apns_token);
         assert!(empty.pinned_hosts.is_empty());
+        assert!(empty.recent_failures.is_empty());
+    }
+
+    // ── the extension's breadcrumbs ──
+
+    /// The cross-bundle contract: bytes the Swift extension writes, parsed by this side.
+    /// The literal below is what `NotifyBreadcrumbs.record` encodes, so a field rename on
+    /// either side surfaces here rather than as a Settings screen that silently shows nothing.
+    #[test]
+    fn the_extensions_failure_log_is_read_as_the_extension_writes_it() {
+        crate::keychain::clear_for_test();
+        crate::keychain::store_item_after_first_unlock(
+            FAILURE_LOG_ACCOUNT,
+            br#"{"version":1,"failures":[
+                 {"at":"2026-07-27T10:00:00Z","reason":"UNKNOWN_KID","kid":4},
+                 {"at":"2026-07-27T09:00:00Z","reason":"MALFORMED_PAYLOAD","kid":null}]}"#,
+        )
+        .unwrap();
+
+        let failures = load_failures();
+        assert_eq!(failures.len(), 2);
+        assert_eq!(failures[0].reason, "UNKNOWN_KID");
+        assert_eq!(failures[0].kid, Some(4));
+        assert_eq!(
+            failures[1].kid, None,
+            "a junk push has no envelope to read a kid from"
+        );
+        assert_eq!(
+            get_notification_diagnostics().recent_failures,
+            failures,
+            "diagnostics must report the log, not a second reading of it"
+        );
+    }
+
+    /// The two bundles version independently, so a reason this build has never heard of has to
+    /// arrive intact for the UI to render generically — dropping the entry would hide the
+    /// failure the user is asking about.
+    #[test]
+    fn an_unrecognized_reason_survives_the_read() {
+        crate::keychain::clear_for_test();
+        crate::keychain::store_item_after_first_unlock(
+            FAILURE_LOG_ACCOUNT,
+            br#"{"version":1,"failures":[{"at":"2026-07-27T10:00:00Z","reason":"SOMETHING_NEW"}]}"#,
+        )
+        .unwrap();
+
+        let failures = load_failures();
+        assert_eq!(failures.len(), 1);
+        assert_eq!(failures[0].reason, "SOMETHING_NEW");
+        assert_eq!(
+            failures[0].kid, None,
+            "an absent kid is not a parse failure"
+        );
+    }
+
+    /// Fail-open: this log is read exactly when notifications are already misbehaving, so a
+    /// damaged record must not take the explaining screen offline with it.
+    #[test]
+    fn a_corrupt_or_foreign_version_failure_log_reads_as_none() {
+        for raw in [
+            &b"{not json"[..],
+            br#"{"version":99,"failures":[{"at":"t","reason":"OPEN_FAILED"}]}"#,
+        ] {
+            crate::keychain::clear_for_test();
+            crate::keychain::store_item_after_first_unlock(FAILURE_LOG_ACCOUNT, raw).unwrap();
+            assert!(load_failures().is_empty());
+        }
+    }
+
+    /// The extension writes on a locked screen, and the app must be able to read what it wrote
+    /// — so the slot carries the same class as the key and the pins, not the framework default.
+    #[test]
+    fn the_failure_log_is_readable_on_a_locked_screen() {
+        crate::keychain::clear_for_test();
+        crate::keychain::store_item_after_first_unlock(FAILURE_LOG_ACCOUNT, b"{}").unwrap();
+        assert_eq!(
+            crate::keychain::accessibility_of(FAILURE_LOG_ACCOUNT),
+            Some(Accessibility::AfterFirstUnlock)
+        );
+    }
+
+    #[test]
+    fn clearing_the_failures_is_idempotent_and_never_fatal() {
+        crate::keychain::clear_for_test();
+        // Nothing stored yet: an absent log is already the state this leaves behind.
+        clear_notification_failures();
+
+        crate::keychain::store_item_after_first_unlock(
+            FAILURE_LOG_ACCOUNT,
+            br#"{"version":1,"failures":[{"at":"t","reason":"OPEN_FAILED"}]}"#,
+        )
+        .unwrap();
+        assert_eq!(load_failures().len(), 1);
+
+        clear_notification_failures();
+        assert!(load_failures().is_empty());
+        clear_notification_failures();
     }
 
     #[test]
@@ -1039,6 +1239,7 @@ mod tests {
         assert_eq!(diagnostics.notification_key_id, Some(key_id));
         assert!(diagnostics.has_apns_token);
         assert_eq!(diagnostics.pinned_hosts["https://pds.example.com"].len(), 1);
+        assert!(diagnostics.recent_failures.is_empty());
 
         let json = serde_json::to_string(&diagnostics).unwrap();
         assert!(

@@ -37,6 +37,10 @@ on:
       # The shared iOS toolchain/patch scripts live in scripts/ios/ (per-app
       # scripts are thin wrappers). PDS-only scripts directly under scripts/
       # (bruno-parity, font-parity, ...) are deliberately excluded.
+      # The shared Swift sources for the wallet's Notification Service Extension.
+      # Not a cargo crate, so the dependency graph above cannot reach them — a Swift
+      # compile error here breaks the macOS lane and nothing else would trigger it.
+      - "ios/**"
       - "scripts/ios/**"
       # The shared runner preamble (toolchain, cache, tauri-cli pin, brew shim).
       - ".github/actions/ios-setup/**"
