@@ -8,7 +8,7 @@ Companion to: Provisioning API Spec, Mobile Architecture Spec
 
 ---
 
-> **Status (verified 2026-07-20): superseded pre-build planning draft — read §§5–5.1 as trued-up, treat the crate-integration plan as the road not taken.**
+> **Status (verified 2026-07-28): superseded pre-build planning draft — read §§5–5.1 as trued-up, treat the crate-integration plan as the road not taken.**
 >
 > This document was written before the OAuth server was built, and its central
 > thesis — that the PDS would *integrate an existing Rust OAuth crate rather than
@@ -178,7 +178,7 @@ endpoint). Every one is a hand-written handler (see the source column, all under
 | `GET /.well-known/oauth-authorization-server` | `oauth_server_metadata.rs` | AS metadata (RFC 8414 + ATProto extensions) |
 | `GET /.well-known/oauth-protected-resource` | `oauth_protected_resource.rs` | Protected-resource metadata (RFC 9728); ezpds is both AS and resource server |
 | `GET/POST /oauth/authorize` | `oauth_authorize.rs` | Authorization endpoint (user-facing consent) |
-| `GET /oauth/authorize/consent-request`, `GET /oauth/authorize/status`, `POST /oauth/authorize/approve`, `POST /oauth/authorize/complete` | `oauth_authorize.rs` + wallet-confirmed-consent handlers | Consent-page data + the wallet-confirmed (passwordless) approval sub-flow |
+| `GET /oauth/authorize/consent-request`, `GET /oauth/authorize/status`, `POST /oauth/authorize/approve`, `POST /oauth/authorize/complete` | `oauth_consent.rs` | Consent-page data + the wallet-confirmed (passwordless) approval sub-flow |
 | `POST /oauth/par` | `oauth_par.rs` | Pushed Authorization Request endpoint (mandatory) |
 | `POST /oauth/token` | `oauth_token/` (per-grant submodules) | Token endpoint (authorization_code, refresh_token, jwt-bearer, claim) |
 | `POST /oauth/revoke` | `oauth_revoke.rs` | Token revocation (RFC 7009) |
@@ -222,6 +222,7 @@ by that validator**, not optional — omitting them breaks client discovery:
     "include:*"
   ],
   "response_types_supported": ["code"],
+  "response_modes_supported": ["query", "fragment"],
   "grant_types_supported": [
     "authorization_code",
     "refresh_token",
@@ -262,6 +263,13 @@ into the endpoint/`agent_auth` URLs. Notes on the fields the March draft omitted
   (the RFC 9207 `iss` the authorize endpoint returns), and
   `client_id_metadata_document_supported` (clients are identified by a
   metadata-document URL, not pre-registration) must all be `true`.
+- `response_modes_supported: ["query", "fragment"]` is stated explicitly rather
+  than left to the RFC 8414 default (which is the same `["query", "fragment"]`
+  when absent): the authorize endpoint really answers redirects in both modes —
+  `query` by default, `fragment` for a browser client that asks (the
+  `@atproto/oauth-client-browser` default), parsed and carried through PAR/
+  authorize/consent by `auth/oauth_response_mode.rs`. A browser client that never
+  reads the query string silently failed login before the mode was honored.
 - The two extra `grant_types_supported` entries are the auth.md agent grants
   (`jwt-bearer` service-assertion exchange and the machine-pollable `claim`
   grant); see the `oauth_token/` and `agent_*` route docs.
