@@ -220,6 +220,15 @@ pub(super) async fn handle_authorization_code(
         return OAuthTokenError::new("server_error", "database error").into_response();
     }
 
+    // Structured trace of successful issuance, the counterpart of the rejection log in
+    // `oauth_errors.rs` (and of `oauth_consent`'s approve log): which client completed an
+    // exchange for which account. Never the token material itself.
+    tracing::info!(
+        client_id = %auth_code.client_id,
+        did = %auth_code.did,
+        "OAuth authorization-code exchange completed"
+    );
+
     // Issue a fresh DPoP nonce for the next request.
     let fresh_nonce = issue_nonce(&state.dpop_nonces).await;
 

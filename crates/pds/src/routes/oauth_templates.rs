@@ -30,6 +30,14 @@ pub(super) fn error_redirect(
     issuer: &str,
     mode: ResponseMode,
 ) -> Redirect {
+    // Structured trace of every authorization-response error: the redirect delivers the
+    // error to the client, not the operator, so without this line a failed authorize leg
+    // is only a bare 3xx in the request counters. Mechanical facts only.
+    tracing::info!(
+        error,
+        description,
+        "OAuth authorization error redirect issued"
+    );
     let url = format!(
         "{}{}error={}&error_description={}&state={}&iss={}",
         redirect_uri,
