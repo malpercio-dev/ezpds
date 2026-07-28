@@ -47,6 +47,15 @@ impl OAuthTokenError {
 
 impl IntoResponse for OAuthTokenError {
     fn into_response(self) -> Response {
+        // Structured trace of every token/revocation-endpoint rejection. Without it, a
+        // third-party client's failed exchange is a bare 4xx in the request counters and
+        // diagnosing which check fired means counter archaeology. Mechanical facts only —
+        // codes and fixed descriptions, never token material.
+        tracing::info!(
+            error = self.error,
+            description = self.error_description,
+            "OAuth endpoint rejecting request"
+        );
         let body = serde_json::json!({
             "error": self.error,
             "error_description": self.error_description,
