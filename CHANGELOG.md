@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Changes are collected in `changelog.d/` during development and inserted here when
 `just set-version` prepares a release. There is intentionally no `Unreleased` section.
 
+## [0.9.2] - 2026-07-27
+
+### Fixed
+
+- OAuth `include:` permission-set expansion now skips individual entries that cannot be converted to a valid scope (matching the reference implementation) instead of rejecting the whole set — fixes logins from apps requesting Bluesky's `app.bsky.authCreatePosts` set, whose `inheritAud` video-upload entry is unrenderable without an `?aud=` parameter.
+
+
 ## [0.9.1] - 2026-07-27
 
 ### Fixed
