@@ -93,7 +93,14 @@ process that runs on a locked screen.
   tolerate an unrecognized value on purpose: the extension versions independently, and the entry
   a strict reader would drop is the one the user is asking about. A new case still needs wording
   in `apps/identity-wallet/src/lib/notification-health.ts`.
-- CI gates: `just ios-template-check` (Linux — target present, gated, embedded, entitlements
-  order and least privilege, sources exist) and `just ios-check` (macOS — the same facts in the
-  generated pbxproj). Neither compiles Swift; `ios-pr-check` runs no `xcodebuild`, so the
-  extension's own tests are a local/manual `xcodebuild test -scheme <app>_NSETests`.
+- CI gates, in order of what they can catch:
+  - `just _nse-typecheck` (macOS, part of `just ios-pr-check`) — `swiftc -typecheck` of the
+    extension's sources, then of the test bundle exactly as the template composes it, against
+    the real iOS SDK at the deployment target both apps declare. No simulator, no signing, no
+    generated Xcode project. This is the only thing that compiles this Swift before a release
+    archive would.
+  - `just ios-template-check` (Linux) — target present, gated to the wallet, embedded,
+    principal class and module name, entitlements order and least privilege, sources exist.
+  - `just ios-check` (macOS) — the same structural facts in the generated pbxproj.
+  Nothing *runs* the tests in CI: `ios-pr-check` performs no `xcodebuild`, so the fixture
+  cross-check is a local `xcodebuild test -scheme <app>_NSETests` (or `⌘U` on that scheme).

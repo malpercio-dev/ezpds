@@ -146,6 +146,10 @@ fi
 # forever, with nothing in any log to say the extension was never built.
 require 'type: app-extension' "the NSE target (a sealed push renders as the unverified notice without it)"
 require 'NSExtensionPointIdentifier: com.apple.usernotifications.service' "the NSE's extension point (iOS would not route pushes to it)"
+# Both halves of the principal class, and the line that joins them. Checking only the halves
+# would pass a project that named a class iOS cannot find — which presents as a push that never
+# arrived, with nothing in any log distinguishing it from one that was never sent.
+require 'NSExtensionPrincipalClass: $(PRODUCT_MODULE_NAME).NotificationService' "the NSE's principal class (iOS cannot instantiate the extension without it)"
 require 'PRODUCT_MODULE_NAME: NotificationService' "half of NSExtensionPrincipalClass — a drift here means iOS cannot instantiate the extension"
 require '- path: ../../../../../ios/NotificationService' "the shared Swift sources, referenced in place"
 require 'CODE_SIGN_ENTITLEMENTS: ../../Entitlements.NSE.plist' "the NSE's shared-keychain entitlement (without it every Keychain read finds nothing)"
@@ -169,7 +173,11 @@ for source in ios/NotificationService/NotificationService.swift \
               ios/NotificationService/NotifyEnvelope.swift \
               ios/NotificationService/NotifyKeychain.swift \
               ios/NotificationService/NotifyBreadcrumbs.swift \
-              ios/NotificationServiceTests/NotifyFixtureTests.swift; do
+              ios/NotificationServiceTests/NotifyFixtureTests.swift \
+              ios/NotificationServiceTests/NotifyResolverTests.swift; do
+  # No CI lane compiles Swift, so this loop is the ONLY automated signal that one of these
+  # files went missing — including the test files, whose absence would otherwise just look
+  # like a suite that quietly got smaller.
   if [ ! -f "${REPO_ROOT}/${source}" ]; then
     echo "ios-template-check: FAIL — ${source} missing (the template compiles the whole ios/NotificationService tree)" >&2
     fail=1

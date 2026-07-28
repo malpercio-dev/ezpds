@@ -113,3 +113,171 @@ final class NotifyFixtureTests: XCTestCase {
         XCTAssertTrue(NotifyCrypto.aad.isEmpty)
     }
 }
+
+/// The two resolver outcomes that need a *genuinely sealed* payload to reach, so they cannot
+/// live with the rest of the failure ladder in `NotifyResolverTests`.
+///
+/// Sealed here with `HPKE.Sender` rather than pinned as another Rust fixture: what these
+/// exercise is the resolver's behaviour on either side of a successful open, not the wire
+/// format — the fixtures already own that, and adding a vector for "authentic but unrenderable"
+/// would pin a shape Custos should never emit.
+final class NotifySealedResolverTests: XCTestCase {
+    /// Seal `plaintext` and hand back the `userInfo` an APNs delivery would carry, plus the
+    /// sender's `did:key` as the pin store would hold it.
+    private func sealed(
+        _ plaintext: Data,
+        kid: Int = 1
+    ) throws -> (userInfo: [AnyHashable: Any], recipientKey: Data, senderDidKey: String) {
+        let recipient = P256.KeyAgreement.PrivateKey()
+        let sender = P256.KeyAgreement.PrivateKey()
+
+        var hpke = try HPKE.Sender(
+            recipientKey: recipient.publicKey,
+            ciphersuite: NotifyCrypto.ciphersuite,
+            info: NotifyCrypto.info,
+            authenticatedBy: sender
+        )
+        let ciphertext = try hpke.seal(plaintext, authenticating: NotifyCrypto.aad)
+
+        let b64 = { (data: Data) in
+            data.base64EncodedString()
+                .replacingOccurrences(of: "+", with: "-")
+                .replacingOccurrences(of: "/", with: "_")
+                .replacingOccurrences(of: "=", with: "")
+        }
+        let userInfo: [AnyHashable: Any] = [
+            "aps": ["alert": ["title": "Custos", "body": "Encrypted notification"]],
+            NotifyEnvelope.userInfoKey: [
+                "v": 1, "kid": kid,
+                "enc": b64(hpke.encapsulatedKey), "ct": b64(ciphertext),
+            ],
+        ]
+        return (
+            userInfo,
+            recipient.rawRepresentation,
+            TestDidKey.encode(sender.publicKey.compressedRepresentation)
+        )
+    }
+
+    private func pins(kid: Int, _ didKey: String) -> PinnedSenderKeys {
+        PinnedSenderKeys(
+            version: 1,
+            hosts: ["https://pds.example.com": [PinnedSenderKey(kid: kid, publicKey: didKey)]]
+        )
+    }
+
+    /// The happy path, end to end through the resolver — proof that a correctly pinned sender
+    /// key actually renders, so the failure cases below mean something.
+    func testAnAuthenticSealedPayloadRenders() throws {
+        let payload = Data(#"{"type":"agent_claim_pending","title":"Custos","body":"An agent is waiting"}"#.utf8)
+        let (userInfo, key, didKey) = try sealed(payload)
+
+        let outcome = NotifyResolver.resolve(
+            userInfo: userInfo,
+            recipientPrivateKey: key,
+            pins: pins(kid: 1, didKey)
+        )
+        guard case let .rendered(rendered) = outcome else {
+            return XCTFail("expected a render, got \(outcome)")
+        }
+        XCTAssertEqual(rendered.title, "Custos")
+        XCTAssertEqual(rendered.body, "An agent is waiting")
+    }
+
+    /// The one outcome where the payload IS authenticated and still cannot be shown. Only a
+    /// holder of the pinned sender key could have produced it, so this is our own bug or a
+    /// version skew — but there is no content to render, and the rule admits no exception for
+    /// a payload whose provenance is fine.
+    func testAnAuthenticButUnrenderablePayloadIsUnverified() throws {
+        let (userInfo, key, didKey) = try sealed(Data("not json at all".utf8), kid: 7)
+
+        XCTAssertEqual(
+            NotifyResolver.resolve(
+                userInfo: userInfo,
+                recipientPrivateKey: key,
+                pins: pins(kid: 7, didKey)
+            ),
+            .unverified(.malformedPlaintext, kid: 7)
+        )
+    }
+
+    /// A payload that opens but carries nothing to say. Rejected for the same reason: a blank
+    /// banner is indistinguishable from a delivery failure.
+    func testAnEmptySealedPayloadIsUnverified() throws {
+        let (userInfo, key, didKey) = try sealed(Data(#"{"type":"x","title":"","body":""}"#.utf8))
+
+        XCTAssertEqual(
+            NotifyResolver.resolve(
+                userInfo: userInfo,
+                recipientPrivateKey: key,
+                pins: pins(kid: 1, didKey)
+            ),
+            .unverified(.malformedPlaintext, kid: 1)
+        )
+    }
+
+    /// The right key under the wrong `kid` is not a candidate at all — which is what makes
+    /// `UNKNOWN_KID` a re-pin signal rather than a generic decryption failure.
+    func testAPinUnderAnotherKidIsNotTried() throws {
+        let (userInfo, key, didKey) = try sealed(Data(#"{"type":"x","title":"t","body":"b"}"#.utf8), kid: 2)
+
+        XCTAssertEqual(
+            NotifyResolver.resolve(
+                userInfo: userInfo,
+                recipientPrivateKey: key,
+                pins: pins(kid: 99, didKey)
+            ),
+            .unverified(.unknownKid, kid: 2)
+        )
+    }
+}
+
+/// A `did:key` **encoder**, test-only.
+///
+/// The extension ships only the decoder — it never mints a sender key, it just reads the ones
+/// Custos published. Encoding here lets these tests build a pin store around a keypair they
+/// generated, and doubles as a round-trip check on `DidKey`.
+enum TestDidKey {
+    private static let alphabet = Array("123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz")
+
+    static func encode(_ compressedPoint: Data) -> String {
+        let bytes = DidKey.p256Prefix + [UInt8](compressedPoint)
+
+        // Base-256 → base-58 by repeated division, least-significant digit first.
+        var digits: [Int] = []
+        for byte in bytes {
+            var carry = Int(byte)
+            for index in digits.indices {
+                carry += digits[index] << 8
+                digits[index] = carry % 58
+                carry /= 58
+            }
+            while carry > 0 {
+                digits.append(carry % 58)
+                carry /= 58
+            }
+        }
+
+        // Leading zero BYTES carry no magnitude, so the arithmetic above cannot represent them;
+        // base58 spells each as one '1'. (A P-256 did:key never has any — the multicodec prefix
+        // starts 0x80 — but an encoder that only works for its one caller is not one the
+        // round-trip test can vouch for.)
+        let leadingZeros = bytes.prefix { $0 == 0 }.count
+        let body = digits.reversed().map { alphabet[$0] }
+        return "did:key:z" + String(repeating: alphabet[0], count: leadingZeros) + String(body)
+    }
+}
+
+final class TestDidKeyRoundTripTests: XCTestCase {
+    /// If the encoder and the shipped decoder disagree, every test above would be exercising a
+    /// candidate set the real extension could never build.
+    func testTheEncoderRoundTripsThroughTheShippedDecoder() throws {
+        for _ in 0..<8 {
+            let point = P256.KeyAgreement.PrivateKey().publicKey.compressedRepresentation
+            let decoded = try XCTUnwrap(
+                DidKey.p256PublicKeyBytes(from: TestDidKey.encode(point))
+            )
+            XCTAssertEqual(decoded, point)
+        }
+    }
+}

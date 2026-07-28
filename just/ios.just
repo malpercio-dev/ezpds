@@ -129,6 +129,39 @@ _ipa app_dir build_number:
       exit "$status"
     done
 
+# Typecheck the Notification Service Extension's Swift against the real iOS SDK — the
+# extension's sources alone, then the test bundle exactly as the XcodeGen template composes
+# it (extension sources compiled INTO the test target, since an app extension has no module
+# to import).
+#
+# This exists because no other lane compiles Swift at all: `_pr-check` cross-compiles the
+# Rust staticlib and stops, and the archive that would surface a Swift error only runs on
+# push to main, holding signing secrets. Without this, a compile error in ~800 lines of
+# security-critical Swift reaches TestFlight before anything objects — and the
+# file-existence loop in ios-template-check would have to stand in for a compiler.
+#
+# `-typecheck`, not a build: it needs no simulator, no signing, and no generated Xcode
+# project, so it runs on a bare checkout in seconds. macOS-only (xcrun); the caller is the
+# macOS pr-check.
+_nse-typecheck:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    sdk="$(xcrun --sdk iphonesimulator --show-sdk-path)"
+    platform="$(xcrun --sdk iphonesimulator --show-sdk-platform-path)"
+    # The deployment target is pinned to the same 17.0 both apps declare: CryptoKit's HPKE
+    # auth-mode initializer does not exist before it, so a lower target here would let a
+    # regression that raises the real minimum pass unnoticed.
+    common=(-typecheck -sdk "$sdk" -target arm64-apple-ios17.0-simulator)
+    xcrun swiftc "${common[@]}" ios/NotificationService/*.swift
+    echo "✓ NSE sources typecheck"
+    # XCTest's Swift overlay lives beside the framework, not inside it; without the -I the
+    # C macros are found instead and every assertion reads as an unknown identifier.
+    xcrun swiftc "${common[@]}" \
+      -F "$platform/Developer/Library/Frameworks" \
+      -I "$platform/Developer/usr/lib" \
+      ios/NotificationService/*.swift ios/NotificationServiceTests/*.swift
+    echo "✓ NSE test bundle typechecks"
+
 # Compile the app's Icon Composer document (AppIcon.icon, referenced in place by
 # the scripts/ios/project.yml template) with actool — the same compiler Xcode's
 # build invokes — so a malformed icon.json or a layer SVG the Apple toolchain
@@ -191,7 +224,10 @@ ios-build: ios-check
 # template rendering, the swift-rs fork (vendored plugin Swift compilation), and the
 # shared workspace crates on aarch64-apple-ios.
 # Assumes the Xcode project exists: run `cargo tauri ios init` + `just ios-postinit` first.
-ios-pr-check: ios-check (_icon-compile "apps/identity-wallet")
+# `_nse-typecheck` is on THIS app's gate only: the Notification Service Extension target is
+# gated to the wallet's bundle id in scripts/ios/project.yml, so admin-companion's project
+# compiles none of that Swift (its adoption is where both move).
+ios-pr-check: ios-check _nse-typecheck (_icon-compile "apps/identity-wallet")
     just _pr-check apps/identity-wallet identity-wallet
 
 # Build a signed, App Store-method IPA (for TestFlight or the App Store). Assumes the

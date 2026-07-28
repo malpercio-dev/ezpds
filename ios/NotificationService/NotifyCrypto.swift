@@ -45,7 +45,9 @@ enum NotifyCrypto {
               let publicKey = senderKey(from: senderPublicKey)
         else { return nil }
 
-        guard let recipient = try? HPKE.Recipient(
+        // `var` because `HPKE.Recipient.open` is mutating — the recipient carries the AEAD
+        // sequence number, even though a single-shot open never advances past the first message.
+        guard var recipient = try? HPKE.Recipient(
             privateKey: privateKey,
             ciphersuite: ciphersuite,
             info: info,

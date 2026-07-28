@@ -112,6 +112,16 @@ pub(crate) const NOTIFICATION_ACCOUNTS: &[&str] = &[
 /// than mis-parsed.
 const PIN_DOCUMENT_VERSION: u8 = 1;
 
+/// Version tag on the extension's failure log.
+///
+/// Its own constant despite currently equalling [`PIN_DOCUMENT_VERSION`]: the two documents are
+/// unrelated schemas with different authors — this module owns the pin store, the Swift
+/// extension owns the failure log — so sharing a number would mean a bump made for the pin
+/// store's shape silently discarded every breadcrumb the extension had recorded. That is the
+/// same failure this module refuses for `reason`, and it would land on the one surface whose
+/// job is to work when notifications are already broken.
+const FAILURE_LOG_VERSION: u8 = 1;
+
 // ── Errors ───────────────────────────────────────────────────────────────────
 
 /// Errors from the notification commands.
@@ -282,7 +292,7 @@ fn load_failures() -> Vec<NotificationFailure> {
         }
     };
     match serde_json::from_slice::<NotificationFailureLog>(&raw) {
-        Ok(log) if log.version == PIN_DOCUMENT_VERSION => log.failures,
+        Ok(log) if log.version == FAILURE_LOG_VERSION => log.failures,
         Ok(log) => {
             tracing::warn!(
                 version = log.version,
@@ -1138,6 +1148,14 @@ mod tests {
     #[test]
     fn the_extensions_failure_log_is_read_as_the_extension_writes_it() {
         crate::keychain::clear_for_test();
+        // The literal `1` is what Swift's `NotifyFailureLog.supportedVersion` writes. Asserting
+        // it against the constant here is what makes a bump on this side visible: the two are
+        // separate bundles, so nothing else would notice them disagreeing until devices stopped
+        // reporting failures.
+        assert_eq!(
+            FAILURE_LOG_VERSION, 1,
+            "must match Swift's supportedVersion"
+        );
         crate::keychain::store_item_after_first_unlock(
             FAILURE_LOG_ACCOUNT,
             br#"{"version":1,"failures":[

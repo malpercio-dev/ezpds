@@ -38,8 +38,11 @@ on:
       # scripts are thin wrappers). PDS-only scripts directly under scripts/
       # (bruno-parity, font-parity, ...) are deliberately excluded.
       # The shared Swift sources for the wallet's Notification Service Extension.
-      # Not a cargo crate, so the dependency graph above cannot reach them — a Swift
-      # compile error here breaks the macOS lane and nothing else would trigger it.
+      # Not a cargo crate, so the dependency graph above cannot reach them, and no lane
+      # compiles Swift — so this trigger exists to bring a change under the template and
+      # file-existence gates, which are the only automated check these sources have.
+      # Deliberately absent from admin-testflight.yml: the NSE target is gated to the
+      # wallet's bundle id, so the console's project compiles none of this.
       - "ios/**"
       - "scripts/ios/**"
       # The shared runner preamble (toolchain, cache, tauri-cli pin, brew shim).

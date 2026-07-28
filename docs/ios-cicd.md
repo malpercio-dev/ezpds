@@ -41,8 +41,10 @@ sign → package → ship).
   on the same `macos-26` runner image, `cargo tauri ios init` (renders the committed
   `scripts/ios/project.yml` template) → `just ios-postinit` / `admin-postinit` (the
   template-seam gate) → `just ios-pr-check` / `admin-pr-check`
-  (frontend build + staticlib cross-compile for `aarch64-apple-ios`). Everything short of
-  xcodebuild archiving/signing, so iOS breakage surfaces on the PR instead of post-merge.
+  (frontend build + staticlib cross-compile for `aarch64-apple-ios`, plus — on the wallet lane
+  only — `swiftc -typecheck` of the Notification Service Extension and its test bundle).
+  Everything short of xcodebuild archiving/signing, so iOS breakage surfaces on the PR instead
+  of post-merge.
 
 ## One-Time Setup
 
@@ -298,10 +300,16 @@ in step 3.
 Verify locally first — `just ios-release` on your Mac with both profiles installed — before
 trusting the cloud job, exactly as the Admin Companion section advises.
 
-**Running the extension's tests.** `ios-pr-check` stops short of `xcodebuild`, so the CryptoKit
-cross-check against `crates/crypto`'s golden HPKE vectors is not CI-gated. The template
-generates a dedicated `<app>_NSETests` scheme that builds only the extension (not the app, and
-therefore not the Rust staticlib), so it runs in seconds:
+**The extension's Swift is typechecked in CI; its tests are not run there.** `just ios-pr-check`
+includes `just _nse-typecheck`, which runs `swiftc -typecheck` over the extension's sources and
+then over the test bundle as the template composes it, against the real iOS SDK — no simulator,
+no signing, no generated project. That is what keeps a Swift compile error out of a release
+archive, since the archive itself only runs on push to `main`.
+
+Actually *running* the tests still needs `xcodebuild`, which `ios-pr-check` does not do — so the
+CryptoKit cross-check against `crates/crypto`'s golden HPKE vectors stays a local step. The
+template generates a dedicated `<app>_NSETests` scheme that builds only the extension (not the
+app, and therefore not the Rust staticlib), so it runs in seconds:
 
 ```bash
 xcodebuild test -project apps/identity-wallet/src-tauri/gen/apple/*.xcodeproj -scheme Obsign_NSETests -destination 'platform=iOS Simulator,name=iPhone 17'

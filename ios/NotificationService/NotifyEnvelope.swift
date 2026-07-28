@@ -17,6 +17,11 @@ struct NotifyEnvelope: Equatable {
     /// guessed at.
     static let supportedVersion = 1
 
+    /// The `userInfo` key the sealed block travels under. Named once because it is used for two
+    /// opposite purposes — reading the envelope, and *removing* it before delivery — and a typo
+    /// in the second would leak ciphertext into the delivered-notification list silently.
+    static let userInfoKey = "ezpds"
+
     let version: Int
     /// The instance-scoped sender-key id. Not a global identifier: two Custos instances both
     /// start their `kid` sequence at 1, which is why the pin store is keyed by host and every
@@ -34,7 +39,7 @@ struct NotifyEnvelope: Equatable {
     /// all of those identically (the unverified notice), so this deliberately does not
     /// distinguish "absent" from "malformed": neither is content this device can vouch for.
     static func parse(userInfo: [AnyHashable: Any]) -> NotifyEnvelope? {
-        guard let block = userInfo["ezpds"] as? [String: Any],
+        guard let block = userInfo[userInfoKey] as? [String: Any],
               let version = block["v"] as? Int,
               version == supportedVersion,
               let kid = block["kid"] as? Int,

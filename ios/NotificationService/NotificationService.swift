@@ -94,7 +94,16 @@ final class NotificationService: UNNotificationServiceExtension {
     ) {
         self.contentHandler = contentHandler
         guard let content = request.content.mutableCopy() as? UNMutableNotificationContent else {
-            contentHandler(request.content)
+            // `UNNotificationContent.mutableCopy()` is documented to return the mutable class, so
+            // this is a platform-contract violation rather than a state a payload can produce.
+            // It still cannot be allowed to deliver `request.content`: that content is immutable,
+            // so the sealed block cannot be stripped from it, and its title/body are the relay's
+            // placeholder — the one combination the extension's rule forbids. A fresh content
+            // carrying only the notice is the sole way to honour both halves here.
+            //
+            // No breadcrumb: the failure vocabulary describes payloads, and reporting this as a
+            // payload problem would send the user looking at their keys for a bug in ours.
+            contentHandler(Self.unverifiedContent())
             return
         }
         bestAttempt = content
@@ -119,27 +128,48 @@ final class NotificationService: UNNotificationServiceExtension {
             NotifyBreadcrumbs.record(reason, kid: kid)
         }
 
-        // The sealed block has served its purpose and must not ride along into the delivered
-        // notification, where the app (and anything reading `UNUserNotificationCenter`'s
-        // delivered list) would see ciphertext it has no use for.
-        content.userInfo.removeValue(forKey: "ezpds")
-
+        Self.finish(content)
         contentHandler(content)
     }
 
     /// iOS is about to give up on us.
     ///
-    /// Whatever is in `bestAttempt` is delivered; if we never got as far as writing the
-    /// unverified notice into it, that content is still the relay's placeholder. Say so
-    /// rather than let a timeout be the one path where unverified text renders as though it
-    /// were the server's — the extension's rule does not get an exception for running late.
+    /// Whatever is in `bestAttempt` is delivered, so this path has to satisfy the same two
+    /// obligations `didReceive` does — say "unverified" rather than let the relay's placeholder
+    /// stand in for the server's words, and strip the sealed block. Neither gets an exception
+    /// for running late: a timeout is the one route by which unstripped ciphertext, under a
+    /// title the user reads as authentic, could reach the delivered-notification list.
     override func serviceExtensionTimeWillExpire() {
         guard let contentHandler, let bestAttempt else { return }
-        if bestAttempt.title != NotifyResolver.unverifiedTitle,
-           bestAttempt.userInfo["ezpds"] != nil {
+        // The presence of the sealed block IS the "we never finished" signal — `finish` strips it
+        // and writes the notice in the same breath, so it can only still be here if resolution
+        // was cut short. Testing that rather than the title keeps the two facts from drifting.
+        if bestAttempt.userInfo[NotifyEnvelope.userInfoKey] != nil {
             bestAttempt.title = NotifyResolver.unverifiedTitle
             bestAttempt.body = NotifyResolver.unverifiedBody
         }
+        Self.finish(bestAttempt)
         contentHandler(bestAttempt)
+    }
+
+    /// The last thing done to any content that leaves this extension.
+    ///
+    /// The sealed block has served its purpose and must not ride along into the delivered
+    /// notification, where the app — and anything reading `UNUserNotificationCenter`'s delivered
+    /// list — would see ciphertext it has no use for. Factored out because "every exit path"
+    /// is the actual requirement, and inlining it at each one is how an exit path gets missed.
+    private static func finish(_ content: UNMutableNotificationContent) {
+        content.userInfo.removeValue(forKey: NotifyEnvelope.userInfoKey)
+    }
+
+    /// A fresh content carrying nothing but the unverified notice.
+    ///
+    /// For the exit where no mutable copy exists to strip, so substituting content is the only
+    /// way to avoid delivering the sealed block.
+    private static func unverifiedContent() -> UNMutableNotificationContent {
+        let content = UNMutableNotificationContent()
+        content.title = NotifyResolver.unverifiedTitle
+        content.body = NotifyResolver.unverifiedBody
+        return content
     }
 }
