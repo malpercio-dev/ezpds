@@ -135,11 +135,12 @@ pub async fn post_par(State(state): State<AppState>, Form(form): Form<PARForm>) 
 
     // Both advertised response modes are validated up front, so a mode this server can't
     // answer in fails the PAR loudly instead of being silently answered in the wrong place.
-    let response_mode =
-        match crate::routes::oauth_templates::ResponseMode::parse(form.response_mode.as_deref()) {
-            Ok(m) => m,
-            Err(desc) => return PARError::new("invalid_request", desc).into_response(),
-        };
+    let response_mode = match crate::auth::oauth_response_mode::ResponseMode::parse(
+        form.response_mode.as_deref(),
+    ) {
+        Ok(m) => m,
+        Err(desc) => return PARError::new("invalid_request", desc).into_response(),
+    };
 
     // Validate & canonically normalize the requested granular scopes; a malformed
     // or unsupported scope is rejected up-front (RFC 6749 §4.1.2.1 `invalid_scope`).

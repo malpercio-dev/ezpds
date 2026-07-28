@@ -503,8 +503,9 @@ pub async fn post_authorization_complete(
     // The stored value was validated before it was written, so an unparseable one means
     // row tampering/drift; falling back to `query` (the protocol default) is the honest
     // degraded answer rather than a hard failure after consent already happened.
-    let mode = crate::routes::oauth_templates::ResponseMode::parse(Some(&completed.response_mode))
-        .unwrap_or(crate::routes::oauth_templates::ResponseMode::Query);
+    let mode =
+        crate::auth::oauth_response_mode::ResponseMode::parse(Some(&completed.response_mode))
+            .unwrap_or(crate::auth::oauth_response_mode::ResponseMode::Query);
     build_code_redirect(
         &completed.redirect_uri,
         &token.plaintext,

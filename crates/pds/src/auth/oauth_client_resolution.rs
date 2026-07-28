@@ -12,6 +12,10 @@
 // required everywhere except loopback hosts, which may use plain http (the spec's
 // local-development exception — also what lets tests serve metadata from 127.0.0.1).
 
+use std::collections::HashMap;
+use std::sync::{Mutex, OnceLock};
+use std::time::{Duration, Instant};
+
 use url::{Host, Url};
 
 /// Upper bound on an accepted client-metadata document. Real documents are well under
@@ -21,6 +25,49 @@ const MAX_METADATA_BYTES: usize = 64 * 1024;
 /// Fetch timeout for the metadata document, independent of (and tighter than) the shared
 /// client's default: PAR is interactive and a slow metadata host shouldn't hold it long.
 const FETCH_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// How long a failed resolution is remembered before the same client_id may trigger
+/// another outbound fetch. Long enough to blunt replaying one failing URL against the
+/// unauthenticated PAR/authorize endpoints; short enough that a client developer fixing
+/// their metadata document isn't locked out meaningfully.
+const NEGATIVE_CACHE_TTL: Duration = Duration::from_secs(60);
+
+/// Bound on remembered failures so an attacker rotating client_ids can't grow the map
+/// without limit; on overflow the oldest entry is evicted (the one closest to expiry).
+const NEGATIVE_CACHE_MAX: usize = 1024;
+
+/// Recently failed resolutions, keyed by client_id. Process-local by design: this is a
+/// throttle on *our own outbound fetches*, not a correctness cache, so losing it on
+/// restart costs nothing. Successful resolutions are cached durably by the callers
+/// (`oauth_clients` rows); only failures need remembering here.
+fn negative_cache() -> &'static Mutex<HashMap<String, Instant>> {
+    static CACHE: OnceLock<Mutex<HashMap<String, Instant>>> = OnceLock::new();
+    CACHE.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// Whether this client_id failed to resolve within the negative-cache TTL.
+fn recently_failed(client_id: &str) -> bool {
+    let cache = negative_cache().lock().unwrap_or_else(|e| e.into_inner());
+    cache
+        .get(client_id)
+        .is_some_and(|at| at.elapsed() < NEGATIVE_CACHE_TTL)
+}
+
+/// Record a failed resolution, expiring stale entries and evicting the oldest on overflow.
+fn record_failure(client_id: &str) {
+    let mut cache = negative_cache().lock().unwrap_or_else(|e| e.into_inner());
+    cache.retain(|_, at| at.elapsed() < NEGATIVE_CACHE_TTL);
+    if cache.len() >= NEGATIVE_CACHE_MAX {
+        if let Some(oldest) = cache
+            .iter()
+            .min_by_key(|(_, at)| **at)
+            .map(|(k, _)| k.clone())
+        {
+            cache.remove(&oldest);
+        }
+    }
+    cache.insert(client_id.to_string(), Instant::now());
+}
 
 /// Why a URL client_id could not be resolved to a usable client-metadata document.
 ///
@@ -50,6 +97,9 @@ pub enum ClientResolutionError {
         "client metadata client_id mismatch (the document must declare the URL it is served from)"
     )]
     ClientIdMismatch,
+
+    #[error("client metadata resolution for this client_id recently failed; retry shortly")]
+    RecentlyFailed,
 }
 
 /// Validate the URL policy for a metadata-URL client_id (pure; no I/O).
@@ -156,8 +206,33 @@ pub async fn resolve_client_metadata(
     http: &reqwest::Client,
     client_id: &str,
 ) -> Result<String, ClientResolutionError> {
+    // URL-policy failures are pure and cost nothing — only fetch-path failures are worth
+    // remembering. Both callers (`/oauth/par`, `/oauth/authorize`) are unauthenticated,
+    // so without the negative cache, replaying one failing client_id would trigger a
+    // fresh outbound request every time (bounded only by the per-IP limiter and the
+    // fetch timeout).
     let url = validate_client_id_url(client_id)?;
 
+    if recently_failed(client_id) {
+        return Err(ClientResolutionError::RecentlyFailed);
+    }
+
+    match fetch_and_validate(http, client_id, url).await {
+        Ok(body) => Ok(body),
+        Err(e) => {
+            record_failure(client_id);
+            Err(e)
+        }
+    }
+}
+
+/// The fetch + validation pipeline behind [`resolve_client_metadata`], separated so the
+/// caller can record any failure into the negative cache in one place.
+async fn fetch_and_validate(
+    http: &reqwest::Client,
+    client_id: &str,
+    url: Url,
+) -> Result<String, ClientResolutionError> {
     let response = http
         .get(url)
         .header("Accept", "application/json")
@@ -229,6 +304,33 @@ mod tests {
             validate_client_id_url("ftp://app.example.com/m.json"),
             Err(ClientResolutionError::InsecureUrl)
         ));
+    }
+
+    /// A failed resolution is negatively cached: the second attempt for the same
+    /// client_id inside the TTL short-circuits without an outbound request. Both callers
+    /// are unauthenticated, so this is what keeps a replayed failing client_id from
+    /// turning the server into a fetch loop.
+    #[tokio::test]
+    async fn failed_resolution_is_negatively_cached() {
+        // Bind then drop a listener: a loopback port that deterministically refuses.
+        let port = {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            listener.local_addr().unwrap().port()
+        };
+        let client_id = format!("http://127.0.0.1:{port}/oauth/client-metadata.json");
+        let http = reqwest::Client::new();
+
+        let first = resolve_client_metadata(&http, &client_id).await;
+        assert!(
+            matches!(first, Err(ClientResolutionError::Fetch(_))),
+            "first attempt reports the real fetch failure: {first:?}"
+        );
+
+        let second = resolve_client_metadata(&http, &client_id).await;
+        assert!(
+            matches!(second, Err(ClientResolutionError::RecentlyFailed)),
+            "second attempt inside the TTL must short-circuit: {second:?}"
+        );
     }
 
     // ── Reverse-FQDN rule for private-use-scheme redirect URIs ─────────────────

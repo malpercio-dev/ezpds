@@ -6,6 +6,7 @@ pub mod issuer_trust;
 pub mod jwks;
 pub mod jwt;
 pub mod oauth_client_resolution;
+pub mod oauth_response_mode;
 pub mod oauth_scopes;
 pub mod password;
 pub mod permission_sets;

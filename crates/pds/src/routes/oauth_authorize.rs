@@ -17,6 +17,7 @@ use axum::{
 use serde::Deserialize;
 
 use crate::app::AppState;
+use crate::auth::oauth_response_mode::ResponseMode;
 use crate::auth::password::{verify_password, VerifyResult, TIMING_DUMMY_HASH};
 use crate::auth::rate_limit::{clear_failures, is_rate_limited, record_failure};
 use crate::auth::token::generate_token;
@@ -31,8 +32,7 @@ use crate::db::pending_oauth_authorizations::{
     insert_pending_authorization, NewPendingOAuthAuthorization, OAuthConsentAuditEventType,
 };
 use crate::routes::oauth_templates::{
-    build_code_redirect, error_page, error_redirect, render_consent_page, ResponseMode,
-    WalletConsentPath,
+    build_code_redirect, error_page, error_redirect, render_consent_page, WalletConsentPath,
 };
 
 /// Time-to-live of a pending wallet-consent request (~5 minutes, per the design).
