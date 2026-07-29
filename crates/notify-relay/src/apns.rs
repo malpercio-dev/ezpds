@@ -175,7 +175,26 @@ impl ApnsClient {
             .await;
 
         match response {
-            Ok(response) => classify_status(response.status().as_u16()),
+            Ok(response) => {
+                let status = response.status().as_u16();
+                let outcome = classify_status(status);
+                if !matches!(outcome, PushOutcome::Delivered) {
+                    // Apple names the precise refusal only in the body's `reason` string —
+                    // the status alone conflates a relay misconfiguration (wrong key,
+                    // sandbox/production mismatch) with a dead device token. Logged for
+                    // the operator, never forwarded: the instance's contract stays the
+                    // coarse `PushOutcome`, for the blast-radius reasons on
+                    // `classify_status`.
+                    let reason = response.text().await.unwrap_or_default();
+                    tracing::warn!(
+                        status,
+                        reason = %reason,
+                        topic = request.topic,
+                        "APNs refused a notification"
+                    );
+                }
+                outcome
+            }
             Err(e) => {
                 // The relay's own connectivity, never the instance's fault and never
                 // reflected in detail — the instance is told only that Apple was not
