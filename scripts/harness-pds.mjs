@@ -16,6 +16,16 @@
  *
  * Usage: `just harness-pds`. Requires a built pds binary (`cargo build -p pds`) or
  * `EZPDS_HARNESS_PDS_BIN`; `openssl` and `node` come from the dev shell.
+ *
+ * Env:
+ * - `EZPDS_HARNESS_PDS_PORT` / `EZPDS_HARNESS_ADMIN_TOKEN` / `EZPDS_HARNESS_PDS_BIN`
+ * - `EZPDS_HARNESS_DATA_DIR` — keep state in a named directory instead of a throwaway one,
+ *   so the PDS's iroh node identity survives a restart. Needed to exercise anything that
+ *   binds to that identity: a notification-relay enrollment grant is single-use and bound
+ *   to a node id, so a rotating identity burns a fresh grant on every run.
+ * - `EZPDS_IROH_*` / `EZPDS_NOTIFICATIONS_*` are passed through to the spawned PDS. The env
+ *   is otherwise a closed allowlist, which is what keeps the harness hermetic; these two
+ *   blocks are the deliberate exception, since dialing a real relay is the point of them.
  */
 import { execFileSync, spawn } from 'node:child_process';
 import * as fs from 'node:fs';
@@ -141,13 +151,36 @@ async function waitHealthy(httpPort, deadlineMs) {
 }
 
 const bin = pdsBinary();
-const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ezpds-harness-pds-'));
+// EZPDS_HARNESS_DATA_DIR keeps state across runs. The iroh node identity lives in the DB
+// (wrapped under the master key), so a throwaway dir means a new node id every run — and a
+// relay enrollment grant is bound to a node id and single-use, so each run would burn a
+// fresh code. Naming a directory makes the local node id stable.
+const persistentDir = process.env.EZPDS_HARNESS_DATA_DIR;
+const dataDir = persistentDir
+  ? (fs.mkdirSync(persistentDir, { recursive: true }), persistentDir)
+  : fs.mkdtempSync(path.join(os.tmpdir(), 'ezpds-harness-pds-'));
 fs.mkdirSync(path.join(dataDir, 'data'), { recursive: true });
 
-const tls = generateCert(dataDir);
+// Generate into a scratch directory and publish into dataDir only once the TLS port is
+// ours. Generating straight into dataDir means a second harness started against an in-use
+// port overwrites the RUNNING instance's cert.pem before it discovers the conflict: the
+// running server keeps serving the original from memory, so every client that trusts the
+// file starts failing the handshake against a server that is working fine. Publishing
+// after the bind makes the destructive step unreachable on the failure path.
+// generateCert hands back the PEM bytes, so the scratch directory it wrote them through
+// can go immediately — nothing below reads from it, and on the failure path there is then
+// no private key left behind in the temp dir.
+const certDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ezpds-harness-cert-'));
+const tls = generateCert(certDir);
+fs.rmSync(certDir, { recursive: true, force: true });
+
 const plc = await startMockPlc();
 const httpPort = await freePort();
 const proxy = await startTlsProxy(tls, httpPort);
+
+// The port is ours, so publishing these cannot disturb another instance.
+fs.writeFileSync(path.join(dataDir, 'cert.pem'), tls.cert);
+fs.writeFileSync(path.join(dataDir, 'key.pem'), tls.key, { mode: 0o600 });
 
 const proc = spawn(bin, [], {
   cwd: dataDir,
@@ -165,6 +198,14 @@ const proc = spawn(bin, [], {
     EZPDS_SIGNING_KEY_MASTER_KEY: '00'.repeat(32),
     EZPDS_RATE_LIMIT_ENABLED: 'false',
     EZPDS_AGENT_AUTH_SERVICE_AUTH_ENABLED: 'true',
+    // Opt-in passthrough for the two blocks that reach the outside world. The env is an
+    // allowlist rather than an inherit so the harness stays hermetic by default; these are
+    // the settings that deliberately are not (dialing a real notification relay over iroh).
+    ...Object.fromEntries(
+      Object.entries(process.env).filter(
+        ([k]) => k.startsWith('EZPDS_IROH_') || k.startsWith('EZPDS_NOTIFICATIONS_'),
+      ),
+    ),
   },
   stdio: ['ignore', 'inherit', 'inherit'],
 });
@@ -176,7 +217,9 @@ function shutdown(code) {
   try { proc.kill(); } catch { /* already gone */ }
   proxy.close();
   plc.close();
-  try { fs.rmSync(dataDir, { recursive: true, force: true }); } catch { /* best effort */ }
+  if (!persistentDir) {
+    try { fs.rmSync(dataDir, { recursive: true, force: true }); } catch { /* best effort */ }
+  }
   process.exit(code ?? 0);
 }
 process.on('SIGINT', () => shutdown(0));
