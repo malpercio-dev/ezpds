@@ -1,0 +1,37 @@
+```
+› just ios-ipa 2>&1 | tee /tmp/ipa.log
+apps/identity-wallet/scripts/ios-check.sh
+✓ swift-rs-patch-check: fork declared in Cargo.toml and applied in Cargo.lock (1 path entry)
+ios-check: OK — template-rendered project carries every workaround
+just _ipa apps/identity-wallet ""
+CFBundleVersion -> 1785292088
+signing environment visible to the build:
+  IOS_CERTIFICATE            exported (4429 bytes)
+  IOS_CERTIFICATE_PASSWORD   exported (14 bytes)
+  IOS_MOBILE_PROVISION       exported (18500 bytes)
+  IOS_MOBILE_PROVISION_NSE   exported (16575 bytes)
+  APPLE_DEVELOPMENT_TEAM     exported (10 bytes)
+regenerating the Xcode project (tauri's pbxproj writes are not idempotent)...
+        Info Installing iOS Rust targets...
+        Info Installing target x86_64-apple-ios
+info: downloading component 'rust-std' for 'x86_64-apple-ios'
+info: installing component 'rust-std' for 'x86_64-apple-ios'
+        Info package `xcodegen` not found
+        Info Installing `xcodegen` with brew...
+✔︎ Bottle xcodegen (2.46.0)
+        Info package `libimobiledevice` not found
+        Info Installing `libimobiledevice` with brew...
+✔︎ Bottle Manifest ca-certificates (2026-07-16)
+✔︎ Bottle ca-certificates (2026-07-16)
+✔︎ Bottle libimobiledevice (1.4.0)
+        Info package `cocoapods` not found
+        Info Installing `cocoapods` with brew...
+✔︎ Bottle ca-certificates (2026-07-16)
+✔︎ Bottle ruby (4.0.6)
+✔︎ Bottle ruby (4.0.6)
+✔︎ Bottle cocoapods (1.17.0)
+        Info "/Users/jacob.zweifel/workspace/malpercio-dev/ezpds/.claude/worktrees/mm-420-nse-decrypt-render-8c4f7c/apps/identity-wallet/src-tauri" relative to "/Users/jacob.zweifel/workspace/malpercio-dev/ezpds/.claude/worktrees/mm-420-nse-decrypt-render-8c4f7c/apps/identity-wallet/src-tauri/gen/apple" is "../../"
+       Error failed to run command xcodegen: No such file or directory (os error 2)
+error: Recipe `_ipa` failed with exit code 1
+error: Recipe `ios-ipa` failed on line 508 with exit code 1
+```
