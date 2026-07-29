@@ -137,12 +137,16 @@ agent claim confirm), and the wallet screen states it explicitly: "Sign in to
 
 ### The push slot (Phase C, after MM-311)
 
-Push adds only a delivery path: Custos seals `{type: "login-approval", request_id,
-client_name, origin, code}` to the device (the relay design's exact payload), the wallet
-deep-links into the same approval screen — with **number matching now mandatory**: the
-consent page displays a 2-digit number for push-delivered prompts and the wallet requires
-the user to enter/select it before the biometric gate, plus origin display. Nothing about
-the primitive, the envelope, or the completion path changes.
+Push adds only a delivery path: Custos seals a `login-approval` payload carrying
+`{requestId, did, clientName, origin}` to the device, the wallet deep-links into the same
+approval screen — with **number matching now mandatory**: the consent page displays a
+2-digit number for push-delivered prompts and the wallet requires the user to type it
+before the biometric gate, plus origin display. The relay design's original sketch of this
+payload included a `code` field; the landed contract **deliberately omits it** — the
+number is the proof the approver can see the login surface, so sealing it to the wallet
+would defeat the channel binding (see the Phase C landed note below, which is the
+authoritative payload schema). Nothing about the primitive, the envelope, or the
+completion path changes.
 
 ## Suggested phasing
 
