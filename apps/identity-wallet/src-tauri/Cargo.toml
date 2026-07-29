@@ -86,7 +86,7 @@ tauri-plugin-sharesheet = { path = "../../admin-companion/vendor/tauri-plugin-sh
 # path's on-demand download of an evicted placeholder), which returns `Result<(), NSError>`.
 # `NSDate` is needed for the background-backup task's `earliestBeginDate` (bg_backup.rs).
 [target.'cfg(target_os = "ios")'.dependencies]
-objc2-foundation = { workspace = true, features = ["NSFileManager", "NSURL", "NSString", "NSError", "NSDate", "NSData"] }
+objc2-foundation = { workspace = true, features = ["NSFileManager", "NSURL", "NSString", "NSError", "NSDate", "NSData", "NSDictionary", "NSEnumerator"] }
 # The APNs device-token bridge (apns.rs). iOS hands the token to two application-delegate
 # methods and exposes it nowhere else, so the token path needs `UIApplication` (register, and
 # reach the live delegate whose class the callbacks are installed on) and
@@ -94,7 +94,7 @@ objc2-foundation = { workspace = true, features = ["NSFileManager", "NSURL", "NS
 # block). Both are the same objc2 0.3 generated-bindings family already in the lockfile via the
 # vendored auth-session plugin, so neither adds a major.
 objc2-ui-kit = { workspace = true, features = ["UIApplication", "UIResponder"] }
-objc2-user-notifications = { workspace = true, features = ["UNUserNotificationCenter", "block2"] }
+objc2-user-notifications = { workspace = true, features = ["UNUserNotificationCenter", "UNNotificationResponse", "UNNotification", "UNNotificationRequest", "UNNotificationContent", "block2"] }
 # Background media-backup scheduling (bg_backup.rs): the iOS `BGProcessingTask` that keeps an
 # opted-in identity's iCloud mirror topped up without opening the app. `objc2` supplies
 # `Retained`/`AnyThread`; `objc2-background-tasks` the `BGTaskScheduler`/`BGProcessingTaskRequest`

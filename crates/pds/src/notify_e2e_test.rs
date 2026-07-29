@@ -342,6 +342,125 @@ async fn a_notification_travels_from_custos_through_the_relay_to_a_device_that_o
     relay_endpoint.close().await;
 }
 
+/// Phase C of wallet-confirmed OAuth consent, end to end on the server side: a login started
+/// on another surface (`GET /oauth/authorize` with a `login_hint` naming a hosted account)
+/// produces a sealed `login-approval` push through the real relay; the device opens it and
+/// finds the routing data; the login page displays the mandatory match number; and the relay
+/// and Apple see only the fixed placeholder — they never learn a login is happening.
+#[tokio::test]
+async fn a_hinted_login_pushes_a_sealed_login_approval_to_the_wallet() {
+    let apple = MockServer::start().await;
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(200))
+        .mount(&apple)
+        .await;
+
+    let (relay_endpoint, _relay, _keydir) = start_relay(&apple.uri()).await;
+    let relay_addr =
+        EndpointAddr::new(relay_endpoint.id()).with_ip_addr(relay_endpoint.bound_sockets()[0]);
+    let (state, dialer) = start_pds(relay_addr).await;
+
+    // A hosted, handle-bearing account with a registered wallet device.
+    sqlx::query("INSERT INTO handles (handle, did, created_at) VALUES (?, ?, datetime('now'))")
+        .bind("notifye2e.example.com")
+        .bind(ACCOUNT_DID)
+        .execute(&state.db)
+        .await
+        .expect("seed handle");
+    let device = crypto::generate_p256_keypair().expect("device keypair");
+    register_device(&state, &device.key_id.0).await;
+    let (_kid, sender_public_key) = published_sender_key(&state).await;
+
+    // A registered OAuth client, and the login another device starts against it.
+    crate::db::oauth::register_oauth_client(
+        &state.db,
+        "https://app.example.com/client-metadata.json",
+        r#"{"redirect_uris":["https://app.example.com/callback"],"client_name":"Test App"}"#,
+    )
+    .await
+    .expect("register client");
+
+    let response = crate::app::app(state.clone())
+        .oneshot(
+            Request::get(
+                "/oauth/authorize\
+                 ?client_id=https%3A%2F%2Fapp.example.com%2Fclient-metadata.json\
+                 &redirect_uri=https%3A%2F%2Fapp.example.com%2Fcallback\
+                 &code_challenge=e3b0c44298fc1c149afb\
+                 &code_challenge_method=S256\
+                 &state=teststate\
+                 &response_type=code\
+                 &scope=atproto\
+                 &login_hint=notifye2e.example.com",
+            )
+            .body(Body::empty())
+            .unwrap(),
+        )
+        .await
+        .expect("consent page");
+    assert_eq!(response.status(), StatusCode::OK);
+    let html_bytes = axum::body::to_bytes(response.into_body(), 1 << 20)
+        .await
+        .expect("page body");
+    let html = std::str::from_utf8(&html_bytes).expect("utf8 page");
+
+    // The pending row latched the match code, and the page displays that exact number.
+    let (request_id, match_code): (String, String) = sqlx::query_as(
+        "SELECT request_id, match_code FROM pending_oauth_authorizations WHERE match_code IS NOT NULL",
+    )
+    .fetch_one(&state.db)
+    .await
+    .expect("a push-dispatched pending row");
+    assert!(
+        html.contains(&format!(
+            "<div class=\"match-code mono\" id=\"match-code\">{match_code}</div>"
+        )),
+        "the login surface must display the match number"
+    );
+
+    // The push that crossed the wire: placeholder alert outside, `login-approval` inside.
+    let body = await_condition("the pushed APNs body", || async {
+        apple
+            .received_requests()
+            .await
+            .unwrap_or_default()
+            .into_iter()
+            .find_map(|req| serde_json::from_slice::<serde_json::Value>(&req.body).ok())
+    })
+    .await;
+    assert_eq!(body["aps"]["alert"]["title"], "Custos");
+    assert_eq!(body["aps"]["alert"]["body"], "Encrypted notification");
+
+    let decode = |field: &str| {
+        data_encoding::BASE64URL_NOPAD
+            .decode(body["ezpds"][field].as_str().expect("string").as_bytes())
+            .expect("base64url")
+    };
+    let plaintext = crypto::open_notification(
+        &device.private_key_bytes,
+        &sender_public_key,
+        &decode("enc"),
+        &decode("ct"),
+    )
+    .expect("the device must open the login-approval payload");
+    let opened: serde_json::Value = serde_json::from_slice(&plaintext).expect("payload JSON");
+    assert_eq!(opened["type"], "login-approval");
+    assert_eq!(opened["data"]["requestId"], request_id.as_str());
+    assert_eq!(opened["data"]["did"], ACCOUNT_DID);
+    assert_eq!(opened["data"]["clientName"], "Test App");
+    // The match number must never ride in the push — it is the proof the approver can see the
+    // login surface, so handing it to the wallet would defeat the channel binding. (Asserted on
+    // the parsed fields, not a substring: a two-digit string can appear by chance inside the
+    // random request_id.)
+    assert!(
+        opened.get("code").is_none() && opened["data"].get("code").is_none(),
+        "no code field may ride in the push payload"
+    );
+
+    dialer.close().await;
+    relay_endpoint.close().await;
+}
+
 /// The pruning back-channel: Apple reports the device token dead, the relay relays that as
 /// `unregistered`, and Custos deletes the registration at the moment of proof.
 #[tokio::test]

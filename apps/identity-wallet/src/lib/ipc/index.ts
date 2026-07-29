@@ -33,4 +33,5 @@ export * from './app-passwords';
 export * from './blob-backup';
 export * from './repo-backup';
 export * from './notifications';
+export * from './notification-routes';
 export { isCodedError } from './errors';

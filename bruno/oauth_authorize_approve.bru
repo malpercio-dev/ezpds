@@ -17,6 +17,7 @@ body:json {
     "requestId": "poauth_example",
     "decision": "approve",
     "grantedScope": "atproto transition:generic",
+    "matchCode": "42",
     "timestamp": 1720000000,
     "nonce": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
     "signature": "base64url-r-s-signature"
@@ -39,6 +40,12 @@ docs {
   `decision` is `"approve"` or `"deny"` (bound in the envelope so a captured denial can't be
   replayed as an approval). `grantedScope` is the space-joined scope set the wallet chose (empty
   for a denial); the server reduces it to what was actually requested and always grants `atproto`.
+
+  `matchCode` (optional) is the two-digit number displayed on the sign-in page. It is REQUIRED to
+  approve a request for which a `login-approval` push was dispatched (the preview reports
+  `matchRequired: true`) — the mandatory anti-MFA-fatigue proof that the approver can see the
+  login surface. Checked server-side, outside the signed envelope; a missing or wrong number is a
+  403 that leaves the request pending, so the user can retype. A denial never requires it.
 
   Single-use: the guarded status transition means a replayed envelope wins nothing. Returns
   `{ "status": "approved" | "denied", "did": "…" }`. Rate-limited per IP (shared with the preview

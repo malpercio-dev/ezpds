@@ -33,6 +33,8 @@ pub enum ConsentError {
     RequestNotFound,
     #[error("the hosting server rejected the consent approval")]
     ApprovalRejected,
+    #[error("the sign-in number did not match")]
+    MatchCodeMismatch,
     #[error("the authorization request was already resolved")]
     AlreadyResolved,
     #[error("the hosting server rate limited the request")]
@@ -66,6 +68,11 @@ pub struct ConsentPreview {
     pub ip: Option<String>,
     pub requested_scope: Vec<String>,
     pub login_hint: Option<String>,
+    /// Whether approval requires the two-digit number displayed on the sign-in page (a
+    /// `login-approval` push was dispatched — Phase C's mandatory anti-MFA-fatigue check).
+    /// Defaults to `false` so a pre-Phase-C server's preview still deserializes.
+    #[serde(default)]
+    pub match_required: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -83,6 +90,11 @@ struct ApprovalRequest<'a> {
     request_id: &'a str,
     decision: &'a str,
     granted_scope: &'a str,
+    /// The number the user read off the sign-in page, sent only when the preview said matching
+    /// is required. Skipped when absent so a pre-Phase-C server's `deny_unknown_fields` body
+    /// parser never sees a field it does not know.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    match_code: Option<&'a str>,
     timestamp: i64,
     nonce: &'a str,
     signature: String,
@@ -224,6 +236,9 @@ pub(crate) async fn preview_oauth_consent_impl(
 /// Sign and submit a decision (approve/deny) for a previewed authorization. `granted_scope` is the
 /// space-joined scope set the wallet chose (empty for a denial). The signed envelope binds the
 /// `request_id`, `client_id`, decision, and granted-scope hash to the account's device key.
+/// `match_code` is the number the user read off the sign-in page — required by the server
+/// when the request was push-delivered (`ConsentPreview.match_required`), `None` otherwise.
+/// It is a server-side visibility proof, deliberately outside the signed envelope.
 #[tauri::command]
 pub async fn confirm_oauth_consent(
     state: tauri::State<'_, AppState>,
@@ -232,6 +247,7 @@ pub async fn confirm_oauth_consent(
     client_id: String,
     decision: String,
     granted_scope: String,
+    match_code: Option<String>,
 ) -> Result<ConsentDecision, ConsentError> {
     let nonce = fresh_nonce();
     let timestamp = unix_timestamp().map_err(|_| ConsentError::InvalidResponse {
@@ -245,6 +261,7 @@ pub async fn confirm_oauth_consent(
         &client_id,
         &decision,
         &granted_scope,
+        match_code.as_deref(),
         timestamp,
         &nonce,
     )
@@ -260,6 +277,7 @@ pub(crate) async fn confirm_oauth_consent_impl(
     client_id: &str,
     decision: &str,
     granted_scope: &str,
+    match_code: Option<&str>,
     timestamp: i64,
     nonce: &str,
 ) -> Result<ConsentDecision, ConsentError> {
@@ -312,6 +330,7 @@ pub(crate) async fn confirm_oauth_consent_impl(
         request_id,
         decision,
         granted_scope,
+        match_code,
         timestamp,
         nonce,
         signature: URL_SAFE_NO_PAD.encode(signature),
@@ -335,7 +354,11 @@ pub(crate) async fn confirm_oauth_consent_impl(
     if !status.is_success() {
         return Err(match status.as_u16() {
             400 => ConsentError::AlreadyResolved,
-            401 | 403 => ConsentError::ApprovalRejected,
+            401 => ConsentError::ApprovalRejected,
+            // 403 is the server's distinct "sign-in number mismatch" — the request stays
+            // pending, so the screen keeps the review open for a retype. (No pre-Phase-C
+            // server returns 403 from this route.)
+            403 => ConsentError::MatchCodeMismatch,
             404 => ConsentError::RequestNotFound,
             405 => ConsentError::UnsupportedHost,
             429 => ConsentError::RateLimited {
@@ -578,6 +601,7 @@ mod tests {
             CLIENT_ID,
             "approve",
             "atproto transition:generic",
+            None,
             TIMESTAMP,
             &nonce,
         )
@@ -587,6 +611,99 @@ mod tests {
         approve.assert_async().await;
         assert_eq!(result.status, "approved");
         assert_eq!(result.did, DID);
+    }
+
+    /// The push-delivered (number-matching) path: the typed number rides the approval body
+    /// outside the signed envelope, and the server's 403 "number mismatch" maps to its own
+    /// error so the screen can keep the review open for a retype.
+    #[tokio::test]
+    async fn confirm_sends_the_match_code_and_maps_a_mismatch_distinctly() {
+        let key = reset_identity(DID);
+        let server = MockServer::start_async().await;
+        let (_plc, _head, _describe) = discovery_mocks(&server).await;
+        let nonce = URL_SAFE_NO_PAD.encode([9u8; 32]);
+        let envelope = crypto::encode_oauth_consent_envelope(
+            SERVER_DID,
+            DID,
+            &key.key_id,
+            REQUEST_ID,
+            CLIENT_ID,
+            "approve",
+            "atproto",
+            TIMESTAMP,
+            &nonce,
+        );
+        let signature =
+            crate::identity_store::per_did_sign_closure(DID).unwrap()(&envelope).unwrap();
+        let nonce_body = nonce.clone();
+        let signing_key = key.key_id.clone();
+        let approve = server
+            .mock_async(move |when, then| {
+                when.method(POST)
+                    .path("/oauth/authorize/approve")
+                    .json_body(json!({
+                        "did": DID,
+                        "signingKey": signing_key,
+                        "requestId": REQUEST_ID,
+                        "decision": "approve",
+                        "grantedScope": "atproto",
+                        "matchCode": "42",
+                        "timestamp": TIMESTAMP,
+                        "nonce": nonce_body,
+                        "signature": URL_SAFE_NO_PAD.encode(signature),
+                    }));
+                then.status(403)
+                    .json_body(json!({ "error": { "code": "Forbidden", "message": "sign-in number mismatch" } }));
+            })
+            .await;
+
+        let client = PdsClient::new_for_test(server.base_url());
+        let result = confirm_oauth_consent_impl(
+            &client,
+            &IdentityStore,
+            DID,
+            REQUEST_ID,
+            CLIENT_ID,
+            "approve",
+            "atproto",
+            Some("42"),
+            TIMESTAMP,
+            &nonce,
+        )
+        .await;
+
+        approve.assert_async().await;
+        assert!(matches!(result, Err(ConsentError::MatchCodeMismatch)));
+    }
+
+    /// A preview without `matchRequired` — every pre-Phase-C server — deserializes with the
+    /// requirement off, so old hosts keep working unchanged.
+    #[tokio::test]
+    async fn preview_defaults_match_required_off_for_older_servers() {
+        reset_identity(DID);
+        let server = MockServer::start_async().await;
+        let (_plc, _head, _describe) = discovery_mocks(&server).await;
+        let _preview = server
+            .mock_async(|when, then| {
+                when.method(GET).path("/oauth/authorize/consent-request");
+                then.status(200).json_body(json!({
+                    "requestId": REQUEST_ID,
+                    "clientId": CLIENT_ID,
+                    "clientName": "Test App",
+                    "redirectUri": "https://app.example.com/callback",
+                    "origin": null,
+                    "ip": null,
+                    "requestedScope": ["atproto"],
+                    "loginHint": null,
+                }));
+            })
+            .await;
+
+        let client = PdsClient::new_for_test(server.base_url());
+        let result = preview_oauth_consent_impl(&client, DID, "user_code", "ABCD-2345")
+            .await
+            .unwrap();
+        assert!(!result.match_required);
     }
 
     #[tokio::test]
@@ -610,6 +727,7 @@ mod tests {
                 CLIENT_ID,
                 "approve",
                 "atproto",
+                None,
                 TIMESTAMP,
                 &nonce,
             )

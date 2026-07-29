@@ -147,6 +147,54 @@ final class NotifyResolverTests: XCTestCase {
     }
 }
 
+final class NotifyPayloadRouteTests: XCTestCase {
+    private func decode(_ json: String) -> NotifyPayload? {
+        NotifyPayload.decode(Data(json.utf8))
+    }
+
+    /// The `login-approval` payload the consent push seals: the routing identifiers decode
+    /// and become the delivered notification's route block, alongside the payload `type`.
+    func testALoginApprovalPayloadYieldsARouteBlock() throws {
+        let payload = try XCTUnwrap(decode(
+            #"{"type":"login-approval","title":"Sign-in request","body":"b","data":{"requestId":"poauth_x","did":"did:plc:abc","clientName":"App","origin":"https://a"},"pad":"  "}"#
+        ))
+        let route = try XCTUnwrap(NotifyRoute.userInfo(for: payload))
+        XCTAssertEqual(route, ["type": "login-approval", "requestId": "poauth_x", "did": "did:plc:abc"])
+        // Allowlist, not passthrough: clientName/origin render in the banner but never route.
+        XCTAssertNil(route["clientName"])
+        XCTAssertNil(route["origin"])
+    }
+
+    /// A payload without routing data — every pre-Phase-C payload — still renders, and
+    /// contributes no route block at all.
+    func testAPayloadWithoutDataRendersWithNoRoute() throws {
+        let payload = try XCTUnwrap(decode(
+            #"{"type":"ops_alert","title":"t","body":"b","pad":""}"#
+        ))
+        XCTAssertNil(payload.data)
+        XCTAssertNil(NotifyRoute.userInfo(for: payload))
+    }
+
+    /// A `data` block this build doesn't understand degrades to "no route", never to a
+    /// decode failure that would turn an authenticated banner into the unverified notice.
+    func testUnrecognizedOrMalformedDataNeverFailsThePayload() throws {
+        let unknownFields = try XCTUnwrap(decode(
+            #"{"type":"x","title":"t","body":"b","data":{"claimAttemptId":"clm_1"},"pad":""}"#
+        ))
+        XCTAssertNil(NotifyRoute.userInfo(for: unknownFields))
+
+        let wrongTypes = try XCTUnwrap(decode(
+            #"{"type":"x","title":"t","body":"b","data":{"requestId":7,"did":["a"]},"pad":""}"#
+        ))
+        XCTAssertNil(NotifyRoute.userInfo(for: wrongTypes))
+
+        let notAnObject = try XCTUnwrap(decode(
+            #"{"type":"x","title":"t","body":"b","data":"nope","pad":""}"#
+        ))
+        XCTAssertNil(NotifyRoute.userInfo(for: notAnObject))
+    }
+}
+
 final class NotifyBreadcrumbTests: XCTestCase {
     func testTheLogIsNewestFirstAndBounded() {
         var log = NotifyFailureLog.empty

@@ -21,16 +21,18 @@ use crate::auth::oauth_response_mode::ResponseMode;
 use crate::auth::password::{verify_password, VerifyResult, TIMING_DUMMY_HASH};
 use crate::auth::rate_limit::{clear_failures, is_rate_limited, record_failure};
 use crate::auth::token::generate_token;
-use crate::code_gen::generate_login_code;
-use crate::db::accounts::resolve_identifier;
+use crate::code_gen::{generate_login_code, generate_match_code};
+use crate::db::accounts::{active_local_account_exists, resolve_identifier};
 use crate::db::oauth::{
     consume_par_request, get_oauth_client, store_authorization_code, upsert_oauth_client,
     ClientMetadata, StoredPARParams,
 };
 use crate::db::pending_oauth_authorizations::{
     cleanup_expired_pending_authorizations, insert_oauth_consent_audit_event,
-    insert_pending_authorization, NewPendingOAuthAuthorization, OAuthConsentAuditEventType,
+    insert_pending_authorization, set_push_dispatched, NewPendingOAuthAuthorization,
+    OAuthConsentAuditEventType,
 };
+use crate::notifications::{notify_device, NotificationPayload};
 use crate::routes::oauth_templates::{
     build_code_redirect, error_page, error_redirect, render_consent_page, WalletConsentPath,
 };
@@ -471,13 +473,12 @@ pub async fn get_authorization(
         &display_scope,
     )
     .await;
-    let wallet = wallet_codes
-        .as_ref()
-        .map(|(user_code, request_id, origin)| WalletConsentPath {
-            user_code,
-            request_id,
-            origin: origin.as_deref(),
-        });
+    let wallet = wallet_codes.as_ref().map(|pending| WalletConsentPath {
+        user_code: &pending.user_code,
+        request_id: &pending.request_id,
+        origin: pending.origin.as_deref(),
+        match_code: pending.match_code.as_deref(),
+    });
 
     Html(render_consent_page(
         &client_name,
@@ -497,18 +498,30 @@ pub async fn get_authorization(
     .into_response()
 }
 
-/// Create a single-use pending wallet-consent request, returning `(user_code, request_id, origin)`
-/// for the page to render (the origin is snapshotted into the scan QR alongside the request_id), or
-/// `None` if creation should be skipped (rate limited or a DB error) — the caller degrades to the
-/// password-only page. Snapshots the client metadata and requesting context so the wallet preview
-/// and later completion never re-resolve the client document, and audits the creation.
+/// What `create_pending_request` hands the consent page to render: the typed code, the poll /
+/// handoff key, the snapshotted origin, and — when a `login-approval` push went out — the
+/// number-match code the page must display (V060).
+struct PendingWalletRequest {
+    user_code: String,
+    request_id: String,
+    origin: Option<String>,
+    match_code: Option<String>,
+}
+
+/// Create a single-use pending wallet-consent request, returning what the page renders (the
+/// origin is snapshotted into the scan QR alongside the request_id), or `None` if creation should
+/// be skipped (rate limited or a DB error) — the caller degrades to the password-only page.
+/// Snapshots the client metadata and requesting context so the wallet preview and later
+/// completion never re-resolve the client document, and audits the creation. When the request's
+/// `login_hint` names a local account, a sealed `login-approval` push is dispatched to that
+/// account's registered wallet devices (Phase C).
 async fn create_pending_request(
     state: &AppState,
     headers: &HeaderMap,
     params: &AuthorizeQuery,
     client_name: &str,
     display_scope: &str,
-) -> Option<(String, String, Option<String>)> {
+) -> Option<PendingWalletRequest> {
     let client_ip = crate::rate_limit::client_ip_from_headers(headers);
     if state
         .rate_limiter
@@ -592,7 +605,134 @@ async fn create_pending_request(
         tracing::warn!(error = %e, "failed to audit wallet-consent request creation");
     }
 
-    Some((user_code, request_id, origin))
+    // Phase C: push-to-approve. Best-effort — a push is a convenience layer on the same pending
+    // request, and every failure here degrades to the Phase A/B channels (typed code, QR,
+    // handoff) already rendered on the page.
+    let match_code = dispatch_login_approval_push(
+        state,
+        &request_id,
+        &params.client_id,
+        client_name,
+        origin.as_deref(),
+        params.login_hint.as_deref(),
+    )
+    .await;
+
+    Some(PendingWalletRequest {
+        user_code,
+        request_id,
+        origin,
+        match_code,
+    })
+}
+
+/// Resolve a client-supplied `login_hint` to a local, active account DID — **local lookups
+/// only**. This runs on an unauthenticated surface with an attacker-suppliable hint, so it must
+/// never drive outbound handle resolution (the SSRF/amplification posture); an account not on
+/// this instance has no registered wallet devices to push to anyway.
+async fn resolve_login_hint_to_local_did(state: &AppState, hint: &str) -> Option<String> {
+    let did = if hint.starts_with("did:") {
+        hint.to_string()
+    } else {
+        let handle = hint.strip_prefix("at://").unwrap_or(hint);
+        let handle = handle
+            .strip_prefix('@')
+            .unwrap_or(handle)
+            .to_ascii_lowercase();
+        crate::identity::handle::validate_handle_structure(&handle).ok()?;
+        crate::db::handles::resolve_handle(&state.db, &handle)
+            .await
+            .ok()??
+    };
+    match active_local_account_exists(&state.db, &did).await {
+        Ok(true) => Some(did),
+        _ => None,
+    }
+}
+
+/// Seal and enqueue a `login-approval` push toward the hinted account's registered wallet
+/// devices, then latch the number-match requirement onto the pending row. Returns the two-digit
+/// match code for the page to display, or `None` when no push went out.
+///
+/// Anyone can type a victim's handle into a consent page, so this channel is exactly where
+/// MFA-fatigue / blind-tap attacks live. Two mitigations gate it: creation is rate-limited per
+/// client and per IP (`check_oauth_consent_creation`, upstream of this call), and once a push is
+/// dispatched approval REQUIRES the number displayed on the login surface — a victim who is not
+/// looking at any sign-in page has nothing to type. The payload is HPKE-sealed to each device and
+/// the relay sees only an opaque push handle, so the relay never learns a login is happening.
+async fn dispatch_login_approval_push(
+    state: &AppState,
+    request_id: &str,
+    client_id: &str,
+    client_name: &str,
+    origin: Option<&str>,
+    login_hint: Option<&str>,
+) -> Option<String> {
+    // Cheap outs before any lookup: no relay configured, or no hint to name a recipient.
+    state.notify_sender.as_ref()?;
+    let did = resolve_login_hint_to_local_did(state, login_hint?).await?;
+
+    // The number is deliberately absent from the payload: it is the proof the approver can see
+    // the login surface, so handing it to the wallet would defeat the channel binding. The wallet
+    // re-fetches everything it displays from the server's record by `request_id` (the QR-path
+    // discipline); `clientName`/`origin` ride along only for the banner the NSE renders.
+    let body = match origin {
+        Some(origin) => format!(
+            "{client_name} at {origin} is asking to sign in as you. If this is you, open the \
+             request and enter the number shown on the sign-in screen."
+        ),
+        None => format!(
+            "{client_name} is asking to sign in as you. If this is you, open the request and \
+             enter the number shown on the sign-in screen."
+        ),
+    };
+    let payload = NotificationPayload::new("login-approval", "Sign-in request", body).with_data(
+        serde_json::json!({
+            "requestId": request_id,
+            "did": did,
+            "clientName": client_name,
+            "origin": origin,
+        }),
+    );
+    let enqueued = notify_device(state, &did, payload).await;
+    if enqueued == 0 {
+        return None;
+    }
+
+    // Latch the requirement only after at least one sealed payload was enqueued: matching is
+    // mandatory on the push channel, and requiring a number no push ever announced would add
+    // friction to the wallet-initiated channels for nothing.
+    let match_code = generate_match_code();
+    match set_push_dispatched(&state.db, request_id, &match_code).await {
+        Ok(true) => {}
+        Ok(false) => {
+            tracing::warn!(request_id = %request_id, "push dispatched but the match code did not latch");
+            return None;
+        }
+        Err(e) => {
+            tracing::warn!(error = %e, request_id = %request_id, "failed to record push dispatch");
+            return None;
+        }
+    }
+
+    // `account_did` stays NULL like the creation event — that column means "the approving
+    // account", a binding only established at approval. The push target is a mechanical fact.
+    let detail = serde_json::json!({ "devices": enqueued, "pushed_to": did }).to_string();
+    if let Err(e) = insert_oauth_consent_audit_event(
+        &state.db,
+        &uuid::Uuid::new_v4().to_string(),
+        request_id,
+        None,
+        client_id,
+        OAuthConsentAuditEventType::PushDispatched,
+        Some(&detail),
+    )
+    .await
+    {
+        tracing::warn!(error = %e, "failed to audit login-approval push dispatch");
+    }
+
+    Some(match_code)
 }
 
 /// `POST /oauth/authorize` — handle the user's approval or denial of the consent request.
@@ -1012,6 +1152,7 @@ mod tests {
     };
     use tower::ServiceExt;
 
+    use super::resolve_login_hint_to_local_did;
     use crate::app::{app, test_state};
     use crate::auth::token::hash_bearer_token;
     use crate::db::oauth::register_oauth_client;
@@ -1305,6 +1446,71 @@ mod tests {
             !location.contains("<b>"),
             "raw HTML tags must not appear anywhere in the response"
         );
+    }
+
+    /// The push recipient is resolved from the client-supplied `login_hint` with LOCAL lookups
+    /// only — a handle goes through the local `handles` table, never outbound resolution (the
+    /// hint is attacker-suppliable on an unauthenticated surface), and only an active local
+    /// account qualifies.
+    #[tokio::test]
+    async fn login_hint_resolves_only_local_active_accounts_for_push() {
+        let state = state_with_client_and_mobile_account().await;
+
+        // A DID hint for the hosted account resolves; decoration-tolerant handle forms resolve.
+        for hint in [DID, TEST_HANDLE, "@Alice.Test", "at://alice.test"] {
+            assert_eq!(
+                resolve_login_hint_to_local_did(&state, hint)
+                    .await
+                    .as_deref(),
+                Some(DID),
+                "hint {hint:?} should bind the local account"
+            );
+        }
+        // Unknown handle, foreign DID, and structural junk resolve to nothing.
+        for hint in [
+            "nobody.example.com",
+            "did:plc:someoneelse0000000000000",
+            "not a handle",
+        ] {
+            assert_eq!(
+                resolve_login_hint_to_local_did(&state, hint).await,
+                None,
+                "hint {hint:?} must not name a push target"
+            );
+        }
+        // A deactivated account is not a push target.
+        sqlx::query("UPDATE accounts SET deactivated_at = datetime('now') WHERE did = ?")
+            .bind(DID)
+            .execute(&state.db)
+            .await
+            .unwrap();
+        assert_eq!(resolve_login_hint_to_local_did(&state, DID).await, None);
+    }
+
+    /// With no notification relay configured, a hinted login changes nothing: no match code is
+    /// latched, the page renders no number panel, and the Phase A/B channels are untouched.
+    #[tokio::test]
+    async fn hinted_login_without_a_relay_requires_no_number() {
+        let state = state_with_client_and_mobile_account().await;
+        let resp = get_authorize(
+            state.clone(),
+            &authorize_url(&format!("&login_hint={TEST_HANDLE}")),
+        )
+        .await;
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(resp.into_body(), 32768).await.unwrap();
+        let html = std::str::from_utf8(&body).unwrap();
+        assert!(
+            !html.contains("id=\"match-code\""),
+            "no number panel without a dispatched push"
+        );
+        let match_codes: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM pending_oauth_authorizations WHERE match_code IS NOT NULL",
+        )
+        .fetch_one(&state.db)
+        .await
+        .unwrap();
+        assert_eq!(match_codes, 0);
     }
 
     #[tokio::test]

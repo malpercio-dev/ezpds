@@ -137,12 +137,16 @@ agent claim confirm), and the wallet screen states it explicitly: "Sign in to
 
 ### The push slot (Phase C, after MM-311)
 
-Push adds only a delivery path: Custos seals `{type: "login-approval", request_id,
-client_name, origin, code}` to the device (the relay design's exact payload), the wallet
-deep-links into the same approval screen — with **number matching now mandatory**: the
-consent page displays a 2-digit number for push-delivered prompts and the wallet requires
-the user to enter/select it before the biometric gate, plus origin display. Nothing about
-the primitive, the envelope, or the completion path changes.
+Push adds only a delivery path: Custos seals a `login-approval` payload carrying
+`{requestId, did, clientName, origin}` to the device, the wallet deep-links into the same
+approval screen — with **number matching now mandatory**: the consent page displays a
+2-digit number for push-delivered prompts and the wallet requires the user to type it
+before the biometric gate, plus origin display. The relay design's original sketch of this
+payload included a `code` field; the landed contract **deliberately omits it** — the
+number is the proof the approver can see the login surface, so sealing it to the wallet
+would defeat the channel binding (see the Phase C landed note below, which is the
+authoritative payload schema). Nothing about the primitive, the envelope, or the
+completion path changes.
 
 ## Suggested phasing
 
@@ -175,6 +179,28 @@ the primitive, the envelope, or the completion path changes.
   the QR payload.
 - **Phase C — push + number matching.** After the notification relay (MM-311) lands:
   `login-approval` notification type, deep-link approve/deny, number-match UX.
+  **Landed (2026-07-29):** when the consent page's `login_hint` names a hosted account
+  (resolved with **local lookups only** — the hint is attacker-suppliable on an
+  unauthenticated surface, so no outbound handle resolution), Custos seals a
+  `login-approval` payload to the account's registered devices over the existing
+  notification pipeline (`notifications::notify_device`, which now reports the enqueued
+  count) and latches a two-digit `match_code` + `push_dispatched_at` onto the pending row
+  (V060, single-use guarded UPDATE). The sealed payload carries display text plus
+  `data: {requestId, did, clientName, origin}` — **deliberately not the relay design's
+  `code` field**: the number is the proof the approver can see the login surface, so
+  handing it to the wallet would defeat the channel binding. The consent page displays the
+  number; the wallet preview reports `matchRequired`; and `/oauth/authorize/approve`
+  refuses an approval whose `matchCode` doesn't match (403, request left pending for a
+  retype — checked server-side, outside the signed envelope, after the signature/authority
+  checks). A denial never requires the number (declining must not be harder than
+  approving). Delivery: the NSE forwards a verified payload's routing identifiers as the
+  `ezpdsRoute` userInfo block; the wallet's new tap handler (`apns.rs` +
+  `notification_routes.rs`) parks the route and the frontend deep-links into
+  `OAuthConsentApprovalScreen` on the `request_id` (re-fetching everything displayed
+  server-side, the QR-path discipline). Push failure degrades to the Phase A/B channels on
+  the same request, with the number still displayed and still enforced.
+  **Number-format decision:** type-the-number (GitHub style), two digits — typing removes
+  the guess-tap surface entirely, where select-from-three leaves a 1-in-3 blind tap.
 
 Prerequisite note: the 2026-07-12 exploration named the Shamir **reconstruction**
 ceremony a hard prerequisite for removing the password escape hatch; both reconstruction
@@ -210,6 +236,7 @@ ceremonies (escrow-assisted and sovereign) have since landed (`share_recovery.rs
 - **Does the wallet-path consent page still render the password form?** Proposal:
   render the password form only for accounts that have one (requires the identifier
   first, or render both paths side by side as today's form does with checkboxes).
-- **Number format for the Phase C match code**: 2-digit select-from-three (Microsoft
+- ~~**Number format for the Phase C match code**: 2-digit select-from-three (Microsoft
   style) vs type-the-number (GitHub style). Type-the-number is stronger against
-  guess-taps; decide with the push UX.
+  guess-taps; decide with the push UX.~~ **Decided with Phase C (2026-07-29):
+  type-the-number, two digits** — see the Phase C landed note.

@@ -116,6 +116,7 @@ Source: `apps/identity-wallet/src/lib/ipc/`
 | `submit_rekey_cmd` | App command |
 | `submit_repo_key_rotation_cmd` | App command |
 | `submit_self_held_kit_cmd` | App command |
+| `take_pending_notification_route` | App command |
 | `tombstone_identity` | App command |
 | `transfer_blobs` | App command |
 | `transfer_preferences` | App command |

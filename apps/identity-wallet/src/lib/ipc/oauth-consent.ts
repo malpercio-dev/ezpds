@@ -22,6 +22,13 @@ export type ConsentPreview = {
   requestedScope: string[];
   /** If set, the request is pre-bound to this DID; approving as a different DID is refused. */
   loginHint: string | null;
+  /**
+   * Whether approval requires the two-digit number displayed on the sign-in page (a
+   * `login-approval` push was dispatched for this request — Phase C's mandatory
+   * anti-MFA-fatigue check). The number itself never reaches the wallet: the user must read it
+   * off the login surface, which is the whole proof.
+   */
+  matchRequired: boolean;
 };
 
 /** The recorded decision for a consent request. */
@@ -39,6 +46,7 @@ export type ConsentError =
   | { code: 'UNSUPPORTED_HOST' }
   | { code: 'REQUEST_NOT_FOUND' }
   | { code: 'APPROVAL_REJECTED' }
+  | { code: 'MATCH_CODE_MISMATCH' }
   | { code: 'ALREADY_RESOLVED' }
   | { code: 'RATE_LIMITED'; retryAfter: string | null }
   | { code: 'TRANSPORT_FAILURE'; message: string }
@@ -73,12 +81,24 @@ export const previewOAuthConsentByRequestId = (
  * Sign and submit a decision for a previewed authorization. `grantedScope` is the space-joined
  * scope set the wallet chose (empty for a denial). Gate this behind `authenticateBiometric()` — it
  * is the authorization boundary that signs the consent envelope with the identity's device key.
+ *
+ * `matchCode` is the two-digit number the user read off the sign-in page — required to approve
+ * when the preview said `matchRequired` (a wrong number is `MATCH_CODE_MISMATCH` and the request
+ * stays pending for a retype); never needed to deny.
  */
 export const confirmOAuthConsent = (
   did: string,
   requestId: string,
   clientId: string,
   decision: 'approve' | 'deny',
-  grantedScope: string
+  grantedScope: string,
+  matchCode?: string
 ): Promise<ConsentDecision> =>
-  invoke('confirm_oauth_consent', { did, requestId, clientId, decision, grantedScope });
+  invoke('confirm_oauth_consent', {
+    did,
+    requestId,
+    clientId,
+    decision,
+    grantedScope,
+    matchCode: matchCode ?? null,
+  });

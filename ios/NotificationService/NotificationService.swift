@@ -122,6 +122,12 @@ final class NotificationService: UNNotificationServiceExtension {
         case let .rendered(payload):
             content.title = payload.title
             content.body = payload.body
+            // Routing survives ONLY on the verified path: `ezpdsRoute`'s presence in a
+            // delivered notification is the statement that HPKE Auth vouched for it, which
+            // is what lets the app deep-link on a tap without re-deciding trust.
+            if let route = NotifyRoute.userInfo(for: payload) {
+                content.userInfo[NotifyRoute.userInfoKey] = route
+            }
         case let .unverified(reason, kid):
             content.title = NotifyResolver.unverifiedTitle
             content.body = NotifyResolver.unverifiedBody
