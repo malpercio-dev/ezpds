@@ -1,0 +1,28 @@
+{
+  "cli_version": "0.9.0",
+  "checkpoint_id": "16bba238a094",
+  "strategy": "manual-commit",
+  "branch": "claude/notify-apns-http2",
+  "checkpoints_count": 2,
+  "files_touched": [
+    "Cargo.toml",
+    "changelog.d/notify-apns-http2.fixed.md",
+    "crates/notify-relay/src/apns.rs"
+  ],
+  "sessions": [
+    {
+      "metadata": "/16/bba238a094/0/metadata.json",
+      "transcript": "/16/bba238a094/0/full.jsonl",
+      "compact_transcript": "/16/bba238a094/0/transcript.jsonl",
+      "content_hash": "/16/bba238a094/0/content_hash.txt",
+      "prompt": "/16/bba238a094/0/prompt.txt"
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 184,
+    "cache_creation_tokens": 391777,
+    "cache_read_tokens": 12679803,
+    "output_tokens": 49523,
+    "api_call_count": 96
+  }
+}
