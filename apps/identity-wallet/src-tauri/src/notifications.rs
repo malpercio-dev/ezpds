@@ -1148,13 +1148,14 @@ mod tests {
     #[test]
     fn the_extensions_failure_log_is_read_as_the_extension_writes_it() {
         crate::keychain::clear_for_test();
-        // The literal `1` is what Swift's `NotifyFailureLog.supportedVersion` writes. Asserting
-        // it against the constant here is what makes a bump on this side visible: the two are
-        // separate bundles, so nothing else would notice them disagreeing until devices stopped
-        // reporting failures.
+        // The literal `1` below is the version Swift's `NotifyFailureLog` writes. This assert
+        // pins only the Rust half — a bump on the SWIFT side would leave it green — which is why
+        // the actual cross-bundle equality is enforced by `just ios-template-check`, comparing
+        // the two files directly. Kept as a fast in-suite reminder that the fixture below is not
+        // an arbitrary number.
         assert_eq!(
             FAILURE_LOG_VERSION, 1,
-            "must match Swift's supportedVersion"
+            "the fixture below is written at this version"
         );
         crate::keychain::store_item_after_first_unlock(
             FAILURE_LOG_ACCOUNT,

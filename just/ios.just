@@ -109,6 +109,14 @@ _ipa app_dir build_number:
     # variable's existence rather than its content.
     [ -n "${IOS_CERTIFICATE_PASSWORD+x}" ] || missing+=("IOS_CERTIFICATE_PASSWORD")
     [ -n "${IOS_MOBILE_PROVISION:-}" ] || missing+=("IOS_MOBILE_PROVISION")
+    # An app that embeds an extension needs a SECOND profile, for the extension's own bundle id.
+    # Keyed on the tracked entitlements file rather than a hardcoded app name: it is the same
+    # marker the template gate and ios-check use, so an app gains this requirement in the change
+    # that gives it an extension. Without it the build archives for minutes and only then fails
+    # in `_reexport-embedded-extensions`.
+    if [ -f "{{app_dir}}/src-tauri/Entitlements.NSE.plist" ]; then
+      [ -n "${IOS_MOBILE_PROVISION_NSE:-}" ] || missing+=("IOS_MOBILE_PROVISION_NSE")
+    fi
     if [ "${#missing[@]}" -gt 0 ]; then
       echo "✗ signing is not configured — missing: ${missing[*]}" >&2
       echo "  This lane signs EXPLICITLY; tauri's automatic signing produces an" >&2
@@ -297,7 +305,9 @@ _reexport-embedded-extensions app_dir:
     profiles_dir="$HOME/Library/MobileDevice/Provisioning Profiles"
     mkdir -p "$profiles_dir"
     nse_profile="$(mktemp)"
-    echo "$IOS_MOBILE_PROVISION_NSE" | base64 --decode > "$nse_profile"
+    # `-d`, not `--decode`: both spellings work on the BSD base64 and the Nix GNU one this
+    # repo can put ahead of it, but `-d` is the common denominator across older BSDs too.
+    echo "$IOS_MOBILE_PROVISION_NSE" | base64 -d > "$nse_profile"
     nse_plist="$(security cms -D -i "$nse_profile" 2>/dev/null)" || {
       echo "✗ IOS_MOBILE_PROVISION_NSE is not a decodable .mobileprovision" >&2; exit 1; }
     nse_uuid="$(plutil -extract UUID raw - <<<"$nse_plist")"

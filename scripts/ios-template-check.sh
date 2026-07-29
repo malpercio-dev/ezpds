@@ -233,6 +233,60 @@ PY
   esac
 fi
 
+# --- Cross-bundle document versions: Swift and Rust must agree ---
+# The app and the extension are separate bundles that share two JSON documents through the
+# Keychain — the pinned sender-key set (app writes, extension reads) and the failure log
+# (extension writes, app reads). Each carries a version tag, and each side refuses a document
+# whose tag it does not recognise.
+#
+# So the two constants ARE the contract, and nothing at compile time relates them: they live in
+# different languages, in different bundles, built by different toolchains. Bumping one alone
+# does not fail anything — it makes the other side silently discard every document, which
+# presents as notifications that stop being verifiable, or a Settings screen that goes blank
+# exactly when it is needed. A Rust test asserting its own constant equals a literal cannot
+# catch it either; only comparing the two files can.
+if command -v python3 >/dev/null 2>&1; then
+  version_verdict="$(python3 - "${REPO_ROOT}" <<'PY'
+import pathlib, re, sys
+
+root = pathlib.Path(sys.argv[1])
+rust = (root / "apps/identity-wallet/src-tauri/src/notifications.rs").read_text()
+
+# (label, swift file, swift type, rust constant)
+contracts = [
+    ("failure log", "NotifyBreadcrumbs.swift", "NotifyFailureLog", "FAILURE_LOG_VERSION"),
+    ("sender-key pin document", "NotifyKeychain.swift", "PinnedSenderKeys", "PIN_DOCUMENT_VERSION"),
+]
+
+problems = []
+for label, filename, swift_type, rust_const in contracts:
+    source = (root / "ios/NotificationService" / filename).read_text()
+    # The declaration sits inside its type, and each of these files declares exactly one.
+    swift = re.search(r"struct\s+" + swift_type + r"\b.*?static let supportedVersion\s*=\s*(\d+)",
+                      source, re.S)
+    rust_match = re.search(r"const\s+" + rust_const + r"\s*:\s*u8\s*=\s*(\d+)\s*;", rust)
+    if not swift:
+        problems.append(f"{label}: no `supportedVersion` on Swift `{swift_type}` in {filename}")
+    elif not rust_match:
+        problems.append(f"{label}: no `{rust_const}` in notifications.rs")
+    elif swift.group(1) != rust_match.group(1):
+        problems.append(
+            f"{label}: Swift {swift_type}.supportedVersion = {swift.group(1)} but Rust "
+            f"{rust_const} = {rust_match.group(1)} — one side would discard every document "
+            f"the other writes")
+
+print("\n".join(problems) if problems else "ok")
+PY
+)"
+  if [ "${version_verdict}" != "ok" ]; then
+    echo "ios-template-check: FAIL — the app and the extension disagree on a shared document version:" >&2
+    echo "${version_verdict}" | sed 's/^/  /' >&2
+    fail=1
+  fi
+else
+  echo "ios-template-check: WARN — python3 unavailable; skipping the Swift/Rust document-version check" >&2
+fi
+
 # --- Both apps must actually point at the template ---
 for app in identity-wallet admin-companion; do
   conf="${REPO_ROOT}/apps/${app}/src-tauri/tauri.conf.json"
