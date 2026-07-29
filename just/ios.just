@@ -317,7 +317,10 @@ _reexport-embedded-extensions app_dir:
 
     app_id="$(plutil -extract CFBundleIdentifier raw -o - "$app/Info.plist")"
     export EXPORT_TEAM="$team" EXPORT_APP_ID="$app_id" EXPORT_APP_UUID="$app_uuid" EXPORT_NSE_UUID="$nse_uuid"
-    options="$(mktemp -t ExportOptions).plist"
+    # `mktemp -d` then a fixed name inside it: `mktemp -t NAME` is BSD syntax, and the Nix
+    # coreutils mktemp that ios-env.sh leaves ahead of /usr/bin is GNU, which reads -t
+    # differently and demands XXXXXX in the template ("too few X's").
+    options="$(mktemp -d)/ExportOptions.plist"
     profiles_json="$(for a in "${appexes[@]}"; do
       plutil -extract CFBundleIdentifier raw -o - "$a/Info.plist"
     done | paste -sd, -)"
