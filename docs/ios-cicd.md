@@ -109,6 +109,7 @@ Settings → Secrets and variables → Actions → **New repository secret**:
 | `IOS_CERTIFICATE` | base64 of `Distribution.p12` | `base64 -i Distribution.p12 \| pbcopy` |
 | `IOS_CERTIFICATE_PASSWORD` | the `.p12` export password | you set it in step 2 |
 | `IOS_MOBILE_PROVISION` | base64 of the `.mobileprovision` | `base64 -i *.mobileprovision \| pbcopy` |
+| `IOS_MOBILE_PROVISION_NSE` | base64 of the **extension's** `.mobileprovision` | same, for the `…identitywallet.NotificationService` profile — used *alongside* the one above, not instead of it |
 | `APPLE_API_ISSUER` | Issuer ID (UUID) | Top of the **Team Keys** list (team-wide) |
 | `APPLE_API_KEY` | Key ID | The key's row under **Team Keys** |
 | `APPLE_API_KEY_B64` | base64 of the `.p8` | `base64 -i AuthKey_<KeyID>.p8 \| pbcopy` |
@@ -293,9 +294,42 @@ in step 3.
    an extension ships inside its host app, not beside it.
 2. **App Store provisioning profile** — a Distribution profile bound to that App ID, signed by
    the same Apple Distribution cert the wallet already uses.
-3. **GitHub secret** — base64 of that profile, wired into the wallet lane alongside
-   `IOS_MOBILE_PROVISION`. Xcode resolves the extension's profile at archive time, so both must
-   be installed on the runner before `just ios-ipa` runs.
+3. **GitHub secret `IOS_MOBILE_PROVISION_NSE`** — base64 of that profile
+   (`base64 -i *.mobileprovision | pbcopy`). Unlike `IOS_MOBILE_PROVISION_ADMIN`, this is not an
+   *alternative* to `IOS_MOBILE_PROVISION` — both are used in the **same** build, because the app
+   and the extension are separate bundles that each need their own profile.
+
+### Why the release lane re-exports the archive
+
+`cargo tauri ios build` archives and exports in one step, and its generated ExportOptions carries
+exactly one provisioning-profile entry — the app's bundle id. It also only stamps signing
+settings onto build-configuration lists whose comment contains `_iOS`, so an extension target is
+left unsigned in the archive. `xcodebuild -exportArchive` then re-signs the extension with the
+distribution identity but, having no profile for its bundle id, gives it **empty entitlements and
+no embedded profile**.
+
+Nothing fails along the way. The archive succeeds, the export succeeds, a normal-looking `.ipa`
+lands on disk, and the first thing to object is App Store Connect, minutes later:
+
+```
+Validation failed (409) Missing Code Signing Entitlements. No entitlements found in bundle
+'dev.malpercio.identitywallet.NotificationService' for executable '…/identity-wallet_NSE.appex/…'
+```
+
+The obvious escape hatch is closed: tauri merges a user-supplied `gen/apple/ExportOptions.plist`,
+but its `merge_plist` is a shallow later-wins merge, so tauri's own single-entry
+`provisioningProfiles` overwrites yours. There is also no archive-only mode to hook between.
+
+So `just ios-ipa` runs `just _reexport-embedded-extensions` after the tauri build: it installs
+the extension profile, reads the app's profile UUID out of the pbxproj tauri just stamped (so the
+export uses exactly the profile the archive was built against), writes an ExportOptions naming a
+profile for **every** embedded bundle, and re-exports over the `.ipa`. `-exportArchive` re-signs
+everything from scratch, so the ad-hoc-signed archive is a fine input and the second export costs
+seconds. It no-ops for an app with no extensions, so admin-companion shares the recipe untouched.
+
+`just _verify-signed-ipa` then asserts every bundle in the `.ipa` — app and each `.appex` — has
+non-empty entitlements and its own `embedded.mobileprovision`. That check exists because this
+failure is invisible locally; without it the only signal is a 409 after a full upload.
 
 Verify locally first — `just ios-release` on your Mac with both profiles installed — before
 trusting the cloud job, exactly as the Admin Companion section advises.

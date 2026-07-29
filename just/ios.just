@@ -117,7 +117,7 @@ _ipa app_dir build_number:
       buildlog="$(mktemp)"
       if cargo tauri ios build --export-method app-store-connect 2>&1 | tee "$buildlog"; then
         rm -f "$buildlog"
-        exit 0
+        break
       fi
       status="${PIPESTATUS[0]}"
       if [ "$attempt" -lt "$attempts" ] && grep -qE "$transient_re" "$buildlog"; then
@@ -128,6 +128,189 @@ _ipa app_dir build_number:
       rm -f "$buildlog"
       exit "$status"
     done
+    # Only a successful build reaches here — every failure path above exits. `just` runs from
+    # the justfile directory regardless of the cd above, so these need no path fixup.
+    just _reexport-embedded-extensions {{app_dir}}
+    just _verify-signed-ipa {{app_dir}}
+
+# Re-export the archive with an ExportOptions that names a provisioning profile for EVERY
+# embedded bundle, not just the app.
+#
+# WHY THIS EXISTS. `cargo tauri ios build` archives and exports in one step, and its generated
+# ExportOptions carries exactly one provisioning-profile entry:
+#
+#     provisioning_profiles.insert(config.app().identifier().to_string(), profile_uuid.into());
+#
+# — the app's bundle id. It also only stamps signing settings onto build-configuration lists
+# whose comment contains `_iOS`, so an extension target is left entirely unsigned in the
+# archive. `xcodebuild -exportArchive` then re-signs the extension with the distribution
+# identity but, having no profile for its bundle id, gives it EMPTY entitlements and no
+# embedded.mobileprovision. Nothing fails: the archive succeeds, the export succeeds, a
+# plausible-looking .ipa lands on disk, and the first thing that objects is App Store Connect
+# ("Missing Code Signing Entitlements. No entitlements found in bundle ...") after a full
+# build-and-upload round trip.
+#
+# The obvious escape hatch is closed: tauri merges a user-supplied gen/apple/ExportOptions.plist,
+# but `merge_plist` is a shallow later-wins merge, so its own single-entry `provisioningProfiles`
+# overwrites ours wholesale. And there is no archive-only mode to hook between.
+#
+# So we let tauri produce its (broken) .ipa and simply export the archive AGAIN with a complete
+# ExportOptions, overwriting it. `-exportArchive` re-signs every bundle from scratch, so the
+# archive — which tauri leaves ad-hoc signed anyway — is a perfectly good input, and the second
+# export costs seconds. This keeps the fix inside one recipe instead of forking the whole
+# release lane away from tauri.
+#
+# No-ops for an app with no embedded extensions (admin-companion today), so both lanes share it.
+_reexport-embedded-extensions app_dir:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    gen="{{app_dir}}/src-tauri/gen/apple"
+    archive="$(ls -td "$gen"/build/*.xcarchive 2>/dev/null | head -n1 || true)"
+    if [ -z "$archive" ]; then
+      echo "✗ no .xcarchive under $gen/build — did the build actually run?" >&2
+      exit 1
+    fi
+    app="$(ls -d "$archive"/Products/Applications/*.app 2>/dev/null | head -n1 || true)"
+    if [ -z "$app" ]; then
+      echo "✗ no .app inside $archive" >&2
+      exit 1
+    fi
+
+    # Enumerate embedded bundles that need their own profile. Read from the archive rather than
+    # assuming a name, so this keeps working if a second extension is ever added.
+    appexes=()
+    while IFS= read -r a; do [ -n "$a" ] && appexes+=("$a"); done < <(ls -d "$app"/PlugIns/*.appex 2>/dev/null || true)
+    if [ "${#appexes[@]}" -eq 0 ]; then
+      echo "✓ no embedded extensions in $(basename "$app") — tauri's own export is complete"
+      exit 0
+    fi
+
+    if [ -z "${IOS_MOBILE_PROVISION_NSE:-}" ]; then
+      echo "✗ IOS_MOBILE_PROVISION_NSE is not set, but $(basename "$app") embeds an extension." >&2
+      echo "  An app extension is a separate bundle and needs its OWN App Store provisioning" >&2
+      echo "  profile, bound to its own App ID. Without it the extension ships with empty" >&2
+      echo "  entitlements and App Store Connect rejects the upload." >&2
+      echo "  Set it to the base64 of that .mobileprovision:" >&2
+      echo "    export IOS_MOBILE_PROVISION_NSE=\"\$(base64 -i <profile>.mobileprovision)\"" >&2
+      echo "  See docs/ios-cicd.md → \"Push notifications: three artifacts\"." >&2
+      exit 1
+    fi
+
+    # Install the extension's profile where Xcode looks — the same folder and the same UUID
+    # lookup tauri_macos_sign uses for the app's, so both are discoverable identically.
+    profiles_dir="$HOME/Library/MobileDevice/Provisioning Profiles"
+    mkdir -p "$profiles_dir"
+    nse_profile="$(mktemp)"
+    echo "$IOS_MOBILE_PROVISION_NSE" | base64 --decode > "$nse_profile"
+    nse_plist="$(security cms -D -i "$nse_profile" 2>/dev/null)" || {
+      echo "✗ IOS_MOBILE_PROVISION_NSE is not a decodable .mobileprovision" >&2; exit 1; }
+    nse_uuid="$(plutil -extract UUID raw - <<<"$nse_plist")"
+    team="$(plutil -extract TeamIdentifier.0 raw - <<<"$nse_plist")"
+    cp "$nse_profile" "$profiles_dir/$nse_uuid.mobileprovision"
+    rm -f "$nse_profile"
+
+    # The app's profile UUID: read what tauri actually archived with, straight out of the
+    # pbxproj it just stamped. Deriving it from the env var again would risk exporting with a
+    # different profile than the archive was built against.
+    pbxproj="$(ls "$gen"/*.xcodeproj/project.pbxproj | head -n1)"
+    app_uuid="$(grep -oE 'PROVISIONING_PROFILE_SPECIFIER = "[^"]+"' "$pbxproj" | head -n1 | sed -E 's/.*"(.*)"/\1/' || true)"
+    if [ -z "$app_uuid" ]; then
+      echo "✗ no PROVISIONING_PROFILE_SPECIFIER in $pbxproj — signing env (IOS_CERTIFICATE / IOS_MOBILE_PROVISION) was not set for the build" >&2
+      exit 1
+    fi
+
+    app_id="$(plutil -extract CFBundleIdentifier raw -o - "$app/Info.plist")"
+    export EXPORT_TEAM="$team" EXPORT_APP_ID="$app_id" EXPORT_APP_UUID="$app_uuid" EXPORT_NSE_UUID="$nse_uuid"
+    options="$(mktemp -t ExportOptions).plist"
+    profiles_json="$(for a in "${appexes[@]}"; do
+      plutil -extract CFBundleIdentifier raw -o - "$a/Info.plist"
+    done | paste -sd, -)"
+    EXPORT_APPEX_IDS="$profiles_json" python3 - "$options" <<'PY'
+    import os, plistlib, sys
+
+    profiles = {os.environ["EXPORT_APP_ID"]: os.environ["EXPORT_APP_UUID"]}
+    for bundle_id in filter(None, os.environ["EXPORT_APPEX_IDS"].split(",")):
+        # Every extension shares one profile today (there is exactly one). A second extension
+        # would need its own entry here and its own secret — the loop is where that lands.
+        profiles[bundle_id] = os.environ["EXPORT_NSE_UUID"]
+
+    options = {
+        "method": "app-store-connect",
+        "signingStyle": "manual",
+        "teamID": os.environ["EXPORT_TEAM"],
+        # The generic identity name, resolved by Xcode against the keychain — the same shape
+        # tauri writes, and stable across cert renewals.
+        "signingCertificate": "Apple Distribution",
+        "provisioningProfiles": profiles,
+    }
+    with open(sys.argv[1], "wb") as handle:
+        plistlib.dump(options, handle)
+    print("  ExportOptions provisioningProfiles:")
+    for bundle_id, uuid in profiles.items():
+        print(f"    {bundle_id} -> {uuid}")
+    PY
+
+    echo "re-exporting $(basename "$archive") with profiles for every embedded bundle..."
+    rm -f "$gen"/build/arm64/*.ipa
+    xcodebuild -exportArchive \
+      -archivePath "$archive" \
+      -exportPath "$gen/build/arm64" \
+      -exportOptionsPlist "$options" \
+      -allowProvisioningUpdates >/dev/null
+    rm -f "$options"
+    echo "✓ re-exported with ${#appexes[@]} embedded extension(s) signed"
+
+# Assert the exported .ipa is actually shippable: every bundle in it — the app and each
+# embedded extension — must carry non-empty entitlements and its own embedded.mobileprovision.
+#
+# This is the check whose absence cost a full build-and-upload round trip. The failure it
+# catches is completely silent locally: the archive succeeds, the export succeeds, the .ipa
+# looks normal, and only App Store Connect objects, minutes later, with a 409. Two seconds of
+# `codesign -d` turns that into an immediate local failure.
+_verify-signed-ipa app_dir:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    ipa="$(ls -t "{{app_dir}}"/src-tauri/gen/apple/build/arm64/*.ipa 2>/dev/null | head -n1 || true)"
+    if [ -z "$ipa" ]; then
+      echo "✗ no .ipa to verify under {{app_dir}}/src-tauri/gen/apple/build/arm64/" >&2
+      exit 1
+    fi
+    work="$(mktemp -d)"
+    trap 'rm -rf "$work"' EXIT
+    unzip -q "$ipa" -d "$work"
+    app="$(ls -d "$work"/Payload/*.app | head -n1)"
+
+    fail=0
+    check() { # <bundle> <label>
+      local bundle="$1" label="$2" ents
+      if [ ! -f "$bundle/embedded.mobileprovision" ]; then
+        echo "✗ $label has no embedded.mobileprovision — it was signed without a provisioning profile" >&2
+        fail=1
+      fi
+      # `codesign -d --entitlements -` prints nothing (or an empty dict) when the bundle was
+      # signed with none, which is exactly the state App Store Connect rejects.
+      ents="$(codesign -d --entitlements - --xml "$bundle" 2>/dev/null || true)"
+      if ! python3 -c '
+    import plistlib, sys
+    raw = sys.stdin.buffer.read()
+    start = raw.find(b"<?xml")
+    sys.exit(0 if start >= 0 and plistlib.loads(raw[start:]) else 1)
+    ' <<<"$ents"; then
+        echo "✗ $label has no code-signing entitlements (App Store Connect rejects this with a 409)" >&2
+        fail=1
+      else
+        echo "  ✓ $label — entitlements present, profile embedded"
+      fi
+    }
+
+    check "$app" "$(basename "$app")"
+    for appex in "$app"/PlugIns/*.appex; do
+      [ -d "$appex" ] || continue
+      check "$appex" "PlugIns/$(basename "$appex")"
+    done
+
+    [ "$fail" -eq 0 ] || { echo "✗ $(basename "$ipa") is not shippable — see above" >&2; exit 1; }
+    echo "✓ $(basename "$ipa") signing verified"
 
 # Typecheck the Notification Service Extension's Swift against the real iOS SDK — the
 # extension's sources alone, then the test bundle exactly as the XcodeGen template composes

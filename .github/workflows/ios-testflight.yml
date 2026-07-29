@@ -64,8 +64,11 @@ jobs:
       app: identity-wallet
       recipe-prefix: ios
     secrets:
-      # identity-wallet signs with the profile bound to its own bundle id.
+      # identity-wallet signs with the profile bound to its own bundle id, plus a second
+      # profile for the Notification Service Extension's own bundle id
+      # (dev.malpercio.identitywallet.NotificationService). Both are needed in one build.
       IOS_MOBILE_PROVISION: ${{ secrets.IOS_MOBILE_PROVISION }}
+      IOS_MOBILE_PROVISION_NSE: ${{ secrets.IOS_MOBILE_PROVISION_NSE }}
       IOS_CERTIFICATE: ${{ secrets.IOS_CERTIFICATE }}
       IOS_CERTIFICATE_PASSWORD: ${{ secrets.IOS_CERTIFICATE_PASSWORD }}
       APPLE_DEVELOPMENT_TEAM: ${{ secrets.APPLE_DEVELOPMENT_TEAM }}

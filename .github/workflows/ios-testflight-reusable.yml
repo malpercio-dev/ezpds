@@ -35,6 +35,14 @@ on:
       # IOS_MOBILE_PROVISION_ADMIN for admin-companion) by mapping it onto this name.
       IOS_MOBILE_PROVISION:
         required: true
+      # An app EXTENSION is a separate bundle with its own App ID, so it needs its own
+      # profile alongside the app's — both are used in the same build, unlike the pair
+      # above which are alternatives. Optional: only identity-wallet embeds an extension
+      # today, and `just _reexport-embedded-extensions` no-ops for an app without one
+      # (it fails loudly for an app WITH one and no profile, rather than shipping an
+      # extension with empty entitlements that App Store Connect rejects on upload).
+      IOS_MOBILE_PROVISION_NSE:
+        required: false
       # The Apple Distribution cert and the App Store Connect API key are team-wide and
       # shared by both apps; the callers map them 1:1.
       IOS_CERTIFICATE:
@@ -122,6 +130,7 @@ jobs:
           IOS_CERTIFICATE: ${{ secrets.IOS_CERTIFICATE }}
           IOS_CERTIFICATE_PASSWORD: ${{ secrets.IOS_CERTIFICATE_PASSWORD }}
           IOS_MOBILE_PROVISION: ${{ secrets.IOS_MOBILE_PROVISION }}
+          IOS_MOBILE_PROVISION_NSE: ${{ secrets.IOS_MOBILE_PROVISION_NSE }}
           APPLE_DEVELOPMENT_TEAM: ${{ secrets.APPLE_DEVELOPMENT_TEAM }}
           APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
           APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
