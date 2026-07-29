@@ -191,6 +191,21 @@ for the first time inside a CI log.
   Tauri's *automatic* iOS signing is unreliable (tauri#11092). Sign **explicitly** with
   `IOS_CERTIFICATE` + `IOS_CERTIFICATE_PASSWORD` + `IOS_MOBILE_PROVISION` (Apple
   Distribution cert + App Store profile), not the API key.
+
+  Locally this is the easiest mistake to make, because tauri does not complain when the
+  variables are absent — `signing_from_env()` just returns "no signing", the build runs to
+  completion under automatic signing, and it dies at the export with
+  `No signing certificate "iOS Distribution" found`, which names neither the cause nor the
+  variable. `just ios-ipa` therefore pre-flights all three and refuses in a second. A local
+  release run needs the full set in the shell:
+
+  ```bash
+  export IOS_CERTIFICATE="$(base64 -i Distribution.p12)"
+  export IOS_CERTIFICATE_PASSWORD='…'
+  export IOS_MOBILE_PROVISION="$(base64 -i Obsign_App_Store.mobileprovision)"
+  export IOS_MOBILE_PROVISION_NSE="$(base64 -i Obsign_NSE_App_Store.mobileprovision)"
+  export APPLE_API_KEY=… APPLE_API_ISSUER=…   # only for the upload step
+  ```
 - **`base64: invalid option -- 'o'` during signing (local only).** In the devenv, Nix's
   GNU `base64` shadows macOS's BSD one, but Tauri's cert decode uses BSD flags. `ios-env.sh`
   shims `/usr/bin/base64` ahead of it under `EZPDS_IOS_BUILD`. No-op on CI (BSD base64 there).

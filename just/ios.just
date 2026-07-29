@@ -95,6 +95,34 @@ _ipa app_dir build_number:
       echo "  (the post-build restore is 'git checkout -- <conf>', which would discard them)" >&2
       exit 1
     fi
+    # Pre-flight the signing environment BEFORE the ~10-minute build.
+    #
+    # tauri's `signing_from_env()` reads exactly these three and silently returns "no signing"
+    # if any is missing — it does not error. The build then runs to completion under AUTOMATIC
+    # signing, mints the placeholder cert `Apple Distribution: Tauri (unset)` (tauri#11092), and
+    # dies at the very end with `No signing certificate "iOS Distribution" found`, which names
+    # neither the real cause nor the variable to set. One forgotten `export` in a fresh shell
+    # therefore costs a full build and produces a misleading error; this costs a second.
+    missing=()
+    [ -n "${IOS_CERTIFICATE:-}" ] || missing+=("IOS_CERTIFICATE")
+    # Set-but-empty is legitimate for a .p12 exported without a password, so test for the
+    # variable's existence rather than its content.
+    [ -n "${IOS_CERTIFICATE_PASSWORD+x}" ] || missing+=("IOS_CERTIFICATE_PASSWORD")
+    [ -n "${IOS_MOBILE_PROVISION:-}" ] || missing+=("IOS_MOBILE_PROVISION")
+    if [ "${#missing[@]}" -gt 0 ]; then
+      echo "✗ signing is not configured — missing: ${missing[*]}" >&2
+      echo "  This lane signs EXPLICITLY; tauri's automatic signing produces an" >&2
+      echo "  \"Apple Distribution: Tauri (unset)\" placeholder that App Store Connect rejects." >&2
+      echo "  With these unset the build would run to completion and only then fail." >&2
+      echo >&2
+      echo "  export IOS_CERTIFICATE=\"\$(base64 -i Distribution.p12)\"" >&2
+      echo "  export IOS_CERTIFICATE_PASSWORD='…'" >&2
+      echo "  export IOS_MOBILE_PROVISION=\"\$(base64 -i <app>.mobileprovision)\"" >&2
+      echo "  export IOS_MOBILE_PROVISION_NSE=\"\$(base64 -i <extension>.mobileprovision)\"  # apps embedding an extension" >&2
+      echo >&2
+      echo "  See docs/ios-cicd.md → \"GitHub repo secrets\"." >&2
+      exit 1
+    fi
     bv="{{build_number}}"
     [ -n "$bv" ] || bv="$(date -u +%s)"
     trap 'git checkout -- "$conf"' EXIT
