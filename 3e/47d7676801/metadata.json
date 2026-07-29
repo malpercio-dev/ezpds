@@ -1,0 +1,26 @@
+{
+  "cli_version": "0.9.0",
+  "checkpoint_id": "3e47d7676801",
+  "strategy": "manual-commit",
+  "branch": "claude/mm-420-nse-decrypt-render-8c4f7c",
+  "checkpoints_count": 5,
+  "files_touched": [
+    "just/ios.just"
+  ],
+  "sessions": [
+    {
+      "metadata": "/3e/47d7676801/0/metadata.json",
+      "transcript": "/3e/47d7676801/0/full.jsonl",
+      "compact_transcript": "/3e/47d7676801/0/transcript.jsonl",
+      "content_hash": "/3e/47d7676801/0/content_hash.txt",
+      "prompt": "/3e/47d7676801/0/prompt.txt"
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 71,
+    "cache_creation_tokens": 578453,
+    "cache_read_tokens": 21930685,
+    "output_tokens": 48672,
+    "api_call_count": 38
+  }
+}

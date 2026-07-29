@@ -1,0 +1,37 @@
+All checks are green. give me the lowdown on the exact configuration changes I need for apple certificates
+
+---
+
+<task-notification>
+<task-id>bc89f5u4c</task-id>
+<summary>Monitor event: "PR #483 check results as they land"</summary>
+<event>[Monitor timed out — re-arm if needed.]</event>
+</task-notification>
+
+---
+
+for the github workflow, what precise name would we need? is the workflow looking for IOS_MOBILE_PROVISION_NSE?
+
+---
+
+alright, failed near the end, I think as suspected:
+
+```
+2026-07-28 20:51:27.716 ERROR: [ContentDelivery.Uploader.100EA37D0]
+=======================================
+UPLOAD FAILED with 1 error
+=======================================
+Failed to upload package.
+2026-07-28 20:51:27.717 ERROR: [altool.100EA37D0] Validation failed (409) Missing Code Signing Entitlements. No entitlements found in bundle 'dev.malpercio.identitywallet.NotificationService' for executable 'Payload/Obsign.app/PlugIns/identity-wallet_NSE.appex/identity-wallet_NSE'." (ID: 8aa3f109-a7e6-47bf-93e0-914f09a336a2)
+   NSUnderlyingError : Validation failed (-19241) Missing Code Signing Entitlements. No entitlements found in bundle 'dev.malpercio.identitywallet.NotificationService' for executable 'Payload/Obsign.app/PlugIns/identity-wallet_NSE.appex/identity-wallet_NSE'."
+      status : 409
+      detail : Missing Code Signing Entitlements. No entitlements found in bundle 'dev.malpercio.identitywallet.NotificationService' for executable 'Payload/Obsign.app/PlugIns/identity-wallet_NSE.appex/identity-wallet_NSE'."
+      id : 8aa3f109-a7e6-47bf-93e0-914f09a336a2
+      code : STATE_ERROR.VALIDATION_ERROR
+      title : Validation failed
+   iris-code : STATE_ERROR.VALIDATION_ERROR
+```
+
+---
+
+Let's make the change, I have the certificate locally to help run the verification when you are done
