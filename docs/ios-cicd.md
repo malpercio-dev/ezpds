@@ -206,6 +206,22 @@ for the first time inside a CI log.
   export IOS_MOBILE_PROVISION_NSE="$(base64 -i Obsign_NSE_App_Store.mobileprovision)"
   export APPLE_API_KEY=… APPLE_API_ISSUER=…   # only for the upload step
   ```
+- **Second and subsequent LOCAL release builds fail with the `Tauri (unset)` placeholder.**
+  `cargo tauri ios build` writes signing settings into `project.pbxproj` at line numbers its
+  parser recorded, and those go stale as earlier insertions shift the file. A project it has
+  already stamped comes back with build settings sitting after a closing brace — or after
+  `/* End XCBuildConfiguration section */`. Its parser then finds no `_iOS` build-configuration
+  list and silently skips **both** the signing settings and the `provisioningProfiles` /
+  `signingStyle` half of the generated ExportOptions, so the build falls back to automatic
+  signing and dies at the export blaming a missing `iOS Distribution` certificate.
+
+  Xcode and `plutil -lint` both accept the mangled file, so `just ios-check` cannot see it. CI
+  was never affected because it regenerates `gen/` every run; only repeated local builds
+  accumulate the damage, and one build is enough to break the next. `just ios-ipa` therefore
+  regenerates the project itself before building — matching CI's init → postinit → build — and
+  then runs `scripts/ios/pbxproj-parseable.py`, a port of tauri's own parser state machine, as a
+  post-condition. If you ever see the placeholder cert again, that check is the thing to run.
+
 - **`base64: invalid option -- 'o'` during signing (local only).** In the devenv, Nix's
   GNU `base64` shadows macOS's BSD one, but Tauri's cert decode uses BSD flags. `ios-env.sh`
   shims `/usr/bin/base64` ahead of it under `EZPDS_IOS_BUILD`. No-op on CI (BSD base64 there).

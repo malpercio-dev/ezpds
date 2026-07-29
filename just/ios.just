@@ -160,6 +160,34 @@ _ipa app_dir build_number:
       fi
     done
     unset _v _val _note
+
+    # REGENERATE the Xcode project before building. This is not hygiene — it is required for
+    # correctness on any machine that builds twice.
+    #
+    # `cargo tauri ios build` writes CODE_SIGN_IDENTITY / DEVELOPMENT_TEAM /
+    # PROVISIONING_PROFILE_SPECIFIER into project.pbxproj at line numbers its parser recorded.
+    # Those numbers go stale as earlier insertions shift the file, so a project it has ALREADY
+    # stamped comes back with settings written after a closing brace — or after
+    # `/* End XCBuildConfiguration section */` entirely. Its own parser then derails, finds no
+    # `_iOS` build-configuration list, and quietly skips every signing setting AND the
+    # `provisioningProfiles`/`signingStyle` half of the ExportOptions. The build runs to
+    # completion, signs with a self-signed "Apple Distribution: Tauri (unset)" placeholder, and
+    # fails at the export blaming a missing "iOS Distribution" certificate.
+    #
+    # Xcode and `plutil -lint` both accept the mangled file, so nothing else notices. CI never
+    # hit this because it regenerates gen/ on every run; only repeated LOCAL builds accumulate
+    # the damage — one build is enough to break the next.
+    #
+    # Regenerating costs seconds and makes the local lane identical to CI's init → postinit →
+    # build. It comes after the version stamp so the generated Info.plist carries it.
+    echo "regenerating the Xcode project (tauri's pbxproj writes are not idempotent)..."
+    cargo tauri ios init >/dev/null
+    "$(git rev-parse --show-toplevel)/{{app_dir}}/scripts/ios-postinit.sh" >/dev/null
+    # Post-condition: confirm tauri can actually find what it needs to sign. Cheap, and it
+    # converts the silent fallback above into an immediate, named failure.
+    python3 "$(git rev-parse --show-toplevel)/scripts/ios/pbxproj-parseable.py" \
+      src-tauri/gen/apple/*.xcodeproj/project.pbxproj
+
     # SwiftPM manifest compilation for the vendored swift-rs fork occasionally crashes the
     # Apple toolchain non-deterministically: `clang` dies with `Segmentation fault: 11`
     # while linking the throwaway Package.swift manifest executable, panicking swift-rs's
