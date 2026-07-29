@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Changes are collected in `changelog.d/` during development and inserted here when
 `just set-version` prepares a release. There is intentionally no `Unreleased` section.
 
+## [0.10.1] - 2026-07-29
+
+### Fixed
+
+- The notification relay can now actually reach Apple. Its HTTP client was built without HTTP/2 support — a default feature lost when the workspace opted out of defaults — and Apple's push service speaks nothing else, so every real delivery failed in transport with a connection error while the relay's own tests (whose stand-in APNs speaks HTTP/1.1) stayed green. Pushes sealed for your device now arrive.
+
+
 ## [0.10.0] - 2026-07-29
 
 ### Added
