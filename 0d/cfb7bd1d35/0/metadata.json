@@ -1,0 +1,108 @@
+{
+  "cli_version": "0.9.0",
+  "checkpoint_id": "0dcfb7bd1d35",
+  "session_id": "4f4688f2-4dc5-4494-bceb-82770a044417",
+  "strategy": "manual-commit",
+  "created_at": "2026-07-29T12:43:47.116806Z",
+  "branch": "malpercio/mm-443-wallet-confirmed-oauth-consent-phase-c-push-to-approve-with",
+  "checkpoints_count": 1,
+  "files_touched": [
+    "crates/pds/src/db/migrations/V060__pending_oauth_push.sql",
+    "crates/pds/src/db/migrations.rs",
+    "crates/pds/src/db/pending_oauth_authorizations.rs",
+    "crates/pds/src/notifications.rs",
+    "crates/pds/src/code_gen.rs",
+    "crates/pds/src/routes/oauth_authorize.rs",
+    "crates/pds/src/routes/oauth_templates.rs",
+    "crates/pds/src/routes/oauth_consent.rs",
+    "crates/pds/src/notify_e2e_test.rs",
+    "bruno/oauth_authorize_approve.bru",
+    "bruno/oauth_authorize_consent_request.bru",
+    "ios/NotificationService/NotifyEnvelope.swift",
+    "ios/NotificationService/NotificationService.swift",
+    "ios/NotificationServiceTests/NotifyResolverTests.swift",
+    "ios/AGENTS.md",
+    "apps/identity-wallet/src-tauri/src/notification_routes.rs",
+    "apps/identity-wallet/src-tauri/src/lib.rs",
+    "apps/identity-wallet/src-tauri/Cargo.toml",
+    "apps/identity-wallet/src-tauri/src/apns.rs",
+    "apps/identity-wallet/src-tauri/src/oauth_consent.rs",
+    "apps/identity-wallet/src/lib/ipc/oauth-consent.ts",
+    "apps/identity-wallet/src/lib/ipc/notification-routes.ts",
+    "apps/identity-wallet/src/lib/ipc/index.ts",
+    "apps/identity-wallet/src/lib/components/home/OAuthConsentApprovalScreen.svelte",
+    "apps/identity-wallet/src/routes/+page.svelte",
+    "apps/identity-wallet/src/lib/harness/registry.ts",
+    "changelog.d/mm-443.added.md",
+    "docs/design-plans/2026-07-18-wallet-confirmed-oauth-consent.md",
+    "crates/pds/src/db/AGENTS.md",
+    "crates/pds/AGENTS.md",
+    "apps/identity-wallet/AGENTS.md"
+  ],
+  "agent": "Claude Code",
+  "model": "claude-fable-5",
+  "turn_id": "4ba2e65605da",
+  "compact_transcript_start": 0,
+  "token_usage": {
+    "input_tokens": 408,
+    "cache_creation_tokens": 587811,
+    "cache_read_tokens": 96246324,
+    "output_tokens": 142961,
+    "api_call_count": 206
+  },
+  "skill_events_version": 1,
+  "skill_events": [
+    {
+      "id": "claude-skill-toolu_019rF5pMRtqedrBW5AgbNu9r",
+      "event_type": "tool_invocation",
+      "skill": {
+        "name": "linear-workflow"
+      },
+      "source": {
+        "agent": "claude-code",
+        "signal": "skill_tool_use",
+        "confidence": "explicit"
+      },
+      "turn_id": "4ba2e65605da",
+      "transcript_anchor": {
+        "unit": "line",
+        "start": 19,
+        "end": 20,
+        "entry_ids": [
+          "cf659f2e-8de5-4c6a-afd8-d860975e742c"
+        ],
+        "tool_use_id": "toolu_019rF5pMRtqedrBW5AgbNu9r"
+      },
+      "native": {
+        "tool_name": "Skill",
+        "tool_use_id": "toolu_019rF5pMRtqedrBW5AgbNu9r"
+      },
+      "collapse": {
+        "target": "tool_pair",
+        "label": "Skill: linear-workflow",
+        "default_collapsed": true
+      }
+    }
+  ],
+  "initial_attribution": {
+    "calculated_at": "2026-07-29T12:43:46.953232Z",
+    "agent_lines": 1534,
+    "agent_removed": 63,
+    "human_added": 1,
+    "human_modified": 0,
+    "human_removed": 0,
+    "total_committed": 1535,
+    "total_lines_changed": 1598,
+    "agent_percentage": 99.93742177722153,
+    "metric_version": 2
+  },
+  "prompt_attributions": [
+    {
+      "checkpoint_number": 1,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 0,
+      "agent_lines_removed": 0
+    }
+  ]
+}
