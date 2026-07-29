@@ -130,6 +130,23 @@ _ipa app_dir build_number:
     jq --arg bv "$bv" '.bundle.iOS.bundleVersion = $bv' "$conf" > "$tmp" && mv "$tmp" "$conf"
     echo "CFBundleVersion -> $bv"
     cd {{app_dir}} && export EZPDS_IOS_BUILD=1 && . scripts/ios-env.sh
+    # Report the signing environment as a CHILD PROCESS will see it — `env`, not shell
+    # expansion, because that is exactly what tauri's `var_os` reads, and the two differ for a
+    # variable that was assigned but never exported. Lengths only: a value here is a private
+    # key or a password and must never reach a terminal scrollback or a CI transcript.
+    #
+    # This exists because "tauri fell back to automatic signing" and "you forgot an export" are
+    # indistinguishable from tauri's own output — it prints the same placeholder cert either
+    # way, minutes later, naming neither cause. Several builds were spent on that ambiguity.
+    echo "signing environment visible to the build:"
+    for _v in IOS_CERTIFICATE IOS_CERTIFICATE_PASSWORD IOS_MOBILE_PROVISION IOS_MOBILE_PROVISION_NSE APPLE_DEVELOPMENT_TEAM; do
+      if _line="$(env | grep "^${_v}=" | head -n1)"; then
+        printf '  %-26s exported (%s bytes)\n' "$_v" "$(printf '%s' "${_line#*=}" | wc -c | tr -d ' ')"
+      else
+        printf '  %-26s NOT EXPORTED\n' "$_v"
+      fi
+    done
+    unset _v _line
     # SwiftPM manifest compilation for the vendored swift-rs fork occasionally crashes the
     # Apple toolchain non-deterministically: `clang` dies with `Segmentation fault: 11`
     # while linking the throwaway Package.swift manifest executable, panicking swift-rs's
