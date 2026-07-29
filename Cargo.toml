@@ -51,7 +51,10 @@ http-body-util = "0.1"
 # HTTP client (pds)
 # default-features = false: no OpenSSL; future crates must opt in to rustls explicitly
 # (the TLS feature was named rustls-tls before reqwest 0.13).
-reqwest = { version = "0.13", default-features = false, features = ["json", "rustls"] }
+# http2 is a *default* feature, so dropping defaults silently drops it too — and without it
+# reqwest never offers h2 in ALPN, which breaks the one HTTP/2-only peer in the tree:
+# APNs (api.push.apple.com refuses HTTP/1.1 outright, so every push dies in transport).
+reqwest = { version = "0.13", default-features = false, features = ["json", "rustls", "http2"] }
 # reqwest's companion crate. Already in the tree transitively (single major); named directly so
 # the identity-wallet can rebuild a `reqwest::Response` from parts (status/headers/body) after it
 # has consumed a DPoP nonce-challenge body — `reqwest::Response: From<http::Response<T>>`.

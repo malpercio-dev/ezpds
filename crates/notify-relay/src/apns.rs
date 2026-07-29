@@ -505,10 +505,13 @@ pub(crate) mod tests {
 
     // ── Against a stand-in APNs ───────────────────────────────────────────
     //
-    // The mock speaks HTTP/1.1 and the real thing speaks HTTP/2; the client is identical
-    // either way because rustls picks the protocol by ALPN. What these prove is the
-    // wiring: that Apple receives the headers and body the design specifies, and that its
-    // answer reaches the instance as the right outcome.
+    // The mock speaks HTTP/1.1 and the real thing speaks HTTP/2, and ALPN only bridges
+    // that gap when reqwest is *built* with its `http2` feature — without it the client
+    // never offers h2 and Apple (h2-only) refuses the connection, a failure this suite is
+    // structurally blind to. So these tests prove the wiring — that Apple receives the
+    // headers and body the design specifies, and that its answer reaches the instance as
+    // the right outcome — while the protocol itself is pinned by the workspace reqwest
+    // feature list in the root Cargo.toml.
 
     use wiremock::matchers::{method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
