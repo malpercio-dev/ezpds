@@ -114,6 +114,26 @@ if [ -n "${EZPDS_IOS_BUILD:-}" ]; then
     fi
     unset _ezpds_shim
   fi
+
+  # Make Homebrew's bin reachable. cargo-mobile2 shells out to `xcodegen` (to generate the
+  # Xcode project) and `pod`, and installs them with brew when they are missing — but it
+  # installs them into a prefix that is not necessarily on PATH, so the very next call fails
+  # with "failed to run command xcodegen: No such file or directory" immediately after
+  # reporting a successful install. The devenv PATH carries Nix tools only, so inside a `just`
+  # recipe that is exactly what happens.
+  #
+  # APPENDED, never prepended: Homebrew ships its own cargo, node, python and friends, and
+  # putting them ahead of the devenv would silently swap the toolchain this repo pins. Appending
+  # leaves every Nix tool winning and only adds the brew-only ones cargo-mobile2 needs.
+  for _ezpds_brew_bin in /opt/homebrew/bin /usr/local/bin; do
+    if [ -d "${_ezpds_brew_bin}" ]; then
+      case ":${PATH}:" in
+        *":${_ezpds_brew_bin}:"*) : ;;
+        *) export PATH="${PATH}:${_ezpds_brew_bin}" ;;
+      esac
+    fi
+  done
+  unset _ezpds_brew_bin
 fi
 
 unset _ezpds_dev_dir _ezpds_clang _ezpds_ar _ezpds_macos_sdk

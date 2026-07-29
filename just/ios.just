@@ -181,8 +181,18 @@ _ipa app_dir build_number:
     # Regenerating costs seconds and makes the local lane identical to CI's init → postinit →
     # build. It comes after the version stamp so the generated Info.plist carries it.
     echo "regenerating the Xcode project (tauri's pbxproj writes are not idempotent)..."
-    cargo tauri ios init >/dev/null
-    "$(git rev-parse --show-toplevel)/{{app_dir}}/scripts/ios-postinit.sh" >/dev/null
+    # Output is captured rather than discarded, and replayed on failure. `cargo tauri ios init`
+    # reports the actual reason on STDOUT — xcodegen's "Couldn't find current username", a
+    # template render error, a missing dependency — so `>/dev/null` turns any of them into a
+    # bare "exited with code 1" with the explanation thrown away.
+    _initlog="$(mktemp)"
+    if ! { cargo tauri ios init && "$(git rev-parse --show-toplevel)/{{app_dir}}/scripts/ios-postinit.sh"; } >"$_initlog" 2>&1; then
+      echo "✗ could not regenerate the Xcode project:" >&2
+      cat "$_initlog" >&2
+      rm -f "$_initlog"
+      exit 1
+    fi
+    rm -f "$_initlog"
     # Post-condition: confirm tauri can actually find what it needs to sign. Cheap, and it
     # converts the silent fallback above into an immediate, named failure.
     python3 "$(git rev-parse --show-toplevel)/scripts/ios/pbxproj-parseable.py" \
