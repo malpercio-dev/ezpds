@@ -1,0 +1,26 @@
+{
+  "cli_version": "0.9.0",
+  "checkpoint_id": "9d030a51f5f0",
+  "strategy": "manual-commit",
+  "branch": "claude/apns-refusal-logging",
+  "checkpoints_count": 1,
+  "files_touched": [
+    "crates/notify-relay/src/apns.rs"
+  ],
+  "sessions": [
+    {
+      "metadata": "/9d/030a51f5f0/0/metadata.json",
+      "transcript": "/9d/030a51f5f0/0/full.jsonl",
+      "compact_transcript": "/9d/030a51f5f0/0/transcript.jsonl",
+      "content_hash": "/9d/030a51f5f0/0/content_hash.txt",
+      "prompt": "/9d/030a51f5f0/0/prompt.txt"
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 14,
+    "cache_creation_tokens": 5682,
+    "cache_read_tokens": 1783270,
+    "output_tokens": 3775,
+    "api_call_count": 7
+  }
+}
