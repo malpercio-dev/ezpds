@@ -38,6 +38,10 @@ const SANDBOX_ENDPOINT: &str = "https://api.sandbox.push.apple.com";
 /// Priority for a user-visible alert. Apple only accepts 10 or 5 for an alert push.
 const ALERT_PRIORITY: u8 = 10;
 
+/// Cap on how much of a refusal body is read for the operator log. Apple's `reason`
+/// payloads are tens of bytes; anything past this is an endpoint that is not APNs.
+const MAX_REASON_BYTES: usize = 1024;
+
 /// Expiry applied when the sender names no `ttlSecs`. A notification banner an hour stale
 /// is worse than no banner, and a zero expiration would tell Apple to drop it the instant
 /// the device is unreachable — neither extreme is a good default.
@@ -175,7 +179,26 @@ impl ApnsClient {
             .await;
 
         match response {
-            Ok(response) => classify_status(response.status().as_u16()),
+            Ok(response) => {
+                let status = response.status().as_u16();
+                let outcome = classify_status(status);
+                if !matches!(outcome, PushOutcome::Delivered) {
+                    // Apple names the precise refusal only in the body's `reason` string —
+                    // the status alone conflates a relay misconfiguration (wrong key,
+                    // sandbox/production mismatch) with a dead device token. Logged for
+                    // the operator, never forwarded: the instance's contract stays the
+                    // coarse `PushOutcome`, for the blast-radius reasons on
+                    // `classify_status`.
+                    let reason = bounded_body(response).await;
+                    tracing::warn!(
+                        status,
+                        reason = %reason,
+                        topic = request.topic,
+                        "APNs refused a notification"
+                    );
+                }
+                outcome
+            }
             Err(e) => {
                 // The relay's own connectivity, never the instance's fault and never
                 // reflected in detail — the instance is told only that Apple was not
@@ -211,6 +234,31 @@ impl ApnsClient {
         });
         value
     }
+}
+
+/// Read at most [`MAX_REASON_BYTES`] of a refusal body, marking truncation.
+///
+/// Apple's `reason` bodies are a few dozen bytes of JSON, but the endpoint is
+/// operator-configurable (that is the test seam) — so a misdirected endpoint or an
+/// interposed proxy could answer a refusal with an arbitrarily large error page, and an
+/// unbounded read would amplify every refusal into memory and log volume.
+async fn bounded_body(mut response: reqwest::Response) -> String {
+    let mut body: Vec<u8> = Vec::new();
+    let mut truncated = false;
+    while let Ok(Some(chunk)) = response.chunk().await {
+        let remaining = MAX_REASON_BYTES - body.len();
+        if chunk.len() > remaining {
+            body.extend_from_slice(&chunk[..remaining]);
+            truncated = true;
+            break;
+        }
+        body.extend_from_slice(&chunk);
+    }
+    let mut text = String::from_utf8_lossy(&body).into_owned();
+    if truncated {
+        text.push_str(" [truncated]");
+    }
+    text
 }
 
 // ── Functional Core ───────────────────────────────────────────────────────
