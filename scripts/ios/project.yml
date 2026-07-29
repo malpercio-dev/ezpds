@@ -8,6 +8,21 @@
 # workarounds that ios-postinit.sh used to re-apply by regex-patching the pbxproj
 # (see docs/ios-upstream-bugs.md for each workaround's upstream bug).
 #
+# VALIDATING AN EDIT TO THIS FILE: run `cargo tauri ios init` from apps/<app>/ for BOTH apps,
+# then `just ios-postinit` and `just admin-postinit`. Nothing short of that is trustworthy.
+# Handlebars renders this file as TEXT, so two classes of bug survive both careful reading and
+# any hand-rolled substitute for a renderer:
+#   - a TILDE on a block tag removes surrounding newlines, silently welding two YAML lines
+#     together; xcodegen then fails with "mapping values are not allowed in this context".
+#     Use plain tags on their own lines — the whitespace-only line they leave is ignored by
+#     YAML, which is why every long-standing conditional below does it that way.
+#   - a block tag SPELLED OUT INSIDE A COMMENT is still a block tag, so an unmatched one is a
+#     render error. That is why the rule above is described in words here rather than shown.
+#     A plain variable reference in a comment is harmless — it just substitutes.
+# Both of these were real breakages, each caught only by running the init. The Linux
+# `just ios-template-check` is a grep gate over this source; it cannot render, so it sees
+# neither.
+#
 # upstream-version: tauri-cli 2.11.4
 # Forked from crates/tauri-cli/templates/mobile/ios/project.yml at that tag; the
 # pristine copy is committed next to this file as upstream-project.yml so the fork
@@ -186,13 +201,23 @@ targets:
       - sdk: UIKit.framework{{#if this.ios-frameworks}}{{~#each ios-frameworks}}
       - sdk: {{this}}.framework{{/each}}{{/if}}
       - sdk: WebKit.framework
-      {{~#if (eq app.identifier "dev.malpercio.identitywallet")}}
       # ezpds: embed the Notification Service Extension into the app's PlugIns
       # directory. This dependency — not the target definition alone — is what makes
       # the extension part of the archive, so it carries the same bundle-id gate.
+      #
+      # NO TILDE WHITESPACE CONTROL on these tags, deliberately. A tilde on the closing tag
+      # makes handlebars-rust swallow the newline FOLLOWING the block as well as the space
+      # before it, welding this block's last line onto the next key — producing
+      # `embed: true    preBuildScripts:`, which xcodegen rejects with "mapping values are not
+      # allowed in this context". Plain tags on their own lines leave whitespace-only lines
+      # instead, which YAML ignores; that is what every other conditional here does, and why
+      # they all work. (Nor may a comment quote a block tag: handlebars parses this whole file
+      # as text, so a written-out closing tag is an unmatched tag and a render error. A plain
+      # variable reference in a comment is fine — it just substitutes.)
+      {{#if (eq app.identifier "dev.malpercio.identitywallet")}}
       - target: {{app.name}}_NSE
         embed: true
-      {{~/if}}
+      {{/if}}
     preBuildScripts:
       {{~#each ios-pre-build-scripts}}{{#if this.path}}
       - path {{this.path}}{{/if}}{{#if this.script}}

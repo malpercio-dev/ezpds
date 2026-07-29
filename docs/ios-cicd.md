@@ -312,8 +312,13 @@ template generates a dedicated `<app>_NSETests` scheme that builds only the exte
 app, and therefore not the Rust staticlib), so it runs in seconds:
 
 ```bash
-xcodebuild test -project apps/identity-wallet/src-tauri/gen/apple/*.xcodeproj -scheme Obsign_NSETests -destination 'platform=iOS Simulator,name=iPhone 17'
+xcodebuild test -project apps/identity-wallet/src-tauri/gen/apple/identity-wallet.xcodeproj -scheme identity-wallet_NSETests -destination 'platform=iOS Simulator,name=iPhone 17'
 ```
+
+The scheme is named from cargo-mobile2's `app.name`, which is the **crate** name
+(`identity-wallet`) rather than the product name (`Obsign`) — so the targets are
+`identity-wallet_NSE` and `identity-wallet_NSETests`. Confirm with `xcodebuild -list` if a
+future tauri-cli derives it differently.
 
 **3. The relay's APNs auth key** (not an app artifact at all). Certificates, Identifiers &
 Profiles → **Keys** → a new key with **Apple Push Notifications service (APNs)** enabled,
