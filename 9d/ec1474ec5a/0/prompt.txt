@@ -1,0 +1,14 @@
+```
+found cert "Apple Distribution: Tauri (unset)" with organization "Tauri"
+Signing with identity "Apple Distribution: Tauri (unset)"
+Signing /Users/jacob.zweifel/workspace/malpercio-dev/ezpds/.claude/worktrees/mm-420-nse-decrypt-render-8c4f7c/apps/identity-wallet/src-tauri/gen/apple/build/identity-wallet_iOS.xcarchive/Products/Applications/Obsign.app/Obsign
+2026-07-28 22:37:29.466 xcodebuild[13554:16322367] [MT] IDEDistribution: -[IDEDistributionLogging _createLoggingBundleAtPath:]: Created bundle at path "/var/folders/6f/s0q439cd5qz6_w8ld1_hnz2m0000gn/T/identity-wallet_iOS_2026-07-28_22-37-29.465.xcdistributionlogs".
+Exported identity-wallet_iOS to: /Users/jacob.zweifel/workspace/malpercio-dev/ezpds/.claude/worktrees/mm-420-nse-decrypt-render-8c4f7c/apps/identity-wallet/src-tauri/gen/apple/build
+    Finished 1 iOS Bundle at:
+        /Users/jacob.zweifel/workspace/malpercio-dev/ezpds/.claude/worktrees/mm-420-nse-decrypt-render-8c4f7c/apps/identity-wallet/src-tauri/gen/apple/build/arm64/Obsign.ipa
+
+mktemp: too few X's in template ‘ExportOptions’
+error: Recipe `_reexport-embedded-extensions` failed with exit code 1
+error: Recipe `_ipa` failed with exit code 1
+error: Recipe `ios-ipa` failed on line 518 with exit code 1
+```
