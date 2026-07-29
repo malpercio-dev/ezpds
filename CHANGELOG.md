@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Changes are collected in `changelog.d/` during development and inserted here when
 `just set-version` prepares a release. There is intentionally no `Unreleased` section.
 
+## [0.10.2] - 2026-07-29
+
+### Fixed
+
+- A relay operator can now see why Apple refused a notification. The relay logged connection failures but swallowed refusals — a push Apple answered with an error produced no log at all, leaving a misconfigured key, a sandbox/production mismatch, and a dead device token indistinguishable. Every refusal now logs the HTTP status and Apple's own reason string. What the instance is told is unchanged: it still receives only the coarse outcome, so a relay misconfiguration still cannot fan out registration-destroying instructions.
+
+
 ## [0.10.1] - 2026-07-29
 
 ### Fixed
