@@ -140,13 +140,26 @@ _ipa app_dir build_number:
     # way, minutes later, naming neither cause. Several builds were spent on that ambiguity.
     echo "signing environment visible to the build:"
     for _v in IOS_CERTIFICATE IOS_CERTIFICATE_PASSWORD IOS_MOBILE_PROVISION IOS_MOBILE_PROVISION_NSE APPLE_DEVELOPMENT_TEAM; do
-      if _line="$(env | grep "^${_v}=" | head -n1)"; then
-        printf '  %-26s exported (%s bytes)\n' "$_v" "$(printf '%s' "${_line#*=}" | wc -c | tr -d ' ')"
+      # Exportedness from `env` (a child's view); LENGTH from the shell's own copy. Not from
+      # `env` output — base64 is commonly wrapped at 76 columns (openssl does it by default,
+      # and tauri strips whitespace before decoding, so a wrapped value is perfectly valid),
+      # and a line-oriented read of `env` reports only the first line. That misreads an
+      # 18 KB certificate as "76 bytes", which looks exactly like someone passed a file path.
+      if env | grep -q "^${_v}="; then
+        _val="${!_v-}"
+        _note=""
+        # A .p12 and a .mobileprovision are kilobytes; anything tiny is a path, a truncated
+        # paste, or a filename — all of which decode to garbage rather than failing cleanly.
+        case "$_v" in
+          IOS_CERTIFICATE|IOS_MOBILE_PROVISION|IOS_MOBILE_PROVISION_NSE)
+            [ "${#_val}" -lt 1000 ] && _note="  ⚠ implausibly short for base64 — a file path?" ;;
+        esac
+        printf '  %-26s exported (%s bytes)%s\n' "$_v" "${#_val}" "$_note"
       else
         printf '  %-26s NOT EXPORTED\n' "$_v"
       fi
     done
-    unset _v _line
+    unset _v _val _note
     # SwiftPM manifest compilation for the vendored swift-rs fork occasionally crashes the
     # Apple toolchain non-deterministically: `clang` dies with `Segmentation fault: 11`
     # while linking the throwaway Package.swift manifest executable, panicking swift-rs's
