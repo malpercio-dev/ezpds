@@ -1,0 +1,33 @@
+{
+  "cli_version": "0.9.0",
+  "checkpoint_id": "2230240c4429",
+  "strategy": "manual-commit",
+  "branch": "claude/release-v0-10-1",
+  "checkpoints_count": 2,
+  "files_touched": [
+    "CHANGELOG.md",
+    "Cargo.lock",
+    "Cargo.toml",
+    "changelog.d/notify-apns-http2.fixed.md",
+    "sites/docs/src/content/docs/operator/reference/api.md",
+    "sites/docs/src/content/docs/operator/reference/capabilities.md",
+    "sites/docs/src/content/docs/operator/reference/config.md",
+    "sites/docs/src/content/docs/operator/reference/ipc.md"
+  ],
+  "sessions": [
+    {
+      "metadata": "/22/30240c4429/0/metadata.json",
+      "transcript": "/22/30240c4429/0/full.jsonl",
+      "compact_transcript": "/22/30240c4429/0/transcript.jsonl",
+      "content_hash": "/22/30240c4429/0/content_hash.txt",
+      "prompt": "/22/30240c4429/0/prompt.txt"
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 5590,
+    "cache_creation_tokens": 33518,
+    "cache_read_tokens": 3462420,
+    "output_tokens": 12989,
+    "api_call_count": 16
+  }
+}

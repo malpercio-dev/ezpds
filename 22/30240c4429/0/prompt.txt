@@ -1,0 +1,5 @@
+should we consider using something like a2 https://crates.io/crates/a2 instead of rolling our own? it may be that we're already 80% of the way to implementing a2 anyway, in which case we carry on. Go ahead and create the linear issue, check your memory because the tool is misleading you
+
+---
+
+merged. let's roll the production train
