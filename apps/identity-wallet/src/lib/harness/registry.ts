@@ -230,6 +230,8 @@ export type CommandName =
   | 'preview_oauth_consent'
   | 'preview_oauth_consent_by_request_id'
   | 'confirm_oauth_consent'
+  // notification-routes.ts
+  | 'take_pending_notification_route'
   // app-passwords.ts
   | 'create_app_password'
   | 'list_app_passwords'
@@ -1187,6 +1189,8 @@ export function buildRegistry(state: WalletState): Registry {
     },
 
     // ── wallet-confirmed OAuth consent ───────────────────────────────────────
+    // A user code starting with "PUSH" fakes a push-delivered prompt (matchRequired), so the
+    // number-match UI is reachable in a browser; the matching number is always "42".
     preview_oauth_consent: (args): ConsentPreview => ({
       requestId: `poauth-${String(args.userCode ?? 'HARNESS')}`,
       clientId: 'https://app.example.com/client-metadata.json',
@@ -1196,6 +1200,7 @@ export function buildRegistry(state: WalletState): Registry {
       ip: '203.0.113.5',
       requestedScope: ['atproto', 'transition:generic'],
       loginHint: null,
+      matchRequired: String(args.userCode ?? '').startsWith('PUSH'),
     }),
     // The scan path resolves the same pending request server-side by request_id — same preview shape.
     preview_oauth_consent_by_request_id: (args): ConsentPreview => ({
@@ -1207,11 +1212,30 @@ export function buildRegistry(state: WalletState): Registry {
       ip: '203.0.113.5',
       requestedScope: ['atproto', 'transition:generic'],
       loginHint: null,
+      matchRequired: String(args.requestId ?? '').includes('push'),
     }),
-    confirm_oauth_consent: (args): ConsentDecision => ({
-      status: String(args.decision) === 'deny' ? 'denied' : 'approved',
-      did: String(args.did ?? state.identities[0]?.did ?? ''),
-    }),
+    confirm_oauth_consent: (args): ConsentDecision => {
+      // Mirrors the server's Phase C rule: a push-delivered approval needs the number shown on
+      // the sign-in surface, and a wrong one leaves the request pending (typed retry works).
+      const requestId = String(args.requestId ?? '');
+      const pushDelivered = requestId.startsWith('poauth-PUSH') || requestId.includes('push');
+      if (
+        String(args.decision) === 'approve' &&
+        pushDelivered &&
+        String(args.matchCode ?? '') !== '42'
+      ) {
+        throw { code: 'MATCH_CODE_MISMATCH' };
+      }
+      return {
+        status: String(args.decision) === 'deny' ? 'denied' : 'approved',
+        did: String(args.did ?? state.identities[0]?.did ?? ''),
+      };
+    },
+
+    // ── notification tap routing (push-to-approve deep link) ─────────────────
+    // No push can arrive in a browser, so the parked-route slot is always empty here; the
+    // deep-link path itself is exercised on-device (the route store is host-tested in Rust).
+    take_pending_notification_route: () => null,
 
     // ── app passwords ("Sign in to Bluesky and other apps") ──────────────────
     list_app_passwords: (args): AppPasswordEntry[] => {

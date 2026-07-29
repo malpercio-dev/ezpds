@@ -17,6 +17,12 @@
 // request, flipped from a denial, or widened. Replay of the same envelope onto its own request is
 // stopped by the single-use guarded status transition (the request_id binding + single-use row
 // together subsume a nonce store). This module never imports another route handler.
+//
+// Phase C (push-to-approve): when the consent page dispatched a `login-approval` push for the
+// request (`pending.match_code` set), approval additionally requires the two-digit number the
+// page displays — the mandatory anti-MFA-fatigue proof that the approver can see the login
+// surface. The number is checked server-side, outside the envelope, after the signature and
+// authority checks; a mismatch is a 403 that leaves the request pending.
 
 use std::time::{Duration, Instant};
 
@@ -65,6 +71,15 @@ fn approval_rejected() -> ApiError {
     )
 }
 
+/// A push-delivered request was approved without the number displayed on the login surface.
+/// Deliberately distinct (403) from `approval_rejected` (401): this check runs only after the
+/// envelope verified against the account's authoritative keys, so the caller is the genuine
+/// wallet and telling it "wrong number, ask the user to re-read the page" is not an oracle —
+/// while the request stays pending so the user can retype.
+fn match_code_rejected() -> ApiError {
+    ApiError::new(ErrorCode::Forbidden, "sign-in number mismatch")
+}
+
 /// Reduce the wallet's requested granted-scope string to the tokens actually on offer: `atproto` is
 /// always granted (never optional), and every other token is kept only if it was part of the
 /// request's snapshotted `requested_scope`. This mirrors `oauth_authorize`'s reduction filter, so a
@@ -99,6 +114,11 @@ pub struct ConsentRequestPreview {
     ip: Option<String>,
     requested_scope: Vec<String>,
     login_hint: Option<String>,
+    /// Whether approval requires the two-digit number displayed on the sign-in page (true iff a
+    /// `login-approval` push was dispatched for this request — the mandatory anti-MFA-fatigue
+    /// mitigation on the wallet-notified channel). The number itself is never in this response:
+    /// it is the proof the approver can see the login surface.
+    match_required: bool,
 }
 
 /// `GET /oauth/authorize/consent-request` — the wallet's preview of a pending request, resolved by
@@ -135,6 +155,7 @@ pub async fn get_consent_request(
             .map(str::to_string)
             .collect(),
         login_hint: p.login_hint,
+        match_required: p.match_code.is_some(),
     }))
 }
 
@@ -209,6 +230,12 @@ pub struct ApprovalRequest {
     /// Space-joined granted-scope string the wallet chose (empty for a denial). Signed verbatim.
     #[serde(default)]
     granted_scope: String,
+    /// The two-digit number the user read off the sign-in page. Required to approve a request
+    /// for which a `login-approval` push was dispatched; ignored otherwise. Deliberately outside
+    /// the signed envelope — it is a liveness/visibility proof checked server-side against the
+    /// stored code (like the `login_hint` binding), not a statement the key needs to attest.
+    #[serde(default)]
+    match_code: Option<String>,
     timestamp: i64,
     nonce: String,
     signature: String,
@@ -348,6 +375,21 @@ pub async fn post_authorization_approve(
     if let Some(hint) = pending.login_hint.as_deref() {
         if !hint_binds_account(&state, hint, &request.did, &authority).await? {
             return Err(approval_rejected());
+        }
+    }
+
+    // 6b. Number matching (Phase C): once a `login-approval` push was dispatched for this
+    //    request, an APPROVAL must present the number displayed on the sign-in page — the
+    //    mandatory anti-MFA-fatigue proof that the approver can see the login surface. A wrong
+    //    number is rejected WITHOUT terminating the request (the user re-reads and retypes; the
+    //    approve route's per-IP rate limit bounds guessing). A denial deliberately skips the
+    //    check: declining must never be harder than approving, and the recipient of an
+    //    unsolicited prompt is exactly who should be able to kill it.
+    if approve {
+        if let Some(expected) = pending.match_code.as_deref() {
+            if request.match_code.as_deref() != Some(expected) {
+                return Err(match_code_rejected());
+            }
         }
     }
 
@@ -1151,6 +1193,159 @@ mod tests {
         )
         .await;
         assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    }
+
+    /// Once a `login-approval` push was dispatched, approval REQUIRES the number displayed on
+    /// the sign-in page: a missing or wrong number is a 403 that leaves the request pending
+    /// (the user re-reads and retypes), and the correct number approves. The AC verbatim:
+    /// "approval requires the matching number + biometric; a wrong number cannot approve."
+    #[tokio::test]
+    async fn push_delivered_request_requires_the_matching_number() {
+        let plc = MockServer::start().await;
+        let state = setup(&plc).await;
+        let key = p256_key();
+        mount_audit_log(&plc, &[&key.did]).await;
+        let request_id = "poauth_push";
+        seed_pending(&state, request_id, None).await;
+        assert!(
+            crate::db::pending_oauth_authorizations::set_push_dispatched(
+                &state.db, request_id, "42"
+            )
+            .await
+            .unwrap()
+        );
+
+        // The wallet preview announces the requirement (never the number itself).
+        let preview = body_json(
+            get(
+                state.clone(),
+                "/oauth/authorize/consent-request?user_code=TEST-CODE",
+            )
+            .await,
+        )
+        .await;
+        assert_eq!(preview["matchRequired"], true);
+        assert!(
+            preview.get("matchCode").is_none(),
+            "the number must never reach the wallet in the preview"
+        );
+
+        // No number → 403, request still pending.
+        let resp = post_json(
+            state.clone(),
+            "/oauth/authorize/approve",
+            approval_body(
+                &state,
+                &key,
+                request_id,
+                "approve",
+                REQUESTED_SCOPE,
+                now(),
+                31,
+            ),
+        )
+        .await;
+        assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+
+        // Wrong number → 403, request still pending.
+        let mut wrong = approval_body(
+            &state,
+            &key,
+            request_id,
+            "approve",
+            REQUESTED_SCOPE,
+            now(),
+            32,
+        );
+        wrong["matchCode"] = json!("24");
+        let resp = post_json(state.clone(), "/oauth/authorize/approve", wrong).await;
+        assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+        let status = body_json(
+            get(
+                state.clone(),
+                &format!("/oauth/authorize/status?request_id={request_id}"),
+            )
+            .await,
+        )
+        .await;
+        assert_eq!(
+            status["status"], "pending",
+            "a wrong number must not terminate the request"
+        );
+
+        // The matching number approves.
+        let mut right = approval_body(
+            &state,
+            &key,
+            request_id,
+            "approve",
+            REQUESTED_SCOPE,
+            now(),
+            33,
+        );
+        right["matchCode"] = json!("42");
+        let resp = post_json(state.clone(), "/oauth/authorize/approve", right).await;
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = body_json(resp).await;
+        assert_eq!(body["status"], "approved");
+    }
+
+    /// Denying never requires the number: declining must not be harder than approving, and the
+    /// recipient of an unsolicited push is exactly who should be able to kill the request.
+    #[tokio::test]
+    async fn denial_does_not_require_the_match_number() {
+        let plc = MockServer::start().await;
+        let state = setup(&plc).await;
+        let key = p256_key();
+        mount_audit_log(&plc, &[&key.did]).await;
+        let request_id = "poauth_push_deny";
+        seed_pending(&state, request_id, None).await;
+        assert!(
+            crate::db::pending_oauth_authorizations::set_push_dispatched(
+                &state.db, request_id, "17"
+            )
+            .await
+            .unwrap()
+        );
+
+        let resp = post_json(
+            state.clone(),
+            "/oauth/authorize/approve",
+            approval_body(&state, &key, request_id, "deny", "", now(), 34),
+        )
+        .await;
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = body_json(resp).await;
+        assert_eq!(body["status"], "denied");
+    }
+
+    /// The dispatch latch is single-use and pending-only: a second dispatch cannot rotate the
+    /// number out from under the page, and a resolved request cannot have a requirement
+    /// retrofitted onto it.
+    #[tokio::test]
+    async fn push_dispatch_latches_exactly_once() {
+        let plc = MockServer::start().await;
+        let state = setup(&plc).await;
+        let request_id = "poauth_latch";
+        seed_pending(&state, request_id, None).await;
+        let db = &state.db;
+        assert!(
+            crate::db::pending_oauth_authorizations::set_push_dispatched(db, request_id, "10")
+                .await
+                .unwrap()
+        );
+        assert!(
+            !crate::db::pending_oauth_authorizations::set_push_dispatched(db, request_id, "99")
+                .await
+                .unwrap(),
+            "a second dispatch must not overwrite the displayed number"
+        );
+        let row =
+            crate::db::pending_oauth_authorizations::get_pending_by_request_id(db, request_id)
+                .await
+                .unwrap()
+                .unwrap();
+        assert_eq!(row.match_code.as_deref(), Some("10"));
     }
 
     /// The completion redirect must answer in the response mode the client asked for at

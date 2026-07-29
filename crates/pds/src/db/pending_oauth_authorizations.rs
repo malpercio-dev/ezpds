@@ -27,6 +27,10 @@ pub struct PendingOAuthAuthorization {
     pub ip: Option<String>,
     pub status: String,
     pub is_expired: bool,
+    /// The short number-match code (V060). `Some` iff a `login-approval` push was dispatched for
+    /// this request, in which case an approval must present it (the anti-MFA-fatigue proof that
+    /// the approver can see the login surface).
+    pub match_code: Option<String>,
 }
 
 /// The fields a newly created pending request carries. Client metadata is snapshotted at creation
@@ -69,7 +73,8 @@ pub struct CompletedAuthorization {
 }
 
 const SELECT_COLUMNS: &str = "request_id, client_id, client_name, redirect_uri, requested_scope, \
-     login_hint, origin, ip, status, datetime(expires_at) <= datetime('now') AS is_expired";
+     login_hint, origin, ip, status, datetime(expires_at) <= datetime('now') AS is_expired, \
+     match_code";
 
 fn map_row(row: &sqlx::sqlite::SqliteRow) -> PendingOAuthAuthorization {
     use sqlx::Row;
@@ -84,6 +89,7 @@ fn map_row(row: &sqlx::sqlite::SqliteRow) -> PendingOAuthAuthorization {
         ip: row.get("ip"),
         status: row.get("status"),
         is_expired: row.get::<i64, _>("is_expired") != 0,
+        match_code: row.get("match_code"),
     }
 }
 
@@ -202,6 +208,37 @@ pub async fn get_pending_by_user_code(
     Ok(row.as_ref().map(map_row))
 }
 
+/// Record that a `login-approval` push was dispatched for this request, binding the number-match
+/// code an approval must now present (V060). Guarded on the row still being pending and never
+/// having dispatched before, so the code is written exactly once and a late dispatch can never
+/// retrofit a requirement onto a resolved request. Returns whether this call set it.
+pub async fn set_push_dispatched<'e, E>(
+    executor: E,
+    request_id: &str,
+    match_code: &str,
+) -> Result<bool, ApiError>
+where
+    E: sqlx::Executor<'e, Database = Sqlite>,
+{
+    let result = sqlx::query(
+        "UPDATE pending_oauth_authorizations \
+         SET match_code = ?, push_dispatched_at = datetime('now') \
+         WHERE request_id = ? AND status = 'pending' AND match_code IS NULL",
+    )
+    .bind(match_code)
+    .bind(request_id)
+    .execute(executor)
+    .await
+    .map_err(|e| {
+        tracing::error!(error = %e, "DB error recording push dispatch for pending OAuth authorization");
+        ApiError::new(
+            ErrorCode::InternalError,
+            "failed to record push dispatch",
+        )
+    })?;
+    Ok(result.rows_affected() == 1)
+}
+
 /// Guarded single-use `pending → approved` transition, binding the approving account DID and the
 /// granted scope set. Returns `true` only if this call won the transition (row still `pending` and
 /// unexpired), so a replayed approval envelope affects zero rows.
@@ -316,6 +353,9 @@ where
 pub enum OAuthConsentAuditEventType {
     /// The consent page created a pending request (wallet path rendered).
     RequestCreated,
+    /// A `login-approval` push was sealed and enqueued toward the hinted account's devices,
+    /// making number matching mandatory for this request (V060).
+    PushDispatched,
     /// The wallet approved the request with a valid device-key signature.
     Approved,
     /// The wallet denied the request.
@@ -328,6 +368,7 @@ impl OAuthConsentAuditEventType {
     pub fn as_str(self) -> &'static str {
         match self {
             OAuthConsentAuditEventType::RequestCreated => "request_created",
+            OAuthConsentAuditEventType::PushDispatched => "push_dispatched",
             OAuthConsentAuditEventType::Approved => "approved",
             OAuthConsentAuditEventType::Denied => "denied",
             OAuthConsentAuditEventType::Completed => "completed",

@@ -42,6 +42,26 @@ pub fn generate_login_code() -> String {
     grouped
 }
 
+/// Generate the two-digit number-match code for a push-delivered consent prompt (`"00"`–`"99"`).
+///
+/// This is not a secret in the claim-code sense — it is displayed on the sign-in page to whoever
+/// started the login. Its job is channel binding: the wallet user must *type the number shown on
+/// the login surface* before approving (the GitHub-style anti-MFA-fatigue proof), so a victim who
+/// is not looking at any sign-in page has nothing to type. Two digits match the design's spec and
+/// the industry convention; the approve endpoint's rate limit bounds guessing, and a guess is only
+/// meaningful to someone who already holds the account's device key.
+pub fn generate_match_code() -> String {
+    // Rejection-sample a byte into 0..100 (uniform: reject >= 200, the largest multiple of 100
+    // in a byte), then render with a leading zero so the display width is constant.
+    let mut buf = [0u8; 1];
+    loop {
+        OsRng.fill_bytes(&mut buf);
+        if buf[0] < 200 {
+            return format!("{:02}", buf[0] % 100);
+        }
+    }
+}
+
 /// Append `n` uniformly-drawn charset characters to `out`, rejecting bytes at or above `cutoff`
 /// so the mapping onto the charset stays unbiased (see `generate_code`). Shared by both generators.
 fn draw_chars(out: &mut String, n: usize, cutoff: usize) {
@@ -94,6 +114,18 @@ mod tests {
     #[test]
     fn code_is_6_chars() {
         assert_eq!(generate_code().len(), CODE_LEN);
+    }
+
+    #[test]
+    fn match_code_is_two_digits() {
+        for _ in 0..200 {
+            let code = generate_match_code();
+            assert_eq!(code.len(), 2, "match code {code} must be two digits");
+            assert!(
+                code.chars().all(|c| c.is_ascii_digit()),
+                "match code {code} must be numeric"
+            );
+        }
     }
 
     #[test]

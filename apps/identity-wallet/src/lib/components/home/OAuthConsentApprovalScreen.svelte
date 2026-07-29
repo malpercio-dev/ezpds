@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { tick } from 'svelte';
+  import { onMount, tick } from 'svelte';
   import {
     previewOAuthConsent,
     previewOAuthConsentByRequestId,
@@ -21,12 +21,18 @@
   let {
     did,
     handle,
+    initialRequestId,
     onback,
     ondone,
   }: {
     did: string;
     /** The identity's handle, shown as "as @{handle}"; falls back to the DID when absent. */
     handle?: string;
+    /**
+     * A pending request to open immediately — the push deep-link entry (Phase C). Like the QR
+     * path, only the id arrives from outside: everything displayed is the server's record.
+     */
+    initialRequestId?: string;
     onback: () => void;
     /** Called after a recorded decision (approve or deny). */
     ondone: () => void;
@@ -41,6 +47,10 @@
   /** Non-`atproto` scope tokens the user has left checked (scope reduction lives here). */
   let checked = $state<Set<string>>(new Set());
   let ceremonyError = $state<{ title: string; body: string } | null>(null);
+  /** The two-digit number typed from the sign-in page (push-delivered prompts only). */
+  let matchNumber = $state('');
+  let matchError = $state<string | undefined>(undefined);
+  const matchNumberValid = $derived(/^\d{2}$/.test(matchNumber.trim()));
 
   // ── QR scan (Phase B: cross-device convenience channel) ──────────────────────
   // `scanning` makes the WebView see-through so the native camera the barcode-scanner plugin
@@ -132,8 +142,37 @@
   function applyPreview(p: ConsentPreview) {
     preview = p;
     checked = new Set(p.requestedScope.filter((t) => t !== 'atproto'));
+    matchNumber = '';
+    matchError = undefined;
     phase = 'review';
   }
+
+  /** The push deep-link entry: a tapped `login-approval` notification arrives with a
+   *  `request_id` and nothing else trusted — identical to the QR path, the request is
+   *  re-fetched server-side and the review renders only the server's record. */
+  async function loadInitialRequest(requestId: string) {
+    phase = 'loading';
+    try {
+      applyPreview(await previewOAuthConsentByRequestId(did, requestId));
+    } catch (e) {
+      phase = 'enter';
+      const c = errorCode(e);
+      if (c === 'REQUEST_NOT_FOUND') {
+        scanHint =
+          'That sign-in request expired or was already handled. If you are still signing in, enter the code from the sign-in page below.';
+      } else if (c === 'RATE_LIMITED') {
+        ceremonyError = decisionFailure(c);
+      } else {
+        scanHint = 'Could not reach your server. Check your connection and try again.';
+      }
+    }
+  }
+
+  // Runs once at mount: a notification tap opened this screen with a request in hand. The
+  // prop is deliberately read once — a screen already open never re-routes under the user.
+  onMount(() => {
+    if (initialRequestId) void loadInitialRequest(initialRequestId);
+  });
 
   async function loadPreview() {
     codeError = undefined;
@@ -245,7 +284,15 @@
 
   async function approve() {
     if (!preview) return;
+    // Number matching is the anti-blind-tap gate for push-delivered prompts: the user must
+    // read the number OFF the sign-in page before the biometric prompt ever appears. The
+    // server enforces the same rule, so this is UX ordering, not the security boundary.
+    if (preview.matchRequired && !matchNumberValid) {
+      matchError = 'Enter the two-digit number shown on the sign-in screen.';
+      return;
+    }
     ceremonyError = null;
+    matchError = undefined;
     phase = 'approving';
     try {
       // The biometric prompt is the authorization boundary: rejecting it aborts before any
@@ -256,12 +303,26 @@
       return;
     }
     try {
-      await confirmOAuthConsent(did, preview.requestId, preview.clientId, 'approve', grantedScopeString());
+      await confirmOAuthConsent(
+        did,
+        preview.requestId,
+        preview.clientId,
+        'approve',
+        grantedScopeString(),
+        preview.matchRequired ? matchNumber.trim() : undefined
+      );
       phase = 'approved';
       setTimeout(() => ondone(), 1200);
     } catch (e) {
       phase = 'review';
-      ceremonyError = decisionFailure(errorCode(e));
+      const c = errorCode(e);
+      if (c === 'MATCH_CODE_MISMATCH') {
+        // The request is still pending — a wrong number never terminates it. Re-read, retype.
+        matchNumber = '';
+        matchError = 'That number doesn’t match. Check the sign-in screen and try again.';
+        return;
+      }
+      ceremonyError = decisionFailure(c);
     }
   }
 
@@ -399,6 +460,34 @@
           checked. You can revoke this app’s access later from the app itself.
         </p>
 
+        {#if preview.matchRequired}
+          <!-- Number matching (mandatory for push-delivered prompts): typing the number proves
+               the approver can see the sign-in screen — a prompt you didn't start is one you
+               can't complete. Type-the-number (GitHub style) beats pick-from-three: there is
+               nothing to guess-tap. -->
+          <div class="match" class:match--error={!!matchError}>
+            <label class="field-label" for="match-number">
+              Enter the number shown on the sign-in screen
+            </label>
+            <p class="match-why">
+              This proves you can see the screen that asked to sign in. If you didn’t start this
+              sign-in and see no number anywhere, deny the request.
+            </p>
+            <TextField
+              id="match-number"
+              bind:value={matchNumber}
+              mono
+              inputmode="numeric"
+              autocomplete="one-time-code"
+              maxlength="2"
+              spellcheck="false"
+              placeholder="e.g. 42"
+              error={matchError}
+              disabled={phase !== 'review'}
+            />
+          </div>
+        {/if}
+
         {#if ceremonyError}
           <div class="halt" role="alert">
             <span class="halt-ic" aria-hidden="true">
@@ -412,7 +501,10 @@
         {/if}
 
         <div class="actions">
-          <Button onclick={approve} disabled={phase !== 'review'}>
+          <Button
+            onclick={approve}
+            disabled={phase !== 'review' || (preview.matchRequired && !matchNumberValid)}
+          >
             {#if phase === 'approving'}<Spinner size={18} /> Waiting for confirmation…{:else}Approve with biometrics{/if}
           </Button>
           <Button variant="secondary" onclick={deny} disabled={phase !== 'review'}>
@@ -766,6 +858,27 @@
   }
 
   .fine {
+    font-size: var(--text-label);
+    color: var(--color-muted);
+    line-height: 1.5;
+    margin: 0;
+  }
+
+  /* Number-match block: framed like a checkpoint, not colored as an alarm — it is a normal,
+     expected step for push-delivered prompts (status never by color alone; the words carry it). */
+  .match {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-xs);
+    background: var(--color-surface);
+    border: 1px solid var(--color-line);
+    border-radius: var(--radius-lg);
+    padding: var(--space-md);
+  }
+  .match--error {
+    border-color: var(--color-critical);
+  }
+  .match-why {
     font-size: var(--text-label);
     color: var(--color-muted);
     line-height: 1.5;

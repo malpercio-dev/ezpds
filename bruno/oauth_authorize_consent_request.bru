@@ -27,6 +27,11 @@ docs {
   name/id, redirect URI, requesting origin/IP, requested scope list, and any `login_hint`, so the
   wallet can render "Sign in to {client} at {origin} as @{handle}" before the biometric gate.
 
+  The response also carries `matchRequired: bool` — `true` iff a `login-approval` push was
+  dispatched for this request, in which case the approve call must present the two-digit number
+  displayed on the sign-in page (`matchCode`). The number itself is never in this response: it is
+  the proof the approver can see the login surface.
+
   Returns 404 for anything not currently pending (unknown/expired/terminal), so a guessed
   `user_code` reveals nothing. Rate-limited per IP (shares one limiter with the approve endpoint).
 }

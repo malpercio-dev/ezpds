@@ -18,6 +18,7 @@ pub mod identity_store;
 pub mod keychain;
 pub mod migrate;
 pub mod migration_orchestrator;
+pub mod notification_routes;
 pub mod notifications;
 pub mod oauth;
 pub mod oauth_client;
@@ -1757,6 +1758,7 @@ pub fn run() {
             notifications::refresh_notification_sender_keys,
             notifications::get_notification_diagnostics,
             notifications::clear_notification_failures,
+            notification_routes::take_pending_notification_route,
             plc_monitor::check_identity_status,
             plc_monitor::get_monitor_history,
             recovery::build_recovery_override_cmd,

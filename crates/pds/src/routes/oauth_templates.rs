@@ -101,6 +101,10 @@ pub(super) struct WalletConsentPath<'a> {
     pub user_code: &'a str,
     pub request_id: &'a str,
     pub origin: Option<&'a str>,
+    /// The two-digit number-match code, present only when a `login-approval` push was dispatched
+    /// (Phase C). The page must display it: the wallet requires the user to type it before the
+    /// biometric gate, proving the approver can see this login surface.
+    pub match_code: Option<&'a str>,
 }
 
 /// Custom URL scheme the identity wallet registers; the "Open in Obsign" handoff link targets it.
@@ -309,6 +313,20 @@ fn render_wallet_path(w: &WalletConsentPath) -> String {
     html.push_str("    <div class=\"wallet\" id=\"wallet-path\" data-request-id=\"");
     html.push_str(&request_id);
     html.push_str("\">\n");
+    // Push-delivered prompt (Phase C): the number-match panel leads. The wallet will refuse to
+    // approve without this number, so a user whose phone just buzzed reads this block first;
+    // everything below stays rendered as the fallback channels for the same request.
+    if let Some(match_code) = w.match_code {
+        html.push_str(
+            "      <p class=\"wallet-lead\">We sent a sign-in request to your wallet. To approve it, enter this number in Obsign:</p>\n",
+        );
+        html.push_str("      <div class=\"match-code mono\" id=\"match-code\">");
+        html.push_str(&html_escape(match_code));
+        html.push_str("</div>\n");
+        html.push_str(
+            "      <p class=\"wallet-lead wallet-or\">No notification? Scan or type the code below instead — you'll still be asked for the number above.</p>\n",
+        );
+    }
     // Scan path first: the strongest cross-device channel (start from the page, no transcription).
     // Rendered only when the payload actually fits in a QR — otherwise the typed code below stands
     // in, and nothing about the fallback changes.
@@ -588,6 +606,11 @@ const CONSENT_CSS: &str = r#"
       font-family: var(--mono); font-size: 26px; font-weight: 400; letter-spacing: 0.12em;
       color: var(--ink); background: var(--bg); border: 1px solid var(--line); border-radius: 10px;
       padding: 10px 18px; user-select: all;
+    }
+    .match-code {
+      font-family: var(--mono); font-size: 40px; font-weight: 400; letter-spacing: 0.18em;
+      color: var(--ink); background: var(--bg); border: 1px solid var(--line); border-radius: 10px;
+      padding: 12px 26px; user-select: all;
     }
     .wallet-open { width: 100%; text-decoration: none; }
     .wallet-continue { width: 100%; }
@@ -900,6 +923,7 @@ mod tests {
             user_code: "4QX9-TX7P",
             request_id: "poauth_abcDEF123",
             origin: Some("https://app.example.com"),
+            match_code: None,
         };
         let html = render_consent_page(
             "Test App",
@@ -932,6 +956,45 @@ mod tests {
             html.contains("consent?request_id=poauth_abcDEF123"),
             "the handoff link must carry the request_id"
         );
+    }
+
+    /// A push-delivered prompt renders the number-match panel ahead of the fallback channels,
+    /// which all stay rendered — push failure degrades to the same pending request's typed code
+    /// and QR, with the number still on display for the mandatory match.
+    #[test]
+    fn wallet_path_renders_the_match_code_panel_when_a_push_was_dispatched() {
+        let wallet = WalletConsentPath {
+            user_code: "4QX9-TX7P",
+            request_id: "poauth_abcDEF123",
+            origin: Some("https://app.example.com"),
+            match_code: Some("42"),
+        };
+        let html = render_consent_page(
+            "Test App",
+            "https://app.example.com/client-metadata.json",
+            "https://app.example.com/callback",
+            "challenge",
+            "S256",
+            "state",
+            "atproto",
+            "code",
+            ResponseMode::Query,
+            "https://pds.example.com",
+            None,
+            None,
+            Some(&wallet),
+        );
+        assert!(
+            html.contains("<div class=\"match-code mono\" id=\"match-code\">42</div>"),
+            "the match number must be displayed on the login surface"
+        );
+        assert!(
+            html.contains("enter this number in Obsign"),
+            "the panel must say what the number is for"
+        );
+        // The Phase A/B channels stay rendered as the degradation path.
+        assert!(html.contains("4QX9-TX7P"), "typed code stays rendered");
+        assert!(html.contains("<svg"), "QR stays rendered");
     }
 
     /// The handoff URI carries the request_id (and origin when present) under the wallet's

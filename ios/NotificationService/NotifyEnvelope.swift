@@ -58,23 +58,85 @@ struct NotifyEnvelope: Equatable {
 ///
 /// Wire shape: `{ "type": …, "title": …, "body": …, "data": { … }, "pad": "…" }`. `pad` is
 /// dropped on the floor here — its whole job was to make the *serialized APNs request* land
-/// on a padding bucket, which is finished by the time these bytes exist.
+/// on a padding bucket, which is finished by the time these bytes exist. `data` is decoded
+/// only for the small allowlist of routing fields below; everything else in it is ignored.
 struct NotifyPayload: Equatable, Decodable {
     let type: String
     let title: String
     let body: String
+    /// Structured routing data the sealing instance attached (a request id, a subject DID).
+    /// Optional and tolerant: a payload without it — or with fields this build doesn't know —
+    /// still renders; only the recognized identifiers survive into the delivered notification.
+    let data: NotifyRouteData?
+
+    private enum CodingKeys: String, CodingKey {
+        case type, title, body, data
+    }
 
     /// Decode sealed plaintext, rejecting a payload with nothing to render.
     ///
     /// An empty title *and* body would produce a banner indistinguishable from a silent
     /// delivery failure, so it is treated as a malformed payload and rendered as the
     /// unverified notice instead — the extension's one rule is that it never shows something
-    /// it cannot stand behind.
+    /// it cannot stand behind. A `data` block that fails to decode as the routing shape is
+    /// dropped (the banner still renders); it never fails the whole payload.
     static func decode(_ plaintext: Data) -> NotifyPayload? {
         guard let payload = try? JSONDecoder().decode(NotifyPayload.self, from: plaintext),
               !(payload.title.isEmpty && payload.body.isEmpty)
         else { return nil }
         return payload
+    }
+}
+
+/// The routing identifiers a verified payload may carry in `data`.
+///
+/// A deliberate allowlist rather than a passthrough: only these fields ever reach the
+/// delivered notification's `userInfo`, so the app can never be steered by a field the
+/// extension didn't decide to forward.
+struct NotifyRouteData: Equatable, Decodable {
+    /// A pending OAuth consent request id (`login-approval`).
+    let requestId: String?
+    /// The account DID the notification concerns, so a multi-identity wallet opens the
+    /// right one.
+    let did: String?
+
+    private enum CodingKeys: String, CodingKey {
+        case requestId, did
+    }
+
+    init(requestId: String?, did: String?) {
+        self.requestId = requestId
+        self.did = did
+    }
+
+    init(from decoder: Decoder) throws {
+        // Tolerant field-by-field decode: a `data` block whose recognized fields have
+        // unexpected types reads as absent fields, never a decode failure that would take
+        // the whole (already authenticated) payload down with it.
+        let container = try? decoder.container(keyedBy: CodingKeys.self)
+        requestId = container.flatMap { try? $0.decodeIfPresent(String.self, forKey: .requestId) } ?? nil
+        did = container.flatMap { try? $0.decodeIfPresent(String.self, forKey: .did) } ?? nil
+    }
+}
+
+/// The routing block a verified payload leaves in the delivered notification.
+enum NotifyRoute {
+    /// The `userInfo` key the app reads on a notification tap. Distinct from
+    /// `NotifyEnvelope.userInfoKey` (`ezpds`, the sealed block, which is always stripped):
+    /// this one is *written* by the extension, and only ever after HPKE Auth verified the
+    /// payload — so its presence is itself the "this came from your instance" statement.
+    static let userInfoKey = "ezpdsRoute"
+
+    /// What a rendered payload contributes to the delivered notification's `userInfo`, or
+    /// `nil` when it carries nothing to route on. Pure so the tests can pin the contract:
+    /// only allowlisted identifiers, plus the payload `type` the app dispatches on.
+    static func userInfo(for payload: NotifyPayload) -> [String: String]? {
+        var route: [String: String] = [:]
+        if let requestId = payload.data?.requestId { route["requestId"] = requestId }
+        if let did = payload.data?.did { route["did"] = did }
+        guard !route.isEmpty else { return nil }
+        route["type"] = payload.type
+        return route
     }
 }
 

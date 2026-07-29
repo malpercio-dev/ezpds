@@ -1,6 +1,6 @@
 # Shared iOS Swift sources
 
-Last verified: 2026-07-27
+Last verified: 2026-07-29
 
 ## Purpose
 
@@ -27,6 +27,12 @@ instantiates via `NSExtensionPrincipalClass` when a push carries `mutable-conten
   it holds on the timeout path too (`serviceExtensionTimeWillExpire`).
 - The sealed `ezpds` block is stripped from the delivered notification, so ciphertext never
   reaches the app's delivered-notification list.
+- A **verified** payload's routing identifiers survive into the delivered notification as the
+  `ezpdsRoute` `userInfo` block (`{type, requestId?, did?}` — an allowlist read from the
+  payload's `data`, never a passthrough). It is written only on the rendered path, so its
+  presence in a delivered notification is itself the "HPKE Auth vouched for this" statement the
+  app's tap handler relies on to deep-link (the wallet still re-fetches everything it displays
+  from the server by `requestId`). An unverified or timed-out delivery never carries it.
 - Every failure leaves a breadcrumb in the shared Keychain, best effort. A Keychain that will
   not take a diagnostic never costs the user the notice itself.
 

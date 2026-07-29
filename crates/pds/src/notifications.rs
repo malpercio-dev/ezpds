@@ -71,16 +71,19 @@ impl NotificationPayload {
 /// Notify every device registered to `did`.
 ///
 /// Silent and harmless when notifications are unconfigured, when the account has no
-/// registered devices, or when the relay is unreachable.
-pub async fn notify_device(state: &AppState, did: &str, payload: NotificationPayload) {
+/// registered devices, or when the relay is unreachable. Returns how many sealed payloads
+/// were enqueued toward the relay — delivery stays fire-and-forget beyond that, but "zero
+/// devices could even be attempted" is a fact some triggers branch on (the consent push
+/// makes number matching mandatory only when a push actually went out).
+pub async fn notify_device(state: &AppState, did: &str, payload: NotificationPayload) -> usize {
     let Some(sender) = state.notify_sender.as_ref() else {
-        return;
+        return 0;
     };
     let registrations = match store::list_registrations(&state.db, did).await {
         Ok(rows) => rows,
         Err(e) => {
             tracing::warn!(error = %e, "failed to load notification registrations");
-            return;
+            return 0;
         }
     };
     fan_out(state, sender, registrations, payload, |device_id| {
@@ -89,7 +92,7 @@ pub async fn notify_device(state: &AppState, did: &str, payload: NotificationPay
             device_uuid: device_id,
         }
     })
-    .await;
+    .await
 }
 
 /// Notify every *active* admin-companion device — the operator alert channel.
@@ -118,24 +121,26 @@ pub async fn notify_admin_devices(state: &AppState, payload: NotificationPayload
     .await;
 }
 
+/// Seal-and-enqueue one payload per registration, returning how many jobs were enqueued.
 async fn fan_out(
     state: &AppState,
     sender: &crate::notify_relay_client::NotifySender,
     registrations: Vec<store::RegistrationRow>,
     payload: NotificationPayload,
     owner_of: impl Fn(String) -> RegistrationOwner,
-) {
+) -> usize {
     if registrations.is_empty() {
-        return;
+        return 0;
     }
 
     // Load the sealing key once for the whole fan-out. Doing it per device would mean a
     // rotation landing mid-fan-out seals some devices under the old key and some under the
     // new — both valid, but needlessly hard to reason about when debugging a delivery.
     let Some((kid, secret)) = active_sender_key(state).await else {
-        return;
+        return 0;
     };
 
+    let mut enqueued = 0;
     for registration in registrations {
         // A registration with no handle has not completed its relay round trip yet (the
         // relay was down at registration time, or the job is still queued). There is nothing
@@ -168,7 +173,9 @@ async fn fan_out(
             enc: base64url(&sealed.enc),
             ct: base64url(&sealed.ct),
         });
+        enqueued += 1;
     }
+    enqueued
 }
 
 /// Pad, then seal, one payload for one recipient.

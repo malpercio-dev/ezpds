@@ -58,7 +58,7 @@
   import SettingsScreen from '$lib/components/home/SettingsScreen.svelte';
   import RemoveIdentityScreen from '$lib/components/home/RemoveIdentityScreen.svelte';
   import PasswordUnlockDialog from '$lib/components/home/PasswordUnlockDialog.svelte';
-  import { createAccount, confirmShareBackup, confirmRekey, confirmSelfHeldKit, selfHeldKitInProgress, getPdsCapabilities, hasPdsCapability, confirmRecoveryBackup, getPendingRecoveryEpilogue, registerCreatedIdentity, importDidWebIdentity, listIdentities, listPendingRemovals, getStoredDidDoc, checkIdentityStatus, getBlobBackupStatus, runBlobBackup, getRepoBackupStatus, runRepoBackup, registerForNotifications, isCodedError, type CreateAccountError, type PdsCapabilities, type IdentityInfo, type VerifiedClaimOp, type ClaimResult, type RekeyResult, type SelfHeldKitResult, type UnauthorizedChange, type IdentityStatus, type CollectedShare } from '$lib/ipc';
+  import { createAccount, confirmShareBackup, confirmRekey, confirmSelfHeldKit, selfHeldKitInProgress, getPdsCapabilities, hasPdsCapability, confirmRecoveryBackup, getPendingRecoveryEpilogue, registerCreatedIdentity, importDidWebIdentity, listIdentities, listPendingRemovals, getStoredDidDoc, checkIdentityStatus, getBlobBackupStatus, runBlobBackup, getRepoBackupStatus, runRepoBackup, registerForNotifications, takePendingNotificationRoute, NOTIFICATION_ROUTE_EVENT, isCodedError, type CreateAccountError, type PdsCapabilities, type IdentityInfo, type VerifiedClaimOp, type ClaimResult, type RekeyResult, type SelfHeldKitResult, type UnauthorizedChange, type IdentityStatus, type CollectedShare, type PendingNotificationRoute } from '$lib/ipc';
   import { decideAlarmLanding } from '$lib/alarm-landing';
   import { authenticateBiometric } from '$lib/biometric';
   import { normalizePlcDocToW3c, extractHandle, extractPdsFromPlcDoc } from '$lib/did-doc-utils';
@@ -193,6 +193,14 @@
   // The selected identity's device key is gone from the Secure Enclave; the detail
   // screen explains the signing entries it is already withholding.
   let selectedDeviceKeyUnusable = $state(false);
+
+  /**
+   * A pending consent request a tapped `login-approval` push handed the app (Phase C). Set only
+   * by the notification router below; the consent screen opens straight on this request and it
+   * is cleared the moment the screen is left, so a later manual "Sign in to an app" starts at
+   * code entry as always.
+   */
+  let consentRequestId = $state<string | null>(null);
 
   let selectedAlertDid = $state<string | null>(null);
   let selectedAlertChanges = $state<UnauthorizedChange[]>([]);
@@ -343,6 +351,51 @@
       });
   }
 
+  /**
+   * Route a tapped notification (Phase C: push-to-approve). A `login-approval` tap opens the
+   * consent approval screen straight on its pending request — the route is only a pointer;
+   * the screen re-fetches everything it displays from the server by `request_id`. Navigation
+   * happens only from a surface it is safe to leave (never out of a ceremony mid-flight), and
+   * only for an identity this wallet actually manages: the route's `did` must be managed, or
+   * there must be exactly one identity to act as. Returns whether it navigated.
+   */
+  async function handleNotificationRoute(route: PendingNotificationRoute | null): Promise<boolean> {
+    if (!route || route.kind !== 'login-approval' || !route.requestId) return false;
+    const interruptible: OnboardingStep[] = [
+      'home',
+      'identity_detail',
+      'protection',
+      'settings',
+      'oauth_consent_approval',
+    ];
+    if (!interruptible.includes(step)) return false;
+    try {
+      const identities = await listIdentities();
+      const did =
+        route.did && identities.includes(route.did)
+          ? route.did
+          : identities.length === 1
+            ? identities[0]
+            : null;
+      if (!did) return false;
+      selectedDid = did;
+      try {
+        selectedDidDoc = await getStoredDidDoc(did);
+      } catch {
+        selectedDidDoc = null;
+      }
+      selectedDeviceKeyIsRoot = null;
+      selectedDeviceKeyUnusable = false;
+      identityReturnStep = 'home';
+      consentRequestId = route.requestId;
+      goTo('oauth_consent_approval');
+      return true;
+    } catch (e) {
+      console.warn('notification route handling failed:', e);
+      return false;
+    }
+  }
+
   // ── PDS configuration and OAuth event listener ──────────────────────
 
   function handleVisibilityChange() {
@@ -405,12 +458,22 @@
         const identities = await listIdentities();
         if (identities.length > 0) {
           step = 'home';
+          // A cold start caused by a notification tap: drain the parked route first (fast,
+          // local) — a tapped consent prompt is minutes-perishable and the tap was an explicit
+          // intent, so it wins this launch's landing. The alarm takeover is skipped only when
+          // the route actually navigated; it re-fires on the next foreground regardless.
+          const routed = await takePendingNotificationRoute()
+            .then(handleNotificationRoute)
+            .catch((e) => {
+              console.warn('draining the pending notification route failed:', e);
+              return false;
+            });
           // Zero navigation between phone-unlock and the one clear action: ask the monitor
           // now and, if an identity is under attack, land on its alarm surface instead of
           // leaving it behind a strip. Unawaited — home renders immediately and the
           // takeover replaces it when the answer arrives, rather than holding the app on a
           // blank screen for a directory round trip that may never come back.
-          void checkAndLand();
+          if (!routed) void checkAndLand();
           // Opportunistic backup passes for opted-in identities: incremental and idempotent
           // by construction (content-addressed mirror / rev short-circuit), fire-and-forget so
           // the home screen never waits on them, and silent — failures surface the next time
@@ -447,6 +510,15 @@
     // unused OAuth-client machinery.
     listen('auth_ready', () => {
       goTo('home');
+    });
+
+    // Warm-foreground notification taps: the iOS tap handler parks the route and emits this
+    // event. Reading through take() (not the event payload) keeps one consumption path — a
+    // route the cold-start drain already took is gone, so a tap can never navigate twice.
+    listen(NOTIFICATION_ROUTE_EVENT, () => {
+      void takePendingNotificationRoute()
+        .then(handleNotificationRoute)
+        .catch((e) => console.warn('handling a notification route event failed:', e));
     });
     // Note: We intentionally don't await listen() or return a cleanup function here.
     // Svelte 5's onMount does not await async cleanup return values (it would receive a
@@ -1005,8 +1077,15 @@
     <OAuthConsentApprovalScreen
       did={selectedDid ?? ''}
       handle={selectedDidDoc ? (extractHandle(selectedDidDoc) ?? undefined) : undefined}
-      onback={() => goTo('identity_detail')}
-      ondone={() => goTo('identity_detail')}
+      initialRequestId={consentRequestId ?? undefined}
+      onback={() => {
+        consentRequestId = null;
+        goTo('identity_detail');
+      }}
+      ondone={() => {
+        consentRequestId = null;
+        goTo('identity_detail');
+      }}
     />
 
   {:else if step === 'identity_detail'}
@@ -1016,7 +1095,11 @@
       deviceKeyIsRoot={selectedDeviceKeyIsRoot}
       deviceKeyUnusable={selectedDeviceKeyUnusable}
       onback={() => goTo(identityReturnStep)}
-      onsignin={() => goTo('oauth_consent_approval')}
+      onsignin={() => {
+        // Manual entry always starts at code entry — a stale push route never leaks in here.
+        consentRequestId = null;
+        goTo('oauth_consent_approval');
+      }}
       onapppasswords={() => goTo('app_passwords')}
       onagents={() => goTo('my_agents')}
       onmoveorrebuild={() => goTo('move_or_rebuild')}
