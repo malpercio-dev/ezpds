@@ -62,6 +62,38 @@ export type SenderKeyPinning = {
   keys: SenderKey[];
 };
 
+/**
+ * Why the Notification Service Extension could not vouch for a payload.
+ *
+ * Kept open-ended (`(string & {})`) rather than a closed union: the extension is a separate
+ * bundle that versions on its own schedule, so an unrecognized reason has to reach the screen
+ * as a generic sentence instead of being dropped — the entry the user is asking about is the
+ * one a strict union would discard.
+ */
+export type NotificationFailureReason =
+  /** No `ezpds` block, or one this version can't parse — a relay sending junk. */
+  | 'MALFORMED_PAYLOAD'
+  /** The key or the pins couldn't be read: nothing registered, or the Keychain was still
+   *  locked from a reboot. */
+  | 'KEYS_UNAVAILABLE'
+  /** No pinned key carries the payload's `kid` — the key-desync signature. */
+  | 'UNKNOWN_KID'
+  /** Candidates existed and none opened it. HPKE Auth mode failing closed. */
+  | 'OPEN_FAILED'
+  /** It opened — so it was authentic — but carried nothing renderable. */
+  | 'MALFORMED_PLAINTEXT'
+  // eslint-disable-next-line @typescript-eslint/ban-types
+  | (string & {});
+
+/** One failure the extension recorded. */
+export type NotificationFailure = {
+  /** ISO 8601, from the extension's clock. */
+  at: string;
+  reason: NotificationFailureReason;
+  /** The payload's sender-key id, where it got far enough to have one. */
+  kid: number | null;
+};
+
 /** What this device holds, for the diagnostics surface. Public halves only. */
 export type NotificationDiagnostics = {
   deviceUuid: string | null;
@@ -70,6 +102,13 @@ export type NotificationDiagnostics = {
   /** Pinned sender keys per hosting server. Keyed by host because `kid` is instance-scoped:
    *  two Custos instances both start numbering at 1. */
   pinnedHosts: Record<string, SenderKey[]>;
+  /**
+   * What the extension could not verify, newest first.
+   *
+   * iOS won't let an extension suppress an alert push, so an unverifiable payload still shows a
+   * banner saying so. These are what turn that banner into something diagnosable.
+   */
+  recentFailures: NotificationFailure[];
 };
 
 export type NotificationsError =
@@ -110,4 +149,15 @@ export async function refreshNotificationSenderKeys(did: string): Promise<Sender
 /** What this device holds. Read-only, no network, no identity needed. */
 export async function getNotificationDiagnostics(): Promise<NotificationDiagnostics> {
   return invoke<NotificationDiagnostics>('get_notification_diagnostics');
+}
+
+/**
+ * Forget the extension's recorded failures.
+ *
+ * The acknowledge half of the diagnostic: once the user has re-pinned or switched relays, a log
+ * that keeps reporting the old problem is noise — and noise is what stops the next real report
+ * from being read. Idempotent, and never rejects.
+ */
+export async function clearNotificationFailures(): Promise<void> {
+  return invoke<void>('clear_notification_failures');
 }

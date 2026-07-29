@@ -76,6 +76,24 @@ INFRA=(
   "rust-toolchain.toml"
 )
 
+# Non-crate entries that belong to ONE app rather than every lane. Kept apart from INFRA
+# because this gate enforces tightness as well as coverage: an entry here is asserted to be
+# absent from the lanes it does not belong to, so a lane cannot quietly acquire a trigger for
+# sources it never compiles.
+#
+#   ios/**  — the shared Swift sources for the Notification Service Extension. The NSE target
+#             in scripts/ios/project.yml is gated to the wallet's bundle id, so admin-companion's
+#             generated project contains no target that compiles them and a Swift change there
+#             cannot affect its build. Not a cargo crate either, so the dependency graph above
+#             cannot see it. Move it to INFRA (or add a second entry) in the same change that
+#             widens that gate — the console's own notification adoption.
+app_infra_for() { # <app>
+  case "$1" in
+    identity-wallet) printf '%s\n' "ios/**" ;;
+    admin-companion) ;;
+  esac
+}
+
 # Workflow file(s) whose changes must re-trigger a given lane. Normally a lane just
 # watches its own file, but the two TestFlight callers are thin wrappers around the
 # shared reusable workflow (ios-testflight-reusable.yml) — editing the reusable body
@@ -106,6 +124,7 @@ expected_for() { # <workflow file> <app>...
   watched_workflows_for "$wf"
   for app in "$@"; do
     printf 'apps/%s/**\n' "$app"
+    app_infra_for "$app"
   done
   while IFS= read -r dir; do
     [ -n "$dir" ] || continue

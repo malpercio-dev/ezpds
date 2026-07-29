@@ -27,6 +27,7 @@ Source: `apps/identity-wallet/src/lib/ipc/`
 | `change_handle_cmd` | App command |
 | `check_handle_resolution` | App command |
 | `check_identity_status` | App command |
+| `clear_notification_failures` | App command |
 | `complete_did_web_ceremony` | App command |
 | `complete_oauth_flow` | App command |
 | `confirm_agent_claim` | App command |

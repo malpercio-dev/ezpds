@@ -41,8 +41,10 @@ sign → package → ship).
   on the same `macos-26` runner image, `cargo tauri ios init` (renders the committed
   `scripts/ios/project.yml` template) → `just ios-postinit` / `admin-postinit` (the
   template-seam gate) → `just ios-pr-check` / `admin-pr-check`
-  (frontend build + staticlib cross-compile for `aarch64-apple-ios`). Everything short of
-  xcodebuild archiving/signing, so iOS breakage surfaces on the PR instead of post-merge.
+  (frontend build + staticlib cross-compile for `aarch64-apple-ios`, plus — on the wallet lane
+  only — `swiftc -typecheck` of the Notification Service Extension and its test bundle).
+  Everything short of xcodebuild archiving/signing, so iOS breakage surfaces on the PR instead
+  of post-merge.
 
 ## One-Time Setup
 
@@ -107,6 +109,7 @@ Settings → Secrets and variables → Actions → **New repository secret**:
 | `IOS_CERTIFICATE` | base64 of `Distribution.p12` | `base64 -i Distribution.p12 \| pbcopy` |
 | `IOS_CERTIFICATE_PASSWORD` | the `.p12` export password | you set it in step 2 |
 | `IOS_MOBILE_PROVISION` | base64 of the `.mobileprovision` | `base64 -i *.mobileprovision \| pbcopy` |
+| `IOS_MOBILE_PROVISION_NSE` | base64 of the **extension's** `.mobileprovision` | same, for the `…identitywallet.NotificationService` profile — used *alongside* the one above, not instead of it |
 | `APPLE_API_ISSUER` | Issuer ID (UUID) | Top of the **Team Keys** list (team-wide) |
 | `APPLE_API_KEY` | Key ID | The key's row under **Team Keys** |
 | `APPLE_API_KEY_B64` | base64 of the `.p8` | `base64 -i AuthKey_<KeyID>.p8 \| pbcopy` |
@@ -188,6 +191,37 @@ for the first time inside a CI log.
   Tauri's *automatic* iOS signing is unreliable (tauri#11092). Sign **explicitly** with
   `IOS_CERTIFICATE` + `IOS_CERTIFICATE_PASSWORD` + `IOS_MOBILE_PROVISION` (Apple
   Distribution cert + App Store profile), not the API key.
+
+  Locally this is the easiest mistake to make, because tauri does not complain when the
+  variables are absent — `signing_from_env()` just returns "no signing", the build runs to
+  completion under automatic signing, and it dies at the export with
+  `No signing certificate "iOS Distribution" found`, which names neither the cause nor the
+  variable. `just ios-ipa` therefore pre-flights all three and refuses in a second. A local
+  release run needs the full set in the shell:
+
+  ```bash
+  export IOS_CERTIFICATE="$(base64 -i Distribution.p12)"
+  export IOS_CERTIFICATE_PASSWORD='…'
+  export IOS_MOBILE_PROVISION="$(base64 -i Obsign_App_Store.mobileprovision)"
+  export IOS_MOBILE_PROVISION_NSE="$(base64 -i Obsign_NSE_App_Store.mobileprovision)"
+  export APPLE_API_KEY=… APPLE_API_ISSUER=…   # only for the upload step
+  ```
+- **Second and subsequent LOCAL release builds fail with the `Tauri (unset)` placeholder.**
+  `cargo tauri ios build` writes signing settings into `project.pbxproj` at line numbers its
+  parser recorded, and those go stale as earlier insertions shift the file. A project it has
+  already stamped comes back with build settings sitting after a closing brace — or after
+  `/* End XCBuildConfiguration section */`. Its parser then finds no `_iOS` build-configuration
+  list and silently skips **both** the signing settings and the `provisioningProfiles` /
+  `signingStyle` half of the generated ExportOptions, so the build falls back to automatic
+  signing and dies at the export blaming a missing `iOS Distribution` certificate.
+
+  Xcode and `plutil -lint` both accept the mangled file, so `just ios-check` cannot see it. CI
+  was never affected because it regenerates `gen/` every run; only repeated local builds
+  accumulate the damage, and one build is enough to break the next. `just ios-ipa` therefore
+  regenerates the project itself before building — matching CI's init → postinit → build — and
+  then runs `scripts/ios/pbxproj-parseable.py`, a port of tauri's own parser state machine, as a
+  post-condition. If you ever see the placeholder cert again, that check is the thing to run.
+
 - **`base64: invalid option -- 'o'` during signing (local only).** In the devenv, Nix's
   GNU `base64` shadows macOS's BSD one, but Tauri's cert decode uses BSD flags. `ios-env.sh`
   shims `/usr/bin/base64` ahead of it under `EZPDS_IOS_BUILD`. No-op on CI (BSD base64 there).
@@ -266,13 +300,90 @@ reports `AWAITING_APNS_TOKEN` forever and registers with no server, which reads 
 happens" rather than as an error. This is the only one of the three that gates the wallet's
 own build, via the profile-regeneration rule in [step 3](#2-app-store-connect) above.
 
-**2. The Notification Service Extension's App ID** (with the extension itself). An app
-extension is a **separate bundle** (`dev.malpercio.identitywallet.<name>`), so it needs its
-own explicit App ID, its own distribution profile signed by the same team cert, and its own
-`IOS_MOBILE_PROVISION_*`-style secret — the same three-artifact shape the Admin Companion
-lane above already establishes. It does **not** need `aps-environment` (that is an app
-entitlement, not an extension one); what it needs is the shared keychain access group, which
-needs no portal work for the reason given in step 3.
+**2. The Notification Service Extension's App ID** (shipped — the extension itself now
+exists). An app extension is a **separate bundle**, here
+`dev.malpercio.identitywallet.NotificationService`, so it needs its own explicit App ID, its
+own distribution profile signed by the same team cert, and its own `IOS_MOBILE_PROVISION_*`-style
+secret — the same three-artifact shape the Admin Companion lane above already establishes. It
+does **not** need `aps-environment` (that is an app entitlement, not an extension one); what
+it needs is the shared keychain access group, which needs no portal work for the reason given
+in step 3.
+
+> **This is a release blocker, not a nicety.** The extension is embedded into the app bundle by
+> the XcodeGen template, so from the change that added it onward the wallet's TestFlight lane
+> archives two bundles and needs a profile for each. Until the App ID and profile below exist,
+> `just ios-ipa` (and therefore `ios-testflight.yml`) fails at signing. Nothing else is blocked:
+> `just ios-pr-check` runs no `xcodebuild` and stays green, and admin-companion is untouched —
+> the extension is deliberately gated to the wallet's bundle id in `scripts/ios/project.yml`, so
+> the console needs none of this until MM-421 widens that gate.
+
+**Setting it up** (one time, mirroring the Admin Companion list above):
+
+1. **App ID** — register `dev.malpercio.identitywallet.NotificationService`. No capabilities to
+   enable: the extension's only entitlement is `keychain-access-groups`, which a profile
+   authorizes through its `<TeamID>.*` wildcard. There is **no** App Store Connect app record —
+   an extension ships inside its host app, not beside it.
+2. **App Store provisioning profile** — a Distribution profile bound to that App ID, signed by
+   the same Apple Distribution cert the wallet already uses.
+3. **GitHub secret `IOS_MOBILE_PROVISION_NSE`** — base64 of that profile
+   (`base64 -i *.mobileprovision | pbcopy`). Unlike `IOS_MOBILE_PROVISION_ADMIN`, this is not an
+   *alternative* to `IOS_MOBILE_PROVISION` — both are used in the **same** build, because the app
+   and the extension are separate bundles that each need their own profile.
+
+### Why the release lane re-exports the archive
+
+`cargo tauri ios build` archives and exports in one step, and its generated ExportOptions carries
+exactly one provisioning-profile entry — the app's bundle id. It also only stamps signing
+settings onto build-configuration lists whose comment contains `_iOS`, so an extension target is
+left unsigned in the archive. `xcodebuild -exportArchive` then re-signs the extension with the
+distribution identity but, having no profile for its bundle id, gives it **empty entitlements and
+no embedded profile**.
+
+Nothing fails along the way. The archive succeeds, the export succeeds, a normal-looking `.ipa`
+lands on disk, and the first thing to object is App Store Connect, minutes later:
+
+```
+Validation failed (409) Missing Code Signing Entitlements. No entitlements found in bundle
+'dev.malpercio.identitywallet.NotificationService' for executable '…/identity-wallet_NSE.appex/…'
+```
+
+The obvious escape hatch is closed: tauri merges a user-supplied `gen/apple/ExportOptions.plist`,
+but its `merge_plist` is a shallow later-wins merge, so tauri's own single-entry
+`provisioningProfiles` overwrites yours. There is also no archive-only mode to hook between.
+
+So `just ios-ipa` runs `just _reexport-embedded-extensions` after the tauri build: it installs
+the extension profile, reads the app's profile UUID out of the pbxproj tauri just stamped (so the
+export uses exactly the profile the archive was built against), writes an ExportOptions naming a
+profile for **every** embedded bundle, and re-exports over the `.ipa`. `-exportArchive` re-signs
+everything from scratch, so the ad-hoc-signed archive is a fine input and the second export costs
+seconds. It no-ops for an app with no extensions, so admin-companion shares the recipe untouched.
+
+`just _verify-signed-ipa` then asserts every bundle in the `.ipa` — app and each `.appex` — has
+non-empty entitlements and its own `embedded.mobileprovision`. That check exists because this
+failure is invisible locally; without it the only signal is a 409 after a full upload.
+
+Verify locally first — `just ios-release` on your Mac with both profiles installed — before
+trusting the cloud job, exactly as the Admin Companion section advises.
+
+**The extension's Swift is typechecked in CI; its tests are not run there.** `just ios-pr-check`
+includes `just _nse-typecheck`, which runs `swiftc -typecheck` over the extension's sources and
+then over the test bundle as the template composes it, against the real iOS SDK — no simulator,
+no signing, no generated project. That is what keeps a Swift compile error out of a release
+archive, since the archive itself only runs on push to `main`.
+
+Actually *running* the tests still needs `xcodebuild`, which `ios-pr-check` does not do — so the
+CryptoKit cross-check against `crates/crypto`'s golden HPKE vectors stays a local step. The
+template generates a dedicated `<app>_NSETests` scheme that builds only the extension (not the
+app, and therefore not the Rust staticlib), so it runs in seconds:
+
+```bash
+xcodebuild test -project apps/identity-wallet/src-tauri/gen/apple/identity-wallet.xcodeproj -scheme identity-wallet_NSETests -destination 'platform=iOS Simulator,name=iPhone 17'
+```
+
+The scheme is named from cargo-mobile2's `app.name`, which is the **crate** name
+(`identity-wallet`) rather than the product name (`Obsign`) — so the targets are
+`identity-wallet_NSE` and `identity-wallet_NSETests`. Confirm with `xcodebuild -list` if a
+future tauri-cli derives it differently.
 
 **3. The relay's APNs auth key** (not an app artifact at all). Certificates, Identifiers &
 Profiles → **Keys** → a new key with **Apple Push Notifications service (APNs)** enabled,

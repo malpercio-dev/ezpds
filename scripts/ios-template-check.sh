@@ -137,6 +137,156 @@ if grep -qiE 'icloud|ubiquity' "${REPO_ROOT}/apps/admin-companion/src-tauri/Enti
   fail=1
 fi
 
+# --- The Notification Service Extension (ezpds change 5) ---
+# The extension is what makes an end-to-end-encrypted push readable: it HPKE-opens the sealed
+# payload with the per-device notification key the wallet stores in the shared keychain group. Every
+# piece below is load-
+# bearing in a way that fails SILENTLY if dropped — a re-rendered template missing the target
+# leaves the app installing happily and showing "couldn't verify" for every notification
+# forever, with nothing in any log to say the extension was never built.
+require 'type: app-extension' "the NSE target (a sealed push renders as the unverified notice without it)"
+require 'NSExtensionPointIdentifier: com.apple.usernotifications.service' "the NSE's extension point (iOS would not route pushes to it)"
+# Both halves of the principal class, and the line that joins them. Checking only the halves
+# would pass a project that named a class iOS cannot find — which presents as a push that never
+# arrived, with nothing in any log distinguishing it from one that was never sent.
+require 'NSExtensionPrincipalClass: $(PRODUCT_MODULE_NAME).NotificationService' "the NSE's principal class (iOS cannot instantiate the extension without it)"
+require 'PRODUCT_MODULE_NAME: NotificationService' "half of NSExtensionPrincipalClass — a drift here means iOS cannot instantiate the extension"
+require '- path: ../../../../../ios/NotificationService' "the shared Swift sources, referenced in place"
+require 'CODE_SIGN_ENTITLEMENTS: ../../Entitlements.NSE.plist' "the NSE's shared-keychain entitlement (without it every Keychain read finds nothing)"
+# The embed dependency, not the target definition, is what puts the extension in the archive.
+if ! grep -qF -- '- target: {{app.name}}_NSE' "${TEMPLATE}"; then
+  echo "ios-template-check: FAIL — the app target no longer embeds {{app.name}}_NSE; the extension would be built but never shipped" >&2
+  fail=1
+fi
+# The gate is what keeps admin-companion from needing a second App ID + profile + secret for
+# an extension it cannot use (see the template's comment). If it is ever removed,
+# it must be removed deliberately, alongside the console's shared keychain group.
+if ! grep -qF -- '{{#if (eq app.identifier "dev.malpercio.identitywallet")}}' "${TEMPLATE}"; then
+  echo "ios-template-check: FAIL — the NSE is no longer gated to the wallet's bundle id; admin-companion would need its own extension App ID and provisioning profile before either TestFlight lane could sign a build" >&2
+  fail=1
+fi
+# The interop test's fixture is referenced in place, so there is no copy to drift from the
+# crate that generates it.
+require '- path: ../../../../../crates/crypto/tests/fixtures/notify/hpke-notify-v1.json' "the Rust golden HPKE vectors the CryptoKit cross-check opens"
+for source in ios/NotificationService/NotificationService.swift \
+              ios/NotificationService/NotifyCrypto.swift \
+              ios/NotificationService/NotifyEnvelope.swift \
+              ios/NotificationService/NotifyKeychain.swift \
+              ios/NotificationService/NotifyBreadcrumbs.swift \
+              ios/NotificationServiceTests/NotifyFixtureTests.swift \
+              ios/NotificationServiceTests/NotifyResolverTests.swift; do
+  # No CI lane compiles Swift, so this loop is the ONLY automated signal that one of these
+  # files went missing — including the test files, whose absence would otherwise just look
+  # like a suite that quietly got smaller.
+  if [ ! -f "${REPO_ROOT}/${source}" ]; then
+    echo "ios-template-check: FAIL — ${source} missing (the template compiles the whole ios/NotificationService tree)" >&2
+    fail=1
+  fi
+done
+# The extension's entitlements are its ONLY reach into the app's Keychain, and the ORDER is
+# the mechanism: neither process names an access group in its queries, so iOS files an
+# unqualified write into the FIRST entitled group. If org.obsign.shared is not first in BOTH
+# files, the breadcrumbs the extension writes land where the app cannot read them.
+NSE_ENT="${REPO_ROOT}/apps/identity-wallet/src-tauri/Entitlements.NSE.plist"
+if [ ! -f "${NSE_ENT}" ]; then
+  echo "ios-template-check: FAIL — ${NSE_ENT} missing (the NSE target's CODE_SIGN_ENTITLEMENTS points at it)" >&2
+  fail=1
+elif ! command -v python3 >/dev/null 2>&1; then
+  echo "ios-template-check: WARN — python3 unavailable; skipping the NSE keychain-group order check" >&2
+else
+  # Both assertions read the PARSED nodes, never the raw text: this file's explanatory comments
+  # name `aps-environment` and iCloud precisely to say why they are absent, so a grep would be
+  # satisfied by prose and would fail on a correct file (the same trap the wallet container
+  # check above documents).
+  nse_verdict="$(python3 - "${NSE_ENT}" <<'PY'
+import plistlib, sys
+
+with open(sys.argv[1], "rb") as handle:
+    entitlements = plistlib.load(handle)
+
+groups = entitlements.get("keychain-access-groups", [])
+if not groups or groups[0] != "$(AppIdentifierPrefix)org.obsign.shared":
+    print("order")
+# Least privilege: the extension only ever needs the shared keychain group. `aps-environment`
+# is an APP entitlement (the app obtains the device token; the extension only decrypts), and a
+# stray iCloud grant would widen the reach of the one process that runs on a locked screen.
+elif set(entitlements) != {"keychain-access-groups"}:
+    print("extra:" + ",".join(sorted(set(entitlements) - {"keychain-access-groups"})))
+else:
+    print("ok")
+PY
+)"
+  case "${nse_verdict}" in
+    ok) ;;
+    order)
+      echo "ios-template-check: FAIL — the NSE entitlements must list \$(AppIdentifierPrefix)org.obsign.shared FIRST; an unqualified write otherwise lands in a group the app cannot read (ADR-0030)" >&2
+      fail=1
+      ;;
+    extra:*)
+      echo "ios-template-check: FAIL — the NSE entitlements declare more than the shared keychain group (${nse_verdict#extra:}); least privilege: the extension obtains no push token and touches no backup" >&2
+      fail=1
+      ;;
+    *)
+      echo "ios-template-check: FAIL — could not parse ${NSE_ENT}" >&2
+      fail=1
+      ;;
+  esac
+fi
+
+# --- Cross-bundle document versions: Swift and Rust must agree ---
+# The app and the extension are separate bundles that share two JSON documents through the
+# Keychain — the pinned sender-key set (app writes, extension reads) and the failure log
+# (extension writes, app reads). Each carries a version tag, and each side refuses a document
+# whose tag it does not recognise.
+#
+# So the two constants ARE the contract, and nothing at compile time relates them: they live in
+# different languages, in different bundles, built by different toolchains. Bumping one alone
+# does not fail anything — it makes the other side silently discard every document, which
+# presents as notifications that stop being verifiable, or a Settings screen that goes blank
+# exactly when it is needed. A Rust test asserting its own constant equals a literal cannot
+# catch it either; only comparing the two files can.
+if command -v python3 >/dev/null 2>&1; then
+  version_verdict="$(python3 - "${REPO_ROOT}" <<'PY'
+import pathlib, re, sys
+
+root = pathlib.Path(sys.argv[1])
+rust = (root / "apps/identity-wallet/src-tauri/src/notifications.rs").read_text()
+
+# (label, swift file, swift type, rust constant)
+contracts = [
+    ("failure log", "NotifyBreadcrumbs.swift", "NotifyFailureLog", "FAILURE_LOG_VERSION"),
+    ("sender-key pin document", "NotifyKeychain.swift", "PinnedSenderKeys", "PIN_DOCUMENT_VERSION"),
+]
+
+problems = []
+for label, filename, swift_type, rust_const in contracts:
+    source = (root / "ios/NotificationService" / filename).read_text()
+    # The declaration sits inside its type, and each of these files declares exactly one.
+    swift = re.search(r"struct\s+" + swift_type + r"\b.*?static let supportedVersion\s*=\s*(\d+)",
+                      source, re.S)
+    rust_match = re.search(r"const\s+" + rust_const + r"\s*:\s*u8\s*=\s*(\d+)\s*;", rust)
+    if not swift:
+        problems.append(f"{label}: no `supportedVersion` on Swift `{swift_type}` in {filename}")
+    elif not rust_match:
+        problems.append(f"{label}: no `{rust_const}` in notifications.rs")
+    elif swift.group(1) != rust_match.group(1):
+        problems.append(
+            f"{label}: Swift {swift_type}.supportedVersion = {swift.group(1)} but Rust "
+            f"{rust_const} = {rust_match.group(1)} — one side would discard every document "
+            f"the other writes")
+
+print("\n".join(problems) if problems else "ok")
+PY
+)"
+  if [ "${version_verdict}" != "ok" ]; then
+    echo "ios-template-check: FAIL — the app and the extension disagree on a shared document version:" >&2
+    echo "${version_verdict}" | sed 's/^/  /' >&2
+    fail=1
+  fi
+else
+  echo "ios-template-check: WARN — python3 unavailable; skipping the Swift/Rust document-version check" >&2
+fi
+
 # --- Both apps must actually point at the template ---
 for app in identity-wallet admin-companion; do
   conf="${REPO_ROOT}/apps/${app}/src-tauri/tauri.conf.json"

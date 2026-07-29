@@ -341,6 +341,15 @@ export interface WalletState {
     /** Pinned sender keys per hosting server — `kid` is instance-scoped, so the host is part
      *  of the key's identity. */
     pinnedHosts: Record<string, { kid: number; publicKey: string }[]>;
+    /**
+     * What the Notification Service Extension could not verify, newest first.
+     *
+     * Empty by default, and populated only by the `notifications-unverified` scenario — a
+     * browser has no extension and no push, so nothing can produce one naturally, and
+     * `window.__harness.state()` is a deep clone rather than the live store, so it cannot be
+     * seeded from the console either.
+     */
+    recentFailures: { at: string; reason: string; kid: number | null }[];
     /** DIDs whose host has been told about this device (what the register call recorded). */
     registeredDids: string[];
   };
@@ -396,6 +405,7 @@ export function emptyWalletState(): WalletState {
       // false to model a relay-less one without disturbing any other capability.
       relaySupported: true,
       pinnedHosts: {},
+      recentFailures: [],
       registeredDids: [],
     },
     identities: [],

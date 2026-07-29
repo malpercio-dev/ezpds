@@ -31,6 +31,13 @@ on:
       # The shared iOS toolchain/patch scripts live in scripts/ios/ (per-app
       # scripts are thin wrappers). PDS-only scripts directly under scripts/
       # (bruno-parity, font-parity, ...) are deliberately excluded.
+      # The shared Swift sources for the wallet's Notification Service Extension.
+      # Not a cargo crate, so the dependency graph above cannot reach them, and no lane
+      # compiles Swift — so this trigger exists to bring a change under the template and
+      # file-existence gates, which are the only automated check these sources have.
+      # Deliberately absent from admin-testflight.yml: the NSE target is gated to the
+      # wallet's bundle id, so the console's project compiles none of this.
+      - "ios/**"
       - "scripts/ios/**"
       # The shared runner preamble (toolchain, cache, tauri-cli pin, brew shim).
       - ".github/actions/ios-setup/**"
@@ -57,8 +64,11 @@ jobs:
       app: identity-wallet
       recipe-prefix: ios
     secrets:
-      # identity-wallet signs with the profile bound to its own bundle id.
+      # identity-wallet signs with the profile bound to its own bundle id, plus a second
+      # profile for the Notification Service Extension's own bundle id
+      # (dev.malpercio.identitywallet.NotificationService). Both are needed in one build.
       IOS_MOBILE_PROVISION: ${{ secrets.IOS_MOBILE_PROVISION }}
+      IOS_MOBILE_PROVISION_NSE: ${{ secrets.IOS_MOBILE_PROVISION_NSE }}
       IOS_CERTIFICATE: ${{ secrets.IOS_CERTIFICATE }}
       IOS_CERTIFICATE_PASSWORD: ${{ secrets.IOS_CERTIFICATE_PASSWORD }}
       APPLE_DEVELOPMENT_TEAM: ${{ secrets.APPLE_DEVELOPMENT_TEAM }}

@@ -34,6 +34,7 @@ export type ScenarioName =
   | 'agent-connected'
   | 'app-password-minted'
   | 'device-key-unusable'
+  | 'notifications-unverified'
   | 'rekey-eligible'
   | 'rekey-mixed'
   | 'self-held-kit'
@@ -111,6 +112,27 @@ export const scenarios: Record<ScenarioName, () => WalletState> = {
    * Secure Enclave key could not. The wallet must not claim custody of rotationKeys[0]
    * it cannot sign with — the card shows "Can't sign" and offers the recovery ceremony.
    */
+  // The Settings notification diagnostic with something to report. Unreachable any other
+  // way in a browser: the breadcrumbs are written by the Notification Service Extension,
+  // which only exists on a device and only runs when a real sealed push arrives.
+  //
+  // The mix is deliberate — two key-desync failures alongside one benign post-restart one,
+  // so the surface has to level correctly rather than describe whichever it saw first.
+  // Timestamps are relative to load, since the readout windows on the last seven days.
+  'notifications-unverified': () => {
+    const state = emptyWalletState();
+    state.pdsUrl = DEFAULT_PDS_URL;
+    upsertIdentity(state, seedIdentity({ handle: 'alice.harness.pds.local' }));
+    state.notifications.notificationKeyMinted = true;
+    state.notifications.apnsToken = 'harnessapnstoken';
+    const now = Date.now();
+    state.notifications.recentFailures = [
+      { at: new Date(now - 60 * 60 * 1000).toISOString(), reason: 'UNKNOWN_KID', kid: 4 },
+      { at: new Date(now - 5 * 60 * 60 * 1000).toISOString(), reason: 'UNKNOWN_KID', kid: 4 },
+      { at: new Date(now - 30 * 60 * 60 * 1000).toISOString(), reason: 'KEYS_UNAVAILABLE', kid: 3 },
+    ];
+    return state;
+  },
   'device-key-unusable': () => {
     const state = emptyWalletState();
     state.pdsUrl = DEFAULT_PDS_URL;

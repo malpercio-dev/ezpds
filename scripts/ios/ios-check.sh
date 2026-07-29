@@ -202,6 +202,49 @@ if [ -d "${APP_DIR}/AppIcon.icon" ]; then
   fi
 fi
 
+# The Notification Service Extension. Rendered by the template only for the app whose bundle
+# id matches the gate there (the wallet today — see that file, and MM-421 for the console), so
+# this reads the same source of truth rather than restating which app is which.
+#
+# Everything here fails SILENTLY if the template did not apply: the app installs, launches, and
+# behaves normally, and every sealed notification renders "couldn't verify" forever with nothing
+# anywhere saying the extension was never built. That is why the pbxproj is checked and not just
+# the project.yml — a rendered-but-not-generated project would pass the template check upstream.
+NSE_ENT="${APP_DIR}/src-tauri/Entitlements.NSE.plist"
+if [ -f "${NSE_ENT}" ]; then
+  if ! grep -q 'com.apple.product-type.app-extension' "${PBXPROJ}"; then
+    echo "ios-check: FAIL — no app-extension target in the project; sealed notifications would all render as unverified ${REINIT_HINT}" >&2
+    fail=1
+  fi
+  # The embed is a separate fact from the target existing: without the Embed Foundation
+  # Extensions copy phase the extension is built and then left out of the .app.
+  if ! grep -qE '_NSE\.appex in (Embed|Copy)' "${PBXPROJ}"; then
+    echo "ios-check: FAIL — the NSE .appex is not embedded into the app bundle ${REINIT_HINT}" >&2
+    fail=1
+  fi
+  if ! grep -qF 'CODE_SIGN_ENTITLEMENTS = "../../Entitlements.NSE.plist"' "${PBXPROJ}" \
+     && ! grep -qF 'CODE_SIGN_ENTITLEMENTS = ../../Entitlements.NSE.plist' "${PBXPROJ}"; then
+    echo "ios-check: FAIL — the NSE target does not point at ${NSE_ENT}; its Keychain reads would find nothing ${REINIT_HINT}" >&2
+    fail=1
+  fi
+  # Half of NSExtensionPrincipalClass. A drift makes iOS unable to instantiate the extension,
+  # which looks exactly like a push that never arrived.
+  if ! grep -q 'PRODUCT_MODULE_NAME = NotificationService' "${PBXPROJ}"; then
+    echo "ios-check: FAIL — the NSE's PRODUCT_MODULE_NAME is not NotificationService ${REINIT_HINT}" >&2
+    fail=1
+  fi
+  # XcodeGen GENERATES the extension's Info.plist from the template's `properties`, so a
+  # malformed one is a template bug rather than a tracked-file bug — and it is the file iOS
+  # reads to find the principal class. The directory is named from {{app.name}}, hence the glob.
+  for plist in "$(dirname "${PBXPROJ}")"/../*_NSE/Info.plist; do
+    [ -f "${plist}" ] || continue
+    if command -v plutil >/dev/null 2>&1 && ! plutil -lint "${plist}" >/dev/null 2>&1; then
+      echo "ios-check: FAIL — ${plist} is not a valid plist ${REINIT_HINT}" >&2
+      fail=1
+    fi
+  done
+fi
+
 # Structural guard: a sentinel-present-but-corrupt pbxproj must still fail the check.
 if command -v plutil >/dev/null 2>&1 && ! plutil -lint "${PBXPROJ}" >/dev/null 2>&1; then
   echo "ios-check: FAIL — project.pbxproj does not parse (plutil -lint)" >&2

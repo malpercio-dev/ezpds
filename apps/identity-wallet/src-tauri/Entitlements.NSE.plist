@@ -1,0 +1,45 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <!--
+    The Notification Service Extension's iOS code-signing entitlements.
+
+    Referenced by the shared XcodeGen template (scripts/ios/project.yml) as the NSE target's
+    CODE_SIGN_ENTITLEMENTS build setting, path-relative to gen/apple. Unlike the app's
+    Entitlements.ios.plist this does NOT go through ios-postinit's Patch H: that patch exists
+    because tauri-cli's build-time codesign reads the app target's default entitlements path
+    regardless of the template. Tauri signs only the app; the extension is signed by Xcode
+    from this setting, so the tracked file is used directly and there is nothing to install.
+
+    ONE entitlement, and it is the whole reason the extension can do anything: the shared
+    keychain access group holding the notification private key and the pinned sender-key set.
+    Without it the extension's Keychain queries search only its own implicit group (the
+    extension's own bundle id), find nothing, and every push renders as the unverified notice.
+
+    ORDER IS LOAD-BEARING, exactly as in the app's entitlements: iOS searches EVERY entitled
+    group on an unqualified read and files an unqualified write into the FIRST. Neither
+    process names a group in its queries (that would mean discovering the team's
+    AppIdentifierPrefix at runtime, adding a failure mode to the one path that must work on a
+    locked screen), so `org.obsign.shared` must be first here and in the app, or the
+    breadcrumbs the extension writes land somewhere the app cannot read them. The legacy
+    group is listed for the same indefinite-readability reason given there — see ADR-0030 and
+    keychain.rs's `entitlement_declares_stable_group_first`.
+
+    Deliberately ABSENT: `aps-environment`. That is an app entitlement, not an extension one —
+    the app obtains the device token, the extension only decrypts what arrives. And no iCloud
+    container: the extension touches no backup.
+
+    PORTAL WORK: an app extension is a separate bundle
+    (dev.malpercio.identitywallet.NotificationService), so it needs its own explicit App ID
+    and its own distribution profile before the TestFlight lane can sign a build that embeds
+    it. `keychain-access-groups` itself needs no registration — a provisioning profile
+    authorizes the whole team prefix via a <TeamID>.* wildcard. See docs/ios-cicd.md.
+  -->
+  <key>keychain-access-groups</key>
+  <array>
+    <string>$(AppIdentifierPrefix)org.obsign.shared</string>
+    <string>$(AppIdentifierPrefix)dev.malpercio.identitywallet</string>
+  </array>
+</dict>
+</plist>
