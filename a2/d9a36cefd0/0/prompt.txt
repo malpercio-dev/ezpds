@@ -1,0 +1,17 @@
+failure, with:
+
+```
+found cert "Apple Distribution: Tauri (unset)" with organization "Tauri"
+Signing with identity "Apple Distribution: Tauri (unset)"
+Signing /Users/jacob.zweifel/workspace/malpercio-dev/ezpds/.claude/worktrees/mm-420-nse-decrypt-render-8c4f7c/apps/identity-wallet/src-tauri/gen/apple/build/identity-wallet_iOS.xcarchive/Products/Applications/Obsign.app/Obsign
+2026-07-28 21:17:18.225 xcodebuild[32588:16082440] [MT] IDEDistribution: -[IDEDistributionLogging _createLoggingBundleAtPath:]: Created bundle at path "/var/folders/6f/s0q439cd5qz6_w8ld1_hnz2m0000gn/T/identity-wallet_iOS_2026-07-28_21-17-18.225.xcdistributionlogs".
+error: exportArchive "Obsign.app" requires a provisioning profile with the iCloud and Push Notifications features.
+
+error: exportArchive No signing certificate "iOS Distribution" found
+
+** EXPORT FAILED **
+
+       Error failed to export iOS app: command ["xcodebuild"] exited with code 70
+error: Recipe `_ipa` failed with exit code 1
+error: Recipe `ios-ipa` failed on line 422 with exit code 1
+```
