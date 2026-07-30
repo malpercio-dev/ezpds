@@ -359,6 +359,49 @@ _reexport-embedded-extensions app_dir:
         print(f"    {bundle_id} -> {uuid}")
     PY
 
+    # Make the distribution identity findable for THIS export. tauri imports IOS_CERTIFICATE
+    # into an ephemeral keychain that is deleted the moment `cargo tauri ios build` exits, so
+    # by the time this recipe runs, a fresh CI runner holds no signing identity at all and
+    # `-exportArchive` fails with `No signing certificate "iOS Distribution" found`. A
+    # developer Mac hides this: the login keychain carries the same identity permanently,
+    # which is why the lane can be red while the identical local build is green. Import into
+    # our own temporary keychain, prepend it to the search list, and restore everything on
+    # exit — the same lifecycle tauri gives its keychain, held open a recipe longer.
+    # Skipped when IOS_CERTIFICATE is unset: that is a developer Mac running the recipe
+    # standalone, where the login keychain already holds the identity.
+    if [ -n "${IOS_CERTIFICATE:-}" ]; then
+      # One cleanup owns every signing artifact, installed BEFORE the decoded key can exist:
+      # a failure in base64/import must never strand the raw .p12 in TMPDIR. Each step is
+      # tolerant of the earlier ones not having happened yet.
+      reexport_dir="$(mktemp -d)"
+      reexport_keychain="$reexport_dir/reexport.keychain-db"
+      cert_file="$reexport_dir/cert.p12"
+      prior_keychains=()
+      cleanup_signing() {
+        rm -f "$cert_file"
+        if [ "${#prior_keychains[@]}" -gt 0 ]; then
+          security list-keychains -d user -s "${prior_keychains[@]}" 2>/dev/null || true
+        fi
+        security delete-keychain "$reexport_keychain" 2>/dev/null || true
+        rm -rf "$reexport_dir"
+      }
+      trap cleanup_signing EXIT
+      echo "$IOS_CERTIFICATE" | base64 -d > "$cert_file"
+      while IFS= read -r k; do
+        k="${k#"${k%%[![:space:]]*}"}"; k="${k%\"}"; k="${k#\"}"
+        [ -n "$k" ] && prior_keychains+=("$k")
+      done < <(security list-keychains -d user)
+      security create-keychain -p "" "$reexport_keychain"
+      security set-keychain-settings "$reexport_keychain"
+      security unlock-keychain -p "" "$reexport_keychain"
+      security import "$cert_file" -k "$reexport_keychain" \
+        -P "${IOS_CERTIFICATE_PASSWORD:-}" -T /usr/bin/codesign -T /usr/bin/security
+      rm -f "$cert_file"
+      # Without this, codesign under xcodebuild stalls on a keychain ACL prompt no CI can answer.
+      security set-key-partition-list -S apple-tool:,apple: -k "" "$reexport_keychain" >/dev/null
+      security list-keychains -d user -s "$reexport_keychain" "${prior_keychains[@]}"
+    fi
+
     echo "re-exporting $(basename "$archive") with profiles for every embedded bundle..."
     rm -f "$gen"/build/arm64/*.ipa
     xcodebuild -exportArchive \
