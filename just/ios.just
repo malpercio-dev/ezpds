@@ -370,19 +370,27 @@ _reexport-embedded-extensions app_dir:
     # Skipped when IOS_CERTIFICATE is unset: that is a developer Mac running the recipe
     # standalone, where the login keychain already holds the identity.
     if [ -n "${IOS_CERTIFICATE:-}" ]; then
-      reexport_keychain="$(mktemp -d)/reexport.keychain-db"
-      cert_file="$(mktemp)"
-      echo "$IOS_CERTIFICATE" | base64 -d > "$cert_file"
+      # One cleanup owns every signing artifact, installed BEFORE the decoded key can exist:
+      # a failure in base64/import must never strand the raw .p12 in TMPDIR. Each step is
+      # tolerant of the earlier ones not having happened yet.
+      reexport_dir="$(mktemp -d)"
+      reexport_keychain="$reexport_dir/reexport.keychain-db"
+      cert_file="$reexport_dir/cert.p12"
       prior_keychains=()
+      cleanup_signing() {
+        rm -f "$cert_file"
+        if [ "${#prior_keychains[@]}" -gt 0 ]; then
+          security list-keychains -d user -s "${prior_keychains[@]}" 2>/dev/null || true
+        fi
+        security delete-keychain "$reexport_keychain" 2>/dev/null || true
+        rm -rf "$reexport_dir"
+      }
+      trap cleanup_signing EXIT
+      echo "$IOS_CERTIFICATE" | base64 -d > "$cert_file"
       while IFS= read -r k; do
         k="${k#"${k%%[![:space:]]*}"}"; k="${k%\"}"; k="${k#\"}"
         [ -n "$k" ] && prior_keychains+=("$k")
       done < <(security list-keychains -d user)
-      restore_keychains() {
-        security list-keychains -d user -s "${prior_keychains[@]}" 2>/dev/null || true
-        security delete-keychain "$reexport_keychain" 2>/dev/null || true
-      }
-      trap restore_keychains EXIT
       security create-keychain -p "" "$reexport_keychain"
       security set-keychain-settings "$reexport_keychain"
       security unlock-keychain -p "" "$reexport_keychain"
