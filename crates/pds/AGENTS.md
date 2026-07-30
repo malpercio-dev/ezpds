@@ -244,8 +244,10 @@ re-binds IPv4 only — without it iroh's v6 relay probes fail `NetworkUnreachabl
 WARN every ~80s that buries real errors. `AppState.iroh: Option<Arc<IrohState>>`
 holds the bound endpoint and its node-id string; `get_device_pds` advertises that node id.
 The accept loop speaks a minimal v0.1 echo protocol on the `ezpds/iroh/0` ALPN — enough to
-prove the bidirectional channel and serve as a liveness probe; the real repo-sync / push
-protocols register here later. Errors are logged, never propagated (one bad peer never stops
+prove the bidirectional channel and serve as a liveness probe; the real repo-sync protocol
+registers additional ALPNs here later (push is instead an *outbound* leg — see
+`notify_relay_client.rs` — dialing `ezpds/notify/0` on this same endpoint, so it adds nothing
+to this accept loop). Errors are logged, never propagated (one bad peer never stops
 the loop). The endpoint is closed on graceful shutdown, which ends the accept loop.
 
 ### `identity/`
