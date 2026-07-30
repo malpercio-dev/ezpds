@@ -4,10 +4,8 @@
 // routable address. Bound at startup (when `[iroh] enabled`) alongside the HTTP server; its
 // node id is advertised via `GET /v1/devices/:id/pds`. The accept loop speaks a minimal
 // v0.1 echo protocol on the `ezpds/iroh/0` ALPN — enough to prove the bidirectional channel
-// works end-to-end and to give devices a liveness probe. The real repo-sync protocol will
-// register additional ALPNs (or message types) here later. Push is no longer among them: it
-// shipped as an *outbound* leg (`notify_relay_client.rs` dials the relay on `ezpds/notify/0`
-// from this same endpoint), so it registers nothing on this accept loop.
+// works end-to-end and to give devices a liveness probe. The real repo-sync / push protocols
+// will register additional ALPNs (or message types) here later.
 
 use iroh::endpoint::{presets, Incoming};
 use iroh::{Endpoint, SecretKey};
