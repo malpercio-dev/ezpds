@@ -1,0 +1,237 @@
+<task-notification>
+<task-id>bjf8wwjgi</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-jacob-zweifel-workspace-malpercio-dev-ezpds--claude-worktrees-production-release-prep-314fa8/d20215ff-0137-4185-9bba-ef3732b0ac61/tasks/bjf8wwjgi.output</output-file>
+<status>completed</status>
+<summary>Background command "Commit, push, open v0.10.2 release PR, and watch CI" completed (exit code 0)</summary>
+</task-notification>
+
+---
+
+<task-notification>
+<task-id>bjv7dfn3u</task-id>
+<tool-use-id>toolu_01TQE9SgVk2sLrQftnLSB3Qg</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-jacob-zweifel-workspace-malpercio-dev-ezpds--claude-worktrees-production-release-prep-314fa8/d20215ff-0137-4185-9bba-ef3732b0ac61/tasks/bjv7dfn3u.output</output-file>
+<status>completed</status>
+<summary>Background command "Watch CI on release PR #491" completed (exit code 0)</summary>
+</task-notification>
+
+---
+
+merged! please complete the rollout
+
+---
+
+<task-notification>
+<task-id>bsozfx0h1</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-jacob-zweifel-workspace-malpercio-dev-ezpds--claude-worktrees-production-release-prep-314fa8/d20215ff-0137-4185-9bba-ef3732b0ac61/tasks/bsozfx0h1.output</output-file>
+<status>completed</status>
+<summary>Background command "Watch production CI and poll health for v0.10.2" completed (exit code 0)</summary>
+</task-notification>
+
+---
+
+What does bad environment key in token mean?  APNs refused a notification status=403 reason={"reason":"BadEnvironmentKeyInToken"} presumably I misconfigured something. oh, perhaps I have a sandbox key currently?
+
+---
+
+That was it! the push came through. however now they are arriving as unverified
+
+---
+
+heh, the app reports all good, every recent notification from the server arrived and was verified. not sure if my mixed two-server state in my wallet is causing any issues? also on the newest testflight build
+
+---
+
+same deal, couldn't verify, settings -> notifications green
+
+---
+
+The banner is generally slow, however I had one instant delivery. I couldn't promise you that it wasn't just an older delivery that happened to coincide with another login attempt, however. Tapping just opens the app.
+
+---
+
+console.app logs:
+
+```
+default	19:50:04.920563-0400	runningboardd	Executing launch request for xpcservice<dev.malpercio.identitywallet.NotificationService([osservice<com.apple.SpringBoard>:6635])>{vt hash: 0}{definition:dev.malpercio.identitywallet.NotificationService[extension][client]} (Launching extension dev.malpercio.identitywallet.NotificationService(C49CA642-E481-49FB-9423-4B302152AA14) for host 6635) from requestor: [osservice<com.apple.pluginkit.pkd>:185]
+default	19:50:04.920728-0400	runningboardd	Creating and launching job for: xpcservice<dev.malpercio.identitywallet.NotificationService([osservice<com.apple.SpringBoard>:6635])>{vt hash: 0}{definition:dev.malpercio.identitywallet.NotificationService[extension][client]}
+default	19:50:04.927375-0400	runningboardd	'(null)' Submitting extension overlay (host PID 6635, path /private/var/containers/Bundle/Application/7E77B217-B825-4C1A-B184-43916AD43D39/Obsign.app/PlugIns/identity-wallet_NSE.appex/identity-wallet_NSE):
+<dictionary: 0x753bc84300> { count = 3, transaction: 0, voucher = 0x0, contents =
+	"XPCService" => <dictionary: 0x753bc86700> { count = 12, transaction: 0, voucher = 0x0, contents =
+		"_ManagedBy" => <string: 0x753ce86c70> { string cache = 0x0, length = 22, contents = "com.apple.runningboard" }
+		"Platform" => <int64: 0xad8c598877843bdf>: 2
+		"RunLoopType" => <string: 0x753ce85fb0> { string cache = 0x0, length = 9, contents = "NSRunLoop" }
+		"_SandboxProfile" => <string: 0x753c6d5650> { string cache = 0x0, length = 6, contents = "plugin" }
+		"_AdditionalSubServices" => <dictionary: 0x753bc87e40> { count = 1, transaction: 0, voucher = 0x0, contents =
+			"apple-extension-service" => <bool: 0x1f9d29330>: true
+		}
+		"PersonaEnterprise" => <int64: 0xad8c59887784248f>: 1000
+		"EnvironmentVariables" => <dictionary: 0x753bc86ca0> { count = 3, transaction: 0, voucher = 0x0, contents =
+			"TMPDIR" => <string: 0x753ce841b0> { string cache = 0x0, length = 92, contents = "/private/var/mobile/Containers/Data/PluginKitPlugin/2951BD32-7466-4F9C-844E-35F29EC64DF6/tmp" }
+			"HOME" => <string: 0x753ce85d70> { string cache = 0x0, length = 88, contents = "/private/var/mobile/Containers/Data/PluginKitPlugin/2951BD32-7466-4F9C-844E-35F29EC64DF6" }
+			"CFFIXED_USER_HOME" => <string: 0x753ce84960> { string cache = 0x0, length = 88, contents = "/private/var/mobile/Containers/Data/PluginKitPlugin/2951BD32-7466-4F9C-844E-35F29EC64DF6" }
+		}
+		"_AdditionalProperties" => <dictionary: 0x753bc87ea0> { count = 1, transaction: 0, voucher = 0x0, contents =
+			"RunningBoard" => <dictionary: 0x753bc86940> { count = 2, transaction: 0, voucher = 0x0, contents =
+				"RunningBoardLaunchedIdentity" => <dictionary: 0x753bc85920> { count = 5, transaction: 0, voucher = 0x0, contents =
+					"TYPE" => <int64: 0xad8c598877843bef>: 4
+					"h" => <int64: 0xad8c59887784f497>: 6635
+					"i" => <string: 0x753ce846c0> { string cache = 0x0, length = 48, contents = "dev.malpercio.identitywallet.NotificationService" }
+					"r" => <int64: 0xad8c598877843bdf>: 2
+					"H" => <dictionary: 0x753bc86f40> { count = 4, transaction: 0, voucher = 0x0, contents =
+						"l" => <string: 0x753ce840f0> { string cache = 0x0, length = 21, contents = "com.apple.SpringBoard" }
+						"t" => <int64: 0xad8c598877843bdf>: 2
+						"TYPE" => <int64: 0xad8c598877843bff>: 6
+						"p" => <int64: 0xad8c598877843bcf>: 0
+					}
+				}
+				"RunningBoardLaunched" => <bool: 0x1f9d29330>: true
+			}
+		}
+		"_OmitSandboxParameters" => <bool: 0x1f9d29330>: true
+		"SpawnConstraint" => <dictionary: 0x753bc86e80> { count = 1, transaction: 0, voucher = 0x0, contents =
+			"signing-identifier" => <string: 0x753c179500> { string cache = 0x0, length = 48, contents = "dev.malpercio.identitywallet.NotificationService" }
+		}
+		"_SandboxContainer" => <string: 0x753ce86430> { string cache = 0x0, length = 88, contents = "/private/var/mobile/Containers/Data/PluginKitPlugin/2951BD32-7466-4F9C-844E-35F29EC64DF6" }
+		"ProgramArguments" => <array: 0x753c6d4750> { count = 3, capacity = 10, contents =
+			0: <string: 0x753c39a4f0> { string cache = 0x0, length = 144, contents = "/private/var/containers/Bundle/Application/7E77B217-B825-4C1A-B184-43916AD43D39/Obsign.app/PlugIns/identity-wallet_NSE.appex/identity-wallet_NSE" }
+			1: <string: 0x753ce84270> { string cache = 0x0, length = 15, contents = "-AppleLanguages" }
+			2: <string: 0x753ce86e50> { string cache = 0x0, length = 9, contents = "("en-US")" }
+		}
+	}
+	"RunningBoard" => <dictionary: 0x753bc86e20> { count = 1, transaction: 0, voucher = 0x0, contents =
+		"Managed" => <bool: 0x1f9d29330>: true
+	}
+	"CFBundlePackageType" => <string: 0x753ce84210> { string cache = 0x0, length = 4, contents = "XPC!" }
+}
+default	19:50:05.122817-0400	runningboardd	[xpcservice<dev.malpercio.identitywallet.NotificationService([osservice<com.apple.SpringBoard>:6635])>{vt hash: 0}{definition:dev.malpercio.identitywallet.NotificationService[extension][client]}:16670] Memory Limits: active 165 inactive 165
+ <private>
+default	19:50:05.122837-0400	runningboardd	[xpcservice<dev.malpercio.identitywallet.NotificationService([osservice<com.apple.SpringBoard>:6635])>{vt hash: 0}{definition:dev.malpercio.identitywallet.NotificationService[extension][client]}:16670] This process will be managed.
+default	19:50:05.125749-0400	runningboardd	Now tracking process: [xpcservice<dev.malpercio.identitywallet.NotificationService([osservice<com.apple.SpringBoard>:6635])>{vt hash: 0}{definition:dev.malpercio.identitywallet.NotificationService[extension][client]}:16670]
+default	19:50:05.126162-0400	runningboardd	Calculated state for xpcservice<dev.malpercio.identitywallet.NotificationService([osservice<com.apple.SpringBoard>:6635])>{vt hash: 0}{definition:dev.malpercio.identitywallet.NotificationService[extension][client]}: running-suspended (role: None) (endowments: (null))
+default	19:50:05.127068-0400	runningboardd	[xpcservice<dev.malpercio.identitywallet.NotificationService([osservice<com.apple.SpringBoard>:6635])>{vt hash: 0}{definition:dev.malpercio.identitywallet.NotificationService[extension][client]}:16670] reported to RB as running
+default	19:50:05.127757-0400	SpringBoard	Hit the server for a process handle 125487750000411e that resolved to: [xpcservice<dev.malpercio.identitywallet.NotificationService([osservice<com.apple.SpringBoard>:6635])>{vt hash: 0}{definition:dev.malpercio.identitywallet.NotificationService[extension][client]}:16670]
+default	19:50:05.128773-0400	audiomxd	Hit the server for a process handle 125487750000411e that resolved to: [xpcservice<dev.malpercio.identitywallet.NotificationService([osservice<com.apple.SpringBoard>:6635])>{vt hash: 0}{definition:dev.malpercio.identitywallet.NotificationService[extension][client]}:16670]
+default	19:50:05.128803-0400	audiomxd	Received state update for 16670 (xpcservice<dev.malpercio.identitywallet.NotificationService([osservice<com.apple.SpringBoard>:6635])>{vt hash: 0}{definition:dev.malpercio.identitywallet.NotificationService[extension][client]}, running-suspended-NotVisible
+default	19:50:05.129257-0400	SpringBoard	Received state update for 16670 (xpcservice<dev.malpercio.identitywallet.NotificationService([osservice<com.apple.SpringBoard>:6635])>{vt hash: 0}{definition:dev.malpercio.identitywallet.NotificationService[extension][client]}, running-suspended-NotVisible
+default	19:50:05.129662-0400	runningboardd	Acquiring assertion targeting [xpcservice<dev.malpercio.identitywallet.NotificationService([osservice<com.apple.SpringBoard>:6635])>{vt hash: 0}{definition:dev.malpercio.identitywallet.NotificationService[extension][client]}:16670] from originator [osservice<com.apple.SpringBoard>:6635] with description <RBSAssertionDescriptor| "com.apple.extension.session" ID:38-6635-401445 target:16670 attributes:[
+	<RBSLegacyAttribute| requestedReason:ViewService reason:ViewService flags:( AllowIdleSleep PreventTaskSuspend PreventTaskThrottleDown )>,
+	<RBSAcquisitionCompletionAttribute| policy:AfterValidation>
+	]>
+default	19:50:05.129798-0400	runningboardd	Assertion 38-6635-401445 (target:[xpcservice<dev.malpercio.identitywallet.NotificationService([osservice<com.apple.SpringBoard>:6635])>{vt hash: 0}{definition:dev.malpercio.identitywallet.NotificationService[extension][client]}:16670]) will be created as active
+default	19:50:05.132296-0400	runningboardd	[xpcservice<dev.malpercio.identitywallet.NotificationService([osservice<com.apple.SpringBoard>:6635])>{vt hash: 0}{definition:dev.malpercio.identitywallet.NotificationService[extension][client]}:16670] Set jetsam priority to 40 [0] flag[1]
+default	19:50:05.132473-0400	runningboardd	[xpcservice<dev.malpercio.identitywallet.NotificationService([osservice<com.apple.SpringBoard>:6635])>{vt hash: 0}{definition:dev.malpercio.identitywallet.NotificationService[extension][client]}:16670] Resuming task.
+default	19:50:05.132491-0400	runningboardd	Calculated state for xpcservice<dev.malpercio.identitywallet.NotificationService([osservice<com.apple.SpringBoard>:6635])>{vt hash: 0}{definition:dev.malpercio.identitywallet.NotificationService[extension][client]}: running-active (role: UserInteractiveNonFocal) (endowments: (null))
+default	19:50:05.132513-0400	runningboardd	[xpcservice<dev.malpercio.identitywallet.NotificationService([osservice<com.apple.SpringBoard>:6635])>{vt hash: 0}{definition:dev.malpercio.identitywallet.NotificationService[extension][client]}:16670] Result 45 setting darwin role to UserInteractiveNonFocal: Operation not supported, falling back to setting priority
+default	19:50:05.132543-0400	runningboardd	[xpcservice<dev.malpercio.identitywallet.NotificationService([osservice<com.apple.SpringBoard>:6635])>{vt hash: 0}{definition:dev.malpercio.identitywallet.NotificationService[extension][client]}:16670] Set darwin priority to: PRIO_DEFAULT
+default	19:50:05.132740-0400	runningboardd	[xpcservice<dev.malpercio.identitywallet.NotificationService([osservice<com.apple.SpringBoard>:6635])>{vt hash: 0}{definition:dev.malpercio.identitywallet.NotificationService[extension][client]}:16670] set Memory Limits to Hard Inactive (165)
+default	19:50:05.132756-0400	runningboardd	[xpcservice<dev.malpercio.identitywallet.NotificationService([osservice<com.apple.SpringBoard>:6635])>{vt hash: 0}{definition:dev.malpercio.identitywallet.NotificationService[extension][client]}:16670] Set Carplay mode to: 0
+default	19:50:05.132860-0400	SpringBoard	Received state update for 16670 (xpcservice<dev.malpercio.identitywallet.NotificationService([osservice<com.apple.SpringBoard>:6635])>{vt hash: 0}{definition:dev.malpercio.identitywallet.NotificationService[extension][client]}, running-active-NotVisible
+default	19:50:05.132870-0400	audiomxd	Received state update for 16670 (xpcservice<dev.malpercio.identitywallet.NotificationService([osservice<com.apple.SpringBoard>:6635])>{vt hash: 0}{definition:dev.malpercio.identitywallet.NotificationService[extension][client]}, running-active-NotVisible
+default	19:50:05.134637-0400	SpringBoard	[0xa00007466c40a00] activating connection: mach=false listener=false peer=false name=dev.malpercio.identitywallet.NotificationService
+default	19:50:05.148228-0400	accessoryd	Hit the server for a process handle 125487750000411e that resolved to: [xpcservice<dev.malpercio.identitywallet.NotificationService([osservice<com.apple.SpringBoard>:6635])>{vt hash: 0}{definition:dev.malpercio.identitywallet.NotificationService[extension][client]}:16670]
+default	19:50:05.148386-0400	accessoryd	Received state update for 16670 (xpcservice<dev.malpercio.identitywallet.NotificationService([osservice<com.apple.SpringBoard>:6635])>{vt hash: 0}{definition:dev.malpercio.identitywallet.NotificationService[extension][client]}, running-suspended-NotVisible
+default	19:50:05.148497-0400	UserEventAgent	Hit the server for a process handle 125487750000411e that resolved to: [xpcservice<dev.malpercio.identitywallet.NotificationService([osservice<com.apple.SpringBoard>:6635])>{vt hash: 0}{definition:dev.malpercio.identitywallet.NotificationService[extension][client]}:16670]
+default	19:50:05.148936-0400	UserEventAgent	Received state update for 16670 (xpcservice<dev.malpercio.identitywallet.NotificationService([osservice<com.apple.SpringBoard>:6635])>{vt hash: 0}{definition:dev.malpercio.identitywallet.NotificationService[extension][client]}, running-suspended-NotVisible
+default	19:50:05.149374-0400	accessoryd	Posting application state change {
+    ACCPlatformApplicationStateDisplayIDKey = "dev.malpercio.identitywallet.NotificationService";
+    ACCPlatformApplicationStateKey = 2;
+    ACCPlatformApplicationStateProcessIDKey = 16670;
+}
+default	19:50:05.149903-0400	accessoryd	handling app state change notification {
+    ACCPlatformApplicationStateDisplayIDKey = "dev.malpercio.identitywallet.NotificationService";
+    ACCPlatformApplicationStateKey = 2;
+    ACCPlatformApplicationStateProcessIDKey = 16670;
+}
+default	19:50:05.151540-0400	PerfPowerServices	Hit the server for a process handle 125487750000411e that resolved to: [xpcservice<dev.malpercio.identitywallet.NotificationService([osservice<com.apple.SpringBoard>:6635])>{vt hash: 0}{definition:dev.malpercio.identitywallet.NotificationService[extension][client]}:16670]
+default	19:50:05.151890-0400	PerfPowerServices	Received state update for 16670 (xpcservice<dev.malpercio.identitywallet.NotificationService([osservice<com.apple.SpringBoard>:6635])>{vt hash: 0}{definition:dev.malpercio.identitywallet.NotificationService[extension][client]}, running-suspended-NotVisible
+default	19:50:05.152059-0400	WirelessRadioManagerd	Hit the server for a process handle 125487750000411e that resolved to: [xpcservice<dev.malpercio.identitywallet.NotificationService([osservice<com.apple.SpringBoard>:6635])>{vt hash: 0}{definition:dev.malpercio.identitywallet.NotificationService[extension][client]}:16670]
+default	19:50:05.152478-0400	WirelessRadioManagerd	Received state update for 16670 (xpcservice<dev.malpercio.identitywallet.NotificationService([osservice<com.apple.SpringBoard>:6635])>{vt hash: 0}{definition:dev.malpercio.identitywallet.NotificationService[extension][client]}, running-suspended-NotVisible
+default	19:50:05.154699-0400	accessoryd	Received state update for 16670 (xpcservice<dev.malpercio.identitywallet.NotificationService([osservice<com.apple.SpringBoard>:6635])>{vt hash: 0}{definition:dev.malpercio.identitywallet.NotificationService[extension][client]}, running-active-NotVisible
+default	19:50:05.155055-0400	UserEventAgent	Received state update for 16670 (xpcservice<dev.malpercio.identitywallet.NotificationService([osservice<com.apple.SpringBoard>:6635])>{vt hash: 0}{definition:dev.malpercio.identitywallet.NotificationService[extension][client]}, running-active-NotVisible
+default	19:50:05.155337-0400	accessoryd	Posting application state change {
+    ACCPlatformApplicationStateDisplayIDKey = "dev.malpercio.identitywallet.NotificationService";
+    ACCPlatformApplicationStateKey = 4;
+    ACCPlatformApplicationStateProcessIDKey = 16670;
+}
+default	19:50:05.155389-0400	accessoryd	handling app state change notification {
+    ACCPlatformApplicationStateDisplayIDKey = "dev.malpercio.identitywallet.NotificationService";
+    ACCPlatformApplicationStateKey = 4;
+    ACCPlatformApplicationStateProcessIDKey = 16670;
+}
+default	19:50:05.156596-0400	wifid	Hit the server for a process handle 125487750000411e that resolved to: [xpcservice<dev.malpercio.identitywallet.NotificationService([osservice<com.apple.SpringBoard>:6635])>{vt hash: 0}{definition:dev.malpercio.identitywallet.NotificationService[extension][client]}:16670]
+default	19:50:05.156624-0400	symptomsd	Hit the server for a process handle 125487750000411e that resolved to: [xpcservice<dev.malpercio.identitywallet.NotificationService([osservice<com.apple.SpringBoard>:6635])>{vt hash: 0}{definition:dev.malpercio.identitywallet.NotificationService[extension][client]}:16670]
+default	19:50:05.156723-0400	symptomsd	Received state update for 16670 (xpcservice<dev.malpercio.identitywallet.NotificationService([osservice<com.apple.SpringBoard>:6635])>{vt hash: 0}{definition:dev.malpercio.identitywallet.NotificationService[extension][client]}, running-suspended-NotVisible
+default	19:50:05.156999-0400	wifid	Received state update for 16670 (xpcservice<dev.malpercio.identitywallet.NotificationService([osservice<com.apple.SpringBoard>:6635])>{vt hash: 0}{definition:dev.malpercio.identitywallet.NotificationService[extension][client]}, running-suspended-NotVisible
+default	19:50:05.157720-0400	replayd	Hit the server for a process handle 125487750000411e that resolved to: [xpcservice<dev.malpercio.identitywallet.NotificationService([osservice<com.apple.SpringBoard>:6635])>{vt hash: 0}{definition:dev.malpercio.identitywallet.NotificationService[extension][client]}:16670]
+default	19:50:05.158024-0400	replayd	Received state update for 16670 (xpcservice<dev.malpercio.identitywallet.NotificationService([osservice<com.apple.SpringBoard>:6635])>{vt hash: 0}{definition:dev.malpercio.identitywallet.NotificationService[extension][client]}, running-suspended-NotVisible
+default	19:50:05.158586-0400	useractivityd	Hit the server for a process handle 125487750000411e that resolved to: [xpcservice<dev.malpercio.identitywallet.NotificationService([osservice<com.apple.SpringBoard>:6635])>{vt hash: 0}{definition:dev.malpercio.identitywallet.NotificationService[extension][client]}:16670]
+default	19:50:05.158984-0400	PerfPowerServices	Received state update for 16670 (xpcservice<dev.malpercio.identitywallet.NotificationService([osservice<com.apple.SpringBoard>:6635])>{vt hash: 0}{definition:dev.malpercio.identitywallet.NotificationService[extension][client]}, running-active-NotVisible
+default	19:50:05.159054-0400	useractivityd	Received state update for 16670 (xpcservice<dev.malpercio.identitywallet.NotificationService([osservice<com.apple.SpringBoard>:6635])>{vt hash: 0}{definition:dev.malpercio.identitywallet.NotificationService[extension][client]}, running-suspended-NotVisible
+default	19:50:05.161273-0400	WirelessRadioManagerd	Received state update for 16670 (xpcservice<dev.malpercio.identitywallet.NotificationService([osservice<com.apple.SpringBoard>:6635])>{vt hash: 0}{definition:dev.malpercio.identitywallet.NotificationService[extension][client]}, running-active-NotVisible
+default	19:50:05.162482-0400	wifid	Received state update for 16670 (xpcservice<dev.malpercio.identitywallet.NotificationService([osservice<com.apple.SpringBoard>:6635])>{vt hash: 0}{definition:dev.malpercio.identitywallet.NotificationService[extension][client]}, running-active-NotVisible
+default	19:50:05.163038-0400	symptomsd	Received state update for 16670 (xpcservice<dev.malpercio.identitywallet.NotificationService([osservice<com.apple.SpringBoard>:6635])>{vt hash: 0}{definition:dev.malpercio.identitywallet.NotificationService[extension][client]}, running-active-NotVisible
+default	19:50:05.164208-0400	replayd	Received state update for 16670 (xpcservice<dev.malpercio.identitywallet.NotificationService([osservice<com.apple.SpringBoard>:6635])>{vt hash: 0}{definition:dev.malpercio.identitywallet.NotificationService[extension][client]}, running-active-NotVisible
+default	19:50:05.164697-0400	useractivityd	Received state update for 16670 (xpcservice<dev.malpercio.identitywallet.NotificationService([osservice<com.apple.SpringBoard>:6635])>{vt hash: 0}{definition:dev.malpercio.identitywallet.NotificationService[extension][client]}, running-active-NotVisible
+default	19:50:05.167699-0400	wifid	-[WiFiUserInteractionMonitor setApplicationRunningState:foregroundState:andNetworkingState:forBundleId:]: dev.malpercio.identitywallet.NotificationService entered background
+default	19:50:05.211272-0400	runningboardd	Setting client for [xpcservice<dev.malpercio.identitywallet.NotificationService([osservice<com.apple.SpringBoard>:6635])>{vt hash: 0}{definition:dev.malpercio.identitywallet.NotificationService[extension][client]}:16670] as ready
+default	19:50:05.212831-0400	identity-wallet_NSE	Identity resolved as xpcservice<dev.malpercio.identitywallet.NotificationService([osservice<com.apple.SpringBoard>:6635])>{vt hash: 0}{definition:dev.malpercio.identitywallet.NotificationService[extension][client]}
+default	19:50:05.213401-0400	identity-wallet_NSE	[0x1038bc3c0] activating connection: mach=false listener=true peer=false name=dev.malpercio.identitywallet.NotificationService
+default	19:50:05.220299-0400	identity-wallet_NSE	[0x1038bc500] activating connection: mach=false listener=false peer=true name=dev.malpercio.identitywallet.NotificationService.peer[6635].0x1038bc500
+default	19:50:05.224054-0400	identity-wallet_NSE	[0x1038bc780] activating connection: mach=true listener=true peer=false name=dev.malpercio.identitywallet.NotificationService.apple-extension-service
+default	19:50:05.225553-0400	runningboardd	Invalidating assertion 38-6635-401445 (target:[xpcservice<dev.malpercio.identitywallet.NotificationService([osservice<com.apple.SpringBoard>:6635])>{vt hash: 0}{definition:dev.malpercio.identitywallet.NotificationService[extension][client]}:16670]) from originator [osservice<com.apple.SpringBoard>:6635]
+default	19:50:05.226643-0400	runningboardd	Acquiring assertion targeting [xpcservice<dev.malpercio.identitywallet.NotificationService([osservice<com.apple.SpringBoard>:6635])>{vt hash: 0}{definition:dev.malpercio.identitywallet.NotificationService[extension][client]}:16670] from originator [osservice<com.apple.SpringBoard>:6635] with description <RBSAssertionDescriptor| "com.apple.extension.session" ID:38-6635-401446 target:16670 attributes:[
+	<RBSLegacyAttribute| requestedReason:ViewService reason:ViewService flags:( AllowIdleSleep PreventTaskSuspend PreventTaskThrottleDown WantsForegroundResourcePriority )>,
+	<RBSAcquisitionCompletionAttribute| policy:AfterValidation>
+	]>
+default	19:50:05.226857-0400	runningboardd	Assertion 38-6635-401446 (target:[xpcservice<dev.malpercio.identitywallet.NotificationService([osservice<com.apple.SpringBoard>:6635])>{vt hash: 0}{definition:dev.malpercio.identitywallet.NotificationService[extension][client]}:16670]) will be created as active
+default	19:50:05.227938-0400	runningboardd	[xpcservice<dev.malpercio.identitywallet.NotificationService([osservice<com.apple.SpringBoard>:6635])>{vt hash: 0}{definition:dev.malpercio.identitywallet.NotificationService[extension][client]}:16670] Set jetsam priority to 100 [0] flag[1]
+default	19:50:05.229923-0400	SpringBoard	[0xe0000746e463700] activating connection: mach=false listener=false peer=false name=dev.malpercio.identitywallet.NotificationService.apple-extension-service
+default	19:50:05.232286-0400	identity-wallet_NSE	[0x1038bc8c0] activating connection: mach=false listener=false peer=true name=dev.malpercio.identitywallet.NotificationService.apple-extension-service.peer[6635].0x1038bc8c0
+default	19:50:05.236536-0400	SpringBoard	[dev.malpercio.identitywallet.NotificationService] Extension started, scheduled timers: sessionUUID=DE40CCFC-10ED-4511-B942-FB933188067F, serviceTime=29.678327, graceTime=28.678327
+default	19:50:05.236563-0400	SpringBoard	[dev.malpercio.identitywallet.NotificationService] Incremented notification center access to service extension: 1
+default	19:50:05.261100-0400	SpringBoard	[dev.malpercio.identitywallet.NotificationService] Decremented notification center access to service extension: 0
+default	19:50:05.261115-0400	SpringBoard	[dev.malpercio.identitywallet.NotificationService] Service extension delivered mutated content: sessionUUID=DE40CCFC-10ED-4511-B942-FB933188067F
+default	19:50:05.266911-0400	SpringBoard	tearing down extension request DE40CCFC-10ED-4511-B942-FB933188067F to extension <EXConcreteExtension: 0x50000746dd707e0> {id = dev.malpercio.identitywallet.NotificationService} (last known pid 16670)
+default	19:50:10.600080-0400	runningboardd	Invalidating assertion 38-6635-401446 (target:[xpcservice<dev.malpercio.identitywallet.NotificationService([osservice<com.apple.SpringBoard>:6635])>{vt hash: 0}{definition:dev.malpercio.identitywallet.NotificationService[extension][client]}:16670]) from originator [osservice<com.apple.SpringBoard>:6635]
+default	19:50:10.702152-0400	runningboardd	Removed last relative-start-date-defining assertion for process xpcservice<dev.malpercio.identitywallet.NotificationService([osservice<com.apple.SpringBoard>:6635])>{vt hash: 0}{definition:dev.malpercio.identitywallet.NotificationService[extension][client]}
+default	19:50:10.704869-0400	runningboardd	Calculated state for xpcservice<dev.malpercio.identitywallet.NotificationService([osservice<com.apple.SpringBoard>:6635])>{vt hash: 0}{definition:dev.malpercio.identitywallet.NotificationService[extension][client]}: running-suspended (role: None) (endowments: (null))
+default	19:50:10.704885-0400	runningboardd	[xpcservice<dev.malpercio.identitywallet.NotificationService([osservice<com.apple.SpringBoard>:6635])>{vt hash: 0}{definition:dev.malpercio.identitywallet.NotificationService[extension][client]}:16670] Set jetsam priority to 0 [0] flag[1]
+default	19:50:10.704986-0400	runningboardd	[xpcservice<dev.malpercio.identitywallet.NotificationService([osservice<com.apple.SpringBoard>:6635])>{vt hash: 0}{definition:dev.malpercio.identitywallet.NotificationService[extension][client]}:16670] Suspending task.
+default	19:50:10.706387-0400	SpringBoard	Received state update for 16670 (xpcservice<dev.malpercio.identitywallet.NotificationService([osservice<com.apple.SpringBoard>:6635])>{vt hash: 0}{definition:dev.malpercio.identitywallet.NotificationService[extension][client]}, running-suspended-NotVisible
+default	19:50:10.706403-0400	runningboardd	[xpcservice<dev.malpercio.identitywallet.NotificationService([osservice<com.apple.SpringBoard>:6635])>{vt hash: 0}{definition:dev.malpercio.identitywallet.NotificationService[extension][client]}:16670] Shutdown sockets (ALL)
+default	19:50:10.706420-0400	runningboardd	[xpcservice<dev.malpercio.identitywallet.NotificationService([osservice<com.apple.SpringBoard>:6635])>{vt hash: 0}{definition:dev.malpercio.identitywallet.NotificationService[extension][client]}:16670] Result 45 setting darwin role to None: Operation not supported, falling back to setting priority
+default	19:50:10.706435-0400	runningboardd	[xpcservice<dev.malpercio.identitywallet.NotificationService([osservice<com.apple.SpringBoard>:6635])>{vt hash: 0}{definition:dev.malpercio.identitywallet.NotificationService[extension][client]}:16670] Set darwin priority to: PRIO_DARWIN_BG
+default	19:50:10.707374-0400	runningboardd	[xpcservice<dev.malpercio.identitywallet.NotificationService([osservice<com.apple.SpringBoard>:6635])>{vt hash: 0}{definition:dev.malpercio.identitywallet.NotificationService[extension][client]}:16670] check if suspended process is holding locks
+default	19:50:10.707482-0400	audiomxd	Received state update for 16670 (xpcservice<dev.malpercio.identitywallet.NotificationService([osservice<com.apple.SpringBoard>:6635])>{vt hash: 0}{definition:dev.malpercio.identitywallet.NotificationService[extension][client]}, running-suspended-NotVisible
+default	19:50:10.708601-0400	UserEventAgent	Received state update for 16670 (xpcservice<dev.malpercio.identitywallet.NotificationService([osservice<com.apple.SpringBoard>:6635])>{vt hash: 0}{definition:dev.malpercio.identitywallet.NotificationService[extension][client]}, running-suspended-NotVisible
+default	19:50:10.709717-0400	accessoryd	Received state update for 16670 (xpcservice<dev.malpercio.identitywallet.NotificationService([osservice<com.apple.SpringBoard>:6635])>{vt hash: 0}{definition:dev.malpercio.identitywallet.NotificationService[extension][client]}, running-suspended-NotVisible
+default	19:50:10.709986-0400	WirelessRadioManagerd	Received state update for 16670 (xpcservice<dev.malpercio.identitywallet.NotificationService([osservice<com.apple.SpringBoard>:6635])>{vt hash: 0}{definition:dev.malpercio.identitywallet.NotificationService[extension][client]}, running-suspended-NotVisible
+default	19:50:10.710222-0400	accessoryd	Posting application state change {
+    ACCPlatformApplicationStateDisplayIDKey = "dev.malpercio.identitywallet.NotificationService";
+    ACCPlatformApplicationStateKey = 2;
+    ACCPlatformApplicationStateProcessIDKey = 16670;
+}
+default	19:50:10.710397-0400	accessoryd	handling app state change notification {
+    ACCPlatformApplicationStateDisplayIDKey = "dev.malpercio.identitywallet.NotificationService";
+    ACCPlatformApplicationStateKey = 2;
+    ACCPlatformApplicationStateProcessIDKey = 16670;
+}
+default	19:50:10.711118-0400	PerfPowerServices	Received state update for 16670 (xpcservice<dev.malpercio.identitywallet.NotificationService([osservice<com.apple.SpringBoard>:6635])>{vt hash: 0}{definition:dev.malpercio.identitywallet.NotificationService[extension][client]}, running-suspended-NotVisible
+default	19:50:10.711479-0400	replayd	Received state update for 16670 (xpcservice<dev.malpercio.identitywallet.NotificationService([osservice<com.apple.SpringBoard>:6635])>{vt hash: 0}{definition:dev.malpercio.identitywallet.NotificationService[extension][client]}, running-suspended-NotVisible
+default	19:50:10.712706-0400	wifid	Received state update for 16670 (xpcservice<dev.malpercio.identitywallet.NotificationService([osservice<com.apple.SpringBoard>:6635])>{vt hash: 0}{definition:dev.malpercio.identitywallet.NotificationService[extension][client]}, running-suspended-NotVisible
+default	19:50:10.712868-0400	useractivityd	Received state update for 16670 (xpcservice<dev.malpercio.identitywallet.NotificationService([osservice<com.apple.SpringBoard>:6635])>{vt hash: 0}{definition:dev.malpercio.identitywallet.NotificationService[extension][client]}, running-suspended-NotVisible
+default	19:50:10.712914-0400	symptomsd	Received state update for 16670 (xpcservice<dev.malpercio.identitywallet.NotificationService([osservice<com.apple.SpringBoard>:6635])>{vt hash: 0}{definition:dev.malpercio.identitywallet.NotificationService[extension][client]}, running-suspended-NotVisible
+default	19:50:16.462153-0400	symptomsd	Consider alternate update: level: 4, (com.apple.Home.HomeWidget, 1, AppFreePassed), (com.apple.icloud.FindMyDevice.FindMyExtensionContainer.FindMyDeviceBluetoothExtension, 1, AppFreePassed), (com.apple.Home.HomeWidget.Interactive, 1, AppFreePassed), (com.apple.icloud.FindMyDevice.FindMyExtensionContainer.FMDMagSafeExtension, 1, AppFreePassed), (com.apple.ScreenTimeWidgetApplication.ScreenTimeWidgetExtension, 1, AppFreePassed), (com.apple.AdaptiveMusicApp.AdaptiveMusicWidget, 1, AppFreePassed), (com.synology.kailash, 1, AppFreePassed), (com.apple.chrono.WidgetRenderer-Default, 2, AppFreePassed), (com.apple.fskit.msdos, 1, AppFreePassed), (com.apple.AuthenticationServicesUI, 1, AppFreePassed), (com.apple.MomentsUIService, 1, AppFreePassed), (com.apple.CloudDocs.iCloudDriveFileProvider, 1, AppFreePassed), (dev.malpercio.identitywallet.NotificationService, 1, AppFreePassed), (com.apple.fskit.exfat, 1, AppFreePassed), (com.1password.1password.autofill-extension, 1, AppFreePassed), (com.apple.CarPlayApp, 2, AppFreePassed), (com.appl
+default	19:50:16.464474-0400	symptomsd	Consider alternate update: level: 4, (com.apple.Home.HomeWidget, 1, AppFreePassed), (com.apple.icloud.FindMyDevice.FindMyExtensionContainer.FindMyDeviceBluetoothExtension, 1, AppFreePassed), (com.apple.Home.HomeWidget.Interactive, 1, AppFreePassed), (com.apple.icloud.FindMyDevice.FindMyExtensionContainer.FMDMagSafeExtension, 1, AppFreePassed), (com.apple.ScreenTimeWidgetApplication.ScreenTimeWidgetExtension, 1, AppFreePassed), (com.apple.AdaptiveMusicApp.AdaptiveMusicWidget, 1, AppFreePassed), (com.synology.kailash, 1, AppFreePassed), (com.apple.chrono.WidgetRenderer-Default, 2, AppFreePassed), (com.apple.fskit.msdos, 1, AppFreePassed), (com.apple.AuthenticationServicesUI, 1, AppFreePassed), (com.apple.MomentsUIService, 1, AppFreePassed), (com.apple.CloudDocs.iCloudDriveFileProvider, 1, AppFreePassed), (dev.malpercio.identitywallet.NotificationService, 1, AppFreePassed), (com.apple.fskit.exfat, 1, AppFreePassed), (com.1password.1password.autofill-extension, 1, AppFreePassed), (com.apple.CarPlayApp, 2, AppFreePassed), (com.appl
+default	19:50:16.530195-0400	symptomsd	Consider alternate update: level: 4, (com.apple.Home.HomeWidget, 1, AppFreePassed), (com.apple.icloud.FindMyDevice.FindMyExtensionContainer.FindMyDeviceBluetoothExtension, 1, AppFreePassed), (com.apple.Home.HomeWidget.Interactive, 1, AppFreePassed), (com.apple.icloud.FindMyDevice.FindMyExtensionContainer.FMDMagSafeExtension, 1, AppFreePassed), (com.apple.ScreenTimeWidgetApplication.ScreenTimeWidgetExtension, 1, AppFreePassed), (com.apple.AdaptiveMusicApp.AdaptiveMusicWidget, 1, AppFreePassed), (com.synology.kailash, 1, AppFreePassed), (com.apple.chrono.WidgetRenderer-Default, 2, AppFreePassed), (com.apple.fskit.msdos, 1, AppFreePassed), (com.apple.AuthenticationServicesUI, 1, AppFreePassed), (com.apple.MomentsUIService, 1, AppFreePassed), (com.apple.CloudDocs.iCloudDriveFileProvider, 1, AppFreePassed), (dev.malpercio.identitywallet.NotificationService, 1, AppFreePassed), (com.apple.fskit.exfat, 1, AppFreePassed), (com.1password.1password.autofill-extension, 1, AppFreePassed), (com.apple.CarPlayApp, 2, AppFreePassed), (com.appl
+default	19:50:16.532588-0400	symptomsd	Consider alternate update: level: 4, (com.apple.Home.HomeWidget, 1, AppFreePassed), (com.apple.icloud.FindMyDevice.FindMyExtensionContainer.FindMyDeviceBluetoothExtension, 1, AppFreePassed), (com.apple.Home.HomeWidget.Interactive, 1, AppFreePassed), (com.apple.icloud.FindMyDevice.FindMyExtensionContainer.FMDMagSafeExtension, 1, AppFreePassed), (com.apple.ScreenTimeWidgetApplication.ScreenTimeWidgetExtension, 1, AppFreePassed), (com.apple.AdaptiveMusicApp.AdaptiveMusicWidget, 1, AppFreePassed), (com.synology.kailash, 1, AppFreePassed), (com.apple.chrono.WidgetRenderer-Default, 2, AppFreePassed), (com.apple.fskit.msdos, 1, AppFreePassed), (com.apple.AuthenticationServicesUI, 1, AppFreePassed), (com.apple.MomentsUIService, 1, AppFreePassed), (com.apple.CloudDocs.iCloudDriveFileProvider, 1, AppFreePassed), (dev.malpercio.identitywallet.NotificationService, 1, AppFreePassed), (com.apple.fskit.exfat, 1, AppFreePassed), (com.1password.1password.autofill-extension, 1, AppFreePassed), (com.apple.CarPlayApp, 2, AppFreePassed), (com.appl
+default	19:50:16.548799-0400	nesessionmanager	Consider alternate update, new advice: level: 4, (com.apple.Home.HomeWidget, 1, AppFreePassed), (com.apple.icloud.FindMyDevice.FindMyExtensionContainer.FindMyDeviceBluetoothExtension, 1, AppFreePassed), (com.apple.Home.HomeWidget.Interactive, 1, AppFreePassed), (com.apple.icloud.FindMyDevice.FindMyExtensionContainer.FMDMagSafeExtension, 1, AppFreePassed), (com.apple.ScreenTimeWidgetApplication.ScreenTimeWidgetExtension, 1, AppFreePassed), (com.apple.AdaptiveMusicApp.AdaptiveMusicWidget, 1, AppFreePassed), (com.synology.kailash, 1, AppFreePassed), (com.apple.chrono.WidgetRenderer-Default, 2, AppFreePassed), (com.apple.fskit.msdos, 1, AppFreePassed), (com.apple.AuthenticationServicesUI, 1, AppFreePassed), (com.apple.MomentsUIService, 1, AppFreePassed), (com.apple.CloudDocs.iCloudDriveFileProvider, 1, AppFreePassed), (dev.malpercio.identitywallet.NotificationService, 1, AppFreePassed), (com.apple.fskit.exfat, 1, AppFreePassed), (com.1password.1password.autofill-extension, 1, AppFreePassed), (com.apple.CarPlayApp, 2, AppFreePassed), (com.appl
+
+```
+
+---
+
+hm, I used the same exact certificates that worked locally, but github actions is still failing 🤔
