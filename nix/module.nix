@@ -79,10 +79,8 @@ in
 
     systemd.tmpfiles.rules = [ "d ${cfg.dataDir} 0750 root root - -" ];
 
-    # Preserve hardening intent: the image's entrypoint starts as root (to chown the /data
-    # volume mount) then drops to the relay user (uid 10001) via gosu, so the PDS process
-    # itself runs unprivileged. NoNewPrivileges only blocks privilege escalation, not that
-    # voluntary drop, so carry it onto the generated unit where applicable.
+    # Preserve hardening intent: the container already runs non-root (relay uid 10001, baked in Phase 2).
+    # Carry NoNewPrivileges onto the generated unit where applicable.
     systemd.services."${config.virtualisation.oci-containers.backend}-ezpds".serviceConfig.NoNewPrivileges = true;
   };
 }
