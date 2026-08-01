@@ -99,7 +99,7 @@ The mobile app guides users through:
 2. **Account creation** — Claim code → email + handle → device key registration
 3. **DID ceremony** — Build and sign a `did:plc` genesis op using the device Secure Enclave, submit to PDS, receive Shamir recovery shares
 4. **Handle registration** — Register a handle on the PDS's domain
-5. **OAuth login** — Authenticate with the PDS via OAuth 2.0 + DPoP
+5. **Completion** — The new identity lands straight on the home screen; there is no post-create browser sign-in hand-off
 6. **Identity management** — Multi-identity home, DID document display, rotation key status
 7. **PLC monitoring** — Periodic audit log checks for unauthorized DID changes
 8. **Recovery** — Shamir secret sharing (3 shares, 2-of-3 threshold) with iCloud Keychain backup

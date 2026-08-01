@@ -48,7 +48,7 @@ leave it only on the phone that also holds Share 1.
 
 ## Recovering with two shares
 
-Lost the phone entirely? On a new device, choose **Recover from backup shares**
+Lost the phone entirely? On a new device, choose **I lost access to my wallet**
 on Obsign's first screen. Any two of your three shares bring the identity back:
 
 - **The common path** — Share 1 loads automatically if iCloud Keychain carried it
