@@ -1,6 +1,6 @@
 # Nix Packaging and Deployment
 
-Last verified: 2026-06-26
+Last verified: 2026-07-31
 
 ## Purpose
 Provides a NixOS module (`module.nix`) for declarative PDS deployment via OCI containers
@@ -27,7 +27,7 @@ and referenced by digest in the module.
   - Secrets from `environmentFile` are injected at container start, kept out of Nix store
   - systemd.tmpfiles creates `dataDir` with mode 0750
   - NoNewPrivileges=true enforced on generated podman/docker systemd unit
-  - Container runs non-root (relay uid 10001, baked into OCI image)
+  - The PDS process runs non-root (relay uid 10001, baked into the OCI image). The container's *entrypoint* starts as root — it must, to `chown` the root-owned `/data` volume mount (Railway Volumes and fresh host mounts arrive `root:root`) — then execs the server as the relay user via `gosu` (see `docker-entrypoint.sh`). So the workload runs unprivileged even though PID 1 briefly does not.
 
 - **Expects**: 
   - Caller has enabled a container backend (e.g., `virtualisation.oci-containers.backend = "podman"`)
@@ -42,7 +42,7 @@ and referenced by digest in the module.
 - Container-based deployment (not binary package) allows runtime secrets via environmentFile
 - `lib.types.str` for paths: avoids Nix store coercion of runtime paths
 - environmentFile escape hatch: secrets must not land in world-readable Nix store
-- Non-root container (uid 10001) + NoNewPrivileges: defense-in-depth for network-facing service
+- Non-root workload (uid 10001) + NoNewPrivileges: defense-in-depth for network-facing service. NoNewPrivileges is compatible with the root entrypoint's `gosu` drop — it blocks privilege *escalation* (setuid execve), not root voluntarily dropping to a lower uid — and still applies to the resulting relay-user process tree
 - Digest-pinned image references: ensures reproducibility and prevents accidental image rollbacks
 
 ## Invariants

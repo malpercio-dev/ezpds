@@ -592,8 +592,8 @@ rotation bumps a `kek_generation` counter in `server_metadata`.
 ## Security Posture
 
 The PDS image is hardened with:
-- **Non-root container** - Runs as uid 10001 (created in the Dockerfile).
-- **NoNewPrivileges** - Set by the ezpds NixOS module on the generated `podman-ezpds.service` unit; prevents privilege escalation.
+- **Non-root workload** - The PDS process runs as uid 10001 (the `relay` user created in the Dockerfile). The entrypoint itself starts as root — it must, to `chown` the root-owned `/data` volume mount — then execs the server via `gosu relay` (see `docker-entrypoint.sh`), so the long-running workload is unprivileged even though PID 1 briefly is not.
+- **NoNewPrivileges** - Set by the ezpds NixOS module on the generated `podman-ezpds.service` unit; prevents privilege escalation. Compatible with the root-entrypoint-then-`gosu`-drop above: it blocks escalation via setuid execve, not root voluntarily dropping to a lower uid.
 - **No secrets in image** - All runtime secrets injected via `environmentFile` or env vars, not baked into the image.
 - **Read-only root (where possible)** - SQLite writes to `/data` only; rest of the image can be read-only (optional; set `read_only = true` in container config if desired).
 
