@@ -3,27 +3,32 @@ title: Getting started
 description: Create a new identity or bring an existing one into Obsign.
 ---
 
-When you open Obsign, you're offered three options:
+When you open Obsign, it asks one question — **what's your situation?** — and
+routes you from your answer, rather than making you name the ceremony you need:
 
 <figure>
-  <img src="/screenshots/wallet/welcome.png" alt="Obsign's first screen, offering 'Create an identity', 'Import an identity', and 'Recover from backup shares'" width="280" />
-  <figcaption>The first screen: create a new identity, import one you already have, or recover one from its backup shares.</figcaption>
+  <img src="/screenshots/wallet/welcome.png" alt="Obsign's first screen, 'Add an identity — what's your situation?', listing 'Starting fresh', 'I have an account somewhere', 'I lost access to my wallet', and 'My server is gone'" width="280" />
+  <figcaption>The first screen asks what you're trying to do, not which flow to run, and routes you from there.</figcaption>
 </figure>
 
-- **Create an identity** — set up a brand-new identity from scratch.
-- **Import an identity** — take custody of an identity you already have, wherever
-  it is hosted. Your device becomes its master key; the identity stays on its
-  current server.
-- **Recover from backup shares** — bring an identity back onto a new device using
+- **Starting fresh** — make a brand-new identity from scratch, on a server you
+  choose.
+- **I have an account somewhere** — take custody of an account you already have,
+  wherever it is hosted. Your device becomes its master key; the account stays on
+  its current server.
+- **I lost access to my wallet** — bring an identity back onto a new device using
   any two of its three backup shares (see
   [Recovering with two shares](/user/backup/#recovering-with-two-shares)).
+- **My server is gone** — your host has disappeared and you need the identity
+  somewhere else.
 
-Importing is not the same as moving. Import changes *who holds the keys*; moving
-changes *where the account lives*, and you do that later from the identity's own
-screen (see [Migrating your identity](/user/migration/)).
+Taking custody of an existing account is not the same as moving it. It changes
+*who holds the keys*; moving changes *where the account lives*, and you do that
+later from the identity's own screen (see
+[Migrating your identity](/user/migration/)).
 
 If you already have identities in the wallet, tap **Add an identity** at the
-bottom of your identity list to reach the same screen.
+bottom of your identity list to reach this screen again.
 
 <figure>
   <img src="/screenshots/wallet/home-multi.png" alt="Obsign home screen listing two identities, each with a root-key status badge, and an 'Add an identity' button at the bottom" width="280" />
@@ -32,7 +37,7 @@ bottom of your identity list to reach the same screen.
 
 ## Create an identity
 
-1. Open Obsign and choose **Create an identity**.
+1. Open Obsign and choose **Starting fresh**.
 2. Follow the prompts to pick a handle on an available domain and set up your
    account.
 3. Obsign generates your identity key **on your device** and seals it. The key
@@ -59,7 +64,7 @@ import an identity there instead.
 ## Import an identity
 
 If you already have an ATProtocol identity — on [bsky.social](https://bsky.social),
-a self-hosted PDS, anywhere — choose **Import an identity**. Obsign installs this
+a self-hosted PDS, anywhere — choose **I have an account somewhere**. Obsign installs this
 device's key as the identity's master key, which is what unlocks tamper
 monitoring, the 72-hour reversal window, and your own backups. The account itself
 does not move: it keeps running on the same server, with the same handle.

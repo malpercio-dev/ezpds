@@ -18,12 +18,13 @@ device photos.
 
 ## Getting started
 
-The first launch offers to create a new identity, import an existing one, or
-recover one from its backup shares.
+The first launch asks a single question — what's your situation? — and routes you
+from your answer: starting fresh, bringing in an account you already have,
+rebuilding from your backup shares, or getting off a server that's gone.
 
 <figure>
-  <img src="/screenshots/wallet/welcome.png" alt="Obsign welcome screen with 'Create an identity', 'Import an identity', and 'Recover from backup shares' options" width="280" />
-  <figcaption>First launch: create a new identity, import one you already have, or recover from backup shares.</figcaption>
+  <img src="/screenshots/wallet/welcome.png" alt="Obsign welcome screen, 'Add an identity — what's your situation?', with 'Starting fresh', 'I have an account somewhere', 'I lost access to my wallet', and 'My server is gone' options" width="280" />
+  <figcaption>First launch: one situation question, routed to the matching flow.</figcaption>
 </figure>
 
 Creating an identity needs a Custos server. Point the wallet at one that only speaks the
