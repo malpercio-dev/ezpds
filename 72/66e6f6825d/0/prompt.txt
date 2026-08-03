@@ -1,0 +1,9 @@
+OAuth flows are failing more often than not. For some atproto apps, it works smoothly, for example, I haven't yet run into any issues with tangled. rpg.actor seems to allow me to log in, but actions around the site fail. pckt.blog still has issues, also can't log in to beacon.bits. I think we need to step back and take a comprehensive look at the oauth story. What are we missing? The reference PDS is what bsky runs, what are the gaps we have with the reference that may be causing issues? How about when compared to tranquil, which also has growing adoption?
+
+---
+
+Let's get started on the fixes in order
+
+---
+
+please continue
