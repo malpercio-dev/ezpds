@@ -1,0 +1,26 @@
+{
+  "cli_version": "0.9.0",
+  "checkpoint_id": "36d0a8231d2c",
+  "strategy": "manual-commit",
+  "branch": "malpercio/mm-498-custos-rendered-pages-voice-pass-oauth-authorize-wallet-sign",
+  "checkpoints_count": 1,
+  "files_touched": [
+    "crates/pds/src/routes/oauth_authorize.rs"
+  ],
+  "sessions": [
+    {
+      "metadata": "/36/d0a8231d2c/0/metadata.json",
+      "transcript": "/36/d0a8231d2c/0/full.jsonl",
+      "compact_transcript": "/36/d0a8231d2c/0/transcript.jsonl",
+      "content_hash": "/36/d0a8231d2c/0/content_hash.txt",
+      "prompt": "/36/d0a8231d2c/0/prompt.txt"
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 596,
+    "cache_creation_tokens": 3431978,
+    "cache_read_tokens": 85228568,
+    "output_tokens": 373738,
+    "api_call_count": 324
+  }
+}
