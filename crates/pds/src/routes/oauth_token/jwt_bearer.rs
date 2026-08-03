@@ -122,6 +122,7 @@ pub(super) async fn handle_jwt_bearer(state: &AppState, form: TokenRequestForm) 
         None,
         Some(&claims.registration_id),
         &state.config.public_url,
+        super::AGENT_ACCESS_TOKEN_TTL_SECS,
     ) {
         Ok(t) => t,
         Err(e) => return e.into_response(),
@@ -155,7 +156,7 @@ pub(super) async fn handle_jwt_bearer(state: &AppState, form: TokenRequestForm) 
         Json(JwtBearerTokenResponse {
             access_token,
             token_type: "Bearer",
-            expires_in: 300,
+            expires_in: super::AGENT_ACCESS_TOKEN_TTL_SECS,
             scope: claims.scope,
         }),
     )

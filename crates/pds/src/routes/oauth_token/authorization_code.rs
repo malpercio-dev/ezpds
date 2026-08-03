@@ -21,7 +21,7 @@ use crate::app::AppState;
 use crate::auth::token::generate_token;
 use crate::auth::{issue_nonce, validate_dpop_for_token_endpoint, DpopTokenEndpointError};
 use crate::db::oauth::{
-    delete_authorization_code, get_authorization_code, store_oauth_refresh_token,
+    delete_authorization_code, get_authorization_code, store_initial_oauth_refresh_token,
 };
 use crate::routes::oauth_errors::OAuthTokenError;
 
@@ -198,6 +198,7 @@ pub(super) async fn handle_authorization_code(
         Some(&jkt),
         None,
         &state.config.public_url,
+        super::ACCESS_TOKEN_TTL_SECS,
     ) {
         Ok(t) => t,
         Err(e) => return e.into_response(),
@@ -206,7 +207,7 @@ pub(super) async fn handle_authorization_code(
     // Generate and store refresh token, persisting the granted scope so rotation
     // carries it forward.
     let refresh = generate_token();
-    if let Err(e) = store_oauth_refresh_token(
+    if let Err(e) = store_initial_oauth_refresh_token(
         &state.db,
         &refresh.hash,
         &auth_code.client_id,
@@ -243,7 +244,7 @@ pub(super) async fn handle_authorization_code(
         Json(TokenResponse {
             access_token,
             token_type: "DPoP",
-            expires_in: 300,
+            expires_in: super::ACCESS_TOKEN_TTL_SECS,
             refresh_token: refresh.plaintext,
             scope: granted_scope,
             sub: auth_code.did,
@@ -512,7 +513,7 @@ mod tests {
             "access_token must be present"
         );
         assert_eq!(json["token_type"], "DPoP", "token_type must be DPoP");
-        assert_eq!(json["expires_in"], 300);
+        assert_eq!(json["expires_in"], 900);
         assert!(
             json["refresh_token"].is_string(),
             "refresh_token must be present"

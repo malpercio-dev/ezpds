@@ -123,6 +123,15 @@ struct CnfClaim {
 /// token, or `None` for a plain Bearer token (jwt-bearer grant) that carries no `cnf` binding.
 /// `registration_id` is set only for agent-derived tokens (jwt-bearer), marking them as such and
 /// tying them to their `agent_identities` row; `None` for ordinary session/OAuth grants.
+/// OAuth (authorization-code / refresh) access-token lifetime. 15 minutes, matching the
+/// reference PDS — long enough that well-behaved clients aren't refreshing constantly,
+/// short enough that revocation takes effect quickly.
+pub(super) const ACCESS_TOKEN_TTL_SECS: u64 = 900;
+
+/// Agent-flow (jwt-bearer / claim-polling) access-token lifetime. Deliberately shorter
+/// than the OAuth lifetime: agent tokens are minted headlessly and have no consent leg.
+pub(super) const AGENT_ACCESS_TOKEN_TTL_SECS: u64 = 300;
+
 fn issue_access_token(
     signing_key: &crate::auth::OAuthSigningKey,
     did: &str,
@@ -130,6 +139,7 @@ fn issue_access_token(
     jkt: Option<&str>,
     registration_id: Option<&str>,
     public_url: &str,
+    ttl_secs: u64,
 ) -> Result<String, OAuthTokenError> {
     use uuid::Uuid;
 
@@ -144,7 +154,7 @@ fn issue_access_token(
         sub: did.to_string(),
         aud: public_url.to_string(),
         iat: now,
-        exp: now + 300,
+        exp: now + ttl_secs,
         scope: scope.to_string(),
         cnf: jkt.map(|jkt| CnfClaim {
             jkt: jkt.to_string(),

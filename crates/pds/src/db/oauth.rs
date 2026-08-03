@@ -257,16 +257,25 @@ pub async fn delete_authorization_code(
     Ok(())
 }
 
-/// Store a new refresh token in `oauth_tokens`.
+/// How long a refresh-token session family lives from the initial authorization-code
+/// exchange. Absolute, not rolling: rotation carries the initial expiry forward, matching
+/// the reference PDS's public-client session policy (2 weeks; confidential clients can be
+/// extended when `private_key_jwt` client auth lands).
+const REFRESH_SESSION_TTL: &str = "+14 days";
+
+/// How long a superseded refresh token remains serviceable as a *concurrent duplicate*
+/// (multi-tab, background+foreground refresh races). Presented after this window, a
+/// superseded token is a theft signal and the whole session family is revoked.
+const REFRESH_REUSE_GRACE: &str = "-60 seconds";
+
+/// Store the first refresh token of a new session family (authorization-code exchange).
 ///
-/// `token_hash` is used as the row's `id` (PRIMARY KEY). This follows the same
-/// pattern as `oauth_authorization_codes` where `code` IS the hash.
-/// `scope` is the granular atproto OAuth scope set granted to this session (e.g.
-/// `atproto transition:generic`), persisted so refresh-token rotation carries the
-/// granted permissions forward.
+/// `token_hash` is used as the row's `id` (PRIMARY KEY) and, being the first of its
+/// family, as the family's `session_id`. `scope` is the granular atproto OAuth scope set
+/// granted to this session, persisted so rotation carries the granted permissions forward.
 /// `jkt` is the DPoP key thumbprint binding this token to the client's keypair.
-/// Expires 24 hours after insertion.
-pub async fn store_oauth_refresh_token(
+/// The session expires [`REFRESH_SESSION_TTL`] after insertion.
+pub async fn store_initial_oauth_refresh_token(
     pool: &SqlitePool,
     token_hash: &str,
     client_id: &str,
@@ -275,14 +284,47 @@ pub async fn store_oauth_refresh_token(
     jkt: &str,
 ) -> Result<(), sqlx::Error> {
     sqlx::query(
-        "INSERT INTO oauth_tokens (id, client_id, did, scope, jkt, expires_at, created_at) \
-         VALUES (?, ?, ?, ?, ?, datetime('now', '+24 hours'), datetime('now'))",
+        "INSERT INTO oauth_tokens (id, session_id, client_id, did, scope, jkt, expires_at, created_at) \
+         VALUES (?, ?, ?, ?, ?, ?, datetime('now', ?), datetime('now'))",
     )
+    .bind(token_hash)
     .bind(token_hash)
     .bind(client_id)
     .bind(did)
     .bind(scope)
     .bind(jkt)
+    .bind(REFRESH_SESSION_TTL)
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+/// Store a rotated refresh token in an existing session family.
+///
+/// `expires_at` is the presented token's expiry, carried forward verbatim — the session's
+/// lifetime is absolute from the initial grant, so rotation never extends it.
+#[allow(clippy::too_many_arguments)]
+pub async fn store_rotated_oauth_refresh_token(
+    pool: &SqlitePool,
+    token_hash: &str,
+    client_id: &str,
+    did: &str,
+    scope: &str,
+    jkt: &str,
+    session_id: &str,
+    expires_at: &str,
+) -> Result<(), sqlx::Error> {
+    sqlx::query(
+        "INSERT INTO oauth_tokens (id, session_id, client_id, did, scope, jkt, expires_at, created_at) \
+         VALUES (?, ?, ?, ?, ?, ?, ?, datetime('now'))",
+    )
+    .bind(token_hash)
+    .bind(session_id)
+    .bind(client_id)
+    .bind(did)
+    .bind(scope)
+    .bind(jkt)
+    .bind(expires_at)
     .execute(pool)
     .await?;
     Ok(())
@@ -297,6 +339,15 @@ pub struct RefreshTokenRow {
     /// DPoP key thumbprint bound to this refresh token. `None` for tokens
     /// issued before DPoP binding was enforced (not expected after V012).
     pub jkt: Option<String>,
+    /// The session family this token belongs to. Rows written before V061 (or inserted
+    /// without one) are their own single-member family (`COALESCE(session_id, id)`).
+    pub session_id: String,
+    /// The session's absolute expiry, carried forward verbatim on rotation.
+    pub expires_at: String,
+    /// `None` while this is the family's current token. `Some(within_grace)` once it has
+    /// been rotated away: `true` inside [`REFRESH_REUSE_GRACE`] (a concurrent duplicate
+    /// refresh — still serviceable), `false` beyond it (reuse — revoke the family).
+    pub superseded_within_grace: Option<bool>,
 }
 
 /// Retrieve a refresh token without consuming it.
@@ -306,43 +357,84 @@ pub struct RefreshTokenRow {
 ///
 /// The `id` column stores the SHA-256 hex hash of the raw token bytes.
 /// Callers must hash the presented token before calling this function
-/// using the same approach as `store_oauth_refresh_token`.
+/// using the same approach as `store_initial_oauth_refresh_token`.
 ///
-/// Use this to retrieve the token for validation, then call `delete_oauth_refresh_token`
-/// after all checks pass. The SELECT+DELETE are serialized due to `max_connections(1)`
-/// on the pool, preventing TOCTOU races.
+/// Use this to retrieve the token for validation, then rotate via
+/// [`supersede_oauth_refresh_token`] + [`store_rotated_oauth_refresh_token`]. The
+/// SELECT+UPDATE are serialized due to `max_connections(1)` on the pool, preventing
+/// TOCTOU races.
+/// The raw column tuple `get_oauth_refresh_token` selects, in SELECT order:
+/// client_id, did, scope, jkt, session_id (coalesced), expires_at, superseded-within-grace.
+type RefreshTokenColumns = (
+    String,
+    String,
+    String,
+    Option<String>,
+    String,
+    String,
+    Option<bool>,
+);
+
 pub async fn get_oauth_refresh_token(
     pool: &SqlitePool,
     token_hash: &str,
 ) -> Result<Option<RefreshTokenRow>, sqlx::Error> {
-    let row: Option<(String, String, String, Option<String>)> = sqlx::query_as(
-        "SELECT client_id, did, scope, jkt FROM oauth_tokens \
-         WHERE id = ? AND expires_at > datetime('now')",
+    let row: Option<RefreshTokenColumns> = sqlx::query_as(
+        "SELECT client_id, did, scope, jkt, COALESCE(session_id, id), expires_at, \
+             CASE WHEN superseded_at IS NULL THEN NULL \
+                  ELSE superseded_at > datetime('now', ?) END \
+             FROM oauth_tokens \
+             WHERE id = ? AND expires_at > datetime('now')",
     )
+    .bind(REFRESH_REUSE_GRACE)
     .bind(token_hash)
     .fetch_optional(pool)
     .await?;
 
-    Ok(row.map(|(client_id, did, scope, jkt)| RefreshTokenRow {
-        client_id,
-        did,
-        scope,
-        jkt,
-    }))
+    Ok(row.map(
+        |(client_id, did, scope, jkt, session_id, expires_at, superseded_within_grace)| {
+            RefreshTokenRow {
+                client_id,
+                did,
+                scope,
+                jkt,
+                session_id,
+                expires_at,
+                superseded_within_grace,
+            }
+        },
+    ))
 }
 
-/// Delete a refresh token after validation is complete.
+/// Mark a refresh token rotated away, beginning its [`REFRESH_REUSE_GRACE`] window.
 ///
-/// The `id` column stores the SHA-256 hex hash of the raw token bytes.
-///
-/// The SELECT+DELETE sequence is safe from TOCTOU races because the PDS's
-/// connection pool uses `max_connections(1)`, making all DB operations serialized.
-pub async fn delete_oauth_refresh_token(
+/// Returns `false` when the token was already superseded (a concurrent refresh got there
+/// first) — the caller treats that exactly like finding the token already inside its grace
+/// window.
+pub async fn supersede_oauth_refresh_token(
     pool: &SqlitePool,
     token_hash: &str,
+) -> Result<bool, sqlx::Error> {
+    let result = sqlx::query(
+        "UPDATE oauth_tokens SET superseded_at = datetime('now') \
+         WHERE id = ? AND superseded_at IS NULL",
+    )
+    .bind(token_hash)
+    .execute(pool)
+    .await?;
+    Ok(result.rows_affected() == 1)
+}
+
+/// Revoke an entire refresh-token session family (every rotation of one grant).
+///
+/// Used on detected refresh-token reuse (theft signal) and on RFC 7009 revocation —
+/// revoking any one refresh token ends the session it belongs to.
+pub async fn delete_oauth_refresh_session(
+    pool: &SqlitePool,
+    session_id: &str,
 ) -> Result<(), sqlx::Error> {
-    sqlx::query("DELETE FROM oauth_tokens WHERE id = ?")
-        .bind(token_hash)
+    sqlx::query("DELETE FROM oauth_tokens WHERE COALESCE(session_id, id) = ?")
+        .bind(session_id)
         .execute(pool)
         .await?;
     Ok(())
@@ -742,7 +834,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn store_oauth_refresh_token_persists_row() {
+    async fn store_initial_oauth_refresh_token_persists_row() {
         let pool = test_pool().await;
         register_oauth_client(
             &pool,
@@ -753,7 +845,7 @@ mod tests {
         .unwrap();
         insert_test_account(&pool).await;
 
-        store_oauth_refresh_token(
+        store_initial_oauth_refresh_token(
             &pool,
             "refresh-token-hash-01",
             "https://app.example.com/client-metadata.json",
