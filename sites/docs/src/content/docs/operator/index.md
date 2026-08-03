@@ -1,11 +1,11 @@
 ---
 title: Running Custos
-description: The operator's view — what Custos runs and how to run it.
+description: What Custos runs and how to run it.
 ---
 
 Custos is the server side: the PDS that hosts identities and the operator console
-that manages it. This surface reports the literal truth of what the machine is
-doing — it does not hide the machinery.
+that manages it. The surface reports the literal truth of what the machine is
+doing.
 
 If you are _using_ an identity rather than running a server, you want
 [Using Obsign](/user/) instead.
@@ -37,8 +37,8 @@ rotationKeys[1]  →  the user's recovery key   (from their 2-of-3 backup)
 rotationKeys[2]  →  the server's key          (yours, lowest precedence)
 ```
 
-Accounts created before on-device recovery keys carry two entries — the user's
-device key, then yours — until their wallet adds the recovery key; your key is
-last either way. The user can always override you. That is by design: it is what lets a user
-leave your server without your permission, and it is the property that makes
-hosting trustworthy rather than custodial.
+Accounts created before on-device recovery keys carry two entries (the user's
+device key, then yours) until their wallet adds the recovery key; your key is
+last either way. The user can always override you. That property is what lets a
+user leave your server without your permission, and it's what makes hosting
+trustworthy rather than custodial.
