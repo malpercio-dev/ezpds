@@ -1,0 +1,38 @@
+{
+  "cli_version": "0.9.0",
+  "checkpoint_id": "3bb0f9f91c53",
+  "strategy": "manual-commit",
+  "branch": "malpercio/mm-495-agentsmd-diet-wallet",
+  "checkpoints_count": 9,
+  "files_touched": [
+    "apps/identity-wallet/src-tauri/src/disaster_recovery.rs",
+    "apps/identity-wallet/src-tauri/src/identity_removal.rs",
+    "apps/identity-wallet/src-tauri/src/identity_store.rs",
+    "apps/identity-wallet/src-tauri/src/lib.rs",
+    "apps/identity-wallet/src-tauri/src/oauth.rs",
+    "apps/identity-wallet/src-tauri/src/password_unlock.rs",
+    "apps/identity-wallet/src-tauri/src/recovery.rs",
+    "apps/identity-wallet/src-tauri/src/repo_backup.rs",
+    "apps/identity-wallet/src-tauri/src/share_ceremony.rs",
+    "apps/identity-wallet/src-tauri/src/share_recovery.rs",
+    "apps/identity-wallet/src-tauri/src/source_login.rs",
+    "apps/identity-wallet/src/routes/+page.svelte",
+    "changelog.d/mm-495-wallet.changed.md"
+  ],
+  "sessions": [
+    {
+      "metadata": "/3b/b0f9f91c53/0/metadata.json",
+      "transcript": "/3b/b0f9f91c53/0/full.jsonl",
+      "compact_transcript": "/3b/b0f9f91c53/0/transcript.jsonl",
+      "content_hash": "/3b/b0f9f91c53/0/content_hash.txt",
+      "prompt": "/3b/b0f9f91c53/0/prompt.txt"
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 409,
+    "cache_creation_tokens": 2080688,
+    "cache_read_tokens": 66394535,
+    "output_tokens": 271136,
+    "api_call_count": 223
+  }
+}
