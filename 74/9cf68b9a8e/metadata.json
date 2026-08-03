@@ -1,0 +1,24 @@
+{
+  "cli_version": "0.9.0",
+  "checkpoint_id": "749cf68b9a8e",
+  "strategy": "manual-commit",
+  "branch": "claude/prose-comments-review-f7fad4",
+  "checkpoints_count": 4,
+  "files_touched": null,
+  "sessions": [
+    {
+      "metadata": "/74/9cf68b9a8e/0/metadata.json",
+      "transcript": "/74/9cf68b9a8e/0/full.jsonl",
+      "compact_transcript": "/74/9cf68b9a8e/0/transcript.jsonl",
+      "content_hash": "/74/9cf68b9a8e/0/content_hash.txt",
+      "prompt": "/74/9cf68b9a8e/0/prompt.txt"
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 113,
+    "cache_creation_tokens": 344355,
+    "cache_read_tokens": 16665456,
+    "output_tokens": 64924,
+    "api_call_count": 62
+  }
+}
