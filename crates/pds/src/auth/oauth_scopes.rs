@@ -960,7 +960,21 @@ fn aud_matches(params: &[(String, String)], aud: &str) -> bool {
     params
         .iter()
         .find(|(key, _)| key == "aud")
-        .is_some_and(|(_, value)| value == "*" || value == aud)
+        .is_some_and(|(_, value)| value == "*" || aud_did(value) == aud_did(aud))
+}
+
+/// The bare DID of a `did[#serviceId]` audience reference.
+///
+/// Clients are split on whether an `rpc:` scope's `aud` carries the `#serviceId` fragment
+/// (the spec's examples use the bare DID; real client metadata in the wild parameterizes
+/// with the fragment), and this server's two enforcement sites historically disagreed too —
+/// the proxy path checked the raw `atproto-proxy` header (fragment included) while
+/// `getServiceAuth` checked the stripped DID, so the same grant could pass one and fail the
+/// other. The fragment selects an endpoint in the DID document for *routing*; the audience
+/// a receiving service authenticates is its bare DID, so the privilege boundary is the DID
+/// and coverage compares exactly that.
+fn aud_did(aud: &str) -> &str {
+    aud.split_once('#').map_or(aud, |(did, _)| did)
 }
 
 fn accept_matches(grant: &str, mime_type: &str) -> bool {
@@ -1324,6 +1338,50 @@ mod tests {
         // A granular identity grant still works, and a full session always works.
         assert!(require_identity("atproto identity:*", "*").is_ok());
         assert!(require_identity(SCOPE_ACCESS, "*").is_ok());
+    }
+
+    /// The `#serviceId` fragment on either side of an `rpc:` audience is a DID-document
+    /// routing selector, not a narrower principal — receiving services authenticate the
+    /// bare DID. Clients are split on which convention they write in scope strings, and
+    /// the proxy path (raw `atproto-proxy` header, fragment included) and `getServiceAuth`
+    /// (stripped DID) present different forms of the same target, so coverage must compare
+    /// DIDs and ignore fragments in every combination.
+    #[test]
+    fn rpc_aud_matches_on_the_did_ignoring_service_fragments() {
+        let bare_grant = "atproto rpc:app.bsky.feed.getFeedSkeleton?aud=did:web:api.bsky.app";
+        let frag_grant =
+            "atproto rpc:at.marque.partner.listPricing?aud=did:web:marque.at%23marque_registrar";
+
+        // Bare-DID grant covers both target forms.
+        assert!(allows_rpc(
+            bare_grant,
+            "app.bsky.feed.getFeedSkeleton",
+            "did:web:api.bsky.app"
+        ));
+        assert!(allows_rpc(
+            bare_grant,
+            "app.bsky.feed.getFeedSkeleton",
+            "did:web:api.bsky.app#bsky_appview"
+        ));
+
+        // Fragment-qualified grant (pckt.blog's convention) covers both target forms too.
+        assert!(allows_rpc(
+            frag_grant,
+            "at.marque.partner.listPricing",
+            "did:web:marque.at#marque_registrar"
+        ));
+        assert!(allows_rpc(
+            frag_grant,
+            "at.marque.partner.listPricing",
+            "did:web:marque.at"
+        ));
+
+        // A different DID never matches, whatever the fragments say.
+        assert!(!allows_rpc(
+            bare_grant,
+            "app.bsky.feed.getFeedSkeleton",
+            "did:web:evil.example#bsky_appview"
+        ));
     }
 
     #[test]
