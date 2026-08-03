@@ -6,8 +6,9 @@
 //! methods take `&self`. A top-level `"managed-dids"` entry maintains a JSON array
 //! index of all managed DIDs; per-DID entries use the `"{did}:suffix"` naming (device
 //! keys, DID documents, PLC audit logs, sessions — the full account inventory is in
-//! `keychain`'s module docs). Every method requires the DID to be registered first
-//! (`IdentityNotFound` otherwise); [`IdentityStoreError`] serializes as
+//! `keychain`'s module docs). Per-DID methods require the DID to be registered first
+//! (`IdentityNotFound` otherwise); the index-level calls (`add_identity`,
+//! `list_identities`) do not. [`IdentityStoreError`] serializes as
 //! `{ code: "SCREAMING_SNAKE_CASE" }`.
 //!
 //! Device keys are lazily generated on first [`IdentityStore::get_or_create_device_key`]
@@ -26,8 +27,11 @@
 //! `device_key.rs` key by copying its Keychain material — the create flow signs its
 //! genesis op with the global key before the DID exists, and without adoption the
 //! "root key" badge and `plc_monitor`'s signature checks would both be wrong.
-//! [`IdentityStore::remove_identity`] unregisters index-first, then best-effort deletes
-//! every per-DID entry — deliberately excluding both `recovery-share-1:{did}` slots:
+//! [`IdentityStore::remove_identity`] records the `forgotten-dids` tombstone first
+//! (fail-closed — the window where a DID is unmanaged but untombstoned must never open,
+//! or launch reconciliation re-registers it), then removes the DID from `managed-dids`,
+//! then best-effort deletes every per-DID entry — deliberately excluding both
+//! `recovery-share-1:{did}` slots:
 //! removal is also reached from `forget_identity_locally`, which promises only to
 //! remove the identity from THIS device, and deleting the synchronizable slot would
 //! reach every device under the Apple account and destroy a share the user may still

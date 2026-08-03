@@ -7,9 +7,10 @@
 //! transfer half reuses the migration orchestrator. Two guarded PLC ops, with
 //! createAccount + import sandwiched between:
 //!
-//! 1. `prepare_disaster_recovery(did, dest_pds_url, handle_override?)` — resolve the
-//!    destination `describeServer` DID + current PLC state from plc.directory ALONE
-//!    (the dead source is never contacted); `handle_override` is the fallback for a
+//! 1. `prepare_disaster_recovery(did, dest_pds_url, handle_override?)` — ask the
+//!    DESTINATION PDS for its `describeServer` DID and read the DID's current PLC
+//!    state from plc.directory; the dead source PDS is never contacted.
+//!    `handle_override` is the fallback for a
 //!    handle whose domain the dead PDS served. Opens a `recovery: true` orchestration
 //!    session.
 //! 2. `enroll_recovery_signing_key(did)` — PLC op #1: generate (or reuse across

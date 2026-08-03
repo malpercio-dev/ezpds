@@ -51,8 +51,11 @@
 //! The shared core `retire_and_wipe` is METHOD-AWARE and owns the branch both
 //! commands go through. A did:plc runs `tombstone_and_wipe`: fetch the audit-log head
 //! as `prev`, build + sign `crypto::build_did_plc_tombstone_op` with
-//! `per_did_sign_closure`, self-verify via `verify_plc_tombstone_op`, POST it to
-//! plc.directory, and ONLY THEN call `IdentityStore::remove_identity` — the wipe
+//! `per_did_sign_closure`, self-verify via `verify_plc_tombstone_op` against the head
+//! rotation keys before submitting. A tombstone is the one wallet-signed PLC op with
+//! no field allowlist to guard — it carries no identity state and retires everything —
+//! so the pre-sign checks are that self-verification plus the wipe-last ordering.
+//! Then POST it to plc.directory, and ONLY THEN call `IdentityStore::remove_identity` — the wipe
 //! deletes the device key that signs the tombstone, so a submit failure must leave it
 //! intact for a retry (the `submit_then_wipe` ordering is unit-tested). A did:web
 //! skips the tombstone leg entirely and goes straight to the wipe, never contacting

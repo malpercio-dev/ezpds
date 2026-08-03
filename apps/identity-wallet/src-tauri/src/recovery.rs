@@ -10,7 +10,9 @@
 //! restoring the pre-unauthorized state with `prev` at the fork-point CID (so submission
 //! nullifies everything after the fork), and signs it with the per-DID device key.
 //! `submit_recovery_override` POSTs the signed op to plc.directory and updates the cached
-//! audit log and DID document. The Tauri commands are `build_recovery_override_cmd` /
+//! audit log and DID document. There is no separate pre-sign allowlist guard here: the
+//! counter-op's contents are derived entirely from the audit log's pre-fork state — never
+//! from caller input — which is the mutation bound an allowlist would otherwise assert. The Tauri commands are `build_recovery_override_cmd` /
 //! `submit_recovery_override_cmd`; [`RecoveryState`] `{ did, signed_op }` rides
 //! `AppState.recovery_state` between them (`tokio::sync::Mutex`, held across `.await`).
 //!

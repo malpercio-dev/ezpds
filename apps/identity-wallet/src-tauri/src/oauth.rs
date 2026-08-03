@@ -24,8 +24,9 @@
 //! password form with no password to enter, and a wallet hand-off pointing at the very app
 //! hosting the browser), and the evidence said it proved nothing — `POST /v1/dids` already
 //! returns `status: "active"` plus a session token, `oauth_session` had writers but zero
-//! readers, and the DPoP constructor is never called in production because every
-//! authenticated operation resolves a per-DID session via
+//! readers, and `OAuthClient`'s DPoP mode has no production caller (Bearer construction
+//! still initializes the shared [`DPoPKeypair`], but Bearer requests never send DPoP
+//! proofs) because every authenticated operation resolves a per-DID session via
 //! `SessionProvider::full_access_client` (minted by `sovereign_login`/`password_unlock`
 //! against the device key the genesis op pinned at `rotationKeys[0]`). The machinery — these
 //! two commands, [`DPoPKeypair`], the global `oauth-*` Keychain items, the `auth_ready`

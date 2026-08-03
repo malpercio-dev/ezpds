@@ -26,7 +26,9 @@
 //! Client-side CAR validation — the wallet's twin of the destination PDS's `car_import`
 //! checks, built on the pure `cid`/`ipld-core`/`serde_ipld_dagcbor` primitives, NOT the
 //! repo-engine crate: well-formed framing; every block's bytes re-hash to its CID; exactly
-//! one root; the root decodes as a signed commit (version 3) bound to this DID; and the MST
+//! one root; the root decodes as a commit (version 3) bound to this DID and carrying a `sig`
+//! field — presence-checked, not verified against the DID's key, so this is structural
+//! validation and the authenticating consumer is the destination `importRepo`; and the MST
 //! walks intact from the commit, following subtree + record-value links but never descending
 //! into records (records link to out-of-CAR blobs). A corrupt or hostile fetch is
 //! `CAR_INVALID`, leaving the prior good snapshot untouched. No encryption: the repo is

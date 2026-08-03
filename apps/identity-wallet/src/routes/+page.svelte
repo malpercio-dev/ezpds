@@ -6,7 +6,8 @@
   - Create: add_identity → identity_method → [did:plc: pds_config | new did:web:
     did_web_path → did_web_domain → pds_config] → claim_code → email → handle →
     [password] → loading → did_ceremony (did:web branch: did_web_ceremony) → did_success
-    → shamir_backup → handle_registration → complete → home. Every pre-submit step wires
+    → { did:plc: shamir_backup → handle_registration; did:web: handle_registration }
+    → complete → home. Every pre-submit step wires
     `onback` to the previous step. `pds_config` is a capability gate covering both create
     paths: no advertised `createCeremony` steers to `create_unavailable` (import one tap
     away, server kept), while an unreached host gets a retryable error instead — the rule

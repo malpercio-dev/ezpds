@@ -21,7 +21,8 @@
 //!
 //! Two postures carry over from the claim flow unchanged: the full session is required
 //! because a `transition:generic` OAuth token cannot drive identity operations (ADR-0021),
-//! and the password is used for exactly one request and never stored.
+//! and the password is used only in `createSession` requests (including the email-2FA
+//! retry with `authFactorToken`) and never stored.
 //!
 //! [`get_identity_unlock_route`] decides which unlock a screen should offer
 //! (`UnlockRoute { method, pdsUrl, handle }`, method `SOVEREIGN` | `PASSWORD`) by
@@ -29,7 +30,9 @@
 //! unreached probe routes to `SOVEREIGN`, not `PASSWORD`**: `reached: false` means the
 //! question could not be put to the host, and demanding a password on that basis would
 //! both misstate a fact about the user's server and change behavior for every Custos
-//! identity whose launch happens to be offline.
+//! identity whose launch happens to be offline. That rule covers the capability probe
+//! only: when `discover_pds` itself fails, no route can be answered at all and the
+//! command surfaces the plain `NETWORK_ERROR`.
 //! [`unlock_identity_with_password`] validates the returned pair's `sub`/`aud` against
 //! this DID and host before persisting, and answers with the provider's `SessionReady`.
 //!

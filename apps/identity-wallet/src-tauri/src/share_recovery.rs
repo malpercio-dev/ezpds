@@ -4,7 +4,14 @@
 //! inverse of `share_ceremony.rs`. Two shares of the 2-of-3 split reconstruct the
 //! recovery seed; the seed re-derives the recovery rotation key (`rotationKeys[1]` in
 //! the `[device, recovery, PDS]` layout); that key signs a PLC rotation op installing a
-//! fresh per-DID device key at `rotationKeys[0]` on the new device.
+//! fresh per-DID device key at `rotationKeys[0]` on the new device. Neither of this
+//! module's rotation ops (the anchor, and the epilogue's recovery-key swap) has a
+//! separate pre-sign allowlist guard: both are built by copying `verificationMethods`,
+//! `alsoKnownAs`, and `services` through from the authoritative current state unchanged,
+//! with only the rotation-key change applied (`anchored_rotation_keys` /
+//! `swapped_rotation_keys`), so the construction cannot express any other mutation —
+//! and the anchor refuses to sign unless the derived recovery key is in the current
+//! rotation set.
 //!
 //! Command spine: `start_share_recovery` (resolve handle/did:plc via plc.directory,
 //! then auto-load Share 1 — synchronizable per-DID slot, then device-local per-DID,

@@ -551,7 +551,8 @@ async fn fetch_repo_signing_key(
 ///
 /// Fetches the PDS repo signing key (`GET /v1/repo-signing-key`), loads-or-generates
 /// the client-side share set via `share_ceremony::load_or_create` (staged in the
-/// `ceremony-staging` Keychain slot BEFORE any network call, so a retry reuses the
+/// `ceremony-staging` Keychain slot before the state-creating `POST /v1/dids` call —
+/// the read-only signing-key `GET` precedes it — so a retry reuses the
 /// identical set and set_id), builds the signed did:plc genesis op via
 /// `crypto::build_did_plc_genesis_op_multi_rotation_with_external_signer` with
 /// `rotationKeys = [device, recovery, PDS]` (ADR-0027) using the device key as signer,
@@ -573,9 +574,10 @@ async fn perform_did_ceremony(
     let pds_key = fetch_repo_signing_key(&state, &pending_token).await?;
 
     // Step 3.5: Generate (or reload from staging) the client-side share set — seed,
-    // derived recovery key, and the 2-of-3 envelope split. Staged BEFORE any network
-    // call so a mid-ceremony retry reuses the identical set (same set_id) instead of
-    // orphaning an escrow deposit. Custos only ever receives Share 2.
+    // derived recovery key, and the 2-of-3 envelope split. Staged before the
+    // state-creating POST /v1/dids below, so a mid-ceremony retry reuses the identical
+    // set (same set_id) instead of orphaning an escrow deposit. Custos only ever
+    // receives Share 2.
     let pds_base_url = state.custos_client().base_url_str().to_owned();
     let shares = share_ceremony::load_or_create(&handle, &pds_base_url).map_err(|e| {
         tracing::error!(error = %e, "client-side share generation failed during DID ceremony");

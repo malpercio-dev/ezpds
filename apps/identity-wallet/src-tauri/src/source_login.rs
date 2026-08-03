@@ -15,7 +15,8 @@
 //! account-match guards (plus the email-2FA branch) and returns the raw JWT pair —
 //! which is what `password_unlock` persists. [`authenticate_source_password`] wraps
 //! that pair into a full-session Bearer client for the claim and migration paths. The
-//! password is used for exactly one request and never stored.
+//! password is used only in `createSession` requests — including the email-2FA retry
+//! that re-sends it with `authFactorToken` — and is never persisted.
 //!
 //! The body is identical apart from which frontend-facing error enum it feeds. This
 //! module owns that body once and returns a neutral [`SourceLoginError`]; each caller
@@ -92,8 +93,8 @@ pub(crate) async fn authenticate_source_password(
 ///
 /// `expected_did` is the DID being claimed/migrated/unlocked: the session the PDS returns MUST be
 /// for that account, or the caller signed in to the wrong one and we refuse to bind those
-/// credentials rather than act against the wrong identity. The password is used for one request
-/// and never stored.
+/// credentials rather than act against the wrong identity. The password is used only in
+/// `createSession` requests (including the email-2FA retry) and never stored.
 pub(crate) async fn create_source_session(
     pds_client: &crate::pds_client::PdsClient,
     pds_url: &str,

@@ -2,15 +2,18 @@
 
 //! Client-side Shamir share generation for the DID ceremony (the ceremony inversion):
 //! the wallet — not the server — generates the recovery seed, derives the recovery
-//! rotation key from it, and splits the seed 2-of-3 into v2 share envelopes. Custos
-//! receives exactly one share (the Share 2 envelope, deposited with the ceremony
-//! request) and never sees the seed or the other shares, so no server backup can ever
-//! hold reconstruction material. [`CeremonyShareSet`] carries the recovery key's
+//! rotation key from it, and splits the seed 2-of-3 into v2 share envelopes. In the
+//! escrowing ceremonies (create, re-key) Custos receives exactly one share — the
+//! Share 2 envelope, deposited with the ceremony request — and never sees the seed or
+//! the other shares, so no server backup can ever hold reconstruction material; the
+//! self-held kit stages the same split but deposits nothing (Shares 2 AND 3 go to the
+//! user — see `self_held_kit.rs`). [`CeremonyShareSet`] carries the recovery key's
 //! did:key, the three base32 envelope strings, and the Share 3 word phrase — all share
 //! material in `Zeroizing`.
 //!
 //! Retry resilience lives here too: [`load_or_create`] persists the generated set in a
-//! Keychain staging slot BEFORE any network call, so a retry reuses the identical set
+//! Keychain staging slot before the ceremony's state-creating call (`POST /v1/dids`; the
+//! read-only signing-key fetch precedes staging), so a retry reuses the identical set
 //! (same set_id) instead of orphaning a prior attempt's escrow deposit. Three staging
 //! slots, one per ceremony: `ceremony-staging` ([`STAGING_ACCOUNT`], the create
 //! ceremony) plus the per-DID `rekey-staging:{did}` and `self-held-kit-staging:{did}`.
