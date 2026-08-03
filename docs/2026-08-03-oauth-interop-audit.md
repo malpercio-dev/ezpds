@@ -149,6 +149,15 @@ scheme more completely, they ship an `/oauth/introspect` endpoint, and their con
 per-scope human-readable descriptions. Their issue list is a useful preview of our next six
 months of interop bugs if we don't build a conformance harness.
 
+## Status
+
+**Gaps 1–5 shipped on branch `claude/oauth-atproto-failures-4ff55e` (2026-08-03), unreleased.**
+Five commits, one per gap, each with tests: the flat XRPC error shape (`e0fcd2f2`), token
+lifetimes + refresh grace/reuse detection (`28c9e25d`, V061), `rpc:` audience fragment
+normalization (`0b04bdb4`), `private_key_jwt` client authentication (`3cfdaf3b`), and DPoP
+key binding at PAR + optional `state` (`bfd3f8c8`, V062). Items 6 and 7 below are still open,
+and none of this is verified against a live third-party client yet — that is item 6's job.
+
 ## Recommended order of work
 
 1. Fix the XRPC error envelope for auth failures (flat `{"error": "ExpiredToken"}` +
