@@ -1,58 +1,52 @@
 // pattern: Mixed (Functional Core pin-store arithmetic; Imperative Shell commands + Keychain)
-//
-// The device half of the end-to-end-encrypted notification relay: the keys a Custos instance
-// seals push payloads to, the registration that tells it where to send them, and the pinned
-// sender-key set the Notification Service Extension verifies against.
-//
-//   register_for_notifications(did)         — POST /v1/notifications/register
-//   refresh_notification_sender_keys(did)   — GET  /v1/notifications/sender-keys (the re-pin)
-//   get_notification_diagnostics()          — what this device holds, for Settings
-//   clear_notification_failures()           — acknowledge the extension's breadcrumbs
-//
-// Nothing here decrypts anything. The Notification Service Extension that does is a separate
-// bundle (`ios/NotificationService/`, Swift + CryptoKit); this module's whole job is to leave
-// the right material in the right Keychain slots under the right protection class, and to keep
-// the pinned set fresh.
-//
-// # The one slot this module reads but does not write
-//
-// `notification-failures` runs the other way: the extension appends to it, the app reads it.
-// It exists because iOS will not let a Notification Service Extension suppress an alert push,
-// so a payload that fails to verify still produces a banner — the honest "couldn't verify"
-// notice, which on its own is a mystery. The breadcrumbs are what let Settings say whether the
-// cause is a key desync (the instance rotated and this device has not re-pinned) or a relay
-// sending junk, which are the same banner and completely different problems.
-//
-// # Why the material is device-global rather than per-DID
-//
-// A push arrives at the extension as `{v, kid, enc, ct}` and nothing else — no DID, no handle,
-// no account hint, because naming one would hand the relay and Apple the metadata the whole
-// design exists to withhold. So the recipient key cannot be per-identity: the extension would
-// have no way to choose among several. One device, one notification keypair, one `device_uuid`;
-// every identity on the device registers the same public key with its own host.
-//
-// # Why the pinned set is per-host anyway
-//
-// `kid` is an autoincrement column on *one* Custos instance. Two instances will both publish a
-// `kid` of 1 for entirely unrelated keys, and this wallet routinely holds identities on more
-// than one. So the pin store is a map from hosting server to that server's published set, and
-// the extension tries every candidate key registered under the incoming `kid`. That costs
-// nothing and cannot go wrong: HPKE Auth mode either authenticates against a given sender key
-// or it does not, so a wrong candidate fails closed and the next is tried. A single flat set
-// keyed by `kid` alone would instead have two instances silently overwriting each other.
-//
-// # Re-pinning is wholesale replacement
-//
-// A successful fetch replaces that host's entry entirely rather than merging into it. That one
-// choice is what implements all three rotation semantics from the design: a new key appears, a
-// retired key stays as long as the server keeps publishing it, and a *revoked* key vanishes from
-// this device the first time it contacts its Custos. Merging would keep a compromised key
-// pinned forever, which is precisely the window re-pin-on-every-contact exists to close.
-//
-// A failed fetch changes nothing. An instance that answers 501 has not revoked anything — it has
-// switched the feature off, or was never configured — and a 503 means it could not read its own
-// keys. Treating either as "revoke everything" would let one bad deploy strip the pins off every
-// device that happened to check in during it.
+
+//! The device half of the end-to-end-encrypted notification relay: the keys a Custos instance
+//! seals push payloads to, the registration that tells it where to send them, and the pinned
+//! sender-key set the Notification Service Extension verifies against.
+//!
+//! - `register_for_notifications(did)` — POST `/v1/notifications/register` over a
+//!   `SessionProvider::full_access_client` session: device uuid, notification `did:key`, APNs
+//!   token, the app's own bundle id as the topic. Re-pins on the same contact — the calling
+//!   cadence (each onboarding flow's completion + once per app open per identity,
+//!   fire-and-forget in `+page.svelte`'s `syncNotifications`) is a security property: until a
+//!   device re-pins, a compromised sender key plus a colluding relay can forge content for it
+//! - `refresh_notification_sender_keys(did)` — GET `/v1/notifications/sender-keys`, the re-pin
+//! - `get_notification_diagnostics()` — a no-network, no-identity read of what the device holds
+//! - `clear_notification_failures()` — acknowledge the extension's breadcrumbs
+//!
+//! Nothing here decrypts anything; the extension that does is a separate bundle
+//! (`ios/NotificationService/`, Swift + CryptoKit). This module's job is to leave the right
+//! material in the right Keychain slots under the right protection class: five app-global
+//! accounts (`NOTIFICATION_ACCOUNTS`, none ever syncs) — `notification-device-uuid`,
+//! `-key-priv`, `-sender-keys`, `-apns-token`, `-failures`; the three the extension touches
+//! are `AfterFirstUnlock` (it runs on a locked screen), the uuid and APNs token ordinary
+//! `store_item` — see each constant. `notification-failures` runs the other way: the extension
+//! appends, the app only reads. iOS will not let an extension suppress an alert push, so an
+//! unverifiable payload still banners ("couldn't verify"); the breadcrumbs are what let
+//! Settings distinguish a key desync (open the app; it re-pins) from a relay sending junk —
+//! the same banner and opposite responses. Both the pin document and the failure log read
+//! **fail-open** (corrupt reads as empty), and `reason` is a plain `String`: the extension
+//! versions independently, so an unrecognized entry must reach the screen generically.
+//!
+//! **Device-global, not per-DID.** A push carries `{v, kid, enc, ct}` and nothing else —
+//! naming a DID would hand the relay and Apple the metadata the design exists to withhold —
+//! so the extension has no way to choose among per-identity keys: one keypair, one
+//! `device_uuid` per install, every identity registers the same public key with its own host.
+//! **The pinned set is nonetheless per hosting server:** `kid` is an autoincrement column on
+//! ONE instance, so two instances both publish a `kid` of 1 for unrelated keys; the extension
+//! tries every candidate under the incoming `kid`, and HPKE Auth mode fails closed on a wrong
+//! one. A successful fetch **replaces that host's set wholesale** — the one choice that
+//! implements add-new / retire / revoke: a revoked key vanishes at the device's next contact,
+//! the short-compromise-window property. A 501 (feature off) and a 503 (instance can't read
+//! its own keys) both leave the stored set untouched: neither is a revocation, and clearing on
+//! a bad deploy would strip every device that checked in during it. Two ordinary "no" answers
+//! are **outcomes, not errors** — `AWAITING_APNS_TOKEN` and `UNSUPPORTED` — so onboarding has
+//! nothing to catch; neither command is biometric-gated (nothing is signed, no identity
+//! material is exposed, and a prompt at onboarding completion would be a demand the user
+//! cannot connect to anything they did). Network cores (`register_impl`,
+//! `fetch_sender_keys_impl`) take an `&OAuthClient` and are tested against httpmock; the
+//! Keychain half is tested against the in-memory double, down to each slot's protection class
+//! and the exact bytes the Swift extension writes. Serialized types mirror `$lib/ipc` exactly.
 
 use std::collections::BTreeMap;
 

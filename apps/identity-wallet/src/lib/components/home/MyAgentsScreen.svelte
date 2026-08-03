@@ -8,6 +8,9 @@
   import SkeletonCard from '$lib/components/ui/SkeletonCard.svelte';
   import AgentDetailScreen from './AgentDetailScreen.svelte';
 
+  // The per-identity agent list (the `my_agents` step, from the identity screen's Use
+  // zone). Renders AgentDetailScreen as a sub-view on selection; a SESSION_LOCKED load
+  // offers a sovereign unlock instead of an error.
   let {
     did,
     onback,

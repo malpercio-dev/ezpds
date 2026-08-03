@@ -1,18 +1,28 @@
 // pattern: Functional Core (one shared network core + a neutral error, no Tauri state)
-//
-// Both wallet source-login paths — the claim flow (`claim::authenticate_source_pds`) and the
-// outbound migration (`migration_orchestrator::authenticate_migration_source`) — open a full
-// session against the account's *current* PDS with a password `createSession` and wrap it in a
-// Bearer `OAuthClient` (ADR-0021). A spec-strict PDS (bsky.social) gates the
-// operations that follow — PLC/identity ops for the claim, minting the source's
-// `com.atproto.server.createAccount` service-auth token for the migration — behind a full session;
-// the atproto OAuth ceiling for a third-party client is `transition:generic`, which those
-// operations refuse.
-//
-// The body is identical apart from which frontend-facing error enum it feeds. This module owns
-// that body once and returns a neutral `SourceLoginError`; each caller keeps its own public enum
-// and maps `SourceLoginError` in via `From`. Two distinct enums are a deliberate design
-// choice — the goal is to share the *behavior + tests*, not collapse the contracts.
+
+//! Shared source-PDS password-login core (ADR-0021).
+//!
+//! Both wallet source-login paths — the claim flow (`claim::authenticate_source_pds`)
+//! and the outbound migration (`migration_orchestrator::authenticate_migration_source`)
+//! — open a full session against the account's *current* PDS with a password
+//! `createSession` and wrap it in a Bearer `OAuthClient`. A spec-strict PDS
+//! (bsky.social) gates the operations that follow — PLC/identity ops for the claim,
+//! minting the source's `com.atproto.server.createAccount` service-auth token for the
+//! migration — behind a full session; the atproto OAuth ceiling for a third-party
+//! client is `transition:generic`, which those operations refuse.
+//!
+//! [`create_source_session`] runs the shared `createSession` body with the HTTPS and
+//! account-match guards (plus the email-2FA branch) and returns the raw JWT pair —
+//! which is what `password_unlock` persists. [`authenticate_source_password`] wraps
+//! that pair into a full-session Bearer client for the claim and migration paths. The
+//! password is used for exactly one request and never stored.
+//!
+//! The body is identical apart from which frontend-facing error enum it feeds. This
+//! module owns that body once and returns a neutral [`SourceLoginError`]; each caller
+//! keeps its own public enum (`ClaimError` / `MigrationError`) and maps in via `From`.
+//! Two distinct enums are a deliberate design choice — the goal is to share the
+//! *behavior + tests*, not collapse the contracts. The behavioral (mock-PDS) tests
+//! live here; each caller keeps only a `From`-mapping unit test.
 
 use crate::oauth_client::OAuthClient;
 

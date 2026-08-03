@@ -1,8 +1,31 @@
 // pattern: Imperative Shell
-//
-// Gathers: session state (access_token, refresh_token, expiry, nonce), request params
-// Processes: lazy refresh → DPoP proof → header attachment → nonce retry
-// Returns: reqwest::Response or OAuthError
+
+//! [`OAuthClient`]: the authenticated XRPC HTTP client. Gathers session state
+//! (access/refresh token, expiry, nonce) and request params; runs lazy refresh → proof →
+//! header attachment → nonce retry; returns `reqwest::Response` or [`OAuthError`].
+//!
+//! **Two auth modes**, selected at construction (private `AuthMode`):
+//! [`OAuthClient::new`] builds a **DPoP** client — every request carries
+//! `Authorization: DPoP {access_token}` plus a fresh `DPoP` proof header, refreshing via
+//! `/oauth/token`. [`OAuthClient::new_bearer`] builds a **Bearer** client — plain
+//! `Authorization: Bearer {access_jwt}`, no proof/nonce dance, expiry derived from the
+//! access JWT's `exp` claim, refresh via `com.atproto.server.refreshSession` (in memory
+//! only). Bearer mode serves the migration destination-PDS session, which is minted by a
+//! service-auth `createAccount` rather than an OAuth flow.
+//!
+//! **Lazy refresh.** The token is refreshed before a request whenever it has under 60
+//! seconds remaining, so callers never see a routinely-expired token.
+//!
+//! **`use_dpop_nonce` retry.** A 400 whose body names `use_dpop_nonce` is retried once with
+//! the server's `DPoP-Nonce`. A 400 that is *not* a nonce challenge is buffered and handed
+//! back as an intact `reqwest::Response` (rebuilt from its captured parts), never flattened
+//! into `NotAuthenticated`, so the caller's `pds_client::classify_xrpc_response` can surface
+//! the server's real status and body. Non-400 statuses pass through untouched.
+//!
+//! Request methods: `get`, `post` (JSON), `post_no_body` (zero bytes and no `Content-Type` —
+//! for no-input XRPC procedures like `requestPlcOperationSignature`/`activateAccount`, whose
+//! lexicons define no input and where a spec-strict PDS rejects any body), and `post_bytes`
+//! (raw byte body — CAR repo import and blob upload).
 
 use std::sync::{Arc, Mutex};
 

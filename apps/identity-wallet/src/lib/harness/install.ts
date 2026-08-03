@@ -12,6 +12,10 @@
  * This module is only ever reached through the dev-gated dynamic import in
  * `src/hooks.client.ts`, so a production build tree-shakes it out entirely
  * (browser-harness.AC4). The marker below is what the build-absence check greps for.
+ *
+ * Fidelity the browser can never cover stays a simulator/device concern in either mode:
+ * the real Keychain/Secure Enclave, the biometric prompt, ASWebAuthenticationSession,
+ * WKWebView rendering and safe-area insets, and the camera/QR scan.
  */
 import { mockIPC } from '@tauri-apps/api/mocks';
 import { buildRegistry, type Handler, type CommandName } from './registry';

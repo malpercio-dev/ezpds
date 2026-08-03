@@ -1,14 +1,44 @@
 // pattern: Imperative Shell
-//
-// Gathers: the selected identity's DID, its hosting PDS + server DID, its per-DID device key
-// Processes: fetches a pending OAuth authorization for preview; on confirm, signs the canonical
-//            consent envelope with the device key and submits the approve/deny decision
-// Returns: the preview a wallet screen renders, and the recorded decision
-//
-// The wallet-confirmed OAuth consent client (Phase A). Mirrors `sovereign_session.rs`: the same
-// device-key-signed canonical envelope shape (`crypto::encode_oauth_consent_envelope`), the same
-// per-DID discovery + safety checks. The biometric gate lives in the frontend, in front of
-// `confirm_oauth_consent`, so a cancelled prompt signs and sends nothing.
+
+//! Wallet-confirmed OAuth consent client — the wallet side of the pending-authorization
+//! primitive (Phases A + B of the wallet-confirmed-OAuth-consent design plan). Three
+//! per-identity Tauri IPC commands:
+//!
+//! - `preview_oauth_consent(did, user_code) -> ConsentPreview` — resolves the selected
+//!   DID's hosting PDS via `discover_pds`, then
+//!   `GET /oauth/authorize/consent-request?user_code=…`: what approving would grant
+//!   (client name/id, redirect URI, requesting origin/IP, requested scope list,
+//!   `login_hint`), shown before the biometric gate.
+//! - `preview_oauth_consent_by_request_id(did, request_id)` — the Phase B QR-scan path:
+//!   the same preview queried on the `request_id` dimension. The wallet extracts only
+//!   the `request_id` from the scanned QR and re-verifies it server-side, never
+//!   trusting QR contents for display. Both previews share one
+//!   `preview_oauth_consent_impl(did, query_key, query_value)` core.
+//! - `confirm_oauth_consent(did, request_id, client_id, decision, granted_scope,
+//!   match_code?) -> ConsentDecision` — signs the canonical
+//!   `crypto::encode_oauth_consent_envelope` (server DID from `describe_server`,
+//!   account DID, `request_id`, `client_id`, decision, granted-scope hash, timestamp,
+//!   nonce) with the per-DID device key and POSTs `/oauth/authorize/approve`.
+//!   `match_code` is the Phase C number the user read off the sign-in page, sent
+//!   OUTSIDE the envelope and only when the preview reported `matchRequired` — skipped
+//!   entirely when absent, so a pre-Phase-C server's `deny_unknown_fields` never sees
+//!   it.
+//!
+//! Mirrors `sovereign_session.rs`: the per-DID device key is resolved before any
+//! request, the same `pds_url_is_safe` and DID-doc-match checks, the same canonical
+//! envelope discipline. The biometric gate lives in the frontend, in front of
+//! `confirmOAuthConsent`, so a cancelled prompt signs and sends nothing. Request cores
+//! are `_impl` functions taking `&PdsClient`, tested against httpmock.
+//!
+//! `ConsentError` (IDENTITY_NOT_FOUND, UNSUPPORTED_HOST, REQUEST_NOT_FOUND,
+//! APPROVAL_REJECTED, MATCH_CODE_MISMATCH — the server's 403 "number mismatch"; the
+//! request stays pending, so the review stays open for a retype — ALREADY_RESOLVED,
+//! RATE_LIMITED, TRANSPORT_FAILURE, KEYCHAIN_FAILURE, SIGNING_FAILED, DID_MISMATCH,
+//! SERVER_MISMATCH, INVALID_RESPONSE, SERVER_FAILURE) serializes as
+//! `{ code: "SCREAMING_SNAKE_CASE" }` with camelCase fields; the TypeScript union and
+//! the camelCase `ConsentPreview`/`ConsentDecision` types must match their `$lib/ipc`
+//! counterparts. `ConsentPreview.matchRequired` defaults false on deserialize, so a
+//! pre-Phase-C server keeps working.
 
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
 use serde::{Deserialize, Serialize};

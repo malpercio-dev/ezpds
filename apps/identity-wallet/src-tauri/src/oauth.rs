@@ -1,7 +1,41 @@
 // pattern: Mixed (unavoidable)
-//
-// Types: AppState, PendingLogin, OAuthPrepared, OAuthSession (Functional Core)
-// prepare_oauth_flow / complete_oauth_flow: Imperative Shell (PKCE+PAR, then code→token exchange)
+
+//! `AppState` (the app-wide Tauri-managed state) plus the wallet's OAuth PKCE client
+//! machinery. The types (`AppState`, `PendingLogin`, `OAuthPrepared`, `OAuthSession`) are
+//! Functional Core; the two flow commands are Imperative Shell.
+//!
+//! **`AppState` slots.** `pending_login` and `oauth_session` (`std::sync::Mutex<Option<_>>`,
+//! cleanly empty outside a flow); `custos_client` (`OnceLock`, set once from the Keychain URL
+//! or first-launch config, compile-time default otherwise); `pds_client` (eager — cheap and
+//! stateless; exposed via [`AppState::pds_client`] for the claim-flow commands); and the
+//! per-flow `tokio::sync::Mutex<Option<_>>` slots (`claim_state`, `recovery_state`,
+//! `rotation_state`, `migration_state`, `orchestration_state`, `share_recovery_state`) —
+//! tokio mutexes because those commands hold the lock across `.await` points. Neither source
+//! login (claim, outbound migration) parks OAuth state here: both are password
+//! `createSession` (`claim::authenticate_source_pds`,
+//! `migration_orchestrator::authenticate_migration_source`).
+//!
+//! **The OAuth flow has no live caller.** `prepare_oauth_flow` (DPoP keygen + PKCE + PAR →
+//! authorize URL, parking the verifier and CSRF state in `pending_login` — they never leave
+//! the Rust backend) and `complete_oauth_flow` (callback validation + DPoP-bound token
+//! exchange into `oauth_session` and the Keychain) were the create-flow login, split around
+//! the in-app `ASWebAuthenticationSession`. The create flow now ends at `home` with no OAuth
+//! round trip: the final authorize step was unreachable for a passwordless account (a
+//! password form with no password to enter, and a wallet hand-off pointing at the very app
+//! hosting the browser), and the evidence said it proved nothing — `POST /v1/dids` already
+//! returns `status: "active"` plus a session token, `oauth_session` had writers but zero
+//! readers, and the DPoP constructor is never called in production because every
+//! authenticated operation resolves a per-DID session via
+//! `SessionProvider::full_access_client` (minted by `sovereign_login`/`password_unlock`
+//! against the device key the genesis op pinned at `rotationKeys[0]`). The machinery — these
+//! two commands, [`DPoPKeypair`], the global `oauth-*` Keychain items, the `auth_ready`
+//! startup emit, the vendored `tauri-plugin-auth-session` — is retained but dead, tracked
+//! for separate retirement.
+//!
+//! Also here: [`DPoPKeypair`] (P-256, persisted in Keychain and reused across flows so a
+//! server can `jkt`-bind tokens to it), the PKCE verifier/S256-challenge utilities, and
+//! `parse_callback_url` (the shared `pub(crate)` callback-URL parser). [`OAuthError`]
+//! serializes as `{ code: "SCREAMING_SNAKE_CASE" }`; its TypeScript union must match.
 
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
 use p256::ecdsa::{signature::Signer, Signature, SigningKey};

@@ -1,29 +1,38 @@
 // pattern: Mixed (unavoidable)
-//
-// Client-side Shamir share generation for the DID ceremony (the ceremony inversion):
-// the wallet — not the server — generates the recovery seed, derives the recovery
-// rotation key from it, and splits the seed 2-of-3 into v2 share envelopes. Custos
-// receives exactly one share (the Share 2 envelope, deposited with the ceremony
-// request) and never sees the seed or the other shares, so no server backup can ever
-// hold reconstruction material.
-//
-// Retry resilience lives here too: the generated set is persisted in a Keychain
-// staging slot (`ceremony-staging` — transient working material, distinct from the
-// durable per-DID `recovery-share-1:{did}` slot) BEFORE any network call, so a retry reuses the
-// identical set (same set_id) instead of orphaning a prior attempt's escrow deposit.
-// The staging record holds the three envelopes only — the seed is recomputed from
-// Shares 1+2 on load, and every load re-validates each envelope's checksum and
-// cross-checks set_ids. A present-but-unreadable record **fails closed**
-// (`StagingCorrupt`) rather than regenerating: it may be the exact set a prior
-// attempt already bound to a genesis op and escrowed, so overwriting it would
-// permanently destroy the recovery seed. Only a genuinely absent slot — or one
-// staged for different ceremony inputs, which a new ceremony explicitly abandons —
-// permits fresh generation.
-//
-// Teardown order is load-bearing: `clear_staging` runs only after Share 1 has
-// verifiably reached its durable slot and the user has confirmed saving Share 3
-// (`confirm_share_backup` in lib.rs drives that), because until then the staging
-// slot is the only durable home of the seed material.
+
+//! Client-side Shamir share generation for the DID ceremony (the ceremony inversion):
+//! the wallet — not the server — generates the recovery seed, derives the recovery
+//! rotation key from it, and splits the seed 2-of-3 into v2 share envelopes. Custos
+//! receives exactly one share (the Share 2 envelope, deposited with the ceremony
+//! request) and never sees the seed or the other shares, so no server backup can ever
+//! hold reconstruction material. [`CeremonyShareSet`] carries the recovery key's
+//! did:key, the three base32 envelope strings, and the Share 3 word phrase — all share
+//! material in `Zeroizing`.
+//!
+//! Retry resilience lives here too: [`load_or_create`] persists the generated set in a
+//! Keychain staging slot BEFORE any network call, so a retry reuses the identical set
+//! (same set_id) instead of orphaning a prior attempt's escrow deposit. Three staging
+//! slots, one per ceremony: `ceremony-staging` ([`STAGING_ACCOUNT`], the create
+//! ceremony) plus the per-DID `rekey-staging:{did}` and `self-held-kit-staging:{did}`.
+//! The latter two are separate slots for the same DID on purpose — the two ceremonies
+//! disagree about who keeps Share 2 (the re-key escrows it, the kit hands it to the
+//! user), so a set staged by one must never be picked up and completed by the other.
+//!
+//! Each staging record holds the three envelopes only — the seed is recomputed from
+//! Shares 1+2 on load, and every load re-validates each envelope's checksum and
+//! cross-checks set_ids. A present-but-unreadable record **fails closed**
+//! (`StagingCorrupt`) rather than regenerating: it may be the exact set a prior
+//! attempt already bound to a genesis op and escrowed, so overwriting it would
+//! permanently destroy the recovery seed. Only a genuinely absent slot — or one
+//! staged for different ceremony inputs, which a new ceremony explicitly abandons —
+//! permits fresh generation.
+//!
+//! Teardown order is load-bearing and shared by all three slots: the idempotent
+//! [`clear_staging`] (and its per-DID siblings) runs only after Share 1 has verifiably
+//! reached its durable `recovery-share-1:{did}` slot and the user has confirmed saving
+//! Share 3 (`confirm_share_backup` in lib.rs, `confirm_rekey`, and
+//! `confirm_self_held_kit` drive that), because until then the staging slot is the
+//! seed material's only durable home.
 
 use rand_core::{OsRng, RngCore};
 use serde::{Deserialize, Serialize};

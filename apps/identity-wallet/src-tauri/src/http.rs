@@ -1,9 +1,21 @@
-//! PDS HTTP client for identity-wallet.
+// pattern: Imperative Shell
+
+//! [`CustosClient`]: the HTTP client for the *one* PDS the user configured. Discovery and
+//! XRPC against arbitrary endpoints (plc.directory, a claim source, a migration
+//! destination) live in `pds_client.rs`; this client only ever addresses the configured
+//! Custos, which is why it holds a base URL where `PdsClient` is stateless.
 //!
-//! All PDS API calls go through `CustosClient`. The base URL starts
-//! as compile-time configured (`http://localhost:8080` in debug builds,
-//! `https://obsign.org` in release builds) and can be overridden
-//! at runtime via AppState.
+//! The base URL is runtime-configured: the user sets it on first launch
+//! (`PdsConfigScreen`), it persists to the Keychain, and later launches restore it via
+//! `AppState::set_custos_client`. The compile-time default
+//! (`#[cfg(debug_assertions)]`: `http://localhost:8080` debug, `https://obsign.org`
+//! release) is only the pre-filled value in that configuration UI, and the fallback when
+//! nothing was ever configured.
+//!
+//! Methods: `post`, `get`, `get_with_bearer`, `post_with_bearer`, plus the OAuth pair
+//! `par` (POST `/oauth/par` with a DPoP proof) and `token_exchange` (POST `/oauth/token`
+//! with the PKCE verifier). Response types: [`ParResponse`], [`TokenResponse`],
+//! [`TokenErrorResponse`].
 
 use reqwest::{Client, Response};
 use serde::Serialize;

@@ -1,31 +1,43 @@
 // pattern: Imperative Shell
-//
-// Gathers: a selected DID's persisted `oauth-tokens` record, current DID discovery,
-//          and a per-DID coalescing lock
-// Processes: restore a still-valid session, or rotate a near-expiry one via
-//            `com.atproto.server.refreshSession` and atomically persist the new pair
-// Returns: a ready full-access Bearer client, or a typed lifecycle error whose
-//          `NEEDS_UNLOCK` variant hands off to the biometric sovereign login
 
 //! Per-DID full-access session lifecycle.
 //!
 //! [`SessionProvider::full_access_client`] is the seam every authenticated wallet
 //! operation on a Custos-hosted identity goes through. It replaces the single
-//! global in-memory `oauth_session` with an on-demand, per-DID resolver:
+//! global in-memory `oauth_session` with an on-demand, per-DID resolver running a
+//! decision ladder over the DID's versioned [`SovereignTokenRecord`]:
 //!
-//! 1. Load the selected DID's versioned [`SovereignTokenRecord`].
-//! 2. If the access JWT is still valid, hand back a Bearer client directly — no
-//!    network, so a restart (or an offline launch) with a live token needs no prompt.
-//! 3. If it is expired/near-expiry but the refresh chain is alive, confirm the DID
-//!    still resolves to the same host, then rotate exactly once via
-//!    `refreshSession` and atomically persist the returned pair.
-//! 4. If no usable refresh chain remains, return [`SessionError::NeedsUnlock`] — the
-//!    frontend surfaces a passwordless "Unlock identity" action that runs the
-//!    biometric-gated [`crate::sovereign_session::sovereign_login`].
+//! 1. No record, or a dead refresh chain → [`SessionError::NeedsUnlock`]
+//!    (`NoRefreshChain`).
+//! 2. Access JWT still valid (`exp > now + 120s` headroom) → rebuild a Bearer client
+//!    with **no network** — this is what makes a restart or offline launch with a
+//!    live token need no prompt.
+//! 3. Near-expiry with a live refresh → discover the DID's current PDS; if the host
+//!    moved, **discard the old-audience record** and return
+//!    `NeedsUnlock { HostChanged }`, else call `com.atproto.server.refreshSession`
+//!    exactly once and atomically persist the rotated pair (re-validating sub/aud).
 //!
-//! Concurrent callers for one DID coalesce behind a per-DID async lock: the first
-//! rotates and persists, later callers re-read the freshly-stored record and reuse
-//! it, so a refresh token can never be raced into replay detection.
+//! Terminal errors are distinct and never looped: `NeedsUnlock { reason }`,
+//! `RateLimited { retryAfter }`, `UnsupportedHost`, `Offline { message }`,
+//! `ServerFailure { status }`, `Keychain`, `InvalidResponse` ([`SessionError`]
+//! serializes a SCREAMING_SNAKE_CASE `code`). A revoked refresh (400/401) and a host
+//! change both delete the dead record; a rate limit keeps it. Coalescing is a
+//! **re-read**, not a shared future: the second caller for one DID waits on the
+//! per-DID async lock, then re-loads the freshly-persisted record — so a refresh
+//! token can never be raced into replay detection. The lock registry is a
+//! process-global `OnceLock<Mutex<HashMap<did, Arc<tokio::Mutex>>>>`
+//! (unit-struct-over-global shape, like `IdentityStore`). The provider deliberately
+//! does NOT reuse `OAuthClient::refresh_token_bearer`, which is in-memory-only by
+//! design — refresh + persist belong here.
+//!
+//! Types: [`ActiveSession`] (client, did, pds_url, access/refresh expiries,
+//! `rotated`), [`SessionReady`] (the serializable summary, dropping the client), and
+//! [`UnlockReason`] (`NO_REFRESH_CHAIN` / `REFRESH_REVOKED` / `HOST_CHANGED`). The
+//! [`ensure_identity_session`] Tauri command is the frontend pre-flight: restore or
+//! rotate, report a `SessionReady`; a `NEEDS_UNLOCK` error is the UI's cue to run
+//! `unlockIdentity(did)` — the biometric sovereign login where the host advertises
+//! `sovereignSessions`, the `password_unlock` prompt where it does not. The command
+//! performs no biometric prompt itself: a live token must never demand one.
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, OnceLock};

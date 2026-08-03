@@ -1,12 +1,17 @@
 /**
  * Proxy-mode handlers for the wallet harness (browser-harness Phase 5).
  *
- * In proxy mode the thin-HTTP command subset (account creation, handle/domain queries,
- * identity resolution, agent list/revoke/audit) runs for real against a hermetic local
- * PDS reached through the vite dev-server proxy at `/__pds/*`, using a real WebCrypto
- * P-256 device key for signatures. Every command NOT overridden here falls through to
- * the in-memory fake — including the deliberately fake-only heavy-logic commands
- * (migration transfer legs, DID ceremony internals, OAuth completion; see the runbook).
+ * Proxy mode is real only for the thin-HTTP subset: `create_account` (mints + redeems a
+ * real claim code, POSTs `/v1/accounts/mobile`) and `get_available_user_domains`
+ * (describeServer), run against a hermetic local PDS (`just harness-pds`) through the
+ * vite dev-server proxy at `/__pds/*` with a real WebCrypto P-256 device key. Every
+ * command NOT overridden here falls through to the in-memory fake — by the honest
+ * boundary these stay faked even in proxy mode (heavy Rust logic with no thin-HTTP
+ * form): the DID ceremonies (`perform_did_ceremony`, `*_did_web_ceremony`), OAuth
+ * completion (`prepare/complete_oauth_flow`), the migration transfer legs
+ * (`transfer_repo`/`transfer_blobs`/…, `finalize_migration`), recovery/claim PLC ops,
+ * and the agent surfaces (which need a real post-ceremony session the faked ceremony
+ * never mints).
  */
 import type { Handler } from '../registry';
 import type { WalletState } from '../state';

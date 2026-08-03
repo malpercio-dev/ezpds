@@ -1,26 +1,52 @@
 // pattern: Mixed (Functional Core types + guard/converters; Imperative Shell commands)
-//
-// Functional Core: MigrationInputs, SignedMigrationOp, MigrateError, the strict
-//                  pre-sign guard, the RecommendedCredentials -> typed-map
-//                  converters, current-state extraction, and diff computation
-//                  (all pure).
-// Imperative Shell: build_migration_op / submit_migration_op (network + Keychain +
-//                   signing) and their Tauri command wrappers.
-//
-// This is the wallet-authorized (self-signed) identity leg of account migration
-// (ADR-0002, path 1). The DID-repointing PLC operation is built and signed LOCALLY
-// with the per-DID device key and submitted directly to plc.directory — no email
-// token, no signPlcOperation round-trip. It is applicable whenever the wallet holds
-// an authorized key in the DID's current rotationKeys; otherwise it refuses and the
-// migration orchestrator falls back to the PDS-signed interop path.
-//
-// Contrast with claim.rs: a claim must change NOTHING but insert the device key at
-// rotationKeys[0], so its guard rejects every key/service mutation. A migration is
-// the inverse — it MUST rewrite services.atproto_pds, rotationKeys[1], and
-// verificationMethods.atproto to the destination's values. The one invariant that
-// must survive is rotationKeys[0] == the wallet device key; that single fact is the
-// entire "credible exit" guarantee (and any op the user did not initiate is caught
-// by plc_monitor and reversible via recovery.rs).
+
+//! Self-signed account-migration identity leg (ADR-0002, path 1): the DID-repointing
+//! PLC op is built and device-key-signed LOCALLY and submitted directly to
+//! plc.directory — no email token, no `signPlcOperation` round trip. Applicable
+//! whenever the wallet holds an authorized key in the DID's current rotationKeys;
+//! otherwise it refuses (`WalletNotAuthorized`) and the migration orchestrator falls
+//! back to the PDS-signed interop path.
+//!
+//! - `build_migration_op(pds_client, dest_client, did) -> SignedMigrationOp` —
+//!   fetches the audit log for `prev` + current state, reads
+//!   `getRecommendedDidCredentials` from the DESTINATION PDS via the passed-in authed
+//!   `OAuthClient`, assembles the op with the device key preserved at
+//!   `rotationKeys[0]`, runs the strict pre-sign guard, signs with the per-DID key.
+//! - `submit_migration_op(pds_client, did, signed_op) -> ClaimResult` — POSTs to
+//!   plc.directory, refreshes the cached PLC log + DID doc.
+//! - Tauri commands: `build_migration_op_cmd` / `submit_migration_op_cmd`. The
+//!   did:web outbound-migration identity leg also lives here
+//!   (`build_did_web_migration_document_cmd` / `submit_did_web_migration_document_cmd`):
+//!   the wallet composes the reviewed `did.json`, and submission verifies it is
+//!   externally resolvable before adopting the identity.
+//! - Pure helpers: `guard_migration_op`, `recommended_verification_methods` /
+//!   `recommended_services` (RecommendedCredentials JSON → typed maps),
+//!   `latest_op_state` (current state from the newest non-nullified audit entry),
+//!   `build_migration_diff`.
+//!
+//! `guard_migration_op` is the SECOND of the wallet's seven strict pre-sign
+//! allowlists (`claim.rs`'s 4-point verification is the first), enforced before
+//! signing: (1) `rotationKeys[0]` == the device key, (2) the device key is in the
+//! DID's current rotationKeys (else `WalletNotAuthorized`), (3) every other proposed
+//! rotation key was recommended by the destination, (4) alsoKnownAs preserved,
+//! (5) only the `atproto_pds` service is touched. It is the polar opposite of the
+//! claim guard: a claim must change NOTHING but insert the device key at
+//! `rotationKeys[0]`, while a migration MUST rewrite `services.atproto_pds`,
+//! `rotationKeys[1]`, and `verificationMethods.atproto` to the destination's values.
+//! The one preserved invariant — `rotationKeys[0]` == the wallet device key — is the
+//! entire "credible exit" guarantee (ADR-0002); an op the user didn't initiate is
+//! caught by `plc_monitor` and reversible via `recovery.rs`.
+//!
+//! Types: `SignedMigrationOp { diff, signed_op }` (camelCase on the wire:
+//! `{ diff, signedOp }`), `MigrationState { did, dest_oauth_client, signed_op }`, and
+//! `MigrationInputs`. `MigrationState` sits in `AppState` behind a
+//! `tokio::sync::Mutex` (commands hold the lock across `.await`) and is populated by
+//! the migration orchestrator, never by this module — the destination login is
+//! deliberately not owned here, keeping the identity leg a pure, independently
+//! testable unit. `MigrateError` (WALLET_NOT_AUTHORIZED, GUARD_REJECTED,
+//! INVALID_RECOMMENDED_CREDENTIALS, INVALID_AUDIT_LOG, SIGNING_FAILED,
+//! PLC_DIRECTORY_ERROR, NETWORK_ERROR, IDENTITY_NOT_FOUND, MIGRATION_NOT_READY)
+//! serializes as SCREAMING_SNAKE_CASE; the `$lib/ipc` union must match exactly.
 
 use std::collections::BTreeMap;
 

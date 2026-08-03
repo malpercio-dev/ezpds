@@ -1,36 +1,63 @@
 // pattern: Mixed (Functional Core guard/helpers + Imperative Shell commands)
-//
-// Sovereign disaster recovery: rebuild the account on a new (or the same) PDS from the
-// iCloud backups when the source PDS is gone or uncooperative — the "adversarial
-// migration" pattern, automated by a wallet that holds `rotationKeys[0]`.
-//
-// The identity half lives here; the transfer half reuses the migration orchestrator.
-// Flow (two guarded PLC ops, createAccount + import sandwiched between):
-//   1. `enroll_recovery_signing_key` — PLC op #1, device-key-signed, submitted DIRECTLY
-//      to plc.directory: enroll a fresh self-controlled `atproto` signing key, changing
-//      NOTHING else (rotationKeys, alsoKnownAs, services all preserved — the strict
-//      guard proves it). The `services.atproto_pds` repoint is deferred to op #2, which
-//      reuses `migrate.rs` verbatim.
-//   2. `await_recovery_key_visibility` — poll the plc.directory audit log until op #1
-//      is globally visible; `createAccount` cannot verify the offline JWT before the
-//      signing-key change propagates.
-//   3. `create_recovery_destination_account` — mint the service-auth JWT OFFLINE with
-//      the self-controlled key (`iss` = account DID, `aud` = destination server DID,
-//      `lxm` = com.atproto.server.createAccount) and run the standard migration
-//      `createAccount` path against the destination — which verifies the JWT against
-//      the key it resolves from plc.directory, so this works against any PDS.
-//   4. `recovery_transfer_repo` — importRepo from the validated iCloud CAR snapshot
-//      (`repo_backup::mirror_repo_car`); blobs drain from the iCloud mirror via the
-//      shared `transfer_blobs` (mirror-primary in recovery mode).
-//   5. The identity leg (PLC op #2: adopt the destination's recommended keys +
-//      `services` repoint, wallet device key still at `rotationKeys[0]`) and the
-//      finalize (activateAccount, no source to deactivate) reuse `migrate.rs` and the
-//      orchestrator unchanged.
-//
-// Unlike `rotate_repo_key.rs` — which deliberately routes its op through the live PDS —
-// every PLC write here goes straight to plc.directory: a dead or hostile source PDS is
-// exactly the scenario. The account stays deactivated (inert) until the final
-// activation, so an abort at any earlier step leaves nothing half-live.
+
+//! Sovereign disaster recovery ("Rebuild from backup" on the identity screen): rebuild
+//! the account on a new (or the same) PDS from the iCloud backups when the source PDS
+//! is gone or uncooperative — the ATProto "adversarial migration" pattern, automated
+//! by the wallet's custody of `rotationKeys[0]`. The identity half lives here; the
+//! transfer half reuses the migration orchestrator. Two guarded PLC ops, with
+//! createAccount + import sandwiched between:
+//!
+//! 1. `prepare_disaster_recovery(did, dest_pds_url, handle_override?)` — resolve the
+//!    destination `describeServer` DID + current PLC state from plc.directory ALONE
+//!    (the dead source is never contacted); `handle_override` is the fallback for a
+//!    handle whose domain the dead PDS served. Opens a `recovery: true` orchestration
+//!    session.
+//! 2. `enroll_recovery_signing_key(did)` — PLC op #1: generate (or reuse across
+//!    retries) a self-controlled P-256 `atproto` signing key, persist its scalar to
+//!    the per-DID `recovery-signing-key` Keychain slot with read-back verify BEFORE
+//!    any network call, then build + device-key-sign + submit the enroll op directly
+//!    to plc.directory. Reconciles to success if a prior attempt already landed;
+//!    biometric-gated in the frontend. The `services.atproto_pds` repoint is deferred
+//!    to op #2.
+//! 3. `await_recovery_key_visibility(did)` — one audit-log poll: is the enrolled key
+//!    the DID's `atproto` method yet? Advances the phase gate when it is —
+//!    `createAccount` cannot run before op #1 propagates.
+//! 4. `create_recovery_destination_account(did, email, invite_code?)` — re-verify
+//!    visibility, mint the service-auth JWT OFFLINE with the self-controlled key
+//!    (`iss` = account DID, `aud` = destination server DID,
+//!    `lxm` = `com.atproto.server.createAccount`, 1h expiry, via
+//!    `crypto::mint_service_auth_jwt`), and run the shared migration `createAccount`
+//!    core. The destination verifies the JWT against plc.directory, so this works
+//!    against any PDS.
+//! 5. `recovery_transfer_repo(app, did)` — importRepo from the validated iCloud CAR
+//!    snapshot (`repo_backup::mirror_repo_car`); `BACKUP_UNAVAILABLE` when no valid
+//!    snapshot exists. The rest of the tail reuses the orchestrator's shared commands
+//!    on the same session: `transfer_blobs` (mirror-primary — the drain reads
+//!    `blob_backup::mirror_fallback_blob` directly, no doomed source fetches),
+//!    `transfer_preferences` (honest no-op skip: no preferences backup exists),
+//!    `verify_import`, `arm_identity_leg` + the `migrate.rs` identity leg (PLC op #2:
+//!    adopt the destination's recommended keys + `services` repoint, wallet device
+//!    key still at `rotationKeys[0]`), and `finalize_migration` (activate the
+//!    destination; no source to deactivate).
+//!
+//! `guard_recovery_enroll_op` is the FIFTH strict wallet allowlist and the narrowest:
+//! ONLY the `atproto` verification method may change, to exactly the freshly
+//! generated key (fresh = not a rotation key, not an existing method); rotationKeys
+//! must be byte-identical with the device key at `[0]` — the anti-lockout rule from
+//! the adversarial-migration write-up — and alsoKnownAs and services preserved.
+//! Unlike `rotate_repo_key.rs`, which deliberately routes its op through the live
+//! PDS, every PLC write here goes straight to plc.directory: a dead or hostile source
+//! PDS is exactly the scenario. The created account stays DEACTIVATED (inert) until
+//! the final activation, so an abort at any earlier step leaves nothing half-live; a
+//! stolen device key attempting this is caught by `plc_monitor` + the 72-hour
+//! recovery window.
+//!
+//! `DisasterRecoveryError` (WALLET_NOT_AUTHORIZED, GUARD_REJECTED, INVALID_AUDIT_LOG,
+//! SIGNING_FAILED, KEYCHAIN_ERROR, IDENTITY_NOT_FOUND, PLC_DIRECTORY_ERROR,
+//! RATE_LIMITED, KEY_NOT_ENROLLED, DESTINATION_UNREACHABLE, RECOVERY_NOT_READY,
+//! NETWORK_ERROR) serializes as `{ code: "SCREAMING_SNAKE_CASE" }` with camelCase
+//! fields; the orchestration-half commands return `MigrationError` instead (whose
+//! `BACKUP_UNAVAILABLE` variant is recovery-specific).
 
 use std::collections::BTreeMap;
 

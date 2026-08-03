@@ -1,3 +1,29 @@
+//! Global P-256 device key, `#[cfg]`-dispatched between two compile-time paths sharing
+//! one public API. macOS and the iOS Simulator use software keys via the `crypto`
+//! crate, with the private scalar stored in the Keychain (`device-rotation-key-priv`).
+//! A real iOS device uses the Secure Enclave via `security-framework`: the private key
+//! never leaves the enclave, and only the compressed public key and the SE-assigned
+//! `application_label` (a SHA-1) are stored in the Keychain for lookup
+//! (`device-rotation-key-pub` / `device-rotation-key-app-label`).
+//!
+//! Public API: [`get_or_create`] (idempotent — every call returns the same key, which
+//! is what makes `create_account` retries safe: the PDS sees one device key per device)
+//! and [`sign`] (raw 64-byte `r||s` ECDSA). Signatures are **low-S normalized on both
+//! paths** — ATProto/plc.directory requires low-S, and RFC 6979 (which makes the
+//! software path deterministic) only fixes the nonce, so normalization is an explicit
+//! step, not a byproduct.
+//!
+//! The `pub(crate)` consts `DEVICE_KEY_PRIV_ACCOUNT` / `DEVICE_KEY_PUB_ACCOUNT` /
+//! `DEVICE_KEY_APP_LABEL_ACCOUNT` are the single source of the global device-key
+//! Keychain account names; changing any of them orphans existing keys.
+//! `IdentityStore::adopt_global_device_key` copies whichever of these accounts exists
+//! into the per-DID slots, for identities whose genesis op was signed with this global
+//! key before the DID existed.
+//!
+//! The P-256 multicodec varint prefix `[0x80, 0x24]` is duplicated from
+//! `crates/crypto/src/keys.rs` (the constant is `pub(crate)` there) — deliberate, so
+//! this crate does not depend on the crypto crate's internal layout.
+
 use serde::Serialize;
 
 #[cfg(all(target_os = "ios", not(target_env = "sim")))]

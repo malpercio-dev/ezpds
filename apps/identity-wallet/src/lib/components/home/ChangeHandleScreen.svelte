@@ -15,6 +15,11 @@
   } from '$lib/ipc';
   import { unlockIdentity, isUnlockCancelled } from '$lib/unlock';
 
+  // The sovereign change-handle surface, reached from ManageIdentityScreen's "Change
+  // handle" row (did:plc with the device key as top rotation key only — the wallet signs
+  // the alsoKnownAs PLC op itself). Loads the hosting PDS's served handle domains
+  // (`getIdentityHandleDomains`), pre-flights the session, then runs the biometric-gated
+  // `changeHandle`.
   let {
     did,
     currentHandle,

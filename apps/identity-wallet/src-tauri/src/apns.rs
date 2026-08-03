@@ -1,36 +1,42 @@
 // pattern: Imperative Shell (iOS-only Objective-C runtime bridge)
-//
-// How the device token reaches `notifications.rs`. iOS delivers it exactly once per launch, to
-// two methods on the **application delegate** — there is no polling API, no
-// `UIApplication.deviceToken` property, and no Tauri plugin for it. So this module installs
-// those two methods on Tauri's delegate class at startup, before asking iOS to register.
-//
-// The same add-only mechanism carries the third callback: a notification **tap**
-// (`userNotificationCenter:didReceiveNotificationResponse:withCompletionHandler:`) is only ever
-// delivered to `UNUserNotificationCenter`'s delegate, which Tauri never sets — so the method is
-// added to the application delegate's class and the center's delegate pointed at it. The tap
-// handler reads the route block the Notification Service Extension left on the *verified* path
-// and hands it to `notification_routes` (the portable, host-tested half).
-//
-// Everything here is compiled only for iOS (`lib.rs` gates the whole module), which also means
-// it is compiled only by the `aarch64-apple-ios` cross-compile in the PR lane and exercised only
-// on a device. Both consequences shape the code: the logic that *can* be tested lives in
-// `notifications.rs` (hex encoding, change detection, the registration sequence), and what stays
-// here is the smallest possible amount of runtime plumbing.
-//
-// # Why add methods rather than swizzle
-//
-// `class_addMethod` fails if the class already implements the selector, and that failure mode is
-// the one we want: Tauri's delegate does not implement either method today, and if a future
-// version starts to, silently replacing its implementation would be a far worse outcome than
-// declining and logging. Nothing here ever calls `method_setImplementation` or
-// `method_exchangeImplementations`, so no existing behaviour can be displaced.
-//
-// # Why a process-global handle
-//
-// An IMP is a bare C function pointer with no capture. The callback therefore reads the
-// `AppHandle` from a `OnceLock` written during `setup` — the unit-of-global shape `IdentityStore`
-// and `pds_capabilities` already use — rather than threading state it structurally cannot carry.
+
+//! How the APNs device token reaches `notifications.rs`. iOS delivers it exactly once per
+//! launch, to two methods on the **application delegate** — there is no polling API, no
+//! `UIApplication.deviceToken` property, and no Tauri plugin for it. So this module installs
+//! those two methods on Tauri's live delegate class, wired once from `lib.rs`'s `setup`,
+//! before asking iOS to register. On a **changed** token the callback re-registers every
+//! managed identity; an unchanged one (iOS re-delivers on every launch) does nothing — a
+//! round trip per identity per launch would only rewrite rows that already say this.
+//!
+//! The same add-only mechanism carries the third callback: a notification **tap**
+//! (`userNotificationCenter:didReceiveNotificationResponse:withCompletionHandler:`) is only
+//! ever delivered to `UNUserNotificationCenter`'s delegate, which Tauri never sets — so the
+//! method is added to the application delegate's class and the center's delegate pointed at
+//! it. The tap handler reads the `ezpdsRoute` block the Notification Service Extension writes
+//! only on the *verified* (HPKE-authenticated) path, parks it in `notification_routes` (the
+//! portable, host-tested half), and emits the `notification_route` event — the deep-link path
+//! for push-to-approve.
+//!
+//! Everything here is compiled only for iOS (`lib.rs` gates the whole module), which also
+//! means it is compiled only by the `aarch64-apple-ios` cross-compile in the PR lane and
+//! exercised only on a device. Both consequences shape the code: the logic that *can* be
+//! tested lives in `notifications.rs` (hex encoding, change detection, the registration
+//! sequence), and what stays here is the smallest possible amount of runtime plumbing.
+//!
+//! # Why add methods rather than swizzle
+//!
+//! `class_addMethod` fails if the class already implements the selector, and that failure
+//! mode is the one we want: Tauri's delegate does not implement either method today, and if a
+//! future version starts to, silently replacing its implementation would be a far worse
+//! outcome than declining and logging. Nothing here ever calls `method_setImplementation` or
+//! `method_exchangeImplementations`, so no existing behaviour can be displaced.
+//!
+//! # Why a process-global handle
+//!
+//! An IMP is a bare C function pointer with no capture. The callbacks therefore read the
+//! `AppHandle` from a `OnceLock` written during `setup` — the unit-of-global shape
+//! `IdentityStore` and `pds_capabilities` already use — rather than threading state they
+//! structurally cannot carry.
 
 use std::sync::OnceLock;
 

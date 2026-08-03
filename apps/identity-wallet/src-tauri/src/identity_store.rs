@@ -2,10 +2,41 @@
 
 //! Per-DID identity storage layer with Keychain-based persistence.
 //!
-//! `IdentityStore` manages multi-identity lifecycle in the iOS Keychain:
-//! - A top-level `"managed-dids"` entry maintains a JSON array index of all managed DIDs
-//! - Per-DID prefixed entries store device keys, DID documents, and PLC audit logs
-//! - Device keys are lazily generated on first access via `get_or_create_device_key`
+//! `IdentityStore` is a stateless unit struct — all state lives in the Keychain, and
+//! methods take `&self`. A top-level `"managed-dids"` entry maintains a JSON array
+//! index of all managed DIDs; per-DID entries use the `"{did}:suffix"` naming (device
+//! keys, DID documents, PLC audit logs, sessions — the full account inventory is in
+//! `keychain`'s module docs). Every method requires the DID to be registered first
+//! (`IdentityNotFound` otherwise); [`IdentityStoreError`] serializes as
+//! `{ code: "SCREAMING_SNAKE_CASE" }`.
+//!
+//! Device keys are lazily generated on first [`IdentityStore::get_or_create_device_key`]
+//! — never at registration — with the same `#[cfg]` dispatch as `device_key.rs`
+//! (software P-256 on macOS/simulator, Secure Enclave on a real device) but per-DID
+//! account namespacing (`"{did}:device-key"` instead of `"device-rotation-key-priv"`).
+//! On the Secure Enclave path the fast path **probes the enclave before trusting
+//! cached metadata** ([`classify_se_fast_path`], kept `cfg`-free so it is host-tested):
+//! the two metadata items restore from an encrypted device backup while the enclave key
+//! never does, so "both items present" is exactly the state a restored device wakes up
+//! in. A dead probe returns `DeviceKeyUnusable` and must NOT mint a replacement — a
+//! fresh key is absent from the DID's `rotationKeys`, and recovery is the destination;
+//! only positive probe verdicts are cached in-process.
+//!
+//! [`IdentityStore::adopt_global_device_key`] aliases the per-DID key to the global
+//! `device_key.rs` key by copying its Keychain material — the create flow signs its
+//! genesis op with the global key before the DID exists, and without adoption the
+//! "root key" badge and `plc_monitor`'s signature checks would both be wrong.
+//! [`IdentityStore::remove_identity`] unregisters index-first, then best-effort deletes
+//! every per-DID entry — deliberately excluding both `recovery-share-1:{did}` slots:
+//! removal is also reached from `forget_identity_locally`, which promises only to
+//! remove the identity from THIS device, and deleting the synchronizable slot would
+//! reach every device under the Apple account and destroy a share the user may still
+//! need.
+//!
+//! [`SovereignTokenRecord`] is the versioned full-access Bearer session stored in
+//! `{did}:oauth-tokens` — written by `sovereign_session::sovereign_login`,
+//! `password_unlock`, and the migration cutover, read by `session_provider`. That
+//! shared shape is the contract: a change must keep all writers and the reader in step.
 //!
 //! All Keychain operations use the shared `keychain::SERVICE` prefix.
 

@@ -1,36 +1,43 @@
 // pattern: Mixed (Functional Core CAR-validation + error mapping; Imperative Shell commands)
-//
-// User-held repo backup: a full-CAR snapshot of the account's ATProto repository (its
-// signed commit + Merkle Search Tree + record blocks — every post, like, follow, and
-// profile edit) mirrored into the wallet's iCloud Drive ubiquity container, the sibling of
-// `blob_backup.rs`. The repo is otherwise the one account asset held ONLY on the PDS; this
-// closes the last self-custody gap. A CAR *is* the portable, importable artifact
-// (`com.atproto.repo.importRepo` / the migration `transfer_repo` leg consume exactly these
-// bytes), so there is nothing to "generate" for a new provider — the file is the export.
-//
-// Four Tauri IPC commands + one `pub(crate)` migration helper:
-//
-//   get_repo_backup_status(did)          — location + opt-in flag + snapshot size/rev
-//   set_repo_backup_enabled(did, bool)   — the explicit opt-in toggle
-//   run_repo_backup(did)                 — discover PDS → getRepo → VALIDATE → atomic write
-//   export_repo_backup(did)              — read + re-validate the stored CAR; hand out bytes
-//   mirror_repo_car(root, did)           — the transfer_repo iCloud-mirror fallback source
-//
-// The snapshot is fetched over the public, unauthenticated `com.atproto.sync.getRepo`
-// (`auth: none`, no session — a genuine advantage over the blob restore path, which needs a
-// full-access session). Before a fetched CAR is ever enshrined it is validated client-side —
-// the wallet's twin of the defensive checks the destination PDS's `car_import` applies:
-// well-formed framing, every block's bytes re-hash to its CID (content-addressed = trustless),
-// exactly one root, the root decodes as a signed commit (version 3) bound to this DID, and the
-// MST walks intact from the commit. A corrupt or hostile fetch is rejected as `CAR_INVALID`,
-// leaving the prior good snapshot untouched. No encryption: the repo is public data on an
-// `auth: none` endpoint, the same posture already accepted for the blob mirror.
-//
-// The mirror root, `BackupLocation`, and the `EZPDS_BLOB_BACKUP_DIR` override are REUSED from
-// `blob_backup` — both features write under the same iCloud ubiquity container (blob uses
-// `blobs/` + `manifests/`; repo uses `repo/{sanitized-did}.{car,json}`), so there is no new
-// entitlement and the "iCloud off on a real device = unavailable, never a silent local
-// fallback" contract holds identically.
+
+//! User-held repo backup, sibling of `blob_backup`: a full-CAR snapshot of the account's repo
+//! (signed commit + MST + record blocks — every post, like, follow, profile edit) mirrored
+//! into the same iCloud ubiquity container. The repo is otherwise the one account asset held
+//! ONLY on the PDS; this closes the last self-custody gap. A CAR *is* the importable artifact
+//! (`importRepo` / the migration `transfer_repo` leg consume exactly these bytes), so the
+//! file is the export.
+//!
+//! Four Tauri IPC commands + one `pub(crate)` helper:
+//!
+//! - `get_repo_backup_status(did)` — location + opt-in flag + snapshot size/rev
+//! - `set_repo_backup_enabled(did, bool)` — the explicit opt-in toggle (per-DID Keychain flag
+//!   `{did}:repo-backup-enabled`, named by `backup_enabled_account`)
+//! - `run_repo_backup(did)` — discover PDS → public `getRepo` (`auth: none`, no session) →
+//!   validate → atomic temp-file+rename write of `repo/{sanitized-did}.car` + its manifest
+//!   `repo/{sanitized-did}.json` (`rootCid, rev, sizeBytes, lastBackupAt`). Idempotent: an
+//!   unchanged `rev` short-circuits the CAR rewrite and only advances the timestamp
+//! - `export_repo_backup(did)` — read + re-validate the stored CAR, hand out the bytes
+//!   (base64) + metadata. Deliberately no "push to my live PDS" button: `importRepo` needs a
+//!   *deactivated* account, so restore flows through the migration machinery
+//! - `mirror_repo_car` — fail-closed re-validating mirror read, the repo twin of
+//!   `blob_backup::mirror_fallback_blob`; consumed by `migration_orchestrator::transfer_repo`
+//!   (source-`getRepo`-failure fallback) and `disaster_recovery::recovery_transfer_repo`
+//!
+//! Client-side CAR validation — the wallet's twin of the destination PDS's `car_import`
+//! checks, built on the pure `cid`/`ipld-core`/`serde_ipld_dagcbor` primitives, NOT the
+//! repo-engine crate: well-formed framing; every block's bytes re-hash to its CID; exactly
+//! one root; the root decodes as a signed commit (version 3) bound to this DID; and the MST
+//! walks intact from the commit, following subtree + record-value links but never descending
+//! into records (records link to out-of-CAR blobs). A corrupt or hostile fetch is
+//! `CAR_INVALID`, leaving the prior good snapshot untouched. No encryption: the repo is
+//! public data on an `auth: none` endpoint.
+//!
+//! The mirror root, `BackupLocation`, `sanitize_did`, and the `EZPDS_BLOB_BACKUP_DIR`
+//! override are reused from `blob_backup` — same container, no new entitlement, and the
+//! "iCloud off on a real device = `BACKUP_UNAVAILABLE`, never a silent local fallback"
+//! contract holds identically. Nothing here needs a session, so `RepoBackupError` has no
+//! `SESSION_LOCKED`; serialized types mirror `$lib/ipc` exactly (SCREAMING_SNAKE_CASE codes,
+//! camelCase fields).
 
 use std::collections::{HashMap, HashSet};
 use std::io::Cursor;

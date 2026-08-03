@@ -1,7 +1,27 @@
 // pattern: Mixed (Functional Core types + Imperative Shell commands)
-//
-// Functional Core: Types and error enums for recovery override operations
-// Imperative Shell: Recovery override building and submission commands
+
+//! The recovery override: a counter-operation that undoes an unauthorized PLC op inside
+//! plc.directory's 72-hour recovery window. Types and the fork-point/diff logic are
+//! Functional Core; the build/submit commands are Imperative Shell.
+//!
+//! `build_recovery_override` fetches the audit log, identifies the fork point
+//! ([`find_fork_point`] — the last legitimate operation before unauthorized changes; the
+//! *earliest* fork when several unauthorized ops are chained), builds a counter-op
+//! restoring the pre-unauthorized state with `prev` at the fork-point CID (so submission
+//! nullifies everything after the fork), and signs it with the per-DID device key.
+//! `submit_recovery_override` POSTs the signed op to plc.directory and updates the cached
+//! audit log and DID document. The Tauri commands are `build_recovery_override_cmd` /
+//! `submit_recovery_override_cmd`; [`RecoveryState`] `{ did, signed_op }` rides
+//! `AppState.recovery_state` between them (`tokio::sync::Mutex`, held across `.await`).
+//!
+//! The window (`RECOVERY_WINDOW_HOURS` = 72, computed locally with `chrono` from the
+//! unauthorized op's `created_at`) is *enforced* by plc.directory; the local check exists
+//! to fail early with `RecoveryWindowExpired`. The frontend mirrors it as
+//! `RECOVERY_WINDOW_MS` in `deadline.ts`.
+//!
+//! [`RecoveryError`] serializes as `{ code: "SCREAMING_SNAKE_CASE" }` and
+//! [`SignedRecoveryOp`] as camelCase `{ diff, signedOp }`; TypeScript counterparts must
+//! match.
 
 use crate::claim::{ChangeType, ClaimResult, OpDiff, ServiceChange};
 use crate::identity_store::{IdentityStore, PerDidSignError};

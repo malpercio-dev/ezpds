@@ -26,6 +26,14 @@
 //! **A gate reads as a feature question, never a vendor question.** There is deliberately
 //! no `is_custos()`: a self-hosted Custos may run without escrow, and a future
 //! implementation could adopt a single capability. Ask [`ServerCapabilities::has`].
+//!
+//! **Cache shape.** A process-global per-host map (`OnceLock<Mutex<HashMap>>`, the
+//! unit-of-global shape `IdentityStore` uses) keyed by a trailing-slash/case-normalized
+//! host. Every successful `PdsClient::describe_server` calls [`record`], so migration
+//! prepare, handle change, consent, and sovereign login all warm it for free; [`probe`] is
+//! the cached read that describes the host only when nothing is known. A *failed* probe
+//! yields [`ServerCapabilities::none`] and is not cached — see [`probe`] — and [`forget`]
+//! drops a host when the user re-points the wallet.
 
 use std::collections::HashMap;
 use std::sync::{Mutex, OnceLock};

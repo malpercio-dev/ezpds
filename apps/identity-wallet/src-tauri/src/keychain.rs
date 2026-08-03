@@ -62,6 +62,49 @@
 //! compile time, and `just bundle-identity-check` re-asserts it alongside the bundle id and
 //! the iCloud container. See ADR-0030.
 //!
+//! # Account inventory
+//!
+//! Every account the wallet stores, with the module whose constant or helper owns its
+//! naming in parentheses (that module's docs carry the account's contract). App-global,
+//! device-local unless noted:
+//!
+//! * `relay-base-url` — configured PDS base URL ([`store_pds_url`]/[`load_pds_url`]).
+//! * `appearance-preference` — `"system"`/`"light"`/`"dark"`; mirrored pre-paint in
+//!   localStorage under the same key.
+//! * `device-rotation-key-priv` / `-pub` / `-app-label` (`device_key`) — the global
+//!   device key: priv on the software path, pub + app-label as Secure Enclave metadata.
+//! * `session-token` — the pending (pre-DID) or upgraded (post-DID) session token.
+//! * `did` — the create flow's legacy primary-DID marker.
+//! * `ceremony-staging` (`share_ceremony::STAGING_ACCOUNT`) — the in-flight create
+//!   ceremony's share set; fail-closed.
+//! * `recovery-epilogue` (`share_recovery::EPILOGUE_ACCOUNT`) — the in-flight recovery
+//!   rotation epilogue; fail-closed.
+//! * `monitor-history` (`plc_monitor`) — the monitor's sweep log; fail-open.
+//! * `managed-dids` / `forgotten-dids` (`identity_store`) — the managed-DID index and
+//!   the deliberate-removal record launch reconciliation consults.
+//! * `pending-removals` (`identity_removal`) — DIDs whose post-delete tombstone/wipe
+//!   is unfinished; fail-open.
+//! * `oauth-dpop-key-priv`, `oauth-access-token`, `oauth-refresh-token` — the retained
+//!   but currently dead legacy OAuth-client items ([`store_dpop_key`]/[`store_oauth_tokens`]).
+//! * the five `notification-*` accounts (`notifications::NOTIFICATION_ACCOUNTS` is the
+//!   inventory) — the key, the pinned sender-key document, and the extension's failure
+//!   log are written via [`store_item_after_first_unlock`]; none of the five ever syncs.
+//! * `blob-backup-settings` and `background-backup-next-mirror` (`bg_backup`) — the
+//!   background-sweep policy and its mirror-alternation turn.
+//! * `recovery-share-1` — the deprecated app-global Share 1 slot, read only by the
+//!   launch migration and the recovery auto-load fallback.
+//!
+//! Per-DID accounts follow `"{did}:suffix"` with ten suffixes: `device-key`,
+//! `device-key-pub`, `device-key-app-label`, `did-doc`, `plc-log`, `oauth-tokens`,
+//! `recovery-signing-key` (all `identity_store`; the last written by
+//! `disaster_recovery`), `blob-backup-enabled` (`blob_backup`), `repo-backup-enabled`
+//! (`repo_backup`), and `self-held-kit` (`self_held_kit`). Three more per-DID slots
+//! use a prefix form: `recovery-share-1:{did}` (`rekey::recovery_share1_account` —
+//! the only account family [`syncs_to_icloud`] admits to the synchronizable store) and
+//! the staging pair `rekey-staging:{did}` / `self-held-kit-staging:{did}`
+//! (`share_ceremony`). Changing [`SERVICE`] or any account name orphans previously
+//! stored items.
+//!
 //! In test builds (`#[cfg(test)]`), all Keychain operations are redirected to an
 //! in-memory store so that tests never touch the real macOS Keychain and never
 //! trigger a password prompt. The test store models the two-store split faithfully —

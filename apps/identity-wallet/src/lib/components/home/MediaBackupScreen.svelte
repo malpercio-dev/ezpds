@@ -26,6 +26,15 @@
   } from '$lib/ipc';
   import { unlockIdentity, isUnlockCancelled } from '$lib/unlock';
 
+  // The user-held backup surface, reached from ManageIdentityScreen's "Backups" row.
+  // Two sections over the same iCloud location, each with its own per-DID opt-in flag:
+  // media (the blob mirror — "Back up now" is an incremental, CID-verified pass over
+  // public sync endpoints, no session; "Restore to server" is biometric-gated with
+  // SESSION_LOCKED → `unlockIdentity` + retry, and per-blob failures are listed rather
+  // than aborting the run) and posts (the repo CAR snapshot — public `getRepo`, no
+  // session or biometric, and deliberately no restore button: see `$lib/ipc/repo-backup`).
+  // `+page.svelte` also fires silent opportunistic passes of both on app open.
+
   let {
     did,
     onback,

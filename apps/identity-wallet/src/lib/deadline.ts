@@ -1,3 +1,13 @@
+/**
+ * PLC recovery-deadline utilities, shared by every alarm surface.
+ *
+ * A rotation-key recovery override must land within plc.directory's 72-hour window
+ * (`RECOVERY_WINDOW_MS` — computed locally here, enforced by the directory itself).
+ * `getDeadline` adds the window to an unauthorized operation's ISO 8601 `createdAt`;
+ * `getUrgency` maps time remaining onto the app-wide four-state `Urgency` vocabulary
+ * (expired at 0, critical under 4h, warning under 24h, safe at 24h and up);
+ * `formatCountdown` renders the "Xh Ym remaining" line. Pure; tested by `deadline.test.ts`.
+ */
 export const RECOVERY_WINDOW_MS = 72 * 60 * 60 * 1000; // 72 hours
 
 export function getDeadline(createdAt: string): Date {

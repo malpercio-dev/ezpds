@@ -1,8 +1,60 @@
 // pattern: Imperative Shell
-//
-// Gathers: PDS discovery parameters (handle, DID, OAuth metadata)
-// Processes: DNS TXT resolution, HTTP well-known fetches, PDS OAuth metadata discovery
-// Returns: PDS endpoints, authorization server metadata, or error codes
+
+//! Discovery, auth, and XRPC against *arbitrary* PDS endpoints and plc.directory — every
+//! server the wallet learns about at runtime, as opposed to the one configured Custos
+//! (`http.rs::CustosClient`). [`PdsClient`] is stateless: it wraps a `reqwest::Client`
+//! (connection pooling) plus the plc.directory base URL (default `https://plc.directory`;
+//! a test constructor overrides it), and is built eagerly in `AppState::new`.
+//!
+//! **The wallet's OAuth identity** also lives here: [`CANONICAL_CLIENT_ID`],
+//! [`REDIRECT_URI`], [`CALLBACK_SCHEME`], [`client_id_for_pds`] (fixed canonical URL except
+//! a loopback base, which derives its own). The redirect scheme is the client_id host in
+//! reverse-FQDN order — the constants' docs carry the spec rule and the sync requirement
+//! with the Custos client-metadata route and the V042-seeded `oauth_clients` row.
+//!
+//! `PdsClient` methods, grouped:
+//! - **Discovery**: `resolve_handle` (DNS TXT `_atproto.{handle}`, then HTTP
+//!   `/.well-known/atproto-did`; `HandleNotFound` only when both fail), `discover_pds`
+//!   (DID doc → `atproto_pds` endpoint, HEAD reachability check), `discover_auth_server`
+//!   (validates `code` + `S256` support).
+//! - **OAuth against a discovered AS**: `pds_par`, `pds_token_exchange` (returns the raw
+//!   `reqwest::Response` so the caller runs the nonce retry), `build_pds_authorize_url`.
+//! - **plc.directory**: `fetch_audit_log`, `fetch_plc_data_document`,
+//!   `post_plc_operation`, and the free helper `rotation_keys_from_audit_log`.
+//! - **Per-server calls**: `describe_server` (pre-migration probe for `did`/domains; every
+//!   success also records the optional `custos` extension into `pds_capabilities`' cache),
+//!   `create_session` (the claim flow's password source login — 401 →
+//!   `InvalidCredentials`, or `AuthFactorTokenRequired` for email 2FA; the returned JWTs
+//!   feed `OAuthClient::new_bearer`), `fetch_repo_car`, `fetch_blob`/`fetch_blob_with_type`,
+//!   `list_blobs`, `reserve_signing_key`, `delete_account`.
+//!
+//! **Module-level XRPC helpers** take an `&OAuthClient` instead of being `PdsClient`
+//! methods — they need an authenticated client the plain one cannot provide, keeping
+//! `PdsClient` focused on unauthenticated work: the claim trio
+//! (`request_plc_operation_signature`, `sign_plc_operation`,
+//! `get_recommended_did_credentials`); the migration set (`get_service_auth`,
+//! `create_account_migration` — HTTP 409 → `DidAlreadyExists` for resume — `import_repo`,
+//! `upload_blob`, `list_missing_blobs`, `get_preferences`, `put_preferences`,
+//! `check_account_status`, `activate_account`, `deactivate_account`,
+//! `request_account_delete`); the app-password trio (`create_app_password`,
+//! `list_app_passwords`, `revoke_app_password`).
+//!
+//! **Status classification.** Every authenticated helper routes its non-2xx branch through
+//! `classify_xrpc_response` (→ the pure `classify_xrpc_error`): `429` →
+//! `RateLimited { retry_after }`, `401` → `Unauthorized`, anything else →
+//! `XrpcError { status, error, message }` carrying the atproto error envelope.
+//! [`PdsClientError::NetworkError`] is transport-only — a server that answered is never
+//! reported as a connectivity failure.
+//!
+//! **Error reachability.** `PdsClientError` serializes as `{ code: "SCREAMING_SNAKE_CASE" }`
+//! (`PdsUnreachable.reason` is serde-skipped). The discovery/resolve variants
+//! (`HandleNotFound`, `DidNotFound`, `PdsUnreachable`, `NetworkError`, `InvalidResponse`,
+//! `OauthFailed`) can reach the frontend directly; the status-classified trio
+//! (`RateLimited`, `Unauthorized`, `XrpcError`) is mapped into each command's own error
+//! enum first (e.g. `ClaimError`); `DidAlreadyExists` is migration-internal; and
+//! `InvalidCredentials`/`AuthFactorTokenRequired`/`InsecurePdsUrl` are claim-flow-internal,
+//! mapped by `authenticate_source_pds`. [`PlcDidDocument`] and [`PlcService`] derive
+//! `Clone` so claim state can be cloned out of the tokio mutex before network calls.
 
 use std::collections::HashMap;
 use std::time::Duration;

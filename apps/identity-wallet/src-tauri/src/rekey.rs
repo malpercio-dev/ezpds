@@ -1,38 +1,54 @@
 // pattern: Mixed (Functional Core guard/diff; Imperative Shell build/submit/confirm commands)
-//
-// Functional Core: the strict additive re-key guard and the review-diff computation (pure).
-// Imperative Shell: build_rekey / submit_rekey / confirm_rekey (share generation + network +
-//                   Keychain + signing) and their Tauri command wrappers.
-//
-// This is the "re-key migration" for existing OLD-MODEL accounts. Every account
-// created before the ceremony inversion carries a server-generated 2-of-3 split of a secret
-// bound to nothing: the shares protect nothing, and the server saw all three at generation.
-// Such an account's `rotationKeys` are the 2-key `[device, PDS]` array — no recovery key. The
-// account's real safety net is unchanged from today: the device key itself.
-//
-// The re-key moves the account onto the client-generated recovery model, exactly like a fresh
-// ceremony but against an existing identity:
-//   1. Generate a NEW recovery seed client-side, derive its recovery key, split 2-of-3 (v2
-//      envelopes), staged in a per-DID Keychain slot BEFORE any network call.
-//   2. Device-key-sign a PLC rotation op INSERTING the recovery key at `rotationKeys[1]` — the
-//      device key stays at `[0]`, the existing PDS key shifts to `[2]`. Nothing is removed.
-//   3. `PUT /v1/recovery/escrow-share` with the new Share 2 (the server deposits it and voids the
-//      dead legacy `accounts.recovery_share` in the same transaction).
-//   4. Overwrite the per-DID Keychain Share 1 slot with the new Share 1 (verified read-back).
-//   5. Walk the user through saving the new Share 3 (frontend reuses ShamirBackupScreen), then
-//      refresh the cached DID doc and tear down the staging slot.
-//
-// ADDITIVE-ONLY SAFETY. The device key never leaves `rotationKeys[0]`; the new shares are staged
-// before the PLC op; escrow deposit follows it. A failure at any step leaves the account no less
-// recoverable than today (device key only), and a resumed re-key converges to the same terminal
-// state — every network/Keychain step below is idempotent. There is no window in which the
-// account is worse off. Old shares are VOIDED by the re-key, not merely rotated — the honest
-// framing, since they never protected anything.
-//
-// Unlike the sovereign repo-key rotation (which routes its op through the PDS so the commit
-// signer cuts over atomically), a re-key never changes `verificationMethods.atproto` — the PDS
-// key is the SAME key, only repositioned — so the wallet submits this op to plc.directory
-// directly, like the migration and recovery legs.
+
+//! The "re-key migration" for existing OLD-MODEL accounts. Every account created
+//! before the ceremony inversion carries a server-generated 2-of-3 split of a secret
+//! bound to nothing: the shares protect nothing, and the server saw all three at
+//! generation. Such an account's `rotationKeys` are the 2-key `[device, PDS]` array —
+//! no recovery key; its real safety net is unchanged from today, the device key
+//! itself. [`guard_rekey_op`] (pure, with the review-diff computation) encodes exactly
+//! that layout: the current `rotationKeys` must be exactly those 2 keys, which is why
+//! the claimed-identity sibling `self_held_kit::guard_self_held_kit_op` drops the rule.
+//!
+//! The re-key moves the account onto the client-generated recovery model, exactly like
+//! a fresh ceremony but against an existing identity:
+//!   1. Generate a NEW recovery seed client-side, derive its recovery key, split
+//!      2-of-3 (v2 envelopes), staged in the per-DID `rekey-staging:{did}` slot
+//!      (`share_ceremony`) BEFORE any network call.
+//!   2. Device-key-sign a PLC rotation op INSERTING the recovery key at
+//!      `rotationKeys[1]` — the device key stays at `[0]`, the existing PDS key shifts
+//!      to `[2]`. Nothing is removed.
+//!   3. `PUT /v1/recovery/escrow-share` with the new Share 2 (the server deposits it
+//!      and voids the dead legacy `accounts.recovery_share` in the same transaction).
+//!   4. Overwrite the per-DID Keychain Share 1 slot with the new Share 1 (verified
+//!      read-back).
+//!   5. Walk the user through saving the new Share 3 (frontend reuses
+//!      ShamirBackupScreen), then refresh the cached DID doc and tear down the staging
+//!      slot — `confirm_rekey` is the teardown gate (Share 1 verifiably durable first,
+//!      the order `confirm_share_backup` and `confirm_self_held_kit` mirror).
+//!
+//! ADDITIVE-ONLY SAFETY. The device key never leaves `rotationKeys[0]`; the new shares
+//! are staged before the PLC op; escrow deposit follows it. A failure at any step
+//! leaves the account no less recoverable than today (device key only), and a resumed
+//! re-key converges to the same terminal state — every network/Keychain step below is
+//! idempotent. There is no window in which the account is worse off. Old shares are
+//! VOIDED by the re-key, not merely rotated — the honest framing, since they never
+//! protected anything.
+//!
+//! This module also owns the durable per-DID Share 1 slot: `recovery-share-1:{did}`
+//! ([`recovery_share1_account`] is the single source of the naming, and
+//! [`is_recovery_share1_account`] is the sole account family `keychain::syncs_to_icloud`
+//! admits to the iCloud-synchronizable store), with accessors [`store_share1`],
+//! [`load_share1`] (synced-first read, device-local fallback), and
+//! [`read_share1_synced`] (write read-back, deliberately no fallback). The slot holds
+//! the wallet-generated 68-char base32 v2 envelope on the client-share path (did:web
+//! ceremonies store the server-returned 52-char bare base32) and is never displayed to
+//! the user.
+//!
+//! Unlike the sovereign repo-key rotation (which routes its op through the PDS so the
+//! commit signer cuts over atomically), a re-key never changes
+//! `verificationMethods.atproto` — the PDS key is the SAME key, only repositioned — so
+//! the wallet submits this op to plc.directory directly, like the migration and
+//! recovery legs.
 
 use std::collections::BTreeMap;
 

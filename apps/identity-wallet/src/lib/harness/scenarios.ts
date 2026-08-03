@@ -114,7 +114,9 @@ export const scenarios: Record<ScenarioName, () => WalletState> = {
    */
   // The Settings notification diagnostic with something to report. Unreachable any other
   // way in a browser: the breadcrumbs are written by the Notification Service Extension,
-  // which only exists on a device and only runs when a real sealed push arrives.
+  // which only exists on a device and only runs when a real sealed push arrives — and
+  // `window.__harness.state()` returns a deep clone, never the live store, so seeding a
+  // scenario is the only way in.
   //
   // The mix is deliberate — two key-desync failures alongside one benign post-restart one,
   // so the surface has to level correctly rather than describe whichever it saw first.

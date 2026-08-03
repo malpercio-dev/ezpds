@@ -1,10 +1,4 @@
 // pattern: Imperative Shell
-//
-// Gathers: the identity's current hosting PDS, that host's advertised capabilities,
-//          and (for the password path) the account's one-shot password
-// Processes: decides which unlock a host can serve, then mints a full session with
-//            `com.atproto.server.createSession` and binds the returned pair to this DID + host
-// Returns: the unlock route a screen should offer, or a persisted, ready session summary
 
 //! The second resolution of [`crate::session_provider::SessionError::NeedsUnlock`].
 //!
@@ -28,6 +22,23 @@
 //! Two postures carry over from the claim flow unchanged: the full session is required
 //! because a `transition:generic` OAuth token cannot drive identity operations (ADR-0021),
 //! and the password is used for exactly one request and never stored.
+//!
+//! [`get_identity_unlock_route`] decides which unlock a screen should offer
+//! (`UnlockRoute { method, pdsUrl, handle }`, method `SOVEREIGN` | `PASSWORD`) by
+//! discovering the DID's current host and reading `pds_capabilities::probe`. **An
+//! unreached probe routes to `SOVEREIGN`, not `PASSWORD`**: `reached: false` means the
+//! question could not be put to the host, and demanding a password on that basis would
+//! both misstate a fact about the user's server and change behavior for every Custos
+//! identity whose launch happens to be offline.
+//! [`unlock_identity_with_password`] validates the returned pair's `sub`/`aud` against
+//! this DID and host before persisting, and answers with the provider's `SessionReady`.
+//!
+//! Deliberately NOT biometric-gated: the password is itself the presence proof and
+//! nothing here is device-key-signed; the irreversible operations a session unlocks
+//! keep their own gates. [`UnlockError`] (IDENTITY_NOT_FOUND, UNSUPPORTED_HOST,
+//! TWO_FACTOR_REQUIRED, INVALID_CREDENTIALS, ACCOUNT_MISMATCH, INSECURE_HOST_URL,
+//! RATE_LIMITED, SERVER_ERROR, NETWORK_ERROR, KEYCHAIN, INVALID_RESPONSE) serializes
+//! as `{ code: "SCREAMING_SNAKE_CASE" }` with camelCase fields.
 
 use serde::Serialize;
 

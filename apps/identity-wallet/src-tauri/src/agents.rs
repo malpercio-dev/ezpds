@@ -1,17 +1,39 @@
-// Agent consent + audit commands — the wallet side of the auth.md claim ceremony and the
-// "My agents" management surface. Five per-identity Tauri IPC commands, each taking a `did`:
-//
-//   preview_agent_claim(did, user_code)  — what would approving this code grant? (pre-biometric)
-//   confirm_agent_claim(did, user_code)  — the human gate: flip the agent identity active → claimed
-//   list_agents(did)                     — agent identities bound to this identity's account
-//   revoke_agent(did, registration_id)   — turn an agent off (idempotent on the server)
-//   get_agent_audit(did, registration_id, cursor) — page an agent's append-only audit trail
-//
-// Each resolves a per-DID full-access session through `SessionProvider::full_access_client`
-// (like `app_passwords.rs`), so an expired session self-heals via `refreshSession` or, failing
-// that, `SessionLocked` cues the frontend to run the biometric `sovereignLogin(did)` and retry —
-// instead of dead-ending against the never-refreshed global session token this flow used before.
-// Request cores are `_impl` functions taking `&OAuthClient` so tests drive them against httpmock.
+// pattern: Mixed (Functional Core error mapping; Imperative Shell commands)
+
+//! Agent consent + audit — the wallet side of the auth.md claim ceremony and the
+//! "My agents" surface. Five per-identity Tauri IPC commands, each taking a `did`:
+//!
+//! - `preview_agent_claim(did, user_code) -> AgentClaimPreview` — `POST /v1/agents/claim-preview`:
+//!   what approving this code would grant, shown before the biometric gate.
+//! - `confirm_agent_claim(did, user_code) -> AgentClaimConfirmation` —
+//!   `POST /agent/identity/claim/confirm`, the human gate flipping the agent identity
+//!   `active → claimed`; the frontend wraps it in `authenticateBiometric()`, so the
+//!   prompt precedes the network call and a rejected gate grants nothing.
+//! - `list_agents(did) -> Vec<AgentSummary>` — the identities bound to this account.
+//! - `revoke_agent(did, registration_id)` — turn an agent off (idempotent on the server).
+//! - `get_agent_audit(did, registration_id, cursor?) -> AgentAuditPage` — page the
+//!   agent's append-only audit trail.
+//!
+//! Each resolves a refreshable per-DID full-access session via
+//! `SessionProvider::full_access_client` (like `app_passwords.rs`) and issues the
+//! request through `session.client` (an `OAuthClient`), so an expired session
+//! self-heals via `refreshSession` or, failing that, `SESSION_LOCKED { reason }` cues
+//! the frontend to run `unlockIdentity(did)` and retry. This replaced auth on the
+//! never-refreshed global `"session-token"`, whose lapse dead-ended every agent
+//! command as a bogus connection error. Request cores are `_impl` functions taking
+//! `&OAuthClient`, tested against httpmock.
+//!
+//! `AgentsError` (NOT_AUTHENTICATED, CODE_NOT_FOUND, CODE_EXPIRED, ALREADY_CLAIMED,
+//! ACCESS_DENIED, AGENT_NOT_FOUND, RATE_LIMITED, SESSION_LOCKED, NETWORK_ERROR,
+//! UNKNOWN) serializes as `{ code: "SCREAMING_SNAKE_CASE" }`; the TypeScript union in
+//! `$lib/ipc` must match exactly, and `SESSION_LOCKED` carries
+//! `reason: UnlockReason`. The ceremony's `{error}` codes map onto it in
+//! `map_ceremony_error`; a session-lifecycle failure maps via `map_session_error` —
+//! only a genuine transport failure is NETWORK_ERROR (a `NeedsUnlock` is
+//! SESSION_LOCKED, every other verdict UNKNOWN) — so denial, expiry, and lock render
+//! as explicit states. The IPC types (`AgentSummary`, `AgentAuditEvent`,
+//! `AgentAuditPage`, `AgentClaimPreview`, `AgentClaimConfirmation`) serialize
+//! camelCase and must match their `$lib/ipc` counterparts.
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;

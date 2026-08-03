@@ -20,6 +20,11 @@
   } from '$lib/ipc';
   import { unlockIdentity, isUnlockCancelled } from '$lib/unlock';
 
+  // The app-password surface, reached from the identity screen's Use zone ("Sign in to
+  // Bluesky"). Lists, mints, and revokes the account's scoped app passwords over the
+  // identity's full-access session (SESSION_LOCKED → `unlockIdentity` + retry); mint and
+  // revoke are biometric-gated, and the minted secret is shown once, offered for copy,
+  // and never persisted by the wallet.
   let {
     did,
     onback,
