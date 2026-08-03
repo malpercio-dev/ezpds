@@ -118,6 +118,9 @@ pub async fn get_oauth_client(
 /// consistent with the session and refresh-token patterns in this codebase.
 ///
 /// The code expires 60 seconds after creation (single-use, short-lived per RFC 6749 §4.1.2).
+/// `dpop_jkt` is the DPoP key thumbprint the client proved at PAR time, or `None` when the
+/// flow carried no proof (a non-PAR authorize, or a PAR without a DPoP header). When
+/// present, the token endpoint requires the redeeming proof to use that same key.
 #[allow(clippy::too_many_arguments)]
 pub async fn store_authorization_code<'e, E>(
     executor: E,
@@ -128,6 +131,7 @@ pub async fn store_authorization_code<'e, E>(
     code_challenge_method: &str,
     redirect_uri: &str,
     scope: &str,
+    dpop_jkt: Option<&str>,
 ) -> Result<(), sqlx::Error>
 where
     E: sqlx::Executor<'e, Database = sqlx::Sqlite>,
@@ -135,8 +139,8 @@ where
     sqlx::query(
         "INSERT INTO oauth_authorization_codes \
          (code, client_id, did, code_challenge, code_challenge_method, redirect_uri, scope, \
-          expires_at, created_at) \
-         VALUES (?, ?, ?, ?, ?, ?, ?, datetime('now', '+60 seconds'), datetime('now'))",
+          dpop_jkt, expires_at, created_at) \
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, datetime('now', '+60 seconds'), datetime('now'))",
     )
     .bind(code)
     .bind(client_id)
@@ -145,6 +149,7 @@ where
     .bind(code_challenge_method)
     .bind(redirect_uri)
     .bind(scope)
+    .bind(dpop_jkt)
     .execute(executor)
     .await?;
     Ok(())
@@ -208,6 +213,9 @@ pub struct AuthCodeRow {
     pub redirect_uri: String,
     /// The granular atproto OAuth scope set granted at consent time.
     pub scope: String,
+    /// The DPoP key thumbprint the client proved at PAR time, when it proved one. The
+    /// token endpoint requires the redeeming proof to use this key (RFC 9449 §10).
+    pub dpop_jkt: Option<String>,
 }
 
 /// Retrieve an authorization code without consuming it.
@@ -221,21 +229,34 @@ pub struct AuthCodeRow {
 /// Use this to retrieve the code for validation, then call `delete_authorization_code`
 /// after all checks pass. The SELECT+DELETE are serialized due to `max_connections(1)`
 /// on the pool, preventing TOCTOU races.
+/// The raw column tuple `get_authorization_code` selects, in SELECT order:
+/// client_id, did, code_challenge, code_challenge_method, redirect_uri, scope, dpop_jkt.
+type AuthCodeColumns = (
+    String,
+    String,
+    String,
+    String,
+    String,
+    String,
+    Option<String>,
+);
+
 pub async fn get_authorization_code(
     pool: &SqlitePool,
     code_hash: &str,
 ) -> Result<Option<AuthCodeRow>, sqlx::Error> {
-    let row: Option<(String, String, String, String, String, String)> = sqlx::query_as(
-        "SELECT client_id, did, code_challenge, code_challenge_method, redirect_uri, scope \
-         FROM oauth_authorization_codes \
-         WHERE code = ? AND expires_at > datetime('now')",
+    let row: Option<AuthCodeColumns> = sqlx::query_as(
+        "SELECT client_id, did, code_challenge, code_challenge_method, redirect_uri, scope, \
+             dpop_jkt \
+             FROM oauth_authorization_codes \
+             WHERE code = ? AND expires_at > datetime('now')",
     )
     .bind(code_hash)
     .fetch_optional(pool)
     .await?;
 
     Ok(row.map(
-        |(client_id, did, code_challenge, code_challenge_method, redirect_uri, scope)| {
+        |(client_id, did, code_challenge, code_challenge_method, redirect_uri, scope, dpop_jkt)| {
             AuthCodeRow {
                 client_id,
                 did,
@@ -243,6 +264,7 @@ pub async fn get_authorization_code(
                 code_challenge_method,
                 redirect_uri,
                 scope,
+                dpop_jkt,
             }
         },
     ))
@@ -467,6 +489,11 @@ pub struct StoredPARParams {
     pub response_mode: String,
     pub scope: String,
     pub login_hint: Option<String>,
+    /// The DPoP key thumbprint the client proved (or declared) at PAR time, carried into
+    /// the authorization code so only that key can redeem it. Defaults on deserialize so a
+    /// PAR row stored before this field existed reads as unbound — exactly how it behaved.
+    #[serde(default)]
+    pub dpop_jkt: Option<String>,
 }
 
 fn default_response_mode() -> String {
@@ -780,6 +807,7 @@ mod tests {
             "S256",
             "https://app.example.com/callback",
             "atproto",
+            None,
         )
         .await
         .unwrap();

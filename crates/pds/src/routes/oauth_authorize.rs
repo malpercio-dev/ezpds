@@ -93,6 +93,10 @@ pub struct AuthorizeQuery {
     /// ATProto extension: the client's hint about which account is authorizing.
     /// Pre-populates the identifier field on the consent page.
     pub login_hint: Option<String>,
+    /// The DPoP key thumbprint bound at PAR time (RFC 9449 §10), when the flow came
+    /// through PAR and proved a key. Never populated on the direct (non-PAR) path: there
+    /// is no authenticated channel on which a client could assert a key there.
+    pub dpop_jkt: Option<String>,
 }
 
 /// Raw query parameters for `GET /oauth/authorize`.
@@ -229,6 +233,7 @@ async fn resolve_authorize_params(
             response_mode,
             scope: stored.scope,
             login_hint: stored.login_hint,
+            dpop_jkt: stored.dpop_jkt,
         })
     } else {
         // Direct (non-PAR) flow: the mode arrives as a raw query parameter. Rejecting an
@@ -249,6 +254,9 @@ async fn resolve_authorize_params(
                 .filter(|s| !s.is_empty())
                 .unwrap_or_else(default_scope),
             login_hint: raw.login_hint,
+            // The direct (non-PAR) path has no channel on which the client could assert a
+            // DPoP key: query parameters are attacker-controllable.
+            dpop_jkt: None,
         })
     }
 }
@@ -591,6 +599,7 @@ async fn create_pending_request(
         origin: origin.as_deref(),
         ip: Some(client_ip.as_str()),
         user_agent: user_agent.as_deref(),
+        dpop_jkt: params.dpop_jkt.as_deref(),
         ttl_secs: PENDING_REQUEST_TTL_SECS,
     };
     if insert_pending_authorization(&state.db, &new).await.is_err() {
@@ -1129,6 +1138,12 @@ pub async fn post_authorization(
         &form.code_challenge_method,
         &form.redirect_uri,
         &granted_scope,
+        // No DPoP binding on this path. The PAR row (which holds the pushed `dpop_jkt`) is
+        // consumed by the GET that rendered this form, so by POST time the only place the
+        // thumbprint could travel is a hidden field — which is attacker-controllable, and a
+        // binding an attacker can simply omit is no binding at all. The wallet-consent path
+        // keeps its pending request server-side and does bind (see `oauth_consent.rs`).
+        None,
     )
     .await
     {

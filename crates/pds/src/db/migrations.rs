@@ -266,4 +266,8 @@ pub(super) static MIGRATIONS: &[Migration] = &[
         version: 61,
         sql: include_str!("migrations/V061__oauth_refresh_sessions.sql"),
     },
+    Migration {
+        version: 62,
+        sql: include_str!("migrations/V062__oauth_dpop_jkt_binding.sql"),
+    },
 ];

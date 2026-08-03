@@ -192,6 +192,22 @@ pub(super) async fn handle_authorization_code(
         .into_response();
     }
 
+    // Enforce the DPoP key this flow was bound to at PAR time (RFC 9449 §10): a code issued
+    // for a client that proved a key can only be redeemed by that key, so an intercepted
+    // code is useless to anyone else. Codes carrying no binding (non-PAR flows, or a PAR
+    // that proved no key) redeem as before — the issued tokens still bind to whatever key
+    // presents the proof here.
+    if let Some(bound_jkt) = auth_code.dpop_jkt.as_deref() {
+        use subtle::ConstantTimeEq;
+        if !bool::from(bound_jkt.as_bytes().ct_eq(jkt.as_bytes())) {
+            return OAuthTokenError::new(
+                "invalid_grant",
+                "authorization code is bound to a different DPoP key",
+            )
+            .into_response();
+        }
+    }
+
     // All validations passed; now consume the code.
     if let Err(e) = delete_authorization_code(&state.db, &code_hash).await {
         tracing::error!(error = %e, "failed to delete authorization code");
@@ -290,6 +306,16 @@ mod tests {
 
     /// Seed the DB with a test client + account + authorization code.
     async fn seed_auth_code(state: &AppState, code_hash: &str, code_challenge: &str) {
+        seed_auth_code_bound(state, code_hash, code_challenge, None).await
+    }
+
+    /// Seed an authorization code carrying a PAR-time DPoP key binding (V062).
+    async fn seed_auth_code_bound(
+        state: &AppState,
+        code_hash: &str,
+        code_challenge: &str,
+        dpop_jkt: Option<&str>,
+    ) {
         register_oauth_client(
             &state.db,
             "https://app.example.com/client-metadata.json",
@@ -316,6 +342,7 @@ mod tests {
             "S256",
             "https://app.example.com/callback",
             "atproto",
+            dpop_jkt,
         )
         .await
         .unwrap();
@@ -891,6 +918,7 @@ mod tests {
             "plain",
             "https://app.example.com/callback",
             "com.atproto.access",
+            None,
         )
         .await
         .unwrap();
@@ -1073,6 +1101,7 @@ mod tests {
             "S256",
             "https://app.example.com/callback",
             "atproto transition:generic",
+            None,
         )
         .await
         .unwrap();
@@ -1130,5 +1159,74 @@ mod tests {
         );
         let json = json_body(resp).await;
         assert!(json["token"].is_string(), "must return a service-auth JWT");
+    }
+
+    /// A code bound to a DPoP key at PAR time (RFC 9449 §10) is redeemable only by that
+    /// key: an intercepted code presented with a different key is refused.
+    #[tokio::test]
+    async fn authorization_code_bound_to_another_dpop_key_is_rejected() {
+        let state = test_state().await;
+        let flow_key = SigningKey::random(&mut OsRng);
+        let attacker_key = SigningKey::random(&mut OsRng);
+
+        let code_verifier = "testcodeverifier1234567890abcdefghijklmnopqr";
+        let code_challenge = URL_SAFE_NO_PAD.encode(Sha256::digest(code_verifier.as_bytes()));
+        let raw_code = "dGVzdGF1dGhvcml6YXRpb25jb2RlMTIzNDU2Nzg5MDEyMw";
+        let code_hash = {
+            let bytes = URL_SAFE_NO_PAD.decode(raw_code).unwrap();
+            let hash = Sha256::digest(&bytes);
+            hash.iter().map(|b| format!("{b:02x}")).collect::<String>()
+        };
+
+        seed_auth_code_bound(
+            &state,
+            &code_hash,
+            &code_challenge,
+            Some(&dpop_thumbprint(&flow_key)),
+        )
+        .await;
+
+        let body = format!(
+            "grant_type=authorization_code\
+             &code={raw_code}\
+             &redirect_uri=https%3A%2F%2Fapp.example.com%2Fcallback\
+             &client_id=https%3A%2F%2Fapp.example.com%2Fclient-metadata.json\
+             &code_verifier={code_verifier}"
+        );
+
+        // The attacker holds the code (and even the verifier) but not the flow's key.
+        let nonce = issue_nonce(&state.dpop_nonces).await;
+        let attacker_proof = make_dpop_proof(
+            &attacker_key,
+            "POST",
+            "https://test.example.com/oauth/token",
+            Some(&nonce),
+            now_secs(),
+        );
+        let resp = app(state.clone())
+            .oneshot(post_token_with_dpop(&body, &attacker_proof))
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+        assert_eq!(json_body(resp).await["error"], "invalid_grant");
+
+        // The legitimate client, holding the bound key, still redeems it.
+        let nonce = issue_nonce(&state.dpop_nonces).await;
+        let flow_proof = make_dpop_proof(
+            &flow_key,
+            "POST",
+            "https://test.example.com/oauth/token",
+            Some(&nonce),
+            now_secs(),
+        );
+        let resp = app(state)
+            .oneshot(post_token_with_dpop(&body, &flow_proof))
+            .await
+            .unwrap();
+        assert_eq!(
+            resp.status(),
+            StatusCode::OK,
+            "the key the flow was bound to must still redeem the code"
+        );
     }
 }

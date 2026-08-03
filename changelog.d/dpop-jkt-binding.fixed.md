@@ -1,0 +1,1 @@
+Pushed authorization requests now bind the flow to the client's DPoP key, so an intercepted authorization code cannot be redeemed by anyone else. The `state` parameter is no longer required at the PAR endpoint (PKCE already binds the flow), and an authorization response no longer echoes an empty `state` back to a client that sent none.
