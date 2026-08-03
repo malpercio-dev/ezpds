@@ -1,0 +1,28 @@
+{
+  "cli_version": "0.9.0",
+  "checkpoint_id": "c3cf89339cae",
+  "strategy": "manual-commit",
+  "branch": "malpercio/mm-495-agentsmd-diet-pds",
+  "checkpoints_count": 10,
+  "files_touched": [
+    "crates/pds/src/metrics.rs",
+    "crates/pds/src/routes/create_account_xrpc.rs",
+    "crates/pds/src/routes/create_did.rs"
+  ],
+  "sessions": [
+    {
+      "metadata": "/c3/cf89339cae/0/metadata.json",
+      "transcript": "/c3/cf89339cae/0/full.jsonl",
+      "compact_transcript": "/c3/cf89339cae/0/transcript.jsonl",
+      "content_hash": "/c3/cf89339cae/0/content_hash.txt",
+      "prompt": "/c3/cf89339cae/0/prompt.txt"
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 317,
+    "cache_creation_tokens": 1457365,
+    "cache_read_tokens": 42368202,
+    "output_tokens": 210326,
+    "api_call_count": 173
+  }
+}
