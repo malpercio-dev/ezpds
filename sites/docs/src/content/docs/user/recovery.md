@@ -3,13 +3,13 @@ title: Tamper monitoring & recovery
 description: How Obsign watches your identity for unexpected changes, and the 72-hour override.
 ---
 
-Obsign continuously checks that your identity document (your DID) still says what
-it should. If something changes that you did not initiate, Obsign tells you — in
-words, with an icon and a place in the list, never by color alone.
+Obsign continuously checks that your identity document (your DID) still says
+what it should. If something changes that you didn't initiate, Obsign tells
+you: in words, with an icon and a place in the list, never by color alone.
 
 <figure>
   <img src="/screenshots/wallet/home-alert.png" alt="Obsign home screen with a banner reading that an unauthorized change needs attention, paired with an icon and text" width="280" />
-  <figcaption>A detected change surfaces on the home screen as a banner — text and icon, not color alone.</figcaption>
+  <figcaption>A detected change surfaces on the home screen as a banner with text and icon, not color alone.</figcaption>
 </figure>
 
 ## Reading a status
@@ -18,26 +18,27 @@ Every identity shows a status. The status is always carried by **text + icon +
 position**, so it is legible without relying on color:
 
 :::note[Monitoring]
-Nothing unexpected. Obsign is watching and the identity document matches what you
-last approved.
+Nothing unexpected. Obsign is watching and the identity document matches what
+you last approved.
 :::
 
 :::caution[Change detected]
-The identity document changed in a way you did not initiate. You have a window to
-review and, if needed, override it.
+The identity document changed in a way you did not initiate. You have a window
+to review and, if needed, override it.
 :::
 
 :::danger[Action needed]
-An override window is closing, or a change would remove your ability to recover.
-This state is paired with an explicit label and a persistent banner, not a red
-dot alone.
+An override window is closing, or a change would remove your ability to
+recover. This state is paired with an explicit label and a persistent banner,
+not a red dot alone.
 :::
 
 ## The 72-hour override
 
-ATProtocol's PLC directory gives the higher-precedence rotation key a
-**72-hour window** to contest a change. Because your key is `rotationKeys[0]`
-(see [Getting started](/user/getting-started/)), you hold that power:
+ATProtocol's PLC directory gives the higher-precedence key a **72-hour window**
+to contest a change. Your device key sits at the top of that list (see
+[Who holds the keys](/user/getting-started/#who-holds-the-keys)), so you hold
+that power:
 
 1. Obsign detects a contested change and starts the countdown.
 2. You review what changed, in plain language.
@@ -46,19 +47,19 @@ ATProtocol's PLC directory gives the higher-precedence rotation key a
 
 <figure>
   <img src="/screenshots/wallet/alert-detail.png" alt="Obsign alert detail screen showing the contested change and a time-remaining countdown for the recovery window" width="280" />
-  <figcaption>The alert detail: what changed, and the time remaining in the 72-hour window — shown as a duration, not a color.</figcaption>
+  <figcaption>The alert detail: what changed, and the time remaining in the 72-hour window, shown as a duration rather than a color.</figcaption>
 </figure>
 
 :::tip
-The countdown is shown as a time remaining, not just a color. An override is
-signed by the identity key already on your device — no share to reassemble and no
-scramble in the moment. (Your [Shamir backup](/user/backup/) is the separate
-safety net for getting a key back onto a _new_ device.)
+An override is signed by the device key already on your phone — no share to
+reassemble and no scramble in the moment. (Your
+[Shamir backup](/user/backup/) is the separate safety net for getting a key
+back onto a _new_ device.)
 :::
 
 :::note[This page describes did:plc identities]
-Monitoring and the 72-hour override are properties of the PLC directory, so they
-apply to **did:plc** identities — the default. A
-[did:web identity](/user/getting-started/#advanced-anchor-to-a-domain-you-control-didweb)
+Monitoring and the 72-hour override are properties of the PLC directory, so
+they apply to **did:plc** identities — the default. A
+[did:web identity](/user/getting-started/#advanced-anchor-your-identity-to-a-domain-you-own-didweb)
 is anchored to your domain instead: defending it means defending the domain.
 :::

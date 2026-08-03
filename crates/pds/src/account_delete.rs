@@ -35,53 +35,30 @@ pub enum PurgeOutcome {
     NotFound,
 }
 
-/// Child tables that hold a row per account keyed by a `did` column, listed in an order that
-/// respects the inter-child foreign keys (**no account-keyed FK cascades**: the schema's only
-/// `ON DELETE CASCADE`s hang content-addressed ownership rows off their physical tables
-/// (`block_owners.cid` → `blocks`, `blob_owners.cid` → `blobs`), never off `accounts`, so every
-/// child must be deleted explicitly and in dependency order before the `accounts` row):
+/// Child tables holding rows for an account, deleted in foreign-key dependency order before the
+/// `accounts` row. The schema has **no account-keyed FK cascades** (its only `ON DELETE CASCADE`s
+/// hang content-addressed ownership rows off their physical tables), so every child is removed
+/// explicitly; the ordering below follows the inter-child FKs (e.g. `refresh_tokens` before
+/// `sessions`).
 ///
-/// * `refresh_tokens` before `sessions` (`refresh_tokens.session_id → sessions.id`)
-/// * `transfer_audit_events` before `transfers` before `transfer_devices`
-///   (`transfer_audit_events.transfer_id → transfers.id`, `transfers.accepted_device_id →
-///   transfer_devices.id`)
-/// * `agent_audit_events` and `agent_claim_attempts` before `agent_identities`
-///   (`agent_audit_events.registration_id → agent_identities.id`,
-///   `agent_claim_attempts.identity_id → agent_identities.id`); audit events are keyed through
-///   the identity rather than their own `did` column because pre-claim events on an anonymous
-///   registration carry a NULL `did` but still pin the identity row via the FK. Any audit event
-///   left carrying this DID on a *foreign* account's registration is part of that account's
-///   trail, so it is unlinked (`did = NULL` — the column is nullable) rather than deleted.
-/// * `sovereign_session_nonces` before `accounts` (each replay row is FK-owned by its DID)
-/// * `email_tokens` before `accounts` (FK-owned by the DID; consumption only stamps `used_at`,
-///   so confirm/update rows persist for the account's lifetime and must be purged here)
-/// * `recovery_otps`, `recovery_audit_events`, and `recovery_escrow` before `accounts` (all
-///   FK-owned by the DID; no FK links them, so their relative order is free)
+/// Non-obvious scoping the SQL alone can't show:
 ///
-/// The sovereign-child-agent tables (V047/V049) are scoped by *both* of their DID columns:
+/// * `agent_audit_events` rows carrying this DID on a *foreign* account's registration are
+///   unlinked (`did = NULL`), not deleted — they belong to that account's audit trail.
+/// * The sovereign-child tables (V047/V049) are scoped by *both* DID columns: a purged parent
+///   takes its children's registration/provisioning rows with it (the child *accounts* are
+///   cascade-scheduled onto the reaper by `purge_account`, ADR-0023), and a purged child's own
+///   provisioning row must go before its `accounts` row. `agent_child_deletions` is deleted
+///   `WHERE parent_did = ?` only, never by `child_did` (the table's key, see V049) — the
+///   tombstone must survive its child's purge to keep the parent's audit view alive.
+/// * `repo_seq` is deliberately excluded: it is a shared, densely-sequenced log, and per-DID
+///   holes would break cursor replay for every other account. History there ages out via the
+///   retention sweep; the `#account` (deleted) frame is how subscribers learn the account is
+///   gone.
 ///
-/// * `agent_identities` / `agent_child_provisionings` are additionally keyed
-///   `WHERE parent_did = ?`: a purged parent's children lose the account their custody chains to
-///   (ADR-0023), so their registration/provisioning rows go with the parent — the child
-///   *accounts* are cascade-scheduled for the reaper by `purge_account` itself (see below).
-/// * `agent_child_provisionings` is keyed `WHERE child_did = ?`: a minted child's provisioning row
-///   FK-references `accounts(did)` on `child_did`, so deleting a child account without first
-///   removing this row is a foreign-key violation. A no-op for a non-child account (only children
-///   have a provisioning row).
-/// * `agent_child_deletions` is keyed `WHERE parent_did = ?` — never `child_did`. It is the durable
-///   child-deletion tombstone that must *survive* a child's purge to keep the parent's audit view
-///   alive, so it carries no FK on `child_did`; it is anchored to `parent_did` and reclaimed only
-///   when the *parent* is deleted. A no-op for a child (a child authors no deletions).
-///
-/// The `purge_covers_every_account_foreign_key_in_the_schema` test walks the live schema's
-/// FK graph and fails if a migration adds an account-keyed table this list doesn't reach.
-///
-/// `did_documents` and `reserved_signing_keys` carry the DID with no FK to `accounts`, but are
-/// scoped by `did` so removing this account's rows is correct. `repo_seq` (the durable firehose
-/// log) is deliberately **excluded**: it is a shared, densely-sequenced log and punching per-DID
-/// holes in it would break cursor-replay's density invariant for every other account. The
-/// account's history there ages out via the normal retention sweep; the `#account` (deleted) frame
-/// we emit is how subscribers learn the account is gone.
+/// Coverage is enforced by `purge_covers_every_account_foreign_key_in_the_schema`, which walks
+/// the live schema's FK graph and fails if a migration adds an account-keyed table this list
+/// doesn't reach.
 const DELETE_BY_DID: &[&str] = &[
     "DELETE FROM account_labels WHERE did = ?",
     "DELETE FROM operator_account_audit_events WHERE did = ?",

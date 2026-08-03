@@ -153,52 +153,21 @@ subscriber-facing WebSocket frame encoding lives in the `sync_subscribe_repos` h
 
 ### `crawler.rs`
 
-Outbound `com.atproto.sync.requestCrawl` notifier. `AppState.crawlers: Arc<CrawlerNotifier>`
-is shared by every handler. The re-invitation fires from three places: **(1)** on startup
-(`main.rs` calls `crawlers.notify()` once when crawlers are configured — a fresh deploy is exactly
-when a dropped relay subscription must be re-invited); **(2)** on **every firehose emission**, via
-`Firehose::broadcast` (the single fan-out choke point), which the notifier is attached to at boot
-(`attach_crawlers`) — so `#commit` **and** the `#account`/`#identity`/`#sync` lifecycle frames all
-re-invite the relay, not just repo commits; **(3)** the same broadcast path covers `create_did.rs`/
-`create_account_xrpc.rs`/`agent_child.rs`, which additionally call `notify()` directly after their
-own commit path. `notify` is fire-and-forget: it selects the crawlers outside their rate-limit
-window (one notification per crawler per 30s), then spawns a detached task per crawler that POSTs
-`{ "hostname": <PDS-host> }` to `<url>/xrpc/com.atproto.sync.requestCrawl`, retrying with
-exponential backoff up to 3 times. All outcomes are logged, never propagated — an emission never
-blocks on or fails because of a crawler. Configured via `[crawlers] urls = [...]` (default
-`["https://bsky.network"]`; empty disables) or `EZPDS_CRAWLERS`.
-
-Why notify on non-commit frames matters: a relay can silently drop its subscription to a quiet
-PDS, and if the PDS only re-invited on commits, a post-migration `#account`(active)/`#sync` burst
-emitted while nobody was listening would leave the network's last word on the DID as the source
-PDS's deactivation — the DID stuck `AccountDeactivated` network-wide until a repo write happens to
-fire another `requestCrawl`. Emitting on the lifecycle frames closes that gap; the durable
-`repo_seq` log means the relay's replay heals everything once it reconnects (within retention).
+Outbound `com.atproto.sync.requestCrawl` notifier (`AppState.crawlers`). Fires on startup and on
+**every** firehose broadcast frame — lifecycle frames included, so a relay that silently dropped
+its subscription is re-invited even when the only news is a post-migration `#account`/`#sync`.
+Fire-and-forget, rate-limited to one notification per crawler per 30s, retried with backoff;
+configured via `[crawlers] urls` / `EZPDS_CRAWLERS` (default `["https://bsky.network"]`, empty
+disables). Mechanism and invariants: the module doc in `src/crawler.rs`.
 
 ### `relay_status.rs`
 
-The **inbound** half of federation health, complementing `crawler.rs`'s outbound `requestCrawl`:
-a `com.atproto.sync.getHostStatus` client that asks the configured relay what it knows about this
-PDS. Backs `GET /v1/admin/relay-status` (route `admin_relay_status.rs`), the operator's "is my
-server actually federating right now" readout. `fetch_host_status` returns a `RelayReport`:
-`Found(HostStatus{ seq, account_count, status })` (the relay's cursor into *our* firehose seq-space,
-how many of our accounts it has indexed, and the lifecycle status it assigns us), `NotFound` (the
-relay is up but has never crawled us — a normal "not federating yet" state, distinct from an
-outage), or `Unreachable(reason)` (transport failure, timeout, non-2xx, or unparseable body). It is
-**total, never fatal** — every failure path becomes a variant rather than an `Err`, so the admin
-readout always renders the literal truth of what the relay said.
-
-The gap the readout reports is `pdsHeadSeq − relaySeq`, and `pdsHeadSeq` is our **exact** sequencer
-head (`firehose.current_seq()`): because we own the PDS, the route reads the head directly instead
-of the timed-`subscribeRepos` approximation a third-party observer must make. This module only
-fetches the relay's side; `admin_relay_status.rs` does the compare. Like `admin_health.rs`, the
-route reports raw truth only — the ok/warn/behind verdict (gap thresholds, status mapping) lives
-with the operator (the companion app's relay-status block), never in the API shape. The `#[serde]`
-status string is kept verbatim (not an enum) so an unknown value from a newer relay is passed
-through rather than dropped. `POST /v1/admin/request-crawl` (route `admin_request_crawl.rs`) is the
-companion action: the operator "Request crawl" button, driving `CrawlerNotifier::request_crawl_now`
-to re-invite every configured relay immediately (bypassing the 30s auto-notify window) and reporting
-each relay's outcome.
+The inbound half of federation health: a `com.atproto.sync.getHostStatus` client asking the
+upstream relay what it knows about this PDS, backing `GET /v1/admin/relay-status` (which compares
+the relay's cursor against our exact sequencer head — see that route's row below, and
+`admin_request_crawl.rs` for the companion action). Total, never fatal: every failure becomes a
+`RelayReport` variant, so the readout always renders the outcome — what the relay said, or that
+it could not be asked. Details: the module doc in `src/relay_status.rs`.
 
 ### `rate_limit.rs`
 

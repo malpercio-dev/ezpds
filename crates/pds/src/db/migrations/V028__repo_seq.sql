@@ -22,8 +22,9 @@
 -- not regenerated from the block store on demand) because post-commit GC may have already
 -- reclaimed the superseded blocks the diff was computed against.
 --
--- The log is append-only and currently unbounded; a retention/pruning sweep is future work
--- (a relay that has consumed past `seq` N no longer needs rows at or below N).
+-- The log is append-only; the periodic `firehose_gc` retention sweep prunes it below the live
+-- frontier by age/count (`[firehose] log_retention_*` — a relay that has consumed past `seq` N
+-- no longer needs rows at or below N).
 CREATE TABLE repo_seq (
     seq          INTEGER PRIMARY KEY,             -- monotonic sequence number (assigned by the sequencer)
     did          TEXT NOT NULL,                   -- repo/account DID the event concerns
