@@ -34,8 +34,8 @@ your identity list to reach this screen again.
 1. Choose **Starting fresh**.
 2. Follow the prompts to pick a handle on an available domain and set up your
    account.
-3. Obsign generates your identity key on your device and seals it there. The
-   key never leaves your device unencrypted.
+3. Obsign generates your device key right on your phone and seals it there.
+   The key never leaves your device unencrypted.
 4. Before you finish, Obsign walks you through saving your recovery share. You
    can't skip this step. See [2-of-3 Shamir backup](/user/backup/).
 
@@ -102,8 +102,9 @@ can either host the document for you or leave the hosting to you.
 
 Know the trade before choosing it:
 
-- **You gain** an identity rooted in something you already own. No directory
-  and no server sits between you and it.
+- **You gain** an identity rooted in something you already own. Control comes
+  from your domain and the identity document it serves, not from a directory
+  entry or a server's say-so.
 - **You give up** the safety net. Tamper monitoring, the
   [72-hour reversal window](/user/recovery/), and the
   [2-of-3 share backup](/user/backup/) don't apply to a did:web identity.

@@ -110,9 +110,11 @@ repository into your iCloud Drive.
   previous good snapshot is left untouched; you are never left holding a
   corrupt backup.
 - **Yours to keep and to move.** The snapshot is a standard repository export
-  you can hold, inspect, and carry to another server, so the record of what
-  you've written stays with you no matter what happens to the server that
-  hosted it.
+  you can hold and inspect, so the record of what you've written stays with
+  you no matter what happens to the server that hosted it. Bringing it back is
+  part of a move: the snapshot feeds a
+  [migration or recovery](/user/migration/) to a server, not a direct upload
+  into your live account.
 
 Together with your media backup, this means your whole presence — what you
 wrote and the images you attached — has a copy that you control.

@@ -35,7 +35,7 @@ The failure mode to avoid is uniform, machine-flavored prose. The tells, and
 their fixes:
 
 - **Em-dash budget.** A handful per page, not one per sentence. Most asides
-  read fine as a separate sentence or a comma.
+  read fine as a separate sentence or set off with commas.
 - **Retire the contrast scaffold.** "X is not Y — it's Z" and "not X, but Y"
   are fine once; as the default sentence shape they are a fingerprint. Say what
   a thing *is*.

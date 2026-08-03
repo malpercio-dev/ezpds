@@ -51,7 +51,7 @@ that power:
 </figure>
 
 :::tip
-An override is signed by the identity key already on your device — no share to
+An override is signed by the device key already on your phone — no share to
 reassemble and no scramble in the moment. (Your
 [Shamir backup](/user/backup/) is the separate safety net for getting a key
 back onto a _new_ device.)

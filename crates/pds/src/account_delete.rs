@@ -48,9 +48,9 @@ pub enum PurgeOutcome {
 /// * The sovereign-child tables (V047/V049) are scoped by *both* DID columns: a purged parent
 ///   takes its children's registration/provisioning rows with it (the child *accounts* are
 ///   cascade-scheduled onto the reaper by `purge_account`, ADR-0023), and a purged child's own
-///   provisioning row must go before its `accounts` row. `agent_child_deletions` is keyed by
-///   `parent_did` only — the tombstone must survive its child's purge to keep the parent's audit
-///   view alive.
+///   provisioning row must go before its `accounts` row. `agent_child_deletions` is deleted
+///   `WHERE parent_did = ?` only, never by `child_did` (the table's key, see V049) — the
+///   tombstone must survive its child's purge to keep the parent's audit view alive.
 /// * `repo_seq` is deliberately excluded: it is a shared, densely-sequenced log, and per-DID
 ///   holes would break cursor replay for every other account. History there ages out via the
 ///   retention sweep; the `#account` (deleted) frame is how subscribers learn the account is

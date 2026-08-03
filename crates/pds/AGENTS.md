@@ -166,8 +166,8 @@ The inbound half of federation health: a `com.atproto.sync.getHostStatus` client
 upstream relay what it knows about this PDS, backing `GET /v1/admin/relay-status` (which compares
 the relay's cursor against our exact sequencer head — see that route's row below, and
 `admin_request_crawl.rs` for the companion action). Total, never fatal: every failure becomes a
-`RelayReport` variant, so the readout always renders what the relay actually said. Details: the
-module doc in `src/relay_status.rs`.
+`RelayReport` variant, so the readout always renders the outcome — what the relay said, or that
+it could not be asked. Details: the module doc in `src/relay_status.rs`.
 
 ### `rate_limit.rs`
 

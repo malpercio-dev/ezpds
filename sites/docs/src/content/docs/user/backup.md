@@ -38,8 +38,9 @@ and hands the server Share 2 and nothing else. No server database, and no
 backup of one, can ever reconstruct your secret.
 
 You confirm you've saved Share 3 before you can continue. Obsign already holds
-two shares for you (iCloud and your server), so saving Share 3 anywhere
-independent of your phone gives you a second, self-controlled path back in.
+two shares for you (one in this device's Keychain, one in your server's
+escrow), so saving Share 3 anywhere independent of your phone gives you a
+second, self-controlled path back in.
 
 :::tip[Good homes for Share 3]
 Save it to a password manager (1Password, Bitwarden, …), print it and store it
@@ -97,8 +98,8 @@ key never moves, so an interrupted upgrade never leaves you worse off than
 before.
 :::
 
-Your other safety net is unchanged: because your identity key sits on your
-device as the highest-priority key, you can
+Your other safety net is unchanged: because your device key sits at the top of
+your identity's key list, you can
 [override an unexpected change](/user/recovery/) within a 72-hour window
 without reassembling any shares.
 
