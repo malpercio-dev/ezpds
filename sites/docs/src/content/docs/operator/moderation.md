@@ -4,8 +4,8 @@ description: Takedown, restore, credential revocation, and account repair from t
 ---
 
 The operator console (the "Brass Console" companion app) exposes the moderation
-actions an operator needs. Every action reports exactly what it did — the console
-does not soften or hide the effect.
+actions an operator needs. Every action reports what it did, and the console
+doesn't soften or hide the effect.
 
 ## Actions
 
@@ -24,8 +24,8 @@ On the **Moderation** screen (look up an account by DID first):
   account: in one sweep it revokes the account's **sessions, app passwords, OAuth
   grants and pending authorization codes, and transfer-device tokens**, and reports
   the literal per-family counts. The account's **main password is untouched**, and
-  any already-issued access tokens lapse on their own within minutes. Every holder
-  — including the owner — is signed out and must log in again.
+  any already-issued access tokens lapse on their own within minutes. Every
+  holder, including the owner, is signed out and must log in again.
 
 You reach an account by tapping it in the account list, which is searchable by
 handle or DID and shows each account's blob quota.
@@ -41,7 +41,7 @@ On the **Account detail** screen (reached by tapping an account in the list):
   unconfirmed.
 - **Issue a password-reset token** — mint a single-use, one-hour reset token for
   out-of-band delivery. This is **refused for a passwordless / key-sovereign
-  account** — those recover through their escrowed key share, not a reset.
+  account**: those recover through their escrowed key share, not a reset.
 
 Both takedown and credential revocation are destructive, so the console arms them
 behind a two-tap confirmation that restates the target, then a biometric gate,
@@ -50,7 +50,7 @@ before anything is signed.
 :::caution[Takedown is server-scoped, not identity-scoped]
 A takedown affects what _your_ server serves. Because the user holds
 `rotationKeys[0]`, they can migrate their identity elsewhere. Moderation is your
-control over your infrastructure, not custody over their identity — keep that
+control over your infrastructure, not custody over their identity; keep that
 distinction clear when you communicate an action.
 :::
 
@@ -58,13 +58,13 @@ distinction clear when you communicate an action.
 
 Custos can watch ATProto **labelers** (moderation services) and flag any hosted
 account they label. Flagged accounts float to the top of the console's account
-list with an explicit `⚑` indicator per label — the label value, the labeler,
-and when it was applied — and the Home screen shows a flagged-accounts notice
+list with an explicit `⚑` indicator per label (the label value, the labeler,
+and when it was applied), and the Home screen shows a flagged-accounts notice
 for the active server. This turns the account list from a neutral roster into a
 spam/abuse triage view: if a labeler your network trusts flags one of your
 accounts, you see it on your next glance at the console.
 
-Watching is **off by default** — you choose which labelers' judgment reorders
+Watching is **off by default**: you choose which labelers' judgment reorders
 your console. The recommended starting point is Bluesky's moderation service:
 
 ```bash
@@ -99,20 +99,20 @@ Two things worth knowing before you enable it:
 - **Each poll discloses your hosted-account DIDs to the watched labeler** (they
   arrive as the query's `uriPatterns`). Hosted DIDs are already publicly
   enumerable via `com.atproto.sync.listRepos`, but watching a labeler does
-  establish a recurring outbound relationship with it — which is why this is an
-  explicit opt-in rather than a default.
+  establish a recurring outbound relationship with it, which is why it's an
+  explicit opt-in.
 - **A flag is the labeler's opinion, not a verdict.** Flagging changes only the
   sort order and the indicator; it takes no action against the account. Takedown
-  and credential revocation remain your deliberate, gated decisions above.
+  and credential revocation remain your gated decisions above.
 
 Removing a labeler from the config (or disabling watching entirely) clears its
-flags on the next pass or restart — flagged state never outlives the
+flags on the next pass or restart; flagged state never outlives the
 configuration that produced it.
 
 ## Accountability
 
 Moderation actions are shown with their subject, the operator device that signed
-them, and the result — status carried in text, not by color alone. Pair any
+them, and the result, with status carried in text, not by color alone. Pair any
 externally visible action with a clear, honest explanation to the affected user;
 the tooling reports the literal truth, and so should you.
 

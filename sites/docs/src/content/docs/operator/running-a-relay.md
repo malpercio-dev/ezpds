@@ -3,8 +3,8 @@ title: Running a relay
 description: Stand up the PDS, check its health, and understand what you are responsible for.
 ---
 
-The PDS is a single Rust binary with a SQLite database. It is designed to be
-easy to host — the whole point of the project.
+The PDS is a single Rust binary with a SQLite database, designed to be easy to
+host.
 
 ## Health
 
@@ -14,17 +14,16 @@ Every deployment exposes a health endpoint the platform can watch:
 curl -sS https://your-pds.example.com/xrpc/_health
 ```
 
-A healthy server reports its version, derived from the workspace version — the
-same source these docs stamp — so the server and its documentation cannot claim
-different versions.
+A healthy server reports its version, derived from the same workspace version
+these docs stamp, so the server and its documentation cannot claim different
+versions.
 
 :::note[Status is stated, not colored]
-The operator console reports raw facts — version, uptime, counts, sweep
-last-runs — and draws no `healthy`/`degraded`/`down` verdict of its own: the
-thresholds are the operator's judgment, not the API's shape. What is wrong is
-made legible in place — a troubled background sweep carries a trailing `!` glyph
-and a named fault beside its figures, never a bare colored dot. A degraded
-server tells you _what_ degraded.
+The operator console reports raw facts (version, uptime, counts, sweep
+last-runs) and draws no `healthy`/`degraded`/`down` verdict of its own; the
+thresholds are your judgment. What's wrong is made legible in place: a troubled
+background sweep carries a trailing `!` glyph and a named fault beside its
+figures, never a bare colored dot. A degraded server tells you _what_ degraded.
 :::
 
 <figure>
@@ -34,11 +33,11 @@ server tells you _what_ degraded.
 
 On a degraded relay, the same readout flags each troubled background sweep with
 a trailing `!` glyph and a named fault. A sweep whose last completed pass keeps
-ageing reads `stale` — passes have stopped completing, so the sweep is dead. One
-that completed but skipped work reads `failed <n>` — it ran, yet recorded `n`
+aging reads `stale`: passes have stopped completing, so the sweep is dead. One
+that completed but skipped work reads `failed <n>`: it ran, yet recorded `n`
 errors (for blob GC, an account whose reconcile failed is skipped, so its blobs
-stay uncollected until the fault is fixed). The two are named so they read apart on a
-row that has both, and _what_ degraded is legible without relying on color.
+stay uncollected until the fault is fixed). Naming both keeps them legible apart
+on a row that has both, without relying on color.
 
 <figure>
   <img src="/screenshots/admin/status-degraded.png" alt="Custos operator console server-status screen for a degraded relay, with stale background sweeps flagged by a trailing glyph" width="280" />
@@ -47,12 +46,12 @@ row that has both, and _what_ degraded is legible without relying on color.
 
 ## Is the upstream relay seeing you?
 
-A healthy server that no relay is crawling is invisible to the network — and an
+A healthy server that no relay is crawling is invisible to the network, and an
 upstream relay can silently drop your subscription. The console's Home screen
 carries a **Relay federation** block that compares your server's exact sequencer
 head against what the upstream relay reports for your host: the relay's
 lifecycle status, its cursor, how many events it is behind, and when it last
-consumed one. **Request crawl** re-invites the relay on demand — the recovery
+consumed one. **Request crawl** re-invites the relay on demand: the recovery
 move when the readout says the relay has stopped listening.
 
 <figure>
@@ -83,5 +82,5 @@ users depend on. Verify your restore path before you need it.
 ## Deploy
 
 The server deploys as an OCI image (Railway builds the `Dockerfile` directly).
-The full runbook — staging vs production branches, Litestream backups, and the
-security posture — lives in the repository's `docs/deploy.md`.
+The full runbook (staging vs production branches, Litestream backups, and the
+security posture) lives in the repository's `docs/deploy.md`.

@@ -13,12 +13,12 @@ its own **blob mirror** to do the same for blob files.
 
 When the Litestream environment variables are set, the container runs the PDS
 under Litestream: it streams the SQLite write-ahead log to your bucket as writes
-happen (not a nightly snapshot — a continuous replica), and on boot it restores
+happen (a continuous replica, not a nightly snapshot), and on boot it restores
 from that replica if the local database is missing. So a current restore point
 always exists.
 
 The replica is defined in `litestream.yml` (committed in the repo) with
-`force-path-style: false` — virtual-hosted-style addressing, which
+`force-path-style: false`: virtual-hosted-style addressing, which
 Railway/Tigris-style buckets require.
 
 ## Turning it on
@@ -35,7 +35,7 @@ leave them unset and run the PDS directly):
 
 :::caution[The bucket credentials are secrets]
 Store them in your platform's secret manager, never in the repository or the
-image — the same discipline as the [master key](/operator/configuration/). Anyone
+image, the same discipline as the [master key](/operator/configuration/). Anyone
 with the replica has a full copy of your accounts' data.
 :::
 
@@ -49,15 +49,15 @@ instead of restoring from here alone.
 
 ## Blobs: the bucket mirror
 
-Litestream replicates only the SQLite database. Uploaded blobs — avatars,
-post images, video — live as files on the deployment volume, where losing the
+Litestream replicates only the SQLite database. Uploaded blobs (avatars,
+post images, video) live as files on the deployment volume, where losing the
 volume would destroy every account's media. The blob mirror is the Litestream
 analogue for those files: a periodic sweep uploads every stored blob to an
 S3-compatible bucket, and on boot the server attempts to restore any file
 missing from the volume out of the bucket **before it takes traffic**. The
 restore is best-effort per blob: a blob whose bytes exist in neither place, or
 whose bucket copy fails content-hash verification, is logged loudly (per-CID
-error plus a boot summary count) and boot continues — that blob stays
+error plus a boot summary count) and boot continues; that blob stays
 unavailable rather than blocking startup.
 
 Turn it on by setting a bucket (unset means disabled):
@@ -89,16 +89,15 @@ bucket's.
 
 A backup only helps if the bytes it protects are still good. A periodic **scrub
 sweep** re-hashes every stored blob against its recorded CID and size, and walks
-the blob directory for orphans in both directions — a database row whose file has
+the blob directory for orphans in both directions: a database row whose file has
 gone missing, and a file that no row owns. Bitrot, a truncated write, or a bad
 restore surfaces as an operator alarm (the `blob_scrub_*` metrics and
-`GET /v1/admin/health`) **months before a migration would trip over it**, rather
-than as a mystery at the worst possible moment.
+`GET /v1/admin/health`) months before a migration would trip over it.
 
 When the [bucket mirror](#blobs-the-bucket-mirror) is configured, the sweep can
 do more than report: a file that fails its hash or has gone missing is
 **auto-healed** from the mirror's verified-good copy. Auto-heal is on by default
-and has no effect when the mirror is disabled — with no verified copy to pull
+and has no effect when the mirror is disabled: with no verified copy to pull
 from, a bad file is only ever flagged, never silently replaced. Both knobs
 (`blob_scrub.interval_secs`, default 6 hours; `blob_scrub.auto_heal`) are in the
 [configuration reference](/operator/reference/config/).
@@ -130,7 +129,7 @@ absent.
 
 ### Rollback after a bad release
 
-Schema migrations are **forward-only** — there is no down-path. Redeploying an
+Schema migrations are **forward-only**; there is no down-path. Redeploying an
 earlier `vX.Y.Z` tag is safe **only** when the schema change was
 backward-compatible. If it wasn't, roll back by restoring the database from the
 Litestream replica to a point *before* the promote, rather than by redeploying

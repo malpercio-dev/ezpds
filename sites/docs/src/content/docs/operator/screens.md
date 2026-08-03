@@ -1,6 +1,6 @@
 ---
 title: Console screens
-description: A visual tour of the Custos operator console — claim codes, accounts, devices, moderation, the audit log, transfers, and server status.
+description: A visual tour of the Custos operator console, from claim codes and accounts to moderation, the audit log, transfers, and server status.
 ---
 
 A tour of the Custos operator console (the admin companion app). Every image here is
@@ -20,7 +20,7 @@ diagrams, not pixel-exact device photos.
 
 The console opens on the active relay, ready to mint a single-use, device-signed account
 claim code. A **Relay federation** block up top reports whether the upstream relay is
-actually crawling this server — status, exact events behind, last seen — with a
+actually crawling this server (status, exact events behind, last seen) with a
 **Request crawl** re-invite (see
 [Is the upstream relay seeing you?](/operator/running-a-relay/#is-the-upstream-relay-seeing-you)).
 
@@ -86,9 +86,9 @@ destructive action.
 
 ## Audit log
 
-Every privileged operator action — takedowns, credential sweeps, code mints and
+Every privileged operator action (takedowns, credential sweeps, code mints and
 revokes, device pairings and revocations, transfer cancels, account repairs,
-crawl requests — is durably recorded with the credential that signed it: the
+crawl requests) is durably recorded with the credential that signed it: the
 master token or the specific paired device. The Audit screen browses the trail
 reverse-chronologically, filterable by action, with per-event drill-in by actor
 or subject.
@@ -109,7 +109,7 @@ In-flight device transfers an operator can watch and cancel.
 
 ## Server status
 
-One relay's health as it reports it — version and uptime, account counts, blob and block
+One relay's health as it reports it: version and uptime, account counts, blob and block
 totals, firehose state, and background-sweep last-runs. Facts only; nothing here is a
 verdict.
 
@@ -119,15 +119,15 @@ verdict.
 </figure>
 
 On a degraded relay, a troubled background sweep is flagged with a trailing `!` glyph and a
-named fault — `stale` when its passes have stopped completing (the sweep is dead), or
+named fault: `stale` when its passes have stopped completing (the sweep is dead), or
 `failed <n>` when a pass ran but recorded `n` errors (for blob GC, an account whose
-reconcile failed is skipped, so its blobs stay uncollected — and its disk unreclaimed —
+reconcile failed is skipped, so its blobs stay uncollected, and its disk unreclaimed,
 until the fault is fixed). Naming each fault keeps the two
-legible apart on a row that carries both; status is never signalled by colour alone.
+legible apart on a row that carries both; status is never signaled by color alone.
 
 <figure>
   <img src="/screenshots/admin/status-degraded.png" alt="Custos console server status for a degraded relay with stale-sweep glyphs" width="280" />
-  <figcaption>A degraded relay: stale sweeps flagged by glyph, never colour alone.</figcaption>
+  <figcaption>A degraded relay: stale sweeps flagged by glyph, never color alone.</figcaption>
 </figure>
 
 ## Settings
@@ -140,7 +140,7 @@ Per-relay pairings, the global admin key, and the biometric toggle.
 </figure>
 
 Further down, a **Diagnostics** section exports a redacted, per-relay network-error log for
-troubleshooting — operation names, relay hosts, statuses, and short error codes only, never
+troubleshooting: operation names, relay hosts, statuses, and short error codes only, never
 credentials, keys, signed requests, or claim codes.
 
 <figure>

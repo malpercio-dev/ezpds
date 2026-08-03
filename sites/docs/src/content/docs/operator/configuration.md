@@ -4,7 +4,7 @@ description: The configuration and environment surface that tunes a deployment.
 ---
 
 A Custos deployment is configured through environment variables and a small set
-of runtime settings. This page is the operator's map of that surface — the
+of runtime settings. This page is the operator's map of that surface: the
 knobs you'll actually set, with the context to set them safely. The exhaustive,
 drift-proof inventory of every setting is the
 [generated configuration reference](/operator/reference/config/), produced
@@ -27,14 +27,14 @@ These are injected at runtime and never baked into the image:
 :::danger[The master key must never change out from under the database]
 The master key **is** the AES-256-GCM key those secrets are encrypted with; it is
 used directly. Changing the environment variable alone on a populated instance
-makes all existing secrets undecryptable — the server fails to load account repo
+makes all existing secrets undecryptable: the server fails to load account repo
 signing keys, and repo writes break. **Losing it is unrecoverable.** So: store it
-in a secret manager (agenix / sops / your platform's secret store) never in the
+in a secret manager (agenix / sops / your platform's secret store), never in the
 repository or the image, and back it up.
 
 If it's already lost or you suspect it's compromised, stop and follow the
 [master-key disaster runbook](/operator/master-key-runbook/) rather than
-improvising — the recovery order matters.
+improvising; the recovery order matters.
 :::
 
 Rotation is supported, but only as a deliberate offline operation: the
@@ -55,6 +55,6 @@ changing the environment variable alone.
 | `EZPDS_AVAILABLE_USER_DOMAINS` | Domains users may claim handles on. |
 | `EZPDS_LABELER_WATCHED` | Comma-separated labeler DIDs to watch; hosted accounts they label are flagged on the operator console. Off (empty) by default — see [Moderation § Labeler watching](/operator/moderation/#labeler-watching--flagged-accounts). |
 
-The table above is the operator-facing subset. Every remaining setting — with
-its type, default, and doc-comment — is in the
+The table above is the operator-facing subset. Every remaining setting, with
+its type, default, and doc-comment, is in the
 [generated configuration reference](/operator/reference/config/).
