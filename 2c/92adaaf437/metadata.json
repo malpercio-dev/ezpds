@@ -1,0 +1,24 @@
+{
+  "cli_version": "0.9.0",
+  "checkpoint_id": "2c92adaaf437",
+  "strategy": "manual-commit",
+  "branch": "malpercio/mm-495-agentsmd-diet-wallet",
+  "checkpoints_count": 1,
+  "files_touched": null,
+  "sessions": [
+    {
+      "metadata": "/2c/92adaaf437/0/metadata.json",
+      "transcript": "/2c/92adaaf437/0/full.jsonl",
+      "compact_transcript": "/2c/92adaaf437/0/transcript.jsonl",
+      "content_hash": "/2c/92adaaf437/0/content_hash.txt",
+      "prompt": "/2c/92adaaf437/0/prompt.txt"
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 430,
+    "cache_creation_tokens": 2638494,
+    "cache_read_tokens": 71885974,
+    "output_tokens": 277342,
+    "api_call_count": 234
+  }
+}
