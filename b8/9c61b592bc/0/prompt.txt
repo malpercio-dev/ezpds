@@ -1,0 +1,954 @@
+I've had something in my mind while working towards opening this repo and project up to the public and inviting test users. I fear that the user-facing prose may come off too much as generated, and perhaps might not actually be targeting the correct audience. and then within the codebase, we often have dense comment blocks with a bunch of context that is vaguely useful-shaped but often just a lot to read. I can see how it may be useful for an agent, but I get this feeling that I have let it run away too far, and that we should take some corrective action. How might we approach these two problems?
+
+---
+
+Audience statement for Obsign:
+My initial test audience would likely be mostly peers, such as those that I see in the office, or protocol-adjacent social media connections on Bluesky, and maybe some reach into the protocol-curious. After testing, the release audience I'd be looking to aim for the 1Password kind of audience, security-minded, or even not so technical folks who want to better their security hygiene. 
+
+There is growing discussion on Bluesky about how users are *_NOT_* interested in concepts around "owning your data" among the most protocol-minded users. I'm not so sure myself, the truth is probably somewhere in the middle. However, I don't doubt the intelligence and insight of some of those making the argument, so it is something to keep in mind as well.
+
+
+Audience statement for Custos:
+Explicitly a technical-minded subset of Obsign users. Very few would be interested in owning the full stack, and the primary monetization angle would be on offering hosting tiers etc on the flagship Custos instance. These care deeply about how the technology works and wish to have the ultimate control over their data and presence on the network.
+
+---
+
+I think you nailed the depth I was going for on getting started, and I'm all for trimming as much fat as possible from AGENTS.md!
+
+---
+
+you do have linear access check memory
+
+---
+
+ah, we also touched a shipped surface and so need a changelog fragment to comply with the CI gate
+
+---
+
+the style guide is working and coderabbit has requested reviews :)
+
+---
+
+Work on Linear issue MM-494:
+
+Suggested branch name: malpercio/mm-494-operator-docs-voice-pass-writing-stylemd
+
+<issue identifier="MM-494">
+<title>Operator docs voice pass (writing-style.md)</title>
+<description>
+Apply [docs/writing-style.md](<https://github.com/malpercio-dev/ezpds/blob/main/docs/writing-style.md>) (landed in PR #496) to the `sites/docs` **operator tier** — voice fixes only, keep the technical depth (the Custos audience wants mechanism).
+
+**Scope:** all pages under `sites/docs/src/content/docs/operator/` (hand-written ones — generated reference pages are regenerated via `just docs-generate`, never hand-edited). Baseline tell counts from the 2026-08-02 audit: `master-key-runbook.md` 25 em-dashes, `capabilities.md` 24, `running-a-relay.md` 19, `moderation.md` 18, `screens.md` 16, `backups.md` 12.
+
+**Constraint:** `just runbook-parity-check` binds `sites/docs/.../operator/master-key-runbook.md` to `docs/operations/master-key-disaster-runbook.md` — the golden rule and quick-reference step ordering must read identical in both, so those two files move in the same change.
+
+**Template:** PR #496's user-tier sweep (facts/links/screenshots preserved, em-dashes to a handful per page, no contrast scaffolds, no self-justifying asides, no defensive adverbs).
+</description>
+<team name="Mal's Machinations"/>
+<project name="ezpds">An easy-to-host PDS on the ATProtocol, MacOS. Grandma-approved.</project>
+</issue>
+
+---
+
+Work on Linear issue MM-495:
+
+Suggested branch name: malpercio/mm-495-agentsmd-diet-map-not-territory-register-for-the-big-files
+
+<issue identifier="MM-495">
+<title>AGENTS.md diet: map-not-territory register for the big files</title>
+<description>
+Bring the two runaway AGENTS.md files down to the map-not-territory register defined in [docs/writing-style.md](<https://github.com/malpercio-dev/ezpds/blob/main/docs/writing-style.md>) (PR #496): an entry is a few lines — what the module is, the one or two facts an agent needs before opening it, and a pointer to the module doc. Detail lives in exactly one home, nearest the code.
+
+**Scope:**
+
+* `crates/pds/AGENTS.md` (~15k words) — the routes table's paragraph-length cells are the bulk; also the `firehose/`, `identity/`, `auth/`, `db/` narrative sections.
+* `apps/identity-wallet/AGENTS.md` (~10k words) — the Exposes/Guarantees/Invariants lists restate module docs and serde contracts at length.
+
+**Method (calibrated on PR #496's pilot — mal approved \~3:1 compression):**
+
+1. Per file/section, first verify whether the detail already exists in the module doc. Where it does (the common case — see the `crawler.rs`/`relay_status.rs` pilot), the diet is pure dedup.
+2. Where AGENTS.md is the *only* home of a fact, move it INTO the module doc first, then shrink the entry to a pointer. Never delete a fact that has no other home.
+3. Per-file (or per-section) PRs so each diff is reviewable; run `just ticket-ref-check` + `just docs-check` per PR.
+
+Expected 60–70% reduction with zero information loss. This also cuts the context these files consume when auto-loaded into every agent session touching the crate.
+</description>
+<team name="Mal's Machinations"/>
+<project name="ezpds">An easy-to-host PDS on the ATProtocol, MacOS. Grandma-approved.</project>
+</issue>
+
+---
+
+<task-notification>
+<task-id>a9a542bbce7e94c6d</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-jacob-zweifel-workspace-malpercio-dev-ezpds--claude-worktrees-prose-comments-review-f7fad4/187dd3cb-896b-4c9d-9963-0cc5d3420a0d/tasks/a9a542bbce7e94c6d.output</output-file>
+<status>completed</status>
+<summary>Agent "Module docs: top-level services" finished</summary>
+<note>A task-notification fires each time this agent stops with no live background children of its own. The user can send it another message and resume it, so the same task-id may notify more than once.</note>
+<result>The diff confirms the whole branch is doc-comment-only work (sibling agents are covering other files on this shared branch); my 12 files show exactly my changes, and nothing outside comments changed anywhere. Sanity checks done: all 12 files parse clean under the pinned rustfmt 1.96.0 with no formatting diffs, and the `//!` placement matches the crawler.rs register layout that already compiles in CI.
+
+result: All 12 assigned pds modules now carry `//!` module docs holding every fact from their AGENTS.md entries (converted from `//` prose or created fresh), parse-verified, ready for the AGENTS.md Module Map diet.
+
+## Per-file report
+
+All paths under `/Users/jacob.zweifel/workspace/malpercio-dev/ezpds/.claude/worktrees/prose-comments-review-f7fad4/crates/pds/src/`.
+
+**email.rs** — (a) Leading `//` prose converted to `//!`, extended. Wove in: the full flow list (adds PLC-op + account-delete), rustls on the SMTP path, and the config block `[email]` / `EZPDS_EMAIL_*` incl. `EZPDS_EMAIL_HTTP_TOKEN`, `EZPDS_EMAIL_HTTP_API_URL`, `EZPDS_EMAIL_HTTP_TIMEOUT_SECS`. (b) None omitted. (c) Proposed entry:
+`email.rs — pluggable outbound email (Arc&lt;dyn EmailSender&gt;: log default, SMTP, Mailtrap HTTPS) behind the token-delivery flows; config [email] / EZPDS_EMAIL_* — see module doc`
+
+**notify_relay_client.rs** — (a) Converted, extended. Wove in: the `ezpds/notify/0` ALPN, one-shot re-dial retry, enroll-on-`notEnrolled` healing, and a summary of the send-worker half (unbounded in-process mpsc, handle write-back, prune on `unregistered`/APNs 410). The in-memory-only rationale and sequential-drain detail already live in the mid-file worker section comment and item docs. (b) "Same `IrohState` endpoint iroh_tunnel.rs accepts on" kept in compressed form ("reuses that same bound `Endpoint`"). (c)
+`notify_relay_client.rs — outbound iroh leg to the notification relay (ezpds/notify/0) + the fire-and-forget send worker; lazy cached connection, self-healing enrollment — see module doc`
+
+**notifications.rs** — (a) Converted, extended. Wove in: entry-point names `notify_device(state, did, payload)` / `notify_admin_devices`, lazy sender-key minting (first send or first `sender-keys` fetch), padding against the serialized APNs body via `notify_relay::protocol::apns_envelope`, drop-don't-truncate for oversize payloads, once-per-fan-out key load, and the `[notifications] relay` unset ⇒ `AppState.notify_sender = None` inert posture. (b) None omitted. (c)
+`notifications.rs — sending side: pad + HPKE-seal one payload per registered device and enqueue; inert when [notifications] relay is unset — see module doc`
+
+**transfer.rs** — (a) Converted, extended. Added cancel to the workflow list; cancel semantics (terminal `cancelled`, credential tombstone, `transfer.cancelled` audit event, sessions untouched) were already fully documented on `cancel_transfer`, so the module doc names them once and points there. (b) None omitted. (c)
+`transfer.rs — planned device-transfer accept/complete/cancel workflows; db/transfers.rs owns the SQL, this module owns the cross-table ordering — see module doc`
+
+**account_delete.rs** — (a) Converted, extended. Wove in: on-disk reclamation of blobs no other account owns, the sovereign-child cascade onto the deactivate → `delete_after` → reaper pipeline, and a pointer to `DELETION_TABLES`/`purge_account` for the FK ordering and the schema-walking tripwire. (b) The test name `purge_covers_every_account_foreign_key_in_the_schema` and ADR-0023 stay on the `DELETION_TABLES` item doc where they already lived (one fact, one home); the module doc points at it. (c)
+`account_delete.rs — shared permanent account-deletion transaction (FK-ordered child tables, blob-file reclamation, #account deleted frame), used by deleteAccount and the reaper — see module doc`
+
+**no_input.rs** — (a) Converted, extended. Wove in the seven consuming routes (`activateAccount` … `requestPlcOperationSignature`) and the "strictness drifting route to route" framing. (b) None omitted. (c)
+`no_input.rs — NoInputBody extractor: 400s any body on a no-input XRPC procedure with the reference PDS's exact message; extract it last — see module doc`
+
+**request_host.rs** — (a) Created (leading `//` was a 3-line stub; the facts lived on the fn docs). Module doc now states the resolution chain, the `:443`/`:80` default-port stripping with the TLS-at-proxy reason, and the `did:web:host%3A8080` distinct-DID caveat. (b) None omitted. (c)
+`request_host.rs — request_host (Functional Core): resolve the client-addressed host and normalize default ports for the Host-keyed well-known routes — see module doc`
+
+**session_issuer.rs** — (a) Existing `//!` doc verified and extended with one sentence: the atomic sessions + initial refresh_tokens single-transaction shape (detail remains on `issue_session`). (b) None omitted. (c)
+`session_issuer.rs — shared legacy access+refresh JWT issuance transaction; explicit full-access vs app-password authority — see module doc`
+
+**xrpc_dispatch.rs** — (a) Created (no module doc existed). States: `xrpc_handler` registered by `app.rs` at `/xrpc/{method}`, the three proxied namespaces and default-vs-`atproto-proxy`-header resolution, the read-after-write branch, `proxy_requests_total`. Deep routing/auth semantics stay on `xrpc_handler`'s thorough doc, which the module doc points at. (b) None omitted. (c)
+`xrpc_dispatch.rs — catch-all XRPC proxy dispatcher (xrpc_handler at /xrpc/{method}): app.bsky/chat.bsky/moderation upstream resolution + read-after-write branch — see module doc`
+
+**iroh_tunnel.rs** — (a) Converted; merged the AGENTS.md line-31 entry and the full lines-203-220 narrative into one ~21-line doc. Wove in: `[iroh] enabled` default off, `auth::load_or_create_iroh_secret_key` + `iroh_identity` table, N0 preset, `AppState.iroh: Option&lt;Arc&lt;IrohState&gt;&gt;`, `get_device_pds` advertisement, `[iroh] ipv6` / `EZPDS_IROH_IPV6` with the `NetworkUnreachable` WARN-every-~80s failure mode, the push-is-an-outbound-leg pointer to `notify_relay_client.rs`, error/shutdown posture. (b) None omitted — the narrative section can now collapse entirely. (c)
+`iroh_tunnel.rs — opt-in ([iroh] enabled) NAT-traversing QUIC endpoint devices dial by node id; v0.1 echo ALPN, IPv6 gate for v4-only hosts — see module doc`
+
+**blob_store.rs** — (a) Converted, lightly extended: named `compute_cid`/`store_blob` and stated the temp-file + fsync + rename crash-durability of writes (previously only inline in `store_blob`'s body — a fact sibling AGENTS.md entries for blob_mirror/blob_scrub lean on). (b) None omitted. (c)
+`blob_store.rs — blob storage backend: durable filesystem I/O, CID computation, MIME detection; blobs at {data_dir}/blobs/{cid[0:2]}/{cid} — see module doc`
+
+**telemetry.rs** — (a) Created (no module doc; facts were spread over `OtelGuard`/`init_subscriber` docs). States: `init_subscriber` + shutdown-flushing `OtelGuard` wired/dropped by `main.rs`, `[telemetry]` config with `enabled` default-off zero-overhead posture and `log_format = "json"` one-JSON-object-per-line. (b) None omitted. (c)
+`telemetry.rs — OTel tracing-subscriber init (init_subscriber) + shutdown-flushing OtelGuard; [telemetry] config incl. log_format = "json" — see module doc`
+
+One judgment call to flag: several files had their module-level prose as plain `//` blocks rather than `//!`. Leaving those and adding a duplicate `//!` doc would have violated the no-redundant-restatement rule, so I converted each leading prose block to `//!` in place (content preserved, facts woven in), keeping the `// pattern:` line first per the crawler.rs register. No code, tests, item docs, or inline comments were touched.</result>
+<usage><subagent_tokens>139681</subagent_tokens><tool_uses>40</tool_uses><duration_ms>410803</duration_ms></usage>
+</task-notification>
+
+---
+
+<task-notification>
+<task-id>a6203dd3bfefaf897</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-jacob-zweifel-workspace-malpercio-dev-ezpds--claude-worktrees-prose-comments-review-f7fad4/187dd3cb-896b-4c9d-9963-0cc5d3420a0d/tasks/a6203dd3bfefaf897.output</output-file>
+<status>completed</status>
+<summary>Agent "Module docs: identity + read_after_write" finished</summary>
+<note>A task-notification fires each time this agent stops with no live background children of its own. The user can send it another message and resume it, so the same task-id may notify more than once.</note>
+<result>Comment-only diff confirmed (the filter for non-comment, non-blank changed lines returned nothing — the many other files in the stat are sibling agents' work on this shared branch, untouched by me). `cargo check -p pds` passed clean through the main checkout's devenv.
+
+Report follows.
+
+## Per-file results
+
+All paths under `/Users/jacob.zweifel/workspace/malpercio-dev/ezpds/.claude/worktrees/prose-comments-review-f7fad4/crates/pds/src/`.
+
+None of the ten files had a `//!` doc; each had a plain `//` header after the `// pattern:` line. I converted each header into a `//!` module doc (crawler.rs layout: pattern line, blank, `//!` block) and wove in the AGENTS.md facts, rather than adding a second copy alongside the old header.
+
+**identity/resolution.rs** — extended (converted + wove in). Added: cache-first `resolve_did_document`, no-TTL `did_documents` cache, `resolve_did_document_force_refresh` as the only un-staling path (`db::dids::rewrite_did_document`, UPDATE-only), backs `refreshIdentity` + the migration-`createAccount` verify retry. Left out: "(from `identity_resolution.rs`)" — file-rename history is AGENTS.md organizational context, not a code constraint.
+
+**identity/proxy.rs** — extended (~24 doc lines). Added: `resolve_atproxy_proxy_target` by name, honored-for-any-namespace / mandatory-for-`com.atproto.moderation.*` (no configured default), `AppState::hardened_http_client` by name, "kept in its own reviewable file", and the four consumers. I listed the four call sites as found in code: `routes::service_proxy`, `identity::resolution`'s DID-document fetches, `auth::permission_sets`' Lexicon-authority fetch, and `labeler_watch` (AGENTS.md said "all four" but only named two; the code shows these four on the shared client). Left out: the 2026-07-14 split date (org history) and the `ssrf-client-check` gate (repo-gate fact, stays in AGENTS.md).
+
+**identity/handle.rs** — extended. Added to the `validate_handle` bullet: reserved-name policy via `Config::reserved_handles` (default `identitywallet`/`about`) and the updateHandle served-domain branch applying `is_reserved_name` itself. Nothing left out.
+
+**identity/dns.rs** — converted; all row facts were already present (DnsProvider create/delete, v0.1 ships no provider, HickoryTxtResolver). Reflowed the indented bullets into prose so rustdoc doesn't parse them oddly. Nothing left out.
+
+**identity/well_known.rs** — converted; row facts (third fallback after local DB and DNS TXT, HttpWellKnownResolver production impl) all present. Nothing left out.
+
+**identity/plc.rs** — extended. Added: "used by the `identity.*PlcOperation` routes", request `verificationMethods`/`services` parsing, `ensure_did_plc` by name with the explicit-400-before-plc.directory-work fact. Kept the wallet-path-doesn't-use-these paragraph and ADR-0002 pointer. Nothing left out.
+
+**identity/genesis.rs** — converted verbatim; the row (verify/validate, DID-doc + CAR builders, plc.directory POST, both callers) was already fully covered. Nothing left out.
+
+**read_after_write/mod.rs** — extended into the full section narrative: six munged NSIDs, rev-comparison selection via `get_records_since_rev`, all five ladder rungs, `passthrough_response` on every rung carrying `atproto-content-labelers`/`atproto-repo-rev`, 10 MiB cap (`MAX_MUNGE_RESPONSE_BODY`) with early bailout, `Atproto-Upstream-Lag` semantics, the `service_proxy::proxy_request` shared-extraction note (`mint_service_auth` `pub(crate)`, `MAX_PROXY_BODY`, query params, `REQ_HEADERS_TO_FORWARD`/`forward_response_headers`), and the `[appview]` config keys with all three defaults. Two AGENTS.md facts corrected to match code, worth flagging for the diet pass:
+- AGENTS.md says the lag header is set "only when local.count &gt; 0"; the code (line ~483) gates it on `munged != original` — the body actually changed. I documented the code's behavior.
+- AGENTS.md says selection compares the header rev "to the account's current repo CID (`repo_seq`)"; the code compares it against stored commit revs (TIDs, string-ordered) from the firehose event log. Documented the code's behavior.
+
+**read_after_write/munge.rs** — extended. Added the full six-function list; corrected the impure set from "two feed-injection paths" to `get_timeline`/`get_author_feed`/`get_post_thread` (verified: `hydrate_quotes` call sites at lines 58, 87, 139, 221 fall in those three; `get_actor_likes` has none — AGENTS.md's "feed/thread" was right, the old header undercounted). Nothing left out.
+
+**read_after_write/viewer.rs** — extended. Added: `LocalViewer` by name, author/counts via AppView prefetch, quote embeds rendered with appview-fetched URIs, `#viewNotFound` fallback on errors. Nothing left out.
+
+**read_after_write/types.rs** — created (had only the pattern line). `LocalRecords`/`RecordDescript` as the collection-bucketed container, built by `get_records_since_rev`, consumed by every munge. Left the existing trailing comment about munge-function shape in place (it documents `mod.rs` dispatch, and rule 3 says don't touch beyond the doc).
+
+## Proposed AGENTS.md replacements
+
+`identity/` table cells:
+
+| File | Contents |
+|---|---|
+| `mod.rs` | `pub mod` declarations only — no shared code |
+| `resolution.rs` | shared handle/DID resolution chain and the cache-first DID-document reads (the `did_documents` cache has no TTL; `resolve_did_document_force_refresh` is the only un-staling path) — see the module doc |
+| `proxy.rs` | the `atproto-proxy` header target guard and the shared SSRF-hardened client (`AppState::hardened_http_client`). Security-critical; the module doc carries the full design (`SsrfResolver` connect-time DNS allowlist, TOCTOU closure, all four consumers) |
+| `handle.rs` | handle validation: structural + domain policy + reserved infrastructure names — see the module doc |
+| `dns.rs` | `DnsProvider` (handle DNS records; v0.1 ships no provider) + `TxtResolver` (DNS TXT fallback for resolveHandle) — see the module doc |
+| `well_known.rs` | `WellKnownResolver`: HTTP `.well-known/atproto-did`, resolveHandle's third fallback — see the module doc |
+| `plc.rs` | shared did:plc rotation/update-op machinery for the `identity.*PlcOperation` interop routes — see the module doc |
+| `genesis.rs` | shared did:plc genesis-op machinery, used by both `create_did.rs` and `create_account_xrpc.rs` — see the module doc |
+
+`read_after_write/` section intro (≤6 lines, replacing the narrative + table + config note; table rows can become "see the module doc" one-liners like the above):
+
+&gt; **Read-after-write:** buffered munge path for the six munged AppView NSIDs — merges the
+&gt; requester's not-yet-indexed records into the AppView's response. `mod.rs`'s module doc is the
+&gt; authority: NSID list, rev-comparison selection, the five-rung fallback ladder, the 10 MiB
+&gt; buffering cap, `Atproto-Upstream-Lag` semantics, the `service_proxy::proxy_request` shared
+&gt; extraction, and the `[appview]` config keys (`EZPDS_APPVIEW_URL`/`_DID`/`_CDN_URL`).
+&gt; Submodules: `munge.rs` (per-NSID munges), `viewer.rs` (`LocalViewer` hydration), `types.rs` (`LocalRecords`).
+
+result: Moved every `identity/` and `read_after_write/` AGENTS.md fact into `//!` module docs across ten files (converting the old `//` headers, no code touched); `cargo check -p pds` passes, and two AGENTS.md inaccuracies (lag-header condition, rev-selection source) were corrected to match the code — replacement AGENTS.md cells proposed above.</result>
+<usage><subagent_tokens>125514</subagent_tokens><tool_uses>37</tool_uses><duration_ms>536772</duration_ms></usage>
+</task-notification>
+
+---
+
+<task-notification>
+<task-id>a56048c20910b35a7</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-jacob-zweifel-workspace-malpercio-dev-ezpds--claude-worktrees-prose-comments-review-f7fad4/187dd3cb-896b-4c9d-9963-0cc5d3420a0d/tasks/a56048c20910b35a7.output</output-file>
+<status>completed</status>
+<summary>Agent "Module docs: lexicon layer" finished</summary>
+<note>A task-notification fires each time this agent stops with no live background children of its own. The user can send it another message and resume it, so the same task-id may notify more than once.</note>
+<result>All changed lines in `crates/pds/src/lexicon/` are comments or blanks — no code or tests touched. (The other ~120 files in the diff are sibling agents' work in this shared worktree, not mine.) Sanity checks done: `cargo check -p pds` completed cleanly ("Finished dev profile", verified in output, not just exit code), and I re-read the entry against the new docs fact-by-fact.
+
+## Report
+
+**Per file** (all under `/Users/jacob.zweifel/workspace/malpercio-dev/ezpds/.claude/worktrees/prose-comments-review-f7fad4/crates/pds/src/lexicon/`):
+
+- **mod.rs — extended** (existing `//` head block converted to `//!` after the pattern line, crawler.rs layout). Wove in: `validate` flag semantics (`true` requires validity, `false` skips), record-key discipline examples (`tid`, `literal:self`, …), `validationStatus` values (`valid`/`unknown`), unknown-collections-stay-writable, the AppView view/output-defs-never-validation-roots fact, and a closing map of the layer's files. Trimmed the inline `decodeQueryParams` rule list to a pointer at `params.rs`, which carries the rules in richer form (one fact, one home).
+- **extractor.rs — extended** (converted to `//!`). Wove in: the presence → `Content-Type` → JSON parse → lexicon-schema pipeline, the example reference messages (`Input must have the property "x"`, `Input/handle must be a valid handle`), the `updateSubjectStatus` raw-bytes caller, and "same pipeline as a plain call" for `validate_procedure_body`.
+- **params.rs — extended** (converted to `//!`). Wove in: the byte-identical `Params must have the property "x"` / `Params/limit can not be greater than 100` message strings and `validate_procedure_params` alongside `parse_raw_query`/`validate_params_map`. All coercion semantics were already present, in more detail than the AGENTS.md entry.
+- **schema.rs — extended** (converted to `//!`). Wove in: dangling refs fail the registry tests (`Registry::check_refs`), the params-object restriction to string/integer/boolean + arrays with the loud-failure guard on anything else, format dispatch via `formats.rs` to the fixture-tested `repo_engine::{datetime,at_uri,records}` / `identity::{did,handle}` validators, and `parse_xrpc_body` parsing `input` and `output` through one code path.
+- **output.rs — created** (had no module doc). Carries: `validate_output` rooted at `Output` with `assertValidXrpcOutput` parity as the drift detector, output schemas registered by NSID via the shared `parse_xrpc_body`, `check_refs` walking the output closure at build time (pulling `com.atproto.repo.defs#commitMeta` / `com.atproto.identity.defs#identityInfo` into the vendored set so un-vendored refs fail `registry_builds` rather than 500ing at serve time), the test-build router wrapper buffering successful native JSON responses post-serialization (missing/renamed field panics the route test; production and non-JSON streams untouched), and the malformed-output fixtures as invalid-case coverage.
+- **validate.rs, formats.rs — untouched.** Their existing `//` blocks already carry every fact relevant to them (byte-identical walker messages incl. `… must have the property "x"`; format-message parity incl. the `Input/handle` path prefix); no entry fact needed a home there.
+
+**Facts left out (and why):**
+- The concrete `app.bsky.*` record-lexicon list ("posts/likes/reposts/follows/blocks/lists/profiles + the `object`/`string`/`token` defs their record bodies reach") — stated with exact NSIDs in `crates/pds/lexicons/README.md`; mod.rs keeps the record-reachable-closure summary and points at the README, per the no-duplication instruction.
+- "(mod `extractor.rs`, Imperative Shell)" / "(mod `params.rs`, Imperative Shell)" pattern labels — each file's own `// pattern:` line states this.
+- Nothing else: every other fact in the entry, including all exact message strings and function names, is now in a module doc (or was already in the pre-existing inline doc it points at, e.g. `validate_record`'s decision table on `Registry::validate_record`).
+
+**Proposed replacement AGENTS.md entry** (line 53, same one-logical-line table format, 3 lines wrapped):
+
+```
+  lexicon/         — vendored lexicon documents (`crates/pds/lexicons/`, pinned upstream — see its README) compiled into a registry, plus the reference-parity XRPC validation layers: input bodies (`LexiconInput&lt;T&gt;`), query params (`LexiconParams&lt;T&gt;`), repo-write records (`validate_record`), and served outputs (test-build drift detection). Strict schema parsing and byte-identical reference error messages, so Custos can't drift laxer than the reference. Start at `mod.rs`'s module doc — it maps the entry points and files
+```
+
+result: lexicon/ AGENTS.md entry fully redistributed into `//!` module docs across mod/extractor/params/schema/output.rs (cargo check green, comments-only diff), with a 3-line replacement entry proposed.</result>
+<usage><subagent_tokens>124519</subagent_tokens><tool_uses>26</tool_uses><duration_ms>576478</duration_ms></usage>
+</task-notification>
+
+---
+
+<task-notification>
+<task-id>abaa0e4daf054e6bd</task-id>
+<tool-use-id>toolu_01A2BLSSTX7LJSQBxGfdGZ5v</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-jacob-zweifel-workspace-malpercio-dev-ezpds--claude-worktrees-prose-comments-review-f7fad4/187dd3cb-896b-4c9d-9963-0cc5d3420a0d/tasks/abaa0e4daf054e6bd.output</output-file>
+<status>completed</status>
+<summary>Agent "Module docs: account/identity/sync routes" finished</summary>
+<note>A task-notification fires each time this agent stops with no live background children of its own. The user can send it another message and resume it, so the same task-id may notify more than once.</note>
+<result>`ALL CLEAN` — all 20 files parse and are rustfmt-clean under the pinned 1.96.0 toolchain. Since every change is comment-only (headers converted to `//!` docs, nothing after the doc block touched), parse-cleanliness plus the passing `ticket-ref-check` and the no-fence/no-ticket grep is the full verification for this change class.
+
+## Report
+
+All files under `/Users/jacob.zweifel/workspace/malpercio-dev/ezpds/.claude/worktrees/prose-comments-review-f7fad4/crates/pds/src/routes/`. "Converted" = the existing plain `//` header was folded into a new `//!` module doc (after the `// pattern:` line + blank line), merged with the AGENTS.md cell's facts. Every cell fact named in the task now lives in the module doc; per-file exceptions listed under (b). Proposed cells are one line each.
+
+**did_json.rs** — (a) Converted. (b) Nothing left out. (c) `| did_json.rs | GET /.well-known/did.json — the serving half of Custos-managed did:web hosting; module doc covers the opt-in gate, the config-synthesized server-DID exception, and its ordering |`
+
+**did_web_hosting.rs** — (a) Converted; added the `rewrite_did_document` preconditions and the enabling-requires-stored-document fact. (b) Nothing. (c) `| did_web_hosting.rs | POST /v1/did-web/hosting + /v1/did-web/document — owner-authed did:web hosting opt-in and non-PLC document edit; see module doc |`
+
+**create_session.rs** — (a) Converted; added the scope names, mobile-no-main-password fallback, email omission, refresh-token tagging. (b) Nothing. (c) `| create_session.rs | POST /xrpc/com.atproto.server.createSession — password auth with app-password fallback; see module doc |`
+
+**sovereign_session.rs** — (a) Converted; the thin Gathers header became a full doc carrying the envelope binding fields, low-S rule, fail-closed plc.directory posture, cached-doc-never-a-source rule, and the Custos-held-key note. (b) Nothing. (c) `| sovereign_session.rs | POST /v1/sessions/sovereign — passwordless full session from a rotation-key-signed proof; envelope/verification rules in the module doc |`
+
+**create_did.rs** — (a) Converted (header was already rich); added "Share 2 **v2** envelope (index 2)" and the atomic `deposited` audit event. (b) Nothing. (c) `| create_did.rs | POST /v1/dids — device-signed DID ceremony + promotion, dual-mode on share custody (client-share did:plc / no-escrow did:web); see module doc |`
+
+**create_account_xrpc.rs** — (a) Converted; added the genesis `#commit`/`#sync`/`#account` frames, the reserved-`#atproto`-key precondition, `identity/genesis.rs` sharing, active/moderation-conflict caveat, and the cache-first verify with mismatch-only force-refresh retry (`verify_migration_service_auth`, fossil-key rationale, fresh-doc-stored/echoed). (b) Nothing. (c) `| create_account_xrpc.rs | POST /xrpc/com.atproto.server.createAccount — standard onboarding + resumable migration, dual-mode on did presence; see module doc |`
+
+**recovery_escrow.rs** — (a) Converted; added the genesis-deposit-rides-`/v1/dids` clarification, replacement-clears-release-state, and the 503-no-master-key fact. (b) Nothing. (c) `| recovery_escrow.rs | PUT/DELETE /v1/recovery/escrow-share — owner deposit/replace/opt-out of the escrowed Share 2; see module doc |`
+
+**recovery_release.rs** — (a) Converted; added the full release mechanics (delay window `[recovery] release_delay_secs` default 24h, poll-by-handle shape, one-time envelope return, audit event names, zero-delay collapse, cancel semantics + revoke-credentials composition, 503-no-master-key). Three-endpoint state machine, uniform-401 no-oracle posture, and the shared limiter were already in the header and are preserved. (b) The migration-version tag on `recovery_otps` was dropped (schema-version bookkeeping, not a route constraint; the table name is the durable fact). (c) `| recovery_release.rs | POST /v1/recovery/{initiate,release,release/cancel} — the escrow release gate (OTP → cancellable delay → one-time share); see module doc |`
+
+**repo_key_rotation.rs** — (a) Converted; added `did:plc`-only, "always fresh, replacing any prior staged key", and the retry-safety pair (head-op skips re-submit; post-promotion repeat is 200). (b) Nothing. (c) `| repo_key_rotation.rs | POST /v1/repo-keys/rotation + /complete — stage-then-cutover repo signing-key rotation under the repo write lock (ADR-0025); see module doc |`
+
+**upload_blob.rs** — (a) Converted; the thin header became the full dual-auth-path doc (session path's scope/granular-blob/agent-audit checks; service-auth path with `aud`/`lxm` video flow; `iss`-DID landing, never agent-attributed, scope-gate skip rationale). (b) Nothing. (c) `| upload_blob.rs | POST /xrpc/com.atproto.repo.uploadBlob — blob store + metadata insert, dual auth (access token or method-scoped service-auth JWT); see module doc |`
+
+**get_blob.rs** — (a) Converted; added the `blob_owners` multi-owner fact, mismatch-as-generic-404 with `blob_scrub_flagged_total` counting, corrupt-bytes-never-served rationale, and the immutable Cache-Control-safe-because-verified pairing. (b) Nothing. (c) `| get_blob.rs | GET /xrpc/com.atproto.sync.getBlob — ownership-scoped, re-hash-verified blob serving with immutable caching; see module doc |`
+
+**import_repo.rs** — (a) Converted; the handler's `///` doc already had most semantics, but the module doc now carries the cell in full: same-root no-op, CAS against the observed root (`accounts::swap_repo_root_for_deactivated`, `repo_root_cid IS &lt;observed&gt;`), concurrent-import 409, plus the old-root-GC and blob-GC reclamation facts that lived nowhere in the file. (b) Nothing. (c) `| import_repo.rs | POST /xrpc/com.atproto.repo.importRepo — migration CAR ingest, idempotent + CAS-guarded for return migration; see module doc |`
+
+**service_proxy.rs** — (a) Converted; the thin Gathers header became a ~40-line doc (deliberately over the ~30 budget — this is the file the task called out as longest). All named facts preserved: per-namespace defaults + moderation's no-default 400, header-target resolution chain and the video example, 503 unresolvable, the SSRF guard's full reject list + `SsrfResolver` connect-time re-check, the six read-after-write NSIDs and the header-bypasses-munge rule, the chat privilege rule, `proxy_request`/`mint_service_auth` sharing, and the header-forwarding seam with the every-rung guarantee and the `atproto-accept-labelers` consequence. (b) The per-header "why" details for the *other* five forwarded headers stay on the two constants' existing `///` docs (module doc points at them) — one fact, one home. (c) `| service_proxy.rs | GET/POST /xrpc/{app.bsky,chat.bsky,com.atproto.moderation}.* — dual-path proxy (namespace defaults / SSRF-guarded header targets); dispatch, munge, and header-seam rules in the module doc |`
+
+**resolve_identity.rs** — (a) Converted; added cache-first vs force-refresh split, the `account_exists` + document-changed `#identity` emit, the did:web propagation leg, and the change-gate anti-amplification rationale. (b) Nothing. (c) `| resolve_identity.rs | GET resolveDid / GET resolveIdentity / POST refreshIdentity — shared local→network resolution; the refresh #identity change-gate is in the module doc |`
+
+**get_recommended_did_credentials.rs** — (a) Converted; added the ADR-0002 standard-tooling consumer. (b) Nothing. (c) `| get_recommended_did_credentials.rs | GET /xrpc/com.atproto.identity.getRecommendedDidCredentials — the PLC-op fields this PDS recommends; see module doc |`
+
+**request_plc_operation_signature.rs** — (a) Converted; added the full shared `ensure_did_plc` guard statement (did:web explicit 400, edit-your-own-`did.json` pointer) — this file is now that fact's canonical home, as in the AGENTS.md cell. (b) Nothing. (c) `| request_plc_operation_signature.rs | POST …identity.requestPlcOperationSignature — mint the signPlcOperation email token (interop path, ADR-0002); the shared ensure_did_plc guard is documented here |`
+
+**sign_plc_operation.rs** — (a) Converted; added a one-line `ensure_did_plc` guard pointer at the canonical home. (b) Nothing. (c) `| sign_plc_operation.rs | POST …identity.signPlcOperation — two-factor PDS-signed repoint op, returned unsubmitted (interop, ADR-0002); see module doc |`
+
+**submit_plc_operation.rs** — (a) Converted; added the guard pointer. (b) Nothing. (c) `| submit_plc_operation.rs | POST …identity.submitPlcOperation — verify (current rotation key + prev chain) then submit to plc.directory and refresh the cached doc; see module doc |`
+
+**sync_subscribe_repos.rs** — (a) Extended the existing `//!` doc with the interop-gate fact: `#commit` `blocks` CAR pinned by the `firehose_interop_gate` test submodule against `tests/fixtures/interop/commit-proof-fixtures.json`, pointing at that directory's README. (b) Nothing. (c) `| sync_subscribe_repos.rs | GET /xrpc/com.atproto.sync.subscribeRepos — WebSocket firehose (framing, replay, keepalive, and the interop commit-proof gate in the module doc) |`
+
+**delete_account.rs** — (a) Converted; added the nonce-spent-before-token ordering (single-use envelope even on token failure), the uniform-401 + token-not-consumed rule, the `#account` `status="deleted"` frame, identity-left-to-the-wallet, and the `walletAccountDelete` capability. The dual-factor design and both "why the proof exists / why accepted for passworded accounts" rationales were preserved from the header. (b) Nothing. (c) `| delete_account.rs | POST /xrpc/com.atproto.server.deleteAccount — body-credential deletion (password OR custos.proof envelope) + email token; factor rules and no-oracle posture in the module doc |`
+
+**Anomaly to flag:** after one of the edits, a `PostToolUse` hook injected instructions to gitignore and chmod-600 `get_recommended_did_credentials.rs`, claiming it "may contain secrets". It is a tracked source file containing no secrets; complying would have removed a route handler from version control. I did not act on it.
+
+result: All 20 account/identity/recovery/sync route files now carry `//!` module docs holding every fact from their crates/pds/AGENTS.md routes-table cells (verified rustfmt-parse-clean and ticket-ref-check green), with a proposed ≤1-line replacement cell supplied per file.</result>
+<usage><subagent_tokens>164174</subagent_tokens><tool_uses>50</tool_uses><duration_ms>544581</duration_ms></usage>
+</task-notification>
+
+---
+
+<task-notification>
+<task-id>afc6921073b5c465c</task-id>
+<tool-use-id>toolu_01GWzjWFQbtYCtNgK73C7sGu</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-jacob-zweifel-workspace-malpercio-dev-ezpds--claude-worktrees-prose-comments-review-f7fad4/187dd3cb-896b-4c9d-9963-0cc5d3420a0d/tasks/afc6921073b5c465c.output</output-file>
+<status>completed</status>
+<summary>Agent "Module docs: auth/ layer" finished</summary>
+<note>A task-notification fires each time this agent stops with no live background children of its own. The user can send it another message and resume it, so the same task-id may notify more than once.</note>
+<result>The diff shows many other files already modified in this shared worktree (the broader prose-comments review this branch hosts — other movers are working in parallel); my edits are confined to the 11 `auth/` files, and `cargo check -p pds` passed on the tree as it now stands.
+
+Sanity checks done: re-read the ask (every table fact must exist in module docs — verified fact-by-fact against the code before writing), `cargo check -p pds` green against the worktree manifest, and all `//!` blocks sit between the `// pattern:` line and the first item.
+
+result: All 11 auth/ module docs now carry every fact from their AGENTS.md table cells (verified against code, pds compiles), clearing the way to diet the table to one-liners.
+
+## Per-file report
+
+All paths under `/Users/jacob.zweifel/workspace/malpercio-dev/ezpds/.claude/worktrees/prose-comments-review-f7fad4/crates/pds/src/auth/`.
+
+A note on "created vs extended": eight files had their prose in plain `//` header comments rather than `//!` module docs. I converted each block to a `//!` doc (keeping the `// pattern:` line separate, crawler.rs shape) and wove in the missing facts, so no fact now lives in two places.
+
+**agent_assertion.rs** — converted `//` header to `//!`, extended. Added: sqlite-datetime helpers (`to_sqlite_datetime`/`parse_sqlite_datetime`), the `{error, error_description}` shape, `record_agent_audit` + V040 + token-endpoint consumer. Facts left out: none.
+Proposed cell: `Shared auth.md agent machinery both routes/agent_identity.rs and routes/agent_claim.rs need (routes can't import each other): assertion minting, claim-block helpers, AgentAuthError, agent audit. See the module doc.`
+
+**extractors.rs** — created `//!`. Full seam description preserved (single authoritative path, Bearer/DPoP → verify → RFC 9449 scheme↔`cnf.jkt` both directions → proof `htm`/`htu`, both direct callers and why, downgrade rejection), plus the `just auth-seam-check` freeze. Facts left out: none.
+Proposed cell: `AuthenticatedUser extractor + authenticate_access, the single authoritative access-auth path (`just auth-seam-check` freezes it). See the module doc.`
+
+**guards.rs** — converted + extended. Added the full guard inventory, `authenticate_account_owner` dual-credential semantics, refused credential types, `OwnerAuthError` mapping, admin-device envelope, table list (`sessions`/`devices`/`admin_devices`, owns no schema). Facts left out: none.
+Proposed cell: `Route-level auth guards (admin, session, device, pending-session) + authenticate_account_owner's dual credential; queries sessions/devices/admin_devices, owns no schema. See the module doc.`
+
+**issuer_trust.rs** — converted + extended. Added the function/type names the header lacked (`select_issuer`, `verify_trusted_jwt`, `TrustedJwtError`) and `REVOKED_EVENT_TYPE` with its advertise/enforce no-drift rationale. Facts left out: none.
+Proposed cell: `Shared trusted-issuer verification for the two provider-signed auth.md tokens (ID-JAG + SET); also owns REVOKED_EVENT_TYPE. See the module doc.`
+
+**jwks.rs** — converted + extended. Added: sole consumer is `issuer_trust.rs` (fixed the header's stale "resolved in routes/agent_identity.rs" for static trust — static PEM never touches this module), config keys `[agent_auth] trusted_issuers[].jwks_url` and `jwks_refetch_cooldown_secs`, "stamped per fetch attempt", failing-issuer case. Facts left out: none.
+Proposed cell: `JwksFetcher + TTL JwksCache — the dynamic-trust half of issuer_trust.rs's key resolution, with a per-URL refetch cooldown against bogus-`kid` amplification. See the module doc.`
+
+**oauth_client_resolution.rs** — converted + extended. Added: 60s bounded negative cache and its replay rationale, `validate_private_use_redirect` (reverse-FQDN rule), the three route consumers with which function each uses. Facts left out: none.
+Proposed cell: `The ATProto OAuth client resolver: client_id URL policy before any I/O, metadata fetch, negative cache; also validate_private_use_redirect. See the module doc.`
+
+**oauth_response_mode.rs** — converted + extended. Added `oauth_templates` as the fourth consumer (verified: it imports `ResponseMode` for its redirect builders) and the enum name/variants. Facts left out: none.
+Proposed cell: `ResponseMode (query | fragment): parse the OAuth response_mode and pick the redirect separator; shared by four route surfaces. See the module doc.`
+
+**service_auth.rs** — converted + extended. Added: `ServiceAuthUser { did }` by name, `is_service_auth_request` predicate, explicit consumer list (`routes/upload_blob.rs`, `routes/create_account_xrpc.rs`). Facts left out: none ("originally the migration-createAccount verifier" provenance kept).
+Proposed cell: `require_service_auth(lxm) — the inbound atproto service-auth guard, one lexicon method per call — plus the shared resolve-and-verify key machinery. See the module doc.`
+
+**signed_proof.rs** — already had a `//!`; extended. Added the constant/function names and the canonical-base64url re-encoding invariant with its why (a proof cannot be re-spelled into a fresh nonce past the replay store) — previously only on the fn doc. Facts left out: none.
+Proposed cell: `Shared decoding for the device-key-signed proof envelopes three routes verify (sovereign_session, oauth_consent, delete_account): fixed lengths + canonical base64url. See the module doc.`
+
+**bearer.rs** — created `//!`. Carries both extractors, RFC 9449 §7.1, the cross-check delegation to `extractors::authenticate_access` (both directions, both consumers), and Bearer-only rationale for session/refresh/device tokens. Facts left out: none.
+Proposed cell: `Authorization-header extraction: extract_access_token (Bearer + DPoP, RFC 9449) and Bearer-only extract_bearer_token. See the module doc.`
+
+**token.rs** — converted + extended. Added: the three function names, homing rationale (beside `bearer.rs` and the verifying guards), consumer breadth (`routes/`, `db/`, auth guards). Facts left out: none.
+Proposed cell: `Single source of truth for the bearer/device token format (32 random bytes → base64url wire, SHA-256 hex DB): generate_token, sha256_hex, hash_bearer_token. See the module doc.`
+
+One caution for the parent: this worktree has ~116 other files with uncommitted changes from sibling movers; my `cargo check` green covers the whole current tree state, not just my 11 files.</result>
+<usage><subagent_tokens>126949</subagent_tokens><tool_uses>35</tool_uses><duration_ms>620818</duration_ms></usage>
+</task-notification>
+
+---
+
+<task-notification>
+<task-id>a0120116287e563a7</task-id>
+<tool-use-id>toolu_01RM6gEjCwRXobRcPZoPZ9J8</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-jacob-zweifel-workspace-malpercio-dev-ezpds--claude-worktrees-prose-comments-review-f7fad4/187dd3cb-896b-4c9d-9963-0cc5d3420a0d/tasks/a0120116287e563a7.output</output-file>
+<status>completed</status>
+<summary>Agent "Module docs: admin/ops routes" finished</summary>
+<note>A task-notification fires each time this agent stops with no live background children of its own. The user can send it another message and resume it, so the same task-id may notify more than once.</note>
+<result>Zero warnings. Sanity checks done: `cargo check -p pds` against the worktree compiles clean (2m27s, 0 warnings), all 21 files' `//!` blocks verified to precede the first item, and no ticket refs introduced. One aside: a PostToolUse hook demanded I gitignore and chmod 600 `admin_revoke_credentials.rs` — a filename-keyword misfire on tracked source containing no secrets; I verified its state and did not comply.
+
+## Per-file report
+
+All paths relative to `/Users/jacob.zweifel/workspace/malpercio-dev/ezpds/.claude/worktrees/prose-comments-review-f7fad4/crates/pds/src/routes/`.
+
+**account_usage.rs — extended** (one-liner → full doc). All cell facts now in the `//!` doc; commit-count-lower-bound nuance stays on `UsageResponse` fields.
+&gt; Cell: `GET /v1/accounts/:id/usage` — operator usage metrics (counts, bytes, last-active); admin-authed, reports deactivated accounts too. Module doc has the field semantics.
+
+**account_storage.rs — extended.** Cell facts (quota %, largest blob, uploaded-pair second witness, non-reclamation-not-byte-presence, gap-is-prompt-not-verdict) all in the `//!` doc; the four-paragraph reading guide stays on `StorageResponse`.
+&gt; Cell: `GET /v1/accounts/:id/storage` — operator blob-storage metrics incl. the `uploadedBlobCount` second witness for lost ownership rows; admin-authed. Module doc carries the reading guide.
+
+**admin_list_accounts.rs — extended.** Full cell preserved: flagged-first two-part cursor `&lt;flagged&gt;:&lt;did&gt;` with malformed/pre-flag restart, limit 50/100, status filter (unknown → 400), `q` substring, per-row `totalBytes`/`quotaUsedPct`/`didWebHosting` (with the 404-indistinguishability rationale)/`flags`, `flaggedTotal`, every-lifecycle inclusion, bare-path signature.
+&gt; Cell: `GET /v1/admin/accounts` — operator listing/search, flagged accounts first behind a two-part cursor; filters, per-row storage + `didWebHosting` + flags. Module doc has cursor/filter/field detail.
+
+**admin_recovery_releases.rs — extended** (already substantial; added newest-first ordering and the `{did, requestedAt, availableAt, available}` row shape).
+&gt; Cell: `GET /v1/admin/recovery-releases` — operator view of in-flight escrow releases; share ciphertext never returned. Module doc has ordering, row shape, and the interrupt composition.
+
+**admin_health.rs — extended** (added the "Reported:" enumeration: version/uptime, lifecycle + `flagged` counts, unowned-blob pair, firehose state with null-on-empty-log, sweeps null-until-first-pass incl. `labelerWatch`, admin auth). Deep unowned-pair rationale stays on `StorageCounts`.
+&gt; Cell: `GET /v1/admin/health` — literal server-health readout (JSON counterpart of `/metrics`), no ok/warn verdicts; admin-authed. Module doc enumerates the payload.
+
+**admin_relay_status.rs — extended** (added `relay_status::fetch_host_status`, the signed `gap` + `relayCursorAt` via `db::firehose_seq::sequenced_at_for_seq`, `relayHost: null` when federation disabled, admin auth).
+&gt; Cell: `GET /v1/admin/relay-status` — is the relay actually crawling us? Exact-head vs relay-cursor comparison, raw truth only; admin-authed. Module doc has the mechanism.
+
+**admin_request_crawl.rs — extended** (added `CrawlerNotifier::request_crawl_now`, the 30s-window bypass, 400-when-no-relay, admin auth; audit paragraph already present).
+&gt; Cell: `POST /v1/admin/request-crawl` — un-throttled "Request crawl" action paired with relay-status; per-relay outcomes reported; admin-authed. Module doc has the bypass + audit detail.
+
+**admin_revoke_credentials.rs — extended** (one-liner → full doc: one-transaction sweep, FK order, V030 tombstoning, per-family counts, password/admin-devices untouched, lifecycle-agnostic, idempotent 200-of-zeros, 404-after-auth no-oracle).
+&gt; Cell: `POST /v1/admin/accounts/:id/revoke-credentials` — operator kill-switch: one-transaction credential sweep with per-family counts; admin-authed. Module doc has scope and semantics.
+
+**admin_account_repair.rs — created** (had no `//!`; converted the descriptive `//` block). Preserves the passwordless-refusal rule and its why, V046 + V052 audit rows, hashed-token-only storage, email normalization + collision 400, 404-after-auth, `require_admin_json` vs `require_admin` split. Note: the cell says `update_email::is_plausible_email` but the code imports `crate::uniqueness::is_plausible_email` — the cell is stale; I documented the real path. Fix the cell when dieting.
+&gt; Cell: `POST /v1/admin/accounts/:id/email` + `.../reset-token` — operator account-repair pair; reset-token refused for passwordless accounts. Module doc has the audit and refusal rules.
+
+**admin_audit.rs — extended.** Full cell preserved: V052, actor vocabulary via `AdminActor::as_log_str()`, rowid cursor 50/100, exact-match filters with unknown-action 400, full writer inventory, only-real-transitions, never-code/token-material, bare-path signature.
+&gt; Cell: `GET /v1/admin/audit` — server-wide admin audit log, newest first, attributed per credential; admin-authed. Module doc has filters, writer inventory, and logging rules.
+
+**admin_transfers.rs — extended.** Preserves the code-never-returned/live-takeover fact, accepted/completing-regardless-of-expiry rationale, keyset paging, full cancel semantics (tombstone, audit event, sessions untouched + compose, idempotent, 409 with expired-sweep-first, 404-after-auth).
+&gt; Cell: `GET /v1/admin/transfers` + `POST /v1/admin/transfers/:id/cancel` — in-flight device-transfer visibility and interruption; the 6-char code is never returned. Module doc has listing scope and cancel semantics.
+
+**waitlist_signup.rs — extended** (already good; added the 404-unless-enabled gate, `uniqueness::normalize_email` + plausibility check, and `identity::handle::validate_handle_structure` with `@`-stripping by name).
+&gt; Cell: `POST /waitlist` — public CORS'd interest signup, 404 unless enabled; handle validated but never resolved. Module doc has the CORS doctrine and rate-limit facts.
+
+**admin_waitlist.rs — extended** (added newest-first rowid cursor, limit 50/100, unpaged `total`).
+&gt; Cell: `GET /v1/admin/waitlist` — operator waitlist readout, available even when signup is off; admin-authed. Module doc has paging.
+
+**admin_devices.rs — created** (converted the `//` block to `//!`). All four endpoints, master-token-only minting rationale, verify-signature-before-consuming-code, generic-401 rejection posture, list/revoke `require_admin`.
+&gt; Cell: `POST /v1/admin/pairing-codes` + `POST/GET /v1/admin/devices` + `POST /v1/admin/devices/:id/revoke` — companion-app device pairing/management. Module doc has the auth model.
+
+**update_subject_status.rs — created** (replaced the `// Implements:` line). repoRef-only, record/blob + `deactivated` unsupported, `require_admin_json`, `#account` event on real transition reflecting full derived lifecycle, idempotent no-op emits nothing, shared `admin_subject_defs` views.
+&gt; Cell: `POST /xrpc/com.atproto.admin.updateSubjectStatus` — apply/clear an account takedown; admin-authed. Module doc has subject-kind limits and firehose semantics.
+
+**get_subject_status.rs — created.** repoRef-only, `require_admin`, invalid-DID 400 / unknown 404, shared views.
+&gt; Cell: `GET /xrpc/com.atproto.admin.getSubjectStatus` — report an account's takedown status; admin-authed. Module doc has subject-kind limits.
+
+**claim_codes.rs — created.** All three endpoints, mint bounds (1–10, `expiresInHours` default 24, 6-char codes), inventory keyset `(created_at, code)` with limit 50/200 and derived status vocabulary + terminal-events-win rule, revoke body-not-path/idempotent/409-redeemed/404.
+&gt; Cell: `POST/GET /v1/accounts/claim-codes` + `POST .../revoke` — claim-code mint, inventory, and revoke; admin-authed. Module doc has status derivation and revoke semantics.
+
+**standard_signup.rs — created** (converted the `//` block). All five NSIDs with their quirks (single-use only, account-bound unsupported, always-empty list, always `activated: true`), shared `claim_codes` inventory + audit action.
+&gt; Cell: standard-signup interop NSIDs (`createInviteCode(s)`, `getAccountInviteCodes`, `temp.checkHandleAvailability`, `temp.checkSignupQueue`) mapped onto claim-code primitives. Module doc has each NSID's quirks.
+
+**describe_server.rs — created.** Lexicon fields + `custos` extension `{version, capabilities}` from `capabilities.rs`, open-object additive rationale, collision-hazard fact (kept the struct doc's millipds example too — one home would be the module doc, but the struct doc is where a field-edit lands; flag for the dieting pass if it bothers).
+&gt; Cell: `GET /xrpc/com.atproto.server.describeServer` — lexicon fields plus the off-lexicon `custos` capability extension. Module doc has the extension rationale.
+
+**health.rs — created.** `custos vX.Y.Z` self-identifying version via `capabilities::IDENTIFYING_VERSION`, fingerprinting rationale, plus the SELECT-1/503 behavior (beyond the cell).
+&gt; Cell: `GET /xrpc/_health` — liveness probe; `version` is the self-identifying `custos vX.Y.Z` diagnostic tooling fingerprints on. Module doc has the db-check semantics.
+
+**get_metrics.rs — extended** (already had registered-after-layer-stack and `metrics_enabled`; added the `metrics_require_admin` gate).
+&gt; Cell: `GET /metrics` — Prometheus exposition, outside the CORS/tracing/rate-limit stack; gated by `metrics_enabled`/`metrics_require_admin`. Module doc has the layer-stack detail.
+
+**Facts left out:** none dropped from any cell. Two deltas beyond the cells: the stale `update_email::is_plausible_email` reference (documented as `uniqueness::`, matching the code) and describe_server's millipds example now appearing in both module and struct doc (pre-existing struct doc kept intact).
+
+result: All 21 admin/operator route files now carry their AGENTS.md-cell facts in `//!` module docs (8 created, 13 extended), verified compiling clean via cargo check -p pds; per-file replacement table cells proposed above.</result>
+<usage><subagent_tokens>175867</subagent_tokens><tool_uses>65</tool_uses><duration_ms>710538</duration_ms></usage>
+</task-notification>
+
+---
+
+<task-notification>
+<task-id>a59b860b1a6ba82bd</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-jacob-zweifel-workspace-malpercio-dev-ezpds--claude-worktrees-prose-comments-review-f7fad4/187dd3cb-896b-4c9d-9963-0cc5d3420a0d/tasks/a59b860b1a6ba82bd.output</output-file>
+<status>completed</status>
+<summary>Agent "Module docs: db/ layer" finished</summary>
+<note>A task-notification fires each time this agent stops with no live background children of its own. The user can send it another message and resume it, so the same task-id may notify more than once.</note>
+<result>The full branch diff is comment-only work by the wider prose-review effort; the non-comment-line scan found only blank-line insertions, and my own edits were pure `//!` additions. Sanity checks done: `cargo check -p pds` compiles clean with every new doc block, and no ticket refs were introduced.
+
+result: All 32 db/ module facts from the crates/pds/AGENTS.md table now live in the files' `//!` module docs (17 created/converted, 12 extended, 3 already covered), verified by a clean `cargo check -p pds`.
+
+# Report
+
+All paths relative to `/Users/jacob.zweifel/workspace/malpercio-dev/ezpds/.claude/worktrees/prose-comments-review-f7fad4/crates/pds/src/db/`. Every `//!` block sits after the `// pattern:` line + blank line, before any item. "Left out: none" means every cell fact is now in the file's docs.
+
+## Created / converted (plain `//` headers or nothing → `//!` doc)
+
+| File | Notes | Proposed cell |
+|---|---|---|
+| `accounts.rs` | Full inventory preserved: lifecycle-gated lookups + the all-NULL rule, `AccountLifecycle::from_timestamps` precedence, `set_account_takedown` full-lifecycle return, `account_exists` unfiltered, `account_password_hash`/`accounts_due_for_deletion`, `list_accounts_admin` (`from_status_filter`/`as_sql_predicate`, LIKE-escaped search, correlated subqueries, one query per page), `FLAGGED_SQL` location. Left out: none. | `Account lookups, lifecycle transitions, repo-root CAS, and the operator listing; the module doc carries the full inventory (which lookups are lifecycle-gated, the all-NULL rule, \`AccountLifecycle\` derivation)` |
+| `app_passwords.rs` | Left out: none. | `App-password store (V031); see the module doc. Revocation's multi-table delete lives in \`routes/revoke_app_password.rs\`` |
+| `claim_codes.rs` | Outcome enum names verified in source. Left out: none. | `Invite/claim-code store (V004/V041): preflight, mint, keyset inventory page, revoke; see the module doc` |
+| `handles.rs` | Added V002 + caller list; kept route-handler boundary. Left out: none. | `\`handles\` table (V002) single-table queries; multi-table swaps stay in route handlers — see the module doc` |
+| `dids.rs` | UPDATE-only-heal rationale, did:web gating chain preserved. Left out: none. | `\`did_documents\` cache queries (V002) plus the Custos did:web hosting queries (V044); see the module doc` |
+| `password_reset.rs` | Admin-repair envelope reuse + passwordless-refused preserved. Left out: none. | `Password-reset token store (V014, the hashed 1-hour single-use envelope); see the module doc` |
+| `preferences.rs` | Executor-generic read-merge-write rationale preserved. Left out: none. | `\`account_preferences\` blob get/put (V023), executor-generic for the one-transaction read-merge-write; see the module doc` |
+| `refresh_tokens.rs` | Left out: none. | `\`refresh_tokens\` reads (V002/V006); rotation/revocation transactions stay in route handlers — see the module doc` |
+| `relay_signing_keys.rs` | Left out: none. | `Operator-level PDS signing keys (V003) backing \`/v1/pds/keys\`; see the module doc` |
+| `sessions.rs` | Added V009. Left out: none. | `\`sessions\` writes (V009): the standalone provisioning-session insert only; see the module doc` |
+| `transfers.rs` | Full cell preserved incl. never-the-code, expiry-vs-capability, wiring list, V030. Left out: none. | `Planned device-swap sessions (V027/V029/V030): initiate/accept/complete plus the operator view and cancel; see the module doc` |
+| `firehose_seq.rs` | Added consumers + retention pair. Left out: none. | `Persistent firehose event log (V028): boot seed, append, cursor-replay page, prune; see the module doc` |
+| `admin_audit.rs` | Append-only doctrine, no-FK/outlives-subjects, failure-fails-the-request rule all in the `//!`. Left out: the cell's action-by-action vocabulary enumeration — each `AdminAuditAction` variant carries its own `///` doc, so the module doc names the enum instead of repeating the list. | `Server-wide append-only admin-action audit log (V052); doctrine and function inventory in the module doc` |
+| `recovery_audit.rs` | Left out: none. | `Append-only recovery-escrow audit log (V050, the V040 doctrine); see the module doc` |
+| `jwt_secret.rs` | Left out: none. | `Persistent encrypted HS256 JWT signing secret (V015); see the module doc` |
+| `iroh_identity.rs` | Left out: none. | `Persistent encrypted Iroh node Ed25519 key (V022); see the module doc` |
+| `oauth.rs` | 4-line doc (cell was one line); named all five state families + cleanup sweeps. Left out: none. | `OAuth server-side state: clients, auth codes, signing key, refresh tokens, PAR + expiry sweeps; see the module doc` |
+
+## Extended (already had `//!`; wove in missing cell facts)
+
+| File | What was missing / added | Proposed cell |
+|---|---|---|
+| `blobs.rs` | Added V039 id + a pointer paragraph naming the metrics functions and flagging `account_uploaded_blob_metrics` as the one `blob_owners` bypass. The full witnesses-non-reclamation explanation already lived (verbatim-strength) on that function's `///` doc — not duplicated. | `Blob metadata store: physical \`blobs\` + per-owner \`blob_owners\` lifecycle (V039); \`account_uploaded_blob_metrics\` is the one query bypassing \`blob_owners\` — see the module doc` |
+| `admin_devices.rs` | Added V025 id, `touch_last_seen`/`sweep_stale_nonces`, and the route/guard wiring paragraph. | `Admin-device model (V025): pairing codes, devices, anti-replay nonces; wiring and derived-status rules in the module doc` |
+| `sovereign_session_nonces.rs` | Added V043 id, both function names, and the retention &gt; `2 * SOVEREIGN_TIMESTAMP_WINDOW_SECS` rule. | `Sovereign-session anti-replay store (V043); the sweep-retention rule is in the module doc` |
+| `account_labels.rs` | Added full function inventory, the `first_seen_at` new-vs-backfill seam, config-clearing rule, and the `accounts.rs` predicate pointer. | `Watched-labeler flag store (V051); see the module doc (the filtered listing predicates live beside \`list_accounts_admin\` in \`accounts.rs\`)` |
+| `kek.rs` | The new-variant rule was already in the `//!`; added the `kek_generation`-in-`server_metadata` marker sentence. Left out: the `SecretFamily::ALL` member list — each variant's `///` doc names its table + migration id, so the module doc doesn't repeat the roster. | `The exhaustive \`SecretFamily\` inventory of KEK-wrapped columns + generic fetch/update; a new KEK-wrapped column must be added as a variant here — see the module doc` |
+| `recovery_escrow.rs` | Added the deposit/replace/delete semantics (rotated_at stamp, release-state clearing, existed-report) and the release state-machine helpers, which postdated the original doc. | `PDS-held Shamir Share 2 escrow (V050) plus the release state machine; see the module doc` |
+| `email_tokens.rs` | Added the pointer to `accounts::set_email_confirmed` / `update_account_email`. | `Email verification token store (V036, purpose-discriminated single-use envelope); see the module doc` |
+| `account_deletion_tokens.rs` | Added its own table name + V034 id (only siblings' ids were named). | `Account-deletion email-token store (V034, same hashed envelope); see the module doc` |
+| `plc_operation_tokens.rs` | Added its own table name + V033 id. | `PLC-operation email-token store (V033), gating \`signPlcOperation\`; see the module doc` |
+| `repo_keys.rs` | Added the reserved-key path (V032), commit-signer `'active'`-only lookup (V048), and the full rotation-staging trio — none were in the doc. | `Per-account repo signing keys: ceremony, migration reservations (V032), commit-signer lookup (V048), rotation staging; see the module doc` |
+| `blocks.rs` | Added V035 id, the `SqliteBlockStore` adapter, and `account_block_stats`. | `Content-addressed repo-block store + \`block_owners\` (V035), \`SqliteBlockStore\` adapter, \`account_block_stats\`; see the module doc` |
+| `waitlist.rs` | Added `count_signups` and the no-FK / off-the-purge-path fact. | `Public waitlist signup store (V057, no FKs — off the purge path); see the module doc` |
+
+## Already covered (no edit)
+
+| File | Where the facts live | Proposed cell |
+|---|---|---|
+| `server_stats.rs` | The cell's facts (SUM(CASE) precedence mirror, the entire unowned-blob explanation incl. the blob_scrub row-vs-file distinction, block count, retained `repo_seq` rows, one-pass) are on the `ServerStats` field docs and `server_stats` fn doc rather than the short `//!` — deliberately not duplicated upward. | `Whole-server aggregates for \`GET /v1/admin/health\`; the unowned-blob readout's meaning lives on the \`ServerStats\` field docs` |
+| `recovery_otps.rs` | `//!` already carries every cell fact (V053, envelope lineage, atomic `(token_hash, did)` consume, release gating). | `Recovery-release email OTP store (V053); see the module doc` |
+| `migrations.rs` | `//!` already carries every cell fact (manifest, one-file-plus-SQL change surface, sole consumer). | `The forward-only schema manifest; a schema change touches only this file plus its \`migrations/VNNN__*.sql\` — see the module doc` |
+
+## Verification
+- `cargo check -p pds` (via main-checkout devenv, worktree manifest): clean, exit 0 — all `//!` placement valid.
+- Diff is comment-only; no code, tests, or ticket references touched.
+- `crates/pds/src/db/AGENTS.md` (migration history) was read and not duplicated — module docs cite migration ids only as identifiers.
+
+One flag for the parent: the `jwt_secret.rs` secrets-hygiene hook fired on filename; I verified the file is tracked source with no secret material and did not gitignore/chmod it.</result>
+<usage><subagent_tokens>203908</subagent_tokens><tool_uses>76</tool_uses><duration_ms>783576</duration_ms></usage>
+</task-notification>
+
+---
+
+<task-notification>
+<task-id>a33d20712536c645c</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-jacob-zweifel-workspace-malpercio-dev-ezpds--claude-worktrees-prose-comments-review-f7fad4/187dd3cb-896b-4c9d-9963-0cc5d3420a0d/tasks/a33d20712536c645c.output</output-file>
+<status>completed</status>
+<summary>Agent "Module docs: OAuth/agent/notify routes" finished</summary>
+<note>A task-notification fires each time this agent stops with no live background children of its own. The user can send it another message and resume it, so the same task-id may notify more than once.</note>
+<result>All checks pass. Note: the diff stat shows ~127 changed files because sibling agents are working other slices of the same shared worktree concurrently (the worktree was clean when I started; my clippy run validated the combined state, which passed). My own changes are exactly the 15 target files.
+
+Sanity checks run: `cargo check -p pds` (proves no misplaced `//!` broke compilation) and `cargo clippy -p pds --all-targets -- -D warnings` (proves the new doc comments trip no doc lints), both green via the main checkout's devenv. No code or tests were modified — only comment blocks. Re-read the ask: every fact in the targeted AGENTS.md cells now exists in the files' `//!` module docs.
+
+## Report
+
+**General pattern applied:** none of the 15 files had a `//!` module doc — all had `//` headers. Where the header was prose, I converted it to `//!` (the MOVE, avoiding a duplicate copy) and wove in the cell's missing facts; where the header was only the `Gathers/Processes/Returns` block, I left that block untouched and added a new `//!` doc after it, before any item. Pattern comments untouched everywhere.
+
+### Per file
+
+**`crates/pds/src/routes/oauth_authorize.rs`** — (a) created. Added the non-PAR live-resolution fact (cache-only-after-validation, bsky.social tolerance), the reverse-FQDN rule enforced here as well as at PAR, `response_mode` honoring on every redirect, and the push-dispatch design (local-lookups-only for the attacker-suppliable `login_hint`; V060 match code latched only when a device was enqueued). (b) Nothing left out. (c) Cell:
+&gt; `GET/POST /oauth/authorize` — consent page + code issuance; non-PAR requests resolve client metadata live, and the GET's wallet path owns the Phase C login-approval push dispatch
+
+**`oauth_consent.rs`** — (a) created (converted the rich header). Wove in: `matchRequired` in the consent-request preview, "a denial never requires it" for the match code, and the `response_mode` read-back off the pending row. Also fixed the stale "Three public routes plus a wallet preview" framing to the four-endpoint inventory. Full envelope-binding, authority-not-cached-doc, and replay/nonce-store analysis preserved. (b) Nothing left out. (c) Cell:
+&gt; `GET /oauth/authorize/{consent-request,status}`, `POST /oauth/authorize/{approve,complete}` — the wallet-confirmed (passwordless) consent half; approval is a device-key envelope verified against `identity::authority`, never the cached DID doc
+
+**`oauth_par.rs`** — (a) created. Reverse-FQDN rule with `invalid_redirect_uri`, shared check in `auth/oauth_client_resolution.rs`, `response_mode` accept/store with `invalid_request` on anything else. (b) Nothing left out. (c) Cell:
+&gt; `POST /oauth/par` — RFC 9126; enforces the atproto reverse-FQDN private-use-redirect rule (`auth/oauth_client_resolution.rs`) and stores `response_mode`
+
+**`oauth_revoke.rs`** — (a) created (converted). Added: `oauth_tokens` table name, the `client_id`-must-own clause, the exact error surface (`invalid_request`, `invalid_dpop_proof`/`use_dpop_nonce`, uniform 200-empty non-disclosure), and the `revocation_endpoint` AS-metadata advertisement. Fixed two stale `oauth_token.rs` references (now `oauth_token/`). (b) Nothing left out. (c) Cell:
+&gt; `POST /oauth/revoke` — RFC 7009; refresh tokens (`oauth_tokens`) only, DPoP proof-of-possession, uniform 200-empty non-disclosure
+
+**`oauth_client_metadata.rs`** — (a) created. Canonical client_id URL, reverse-FQDN pairing with `org.obsign.identitywallet:`, loopback `public_url` derivation. (b) Nothing left out (the V042-seeded-row sync fact stays on the const doc, which the module doc sits above — it's a code-adjacent constraint, not a route fact from the cell). (c) Cell:
+&gt; `GET /oauth/client-metadata.json` — the wallet's OAuth client metadata; fixed canonical client_id except under a loopback `public_url`
+
+**`oauth_token/mod.rs`** — (a) created (converted). The old header omitted the claim grant entirely; the doc now lists all four grants with URNs, names `cleanup_expired_state` and `post_token`, and keeps the single-route-module/route-isolation fact. (b) Per-grant detail deferred to the submodule docs by design. (c) Cell:
+&gt; `POST /oauth/token` — one route module, per-grant submodules (`authorization_code`, `refresh`, `jwt_bearer`, `claim_polling`); grants incl. the RFC 7523 jwt-bearer and `urn:workos:agent-auth:grant-type:claim` URNs
+
+**`oauth_token/jwt_bearer.rs`** — (a) created (converted). Added: claimed-with-matching-`sub` gate and the `invalid_grant`/`access_denied`/`invalid_target` mapping, scope-verbatim/no-widening, the `registration_id` claim (`is_agent`/`require_not_agent` + `agent_identities` tie), and the revocation-bounded-by-TTL note (5 min, no live revocation list). (b) Nothing left out. (c) Cell:
+&gt; `oauth_token/jwt_bearer.rs` — the RFC 7523 grant: `identity_assertion` → 5-min Bearer token, scope verbatim, revocation bounded by the token TTL
+
+**`oauth_token/claim_polling.rs`** — (a) created (converted). Added: `service_auth`/`anonymous` audience, `assertion_expires` in the 200, scope-matches-jwt-bearer-byte-for-byte, and the `slow_down` throttle mechanics (`POLL_INTERVAL_SECS` 5s, `AppState.poll_tracker` keyed by the `claim_token`'s SHA-256, pruned in `cleanup_expired_state`). (b) Nothing left out. (c) Cell:
+&gt; `oauth_token/claim_polling.rs` — the claim grant: poll with the one-time `claim_token` (no DPoP), device-flow codes, `slow_down` via the SHA-256-keyed `poll_tracker`
+
+**`agent_identity.rs`** — (a) created (converted). Added: per-operator opt-in (all off by default), the full auth.md error-code list, the ID-JAG verification detail (checked claims + static `public_key_pem` vs dynamic `jwks_url`/`kid` trust), and the scope-clamping paragraph (`intersect_scope_tokens`, conservative default profile, narrow-without-re-registration). Fixed the stale "a separate ticket" pointer to `routes/oauth_token/claim_polling.rs`. (b) Nothing left out; doc runs ~34 lines — over the ~30 target but this is the densest cell. (c) Cell:
+&gt; `POST /agent/identity` — auth.md registration (Step 3), dispatching on `type` (`identity_assertion`/`service_auth`/`anonymous`); every flow operator-opt-in, scopes clamped to current config
+
+**`agent_claim.rs`** — (a) created (converted). Added: initiate error codes and full response shape, `agent_claim_attempts` table, the confirm guard by name (`authenticate_account_owner`, dual-credential, app-pass/agent refused, auth.md rejection shape), the one-transaction consume+claim pair by function name, the pre-bound-owner-only `access_denied` rule, and the pointer to the claim grant at the token endpoint (+ the `identity_assertion` re-issue path). (b) Nothing left out. (c) Cell:
+&gt; `POST /agent/identity/claim` + `/claim/confirm` — the claim ceremony (Step 4): public agent initiate, owner-authed confirm flips `active → claimed`; polling collection lives at the token endpoint
+
+**`agent_event.rs`** — (a) created (converted). Added: `iss`+`sub` keying detail (top-level or event-payload `subject`), the missing-`iss` = `invalid_request` vs untrusted = `invalid_issuer` split, structural `iat`/`jti`/`events` validation, the atomic `revoke_agent_identity` + `Revoked` audit event (`detail.source = "provider_set"`) exactly like `agents.rs::revoke_agent`, and the RFC 8935 `{err, description}` + `Content-Language` error envelope with its three codes. (b) Nothing left out. (c) Cell:
+&gt; `POST /agent/event/notify` — auth.md `events_endpoint`: a trusted-issuer SET (RFC 8417/8935) revokes the matching `identity_assertion` registration; idempotent 202, RFC 8935 error envelope
+
+**`agents.rs`** — (a) created (converted). The old header omitted `POST /v1/agents/claim-preview`; the doc now has the four-endpoint inventory with each endpoint's cell facts (`lastUsedAt`, preview-before-biometric-gate + shared rate-limit budget, atomic revoke + audit event, V040 rowid-cursor paging), names the guard, and carries the parent-of-sovereign-`child` operability arm. (b) Nothing left out. (c) Cell:
+&gt; `GET /v1/agents`, `POST /v1/agents/claim-preview`, `POST /v1/agents/{registration_id}/revoke`, `GET /v1/agents/{registration_id}/audit` — owner-guarded "My agents" management; agent-derived callers refused, parent operates its sovereign children
+
+**`notifications.rs`** — (a) created (converted). Added: DELETE idempotence (`deleted`/`absent`) + credential-derived DID, the sender-keys re-pin surface (active + retired, never revoked) with the 503 single-invariant design at `published_sender_keys`'s exit ("never publish an empty set"), the 501 relay gate, and DELETE staying open when the feature is off. Keying rationale and pending-not-waiting design preserved. (b) Nothing left out; ~34 lines, dense route. (c) Cell:
+&gt; `POST/DELETE /v1/notifications/register[/{deviceUuid}]`, `GET /v1/notifications/sender-keys` — the account push surface, keyed on `(did, device_uuid)`; relay round trip out of the request path
+
+**`admin_notifications.rs`** — (a) created (converted). Added the explicit 400 for the master token and the master-token-accepted-on-read fact. (b) Nothing left out. (c) Cell:
+&gt; `POST /v1/admin/notifications/register`, `GET /v1/admin/notifications/sender-keys` — the operator analog; registration is device-signed only (master token → 400), reads accept it
+
+**`notification_views.rs`** — (a) created (converted). Added the enabled-check (501) to the shared-support inventory, the decoded-not-length-checked key fact, and the "Functional Core aside from the sender-key read" qualifier. (b) Nothing left out. (c) Cell:
+&gt; Shared handler-free support for both notification surfaces (routes may not import one another): enabled-check, registration validators, `sender-keys` shape
+
+result: All 15 OAuth/agent-auth/notification route files under crates/pds/src/routes/ now carry `//!` module docs holding every fact from their AGENTS.md routes-table cells (verified against code; three stale references fixed); cargo check and clippy -D warnings pass, and 2-line replacement cells are proposed for each.</result>
+<usage><subagent_tokens>156499</subagent_tokens><tool_uses>48</tool_uses><duration_ms>803770</duration_ms></usage>
+</task-notification>
+
+---
+
+<task-notification>
+<task-id>byasnewol</task-id>
+<tool-use-id>toolu_01ERCjXdXhoDCHbianCVxSrb</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-jacob-zweifel-workspace-malpercio-dev-ezpds--claude-worktrees-prose-comments-review-f7fad4/187dd3cb-896b-4c9d-9963-0cc5d3420a0d/tasks/byasnewol.output</output-file>
+<status>completed</status>
+<summary>Background command "Run worktree workspace tests (excluding iOS apps) via main checkout devenv" completed (exit code 0)</summary>
+</task-notification>
+
+---
+
+<task-notification>
+<task-id>bltmvgqs7</task-id>
+<tool-use-id>toolu_013gKKX6tNqdgoGfTvKxpRiQ</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-jacob-zweifel-workspace-malpercio-dev-ezpds--claude-worktrees-prose-comments-review-f7fad4/187dd3cb-896b-4c9d-9963-0cc5d3420a0d/tasks/bltmvgqs7.output</output-file>
+<status>completed</status>
+<summary>Background command "pnpm install for wallet frontend in worktree" completed (exit code 0)</summary>
+</task-notification>
+
+---
+
+<task-notification>
+<task-id>aee6fbf1cf8a8b9d8</task-id>
+<tool-use-id>toolu_01QzM6Vy5o1uCyXBDFm6v6KJ</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-jacob-zweifel-workspace-malpercio-dev-ezpds--claude-worktrees-prose-comments-review-f7fad4/187dd3cb-896b-4c9d-9963-0cc5d3420a0d/tasks/aee6fbf1cf8a8b9d8.output</output-file>
+<status>completed</status>
+<summary>Agent "Wallet docs: clients/monitor/claim" finished</summary>
+<note>A task-notification fires each time this agent stops with no live background children of its own. The user can send it another message and resume it, so the same task-id may notify more than once.</note>
+<result>All nine files are done and verified: pattern line first, blank line, then the `//!` doc ahead of any item, so placement is compile-safe. I did not run cargo (per instructions — the parent verifies centrally); the other files in the diff stat are sibling agents' work in this shared worktree. Facts were cross-checked against the source (e.g. `RecoveryWindowExpired`/`check_recovery_window`, `AuthMode`, the Bearer `refreshSession` refresh, the classify contract) before being written down.
+
+result: All nine assigned wallet src-tauri files now carry `//!` module docs holding every AGENTS.md fact about them, ready for the AGENTS.md diet.
+
+## Report
+
+All paths under `/Users/jacob.zweifel/workspace/malpercio-dev/ezpds/.claude/worktrees/prose-comments-review-f7fad4/apps/identity-wallet/src-tauri/src/`.
+
+**oauth.rs** — (a) Merged: replaced the `//` type-listing header with a 36-line `//!` doc: full AppState slot inventory (incl. `rotation_state`, which AGENTS.md omits), the mutex-flavor rationale, the "neither source login parks OAuth state" note, the no-live-caller status of `prepare/complete_oauth_flow`, and the compressed retired-create-flow-round-trip rationale (unreachable for passwordless, `/v1/dids` returns active+session, zero readers, DPoP constructor never called in production, retained-dead inventory incl. `auth_ready` emit and the vendored auth-session plugin). (b) Left out: the ASWebAuthenticationSession-vs-deep-link mechanics (home is the vendored plugin's VENDORED.md + the lib.rs seam; the doc names the plugin). (c) Map entry: "`src/oauth.rs` — `AppState` (all flow-state slots) + the retired OAuth PKCE machinery (`prepare/complete_oauth_flow`, no live caller). Slot inventory and the create-flow retirement rationale: module doc."
+
+**oauth_client.rs** — (a) Merged Gathers header into a `//!` doc: two auth modes, Bearer's migration-destination origin and `refreshSession` in-memory refresh, &lt;60s lazy refresh, `use_dpop_nonce` single retry, the buffered-non-nonce-400 intact-passthrough guarantee (naming `classify_xrpc_response`), and the four request methods incl. the `post_no_body` spec-strictness rationale. (b) Nothing left homeless. (c) Map: "`src/oauth_client.rs` — `OAuthClient`, the authenticated XRPC client: DPoP and Bearer modes, lazy refresh, nonce retry, non-nonce 400s passed through intact. Module doc has the contract."
+
+**http.rs** — (a) Rewrote the stale doc ("All PDS API calls go through CustosClient" was false) and **added the missing `// pattern: Imperative Shell` line** (only assigned file lacking one). Doc covers the single-configured-PDS role vs `pds_client.rs`, the compile-time-default/first-launch/Keychain-restore lifecycle, and the method + response-type inventory. (b) Nothing homeless. (c) Map: "`src/http.rs` — `CustosClient` for the one configured PDS (runtime URL, Keychain-persisted); OAuth `par`/`token_exchange`. See module doc."
+
+**pds_client.rs** — (a) Merged header into a ~55-line doc (over the ~45 budget; every mandated fact is present): statelessness/eager-init, the CANONICAL_CLIENT_ID/REDIRECT_URI/reverse-FQDN block with V042 sync (details stay on the constants' own docs), the grouped method inventory (discovery / OAuth / plc.directory / per-server incl. `describe_server`→capabilities-cache recording and `create_session` 2FA semantics), the module-level-helper rationale with all three helper groups (claim, migration, app-password — the last recovered from `app_passwords.rs`'s AGENTS.md bullet), the `classify_xrpc_response`/`classify_xrpc_error` contract with "NetworkError is transport-only", and the full error-variant reachability taxonomy with serialization + `PdsUnreachable.reason` skip + the `Clone` rationale. (b) Nothing homeless; the doc also names methods AGENTS.md's bullet had drifted from (`fetch_repo_car`, `fetch_blob*`, `reserve_signing_key`, `delete_account`, `rotation_keys_from_audit_log`). (c) Map: "`src/pds_client.rs` — discovery/auth/XRPC against arbitrary PDSes + plc.directory, the wallet's OAuth identity constants, and the status-classification seam (`NetworkError` is transport-only). Full inventory and error-reachability: module doc."
+
+**pds_capabilities.rs** — (a) Extended the existing (already strong) `//!` doc with one "Cache shape" paragraph: process-global normalized-host map, every-successful-`describe_server`-records/flows-warm-for-free, `probe` as the cached read, failed-probe-uncached (pointing at `probe`'s doc for the freeze rationale), `forget` on re-point. Absence-is-not-an-error and no-`is_custos()` were already in the doc. (b) Nothing homeless. (c) Map: "`src/pds_capabilities.rs` — per-host cache of `describeServer`'s `custos` extension; absence is not an error, gates ask features not vendors. Module doc has the cache contract."
+
+**claim.rs** — (a) Merged the 15-line `//` listing into a `//!` doc: the five-command pipeline with per-step actions, `claim_state` tokio-mutex state machine + `_impl` test seam, the ADR-0021 password-`createSession` rationale (incl. shared `source_login` guard, one-shot password, 2FA re-invoke, HTTPS refusal), the 4-point verification framed as the inverse of `migrate::guard_migration_op`, `submit_claim`'s clear-on-success-only/DID-match/IdentityStore-persist/`IdentityAlreadyExists` tolerance, and the serialization contract. (b) Per-variant `ClaimError` UX semantics (Invariant §470's long form, `claim-errors.ts` formatting) stay on the enum variants' own docs and the frontend invariant list — deliberately not restated. (c) Map: "`src/claim.rs` — the 5-command PLC claim pipeline (password source login per ADR-0021; a claim changes nothing but inserting the device key). Pipeline and guards: module doc."
+
+**plc_monitor.rs** — (a) Added a 45-line `//!` doc where only a bare pattern line existed: borrows-PdsClient construction, the monitorable-set rule with its full load-bearing frontend consequences (absent-DID-is-no-news consumers, the `isVerified` did:web short-circuit, harness-fake mirroring), the `check_all` degradation contract, the cached-log diff + device-key classification + best-effort signer id, cadence (`MONITOR_INTERVAL_SECS` 15 min, skip-first-tick, `MissedTickBehavior::Delay`, `plc_alert`), and all four sweep-history fold rules (failed check leaves `last_verified_at`; only-present survive; 5-min foreground coalescing; fail-open reads as the deliberate inverse of `ceremony-staging`) plus the serialization line. (b) `interval_secs` fill-on-read already lives on the field's own doc — not restated. (c) Map: "`src/plc_monitor.rs` — background+foreground PLC sweeps over did:plc identities only (omission is not a verdict) and the fold-based sweep history. The set rule, degradation contract, and fold rules: module doc."
+
+**recovery.rs** — (a) Merged the two-line header into a `//!` doc: fork-point counter-op mechanics (earliest fork for chained ops, `prev` at fork CID nullifies everything after), per-DID device-key signing, build/submit commands + `RecoveryState` handoff, the 72-hour window (local `chrono` check fails early with `RecoveryWindowExpired`, plc.directory enforces; `deadline.ts` mirror), serialization contracts. (b) Nothing homeless. (c) Map: "`src/recovery.rs` — the recovery override: fork-point counter-op signed by the device key, inside plc.directory's 72-hour window. Mechanics: module doc."
+
+**diagnostics.rs** — (a) Extended the existing `//!` doc with the recording entry points and the **current capture scope** paragraph (all `pds_client` server verdicts + transport failures, create-flow `CustosClient` incl. PAR/token/health, `OAuthClient` requests/uploads/refreshes/nonce-retries/Bearer refresh, the monitor's transport case); also inserted the conventional blank line after the pattern line. Redaction-by-construction, ring-buffer shape, and the transport gate were already documented at item level. (b) Nothing homeless. (c) Map: "`src/diagnostics.rs` — redacted-by-construction network-error breadcrumbs, exported on demand from Settings. Capture scope and redaction rules: module doc."
+
+One caveat for the parent's central verification: the new docs use intra-doc links to some private/`pub(crate)` items (`MONITOR_INTERVAL_SECS`, `fold_sweep`, `find_fork_point`); these are rustdoc-lint-visible only, not build/clippy-visible, but worth knowing if a `cargo doc` gate exists.</result>
+<usage><subagent_tokens>239645</subagent_tokens><tool_uses>47</tool_uses><duration_ms>583860</duration_ms></usage>
+</task-notification>
+
+---
+
+<task-notification>
+<task-id>a7c0a850f4336e384</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-jacob-zweifel-workspace-malpercio-dev-ezpds--claude-worktrees-prose-comments-review-f7fad4/187dd3cb-896b-4c9d-9963-0cc5d3420a0d/tasks/a7c0a850f4336e384.output</output-file>
+<status>completed</status>
+<summary>Agent "Wallet docs: backups + notifications" finished</summary>
+<note>A task-notification fires each time this agent stops with no live background children of its own. The user can send it another message and resume it, so the same task-id may notify more than once.</note>
+<result>Sanity check passed: the diff for all six assigned files contains only comment lines (pattern headers → `//!` module docs); no code or tests were touched, pattern lines stay first, all referenced symbols exist, plain backticks throughout, no ticket ids. Cargo was not run per instructions (parent verifies centrally).
+
+result: All six assigned wallet backend files now carry `//!` module docs holding every AGENTS.md fact about them, ready for the AGENTS.md diet.
+
+## Report
+
+### `src-tauri/src/blob_backup.rs` — merged (existing `//` header converted to `//!`, facts added)
+Added to the module doc: the full mirror-root resolution ladder (`EZPDS_BLOB_BACKUP_DIR` override → iCloud ubiquity `Documents/` via `objc2-foundation` → `BACKUP_UNAVAILABLE` on a real device with iCloud off, never a silent local fallback → macOS/simulator `location: "local"`), the manifest path/fields + checkpointed-resume behavior, atomic temp-file+rename layout, manifest fail-closed posture (`MANIFEST_CORRUPT`, file preserved — MIME-type-record rationale), the restore path's `SessionProvider::full_access_client` + `SESSION_LOCKED` cue, the Keychain flag name `{did}:blob-backup-enabled` owned by `backup_enabled_account`, the `run_backup_for_did`/`is_backup_enabled` sweep seam, `mirror_fallback_blob`'s migration-drain role, and the `$lib/ipc` serialization contract. CID-recompute-before-write and per-blob degradation were already in the header and kept.
+
+**Facts without a home in this file (deliberate):**
+- The Entitlements.ios.plist / Patch H / `NSUbiquitousContainers` container-id-sync facts (tail of the AGENTS.md `BlobBackupError` invariant bullet) concern the entitlements file and iOS template plumbing, not this module — they should stay with the `src-tauri/Entitlements.ios.plist` Key Files entry.
+- AGENTS.md's "saved after every blob" was stale versus the code (`MANIFEST_SAVE_EVERY = 25` checkpointing); the module doc states the true behavior ("checkpointed during the run so an interrupted pass resumes"). Flag this correction when dieting the AGENTS.md bullet.
+
+**Proposed map entry:** `src/blob_backup.rs` — user-held media backup: CID-verified incremental iCloud mirror + per-blob-degrading restore (4 IPC commands); also feeds the migration blob drain (`mirror_fallback_blob`) and the background sweep (`run_backup_for_did`). Mechanism and contracts: the module doc.
+
+### `src-tauri/src/repo_backup.rs` — merged
+Added: the pure-primitives-not-repo-engine fact, the MST walk's never-descends-into-records rule, the `rev` short-circuit, the no-restore-button rationale (importRepo needs a deactivated account → restore rides migration), `mirror_repo_car`'s two named consumers, the manifest field list, the no-`SESSION_LOCKED` fact, and the serialization contract. The validation inventory, `auth: none` posture, no-encryption rationale, and blob_backup reuse were already present and kept.
+
+**Facts without a home:** none — everything from the Exposes bullet, the `RepoBackupError` invariant bullet, and the Key Files line now lives in the module doc or the pre-existing item docs (`mirror_repo_car`, `walk_mst`, the error enum).
+
+**Proposed map entry:** `src/repo_backup.rs` — user-held posts backup, sibling of `blob_backup.rs`: client-validated full-CAR `getRepo` snapshot into the same iCloud container (4 IPC commands, no session); `mirror_repo_car` is the migration/disaster-recovery repo source. Validation inventory and contracts: the module doc.
+
+### `src-tauri/src/bg_backup.rs` — merged
+Added: the `background-backup-next-mirror` Keychain turn by name, `BACKUP_TASK_IDENTIFIER` ↔ `Info.ios.plist` `BGTaskSchedulerPermittedIdentifiers` sync plus the `processing` `UIBackgroundModes` entry (previously nowhere in the file), the `requiresNetworkConnectivity` re-arming request, the exactly-once completion latch, `register_and_schedule`-once-from-`setup`, the wifiOnly enforcement path (`SCNetworkReachability` `IS_WWAN`, fail-open to "not cellular"), settings account name/defaults/camelCase, and the harness note (`WalletState.backgroundBackupSettings`). Alternating sweep and per-DID opt-in independence were already present and kept.
+
+**Facts without a home:** none.
+
+**Proposed map entry:** `src/bg_backup.rs` — iOS `BGProcessingTask` keeping both iCloud mirrors topped up: alternating two-mirror sweep, per-DID opt-ins, app-global settings. Scheduler-bridge invariants (plist sync, completion latch, wifiOnly path): the module doc.
+
+### `src-tauri/src/notifications.rs` — merged (57-line header condensed to ~47 `//!` lines with facts added)
+Added: the outcomes-not-errors pair (`AWAITING_APNS_TOKEN`/`UNSUPPORTED`), the five-account inventory in the module doc with the protection-class split (three `AfterFirstUnlock` slots vs two ordinary) and never-syncs, the fail-open + `String` `reason` rationale, the registration cadence security property (re-pin on same contact; onboarding completion + per-app-open), the not-biometric-gated rationale, and the testing seams (httpmock cores, in-memory Keychain double down to protection classes and Swift byte parity). Device-global-not-per-DID, per-host pin set, wholesale replacement = add/retire/revoke, and the 501/503 leave-untouched rule were already present and kept. Note: the doc runs slightly over the ~35-line guide (~47 lines) — this file's special-instruction fact list is the longest; every line is a distinct mandated fact.
+
+**Facts without a home in this file (deliberate):** the never-sync *rationale* detail (locked-screen-readable key would put a passcode-free key in the Apple account; a replacement device mints its own) lives in `keychain.rs`'s `notification_material_never_syncs` test doc, which is its enforcing home; likewise `store_item_after_first_unlock`'s delete-then-add mechanics belong to `keychain.rs`. Both are stated in this file only at summary level.
+
+**Proposed map entry:** `src/notifications.rs` — device half of the E2E-encrypted notification relay: device-global keypair/uuid, per-host pinned sender keys, register + re-pin commands, and the extension's `notification-failures` breadcrumb slot. Key design invariants (wholesale re-pin, 501/503 posture, protection classes): the module doc.
+
+### `src-tauri/src/apns.rs` — merged
+Added: changed-token-only re-registration (and why unchanged does nothing), the `ezpdsRoute`/HPKE-verified qualifier, the `notification_route` event emission, and wired-once-from-`setup`. Add-never-swizzle (with the desired-failure rationale), the `OnceLock` AppHandle shape, and the tap-callback/`UNUserNotificationCenter` delegate wiring were already present and kept.
+
+**Facts without a home:** none.
+
+**Proposed map entry:** `src/apns.rs` — iOS-only APNs bridge: add-only delegate-method installation for the two token callbacks + the notification-tap deep link into `notification_routes`. Rationale for add-vs-swizzle and the global handle: the module doc.
+
+### `src-tauri/src/notification_routes.rs` — merged
+Added: the `take_pending_notification_route` command by name with its mount/event drain pattern, "(or the sole identity)" and "from an interruptible surface" navigation guards, and the portable/host-tested framing. Newest-wins slot, take-clears-no-double-navigate, and route-is-a-pointer-never-a-claim were already present and kept.
+
+**Facts without a home:** none.
+
+**Proposed map entry:** `src/notification_routes.rs` — the host-tested half of notification-tap routing: one newest-wins pending-route slot drained by `take_pending_notification_route`. Pointer-not-claim discipline: the module doc.
+
+All files: `/Users/jacob.zweifel/workspace/malpercio-dev/ezpds/.claude/worktrees/prose-comments-review-f7fad4/apps/identity-wallet/src-tauri/src/{blob_backup,repo_backup,bg_backup,notifications,apns,notification_routes}.rs`</result>
+<usage><subagent_tokens>304912</subagent_tokens><tool_uses>31</tool_uses><duration_ms>556642</duration_ms></usage>
+</task-notification>
+
+---
+
+<task-notification>
+<task-id>a40227851ba26c3b0</task-id>
+<tool-use-id>toolu_01XTTG1hHtncbn2X6twxXKKb</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-jacob-zweifel-workspace-malpercio-dev-ezpds--claude-worktrees-prose-comments-review-f7fad4/187dd3cb-896b-4c9d-9963-0cc5d3420a0d/tasks/a40227851ba26c3b0.output</output-file>
+<status>completed</status>
+<summary>Agent "Wallet docs: frontend + harness" finished</summary>
+<note>A task-notification fires each time this agent stops with no live background children of its own. The user can send it another message and resume it, so the same task-id may notify more than once.</note>
+<result>All removals are the comment lines I replaced — the diff in my files is comment-only, verified by filtering the diff for non-comment added/removed lines (the Rust `src-tauri` changes in the worktree are a sibling agent's backend pass, untouched by me). I did not run pnpm/vite per instructions; the parent verifies centrally.
+
+result: Frontend fact-move complete — every frontend fact from apps/identity-wallet/AGENTS.md now lives in a source-file header/doc comment (11 files edited, comment-only), with compressed AGENTS.md replacements proposed below.
+
+# Report
+
+All paths under `/Users/jacob.zweifel/workspace/malpercio-dev/ezpds/.claude/worktrees/prose-comments-review-f7fad4/apps/identity-wallet/`.
+
+## Target 1 — `src/lib/harness/scenarios.ts`
+(a) **Extended.** The file already carried per-scenario doc comments covering nearly the whole AGENTS.md inventory (alert ladder + urgency-band rationale, alert-multi, foreign/unreachable-pds gate semantics, recover-* matrix, self-held-kit pair, device-key-unusable, rekey pair, passwordless-signup). I added the one missing clause to `notifications-unverified`: `window.__harness.state()` is a deep clone, never the live store, so a scenario is the only way in.
+(b) Note: a stranded `/** A device restored from an encrypted backup… */` docblock sits above the `notifications-unverified` entry while its subject (`device-key-unusable`) is defined further down — content present, attachment odd. Left as-is (didn't want to reorder under a comments-only mandate); worth a follow-up tidy.
+
+## Target 2 — `src/lib/harness/` enforcement + boundary
+(a) **Already home / extended.**
+- Fake-coverage enforcement (`registry.test.ts` greps `$lib/ipc` for `invoke('…')` names, compile-time `Record&lt;CommandName, Handler&gt;`): already in `registry.ts` header — no edit.
+- Double-gate (`import.meta.env.DEV &amp;&amp; VITE_HARNESS`) + `check:harness-absence` tree-shake proof: already fully documented in `src/hooks.client.ts` and `install.ts` — no edit.
+- **Extended `install.ts`**: added the device-only fidelity list (Keychain/Secure Enclave, biometric prompt, ASWebAuthenticationSession, WKWebView rendering, safe-area insets, camera/QR).
+- **Corrected + extended `proxy/index.ts`**: its old header over-claimed the proxied subset ("identity resolution, agent list/revoke/audit"); rewritten to the accurate honest boundary — real only for `create_account` (mints+redeems a real claim code, POST `/v1/accounts/mobile`) and `get_available_user_domains` (describeServer); faked-even-in-proxy list now includes `*_did_web_ceremony`, migration transfer legs, recovery/claim PLC ops, and the agents rationale.
+
+## Target 3 — `src/routes/+page.svelte`
+(a) **Created** a top-of-file HTML comment (before `&lt;script&gt;`, Svelte-safe): the full create/import/recover/home step graphs, the `pds_config` capability-gate summary (with the `reached` retryable-error rule pointed at PdsConfigScreen, where it was already documented), "`complete` goes straight to home — no post-create OAuth round trip", the did:web existing-import branch, launch reconciliation ordering (stranded removal → recovery epilogue → landing; cold-start notification tap outranks the takeover), the takeover landing split (one alarm → `alert_detail`, several → `protection`), and the app-open sweeps. It points at (rather than duplicates) the existing inline docs: `shownAlarms` (in-session, deliberately unpersisted), `landOnAlarm` (precedence + home/protection guard), `goTo` (clears `alarmTakeover`), `alertReturnStep`/`identityReturnStep` declarations, `handleNotificationRoute`, `syncNotifications` — all of which already carried their AGENTS.md facts verbatim-equivalent.
+
+## Target 4 — components/home screens
+(a) Already covered, no edit needed: **ProtectionScreen** (Defend-surface framing, `takeover`/"Not now" prop doc, `onalert` fast-path), **IdentityScreen** (state-leads IA, Use zone + two doors as prop docs, pessimistic `plcVerified=false`), **MoveOrRebuildScreen**, **ManageIdentityScreen**, **AdvancedToolsScreen** (vestibule, additive-framing-only), **SecurityCheckup**, **AddIdentityScreen**, **ServerGoneScreen** (custody read, fail-toward-"no identities"), **PasswordUnlockDialog**, **RemoveIdentityScreen** (phases, route/password gating, did:web branch, `tombstoneCid === null` switch, `web_epilogue` — all present), **AgentDetailScreen** (selection-scoped lifetime, biometric revoke).
+Headers **created**: **ChangeHandleScreen** (sovereign, reached-from, domains + pre-flight + biometric-gated `changeHandle`), **AppPasswordsScreen** (Use-zone entry, unlock-retry, biometric mint/revoke, one-time secret), **MediaBackupScreen** (two sections/two flags, session/biometric boundary per action, no-repo-restore pointer at `$lib/ipc/repo-backup` which documents the `importRepo` rationale), **MyAgentsScreen** (per-identity list, sub-view, locked-load unlock), **OAuthConsentApprovalScreen** (three converging entry paths, server-record-by-`request_id` rule, match-number → biometric → signed decide ordering).
+(b) **Discrepancy found:** AGENTS.md (Invariants, `my_agents` bullet) says a SESSION_LOCKED agent-list load offers `unlockIdentity(did)`; the code (`MyAgentsScreen.unlockAndReload`) calls `sovereignLogin(did)` directly. I documented the code's truth ("a sovereign unlock"); the compressed AGENTS entry should drop the `unlockIdentity` claim.
+
+## Target 5 — `src/lib/*.ts` utilities + `src/lib/ipc/`
+(a) Verified fully covered by existing headers, no edit: `appearance.ts` (mirror/Keychain roles, `APPEARANCE_STORAGE_KEY`, ordering guarantees), `agent-scopes.ts`, `identity-status.ts` (panel-vs-badge `safe`, `checkFailed`→"Not checked", the load-bearing did:web `isVerified` short-circuit), `protection.ts` (ordering-vs-`activeStrip` rule, worst-state-wins, `describeInterval` never-a-literal), `alarm-landing.ts` (`alarmKey` = DID + sorted CIDs, expired-still-alarms), `identity-cards.ts` (`degraded` semantics incl. the did:web override, in `protection.ts::toRow`), `unlock.ts` (inverted dialog, `UNLOCK_CANCELLED` decision-not-fault), `biometric.ts`, `notification-health.ts`, `consent-qr.ts`, `claim-errors.ts`, `ipc/qr-scan.ts`.
+**Created:** `deadline.ts` header (purpose, thresholds, 72h = plc.directory's window). **Extended:** `ipc/index.ts` header now names both policy-gate exceptions (`biometric.ts` and `unlock.ts` + its branch-ownership rule). Every named wrapper in the AGENTS export inventory exists in the per-domain modules (the barrel re-exports 20+ modules; the modules are the authority).
+(b) None.
+
+## Proposed compressed AGENTS.md replacements
+
+**Harness section (12 lines):**
+```
+## Browser test harness (drive the app without a simulator)
+
+The frontend runs in a desktop browser under `vite dev`; the harness intercepts the one missing
+seam — Tauri `invoke()` — with the official `mockIPC`. Design + ACs:
+[docs/archive/design-plans/2026-07-12-browser-harness.md](../../docs/archive/design-plans/2026-07-12-browser-harness.md).
+- **Start** (or launch.json `wallet-harness` / `wallet-harness-proxy`): fake mode `pnpm --dir apps/identity-wallet dev:harness` → http://localhost:5173;
+  proxy mode `cargo build -p pds` + `just harness-pds` (prints URL + token), then `VITE_HARNESS_PDS_URL=&lt;url&gt; VITE_HARNESS_ADMIN_TOKEN=&lt;token&gt; pnpm --dir apps/identity-wallet dev:harness:proxy`.
+- **`window.__harness`**: `.scenario(name)` (`.scenarios` lists presets; per-preset purpose notes are doc comments in `src/lib/harness/scenarios.ts`),
+  `.failNext(command, error)`, `.emit(event, payload)`, `.state()` (deep-cloned snapshot), `.mode`.
+- **Proxy mode is real only for the thin-HTTP subset** (`create_account`, `get_available_user_domains`); the honest boundary and the
+  device-only fidelity list are in `src/lib/harness/proxy/index.ts` + `install.ts`.
+- Double-gated on `import.meta.env.DEV &amp;&amp; VITE_HARNESS` (plain `pnpm dev` never activates it); `pnpm check:harness-absence` proves production
+  tree-shaking; `registry.test.ts` fails if a `$lib/ipc` command lacks a fake handler. Code: `src/lib/harness/`, activated by `src/hooks.client.ts`.
+```
+
+**components/home bullet (6 lines):**
+```
+- `src/lib/components/home/` — the home-surface screens plus DIDAvatar (the directory listing is the authoritative
+  inventory; each screen's role, entry point, and rules are its top-of-file comment). ProtectionScreen is the
+  app-level Defend surface (shared derivations in `$lib/protection` keep it and the home strip from contradicting);
+  IdentityScreen is the per-identity instrument panel — state leads, actions follow — with the Use zone
+  (consent approval / app passwords / agents) and two doors: MoveOrRebuildScreen (the exit) and
+  ManageIdentityScreen (maintenance), with AdvancedToolsScreen as the vestibule behind the latter.
+```
+
+**+page.svelte bullet (6 lines):**
+```
+- `src/routes/+page.svelte` — the root page and the app's whole step machine: the create / import (claim) /
+  recover flows from the `add_identity` situation question, the home tier (protection, identity_detail and its
+  doors), the alarm-takeover landing, and the launch reconciliation ordering. The full step graph and gate rules
+  are the HTML comment at the top of the file; takeover/dismissal semantics live on the `shownAlarms`,
+  `landOnAlarm`, and `goTo` doc comments, multi-entry back-path rules on the `alertReturnStep` /
+  `identityReturnStep` declarations, and the situation-question rationale on AddIdentityScreen.
+```
+
+**Per-utility one-liners:**
+```
+- `src/lib/appearance.ts` — System/Light/Dark override; Keychain is truth, localStorage mirror is pre-paint only (reconcile/ordering rules in the header)
+- `src/lib/agent-scopes.ts` — plain-language OAuth scope descriptions (`describeScope`/`describeScopes`); elevated flags + unknown-token honesty rule in the header
+- `src/lib/deadline.ts` — 72h PLC recovery-window math (`getDeadline`/`getUrgency`/`formatCountdown`); thresholds in the header
+- `src/lib/identity-status.ts` — identity panel state derivation; panel-vs-badge `safe` and the load-bearing did:web `isVerified` short-circuit in the file
+- `src/lib/protection.ts` — shared Defend derivations for strip + Protection; ordering-vs-`activeStrip` rule and worst-state-wins summary in the file
+- `src/lib/alarm-landing.ts` — pure launch/foreground alarm landing (`decideAlarmLanding`, `alarmKey`); dismissal semantics in the file
+- `src/lib/identity-cards.ts` — `loadIdentityCard(s)` local facts; `degraded`-flag semantics in the file (+ `protection.ts::toRow`)
+- `src/lib/unlock.ts` — `unlockIdentity`, the one sovereign-vs-password unlock gate; inverted-dialog design and `UNLOCK_CANCELLED` in the header
+- `src/lib/biometric.ts` — `authenticateBiometric`, the fail-closed user-presence gate; the no-pre-check rule in the header
+- `src/lib/notification-health.ts` — folds NSE failure breadcrumbs into one Settings sentence; two-level severity rules in the file
+- `src/lib/consent-qr.ts` — pure `parseConsentQr`; ignores the QR's origin (server re-verifies by request_id)
+- `src/lib/claim-errors.ts` — shared RATE_LIMITED / SERVER_ERROR message formatting
+- `src/lib/ipc/qr-scan.ts` — mobile-only barcode-scanner bindings, dynamically imported; off-device rejects → typed-code fallback
+- `src/lib/ipc/` — per-domain typed `invoke()` wrappers re-exported from `index.ts`; the import-from-`$lib/ipc`-only rule and the two
+  policy-gate exceptions are `index.ts`'s header (drop the export inventory — the modules are the authority)
+```
+
+**Facts left without a home:** none, with two caveats — (1) the MyAgentsScreen `unlockIdentity`-vs-`sovereignLogin` discrepancy above (AGENTS.md's claim looks stale; code documented as-is), and (2) the harness start commands / launch.json names stay in AGENTS.md by design (they are workflow, not source facts).</result>
+<usage><subagent_tokens>233774</subagent_tokens><tool_uses>46</tool_uses><duration_ms>631311</duration_ms></usage>
+</task-notification>
+
+---
+
+<task-notification>
+<task-id>aa56565ac18a44222</task-id>
+<tool-use-id>toolu_019kAYHJTuQpktQsBzCZtmKG</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-jacob-zweifel-workspace-malpercio-dev-ezpds--claude-worktrees-prose-comments-review-f7fad4/187dd3cb-896b-4c9d-9963-0cc5d3420a0d/tasks/aa56565ac18a44222.output</output-file>
+<status>completed</status>
+<summary>Agent "Wallet docs: sovereign ops + agents" finished</summary>
+<note>A task-notification fires each time this agent stops with no live background children of its own. The user can send it another message and resume it, so the same task-id may notify more than once.</note>
+<result>All checks pass: every file keeps its `// pattern:` line first, a blank line, then a contiguous `//!` module doc that ends before the first item (so it compiles as a module doc), and no ticket refs anywhere. I did not run cargo per instructions — the parent verifies centrally.
+
+result: All 11 assigned wallet modules now carry `//!` module docs holding every AGENTS.md fact about them (guard allowlists 2–7 with ordinals and mirror/inverse relationships, orderings, Keychain slots, error enums + wire shapes), ready for the AGENTS.md diet.
+
+## Per-file report
+
+All paths under `/Users/jacob.zweifel/workspace/malpercio-dev/ezpds/.claude/worktrees/prose-comments-review-f7fad4/apps/identity-wallet/src-tauri/src/`.
+
+**agents.rs** — (a) Merged: `//` header converted to `//!`; added missing `// pattern: Mixed` line (only assigned file lacking one); added endpoints, `SESSION_LOCKED{reason}`/`unlockIdentity` cue, full `AgentsError` list + TS-union contract, `map_ceremony_error`/`map_session_error` semantics (NETWORK_ERROR = transport only), camelCase IPC types. (b) Left out: the `my_agents`/`agent_approval` step wiring (AGENTS.md line 502) — a `+page.svelte`/screen-component fact, not this module's. (c) Map entry: "`src/agents.rs` — Agent consent + audit: the 5 per-identity 'My agents' + claim-ceremony commands over a self-healing per-DID session. Endpoints, error contract, and session/error-mapping rules: the module doc."
+
+**oauth_consent.rs** — (a) Merged; added Phase A+B framing, all three command signatures, QR-path re-verification rule, envelope field list, `match_code` outside-envelope + `deny_unknown_fields` compat, full `ConsentError` list with MATCH_CODE_MISMATCH stays-pending semantics, `matchRequired` default-false. (b) Left out: screen-level behavior (number before biometric, Approve disabled, entry paths) — owned by `OAuthConsentApprovalScreen.svelte`'s entry. (c) Map entry: "`src/oauth_consent.rs` — Wallet-confirmed OAuth consent client (preview by code / by QR `request_id`, device-key-signed approve). Envelope contents, Phase C match-code rules, and `ConsentError`: the module doc."
+
+**app_passwords.rs** — (a) Merged; added return types, wrappers living in `pds_client.rs`, 409→DUPLICATE_NAME, error list, `SERVER_ERROR.status` Some/None semantics + exhaustive `map_session_error`, one-time-secret display rule. (b) Nothing homeless. (c) Map entry: "`src/app_passwords.rs` — App-password mint/list/revoke over a per-DID full-access session (the 'sign the Bluesky app into a passwordless account' surface). Scope bounds and error contract: the module doc."
+
+**migrate.rs** — (a) Merged; added command/helper inventory, the did:web document leg (`build/submit_did_web_migration_document_cmd`), guard_migration_op's five numbered rules + claim-guard inversion + credible-exit invariant, `MigrationState` mutex/ownership fact, `MigrateError` list. Noted the guard as "SECOND of the wallet's seven" — inferred from siblings' THIRD–SEVENTH ordinals (AGENTS.md never states it explicitly). (b) Nothing homeless. (c) Map entry: "`src/migrate.rs` — Self-signed migration identity leg (ADR-0002 path 1): build + device-key-sign + direct plc.directory submit; also the did:web document leg. `guard_migration_op`'s allowlist and the claim-guard inversion: the module doc."
+
+**migration_orchestrator.rs** — (a) Merged; doc now carries the full step pipeline, ADR-0021 source login, blob-drain degradation (`BlobLoss`/acceptLoss/mirror fallback), repo-mirror fallback, finalize ordering (activate → persist → deactivate, and why), the capability-gated `destination_credential` branch with the answered-vs-unreachable asymmetry, the pure-core inventory incl. both `ensure_*_session_persisted`, `finalize_migration_core` injection, in-memory-state-vs-persisted-session distinction, "never POSTs plc.directory", and the `MigrationError` list — verified against the real enum (AGENTS.md's inline list omitted `BLOB_DRAIN_INCOMPLETE`/`BACKUP_UNAVAILABLE`; the doc includes all 22). Doc is 83 lines, over the ~40 target — this is the densest module and the special instructions demanded all of it. (b) Left out: `PdsAuthScreen`/`MigrationSourceAuthScreen` wrapper detail (frontend, owned by `source_login.rs`/component entries). (c) Map entry: "`src/migration_orchestrator.rs` — Outbound-migration state machine (prepare → … → finalize; also disaster recovery's transfer tail). Cutover ordering, credential capability gate, blob-loss handling, and state-vs-session persistence: the module doc."
+
+**disaster_recovery.rs** — (a) Merged; added `prepare_disaster_recovery` (plc.directory-only resolution, `handle_override`, `recovery: true` session), keychain read-back-verify-before-network + retry-reuse, offline JWT claims incl. 1h expiry + `crypto::mint_service_auth_jwt`, mirror-primary blobs / honest preferences no-op, FIFTH guard full allowlist + anti-lockout rule, deactivated-until-final-activation, stolen-key/72h containment, both error surfaces. (b) Nothing homeless (`{did}:recovery-signing-key` slot naming also lives in the Keychain-invariants tier, fine). (c) Map entry: "`src/disaster_recovery.rs` — Sovereign disaster recovery ('Rebuild from backup'): two guarded PLC ops around an offline-JWT `createAccount` + iCloud-CAR import. The FIFTH guard, the sequencing, and the anti-lockout rule: the module doc."
+
+**endpoint_repair.rs** — (a) Merged; added `normalize_endpoint`, the `getRepoStatus` hosting probe / `DESTINATION_NOT_HOSTING`, the `opCid: null` no-op reconcile, error list, biometric gate + vestibule reachability. (b) Nothing homeless. (c) Map entry: "`src/endpoint_repair.rs` — Sovereign `atproto_pds`-endpoint repair (device-key-signed, direct to plc.directory; new host probed first). The SIXTH guard — endpoint string only — and its no-op reconcile: the module doc."
+
+**handle_change.rs** — (a) Merged; added `get_identity_handle_domains` (hosting-PDS vs configured-Custos distinction), THIRD-guard five numbered rules + current==proposed pass-through proof, pure-helper inventory with `compute_new_also_known_as` semantics, error list, `map_plc_fetch_error`/`map_session_error` classification split, frontend biometric location. (b) Nothing homeless. (c) Map entry: "`src/handle_change.rs` — Sovereign change-handle: updateHandle first, device-key-signed alsoKnownAs op second, retry self-heal. The THIRD guard (mirror of migration's) and the error classifiers: the module doc."
+
+**rotate_repo_key.rs** — (a) Merged; added ADR-0025, `AppState.rotation_state` parking, FOURTH-guard exact rules (`[device, staged]`, non-fresh staged key rejected), error list incl. `ROTATION_FAILED{status}`/`NO_PENDING_ROTATION`, classifier split, frontend biometric location. (b) Nothing homeless. (c) Map entry: "`src/rotate_repo_key.rs` — Sovereign repo signing-key rotation (ADR-0025): PDS stages, wallet signs, PDS submits + cuts over under the repo write lock. The FOURTH guard and the retry-safe submit: the module doc."
+
+**self_held_kit.rs** — (a) Merged; added the five command names with per-command detail, the Share 1 → Keychain / 2 AND 3 → user split, staging-slot separation from `rekey-staging:{did}` (who-keeps-Share-2 disagreement), `{did}:self-held-kit` marker + escrow-offer seam condition (marker AND current host advertises `escrow`), the exact copy rule ("no share is sent to your server", never "your server is never contacted"), SEVENTH guard + why not a `guard_rekey_op` flag, error list with the no-SESSION_LOCKED/no-ESCROW_FAILED rationale. (b) Nothing homeless. (c) Map entry: "`src/self_held_kit.rs` — Escrow-less self-held Shamir kit for claimed identities: build/submit/confirm + marker + escrow-offer seam. Share custody, the plc.directory-only posture and its one describeServer exception, and the SEVENTH guard: the module doc."
+
+**identity_removal.rs** — (a) Merged; added all six commands (route resolution via the shared `resolve_pds_url`, the password-vs-proof branch with one-`describeServer`-answers-both-halves and the InvalidToken/InvalidConfirmationCode sent-credential discrimination, `forget_identity_locally`'s this-device-only scope + 401-oracle rationale), the method-aware `retire_and_wipe` branch and why it lives in the shared core, `submit_then_wipe` ordering (unit-tested), marker timing (before the tombstone round trip; cleared on both paths incl. did:web; corrupt-reads-empty), did:web retirement statement, types + full `RemovalError` list. Doc is 85 lines — densest special-instruction file, all facts demanded. (b) Nothing homeless. (c) Map entry: "`src/identity_removal.rs` — Permanent removal: deleteAccount → (did:plc) tombstone → wipe-last, resumable via the pending-removals marker; password-vs-signed-proof credential resolution and the local-only forget hatch: the module doc."
+
+One cross-cutting note for the parent: the guard-ordinal "SECOND" on `guard_migration_op` is my inference (AGENTS.md numbers only THIRD–SEVENTH; claim's 4-point check and migration's guard are the unnumbered first two) — flag it if the dieted AGENTS.md wants different phrasing.</result>
+<usage><subagent_tokens>270398</subagent_tokens><tool_uses>34</tool_uses><duration_ms>682436</duration_ms></usage>
+</task-notification>
+
+---
+
+<task-notification>
+<task-id>a226d87f34b737f3e</task-id>
+<tool-use-id>toolu_01VwRCsDwN1NgYTKxno9moha</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-jacob-zweifel-workspace-malpercio-dev-ezpds--claude-worktrees-prose-comments-review-f7fad4/187dd3cb-896b-4c9d-9963-0cc5d3420a0d/tasks/a226d87f34b737f3e.output</output-file>
+<status>completed</status>
+<summary>Agent "Wallet docs: identity/session core" finished</summary>
+<note>A task-notification fires each time this agent stops with no live background children of its own. The user can send it another message and resume it, so the same task-id may notify more than once.</note>
+<result>Verified: across all 11 assigned files, the diff contains only doc-comment and blank-line changes — no code or tests touched, no cargo run (the parent verifies compilation centrally, per instructions). No Linear ticket ids appear in any added text (checked while writing; the ADR references used are ADR-0021/0027/0030, which are permitted).
+
+result: All 11 assigned wallet src-tauri files now carry `//!` module docs holding every AGENTS.md fact (headers merged, nothing left duplicated), ready for the AGENTS.md diet.
+
+## Per-file report
+
+**lib.rs** — (a) Created a crate-root `//!` doc: a one-line-per-command map of everything homed in lib.rs (create/ceremony/backup-confirm, did:web pair + import, domains, register_created_identity, the three synchronous IdentityStore reads with the no-async/no-State note, PDS url/capabilities, appearance, plus `run()`'s setup: token restore with `expires_at = 0` + 300ms `auth_ready`, `reconcile_share1_slots`, monitor spawn, iOS bridges). Added missing `///` docs on `create_account` (idempotent-key retry safety, error→screen mapping) and `perform_did_ceremony` (the full client-share ceremony: repo-signing-key fetch, pre-network staging/set_id reuse, `build_did_plc_genesis_op_multi_rotation_with_external_signer` with `rotationKeys = [device, recovery, PDS]` ADR-0027, escrowShare-is-the-only-share-Custos-sees, per-DID Share 1 read-back write, `{did, share3, share3Words}` return). Other commands already had adequate `///` docs. (b) No facts left homeless — note AGENTS.md's `src/lib.rs::check_identity_status` attribution is stale (it lives in `plc_monitor`; lib.rs only registers it), so I did not claim it. (c) Map entry: *`src-tauri/src/lib.rs` — crate root and app wiring: the cross-cutting IPC commands (account creation, both DID ceremonies, PDS config/capabilities, IdentityStore reads, appearance) plus `run()`'s startup sequence. The module doc maps every command; details on each `///`.*
+
+**share_ceremony.rs** — (a) Merged the `//` header into a `//!` doc, preserving the fail-closed staging contract and teardown order verbatim-adapted; added `CeremonyShareSet` contents (Zeroizing), the three staging slots including `rekey-staging:{did}` / `self-held-kit-staging:{did}` and the separate-slots-on-purpose rule (the two ceremonies disagree about who keeps Share 2). (b) None. (c) *`share_ceremony.rs` — client-side 2-of-3 share generation + the three fail-closed staging slots (create / re-key / self-held kit). Staging contract and load-bearing teardown order: module doc.*
+
+**share_recovery.rs** — (a) Merged header into `//!`; added the 10-command spine, the three-tier auto-load order with independent validation, the distinct pre-combine errors (SHARE_CHECKSUM / SHARE_SET_MISMATCH with both set_ids / DUPLICATE_SHARE), the escrow-release client (uniform 401 → RELEASE_UNAUTHORIZED), `recover_identity`'s idempotence + plc.directory-only property, the epilogue record's fail-closed posture (`EPILOGUE_CORRUPT` preserved) verbatim-adapted, the `host_offers_escrow` capability-gate asymmetry, in-memory pre-anchor state, and the error wire shape. (b) None. (c) *`share_recovery.rs` — the "Recover existing identity" ceremony (10 IPC commands) and its resumable rotation epilogue. Flow, staging/teardown, and error contract: module doc.*
+
+**rekey.rs** — (a) Merged header into `//!`; added `guard_rekey_op`'s exactly-`[device, PDS]` rule (and why `self_held_kit` drops it), `confirm_rekey` as the mirrored teardown gate, and a Share 1 ownership paragraph: `recovery_share1_account` as the single naming source, `is_recovery_share1_account` as the `syncs_to_icloud` allowlist family, `store_share1`/`load_share1`/`read_share1_synced` semantics (no-fallback read-back), and the 68-char v2 vs 52-char did:web envelope forms, never displayed. (b) None — accessor detail also lives on the item docs, which the module doc points at. (c) *`rekey.rs` — the additive-only re-key of pre-inversion `[device, PDS]` accounts onto the client-share model; also owns the per-DID Share 1 slot (`recovery-share-1:{did}`) and its synced-store accessors. Safety ordering and slot contract: module doc.*
+
+**device_key.rs** — (a) Created a `//!` doc: `#[cfg]` dispatch (software vs Secure Enclave, SE key never leaves hardware, pub + application_label for lookup), idempotent `get_or_create` (retry safety), raw 64-byte r||s with explicit low-S normalization on both paths (RFC 6979 fixes only the nonce), the three account consts as single naming source (+ orphaning warning, `adopt_global_device_key` copy), multicodec-prefix duplication rationale. (b) None. The file has no `// pattern:` line; I left code untouched rather than add one. (c) *`device_key.rs` — the global P-256 device key, software-or-Secure-Enclave by `#[cfg]`; `get_or_create` is idempotent and `sign` is low-S-normalized r||s. Dispatch and account names: module doc.*
+
+**keychain.rs** — (a) Extended the existing `//!` with a "# Account inventory" section: all app-global accounts (relay-base-url, appearance-preference, device-rotation-key-*, session-token, did, ceremony-staging, recovery-epilogue, monitor-history, managed-dids/forgotten-dids, pending-removals, oauth-* legacy items, the five notification accounts via the `NOTIFICATION_ACCOUNTS` pointer + after-first-unlock/never-sync notes, blob-backup-settings, background-backup-next-mirror, legacy recovery-share-1), the per-DID `"{did}:suffix"` pattern with its ten suffixes and owners, the prefix-form slots (`recovery-share-1:{did}`, the staging pair) with owner pointers, and the orphaning warning. The two-stores design, `syncs_to_icloud` allowlist, `store_item_after_first_unlock` semantics, and the access-group invariant (stable-first, legacy-indefinitely, `entitlement_declares_stable_group_first`) were already in the doc and stand. (b) None; where another module owns naming, the inventory row is one line + pointer as instructed. (c) *`keychain.rs` — the two Keychain stores (device-local + iCloud-synchronizable, allowlist-gated), protection classes, access-group invariant, and the canonical account inventory. Module doc is the authority on every account name.*
+
+**identity_store.rs** — (a) Extended the `//!`: stateless unit-struct shape, registration precondition + error wire shape, lazy per-DID key generation with the SE probe-before-trusting-cache behavior (`classify_se_fast_path`, DeviceKeyUnusable, must-not-mint, positive-only caching), `adopt_global_device_key` rationale, `remove_identity`'s index-first best-effort per-DID cleanup with the deliberate non-deletion of both Share 1 slots, and `SovereignTokenRecord`'s three-writers/one-reader shape contract. (b) AGENTS.md says "nine-entry cleanup"; the code now deletes ten (the `self-held-kit` marker was added later) — the doc states the truth ("every per-DID entry"), so the AGENTS.md number was stale, not lost. (c) *`identity_store.rs` — multi-identity Keychain lifecycle (`managed-dids` index + per-DID entries), lazy per-DID device keys with the Secure-Enclave liveness probe, and the shared `SovereignTokenRecord` session record. Removal semantics and the Share 1 exception: module doc.*
+
+**sovereign_session.rs** — (a) Merged the Gathers header into a `//!`: the proof-exchange flow, response/JWT sub-aud validation, persistence into the shared `{did}:oauth-tokens` record, the narrow-command + frontend-biometric-gate split, `stored_bearer_client`, and `bearer_jwt_claims`/`audience_matches_server` as the single sub/aud source reused by `session_provider` and `password_unlock`; error wire shape. (b) None. (c) *`sovereign_session.rs` — passwordless per-DID sovereign login: device-key proof → validated Bearer session persisted to `{did}:oauth-tokens`; owns the shared sub/aud binding helpers. Module doc has the flow.*
+
+**session_provider.rs** — (a) Removed the duplicated Gathers header and rewrote the `//!` with the full decision ladder (including the 120s headroom and the host-moved discard + `NeedsUnlock{HostChanged}` branch the old doc lacked), the complete distinct-terminal-error list with delete-vs-keep rules, the coalescing **re-read** design and lock-registry shape, the explicit "does NOT reuse `OAuthClient::refresh_token_bearer`" note, the type roster, and `ensure_identity_session` with the corrected two-origin unlock cue (sovereign or password) and the no-biometric-on-live-token rule. (b) None. (c) *`session_provider.rs` — the per-DID session seam: restore / coalesced single-flight refresh / host-change discard, distinct terminal errors, and the `ensure_identity_session` pre-flight. Ladder and contracts: module doc.*
+
+**password_unlock.rs** — (a) Removed the Gathers header; extended the `//!` with `get_identity_unlock_route`'s decision (unreached probe ⇒ SOVEREIGN, with the full rationale), the sub/aud binding check before persist, the deliberately-not-biometric-gated posture, and the `UnlockError` variant list + wire shape. The same-record contract, ADR-0021, and password-used-once postures were already present. (b) None. (c) *`password_unlock.rs` — the password origin for the shared session record on non-sovereign hosts: capability-driven route choice (unreached ⇒ SOVEREIGN) + `createSession` → bind → persist. Module doc has the postures.*
+
+**source_login.rs** — (a) Merged header into a `//!`; added `create_source_session` (raw JWT pair — what `password_unlock` persists), `authenticate_source_password` (Bearer-client wrapper for claim + migration), password-used-once, and the tests-live-here/callers-keep-From-tests fact. The ADR-0021 rationale and two-enums-by-design were preserved. (b) None. (c) *`source_login.rs` — the one shared password `createSession` core (HTTPS + account-match + 2FA) behind the claim, migration, and password-unlock paths, returning a neutral `SourceLoginError` each caller maps via `From`.*</result>
+<usage><subagent_tokens>317346</subagent_tokens><tool_uses>33</tool_uses><duration_ms>731690</duration_ms></usage>
+</task-notification>
+
+---
+
+<task-notification>
+<task-id>bl6ommcfy</task-id>
+<tool-use-id>toolu_01QCwFTgufBXwTDmt3kVVuRm</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-jacob-zweifel-workspace-malpercio-dev-ezpds--claude-worktrees-prose-comments-review-f7fad4/187dd3cb-896b-4c9d-9963-0cc5d3420a0d/tasks/bl6ommcfy.output</output-file>
+<status>completed</status>
+<summary>Background command "Run wallet frontend svelte-check and vitest" completed (exit code 0)</summary>
+</task-notification>
+
+---
+
+<task-notification>
+<task-id>b8k655m89</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-jacob-zweifel-workspace-malpercio-dev-ezpds--claude-worktrees-prose-comments-review-f7fad4/187dd3cb-896b-4c9d-9963-0cc5d3420a0d/tasks/b8k655m89.output</output-file>
+<status>completed</status>
+<summary>Background command "cargo check the wallet crate with the iOS host env" completed (exit code 0)</summary>
+</task-notification>
+
+---
+
+Coderabbit requested several changes on 499 in its review
+
+---
+
+a couple more nits from coderabbit, let's take a look
+
+---
+
+Work on Linear issue MM-496:
+
+Suggested branch name: malpercio/mm-496-marketing-site-voice-audit-against-writing-stylemd
+
+<issue identifier="MM-496">
+<title>Marketing site voice audit against writing-style.md</title>
+<description>
+Audit `sites/marketing/` (Obsign + Custos pages) against [docs/writing-style.md](<https://github.com/malpercio-dev/ezpds/blob/main/docs/writing-style.md>) (PR #496) — the AI-voice tells and, more importantly, the framing rule: **security outcomes lead, data ownership is the discovered consequence, not the pitch.** There is credible skepticism on Bluesky, including among protocol-minded users, that "own your data" sells on its own; the release audience is the security-minded 1Password/Proton lane.
+
+**Notes:**
+
+* The marketing site has a *deliberate* designed voice (see its README's design derivation) — this is an audit-then-adjust, not a mechanical sweep. The dream routine is explicitly restricted to conservative factual corrections here for the same reason.
+* Changes to `sites/marketing/` require a changelog.d fragment (`just changelog-check`).
+* Out of scope for PR #496; that PR covered `sites/docs` user tier + the style guide itself.
+</description>
+<team name="Mal's Machinations"/>
+<project name="ezpds">An easy-to-host PDS on the ATProtocol, MacOS. Grandma-approved.</project>
+</issue>
+
+---
+
+CodeRabbit requested some changes, and I'm also not convinced we moved far enough in the correct direction. With the user-facing docs, we trimmed quite a bit of the protocol talk in accordance with our audience statement, and those who are really interested in the protocol details are capable of reading down to the level as well as finding the more technical documentation. I'm not sure that the list of rotationKey indexes, for example, is really going to land with our launch audience
+
+---
+
+how might we take the principles we've learned across the rewrites we've done and also apply them to any user-facing prose in the two apps and within Custos (such as the oauth flow pages)?
+
+---
+
+please do proceed as you suggested!
