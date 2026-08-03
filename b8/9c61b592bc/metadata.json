@@ -1,0 +1,26 @@
+{
+  "cli_version": "0.9.0",
+  "checkpoint_id": "b89c61b592bc",
+  "strategy": "manual-commit",
+  "branch": "malpercio/writing-style-screens-and-rendered-pages",
+  "checkpoints_count": 3,
+  "files_touched": [
+    "docs/writing-style.md"
+  ],
+  "sessions": [
+    {
+      "metadata": "/b8/9c61b592bc/0/metadata.json",
+      "transcript": "/b8/9c61b592bc/0/full.jsonl",
+      "compact_transcript": "/b8/9c61b592bc/0/transcript.jsonl",
+      "content_hash": "/b8/9c61b592bc/0/content_hash.txt",
+      "prompt": ""
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 513,
+    "cache_creation_tokens": 3203722,
+    "cache_read_tokens": 77522584,
+    "output_tokens": 330443,
+    "api_call_count": 279
+  }
+}
