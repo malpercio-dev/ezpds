@@ -1,0 +1,24 @@
+{
+  "cli_version": "0.9.0",
+  "checkpoint_id": "df71a3d3c392",
+  "strategy": "manual-commit",
+  "branch": "malpercio/mm-496-marketing-site-voice-audit-against-writing-stylemd",
+  "checkpoints_count": 1,
+  "files_touched": null,
+  "sessions": [
+    {
+      "metadata": "/df/71a3d3c392/0/metadata.json",
+      "transcript": "/df/71a3d3c392/0/full.jsonl",
+      "compact_transcript": "/df/71a3d3c392/0/transcript.jsonl",
+      "content_hash": "/df/71a3d3c392/0/content_hash.txt",
+      "prompt": "/df/71a3d3c392/0/prompt.txt"
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 462,
+    "cache_creation_tokens": 2824542,
+    "cache_read_tokens": 74154908,
+    "output_tokens": 295849,
+    "api_call_count": 251
+  }
+}
