@@ -1,0 +1,24 @@
+{
+  "cli_version": "0.9.0",
+  "checkpoint_id": "bed84923a453",
+  "strategy": "manual-commit",
+  "branch": "malpercio/mm-494-operator-docs-voice-pass-writing-stylemd",
+  "checkpoints_count": 1,
+  "files_touched": null,
+  "sessions": [
+    {
+      "metadata": "/be/d84923a453/0/metadata.json",
+      "transcript": "/be/d84923a453/0/full.jsonl",
+      "compact_transcript": "/be/d84923a453/0/transcript.jsonl",
+      "content_hash": "/be/d84923a453/0/content_hash.txt",
+      "prompt": "/be/d84923a453/0/prompt.txt"
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 179,
+    "cache_creation_tokens": 1076085,
+    "cache_read_tokens": 23609555,
+    "output_tokens": 121823,
+    "api_call_count": 100
+  }
+}
