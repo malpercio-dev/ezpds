@@ -1,0 +1,28 @@
+I've had something in my mind while working towards opening this repo and project up to the public and inviting test users. I fear that the user-facing prose may come off too much as generated, and perhaps might not actually be targeting the correct audience. and then within the codebase, we often have dense comment blocks with a bunch of context that is vaguely useful-shaped but often just a lot to read. I can see how it may be useful for an agent, but I get this feeling that I have let it run away too far, and that we should take some corrective action. How might we approach these two problems?
+
+---
+
+Audience statement for Obsign:
+My initial test audience would likely be mostly peers, such as those that I see in the office, or protocol-adjacent social media connections on Bluesky, and maybe some reach into the protocol-curious. After testing, the release audience I'd be looking to aim for the 1Password kind of audience, security-minded, or even not so technical folks who want to better their security hygiene. 
+
+There is growing discussion on Bluesky about how users are *_NOT_* interested in concepts around "owning your data" among the most protocol-minded users. I'm not so sure myself, the truth is probably somewhere in the middle. However, I don't doubt the intelligence and insight of some of those making the argument, so it is something to keep in mind as well.
+
+
+Audience statement for Custos:
+Explicitly a technical-minded subset of Obsign users. Very few would be interested in owning the full stack, and the primary monetization angle would be on offering hosting tiers etc on the flagship Custos instance. These care deeply about how the technology works and wish to have the ultimate control over their data and presence on the network.
+
+---
+
+I think you nailed the depth I was going for on getting started, and I'm all for trimming as much fat as possible from AGENTS.md!
+
+---
+
+you do have linear access check memory
+
+---
+
+ah, we also touched a shipped surface and so need a changelog fragment to comply with the CI gate
+
+---
+
+the style guide is working and coderabbit has requested reviews :)

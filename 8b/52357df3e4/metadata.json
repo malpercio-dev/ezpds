@@ -1,0 +1,30 @@
+{
+  "cli_version": "0.9.0",
+  "checkpoint_id": "8b52357df3e4",
+  "strategy": "manual-commit",
+  "branch": "claude/prose-comments-review-f7fad4",
+  "checkpoints_count": 1,
+  "files_touched": [
+    "AGENTS.md",
+    "crates/pds/AGENTS.md",
+    "crates/pds/src/account_delete.rs",
+    "docs/writing-style.md",
+    "sites/docs/src/content/docs/user/getting-started.md"
+  ],
+  "sessions": [
+    {
+      "metadata": "/8b/52357df3e4/0/metadata.json",
+      "transcript": "/8b/52357df3e4/0/full.jsonl",
+      "compact_transcript": "/8b/52357df3e4/0/transcript.jsonl",
+      "content_hash": "/8b/52357df3e4/0/content_hash.txt",
+      "prompt": "/8b/52357df3e4/0/prompt.txt"
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 127,
+    "cache_creation_tokens": 691862,
+    "cache_read_tokens": 19180696,
+    "output_tokens": 76102,
+    "api_call_count": 70
+  }
+}
