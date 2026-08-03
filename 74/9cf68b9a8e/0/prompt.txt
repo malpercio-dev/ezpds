@@ -10,3 +10,15 @@ There is growing discussion on Bluesky about how users are *_NOT_* interested in
 
 Audience statement for Custos:
 Explicitly a technical-minded subset of Obsign users. Very few would be interested in owning the full stack, and the primary monetization angle would be on offering hosting tiers etc on the flagship Custos instance. These care deeply about how the technology works and wish to have the ultimate control over their data and presence on the network.
+
+---
+
+I think you nailed the depth I was going for on getting started, and I'm all for trimming as much fat as possible from AGENTS.md!
+
+---
+
+you do have linear access check memory
+
+---
+
+ah, we also touched a shipped surface and so need a changelog fragment to comply with the CI gate
