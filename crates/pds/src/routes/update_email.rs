@@ -168,7 +168,7 @@ mod tests {
             .unwrap();
         assert_eq!(response.status(), StatusCode::BAD_REQUEST);
         let json = body_json(response).await;
-        assert_eq!(json["error"]["code"], "InvalidRequest");
+        assert_eq!(json["error"], "InvalidRequest");
     }
 
     #[tokio::test]
@@ -245,7 +245,7 @@ mod tests {
             .unwrap();
         assert_eq!(response.status(), StatusCode::BAD_REQUEST);
         let json = body_json(response).await;
-        assert_eq!(json["error"]["code"], "InvalidRequest");
+        assert_eq!(json["error"], "InvalidRequest");
     }
 
     #[tokio::test]
@@ -266,7 +266,7 @@ mod tests {
             .unwrap();
         assert_eq!(response.status(), StatusCode::BAD_REQUEST);
         let json = body_json(response).await;
-        assert_eq!(json["error"]["code"], "InvalidRequest");
+        assert_eq!(json["error"], "InvalidRequest");
     }
 
     #[tokio::test]

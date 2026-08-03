@@ -311,7 +311,7 @@ mod tests {
 
         assert_eq!(response.status(), StatusCode::GONE);
         let body = body_json(response).await;
-        assert_eq!(body["error"]["code"], "DidDeactivated");
+        assert_eq!(body["error"], "DidDeactivated");
     }
 
     #[tokio::test]
@@ -337,7 +337,7 @@ mod tests {
 
         assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
         let body = body_json(response).await;
-        assert_eq!(body["error"]["code"], "PLC_DIRECTORY_ERROR");
+        assert_eq!(body["error"], "PlcDirectoryError");
     }
 
     #[tokio::test]
@@ -783,6 +783,6 @@ mod tests {
 
         assert_eq!(response.status(), StatusCode::NOT_FOUND);
         let body = body_json(response).await;
-        assert_eq!(body["error"]["code"], "HANDLE_NOT_FOUND");
+        assert_eq!(body["error"], "HandleNotFound");
     }
 }

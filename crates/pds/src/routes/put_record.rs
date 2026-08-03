@@ -418,7 +418,7 @@ mod tests {
         )
         .await;
         assert_eq!(status, StatusCode::CONFLICT);
-        assert_eq!(body["error"]["code"], "InvalidSwap");
+        assert_eq!(body["error"], "InvalidSwap");
     }
 
     #[tokio::test]
@@ -448,7 +448,7 @@ mod tests {
         )
         .await;
         assert_eq!(status, StatusCode::CONFLICT);
-        assert_eq!(body["error"]["code"], "InvalidSwap");
+        assert_eq!(body["error"], "InvalidSwap");
     }
 
     #[tokio::test]
@@ -468,7 +468,7 @@ mod tests {
         )
         .await;
         assert_eq!(status, StatusCode::CONFLICT);
-        assert_eq!(body["error"]["code"], "InvalidSwap");
+        assert_eq!(body["error"], "InvalidSwap");
     }
 
     #[tokio::test]

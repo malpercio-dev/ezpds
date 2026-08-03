@@ -287,6 +287,6 @@ mod tests {
 
         let (status, body) = describe(&app, "did:plc:doesnotexist").await;
         assert_eq!(status, StatusCode::NOT_FOUND);
-        assert_eq!(body["error"]["code"], "NOT_FOUND");
+        assert_eq!(body["error"], "NotFound");
     }
 }

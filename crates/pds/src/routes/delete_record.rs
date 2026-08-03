@@ -387,7 +387,7 @@ mod tests {
             .await
             .unwrap();
         let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
-        assert_eq!(json["error"]["code"], "InsufficientScope");
+        assert_eq!(json["error"], "InsufficientScope");
     }
 
     #[tokio::test]
@@ -434,7 +434,7 @@ mod tests {
             .await
             .unwrap();
         let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
-        assert_eq!(json["error"]["code"], "InvalidSwap");
+        assert_eq!(json["error"], "InvalidSwap");
     }
 
     #[tokio::test]
@@ -462,7 +462,7 @@ mod tests {
             .await
             .unwrap();
         let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
-        assert_eq!(json["error"]["code"], "InvalidSwap");
+        assert_eq!(json["error"], "InvalidSwap");
     }
 
     #[tokio::test]

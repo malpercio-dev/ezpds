@@ -603,11 +603,8 @@ mod tests {
                 .unwrap(),
         )
         .unwrap();
-        assert_eq!(body["error"]["code"], "InvalidRequest");
-        assert_eq!(
-            body["error"]["message"],
-            "Input/rkey must be a valid Record Key"
-        );
+        assert_eq!(body["error"], "InvalidRequest");
+        assert_eq!(body["message"], "Input/rkey must be a valid Record Key");
     }
 
     #[tokio::test]
@@ -1076,7 +1073,7 @@ mod tests {
             .await
             .unwrap();
         let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
-        assert_eq!(json["error"]["code"], "InvalidSwap");
+        assert_eq!(json["error"], "InvalidSwap");
     }
 
     #[tokio::test]

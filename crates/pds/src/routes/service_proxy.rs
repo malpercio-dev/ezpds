@@ -769,7 +769,7 @@ mod tests {
             .await
             .unwrap();
         let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
-        assert_eq!(json["error"]["code"], "SERVICE_UNAVAILABLE");
+        assert_eq!(json["error"], "ServiceUnavailable");
     }
 
     #[tokio::test]
@@ -800,7 +800,7 @@ mod tests {
             .await
             .unwrap();
         let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
-        assert_eq!(json["error"]["code"], "PAYLOAD_TOO_LARGE");
+        assert_eq!(json["error"], "PayloadTooLarge");
     }
 
     #[tokio::test]
@@ -1213,7 +1213,7 @@ mod tests {
             .await
             .unwrap();
         let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
-        assert_eq!(json["error"]["code"], "InvalidRequest");
+        assert_eq!(json["error"], "InvalidRequest");
     }
 
     // A resolvable DID that doesn't advertise the requested service id must not silently proxy

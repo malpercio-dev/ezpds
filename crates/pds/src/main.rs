@@ -54,6 +54,7 @@ mod time;
 mod transfer;
 mod uniqueness;
 mod xrpc_dispatch;
+mod xrpc_error_shape;
 
 /// Convert a config database_url (which may be a plain filesystem path or a sqlx URL) to a valid sqlx URL.
 ///

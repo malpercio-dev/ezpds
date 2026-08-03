@@ -234,7 +234,7 @@ mod tests {
                 .unwrap(),
         )
         .unwrap();
-        assert_eq!(body["error"]["code"], "HANDLE_NOT_FOUND");
+        assert_eq!(body["error"], "HandleNotFound");
     }
 
     /// A DNS resolver error must not prevent the HTTP well-known fallback from resolving the
@@ -305,7 +305,7 @@ mod tests {
                 .unwrap(),
         )
         .unwrap();
-        assert_eq!(body["error"]["code"], "HANDLE_NOT_FOUND");
+        assert_eq!(body["error"], "HandleNotFound");
     }
 
     // ── Not found ─────────────────────────────────────────────────────────────
@@ -326,7 +326,7 @@ mod tests {
                 .unwrap(),
         )
         .unwrap();
-        assert_eq!(body["error"]["code"], "HANDLE_NOT_FOUND");
+        assert_eq!(body["error"], "HandleNotFound");
     }
 
     #[tokio::test]
@@ -345,7 +345,7 @@ mod tests {
                 .unwrap(),
         )
         .unwrap();
-        assert_eq!(body["error"]["code"], "HANDLE_NOT_FOUND");
+        assert_eq!(body["error"], "HandleNotFound");
     }
 
     // ── HTTP well-known fallback ───────────────────────────────────────────────
@@ -377,10 +377,7 @@ mod tests {
                 .unwrap(),
         )
         .unwrap();
-        assert_eq!(
-            body["error"]["message"],
-            "Params/handle must be a valid handle"
-        );
+        assert_eq!(body["message"], "Params/handle must be a valid handle");
     }
 
     #[tokio::test]

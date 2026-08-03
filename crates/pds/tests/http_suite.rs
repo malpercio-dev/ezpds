@@ -421,7 +421,7 @@ async fn http_golden_path_suite() {
                 "{path} must reject a body with 400, got {status}: {body}"
             );
             assert_eq!(
-                body["error"]["code"], "InvalidRequest",
+                body["error"], "InvalidRequest",
                 "{path} body rejection must be InvalidRequest: {body}"
             );
         }
@@ -455,11 +455,11 @@ async fn http_golden_path_suite() {
             let body: serde_json::Value = resp.json().await.expect("error json");
             assert_eq!(status.as_u16(), 400, "expected 400, got {status}: {body}");
             assert_eq!(
-                body["error"]["code"], "InvalidRequest",
+                body["error"], "InvalidRequest",
                 "expected InvalidRequest: {body}"
             );
             assert_eq!(
-                body["error"]["message"], expected_message,
+                body["message"], expected_message,
                 "reference-parity message mismatch: {body}"
             );
         };
@@ -540,11 +540,11 @@ async fn http_golden_path_suite() {
             let body: serde_json::Value = resp.json().await.expect("error json");
             assert_eq!(status.as_u16(), 400, "expected 400, got {status}: {body}");
             assert_eq!(
-                body["error"]["code"], "InvalidRequest",
+                body["error"], "InvalidRequest",
                 "expected InvalidRequest: {body}"
             );
             assert_eq!(
-                body["error"]["message"], expected_message,
+                body["message"], expected_message,
                 "reference-parity message mismatch: {body}"
             );
         };
@@ -621,9 +621,9 @@ async fn http_golden_path_suite() {
         let status = resp.status();
         let body: serde_json::Value = resp.json().await.expect("json");
         assert_eq!(status.as_u16(), 400, "invalid known record rejected: {body}");
-        assert_eq!(body["error"]["code"], "InvalidRequest", "{body}");
+        assert_eq!(body["error"], "InvalidRequest", "{body}");
         assert!(
-            body["error"]["message"]
+            body["message"]
                 .as_str()
                 .is_some_and(|m| m.contains("Invalid app.bsky.feed.post record")),
             "reference-shaped record error: {body}"
@@ -681,7 +681,7 @@ async fn http_golden_path_suite() {
         let body: serde_json::Value = resp.json().await.expect("json");
         assert_eq!(status.as_u16(), 400, "validate:true unknown rejected: {body}");
         assert!(
-            body["error"]["message"]
+            body["message"]
                 .as_str()
                 .is_some_and(|m| m.contains("Unknown lexicon type")),
             "unknown-lexicon message: {body}"
@@ -699,7 +699,7 @@ async fn http_golden_path_suite() {
         let body: serde_json::Value = resp.json().await.expect("json");
         assert_eq!(status.as_u16(), 400, "$type mismatch rejected: {body}");
         assert!(
-            body["error"]["message"]
+            body["message"]
                 .as_str()
                 .is_some_and(|m| m.contains("Invalid $type")),
             "$type-mismatch message: {body}"

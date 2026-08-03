@@ -367,7 +367,7 @@ mod tests {
             .unwrap();
         assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
         let json = body_json(response).await;
-        assert_eq!(json["error"]["code"], "INVALID_TOKEN");
+        assert_eq!(json["error"], "InvalidToken");
         assert!(account_exists(&db, did).await, "account must survive");
     }
 
@@ -596,7 +596,7 @@ mod tests {
             let replay = app(state).oneshot(post_req(body)).await.unwrap();
 
             assert_eq!(replay.status(), StatusCode::UNAUTHORIZED);
-            assert_eq!(body_json(replay).await["error"]["code"], "UNAUTHORIZED");
+            assert_eq!(body_json(replay).await["error"], "AuthenticationRequired");
             assert!(account_exists(&db, DID).await, "account must survive");
             assert!(
                 !token_used(&db, DID).await,

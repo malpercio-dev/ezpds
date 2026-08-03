@@ -99,6 +99,61 @@ pub enum ErrorCode {
 }
 
 impl ErrorCode {
+    /// The error's name in the flat AT Protocol XRPC error shape
+    /// (`{"error": "<name>", "message": "..."}`), used by the PDS's `/xrpc/*` boundary.
+    ///
+    /// Where the AT Protocol defines a canonical name for the condition, that name is used —
+    /// atproto clients dispatch on these strings (`@atproto/api` and indigo both trigger
+    /// session refresh only on `error == "ExpiredToken"`, and the reference PDS answers a
+    /// missing Authorization header with `AuthMissing`). Codes with no canonical XRPC name
+    /// keep this API's own name, PascalCased to match the XRPC convention.
+    ///
+    /// This is deliberately separate from the serde serialization (the provisioning API's
+    /// nested envelope): the two surfaces speak different dialects, and this method is the
+    /// single place the XRPC dialect is defined.
+    pub fn xrpc_name(&self) -> &'static str {
+        match self {
+            ErrorCode::InvalidClaim => "InvalidClaim",
+            // Presented credentials were wrong (as opposed to absent): the reference PDS
+            // answers with the generic non-refreshable auth failure name.
+            ErrorCode::Unauthorized => "AuthenticationRequired",
+            // An expired *access token*. The canonical XRPC name — clients key their
+            // refresh-on-401 logic on exactly this string.
+            ErrorCode::TokenExpired => "ExpiredToken",
+            ErrorCode::Forbidden => "Forbidden",
+            ErrorCode::NotFound => "NotFound",
+            // com.atproto.server.createAccount's lexicon error for a rejected password.
+            ErrorCode::WeakPassword => "InvalidPassword",
+            ErrorCode::RateLimited => "RateLimitExceeded",
+            ErrorCode::ExportInProgress => "ExportInProgress",
+            ErrorCode::ServiceUnavailable => "ServiceUnavailable",
+            ErrorCode::InternalError => "InternalServerError",
+            ErrorCode::MethodNotImplemented => "MethodNotImplemented",
+            ErrorCode::AccountExists => "AccountExists",
+            // com.atproto.server.createAccount's lexicon error for a taken handle.
+            ErrorCode::HandleTaken => "HandleNotAvailable",
+            ErrorCode::InvalidHandle => "InvalidHandle",
+            ErrorCode::ClaimCodeRedeemed => "ClaimCodeRedeemed",
+            ErrorCode::DidAlreadyExists => "DidAlreadyExists",
+            ErrorCode::DidNotFound => "DidNotFound",
+            ErrorCode::DidDeactivated => "DidDeactivated",
+            ErrorCode::PlcDirectoryError => "PlcDirectoryError",
+            ErrorCode::DnsError => "DnsError",
+            ErrorCode::HandleNotFound => "HandleNotFound",
+            // Authorization header absent entirely — the reference PDS's exact wire name.
+            ErrorCode::AuthenticationRequired => "AuthMissing",
+            ErrorCode::InvalidToken => "InvalidToken",
+            ErrorCode::InsufficientScope => "InsufficientScope",
+            ErrorCode::ExpiredToken => "ExpiredToken",
+            ErrorCode::PayloadTooLarge => "PayloadTooLarge",
+            ErrorCode::Conflict => "Conflict",
+            ErrorCode::InvalidSwap => "InvalidSwap",
+            ErrorCode::InvalidRequest => "InvalidRequest",
+            ErrorCode::HandleResolutionFailed => "HandleResolutionFailed",
+            ErrorCode::BlockNotFound => "BlockNotFound",
+        }
+    }
+
     /// Returns the canonical HTTP status code for this error as a `u16`.
     pub fn status_code(&self) -> u16 {
         match self {
@@ -200,6 +255,20 @@ struct ApiErrorEnvelope {
     error: ApiError,
 }
 
+/// The semantic parts of an [`ApiError`] response, attached to the response's `Extensions`
+/// by the `IntoResponse` impl.
+///
+/// This exists so a boundary layer can re-encode the same error in a different wire dialect
+/// without parsing the JSON body back out — the PDS's `/xrpc/*` surface uses it to answer in
+/// the flat AT Protocol XRPC error shape while the provisioning surface keeps the nested
+/// envelope this crate serializes.
+#[derive(Debug, Clone)]
+pub struct ApiErrorParts {
+    pub code: ErrorCode,
+    pub message: String,
+    pub details: Option<Value>,
+}
+
 #[cfg(feature = "axum")]
 mod axum_integration {
     use super::*;
@@ -217,10 +286,19 @@ mod axum_integration {
             // Take the extra headers out before `self` is moved into the JSON envelope.
             let extra_headers = std::mem::take(&mut self.headers);
 
+            // Attach the semantic parts so a boundary layer (the PDS's `/xrpc/*` surface) can
+            // re-encode this error in the flat XRPC dialect without re-parsing the body.
+            let parts = ApiErrorParts {
+                code: self.code.clone(),
+                message: self.message.clone(),
+                details: self.details.clone(),
+            };
+
             match serde_json::to_vec(&ApiErrorEnvelope { error: self }) {
                 Ok(body) => {
                     let mut response = (status, [(header::CONTENT_TYPE, "application/json")], body)
                         .into_response();
+                    response.extensions_mut().insert(parts);
                     for (name, value) in extra_headers {
                         if let (Ok(name), Ok(value)) = (
                             HeaderName::from_bytes(name.as_bytes()),
@@ -392,5 +470,41 @@ mod tests {
             let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
             assert!(json["error"].get("headers").is_none());
         }
+
+        /// The response carries [`ApiErrorParts`] in its extensions so a boundary layer can
+        /// re-encode the error in the XRPC dialect without re-parsing the body.
+        #[tokio::test]
+        async fn into_response_attaches_api_error_parts_extension() {
+            let err = ApiError::new(ErrorCode::TokenExpired, "token has expired")
+                .with_details(json!({ "hint": "refresh" }));
+            let response = err.into_response();
+            let parts = response
+                .extensions()
+                .get::<ApiErrorParts>()
+                .expect("ApiErrorParts extension must be attached");
+            assert_eq!(parts.code, ErrorCode::TokenExpired);
+            assert_eq!(parts.message, "token has expired");
+            assert_eq!(parts.details, Some(json!({ "hint": "refresh" })));
+        }
+    }
+
+    /// The XRPC dialect names atproto clients actually dispatch on. `ExpiredToken` is the
+    /// string `@atproto/api` and indigo key session refresh off; `AuthMissing` is the
+    /// reference PDS's answer to a missing Authorization header (verified against
+    /// bsky.social 2026-08-03).
+    #[test]
+    fn xrpc_names_use_canonical_atproto_strings() {
+        assert_eq!(ErrorCode::TokenExpired.xrpc_name(), "ExpiredToken");
+        assert_eq!(ErrorCode::ExpiredToken.xrpc_name(), "ExpiredToken");
+        assert_eq!(ErrorCode::InvalidToken.xrpc_name(), "InvalidToken");
+        assert_eq!(ErrorCode::AuthenticationRequired.xrpc_name(), "AuthMissing");
+        assert_eq!(
+            ErrorCode::Unauthorized.xrpc_name(),
+            "AuthenticationRequired"
+        );
+        assert_eq!(ErrorCode::RateLimited.xrpc_name(), "RateLimitExceeded");
+        assert_eq!(ErrorCode::InternalError.xrpc_name(), "InternalServerError");
+        assert_eq!(ErrorCode::HandleTaken.xrpc_name(), "HandleNotAvailable");
+        assert_eq!(ErrorCode::WeakPassword.xrpc_name(), "InvalidPassword");
     }
 }

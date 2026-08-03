@@ -377,7 +377,7 @@ mod tests {
             .unwrap();
         assert_eq!(denied.status(), StatusCode::FORBIDDEN);
         let body = body_json(denied).await;
-        assert_eq!(body["error"]["code"], "InsufficientScope");
+        assert_eq!(body["error"], "InsufficientScope");
 
         let rpc_scoped = scoped_access_jwt(
             &state.jwt_secret,
@@ -435,7 +435,7 @@ mod tests {
             .unwrap();
         assert_eq!(denied.status(), StatusCode::FORBIDDEN);
         let body = body_json(denied).await;
-        assert_eq!(body["error"]["code"], "InsufficientScope");
+        assert_eq!(body["error"], "InsufficientScope");
     }
 
     #[tokio::test]

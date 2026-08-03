@@ -475,7 +475,15 @@ pub fn app(state: AppState) -> Router {
     let public = public.layer(axum::middleware::from_fn(
         crate::lexicon::validate_xrpc_output,
     ));
-    let public = apply_shared_layers(public, &state).layer(CorsLayer::permissive());
+    // The XRPC error-dialect boundary sits outside the shared layers (so a rate-limit 429 is
+    // re-shaped too) but inside CORS: `/xrpc/*` errors leave in the flat AT Protocol shape
+    // atproto clients dispatch on, while every other surface keeps the nested provisioning
+    // envelope. See crate::xrpc_error_shape.
+    let public = apply_shared_layers(public, &state)
+        .layer(axum::middleware::from_fn(
+            crate::xrpc_error_shape::flatten_xrpc_errors,
+        ))
+        .layer(CorsLayer::permissive());
 
     // Admin (`/v1/admin/*`) and provisioning (`/v1/*`) routes have no cross-origin use case — they
     // are called same-origin by first-party native/mobile clients and operators, never a browser
@@ -725,7 +733,7 @@ mod tests {
             .await
             .unwrap();
         let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
-        assert_eq!(json["error"]["code"], "FORBIDDEN");
+        assert_eq!(json["error"], "Forbidden");
     }
 
     #[tokio::test]
@@ -799,7 +807,7 @@ mod tests {
         let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
 
         assert_eq!(status, StatusCode::NOT_IMPLEMENTED);
-        assert_eq!(json["error"]["code"], "MethodNotImplemented");
+        assert_eq!(json["error"], "MethodNotImplemented");
     }
 
     #[tokio::test]
