@@ -649,9 +649,9 @@ async fn promote_account(
     })?;
     let session_id = uuid::Uuid::new_v4().to_string();
 
-    // Acquired *before* opening the transaction below — see `Firehose::lock_emit`'s docs
-    // (crates/pds/AGENTS.md's firehose section) for why that order matters on this crate's
-    // single-connection pool.
+    // Acquired *before* opening the transaction below — see `Firehose::lock_emit`'s docs and
+    // the lock/connection ordering rule in `firehose/mod.rs`'s module doc for why that order
+    // matters on this crate's single-connection pool.
     let emit_guard = state.firehose.lock_emit().await;
     let mut tx = state
         .db

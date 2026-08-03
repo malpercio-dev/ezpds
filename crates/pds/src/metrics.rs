@@ -34,7 +34,7 @@ use prometheus::{Encoder, TextEncoder};
 use crate::app::AppState;
 
 /// Instrument names (as constructed on the meter; counters gain `_total` when rendered)
-/// and label keys. Keep this module in lockstep with the table in `crates/pds/AGENTS.md`.
+/// and label keys — the authoritative inventory of the instrument set.
 pub mod names {
     /// Gauge: currently connected `subscribeRepos` WebSocket subscribers.
     pub const FIREHOSE_SUBSCRIBERS: &str = "firehose_subscribers";

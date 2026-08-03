@@ -302,8 +302,9 @@ async fn promote_new_account(
         ApiError::new(ErrorCode::InternalError, "failed to serialize DID document")
     })?;
 
-    // Acquire the firehose lock *before* opening the transaction — see the firehose section of
-    // crates/pds/AGENTS.md for why that order matters on the single-connection pool.
+    // Acquire the firehose lock *before* opening the transaction — see the lock/connection
+    // ordering rule in `firehose/mod.rs`'s module doc for why that order matters on the
+    // single-connection pool.
     let emit_guard = state.firehose.lock_emit().await;
     let mut tx = state
         .db
