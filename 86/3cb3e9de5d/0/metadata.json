@@ -1,0 +1,121 @@
+{
+  "cli_version": "0.9.0",
+  "checkpoint_id": "863cb3e9de5d",
+  "session_id": "8ed01988-30df-44dc-aa1e-d4f25a8d9e5b",
+  "strategy": "manual-commit",
+  "created_at": "2026-08-03T21:52:42.441022Z",
+  "branch": "claude/oauth-atproto-failures-4ff55e",
+  "checkpoints_count": 1,
+  "save_step_count": 1,
+  "files_touched": [],
+  "agent": "Claude Code",
+  "model": "claude-fable-5",
+  "turn_id": "88d31f785f4b",
+  "compact_transcript_start": 0,
+  "token_usage": {
+    "input_tokens": 222,
+    "cache_creation_tokens": 414565,
+    "cache_read_tokens": 30385199,
+    "output_tokens": 128335,
+    "api_call_count": 115
+  },
+  "skill_events_version": 1,
+  "skill_events": [
+    {
+      "id": "claude-skill-toolu_01R8m6ZYMkUiHHZ3a4ff4RaP",
+      "event_type": "tool_invocation",
+      "skill": {
+        "name": "ed3d-house-style:coding-effectively"
+      },
+      "source": {
+        "agent": "claude-code",
+        "signal": "skill_tool_use",
+        "confidence": "explicit"
+      },
+      "turn_id": "88d31f785f4b",
+      "transcript_anchor": {
+        "unit": "line",
+        "start": 155,
+        "end": 156,
+        "entry_ids": [
+          "69fe513c-3527-4c2a-82a4-87c79a1df9d0"
+        ],
+        "tool_use_id": "toolu_01R8m6ZYMkUiHHZ3a4ff4RaP"
+      },
+      "native": {
+        "tool_name": "Skill",
+        "tool_use_id": "toolu_01R8m6ZYMkUiHHZ3a4ff4RaP"
+      },
+      "collapse": {
+        "target": "tool_pair",
+        "label": "Skill: ed3d-house-style:coding-effectively",
+        "default_collapsed": true
+      }
+    },
+    {
+      "id": "claude-skill-toolu_01QCEBcT8LXgtjaVGY6dFFkS",
+      "event_type": "tool_invocation",
+      "skill": {
+        "name": "ed3d-house-style:howto-code-in-rust"
+      },
+      "source": {
+        "agent": "claude-code",
+        "signal": "skill_tool_use",
+        "confidence": "explicit"
+      },
+      "turn_id": "88d31f785f4b",
+      "transcript_anchor": {
+        "unit": "line",
+        "start": 161,
+        "end": 162,
+        "entry_ids": [
+          "e2e1d38b-df84-46f0-8830-fc294c740c3a"
+        ],
+        "tool_use_id": "toolu_01QCEBcT8LXgtjaVGY6dFFkS"
+      },
+      "native": {
+        "tool_name": "Skill",
+        "tool_use_id": "toolu_01QCEBcT8LXgtjaVGY6dFFkS"
+      },
+      "collapse": {
+        "target": "tool_pair",
+        "label": "Skill: ed3d-house-style:howto-code-in-rust",
+        "default_collapsed": true
+      }
+    },
+    {
+      "id": "claude-skill-toolu_01Vr23F1vBHCNj1QU6d76wyb",
+      "event_type": "tool_invocation",
+      "skill": {
+        "name": "ed3d-house-style:howto-functional-vs-imperative"
+      },
+      "source": {
+        "agent": "claude-code",
+        "signal": "skill_tool_use",
+        "confidence": "explicit"
+      },
+      "turn_id": "88d31f785f4b",
+      "transcript_anchor": {
+        "unit": "line",
+        "start": 165,
+        "end": 166,
+        "entry_ids": [
+          "2187d576-bde4-4a3f-91b0-98a8c6b35407"
+        ],
+        "tool_use_id": "toolu_01Vr23F1vBHCNj1QU6d76wyb"
+      },
+      "native": {
+        "tool_name": "Skill",
+        "tool_use_id": "toolu_01Vr23F1vBHCNj1QU6d76wyb"
+      },
+      "collapse": {
+        "target": "tool_pair",
+        "label": "Skill: ed3d-house-style:howto-functional-vs-imperative",
+        "default_collapsed": true
+      }
+    }
+  ],
+  "session_metrics": {
+    "turn_count": 1
+  }
+}
