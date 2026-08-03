@@ -88,7 +88,7 @@
         case 'SIGNING_FAILED':
           return { message: 'Signing failed. Please try again.', terminal: false };
         case 'PLC_DIRECTORY_ERROR':
-          return { message: 'The PLC directory rejected the operation. Please try again.', terminal: false };
+          return { message: 'The public record rejected the update. Try again in a moment.', terminal: false };
         case 'NETWORK_ERROR':
           return { message: 'Network error. Check your connection and try again.', terminal: false };
         case 'IDENTITY_NOT_FOUND':
@@ -98,7 +98,7 @@
         case 'DESTINATION_CONFLICT':
           return { message: 'The destination account conflicts with this identity.', terminal: true };
         case 'DESTINATION_UNREACHABLE':
-          return { message: "Couldn't reach the destination PDS.", terminal: false };
+          return { message: "Couldn't reach the destination server.", terminal: false };
         case 'ACTIVATION_FAILED':
           return { message: 'Activating your new account failed. Please try again.', terminal: false };
         case 'SOVEREIGN_LOGIN_FAILED':
@@ -108,7 +108,7 @@
         case 'DEACTIVATION_FAILED':
           return { message: 'Deactivating your old account failed. Please try again.', terminal: false };
         case 'SOURCE_AUTH_FAILED':
-          return { message: 'Your source-PDS session expired. Please restart the migration flow.', terminal: true };
+          return { message: 'Your sign-in on the old server expired. Restart the move.', terminal: true };
         default:
           return { message: `Something went wrong (${err.code}).`, terminal };
       }
@@ -197,7 +197,7 @@
           <p class="no-changes">No key or service changes to apply.</p>
         {:else}
           {#each signedOp.diff.addedKeys as key}
-            <DiffRow variant="restore" title="Add rotation key" value={key} />
+            <DiffRow variant="restore" title="Add key" value={key} />
           {/each}
           {#each signedOp.diff.removedKeys as key}
             <DiffRow variant="remove" title="Remove key" value={key} />

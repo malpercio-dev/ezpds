@@ -40,15 +40,15 @@
   {onback}
   authenticate={authenticateMigrationSource}
   errorLogLabel="Migration source sign-in failed:"
-  openingStatus="Opening a session with your current PDS…"
-  title="Sign in to your current PDS"
-  subtitle="Moving your account off this PDS needs a full sign-in — the protocol lets only a full session authorize the move."
+  openingStatus="Opening a session with your current server…"
+  title="Sign in to your current server"
+  subtitle="Moving your account off this server needs a full sign-in — only a full session can authorize the move."
   appPasswordClause="authorize the move"
   mapExtraError={mapMigrationError}
 >
   {#snippet why()}
     <p>
-      Creating your account on the new PDS uses a token your current PDS signs, and it will only
+      Creating your account on the new server uses a token your current server signs, and it will only
       mint that token for a <strong>full sign-in with your account password</strong> — the same
       reason migration tools ask for it. An app password won't work here.
     </p>

@@ -80,7 +80,7 @@
         const err = raw as RecoveryError;
         switch (err.code) {
           case 'RECOVERY_WINDOW_EXPIRED':
-            error = 'Recovery window has expired. No longer possible to recover this identity.';
+            error = 'The recovery window has expired. This change can no longer be reversed.';
             break;
           case 'SIGNING_FAILED':
             error = `Signing failed: ${err.message || 'unknown error'}`;
@@ -124,7 +124,7 @@
         const err = raw as RecoveryError;
         switch (err.code) {
           case 'RECOVERY_WINDOW_EXPIRED':
-            error = 'Recovery window has expired. No longer possible to submit this recovery.';
+            error = 'The recovery window has expired. This override can no longer be submitted.';
             break;
           case 'SIGNING_FAILED':
             error = `Signing failed: ${err.message || 'unknown error'}`;

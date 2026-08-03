@@ -66,13 +66,13 @@
     if (isCodedError(raw)) {
       switch (raw.code) {
         case 'DESTINATION_UNREACHABLE':
-          return "Couldn't reach the destination PDS. Check the URL and try again.";
+          return "Couldn't reach the destination server. Check the address and try again.";
         case 'RATE_LIMITED':
-          return 'The PLC directory is rate-limiting requests. Wait a moment and try again.';
+          return 'The public record is busy right now. Wait a moment and try again.';
         case 'PLC_DIRECTORY_ERROR':
-          return 'The PLC directory rejected the request. Please try again.';
+          return 'The public record rejected the request. Try again in a moment.';
         case 'INVALID_AUDIT_LOG':
-          return "This identity's PLC record could not be read.";
+          return "Couldn't read this identity's public record.";
         case 'NETWORK_ERROR':
           return 'Network error. Check your connection and try again.';
         default:
@@ -97,7 +97,7 @@
         const decision = await detectMigrationPath(did);
         if (decision.path === 'interop') {
           terminalMessage =
-            "This wallet doesn't hold a rotation key for this identity, so it can't rebuild the account.";
+            "This wallet doesn't hold a key that can act for this identity, so it can't rebuild the account.";
           return;
         }
         if (decision.path === 'cannot_determine') {
@@ -138,7 +138,7 @@
 
 <OnboardingShell
   title="Rebuild from backup"
-  subtitle="Your old PDS doesn't need to cooperate — or even exist. This rebuilds your account on a new PDS from your backed-up posts and media, using the keys this wallet holds."
+  subtitle="Your old server doesn't need to cooperate — or even exist. This rebuilds your account on a new server from your backed-up posts and media, using the keys this wallet holds."
   onback={terminalMessage ? undefined : onback}
 >
   {#if terminalMessage}
@@ -168,7 +168,7 @@
       autocapitalize="none"
       autocorrect="off"
       spellcheck={false}
-      aria-label="Destination PDS URL"
+      aria-label="Destination server address"
       disabled={checking}
       error={error ?? undefined}
       onblur={() => (probedPdsUrl = destPdsUrl)}

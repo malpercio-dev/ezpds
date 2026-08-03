@@ -50,7 +50,7 @@
               'Your PDS would not authorize the identity change for this session. Go back and sign in with your account password (an app password is not enough).';
             break;
           case 'UNAUTHORIZED':
-            sendError = 'Your session expired. Go back and sign in to your PDS again.';
+            sendError = 'Your session expired. Go back and sign in to your server again.';
             break;
           case 'RATE_LIMITED':
             sendError = formatRateLimitMessage(err.retryAfter);

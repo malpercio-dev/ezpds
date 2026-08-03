@@ -41,7 +41,7 @@
       <p class="vestibule-s">
         They act on the protocol itself — the keys that prove the identity is yours, the
         server it points at, whether it exists at all. You rarely need them, and each one
-        explains exactly what it will sign, and asks you to confirm, before anything happens.
+        shows the exact change it will sign and asks you to confirm before anything happens.
       </p>
     </div>
   </div>

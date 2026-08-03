@@ -34,10 +34,10 @@
             error = 'Handle not found. Check the spelling and try again.';
             break;
           case 'DID_NOT_FOUND':
-            error = 'This identity was not found on the PLC directory.';
+            error = "This identity wasn't found on the network's public record.";
             break;
           case 'UNSUPPORTED_IDENTITY':
-            error = 'Only did:plc identities can be recovered from backup shares.';
+            error = "Backup shares can only recover an identity kept on the network's public record.";
             break;
           case 'RATE_LIMITED':
             error = 'Too many attempts. Wait a moment and try again.';

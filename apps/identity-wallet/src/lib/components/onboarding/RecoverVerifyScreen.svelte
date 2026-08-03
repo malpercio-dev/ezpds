@@ -34,7 +34,7 @@
         case 'SHARES_INCOMPLETE':
           return 'Two shares are needed before verification. Go back and collect another.';
         case 'PLC_DIRECTORY_ERROR':
-          return 'The PLC directory rejected the operation. Try again in a moment.';
+          return 'The public record rejected the update. Try again in a moment.';
         case 'SIGNING_FAILED':
           return 'Signing failed on this device. Try again.';
         case 'NETWORK_ERROR':

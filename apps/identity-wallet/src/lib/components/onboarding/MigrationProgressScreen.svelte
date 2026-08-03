@@ -92,15 +92,15 @@
       const err = raw as MigrationError;
       switch (err.code) {
         case 'DESTINATION_UNREACHABLE':
-          return "Couldn't reach the destination PDS.";
+          return "Couldn't reach the destination server.";
         case 'SOURCE_AUTH_FAILED':
-          return 'Your source-PDS session expired. Please sign in again.';
+          return 'Your sign-in on the old server expired. Sign in again.';
         case 'SERVICE_AUTH_FAILED':
-          return "Couldn't authorize with the destination PDS.";
+          return "Couldn't authorize with the destination server.";
         case 'ACCOUNT_CREATION_FAILED':
-          return "Couldn't create the account on the destination PDS.";
+          return "Couldn't create the account on the destination server.";
         case 'DESTINATION_CONFLICT':
-          return 'An account already exists on the destination PDS with a conflicting identity.';
+          return 'The destination server already has an account that conflicts with this identity.';
         case 'REPO_TRANSFER_FAILED':
           return "Couldn't transfer the repository.";
         case 'BLOB_TRANSFER_FAILED':

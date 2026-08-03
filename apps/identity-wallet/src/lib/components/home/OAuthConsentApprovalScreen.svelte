@@ -369,8 +369,8 @@
   {#if phase === 'enter' || phase === 'loading'}
     <div class="body">
       <p class="lede">
-        An app is asking to sign in as your identity. Scan the QR on its sign-in page, or enter the
-        short code it shows — either way you see exactly what it is asking for before anything happens.
+        An app is asking to sign in as you. Scan the QR on its sign-in page, or enter the
+        short code it shows — either way you see what it's asking for before anything happens.
       </p>
 
       <div class="scan-cta" bind:this={triggerEl}>

@@ -76,7 +76,7 @@
         case 'ESCROW_DEPOSIT_FAILED':
           return "Your server refused the new escrow share.";
         case 'PLC_DIRECTORY_ERROR':
-          return 'The PLC directory rejected the share-rotation operation. Try again in a moment.';
+          return 'The public record rejected the update. Try again in a moment.';
         case 'SIGNING_FAILED':
           return 'Signing failed on this device. Try again.';
         case 'KEYCHAIN_ERROR':

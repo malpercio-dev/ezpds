@@ -169,7 +169,7 @@
         case 'SESSION_REQUIRED':
           return 'This identity needs to be unlocked first.';
         case 'REQUEST_DELETE_FAILED':
-          return `Could not start deletion: ${err.message || 'unknown error'}`;
+          return `Couldn't start deletion: ${err.message || 'unknown error'}`;
         case 'INVALID_TOKEN':
           return 'That password or confirmation code was not accepted. Check your email and try again.';
         case 'INVALID_CONFIRMATION_CODE':
@@ -177,21 +177,21 @@
         case 'PASSWORD_REQUIRED':
           return 'This server needs your account password to remove an identity.';
         case 'PROOF_SIGNING_FAILED':
-          return `Could not sign the removal authorization: ${err.message || 'unknown error'}`;
+          return `Couldn't sign the removal authorization: ${err.message || 'unknown error'}`;
         case 'ACCOUNT_DELETE_FAILED':
           return `Account deletion failed: ${err.message || 'unknown error'}`;
         case 'INVALID_AUDIT_LOG':
-          return `Could not read the identity's PLC log: ${err.message || 'unknown error'}`;
+          return `Couldn't read the identity's public record: ${err.message || 'unknown error'}`;
         case 'TOMBSTONE_SIGNING_FAILED':
-          return `Could not sign the tombstone: ${err.message || 'unknown error'}`;
+          return `Couldn't sign the identity's retirement: ${err.message || 'unknown error'}`;
         case 'PLC_DIRECTORY_ERROR':
-          return `The PLC directory rejected the tombstone: ${err.message || 'unknown error'}`;
+          return `The public record rejected the retirement: ${err.message || 'unknown error'}`;
         case 'IDENTITY_NOT_FOUND':
           return `Identity not found: ${err.message || 'unknown error'}`;
         case 'LOCAL_WIPE_FAILED':
           return `The account was removed, but local cleanup failed: ${err.message || 'unknown error'}`;
         case 'RATE_LIMITED':
-          return 'Rate limited by the server. Please wait a moment and try again.';
+          return 'The server is busy. Wait a moment and try again.';
         case 'NETWORK_ERROR':
           return `Network error: ${err.message || 'unknown error'}`;
         default:
@@ -417,17 +417,17 @@
         <p class="hero-sub">This cannot be undone. Removing this identity will:</p>
       </div>
       <ul class="consequences">
-        <li><strong>Delete your account</strong> and all its data on your PDS.</li>
+        <li><strong>Delete your account</strong> and all its data on your server.</li>
         {#if !isDidWeb}
-          <li><strong>Retire the identity on the network</strong> by tombstoning its DID — it can never be reactivated or migrated.</li>
+          <li><strong>Retire the identity across the network</strong> — it can never be reactivated or migrated.</li>
         {/if}
         <li><strong>Erase its keys</strong> from this device.</li>
       </ul>
       {#if isDidWeb}
         <p class="note">
-          This identity is a <span class="mono">did:web</span>, so there is no DID tombstone to
-          publish. It keeps resolving until you take its document down — we'll show you exactly
-          what to remove once the account is deleted.
+          This identity lives at your own domain, so there is nothing to retire on the network.
+          It keeps working until you take its document down — we'll show you what to remove
+          once the account is deleted.
         </p>
       {/if}
       <p class="note">
@@ -497,8 +497,8 @@
       <div class="hero">
         <h1 class="hero-title">One step is yours</h1>
         <p class="hero-sub">
-          Your account is deleted and this identity's keys are erased from this device. The DID
-          itself keeps resolving for as long as its document stays published.
+          Your account is deleted and this identity's keys are erased from this device. The
+          identity itself keeps resolving for as long as its document stays published.
         </p>
       </div>
       <ul class="consequences">
@@ -554,8 +554,8 @@
 
       {#if isDidWeb}
         <p class="note">
-          There is no network-wide retirement the wallet can perform for a
-          <span class="mono">did:web</span>: it is retired by taking its document
+          There is no network-wide retirement the wallet can perform for a domain
+          identity: it is retired by taking its document
           {#if didWebDocUrl}
             at <span class="mono">{didWebDocUrl}</span>
           {/if}
