@@ -1,18 +1,42 @@
 // pattern: Mixed (Functional Core types + Imperative Shell commands)
-//
-// Functional Core: IdentityInfo, VerifiedClaimOp, OpDiff, ServiceChange, ClaimResult,
-//                  ClaimState, ResolveError, ClaimError (types and errors)
-// Imperative Shell: resolve_identity (command: resolves handle/DID, fetches DID doc from
-//                   plc.directory, checks IdentityStore, stores state, returns IdentityInfo)
-//                   authenticate_source_pds (command: password createSession against the source
-//                   PDS → full-session Bearer OAuthClient stored in claim_state; PLC ops need a
-//                   full session that no OAuth transition:generic token can grant)
-//                   request_claim_verification (command: calls requestPlcOperationSignature XRPC
-//                   endpoint on old PDS to trigger email verification)
-//                   sign_and_verify_claim (command: calls getRecommendedDidCredentials and
-//                   signPlcOperation on old PDS, verifies signature and local constraints)
-//                   submit_claim (command: POSTs signed PLC operation to plc.directory,
-//                   persists identity to IdentityStore, clears claim state)
+
+//! The PLC rotation-key claim flow: bring an account hosted elsewhere under wallet custody
+//! by inserting the device key at `rotationKeys[0]`, with the source PDS signing the op.
+//! The types (`IdentityInfo`, `VerifiedClaimOp`, `OpDiff`, `ServiceChange`, `ClaimResult`,
+//! `ClaimState`, the error enums) are Functional Core; the five Tauri commands are
+//! Imperative Shell.
+//!
+//! **A sequential state machine.** `resolve_identity` (handle/DID → identity info via
+//! plc.directory; stores — and on a re-call resets — `ClaimState`) →
+//! `authenticate_source_pds` → `request_claim_verification` (`requestPlcOperationSignature`
+//! on the old PDS, which emails a verification code) → `sign_and_verify_claim` →
+//! `submit_claim`. State persists across commands in `AppState.claim_state`
+//! (`tokio::sync::Mutex` — held across `.await`); each command validates its
+//! prerequisites, and the `_impl` helpers extract the core logic from Tauri's `State`
+//! wrapper for tests.
+//!
+//! **Source login is a password `createSession`, not OAuth** (ADR-0021): the later steps
+//! are PLC/identity ops a spec-strict PDS gates behind a full session, which no OAuth
+//! `transition:generic` token can grant. The shared `createSession` body + account-match
+//! guard live in `source_login::authenticate_source_password`; this module's wrapper maps
+//! the neutral error into `ClaimError`, builds a full-session Bearer `OAuthClient`
+//! (`new_bearer`) into `ClaimState`, and uses the password exactly once, never storing it.
+//! An email-2FA account surfaces `TwoFactorRequired`; the UI re-invokes with the emailed
+//! `auth_factor_token`. A non-HTTPS source endpoint is refused (`InsecureSourceUrl`).
+//!
+//! **Verification before submission.** `sign_and_verify_claim` fetches
+//! `getRecommendedDidCredentials` + `signPlcOperation` from the old PDS, then runs four
+//! local checks: (1) `rotationKeys[0]` is the device key, (2) `prev` chains onto the
+//! audit-log head, (3) no unexpected key additions or removals, (4) no unexpected service
+//! mutations — a claim changes *nothing* except inserting the device key (the inverse of
+//! `migrate::guard_migration_op`). `submit_claim` POSTs the signed op to plc.directory,
+//! validates the caller DID matches `ClaimState.did`, persists the identity via
+//! `IdentityStore` (DID, device key, re-fetched DID doc + audit log; tolerates
+//! `IdentityAlreadyExists` from a prior partial claim), and clears state only on success
+//! so failures can be retried.
+//!
+//! [`ResolveError`] and [`ClaimError`] serialize as `{ code: "SCREAMING_SNAKE_CASE" }`;
+//! their TypeScript unions must match. Per-variant semantics live on the enums.
 
 use serde::Serialize;
 

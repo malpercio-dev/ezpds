@@ -1,26 +1,41 @@
 // pattern: Mixed (Functional Core error mapping; Imperative Shell commands)
-//
-// App-password management for a wallet-custodied identity — the surface that signs
-// the official Bluesky app (and other password-login clients) into a passwordless
-// sovereign Custos account. Three Tauri IPC commands:
-//
-//   create_app_password(did, name, privileged) — mint; returns the secret ONCE
-//   list_app_passwords(did)                    — metadata only, never the secret
-//   revoke_app_password(did, name)             — kills the credential and its sessions
-//
-// A sovereign account has no main password, so the PDS's createSession app-password
-// fallback (V031) makes this minted credential the only way a password-login client
-// can open a session — and that session is scope-bounded (`com.atproto.appPass`):
-// it can post/like/follow and proxy to the AppView, but can never touch account
-// management, PLC/identity ops, agent surfaces, or app-password management itself.
-// Chat (DMs) additionally requires the `privileged` flag chosen at mint time.
-//
-// Every command resolves a per-DID full-access session through
-// `SessionProvider::full_access_client` (the mint/list/revoke routes require full
-// access — an app password cannot manage app passwords). A `NeedsUnlock` maps to
-// `SESSION_LOCKED`, the frontend's cue to run the biometric `sovereignLogin(did)`
-// and retry, exactly like the change-handle flow. The biometric gate on minting
-// lives in the frontend wrapper (`$lib/ipc/app-passwords.ts`), in front of this.
+
+//! App-password management for a wallet-custodied identity — the surface that signs
+//! the official Bluesky app (and other password-login clients) into a passwordless
+//! sovereign Custos account. Three Tauri IPC commands:
+//!
+//! - `create_app_password(did, name, privileged) -> AppPasswordCreated` — mints via
+//!   `com.atproto.server.createAppPassword`. The returned secret is surfaced ONCE:
+//!   displayed once, offered for copy, never persisted by the wallet. The biometric
+//!   gate on minting lives in the frontend wrapper (`$lib/ipc/app-passwords.ts`).
+//! - `list_app_passwords(did) -> Vec<AppPasswordEntry>` — metadata only, never the
+//!   secret.
+//! - `revoke_app_password(did, name)` — the server deletes the credential and its
+//!   sessions/refresh tokens atomically.
+//!
+//! A sovereign account has no main password, so the PDS's createSession app-password
+//! fallback (V031) makes this minted credential the only way a password-login client
+//! can open a session — and that session is scope-bounded (`com.atproto.appPass`):
+//! it can post/like/follow and proxy to the AppView, but can never touch account
+//! management, PLC/identity ops, agent surfaces, or app-password management itself.
+//! Chat (DMs) additionally requires the `privileged` flag chosen at mint time.
+//!
+//! Every command resolves a per-DID full-access session through
+//! `SessionProvider::full_access_client` (the mint/list/revoke routes require full
+//! access — an app password cannot manage app passwords). A `NeedsUnlock` maps to
+//! `SESSION_LOCKED { reason: UnlockReason }`, the frontend's cue to run
+//! `unlockIdentity(did)` and retry, mirroring `handle_change.rs`. The thin XRPC
+//! wrappers and response types (`AppPasswordCreated`, `AppPasswordEntry`, camelCase,
+//! mirrored in `$lib/ipc`) live in `pds_client.rs`; a 409 duplicate name maps to
+//! `DUPLICATE_NAME`.
+//!
+//! `AppPasswordsError` (SESSION_LOCKED, RATE_LIMITED, DUPLICATE_NAME,
+//! IDENTITY_NOT_FOUND, SERVER_ERROR, NETWORK_ERROR) serializes as
+//! `{ code: "SCREAMING_SNAKE_CASE" }` with camelCase fields; the TypeScript union
+//! must match exactly. `SERVER_ERROR.status` is `Some(status)` for a classified PDS
+//! HTTP refusal and `None` for a session-lifecycle failure that isn't a transport
+//! error (unsupported host, keychain, malformed response) — `map_session_error` is
+//! exhaustive, so none of those flatten into NETWORK_ERROR.
 
 use serde::Serialize;
 

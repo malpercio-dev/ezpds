@@ -4,8 +4,10 @@
  * The "`invoke()` lives only here" invariant holds at directory granularity: every
  * module under `$lib/ipc/` may call `invoke()`, and page components import the wrappers
  * from `$lib/ipc` (this barrel) instead of calling `invoke()` directly. Pure helpers that
- * are policy gates rather than command wrappers live outside this directory (the biometric
- * gate is `$lib/biometric.ts`); `isCodedError` (a generic IPC error guard) is the one pure
+ * are policy gates rather than command wrappers live outside this directory: the biometric
+ * gate is `$lib/biometric.ts`, and `$lib/unlock.ts`'s `unlockIdentity` composes the two IPC
+ * unlock routes and owns the sovereign-vs-password branch, so no screen decides for itself
+ * which sign-in its host supports; `isCodedError` (a generic IPC error guard) is the one pure
  * helper kept here, in `./errors`, because it is used to narrow the errors these commands reject with.
  */
 export * from './account';

@@ -1,38 +1,58 @@
 // pattern: Mixed (Functional Core guard/parsers/classifiers; Imperative Shell command)
-//
-// Functional Core: the strict alsoKnownAs-only guard, current-state extraction from
-//                  the audit log, the new-alsoKnownAs computation, and the
-//                  updateHandle-failure classifier (all pure).
-// Imperative Shell: change_handle / build_handle_op / submit_handle_op (network +
-//                   Keychain + signing) and their Tauri command wrappers.
-//
-// This is the sovereign "change handle" flow for a wallet-custodied did:plc identity.
-// On a reference PDS, changing a handle is one call because the PDS custodies the
-// rotation key and rewrites the PLC doc itself. In our sovereign model the
-// alsoKnownAs op is DEVICE-KEY-SIGNED, like the migration identity leg — but the two
-// existing wallet guards both forbid it:
-//   * migrate::guard_migration_op REQUIRES alsoKnownAs preserved (its invariant 4);
-//   * the claim guard forbids all mutation except inserting the device key.
-// So this module is a THIRD allowlist, the mirror image of migration's: alsoKnownAs
-// MAY change; rotationKeys, verificationMethods, and services must NOT.
-//
-// The flow is fully passwordless end to end (sovereign login + the per-DID session
-// provider supply the full-access session; the biometric gate lives in the frontend,
-// in front of the Secure-Enclave signing):
-//   1. Resolve a full-access session for the DID via SessionProvider.
-//   2. `com.atproto.identity.updateHandle` on the hosting PDS — the PDS arbitrates
-//      served-domain allocation / uniqueness / reserved names (this half cannot be
-//      removed; its auth is the device key, transitively).
-//   3. Build + device-key-sign the alsoKnownAs PLC op (strict guard) and POST it to
-//      plc.directory.
-//   4. Refresh the cached PLC log + DID document so the home card updates.
-//
-// Ordering: updateHandle FIRST (PDS-side validation/uniqueness), the PLC op SECOND. A
-// failure between the two leaves handle resolution ahead of the DID doc, which
-// self-heals on retry: build_handle_op re-reads the audit log every attempt, and if
-// the op already landed (a prior attempt whose HTTP response was lost) the desired
-// alsoKnownAs is already current, so the flow reconciles to success instead of
-// re-POSTing a stale op.
+
+//! The sovereign "change handle" flow for a wallet-custodied did:plc. On a reference
+//! PDS, changing a handle is one call because the PDS custodies the rotation key and
+//! rewrites the PLC doc itself; here the alsoKnownAs op is DEVICE-KEY-SIGNED, like
+//! the migration identity leg. Two Tauri commands:
+//!
+//! - `get_identity_handle_domains(did)` — discovers the DID's HOSTING PDS via
+//!   `discover_pds` and returns its `describeServer.availableUserDomains` (distinct
+//!   from the create flow's `get_available_user_domains`, which targets only the
+//!   configured Custos).
+//! - `change_handle_cmd(did, handle)` — the full passwordless flow (sovereign login +
+//!   the per-DID session provider supply the session; the biometric gate lives in the
+//!   frontend, `$lib/ipc/handle-change.ts`'s `changeHandle`, in front of the
+//!   Secure-Enclave signing):
+//!   1. Resolve a full-access session via `SessionProvider::full_access_client`.
+//!   2. `com.atproto.identity.updateHandle` on the hosting PDS — the PDS arbitrates
+//!      served-domain allocation / uniqueness / reserved names (this half cannot be
+//!      removed; its auth is the device key, transitively).
+//!   3. Build + device-key-sign the alsoKnownAs PLC op (strict guard,
+//!      `crypto::build_did_plc_rotation_op`) and POST it to plc.directory.
+//!   4. Refresh the cached PLC log + DID document so the home card updates.
+//!
+//! Ordering: updateHandle FIRST, the PLC op SECOND. A failure between the two leaves
+//! handle resolution ahead of the DID doc, which self-heals on retry:
+//! `build_handle_op` re-reads the audit log every attempt, and if the op already
+//! landed (a prior attempt whose HTTP response was lost) the desired alsoKnownAs is
+//! already current, so the flow reconciles to success instead of re-POSTing a stale op.
+//!
+//! `guard_handle_change` is the THIRD strict wallet allowlist, the mirror image of
+//! `migrate::guard_migration_op` (which REQUIRES alsoKnownAs preserved, its invariant
+//! 4, while the claim guard forbids all mutation except inserting the device key).
+//! Before signing it enforces: (1) the device key is in the DID's current
+//! rotationKeys (else `WalletNotAuthorized`), (2) rotationKeys unchanged,
+//! (3) verificationMethods unchanged, (4) services unchanged, (5) alsoKnownAs
+//! non-empty. So alsoKnownAs MAY change; rotationKeys, verificationMethods, and
+//! services must NOT. The build assembles the op with every non-alsoKnownAs field
+//! passed through as current==proposed, so the guard proves the op is a pure handle
+//! change.
+//!
+//! Pure helpers: `guard_handle_change`, `latest_full_state` (full current state incl.
+//! verificationMethods + services maps), `compute_new_also_known_as` (new
+//! `at://{handle}` primary, prior `at://` handles dropped, non-handle aliases
+//! preserved), `classify_update_handle_error`. `HandleChangeError`
+//! (WALLET_NOT_AUTHORIZED, SESSION_LOCKED, RATE_LIMITED, HANDLE_NOT_AVAILABLE,
+//! INVALID_HANDLE, UPDATE_HANDLE_FAILED, GUARD_REJECTED, INVALID_AUDIT_LOG,
+//! SIGNING_FAILED, PLC_DIRECTORY_ERROR, SERVER_ERROR, NETWORK_ERROR,
+//! IDENTITY_NOT_FOUND) serializes as SCREAMING_SNAKE_CASE; the `$lib/ipc` union must
+//! match exactly, and `SESSION_LOCKED` carries `reason: UnlockReason` — the cue for
+//! the frontend to run `unlockIdentity(did)` and retry. A directory read
+//! (`fetch_audit_log`/`fetch_plc_data_document`/`discover_pds`) is classified via
+//! `map_plc_fetch_error` (throttle → RATE_LIMITED, HTTP verdict →
+//! PLC_DIRECTORY_ERROR, transport → NETWORK_ERROR); a session-lifecycle failure via
+//! `map_session_error` (a server verdict / unsupported host / keychain / malformed
+//! response → SERVER_ERROR, never NETWORK_ERROR).
 
 use std::collections::BTreeMap;
 

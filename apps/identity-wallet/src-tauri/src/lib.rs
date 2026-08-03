@@ -1,3 +1,34 @@
+//! Obsign wallet backend: crate root, app wiring, and the small cross-cutting Tauri
+//! IPC commands that belong to no flow module. Each flow module below owns its own
+//! commands and contract; what lives *here* is:
+//!
+//! - `create_account` — device key + `POST /v1/accounts/mobile`; tokens to Keychain.
+//! - `perform_did_ceremony` — the client-share did:plc ceremony (see its doc).
+//! - `confirm_share_backup` — the ceremony teardown gate (Share 1 durable before the
+//!   staging slot dies).
+//! - `prepare_did_web_ceremony` / `complete_did_web_ceremony` — the did:web sibling
+//!   ceremony (compose/export a reviewed `did.json`; submit only once resolvable).
+//! - `import_did_web_identity` — bring an existing did:web under wallet management.
+//! - `get_available_user_domains` — describeServer domains for handle composition.
+//! - `register_created_identity` — register a create-flow identity in `IdentityStore`.
+//! - `list_identities` / `get_stored_did_doc` / `get_device_key_id` — synchronous
+//!   `IdentityStore` reads (no `async fn`, no `State<>` — Keychain access is
+//!   synchronous, unlike most commands here).
+//! - `get_pds_url` / `save_pds_url` — configured-PDS persistence, `_health`
+//!   reachability check, `custos_client` init, and a best-effort capability re-probe.
+//! - `get_pds_capabilities` — cached per-host capability read; an absent `custos`
+//!   extension and an unreachable host both report an empty list, never an error.
+//! - `get_appearance_preference` / `set_appearance_preference` — the three-value
+//!   appearance override; a corrupt stored value reads as absent.
+//!
+//! `run()` is the iOS/Android entry point (`#[cfg_attr(mobile, tauri::mobile_entry_point)]`;
+//! `main.rs` calls it on desktop). Its `setup` does the app wiring: command + plugin
+//! registration, the startup OAuth-token restore into `AppState.oauth_session`
+//! (`expires_at = 0` forces an immediate refresh; `auth_ready` emitted after a 300 ms
+//! delay so SvelteKit can register its listener), `reconcile_share1_slots` (the two
+//! additive Share 1 launch hops — see its doc), the PLC monitoring loop spawn, and the
+//! iOS-only APNs + background-backup bridges.
+
 pub mod agents;
 /// The iOS APNs device-token bridge. iOS-only because it is nothing *but* platform plumbing:
 /// every part with logic worth testing lives in [`notifications`].
@@ -368,6 +399,13 @@ fn build_create_flow_did_doc(
 
 // ── IPC command ─────────────────────────────────────────────────────────────
 
+/// Create a provisional mobile account on the configured PDS.
+///
+/// Gets or creates the global device key via `device_key::get_or_create()` (idempotent,
+/// so a retry sends the PDS the same key), POSTs the claim code / email / handle to
+/// `POST /v1/accounts/mobile`, and stores the returned tokens in the Keychain on
+/// success. PDS refusals map to typed [`CreateAccountError`] variants the frontend
+/// routes back to the originating screen (e.g. `EXPIRED_CODE` → the claim-code step).
 #[tauri::command]
 async fn create_account(
     claim_code: String,
@@ -509,6 +547,21 @@ async fn fetch_repo_signing_key(
     })
 }
 
+/// Run the client-share did:plc ceremony (the ceremony inversion).
+///
+/// Fetches the PDS repo signing key (`GET /v1/repo-signing-key`), loads-or-generates
+/// the client-side share set via `share_ceremony::load_or_create` (staged in the
+/// `ceremony-staging` Keychain slot before the state-creating `POST /v1/dids` call —
+/// the read-only signing-key `GET` precedes it — so a retry reuses the
+/// identical set and set_id), builds the signed did:plc genesis op via
+/// `crypto::build_did_plc_genesis_op_multi_rotation_with_external_signer` with
+/// `rotationKeys = [device, recovery, PDS]` (ADR-0027) using the device key as signer,
+/// and POSTs the op + password + `recoveryKey` + `escrowShare` (the Share 2 envelope —
+/// the only share Custos ever sees) to `POST /v1/dids`. On success it persists the DID
+/// and the upgraded session token, writes the wallet-generated Share 1 envelope to the
+/// per-DID `recovery-share-1:{did}` slot with a read-back verify (per-DID, so a second
+/// identity's ceremony cannot overwrite the first's — the re-key flow's convention),
+/// and returns `{ did, share3, share3Words }` for the backup screen.
 #[tauri::command]
 async fn perform_did_ceremony(
     handle: String,
@@ -521,9 +574,10 @@ async fn perform_did_ceremony(
     let pds_key = fetch_repo_signing_key(&state, &pending_token).await?;
 
     // Step 3.5: Generate (or reload from staging) the client-side share set — seed,
-    // derived recovery key, and the 2-of-3 envelope split. Staged BEFORE any network
-    // call so a mid-ceremony retry reuses the identical set (same set_id) instead of
-    // orphaning an escrow deposit. Custos only ever receives Share 2.
+    // derived recovery key, and the 2-of-3 envelope split. Staged before the
+    // state-creating POST /v1/dids below, so a mid-ceremony retry reuses the identical
+    // set (same set_id) instead of orphaning an escrow deposit. Custos only ever
+    // receives Share 2.
     let pds_base_url = state.custos_client().base_url_str().to_owned();
     let shares = share_ceremony::load_or_create(&handle, &pds_base_url).map_err(|e| {
         tracing::error!(error = %e, "client-side share generation failed during DID ceremony");

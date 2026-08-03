@@ -1,33 +1,53 @@
 // pattern: Imperative Shell
-//
-// The "Recover existing identity" ceremony — the consuming inverse of
-// `share_ceremony.rs`. Two shares of the 2-of-3 split reconstruct the recovery
-// seed; the seed re-derives the recovery rotation key (`rotationKeys[1]` in the
-// `[device, recovery, PDS]` layout); that key signs a PLC rotation op installing a
-// fresh device key at `rotationKeys[0]` on the new device.
-//
-// Two collection paths feed the same core:
-//   - escrow-assisted: Share 1 auto-loads from the per-DID `recovery-share-1:{did}`
-//     slot, preferring the iCloud-synchronizable copy (the only one that can reach a
-//     replacement device) and falling back to the device-local copy, then to the legacy
-//     global slot for pre-unification identities; Share 2 arrives via the PDS
-//     escrow-release flow (initiate → email OTP →
-//     release, with a cancellable pending-delay window).
-//   - fully sovereign: Share 1 (or a manually entered share) plus Share 3 (word
-//     phrase or base32/QR). This path touches ONLY plc.directory until the
-//     re-escrow step of the rotation epilogue — never the Custos PDS — which is
-//     the credible-exit property the split exists to provide.
-//
-// Reconstruction is verified against the authoritative plc.directory audit log
-// (never a cached DID document — the PLC-native shape is the only one carrying
-// `rotationKeys`) BEFORE anything is signed, so "these shares don't match this
-// identity" surfaces as a pre-signature failure.
-//
-// The mandatory rotation epilogue (fresh seed, new set_id, new recovery key
-// swapped into the recovery slot, Share 2 re-escrowed, Share 1 rewritten, Share 3
-// walked through) persists its progress in a durable Keychain record BEFORE any
-// network step, so an app kill mid-epilogue resumes on next launch instead of
-// stranding the account with the lost device's (now void) share world.
+
+//! The "Recover existing identity" ceremony (10 Tauri IPC commands) — the consuming
+//! inverse of `share_ceremony.rs`. Two shares of the 2-of-3 split reconstruct the
+//! recovery seed; the seed re-derives the recovery rotation key (`rotationKeys[1]` in
+//! the `[device, recovery, PDS]` layout); that key signs a PLC rotation op installing a
+//! fresh per-DID device key at `rotationKeys[0]` on the new device. Neither of this
+//! module's rotation ops (the anchor, and the epilogue's recovery-key swap) has a
+//! separate pre-sign allowlist guard: both are built by copying `verificationMethods`,
+//! `alsoKnownAs`, and `services` through from the authoritative current state unchanged,
+//! with only the rotation-key change applied (`anchored_rotation_keys` /
+//! `swapped_rotation_keys`), so the construction cannot express any other mutation —
+//! and the anchor refuses to sign unless the derived recovery key is in the current
+//! rotation set.
+//!
+//! Command spine: `start_share_recovery` (resolve handle/did:plc via plc.directory,
+//! then auto-load Share 1 — synchronizable per-DID slot, then device-local per-DID,
+//! then the legacy global slot, each tier validated independently so a damaged higher
+//! tier cannot shadow a good lower one) → `add_recovery_share`/`remove_recovery_share`
+//! (base32 or word-phrase entry; `SHARE_CHECKSUM`, `SHARE_SET_MISMATCH` — carrying
+//! both set_ids — and `DUPLICATE_SHARE` are distinct, pre-combine errors) →
+//! `verify_recovery_shares` (combine → derive → compare against the **authoritative
+//! plc.directory audit log**, never a cached DID document — the PLC-native shape is
+//! the only one carrying `rotationKeys` — so `SHARES_DO_NOT_MATCH_IDENTITY` surfaces
+//! BEFORE anything signs) → `recover_identity` (idempotent on retry; talks ONLY to
+//! plc.directory — zero PDS requests until re-escrow, the credible-exit property —
+//! and durably stages the epilogue before returning). The escrow-assisted Share 2
+//! path is `initiate_escrow_release`/`request_escrow_release`, addressed to the
+//! account's own PDS endpoint from the authoritative DID state: an OTP opens the
+//! cancellable pending-delay window, OTP-less calls poll it, and the server's uniform
+//! 401 maps to `RELEASE_UNAUTHORIZED`.
+//!
+//! The mandatory rotation epilogue (`run_recovery_epilogue`, resumable; `skip_escrow`
+//! honored) swaps the new recovery key into `rotationKeys[1]` signed by the new device
+//! key, re-escrows the new Share 2 over a stored-or-fresh sovereign session, and
+//! rewrites the per-DID Share 1 slot with read-back verify — each step recorded in the
+//! durable [`EPILOGUE_ACCOUNT`] record as it completes, so an app kill resumes on next
+//! launch (`get_pending_recovery_epilogue`). The re-escrow leg is capability-gated by
+//! `host_offers_escrow`: a host that answered and advertises no `escrow` records
+//! `escrow_skipped`, while a host that could NOT be asked is still attempted (treating
+//! an outage as "no escrow" would silently downgrade a Custos account's posture). The
+//! record is fail-closed like `ceremony-staging` — `EPILOGUE_CORRUPT` preserves it,
+//! since it may hold the only copy of a set the swap op already bound to the DID —
+//! and `confirm_recovery_backup` is the teardown gate, destroying it only after the
+//! NEW Share 1 is verified durable in the per-DID slot.
+//!
+//! Pre-anchor session state (`AppState.share_recovery_state`) is in-memory by design:
+//! that phase restarts from the entry screen, and only the epilogue persists.
+//! `ShareRecoveryError` serializes as `{ code: "SCREAMING_SNAKE_CASE" }` with
+//! camelCase fields.
 
 use std::time::{SystemTime, UNIX_EPOCH};
 

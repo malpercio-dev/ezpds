@@ -1,30 +1,41 @@
 // pattern: Mixed (Functional Core sync/restore logic + error mapping; Imperative Shell commands)
-//
-// User-held blob backup: a content-addressed mirror of the account's blobs in the
-// wallet's iCloud Drive ubiquity container (`Documents/blobs/{cid}`), the one backup
-// layer that survives the PDS itself failing. Content addressing makes the mirror
-// trustless — restored bytes re-hash to the same CID, so records never need rewriting.
-//
-// Four Tauri IPC commands:
-//
-//   get_blob_backup_status(did)         — location + opt-in flag + mirror size
-//   set_blob_backup_enabled(did, bool)  — the explicit opt-in toggle
-//   run_blob_backup(did)                — incremental sync pass (listBlobs → diff →
-//                                         getBlob → verify CID → write → manifest)
-//   restore_blob_backup(did)            — walk the manifest, uploadBlob each file
-//
-// The sync pass verifies every fetched blob against its CID (CIDv1, raw codec,
-// SHA-256 multihash — the exact encoding the PDS's `blob_store::build_cid` emits)
-// before writing, so corrupt bytes are never enshrined as the recovery copy — the
-// client-side twin of the server's verify-on-serve. Both the sync and the restore
-// degrade per-blob: one dead blob becomes a report entry, never an aborted run.
-//
-// On a real iOS device the mirror root is the app's iCloud Drive ubiquity container
-// (user-visible in the Files app; iOS syncs it). Everywhere else (macOS host builds,
-// the simulator, tests) it falls back to a local app-data directory so the surface
-// stays exercisable, reported distinctly as `location: "local"`. The restore path
-// treats an unreadable file (e.g. an undownloaded iCloud placeholder) as a per-blob
-// failure with guidance, not a run-stopper.
+
+//! User-held blob backup: a content-addressed mirror of the account's blobs in the wallet's
+//! iCloud Drive ubiquity container, the one backup layer that survives the PDS itself failing.
+//! Content addressing makes the mirror trustless — restored bytes re-hash to the same CID, so
+//! records never need rewriting.
+//!
+//! Four Tauri IPC commands:
+//!
+//! - `get_blob_backup_status(did)` — mirror location + opt-in flag + mirror size
+//! - `set_blob_backup_enabled(did, bool)` — the explicit opt-in toggle (per-DID Keychain flag
+//!   `{did}:blob-backup-enabled`, named by `backup_enabled_account`)
+//! - `run_blob_backup(did)` — incremental sync pass over public sync endpoints, no session:
+//!   paginated `listBlobs` → diff against the manifest → `getBlob` (Content-Type captured) →
+//!   recompute the CIDv1 raw-codec SHA-256 CID (the exact encoding the PDS's `blob_store`
+//!   emits) and compare **before** writing → atomic temp-file+rename into `blobs/{cid}` →
+//!   record in the per-DID manifest `manifests/{sanitized-did}.json` (`cid, mimeType, size,
+//!   fetchedAt`), checkpointed during the run so an interrupted pass resumes
+//! - `restore_blob_backup(did)` — walk the manifest, re-verify each file's hash, `uploadBlob`
+//!   with the stored MIME type over a `SessionProvider::full_access_client` session
+//!   (`NeedsUnlock` maps to `SESSION_LOCKED`, the frontend's `unlockIdentity` retry cue)
+//!
+//! Both passes degrade per-blob: one dead blob — or an undownloaded iCloud placeholder, or a
+//! corrupt file — becomes a report entry with guidance, never an aborted run. A corrupt
+//! manifest is fail-closed (`MANIFEST_CORRUPT`, file preserved: it may be the only record of
+//! MIME types for bytes the PDS has lost).
+//!
+//! The mirror root resolves (see `resolve_backup_root`): `EZPDS_BLOB_BACKUP_DIR` env override
+//! (tests/dev) → the iCloud ubiquity container's `Documents/` on iOS (`NSFileManager` via
+//! `objc2-foundation`, an iOS-only dep; user-visible in the Files app) → on a real device with
+//! iCloud off, `BACKUP_UNAVAILABLE`, never a silent local fallback → elsewhere (macOS host,
+//! simulator) a local app-data dir reported as `location: "local"`.
+//!
+//! Shared seams: `run_backup_for_did` is the "resolve root → discover PDS → CID-verified
+//! sync" body the background sweep (`bg_backup`) reuses, gated on `is_backup_enabled`;
+//! `mirror_fallback_blob` backs the outbound-migration blob drain when the source PDS's
+//! `getBlob` fails (fail-closed re-verification; see its doc). Serialized types mirror
+//! `$lib/ipc` exactly: SCREAMING_SNAKE_CASE error codes, camelCase fields.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};

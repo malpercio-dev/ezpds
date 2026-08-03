@@ -1,33 +1,40 @@
 // pattern: Mixed (Functional Core sweep orchestration + iOS-only imperative scheduling bridge)
-//
-// Background backup scheduling. The user-held blob backup (`blob_backup.rs`) and repo backup
-// (`repo_backup.rs`) each ship an explicit action plus an opportunistic pass on app open; this
-// module adds the deliberate later step — an iOS `BGProcessingTask` so an opted-in identity's
-// iCloud mirrors stay topped up without the user opening the app (posts and media made days
-// ago shouldn't sit un-backed-up until the next launch).
-//
-// On fire it runs, off-foreground, both mirror passes for every opted-in DID: the incremental,
-// CID-verified, per-blob-degrading `blob_backup::run_backup_for_did` and the full-CAR,
-// client-validated `repo_backup::run_backup_for_did`. The two opt-ins are per-DID and
-// independent — a user can enable one mirror and not the other — so each pass is gated on its
-// own flag. Both are safe to overlap with a foreground pass: the per-DID mirror lock in each
-// module serializes its writes, and the passes are idempotent by construction (content-
-// addressed, immutable/atomically-replaced files), so a sweep iOS interrupts mid-run self-heals
-// on the next pass. The two mirrors sweep sequentially over one wake-up, alternating which
-// mirror leads across fires so iOS's bounded task budget cannot systematically starve either
-// one, while reusing the single generic sweep core.
-//
-// Scheduling is a device concern: everything that touches `BGTaskScheduler` is iOS-only,
-// reached through objc2's BackgroundTasks binding — the same no-new-Swift bridge pattern as
-// blob_backup's ubiquity-container call. Off-device the scheduling surface is inert. The
-// sweep *orchestration* (`run_sweep_with`) is platform-agnostic and unit-tested.
-//
-// The user tunes the sweep from Settings via three app-global flags
-// (`BackgroundBackupSettings`): whether iOS may wake the app at all, whether to require
-// external power, and whether to skip cellular links. They are app-global (not per-DID)
-// because the sweep is one `BGProcessingTask` covering every opted-in identity. The
-// settings get/set commands are frontend-facing, so they (and their harness fakes) are the
-// one part of this module the browser harness does touch.
+
+//! Background backup scheduling. The blob backup (`blob_backup.rs`) and repo backup
+//! (`repo_backup.rs`) each ship an explicit action plus an opportunistic pass on app open;
+//! this module adds an iOS `BGProcessingTask` so an opted-in identity's iCloud mirrors stay
+//! topped up without the user opening the app.
+//!
+//! On fire, `run_backup_sweep` runs both mirror passes over every managed DID in one wake-up,
+//! sequentially, alternating which mirror leads across fires via the durable global Keychain
+//! turn `background-backup-next-mirror` — the task budget can expire between the two passes,
+//! so the alternation keeps iOS's bounded budget from systematically starving either mirror.
+//! Each pass is gated on its OWN per-DID opt-in flag (`blob_backup::is_backup_enabled` /
+//! `repo_backup::is_backup_enabled`), so the two opt-ins are honored independently; each
+//! mirror's tally is logged as its sweep completes. Overlap with a foreground pass is safe:
+//! the per-DID mirror locks serialize writes and the passes are idempotent
+//! (content-addressed, atomically-replaced files), so an interrupted sweep self-heals.
+//! `run_sweep_with` is the platform-agnostic, unit-tested core — opted-in-only, per-DID
+//! degrading, generic over the step's error type so one loop drives both mirrors.
+//!
+//! The `BGTaskScheduler` bridge is iOS-only via objc2 (`objc2-background-tasks` + `block2`,
+//! the same no-new-Swift pattern as the ubiquity-container call); off-device it is inert.
+//! `register_and_schedule` runs once from `lib.rs`'s `setup`; `apply_schedule` submits (or
+//! cancels) a `requiresNetworkConnectivity` request, re-armed on each fire; the task is
+//! marked complete exactly once via a shared latch across the worker and the expiration
+//! handler. The task identifier `dev.malpercio.identitywallet.blob-backup`
+//! (`BACKUP_TASK_IDENTIFIER`) must stay in sync with `Info.ios.plist`'s
+//! `BGTaskSchedulerPermittedIdentifiers`; that plist also carries the `processing`
+//! `UIBackgroundModes` entry.
+//!
+//! User-tunable policy is app-global (`BackgroundBackupSettings`, Keychain account
+//! `blob-backup-settings`; camelCase `backgroundEnabled`/`requireExternalPower`/`wifiOnly`,
+//! defaults on/off/off) because the sweep is one task over every opted-in identity.
+//! `requireExternalPower` maps to `setRequiresExternalPower`; `wifiOnly` — which
+//! `BGProcessingTaskRequest` can't express — is enforced at fire time via
+//! `SCNetworkReachability`'s `IS_WWAN` flag (`system-configuration`, iOS-only; an unreadable
+//! network type fails open to "not cellular"). Only the settings get/set Tauri commands are
+//! frontend-facing (the browser harness fakes them in `WalletState.backgroundBackupSettings`).
 
 // Only the iOS launch-handler payload (`run_backup_sweep`) and the unit tests reference the two
 // backup modules by name; the platform-agnostic `run_sweep_with` core is generic over the backup

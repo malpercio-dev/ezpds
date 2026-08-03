@@ -1,4 +1,51 @@
 // pattern: Mixed (Functional Core types + Imperative Shell commands)
+
+//! PLC monitoring: detect directory operations the device key did not sign.
+//! [`PlcMonitor`] borrows the `AppState` `PdsClient` singleton and is constructed fresh
+//! each cycle, avoiding long-lived borrows across async boundaries.
+//!
+//! **The monitorable set.** `check_all` sweeps only `did:plc:` identities
+//! (`is_monitorable`). A `did:web` — anchored by domain control, with no PLC audit log to
+//! fetch — is *omitted* from the returned `Vec<IdentityStatus>` entirely, never reported
+//! with a verdict: `check_failed: true` would spend a round trip to assert something
+//! untrue. That omission is load-bearing downstream: frontend consumers read an absent DID
+//! as "no news" (`IdentityScreen`'s `absorb`, `IdentityListHome`'s `toAlertMap`), and
+//! `$lib/identity-status`'s `isVerified` must short-circuit `did:web` to verified or the
+//! screen's pessimistic initial `plcVerified = false` is never corrected. The browser
+//! harness's `check_identity_status` fake mirrors the omission.
+//!
+//! **Degradation contract.** `check_for_changes` returns `Err` when plc.directory is
+//! unreachable or the log unparseable; `check_all` absorbs it — `tracing::warn`, that
+//! identity reported `check_failed: true`, sweep continues. One unreachable identity never
+//! costs the others their check, and a failed check never masquerades as a clean one.
+//! `check_for_changes` diffs the current audit log against the Keychain-cached copy
+//! (updated via `store_plc_log` after processing, so later cycles see only newer entries)
+//! and classifies each new entry by verifying its signature against the per-DID device
+//! key: device-key-signed entries are authorized and silently consumed, anything else is
+//! an [`UnauthorizedChange`] (signer identified best-effort by `identify_signing_key`).
+//!
+//! **Cadence.** `run_monitoring_loop` is spawned once in `lib.rs::setup()`: skips the
+//! first immediate tick, then every [`MONITOR_INTERVAL_SECS`] (15 min) with
+//! `MissedTickBehavior::Delay` so iOS suspension cannot burst-fire missed ticks; emits the
+//! `"plc_alert"` Tauri event (`Vec<IdentityStatus>`) when unauthorized changes are found.
+//! `check_identity_status` is the synchronous foreground IPC check over the same set.
+//!
+//! **Sweep history.** Every completed pass — either trigger — is folded by the pure,
+//! tested [`fold_sweep`] into the global `monitor-history` Keychain record, read back by
+//! `get_monitor_history`. The fold keeps the log honest: counts cover only identities the
+//! sweep actually examined; a *failed* check leaves the identity's previous
+//! `last_verified_at` standing (the last verification is still a fact); only identities
+//! present in the sweep survive (a removed DID leaves on the next pass and can never be
+//! resurrected); and identical *foreground* passes within five minutes coalesce, so
+//! ordinary navigation — which checks on launch, on foreground, and on entering the
+//! identity screen — cannot evict the background sweeps the log exists to evidence. Reads
+//! are **fail-open** (a corrupt record is an empty log), the inverse of
+//! `ceremony-staging`: this record holds counts and timestamps, and erroring on it would
+//! cost the sweep running now to preserve a readout of sweeps already past.
+//!
+//! Serialization: the status/history types are camelCase, `MonitorError` is
+//! `SCREAMING_SNAKE_CASE`, `SweepTrigger` is lowercase; TypeScript counterparts must match.
+
 use crate::identity_store::IdentityStore;
 use crate::pds_client::PdsClient;
 use chrono::{DateTime, SecondsFormat, Utc};

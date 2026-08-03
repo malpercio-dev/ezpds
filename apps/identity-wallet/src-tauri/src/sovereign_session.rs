@@ -1,8 +1,24 @@
 // pattern: Imperative Shell
-//
-// Gathers: managed DID, current hosting PDS/server DID, per-DID device key
-// Processes: canonical proof signing, sovereign-session exchange, response validation
-// Returns: a persisted per-DID Bearer session and a client constructor for XRPC callers
+
+//! Per-DID Custos sovereign login: passwordless full-access session issuance proven by
+//! the identity's own device key.
+//!
+//! The flow discovers the selected DID's current hosting PDS and server DID, signs the
+//! shared canonical proof envelope with that DID's device key, exchanges it at
+//! `POST /v1/sessions/sovereign`, validates the response DID and the returned JWT's
+//! subject/audience against this DID and host, and persists a versioned
+//! `SovereignTokenRecord` into the `{did}:oauth-tokens` Keychain record — the same
+//! record `password_unlock` writes and `session_provider` reads, so restore, rotate,
+//! and host-change-discard behave identically whichever unlock minted the session.
+//!
+//! [`sovereign_login`] is the narrow Tauri command; the typed frontend
+//! `sovereignLogin(did)` wrapper performs the biometric gate before invoking it, so a
+//! cancelled prompt signs and sends nothing. [`stored_bearer_client`] rebuilds an
+//! authenticated Bearer client from the stored record for XRPC helpers. The
+//! `pub(crate)` JWT helpers [`bearer_jwt_claims`] and [`audience_matches_server`] are
+//! the single source of the sub/aud binding check, reused by `session_provider` and
+//! `password_unlock`. `SovereignLoginError` serializes as
+//! `{ code: "SCREAMING_SNAKE_CASE" }` with camelCase fields.
 
 use std::time::{SystemTime, UNIX_EPOCH};
 

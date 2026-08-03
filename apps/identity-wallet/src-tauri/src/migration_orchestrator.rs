@@ -1,18 +1,88 @@
 // pattern: Mixed (Functional Core types + Imperative Shell commands)
-//
-// Functional Core: MigrationPhase, OutboundMigrationState, MigrationError, PreparedMigration,
-//                  ensure_phase_did, import_reconciles, extract_handle_from_also_known_as
-//                  (pure functions — no network, no side effects)
-// Imperative Shell: prepare_migration, authenticate_migration_source,
-//                   create_destination_account; transfer_repo, transfer_blobs,
-//                   transfer_preferences, verify_import; arm_identity_leg,
-//                   finalize_migration — Tauri commands, plus their
-//                   *_impl / authenticate_migration_source_impl / drain_missing_blobs network cores.
-//
-// The source-PDS login is a password `createSession` → full-session Bearer client (ADR-0021),
-// NOT an OAuth `transition:generic` grant: minting the `com.atproto.server.createAccount`
-// service-auth token from the source PDS (see `create_destination_account_impl`) requires a full
-// session on a spec-strict PDS such as bsky.social. Mirrors `claim::authenticate_source_pds`.
+
+//! Wallet-authorized outbound migration state machine (ADR-0002, path 1) — the driver
+//! behind the `prepareMigration()`…`finalizeMigration()` IPC wrappers, as fine-grained
+//! per-step Tauri commands for the source→dest transfer:
+//!
+//! - `prepare_migration` — resolve dest describeServer + source; returns
+//!   `PreparedMigration { handle, sourcePdsUrl }` for the source-auth screen.
+//! - `authenticate_migration_source` — password `createSession` → full-session Bearer
+//!   client via the shared `source_login.rs` core (mirrors
+//!   `claim::authenticate_source_pds`). Per ADR-0021 a full session — which no OAuth
+//!   `transition:generic` grant supplies on a spec-strict PDS such as bsky.social — is
+//!   required to mint the source's `createAccount` service-auth token. HTTPS +
+//!   account-match guards + email-2FA; the password is used once and never stored.
+//! - `create_destination_account` — reserveSigningKey → getServiceAuth → deactivated
+//!   `createAccount` → Bearer session; tolerates `DidAlreadyExists` for resume.
+//! - `transfer_repo` — getRepo → importRepo. On a source `getRepo` failure it falls
+//!   back to the local iCloud repo mirror (`repo_backup::mirror_repo_car`) when that
+//!   mirror holds a CID/commit-valid snapshot for the DID, else surfaces the original
+//!   source failure unchanged — the repo twin of the blob drain's mirror fallback.
+//! - `transfer_blobs` — cursor-paginated `listMissingBlobs` drain
+//!   (`drain_missing_blobs` / `transfer_one_blob`) that degrades PER BLOB rather than
+//!   aborting: an unrecoverable blob becomes a `BlobLoss` (cid, record_uri,
+//!   `BlobTransferDirection`, reason) folded into a loss manifest and surfaced as
+//!   `MigrationError::BlobDrainIncomplete` for the user to accept (re-invoke
+//!   `transferBlobs(did, acceptLoss=true)`). On a source `getBlob` failure the drain
+//!   substitutes the local blob mirror's copy (`blob_backup::mirror_fallback_blob`)
+//!   when one is CID-verified, recording the loss only when it is not. Only a hard
+//!   enumerate failure aborts, as `BlobTransferFailed`.
+//! - `transfer_preferences` (get→put); `verify_import` (`checkAccountStatus`
+//!   completeness gate, returns `AccountStatus`); `arm_identity_leg` (populate
+//!   `migrate::MigrationState.dest_oauth_client`, then run
+//!   `migrate::build_migration_op_cmd` / `submit_migration_op_cmd`).
+//! - `finalize_migration` — the safe cutover: activate dest → durably persist the
+//!   destination session → deactivate source → `Finalized`. The source stays active
+//!   until the durable credential is stored, so a crash or retry never strands the
+//!   account credential-less; `SOVEREIGN_LOGIN_FAILED` / `SESSION_PERSIST_FAILED` are
+//!   the retryable cutover-mint failures that abort before deactivation.
+//!
+//! Which credential gets persisted is capability-gated, not assumed:
+//! `destination_credential` (pure, unit-tested) answers `Sovereign` or `Bearer` from
+//! the DID method plus the destination's advertised `sovereignSessions`
+//! (`pds_capabilities`, warm from `prepare_migration`'s describeServer). A host that
+//! ANSWERED without advertising it — the reference PDS, bsky.social, any
+//! spec-compliant PDS, a Custos with the capability off — takes the Bearer branch:
+//! minting against a route it does not serve would fail AFTER the identity op already
+//! landed. A did:web takes it unconditionally (no rotation keys to sign the proof). A
+//! host that could NOT be asked keeps the sovereign branch: `activateAccount` has
+//! already succeeded against it by then, so `reached: false` is a describeServer
+//! blink, not grounds to downgrade a Custos destination's credential. The same branch
+//! serves outbound migration and sovereign disaster recovery, which share this
+//! command.
+//!
+//! Pure cores are split out for testability: `ensure_phase_did`,
+//! `create_destination_account_impl`, `drain_missing_blobs`, `transfer_repo_impl`,
+//! `transfer_preferences_impl`, `import_reconciles`, the
+//! `activate_destination_account` / `deactivate_source_account` cutover halves,
+//! `destination_credential`, `ensure_sovereign_session_persisted` (idempotent skip
+//! while a persisted record's refresh token is unexpired, else
+//! `sovereign_session::sovereign_login_impl` → persist),
+//! `ensure_bearer_session_persisted` (the same idempotent skip, then sub/aud-validate
+//! and persist the pair `createAccount` already issued into the same
+//! `{did}:oauth-tokens` record — from that write on, `session_provider` restores and
+//! refreshes it identically, and re-unlock rides `password_unlock`'s password
+//! `createSession` route), and the `*_core` mutex-parameterized command cores.
+//! `finalize_migration_core` takes an injected `ensure_session` step so the
+//! activate → session → deactivate ordering is unit-testable without a Keychain or
+//! live PDS; `finalize_migration_impl` above it holds the whole snapshot → capability
+//! probe → branch → cutover path, drivable against mock servers — which is what
+//! proves the non-Custos cutover never calls `/v1/sessions/sovereign`.
+//!
+//! Migration state is IN-MEMORY only (`AppState.orchestration_state`): an app kill
+//! restarts from `prepare_migration`, but the destination session persisted via
+//! `{did}:oauth-tokens` survives — a restarted wallet reconstructs the destination
+//! client from that record (`sovereign_session::stored_bearer_client`), never from
+//! `OutboundMigrationState`. The orchestrator never POSTs plc.directory — the single
+//! PLC write is `migrate::submit_migration_op_cmd`. `MigrationError`
+//! (MIGRATION_NOT_READY, DESTINATION_UNREACHABLE, SOURCE_AUTH_FAILED,
+//! TWO_FACTOR_REQUIRED, ACCOUNT_MISMATCH, INSECURE_SOURCE_URL, RATE_LIMITED,
+//! SERVER_ERROR, SERVICE_AUTH_FAILED, ACCOUNT_CREATION_FAILED, DESTINATION_CONFLICT,
+//! REPO_TRANSFER_FAILED, BLOB_TRANSFER_FAILED, BLOB_DRAIN_INCOMPLETE,
+//! BACKUP_UNAVAILABLE — recovery-specific — PREFERENCES_TRANSFER_FAILED,
+//! VERIFICATION_INCOMPLETE, ACTIVATION_FAILED, SOVEREIGN_LOGIN_FAILED,
+//! SESSION_PERSIST_FAILED, DEACTIVATION_FAILED, NETWORK_ERROR) serializes as
+//! SCREAMING_SNAKE_CASE; the `$lib/ipc` union must match exactly.
 
 use crate::oauth_client::OAuthClient;
 use crate::pds_capabilities::ServerCapabilities;

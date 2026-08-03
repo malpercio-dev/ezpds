@@ -1,22 +1,25 @@
 // pattern: Functional Core
-//
-// The pending notification route: where a tapped push wants the app to go.
-//
-// A tap can arrive before the frontend exists (cold start — iOS launches the app *because of*
-// the tap) or while it is running (warm foreground). One mechanism serves both: the iOS tap
-// handler (`apns.rs`) stores the route here and emits a `notification_route` Tauri event; the
-// frontend drains this slot on mount (cold start) and on the event (warm), and `take` clears
-// it so the two paths can never double-navigate.
-//
-// The route's fields come from the delivered notification's `ezpdsRoute` block, which the
-// Notification Service Extension writes ONLY after the sealed payload verified under HPKE
-// Auth mode — so a stored route is instance-authenticated by construction. The wallet still
-// treats it as a pointer, not a claim: everything it displays is re-fetched from the server
-// by `request_id` (the QR-path discipline), and the `did` must name an identity this wallet
-// actually manages before anything navigates.
-//
-// A single slot, not a queue: routes are stale the moment a newer tap happens, and a consent
-// prompt is ~5-minutes perishable anyway. The newest tap wins.
+
+//! The pending notification route: where a tapped push wants the app to go. The portable,
+//! host-tested half of notification-tap routing (`apns.rs` is the iOS half).
+//!
+//! A tap can arrive before the frontend exists (cold start — iOS launches the app *because
+//! of* the tap) or while it is running (warm foreground). One mechanism serves both: the iOS
+//! tap handler stores the route here (`store_pending_route`) and emits a `notification_route`
+//! Tauri event; the frontend drains the slot via the `take_pending_notification_route`
+//! command on mount (cold start) and on the event (warm), and `take` clears it so the two
+//! paths can never double-navigate on one tap.
+//!
+//! The route's fields come from the delivered notification's `ezpdsRoute` block, which the
+//! Notification Service Extension writes ONLY after the sealed payload verified under HPKE
+//! Auth mode — so a stored route is instance-authenticated by construction. The wallet still
+//! treats it as a pointer, never a claim: everything the consent screen displays is
+//! re-fetched from the server by `request_id` (the QR-path discipline), and the frontend
+//! router navigates only for a DID this wallet actually manages (or the sole identity), and
+//! only from an interruptible surface.
+//!
+//! A single newest-wins slot, not a queue: routes are stale the moment a newer tap happens,
+//! and a consent prompt is ~5-minutes perishable anyway.
 
 use std::sync::{Mutex, OnceLock};
 

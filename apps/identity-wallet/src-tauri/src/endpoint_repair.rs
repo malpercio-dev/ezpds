@@ -1,25 +1,37 @@
 // pattern: Mixed (Functional Core guard/normalizer; Imperative Shell command)
-//
-// Functional Core: the strict endpoint-only guard and the endpoint normalizer (pure).
-// Imperative Shell: repair_hosting_endpoint (network + Keychain + signing) and its
-//                   Tauri command wrapper.
-//
-// The sovereign "repair hosting endpoint" flow for a wallet-custodied did:plc: rewrite
-// `services.atproto_pds.endpoint` to the hosting server's new public URL after the
-// server changes hostname underneath the account (the DID doc then points at a dead
-// host, so every client misroutes). On a reference PDS this would be a server-signed
-// `signPlcOperation`, but that route is gated behind a full-access session — which a
-// passwordless account can only mint against the very endpoint that just died. So the
-// wallet signs the op itself with the device key and submits DIRECTLY to
-// plc.directory: the only network dependencies are plc.directory and the NEW endpoint
-// (probed to prove it actually hosts this account), never the dead one.
-//
-// This is the SIXTH strict wallet allowlist, the narrowest service mutation: ONLY the
-// `atproto_pds` endpoint string may change. rotationKeys (the sovereignty anchor),
-// verificationMethods, alsoKnownAs, every other service, and even the `atproto_pds`
-// service TYPE must be re-signed byte-for-byte unchanged. A migration op
-// (`migrate::guard_migration_op`) also rewrites keys; a repair must never touch them —
-// the hosting server did not change, only its name did.
+
+//! The sovereign "repair hosting endpoint" flow for a wallet-custodied did:plc — one
+//! Tauri IPC command, `repair_hosting_endpoint(did, new_endpoint)`: rewrite
+//! `services.atproto_pds.endpoint` to the hosting server's new public URL after the
+//! server changes hostname underneath the account (the DID doc then points at a dead
+//! host, so every client misroutes). On a reference PDS this would be a server-signed
+//! `signPlcOperation`, but that route is gated behind a full-access session — which a
+//! passwordless account can only mint against the very endpoint that just died. So
+//! the wallet device-key-signs the op itself and submits DIRECTLY to plc.directory:
+//! the only network dependencies are plc.directory and the NEW endpoint, never the
+//! dead one.
+//!
+//! The new endpoint is normalized to a bare https origin (`normalize_endpoint`) and
+//! probed via the public `com.atproto.sync.getRepoStatus` to prove it actually hosts
+//! this DID before anything signs (`DESTINATION_NOT_HOSTING` otherwise).
+//!
+//! `guard_endpoint_repair` is the SIXTH strict wallet allowlist and the narrowest
+//! service mutation: ONLY the `atproto_pds` endpoint string may change. rotationKeys
+//! (the sovereignty anchor), verificationMethods, alsoKnownAs, every other service,
+//! and even the `atproto_pds` service TYPE must be re-signed byte-for-byte unchanged;
+//! and a no-op endpoint must reconcile rather than sign — an already-correct document
+//! returns success with `opCid: null`. A migration op (`migrate::guard_migration_op`)
+//! also rewrites keys; a repair must never touch them — the hosting server did not
+//! change, only its name did.
+//!
+//! `EndpointRepairError` (WALLET_NOT_AUTHORIZED, INVALID_ENDPOINT,
+//! DESTINATION_UNREACHABLE, DESTINATION_NOT_HOSTING, GUARD_REJECTED,
+//! INVALID_AUDIT_LOG, SIGNING_FAILED, PLC_DIRECTORY_ERROR, RATE_LIMITED,
+//! NETWORK_ERROR, IDENTITY_NOT_FOUND) serializes as
+//! `{ code: "SCREAMING_SNAKE_CASE" }` with camelCase fields. The frontend gates
+//! `repairHostingEndpoint` behind `authenticateBiometric()`; the screen is reached
+//! from the Advanced tools "Repair hosting endpoint" row, behind the vestibule
+//! (root-key did:plc only).
 
 use std::collections::BTreeMap;
 

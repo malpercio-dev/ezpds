@@ -1,35 +1,94 @@
 // pattern: Mixed (Functional Core types + Imperative Shell commands)
-//
-// Permanent identity removal: the wallet-side counterpart to the PDS's
-// `requestAccountDelete`/`deleteAccount` endpoints plus, for a did:plc, a tombstone.
-//
-// A removal has three network/local effects, applied in a strict order:
-//   1. deleteAccount   — the PDS purges all account data and emits an `#account`
-//                        (`status="deleted"`) firehose frame relays consume.
-//                        Method-agnostic.
-//   2. plc_tombstone   — did:plc ONLY. The wallet signs a tombstone with the DID's
-//                        device key (rotationKeys[0]) and POSTs it to plc.directory,
-//                        so the did:plc itself is retired network-wide (the PDS cannot
-//                        do this — it never holds the rotation key, ADR-0001).
-//   3. local wipe      — `IdentityStore::remove_identity` deletes every per-DID
-//                        Keychain entry.
-//
-// Ordering invariant: the local wipe runs LAST and only after the tombstone
-// submits, because the wipe deletes the device key that signs the tombstone. If the
-// tombstone submit fails, the account is already deleted (its single-use email token
-// spent) but the device key survives — the UI resumes via `tombstone_identity`, which
-// retries only the tombstone + wipe.
-//
-// Method-awareness (step 2): a did:web has no PLC log and no tombstone operation — it
-// dies when its document leaves the domain, an operator action outside the wallet's
-// control. So a non-did:plc removal skips step 2 entirely and goes straight from the
-// deleteAccount to the local wipe, never contacting plc.directory (whose audit-log fetch
-// 404s for any DID it does not host). Routing a did:web through the tombstone leg would
-// wedge the flow permanently: the account would be gone and its single-use email code
-// spent, while the wipe — gated behind a submit that can never succeed — never runs and
-// the pending-removal marker never clears, so every launch re-offers a doomed retry. The
-// branch lives in `retire_and_wipe` rather than at the command boundary because
-// `tombstone_identity` (the resume path the marker routes to) reaches the same core.
+
+//! Permanent identity removal — the wallet-side counterpart to the PDS's
+//! `requestAccountDelete`/`deleteAccount` endpoints plus, for a did:plc, a tombstone.
+//! Both endpoints already exist and are method-agnostic (no PDS/DB changes); the
+//! did:plc tombstone is the DID-level network messaging the PDS can't do — it never
+//! holds the rotation key (ADR-0001). Six Tauri IPC commands:
+//!
+//! - `get_identity_removal_route(did) -> RemovalRoute { requiresPassword, pdsUrl }` —
+//!   which credential this removal needs. `requiresPassword: false` when the host
+//!   advertises `walletAccountDelete` and the wallet can sign the removal itself;
+//!   resolved through the SAME `resolve_pds_url` the confirm step uses, so the screen
+//!   and the request can never address different hosts. A host that could not be
+//!   described reports `true` — a field the user can ignore beats a missing one.
+//! - `request_identity_removal(did)` — full-access session via
+//!   `SessionProvider::full_access_client` (a `NeedsUnlock` maps to
+//!   `SessionRequired`, so the UI runs `unlockIdentity` first), then
+//!   `com.atproto.server.requestAccountDelete`, which emails a single-use code.
+//! - `confirm_identity_removal(did, password: Option<String>, token)` — calls
+//!   `deleteAccount` FIRST (a bad credential mutates nothing), then persists the
+//!   pending-removal marker and runs `retire_and_wipe`. `password: None` is an
+//!   identity that has none: `build_delete_credential` device-key-signs
+//!   `crypto::encode_account_delete_envelope` — audience = the host's own
+//!   `describeServer` DID, so a proof cannot be relayed to another server — and sends
+//!   it as the body's off-lexicon `custos.proof`, gated on the host advertising
+//!   `walletAccountDelete` (`PasswordRequired` otherwise, before anything is signed
+//!   or sent). One `describeServer` answers both halves the proof needs — whether the
+//!   host reads it, and the audience DID — so an unreachable host surfaces as the
+//!   network failure it is, not as a demand for a password the identity may not have.
+//!   The server's refusal is deliberately identical for a bad password and a bad
+//!   proof, so the wallet distinguishes them by what it SENT: `InvalidToken` when a
+//!   password went, `InvalidConfirmationCode` when a proof did — an identity with no
+//!   password is never told to check one.
+//! - `tombstone_identity(did)` — resume path: retire + wipe only, for when `confirm`
+//!   deleted the account but the tombstone/wipe failed and the single-use code is
+//!   already spent. For a did:web there is no tombstone to retry; the resume is the
+//!   local wipe alone.
+//! - `list_pending_removals()` — the launch-reconciliation source: DIDs whose
+//!   post-delete tombstone/wipe never finished.
+//! - `forget_identity_locally(did)` — the local-only escape hatch: wipes the DID's
+//!   Keychain material and clears any pending marker with NO network step, returning
+//!   `wasLastIdentity`. For an identity whose PDS account no longer exists (deleted
+//!   from another device, purged server-side, migrated away), `deleteAccount` can
+//!   only answer an opaque 401 indistinguishable from a wrong password (the PDS is
+//!   not an account-existence oracle — see `crates/pds/src/routes/delete_account.rs`),
+//!   so the request/confirm flow can never make progress. It deliberately does NOT
+//!   tombstone the did:plc — the DID may already be retired or now live on another
+//!   PDS — so it only promises to remove the identity from THIS device.
+//!   Biometric-gated in the frontend.
+//!
+//! The shared core `retire_and_wipe` is METHOD-AWARE and owns the branch both
+//! commands go through. A did:plc runs `tombstone_and_wipe`: fetch the audit-log head
+//! as `prev`, build + sign `crypto::build_did_plc_tombstone_op` with
+//! `per_did_sign_closure`, self-verify via `verify_plc_tombstone_op` against the head
+//! rotation keys before submitting. A tombstone is the one wallet-signed PLC op with
+//! no field allowlist to guard — it carries no identity state and retires everything —
+//! so the pre-sign check is that self-verification alone; the separate lifecycle
+//! invariant is wiping local data only after the PLC submission succeeds.
+//! Then POST it to plc.directory, and ONLY THEN call `IdentityStore::remove_identity` — the wipe
+//! deletes the device key that signs the tombstone, so a submit failure must leave it
+//! intact for a retry (the `submit_then_wipe` ordering is unit-tested). A did:web
+//! skips the tombstone leg entirely and goes straight to the wipe, never contacting
+//! plc.directory (whose audit-log fetch 404s for any DID it does not host), reporting
+//! `tombstoneCid: None`; routing it through the tombstone leg would wedge the flow
+//! permanently — account gone, single-use code spent, the wipe gated behind a submit
+//! that can never succeed, the marker never clearing, every launch re-offering a
+//! doomed retry. The branch lives here rather than at the command boundary because
+//! `tombstone_identity` (the resume path the marker routes to) reaches the same core;
+//! guarding only the entry point would leave the wedge reachable. Retiring a did:web
+//! network-wide means removing its `did.json` from the domain — an operator action
+//! outside the wallet's control, which the UI states rather than simulating.
+//!
+//! Post-delete recovery marker: the instant `deleteAccount` succeeds,
+//! `confirm_identity_removal` records the DID in the durable `pending-removals`
+//! Keychain index (a JSON array) BEFORE the tombstone's network round trip — the step
+//! iOS is most likely to interrupt by suspending the app. Both confirm and
+//! `tombstone_identity` clear the marker (best-effort) once `retire_and_wipe`
+//! completes — including on the did:web path, which is what keeps an interrupted
+//! did:web removal from becoming permanent retry state. On launch the UI calls
+//! `list_pending_removals()` and, for any listed DID, resumes straight to the
+//! idempotent retry rather than the request flow, which would fail against the
+//! already-deleted account. A corrupt/unreadable marker reads as empty and an empty
+//! set deletes the entry — a best-effort safety net, never a launch blocker.
+//!
+//! Types: `RemovalOutcome { tombstoneCid, wasLastIdentity }` (`tombstoneCid: null`
+//! when the removed DID has no tombstone leg — a did:web), `RemovalRoute`.
+//! `RemovalError` (SESSION_REQUIRED, REQUEST_DELETE_FAILED, INVALID_TOKEN,
+//! INVALID_CONFIRMATION_CODE, PASSWORD_REQUIRED, PROOF_SIGNING_FAILED,
+//! ACCOUNT_DELETE_FAILED, INVALID_AUDIT_LOG, TOMBSTONE_SIGNING_FAILED,
+//! PLC_DIRECTORY_ERROR, IDENTITY_NOT_FOUND, LOCAL_WIPE_FAILED, RATE_LIMITED,
+//! NETWORK_ERROR) serializes as `{ code: "SCREAMING_SNAKE_CASE" }`.
 
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
 use serde::Serialize;

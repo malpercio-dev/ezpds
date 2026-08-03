@@ -1,3 +1,45 @@
+<!--
+  The root page: the app's whole step machine, a flat union whose nesting is spelled out
+  in step names (per-step notes live on the OnboardingStep type below).
+
+  Flows, from `add_identity` (the one situation question; `cameFromHome` gives it a Back):
+  - Create: add_identity → identity_method → [did:plc: pds_config | new did:web:
+    did_web_path → did_web_domain → pds_config] → claim_code → email → handle →
+    [password] → loading → did_ceremony (did:web branch: did_web_ceremony) → did_success
+    → { did:plc: shamir_backup → handle_registration; did:web: handle_registration }
+    → complete → home. Every pre-submit step wires
+    `onback` to the previous step. `pds_config` is a capability gate covering both create
+    paths: no advertised `createCeremony` steers to `create_unavailable` (import one tap
+    away, server kept), while an unreached host gets a retryable error instead — the rule
+    lives in PdsConfigScreen. `complete` goes straight to `home`: there is no post-create
+    OAuth round trip, and `finishCreateFlow()` registers the identity into IdentityStore
+    (best-effort — see the comment there).
+  - Import (claim): add_identity → identity_input → pds_auth → email_verification →
+    review_operation → claim_success → home. An EXISTING did:web instead forks at
+    identity_method → did_web_path → did_web_existing (`importDidWebIdentity`) and enters
+    the outbound-migration flow at migration_start — a did:web has no claim ceremony;
+    control is proven by the domain publish and the source-PDS password.
+  - Recover: add_identity → recover_start → recover_shares → [recover_escrow] →
+    recover_verify → recover_epilogue → recover_backup (ShamirBackupScreen reuse,
+    `confirmRecoveryBackup` teardown) → recover_success → home.
+  - Home: home → { protection | identity_detail → { move_or_rebuild → { migration_start |
+    recovery_rebuild_start } | manage_identity → { change_handle | media_backup |
+    did_document | advanced_tools → { self_held_kit_review | rotate_repo_key |
+    endpoint_repair | remove_identity } } | app_passwords | my_agents |
+    oauth_consent_approval | alert_detail → recovery_override } }, plus home → settings;
+    `protection` itself reaches identity_detail and alert_detail. Each re-homed screen's
+    `onback` returns to the door it hangs off; the two multi-entry surfaces record their
+    origin in `alertReturnStep` / `identityReturnStep` (see their declarations).
+
+  Launch (`onMount`) resolves, in order: a stranded removal, then a pending recovery
+  epilogue, then the ordinary landing (identities → home, else add_identity) — where a
+  cold-start notification tap outranks the alarm takeover. The takeover (`checkAndLand`,
+  run at launch and on every `visibilitychange` foreground while on home/protection)
+  lands on `alert_detail` for one alarmed identity or `protection` for several; the
+  dismissal, re-alarm, and precedence rules live on `shownAlarms` / `landOnAlarm` /
+  `goTo` below. The same app-open sweep fires opportunistic blob + repo backup passes
+  and per-identity notification re-registration (`syncNotifications`).
+-->
 <script lang="ts">
   import { listen } from '@tauri-apps/api/event';
   import { onMount, onDestroy } from 'svelte';

@@ -1,47 +1,68 @@
 // pattern: Mixed (Functional Core guard/diff; Imperative Shell build/submit/confirm commands)
-//
-// Functional Core: the strict additive guard and the review-diff computation (pure).
-// Imperative Shell: build / submit / confirm (share generation + plc.directory + Keychain +
-//                   signing) and their Tauri command wrappers.
-//
-// THE SELF-HELD SHAMIR KIT — the escrow-less recovery-key install.
-//
-// An identity brought in through the claim ceremony holds its wallet device key at
-// `rotationKeys[0]` but lives on a PDS that is not Custos. It gets the sovereign half of the
-// recovery story for free (PLC monitoring, the 72h override, user-held backups) but not the
-// recovery *seed*: the client-generated 2-of-3 split is fused, in `rekey.rs`, to an escrow
-// deposit that a non-Custos host has no route for.
-//
-// This flow is that ceremony minus the escrow:
-//   1. Generate a NEW recovery seed client-side, derive its recovery key, split 2-of-3 (v2
-//      envelopes), staged in a per-DID Keychain slot BEFORE any network call.
-//   2. Device-key-sign a PLC rotation op INSERTING the recovery key directly after the device
-//      key — the device key stays at `[0]`, every other current key shifts down by one.
-//      Nothing is removed. Submitted straight to plc.directory.
-//   3. Share 1 → the per-DID iCloud-synchronizable Keychain slot (the existing convention).
-//      Shares 2 AND 3 → the user. The user holds two of the three, which is the whole
-//      threshold: the sovereign recovery path (`share_recovery.rs`) already reconstructs from
-//      any two shares with zero PDS involvement.
-//
-// WHAT THIS TALKS TO. Every step that touches the identity is plc.directory: the audit-log
-// read, the op submit, the post-op cache refresh. There is no session, no escrow `PUT`, and no
-// `/v1/*` call. The one request that does reach the hosting PDS is the public, unauthenticated
-// `describeServer` capability probe (often served from the process cache, so frequently no
-// request at all) used to prove the host is not offering escrow — where the richer `rekey.rs`
-// flow belongs. It carries no recovery material and no credential, but it is a request, and
-// user-facing copy must not claim the PDS is never contacted.
-//
-// WHY A NEW GUARD, NOT A FLAG ON `guard_rekey_op`. That guard requires the current layout be
-// exactly `[device, PDS]` — the pre-inversion Custos migration shape — and treats anything
-// longer as `AlreadyRekeyed`. A claimed identity carries whatever rotation keys its host wrote
-// before the claim, so that rule would reject every legitimate case. This is the seventh strict
-// wallet allowlist: device key pinned at `[0]`, the derived recovery key inserted at `[1]`,
-// every other rotation key shifted but preserved, and verificationMethods / services /
-// alsoKnownAs byte-identical.
-//
-// ADDITIVE-ONLY SAFETY, same as the re-key: shares are staged before the op, the device key
-// never leaves `rotationKeys[0]`, and every step is idempotent — so an interrupted kit converges
-// on re-run and no intermediate state is less recoverable than the pre-kit baseline.
+
+//! THE SELF-HELD SHAMIR KIT — the escrow-less recovery-key install ("Add a recovery
+//! key" on the identity screen). An identity brought in through the claim ceremony
+//! holds its wallet device key at `rotationKeys[0]` but lives on a PDS that is not
+//! Custos: it gets the sovereign half of the recovery story for free (PLC monitoring,
+//! the 72h override, user-held backups) but not the recovery *seed* — the
+//! client-generated 2-of-3 split is fused, in `rekey.rs`, to an escrow deposit a
+//! non-Custos host has no route for. This flow is that ceremony minus the escrow.
+//! Five Tauri IPC commands:
+//!
+//! - `build_self_held_kit(did)` — generate a NEW recovery seed client-side, derive its
+//!   recovery key, split 2-of-3 (v2 envelopes), staged in the per-DID
+//!   `self-held-kit-staging:{did}` Keychain slot BEFORE any network call; prove
+//!   eligibility and return the additive review diff + the host's URL.
+//! - `submit_self_held_kit(did)` — device-key-sign a PLC rotation op INSERTING the
+//!   derived recovery key directly after the device key (the device key stays at
+//!   `[0]`, the whole current tail shifts down one index; nothing is removed), POST it
+//!   straight to plc.directory, write Share 1 to the per-DID iCloud-synchronizable
+//!   slot with read-back verify, refresh the cached PLC log + doc, and record the
+//!   durable `{did}:self-held-kit` marker. Biometric-gated in the frontend.
+//! - `confirm_self_held_kit(did)` — teardown gate mirroring `confirm_rekey`: Share 1
+//!   must be verifiably durable before the staging slot — the last local home of
+//!   Shares 2 and 3 — is destroyed.
+//! - `self_held_kit_in_progress_cmd(did)`; `self_held_kit_escrow_offer_cmd(did)` — the
+//!   escrow-upsell SEAM: true only when the marker is present AND the identity's
+//!   *current* host advertises `escrow`, so it is never true right after a kit
+//!   completes.
+//!
+//! Share custody: Share 1 → the Keychain; Shares 2 AND 3 → the user. With no escrow
+//! there is no third party, and the user's two shares are the whole threshold — the
+//! sovereign recovery path (`share_recovery.rs`) reconstructs from any two with zero
+//! PDS involvement. The staging slot is deliberately SEPARATE from the re-key's
+//! `rekey-staging:{did}`: the two ceremonies disagree about who keeps Share 2 (the
+//! re-key escrows it, the kit hands it to the user), so a set staged by one must
+//! never be picked up and completed by the other; both share `ceremony-staging`'s
+//! fail-closed contract and its load-bearing teardown order.
+//!
+//! WHAT THIS TALKS TO. plc.directory is the only peer for anything touching the
+//! identity: the audit-log read, the op submit, the post-op cache refresh. There is
+//! no session, no escrow `PUT`, and no `/v1/*` call — hence no `SESSION_LOCKED` and
+//! no `ESCROW_FAILED` in the error surface. The one request that does reach the
+//! hosting PDS is the public, unauthenticated `describeServer` capability probe
+//! (often served from the `pds_capabilities` cache, so frequently no request at all)
+//! proving the host offers no escrow — where the richer `rekey.rs` flow belongs. It
+//! carries no share material and no credential, but it IS a request: user-facing copy
+//! must say "no share is sent to your server", never "your server is never contacted".
+//!
+//! `guard_self_held_kit_op` is the SEVENTH strict wallet allowlist, not a flag on
+//! `guard_rekey_op`: that guard requires the current layout be exactly `[device, PDS]`
+//! — the pre-inversion Custos migration shape — and treats anything longer as
+//! `AlreadyRekeyed`, which would reject every claimed identity (they carry whatever
+//! rotation keys their host wrote before the claim). The kit's rules: device key
+//! pinned at `[0]`, the fresh recovery key inserted at `[1]`, every other rotation
+//! key shifted but preserved verbatim, and verificationMethods / services /
+//! alsoKnownAs byte-identical. Additive-only safety, same as the re-key: shares are
+//! staged before the op, the device key never leaves `rotationKeys[0]`, and every
+//! step is idempotent — an interrupted kit converges on re-run and no intermediate
+//! state is less recoverable than the pre-kit baseline.
+//!
+//! `SelfHeldKitError` (NOT_DID_PLC, WALLET_NOT_AUTHORIZED, HOST_OFFERS_ESCROW,
+//! RATE_LIMITED, GUARD_REJECTED, INVALID_AUDIT_LOG, SHARE_GENERATION_FAILED,
+//! SIGNING_FAILED, PLC_SUBMISSION_FAILED, PLC_DIRECTORY_ERROR, SHARE_STORAGE_FAILED,
+//! SHARE_NOT_STORED, NETWORK_ERROR, IDENTITY_NOT_FOUND) serializes as
+//! `{ code: "SCREAMING_SNAKE_CASE" }` with camelCase fields.
 
 use std::collections::BTreeMap;
 

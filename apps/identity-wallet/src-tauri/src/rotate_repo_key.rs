@@ -1,37 +1,49 @@
 // pattern: Mixed (Functional Core guard/diff; Imperative Shell build/submit commands)
-//
-// Functional Core: the strict rotation guard and the review-diff computation (pure).
-// Imperative Shell: build_repo_key_rotation / submit_repo_key_rotation (network +
-//                   Keychain + signing) and their Tauri command wrappers.
-//
-// This is the sovereign "rotate repo signing key" flow for a wallet-custodied did:plc
-// identity. The PDS-held repo signing key (`verificationMethods.atproto`, also the PDS
-// slot in `rotationKeys` — the key that signs every repo commit) can be compromised
-// (attacker read the PDS database and master key) or lost (master key gone). Either way
-// the fix is a FRESH key, and only the wallet can authorize it: the PDS's own key is the
-// exact key being replaced, while the wallet device key at `rotationKeys[0]` outranks it.
-//
-// The two existing wallet guards both forbid this op — migration must move `services`
-// and recovery must change nothing — so this module is a FOURTH allowlist, scoped to
-// exactly one mutation: `verificationMethods.atproto` and the PDS `rotationKeys` slot
-// move to a key the hosting PDS just staged; everything else must be preserved.
-//
-// The flow is fully passwordless end to end (sovereign login + the per-DID session
-// provider supply the full-access session; the biometric gate lives in the frontend,
-// in front of the Secure-Enclave signing):
-//   1. Resolve a full-access session for the DID via SessionProvider.
-//   2. `POST /v1/repo-keys/rotation` on the hosting PDS — it stages a fresh key and
-//      returns the `did:key` id the op must install.
-//   3. Build + device-key-sign the rotation op (strict guard) — but do NOT POST it to
-//      plc.directory: the signed op goes back to the PDS.
-//   4. `POST /v1/repo-keys/rotation/complete` — the PDS submits the op to plc.directory
-//      and cuts its commit signer over under the account's repo write lock, so no
-//      commit is ever signed by a key absent from the DID document. (This is why the
-//      wallet must not submit this op itself, unlike the recovery/migration legs.)
-//   5. Refresh the cached PLC log + DID document so the home card updates.
-//
-// The PDS `complete` endpoint is retry-safe (an op that already landed skips the
-// re-submit and just cuts over), so a lost response is healed by re-running submit.
+
+//! The sovereign "rotate repo signing key" flow for a wallet-custodied did:plc
+//! (ADR-0025). The PDS-held repo signing key (`verificationMethods.atproto`, also the
+//! PDS slot in `rotationKeys` — the key that signs every repo commit) can be
+//! compromised (attacker read the PDS database and master key) or lost (master key
+//! gone). Either way the fix is a FRESH key, and only the wallet can authorize it:
+//! the PDS's own key is the exact key being replaced, while the wallet device key at
+//! `rotationKeys[0]` outranks it. Two Tauri commands, fully passwordless end to end
+//! (sovereign login + the per-DID session provider supply the full-access session;
+//! the biometric gate lives in the frontend, `$lib/ipc/rotation.ts`'s
+//! `submitRepoKeyRotation`, in front of the irreversible submission):
+//!
+//! - `build_repo_key_rotation_cmd(did) -> SignedRotationOp` — resolve a full-access
+//!   session via `SessionProvider::full_access_client`, `POST /v1/repo-keys/rotation`
+//!   on the hosting PDS (it stages a fresh key and returns the `did:key` id the op
+//!   must install), fetch the audit log via `handle_change::latest_full_state`,
+//!   compose the op — device key stays `rotationKeys[0]`, the staged key takes the
+//!   PDS slot + the `atproto` method, services/alsoKnownAs preserved — run the strict
+//!   guard, device-key-sign via `crypto::build_did_plc_rotation_op`, and park the op
+//!   in `AppState.rotation_state`.
+//! - `submit_repo_key_rotation_cmd(did) -> ClaimResult` —
+//!   `POST /v1/repo-keys/rotation/complete` with the parked op. The wallet never
+//!   POSTs this op to plc.directory itself, unlike the recovery/migration legs: the
+//!   PDS submits it and cuts its commit signer over atomically under the account's
+//!   repo write lock, so no commit is ever signed by a key absent from the DID
+//!   document. Then refresh the cached PLC log + DID doc. The PDS side is retry-safe
+//!   (an op that already landed skips the re-submit and just cuts over), so the op
+//!   stays parked until success and a lost response is healed by re-running submit.
+//!
+//! `guard_rotation_op` is the FOURTH strict wallet allowlist — migration must move
+//! `services` and recovery must change nothing, so both forbid this op — scoped to
+//! exactly one mutation: the `atproto` verification method and the PDS `rotationKeys`
+//! slot move to exactly the PDS-staged key; rotationKeys must be exactly
+//! `[device, staged]`; other verificationMethods entries, services, and alsoKnownAs
+//! must NOT change; the device key must be in the current rotationKeys (else
+//! `WalletNotAuthorized`); and a staged key already present in the doc is rejected as
+//! non-fresh. Pure helpers: `guard_rotation_op`, `build_rotation_diff`.
+//!
+//! `RotationError` (WALLET_NOT_AUTHORIZED, SESSION_LOCKED, RATE_LIMITED,
+//! GUARD_REJECTED, INVALID_AUDIT_LOG, SIGNING_FAILED, ROTATION_FAILED,
+//! PLC_DIRECTORY_ERROR, SERVER_ERROR, NETWORK_ERROR, IDENTITY_NOT_FOUND,
+//! NO_PENDING_ROTATION) serializes as SCREAMING_SNAKE_CASE; `SESSION_LOCKED` carries
+//! `reason: UnlockReason` and `ROTATION_FAILED` carries the server `status`.
+//! Directory reads classify via `map_plc_fetch_error` and session-lifecycle failures
+//! via `map_session_error` — the same split as `HandleChangeError`.
 
 use std::collections::BTreeMap;
 

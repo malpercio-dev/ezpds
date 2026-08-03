@@ -18,6 +18,16 @@
   import Spinner from '$lib/components/ui/Spinner.svelte';
   import ScreenHeader from '$lib/components/ui/ScreenHeader.svelte';
 
+  // The wallet-confirmed OAuth consent approval screen (the `oauth_consent_approval` step,
+  // reached from the identity screen's Use zone or a tapped `login-approval` push; cloned
+  // from AgentClaimApprovalScreen). Three entry paths — scanned QR (`scanQrCode` →
+  // `parseConsentQr`), typed code (the guaranteed no-camera / accessibility fallback), and
+  // the push's `initialRequestId` — converge on one review fetched from the server's record
+  // by `request_id`, so no entry path ever drives a decision on its own. The review shows
+  // client/origin/IP with per-scope checkboxes (scope reduction happens in the wallet) and
+  // states "Sign in to {client} at {origin} as @{handle}"; then number matching when
+  // `matchRequired`, then the biometric gate, then the device-key-signed approve/deny
+  // (see `approve`/`deny` below for the ordering).
   let {
     did,
     handle,

@@ -1,4 +1,5 @@
 // pattern: Imperative Shell
+
 //! In-app, in-memory diagnostics: a small ring buffer of *redacted* network-error
 //! breadcrumbs the user can export from Settings and hand to support for troubleshooting.
 //!
@@ -9,6 +10,14 @@
 //! exported report can be shared without leaking account material. Nothing is written to
 //! disk; the buffer lives for the process lifetime only, and the user initiates every
 //! export, so there is no passive/always-on collection to opt out of.
+//!
+//! Recording seams call the free functions [`record_server`] (server verdicts) and
+//! [`record_reqwest_transport`] (the shared transport redaction gate). **Current capture
+//! scope:** server-verdict errors across all `pds_client` XRPC calls; every `pds_client`
+//! transport failure (`.send()` and body-read); all create-flow `CustosClient` requests
+//! (including PAR, token exchange, and health reachability); authenticated `OAuthClient`
+//! requests, uploads, lazy refresh, DPoP nonce-refresh retries, and Bearer refresh; and
+//! the PLC monitor's transport case.
 
 use std::collections::VecDeque;
 use std::sync::{Mutex, OnceLock};
