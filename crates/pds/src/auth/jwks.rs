@@ -1,18 +1,21 @@
 // pattern: Imperative Shell
-//
-// Dynamic issuer-key resolution for the auth.md `identity_assertion` flow (ID-JAG verification).
-//
-// A trusted issuer delivers its signing keys either as an inline PEM (static trust, resolved in
-// `routes/agent_identity.rs`) or as a JWKS URL the relay fetches and caches. This module owns the
-// dynamic half: a `JwksFetcher` abstraction (production HTTP impl + injectable test mocks, mirroring
-// the `dns::TxtResolver` pattern) and a TTL cache (`JwksCache`) keyed by URL that selects an
-// ID-JAG's `kid` header out of the issuer's key set and hands back a `DecodingKey`.
-//
-// The cache is reachable from public, unauthenticated endpoints (`POST /agent/identity`,
-// `POST /agent/event/notify`), where the `kid` comes from an *unverified* JWT header. A per-URL
-// refetch cooldown bounds how often those requests can force an outbound JWKS fetch — without it,
-// a stream of bogus-`kid` tokens naming a trusted issuer would translate one inbound request into
-// one outbound fetch (amplification toward the issuer, wasted work here).
+
+//! Dynamic issuer-key resolution for the auth.md `identity_assertion` flow (ID-JAG verification) —
+//! the dynamic-trust half of `issuer_trust.rs`'s key resolution, and its sole consumer.
+//!
+//! A trusted issuer delivers its signing keys either as an inline PEM (static trust, which never
+//! touches this module) or as a JWKS URL — `[agent_auth] trusted_issuers[].jwks_url` — fetched and
+//! cached here. This module owns a `JwksFetcher` abstraction (production `HttpJwksFetcher` +
+//! injectable test mocks, mirroring the `dns::TxtResolver` pattern) and a TTL cache (`JwksCache`)
+//! keyed by URL that selects an ID-JAG's `kid` header out of the issuer's key set and hands back
+//! a `DecodingKey`.
+//!
+//! The cache is reachable from public, unauthenticated endpoints (`POST /agent/identity`,
+//! `POST /agent/event/notify`), where the `kid` comes from an *unverified* JWT header. A per-URL
+//! refetch cooldown (`[agent_auth] jwks_refetch_cooldown_secs`, stamped per fetch *attempt*)
+//! bounds how often those requests — or a failing issuer — can force an outbound JWKS fetch.
+//! Without it, a stream of bogus-`kid` tokens naming a trusted issuer would translate one inbound
+//! request into one outbound fetch (amplification toward the issuer, wasted work here).
 
 use std::collections::HashMap;
 use std::future::Future;

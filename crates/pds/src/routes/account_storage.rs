@@ -5,7 +5,17 @@
 // Processes: admin auth → account lookup (404 if absent) → aggregate blob storage metrics
 // Returns: JSON blob storage metrics on success; ApiError on all failure paths
 
-//! GET /v1/accounts/:id/storage - Operator blob-storage metrics for an account.
+//! `GET /v1/accounts/:id/storage` — operator blob-storage metrics for an account.
+//!
+//! Reports blob count and total bytes, the configured quota
+//! (`[blobs] max_storage_per_account`) with used %, the largest blob, and the
+//! `uploadedBlobCount`/`uploadedBlobBytes` pair from the physical rows' uploader
+//! column — the second witness that makes lost ownership rows legible over HTTP
+//! instead of needing a production SQLite shell. The pair attests non-reclamation, not
+//! byte presence (`blob_scrub` owns that), and blob sharing makes a per-account gap
+//! benign in both directions, so it is a prompt to look, not a verdict; the full
+//! reading guide is on `StorageResponse`. Reports on deactivated accounts too.
+//! Admin-authed via `require_admin`.
 
 use axum::body::Bytes;
 use axum::extract::{Path, State};

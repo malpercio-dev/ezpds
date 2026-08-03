@@ -7,7 +7,8 @@
 //! `GET /v1/admin/waitlist` — the operator's readout of the public interest-signup
 //! waitlist (the `waitlist` capability's read side).
 //!
-//! Deliberately available even when `[waitlist] enabled` has since been switched off:
+//! A newest-first rowid-cursor page (`limit` default 50, max 100) plus the unpaged
+//! `total`. Deliberately available even when `[waitlist] enabled` has since been switched off:
 //! the rows are data the operator already collected, and reading them back must not
 //! depend on the public write endpoint staying open. Admin-authed via `require_admin`;
 //! the signature covers the bare path, so paging params vary without re-signing.

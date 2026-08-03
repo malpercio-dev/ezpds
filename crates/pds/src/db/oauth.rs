@@ -1,7 +1,9 @@
 // pattern: Imperative Shell
-//
-// Storage adapter for OAuth server-side state: client registry, authorization
-// codes, and helpers for the authorization endpoint.
+
+//! Storage adapter for OAuth server-side state: the client registry
+//! (register/upsert/get), authorization codes, the persistent ES256 signing key,
+//! DPoP-bound refresh tokens, and PAR requests — plus the expiry-cleanup sweeps for
+//! codes, tokens, and PAR rows.
 
 use serde::{Deserialize, Serialize};
 use sqlx::SqlitePool;

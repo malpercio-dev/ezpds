@@ -1,8 +1,9 @@
 // pattern: Imperative Shell
-//
-// Operator-level PDS signing keys — the `relay_signing_keys` table (V003), not tied to any
-// account DID. Backs the `/v1/pds/keys` endpoints (deprecated `/v1/relay/keys` aliases): read the
-// current key and persist a freshly minted one. Returns plain data; no business logic.
+
+//! Operator-level PDS signing keys — the `relay_signing_keys` table (V003), not keyed by any
+//! account DID. `latest_signing_key` (+ `RelaySigningKey`) reads the current key and
+//! `insert_signing_key` persists a freshly minted one, backing `GET`/`POST /v1/pds/keys`
+//! (deprecated `/v1/relay/keys` aliases). Plain data out; no business logic.
 
 use common::{ApiError, ErrorCode};
 

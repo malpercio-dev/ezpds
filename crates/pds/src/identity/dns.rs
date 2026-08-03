@@ -1,16 +1,15 @@
 // pattern: Imperative Shell
-//
-// DNS abstractions for handle management.
-//
-// DnsProvider — manages DNS records for handles:
-//   - create_record: called when handles are registered (POST /v1/handles).
-//   - delete_record: called when handles are removed (DELETE /v1/handles/:handle).
-//   For v0.1, AppState carries `dns_provider: None`; operators manage DNS manually.
-//   Real provider implementations (Cloudflare, Route53) are wired in when configured.
-//
-// TxtResolver — resolves DNS TXT records for handle lookup fallback
-//   (GET /xrpc/com.atproto.identity.resolveHandle).
-//   HickoryTxtResolver is the production implementation; tests inject mocks.
+
+//! DNS abstractions for handle management.
+//!
+//! `DnsProvider` manages DNS records for handles: `create_record` on registration
+//! (POST /v1/handles), `delete_record` on removal (DELETE /v1/handles/:handle). v0.1 ships no
+//! provider — `AppState` carries `dns_provider: None` and operators manage DNS manually; real
+//! implementations (Cloudflare, Route53) are wired in when configured.
+//!
+//! `TxtResolver` resolves DNS TXT records for the resolveHandle fallback
+//! (GET /xrpc/com.atproto.identity.resolveHandle). `HickoryTxtResolver` is the production
+//! implementation; tests inject mocks.
 
 use std::future::Future;
 use std::pin::Pin;

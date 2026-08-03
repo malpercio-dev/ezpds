@@ -1,9 +1,20 @@
 // pattern: Imperative Shell
-//
-// Shared ATProto identity-resolution helpers. Routes gather query/body parameters and delegate the
-// actual handle/DID lookup here so resolveHandle, resolveIdentity, refreshIdentity, and resolveDid
-// all use the same local → network fallback rules. The `atproto-proxy` header target guard (SSRF
-// validation + DNS-pinning client) lives in the sibling `proxy` module.
+
+//! Shared ATProto identity-resolution helpers.
+//!
+//! Routes gather query/body parameters and delegate the actual lookup here, so `resolveHandle`,
+//! `resolveIdentity`, `refreshIdentity`, and `resolveDid` all apply the same fallback chain:
+//! local `handles` table → DNS TXT (`_atproto.<handle>`) → HTTP `.well-known/atproto-did`.
+//!
+//! DID-document reads are cache-first: `resolve_did_document` consults the `did_documents` table
+//! before fetching from plc.directory / did:web. The cache has no TTL, so
+//! `resolve_did_document_force_refresh` is the only path that un-stales a row — it bypasses the
+//! cache, fetches the authoritative document, and rewrites the existing cache row in place
+//! (`db::dids::rewrite_did_document`, UPDATE-only). It backs `refreshIdentity` and the
+//! migration-`createAccount` verify retry.
+//!
+//! The `atproto-proxy` header target guard (SSRF validation + the DNS-pinning hardened client)
+//! lives in the sibling `proxy` module.
 
 use std::net::IpAddr;
 

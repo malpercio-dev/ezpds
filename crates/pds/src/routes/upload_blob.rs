@@ -1,11 +1,20 @@
 // pattern: Imperative Shell
-//
-// Gathers: raw request body, AppState, and the authenticated uploader — either a session/OAuth
-//          access token or an atproto service-auth JWT scoped to uploadBlob (the video-service path)
-// Processes: size check → store_blob on filesystem → insert_blob metadata into SQLite
-// Returns: JSON { blob: { $type, ref, mimeType, size } }
-//
-// Implements: POST /xrpc/com.atproto.repo.uploadBlob
+
+//! `POST /xrpc/com.atproto.repo.uploadBlob` — size check → `blob_store::store_blob` on the
+//! filesystem → blob metadata insert; returns `{ blob: { $type, ref, mimeType, size } }`.
+//!
+//! Two auth paths:
+//!
+//! * a normal session/OAuth access token (`AuthenticatedUser`), with its scope and
+//!   granular-blob-scope checks and agent audit; or
+//! * an atproto **service-auth** JWT scoped to exactly this method
+//!   (`auth::service_auth::require_service_auth`) — the official video flow's path: the app
+//!   mints a token with `aud` = its PDS DID and `lxm` = `com.atproto.repo.uploadBlob`, and
+//!   `video.bsky.app` presents it when pushing the transcoded blob back.
+//!
+//! A service upload lands under the token's `iss` DID exactly as a session upload would
+//! (`blob_owners` row, temp grace), is never agent-attributed, and skips the scope gates — the
+//! token is already narrowed to this one method.
 
 use axum::{
     body::Body,

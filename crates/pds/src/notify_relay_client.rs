@@ -1,17 +1,25 @@
 // pattern: Imperative Shell
-//
-// The pds's first *outbound* iroh leg. Everything else in `iroh_tunnel.rs` accepts; this
-// dials. It reuses that same bound `Endpoint` — an iroh endpoint both accepts and dials, so
-// the instance presents one stable node identity to the relay, which is exactly the identity
-// the relay authorizes against (`connection.remote_id()`; no credential ever travels in a
-// message).
-//
-// Framing mirrors the relay's accept side: one JSON request per bidirectional stream,
-// delimited by our FIN, one JSON response back, under a per-stream deadline.
-//
-// Connections are lazy and cached. A relay that is down must never become a pds outage, so
-// every failure here is logged and swallowed by the caller (`crate::notifications`), never
-// propagated into a request path.
+
+//! The pds's first *outbound* iroh leg. Everything else in `iroh_tunnel.rs` accepts; this
+//! dials the configured notification relay on the `ezpds/notify/0` ALPN. It reuses that same
+//! bound `Endpoint` — an iroh endpoint both accepts and dials, so the instance presents one
+//! stable node identity to the relay, which is the identity the relay authorizes against
+//! (`connection.remote_id()`; no credential ever travels in a message).
+//!
+//! Framing mirrors the relay's accept side: one JSON request per bidirectional stream,
+//! delimited by our FIN, one JSON response back, under a per-stream deadline.
+//!
+//! Connections are lazy and cached, with a one-shot re-dial retry: the expected failure is a
+//! *stale* connection after a relay restart. Enrollment is likewise not a startup step — the
+//! client enrolls when the relay answers `notEnrolled`, so a relay restarted, re-provisioned,
+//! or reached for the first time mid-run heals by itself. A relay that is down must never
+//! become a pds outage, so every failure here is logged and swallowed by the caller
+//! (`crate::notifications`), never propagated into a request path.
+//!
+//! The second half of the file is the fire-and-forget send worker: trigger sites enqueue
+//! `NotifyJob`s onto an unbounded in-process mpsc (`NotifySender`) and return immediately.
+//! The worker drains jobs sequentially, writes relay handles back to the registration rows,
+//! and prunes a registration the relay reports `unregistered` (APNs 410).
 
 use std::sync::Arc;
 use std::time::Duration;

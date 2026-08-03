@@ -11,12 +11,16 @@
 //! The operator companion to [`admin_relay_status`](super::admin_relay_status): when the readout
 //! shows the relay behind (or not-yet-crawling), this is the "Request crawl" button. Unlike the
 //! automatic, rate-limited, fire-and-forget notification the PDS sends after each firehose emission
-//! ([`crate::crawler::CrawlerNotifier::notify`]), this is an explicit, un-throttled action whose
-//! per-relay outcome is reported back so the operator sees whether each relay accepted.
+//! ([`crate::crawler::CrawlerNotifier::notify`]), this calls
+//! `CrawlerNotifier::request_crawl_now` — an explicit action
+//! bypassing the 30s auto-notify rate-limit window — and reports each relay's accept/reject
+//! outcome back so the operator sees whether each relay accepted.
 //!
 //! **Audit.** The acting admin is recorded in the durable server-wide admin audit log
 //! (`admin_audit_events`, served at `GET /v1/admin/audit`) with the per-relay outcome tally,
 //! plus a structured log line.
+//!
+//! `400` when no relay is configured (nothing to crawl). Admin-authed via `require_admin`.
 
 use axum::body::Bytes;
 use axum::extract::State;

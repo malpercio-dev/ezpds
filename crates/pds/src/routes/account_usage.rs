@@ -4,7 +4,13 @@
 // Processes: admin auth → account lookup (404 if absent) → aggregate repo/blob usage
 // Returns: JSON usage metrics on success; ApiError on all failure paths
 
-//! GET /v1/accounts/:id/usage - Operator usage metrics for an account.
+//! `GET /v1/accounts/:id/usage` — operator usage metrics for an account.
+//!
+//! Reports record/commit/blob counts, total storage bytes (repo blocks + blobs), and a
+//! last-active timestamp for the DID in the path; a deactivated account still reports.
+//! Admin-authed via `require_admin` (master token **or** an active companion-app
+//! device's signed request). Field semantics — the commits-count lower bound, the
+//! last-active fallback — live on `UsageResponse`.
 
 use axum::body::Bytes;
 use axum::extract::{Path, State};

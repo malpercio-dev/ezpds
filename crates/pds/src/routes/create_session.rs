@@ -1,13 +1,14 @@
 // pattern: Imperative Shell
-//
-// Gathers: JSON body {identifier, password}, DB pool, jwt_secret, config, rate-limit state
-// Processes: rate limit gate → identifier resolution → main-password then app-password
-//            verification (selecting the session scope) → JWT issuance → session +
-//            refresh_token DB insert (tagged with the app password name, if any)
-// Returns: JSON {accessJwt, refreshJwt, handle, did, email?} on success; ApiError on failure.
-//          email is omitted for app-password sessions.
-//
-// Implements: POST /xrpc/com.atproto.server.createSession
+
+//! `POST /xrpc/com.atproto.server.createSession` — password auth.
+//!
+//! Rate-limit gate → identifier resolution → password verification → session issuance. The main
+//! account password is tried first and grants a full `com.atproto.access` session. On mismatch —
+//! or for a mobile account that has no main password at all — the password is tried against the
+//! account's app passwords instead: a match issues a `com.atproto.appPass` (or
+//! `com.atproto.appPassPrivileged`) session with the email omitted from the response and the
+//! refresh token tagged with the app password's name, so revoking that app password can sever
+//! exactly its sessions.
 
 use axum::{extract::State, http::StatusCode, response::Json};
 use serde::{Deserialize, Serialize};

@@ -1,18 +1,33 @@
 // pattern: Imperative Shell
-//
-// Per-account agent management for the wallet's "My agents" surface:
-//   GET  /v1/agents                            — list agent identities bound to the caller's DID
-//   POST /v1/agents/{registration_id}/revoke   — turn an agent off (idempotent)
-//   GET  /v1/agents/{registration_id}/audit    — page that agent's audit trail, newest first
-//
-// These are account-holder routes, not operator/admin ones: the caller authenticates as the
-// account the agents are bound to, with either a wallet session token (`sessions` table) or a
-// full-access OAuth/XRPC access token — the same dual-credential posture as `transfer/complete`.
-// Agent-derived and app-password credentials are refused: an agent must never list, audit, or
-// revoke agents (including itself), and a scoped app password is below this trust bar.
-//
-// An unknown registration id and one bound to a different account are both a uniform 404, so the
-// endpoint is not an existence oracle for other accounts' registration ids.
+
+//! Per-account agent management for the wallet's "My agents" surface:
+//!
+//! - `GET /v1/agents` — list the agent identities bound to the caller's DID: each one's
+//!   type/issuer/subject/scopes/status plus `lastUsedAt` (the newest activity audit event)
+//! - `POST /v1/agents/claim-preview` — "what would confirming this `user_code` grant?":
+//!   registration type + the operator's current canonicalized `granted_scopes`, so the wallet
+//!   shows the grant *before* the biometric approval gate. Authorization mirrors claim confirm,
+//!   every failure shape is the same 404, and it shares the confirm endpoint's rate-limit
+//!   budget (same code-guessing surface)
+//! - `POST /v1/agents/{registration_id}/revoke` — turn an agent off: flips
+//!   `status = 'revoked'` and writes the `revoked` audit event atomically; idempotent (a repeat
+//!   is 200 with no duplicate event)
+//! - `GET /v1/agents/{registration_id}/audit` — page the V040 audit trail newest-first with a
+//!   rowid cursor
+//!
+//! These are account-holder routes, not operator/admin ones. Auth is the shared owner guard
+//! `auth::guards::authenticate_account_owner` (also the claim-confirm gate's guard), accepting
+//! either a wallet session token (`sessions` table) or a full-access OAuth/XRPC access token —
+//! the same dual-credential posture as `transfer/complete`. Agent-derived and app-password
+//! credentials are refused: an agent must never list, preview, audit, or revoke agents
+//! (including itself), and a scoped app password is below this trust bar.
+//!
+//! A registration is operable by the account it acts as **or** by the parent of a sovereign
+//! `child` registration — the parent provisions, revokes, and audits its children; a child's
+//! own tokens never pass the owner guard, so without the parent arm its audit trail would be
+//! readable by no one. An unknown registration id and one bound to a different account are both
+//! a uniform 404, so the endpoint is not an existence oracle for other accounts' registration
+//! ids.
 
 use axum::extract::{Path, Query, State};
 use axum::http::{HeaderMap, Method, Uri};

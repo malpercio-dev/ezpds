@@ -1,6 +1,6 @@
 // pattern: Imperative Shell
 
-//! Account-deletion email token queries.
+//! Account-deletion email token queries (`account_deletion_tokens`, V034).
 //!
 //! These back the standard `com.atproto.server.deleteAccount` flow: before the PDS
 //! will permanently delete an account, the requester must prove control of its email

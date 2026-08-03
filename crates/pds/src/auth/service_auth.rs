@@ -1,27 +1,32 @@
 // pattern: Imperative Shell
-//
-// Inbound atproto service-auth authentication, scoped to a single lexicon method.
-//
-// A service-auth JWT is minted by an account (signed with its `#atproto` repo key) and handed to
-// another service so that service can call one method on the account's PDS as the account. The
-// canonical case: the official app mints a token with `aud` = the user's PDS DID and
-// `lxm` = `com.atproto.repo.uploadBlob`, hands it to `video.bsky.app` with a video, and after
-// transcoding the video service pushes the transcoded blob to `uploadBlob` on the user's PDS
-// authenticated with that token.
-//
-// This module is the reusable guard the reference PDS's service-auth acceptance maps to. It owns
-// two things:
-//
-//   * `require_service_auth(lxm)` — the route-level guard: extract the token, confirm its `iss` is
-//     an account **hosted and active on this server**, then verify it against that account's
-//     `#atproto` key with the audience pinned to this server and the `lxm` pinned to the single
-//     method the route authorizes. The authorization is deliberately narrow — no session, no scope
-//     claims — so a service token can never ride the general `AuthenticatedUser` path.
-//
-//   * `verify_service_auth_resolving_key` — the shared "resolve the issuer's `#atproto` key
-//     cache-first, verify, force-refresh + retry once on a signature mismatch" machinery
-//     (originally the migration-`createAccount` verifier). Both this guard and the migration path
-//     call it, so the dual-curve verification + fossil-key refresh is derived once.
+
+//! Inbound atproto **service-auth** authentication, scoped to a single lexicon method.
+//!
+//! A service-auth JWT is minted by an account (signed with its `#atproto` repo key) and handed to
+//! another service so that service can call one method on the account's PDS as the account. The
+//! canonical case: the official app mints a token with `aud` = the user's PDS DID and
+//! `lxm` = `com.atproto.repo.uploadBlob`, hands it to `video.bsky.app` with a video, and after
+//! transcoding the video service pushes the transcoded blob to `uploadBlob` on the user's PDS
+//! authenticated with that token.
+//!
+//! This module is the reusable guard the reference PDS's service-auth acceptance maps to:
+//!
+//!   * `require_service_auth(lxm)` — the route-level guard: extract the token, confirm its `iss`
+//!     is an account **hosted and active on this server**, then verify it against that account's
+//!     `#atproto` key with `aud` pinned to this server and `lxm` pinned exactly to the single
+//!     method the route authorizes. Returns a bare `ServiceAuthUser { did }` — no session, no
+//!     scope claims — so a service token never rides the general `AuthenticatedUser` path.
+//!
+//!   * `is_service_auth_request` — the cheap, signature-free dispatch predicate (the token's
+//!     `iss` is a `did:`) a route uses to pick between this guard and the access-token path.
+//!
+//!   * `verify_service_auth_resolving_key` — the shared "resolve the issuer's `#atproto` key
+//!     cache-first, dual-curve verify, force-refresh + retry once on a signature mismatch" (heals
+//!     a fossil cached key) machinery, originally the migration-`createAccount` verifier. Both
+//!     this guard and migration-mode `createAccount` call it, so that logic is derived once.
+//!
+//! Consumers: `routes/upload_blob.rs` (the video-service push) and
+//! `routes/create_account_xrpc.rs` (inbound migration).
 
 use axum::http::HeaderMap;
 use serde_json::Value;

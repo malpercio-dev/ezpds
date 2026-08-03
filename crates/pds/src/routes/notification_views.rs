@@ -1,11 +1,14 @@
 // pattern: Imperative Shell
-//
-// Shared, handler-free support for the two notification surfaces — the account-holder's
-// (`notifications.rs`) and the operator's (`admin_notifications.rs`). Routes may not import
-// one another, so everything both need lives here: the registration field validators and the
-// `sender-keys` response shape.
-//
-// Same non-handler-support-file pattern as `admin_subject_defs.rs` and `oauth_templates.rs`.
+
+//! Shared, handler-free support for the two notification surfaces — the account-holder's
+//! (`notifications.rs`) and the operator's (`admin_notifications.rs`). Routes may not import
+//! one another, so everything both need lives here: the enabled-check (501 when no relay is
+//! configured), the registration field validators, and the `sender-keys` response shape.
+//!
+//! The registration public key is *decoded*, not merely length-checked: a key we cannot decode
+//! now is a device we cannot reach later, and that failure would otherwise surface only at
+//! send time. Same non-handler-support-file pattern as `admin_subject_defs.rs` and
+//! `oauth_templates.rs` (Functional Core aside from the sender-key read).
 
 use serde::Serialize;
 

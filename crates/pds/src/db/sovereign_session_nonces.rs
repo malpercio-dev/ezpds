@@ -1,6 +1,13 @@
 // pattern: Imperative Shell
 
-//! DID-scoped replay prevention for sovereign-session signed requests.
+//! DID-scoped replay prevention for sovereign-session signed requests — the
+//! `sovereign_session_nonces` table (V043).
+//!
+//! `insert_nonce_if_absent` records `(did, nonce)` atomically (only the first insert
+//! reports `true`); `sweep_stale_nonces` bounds the table, and its retention must stay
+//! strictly greater than the full replay-acceptance span
+//! ([`REPLAY_ACCEPTANCE_SPAN_SECS`] = `2 * SOVEREIGN_TIMESTAMP_WINDOW_SECS`) so sweeping
+//! can never reopen a replay while its signed timestamp is still acceptable.
 
 use common::SOVEREIGN_TIMESTAMP_WINDOW_SECS;
 use sqlx::{Sqlite, SqlitePool};

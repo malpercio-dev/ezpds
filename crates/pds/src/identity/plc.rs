@@ -1,14 +1,16 @@
 // pattern: Mixed (unavoidable)
-//
-// Shared machinery for the PDS-signed interop account-migration path (ADR-0002):
-// reading a DID's current PLC state from plc.directory (so the PDS can build the
-// next operation on top of it) and rendering an updated DID document from an
-// operation's fields. The audit-log fetch is the one Imperative Shell function
-// here (an outbound HTTP GET); everything else is pure construction.
-//
-// The wallet-authorized path does NOT use these — it builds and submits its
-// identity leg locally with the device key. These endpoints exist so off-the-shelf
-// tooling can migrate off ezpds and so ezpds can serve as a migration destination.
+
+//! Shared did:plc rotation/update-op machinery for the PDS-signed interop migration surface
+//! (ADR-0002), used by the `identity.*PlcOperation` routes: read a DID's current PLC state from
+//! plc.directory (an audit-log GET — the one Imperative Shell function here) so the PDS can
+//! build the next operation on top of it, render an updated DID document from an operation's
+//! fields, parse request `verificationMethods`/`services`, and `ensure_did_plc` (reject a
+//! non-`did:plc` account with an explicit 400 before any plc.directory work). Everything but the
+//! audit-log fetch is pure construction.
+//!
+//! The wallet-authorized path does NOT use these — it builds and submits its identity leg
+//! locally with the device key. These endpoints exist so off-the-shelf tooling can migrate off
+//! ezpds and so ezpds can serve as a migration destination.
 
 use std::collections::BTreeMap;
 

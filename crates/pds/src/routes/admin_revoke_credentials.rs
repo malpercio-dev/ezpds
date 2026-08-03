@@ -4,7 +4,17 @@
 // Processes: admin auth → account lookup (404 if absent) → atomic account-wide credential sweep
 // Returns: JSON per-family revocation counts on success; ApiError on all failure paths
 
-//! POST /v1/admin/accounts/:id/revoke-credentials - Operator credential revocation for an account.
+//! `POST /v1/admin/accounts/:id/revoke-credentials` — operator kill-switch for a
+//! compromised account.
+//!
+//! One transaction deletes the account's sessions (plus refresh tokens, FK order),
+//! OAuth refresh tokens and pending authorization codes, and app passwords, and
+//! tombstones its promoted transfer-device tokens (`revoked_at` stamped, V030
+//! doctrine — the row survives as the audit record). Reports literal per-family
+//! counts. The main password and admin devices are deliberately untouched. Works in
+//! every lifecycle state (takedown-then-sweep composes); idempotent (a repeat sweep is
+//! a 200 of zeros); unknown DID → 404, checked after auth so there is no DID-presence
+//! oracle. Admin-authed via `require_admin`.
 
 use axum::body::Bytes;
 use axum::extract::{Path, State};

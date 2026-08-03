@@ -1,19 +1,23 @@
 // pattern: Imperative Shell
-//
-// `LexiconInput<T>`: the axum extractor that runs a JSON XRPC procedure's request body through
-// the lexicon registry before handing the handler its serde-typed payload. It replaces the bare
-// `axum::Json<T>` extractor on natively-handled procedures, whose default rejections (422 with
-// a plain-text body for a missing field, 415 for a missing content-type) diverge from the
-// reference PDS's uniform 400 `InvalidRequest` envelope — the divergence three routes had
-// already hand-patched around (`put_preferences`, `oauth_token`, `create_signing_key`).
-//
-// The presence/encoding checks mirror `@atproto/xrpc-server`'s `validateInput`, byte-matching
-// its messages. Like `NoInputBody`, extract this *last* — it consumes the request body — and it
-// keys presence off the received bytes (plus the `Content-Length` header to distinguish an
-// explicitly empty body from an absent one), where the reference reads only the headers.
-//
-// Handlers that also need the raw body bytes (admin-signed requests verify a signature over
-// them) skip the extractor and call `validate_procedure_body` directly after their auth step.
+
+//! `LexiconInput<T>`: the axum extractor that runs a JSON XRPC procedure's request body through
+//! the lexicon registry — presence → `Content-Type` → JSON parse → lexicon-schema — before
+//! handing the handler its serde-typed payload. It replaces the bare `axum::Json<T>` extractor on
+//! every natively-handled JSON procedure, whose default rejections (422 with a plain-text body
+//! for a missing field, 415 for a missing content-type) diverge from the reference PDS's uniform
+//! 400 `InvalidRequest` envelope — the divergence three routes had already hand-patched around
+//! (`put_preferences`, `oauth_token`, `create_signing_key`).
+//!
+//! The presence/encoding checks mirror `@atproto/xrpc-server`'s `validateInput`, and every
+//! rejection byte-matches `@atproto/xrpc-server`/`@atproto/lexicon`'s messages
+//! (`Input must have the property "x"`, `Input/handle must be a valid handle`, …). Like
+//! `NoInputBody`, extract this *last* — it consumes the request body — and it keys presence off
+//! the received bytes (plus the `Content-Length` header to distinguish an explicitly empty body
+//! from an absent one), where the reference reads only the headers.
+//!
+//! Handlers that also need the raw body bytes (the admin-signed `updateSubjectStatus` verifies a
+//! signature over them) skip the extractor and call `validate_procedure_body` — the same
+//! pipeline as a plain call — directly after their auth step.
 
 use axum::body::Bytes;
 use axum::extract::FromRequest;

@@ -1,5 +1,14 @@
 // pattern: Functional Core
 
+//! Authorization-header token extraction.
+//!
+//! `extract_access_token` accepts the `Bearer` and `DPoP` schemes (RFC 9449 §7.1 — a DPoP-bound
+//! token arrives as `Authorization: DPoP <token>`), returning the scheme alongside the token; the
+//! shared `extractors::authenticate_access` cross-checks that scheme against the token's actual
+//! `cnf.jkt` binding, in both directions, for both the `AuthenticatedUser` extractor and the
+//! repo-write handlers. `extract_bearer_token` stays Bearer-only for session/refresh/device
+//! tokens, which are never DPoP-bound.
+
 use common::{ApiError, ErrorCode};
 
 /// The authorization scheme an access token arrived under.

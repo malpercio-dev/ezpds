@@ -5,7 +5,8 @@
 // Returns: 200 `{ status: "ok" }` for new and repeat signups alike
 
 //! `POST /waitlist` — the public interest-signup endpoint behind the `waitlist`
-//! capability.
+//! capability. 404 unless `[waitlist] enabled` — the same condition `capabilities.rs`
+//! advertises.
 //!
 //! Deliberately mounted on the **public** router group (permissive CORS) rather than
 //! `/v1/*`: the whole point is that an operator's marketing page — a different origin —
@@ -13,9 +14,12 @@
 //! the endpoint carries no credentials at all, and it keeps the "`/v1/*` gets no CORS"
 //! invariant intact.
 //!
-//! A repeat signup for the same (normalized) email returns the same 200 as a first
+//! The email is normalized (`uniqueness::normalize_email`) and plausibility-checked. A
+//! repeat signup for the same normalized email returns the same 200 as a first
 //! signup: the response never discloses whether an address was already on the list.
-//! The handle is optional interest signal — syntactically validated, never resolved —
+//! The handle is optional interest signal — syntactically validated
+//! (`identity::handle::validate_handle_structure`; a leading `@` is stripped), never
+//! resolved —
 //! so the operator can see how many signups already have an atproto identity without
 //! this endpoint growing an outbound-request (SSRF) surface. Abuse containment is the
 //! per-endpoint IP rate limiter (`[rate_limit] waitlist_per_5min`) on top of the

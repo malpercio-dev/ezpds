@@ -1,22 +1,26 @@
 // pattern: Mixed (unavoidable)
-//
-// Shared trusted-issuer verification for the auth.md agent surface. A trusted external identity
-// provider signs two kinds of token this server accepts:
-//
-//   - an **ID-JAG** presented at `POST /agent/identity` (the `identity_assertion` flow) — see
-//     `routes/agent_identity.rs`; and
-//   - a **Security Event Token** (SET, RFC 8417) pushed to `POST /agent/event/notify` to drive
-//     provider-initiated revocation — see `routes/agent_event.rs`.
-//
-// Both are JWTs verified against the *same* `[agent_auth] trusted_issuers` trust list: select the
-// issuer by the token's `iss`, resolve its key (inline `public_key_pem` for static trust, or a
-// cached `jwks_url` for dynamic trust), then verify the signature plus `iss`/`aud` (and `exp` when
-// present). Routes may not import one another (crate hard rule), so this shared machinery lives in
-// `auth/` where both handlers can reach it.
-//
-// Pure key/claim logic (Functional Core) sits alongside the async JWKS fetch (Imperative Shell),
-// hence the Mixed pattern. Errors are returned as a neutral enum so each caller maps them into its
-// own response vocabulary (auth.md `{error,…}` for the ID-JAG flow, RFC 8935 `{err,…}` for SETs).
+
+//! Shared trusted-issuer verification for the auth.md agent surface. A trusted external identity
+//! provider signs two kinds of token this server accepts:
+//!
+//!   - an **ID-JAG** presented at `POST /agent/identity` (the `identity_assertion` flow) — see
+//!     `routes/agent_identity.rs`; and
+//!   - a **Security Event Token** (SET, RFC 8417) pushed to `POST /agent/event/notify` to drive
+//!     provider-initiated revocation — see `routes/agent_event.rs`.
+//!
+//! Both are JWTs verified against the *same* `[agent_auth] trusted_issuers` trust list:
+//! `select_issuer` picks the entry matching the token's `iss`, key resolution takes the inline
+//! `public_key_pem` (static trust) or a cached `jwks_url` (dynamic trust, via `auth::jwks`), and
+//! `verify_trusted_jwt` checks the signature plus `iss`/`aud` (and `exp` when present). Routes may
+//! not import one another (crate hard rule), so this shared machinery lives in `auth/` where both
+//! handlers can reach it. Also owns `REVOKED_EVENT_TYPE`, required in a SET's `events` claim and
+//! advertised as the AS metadata's sole `events_supported` entry, so the enforced and advertised
+//! values can never drift apart.
+//!
+//! Pure key/claim logic (Functional Core) sits alongside the async JWKS fetch (Imperative Shell),
+//! hence the Mixed pattern. Errors are returned as a neutral `TrustedJwtError` so each caller maps
+//! them into its own response vocabulary (auth.md `{error,…}` for the ID-JAG flow, RFC 8935
+//! `{err,…}` for SETs).
 
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
 use common::{AgentAuthConfig, TrustedIssuer};

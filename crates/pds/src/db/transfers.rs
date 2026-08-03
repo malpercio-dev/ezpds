@@ -1,9 +1,27 @@
 // pattern: Imperative Shell
-//
-// Query functions for the V027 `transfers` table and V029 transfer-accepted
-// device credentials — planned device-swap sessions. One active transfer per
-// account is enforced by the partial unique index `idx_transfers_active_did`;
-// see V027__transfers.sql for the schema rationale.
+
+//! Planned device-swap sessions: the V027 `transfers` table, V029 `transfer_devices`
+//! credentials, and V030 `transfer_audit_events`. See V027__transfers.sql for the schema
+//! rationale.
+//!
+//! `insert_transfer` opens a `pending` transfer for a DID: it sweeps any expired active row
+//! first, then lets the partial unique indexes reject a still-active duplicate
+//! (`InitiateOutcome::DuplicateActive`, the 409 path) or an already-taken active code
+//! (`CodeCollision` — the caller regenerates and retries). Accept-side helpers store the
+//! promoted device's credentials in `transfer_devices`; completion helpers revoke superseded
+//! sessions and transfer-device credentials and append `transfer_audit_events`.
+//! `transfer_device_token_exists` lets `auth/guards.rs`' device-token auth path accept those
+//! credentials later.
+//!
+//! Operator surface: `list_inflight_transfers` returns `accepted`/`completing` rows
+//! regardless of expiry (completion has no expiry check) plus unexpired `pending` rows,
+//! keyset-paged on `(created_at, id)`, and never selects `code` — a live account-takeover
+//! credential. `mark_transfer_cancelled` is a guarded UPDATE to the terminal `cancelled`
+//! status; `revoke_transfer_device` tombstones a single credential.
+//!
+//! Wired by `routes/transfer_initiate.rs`, the root `transfer.rs` accept/complete/cancel
+//! workflows, `routes/transfer_accept.rs`, `routes/transfer_complete.rs`,
+//! `routes/admin_transfers.rs`, and `auth/guards.rs`.
 
 use sqlx::{Sqlite, SqlitePool, Transaction};
 

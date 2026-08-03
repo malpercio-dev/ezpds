@@ -1,26 +1,29 @@
 // pattern: Imperative Shell
-//
-// Owner endpoints for the PDS-held Shamir Share 2 (the escrow half of share-based recovery):
-//
-//   PUT    /v1/recovery/escrow-share — deposit or replace the account's Share 2 envelope
-//   DELETE /v1/recovery/escrow-share — opt out of escrow entirely (idempotent)
-//
-// The share arrives as the v2 base32 share envelope the wallet produced client-side; the server
-// validates it structurally (well-formed envelope, index 2 — Custos never holds any other share)
-// and stores only the AES-256-GCM master-KEK wrapping of its 42 envelope bytes
-// (`crypto::encrypt_secret_bytes`, the shared `SecretFamily` ciphertext format — the base
-// envelope deliberately, with no per-row AAD divergence from the other wrapped columns). One
-// share is information-theoretically worthless alone, so the wrapping is defense-in-depth: a raw
-// DB dump or backup never exposes even that.
-//
-// Each state change appends its `recovery_audit_events` row in the same transaction
-// (`deposited` / `rotated` / `deleted` — mechanical facts only, never share material). The
-// repeat DELETE is a 200 no-op with no duplicate event.
-//
-// Auth is `auth::guards::authenticate_account_owner` (wallet session token or full-access
-// OAuth/XRPC token; agent-derived and app-password credentials refused) — the ceremony deposit,
-// the rotation epilogue, and the old-account re-key all act as the owner. These live on the
-// same-origin `/v1/*` surface (no permissive CORS).
+
+//! Owner endpoints for the PDS-held Shamir Share 2 (the escrow half of share-based recovery):
+//!
+//! * `PUT /v1/recovery/escrow-share` — deposit or replace the account's Share 2 envelope. The
+//!   post-recovery rotation epilogue and the old-account re-key land here; the genesis-ceremony
+//!   deposit itself rides `POST /v1/dids`' client-share path, inside the promotion transaction.
+//! * `DELETE /v1/recovery/escrow-share` — opt out of escrow entirely (idempotent).
+//!
+//! The share arrives as the v2 base32 share envelope the wallet produced client-side; the server
+//! validates it structurally (well-formed envelope, index 2 — Custos never holds any other
+//! share) and stores only the AES-256-GCM master-KEK wrapping of its 42 envelope bytes
+//! (`crypto::encrypt_secret_bytes`, the shared `SecretFamily` ciphertext format — the base
+//! envelope, with no per-row AAD divergence from the other wrapped columns). One share is
+//! information-theoretically worthless alone, so the wrapping is defense-in-depth: a raw DB dump
+//! or backup never exposes even that. 503 with no master key configured.
+//!
+//! Each state change appends its `recovery_audit_events` row in the same transaction
+//! (`deposited` / `rotated` / `deleted` — mechanical facts only, never share material). The
+//! repeat DELETE is a 200 no-op with no duplicate event, and a replacement clears any in-flight
+//! release state.
+//!
+//! Auth is `auth::guards::authenticate_account_owner` (wallet session token or full-access
+//! OAuth/XRPC token; agent-derived and app-password credentials refused) — the rotation
+//! epilogue and the old-account re-key both act as the owner. Lives on the same-origin `/v1/*`
+//! surface (no permissive CORS).
 
 use axum::{
     extract::State,

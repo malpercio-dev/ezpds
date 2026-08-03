@@ -11,7 +11,8 @@
 //!
 //! The one addition here is [`EmailTokenPurpose`]: a single `email_tokens` table serves both
 //! flows, and every insert/consume is bound to the purpose so a confirmation token can never be
-//! spent as an email-change authorization or vice versa.
+//! spent as an email-change authorization or vice versa. The confirmation-state writers —
+//! `set_email_confirmed` and `update_account_email` — live in `db/accounts.rs`.
 
 use common::{ApiError, ErrorCode};
 

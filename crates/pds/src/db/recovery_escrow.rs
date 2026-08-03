@@ -8,6 +8,15 @@
 //! `db/kek.rs`). The deposit/replace/delete steps are generic over the
 //! executor so the owner endpoints can compose them with their audit-event
 //! insert in one transaction.
+//!
+//! `escrow_share_exists` picks insert-vs-replace inside the deposit
+//! transaction; `insert_escrow_share` is the first deposit;
+//! `replace_escrow_share` stamps `rotated_at` and clears any in-flight release
+//! state (a new share voids a pending release); `delete_escrow_share` reports
+//! whether a row existed so the caller audits only real deletions. The release
+//! state machine (V050's release columns, written by the release flow) rides
+//! `get_release_state` / `open_release` / `clear_release` /
+//! `list_pending_releases`.
 
 use sqlx::Sqlite;
 

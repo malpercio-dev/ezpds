@@ -20,6 +20,11 @@
 //! peers. The heartbeat runs from the moment the socket attaches — including throughout any
 //! replay backlog — and a peer that stops answering (no Pong within the read deadline) is
 //! dropped promptly, rather than only when the next Ping send happens to fail.
+//!
+//! The `#commit` frame's `blocks` CAR payload is pinned against the vendored ATProto interop
+//! MST commit-proof fixture (`tests/fixtures/interop/commit-proof-fixtures.json` — see that
+//! directory's README for provenance and documented scope) by the test module's
+//! `firehose_interop_gate` submodule.
 
 use std::collections::VecDeque;
 use std::time::{Duration, Instant};

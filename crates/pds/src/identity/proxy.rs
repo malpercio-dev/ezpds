@@ -1,15 +1,26 @@
 // pattern: Imperative Shell
-//
-// The `atproto-proxy` header target guard: resolves a caller-supplied `<did>#<serviceId>` header
-// to an upstream service endpoint, then SSRF-validates that endpoint (scheme, userinfo,
-// query/fragment, and a public-address check on IP-literal hosts) before it's ever handed to the
-// HTTP client. Since the target DID is caller-chosen, an attacker can make its DID document
-// advertise anything — this is the only thing standing between an authenticated request and an
-// SSRF into the PDS's private network. Also provides the SSRF-hardened HTTP client
-// (`build_hardened_client`), a single shared/pooled client whose custom DNS resolver
-// (`SsrfResolver`) re-applies the same allowlist to every resolved address at connect time — the
-// domain-name half of the guard, closing the redirect/re-resolution TOCTOU gap without a fresh
-// client per request.
+
+//! The `atproto-proxy` header target guard — security-critical and kept in its own reviewable
+//! file: this is the only thing standing between an authenticated request and an SSRF into the
+//! PDS's private network.
+//!
+//! `resolve_atproto_proxy_target` resolves a caller-supplied `<did>#<serviceId>` header to an
+//! upstream service endpoint. The header is honored for any proxied namespace naming an explicit
+//! target, and mandatory for `com.atproto.moderation.*` (which has no configured default
+//! upstream). Since the target DID is caller-chosen, an attacker can make its DID document
+//! advertise anything, so `validate_proxy_endpoint` SSRF-checks the advertised `serviceEndpoint`
+//! (scheme, userinfo, query/fragment, and a public-address check on IP-literal hosts) before it
+//! is ever handed to the HTTP client.
+//!
+//! The domain-name half of the address check runs at connect time inside `SsrfResolver`, the
+//! custom `reqwest::dns::Resolve` installed on the shared hardened client
+//! (`build_hardened_client`: redirects disabled + allowlist-enforcing DNS). Re-applying the
+//! allowlist to every address a name resolves to at connect time closes the
+//! redirect/re-resolution TOCTOU gap. One pooled client, stored in
+//! `AppState::hardened_http_client`, serves all four SSRF-guarded call sites without a fresh
+//! client (and TLS handshake) per request: `routes::service_proxy`'s header-target proxying,
+//! `identity::resolution`'s DID-document fetches, `auth::permission_sets`' Lexicon-authority
+//! fetch, and `labeler_watch`.
 
 use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;

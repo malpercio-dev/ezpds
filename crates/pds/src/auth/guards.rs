@@ -1,7 +1,21 @@
 // pattern: Imperative Shell
-//
-// Route-level auth middleware: token/session/signature checks that read request
-// headers and query the database. Pure helpers it builds on live in `auth/`.
+
+//! Route-level auth guards: token/session/signature checks that read request headers and query
+//! the `sessions`/`devices`/`admin_devices` tables (owning no schema). Pure helpers they build on
+//! live elsewhere in `auth/`.
+//!
+//! The inventory: `require_admin` / `require_admin_token` / `require_admin_json` accept the
+//! master admin token OR a signed companion-device request (the admin-device request-signing
+//! envelope and its self-signature verification live here too); `require_session`,
+//! `require_pending_session`, and `require_device_token` check the wallet's token tiers.
+//!
+//! `authenticate_account_owner` is the account-holder agent surfaces' dual credential: a wallet
+//! session token first, then a full-access OAuth/XRPC access token verified through
+//! `extractors::authenticate_access`, so the RFC 9449 scheme ↔ `cnf.jkt` binding is enforced
+//! exactly as on the extractor/repo-write paths (callers thread the request method/URI in for
+//! DPoP `htm`/`htu` validation). Agent-derived and app-password tokens are refused. Failures
+//! return a vocab-neutral `OwnerAuthError` that `/v1/agents/*` maps to XRPC `ApiError`s and the
+//! claim-confirm gate maps to auth.md errors.
 
 use axum::{
     http::{HeaderMap, Method, StatusCode, Uri},

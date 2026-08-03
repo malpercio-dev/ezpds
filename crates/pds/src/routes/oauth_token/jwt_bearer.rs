@@ -1,10 +1,24 @@
 // pattern: Imperative Shell
-//
-// The `urn:ietf:params:oauth:grant-type:jwt-bearer` grant (RFC 7523 / auth.md Step 5): verify a
-// service-signed agent `identity_assertion` (self-signed under this server's OAuth key), gate on the
-// registration's `Claimed` state, then mint a short-lived plain Bearer access token — no DPoP proof
-// (the assertion is already key-bound upstream) and no refresh token (the agent re-exchanges the
-// assertion until it expires).
+
+//! The `urn:ietf:params:oauth:grant-type:jwt-bearer` grant (RFC 7523 / auth.md Step 5): verify a
+//! service-signed agent `identity_assertion` (self-signed under this server's OAuth key) and mint
+//! a short-lived plain **Bearer** access token — no DPoP proof (the assertion is already
+//! key-bound upstream) and no refresh token (the agent re-exchanges the assertion until it
+//! expires).
+//!
+//! The registration must be `claimed` with a DID matching the assertion `sub`: unclaimed/absent
+//! → `invalid_grant`, `revoked` → `access_denied`, and a `resource` naming anything but this
+//! server's origin → `invalid_target`.
+//!
+//! The issued token carries the assertion's granular `scope` verbatim — no widening is possible,
+//! because the grant accepts no requested `scope` — **and** its `registration_id` claim, which
+//! marks the token agent-derived
+//! (`auth/extractors.rs::AuthenticatedUser::{is_agent,require_not_agent}`) and ties it to the
+//! `agent_identities` row for revocation and audit.
+//!
+//! **Revocation is bounded by the access-token TTL.** Flipping an identity to `revoked` blocks
+//! the *next* exchange immediately, but an already-issued access token stays valid until it
+//! expires (5 min); there is no live-token revocation list.
 
 use axum::{
     http::StatusCode,

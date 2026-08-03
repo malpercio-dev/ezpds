@@ -1,37 +1,42 @@
 // pattern: Functional Core
-//
-// The lexicon registry: the vendored `com.atproto.*` and `app.bsky.*` lexicon documents
-// (`crates/pds/lexicons/`, pinned upstream — see the README there) compiled into the binary and
-// parsed once, plus three validation entry points:
-//
-//   * `validate_input` — the single place asserting "this request body conforms to the procedure's
-//     declared lexicon input". The reference PDS gets this uniformity from `@atproto/xrpc-server`'s
-//     `validateInput` running on every route; Custos historically hand-parsed each body with a
-//     bespoke serde struct, so strictness drifted route by route and concealed client bugs.
-//     Handlers consume it through the `LexiconInput` axum extractor (`extractor.rs`), or through
-//     `validate_procedure_body` where the raw body bytes are also needed for signature verification.
-//   * `validate_params` — the query-parameter counterpart: "this GET request's query
-//     string conforms to the procedure's declared lexicon `parameters`". Query values are always
-//     strings, so `lexicon::params` coerces each declared property to its typed JSON value
-//     (`@atproto/xrpc-server`'s `decodeQueryParams` semantics — an empty value decodes to absent,
-//     an unparseable integer decodes to `0`, a boolean is `true` only for the literal string
-//     "true", an array is repeated query keys) before running the same object-validator required/
-//     format/bounds checks an input body uses. Handlers consume it through the `LexiconParams`
-//     axum extractor (`params.rs`), or through `validate_procedure_params`/`validate_params_map`
-//     for a handler that needs to adjust the raw query before validation (`get_record.rs`'s legacy
-//     `did=` alias).
-//   * `validate_record` — `assertValidRecord`-parity validation for a repo write: reject an invalid
-//     record of a known (vendored) collection by default, honor the `validate` flag, enforce
-//     `$type`/collection agreement and the record-key discipline, and report `validationStatus`.
-//     The repo-write routes call it via `record_write::write_record` / `apply_writes`.
-//   * `validate_output` — the `assertValidXrpcOutput` counterpart: "this serialized response body
-//     conforms to the query/procedure's declared lexicon `output`". Outputs are Custos-controlled,
-//     so a failure is *our* shape regression (missing required field, wrong type) rather than a
-//     client bug — this is drift detection. In test builds, `output.rs` wraps the real Axum router
-//     and validates successful serialized handler responses; production responses are untouched.
-//
-// Scope: input bodies, query parameters, and JSON output bodies of the natively-handled procedures,
-// plus the record bodies of the vendored `app.bsky.*` record lexicons.
+
+//! The lexicon registry: the vendored `com.atproto.*` and `app.bsky.*` lexicon documents
+//! (`crates/pds/lexicons/`, pinned upstream — scope and re-vendoring workflow in the README there)
+//! compiled into the binary and parsed once, plus four validation entry points:
+//!
+//! * `validate_input` — the single place asserting "this request body conforms to the procedure's
+//!   declared lexicon input". The reference PDS gets this uniformity from `@atproto/xrpc-server`'s
+//!   `validateInput` running on every route; Custos historically hand-parsed each body with a
+//!   bespoke serde struct, so strictness drifted route by route and concealed client bugs.
+//!   Handlers consume it through the `LexiconInput` axum extractor (`extractor.rs`), or through
+//!   `validate_procedure_body` where the raw body bytes are also needed for signature verification.
+//! * `validate_params` — the query-parameter counterpart: "this GET request's query string
+//!   conforms to the procedure's declared lexicon `parameters`". Query values are always strings,
+//!   so `params.rs` first coerces each declared property to its typed JSON value
+//!   (`@atproto/xrpc-server`'s `decodeQueryParams` semantics — the rules live in `params.rs`),
+//!   then runs the same object-validator required/format/bounds checks an input body uses.
+//!   Handlers consume it through the `LexiconParams` axum extractor, or through
+//!   `validate_procedure_params`/`validate_params_map` for a handler that needs to adjust the raw
+//!   query before validation (`get_record.rs`'s legacy `did=` alias).
+//! * `validate_record` — `assertValidRecord`-parity validation for a repo write, called via
+//!   `record_write::write_record`/`apply_writes`: an invalid record of a known (vendored)
+//!   collection is rejected by default; the `validate` flag overrides (`true` requires validity,
+//!   `false` skips validation); `$type` must equal the target collection; the record key must
+//!   satisfy the lexicon's key discipline (`tid`, `literal:self`, …). Each write reports a
+//!   `validationStatus` of `valid` or `unknown` — unknown collections stay writable and report
+//!   `unknown`.
+//! * `validate_output` — the `assertValidXrpcOutput` counterpart: "this serialized response body
+//!   conforms to the query/procedure's declared lexicon `output`". Outputs are Custos-controlled,
+//!   so a failure is *our* shape regression (missing required field, wrong type) rather than a
+//!   client bug — this is drift detection. In test builds, `output.rs` wraps the real Axum router
+//!   and validates successful serialized handler responses; production responses are untouched.
+//!
+//! `schema.rs` is the strict document model + parser, `validate.rs` the schema walker with the
+//! reference's byte-identical messages, `formats.rs` the string-format checks. Scope: input
+//! bodies, query parameters, and JSON output bodies of the natively-handled procedures, plus the
+//! record bodies of the vendored `app.bsky.*` record lexicons (the record-reachable closure only;
+//! the AppView view/output defs those documents also declare are never validation roots and stay
+//! un-vendored).
 
 mod extractor;
 mod formats;

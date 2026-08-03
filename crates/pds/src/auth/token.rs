@@ -1,14 +1,16 @@
 // pattern: Functional Core
-//
-// Token generation and hashing utilities.
-//
-// All session tokens and device tokens follow the same format:
-//   - 32 cryptographically random bytes
-//   - Plaintext: base64url-no-pad encoding (43 chars, returned to the client once)
-//   - Storage:   SHA-256 hex digest (64 chars, stored in the database)
-//
-// This module is the single source of truth for that format. Auth verification
-// (decode + hash) lives here too so the encoding stays consistent.
+
+//! Bearer/device token generation and hashing — the single source of truth for the token format.
+//!
+//! All session tokens and device tokens follow the same format:
+//!   - 32 cryptographically random bytes
+//!   - Plaintext: base64url-no-pad encoding (43 chars, returned to the client once)
+//!   - Storage:   SHA-256 hex digest (64 chars, stored in the database)
+//!
+//! `generate_token` mints, `sha256_hex` digests, and `hash_bearer_token` converts a wire token
+//! back into its stored hash — verification lives beside generation so the encoding stays
+//! consistent. Homed here beside its extractor (`bearer.rs`) and the guards that verify it;
+//! consumed broadly by `routes/`, `db/`, and the auth guards.
 
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
 use rand_core::{OsRng, RngCore};

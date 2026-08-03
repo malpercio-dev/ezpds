@@ -1,8 +1,21 @@
 // pattern: Imperative Shell
-//
-// Gathers: DID/identifier query parameters or refresh body
-// Processes: shared ATProto identity resolution (DID document + bidirectionally verified handle)
-// Returns: spec-shaped resolveDid / resolveIdentity / refreshIdentity JSON responses
+
+//! The three `com.atproto.identity` resolution endpoints, all backed by the shared
+//! `identity::resolution` local→network chain (DID document + bidirectionally verified handle),
+//! with spec-shaped responses:
+//!
+//! * `GET /xrpc/com.atproto.identity.resolveDid` — cache-first DID-document read.
+//! * `GET /xrpc/com.atproto.identity.resolveIdentity` — cache-first DID + verified handle.
+//! * `POST /xrpc/com.atproto.identity.refreshIdentity` — force-refresh: purge caches,
+//!   re-resolve from the authoritative source, rewrite the cache row, return the fresh view.
+//!
+//! When this PDS hosts the refreshed account (`account_exists`) *and* the re-resolved document
+//! differs from the pre-refresh cached copy, `refreshIdentity` also emits an `#identity`
+//! firehose frame so relays re-resolve — method-agnostic, and the leg that propagates an
+//! externally-hosted `did:web` `did.json` edit onto the network. The change gate is what makes
+//! that safe to expose: `refreshIdentity` is unauthenticated, so an unconditional
+//! durable+broadcast emit would let anyone amplify re-resolution fan-out onto every relay (or a
+//! polling client inject spurious frames); a no-op refresh emits nothing.
 
 use axum::{extract::State, Json};
 use common::{ApiError, ErrorCode};

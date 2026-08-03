@@ -8,15 +8,19 @@
 
 //! GET /v1/admin/relay-status — is the upstream relay actually crawling/indexing this PDS?
 //!
-//! Compares our **exact** sequencer head (`firehose.current_seq()`) against what the relay reports
-//! for our hostname (`com.atproto.sync.getHostStatus`) and derives the gap server-side. Because we
+//! Queries the first configured crawler via `relay_status::fetch_host_status`
+//! (`com.atproto.sync.getHostStatus`) and compares our **exact** sequencer head
+//! (`firehose.current_seq()`) against what the relay reports for our hostname, deriving a signed
+//! `gap` and the wall-clock `relayCursorAt` (`db::firehose_seq::sequenced_at_for_seq`) server-side
+//! (`relayHost: null` when no crawler is configured — federation disabled). Because we
 //! own the PDS we skip the approximation a third-party observer must make (opening `subscribeRepos`
 //! in a timed window to guess our head) — the head is read directly.
 //!
 //! Like [`admin_health`](super::admin_health), it reports **raw truth only** — no
 //! `ok`/`behind`/`stale` verdict. The gap thresholds (`< 500` fine, `< 5000` warn, else behind) and
 //! the status mapping live with the operator (the companion app renders them), not in the API shape,
-//! so the same readout stays useful whatever an operator's thresholds are.
+//! so the same readout stays useful whatever an operator's thresholds are. Admin-authed via
+//! `require_admin`.
 
 use axum::body::Bytes;
 use axum::extract::State;

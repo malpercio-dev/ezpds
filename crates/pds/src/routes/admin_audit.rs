@@ -5,7 +5,22 @@
 // Processes: admin auth → filtered rowid-cursor page of the server-wide admin audit log
 // Returns: JSON audit-event page on success; ApiError on all failure paths
 
-//! GET /v1/admin/audit - Server-wide admin action audit log.
+//! `GET /v1/admin/audit` — the server-wide admin audit log (V052).
+//!
+//! Every privileged mutating admin action, newest first, attributed via
+//! `AdminActor::as_log_str()` to the credential that signed it (`master-token` /
+//! `device:<id>` / `pairing-code` for enrollments). Rowid-cursor pagination (`limit`
+//! default 50, max 100) plus exact-match `action`/`actor`/`subject` filters; an unknown
+//! `action` word → 400, so a typo'd filter can't read as "no such events".
+//!
+//! Writers are the mutating admin routes themselves — takedown/restore
+//! (`update_subject_status`), credential sweeps, claim-code mints (native +
+//! `createInviteCode(s)`) and revokes, pairing-code mints, device
+//! registration/revocation, transfer cancels, crawl requests, account repairs,
+//! signing-key creation — in the route's own transaction where one exists. Only real
+//! state transitions are recorded (idempotent repeats write nothing), and codes/token
+//! material never enter the log. Admin-authed via `require_admin`; the signature covers
+//! the bare path, so paging/filter params vary without re-signing.
 
 use axum::body::Bytes;
 use axum::extract::{Query, State};

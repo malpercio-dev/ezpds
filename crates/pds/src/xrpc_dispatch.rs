@@ -1,5 +1,12 @@
 // pattern: Imperative Shell
 
+//! The catch-all XRPC proxy dispatcher: `xrpc_handler`, registered by `app.rs` at
+//! `/xrpc/{method}`, resolves `app.bsky.*` / `chat.bsky.*` / `com.atproto.moderation.*` NSIDs
+//! to an upstream — the configured default, or the target named by an `atproto-proxy` header —
+//! enforces the read-after-write munge branch (`READ_AFTER_WRITE_NSIDS`), and counts each
+//! proxied response into `proxy_requests_total`. Routing, auth, and header semantics are on
+//! `xrpc_handler`'s doc.
+
 use axum::{
     extract::{Path, State},
     response::{IntoResponse, Response},

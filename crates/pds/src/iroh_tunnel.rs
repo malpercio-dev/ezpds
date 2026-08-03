@@ -1,11 +1,25 @@
 // pattern: Imperative Shell
-//
-// Iroh QUIC tunnel: a NAT-traversing endpoint devices dial by node id instead of by a
-// routable address. Bound at startup (when `[iroh] enabled`) alongside the HTTP server; its
-// node id is advertised via `GET /v1/devices/:id/pds`. The accept loop speaks a minimal
-// v0.1 echo protocol on the `ezpds/iroh/0` ALPN — enough to prove the bidirectional channel
-// works end-to-end and to give devices a liveness probe. The real repo-sync / push protocols
-// will register additional ALPNs (or message types) here later.
+
+//! Iroh QUIC tunnel: a NAT-traversing endpoint devices dial by node id instead of by a
+//! routable address. Opt-in via `[iroh] enabled` (default off); when enabled, `main.rs` loads
+//! the persistent node identity (`auth::load_or_create_iroh_secret_key`, backed by the
+//! `iroh_identity` table so the node id is stable across restarts), binds the endpoint with
+//! the `N0` preset (n0 discovery + relays), and spawns a detached accept loop.
+//! `AppState.iroh: Option<Arc<IrohState>>` holds the bound endpoint and its node-id string;
+//! `get_device_pds` (`GET /v1/devices/:id/pds`) advertises that node id.
+//!
+//! `[iroh] ipv6` (default true; `EZPDS_IROH_IPV6`) gates the IPv6 QUIC socket. On a v4-only
+//! host (e.g. a Railway container with no public v6 egress) set it false: `start` clears the
+//! pre-configured IP transports and re-binds IPv4 only. Without that, iroh's v6 relay probes
+//! fail `NetworkUnreachable` forever — one WARN every ~80s that buries real errors.
+//!
+//! The accept loop speaks a minimal v0.1 echo protocol on the `ezpds/iroh/0` ALPN — enough to
+//! prove the bidirectional channel works end-to-end and to give devices a liveness probe. The
+//! real repo-sync protocol registers additional ALPNs (or message types) here later; push is
+//! instead an *outbound* leg (see `notify_relay_client.rs`) dialing `ezpds/notify/0` on this
+//! same endpoint, so it adds nothing to this accept loop. Per-connection errors are logged,
+//! never propagated (one bad peer never stops the loop). The endpoint is closed on graceful
+//! shutdown, which ends the accept loop.
 
 use iroh::endpoint::{presets, Incoming};
 use iroh::{Endpoint, SecretKey};

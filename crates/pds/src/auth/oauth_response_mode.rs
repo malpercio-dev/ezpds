@@ -1,11 +1,13 @@
 // pattern: Functional Core
-//
-// The OAuth authorization response's delivery mode (`response_mode`): parse/validate the
-// request parameter and pick the separator a redirect answers with. Pure — no I/O.
-//
-// Homed in `auth/` (not a route file) because three route surfaces share it — `oauth_par`
-// validates it, `oauth_authorize` threads it through both consent paths, and
-// `oauth_consent` reads it back off the pending row — and routes may not import routes.
+
+//! The OAuth authorization response's delivery mode (`ResponseMode`: `query` | `fragment`):
+//! parse/validate the `response_mode` request parameter and pick the separator a redirect
+//! answers with. Pure — no I/O.
+//!
+//! Homed in `auth/` (not a route file) because four route surfaces share it and routes may
+//! not import routes: `oauth_par` validates it, `oauth_authorize` threads it through both
+//! consent paths, `oauth_consent` reads it back off the pending row, and `oauth_templates`
+//! builds the redirects with it.
 
 /// How the authorization response's parameters are delivered to `redirect_uri`
 /// (OAuth 2.0 Multiple Response Type Encoding Practices' `response_mode`).

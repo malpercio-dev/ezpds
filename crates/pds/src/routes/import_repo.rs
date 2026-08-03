@@ -1,14 +1,22 @@
 // pattern: Imperative Shell
-//
-// Gathers: AuthenticatedUser (JWT extractor), the raw CAR request body, DB pool via AppState
-// Processes: scope check → deactivated-account precondition → parse/validate the CAR
-//            (repo_engine::import_repo_car) → idempotent same-root no-op, else persist the
-//            reachable blocks and compare-and-swap the repo root/rev against the root observed at
-//            precondition time, atomically, only while the account is still deactivated
-// Returns: 200 OK (empty) on success (import performed, or an already-present no-op); ApiError on
-//          failure
-//
-// Implements: POST /xrpc/com.atproto.repo.importRepo
+
+//! `POST /xrpc/com.atproto.repo.importRepo` — the data-transfer leg of account migration.
+//!
+//! Scope check (full access only) → deactivated-account precondition → parse/validate the
+//! uploaded CAR (`repo_engine::import_repo_car`; the commit `did` must match the caller) →
+//! persist the reachable blocks and compare-and-swap the repo root/rev atomically, only while
+//! the account is still deactivated. Returns 200 (empty) whether the import ran or was an
+//! already-present no-op.
+//!
+//! Idempotent and round-trip-safe: a CAR whose root already equals the stored root is a 200
+//! no-op (a retried import, or a byte-identical return migration). A *different* root replaces
+//! the stored one under a CAS against the root observed at precondition time
+//! (`accounts::swap_repo_root_for_deactivated`, `repo_root_cid IS <observed>`), so a return
+//! migration into a completed prior residency is unblocked while a concurrent import with a
+//! different base still loses loudly (409).
+//!
+//! Superseded old-root blocks are reclaimed by the account's next write-path GC; blobs, which
+//! transfer separately, are reconciled by the periodic blob GC.
 
 use axum::{
     body::Body,

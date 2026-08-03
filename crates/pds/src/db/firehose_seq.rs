@@ -1,9 +1,16 @@
 // pattern: Imperative Shell
-//
-// Query functions for the V028 `repo_seq` table — the persistent firehose event log that
-// backs `com.atproto.sync.subscribeRepos` cursor replay across restarts. See
-// V028__repo_seq.sql for the schema rationale; the sequencer that drives these queries lives
-// in `firehose.rs`.
+
+//! Persistent firehose event log — the V028 `repo_seq` table backing
+//! `com.atproto.sync.subscribeRepos` cursor replay across restarts. See V028__repo_seq.sql
+//! for the schema rationale; the sequencer that drives these queries lives in `firehose.rs`.
+//!
+//! `max_seq` seeds the sequencer on boot (and re-derives the frontier for its
+//! unique-violation self-heal). `insert_event` appends one sequenced
+//! `#commit`/`#account`/`#identity`/`#sync` row with an explicit `seq`.
+//! `events_in_range(after, upper, limit)` is the cursor-replay page query, and
+//! `retained_boundary_seq` / `prune_below` back the firehose GC's contiguous-prefix sweep.
+//! Consumed by `firehose/mod.rs` (persist-before-broadcast), `firehose/replay.rs` (cursor
+//! replay), and `routes/sync_subscribe_repos.rs` (replay paging).
 
 use sqlx::{Sqlite, SqlitePool};
 

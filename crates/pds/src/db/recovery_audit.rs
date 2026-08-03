@@ -1,13 +1,15 @@
 // pattern: Imperative Shell
-//
-// Recovery-escrow audit log queries (V050). Append-only: this module exposes INSERT only —
-// no UPDATE or DELETE exists here, and none may be added (the `agent_audit_events` V040
-// doctrine; SELECT pagination on the rowid cursor arrives with the surface that reads the
-// trail). Account deletion is the sole remover (`account_delete::purge_account`). Event
-// vocabulary lives in `RecoveryAuditEventType`; the schema's CHECK constraint additionally
-// reserves the release-flow strings (`release_requested`, `release_cancelled`, `released`)
-// for the escrow release endpoints. `detail` carries mechanical facts only — never share
-// material.
+
+//! Recovery-escrow audit log queries (`recovery_audit_events`, V050).
+//!
+//! Append-only, the `agent_audit_events` (V040) doctrine: `insert_recovery_audit_event` is
+//! the only writer — no UPDATE or DELETE exists here, and none may be added (SELECT
+//! pagination on the rowid cursor arrives with the surface that reads the trail). Account
+//! deletion is the sole remover (`account_delete::purge_account`). Event vocabulary lives in
+//! `RecoveryAuditEventType` (`deposited`/`rotated`/`deleted` from the owner endpoints); the
+//! schema's CHECK constraint additionally reserves the release-flow strings
+//! (`release_requested`, `release_cancelled`, `released`) for the escrow release endpoints.
+//! `detail` carries mechanical facts only — never share material.
 
 use common::{ApiError, ErrorCode};
 use sqlx::Sqlite;

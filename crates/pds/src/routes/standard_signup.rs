@@ -1,8 +1,18 @@
 // pattern: Imperative Shell
-//
-// Standard-client signup interop endpoints. These map ezpds's operator-issued
-// claim-code and handle-uniqueness primitives onto the AT Protocol NSIDs used by
-// generic signup clients, without changing the custom mobile provisioning flow.
+
+//! Standard-client signup interop: maps ezpds's operator-issued claim-code and
+//! handle-uniqueness primitives onto the AT Protocol NSIDs generic signup clients use,
+//! without changing the custom mobile provisioning flow.
+//!
+//! `POST /xrpc/com.atproto.server.createInviteCode` (admin-authed; single-use only) and
+//! `POST /xrpc/com.atproto.server.createInviteCodes` (admin-authed; account-bound
+//! batches unsupported) mint into the same `claim_codes` inventory as the native mint
+//! route, sharing its audit action.
+//! `GET /xrpc/com.atproto.server.getAccountInviteCodes` always returns an empty list —
+//! ezpds codes are operator-issued, not per-account.
+//! `GET /xrpc/com.atproto.temp.checkHandleAvailability` answers from the
+//! handle-uniqueness primitives; `GET /xrpc/com.atproto.temp.checkSignupQueue` always
+//! reports `activated: true`.
 
 use axum::{
     body::Bytes,

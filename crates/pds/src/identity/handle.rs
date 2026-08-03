@@ -1,23 +1,25 @@
 // pattern: Functional Core
-//
-// Handle validation shared by the account-provisioning and handle-registration routes.
-//
-// An AT Protocol handle is a domain name (`<name>.<domain...>`, at least two DNS labels).
-// A bare single-segment label like `alice` is NOT a valid handle: relays and AppViews read
-// the handle from the published DID document's `alsoKnownAs` (`at://<handle>`) without
-// re-validating it, and a syntactically invalid handle fails bidirectional verification and
-// renders as `handle.invalid`. So provisioning must reject bare labels *before* a did:plc
-// genesis op (whose hash is the DID) bakes the handle in permanently.
-//
-// Two entry points:
-//   - `validate_handle_structure` — spec structural validity only. Used at account
-//     provisioning, before the server knows which domain the client will register under.
-//   - `validate_handle` — structural validity PLUS the domain-policy check that the handle's
-//     domain is one this server actually serves. Used by the handle-registration route, the
-//     authoritative gate for `available_user_domains`.
-//
-// Both return the first DNS label (the "name") on success, which the handle route uses as the
-// DNS record name.
+
+//! Handle validation shared by the account-provisioning and handle-registration routes.
+//!
+//! An AT Protocol handle is a domain name (`<name>.<domain...>`, at least two DNS labels).
+//! A bare single-segment label like `alice` is NOT a valid handle: relays and AppViews read
+//! the handle from the published DID document's `alsoKnownAs` (`at://<handle>`) without
+//! re-validating it, and a syntactically invalid handle fails bidirectional verification and
+//! renders as `handle.invalid`. So provisioning must reject bare labels *before* a did:plc
+//! genesis op (whose hash is the DID) bakes the handle in permanently.
+//!
+//! Two entry points:
+//! - `validate_handle_structure` — spec structural validity only. Used at account
+//!   provisioning, before the server knows which domain the client will register under.
+//! - `validate_handle` — structural validity PLUS domain policy: the handle's domain is one
+//!   this server actually serves (the authoritative gate for `available_user_domains`), and its
+//!   first label is not an operator-reserved infrastructure name (`Config::reserved_handles`,
+//!   default `identitywallet`/`about`). Callers that skip this check for served domains —
+//!   updateHandle's served-domain branch — apply `is_reserved_name` themselves.
+//!
+//! Both return the first DNS label (the "name") on success, which the handle route uses as the
+//! DNS record name.
 
 /// Maximum total handle length (DNS name limit), per the AT Protocol handle spec.
 const MAX_HANDLE_LEN: usize = 253;

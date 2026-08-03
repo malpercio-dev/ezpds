@@ -1,9 +1,26 @@
 // pattern: Imperative Shell
-//
-// Admin account repair: authenticate the operator, bind the target DID from the path,
-// then atomically apply the repair and append its durable audit events — both the
-// account-scoped `operator_account_audit_events` row (V046, purged with the account) and
-// the server-wide `admin_audit_events` row (V052, FK-free so it outlives the account).
+
+//! Operator account-repair pair: `POST /v1/admin/accounts/:id/email` (correct an
+//! account's email) and `POST /v1/admin/accounts/:id/reset-token` (mint a single-use
+//! 1-hour password-reset token for out-of-band delivery).
+//!
+//! Each handler authenticates the operator, binds the target DID from the path, then
+//! atomically applies the repair **and** appends its durable audit rows — the
+//! account-scoped `operator_account_audit_events` row (V046, purged with the account)
+//! and the server-wide `admin_audit_events` row (V052, FK-free so it outlives the
+//! account) — in one transaction.
+//!
+//! Email repair normalizes and plausibility-checks the address
+//! (`uniqueness::is_plausible_email`), resets `email_confirmed_at`, and audits both
+//! addresses; an address already held by another account or a pending signup → 400.
+//! Reset-token issuance stores only the hashed token (never the plaintext) and audits
+//! the action alone. **It is refused (400) for a passwordless account** — minting one
+//! would bootstrap a password-login path a key-sovereign / mobile account deliberately
+//! lacks; such accounts are recovered through their escrowed key share, not a reset.
+//!
+//! Unknown DID → 404, checked after auth. The email path is admin-authed via
+//! `require_admin_json` (the signature covers the JSON body); the reset-token path via
+//! `require_admin` (no body).
 
 use axum::body::Bytes;
 use axum::extract::{Path, State};

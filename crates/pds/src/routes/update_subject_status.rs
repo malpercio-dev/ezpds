@@ -6,8 +6,18 @@
 //            the account's full resulting lifecycle (not just the takedown dimension) on a real
 //            transition
 // Returns: 200 OK with the resulting subject/takedown status; ApiError on failure
-//
-// Implements: POST /xrpc/com.atproto.admin.updateSubjectStatus
+
+//! `POST /xrpc/com.atproto.admin.updateSubjectStatus` — apply or clear an account-level
+//! takedown.
+//!
+//! `subject` is a `com.atproto.admin.defs#repoRef`, `takedown` a `#statusAttr`;
+//! record/blob subjects and the `deactivated` field are unsupported (ezpds tracks
+//! lifecycle state per-account only). Admin-authed via `require_admin_json`. A real
+//! transition emits an `#account` firehose event reflecting the account's full derived
+//! lifecycle — clearing a takedown is not necessarily `active: true` when the account
+//! is also suspended or deactivated; an idempotent repeat is a 200 no-op that emits
+//! nothing. Response view types are shared with `get_subject_status` via
+//! `admin_subject_defs`.
 
 use axum::{
     body::Bytes,

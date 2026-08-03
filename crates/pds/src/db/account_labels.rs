@@ -7,6 +7,15 @@
 //! `labeler_watch` pass and read by the operator account listing/health readouts. Rows
 //! represent labels *currently in force* — the watcher deletes a row when the labeler
 //! negates or expires the label — so "flagged" is simply "has any row".
+//!
+//! `labels_for_dids` fetches a listing page's flags in one query; `labels_for_labeler` is
+//! the reconcile diff's read side. `upsert_label` (executor-generic, guarded on the account
+//! still existing) refreshes `cts` in place while preserving `first_seen_at` — the seam a
+//! future notifier uses to tell a genuinely new flag from backfill. `delete_label` and
+//! `delete_labels_for_unwatched` (an empty watched list clears the table — flagged state
+//! never outlives its config) remove rows; `count_flagged_accounts` backs the health badge.
+//! The filtered listing predicates (`FLAGGED_SQL`, `count_accounts_admin_flagged`) live
+//! beside `list_accounts_admin` in `db/accounts.rs`.
 
 use std::collections::HashMap;
 

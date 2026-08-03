@@ -1,5 +1,10 @@
 // pattern: Imperative Shell
 
+//! The server's persistent HS256 JWT signing secret — the single-row `jwt_signing_secret`
+//! table (V015), AES-256-GCM encrypted under the signing-key master key. `get_jwt_secret`
+//! (+ `JwtSecretRow`) loads it and `store_jwt_secret` persists a fresh one, so the secret
+//! survives restarts instead of being regenerated per boot.
+
 use sqlx::SqlitePool;
 
 /// A row from the `jwt_signing_secret` table.

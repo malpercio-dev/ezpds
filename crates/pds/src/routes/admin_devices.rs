@@ -1,16 +1,22 @@
 // pattern: Imperative Shell
-//
-// Pairing bootstrap for the operator companion app's per-device signed-request auth.
-//
-// Two endpoints:
-//   POST /v1/admin/pairing-codes — master-token authed; mints a single-use,
-//        short-TTL pairing code the operator renders as a QR for a new phone.
-//   POST /v1/admin/devices       — pairing code + self-signature; registers the
-//        phone's P-256 public key and consumes the code atomically.
-//
-// Registration is authenticated by the pairing code (a bearer secret) plus a
-// self-signature proving the caller holds the private key for the supplied public
-// key — not the master token, so a paired phone cannot enroll accomplices.
+
+//! Pairing bootstrap and device management for the operator companion app's per-device
+//! signed-request auth.
+//!
+//! Four endpoints: `POST /v1/admin/pairing-codes` (master token **only**; mints a
+//! single-use, short-TTL pairing code the operator renders as a QR for a new phone —
+//! minting stays on the root-of-trust path so a paired phone cannot enroll
+//! accomplices), `POST /v1/admin/devices` (pairing code + self-signature; registers
+//! the phone's P-256 public key and consumes the code atomically),
+//! `GET /v1/admin/devices` (list devices with derived status), and
+//! `POST /v1/admin/devices/:id/revoke` (revoke a device; idempotent, 404 on unknown).
+//!
+//! Registration is authenticated by the pairing code (a bearer secret) plus a
+//! self-signature proving the caller holds the private key for the supplied public
+//! key; the signature is verified **before** the code is consumed, and every rejection
+//! path returns one generic 401 so the response never reveals which check failed. List
+//! and revoke are admin-authed via `require_admin` (master token **or** an active
+//! device's signed request).
 
 use axum::{
     body::Bytes,

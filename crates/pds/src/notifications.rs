@@ -1,27 +1,33 @@
 // pattern: Imperative Shell
-//
-// The sending side of the notification relay: turn a notification into one HPKE-sealed,
-// length-quantized payload *per registered device* and hand each to the relay worker.
-//
-// Three properties this module is responsible for, in the order they matter:
-//
-// 1. **Confidentiality.** The relay and Apple both handle the payload, and neither may read
-//    it. Every send is sealed to one specific device's notification public key.
-// 2. **Authenticity.** HPKE `mode_auth` proves the payload came from this instance's sender
-//    key. A malicious relay can drop or duplicate a push; it cannot author one that renders
-//    as genuine.
-// 3. **Metadata minimization.** Ciphertext length is visible to everyone on the path, and
-//    notification *length* betrays notification *kind*. Every payload is padded up to a
-//    bucket before sealing.
-//
-// Fan-out is one seal per registration, never one seal reused: HPKE seals to a single
-// recipient key, and reusing an encapsulated key across devices would be a different (and
-// weaker) protocol.
-//
-// Nothing here is fallible from a caller's perspective. Every path ends in an enqueue or a
-// log line, because a notification is a courtesy: a missed banner is recovered the next time
-// the app talks to Custos, whereas a trigger that fails because a push relay is unwell has
-// turned a courtesy into an outage.
+
+//! The sending side of the notification relay: `notify_device(state, did, payload)` and
+//! `notify_admin_devices` turn a notification into one HPKE-sealed, length-quantized payload
+//! *per registered device* and hand each to the relay worker. Inert when
+//! `[notifications] relay` is unset (`AppState.notify_sender` is `None`), down to never
+//! minting key material.
+//!
+//! Three properties this module is responsible for, in the order they matter:
+//!
+//! 1. **Confidentiality.** The relay and Apple both handle the payload, and neither may read
+//!    it. Every send is sealed to one specific device's notification public key.
+//! 2. **Authenticity.** HPKE `mode_auth` proves the payload came from this instance's sender
+//!    key. A malicious relay can drop or duplicate a push; it cannot author one that renders
+//!    as genuine. Sender keys are minted lazily, on first send or first `sender-keys` fetch
+//!    (`active_sender_key`, `published_sender_keys`).
+//! 3. **Metadata minimization.** Ciphertext length is visible to everyone on the path, and
+//!    notification *length* betrays notification *kind*. Every payload is padded up to a
+//!    bucket before sealing, computed against the serialized APNs body via the shared
+//!    `notify_relay::protocol::apns_envelope` (see `pad_len_for`); a payload too large for
+//!    the top bucket is dropped, never sent unpadded or truncated (see `seal_for`).
+//!
+//! Fan-out is one seal per registration, never one seal reused: HPKE seals to a single
+//! recipient key, and reusing an encapsulated key across devices would be a different (and
+//! weaker) protocol. The sealing key is loaded once per fan-out.
+//!
+//! Nothing here is fallible from a caller's perspective. Every path ends in an enqueue or a
+//! log line, because a notification is a courtesy: a missed banner is recovered the next time
+//! the app talks to Custos, whereas a trigger that fails because a push relay is unwell has
+//! turned a courtesy into an outage.
 
 use serde::Serialize;
 use zeroize::Zeroizing;
