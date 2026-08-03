@@ -63,6 +63,19 @@ pub(super) async fn handle_authorization_code(
                 .into_response()
         }
     };
+
+    // Enforce the client's registered token_endpoint_auth_method (private_key_jwt clients
+    // must present a valid client_assertion; public clients must not).
+    if let Err(e) = super::client_auth::authenticate_token_client(
+        state,
+        client_id,
+        form.client_assertion_type.as_deref(),
+        form.client_assertion.as_deref(),
+    )
+    .await
+    {
+        return e.into_response();
+    }
     let code_verifier = match form.code_verifier.as_deref() {
         Some(v) if !v.is_empty() => v,
         _ => {

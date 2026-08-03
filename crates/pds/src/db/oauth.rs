@@ -32,6 +32,14 @@ pub struct ClientMetadata {
     #[serde(default)]
     pub redirect_uris: Vec<String>,
     pub client_name: Option<String>,
+    /// `none` (public) or `private_key_jwt` (confidential). Absent = `none`.
+    pub token_endpoint_auth_method: Option<String>,
+    /// Inline JWK set for `private_key_jwt` assertion verification. Kept as raw JSON here;
+    /// the token endpoint's client-auth module parses it.
+    pub jwks: Option<serde_json::Value>,
+    /// JWK-set URL alternative to `jwks` (client-controlled — the consumer policy-checks
+    /// and fetches it with the SSRF-hardened client).
+    pub jwks_uri: Option<String>,
 }
 
 /// Register a new OAuth client.

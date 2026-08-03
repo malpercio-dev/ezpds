@@ -22,6 +22,7 @@
 
 mod authorization_code;
 mod claim_polling;
+mod client_auth;
 mod jwt_bearer;
 mod refresh;
 
@@ -57,6 +58,10 @@ pub struct TokenRequestForm {
     pub code_verifier: Option<String>,
     // refresh_token grant
     pub refresh_token: Option<String>,
+    // private_key_jwt client authentication (RFC 7523), enforced per the client's
+    // registered token_endpoint_auth_method
+    pub client_assertion: Option<String>,
+    pub client_assertion_type: Option<String>,
     // jwt-bearer grant (RFC 7523): agent identity-assertion exchange
     pub assertion: Option<String>,
     pub resource: Option<String>,

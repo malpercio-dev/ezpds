@@ -15,9 +15,10 @@ use axum::{
 ///
 /// All token-endpoint and revocation-endpoint errors use this format, distinct from the
 /// codebase's `ApiError` envelope (`{ "error": { "code": "...", "message": "..." } }`).
+#[derive(Debug)]
 pub(super) struct OAuthTokenError {
     pub error: &'static str,
-    pub error_description: &'static str,
+    pub error_description: std::borrow::Cow<'static, str>,
     /// Optional DPoP-Nonce value to include in the response header.
     /// Required for `use_dpop_nonce` errors so the client can retry.
     pub dpop_nonce: Option<String>,
@@ -27,7 +28,17 @@ impl OAuthTokenError {
     pub(super) fn new(error: &'static str, error_description: &'static str) -> Self {
         Self {
             error,
-            error_description,
+            error_description: std::borrow::Cow::Borrowed(error_description),
+            dpop_nonce: None,
+        }
+    }
+
+    /// Like [`OAuthTokenError::new`] but for descriptions built at runtime (e.g. naming the
+    /// offending value). Same wire shape; descriptions stay mechanical facts, never secrets.
+    pub(super) fn new_owned(error: &'static str, error_description: String) -> Self {
+        Self {
+            error,
+            error_description: std::borrow::Cow::Owned(error_description),
             dpop_nonce: None,
         }
     }
@@ -39,7 +50,7 @@ impl OAuthTokenError {
     ) -> Self {
         Self {
             error,
-            error_description,
+            error_description: std::borrow::Cow::Borrowed(error_description),
             dpop_nonce: Some(nonce),
         }
     }
@@ -53,7 +64,7 @@ impl IntoResponse for OAuthTokenError {
         // codes and fixed descriptions, never token material.
         tracing::info!(
             error = self.error,
-            description = self.error_description,
+            description = %self.error_description,
             "OAuth endpoint rejecting request"
         );
         let body = serde_json::json!({
