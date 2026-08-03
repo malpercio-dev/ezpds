@@ -54,7 +54,8 @@
 //! `per_did_sign_closure`, self-verify via `verify_plc_tombstone_op` against the head
 //! rotation keys before submitting. A tombstone is the one wallet-signed PLC op with
 //! no field allowlist to guard — it carries no identity state and retires everything —
-//! so the pre-sign checks are that self-verification plus the wipe-last ordering.
+//! so the pre-sign check is that self-verification alone; the separate lifecycle
+//! invariant is wiping local data only after the PLC submission succeeds.
 //! Then POST it to plc.directory, and ONLY THEN call `IdentityStore::remove_identity` — the wipe
 //! deletes the device key that signs the tombstone, so a submit failure must leave it
 //! intact for a retry (the `submit_then_wipe` ordering is unit-tested). A did:web

@@ -12,9 +12,13 @@
 //! material in `Zeroizing`.
 //!
 //! Retry resilience lives here too: [`load_or_create`] persists the generated set in a
-//! Keychain staging slot before the ceremony's state-creating call (`POST /v1/dids`; the
-//! read-only signing-key fetch precedes staging), so a retry reuses the identical set
-//! (same set_id) instead of orphaning a prior attempt's escrow deposit. Three staging
+//! Keychain staging slot before its ceremony's first state-creating call, so a retry
+//! reuses the identical set (same set_id) instead of orphaning what a prior attempt
+//! already created. That boundary differs per ceremony: the create ceremony's
+//! `POST /v1/dids` (the read-only signing-key fetch precedes staging), the re-key's
+//! rotation-op submit to plc.directory followed by the `PUT /v1/recovery/escrow-share`
+//! deposit, and the self-held kit's rotation-op submit (no `/v1/*` call at all — see
+//! `self_held_kit.rs` for its network posture). Three staging
 //! slots, one per ceremony: `ceremony-staging` ([`STAGING_ACCOUNT`], the create
 //! ceremony) plus the per-DID `rekey-staging:{did}` and `self-held-kit-staging:{did}`.
 //! The latter two are separate slots for the same DID on purpose — the two ceremonies
