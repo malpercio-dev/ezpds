@@ -4,6 +4,13 @@
 // Processes: none (response shape is trivial — no pure core to extract)
 // Returns: JSON response with version and db status
 
+//! `GET /xrpc/_health` — liveness probe.
+//!
+//! `version` is the self-identifying `custos vX.Y.Z`
+//! (`capabilities::IDENTIFYING_VERSION`) — the shape third-party atproto diagnostic
+//! tooling fingerprints on, not a bare version number. `db` reports pool liveness
+//! (`SELECT 1`, not schema or migrations); a failed check is a 503 with `db: "error"`.
+
 use axum::{
     extract::State,
     http::StatusCode,

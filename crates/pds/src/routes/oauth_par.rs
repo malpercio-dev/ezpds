@@ -7,6 +7,16 @@
 //   POST: 201 JSON { request_uri, expires_in } on success
 //         400 JSON { error, error_description } on invalid request (RFC 9126 §2.3)
 
+//! `POST /oauth/par` — Pushed Authorization Requests (RFC 9126).
+//!
+//! For discoverable (https-URL) client_ids, a private-use-scheme `redirect_uri` must be the
+//! client_id host's FQDN in reverse order (`invalid_redirect_uri` otherwise), matching
+//! bsky.social's enforcement of the atproto OAuth rule; the check is shared with the
+//! authorization endpoint via `auth/oauth_client_resolution.rs`.
+//!
+//! Accepts and stores `response_mode` (`query`/`fragment`; anything else is `invalid_request`)
+//! for the authorization endpoint to honor on its redirects.
+
 use axum::{
     extract::State,
     http::StatusCode,

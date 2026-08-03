@@ -1,16 +1,26 @@
 // pattern: Mixed (unavoidable)
-//
-// Gathers: a URL-shaped OAuth client_id + the shared outbound HTTP client
-// Processes: URL policy validation (pure) → metadata-document fetch (shell) →
-//            document validation (pure)
-// Returns: the raw client-metadata JSON for the caller to cache, or a typed refusal
-//
-// ATProto OAuth clients identify themselves by the URL of their client-metadata
-// document; authorization servers resolve unknown client_ids by fetching that URL
-// (https://atproto.com/specs/oauth). This module is that resolver. The fetched URL is
-// caller-controlled, so the policy check runs before any network I/O: https is
-// required everywhere except loopback hosts, which may use plain http (the spec's
-// local-development exception — also what lets tests serve metadata from 127.0.0.1).
+
+//! The ATProto OAuth client resolver: `client_id` URL policy + client-metadata-document fetch.
+//!
+//! Gathers: a URL-shaped OAuth `client_id` + the shared outbound HTTP client.
+//! Processes: URL policy validation (pure) → metadata-document fetch (shell) →
+//! document validation (pure).
+//! Returns: the raw client-metadata JSON for the caller to cache, or a typed refusal.
+//!
+//! ATProto OAuth clients identify themselves by the URL of their client-metadata
+//! document; authorization servers resolve unknown client_ids by fetching that URL
+//! (<https://atproto.com/specs/oauth>). The fetched URL is caller-controlled, so the
+//! policy check runs before any network I/O: https is required everywhere except
+//! loopback hosts, which may use plain http (the spec's local-development exception —
+//! also what lets tests serve metadata from 127.0.0.1). Failed resolutions land in a
+//! process-local 60s negative cache (bounded, oldest-evicted) so replaying one failing
+//! client_id against the unauthenticated PAR/authorize endpoints can't loop outbound
+//! fetches.
+//!
+//! Also owns `validate_private_use_redirect`, the reverse-FQDN redirect rule both
+//! request surfaces enforce. Consumers: `routes/oauth_par.rs` and
+//! `routes/oauth_authorize.rs` (`resolve_client_metadata`), and
+//! `routes/oauth_client_metadata.rs` (`url_is_loopback`).
 
 use std::collections::HashMap;
 use std::sync::{Mutex, OnceLock};

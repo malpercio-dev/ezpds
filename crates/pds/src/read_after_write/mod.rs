@@ -1,9 +1,35 @@
 // pattern: Imperative Shell
-//
-// Proxy a read-after-write NSID to the AppView, buffer the response, and merge the requester's
-// own not-yet-indexed records into it. `pipethrough_munged` runs a best-effort fallback ladder:
-// any upstream/parse/munge failure degrades to returning the AppView response unchanged, and the
-// `Atproto-Upstream-Lag` header is attached only when local records were actually merged.
+
+//! Read-after-write: the buffered munge path for the six munged AppView NSIDs
+//! (`app.bsky.feed.getTimeline`, `getAuthorFeed`, `getPostThread`, `getActorLikes`,
+//! `app.bsky.actor.getProfile`, `getProfiles`). Merges the requester's own not-yet-indexed
+//! records into the AppView's indexed response.
+//!
+//! `get_records_since_rev` selects the records by comparing the AppView's `atproto-repo-rev`
+//! response header against the account's recent commits in the firehose event log (revs are
+//! TIDs, so string comparison orders them by time); records committed after the AppView's rev
+//! are merged. The core `pipethrough_munged` handler runs a best-effort fallback ladder:
+//! (1) upstream error → return the error unchanged; (2) non-2xx → return the buffered original
+//! (except a `getPostThread` 400 `NotFound`, which triggers thread reconstruction); (3) JSON
+//! parse error → return the buffered original; (4) empty `LocalRecords` → return the buffered
+//! original with NO lag header; (5) munge/hydration errors → log and return the buffered
+//! original. Every rung returns through `passthrough_response`, so a degraded response still
+//! carries the upstream's forwarded headers (`atproto-content-labelers`/`atproto-repo-rev`).
+//! Response buffering is capped at 10 MiB (`MAX_MUNGE_RESPONSE_BODY`); an oversized response
+//! bails out early. The `Atproto-Upstream-Lag` header (milliseconds since the oldest merged
+//! record's `indexed_at`) is set only when the munge actually changed the body.
+//!
+//! The munge path shares `service_proxy::proxy_request` extraction with the streaming fast path:
+//! both mint service auth (`mint_service_auth` is `pub(crate)` so `pipethrough_munged` can reuse
+//! the JWT minting), buffer request bodies up to `MAX_PROXY_BODY`, forward query params, and
+//! forward the same request/response header subsets
+//! (`REQ_HEADERS_TO_FORWARD`/`forward_response_headers`).
+//!
+//! The AppView target comes from `[appview]` in `pds.toml`: `EZPDS_APPVIEW_URL` (default
+//! `https://api.bsky.app`), `EZPDS_APPVIEW_DID` (default `did:web:api.bsky.app#bsky_appview`),
+//! and the optional `EZPDS_APPVIEW_CDN_URL` (default `https://cdn.bsky.app`), which overrides
+//! the blob CDN endpoint in blob embed URLs (useful for egress-heavy testing with a local
+//! blobstore).
 
 mod munge;
 mod types;

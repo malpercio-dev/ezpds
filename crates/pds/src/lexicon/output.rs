@@ -1,5 +1,23 @@
 // pattern: Imperative Shell
 
+//! Test-build response-output validation: the drift detector for what Custos *serves*.
+//!
+//! Every natively-handled query/procedure that returns a JSON body has its `output` schema
+//! parsed (the shared `schema::parse_xrpc_body`, the same parse an `input` gets) and registered
+//! by NSID; `Registry::validate_output` (rooted at `Output`, `assertValidXrpcOutput` parity)
+//! asserts a serialized body against it. At registry-build time `check_refs` walks the output
+//! closure too — which is what pulls the output-only `defs` documents
+//! (`com.atproto.repo.defs#commitMeta`, `com.atproto.identity.defs#identityInfo`) into the
+//! vendored set, so a document whose output refs something un-vendored fails `registry_builds`
+//! rather than 500ing at serve time.
+//!
+//! This module is the serve-path half, compiled into test builds only: `validate_xrpc_output`
+//! wraps the real Axum router and buffers every successful natively-handled response with a
+//! registered JSON schema after the handler has serialized its DTO. A missing or renamed field
+//! panics the route test; production builds and non-JSON streams (the `sync.*` CAR streams,
+//! `getBlob`) are untouched. The malformed-output registry fixtures remain as focused
+//! invalid-case coverage.
+
 use axum::{
     body::{to_bytes, Body},
     extract::Request,

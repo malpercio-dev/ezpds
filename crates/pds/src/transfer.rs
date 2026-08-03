@@ -1,8 +1,11 @@
 // pattern: Imperative Shell
-//
-// Higher-level planned-transfer workflows that compose multiple DB tables inside
-// request-sized transactions. The `db::transfers` module owns the SQL statements;
-// this module owns the cross-table ordering needed to accept and complete a transfer.
+
+//! Higher-level planned device-transfer workflows — accept, complete, and operator cancel —
+//! composing multiple DB tables inside request-sized transactions. The `db::transfers` module
+//! owns the SQL statements; this module owns the cross-table ordering. Cancel is the operator
+//! interruption; its semantics (flip to terminal `cancelled`, tombstone the accepted device
+//! credential, append a `transfer.cancelled` audit event, existing account sessions untouched)
+//! are on `cancel_transfer`.
 
 use sqlx::SqlitePool;
 use uuid::Uuid;

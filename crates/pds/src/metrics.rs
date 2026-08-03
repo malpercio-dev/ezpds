@@ -13,11 +13,13 @@
 //! boundary, no registry exists, and `app()` never registers the route — so call sites stay
 //! unconditional while the endpoint 404s.
 //!
-//! Instrument names and label keys live in [`names`] — the single source of truth the
-//! documentation table in `crates/pds/AGENTS.md` mirrors. Counters are named **without**
-//! the `_total` suffix: the Prometheus exporter appends it per the OpenTelemetry
-//! Prometheus-compatibility spec (the unit test below pins the rendered names so drift or
-//! a double suffix fails fast).
+//! Instrument names and label keys live in [`names`], the single source of truth for the
+//! instrument set — each constant's doc states what it measures and who records it. Counters
+//! are named **without** the `_total` suffix: the Prometheus exporter appends it per the
+//! OpenTelemetry Prometheus-compatibility spec (the unit test below pins the rendered names so
+//! drift or a double suffix fails fast). Cardinality rule: label values are always drawn from
+//! small fixed sets or the route table — never from request data (raw URIs, rkeys, DIDs,
+//! hostnames).
 
 use anyhow::Context;
 use axum::extract::{MatchedPath, Request, State};

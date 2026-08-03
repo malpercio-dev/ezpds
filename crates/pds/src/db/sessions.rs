@@ -1,9 +1,10 @@
 // pattern: Imperative Shell
-//
-// Session-row writes against the `sessions` table. Only the standalone provisioning-session
-// insert lives here; every other session insert is one leg of a multi-table auth transaction
-// (createSession, account genesis, migration) and stays in its route handler alongside the
-// paired refresh-token write.
+
+//! Session-row writes against the `sessions` table (V009). Only the standalone insert lives
+//! here: `insert_provisioning_session` creates a bearer-authenticated session with no device
+//! and a one-year TTL. Every other session insert is one leg of a multi-table auth
+//! transaction (createSession, account genesis, migration) and stays in its route handler
+//! alongside the paired refresh-token write.
 
 use common::{ApiError, ErrorCode};
 

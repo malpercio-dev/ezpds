@@ -1,23 +1,19 @@
 // pattern: Imperative Shell
-//
-// POST /xrpc/com.atproto.identity.signPlcOperation
-//
-// Signs a DID-repointing PLC operation on the authenticated account's behalf, using
-// the PDS-held rotation key, and returns it UNSUBMITTED (the caller submits it, or
-// passes it to `submitPlcOperation`). This is the interop (PDS-signed) migration path
-// (ADR-0002): it lets off-the-shelf tooling migrate off ezpds the standard way. The
-// wallet-authorized path signs its identity leg locally and never calls this.
-//
-// The operation is built by overlaying the request's changes onto the DID's current
-// PLC state (fetched from plc.directory) and chaining it via `prev` onto the current
-// head. Authorization is two-factor: a full-access session AND a single-use email
-// token minted by `requestPlcOperationSignature`.
-//
-// Gather:  AuthenticatedUser (full access) + JSON { token?, rotationKeys?, alsoKnownAs?,
-//          verificationMethods?, services? }
-// Process: validate email token → fetch current PLC state → overlay changes →
-//          load + decrypt the PDS rotation key → consume the token → build + sign the operation
-// Respond: { operation }
+
+//! `POST /xrpc/com.atproto.identity.signPlcOperation` — sign a DID-repointing PLC op with the
+//! PDS-held rotation key and return it UNSUBMITTED as `{ operation }` (the caller submits it,
+//! or passes it to `submitPlcOperation`).
+//!
+//! The operation is built by overlaying the request's changes (`rotationKeys?`, `alsoKnownAs?`,
+//! `verificationMethods?`, `services?`) onto the DID's current PLC state fetched from
+//! plc.directory, chained via `prev` onto the current head. Authorization is two-factor: a
+//! full-access session AND the single-use email `token` minted by
+//! `requestPlcOperationSignature`, consumed here.
+//!
+//! This is the interop (PDS-signed) migration path (ADR-0002), letting off-the-shelf tooling
+//! migrate off ezpds the standard way; the wallet-authorized path signs its identity leg locally
+//! and never calls this. Guarded by `identity::plc::ensure_did_plc` like its siblings (an
+//! explicit "not a did:plc" 400 for a `did:web` account — see `request_plc_operation_signature`).
 
 use axum::{extract::State, response::Json};
 use serde::{Deserialize, Serialize};

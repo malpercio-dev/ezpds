@@ -1,9 +1,15 @@
 // pattern: Imperative Shell
-//
-// App-password queries. Reads and writes the `app_passwords` table (V031); returns plain
-// data structs. No business logic — callers decide what to do with the result. Revocation
-// (which also deletes the app password's refresh tokens/sessions) is a multi-table
-// transaction and lives in the route handler, not here.
+
+//! App-password queries over the `app_passwords` table (V031). Plain data out; no business
+//! logic.
+//!
+//! `insert_app_password` reports a `(did, name)` PK collision as
+//! `InsertOutcome::DuplicateName` (the 409 path). `list_app_passwords` returns public
+//! metadata only — never the hash. `list_verify_candidates` returns hash + privilege for
+//! `createSession` to try a supplied password against, and `app_password_privileged`
+//! re-derives an app-pass session's privilege on `refreshSession`. Revocation — deleting the
+//! row plus the app password's refresh tokens and sessions — is a multi-table transaction
+//! owned by `routes/revoke_app_password.rs`, not here.
 
 use common::{ApiError, ErrorCode};
 

@@ -1,5 +1,12 @@
 // pattern: Imperative Shell
 
+//! Account-preferences queries over `account_preferences` (V023): one `app.bsky`
+//! preferences JSON blob per DID, stored locally on the PDS.
+//!
+//! `get_preferences` returns the stored blob; `put_preferences` upserts it, overwriting any
+//! previous value. Both are generic over the executor so `routes/put_preferences.rs` can run
+//! its read-merge-write sequence inside one transaction.
+
 use sqlx::Sqlite;
 
 use common::{ApiError, ErrorCode};

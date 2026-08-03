@@ -1,11 +1,14 @@
 // pattern: Mixed (unavoidable)
-//
-// Munging functions: transform the AppView response by merging the requester's own unindexed records.
-// The profile/likes munges and the `refresh_own_authored_items` / `is_actor_requester` helpers are
-// pure transformations of the AppView response + local records → merged output. The two feed-injection
-// paths (`get_timeline`, `get_author_feed`) are NOT pure: they orchestrate async hydration and
-// insertion through the `LocalViewer` (Imperative Shell), whose `hydrate_quotes` performs an outbound
-// service-auth'd `app.bsky.feed.getPosts` call. Hence the whole file is Mixed, not Functional Core.
+
+//! Per-NSID munges — `get_timeline`, `get_author_feed`, `get_post_thread`, `get_actor_likes`,
+//! `get_profile`, `get_profiles` — each transforming the AppView response by injecting or
+//! overwriting the requester's own unindexed records. The profile/likes munges and the
+//! `refresh_own_authored_items` / `is_actor_requester` helpers are pure transformations of the
+//! AppView response + local records → merged output. The feed/thread injection paths
+//! (`get_timeline`, `get_author_feed`, `get_post_thread`) are NOT pure: they orchestrate async
+//! hydration and insertion through the `LocalViewer` (Imperative Shell), whose `hydrate_quotes`
+//! performs an outbound service-auth'd `app.bsky.feed.getPosts` call. Hence the whole file is
+//! Mixed, not Functional Core.
 
 use super::types::LocalRecords;
 use super::viewer::LocalViewer;

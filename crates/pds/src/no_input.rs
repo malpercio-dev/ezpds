@@ -1,25 +1,27 @@
 // pattern: Imperative Shell
-//
-// `NoInputBody`: a shared axum extractor guarding XRPC procedures whose lexicon defines no
-// `input`. The reference PDS (via `@atproto/xrpc-server`'s `validateInput`) rejects any request
-// carrying a body on a no-input procedure with a 400 `InvalidRequest` — "A request body was
-// provided when none was expected". Custos historically accepted spurious bodies on most of these
-// routes, and that leniency concealed a wallet interop bug: the wallet sent empty `{}`
-// payloads to no-input procedures that bsky.social rejected but Custos silently accepted. Because
-// the wallet develops against Custos, Custos's leniency is the wallet's blind spot — matching the
-// reference's strictness turns Custos into test coverage for the wallet.
-//
-// This lives outside `routes/` (like `request_host.rs`) so every no-input handler can share it
-// without a route-to-route import. Extract it *last* in a handler's argument list — it consumes
-// the request body, so it must be the sole `FromRequest` extractor:
-//
-// ```rust,ignore
-// async fn handler(
-//     user: AuthenticatedUser,
-//     State(state): State<AppState>,
-//     _: NoInputBody,
-// ) -> Result<StatusCode, ApiError> { ... }
-// ```
+
+//! `NoInputBody`: a shared axum extractor guarding XRPC procedures whose lexicon defines no
+//! `input`. The reference PDS (via `@atproto/xrpc-server`'s `validateInput`) rejects any request
+//! carrying a body on a no-input procedure with a 400 `InvalidRequest` — "A request body was
+//! provided when none was expected". Custos historically accepted spurious bodies on most of these
+//! routes, and that leniency concealed a wallet interop bug: the wallet sent empty `{}`
+//! payloads to no-input procedures that bsky.social rejected but Custos silently accepted. Because
+//! the wallet develops against Custos, Custos's leniency is the wallet's blind spot — matching the
+//! reference's strictness turns Custos into test coverage for the wallet.
+//!
+//! This lives outside `routes/` (like `request_host.rs`) so every no-input handler shares one
+//! guard instead of the strictness drifting route to route: `activateAccount`, `refreshSession`,
+//! `deleteSession`, `requestAccountDelete`, `requestEmailConfirmation`, `requestEmailUpdate`,
+//! `requestPlcOperationSignature`. Extract it *last* in a handler's argument list — it consumes
+//! the request body, so it must be the sole `FromRequest` extractor:
+//!
+//! ```rust,ignore
+//! async fn handler(
+//!     user: AuthenticatedUser,
+//!     State(state): State<AppState>,
+//!     _: NoInputBody,
+//! ) -> Result<StatusCode, ApiError> { ... }
+//! ```
 
 use axum::{body::Bytes, extract::FromRequest};
 

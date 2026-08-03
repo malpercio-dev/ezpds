@@ -1,18 +1,22 @@
 // pattern: Imperative Shell
-//
-// Shared permanent account-deletion machinery, used by both the standard XRPC surface
-// (`routes/delete_account.rs`, POST /xrpc/com.atproto.server.deleteAccount) and the scheduled
-// deletion reaper (`account_reaper.rs`, which acts on `deleteAfter`). Deletion is a multi-table
-// atomic transaction plus a firehose `#account` (deleted) frame, so it lives here as a dedicated
-// helper rather than in a `db/` submodule (those own single-table queries, not business
-// transactions) and rather than in a route (routes must not import from one another).
-//
-// **What deletion does NOT do.** ezpds is wallet-native: the PDS never holds the DID's top
-// rotation key (ADR-0001), so it cannot sign a PLC tombstone the way a key-custodying PDS would.
-// Deletion therefore removes all *local* account data and announces the removal on the firehose;
-// the did:plc identity itself remains on plc.directory under the wallet's control (the wallet can
-// tombstone or migrate it independently). This mirrors the reference PDS's `deleteAccount`, which
-// likewise deletes local data and sequences an account event rather than tombstoning the identity.
+
+//! Shared permanent account-deletion machinery, used by both the standard XRPC surface
+//! (`routes/delete_account.rs`, POST /xrpc/com.atproto.server.deleteAccount) and the scheduled
+//! deletion reaper (`account_reaper.rs`, which acts on `deleteAfter`). Deletion is a multi-table
+//! atomic transaction plus on-disk reclamation of blob files no other account owns and a firehose
+//! `#account` (deleted) frame, so it lives here as a dedicated helper rather than in a `db/`
+//! submodule (those own single-table queries, not business transactions) and rather than in a
+//! route (routes must not import from one another). Purging a parent cascade-schedules its
+//! sovereign children onto the same deactivate → `delete_after` → reaper pipeline; see
+//! `DELETION_TABLES` and `purge_account` for the ordering, scoping, and the schema-walking
+//! tripwire test.
+//!
+//! **What deletion does NOT do.** ezpds is wallet-native: the PDS never holds the DID's top
+//! rotation key (ADR-0001), so it cannot sign a PLC tombstone the way a key-custodying PDS would.
+//! Deletion therefore removes all *local* account data and announces the removal on the firehose;
+//! the did:plc identity itself remains on plc.directory under the wallet's control (the wallet can
+//! tombstone or migrate it independently). This mirrors the reference PDS's `deleteAccount`, which
+//! likewise deletes local data and sequences an account event rather than tombstoning the identity.
 
 use common::{ApiError, ErrorCode};
 

@@ -4,6 +4,15 @@
 // Processes: canonical-vs-loopback client_id selection (pure)
 // Returns: OAuth client metadata JSON per AT Protocol spec
 
+//! `GET /oauth/client-metadata.json` — the identity wallet's OAuth client metadata (ATProto
+//! OAuth spec).
+//!
+//! The `client_id` is the fixed canonical
+//! `https://identitywallet.obsign.org/oauth/client-metadata.json` — the reverse-FQDN pairing of
+//! the wallet's `org.obsign.identitywallet:` callback scheme — no matter which Custos instance
+//! serves the document. The one exception is a loopback `public_url` (local dev), where the
+//! client_id derives from that base so client resolution can fetch the document it references.
+
 use axum::{extract::State, response::IntoResponse, Json};
 use serde::Serialize;
 

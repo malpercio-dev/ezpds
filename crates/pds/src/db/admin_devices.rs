@@ -1,6 +1,6 @@
 // pattern: Imperative Shell
 
-//! Admin-device data model: pairing codes, devices, and anti-replay nonces.
+//! Admin-device data model (V025): pairing codes, devices, and anti-replay nonces.
 //!
 //! Backs the operator companion app's per-device signed-request authentication.
 //! Each device holds a non-extractable P-256 key (Secure Enclave on iOS) and the
@@ -16,6 +16,13 @@
 //! pairing/auth routes run inside a transaction (`consume_pairing_code`,
 //! `insert_device`, `insert_nonce_if_absent`) are generic over the executor so a
 //! caller can pass either the pool or an open `&mut Transaction`.
+//!
+//! `touch_last_seen` bumps liveness on each successful device auth, and
+//! `sweep_stale_nonces` bounds the anti-replay table. The pairing/register routes
+//! (`routes/admin_devices.rs`) wire the mint/get/consume + insert functions; the
+//! `require_admin` signed-request guard (`auth/guards.rs`) consumes `get_device` /
+//! `insert_nonce_if_absent` / `touch_last_seen`; the list/revoke routes consume
+//! `list_devices` / `revoke_device` / `get_device`.
 
 #![allow(dead_code)]
 

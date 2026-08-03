@@ -1,10 +1,15 @@
 // pattern: Imperative Shell
-//
-// Handle queries against the `handles` table — each row binds one handle string to the DID that
-// owns it. Returns plain data; no business logic (a caller decides whether a hit/miss means 404,
-// 409, or an idempotent no-op). Multi-table handle swaps — e.g. `updateHandle`'s atomic
-// DELETE-then-INSERT — stay in their route handler's transaction; only standalone single-table
-// statements live here.
+
+//! Handle queries against the `handles` table (V002) — each row binds one handle string to
+//! the DID that owns it. Plain data out; a caller decides whether a hit/miss means 404, 409,
+//! or an idempotent no-op.
+//!
+//! `resolve_handle` (handle → DID, local) backs `updateHandle`, `deleteHandle`, and
+//! `.well-known/atproto-did`; `get_handle_by_did` is the reverse lookup; `insert_handle`
+//! reports a UNIQUE violation as `InsertHandleOutcome::HandleTaken` (for `createHandle`).
+//! Multi-table swaps — `updateHandle`'s atomic DELETE-then-INSERT, `deleteHandle`'s
+//! DNS-ordered delete — stay in their route handlers' transactions; only standalone
+//! single-table statements live here.
 
 use common::{ApiError, ErrorCode};
 

@@ -1,19 +1,20 @@
 // pattern: Imperative Shell
-//
-// The admin-companion's notification endpoints — the operator-alert analog of
-// `routes/notifications.rs`:
-//
-//   POST /v1/admin/notifications/register    — register this admin device for push
-//   GET  /v1/admin/notifications/sender-keys — the set of keys to pin
-//
-// Auth is `require_admin` (master token OR a device-signed envelope), not `authenticate_access`:
-// an operator device authenticates *as a device*, never as an account.
-//
-// The registration is keyed by the authenticated device id, taken from the credential rather
-// than the body. That is the whole security property of this route: a device can register a
-// push key for itself and for nothing else, so a compromised operator device cannot redirect
-// another device's alerts to itself. It follows that the master token — which authenticates
-// no particular device — cannot register at all.
+
+//! The admin-companion's notification endpoints — the operator-alert analog of
+//! `routes/notifications.rs`:
+//!
+//! - `POST /v1/admin/notifications/register` — register this admin device for push
+//! - `GET /v1/admin/notifications/sender-keys` — the set of keys to pin
+//!
+//! Auth is `require_admin` (master token OR a device-signed envelope), not
+//! `authenticate_access`: an operator device authenticates *as a device*, never as an account.
+//!
+//! Registration requires a device-signed request: the row is keyed by the authenticated device
+//! id, taken from the credential rather than the body. That is the whole security property of
+//! this route — a device can register a push key for itself and for nothing else, so a
+//! compromised operator device cannot redirect another device's alerts to itself. It follows
+//! that the master token, which authenticates no particular device, is refused with 400.
+//! Reading the key set is a plain admin read, so the master token is accepted there.
 
 use axum::body::Bytes;
 use axum::{

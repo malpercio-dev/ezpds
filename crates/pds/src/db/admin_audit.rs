@@ -1,11 +1,19 @@
 // pattern: Imperative Shell
-//
-// Server-wide admin-action audit log queries (V052). Append-only: this module exposes
-// INSERT and SELECT only — no UPDATE or DELETE exists here, and none may be added. The
-// table carries no foreign keys, so nothing removes its rows either (not even account
-// deletion): the server's history deliberately outlives the accounts, devices, and codes
-// it describes. Action vocabulary lives in `AdminAuditAction`; callers build the `detail`
-// JSON and must never include request bodies, pairing codes, or token material.
+
+//! Server-wide admin-action audit log queries (`admin_audit_events`, V052).
+//!
+//! Append-only: this module exposes INSERT and SELECT only — no UPDATE or DELETE exists
+//! here, and none may be added. The table carries no foreign keys, so nothing removes its
+//! rows either (not even account deletion): the server's history outlives the accounts,
+//! devices, and codes it describes. `AdminAuditAction` is the action vocabulary, with
+//! `from_filter` giving the list route its 400-on-unknown validation; callers build the
+//! `detail` JSON and must never include request bodies, pairing codes, or token material.
+//!
+//! `insert_admin_audit_event` returns raw `sqlx::Error` and is executor-generic so a write
+//! can join the mutating route's transaction. `record_admin_audit_event` is the
+//! `ApiError`-mapped wrapper: a failed audit write fails the request, because a privileged
+//! action must not land unattributed. `list_admin_audit_events` pages on the rowid cursor,
+//! newest first, with optional exact-match action/actor/subject filters.
 
 use common::{ApiError, ErrorCode};
 use sqlx::Sqlite;

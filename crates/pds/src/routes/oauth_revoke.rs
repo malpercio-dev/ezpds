@@ -5,21 +5,29 @@
 // Returns: 200 with an empty body on success or on an unknown/unauthorized token
 //          (RFC 7009 §2.2 non-disclosure); JSON OAuthTokenError on a malformed or
 //          unauthenticated request
-//
-// `POST /oauth/revoke` — OAuth 2.0 Token Revocation (RFC 7009).
-//
-// Only the stateful **refresh token** is revocable. Access tokens are self-contained
-// 5-minute ES256 JWTs (`oauth_token.rs`) with no server-side store, so there is nothing to
-// delete for one: an access-token `token` (or any unknown/expired value) is accepted as a
-// no-op success, its lifetime already bounded by the 5-minute TTL — the same
-// TTL-bounded-revocation property the jwt-bearer note in `oauth_token.rs` calls out.
-//
-// Authentication is DPoP proof-of-possession, mirroring the `refresh_token` grant: the
-// caller must present a valid DPoP proof (RFC 9449) whose key thumbprint matches the one the
-// refresh token is bound to. A party that merely observed the token string — but does not
-// hold its key — can therefore neither use the token nor revoke it, closing the RFC 7009
-// concern that revocation not become a denial-of-service oracle. This is the codebase's
-// uniform posture: every other refresh-token operation already requires the bound DPoP key.
+
+//! `POST /oauth/revoke` — OAuth 2.0 Token Revocation (RFC 7009), advertised as
+//! `revocation_endpoint` in the AS metadata.
+//!
+//! Only the stateful **refresh token** (`oauth_tokens`) is revocable. Access tokens are
+//! self-contained 5-minute ES256 JWTs (`oauth_token/`) with no server-side store, so there is
+//! nothing to delete for one: an access-token `token` (or any unknown/expired value) is
+//! accepted as a no-op success, its lifetime already bounded by the 5-minute TTL — the same
+//! TTL-bounded-revocation property the jwt-bearer grant (`oauth_token/jwt_bearer.rs`) calls
+//! out.
+//!
+//! Authentication is DPoP proof-of-possession, mirroring the `refresh_token` grant: the
+//! caller must present a valid DPoP proof (RFC 9449) whose key thumbprint matches the one the
+//! refresh token is bound to (and, when the caller names a `client_id`, that client must own
+//! the token). A party that merely observed the token string — but does not hold its key —
+//! can therefore neither use the token nor revoke it, closing the RFC 7009 concern that
+//! revocation not become a denial-of-service oracle. This is the codebase's uniform posture:
+//! every other refresh-token operation already requires the bound DPoP key.
+//!
+//! Every well-formed, DPoP-authenticated request returns **200 with an empty body** whether or
+//! not a token matched (RFC 7009 §2.2 non-disclosure). Only a missing `token`
+//! (`invalid_request`) or a missing/invalid DPoP proof (`invalid_dpop_proof`/`use_dpop_nonce`)
+//! returns the `{error, error_description}` shape.
 
 use axum::{
     extract::State,

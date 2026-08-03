@@ -4,8 +4,12 @@
 //!
 //! Each block is a DAG-CBOR object (MST node or record) addressed by its CIDv1.
 //! Raw block bytes are stored once globally by CID; per-account ownership and revision metadata
-//! live in `block_owners` so account-scoped GC can drop one account's reference without deleting
-//! bytes another account still needs.
+//! live in `block_owners` (V035) so account-scoped GC can drop one account's reference without
+//! deleting bytes another account still needs.
+//!
+//! `SqliteBlockStore` adapts this store to `atrium_repo`'s async blockstore traits for one
+//! account's reads/writes. `account_block_stats` reports owned block refs, total referenced
+//! bytes, and the distinct-rev commit count for the usage endpoint.
 //!
 //! Template: `db/blobs.rs` (content-addressed storage, `ON CONFLICT` idempotency).
 

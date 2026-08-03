@@ -4,8 +4,10 @@
 //!
 //! One row per interested person, keyed by normalized email so a repeat signup is an
 //! idempotent no-op (`InsertSignupOutcome::AlreadySignedUp`) rather than a duplicate row
-//! or an enumeration oracle. The listing is a rowid-cursor page, newest first, for the
-//! operator readout (`GET /v1/admin/waitlist`).
+//! or an enumeration oracle. `list_signups` is a rowid-cursor page, newest first, for the
+//! operator readout (`GET /v1/admin/waitlist`), with `count_signups` for the total. The
+//! table has no foreign keys — signups predate accounts — so it stays off the
+//! account-purge path.
 
 use common::{ApiError, ErrorCode};
 use sqlx::{Row, SqlitePool};

@@ -1,35 +1,33 @@
 // pattern: Imperative Shell
-//
-// Gathers: DB pool + firehose via AppState, JSON body { did, password, token, custos? }
-// Processes: validate body → verify the credential factor (account password, or a device-key-signed
-//            deletion proof) → consume the single-use email token → permanently delete the account
-//            (all local data) and emit an `#account` (deleted) frame
-// Returns: 200 OK (empty) on success; ApiError on failure
-//
-// Implements: POST /xrpc/com.atproto.server.deleteAccount
-//
-// Unlike deactivate/activate, this endpoint is **not** session-authenticated: the credentials are
-// in the body (a user must be able to delete an account they can no longer log a session into).
-// The email `token` (minted by `requestAccountDelete`) is always one of the two factors. The other
-// is whichever the *request* presents:
-//
-//   * the account `password` — the standard lexicon field, unchanged; or
-//   * a **deletion proof** — a fresh timestamped envelope (`crypto::encode_account_delete_envelope`)
-//     signed by a key in the account's authoritative current signing authority
-//     (`identity::authority`: a did:plc rotation set, or a self-hosted did:web's `#device` key),
-//     carried in the off-lexicon `custos` extension object.
-//
-// The proof exists because an account created with no password (the `optionalPassword` capability)
-// could otherwise never be deleted at all: every credential path folded into the same 401 and the
-// holder had no way forward. It is accepted for a passworded account too — selecting the factor by
-// what the request presents rather than by what the account has. A current rotation key is already
-// the highest authority over the identity (it can migrate or tombstone the DID outright), so
-// refusing it to an account that also happens to have a password would deny the stronger credential
-// while honouring the weaker one, and would make the endpoint answer differently depending on
-// whether a password exists — the oracle this route exists to avoid.
-//
-// The heavy lifting — the multi-table atomic delete, the firehose frame, and on-disk blob
-// reclamation — lives in `account_delete::purge_account`, shared with the scheduled-deletion reaper.
+
+//! `POST /xrpc/com.atproto.server.deleteAccount` — permanently delete the account named by the
+//! body's `did` after verifying a credential factor plus the email `token` (minted by
+//! `requestAccountDelete`). Unlike deactivate/activate, this endpoint is **not**
+//! session-authenticated: the credentials are in the body — a user must be able to delete an
+//! account they can no longer log a session into. Advertised as the `walletAccountDelete`
+//! capability.
+//!
+//! The credential factor is whichever the *request* presents:
+//!
+//! * the account `password` — the standard lexicon field, unchanged; or
+//! * a **deletion proof** — a fresh timestamped envelope
+//!   (`crypto::encode_account_delete_envelope`) signed by a key in the account's authoritative
+//!   current signing authority (`identity::authority`, the same live-PLC lookup
+//!   `sovereign_session`/`oauth_consent` use — never the cached DID doc), carried in the
+//!   off-lexicon `custos` extension object.
+//!
+//! The proof exists because an account created with no password (the `optionalPassword`
+//! capability) could otherwise never be deleted at all. It is accepted for a passworded account
+//! too — the factor is selected by what the request presents, not what the account has: a
+//! current rotation key is already the higher authority (it can migrate or tombstone the DID
+//! outright), and branching on whether a password exists would itself be the oracle this route
+//! avoids. Every credential failure is one uniform 401, and none consumes the token. The
+//! proof's nonce is spent in `sovereign_session_nonces` **before** the token is redeemed and is
+//! not rolled back by a token failure, so a captured envelope is single-use in its own right.
+//!
+//! Deletion removes all local data via `account_delete::purge_account` (the multi-table atomic
+//! delete, on-disk blob reclamation, and the `#account` `status="deleted"` firehose frame,
+//! shared with the scheduled-deletion reaper) and leaves the did:plc identity to the wallet.
 
 use axum::{extract::State, http::StatusCode};
 use serde::Deserialize;

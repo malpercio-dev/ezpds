@@ -1,10 +1,12 @@
 // pattern: Imperative Shell
-//
-// Blob storage backend: filesystem I/O, CID computation, MIME type detection.
-// Blobs are stored at `{data_dir}/blobs/{cid[0:2]}/{cid}` with 2-char prefix fanout.
-//
-// I/O is async (`tokio::fs`): blobs can be multiple MB, so the disk read/write must not
-// park a Tokio worker thread. Callers are async handlers/sweeps that `.await` these.
+
+//! Blob storage backend: filesystem I/O, CID computation (`compute_cid`), MIME type detection.
+//! Blobs are stored at `{data_dir}/blobs/{cid[0:2]}/{cid}` with 2-char prefix fanout; writes
+//! (`store_blob`) go through a temp-file + fsync + rename path, so a stored blob is durable
+//! across a crash or power loss.
+//!
+//! I/O is async (`tokio::fs`): blobs can be multiple MB, so the disk read/write must not
+//! park a Tokio worker thread. Callers are async handlers/sweeps that `.await` these.
 
 use sha2::{Digest, Sha256};
 use std::path::Path;

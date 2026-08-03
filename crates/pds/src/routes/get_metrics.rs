@@ -7,6 +7,9 @@
 //! so it sits outside the permissive CORS layer, the trace layer, and rate-limit
 //! accounting — the endpoint is meant for a private-network scraper (or an operator/agent
 //! curl over the deployment's internal network), not for browsers.
+//! `[telemetry] metrics_require_admin = true` adds the `require_admin` gate (master
+//! token or signed companion-device request) for deployments exposing it beyond a
+//! private network.
 
 use axum::extract::State;
 use axum::http::{header, HeaderMap, StatusCode};

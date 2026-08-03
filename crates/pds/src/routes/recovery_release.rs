@@ -1,24 +1,35 @@
 // pattern: Imperative Shell
-//
-// The escrow-assisted recovery *release gate* — the server half of recovery ceremony A
-// (`docs/archive/design-plans/2026-07-17-key-recovery-from-shares.md` §4):
-//
-//   POST /v1/recovery/initiate       — public; handle/DID → email an OTP. Always 200 (no oracle).
-//   POST /v1/recovery/release        — OTP opens a cancellable release; polling collects the share.
-//   POST /v1/recovery/release/cancel — any account session/device kills a pending release.
-//
-// Threat framing: releasing the PDS-held Share 2 converts an "iCloud + mailbox compromise" into
-// an identity takeover, so every knob errs toward friction. The two backstops are the cancellable
-// delay window enforced here and the device key's 72-hour rotation-priority supremacy at
-// plc.directory (ordering `[device, recovery, PDS]`). One share is information-theoretically
-// worthless without a second, which is why polling can be identified by the account handle once
-// the release has been opened with a valid OTP.
-//
-// Uniform failure (no oracles): a wrong/expired/replayed OTP, an unknown handle at `release`, and
-// an escrow-deleted account (owner opt-out) all return the same 401 — an attacker learns nothing
-// about which accounts exist or hold escrow. `initiate` is always-200 (the `requestPasswordReset`
-// posture). initiate + release share one per-IP rate limiter instance (`rate_limit.rs` family 2)
-// so alternating them can't double the OTP-guess budget.
+
+//! The escrow-assisted recovery *release gate* — the server half of recovery ceremony A
+//! (`docs/archive/design-plans/2026-07-17-key-recovery-from-shares.md` §4), a three-endpoint
+//! state machine:
+//!
+//! * `POST /v1/recovery/initiate` — public; resolve handle/DID → email a single-use 1-hour OTP
+//!   (`recovery_otps`) to the account address. Always 200 (no oracle); a resolvable but
+//!   escrow-less account still gets one, so it isn't an escrow oracle either.
+//! * `POST /v1/recovery/release` — one endpoint, two modes. With an `otp` it consumes the OTP
+//!   and opens a cancellable delay window (`release_pending_until = now + [recovery]
+//!   release_delay_secs`, default 24h), auditing `release_requested` and notifying. Without an
+//!   `otp` it polls that opened release *by handle* (safe — one share is worthless alone),
+//!   returning `{status: "pending", availableAt}` until the window elapses, then the base32
+//!   Share 2 envelope once (auditing `released`, notifying, clearing the in-flight state). A
+//!   zero delay collapses open→released into one call.
+//! * `POST /v1/recovery/release/cancel` — account-owner authed; kills a pending release. The DID
+//!   comes from the credential, so it only touches the caller's own release; idempotent, audits
+//!   `release_cancelled` only on a real cancel, and composes with the operator's
+//!   `revoke-credentials` for a compromised-mailbox response.
+//!
+//! Threat framing: releasing the PDS-held Share 2 converts an "iCloud + mailbox compromise" into
+//! an identity takeover, so every knob errs toward friction. The two backstops are the
+//! cancellable delay window enforced here and the device key's 72-hour rotation-priority
+//! supremacy at plc.directory (ordering `[device, recovery, PDS]`).
+//!
+//! Uniform failure (no oracles): a wrong/expired/replayed OTP, an unknown handle at `release`,
+//! and an escrow-deleted account (owner opt-out) all return the same 401 — an attacker learns
+//! nothing about which accounts exist or hold escrow. `initiate` is always-200 (the
+//! `requestPasswordReset` posture). initiate + release share one per-IP rate limiter instance
+//! (`rate_limit.rs` family 2) so alternating them can't double the OTP-guess budget. 503 with no
+//! master key configured.
 
 use axum::{
     extract::State,

@@ -3,31 +3,41 @@
 // Gathers: AppState (config, OAuth signing key, DB), JSON request body
 // Processes: dispatch on registration `type` → validate/mint → persist agent-identity state
 // Returns: JSON registration result on success; OAuth-style `{error, error_description}` on failure
-//
-// `POST /agent/identity` — the auth.md agent-registration endpoint (auth.md spec Step 3). Three
-// registration flows are advertised in the AS metadata, and this handler implements all three:
-//
-//   - `identity_assertion` — the agent presents an ID-JAG (a JWT issued by a trusted external
-//     identity provider). The ID-JAG is verified against a configured issuer trust list; a known
-//     `(iss, sub)` that has been confirmed yields a fresh service-signed `identity_assertion`,
-//     while a first-seen `(iss, sub)` (whose asserted email matches a local account) starts a claim
-//     ceremony and returns `interaction_required`.
-//   - `service_auth` — the agent knows only the user's email (`login_hint`). We start a claim
-//     ceremony bound to that account and return the `claim_token` + claim block.
-//   - `anonymous` — the agent has no user identity yet. We register an ownerless identity
-//     (`agent_identities.did` is NULL until a claim binds one — V038 made it nullable), mint a
-//     pre-claim service-signed `identity_assertion` carrying the operator's `pre_claim_scopes`, and
-//     return it alongside a `claim_token` for an optional later claim ceremony. The pre-claim
-//     identity stays `active` (unclaimed), so its assertion cannot yet be exchanged at the token
-//     endpoint (the jwt-bearer grant requires a `claimed` identity with a bound DID).
-//
-// Claim-lifecycle interpretation (documented because auth.md leaves the exact status transitions to
-// the claim-ceremony endpoint): an `agent_identities.status` of `active` means "registered,
-// awaiting the user's claim confirmation" and `claimed` means "confirmed and bound". This handler
-// only ever *initiates* a registration (persisting the identity + a pending claim attempt and
-// returning the claim materials); the confirmation transition that flips `active → claimed` lives in
-// the claim-ceremony endpoint (`routes/agent_claim.rs`), and the polling exchange in the claim grant
-// type (a separate ticket).
+
+//! `POST /agent/identity` — the auth.md agent-registration endpoint (spec Step 3). Three
+//! registration flows are advertised in the AS metadata; every flow is opt-in per operator (all
+//! off by default), and failures use the OAuth-style `{error, error_description}` shape with the
+//! auth.md codes (`service_auth_not_enabled`/`anonymous_not_enabled`/`issuer_not_enabled`/
+//! `login_required`/`interaction_required`/`invalid_grant`/`access_denied`).
+//!
+//! - `identity_assertion` — the agent presents an ID-JAG (a JWT issued by a trusted external
+//!   identity provider), verified against the `[agent_auth] trusted_issuers` list:
+//!   signature/`iss`/`aud`/`exp`/`auth_time`, the verification key from the matched issuer's
+//!   inline `public_key_pem` (static trust) or its `jwks_url` fetched and cached via `jwks.rs`,
+//!   indexed by the ID-JAG `kid` (dynamic trust). A confirmed `(iss, sub)` yields a fresh
+//!   service-signed `identity_assertion`; a first-seen `(iss, sub)` (whose asserted email
+//!   matches a local account) starts a claim ceremony and returns `interaction_required`.
+//! - `service_auth` — the agent knows only the user's email (`login_hint`). We start a claim
+//!   ceremony bound to that account and return the `claim_token` + claim block.
+//! - `anonymous` — the agent has no user identity yet. We register an ownerless identity
+//!   (`agent_identities.did` is NULL until a claim binds one — V038 made it nullable), mint a
+//!   pre-claim assertion carrying the operator's `[agent_auth] pre_claim_scopes`, and return it
+//!   alongside a `claim_token` for an optional later claim ceremony. The identity stays
+//!   `active` (unclaimed), so its assertion cannot yet be exchanged at the token endpoint (the
+//!   jwt-bearer grant requires a `claimed` identity with a bound DID).
+//!
+//! Claim-lifecycle interpretation (auth.md leaves the exact transitions to the ceremony):
+//! `active` = registered, awaiting the user's claim confirmation; `claimed` = confirmed and
+//! bound. This handler only ever *initiates* a registration; the `active → claimed` flip lives
+//! in `routes/agent_claim.rs` and the polling exchange in `routes/oauth_token/claim_polling.rs`.
+//!
+//! A minted assertion's `scope` is the registration's stored `granted_scopes` **clamped to the
+//! operator's current `[agent_auth] granted_scopes`**
+//! (`auth/oauth_scopes::intersect_scope_tokens`) — a conservative granular profile by default
+//! (repo writes + blobs; no `account:*`/`identity:*`/full-access), so an agent-derived token is
+//! bounded by the same per-route scope checks as an OAuth token. Narrowing the config narrows
+//! subsequently minted assertions without re-registration; the mint never exceeds what was
+//! stored.
 
 use axum::{
     extract::State,

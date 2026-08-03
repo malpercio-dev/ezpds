@@ -1,11 +1,17 @@
 // pattern: Imperative Shell
-//
-// Gathers: query params (did, cid), AppState
-// Processes: look up blob metadata via the DID's ownership row → read blob from filesystem
-//            → re-hash the bytes against the CID before serving
-// Returns: raw blob bytes with Content-Type header
-//
-// Implements: GET /xrpc/com.atproto.sync.getBlob
+
+//! `GET /xrpc/com.atproto.sync.getBlob` — verified public blob serving.
+//!
+//! Looks up blob metadata via the requested DID's `blob_owners` row (the same CID may be owned
+//! by several accounts), re-hashes the file's bytes against the row's CID, then returns the
+//! verified bytes with the stored `Content-Type` and
+//! `Cache-Control: public, max-age=31536000, immutable` — the aggressive caching is safe only
+//! because the bytes were just verified.
+//!
+//! A hash mismatch is the same generic 404 as an absent blob: corrupt bytes are never served,
+//! since downstream caches would keep them as canonical. The mismatch is error-logged and
+//! counted on `blob_scrub_flagged_total`, so the corruption stays visible to the operator while
+//! the client sees only a 404.
 
 use axum::{
     body::Body,

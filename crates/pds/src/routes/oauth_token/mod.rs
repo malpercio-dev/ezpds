@@ -4,15 +4,21 @@
 // Processes: DPoP validation → grant dispatch → token issuance
 // Returns: JSON TokenResponse + DPoP-Nonce header on success;
 //          JSON OAuthTokenError on all failure paths
-//
-// Grants: `authorization_code` and `refresh_token` (DPoP-bound, rotating refresh tokens) plus
-// `urn:ietf:params:oauth:grant-type:jwt-bearer` (RFC 7523) — the auth.md agent path that exchanges
-// a service-signed `identity_assertion` for a short-lived Bearer access token, no DPoP, no refresh.
-//
-// One route module split across per-grant submodules: this file owns the request/response types,
-// the shared token-issuance + cleanup helpers, and the `post_token` dispatcher; each grant's
-// distinct logic and error surface lives in its own submodule (`authorization_code`, `refresh`,
-// `jwt_bearer`, `claim_polling`). Route isolation is untouched — these are all one route module.
+
+//! `POST /oauth/token` — one route module split across per-grant submodules: this file owns the
+//! request/response types, the shared token-issuance + `cleanup_expired_state` helpers, and the
+//! `post_token` grant dispatcher; each grant's distinct logic, error surface, and tests live in
+//! its own submodule. Still a single route module, so the no-routes-importing-routes rule is
+//! untouched.
+//!
+//! Grants:
+//!
+//! - `authorization_code` + `refresh_token` — DPoP-bound, rotating refresh tokens
+//!   (`authorization_code.rs`, `refresh.rs`)
+//! - `urn:ietf:params:oauth:grant-type:jwt-bearer` (RFC 7523) — exchanges a service-signed
+//!   agent `identity_assertion` for a short-lived Bearer access token (`jwt_bearer.rs`)
+//! - `urn:workos:agent-auth:grant-type:claim` (auth.md Step 4c) — the machine-pollable half of
+//!   the agent claim ceremony (`claim_polling.rs`)
 
 mod authorization_code;
 mod claim_polling;

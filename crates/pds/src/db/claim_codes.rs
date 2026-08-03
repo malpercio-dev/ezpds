@@ -1,5 +1,16 @@
 // pattern: Imperative Shell
 
+//! Invite/claim-code queries over the `claim_codes` table (V004; V041 added `revoked_at`).
+//!
+//! `claim_code_valid` is a preflight only — exists, unredeemed, unrevoked, unexpired; the
+//! authoritative single-use redemption is a separate atomic UPDATE inside the
+//! account-creation transaction. `mint_claim_codes` batch-generates and persists unique
+//! codes, retrying rare collisions (`MintClaimCodesError::Exhausted` after too many).
+//! `list_claim_codes` pages the inventory newest-first on the `(created_at, code)` keyset
+//! cursor. `revoke_claim_code` tombstones `revoked_at` iff the code is still unredeemed and
+//! unrevoked, classifying the result as
+//! `RevokeClaimCodeOutcome::{Revoked, AlreadyRevoked, Redeemed, NotFound}`.
+
 use common::{ApiError, ErrorCode};
 use sqlx::SqlitePool;
 

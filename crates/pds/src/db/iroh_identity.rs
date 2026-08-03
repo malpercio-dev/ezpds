@@ -1,5 +1,10 @@
 // pattern: Imperative Shell
 
+//! The PDS's persistent Iroh node identity — the single-row `iroh_identity` table (V022),
+//! an AES-256-GCM-encrypted Ed25519 secret key. `get_iroh_identity` (+ `IrohIdentityRow`)
+//! loads it and `store_iroh_identity` persists a fresh one, so the published node id
+//! (`get_device_pds`) stays stable across restarts.
+
 use sqlx::SqlitePool;
 
 /// A row from the `iroh_identity` table.

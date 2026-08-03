@@ -1,8 +1,11 @@
 // pattern: Imperative Shell
-//
-// Viewer construction: builds ProfileViewBasic and ProfileViewDetailed from local records,
-// hydrates post views with embeds, and merges them into feed responses.
-// Handles local image/external embeds (CDN URLs) and quote-post embeds (via getPosts service auth).
+
+//! `LocalViewer`: hydrates the requester's local records as feed items and profile views —
+//! builds ProfileViewBasic/ProfileViewDetailed from local records with author/counts populated
+//! via AppView prefetch, hydrates post views with embeds, and merges them into feed responses.
+//! Handles local image/external embeds (CDN URLs from `appview.cdn_url`) and quote-post embeds
+//! rendered with appview-fetched URIs (a service-auth'd `getPosts` batch; falls back to
+//! `#viewNotFound` on errors).
 
 use std::collections::HashMap;
 

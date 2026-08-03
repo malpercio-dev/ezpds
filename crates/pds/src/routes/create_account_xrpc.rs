@@ -1,25 +1,31 @@
 // pattern: Imperative Shell
-//
-// POST /xrpc/com.atproto.server.createAccount — the standard ATProto onboarding + migration
-// endpoint. Named `create_account_xrpc` to distinguish it from the native, admin-gated
-// `create_account.rs` (POST /v1/accounts). Two modes, selected by whether `did` is present:
-//
-//   New-account mode (no `did`):
-//     The client supplies a SELF-SIGNED did:plc genesis op (`plcOp`) — ezpds never mints a DID
-//     whose top rotation key is PDS-held (ADR-0001/0002), so `plcOp` is required. The PDS verifies
-//     the op, builds the genesis repo signed by the client's reserved per-account key, submits the
-//     op to plc.directory, and returns an ACTIVE session — mirroring the `/v1/dids` ceremony
-//     without its Shamir/pending-account machinery.
-//
-//   Migration mode (`did` present):
-//     Authenticated by a service-auth JWT the OLD PDS minted (Bearer), verified against the
-//     migrating DID's `#atproto` key. Creates the account DEACTIVATED with no repo yet — the repo
-//     arrives later via `importRepo`, and `activateAccount` finalizes it. Resumable: a retry for
-//     a DID whose account exists and is still deactivated re-issues a session (same credential
-//     proves the same control) instead of 409ing, so a mid-flight client failure never strands
-//     the migration.
-//
-// Invite codes are enforced (single-use, against `claim_codes`) when `config.invite_code_required`.
+
+//! `POST /xrpc/com.atproto.server.createAccount` — the standard ATProto onboarding + migration
+//! endpoint. Named `create_account_xrpc` to distinguish it from the native, admin-gated
+//! `create_account.rs` (`POST /v1/accounts`). Two modes, selected by whether `did` is present:
+//!
+//! * **New-account** (no `did`): the client supplies a SELF-SIGNED did:plc genesis op (`plcOp`)
+//!   — ezpds never mints a DID whose top rotation key is PDS-held (ADR-0001/0002), so `plcOp` is
+//!   required and the reserved per-account `#atproto` key must already exist. The PDS verifies
+//!   the op, builds the genesis repo signed by that reserved key (shared machinery in
+//!   `identity/genesis.rs`), submits the op to plc.directory, and returns an ACTIVE session plus
+//!   the genesis `#commit`/`#sync`/`#account` firehose frames — the `/v1/dids` ceremony without
+//!   its Shamir/pending-account machinery.
+//! * **Migration** (`did` present): authenticated by a service-auth JWT the OLD PDS minted
+//!   (Bearer), verified against the migrating DID's `#atproto` key. Creates the account
+//!   DEACTIVATED with no repo yet — the repo arrives via `importRepo`, and `activateAccount`
+//!   finalizes it. Resumable: a retry for a DID whose account exists and is still deactivated
+//!   re-issues a session (same credential proves the same control) instead of 409ing, so a
+//!   mid-flight client failure never strands the migration; active/moderation states still
+//!   conflict.
+//!
+//! The migration verify (`verify_migration_service_auth`) resolves the DID document cache-first
+//! and, on a **signature mismatch only**, force-refreshes the document and retries once — the
+//! cached `#atproto` key may be a fossil after a migrate-away-and-return; the returned fresh
+//! document is what's stored and echoed.
+//!
+//! Invite codes are enforced (single-use, against `claim_codes`) when
+//! `config.invite_code_required`.
 
 use axum::{extract::State, http::HeaderMap, response::Json};
 use serde::{Deserialize, Serialize};

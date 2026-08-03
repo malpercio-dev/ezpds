@@ -5,6 +5,15 @@
 // Returns: JSON matching com.atproto.server.describeServer Lexicon, plus the `custos`
 //          capability extension
 
+//! `GET /xrpc/com.atproto.server.describeServer` — the lexicon fields plus the
+//! off-lexicon `custos` extension.
+//!
+//! The extension is `{version, capabilities}`, derived by `crate::capabilities` from
+//! the running config. Lexicon objects are open, so the extension is additive — a
+//! client that does not know the field ignores it — and a single distinctively-named
+//! key avoids the collision hazard of a generic name the lexicon authority could later
+//! claim (millipds already ships a top-level `version` with different semantics).
+
 use axum::{
     extract::State,
     response::{IntoResponse, Json},

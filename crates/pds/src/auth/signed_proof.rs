@@ -6,8 +6,13 @@
 //! key in the account's authoritative current signing authority, carrying a random nonce:
 //! `sovereign_session` (passwordless session issuance), `oauth_consent` (wallet-confirmed consent
 //! approval), and `delete_account` (passwordless account deletion). Routes cannot import each
-//! other, so the fixed byte lengths and the canonical-encoding check they all enforce live here
-//! rather than being restated per route, where the check could drift apart.
+//! other, so the fixed byte lengths (`SIGNATURE_BYTES`, `NONCE_BYTES`) and the canonical-encoding
+//! check they all enforce live here rather than being restated per route, where the check could
+//! drift apart.
+//!
+//! `decode_canonical_base64url` accepts a value only if it is exactly N bytes in *canonical*
+//! unpadded base64url — re-encoding must reproduce the input — so a proof cannot be re-spelled
+//! into a fresh nonce and slip past the replay store.
 
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
 

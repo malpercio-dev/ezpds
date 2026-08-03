@@ -1,8 +1,12 @@
 // pattern: Functional Core
-//
-// Shared host resolution for Host-keyed public routes (`.well-known/atproto-did`,
-// `.well-known/did.json`). Lives outside `routes/` so both handlers can call it without a
-// route-to-route import (the constraint that would otherwise force duplication).
+
+//! Shared host resolution for the Host-keyed public routes (`.well-known/atproto-did`,
+//! `.well-known/did.json`): `request_host` resolves the client-addressed host
+//! (`X-Forwarded-Host` → `Host` → `:authority`), then strips an explicit default port
+//! (`:443`/`:80`, both treated as default since TLS terminates at the proxy) so
+//! `Host: example.com:443` keys the same did:web DID / handle as the bare host. A non-default
+//! port stays — `did:web:host%3A8080` is a distinct DID. Lives outside `routes/` so both
+//! handlers share it without a route-to-route import.
 
 use axum::http::{header, HeaderMap, Uri};
 

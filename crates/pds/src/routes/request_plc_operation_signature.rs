@@ -1,19 +1,19 @@
 // pattern: Imperative Shell
-//
-// POST /xrpc/com.atproto.identity.requestPlcOperationSignature
-//
-// Mints a single-use, 1-hour email token that authorizes a later `signPlcOperation`
-// call. This is the interop (PDS-signed) migration path (ADR-0002): proving control
-// of the account email before the PDS will sign a DID-repointing operation on the
-// account's behalf. The wallet-authorized path signs its identity leg locally and
-// never calls this.
-//
-// The token is delivered to the account email via the configured [`crate::email::EmailSender`]
-// (the default log sender writes it to the logs; SMTP delivers a real email).
-//
-// Gather:  AuthenticatedUser (full access token) → DID
-// Process: generate token → store hash (1h TTL) → email it
-// Respond: 200, empty body
+
+//! `POST /xrpc/com.atproto.identity.requestPlcOperationSignature` — full-access-authed.
+//!
+//! Mints a single-use, 1-hour email token (stored hashed) that authorizes a later
+//! `signPlcOperation` call. This is the interop (PDS-signed) migration path (ADR-0002): proving
+//! control of the account email before the PDS will sign a DID-repointing operation on the
+//! account's behalf. The wallet-authorized path signs its identity leg locally and never calls
+//! this. The token is delivered to the account email via the configured
+//! `crate::email::EmailSender` (the default log sender writes it to the logs; SMTP delivers a
+//! real email). Responds 200 with an empty body.
+//!
+//! Like all three `identity.*PlcOperation` routes, the handler first runs
+//! `identity::plc::ensure_did_plc(did)`: a `did:web` account (which has no plc.directory log)
+//! gets an explicit "not a did:plc" 400 up front instead of a confusing 404 deep in the
+//! audit-log fetch — a did:web identity is repointed by editing its own `did.json`.
 
 use axum::{extract::State, http::StatusCode};
 

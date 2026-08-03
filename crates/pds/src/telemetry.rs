@@ -1,5 +1,11 @@
 // pattern: Imperative Shell
 
+//! OTel tracing-subscriber init (`init_subscriber`) plus the shutdown-flushing `OtelGuard`,
+//! wired by `main.rs` at startup and dropped after graceful shutdown. Configured by
+//! `[telemetry]`: `enabled` turns the OTLP layer on (off by default, leaving the fmt-only
+//! subscriber with zero OTel overhead), and `log_format = "json"` switches the stdout fmt
+//! layer to one JSON object per line.
+
 use anyhow::Context;
 use common::{LogFormat, TelemetryConfig};
 use opentelemetry::trace::TracerProvider as _;

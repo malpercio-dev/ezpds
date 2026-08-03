@@ -1,12 +1,21 @@
 // pattern: Imperative Shell
-//
-// The `urn:workos:agent-auth:grant-type:claim` grant (auth.md Step 4c): the machine-pollable half
-// of the claim ceremony. An agent polls with its one-time `claim_token` while the account owner
-// confirms out-of-band; the identity's lifecycle is the state machine, so this handler reads and
-// reports (`authorization_pending`/`expired_token`/`access_denied`) or, once `claimed`, mints a
-// plain Bearer access token plus the stored post-claim assertion for later re-exchange. No DPoP
-// proof — the `claim_token` is itself the credential — and polling faster than the advertised
-// interval yields `slow_down`.
+
+//! The `urn:workos:agent-auth:grant-type:claim` grant (auth.md Step 4c): the machine-pollable
+//! half of the claim ceremony. A `service_auth`/`anonymous` agent polls with its one-time
+//! `claim_token` while the account owner confirms out-of-band — no DPoP proof, since the agent
+//! may hold no key yet; the token is the credential.
+//!
+//! The identity's lifecycle is the state machine, so the handler reads it and reports it as
+//! OAuth device-flow codes: `authorization_pending` (active, ceremony still pending),
+//! `expired_token` (`claim_token`/`user_code` window lapsed), `access_denied` (`revoked`), or —
+//! once `claimed` — **200** with a fresh Bearer token plus the stored post-claim
+//! `identity_assertion` and its `assertion_expires`. The token's scope derives from the row's
+//! stored scopes, so it matches a jwt-bearer exchange of the same assertion byte-for-byte.
+//!
+//! Polling faster than the advertised `interval`
+//! (`auth/agent_assertion.rs::POLL_INTERVAL_SECS`, 5s) yields `slow_down`, throttled by the
+//! in-memory `AppState.poll_tracker` keyed by the `claim_token`'s SHA-256 — never the raw
+//! secret — and pruned in `cleanup_expired_state`.
 
 use std::time::{Duration, Instant};
 

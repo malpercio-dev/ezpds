@@ -1,7 +1,19 @@
 // pattern: Imperative Shell
-//
-// DID document lookup queries against the did_documents table.
-// Returns plain data structs; no business logic — callers decide what to do with the result.
+
+//! DID-document cache queries over the `did_documents` table (V002), plus the
+//! Custos-managed did:web hosting queries (V044).
+//!
+//! Cache: `get_did_document` / `did_document_exists` (lookup / cheap existence probe).
+//! `rewrite_did_document` is an UPDATE-only heal of an existing cache row with a freshly
+//! resolved doc — it never inserts, because the cache has no TTL and a foreign row would
+//! then be stale forever; it backs the force-refresh path. `fetch_also_known_as` renders a
+//! DID's handles as `at://<handle>` for the document's `alsoKnownAs` array, and
+//! `update_also_known_as` writes that field back into the stored document.
+//!
+//! did:web hosting (over `accounts.did_web_hosting_enabled_at`): `serve_hosted_did_document`
+//! is the gated `.well-known/did.json` serve — account exists, opted in, active lifecycle,
+//! document present, else `None` — with `set_did_web_hosting` / `did_web_hosting_enabled` as
+//! the opt-in toggle and probe.
 
 use common::{ApiError, ErrorCode};
 use sqlx::SqlitePool;

@@ -1,13 +1,19 @@
 // pattern: Mixed (unavoidable)
-//
-// Shared machinery for the auth.md agent claim ceremony, used by both the registration endpoint
-// (`routes/agent_identity.rs`) and the claim-ceremony endpoints (`routes/agent_claim.rs`). Routes
-// may not import from one another (crate hard rule), so the service-signed `identity_assertion`
-// minting, the claim-block / verification-URI builders, and the auth.md-style `AgentAuthError`
-// response type live here where both can reach them.
-//
-// Pure ES256 minting (Functional Core) sits alongside the HTTP `AgentAuthError` `IntoResponse`
-// (Imperative Shell), hence the Mixed pattern.
+
+//! Shared machinery for the auth.md agent claim ceremony, used by both the registration endpoint
+//! (`routes/agent_identity.rs`) and the claim-ceremony endpoints (`routes/agent_claim.rs`). Routes
+//! may not import from one another (crate hard rule), so everything both need lives here:
+//!
+//!   * service-signed `identity_assertion` minting;
+//!   * the claim-block / verification-URI builders and the SQLite-`datetime()` timestamp helpers
+//!     (`to_sqlite_datetime` / `parse_sqlite_datetime`);
+//!   * `AgentAuthError`, the auth.md / OAuth-style `{error, error_description}` response type
+//!     (distinct from the crate's XRPC `ApiError` envelope);
+//!   * `record_agent_audit` — append one V040 agent audit event; shared by the registration and
+//!     claim routes and the token endpoint.
+//!
+//! Pure ES256 minting (Functional Core) sits alongside the HTTP `AgentAuthError` `IntoResponse`
+//! (Imperative Shell), hence the Mixed pattern.
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};

@@ -1,19 +1,21 @@
 // pattern: Imperative Shell
-//
-// Custos-managed did:web hosting control surface, account-owner authed:
-//
-//   POST /v1/did-web/hosting   — opt in/out of having Custos serve `.well-known/did.json`
-//   POST /v1/did-web/document  — authenticated direct edit of the served DID document
-//
-// Both are gated to `did:web` accounts: a `did:plc` document lives on plc.directory and is mutated
-// through `submitPlcOperation`, never edited here. The document-update path is the deliberately
-// non-PLC mutation the issue calls for — it overwrites the stored document directly and emits an
-// `#identity` firehose frame so relays re-resolve, the same propagation `updateHandle` and
-// `refreshIdentity` use, without any plc.directory round trip.
-//
-// Auth is `auth::guards::authenticate_account_owner` (wallet session token or full-access
-// OAuth/XRPC token; agent-derived and app-password credentials refused) — the same owner guard the
-// `/v1/agents` surface uses. These live on the same-origin `/v1/*` surface (no permissive CORS).
+
+//! Custos-managed did:web hosting control surface, account-owner authed:
+//!
+//! * `POST /v1/did-web/hosting` — opt in/out of having Custos serve `.well-known/did.json`.
+//!   Enabling requires a stored document (populated by the account's migration onto Custos).
+//! * `POST /v1/did-web/document` — authenticated direct edit of the served DID document.
+//!
+//! Both are gated to `did:web` accounts: a `did:plc` document lives on plc.directory and is
+//! mutated through `submitPlcOperation`, never edited here. The document path is the non-PLC doc
+//! mutation: it overwrites the stored `did_documents` row (`rewrite_did_document` — requires
+//! hosting enabled and the document `id` matching the DID) and emits an `#identity` firehose
+//! frame so relays re-resolve — the same propagation `updateHandle` and `refreshIdentity` use,
+//! with no plc.directory round trip.
+//!
+//! Auth is `auth::guards::authenticate_account_owner` (wallet session token or full-access
+//! OAuth/XRPC token; agent-derived and app-password credentials refused) — the same owner guard
+//! the `/v1/agents` surface uses. Lives on the same-origin `/v1/*` surface (no permissive CORS).
 
 use axum::{
     extract::State,

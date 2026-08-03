@@ -1,5 +1,9 @@
 // pattern: Functional Core
 
+//! `LocalRecords` / `RecordDescript`: the structured container for the requester's unindexed
+//! records, bucketed by collection (`profile` + `posts`). `get_records_since_rev` builds it;
+//! every munge consumes it.
+
 /// One of the requester's records selected for merging, with the metadata a munge needs.
 #[derive(Debug, Clone)]
 pub struct RecordDescript {

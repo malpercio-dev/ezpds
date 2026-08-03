@@ -1,39 +1,42 @@
 // pattern: Imperative Shell
-//
-// `LexiconParams<T>`: the axum extractor validating an XRPC procedure's query parameters against
-// its declared lexicon `parameters` (`type: params`), mirroring `LexiconInput<T>` for bodies. It
-// replaces axum's bare `Query<T>` on every natively-handled GET procedure, whose default
-// rejection is a 400 with a *plain-text* body (not the reference PDS's `ApiError` envelope), and
-// whose strictness is whatever the per-route serde struct happens to enforce.
-//
-// Query values are always strings, so validation is preceded by a coercion step mirroring
-// `@atproto/xrpc-server`'s `decodeQueryParams`/`decodeQueryParam`:
-//
-//   * An empty value (`?repo=`) decodes to "absent" — identical to the key never being sent at
-//     all, so it can still satisfy an optional property but never a required one.
-//   * A `string` property is used as-is; an `integer` property is parsed leniently
-//     (`parseInt(v, 10) || 0` in the reference) — an unparseable value silently becomes `0`
-//     rather than a type error, which can then still fail a `minimum`/`maximum`/`enum` bound; a
-//     `boolean` property is `true` only for the literal string `"true"`, anything else (including
-//     `"1"`/`"TRUE"`) decodes to `false` — a boolean property can therefore never fail its own
-//     type check, only a `const`.
-//   * An `array` property is repeated query keys (`cids=a&cids=b`, the one route that previously
-//     hand-parsed this with `RawQuery` — `sync.getBlocks`); an empty repetition is dropped
-//     element-wise, like a scalar empty value. A key that appears exactly once with an empty
-//     value is treated as fully absent (mirroring the reference's `val ? [...] : undefined`,
-//     where a single empty string is JS-falsy); two or more repetitions are always "present" even
-//     if every individual value is empty, since a non-empty JS array is truthy regardless of its
-//     contents.
-//   * A key repeated for a *scalar*-typed property is a client shape the reference itself barely
-//     defines byte-for-byte (`String(['a','b'])`-style JS coercion); this uses the first
-//     occurrence — a reasonable, documented simplification of an undocumented edge case.
-//
-// Coercion never itself rejects a request — only the shared lexicon-schema validator
-// (required/format/bounds/enum) can, exactly as body validation only rejects on schema failure.
-//
-// Handlers that need to adjust the raw query before validation runs (`get_record.rs`'s legacy
-// `did=` alias for the lexicon's `repo` parameter) skip the extractor and call
-// `parse_raw_query`/`validate_params_map` directly.
+
+//! `LexiconParams<T>`: the axum extractor validating an XRPC procedure's query parameters against
+//! its declared lexicon `parameters` (`type: params`), mirroring `LexiconInput<T>` for bodies. It
+//! replaces axum's bare `Query<T>` on every natively-handled GET procedure, whose default
+//! rejection is a 400 with a *plain-text* body (not the reference PDS's `ApiError` envelope), and
+//! whose strictness is whatever the per-route serde struct happens to enforce.
+//!
+//! Query values are always strings, so validation is preceded by a coercion step mirroring
+//! `@atproto/xrpc-server`'s `decodeQueryParams`/`decodeQueryParam`:
+//!
+//! * An empty value (`?repo=`) decodes to "absent" — identical to the key never being sent at
+//!   all, so it can still satisfy an optional property but never a required one.
+//! * A `string` property is used as-is; an `integer` property is parsed leniently
+//!   (`parseInt(v, 10) || 0` in the reference) — an unparseable value silently becomes `0`
+//!   rather than a type error, which can then still fail a `minimum`/`maximum`/`enum` bound; a
+//!   `boolean` property is `true` only for the literal string `"true"`, anything else (including
+//!   `"1"`/`"TRUE"`) decodes to `false` — a boolean property can therefore never fail its own
+//!   type check, only a `const`.
+//! * An `array` property is repeated query keys (`cids=a&cids=b`, the one route that previously
+//!   hand-parsed this with `RawQuery` — `sync.getBlocks`); an empty repetition is dropped
+//!   element-wise, like a scalar empty value. A key that appears exactly once with an empty
+//!   value is treated as fully absent (mirroring the reference's `val ? [...] : undefined`,
+//!   where a single empty string is JS-falsy); two or more repetitions are always "present" even
+//!   if every individual value is empty, since a non-empty JS array is truthy regardless of its
+//!   contents.
+//! * A key repeated for a *scalar*-typed property is a client shape the reference itself barely
+//!   defines byte-for-byte (`String(['a','b'])`-style JS coercion); this uses the first
+//!   occurrence — a reasonable, documented simplification of an undocumented edge case.
+//!
+//! Coercion never itself rejects a request — only the shared lexicon-schema validator
+//! (required/format/bounds/enum) can, exactly as body validation only rejects on schema failure —
+//! and a rejection carries the reference's byte-identical message
+//! (`Params must have the property "x"`, `Params/limit can not be greater than 100`, …).
+//!
+//! Handlers that need to adjust the raw query before validation runs (`get_record.rs`'s legacy
+//! `did=` alias for the lexicon's `repo` parameter) skip the extractor and run the same pipeline
+//! directly — `validate_procedure_params` for a whole query string, or `parse_raw_query` +
+//! `validate_params_map` around the adjustment.
 
 use std::collections::HashMap;
 

@@ -6,7 +6,22 @@
 //            blob storage and in-force labeler flags
 // Returns: JSON account page on success; ApiError on all failure paths
 
-//! GET /v1/admin/accounts - Operator account listing/search with pagination.
+//! `GET /v1/admin/accounts` — operator account listing/search with pagination.
+//!
+//! Flagged accounts (any in-force `account_labels` row from a watched labeler) sort
+//! first, DID order within each group, behind an opaque two-part cursor
+//! (`<flagged>:<did>` — the sort key is two-dimensional; a malformed or pre-flag cursor
+//! restarts at page one). `limit` defaults to 50, max 100; `status` filters on the
+//! derived lifecycle (`active`/`deactivated`/`suspended`/`takendown`; unknown → 400);
+//! `q` is a literal handle/DID substring match. Every row carries `totalBytes` +
+//! `quotaUsedPct` (against the response-level `quotaBytes`), `didWebHosting` (whether
+//! Custos serves that account's did:web document — the flag gates a serve path that
+//! 404s indistinguishably from an unknown host when off, so without it "not hosted" and
+//! "broken" are the same observation), and its `flags` (`{val, labelerDid, cts}`,
+//! newest first); the response carries `flaggedTotal` (filter-consistent badge count).
+//! Includes accounts in every lifecycle state and without a repo. Admin-authed via
+//! `require_admin`; the signature covers the bare path, so paging/filter params vary
+//! without re-signing.
 
 use axum::body::Bytes;
 use axum::extract::{Query, State};

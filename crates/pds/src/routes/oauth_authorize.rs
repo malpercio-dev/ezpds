@@ -9,6 +9,24 @@
 //   GET:  HTML consent page (200) or HTML error page (400) when redirect is unsafe
 //   POST: 303 redirect to redirect_uri?code=...&state=... or redirect_uri?error=...
 
+//! `GET`/`POST /oauth/authorize` — the authorization endpoint and its consent page.
+//!
+//! **Non-PAR requests resolve live.** A cache miss on a URL-shaped `client_id` fetches the
+//! client-metadata document with the same resolver PAR uses (`auth/oauth_client_resolution.rs`),
+//! so direct authorization requests from real-world clients that skip PAR (bsky.social tolerates
+//! them) still work; the document is cached only after the request fully validates. The
+//! reverse-FQDN private-use-redirect rule is enforced here as well as at PAR.
+//!
+//! **`response_mode`.** Honored on every success and error redirect: `query` (the default) or
+//! `fragment` (the `@atproto/oauth-client-browser` default).
+//!
+//! **Push dispatch (Phase C).** The GET's wallet path owns `dispatch_login_approval_push`: a
+//! `login_hint` naming a hosted account gets a sealed `login-approval` push via
+//! `notifications::notify_device`. The hint is resolved with local lookups only — never outbound
+//! resolution, because it is attacker-suppliable on an unauthenticated surface — and the
+//! two-digit match code (the V060 `match_code` column) is latched and shown on the page only
+//! when a device was actually enqueued.
+
 use axum::{
     extract::{Form, Query, State},
     http::HeaderMap,

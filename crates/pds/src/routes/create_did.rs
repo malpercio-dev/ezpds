@@ -1,46 +1,40 @@
 // pattern: Imperative Shell
-//
-// POST /v1/dids — Device-signed DID ceremony and account promotion
-//
-// Verifies the client-signed did:plc genesis op against the previously issued per-account
-// repo signing key and server config, then builds the genesis repo in memory before the
-// plc.directory POST — so a build failure aborts cleanly, with no orphaned PLC registration
-// and no account without a repo.
-//
-// The ceremony runs in one of two share-custody modes, inferred from the request shape:
-//
-// - **Client-share** (`recoveryKey` + `escrowShare`, did:plc only — both required): the wallet
-//   generated the recovery seed, derived the recovery rotation key, and split the seed
-//   client-side. The server receives exactly one share — the Share 2 envelope — verifies the
-//   declared recovery key appears in the op's `rotationKeys` (so the escrow deposit and the
-//   DID's public state cannot diverge), and stores the KEK-wrapped envelope in
-//   `recovery_escrow` atomically with promotion. No share material is returned, and the server
-//   never generates or splits a secret — no DB snapshot or backup can ever hold two shares.
-// - **No-escrow did:web** (a `didWebDocument`, no share fields): a did:web document has no PLC
-//   `rotationKeys` for a recovery key to bind to, so its recovery model is deliberately
-//   unscoped. The account is promoted with `accounts.recovery_share` NULL and no
-//   `recovery_escrow` row.
-//
-// A did:plc request without `recoveryKey` + `escrowShare` (the retired server-side ceremony's
-// shape) is a plain 400: the fields are required, not optional. Only the DID is pre-stored;
-// retry idempotency of the wallet's share set is the wallet's job (it stages the set locally
-// until the ceremony is confirmed).
-//
-// Whether a retry skips the plc.directory POST is a *separate* decision from share reuse,
-// gated on `pending_plc_registered_at` — stamped only after plc.directory returns 2xx — not
-// on `pending_did` (which is stored before the POST). A retry after a failed POST re-submits
-// the signed genesis op (idempotent on plc.directory: same op → same DID) rather than
-// promoting a DID that never registered globally. Shares stay stable across those re-POSTs.
-//
-// Handles are NOT inserted here — that is POST /v1/handles' job (format validation +
-// optional DNS record creation), so a handle failure never has to unwind an already-
-// promoted account.
-//
-// Account, DID document, session, and genesis repo blocks are promoted in one transaction
-// that also stages the genesis #commit + #sync firehose events; only after it commits does
-// the handler best-effort emit a separate #account (active) frame and request a crawl, so a
-// never-crawled host self-announces to the relay instead of staying invisible until its
-// first record write.
+
+//! `POST /v1/dids` — device-signed DID ceremony and account promotion.
+//!
+//! Verifies the client-signed did:plc genesis op against the previously issued per-account repo
+//! signing key and server config, then builds the genesis repo in memory before the
+//! plc.directory POST — a build failure aborts cleanly, with no orphaned PLC registration and no
+//! account without a repo.
+//!
+//! Dual-mode on share custody, inferred from the request shape:
+//!
+//! * **Client-share** (`recoveryKey` + `escrowShare`, did:plc only — both required): the wallet
+//!   generated the recovery seed, derived the recovery rotation key, and split the seed
+//!   client-side. The server receives exactly one share — the Share 2 v2 envelope (index 2) —
+//!   verifies the declared recovery key appears in the op's `rotationKeys` (so the escrow
+//!   deposit and the DID's public state cannot diverge), and KEK-wraps the envelope into
+//!   `recovery_escrow` (plus its `deposited` audit event) atomically with promotion. The
+//!   response carries no share material, and the server never generates or splits a secret — no
+//!   DB snapshot or backup can ever hold two shares.
+//! * **No-escrow did:web** (a `didWebDocument`, no share fields): a did:web document has no PLC
+//!   `rotationKeys` for a recovery key to bind to, so the account promotes with no escrow.
+//!
+//! `accounts.recovery_share` stays NULL on both paths. A did:plc request missing `recoveryKey` +
+//! `escrowShare` — the retired server-side ceremony's shape — is a plain 400.
+//!
+//! Whether a retry skips the plc.directory POST is a *separate* decision from share reuse, gated
+//! on `pending_plc_registered_at` (stamped only after plc.directory returns 2xx), not on
+//! `pending_did` (stored before the POST). A retry after a failed POST re-submits the signed
+//! genesis op (idempotent on plc.directory: same op → same DID) rather than promoting a DID that
+//! never registered globally; shares stay stable across those re-POSTs. Handles are NOT inserted
+//! here — that is `POST /v1/handles`' job, so a handle failure never unwinds a promoted account.
+//!
+//! Account, DID document, session, and genesis repo blocks are promoted in one transaction that
+//! also stages the genesis `#commit` + `#sync` firehose events; only after it commits does the
+//! handler best-effort emit a separate `#account` (active) frame and request a crawl, so a
+//! never-crawled host self-announces to the relay instead of staying invisible until its first
+//! record write.
 
 use axum::{extract::State, http::HeaderMap, Json};
 use serde::{Deserialize, Serialize};

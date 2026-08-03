@@ -1,22 +1,27 @@
 // pattern: Imperative Shell
-//
-// Outbound email delivery.
-//
-// A small pluggable abstraction behind the password-reset, email-confirmation, and email-update
-// flows. `AppState.email` holds an `Arc<dyn EmailSender>`, mirroring the `dns_provider` /
-// `txt_resolver` / `well_known_resolver` trait-object pattern:
-//   - LogEmailSender  — the default. Logs the message instead of sending it, so a fresh install
-//     and the test suite need no mail server (this is the pre-outbound-email stub behaviour, now
-//     behind a real interface). The plaintext token in the body is exactly what a developer reads
-//     out of the logs to complete a flow locally.
-//   - SmtpEmailSender — real delivery over SMTP via `lettre`, selected by `email.provider = "smtp"`.
-//   - HttpEmailSender — real delivery over Mailtrap's transactional HTTPS Send API via `reqwest`,
-//     selected by `email.provider = "mailtrap"`. Needs only outbound HTTPS, so it delivers on
-//     hosts (e.g. Railway's non-Pro plans) that block every outbound SMTP port — the reason it
-//     exists.
-//
-// Message *content* (subjects, bodies, the reset/confirmation links) is built by the route
-// handlers; this module only knows how to deliver an already-rendered `EmailMessage`.
+
+//! Outbound email delivery.
+//!
+//! A small pluggable abstraction behind the token-delivery flows: password reset, email
+//! confirmation, email update, PLC-operation signature, and account delete. `AppState.email`
+//! holds an `Arc<dyn EmailSender>`, mirroring the `dns_provider` / `txt_resolver` /
+//! `well_known_resolver` trait-object pattern:
+//!
+//! - `LogEmailSender` — the default. Logs the message instead of sending it, so a fresh install
+//!   and the test suite need no mail server (the pre-outbound-email stub behaviour, now behind a
+//!   real interface). The plaintext token in the body is what a developer reads out of the logs
+//!   to complete a flow locally.
+//! - `SmtpEmailSender` — real delivery over SMTP via `lettre` (rustls), selected by
+//!   `email.provider = "smtp"`.
+//! - `HttpEmailSender` — real delivery over Mailtrap's transactional HTTPS Send API via
+//!   `reqwest`, selected by `email.provider = "mailtrap"`. Needs only outbound HTTPS, so it
+//!   delivers on hosts (e.g. Railway's non-Pro plans) that block every outbound SMTP port.
+//!
+//! Configured by `[email]` in `pds.toml` / `EZPDS_EMAIL_*` (Mailtrap: `EZPDS_EMAIL_HTTP_TOKEN`,
+//! optional `EZPDS_EMAIL_HTTP_API_URL` / `EZPDS_EMAIL_HTTP_TIMEOUT_SECS`).
+//!
+//! Message *content* (subjects, bodies, the reset/confirmation links) is built by the route
+//! handlers; this module only knows how to deliver an already-rendered `EmailMessage`.
 
 use std::future::Future;
 use std::pin::Pin;

@@ -1,16 +1,15 @@
 // pattern: Imperative Shell
-//
-// GET /xrpc/com.atproto.identity.getRecommendedDidCredentials
-//
-// Returns the DID-document fields this PDS recommends a (new or migrating) account's
-// PLC operation contain: the PDS-held rotation key, the account's atproto verification
-// method, its handle(s), and this server's PDS service endpoint. A migrating wallet /
-// client fetches these from the destination PDS and folds them into the operation it
-// then signs — putting its own device key ahead of the recommended rotation key.
-//
-// Gather:  AuthenticatedUser (any access-level token) → DID
-// Process: load the account's PDS-held signing key + handles
-// Respond: { rotationKeys, alsoKnownAs, verificationMethods, services }
+
+//! `GET /xrpc/com.atproto.identity.getRecommendedDidCredentials` — session-authed.
+//!
+//! Returns the DID-document fields this PDS recommends a (new or migrating) account's PLC
+//! operation contain — `{ rotationKeys, alsoKnownAs, verificationMethods, services }`: the
+//! PDS-held rotation key, the account's `#atproto` verification method, its handle(s), and this
+//! server's `atproto_pds` endpoint.
+//!
+//! Consumed by migrating wallets/clients — which fetch these from the destination PDS and fold
+//! them into the operation they then sign, putting their own device key ahead of the
+//! recommended rotation key — and by standard migration tooling (ADR-0002).
 
 use axum::{extract::State, response::Json};
 use serde::Serialize;

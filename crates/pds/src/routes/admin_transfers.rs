@@ -4,8 +4,21 @@
 // Processes: admin auth → in-flight transfer listing / operator cancel workflow
 // Returns: JSON on success; ApiError on all failure paths
 
-//! GET /v1/admin/transfers - Operator visibility into in-flight device transfers.
-//! POST /v1/admin/transfers/:id/cancel - Operator interruption of one.
+//! `GET /v1/admin/transfers` — operator visibility into in-flight planned device
+//! transfers — and `POST /v1/admin/transfers/:id/cancel` — operator interruption of one.
+//!
+//! The listing covers every transfer that can still advance: `accepted`/`completing`
+//! rows regardless of expiry — completion has no expiry check, so the target credential
+//! is live — plus unexpired `pending`, newest first on the `(created_at, id)` keyset.
+//! The 6-char code is **never** returned: it is a live account-takeover credential.
+//!
+//! Cancel (via `transfer::cancel_transfer`) flips the transfer to terminal `cancelled`
+//! in one transaction, tombstones the accepted target device credential if present, and
+//! appends a `transfer.cancelled` audit event. Existing account sessions are untouched —
+//! compose with `revoke-credentials` for a full sweep. Idempotent repeat (200); 409
+//! naming a terminal `complete`/`expired` state (a lapsed pending row is swept to
+//! `expired` first); unknown id → 404, checked after auth. Both admin-authed via
+//! `require_admin`.
 
 use axum::body::Bytes;
 use axum::extract::{Path, Query, State};

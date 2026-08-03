@@ -1,5 +1,24 @@
 // pattern: Imperative Shell
 
+//! The single authoritative access-token authentication path.
+//!
+//! `authenticate_access(headers, method, uri, state)` authenticates an access-token request end
+//! to end: extract the token under either the `Bearer` or `DPoP` scheme (RFC 9449 §7.1), verify
+//! it, enforce the scheme ↔ `cnf.jkt` binding rules in both directions, and — when a DPoP proof
+//! is present — validate that proof against the request `method`/`uri` (its `htm`/`htu`). The
+//! `AuthenticatedUser` axum extractor is a thin wrapper over it.
+//!
+//! Two callers bypass the extractor and call `authenticate_access` directly, so their binding
+//! enforcement can never drift from the extractor's: the repo-write handlers
+//! (`createRecord`/`putRecord`/`deleteRecord`/`applyWrites`), which resolve and open the target
+//! repo around the auth check and so can't use the extractor, and
+//! `guards::authenticate_account_owner`'s access-token arm. On every one of these paths a
+//! DPoP-bound token (`cnf.jkt` present) presented as plain `Bearer` with no proof is rejected,
+//! closing the binding-downgrade surface.
+//!
+//! `just auth-seam-check` (`scripts/auth-seam-check.sh`) freezes this contract: a direct
+//! `auth::jwt::verify_access_token` call anywhere outside this seam fails the gate.
+
 use axum::{
     extract::FromRequestParts,
     http::{request::Parts, HeaderMap, Method, Uri},

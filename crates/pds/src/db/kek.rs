@@ -12,7 +12,10 @@
 //! it automatically.
 //!
 //! Like every `db/` module this file only moves opaque ciphertext; decryption
-//! and re-encryption live in the caller (`crate::rewrap`).
+//! and re-encryption live in the caller (`crate::rewrap`). The `kek_generation`
+//! marker in `server_metadata` (`get_kek_generation` / `set_kek_generation`)
+//! records how many rotations have been applied, committed inside the re-wrap
+//! transaction.
 
 use sqlx::Sqlite;
 

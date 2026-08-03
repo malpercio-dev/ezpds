@@ -1,20 +1,36 @@
 // pattern: Imperative Shell
-//
-// The auth.md agent claim ceremony (spec Step 4). Two endpoints, split by audience:
-//
-//   - `POST /agent/identity/claim` — the *agent* starts (or resumes) a ceremony for a registration
-//     it holds a `claim_token` for. Public: the `claim_token` is the agent's credential, so no user
-//     session is required here. Mainly serves the `anonymous` flow, whose registration returned only
-//     a `claim_token` and no `user_code`; `service_auth` / first-seen `identity_assertion` already
-//     minted a `user_code` at registration, so re-initiating idempotently re-emits the pending one.
-//   - `POST /agent/identity/claim/confirm` — the *account owner* (full-access session/OAuth token)
-//     submits the `user_code` the agent showed them. This binds the registration to their DID (for
-//     an ownerless `anonymous` identity), mints the post-claim `identity_assertion`, and flips the
-//     identity `active → claimed` so its assertion can be exchanged at the token endpoint. This is
-//     the wallet-facing surface (Obsign's claim-approval screen).
-//
-// Registration lives in `agent_identity.rs`; the assertion-minting / claim-block / error helpers are
-// shared via `auth::agent_assertion` (routes may not import from one another).
+
+//! The auth.md agent claim ceremony (spec Step 4). Two endpoints, split by audience:
+//!
+//! - `POST /agent/identity/claim` — the *agent* starts (or resumes) a ceremony for a
+//!   registration it holds a `claim_token` for. Public: the token is the agent's credential,
+//!   like a device pairing code, so no user session is required. Validates it
+//!   (`invalid_claim_token`/`claim_expired`/`claimed_or_in_flight`), then idempotently re-emits
+//!   an in-flight `user_code` or opens a fresh `agent_claim_attempts` row, returning
+//!   `{registration_id, claim_attempt_id, status, expires_at, claim_attempt{user_code,
+//!   expires_in, verification_uri, interval}}`. Mainly serves the `anonymous` flow;
+//!   `service_auth` / first-seen `identity_assertion` already minted a `user_code` at
+//!   registration.
+//! - `POST /agent/identity/claim/confirm` — the human gate (Obsign's claim-approval screen):
+//!   the *account owner* submits the `user_code` the agent showed them. Auth is
+//!   `auth::guards::authenticate_account_owner` — wallet session token **or** full-access
+//!   OAuth/XRPC token, the same dual-credential owner guard as `/v1/agents`, so Obsign's opaque
+//!   session token works; app-password and agent-derived callers are refused, and every auth
+//!   rejection uses the auth.md error shape. One transaction consumes the attempt
+//!   (`complete_agent_claim_attempt`) and claims the identity
+//!   (`db::agent_auth::claim_agent_identity`) — binding the caller's DID for an ownerless
+//!   `anonymous` registration (a pre-bound `service_auth`/`identity_assertion` registration may
+//!   be confirmed only by that owner, else `access_denied`), minting the post-claim
+//!   `identity_assertion` (owner DID, current `granted_scopes`), and flipping
+//!   `active → claimed` so the assertion exchanges at the token endpoint.
+//!
+//! Ceremony errors use the auth.md-style `{error, error_description}` body. The machine-pollable
+//! claim grant (`urn:workos:agent-auth:grant-type:claim`) that lets a `service_auth`/`anonymous`
+//! agent auto-collect the minted credential lives at the token endpoint
+//! (`oauth_token/claim_polling.rs::handle_claim_polling`); an `identity_assertion` agent instead
+//! collects it by re-issuing `POST /agent/identity`. Registration lives in `agent_identity.rs`;
+//! the assertion-minting / claim-block / error helpers are shared via `auth::agent_assertion`
+//! (routes may not import from one another).
 
 use axum::{
     extract::State,

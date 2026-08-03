@@ -36,6 +36,25 @@
 //! `emit_lock` and the other could hold `emit_lock` while waiting on that same connection,
 //! deadlocking both.
 //!
+//! **Emission map.** All four repo-write paths (`create_record`/`put_record` via
+//! `record_write::commit_repo_write`, `delete_record`, `apply_writes`) emit exactly one `#commit`
+//! per commit, built from the commit's block diff (`repo_engine::collect_commit_diff` +
+//! `build_car_from_cids`, run before post-commit block GC) and carrying `prevData` plus per-op
+//! `prev` (Sync v1.1's inductive-validation anchors — see [`events`]); each rejects a deactivated
+//! account with 403 before committing. `create_did`'s `promote_account` stages a genesis `#commit`
+//! with a chained `#sync` head assertion atomically with account promotion, then emits a
+//! best-effort `#account` (active) and notifies the crawlers, so a fresh host self-announces
+//! rather than staying invisible until its first write. `activateAccount`/`deactivateAccount`
+//! stage an `#account` frame **only on a real status transition** (a redundant repeat returns 200
+//! and emits nothing); activation chains a `#sync` when the account has a repo, its ≤10 KB
+//! commit-block CAR built *before* the transaction (the single-connection pool can't serve a
+//! block read while the tx holds the connection). `update_subject_status` stages `#account` for
+//! admin takedowns, deriving `active`/`status` from the account's full lifecycle — clearing a
+//! takedown on a still-suspended account reports `suspended`. `importRepo` emits nothing: a
+//! migrated repo's head assertion rides the `activateAccount` that follows it in the migration
+//! sequence. `emit_identity` serves the handle routes and `refreshIdentity`. All frame kinds
+//! share the one sequencer, so lifecycle frames are ordered relative to commits.
+//!
 //! **Module layout.** [`events`] holds the wire-facing event model (types + DAG-CBOR stored
 //! encoding + decode); [`replay`] holds cursor replay over the durable log; this file holds the
 //! sequencer itself — `Firehose`, the bare `emit_*` primitives, and the atomic staged-transaction

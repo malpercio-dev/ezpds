@@ -1,28 +1,34 @@
 // pattern: Imperative Shell
-//
-// The wallet-confirmed half of OAuth consent. Three public routes plus a wallet preview, all keyed
-// off the single-use `pending_oauth_authorizations` request the consent page
-// (`oauth_authorize::get_authorization`) created:
-//
-//   GET  /oauth/authorize/consent-request  — wallet preview: client/origin/scope for a user_code
-//   GET  /oauth/authorize/status           — browser poll (slow_down-throttled), returns {status}
-//   POST /oauth/authorize/approve          — device-key-signed approve/deny of a request
-//   POST /oauth/authorize/complete         — browser exchanges an approved request for the code
-//
-// Approval is proven with a canonical device-key envelope in the `sovereign_session` mold
-// (`crypto::encode_oauth_consent_envelope`), verified against the account's **authoritative**
-// current signing authority (`identity::authority` — a did:plc rotation set, or a self-hosted
-// did:web's `#device` key) — never the cached DID doc. The envelope binds `request_id`, `client_id`, the
-// decision, and a hash of the granted scope set, so an approval cannot be replayed onto a different
-// request, flipped from a denial, or widened. Replay of the same envelope onto its own request is
-// stopped by the single-use guarded status transition (the request_id binding + single-use row
-// together subsume a nonce store). This module never imports another route handler.
-//
-// Phase C (push-to-approve): when the consent page dispatched a `login-approval` push for the
-// request (`pending.match_code` set), approval additionally requires the two-digit number the
-// page displays — the mandatory anti-MFA-fatigue proof that the approver can see the login
-// surface. The number is checked server-side, outside the envelope, after the signature and
-// authority checks; a mismatch is a 403 that leaves the request pending.
+
+//! The wallet-confirmed (passwordless) half of OAuth consent. Four endpoints, all keyed off the
+//! single-use `pending_oauth_authorizations` row the consent page
+//! (`oauth_authorize::get_authorization`) created:
+//!
+//! - `GET /oauth/authorize/consent-request` — wallet preview: client/origin/scope for a
+//!   `user_code`, plus `matchRequired` when a push was dispatched
+//! - `GET /oauth/authorize/status` — browser poll (`slow_down`-throttled), returns `{status}`
+//! - `POST /oauth/authorize/approve` — device-key-signed approve/deny of a request
+//! - `POST /oauth/authorize/complete` — browser exchanges an approved request for the code
+//!
+//! Approval is proven with a canonical device-key envelope in the `sovereign_session` mold
+//! (`crypto::encode_oauth_consent_envelope`), verified against the account's **authoritative**
+//! current signing authority (`identity::authority` — a did:plc rotation set, or a self-hosted
+//! did:web's `#device` key), never the cached DID doc. The envelope binds `request_id`,
+//! `client_id`, the decision, and a hash of the granted scope set, so an approval cannot be
+//! replayed onto a different request, flipped from a denial, or widened. Replay of the same
+//! envelope onto its own request is stopped by the single-use guarded status transition (the
+//! `request_id` binding + single-use row together subsume a nonce store).
+//!
+//! **Push-to-approve (Phase C).** When the consent page dispatched a `login-approval` push for
+//! the request (`pending.match_code` set), an approval must additionally present the two-digit
+//! number the sign-in page displays — the mandatory anti-MFA-fatigue proof that the approver can
+//! see the login surface. It is checked server-side, outside the envelope, after the signature
+//! and authority checks; a mismatch is a 403 that leaves the request pending, and a denial never
+//! requires it.
+//!
+//! Redirects read `response_mode` back off the pending row (`auth/oauth_response_mode.rs`) so
+//! every answer arrives in the mode the client requested. This module never imports another
+//! route handler.
 
 use std::time::{Duration, Instant};
 

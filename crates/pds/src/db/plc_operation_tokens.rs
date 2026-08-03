@@ -1,6 +1,6 @@
 // pattern: Imperative Shell
 
-//! PLC-operation signature token queries.
+//! PLC-operation signature token queries (`plc_operation_tokens`, V033).
 //!
 //! These back the interop account-migration path (ADR-0002): before the PDS will
 //! sign a DID-repointing PLC operation on the account's behalf

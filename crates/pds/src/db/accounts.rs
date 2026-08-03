@@ -1,7 +1,38 @@
 // pattern: Imperative Shell
-//
-// Account lookup queries. Gathers from the accounts + handles + did_documents tables;
-// returns plain data structs. No business logic — callers decide what to do with the result.
+
+//! Account queries: lookups, lifecycle transitions, and repo-root state over the `accounts`
+//! table (joined with `handles` + `did_documents` where a caller needs the trio). Plain data
+//! out; callers decide what a hit or miss means.
+//!
+//! Lookups: `resolve_identifier` (handle/DID → `AccountRow`), `get_session_account`
+//! (DID → account + handle + DID doc, `SessionAccountRow`), `resolve_by_email`. All three are
+//! lifecycle-gated, as is the repo-write pair `get_repo_write_state` /
+//! `advance_repo_root_if_active` (write preconditions + the commit CAS): each requires
+//! `deactivated_at`, `suspended_at`, and `taken_down_at` all NULL, so a suspension or
+//! takedown closes logins and repo writes exactly like a self-service deactivation.
+//!
+//! Lifecycle: `AccountLifecycle::from_timestamps` derives Active/Deactivated/Suspended/
+//! TakenDown from the three timestamp columns (precedence takendown > suspended >
+//! deactivated), feeding `get_repo_status` / `list_repos` for the public sync endpoints.
+//! `deactivate_account` / `activate_account` flip `deactivated_at` and report the
+//! transition. `set_account_takedown` flips `taken_down_at` and returns the full derived
+//! lifecycle (`TakedownStateChange`) so the caller's firehose event reflects the precedence,
+//! not just the takedown dimension. `account_lifecycle` is the unfiltered derived-lifecycle
+//! lookup — the preferences routes use it to admit Active/Deactivated (migration writes
+//! preferences pre-activation) while refusing moderation states.
+//!
+//! Unfiltered by lifecycle: `account_exists` (bare DID presence, shared by the
+//! create-DID/createAccount promotion guards), `account_password_hash` (so `deleteAccount`
+//! can authenticate a deactivated account), `accounts_due_for_deletion` (elapsed
+//! `delete_after`, for the deletion reaper), and the operator usage/storage lookups
+//! `get_account_overview` / `account_last_active`.
+//!
+//! Operator listing: `list_accounts_admin` (`AdminAccountRow`) is one query per page — a
+//! DID-cursor page with a derived-lifecycle filter (`AccountLifecycle::from_status_filter` /
+//! `as_sql_predicate`, precedence-consistent with `from_timestamps`), literal `LIKE`-escaped
+//! handle/DID substring search, and per-row handle + blob bytes via correlated scalar
+//! subqueries. The flagged-account predicates (`FLAGGED_SQL`, `count_accounts_admin_flagged`)
+//! live beside it here; the label rows are `db/account_labels.rs`'s.
 
 use common::{ApiError, ErrorCode};
 use sqlx::Sqlite;

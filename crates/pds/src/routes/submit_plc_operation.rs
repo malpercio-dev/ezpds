@@ -1,19 +1,16 @@
 // pattern: Imperative Shell
-//
-// POST /xrpc/com.atproto.identity.submitPlcOperation
-//
-// Validates a signed PLC operation and submits it to plc.directory, repointing the
-// authenticated account's DID. Provided for interop (ADR-0002): the wallet-authorized
-// path POSTs its own operations to plc.directory directly and does not route them here.
-//
-// Validation before submit: the operation must be signed by one of the DID's CURRENT
-// rotation keys (fetched from plc.directory) and must chain onto the current head via
-// `prev`. After a successful submit the locally-cached DID document is refreshed.
-//
-// Gather:  AuthenticatedUser (full access) + JSON { operation }
-// Process: verify signature vs. current rotation keys → check prev → POST to plc.directory
-//          → refresh cached DID document
-// Respond: 200, empty body
+
+//! `POST /xrpc/com.atproto.identity.submitPlcOperation` — full-access-authed.
+//!
+//! Validates a signed PLC operation and POSTs it to plc.directory, repointing the authenticated
+//! account's DID; after a successful submit the locally-cached DID document is refreshed.
+//! Validation before submit: the operation must be signed by one of the DID's CURRENT rotation
+//! keys (fetched from plc.directory) and must chain onto the current head via `prev`.
+//!
+//! Provided for interop (ADR-0002): the wallet-authorized path POSTs its own operations to
+//! plc.directory directly and does not route them here. Guarded by
+//! `identity::plc::ensure_did_plc` like its siblings (an explicit "not a did:plc" 400 for a
+//! `did:web` account — see `request_plc_operation_signature`).
 
 use axum::{extract::State, response::Json};
 use serde::{Deserialize, Serialize};

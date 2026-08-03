@@ -13,8 +13,14 @@
 //!    `subscribeRepos`, and `_health` are exempt so relay backfill/firehose and platform health
 //!    checks are never throttled.
 //! 2. **Per-endpoint per-IP** — tighter caps on the sensitive auth/account endpoints
-//!    (`createAccount`/`createSession`/`resetPassword`/`updateHandle`) plus the short-code-
-//!    authenticated `/v1/transfer/accept`, keyed by client IP.
+//!    (`createAccount`/`createSession`/`resetPassword`/`updateHandle` plus the native
+//!    `/v1/accounts[/mobile]` signup routes), the public `/waitlist` signup, and every
+//!    endpoint authenticated by a short guessable credential: `/v1/transfer/accept` (6-char
+//!    code), the agent claim pair (`/agent/identity/claim/confirm` + `/v1/agents/claim-preview`,
+//!    6-digit `user_code`), and the escrow-recovery pair (`/v1/recovery/initiate` +
+//!    `/v1/recovery/release`, emailed OTP). Each guess-target pair **shares one limiter
+//!    instance** so alternating endpoints can't double the guess budget (see the constructor
+//!    comments).
 //! 3. **Per-account write points** — the four repo-write routes spend create=3/update=2/delete=1
 //!    points against the *authenticated* DID over an hourly and a daily window. Enforced in
 //!    [`crate::record_write::commit_repo_write`] where the verified DID is known (keying on an

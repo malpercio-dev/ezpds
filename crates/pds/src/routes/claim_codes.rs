@@ -4,6 +4,18 @@
 // Processes: auth check → input validation → claim-code mint / inventory list / revoke
 // Returns: JSON on success; ApiError on all failure paths
 
+//! Operator claim-code lifecycle: `POST /v1/accounts/claim-codes` (mint),
+//! `GET /v1/accounts/claim-codes` (inventory), `POST /v1/accounts/claim-codes/revoke`.
+//!
+//! Mint: 1–10 six-char uppercase-alphanumeric codes per batch, `expiresInHours`
+//! default 24. Inventory: the full mint history newest-first on a `(created_at, code)`
+//! keyset cursor (`limit` default 50, max 200), each row carrying its derived status —
+//! `pending`/`redeemed`/`expired`/`revoked`, terminal events winning over the clock
+//! (see `derive_status`). Revoke: the code travels in the signed JSON body, not the
+//! path; idempotent for an already-revoked code, 409 for a redeemed one, 404 unknown.
+//! All three admin-authed (master token **or** an active companion-app device's signed
+//! request).
+
 use axum::{
     body::Bytes,
     extract::{Query, State},

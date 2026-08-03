@@ -1,11 +1,11 @@
 // pattern: Mixed (unavoidable)
-//
-// Shared did:plc genesis-op machinery used by both the device-signed ceremony
-// (`routes/create_did.rs`, POST /v1/dids) and the standard XRPC onboarding path
-// (`routes/create_account_xrpc.rs`, com.atproto.server.createAccount). The pure builders
-// (DID-document construction, genesis/commit CAR framing, genesis-op verify + semantic
-// validation) are a Functional Core; `post_to_plc_directory` is the one Imperative Shell
-// function here (an outbound HTTP call), kept alongside its callers.
+
+//! Shared did:plc genesis-op machinery used by both the device-signed ceremony
+//! (`routes/create_did.rs`, POST /v1/dids) and the standard XRPC onboarding path
+//! (`routes/create_account_xrpc.rs`, com.atproto.server.createAccount). The pure builders
+//! (DID-document construction, genesis/commit CAR framing, genesis-op verify + semantic
+//! validation) are a Functional Core; `post_to_plc_directory` is the one Imperative Shell
+//! function here (an outbound HTTP call), kept alongside its callers.
 
 use common::{ApiError, ErrorCode};
 

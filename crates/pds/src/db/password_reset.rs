@@ -1,5 +1,14 @@
 // pattern: Imperative Shell
 
+//! Password-reset token queries over `password_reset_tokens` (V014): the SHA-256-hashed,
+//! 1-hour, single-use envelope.
+//!
+//! `insert_reset_token` mints a row (hash only — the plaintext is never stored);
+//! `get_reset_token` / `mark_reset_token_used` are the in-transaction lookup/consume pair;
+//! `update_password_hash` writes the new credential. The admin repair route inserts the same
+//! one-hour hashed token envelope inside its audit transaction — only for accounts that
+//! already have a password; a passwordless account is refused.
+
 use common::{ApiError, ErrorCode};
 use sqlx::{Sqlite, Transaction};
 

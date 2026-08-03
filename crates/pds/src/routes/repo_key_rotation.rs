@@ -1,36 +1,39 @@
 // pattern: Imperative Shell
-//
-// Wallet-driven per-account repo signing-key rotation, account-owner authed:
-//
-//   POST /v1/repo-keys/rotation           — stage a fresh replacement signing key
-//   POST /v1/repo-keys/rotation/complete  — submit the wallet-signed PLC op and cut over
-//
-// The per-account repo signing key (the DID's `#atproto` verification method, which signs
-// every repo commit — ADR-0004) can only be replaced by repointing the DID document, and
-// the PDS cannot authorize that itself: the wallet's device key outranks the PDS key in
-// `rotationKeys` (ADR-0001), so the rotation op is built and signed in the wallet. This
-// surface is the PDS's half of that flow (ADR-0025):
-//
-//   1. `begin` mints a FRESH P-256 key (never reusing a previously staged one) and stores
-//      it as a `'staged'` `signing_keys` row — invisible to commit signing and to
-//      `getRecommendedDidCredentials` until the cutover.
-//   2. The wallet builds a rotation op installing that key as `verificationMethods.atproto`
-//      (+ the PDS slot in `rotationKeys`), signs it with the device key, and POSTs it to
-//      `complete` — never straight to plc.directory, so the PDS controls the cutover.
-//   3. `complete` verifies the op (signed by a current rotation key, chains onto the head,
-//      installs exactly the staged key, leaves `services` untouched), then — holding the
-//      account's repo write lock so no commit can interleave — submits it to plc.directory,
-//      refreshes the cached DID document, and atomically promotes the staged key while
-//      deleting the retired one. An `#identity` firehose frame tells relays to re-resolve.
-//
-// Holding `RepoWriteLocks` across submit+promote is what guarantees no commit is ever
-// signed by a key absent from the DID document: before the lock the document still names
-// the old key (which is still the active signer), and by release the promoted key is both
-// active locally and live in the document.
-//
-// Auth is `auth::guards::authenticate_account_owner` (wallet session token or full-access
-// OAuth/XRPC token; agent-derived and app-password credentials refused) — the same owner
-// guard as `/v1/did-web/*`. These live on the same-origin `/v1/*` surface.
+
+//! Wallet-driven per-account repo signing-key rotation (ADR-0025), account-owner authed,
+//! `did:plc` only:
+//!
+//! * `POST /v1/repo-keys/rotation` — stage a fresh replacement signing key.
+//! * `POST /v1/repo-keys/rotation/complete` — submit the wallet-signed PLC op and cut over.
+//!
+//! The per-account repo signing key (the DID's `#atproto` verification method, which signs every
+//! repo commit — ADR-0004) can only be replaced by repointing the DID document, and the PDS
+//! cannot authorize that itself: the wallet's device key outranks the PDS key in `rotationKeys`
+//! (ADR-0001), so the rotation op is built and signed in the wallet. This surface is the PDS's
+//! half of that flow:
+//!
+//! 1. `begin` mints a FRESH P-256 key (always new, replacing any previously staged one) and
+//!    stores it as a `'staged'` `signing_keys` row — invisible to commit signing and to
+//!    `getRecommendedDidCredentials` until the cutover.
+//! 2. The wallet builds a rotation op installing that key as `verificationMethods.atproto`
+//!    (+ the PDS slot in `rotationKeys`), signs it with the device key, and POSTs it to
+//!    `complete` — never straight to plc.directory, so the PDS controls the cutover.
+//! 3. `complete` verifies the op (signed by a current rotation key, `prev` chains onto the head,
+//!    installs exactly the staged key, `services` unchanged — so a rotation can't double as a
+//!    migration), then — holding the account's `RepoWriteLocks` mutex so no commit can
+//!    interleave — submits it to plc.directory, refreshes the cached DID document, and
+//!    atomically promotes the staged key while deleting the retired one. An `#identity`
+//!    firehose frame tells relays to re-resolve.
+//!
+//! Holding the write lock across submit+promote guarantees no commit is ever signed by a key
+//! absent from the DID document: before the lock the document still names the old key (still the
+//! active signer), and by release the promoted key is both active locally and live in the
+//! document. Retry-safe: an op that already IS the PLC head skips the re-submit, and a repeat
+//! after full promotion is a 200.
+//!
+//! Auth is `auth::guards::authenticate_account_owner` (wallet session token or full-access
+//! OAuth/XRPC token; agent-derived and app-password credentials refused) — the same owner guard
+//! as `/v1/did-web/*`. Lives on the same-origin `/v1/*` surface.
 
 use axum::{
     extract::State,

@@ -1,21 +1,27 @@
 // pattern: Imperative Shell
-//
-// Gathers: request host (forwarded/Host header or URI authority)
-// Processes: host → did:web:{host} → opted-in, active, document-bearing account (single gated read)
-// Returns: 200 application/did+json with the stored DID document, or 404 if the host is not an
-//          opted-in Custos-hosted did:web account
-//
-// This is the serving half of Custos-managed did:web hosting: the operator (and, later,
-// any user-owned domain) can route `https://{host}/.well-known/did.json` here so the DID document
-// is served by Custos instead of a standalone web server. Host-keyed exactly like
-// `atproto_did.rs`'s `.well-known/atproto-did`; the opt-in gate lives in
-// `db::dids::serve_hosted_did_document`, so a host that hasn't enabled hosting 404s identically to
-// an unknown one (no opt-in existence oracle).
-//
-// The server's own did:web identity is the one exception to the account gate: when the request
-// host names the server DID itself, the document is synthesized from config rather than read from
-// the accounts join — the server identity is config-owned infrastructure, not an account, and
-// must keep resolving across a public-URL migration without a ghost accounts row.
+
+//! `GET /.well-known/did.json` — the serving half of Custos-managed did:web hosting.
+//!
+//! Maps the request host (forwarded/Host header or URI authority) to `did:web:{host}` and serves
+//! the opted-in, active, document-bearing account's stored DID document as
+//! `application/did+json`. Host-keyed exactly like `atproto_did.rs`'s `.well-known/atproto-did`;
+//! the opt-in gate lives in `db::dids::serve_hosted_did_document`, so a host that hasn't enabled
+//! hosting 404s identically to an unknown one (no opt-in existence oracle).
+//!
+//! One host is the exception, checked *before* the account gate: when the request host maps to
+//! the server's own DID (`config.resolve_server_did()` — the same DID `describeServer`
+//! advertises), the response is a service-only document synthesized from config (`@context`,
+//! `id`, and an `#atproto_pds` service pointing at `public_url`; no verification methods, since
+//! inter-service auth is always verified against per-account `#atproto` keys). The server
+//! identity is config-owned infrastructure, not an account, and must keep resolving across a
+//! public-URL migration with no accounts row. Ordering the config branch first means a
+//! coincidental account bearing the server DID can never shadow it; a non-`did:web` `server_did`
+//! never matches (host → `did:web:{host}` only produces did:web DIDs), so it falls through to
+//! the account path.
+//!
+//! Serving is opt-in per account (moving hosting onto Custos removes the independence a
+//! standalone host gave the identity) and only ever for user-owned domains — exit is a DNS
+//! repoint away.
 
 use axum::{
     extract::State,

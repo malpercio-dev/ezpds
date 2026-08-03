@@ -1,25 +1,38 @@
 // pattern: Imperative Shell
-//
-// The account-holder's notification endpoints:
-//
-//   POST   /v1/notifications/register               — register this device for push
-//   DELETE /v1/notifications/register/{deviceUuid}  — stop pushing to this device
-//   GET    /v1/notifications/sender-keys            — the set of keys to pin
-//
-// Auth is `auth::extractors::authenticate_access` (the DPoP-binding seam every access-token
-// verification must route through — `just auth-seam-check` enforces it), so these live on
-// the same-origin `/v1/*` surface alongside the other wallet endpoints.
-//
-// Registration keys on `(did, device_uuid)` rather than the `devices` table: `devices` rows
-// are deleted inside the DID-promotion transaction, so a registration anchored there would
-// die exactly when the account starts mattering. `device_uuid` is app-generated and stable
-// across reinstalls of the same install identity.
-//
-// The relay round trip is deliberately **not** in the request path. Registration is one of
-// the first calls the wallet makes after promotion; making it wait on a third-party relay
-// would put that relay's uptime in the onboarding critical path for a feature whose entire
-// failure mode is a missed banner. The row is stored, the relay registration is enqueued,
-// and the response says plainly which of the two happened.
+
+//! The account-holder's notification endpoints:
+//!
+//! - `POST /v1/notifications/register` — register this device for push
+//! - `DELETE /v1/notifications/register/{deviceUuid}` — stop pushing to this device
+//! - `GET /v1/notifications/sender-keys` — the set of keys to pin
+//!
+//! Auth is `auth::extractors::authenticate_access` (the DPoP-binding seam every access-token
+//! verification must route through — `just auth-seam-check` enforces it), so these live on
+//! the same-origin `/v1/*` surface alongside the other wallet endpoints.
+//!
+//! Registration keys on `(did, device_uuid)` rather than the `devices` table: `devices` rows
+//! are deleted inside the DID-promotion transaction, so a registration anchored there would
+//! die exactly when the account starts mattering. `device_uuid` is app-generated and stable
+//! across reinstalls of the same install identity. The relay round trip is **not** in the
+//! request path: registration is one of the first calls the wallet makes after promotion, and
+//! making it wait on a third-party relay would put that relay's uptime in the onboarding
+//! critical path for a feature whose entire failure mode is a missed banner. The row is
+//! stored, the relay registration is enqueued, and the response is `{"status":"pending"}`.
+//!
+//! DELETE is idempotent (`deleted`/`absent`) and drops the relay handle; the DID comes from
+//! the credential, so one account can never unregister another's device.
+//!
+//! `sender-keys` is the re-pin surface (active + retired keys, never revoked ones), and
+//! **503s** whenever no usable key can be served — no master key, a failed lazy generation, or
+//! stored material that will not decrypt under the current KEK. That check is one invariant at
+//! the exit of `notifications::published_sender_keys` ("never publish an empty set") rather
+//! than a guard per failure path: every route to an empty set ends identically for a client —
+//! it pins nothing and then silently fails to verify everything it later receives.
+//!
+//! Register and `sender-keys` **501** when no relay is configured — the route exists, the
+//! instance simply has not opted in — but DELETE stays open, so a device can still clean up
+//! its row (and the operator's relay still be told to drop the handle) after the feature is
+//! switched off; gating it would strand exactly the rows an operator most wants gone.
 
 use axum::{
     extract::{Path, State},

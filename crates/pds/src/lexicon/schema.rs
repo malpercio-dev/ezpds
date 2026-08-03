@@ -1,23 +1,31 @@
 // pattern: Functional Core
-//
-// Typed model of the vendored lexicon documents (`crates/pds/lexicons/`) plus a strict parser.
-//
-// The parser is deliberately hand-rolled over an order-preserving JSON value rather than
-// serde-derived, for two reasons:
-//
-// 1. **Property order matters.** The reference validator (`@atproto/lexicon`) iterates an
-//    object's `properties` in document order, so which violation is reported first (e.g. a
-//    body missing both `identifier` and `password`) follows the lexicon's declaration order.
-//    `serde_json::Map` is a BTreeMap (alphabetical) unless the crate-wide `preserve_order`
-//    feature is enabled — which would silently change JSON object ordering everywhere else in
-//    the workspace — so we parse into our own ordered value instead.
-//
-// 2. **Unknown constructs must fail loudly.** Every schema node checks its keys against an
-//    allowlist and every `type` against the constructs this validator implements. If a future
-//    re-vendoring introduces a constraint we don't enforce (say `minLength` or a new string
-//    format), parsing fails — surfaced by the registry unit tests — instead of the constraint
-//    being silently skipped and Custos drifting laxer than the reference again — the
-//    input-strictness failure mode this module exists to prevent.
+
+//! Typed model of the vendored lexicon documents (`crates/pds/lexicons/`) plus a strict parser.
+//!
+//! The parser is deliberately hand-rolled over an order-preserving JSON value rather than
+//! serde-derived, for two reasons:
+//!
+//! 1. **Property order matters.** The reference validator (`@atproto/lexicon`) iterates an
+//!    object's `properties` in document order, so which violation is reported first (e.g. a
+//!    body missing both `identifier` and `password`) follows the lexicon's declaration order.
+//!    `serde_json::Map` is a BTreeMap (alphabetical) unless the crate-wide `preserve_order`
+//!    feature is enabled — which would silently change JSON object ordering everywhere else in
+//!    the workspace — so we parse into our own ordered value instead.
+//!
+//! 2. **Unknown constructs must fail loudly.** Every schema node checks its keys against an
+//!    allowlist and every `type` against the constructs this validator implements. If a future
+//!    re-vendoring introduces a constraint we don't enforce (say `minLength` or a new string
+//!    format), parsing fails — surfaced by the registry unit tests — instead of the constraint
+//!    being silently skipped and Custos drifting laxer than the reference again — the
+//!    input-strictness failure mode this module exists to prevent. Dangling refs fail the same
+//!    tests (`Registry::check_refs`), and a `parameters` object is restricted to
+//!    string/integer/boolean properties and arrays of them — any other construct (object, ref,
+//!    union, …) in a params position is rejected at parse time.
+//!
+//! String `format` constraints dispatch (`formats.rs`) to the workspace's fixture-tested syntax
+//! validators (`repo_engine::{datetime,at_uri,records}`, `identity::{did,handle}`).
+//! `parse_xrpc_body` parses a procedure's `input` and a query/procedure's JSON `output` through
+//! the same code path, so the output layer inherits the same model and strictness.
 
 use std::fmt;
 

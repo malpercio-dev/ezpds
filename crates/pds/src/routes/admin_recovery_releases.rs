@@ -6,9 +6,9 @@
 
 //! GET /v1/admin/recovery-releases - Operator visibility into in-flight escrow releases.
 //!
-//! The Brass Console's window onto the escrow release flow: which accounts currently have a
-//! recovery-share release open, when it was requested, and when it becomes (or became)
-//! collectable. Literal facts only — no verdicts — like `admin_health.rs`. An operator watching a
+//! The Brass Console's window onto the escrow release flow: every account with an open
+//! recovery-share release, newest request first, each `{did, requestedAt, availableAt,
+//! available}`. Literal facts only — no verdicts — like `admin_health.rs`. An operator watching a
 //! suspicious release composes this with `revoke-credentials` (kill the attacker's sessions) and
 //! the account owner's `POST /v1/recovery/release/cancel` to interrupt it.
 //!

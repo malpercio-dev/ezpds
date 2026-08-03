@@ -4,10 +4,15 @@
 //!
 //! Mirrors the repo-block split (`db/blocks.rs`, V035): `blobs` stores the physical
 //! content-addressed metadata once per CID (the on-disk file is likewise stored once), while
-//! `blob_owners` records each account's reference to that CID together with the per-account
-//! lifecycle (`ref_count`, `temp_until`). One account releasing or deleting its reference never
-//! destroys a file another account's records still link — the physical row and file are
-//! reclaimed only when the last owner is gone.
+//! `blob_owners` (V039) records each account's reference to that CID together with the
+//! per-account lifecycle (`ref_count`, `temp_until`). One account releasing or deleting its
+//! reference never destroys a file another account's records still link — the physical row
+//! and file are reclaimed only when the last owner is gone.
+//!
+//! The per-account metrics (`account_storage_bytes`, `account_blob_metrics`,
+//! `account_largest_blob`) all resolve through `blob_owners`;
+//! [`account_uploaded_blob_metrics`] is the one query that bypasses it — see its doc for
+//! what that witnesses.
 
 use sqlx::SqlitePool;
 

@@ -7,6 +7,15 @@
 //! (DID-keyed) inside the promotion transaction. The private key is always
 //! AES-256-GCM encrypted by the caller before it reaches these functions —
 //! this module only moves opaque ciphertext, never plaintext key material.
+//!
+//! Beyond the ceremony path: `insert_reserved_repo_key` /
+//! `get_reserved_repo_key_by_{did,id}` hold `reserveSigningKey` reservations
+//! for standard account migration (`reserved_signing_keys`, V032), and
+//! `get_signing_key_by_did` is the commit-signer lookup (`'active'` rows only,
+//! per V048's status column). Rotation staging: `stage_rotation_key` writes a
+//! fresh `'staged'` row (replacing any prior staged one),
+//! `get_staged_signing_key` reads it back, and `promote_staged_signing_key` is
+//! the cutover transaction — staged → active plus the retired-row delete.
 
 #![allow(dead_code)]
 

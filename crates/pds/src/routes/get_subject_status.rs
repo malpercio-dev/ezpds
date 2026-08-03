@@ -3,8 +3,14 @@
 // Gathers: admin credentials (master token or signed device request), the subject DID
 // Processes: admin auth → read the account's current lifecycle
 // Returns: 200 OK with the subject/takedown status; ApiError on failure
-//
-// Implements: GET /xrpc/com.atproto.admin.getSubjectStatus
+
+//! `GET /xrpc/com.atproto.admin.getSubjectStatus` — report an account's current
+//! takedown status.
+//!
+//! Only the `com.atproto.admin.defs#repoRef` (account-level) subject kind is supported —
+//! ezpds does not model record- or blob-level takedown. Admin-authed via
+//! `require_admin`. An invalid DID → 400; an unknown one → 404. Response view types are
+//! shared with `update_subject_status` via `admin_subject_defs`.
 
 use axum::{
     body::Bytes,

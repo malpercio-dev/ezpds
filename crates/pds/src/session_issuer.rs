@@ -5,7 +5,9 @@
 //! A session's authority is explicit at the call site: full-access sessions carry no app-password
 //! identity, while app-password sessions carry both their name and privilege. The latter is
 //! re-checked on the transaction connection before any credential is persisted, so a concurrent
-//! revocation cannot race a previously verified password into a fresh session.
+//! revocation cannot race a previously verified password into a fresh session. Issuance is one
+//! transaction: the `sessions` row and its initial `refresh_tokens` row commit together or not
+//! at all (see `issue_session`).
 
 use std::time::{SystemTime, UNIX_EPOCH};
 

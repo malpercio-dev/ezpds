@@ -1,10 +1,10 @@
 // pattern: Imperative Shell
-//
-// HTTP well-known abstraction for handle resolution.
-//
-// WellKnownResolver — resolves handles via GET https://<handle>/.well-known/atproto-did.
-//   Used as the third fallback in resolveHandle (after local DB and DNS TXT).
-//   HttpWellKnownResolver is the production implementation; tests inject mocks.
+
+//! HTTP well-known abstraction for handle resolution.
+//!
+//! `WellKnownResolver` resolves a handle via GET `https://<handle>/.well-known/atproto-did`, the
+//! third fallback in resolveHandle (after the local DB and DNS TXT). `HttpWellKnownResolver` is
+//! the production implementation; tests inject mocks.
 
 use std::future::Future;
 use std::pin::Pin;

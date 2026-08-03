@@ -1,10 +1,22 @@
 // pattern: Imperative Shell
-//
-// Gathers: JSON signed proof + destination server DID + current time
-// Processes: syntax/freshness/local-account checks → signature verification → authoritative
-//            signing-authority lookup (identity::authority) → atomic active-account recheck +
-//            nonce consume + full session
-// Returns: the standard full-access legacy session response
+
+//! `POST /v1/sessions/sovereign` — passwordless full-access session issuance from a signed proof.
+//!
+//! Exchanges a fresh timestamped proof, signed by a key in the hosted DID's authoritative
+//! current signing authority (`identity::authority` — a did:plc account's current PLC
+//! `rotationKeys`, a self-hosted did:web's published `#device` key), for the standard full-access
+//! legacy session response.
+//!
+//! The canonical envelope binds the protocol domain and version, the destination server DID, the
+//! method/path, the account DID, the signing-key DID, the timestamp, and a 32-byte random nonce.
+//! P-256 and secp256k1 signatures are accepted only in canonical low-S form. The account's local
+//! lifecycle is checked before *and inside* the transaction that consumes the nonce and issues
+//! the session. plc.directory failures fail closed, and the cached W3C DID document is never a
+//! rotation-key source — only the live authoritative state authorizes a session.
+//!
+//! Any current rotation key qualifies, including a Custos-held one: it operates under the same
+//! PLC semantics as any other rotation key, granting Custos no power beyond what hosting the
+//! account already gives it.
 
 use std::time::{SystemTime, UNIX_EPOCH};
 

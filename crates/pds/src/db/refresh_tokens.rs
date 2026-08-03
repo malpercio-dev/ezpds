@@ -1,9 +1,12 @@
 // pattern: Imperative Shell
-//
-// Refresh-token lookups against the `refresh_tokens` table. Standalone single-table reads only —
-// the multi-table session rotation (insert the new token + mark the old one used) and revocation
-// (delete the session's tokens + the session row) are atomic transactions that stay in their
-// route handlers (`refreshSession` / `deleteSession`).
+
+//! Refresh-token reads against the `refresh_tokens` table (V002, rebuilt into the live
+//! schema by V006). Standalone single-table lookups only: `get_active_refresh_token`
+//! (+ `ActiveRefreshToken`) is the unexpired-token lookup for `refreshSession`, and
+//! `session_id_for_jti` maps jti → session_id for `deleteSession` with no expiry filter.
+//! The multi-table rotation (insert the new token + mark the old one used) and revocation
+//! (delete the session's tokens + the session row) transactions stay in their route
+//! handlers.
 
 use common::{ApiError, ErrorCode};
 

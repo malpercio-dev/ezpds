@@ -3,25 +3,34 @@
 // Gathers: AppState (config, JWKS cache, DB), request headers + raw body
 // Processes: verify a provider Security Event Token → resolve the target registration → revoke it
 // Returns: `202 Accepted` (empty) on success; RFC 8935 `{ "err", "description" }` JSON on failure
-//
-// `POST /agent/event/notify` — the auth.md `events_endpoint` (advertised in the AS metadata). It
-// receives a **Security Event Token** (SET, RFC 8417) pushed by a trusted identity provider
-// (RFC 8935 push-based delivery, `application/secevent+jwt`) and, for the sole supported event type
-// (`issuer_trust::REVOKED_EVENT_TYPE`), revokes the matching agent registration at the registration
-// layer. This is the provider-initiated counterpart to the account-owner's
-// `POST /v1/agents/{registration_id}/revoke` (`routes/agents.rs`): the same identity provider whose
-// ID-JAG vouched for an `identity_assertion` agent (§3.1) can retract that trust.
-//
-// Trust model (implicit gating): a SET is honored iff its `iss` is on the `[agent_auth]
-// trusted_issuers` list — the same trust anchor that mints `identity_assertion` registrations. A
-// deployment with no trusted issuers (the default) answers every SET with `invalid_issuer`, so
-// nothing is exposed until an operator deliberately trusts a provider. Only `identity_assertion`
-// registrations are reachable: they are the only ones keyed by an `(issuer, subject)` pair, which is
-// exactly how a SET names its target.
-//
-// Idempotent by construction: a SET whose subject is unknown or already revoked is still accepted
-// (`202`) with no state change and no existence oracle, so replaying a revocation SET is harmless —
-// there is deliberately no `jti` dedup store.
+
+//! `POST /agent/event/notify` — the auth.md `events_endpoint` (advertised in the AS metadata).
+//! It receives a **Security Event Token** (SET, RFC 8417) pushed by a trusted identity provider
+//! (RFC 8935 push-based delivery, `application/secevent+jwt`) and, for the sole supported event
+//! type (`issuer_trust::REVOKED_EVENT_TYPE`, which the `events` claim must carry as a JSON
+//! object), revokes the matching agent registration. This is the provider-initiated counterpart
+//! to the account-owner's `POST /v1/agents/{registration_id}/revoke` (`routes/agents.rs`): the
+//! same identity provider whose ID-JAG vouched for an `identity_assertion` agent (§3.1) can
+//! retract that trust. Revocation reuses `revoke_agent_identity` plus a `Revoked` audit event
+//! (`detail.source = "provider_set"`) atomically, exactly like `agents.rs::revoke_agent`.
+//!
+//! Trust model (implicit gating): a SET is honored iff its `iss` is on the `[agent_auth]
+//! trusted_issuers` list — the same trust anchor that mints `identity_assertion` registrations
+//! (`auth/issuer_trust.rs`). A deployment with no trusted issuers (the default) answers every
+//! readable-but-untrusted `iss` with `invalid_issuer` (a missing/unreadable `iss` is
+//! `invalid_request`), so nothing is exposed until an operator deliberately trusts a provider.
+//! Only `identity_assertion` registrations are reachable: they are the only ones keyed by an
+//! `(issuer, subject)` pair, which is exactly how a SET names its target — its `iss` plus its
+//! `sub` (top-level, or a `subject` inside the event payload). The RFC 8417-required `iat`/`jti`
+//! and the JSON-object `events` payloads are structurally validated (`invalid_request` if
+//! malformed).
+//!
+//! Idempotent by construction: a SET whose subject is unknown or already revoked is still
+//! accepted (`202`) with no state change and no existence oracle, so replaying a revocation SET
+//! is harmless — there is deliberately no `jti` dedup store. Errors use the RFC 8935
+//! `{err, description}` body plus `Content-Language`
+//! (`invalid_request`/`invalid_issuer`/`authentication_failed`) — distinct from the XRPC and
+//! auth.md envelopes.
 
 use axum::{
     body::Bytes,

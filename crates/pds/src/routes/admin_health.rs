@@ -13,6 +13,16 @@
 //! (or their dashboards), not in the API shape. The Prometheus endpoint remains the
 //! scraper-facing surface; this one exists because OTel instruments are write-only
 //! in-process and a phone renders JSON, not text exposition.
+//!
+//! Reported: version/uptime; account counts by derived lifecycle plus `flagged`
+//! (accounts with any in-force watched-labeler label — the console's badge count);
+//! physical blob/block counts + bytes and the unowned-blob integrity pair
+//! (`blobUnownedCount`/`blobUnownedBytes` — see `StorageCounts`); firehose state
+//! (current seq, subscribers, retained events, backfill-window age — `null` on an empty
+//! log); and each background sweep's last completed pass from `sweep_status.rs`
+//! (`null` until its first pass after boot; includes `labelerWatch`). Admin-authed via
+//! `require_admin` (master token **or** an active companion-app device's signed
+//! request).
 
 use axum::body::Bytes;
 use axum::extract::State;
