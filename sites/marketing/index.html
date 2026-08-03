@@ -89,8 +89,9 @@
           <p class="lede">
             Obsign is an iOS identity wallet for the AT&nbsp;Protocol, the network behind
             Bluesky. The keys that control your account live in your device&rsquo;s
-            Secure&nbsp;Enclave, not on someone else&rsquo;s server, and your posts and media can be backed up to your own iCloud&nbsp;Drive. No platform, host,
-            or provider can take your identity, block your exit, or hold it hostage.
+            Secure&nbsp;Enclave, not on someone else&rsquo;s server. Your posts and media
+            can back up to your own iCloud&nbsp;Drive. No platform, host, or provider can
+            take your identity, block your exit, or hold it hostage.
           </p>
           <div class="hero-actions">
             <a class="btn btn-primary" href="#waitlist" data-umami-event="waitlist-cta">Join the TestFlight waitlist</a>
@@ -105,33 +106,35 @@
       <!-- The problem, stated honestly -->
       <section class="section-alt" id="owned">
         <div class="container">
-          <h2>Owned, not rented.</h2>
+          <h2>Your account is a promise someone else keeps.</h2>
           <div class="section-intro">
             <p>
-              On the AT&nbsp;Protocol, your account is a public record, controlled
-              by whoever holds its <em>rotation keys</em>. On most hosts today,
-              that&rsquo;s the server. Your ability to leave, to recover from an attack, or
-              simply to stay yourself is a policy promise: real only for as long as your
-              host is honest, solvent, and online.
+              On the AT&nbsp;Protocol, your account is a public record, and whoever
+              holds its keys controls it. On most hosts today, that&rsquo;s the server.
+              Your ability to leave, to recover from an attack, or simply to stay
+              yourself is a policy promise: real only for as long as your host is
+              honest, solvent, and online.
             </p>
             <p>
-              Obsign turns that promise into arithmetic. Your device holds the
-              highest-priority rotation key, so the final word on your account is signed
-              by you — and only ever by you. In addition, your wallet will create a recovery key, which is securely split into three shares, one stored in iCloud, one held in escrow by your server, and the third given to you to store offline. Only two-of-three shares are required to reconstruct the recovery key, so even if one share is compromised, the other two remain secure. A dishonest host cannot steal your recovery key, and you are able to fully recover your account from the two shares you hold.
+              Obsign turns that promise into arithmetic. Your device holds the key that
+              outranks all the others, so the final word on your account is signed by
+              you — and only ever by you. Your wallet also creates a recovery key and
+              splits it into three shares: one in your device&rsquo;s Keychain, one
+              escrowed with your server, one yours to keep offline. Any two rebuild the
+              key. A dishonest host holds a single share it can do nothing with; the two
+              you hold are enough to bring your account back.
             </p>
           </div>
           <div class="keyfacts">
             <dl>
-              <dt>rotationKeys[0]</dt>
-              <dd>your device: Secure&nbsp;Enclave, non-extractable</dd>
-              <dt>rotationKeys[1]</dt>
-              <dd>your recovery key: rebuilt from your backup shares, never seen by the server</dd>
-              <dt>rotationKeys[2]</dt>
-              <dd>your server: signs posts, can never outrank you</dd>
+              <dt>your device</dt>
+              <dd>holds the deciding key, sealed in the Secure&nbsp;Enclave</dd>
+              <dt>your backup</dt>
+              <dd>a recovery key, split into three shares — any two rebuild it, no single custodian</dd>
+              <dt>your server</dt>
+              <dd>signs posts; its key can never outrank yours</dd>
               <dt>recovery window</dt>
               <dd>72 hours, during which your keys override the server&rsquo;s</dd>
-              <dt>backup</dt>
-              <dd>your recovery secret, split 2-of-3 (no single custodian)</dd>
             </dl>
           </div>
         </div>
@@ -169,8 +172,8 @@
               </span>
               <h3>It keeps watch</h3>
               <p>
-                Obsign monitors the public PLC directory for changes to your account.
-                Every entry is verified against your own key: any operation you
+                Obsign watches the network&rsquo;s public record of your account.
+                Every change is checked against your own key: any operation you
                 didn&rsquo;t authorize raises an alarm that tells you exactly what changed.
               </p>
             </div>
@@ -183,9 +186,9 @@
               </span>
               <h3>72 hours to take it back</h3>
               <p>
-                Inside the directory&rsquo;s recovery window, your device key outranks
-                every other key. One clear, reviewed action signs the override and
-                reclaims the account, before the window closes.
+                Inside the recovery window, your device key outranks every other key.
+                One clear, reviewed action signs the override and reclaims the
+                account, before the window closes.
               </p>
             </div>
             <div class="card">
@@ -199,9 +202,9 @@
               <h3>Backup without your server</h3>
               <p>
                 At setup, your device creates a recovery secret and splits it into three
-                shares: iCloud Keychain, your server&rsquo;s escrow, and a place you
-                choose. Any two bring your account back; no single share (and no single
-                company) can.
+                shares: your device&rsquo;s Keychain, your server&rsquo;s escrow, and a
+                place you choose. Any two bring your account back; no single share (and
+                no single company) can.
               </p>
             </div>
           </div>
@@ -226,15 +229,15 @@
           <h2>Leaving is allowed. That&rsquo;s the point.</h2>
           <div class="prose">
             <p>
-              Because you hold the top rotation key, moving your account to a new host is
+              Because the deciding key is yours, moving your account to a new host is
               an operation <em>you</em> sign: it never requires your old server&rsquo;s
               permission, cooperation, or continued existence. Credible exit stops being a
               promise in someone&rsquo;s terms of service and becomes a property of the keys.
             </p>
             <p>
-              And nothing about this leaves the network behind: your server keeps a
-              lower-priority rotation key, so standard AT&nbsp;Protocol tooling and
-              ordinary migrations keep working exactly as they do everywhere else.
+              And nothing about this leaves the network behind: your server keeps an
+              ordinary key of its own, so standard AT&nbsp;Protocol tooling and
+              ordinary migrations keep working as they do everywhere else.
             </p>
             <p>
               Turn on backup and leaving gets safer still: Obsign keeps your own copy of
@@ -254,16 +257,18 @@
             <div>
               <h3>What if I lose my phone?</h3>
               <p>
-                Your recovery secret is split 2-of-3 at setup: one share in iCloud
-                Keychain, one held in escrow by your server, one wherever you choose.
-                Losing the phone loses one share; any two remaining shares bring your
-                identity back on a new device.
+                Your recovery secret is split three ways at setup: one share in your
+                device&rsquo;s Keychain, one held in escrow by your server, one wherever
+                you choose. Losing the phone loses at most one share; any two bring
+                your identity back on a new device.
               </p>
             </div>
             <div>
               <h3>Do I need to understand the cryptography?</h3>
               <p>
-                No, and you&rsquo;re never asked to. Obsign attempts to keep the process as simple as possible. If you want to understand what&rsquo;s happening under the hood, Obsign gives you the details just a few taps away.
+                No, and you&rsquo;re never asked to. Setup is a few plain questions;
+                the machinery stays out of the way. If you&rsquo;re curious about
+                what&rsquo;s happening underneath, the details are a few taps away.
               </p>
             </div>
             <div>
@@ -279,9 +284,9 @@
               <h3>What if this project disappears?</h3>
               <p>
                 Your identity outlives it. It lives in the network&rsquo;s public
-                directory, your keys are on your device, and your server remains a
-                standard rotation key, so ordinary AT&nbsp;Protocol tooling can still
-                operate on your identity. All of this is open source.
+                directory, your keys are on your device, and your server still holds a
+                standard key, so ordinary AT&nbsp;Protocol tooling can still operate on
+                your identity. All of this is open source.
               </p>
             </div>
           </div>
@@ -297,8 +302,8 @@
             Obsign is opening to early testers. Leave an email and we&rsquo;ll send
             you the TestFlight invite when your spot opens. Already on Bluesky or the
             AT&nbsp;Protocol? Add your handle &mdash; bringing an existing account is
-            exactly what Obsign is built for, and it helps us know how many of you
-            are coming with one.
+            what Obsign is built for, and it helps us know how many of you are
+            coming with one.
           </p>
           <form class="waitlist-form" novalidate>
             <div class="waitlist-fields">
