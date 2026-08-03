@@ -89,8 +89,9 @@
           <p class="lede">
             Obsign is an iOS identity wallet for the AT&nbsp;Protocol, the network behind
             Bluesky. The keys that control your account live in your device&rsquo;s
-            Secure&nbsp;Enclave, not on someone else&rsquo;s server, and your posts and media can be backed up to your own iCloud&nbsp;Drive. No platform, host,
-            or provider can take your identity, block your exit, or hold it hostage.
+            Secure&nbsp;Enclave, not on someone else&rsquo;s server. Your posts and media
+            can back up to your own iCloud&nbsp;Drive. No platform, host, or provider can
+            take your identity, block your exit, or hold it hostage.
           </p>
           <div class="hero-actions">
             <a class="btn btn-primary" href="#waitlist" data-umami-event="waitlist-cta">Join the TestFlight waitlist</a>
@@ -105,7 +106,7 @@
       <!-- The problem, stated honestly -->
       <section class="section-alt" id="owned">
         <div class="container">
-          <h2>Owned, not rented.</h2>
+          <h2>Your account is a promise someone else keeps.</h2>
           <div class="section-intro">
             <p>
               On the AT&nbsp;Protocol, your account is a public record, controlled
@@ -117,7 +118,11 @@
             <p>
               Obsign turns that promise into arithmetic. Your device holds the
               highest-priority rotation key, so the final word on your account is signed
-              by you — and only ever by you. In addition, your wallet will create a recovery key, which is securely split into three shares, one stored in iCloud, one held in escrow by your server, and the third given to you to store offline. Only two-of-three shares are required to reconstruct the recovery key, so even if one share is compromised, the other two remain secure. A dishonest host cannot steal your recovery key, and you are able to fully recover your account from the two shares you hold.
+              by you — and only ever by you. Your wallet also creates a recovery key and
+              splits it into three shares: one in your iCloud, one escrowed with your
+              server, one yours to keep offline. Any two rebuild the key. A dishonest
+              host holds a single share it can do nothing with; the two you hold are
+              enough to bring your account back.
             </p>
           </div>
           <div class="keyfacts">
@@ -234,7 +239,7 @@
             <p>
               And nothing about this leaves the network behind: your server keeps a
               lower-priority rotation key, so standard AT&nbsp;Protocol tooling and
-              ordinary migrations keep working exactly as they do everywhere else.
+              ordinary migrations keep working as they do everywhere else.
             </p>
             <p>
               Turn on backup and leaving gets safer still: Obsign keeps your own copy of
@@ -263,7 +268,9 @@
             <div>
               <h3>Do I need to understand the cryptography?</h3>
               <p>
-                No, and you&rsquo;re never asked to. Obsign attempts to keep the process as simple as possible. If you want to understand what&rsquo;s happening under the hood, Obsign gives you the details just a few taps away.
+                No, and you&rsquo;re never asked to. Setup is a few plain questions;
+                the machinery stays out of the way. If you&rsquo;re curious about
+                what&rsquo;s happening underneath, the details are a few taps away.
               </p>
             </div>
             <div>
@@ -297,8 +304,8 @@
             Obsign is opening to early testers. Leave an email and we&rsquo;ll send
             you the TestFlight invite when your spot opens. Already on Bluesky or the
             AT&nbsp;Protocol? Add your handle &mdash; bringing an existing account is
-            exactly what Obsign is built for, and it helps us know how many of you
-            are coming with one.
+            what Obsign is built for, and it helps us know how many of you are
+            coming with one.
           </p>
           <form class="waitlist-form" novalidate>
             <div class="waitlist-fields">
