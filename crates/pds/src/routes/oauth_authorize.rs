@@ -158,15 +158,27 @@ pub struct ConsentForm {
 
 /// Distinguishes client-caused failures from server-caused failures in PAR resolution.
 ///
-/// Callers use this to pick the right error page title so the framing is accurate for
-/// both the user ("Invalid Request" for client errors) and operators ("Server Error" for
-/// infrastructure failures that should trigger alerts).
+/// Callers use this to pick the right error page title: client errors get the
+/// request-didn't-work page, infrastructure failures (which should trigger alerts)
+/// get the server-error page. Both variants carry finished user-register copy; the
+/// mechanical detail lives in the tracing at the failure site.
 enum ResolveError {
     /// The client sent an invalid or expired `request_uri`, or a mismatched `client_id`.
     Client(&'static str),
     /// A database or deserialization failure prevented resolution.
     Server(&'static str),
 }
+
+/// Shared error-page copy for infrastructure failures. The mechanical cause is already
+/// traced at the failure site, so the user's sentence carries none of it.
+const SERVER_ERROR_PAGE_MSG: &str = "This server hit a problem before it could finish. \
+     Nothing was granted. Wait a moment, then start the sign-in again from the app.";
+
+/// Shared error-page copy for a request naming a response delivery mode this server
+/// doesn't support. The `response_mode` detail goes to the log, not the user's sentence.
+const UNSUPPORTED_RESPONSE_MODE_MSG: &str = "The app asked for a kind of sign-in response \
+     this server doesn't support, so the request stopped here. Nothing was granted. If \
+     this keeps happening, the problem is on the app's side.";
 
 /// Resolve `GetAuthorizationQuery` into a fully-populated `AuthorizeQuery`.
 ///
@@ -182,20 +194,25 @@ async fn resolve_authorize_params(
             Ok(Some(r)) => r,
             Ok(None) => {
                 return Err(ResolveError::Client(
-                    "request_uri is invalid or has expired",
+                    "This sign-in link has expired or was already used. Nothing was \
+                     granted. Go back to the app and start the sign-in again.",
                 ))
             }
             Err(e) => {
                 tracing::error!(error = %e, "db error consuming PAR request");
-                return Err(ResolveError::Server(
-                    "database error looking up pushed authorization request",
-                ));
+                return Err(ResolveError::Server(SERVER_ERROR_PAGE_MSG));
             }
         };
 
         if row.client_id != raw.client_id {
+            tracing::info!(
+                client_id = %raw.client_id,
+                "authorize request rejected: client_id does not match the pushed authorization request"
+            );
             return Err(ResolveError::Client(
-                "client_id does not match the pushed authorization request",
+                "This sign-in request doesn't match the app that started it, so it \
+                 stopped here. Nothing was granted. Go back to the app and start the \
+                 sign-in again.",
             ));
         }
 
@@ -207,17 +224,18 @@ async fn resolve_authorize_params(
                     error = %e,
                     "failed to deserialize stored PAR request parameters; possible schema drift or DB corruption"
                 );
-                return Err(ResolveError::Server(
-                    "stored authorization request parameters are malformed",
-                ));
+                return Err(ResolveError::Server(SERVER_ERROR_PAGE_MSG));
             }
         };
 
         // The PAR endpoint validated the mode before storing it, so a parse failure here
         // means the stored row was hand-edited or the schema drifted — a client error is
         // still the safer framing (nothing redirects yet).
-        let response_mode = ResponseMode::parse(Some(stored.response_mode.as_str()))
-            .map_err(ResolveError::Client)?;
+        let response_mode =
+            ResponseMode::parse(Some(stored.response_mode.as_str())).map_err(|desc| {
+                tracing::info!(desc, "authorize request rejected: bad stored response_mode");
+                ResolveError::Client(UNSUPPORTED_RESPONSE_MODE_MSG)
+            })?;
 
         Ok(AuthorizeQuery {
             client_id: raw.client_id,
@@ -233,8 +251,10 @@ async fn resolve_authorize_params(
     } else {
         // Direct (non-PAR) flow: the mode arrives as a raw query parameter. Rejecting an
         // unknown mode here — before any redirect is issued — matches the PAR posture.
-        let response_mode =
-            ResponseMode::parse(raw.response_mode.as_deref()).map_err(ResolveError::Client)?;
+        let response_mode = ResponseMode::parse(raw.response_mode.as_deref()).map_err(|desc| {
+            tracing::info!(desc, "authorize request rejected: bad response_mode");
+            ResolveError::Client(UNSUPPORTED_RESPONSE_MODE_MSG)
+        })?;
 
         Ok(AuthorizeQuery {
             client_id: raw.client_id,
@@ -370,9 +390,11 @@ pub async fn get_authorization(
     let params = match resolve_authorize_params(&state, raw).await {
         Ok(p) => p,
         Err(ResolveError::Client(msg)) => {
-            return error_page("Invalid Request", msg).into_response()
+            return error_page("This sign-in request didn't work", msg).into_response()
         }
-        Err(ResolveError::Server(msg)) => return error_page("Server Error", msg).into_response(),
+        Err(ResolveError::Server(msg)) => {
+            return error_page("Something went wrong on this server", msg).into_response()
+        }
     };
 
     // Client and redirect_uri must be validated before any redirect is issued.
@@ -381,39 +403,54 @@ pub async fn get_authorization(
             Ok(m) => m,
             Err(ClientValidationError::UnknownClient) => {
                 return error_page(
-                    "Unknown Client",
-                    "The client_id is not registered with this server.",
+                    "This app isn't recognized",
+                    "This server doesn't recognize the app asking to sign you in, so \
+                     the request stopped here. Nothing was granted. If this keeps \
+                     happening, the problem is on the app's side.",
                 )
                 .into_response()
             }
             Err(ClientValidationError::ResolutionFailed(desc)) => {
                 return error_page(
-                    "Unknown Client",
-                    &format!("The client_id could not be resolved: {desc}"),
+                    "This app isn't recognized",
+                    &format!(
+                        "This server couldn't verify the app asking to sign you in, so \
+                         the request stopped here. Nothing was granted. Details for the \
+                         app's developer: {desc}"
+                    ),
                 )
                 .into_response()
             }
             Err(ClientValidationError::PrivateUseRedirectMismatch(desc)) => {
-                return error_page("Invalid Redirect URI", &desc).into_response()
-            }
-            Err(ClientValidationError::DbError) => {
                 return error_page(
-                    "Server Error",
-                    "A database error occurred. Please try again.",
+                    "Can't return you to the app",
+                    &format!(
+                        "The app asked to send you to an address it hasn't registered, \
+                         so you weren't sent anywhere and nothing was granted. Details \
+                         for the app's developer: {desc}"
+                    ),
                 )
                 .into_response()
             }
+            Err(ClientValidationError::DbError) => {
+                return error_page("Something went wrong on this server", SERVER_ERROR_PAGE_MSG)
+                    .into_response()
+            }
             Err(ClientValidationError::MalformedMetadata) => {
                 return error_page(
-                    "Client Configuration Error",
-                    "The client's registered metadata is malformed.",
+                    "This app is set up incorrectly",
+                    "The app's registration on this server isn't valid, so sign-in \
+                     can't continue. Nothing was granted. The app's developer needs to \
+                     fix its registration.",
                 )
                 .into_response()
             }
             Err(ClientValidationError::InvalidRedirectUri) => {
                 return error_page(
-                    "Invalid Redirect URI",
-                    "The redirect_uri does not match the client's registered URIs.",
+                    "Can't return you to the app",
+                    "The app asked to send you to an address it hasn't registered, so \
+                     you weren't sent anywhere and nothing was granted. If this keeps \
+                     happening, tell the app's developer.",
                 )
                 .into_response()
             }
@@ -767,48 +804,77 @@ pub async fn post_authorization(
     let issuer = state.config.public_url.trim_end_matches('/').to_string();
     // Validate client and redirect_uri first — deny/approve both redirect there,
     // so we must confirm it is safe before using it as a redirect target.
-    let metadata = match lookup_and_validate_client(&state, &form.client_id, &form.redirect_uri)
-        .await
-    {
-        Ok(m) => m,
-        Err(ClientValidationError::UnknownClient) => {
-            return error_page("Unknown Client", "The client_id is not registered.").into_response()
-        }
-        Err(ClientValidationError::ResolutionFailed(desc)) => {
-            return error_page(
-                "Unknown Client",
-                &format!("The client_id could not be resolved: {desc}"),
-            )
-            .into_response()
-        }
-        Err(ClientValidationError::PrivateUseRedirectMismatch(desc)) => {
-            return error_page("Invalid Redirect URI", &desc).into_response()
-        }
-        Err(ClientValidationError::DbError) => {
-            return error_page("Server Error", "A database error occurred.").into_response()
-        }
-        Err(ClientValidationError::MalformedMetadata) => {
-            return error_page(
-                "Client Configuration Error",
-                "Client metadata is malformed.",
-            )
-            .into_response()
-        }
-        Err(ClientValidationError::InvalidRedirectUri) => {
-            return error_page(
-                "Invalid Redirect URI",
-                "The redirect_uri does not match the client's registered URIs.",
-            )
-            .into_response()
-        }
-    };
+    let metadata =
+        match lookup_and_validate_client(&state, &form.client_id, &form.redirect_uri).await {
+            Ok(m) => m,
+            Err(ClientValidationError::UnknownClient) => {
+                return error_page(
+                    "This app isn't recognized",
+                    "This server doesn't recognize the app asking to sign you in, so the \
+                 request stopped here. Nothing was granted. If this keeps happening, \
+                 the problem is on the app's side.",
+                )
+                .into_response()
+            }
+            Err(ClientValidationError::ResolutionFailed(desc)) => {
+                return error_page(
+                    "This app isn't recognized",
+                    &format!(
+                        "This server couldn't verify the app asking to sign you in, so the \
+                     request stopped here. Nothing was granted. Details for the app's \
+                     developer: {desc}"
+                    ),
+                )
+                .into_response()
+            }
+            Err(ClientValidationError::PrivateUseRedirectMismatch(desc)) => {
+                return error_page(
+                    "Can't return you to the app",
+                    &format!(
+                        "The app asked to send you to an address it hasn't registered, so \
+                     you weren't sent anywhere and nothing was granted. Details for the \
+                     app's developer: {desc}"
+                    ),
+                )
+                .into_response()
+            }
+            Err(ClientValidationError::DbError) => {
+                return error_page("Something went wrong on this server", SERVER_ERROR_PAGE_MSG)
+                    .into_response()
+            }
+            Err(ClientValidationError::MalformedMetadata) => {
+                return error_page(
+                    "This app is set up incorrectly",
+                    "The app's registration on this server isn't valid, so sign-in can't \
+                 continue. Nothing was granted. The app's developer needs to fix its \
+                 registration.",
+                )
+                .into_response()
+            }
+            Err(ClientValidationError::InvalidRedirectUri) => {
+                return error_page(
+                    "Can't return you to the app",
+                    "The app asked to send you to an address it hasn't registered, so you \
+                 weren't sent anywhere and nothing was granted. If this keeps happening, \
+                 tell the app's developer.",
+                )
+                .into_response()
+            }
+        };
 
     // The hidden response_mode field is attacker-controllable like every other hidden
     // field. An unknown value gets the no-redirect error page: guessing a delivery mode
     // the client never asked for would hand the response to a place it isn't looking.
     let mode = match ResponseMode::parse(Some(form.response_mode.as_str())) {
         Ok(m) => m,
-        Err(desc) => return error_page("Invalid Request", desc).into_response(),
+        Err(desc) => {
+            tracing::info!(desc, "consent form rejected: bad response_mode");
+            return error_page(
+                "This sign-in request didn't work",
+                UNSUPPORTED_RESPONSE_MODE_MSG,
+            )
+            .into_response();
+        }
     };
 
     // redirect_uri is now validated — denial and all subsequent errors redirect there.
@@ -917,7 +983,7 @@ pub async fn post_authorization(
         if is_rate_limited(&mut attempts, &identifier) {
             return rerender(
                 Some(&identifier),
-                "Too many failed attempts. Please try again later.",
+                "Too many attempts. Wait a few minutes, then try again.",
             );
         }
     }
@@ -957,7 +1023,10 @@ pub async fn post_authorization(
                 }
             };
             record_failure(&mut attempts, &identifier);
-            return rerender(Some(&identifier), "Invalid credentials.");
+            return rerender(
+                Some(&identifier),
+                "That handle and password didn't match. Check them and try again.",
+            );
         }
         Err(e) => {
             tracing::error!(error = %e, "db error resolving identifier for OAuth approval");
@@ -1003,7 +1072,10 @@ pub async fn post_authorization(
                 }
             };
             record_failure(&mut attempts, &identifier);
-            return rerender(Some(&identifier), "Invalid credentials.");
+            return rerender(
+                Some(&identifier),
+                "That handle and password didn't match. Check them and try again.",
+            );
         }
         VerifyResult::CorruptHash => {
             tracing::error!(
@@ -1782,7 +1854,7 @@ mod tests {
         let body_bytes = axum::body::to_bytes(resp.into_body(), 32768).await.unwrap();
         let html = std::str::from_utf8(&body_bytes).unwrap();
         assert!(
-            html.contains("Invalid credentials."),
+            html.contains("That handle and password didn&#39;t match. Check them and try again."),
             "exact error message must appear"
         );
         assert!(
@@ -1800,7 +1872,7 @@ mod tests {
         let body_bytes = axum::body::to_bytes(resp.into_body(), 32768).await.unwrap();
         let html = std::str::from_utf8(&body_bytes).unwrap();
         assert!(
-            html.contains("Invalid credentials."),
+            html.contains("That handle and password didn&#39;t match. Check them and try again."),
             "must show same message as wrong-password to prevent enumeration"
         );
     }
@@ -1869,7 +1941,7 @@ mod tests {
         let body_bytes = axum::body::to_bytes(resp.into_body(), 32768).await.unwrap();
         let html = std::str::from_utf8(&body_bytes).unwrap();
         assert!(
-            html.contains("Invalid credentials."),
+            html.contains("That handle and password didn&#39;t match. Check them and try again."),
             "mobile account (NULL password_hash) must not pass the credential gate"
         );
     }
@@ -1883,7 +1955,7 @@ mod tests {
         let body_bytes = axum::body::to_bytes(resp.into_body(), 32768).await.unwrap();
         let html = std::str::from_utf8(&body_bytes).unwrap();
         assert!(
-            html.contains("Invalid credentials."),
+            html.contains("That handle and password didn&#39;t match. Check them and try again."),
             "deactivated account must be rejected with the same message as unknown identifier"
         );
     }
@@ -2009,7 +2081,7 @@ mod tests {
             .unwrap();
         let html = std::str::from_utf8(&body).unwrap();
         assert!(
-            html.contains("Invalid Request"),
+            html.contains("This sign-in request didn&#39;t work"),
             "invalid request_uri should render an error page"
         );
     }
@@ -2050,7 +2122,7 @@ mod tests {
             .unwrap();
         let html = std::str::from_utf8(&body).unwrap();
         assert!(
-            html.contains("Invalid Request"),
+            html.contains("This sign-in request didn&#39;t work"),
             "expired request_uri should render an error page"
         );
     }
@@ -2109,8 +2181,8 @@ mod tests {
             .unwrap();
         let html = std::str::from_utf8(&body).unwrap();
         assert!(
-            html.contains("Invalid Redirect URI"),
-            "missing redirect_uri on direct flow should return an Invalid Redirect URI error page"
+            html.contains("Can&#39;t return you to the app"),
+            "missing redirect_uri on direct flow should return the no-redirect error page"
         );
     }
 
@@ -2139,7 +2211,7 @@ mod tests {
             .unwrap();
         let html = std::str::from_utf8(&body).unwrap();
         assert!(
-            html.contains("Invalid Request"),
+            html.contains("This sign-in request didn&#39;t work"),
             "mismatched client_id should render an error page"
         );
     }
@@ -2536,7 +2608,10 @@ mod tests {
         let resp = get_authorize(state, &authorize_url("&response_mode=form_post")).await;
         assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
         let html = body_string(resp).await;
-        assert!(html.contains("response_mode"), "must name the parameter");
+        assert!(
+            html.contains("This sign-in request didn&#39;t work"),
+            "the page carries the user-register copy; the parameter name goes to the log"
+        );
     }
 
     #[tokio::test]
@@ -2643,7 +2718,7 @@ mod tests {
         assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
         let html = body_string(resp).await;
         assert!(
-            html.contains("could not be resolved"),
+            html.contains("Details for the app&#39;s developer:"),
             "resolution failure must be reported distinctly from an unregistered client"
         );
     }
@@ -2661,7 +2736,7 @@ mod tests {
         .await;
         assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
         let html = body_string(resp).await;
-        assert!(html.contains("not registered with this server"));
+        assert!(html.contains("This server doesn&#39;t recognize the app"));
     }
 
     #[tokio::test]

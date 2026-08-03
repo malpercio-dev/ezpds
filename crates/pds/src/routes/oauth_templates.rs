@@ -53,6 +53,10 @@ pub(super) fn error_redirect(
 /// Render a standalone HTML error page for cases where redirecting is unsafe
 /// (unknown `client_id`, mismatched `redirect_uri`).
 pub(super) fn error_page(title: &str, message: &str) -> (StatusCode, Html<String>) {
+    // Structured trace of every no-redirect error page: the page dead-ends in the user's
+    // browser, so this line is the only operator-visible record of the refusal. The page
+    // copy stays in the user register; mechanical detail belongs here and at the call site.
+    tracing::info!(title, message, "OAuth error page rendered");
     let mut html = String::with_capacity(2048);
     html.push_str(ERROR_PAGE_HEADER);
     html.push_str(&html_escape(title));
@@ -155,7 +159,7 @@ pub(super) fn render_consent_page(
     html.push_str("    <div class=\"top\">\n      <span class=\"seal\">");
     html.push_str(ICON_SEAL_LG);
     html.push_str("</span>\n      <h1>Authorize access</h1>\n");
-    html.push_str("      <p class=\"sub\">An app wants to sign in as your identity. Review the request, then approve to continue.</p>\n    </div>\n");
+    html.push_str("      <p class=\"sub\">An app wants to sign in as you. Review the request, then approve to continue.</p>\n    </div>\n");
     html.push_str("    <div class=\"rule\"></div>\n");
 
     // Application.
@@ -332,7 +336,7 @@ fn render_wallet_path(w: &WalletConsentPath) -> String {
     // in, and nothing about the fallback changes.
     if let Some(qr) = render_qr_svg(&handoff) {
         html.push_str(
-            "      <p class=\"wallet-lead\">Scan this with Obsign on your phone to sign in with your device key:</p>\n",
+            "      <p class=\"wallet-lead\">Scan this with Obsign on your phone to approve this sign-in:</p>\n",
         );
         html.push_str("      <div class=\"qr\">");
         html.push_str(&qr);
@@ -342,7 +346,7 @@ fn render_wallet_path(w: &WalletConsentPath) -> String {
         );
     } else {
         html.push_str(
-            "      <p class=\"wallet-lead\">Open Obsign and enter this code to sign in with your device key:</p>\n",
+            "      <p class=\"wallet-lead\">Open Obsign and enter this code to approve this sign-in:</p>\n",
         );
     }
     html.push_str("      <div class=\"user-code mono\">");
