@@ -1,7 +1,10 @@
 # Obsign Without Custos — First-Class Any-PDS Wallet Support
 
-**Status: design accepted — issues filed (epic [MM-452](https://linear.app/malpercio/issue/MM-452),
-Wave 9: Obsign Anywhere).** Captures the 2026-07-24 strategy session: a survey of
+**Status: design accepted — mostly shipped (epic [MM-452](https://linear.app/malpercio/issue/MM-452),
+Wave 9: Obsign Anywhere).** Capability detection (0b) and Phases 0a, 1, 2, and 3
+have landed — see the "**Shipped**" note under each; Phase 0c (the full-arc
+validation run and the "Obsign for any PDS" marketing/docs story) is the
+remaining piece. Captures the 2026-07-24 strategy session: a survey of
 how much of Obsign already functions for identities hosted on a non-Custos PDS, an
 ecosystem survey of how other PDS implementations self-identify, and the phased
 plan for making the any-PDS tier a deliberate product rather than an accident of
@@ -53,6 +56,12 @@ hosted on any spec-compliant PDS:
 | Sovereign sessions (`/v1/sessions/sovereign`) and everything downstream: app passwords, change handle, removal, **blob restore** | Incidental — the features are standard lexicons; only the unlock path is Custos (Phase 2) |
 | Rescue/migration **destination** (finalize unconditionally mints the sovereign session) | Incidental — one branch (Phase 3) |
 | Agents (auth.md), wallet-confirmed OAuth consent, repo-key rotation, did:web hosting | Inherent — Custos server capabilities |
+
+This table is the 2026-07-24 snapshot. The three rows tagged *Incidental (Phase
+N)* have since shipped — Shamir generation (Phase 1), sovereign-session
+downstream (Phase 2), and rescue destination (Phase 3) — so those features now
+work on a non-Custos host; see the phase sections below for the shipped form of
+each. Only the *Structural* and *Inherent* rows remain Custos-locked.
 
 What changed since the previous look (v0.7.x): the user-held backup wave
 (MM-434/444/445/447), the migration mirror fallbacks (MM-433/446/448), sovereign
@@ -148,6 +157,18 @@ capability, the create entry explains honestly that creation needs a Custos
 server and steers to import — up front, not as a late `/v1/accounts/mobile`
 error.
 
+**Shipped, in altered form.** The up-front create-gating landed as planned:
+`PdsConfigScreen` reads the host's advertised capabilities and, when
+`createCeremony` is absent, routes to `CreateUnavailableScreen` rather than
+letting the failure surface as a late `/v1/accounts/mobile` error. The
+`ModeSelectScreen` relabel, however, never shipped as described — the later
+Wallet IA restructure (the "identity instrument panel" phases) replaced the
+two-button mode select with a single "one situation question" door
+(`AddIdentityScreen`), which routes by the user's situation instead of by
+naming the machinery. The honesty goal 0a set for the mode select is met by
+that door plus the `CreateUnavailableScreen` steer; the specific rename it
+proposed is obsolete.
+
 ### Phase 0c — positioning + validation ([MM-455](https://linear.app/malpercio/issue/MM-455))
 
 Validation before marketing: run the full arc — claim from a reference PDS →
@@ -200,6 +221,17 @@ blob restore for foreign identities — all already standard-lexicon features th
 are dark only for want of a session. ADR-0021's full-session requirement and the
 use-once-never-store password posture both hold.
 
+**Shipped.** `apps/identity-wallet/src-tauri/src/password_unlock.rs` supplies the
+second resolution of `NeedsUnlock`; its `UnlockMethod` chooses the sovereign
+device-key path or the password path by the host's advertised `sovereignSessions`
+capability. The password path runs a one-shot `createSession` through the
+machinery `source_login.rs` already uses and persists the returned Bearer pair
+into the same versioned `{did}:oauth-tokens` record, so nothing in
+`session_provider.rs` changes — the refresh/rotate/discard ladder owns the
+session identically regardless of which unlock minted it. The frontend seam is
+`PasswordUnlockDialog.svelte` + `unlock.ts`. ADR-0021 and the
+use-once-never-store posture hold as designed.
+
 ### Phase 3 — any-PDS rescue destination ([MM-458](https://linear.app/malpercio/issue/MM-458))
 
 `finalize_migration_core`'s injected `ensure_session` step branches on the
@@ -211,6 +243,19 @@ sovereign disaster recovery to a non-Custos destination and outbound migration
 between arbitrary hosts. This is a deliberate strategic choice: the rescue path
 must not be a lock-in funnel, which paradoxically strengthens the Custos pitch —
 conversion happens because escrow/agents/consent are worth it, with trust intact.
+
+**Shipped, with two refinements.** The branch is the pure `destination_credential`
+decision in `migration_orchestrator.rs`, consumed by finalize's injected
+ensure-session step, preserving the strict activate → durable-credential →
+deactivate ordering; one branch serves both sovereign disaster recovery to a
+non-Custos destination and outbound migration between arbitrary hosts, as
+planned. Two cases the plan's two-way split did not name emerged in
+implementation: a **did:web** identity has no PLC rotation set to sign a
+sovereign proof, so it persists the Bearer pair regardless of host; and a
+destination that could **not be reached** for its capability probe keeps today's
+sovereign behavior rather than being downgraded to Bearer on a describeServer
+blink — the same probe asymmetry Phase 1 uses, since `activateAccount` has
+already succeeded against that host by the time the decision is read.
 
 ## Sequencing and rationale
 
