@@ -67,6 +67,10 @@ invent work.
 - **Repo rules still apply:** no ticket/AC references in `.rs` comments, the
   Obsign and Brass Console design registers stay separate, `flake.lock` is
   never edited by hand, marketing-surface changes need a changelog fragment.
+- **Prose edits follow [docs/writing-style.md](../writing-style.md)** —
+  audience per tier, voice rules, and the comment/AGENTS.md budget.
+  Consolidations move detail toward the module doc and leave AGENTS.md
+  pointing at it, never the reverse.
 
 ## Configuring the Routine
 
@@ -215,6 +219,14 @@ and this prompt ever disagree, follow the file.
      enforces this); keep the Obsign and Brass Console design registers
      separate; bump a file's "Last verified:" date only for content you
      actually verified tonight.
+   - Prose edits follow docs/writing-style.md — read it before editing any
+     prose surface. It sets the audience per docs tier (user docs are written
+     for the security-minded non-technical reader; operator docs keep their
+     technical depth), the voice rules (em-dash budget, no self-justifying
+     asides, no defensive adverbs), and the comment/AGENTS.md budget: comments
+     state constraints and name the enforcing test, ADRs own rationale, and a
+     consolidation moves detail toward the module doc, leaving AGENTS.md as a
+     pointer — never the reverse.
    - Keep the diff reviewable over coffee: one coherent theme, roughly ≤300
      changed lines. Cut lower-value edits before exceeding that and note them
      in the PR body instead.

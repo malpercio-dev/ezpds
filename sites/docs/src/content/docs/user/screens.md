@@ -33,7 +33,7 @@ with import one tap away.
 
 <figure>
   <img src="/screenshots/wallet/create-unavailable.png" alt="Obsign screen reading 'This server can't create identities', naming the configured host, with 'Import an identity' and 'Use a different server' buttons" width="280" />
-  <figcaption>An honest early stop: this server can host your identity, it just cannot mint one.</figcaption>
+  <figcaption>An honest early stop: this server can host your identity, it just can't create one.</figcaption>
 </figure>
 
 ## Recovering from backup shares
@@ -111,7 +111,7 @@ Direct-message access is off unless you allow it per credential.
 
 ## Agents
 
-Agents you have authorised to act on your behalf are listed under **My agents**, each
+Agents you have authorized to act on your behalf are listed under **My agents**, each
 with its permissions and full activity record.
 
 <figure>
@@ -128,24 +128,25 @@ with its permissions and full activity record.
 
 ## Backing up your content
 
-The **Media backup** screen (opened from an identity) holds two backups you control — your
+The **Media backup** screen (opened from an identity) holds two backups you control: your
 media and your posts.
 
-Choosing **Back up media** keeps your own content-verified copy of
-that account's photos and video in iCloud Drive — restorable to your server byte for byte if
-the server ever loses the originals. The mirror size is always shown.
+Choosing **Back up media** keeps your own content-verified copy of that account's photos
+and video in iCloud Drive, restorable to your server byte for byte if the server ever
+loses the originals. The mirror size is always shown.
 
 <figure>
   <img src="/screenshots/wallet/media-backup.png" alt="Obsign media-backup screen showing 3 items backed up, 8.7 MB of iCloud storage, and 'Back up now' and 'Restore to server' actions" width="280" />
   <figcaption>The media backup for one identity: how much is mirrored, back up now, or restore it to the server.</figcaption>
 </figure>
 
-Settings gains a **Media backup** section that keeps opted-in identities topped up in the
-background — with controls to turn that off, restrict it to while charging, or skip cellular data.
+A **Media backup** section in Settings keeps opted-in identities topped up in the
+background, with controls to turn that off, restrict it to while charging, or skip
+cellular data.
 
 <figure>
   <img src="/screenshots/wallet/media-backup-settings.png" alt="Obsign settings screen showing the Media backup section with 'Back up in the background', 'Only while charging', and 'Use Wi-Fi only' switches" width="280" />
-  <figcaption>The background media-backup controls in Settings — status is carried by the switch position, never colour alone.</figcaption>
+  <figcaption>The background media-backup controls in Settings — status is carried by the switch position, never color alone.</figcaption>
 </figure>
 
 Below the media controls, **Back up your posts** mirrors an integrity-checked snapshot of your
@@ -159,13 +160,13 @@ one part of your account that otherwise lives only on your server.
 
 ## When something is wrong
 
-If Obsign detects an unauthorised change to your identity's public record, the home
-surface raises an alert — status is always shown with text and an icon, never colour
+If Obsign detects an unauthorized change to your identity's public record, the home
+surface raises an alert — status is always shown with text and an icon, never color
 alone.
 
 <figure>
   <img src="/screenshots/wallet/home-alert.png" alt="Obsign home screen showing a tamper alert banner" width="280" />
-  <figcaption>A tamper alert on the home surface — text and icon, not colour alone.</figcaption>
+  <figcaption>A tamper alert on the home surface — text and icon, not color alone.</figcaption>
 </figure>
 
 Opening the alert shows the change and a live countdown of the 72-hour recovery window.

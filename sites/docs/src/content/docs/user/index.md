@@ -3,9 +3,11 @@ title: Welcome to Obsign
 description: What Obsign is, and why your identity stays yours.
 ---
 
-Obsign is a humane security instrument for holding and defending an ATProtocol
-identity. It is **cryptographic, not custodial**: the keys that prove who you are
-live with you, not with a server you have to trust.
+Obsign is a security instrument for holding and defending an ATProtocol
+identity. The keys that prove who you are stay on your device, not on a server
+you have to trust. Obsign seals them there, watches your identity's public
+record for tampering, and keeps a recovery path that doesn't depend on any one
+device.
 
 This surface is written for people _using_ Obsign. If you run the server side,
 head to [Running Custos](/operator/) instead.
@@ -31,7 +33,7 @@ head to [Running Custos](/operator/) instead.
 
 :::note[Honest about the boundary]
 Screenshots in these docs are rendered in a browser harness, not on a real
-device. They are accurate for what a screen _does_; they are not a substitute
-for how iOS renders the real app (Secure Enclave prompts, safe-area insets).
-Where the difference matters, the page says so.
+device. They are accurate for what a screen _does_, but not for how iOS renders
+the real app (Secure Enclave prompts, safe-area insets). Where the difference
+matters, the page says so.
 :::
