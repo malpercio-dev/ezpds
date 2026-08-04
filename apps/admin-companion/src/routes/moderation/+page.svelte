@@ -232,7 +232,7 @@
             <p class="confirm-text">
               {#if takenDown}
                 Restore <span class="confirm-did">{statusView.status.subject.did}</span>
-                on {identity?.host}? The server resumes serving it — unless the account
+                on {identity?.host}? The server resumes serving it unless the account
                 is also suspended or deactivated.
               {:else}
                 Take down <span class="confirm-did">{statusView.status.subject.did}</span>
@@ -310,7 +310,7 @@
             <p class="confirm-text">
               Revoke every credential of
               <span class="confirm-did">{statusView.status.subject.did}</span>
-              on {identity?.host}? Every holder — including the account owner — is
+              on {identity?.host}? Every holder, including the account owner, is
               signed out and must log in again with the account password.
             </p>
             <Button

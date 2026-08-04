@@ -148,8 +148,8 @@
     </section>
   {:else}
     <p class="lede">
-      This account as the server reports it: usage and storage below, moderation —
-      takedown/restore and credential revocation — one tap deeper.
+      This account as the server reports it: usage and storage below, moderation one
+      tap deeper — takedown, restore, and credential revocation.
     </p>
 
     <section class="panel" aria-labelledby="identity-label">

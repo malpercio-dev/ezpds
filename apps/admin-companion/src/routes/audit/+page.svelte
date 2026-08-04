@@ -135,9 +135,9 @@
   <PinnedPairingGate view={pairingsView} {pairing} resource="the audit log is always read from a specific server.">
     {#snippet children()}
     <p class="lede">
-      Every privileged admin action recorded on this server, newest first — takedowns,
-      credential sweeps, code mints and revokes, device pairings and revocations — each
-      attributed to the credential that signed it.
+      Every privileged admin action recorded on this server, newest first: takedowns,
+      credential sweeps, code mints and revokes, device pairings and revocations. Each
+      is attributed to the credential that signed it.
     </p>
 
     <section class="panel" aria-labelledby="audit-filter-label">
