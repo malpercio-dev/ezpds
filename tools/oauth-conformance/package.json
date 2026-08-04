@@ -1,0 +1,16 @@
+{
+  "name": "ezpds-oauth-conformance",
+  "private": true,
+  "type": "module",
+  "engines": { "node": ">=22.21" },
+  "scripts": {
+    "check": "tsc --noEmit",
+    "test": "node test/run.ts"
+  },
+  "devDependencies": {
+    "@types/node": "^22.15.0",
+    "ezpds-interop": "file:../interop",
+    "jose": "^5.9.6",
+    "typescript": "^5.8.0"
+  }
+}

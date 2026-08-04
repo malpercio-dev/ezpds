@@ -73,3 +73,7 @@ linear-export/
 # Claude Code machine-local session files (worktrees already ignored above)
 .claude/settings.local.json
 .claude/scratch_*.log
+
+# Node dependency trees for the tools/* packages (each is an independent pnpm
+# package with its own node_modules; only the lockfiles are tracked).
+tools/*/node_modules/

@@ -102,7 +102,9 @@ jobs:
         with:
           node-version: 22
           cache: pnpm
-          cache-dependency-path: tools/mcp/pnpm-lock.yaml
+          cache-dependency-path: |
+            tools/mcp/pnpm-lock.yaml
+            tools/oauth-conformance/pnpm-lock.yaml
 
       - name: Install deps (tools/mcp)
         working-directory: tools/mcp
@@ -110,6 +112,20 @@ jobs:
 
       - name: Stdio MCP conformance suite (tools/mcp)
         working-directory: tools/mcp
+        env:
+          CUSTOS_MCP_TEST_PDS_BIN: ${{ github.workspace }}/target/debug/pds
+        run: pnpm test
+
+      # The OAuth conformance suite drives real client behaviour (PAR → consent → token →
+      # authenticated call) against a hermetic PDS, pinning the wire contract third-party
+      # atproto clients depend on. It lives in this lane for the same reason the MCP suite
+      # does: it needs a `pds` binary, and `just ci-pds` already built one.
+      - name: Install deps (tools/oauth-conformance)
+        working-directory: tools/oauth-conformance
+        run: pnpm install --frozen-lockfile
+
+      - name: OAuth conformance suite (tools/oauth-conformance)
+        working-directory: tools/oauth-conformance
         env:
           CUSTOS_MCP_TEST_PDS_BIN: ${{ github.workspace }}/target/debug/pds
         run: pnpm test
