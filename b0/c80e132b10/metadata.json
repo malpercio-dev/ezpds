@@ -1,0 +1,24 @@
+{
+  "cli_version": "0.9.0",
+  "checkpoint_id": "b0c80e132b10",
+  "strategy": "manual-commit",
+  "branch": "claude/oauth-atproto-failures-4ff55e",
+  "checkpoints_count": 1,
+  "files_touched": null,
+  "sessions": [
+    {
+      "metadata": "/b0/c80e132b10/0/metadata.json",
+      "transcript": "/b0/c80e132b10/0/full.jsonl",
+      "compact_transcript": "/b0/c80e132b10/0/transcript.jsonl",
+      "content_hash": "/b0/c80e132b10/0/content_hash.txt",
+      "prompt": "/b0/c80e132b10/0/prompt.txt"
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 718,
+    "cache_creation_tokens": 4502061,
+    "cache_read_tokens": 164242524,
+    "output_tokens": 328081,
+    "api_call_count": 364
+  }
+}
