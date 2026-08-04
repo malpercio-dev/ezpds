@@ -38,7 +38,7 @@
 <OnboardingShell
   tone="signet"
   title="Migration complete"
-  subtitle="Your identity now lives on its new PDS. Your DID hasn't changed."
+  subtitle="Your identity now lives on its new server. Your identifier hasn't changed."
 >
   {#snippet icon()}
     <SealEmblem size={80}>

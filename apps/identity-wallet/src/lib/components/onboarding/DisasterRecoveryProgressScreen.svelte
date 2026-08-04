@@ -103,21 +103,21 @@
     if (isCodedError(raw)) {
       switch (raw.code) {
         case 'WALLET_NOT_AUTHORIZED':
-          return "This wallet doesn't hold a rotation key for this identity.";
+          return "This wallet doesn't hold a key that can act for this identity.";
         case 'GUARD_REJECTED':
-          return 'The safety check refused to sign the key-enroll operation.';
+          return 'A safety check refused to sign this change. Nothing was published.';
         case 'KEY_NOT_ENROLLED':
           return 'The recovery signing key is missing. Restart the recovery.';
         case 'PLC_DIRECTORY_ERROR':
-          return 'The PLC directory rejected the request.';
+          return 'The public record rejected the request. Try again in a moment.';
         case 'RATE_LIMITED':
-          return 'The PLC directory is rate-limiting requests. Wait a moment and retry.';
+          return 'The public record is busy right now. Wait a moment and try again.';
         case 'SERVICE_AUTH_FAILED':
-          return "Couldn't authorize with the destination PDS.";
+          return "Couldn't authorize with the destination server.";
         case 'ACCOUNT_CREATION_FAILED':
-          return "Couldn't create the account on the destination PDS.";
+          return "Couldn't create the account on the destination server.";
         case 'DESTINATION_CONFLICT':
-          return 'An account already exists on the destination PDS with a conflicting identity.';
+          return 'The destination server already has an account that conflicts with this identity.';
         case 'BACKUP_UNAVAILABLE':
           return 'No valid backup was found on this device — the account cannot be rebuilt without one.';
         case 'REPO_TRANSFER_FAILED':
@@ -128,7 +128,7 @@
           return "Some media couldn't be restored from the backup.";
         case 'VERIFICATION_INCOMPLETE': {
           const err = raw as Extract<MigrationError, { code: 'VERIFICATION_INCOMPLETE' }>;
-          return `Import incomplete: ${err.imported}/${err.expected} blobs imported so far.`;
+          return `Import incomplete: ${err.imported}/${err.expected} media files imported so far.`;
         }
         case 'NETWORK_ERROR':
           return 'Network error. Check your connection and try again.';

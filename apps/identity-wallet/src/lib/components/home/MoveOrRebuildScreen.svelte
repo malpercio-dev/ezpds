@@ -61,13 +61,14 @@
       <p class="note-t">Neither route is available for this identity</p>
       <p class="note-s">
         Both work by signing a change to the identity itself, which needs this device to
-        hold its top rotation key. Restore that first and they reappear here.
+        hold its deciding key. Restore that first and they reappear here.
       </p>
     </div>
   {:else if !onrebuild}
     <p class="foot">
-      Rebuilding from backup needs a did:plc identity whose top rotation key is on this
-      device. A did:web moves by editing its <code>did.json</code> at your domain instead.
+      Rebuilding from backup needs an identity kept on the network's public record, with its
+      deciding key on this device. A domain identity moves by editing the
+      <code>did.json</code> at your domain instead.
     </p>
   {/if}
 </div>

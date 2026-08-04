@@ -40,7 +40,7 @@
         const err = raw as ClaimError;
         switch (err.code) {
           case 'PLC_DIRECTORY_ERROR':
-            error = `PLC directory rejected the operation: ${err.message || 'unknown error'}`;
+            error = `The public record rejected the update: ${err.message || 'unknown error'}`;
             break;
           case 'RATE_LIMITED':
             error = formatRateLimitMessage(err.retryAfter);

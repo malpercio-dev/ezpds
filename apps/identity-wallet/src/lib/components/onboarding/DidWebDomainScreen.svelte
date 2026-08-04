@@ -31,13 +31,13 @@
         case 'INVALID_DOMAIN':
           return 'Enter a public domain name without a path or port.';
         case 'DOCUMENT_NOT_FOUND':
-          return 'No DID document found — is did.json published at /.well-known/did.json on this domain?';
+          return "Couldn't find a did.json at /.well-known/did.json on this domain. Publish it there, then try again.";
         case 'INVALID_DOCUMENT':
-          return "This domain's did.json is not a usable ATProto DID document.";
+          return "This domain's did.json isn't a usable identity document.";
         case 'PDS_UNREACHABLE':
-          return "The PDS named in this domain's did.json is unreachable.";
+          return "Couldn't reach the server named in this domain's did.json.";
         case 'KEYCHAIN_ERROR':
-          return 'Could not save the identity on this device. Try again.';
+          return "Couldn't save the identity on this device. Try again.";
         default:
           return 'Network error. Check your connection and try again.';
       }

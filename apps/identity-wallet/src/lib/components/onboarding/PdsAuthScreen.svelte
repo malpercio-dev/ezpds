@@ -42,16 +42,16 @@
   {onback}
   authenticate={authenticateSourcePds}
   errorLogLabel="Source PDS sign-in failed:"
-  openingStatus="Opening a session with your PDS…"
-  title="Sign in to your PDS"
-  subtitle="Adding this device as a recovery key is an identity change, and the AT Protocol lets only a full sign-in authorize one."
+  openingStatus="Opening a session with your server…"
+  title="Sign in to your server"
+  subtitle="Adding this device as a recovery key is an identity change, and only a full sign-in can authorize one."
   appPasswordClause="authorize identity changes"
   mapExtraError={mapClaimError}
 >
   {#snippet why()}
     <p>
-      Your PDS only permits identity changes with your <strong>account password</strong> — the
-      protocol has no way to delegate this one action, which is why migration tools ask for it too.
+      Your server only permits identity changes with your <strong>account password</strong> —
+      there is no way to delegate this one action, which is why migration tools ask for it too.
     </p>
     <p class="reassure">
       Your password is sent only to {pdsUrl}, used once to open a session, and never stored on this

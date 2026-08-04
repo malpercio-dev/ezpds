@@ -48,7 +48,7 @@
   load();
 </script>
 
-<OnboardingShell title="Review the domain update" subtitle="These four changes adopt your device key and move the account without a PLC operation." onback={oncancel}>
+<OnboardingShell title="Review the domain update" subtitle="These four changes adopt your device key and move the account, with no change to the network's public record." onback={oncancel}>
   {#if loading}<Spinner label="Preparing document…" />
   {:else if review}
     <div class="diffs">

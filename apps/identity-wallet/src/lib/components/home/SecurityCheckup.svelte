@@ -49,13 +49,13 @@
         : deviceKeyIsRoot === true
           ? {
               label: 'Key custody',
-              value: "This device holds the top rotation key",
+              value: 'This device holds the deciding key',
               verdict: 'held',
             }
           : deviceKeyIsRoot === false
             ? {
                 label: 'Key custody',
-                value: 'This device is not the top rotation key',
+                value: "This device doesn't hold the deciding key",
                 verdict: 'attention',
               }
             : { label: 'Key custody', value: 'Not confirmed', verdict: 'unknown' }

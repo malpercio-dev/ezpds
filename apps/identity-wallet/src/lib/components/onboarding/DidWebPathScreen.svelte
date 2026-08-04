@@ -4,7 +4,7 @@
   let { onselect, onback }: { onselect: (origin: DidWebOrigin) => void; onback: () => void } = $props();
 </script>
 
-<OnboardingShell title="Set up your domain identity" subtitle="Choose what exists today. You will serve the DID document from your own domain." {onback}>
+<OnboardingShell title="Set up your domain identity" subtitle="Choose what exists today. You'll serve your identity's did.json from your own domain." {onback}>
   <div class="grid">
     <button onclick={() => onselect('new')}><strong>New identity</strong><span>Compose a new did.json, then export and publish it on your own web host.</span></button>
     <button onclick={() => onselect('existing')}><strong>Existing identity</strong><span>Review, export, and publish the key and service changes.</span></button>

@@ -202,10 +202,10 @@
           defends it. Only this device's ability to act for it is gone.
         </p>
         <p class="note-s">
-          A did:web has no rotation keys, so there is no recovery ceremony to run. To give
-          this device a working key again: remove the identity here (which only forgets it
-          locally — it publishes nothing), import it again to issue a fresh key, then publish
-          that key in your domain's <code>did.json</code>.
+          There is no recovery ceremony to run for a domain identity. To give this device a
+          working key again: remove the identity here (which only forgets it locally — it
+          publishes nothing), import it again to issue a fresh key, then publish that key in
+          your domain's <code>did.json</code>.
         </p>
       {:else}
         <p class="note-s">
@@ -214,8 +214,8 @@
           unaffected</strong>: it is intact on the public record, and your recovery shares still
           control it. Only this device's ability to act for it is gone, which is why changing
           the handle, moving servers, and repairing the endpoint are unavailable here.
-          Recovering issues a new key on this device and installs it as the identity's top
-          rotation key.
+          Recovering issues a new key on this device and installs it as the identity's
+          deciding key.
         </p>
       {/if}
     </div>

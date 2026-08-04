@@ -48,7 +48,7 @@
     if (isCodedError(raw)) {
       switch (raw.code) {
         case 'DESTINATION_UNREACHABLE':
-          return "Couldn't reach the destination PDS. Check the URL and try again.";
+          return "Couldn't reach the destination server. Check the address and try again.";
         case 'NETWORK_ERROR':
           return 'Network error. Check your connection and try again.';
         case 'MIGRATION_NOT_READY':
@@ -70,7 +70,7 @@
         case 'MIGRATION_NOT_READY':
           return 'Migration is not ready yet. Please try again.';
         case 'PLC_DIRECTORY_ERROR':
-          return 'The PLC directory rejected the request. Please try again.';
+          return 'The public record rejected the request. Try again in a moment.';
         default:
           return `Couldn't check this destination (${raw.code}). Please try again.`;
       }
@@ -135,8 +135,8 @@
 </script>
 
 <OnboardingShell
-  title="Migrate to another PDS"
-  subtitle="Move this identity to a new PDS. Your DID stays the same — only where it lives changes."
+  title="Move to another server"
+  subtitle="Move this identity to a new server. Your identifier stays the same — only where it lives changes."
   onback={terminalMessage ? undefined : onback}
 >
   {#if terminalMessage}
@@ -153,7 +153,7 @@
       autocapitalize="none"
       autocorrect="off"
       spellcheck={false}
-      aria-label="Destination PDS URL"
+      aria-label="Destination server address"
       disabled={checking}
       error={error ?? undefined}
       onblur={() => (probedPdsUrl = destPdsUrl)}

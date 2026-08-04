@@ -39,10 +39,10 @@
             error = 'Handle not found. Check the spelling and try again.';
             break;
           case 'DID_NOT_FOUND':
-            error = 'DID not found on PLC directory.';
+            error = "This identity wasn't found on the network's public record.";
             break;
           case 'PDS_UNREACHABLE':
-            error = 'Could not reach the PDS. It may be temporarily offline.';
+            error = "Couldn't reach this identity's server. It may be temporarily offline.";
             break;
           case 'NETWORK_ERROR':
             error = 'Network error. Check your connection and try again.';

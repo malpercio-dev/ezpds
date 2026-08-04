@@ -38,7 +38,7 @@
 <OnboardingShell
   tone="signet"
   title="Identity claimed"
-  subtitle="Your rotation key has been updated — you're now in control of this identity."
+  subtitle="This device now holds the deciding key — you're in control of this identity."
 >
   {#snippet icon()}
     <SealEmblem size={80}>
