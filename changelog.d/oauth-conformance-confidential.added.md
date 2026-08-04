@@ -1,0 +1,1 @@
+The OAuth conformance suite now covers confidential clients (`private_key_jwt`), and a client publishing its keys at a loopback `jwks_uri` is no longer refused for using plain http — the same development exception `client_id` resolution already made.

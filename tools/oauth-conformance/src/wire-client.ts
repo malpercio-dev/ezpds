@@ -68,6 +68,49 @@ export async function dpopProof(
     .sign(key.privateKey);
 }
 
+/** A confidential client's signing keypair, published as a JWK set in its metadata. */
+export interface ClientKey {
+  privateKey: KeyLike;
+  /** The public half, with `kid`, ready to embed as `jwks: { keys: [...] }`. */
+  publicJwk: JWK & { kid: string };
+}
+
+export async function generateClientKey(kid = 'conformance-1'): Promise<ClientKey> {
+  const { privateKey, publicKey } = await generateKeyPair('ES256', { extractable: true });
+  const publicJwk = { ...(await exportJWK(publicKey)), kid };
+  return { privateKey, publicJwk };
+}
+
+/**
+ * Mint an RFC 7523 `private_key_jwt` client assertion.
+ *
+ * `iss` and `sub` are both the client_id, and `aud` identifies the authorization server —
+ * the claims that stop an assertion minted for one server being replayed against another.
+ * Overrides exist so tests can produce deliberately wrong assertions.
+ */
+export async function clientAssertion(
+  key: ClientKey,
+  clientId: string,
+  audience: string,
+  overrides: { iss?: string; sub?: string; exp?: number; jti?: string | null } = {},
+): Promise<string> {
+  const now = Math.floor(Date.now() / 1000);
+  const payload: Record<string, unknown> = {
+    iss: overrides.iss ?? clientId,
+    sub: overrides.sub ?? clientId,
+    aud: audience,
+    iat: now,
+    exp: overrides.exp ?? now + 60,
+  };
+  if (overrides.jti !== null) payload.jti = overrides.jti ?? crypto.randomUUID();
+  return new SignJWT(payload)
+    .setProtectedHeader({ alg: 'ES256', kid: key.publicJwk.kid })
+    .sign(key.privateKey);
+}
+
+export const CLIENT_ASSERTION_TYPE =
+  'urn:ietf:params:oauth:client-assertion-type:jwt-bearer';
+
 /** PKCE (RFC 7636 §4.1): 43–128 unreserved characters, and its S256 challenge. */
 export function pkce(): { verifier: string; challenge: string } {
   const verifier = crypto.randomBytes(32).toString('base64url');

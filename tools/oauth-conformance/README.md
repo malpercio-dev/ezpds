@@ -78,9 +78,18 @@ that rotations chain, that `sub` and the granted scope survive each one, that th
 `client_id` are enforced, that a rejected refresh does not consume the token, and — the case
 that matters most — that **two concurrent refreshes carrying the same token both succeed**.
 
+`confidential-client.test.ts` covers `private_key_jwt`: a full flow with a valid assertion,
+and refusal when the assertion is missing, signed by the wrong key, minted for another
+audience, or expired — on the refresh grant as well as the initial exchange. The `jwks_uri`
+branch is deliberately not exercised here: it would have to point at loopback, which the
+SSRF-hardened client correctly refuses in production. That branch is covered by
+`client_auth.rs`'s wiremock tests instead.
+
 Each of these was checked by breaking the server and watching the suite go red: removing the
-error-shape middleware fails five tests, and removing the refresh grace window fails the
-concurrency test with the server's literal response in the message. That is the property worth
+error-shape middleware fails five tests, removing the refresh grace window fails the
+concurrency test with the server's literal response in the message, and skipping client
+authentication fails five more — one of them printing the full token set the server handed to
+a client that proved nothing. That is the property worth
 maintaining — these reproduce the production bugs rather than restating current behaviour.
 
 Not yet covered, in rough priority order:
@@ -92,10 +101,9 @@ Not yet covered, in rough priority order:
 2. **The absolute session lifetime.** Rotation must not extend a session past its original
    grant, but a refresh token's expiry is never exposed to the client, so this is not
    observable from outside. Covered by a Rust unit test.
-3. **Confidential clients** — `private_key_jwt` assertions.
-4. **The official SDK** (`@atproto/oauth-client-node`) as a second persona: a compatibility
+3. **The official SDK** (`@atproto/oauth-client-node`) as a second persona: a compatibility
    oracle we did not write.
-5. **The wallet consent path.** Real third-party logins to sovereign accounts go through the
+4. **The wallet consent path.** Real third-party logins to sovereign accounts go through the
    device-key path, not this password form. Covering it needs a JS port of the consent
    envelope (Rust-only today, with a golden vector at
    `test-vectors/oauth-consent-envelope-v1.json` to pin against) and a mock plc.directory that

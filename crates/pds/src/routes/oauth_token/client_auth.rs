@@ -16,8 +16,9 @@
 //! also accepted — both appear in the wild), `exp` required, and a 30-second clock tolerance
 //! (the reference implementation's zero-tolerance `iat` check is a documented interop trap —
 //! bluesky-social/atproto#4474). The verification key comes from the metadata's inline
-//! `jwks` or its `jwks_uri`; the latter is a client-controlled URL, so it is policy-checked
-//! (https, no userinfo/fragment) and fetched with the SSRF-hardened client. `jti` presence
+//! `jwks` or its `jwks_uri`; the latter is a client-controlled URL, so it gets the same
+//! transport policy as `client_id` itself (https except loopback, no credentials) and is
+//! fetched with the SSRF-hardened client, which is the actual guard. `jti` presence
 //! is required but not replay-tracked: every protected grant is already single-use
 //! (authorization codes) or rotation-guarded (refresh tokens), so a replayed assertion alone
 //! wins nothing.
@@ -153,15 +154,25 @@ async fn resolve_client_key(
     if let Some(url) = &metadata.jwks_uri {
         let parsed = url::Url::parse(url)
             .map_err(|_| invalid_client("client metadata jwks_uri is not a valid URL"))?;
-        // The URL comes from a client-authored document: same outbound policy as client_id
-        // resolution (https only, no credentials), and the hardened client's connect-time
-        // SSRF guard covers the address itself.
-        if parsed.scheme() != "https"
-            || !parsed.username().is_empty()
-            || parsed.password().is_some()
+        // The URL comes from a client-authored document, so it gets exactly the transport
+        // policy client_id resolution uses: https, no credentials — with loopback as the one
+        // place plain http is acceptable. Holding `jwks_uri` to a stricter rule than the
+        // `client_id` it was fetched from would make a loopback development client
+        // (explicitly supported by the spec, and by `oauth_client_resolution`) unable to
+        // publish its keys by URL at all.
+        //
+        // The scheme check is not the SSRF control and never was: that is the hardened
+        // client's connect-time resolver, which refuses loopback and private addresses in
+        // production regardless of what this allows.
+        if !parsed.username().is_empty() || parsed.password().is_some() {
+            return Err(invalid_client(
+                "client metadata jwks_uri must carry no credentials",
+            ));
+        }
+        if parsed.scheme() != "https" && !crate::auth::oauth_client_resolution::url_is_loopback(url)
         {
             return Err(invalid_client(
-                "client metadata jwks_uri must be a plain https URL",
+                "client metadata jwks_uri must be an https URL",
             ));
         }
         let resp = state
@@ -406,5 +417,126 @@ mod tests {
         )
         .await
         .expect("small clock skew must be tolerated");
+    }
+
+    /// The `jwks_uri` branch: a client that publishes its keys at a URL rather than inline.
+    ///
+    /// Worth its own test because it is the only path in this module that makes an outbound
+    /// request, and it is a *client-controlled* URL — so it runs through the SSRF-hardened
+    /// client. Production bakes `allow_loopback = false` into that client, which means this
+    /// branch cannot be exercised from the hermetic conformance suite (a loopback jwks_uri is
+    /// correctly refused there); a wiremock server plus `test_state`'s loopback-permitting
+    /// client is the only place it can be covered at all.
+    #[tokio::test]
+    async fn confidential_client_key_is_fetched_from_jwks_uri() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let state = test_state().await;
+        let key = SigningKey::random(&mut OsRng);
+
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/jwks.json"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "keys": [jwk_with_kid(&key, "k1")],
+            })))
+            .mount(&server)
+            .await;
+
+        seed_client(
+            &state,
+            serde_json::json!({
+                "client_id": CLIENT_ID,
+                "redirect_uris": ["https://app.example.com/callback"],
+                "token_endpoint_auth_method": "private_key_jwt",
+                "jwks_uri": format!("{}/jwks.json", server.uri()),
+            }),
+        )
+        .await;
+
+        let assertion = sign_assertion(&key, "k1", valid_claims(CLIENT_ID));
+        authenticate_token_client(
+            &state,
+            CLIENT_ID,
+            Some(CLIENT_ASSERTION_TYPE_JWT_BEARER),
+            Some(&assertion),
+        )
+        .await
+        .expect("a key published at jwks_uri must authenticate the assertion");
+    }
+
+    /// A `jwks_uri` gets the same transport policy as the client_id itself: plain http is
+    /// refused for a real host (loopback, the development exception, is covered above).
+    #[tokio::test]
+    async fn plain_http_jwks_uri_is_refused() {
+        let state = test_state().await;
+        let key = SigningKey::random(&mut OsRng);
+        seed_client(
+            &state,
+            serde_json::json!({
+                "client_id": CLIENT_ID,
+                "redirect_uris": ["https://app.example.com/callback"],
+                "token_endpoint_auth_method": "private_key_jwt",
+                "jwks_uri": "http://keys.example.com/jwks.json",
+            }),
+        )
+        .await;
+        let assertion = sign_assertion(&key, "k1", valid_claims(CLIENT_ID));
+        let err = authenticate_token_client(
+            &state,
+            CLIENT_ID,
+            Some(CLIENT_ASSERTION_TYPE_JWT_BEARER),
+            Some(&assertion),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(err.error, "invalid_client");
+    }
+
+    /// A confidential client that publishes neither `jwks` nor `jwks_uri` has given the server
+    /// no way to verify it — that is a broken registration, not an authenticated client.
+    #[tokio::test]
+    async fn confidential_client_with_no_keys_is_refused() {
+        let state = test_state().await;
+        let key = SigningKey::random(&mut OsRng);
+        seed_client(
+            &state,
+            serde_json::json!({
+                "client_id": CLIENT_ID,
+                "redirect_uris": ["https://app.example.com/callback"],
+                "token_endpoint_auth_method": "private_key_jwt",
+            }),
+        )
+        .await;
+        let assertion = sign_assertion(&key, "k1", valid_claims(CLIENT_ID));
+        let err = authenticate_token_client(
+            &state,
+            CLIENT_ID,
+            Some(CLIENT_ASSERTION_TYPE_JWT_BEARER),
+            Some(&assertion),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(err.error, "invalid_client");
+    }
+
+    /// RFC 7523 requires the assertion to be presented under its own type identifier; a client
+    /// sending the JWT with the wrong `client_assertion_type` has not authenticated.
+    #[tokio::test]
+    async fn wrong_client_assertion_type_is_refused() {
+        let state = test_state().await;
+        let key = SigningKey::random(&mut OsRng);
+        seed_client(&state, confidential_metadata(&key)).await;
+        let assertion = sign_assertion(&key, "k1", valid_claims(CLIENT_ID));
+        let err = authenticate_token_client(
+            &state,
+            CLIENT_ID,
+            Some("urn:ietf:params:oauth:client-assertion-type:saml2-bearer"),
+            Some(&assertion),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(err.error, "invalid_client");
     }
 }
