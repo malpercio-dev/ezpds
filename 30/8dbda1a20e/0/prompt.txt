@@ -1,0 +1,17 @@
+Let’s look into the conformance harness next
+
+---
+
+add the TTL knob and close the expired-token gap
+
+---
+
+keep going into refresh-semantics
+
+---
+
+let's keep going!
+
+---
+
+SDK oracle, then PR, and an issue for the wallet consent path
