@@ -101,8 +101,22 @@ Not yet covered, in rough priority order:
 2. **The absolute session lifetime.** Rotation must not extend a session past its original
    grant, but a refresh token's expiry is never exposed to the client, so this is not
    observable from outside. Covered by a Rust unit test.
-3. **The official SDK** (`@atproto/oauth-client-node`) as a second persona: a compatibility
-   oracle we did not write.
+3. **The official SDK** (`@atproto/oauth-client-node`) as a second persona. Attempted and
+   currently **blocked**, for a reason worth recording: the SDK refuses to treat an
+   `https:` loopback origin as a resource server, and this PDS refuses a non-https
+   `public_url` (RFC 8414 requires an https issuer). A hermetic run needs one side to give
+   way, and weakening the server's issuer rule to satisfy a test is the wrong direction.
+   Getting past it means either a non-loopback hostname resolving to 127.0.0.1 in the test
+   environment, or an http-issuer exception scoped to loopback — a deliberate decision, not
+   a test-harness convenience.
+
+   The attempt was still worth making: on its first run the SDK rejected our client_id
+   outright, which is how we learned this server did not implement the spec's **loopback
+   client** identifiers (`http://localhost?redirect_uri=…&scope=…`, whose metadata is
+   synthesized from the identifier rather than fetched). That is now supported, so any
+   developer building an app against a local Custos can use the standard development
+   client. One run of an oracle we did not write found a real conformance gap before it
+   ever completed a flow.
 4. **The wallet consent path.** Real third-party logins to sovereign accounts go through the
    device-key path, not this password form. Covering it needs a JS port of the consent
    envelope (Rust-only today, with a golden vector at

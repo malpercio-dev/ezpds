@@ -15,7 +15,8 @@ import * as net from 'node:net';
 import * as os from 'node:os';
 import * as path from 'node:path';
 
-import { ADMIN_TOKEN, spawnPds, startMockPlc, type SpawnedPds } from '../../mcp/test/harness.ts';
+import { ADMIN_TOKEN, spawnPds, type SpawnedPds } from '../../mcp/test/harness.ts';
+import { startMockPlc, type MockPlc } from './mock-plc.ts';
 
 export { ADMIN_TOKEN };
 
@@ -91,6 +92,11 @@ export interface ConformanceAccount {
 export interface Fixture {
   baseUrl: string;
   account: ConformanceAccount;
+  /**
+   * The directory the spawned PDS was pointed at, carrying the account's real DID document.
+   * A client that resolves DIDs (the official SDK does) must be pointed here too.
+   */
+  plcUrl: string;
   stop: () => void;
 }
 
@@ -144,9 +150,25 @@ export async function startFixture(
       );
     }
 
+    // Publish the account's DID document so a client can resolve it. The PDS built this
+    // document during the genesis ceremony and serves it back verbatim, so the directory
+    // hands out the real thing rather than a test-shaped approximation.
+    const described = await fetch(
+      `${pds.baseUrl}/xrpc/com.atproto.repo.describeRepo?repo=${encodeURIComponent(created.did)}`,
+    );
+    if (!described.ok) {
+      throw new Error(`could not read the account's DID document: HTTP ${described.status}`);
+    }
+    const { didDoc } = (await described.json()) as { didDoc?: unknown };
+    if (!didDoc) {
+      throw new Error('describeRepo returned no didDoc; the mock directory would serve nothing');
+    }
+    plc.register(created.did, didDoc);
+
     const spawned = pds;
     return {
       baseUrl: spawned.baseUrl,
+      plcUrl: plc.url,
       account: {
         did: created.did,
         handle: created.handle,

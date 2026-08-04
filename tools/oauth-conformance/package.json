@@ -2,7 +2,9 @@
   "name": "ezpds-oauth-conformance",
   "private": true,
   "type": "module",
-  "engines": { "node": ">=22.21" },
+  "engines": {
+    "node": ">=22.21"
+  },
   "scripts": {
     "check": "tsc --noEmit",
     "test": "node test/run.ts"
