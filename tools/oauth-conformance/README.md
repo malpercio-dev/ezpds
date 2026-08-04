@@ -73,17 +73,29 @@ endpoint, plus the refusal of a DPoP-bound token presented as `Bearer`. It runs 
 with `oauth.access_token_ttl_secs = 2` so a token genuinely lapses mid-test rather than the
 suite waiting out a real one.
 
-Removing the error-shape fix turns five of these tests red, which is the check that matters:
-they reproduce the production bug rather than merely restating the current behaviour.
+`refresh.test.ts` covers rotation: that both tokens rotate and the new access token works,
+that rotations chain, that `sub` and the granted scope survive each one, that the DPoP key and
+`client_id` are enforced, that a rejected refresh does not consume the token, and — the case
+that matters most — that **two concurrent refreshes carrying the same token both succeed**.
+
+Each of these was checked by breaking the server and watching the suite go red: removing the
+error-shape middleware fails five tests, and removing the refresh grace window fails the
+concurrency test with the server's literal response in the message. That is the property worth
+maintaining — these reproduce the production bugs rather than restating current behaviour.
 
 Not yet covered, in rough priority order:
 
-1. **Refresh semantics** — rotation, the concurrent-refresh grace window, and stale-reuse
-   family revocation.
-2. **Confidential clients** — `private_key_jwt` assertions.
-3. **The official SDK** (`@atproto/oauth-client-node`) as a second persona: a compatibility
+1. **Stale refresh-token reuse revoking the session family.** The grace window is 60 seconds,
+   so a black-box test would have to sit through it. Covered instead by the Rust unit test
+   `refresh_token_stale_reuse_revokes_session_family`, which backdates `superseded_at`
+   directly. Worth revisiting if the window ever becomes configurable.
+2. **The absolute session lifetime.** Rotation must not extend a session past its original
+   grant, but a refresh token's expiry is never exposed to the client, so this is not
+   observable from outside. Covered by a Rust unit test.
+3. **Confidential clients** — `private_key_jwt` assertions.
+4. **The official SDK** (`@atproto/oauth-client-node`) as a second persona: a compatibility
    oracle we did not write.
-4. **The wallet consent path.** Real third-party logins to sovereign accounts go through the
+5. **The wallet consent path.** Real third-party logins to sovereign accounts go through the
    device-key path, not this password form. Covering it needs a JS port of the consent
    envelope (Rust-only today, with a golden vector at
    `test-vectors/oauth-consent-envelope-v1.json` to pin against) and a mock plc.directory that

@@ -23,10 +23,10 @@ import {
   pkce,
   tokenRequestWithNonceRetry,
   xrpc,
-  type DpopKey,
   type ServerMetadata,
 } from '../src/wire-client.ts';
 import { startClientHost, startFixture, type ClientHost, type Fixture } from './fixture.ts';
+import { login as fullLogin } from './login.ts';
 
 /** Short enough that a token lapses within one test, long enough to use it once first. */
 const ACCESS_TOKEN_TTL_SECS = 2;
@@ -47,41 +47,6 @@ after(() => {
   client?.close();
   fixture?.stop();
 });
-
-/** Run a full flow and return the issued access token plus the key it is bound to. */
-async function login(): Promise<{ accessToken: string; key: DpopKey }> {
-  const key = await generateDpopKey();
-  const { verifier, challenge } = pkce();
-  const pushed = await par(metadata, {
-    client_id: client.clientId,
-    redirect_uri: client.redirectUri,
-    response_type: 'code',
-    code_challenge: challenge,
-    code_challenge_method: 'S256',
-    scope: 'atproto transition:generic',
-    state: 'resource-errors',
-  });
-  assert.equal(pushed.status, 201, `PAR must succeed: ${pushed.text}`);
-
-  const approval = await approveConsent(
-    fixture.baseUrl,
-    `${metadata.authorization_endpoint}?client_id=${encodeURIComponent(client.clientId)}` +
-      `&request_uri=${encodeURIComponent(pushed.json.request_uri)}`,
-    { identifier: fixture.account.did, password: fixture.account.password },
-  );
-  const code = approval.params.get('code');
-  assert.ok(code, `consent must yield a code: ${approval.location}`);
-
-  const exchange = await tokenRequestWithNonceRetry(metadata, key, {
-    grant_type: 'authorization_code',
-    code,
-    redirect_uri: client.redirectUri,
-    client_id: client.clientId,
-    code_verifier: verifier,
-  });
-  assert.equal(exchange.final.status, 200, `token exchange must succeed: ${exchange.final.text}`);
-  return { accessToken: exchange.final.json.access_token, key };
-}
 
 /**
  * Every atproto XRPC error is a flat object with a string `error`. A nested
@@ -131,7 +96,7 @@ test('the configured access-token lifetime is what the token endpoint reports', 
 test('an expired access token yields a flat ExpiredToken error', async () => {
   // REGRESSION: this is the "logs in fine, then every action fails" bug. The token expiring is
   // normal and recoverable — but only if the client can tell that is what happened.
-  const { accessToken, key } = await login();
+  const { accessToken, key } = await fullLogin(fixture, client, metadata);
 
   const before = await xrpc(fixture.baseUrl, 'com.atproto.server.getSession', key, accessToken);
   assert.equal(before.status, 200, 'the token must work before it expires');
@@ -173,7 +138,7 @@ test('a missing Authorization header yields a flat AuthMissing error', async () 
 test('a DPoP-bound token presented as Bearer is refused', async () => {
   // The binding is worthless if the scheme is negotiable: a stolen token must not become
   // usable simply by dropping the proof and relabelling the header.
-  const { accessToken, key } = await login();
+  const { accessToken, key } = await fullLogin(fixture, client, metadata);
   const res = await xrpc(fixture.baseUrl, 'com.atproto.server.getSession', key, accessToken, {
     scheme: 'Bearer',
   });
@@ -184,7 +149,7 @@ test('a DPoP-bound token presented as Bearer is refused', async () => {
 test('an expired token is refused on a proxied endpoint too, not just a local one', async () => {
   // The error envelope is applied at the router seam, so a proxied NSID takes a different
   // code path to the same 401. A client hitting only appview reads must see the same string.
-  const { accessToken, key } = await login();
+  const { accessToken, key } = await fullLogin(fixture, client, metadata);
   await new Promise((resolve) => setTimeout(resolve, (ACCESS_TOKEN_TTL_SECS + 1) * 1000));
 
   const res = await xrpc(fixture.baseUrl, 'app.bsky.actor.getPreferences', key, accessToken);
