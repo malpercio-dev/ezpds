@@ -63,21 +63,27 @@ test-our-own-assumptions failure mode this suite exists to correct.
 
 ## Current coverage and gaps
 
-Covered today: discovery, PAR (including without `state`), the consent leg, the DPoP nonce
-dance, token-response shape (`sub`, `token_type`, `expires_in`, `cnf.jkt` binding), code
-replay, scope rejection, and an authenticated XRPC call.
+`flow.test.ts` covers discovery, PAR (including without `state`), the consent leg, the DPoP
+nonce dance, token-response shape (`sub`, `token_type`, `expires_in`, `cnf.jkt` binding), code
+replay, and scope rejection.
+
+`resource-errors.test.ts` covers what a client sees *after* login: the flat `ExpiredToken` /
+`InvalidToken` / `AuthMissing` strings clients dispatch on, on both a local and a proxied
+endpoint, plus the refusal of a DPoP-bound token presented as `Bearer`. It runs its own PDS
+with `oauth.access_token_ttl_secs = 2` so a token genuinely lapses mid-test rather than the
+suite waiting out a real one.
+
+Removing the error-shape fix turns five of these tests red, which is the check that matters:
+they reproduce the production bug rather than merely restating the current behaviour.
 
 Not yet covered, in rough priority order:
 
-1. **Resource-server error shapes** — the `ExpiredToken` / `InvalidToken` / `AuthMissing`
-   strings clients dispatch on. The expiry case needs a short access-token TTL; see the
-   design plan's open decision.
-2. **Refresh semantics** — rotation, the concurrent-refresh grace window, and stale-reuse
+1. **Refresh semantics** — rotation, the concurrent-refresh grace window, and stale-reuse
    family revocation.
-3. **Confidential clients** — `private_key_jwt` assertions.
-4. **The official SDK** (`@atproto/oauth-client-node`) as a second persona: a compatibility
+2. **Confidential clients** — `private_key_jwt` assertions.
+3. **The official SDK** (`@atproto/oauth-client-node`) as a second persona: a compatibility
    oracle we did not write.
-5. **The wallet consent path.** Real third-party logins to sovereign accounts go through the
+4. **The wallet consent path.** Real third-party logins to sovereign accounts go through the
    device-key path, not this password form. Covering it needs a JS port of the consent
    envelope (Rust-only today, with a golden vector at
    `test-vectors/oauth-consent-envelope-v1.json` to pin against) and a mock plc.directory that

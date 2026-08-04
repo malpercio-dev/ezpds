@@ -80,20 +80,17 @@ those nine are the suite's justification and should never be deleted without a r
 
 ## Open decisions
 
-### 1. Testing an expired access token (assertion 30)
+### 1. Testing an expired access token (assertion 30) — RESOLVED, shipped
 
-This is the single highest-value assertion — it is the "logs in fine, then everything fails"
-bug — and the suite cannot wait 15 minutes for a token to expire. Options:
+Took option (a), the config knob. `OAuthConfig` turned out to be an empty placeholder struct
+already wired into `Config`, so this was one field: `oauth.access_token_ttl_secs`, default 900,
+env override `EZPDS_OAUTH_ACCESS_TOKEN_TTL_SECS`, validated to 1–1800 (a zero-second token
+expires before any client can use it; one above the profile's recommended ceiling is a real
+exposure window on a server with no token introspection). `resource-errors.test.ts` spawns its
+PDS with `2` via the `pds.toml` escape hatch, so a token genuinely lapses mid-test.
 
-- **(a) Config knob.** Add `[oauth] access_token_ttl_secs` (default 900); the harness spawns
-  its PDS with `2`. One small production change, and it exercises the real expiry code path.
-  Also a defensible operator knob in its own right.
-- **(b) Test-only minting seam.** No config change, but the test then exercises a path
-  production never takes.
-- **(c) Leave it to the Rust unit tests.** Weakest: the unit test asserts our own error
-  constant, which is exactly how this bug survived the first time.
-
-**Recommendation: (a).**
+Rejected (b), a test-only minting seam, for the reason that recurs throughout this document:
+it would exercise a path production never takes.
 
 ### 2. Where it runs in CI
 

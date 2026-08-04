@@ -227,7 +227,7 @@ pub(super) async fn handle_authorization_code(
         Some(&jkt),
         None,
         &state.config.public_url,
-        super::ACCESS_TOKEN_TTL_SECS,
+        state.config.oauth.access_token_ttl_secs,
     ) {
         Ok(t) => t,
         Err(e) => return e.into_response(),
@@ -273,7 +273,7 @@ pub(super) async fn handle_authorization_code(
         Json(TokenResponse {
             access_token,
             token_type: "DPoP",
-            expires_in: super::ACCESS_TOKEN_TTL_SECS,
+            expires_in: state.config.oauth.access_token_ttl_secs,
             refresh_token: refresh.plaintext,
             scope: granted_scope,
             sub: auth_code.did,

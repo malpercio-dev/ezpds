@@ -124,19 +124,17 @@ struct CnfClaim {
     jkt: String,
 }
 
+/// Agent-flow (jwt-bearer / claim-polling) access-token lifetime. Deliberately shorter than
+/// the OAuth lifetime and deliberately not configurable: agent tokens are minted headlessly,
+/// with no consent leg and no human to notice a session behaving oddly.
+pub(super) const AGENT_ACCESS_TOKEN_TTL_SECS: u64 = 300;
+
 /// Sign an ES256 `at+jwt` access token. `jkt` is the DPoP key thumbprint for a sender-constrained
 /// token, or `None` for a plain Bearer token (jwt-bearer grant) that carries no `cnf` binding.
 /// `registration_id` is set only for agent-derived tokens (jwt-bearer), marking them as such and
 /// tying them to their `agent_identities` row; `None` for ordinary session/OAuth grants.
-/// OAuth (authorization-code / refresh) access-token lifetime. 15 minutes, matching the
-/// reference PDS — long enough that well-behaved clients aren't refreshing constantly,
-/// short enough that revocation takes effect quickly.
-pub(super) const ACCESS_TOKEN_TTL_SECS: u64 = 900;
-
-/// Agent-flow (jwt-bearer / claim-polling) access-token lifetime. Deliberately shorter
-/// than the OAuth lifetime: agent tokens are minted headlessly and have no consent leg.
-pub(super) const AGENT_ACCESS_TOKEN_TTL_SECS: u64 = 300;
-
+/// `ttl_secs` is the token's lifetime — [`crate::app::AppState`]'s configured
+/// `oauth.access_token_ttl_secs` for OAuth grants, [`AGENT_ACCESS_TOKEN_TTL_SECS`] for agent ones.
 fn issue_access_token(
     signing_key: &crate::auth::OAuthSigningKey,
     did: &str,

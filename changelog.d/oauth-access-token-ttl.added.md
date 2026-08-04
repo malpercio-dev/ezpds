@@ -1,0 +1,1 @@
+Operators can now tune the OAuth access-token lifetime with `EZPDS_OAUTH_ACCESS_TOKEN_TTL_SECS` (default 900 seconds, accepted range 1–1800). The conformance suite uses it to test what a client sees when its token expires.

@@ -102,11 +102,29 @@ export interface Fixture {
  * the first PDS. `node --test` gives each file its own process, which makes this safe as
  * long as the rule is honored.
  */
-export async function startFixture(): Promise<Fixture> {
+export async function startFixture(
+  options: {
+    /**
+     * Override `oauth.access_token_ttl_secs`. Set this to a second or two to test what a
+     * client sees once its token lapses, without the suite waiting out a real 15-minute
+     * token. Tests that use it belong in their own file (see the one-fixture-per-file rule).
+     */
+    accessTokenTtlSecs?: number;
+  } = {},
+): Promise<Fixture> {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'custos-oauth-conformance-'));
   const plc = await startMockPlc();
   let pds: SpawnedPds | undefined;
   try {
+    // `spawnPds` runs the binary with a closed env allowlist and its cwd set to `dir`, so a
+    // setting without an entry in that allowlist is reached by dropping a config file here —
+    // the same escape hatch tools/mcp-sidecar uses for its agent_auth scopes.
+    if (options.accessTokenTtlSecs !== undefined) {
+      fs.writeFileSync(
+        path.join(dir, 'pds.toml'),
+        `[oauth]\naccess_token_ttl_secs = ${options.accessTokenTtlSecs}\n`,
+      );
+    }
     pds = await spawnPds({ dir, plcUrl: plc.url, agentAuthEnabled: false });
 
     process.env.EZPDS_BASE_URL = pds.baseUrl;

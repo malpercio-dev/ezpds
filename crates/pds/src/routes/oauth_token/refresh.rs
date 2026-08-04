@@ -212,7 +212,7 @@ pub(super) async fn handle_refresh_token(
         Some(&jkt),
         None,
         &state.config.public_url,
-        super::ACCESS_TOKEN_TTL_SECS,
+        state.config.oauth.access_token_ttl_secs,
     ) {
         Ok(t) => t,
         Err(e) => return e.into_response(),
@@ -251,7 +251,7 @@ pub(super) async fn handle_refresh_token(
         Json(TokenResponse {
             access_token,
             token_type: "DPoP",
-            expires_in: super::ACCESS_TOKEN_TTL_SECS,
+            expires_in: state.config.oauth.access_token_ttl_secs,
             refresh_token: new_refresh.plaintext,
             scope: granted_scope,
             sub: stored.did,

@@ -668,9 +668,33 @@ fn default_write_points_daily() -> u64 {
     35000
 }
 
-/// Stub for future OAuth configuration.
-#[derive(Debug, Clone, Deserialize, Default)]
-pub struct OAuthConfig {}
+/// OAuth authorization-server configuration.
+#[derive(Debug, Clone, Deserialize)]
+pub struct OAuthConfig {
+    /// Lifetime of an OAuth access token, in seconds. Default 900 (15 minutes), matching the
+    /// reference PDS: long enough that well-behaved clients are not refreshing constantly,
+    /// short enough that a revocation takes effect quickly.
+    ///
+    /// The atproto OAuth profile recommends staying under 30 minutes, so values above that
+    /// are refused rather than silently accepted. The floor exists because the conformance
+    /// suite sets this to a second or two to test expiry behaviour without waiting out a
+    /// real token — a legitimate use, but one worth being deliberate about, since a
+    /// production instance running a 1-second token would refresh on every request.
+    #[serde(default = "default_access_token_ttl_secs")]
+    pub access_token_ttl_secs: u64,
+}
+
+fn default_access_token_ttl_secs() -> u64 {
+    900
+}
+
+impl Default for OAuthConfig {
+    fn default() -> Self {
+        Self {
+            access_token_ttl_secs: default_access_token_ttl_secs(),
+        }
+    }
+}
 
 /// auth.md agent-registration configuration (`POST /agent/identity`).
 ///
@@ -1690,6 +1714,15 @@ pub(crate) fn apply_env_overrides(
     if let Some(v) = env.get("EZPDS_WAITLIST_ENABLED") {
         raw.waitlist.enabled = parse_bool_env("EZPDS_WAITLIST_ENABLED", v)?;
     }
+    // OAuth access-token lifetime. Overridable by env so the conformance suite can spawn a
+    // PDS with a near-instant expiry and assert what a client sees when a token lapses.
+    if let Some(v) = env.get("EZPDS_OAUTH_ACCESS_TOKEN_TTL_SECS") {
+        raw.oauth.access_token_ttl_secs = v.parse::<u64>().map_err(|e| {
+            ConfigError::Invalid(format!(
+                "EZPDS_OAUTH_ACCESS_TOKEN_TTL_SECS is not a valid non-negative integer: '{v}': {e}"
+            ))
+        })?;
+    }
     // Agent-auth (auth.md) scalar/bool overrides. The issuer trust list is a list of structs
     // (each carrying a PEM key or a JWKS URL), which does not map to a flat env var — it stays
     // TOML-only.
@@ -2323,6 +2356,16 @@ pub(crate) fn validate_and_build(raw: RawConfig) -> Result<Config, ConfigError> 
         }
     }
 
+    // An access token that outlives the profile's recommended ceiling is a real exposure
+    // window (this PDS has no token introspection, so a leaked token is live until it
+    // expires); a zero-second one would expire before any client could use it.
+    if raw.oauth.access_token_ttl_secs == 0 || raw.oauth.access_token_ttl_secs > 1800 {
+        return Err(ConfigError::Invalid(format!(
+            "oauth.access_token_ttl_secs must be between 1 and 1800 seconds, got {}",
+            raw.oauth.access_token_ttl_secs
+        )));
+    }
+
     Ok(Config {
         bind_address,
         port,
@@ -2844,6 +2887,46 @@ mod tests {
         let raw = apply_env_overrides(minimal_raw(), &env).unwrap();
         let config = validate_and_build(raw).unwrap();
         assert_eq!(config.agent_auth.jwks_refetch_cooldown_secs, 5);
+    }
+
+    /// The default is the reference PDS's 15 minutes. A shorter access token is what made
+    /// third-party sessions die minutes after login, so the default is worth pinning.
+    #[test]
+    fn oauth_access_token_ttl_defaults_to_fifteen_minutes() {
+        let config = validate_and_build(minimal_raw()).unwrap();
+        assert_eq!(config.oauth.access_token_ttl_secs, 900);
+    }
+
+    /// The conformance suite spawns a PDS with a near-instant expiry to assert what a client
+    /// sees when its token lapses; that is the reason this knob exists.
+    #[test]
+    fn oauth_access_token_ttl_env_override_applies() {
+        let env = HashMap::from([(
+            "EZPDS_OAUTH_ACCESS_TOKEN_TTL_SECS".to_string(),
+            "2".to_string(),
+        )]);
+        let raw = apply_env_overrides(minimal_raw(), &env).unwrap();
+        let config = validate_and_build(raw).unwrap();
+        assert_eq!(config.oauth.access_token_ttl_secs, 2);
+    }
+
+    /// Out-of-range values fail the build rather than silently applying: a zero-second token
+    /// expires before any client can use it, and one above the profile's recommended ceiling
+    /// is a real exposure window on a server with no token introspection.
+    #[test]
+    fn oauth_access_token_ttl_rejects_out_of_range_values() {
+        for bad in ["0", "1801"] {
+            let env = HashMap::from([(
+                "EZPDS_OAUTH_ACCESS_TOKEN_TTL_SECS".to_string(),
+                bad.to_string(),
+            )]);
+            let raw = apply_env_overrides(minimal_raw(), &env).unwrap();
+            let err = validate_and_build(raw).expect_err(&format!("{bad}s must be refused"));
+            assert!(
+                format!("{err}").contains("access_token_ttl_secs"),
+                "the error must name the offending setting, got: {err}"
+            );
+        }
     }
 
     #[test]
