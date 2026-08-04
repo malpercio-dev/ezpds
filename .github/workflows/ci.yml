@@ -124,6 +124,12 @@ jobs:
         working-directory: tools/oauth-conformance
         run: pnpm install --frozen-lockfile
 
+      # Node 22 type-strips rather than type-checks, so `pnpm test` passing says nothing
+      # about the types. Without this a type error only surfaces in an editor.
+      - name: Type-check (tools/oauth-conformance)
+        working-directory: tools/oauth-conformance
+        run: pnpm check
+
       - name: OAuth conformance suite (tools/oauth-conformance)
         working-directory: tools/oauth-conformance
         env:
