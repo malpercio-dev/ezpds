@@ -31,12 +31,15 @@
 #   tauri's transitive gtk-rs requirement advances.
 #
 # RUSTSEC-2026-0235 — out-of-bounds reads in `rkyv` 0.7's archive validation for archives
-#   containing Rc/Arc. `rkyv` never compiles into any artifact: it is an *optional* dependency
-#   of `rust_decimal` (← `byte-unit` ← `tauri-plugin-log`, the app shells) whose feature no
-#   workspace crate enables — `cargo tree -i rkyv --target all` resolves to nothing; the crate
-#   appears in Cargo.lock only because lockfile resolution records optional deps. No reachable
-#   fix regardless: the patched `rkyv` is 0.8.17 while `rust_decimal` requires ^0.7. Revisit if
-#   any crate enables `rust_decimal`'s `rkyv` feature or `rust_decimal` moves to rkyv 0.8.
+#   containing Rc/Arc. A lockfile-versus-feature-graph false positive: `rkyv` is an *optional,
+#   disabled* feature of `rust_decimal`, so it appears in Cargo.lock (which records the union
+#   of possible dependencies) but in no build graph — `cargo tree -i rkyv --target all`
+#   resolves to nothing on every target, so `rkyv` never compiles into any artifact.
+#   Independently, `rust_decimal` itself reaches only the Tauri app shells
+#   (`rust_decimal` ← `byte-unit` ← `tauri-plugin-log` ← identity-wallet / admin-companion),
+#   never the deployed Linux PDS binary. No reachable fix either way: the patched `rkyv` is
+#   0.8.17 while `rust_decimal` requires ^0.7. Revisit if any crate enables `rust_decimal`'s
+#   `rkyv` feature or `rust_decimal` moves to rkyv 0.8.
 #
 # RUSTSEC-2026-0097 — unsoundness in `rand` when a custom logger re-enters `rand::rng()`. The
 #   runtime `rand` copies used by the PDS/workspace are on patched releases (0.8.6 / 0.9.3 / 0.10.1).
@@ -47,22 +50,8 @@
 #   not reachable. Revisit when the tauri build stack drops `rand 0.7`.
 
 [advisories]
-# RUSTSEC-2026-0235 — out-of-bounds reads validating `rkyv` archives containing Rc/Arc.
-#   `rkyv` is never compiled: it is an *optional, disabled* feature of `rust_decimal`, so it
-#   appears in Cargo.lock (which records the union of possible dependencies) but in no build
-#   graph — `cargo tree -i rkyv --target all` reports "nothing to print" on every target.
-#   Independently, `rust_decimal` itself reaches only the Tauri app shells
-#   (`rust_decimal` ← `byte-unit` ← `tauri-plugin-log` ← identity-wallet / admin-companion),
-#   never the deployed Linux PDS binary. The fix is a `rust_decimal` bump to a release
-#   depending on `rkyv >=0.8.17`, which is outside this repo's control.
-#
-#   This is a lockfile-versus-feature-graph false positive: `cargo audit` scans the lockfile
-#   and cannot see that the feature is off. Revisit if `rust_decimal` ever enables `rkyv` by
-#   default, or when a bumped release lands.
-
 ignore = [
     "RUSTSEC-2023-0071",
-    "RUSTSEC-2026-0235",
     "RUSTSEC-2026-0194",
     "RUSTSEC-2026-0195",
     "RUSTSEC-2024-0429",
