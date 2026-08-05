@@ -107,20 +107,25 @@ rosters, exemptions, and `RateLimit-*` header behavior: the module doc.
 
 ### `identity/`
 
-Everything answering "who is this handle/DID": the resolution chain, handle validation, and
-did:plc genesis/rotation-op machinery. None of these files import each other; each is consumed
-independently by `routes/`, `auth/`, `app.rs`/`xrpc_dispatch.rs`, and `main.rs`.
+Everything answering "who is this handle/DID": the resolution chain, handle/DID syntax
+validation, the live signing-authority lookup behind the passwordless surfaces, and did:plc
+genesis/rotation-op machinery. Each is consumed from the outside by `routes/`, `auth/`,
+`app.rs`/`xrpc_dispatch.rs`, and `main.rs`; a few also share helpers within the module (for
+example `authority.rs` reads through `plc.rs` and `resolution.rs`, and `well_known.rs` borrows
+`did.rs`'s validator), so check a file's imports before assuming it stands alone.
 
 | File | Contents |
 |---|---|
 | `mod.rs` | `pub mod` declarations only — no shared code |
 | `resolution.rs` | shared handle/DID resolution chain and the cache-first DID-document reads (the `did_documents` cache has no TTL; `resolve_did_document_force_refresh` is the only un-staling path) — see module doc |
 | `proxy.rs` | the `atproto-proxy` header target guard and the shared SSRF-hardened client (`AppState::hardened_http_client`). Security-critical — the module doc carries the full design (`SsrfResolver` connect-time DNS allowlist, TOCTOU closure, all four consumers); `just ssrf-client-check` guards the well-known-resolver wiring |
+| `did.rs` | general `did:` syntax validation (Functional Core): the canonical `is_valid_did`, re-exported by `auth/validation.rs` and called by `lexicon/formats.rs` for the `did` string format — see module doc |
 | `handle.rs` | handle validation: structural + domain policy + reserved infrastructure names — see module doc |
 | `dns.rs` | `DnsProvider` (handle DNS records; v0.1 ships no provider) + `TxtResolver` (DNS TXT fallback for resolveHandle) — see module doc |
 | `well_known.rs` | `WellKnownResolver`: HTTP `.well-known/atproto-did`, resolveHandle's third fallback — see module doc |
 | `plc.rs` | shared did:plc rotation/update-op machinery for the `identity.*PlcOperation` interop routes — see module doc |
 | `genesis.rs` | shared did:plc genesis-op machinery, used by both `create_did.rs` and `create_account_xrpc.rs` — see module doc |
+| `authority.rs` | the shared live signing-authority lookup (`authorized_signing_keys`) behind the three passwordless surfaces (`sovereign_session`, `oauth_consent` approve, and `deleteAccount`'s proof branch); resolves the authorized keys live — a did:plc account's current rotation set, or a did:web account's served document — never the `did_documents` cache — see module doc |
 
 ### `read_after_write/`
 
