@@ -30,6 +30,14 @@
 #   whole-tauri-stack bump outside this repo's control (tauri v2 pins gtk 0.18). Revisit when
 #   tauri's transitive gtk-rs requirement advances.
 #
+# RUSTSEC-2026-0235 — out-of-bounds reads in `rkyv` 0.7's archive validation for archives
+#   containing Rc/Arc. `rkyv` never compiles into any artifact: it is an *optional* dependency
+#   of `rust_decimal` (← `byte-unit` ← `tauri-plugin-log`, the app shells) whose feature no
+#   workspace crate enables — `cargo tree -i rkyv --target all` resolves to nothing; the crate
+#   appears in Cargo.lock only because lockfile resolution records optional deps. No reachable
+#   fix regardless: the patched `rkyv` is 0.8.17 while `rust_decimal` requires ^0.7. Revisit if
+#   any crate enables `rust_decimal`'s `rkyv` feature or `rust_decimal` moves to rkyv 0.8.
+#
 # RUSTSEC-2026-0097 — unsoundness in `rand` when a custom logger re-enters `rand::rng()`. The
 #   runtime `rand` copies used by the PDS/workspace are on patched releases (0.8.6 / 0.9.3 / 0.10.1).
 #   One unpatched copy remains — `rand 0.7.3` — and there is no patched 0.7.x release (fixes start at
@@ -59,4 +67,5 @@ ignore = [
     "RUSTSEC-2026-0195",
     "RUSTSEC-2024-0429",
     "RUSTSEC-2026-0097",
+    "RUSTSEC-2026-0235",
 ]
