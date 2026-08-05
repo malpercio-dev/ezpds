@@ -117,10 +117,15 @@ Not yet covered, in rough priority order:
    developer building an app against a local Custos can use the standard development
    client. One run of an oracle we did not write found a real conformance gap before it
    ever completed a flow.
-4. **The wallet consent path.** Real third-party logins to sovereign accounts go through the
-   device-key path, not this password form. Covering it needs a JS port of the consent
+4. **The wallet consent path — and with it, the DPoP key binding.** Real third-party logins to
+   sovereign accounts go through the device-key path, not this password form. That is also the
+   only path that carries a pushed request's DPoP key through to the issued code: the password
+   form's pushed request is consumed by the GET that renders it, so the code is issued unbound
+   (deliberately — see `oauth_authorize.rs`). `flow.test.ts` pins that gap rather than leaving
+   it implicit, and the enforcement itself is covered only by a Rust test that writes the
+   binding directly onto the code row. Covering the wallet path needs a JS port of the consent
    envelope (Rust-only today, with a golden vector at
    `test-vectors/oauth-consent-envelope-v1.json` to pin against) and a mock plc.directory that
-   serves real audit logs — the current stub answers `{}`.
+   serves real audit logs — the current one serves DID documents only. Tracked as MM-502.
 
 Design and rationale: [docs/design-plans/2026-08-03-oauth-conformance-harness.md](../../docs/design-plans/2026-08-03-oauth-conformance-harness.md).

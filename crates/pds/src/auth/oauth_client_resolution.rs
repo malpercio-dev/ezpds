@@ -235,6 +235,29 @@ pub(crate) fn is_loopback_client_id(client_id: &str) -> bool {
     !rest.contains('#') && matches!(rest.chars().next(), None | Some('/') | Some('?'))
 }
 
+/// Whether a loopback client's `redirect_uri` is one it may actually receive a code on.
+///
+/// Plain http on the loopback **IP literal** only. `localhost` is deliberately refused even
+/// though it resolves to the same place: RFC 8252 §8.3 advises against it because the name can
+/// resolve to a non-loopback interface through a hosts-file entry or DNS misconfiguration, at
+/// which point the "loopback" client is listening somewhere else entirely. The atproto client
+/// libraries enforce the same narrowing, so a client that works against the reference
+/// implementation works here.
+fn is_loopback_redirect_uri(redirect_uri: &str) -> bool {
+    let Ok(url) = Url::parse(redirect_uri) else {
+        return false;
+    };
+    if url.scheme() != "http" {
+        return false;
+    }
+    match url.host() {
+        Some(Host::Ipv4(ip)) => ip.is_loopback(),
+        Some(Host::Ipv6(ip)) => ip.is_loopback(),
+        // Includes `localhost` — see above.
+        _ => false,
+    }
+}
+
 /// Synthesize the client metadata document a loopback client_id encodes (pure).
 ///
 /// The fields that are not encoded in the identifier are fixed by the spec rather than
@@ -253,7 +276,22 @@ pub(crate) fn loopback_client_metadata(client_id: &str) -> Result<String, Client
     let mut scope: Option<String> = None;
     for (key, value) in url.query_pairs() {
         match key.as_ref() {
-            "redirect_uri" => redirect_uris.push(value.into_owned()),
+            "redirect_uri" => {
+                // A loopback client_id is unregistered and self-describing: anyone can mint
+                // one, and whatever it names here lands in `redirect_uris`, which is the list
+                // the PAR endpoint checks the requested redirect against. Copying the value
+                // through unvalidated would let `http://localhost?redirect_uri=https://
+                // attacker.example/cb` carry an authorization code off the machine — and the
+                // reverse-FQDN rule cannot catch it, since that check exempts non-https
+                // client_ids. The redirect target is the *only* part of this document an
+                // attacker controls, so it is the part that has to be constrained.
+                if !is_loopback_redirect_uri(&value) {
+                    return Err(ClientResolutionError::InvalidDocument(
+                        "loopback client_id redirect_uri must be http on 127.0.0.1 or [::1]",
+                    ));
+                }
+                redirect_uris.push(value.into_owned());
+            }
             "scope" => scope = Some(value.into_owned()),
             // Unknown parameters are ignored rather than rejected, matching how the rest of
             // this server treats forward-compatible extras in client documents.
@@ -548,6 +586,40 @@ mod tests {
             doc["redirect_uris"],
             serde_json::json!(["http://127.0.0.1:9000/cb", "http://[::1]:9000/cb"])
         );
+    }
+
+    /// The redirect target is the only attacker-controlled part of a synthesized loopback
+    /// document, and the PAR endpoint trusts that list. A remote target would carry the
+    /// authorization code off the machine, and the reverse-FQDN rule cannot catch it because
+    /// that check exempts non-https client_ids.
+    #[test]
+    fn loopback_client_refuses_a_non_loopback_redirect_uri() {
+        for hostile in [
+            "http://localhost?redirect_uri=https%3A%2F%2Fattacker.example%2Fcb",
+            "http://localhost?redirect_uri=http%3A%2F%2Fattacker.example%2Fcb",
+            // `localhost` resolves to loopback today but can be repointed by a hosts entry
+            // or DNS, so RFC 8252 §8.3 rules it out as a redirect host.
+            "http://localhost?redirect_uri=http%3A%2F%2Flocalhost%3A9000%2Fcb",
+            // A loopback-looking prefix on someone else's domain.
+            "http://localhost?redirect_uri=http%3A%2F%2F127.0.0.1.attacker.example%2Fcb",
+            // https on loopback is not the shape the spec defines either.
+            "http://localhost?redirect_uri=https%3A%2F%2F127.0.0.1%3A9000%2Fcb",
+        ] {
+            assert!(
+                loopback_client_metadata(hostile).is_err(),
+                "must refuse {hostile}"
+            );
+        }
+
+        // The two shapes a real loopback client uses are still accepted.
+        assert!(loopback_client_metadata(
+            "http://localhost?redirect_uri=http%3A%2F%2F127.0.0.1%3A9000%2Fcb"
+        )
+        .is_ok());
+        assert!(loopback_client_metadata(
+            "http://localhost?redirect_uri=http%3A%2F%2F%5B%3A%3A1%5D%2Fcb"
+        )
+        .is_ok());
     }
 
     /// A loopback client asking for something other than an atproto session has not asked for

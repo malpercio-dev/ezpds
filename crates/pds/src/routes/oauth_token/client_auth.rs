@@ -38,6 +38,11 @@ pub(super) const CLIENT_ASSERTION_TYPE_JWT_BEARER: &str =
 /// 30 seconds covers real-world drift without meaningfully widening the replay window).
 const CLOCK_TOLERANCE_SECS: u64 = 30;
 
+/// Upper bound on a fetched JWK set. Real key sets are a few hundred bytes; the cap only
+/// exists so a hostile `jwks_uri` host cannot stream an unbounded body into memory. Matches
+/// the client-metadata document cap.
+const MAX_JWKS_BYTES: usize = 64 * 1024;
+
 #[derive(Debug, Deserialize)]
 struct ClientAssertionClaims {
     iss: String,
@@ -187,9 +192,26 @@ async fn resolve_client_key(
                 resp.status()
             )));
         }
-        let set: JwkSet = resp
-            .json()
+        // The body comes from a host the client names, so it is bounded before it is parsed:
+        // a real JWK set is a few hundred bytes, and without a cap a hostile (or merely
+        // broken) key host could stream an unbounded response into memory. The shared client
+        // already bounds how *long* this can take; this bounds how *large* it can get. Same
+        // reasoning and same limit as the client-metadata fetch next door.
+        if resp
+            .content_length()
+            .is_some_and(|len| len > MAX_JWKS_BYTES as u64)
+        {
+            return Err(invalid_client("client jwks_uri response is too large"));
+        }
+        let body = resp
+            .bytes()
             .await
+            .map_err(|_| invalid_client("failed to read the client jwks_uri response"))?;
+        // Re-checked after reading: a chunked response carries no content-length to check.
+        if body.len() > MAX_JWKS_BYTES {
+            return Err(invalid_client("client jwks_uri response is too large"));
+        }
+        let set: JwkSet = serde_json::from_slice(&body)
             .map_err(|_| invalid_client("client jwks_uri did not return a valid JWK set"))?;
         return select_key(&set, kid);
     }

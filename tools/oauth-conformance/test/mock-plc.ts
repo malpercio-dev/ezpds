@@ -56,7 +56,11 @@ export function startMockPlc(): Promise<MockPlc> {
       resolve({
         url: `http://127.0.0.1:${address.port}`,
         register: (did, document) => documents.set(did, document),
-        close: () => server.close(),
+        close: () => {
+          // Idle keep-alive sockets would otherwise keep the test process alive.
+          server.closeAllConnections();
+          server.close();
+        },
       });
     });
   });

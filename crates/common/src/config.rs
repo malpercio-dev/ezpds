@@ -1717,11 +1717,7 @@ pub(crate) fn apply_env_overrides(
     // OAuth access-token lifetime. Overridable by env so the conformance suite can spawn a
     // PDS with a near-instant expiry and assert what a client sees when a token lapses.
     if let Some(v) = env.get("EZPDS_OAUTH_ACCESS_TOKEN_TTL_SECS") {
-        raw.oauth.access_token_ttl_secs = v.parse::<u64>().map_err(|e| {
-            ConfigError::Invalid(format!(
-                "EZPDS_OAUTH_ACCESS_TOKEN_TTL_SECS is not a valid non-negative integer: '{v}': {e}"
-            ))
-        })?;
+        raw.oauth.access_token_ttl_secs = parse_u64("EZPDS_OAUTH_ACCESS_TOKEN_TTL_SECS", v)?;
     }
     // Agent-auth (auth.md) scalar/bool overrides. The issuer trust list is a list of structs
     // (each carrying a PEM key or a JWKS URL), which does not map to a flat env var — it stays

@@ -165,7 +165,7 @@ test('a refresh naming the wrong client_id is refused without consuming the toke
   const wrongClient = await tokenRequestWithNonceRetry(metadata, session.key, {
     grant_type: 'refresh_token',
     refresh_token: session.refreshToken,
-    client_id: 'https://someone-else.example/client-metadata.json',
+    client_id: 'http://127.0.0.1:1/client-metadata.json',
   });
   assert.equal(wrongClient.final.status, 400);
   assert.equal(wrongClient.final.json.error, 'invalid_grant');

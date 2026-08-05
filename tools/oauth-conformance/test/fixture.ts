@@ -78,7 +78,16 @@ export async function startClientHost(
     res.end();
   });
   await new Promise<void>((resolve) => server.listen(port, '127.0.0.1', resolve));
-  return { clientId, redirectUri, close: () => server.close() };
+  // `close()` alone waits for idle keep-alive sockets, which a client that reused a
+  // connection leaves open — enough to hold `node --test` past the last assertion.
+  return {
+    clientId,
+    redirectUri,
+    close: () => {
+      server.closeAllConnections();
+      server.close();
+    },
+  };
 }
 
 export interface ConformanceAccount {

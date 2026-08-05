@@ -77,19 +77,23 @@ test('the configured access-token lifetime is what the token endpoint reports', 
     code_challenge_method: 'S256',
     scope: 'atproto',
   });
+  assert.equal(pushed.status, 201, `PAR must succeed: ${pushed.text}`);
   const approval = await approveConsent(
     fixture.baseUrl,
     `${metadata.authorization_endpoint}?client_id=${encodeURIComponent(client.clientId)}` +
       `&request_uri=${encodeURIComponent(pushed.json.request_uri)}`,
     { identifier: fixture.account.did, password: fixture.account.password },
   );
+  const code = approval.params.get('code');
+  assert.ok(code, `consent must yield a code: ${approval.location}`);
   const exchange = await tokenRequestWithNonceRetry(metadata, key, {
     grant_type: 'authorization_code',
-    code: approval.params.get('code')!,
+    code,
     redirect_uri: client.redirectUri,
     client_id: client.clientId,
     code_verifier: verifier,
   });
+  assert.equal(exchange.final.status, 200, `token exchange must succeed: ${exchange.final.text}`);
   assert.equal(exchange.final.json.expires_in, ACCESS_TOKEN_TTL_SECS);
 });
 
@@ -98,16 +102,16 @@ test('an expired access token yields a flat ExpiredToken error', async () => {
   // normal and recoverable — but only if the client can tell that is what happened.
   const { accessToken, key } = await fullLogin(fixture, client, metadata);
 
-  const before = await xrpc(fixture.baseUrl, 'com.atproto.server.getSession', key, accessToken);
-  assert.equal(before.status, 200, 'the token must work before it expires');
+  const whileValid = await xrpc(fixture.baseUrl, 'com.atproto.server.getSession', key, accessToken);
+  assert.equal(whileValid.status, 200, 'the token must work before it expires');
 
   await new Promise((resolve) => setTimeout(resolve, (ACCESS_TOKEN_TTL_SECS + 1) * 1000));
 
-  const after = await xrpc(fixture.baseUrl, 'com.atproto.server.getSession', key, accessToken);
-  assert.equal(after.status, 401, `an expired token must 401, got ${after.status}`);
-  assertFlatXrpcError(after.json, 'expired token');
+  const onceExpired = await xrpc(fixture.baseUrl, 'com.atproto.server.getSession', key, accessToken);
+  assert.equal(onceExpired.status, 401, `an expired token must 401, got ${onceExpired.status}`);
+  assertFlatXrpcError(onceExpired.json, 'expired token');
   assert.equal(
-    after.json.error,
+    onceExpired.json.error,
     'ExpiredToken',
     'clients trigger their refresh on exactly this string; any other value strands the session',
   );
@@ -139,11 +143,26 @@ test('a DPoP-bound token presented as Bearer is refused', async () => {
   // The binding is worthless if the scheme is negotiable: a stolen token must not become
   // usable simply by dropping the proof and relabelling the header.
   const { accessToken, key } = await fullLogin(fixture, client, metadata);
-  const res = await xrpc(fixture.baseUrl, 'com.atproto.server.getSession', key, accessToken, {
-    scheme: 'Bearer',
-  });
-  assert.equal(res.status, 401, 'a sender-constrained token must not be accepted as Bearer');
-  assertFlatXrpcError(res.json, 'bearer-presented DPoP token');
+
+  // Establish that this exact token and key work under the DPoP scheme first. Without this
+  // the test would pass just as happily if the proof were malformed or the token already
+  // expired — a 401 for the wrong reason looks identical to a 401 for the right one.
+  const asDpop = await xrpc(fixture.baseUrl, 'com.atproto.server.getSession', key, accessToken);
+  assert.equal(asDpop.status, 200, `the token must be usable as DPoP first: ${asDpop.text}`);
+
+  const asBearer = await xrpc(
+    fixture.baseUrl,
+    'com.atproto.server.getSession',
+    key,
+    accessToken,
+    { scheme: 'Bearer' },
+  );
+  assert.equal(
+    asBearer.status,
+    401,
+    'the only difference from the accepted request is the scheme, so this must be refused',
+  );
+  assertFlatXrpcError(asBearer.json, 'bearer-presented DPoP token');
 });
 
 test('an expired token is refused on a proxied endpoint too, not just a local one', async () => {

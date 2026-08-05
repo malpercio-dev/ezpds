@@ -29,6 +29,7 @@ const openssl = spawnSync(
 );
 if (openssl.status !== 0) {
   console.error('failed to generate the test TLS certificate (is openssl installed?)');
+  fs.rmSync(tlsDir, { recursive: true, force: true });
   process.exit(1);
 }
 
@@ -36,6 +37,14 @@ const testFiles = fs
   .readdirSync(testDir)
   .filter((name) => name.endsWith('.test.ts'))
   .map((name) => path.join(testDir, name));
+
+// A suite that runs nothing exits 0 and reads as a pass. Given that this whole suite exists
+// because green runs hid real bugs, discovering no tests is a failure, not a quiet success.
+if (testFiles.length === 0) {
+  console.error(`no *.test.ts files found in ${testDir}`);
+  fs.rmSync(tlsDir, { recursive: true, force: true });
+  process.exit(1);
+}
 
 const result = spawnSync(process.execPath, ['--test', ...testFiles], {
   stdio: 'inherit',

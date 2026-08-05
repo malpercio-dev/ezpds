@@ -73,10 +73,11 @@ exists to correct.
 
 ## Coverage
 
-The full assertion catalogue is in [the appendix](#appendix-assertion-catalogue) — 41
-assertions across discovery, PAR, consent, token, refresh, resource-server errors, scopes, and
-confidential clients. Nine are marked † because they correspond to a bug that actually shipped;
-those nine are the suite's justification and should never be deleted without a replacement.
+Coverage spans discovery, PAR, consent, token exchange, refresh, resource-server errors,
+scopes, and confidential clients. The tests themselves are the catalogue: each one names the
+regression it guards, and those tagged `REGRESSION:` correspond to a bug that actually
+shipped. Those are the suite's justification and should never be deleted without a
+replacement. `tools/oauth-conformance/README.md` keeps the current coverage-and-gaps list.
 
 ## Open decisions
 
@@ -114,7 +115,9 @@ would need its own `cargo build -p pds` and roughly doubles the lane's cost.
   "conformant" means. That is a feature — it is how we learn the ecosystem moved — but the
   bump must be a deliberate, reviewed dependency change, not a floating range.
 
-## Appendix: assertion catalogue
+## Status
 
-(To be inlined from the draft catalogue once the personas are implemented; each assertion
-names the regression it guards.)
+Implemented as `tools/oauth-conformance/`. The persona plan above survived contact only
+partly: personas A (hand-rolled wire client) and C (deliberately naive shapes, folded into the
+individual test files) exist; persona B, the official SDK, is blocked — see the README's gap
+list for the reason and the two ways past it.

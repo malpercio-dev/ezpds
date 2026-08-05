@@ -387,12 +387,6 @@ pub struct RefreshTokenRow {
 ///
 /// The `id` column stores the SHA-256 hex hash of the raw token bytes.
 /// Callers must hash the presented token before calling this function
-/// using the same approach as `store_initial_oauth_refresh_token`.
-///
-/// Use this to retrieve the token for validation, then rotate via
-/// [`supersede_oauth_refresh_token`] + [`store_rotated_oauth_refresh_token`]. The
-/// SELECT+UPDATE are serialized due to `max_connections(1)` on the pool, preventing
-/// TOCTOU races.
 /// The raw column tuple `get_oauth_refresh_token` selects, in SELECT order:
 /// client_id, did, scope, jkt, session_id (coalesced), expires_at, superseded-within-grace.
 type RefreshTokenColumns = (
@@ -405,6 +399,15 @@ type RefreshTokenColumns = (
     Option<bool>,
 );
 
+/// Retrieve a refresh token without consuming it.
+///
+/// The `id` column stores the SHA-256 hex hash of the raw token bytes, so callers hash the
+/// presented token first — the same approach `store_initial_oauth_refresh_token` uses.
+///
+/// Use this to retrieve the token for validation, then rotate via
+/// [`supersede_oauth_refresh_token`] + [`store_rotated_oauth_refresh_token`]. The
+/// SELECT+UPDATE are serialized due to `max_connections(1)` on the pool, preventing
+/// TOCTOU races.
 pub async fn get_oauth_refresh_token(
     pool: &SqlitePool,
     token_hash: &str,

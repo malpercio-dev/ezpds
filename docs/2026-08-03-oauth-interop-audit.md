@@ -41,7 +41,7 @@ against (wallet, tangled after the `sub` fix).
 
 ### P0 — actively breaking real apps
 
-1. **Resource-call error shape is not atproto XRPC shape.** `common::ApiError` emits
+1. **Gap 1 — Resource-call error shape is not atproto XRPC shape.** `common::ApiError` emits
    `{"error": {"code": "TOKEN_EXPIRED", "message": ...}}` (nested, SCREAMING_SNAKE); atproto
    clients key refresh-on-401 off the flat `{"error": "ExpiredToken", "message": ...}` body
    (`@atproto/api`, indigo, atcute all match on the string `ExpiredToken`). The correctly named
@@ -53,7 +53,7 @@ against (wallet, tangled after the `sub` fix).
    23:14Z burst). Also: **no `WWW-Authenticate` header on any 401** anywhere in the tree, so
    spec-following clients can't even discover the failure class.
 
-2. **`private_key_jwt` advertised but not implemented.** `TokenRequestForm` has no
+1. **Gap 2 — `private_key_jwt` advertised but not implemented.** `TokenRequestForm` has no
    `client_assertion`/`client_assertion_type` fields; serde silently drops them and the client
    is treated as public. Confidential clients (tangled!) currently "work" only because we skip
    their authentication entirely — an interop time bomb and a real security gap (a leaked
@@ -61,7 +61,7 @@ against (wallet, tangled after the `sub` fix).
    key). Either implement RFC 7523 client assertions (with clock tolerance — see reference
    issue #4474: allow ~30 s skew on `iat`) or stop advertising the method.
 
-3. **`rpc:` scope `aud` matching is inconsistent with itself and the ecosystem.**
+1. **Gap 3 — `rpc:` scope `aud` matching is inconsistent with itself and the ecosystem.**
    `xrpc_dispatch` passes the **raw `atproto-proxy` header including the `#serviceId`
    fragment** into `require_rpc`, while `getServiceAuth` strips the fragment before the same
    check; `aud_matches` is exact string equality. Meanwhile real clients are split on
@@ -71,7 +71,7 @@ against (wallet, tangled after the `sub` fix).
    string. Matching must normalize (compare DID, and treat fragment as an optional refinement)
    on both paths.
 
-4. **Refresh semantics are far tighter than the ecosystem assumes.**
+1. **Gap 4 — Refresh semantics are far tighter than the ecosystem assumes.**
    - Refresh-token TTL **24 h** (reference: 2 weeks public / 3 months confidential since
      June 2025, PR #3883). Any client idle a day is silently logged out.
    - Rotation is strictly single-use with **no reuse-detection grace window**: a concurrent
@@ -85,26 +85,26 @@ against (wallet, tangled after the `sub` fix).
 
 ### P1 — spec divergences that will bite specific clients
 
-5. **PAR is advertised as required but not enforced** — direct `GET /oauth/authorize` works
+1. **Gap 5 — PAR is advertised as required but not enforced** — direct `GET /oauth/authorize` works
    (deliberate, documented). Harmless for lenient clients, but it means we never bind
    `dpop_jkt` at PAR time, and:
-6. **Authorization codes are not DPoP-key-bound at issuance** (no `jkt` column on the code
+1. **Gap 6 — Authorization codes are not DPoP-key-bound at issuance** (no `jkt` column on the code
    row) — the reference binds the key at PAR. Whoever presents the code binds it.
-7. **`state` is mandatory at PAR** — nonstandard (RECOMMENDED in OAuth; the atproto profile
+1. **Gap 7 — `state` is mandatory at PAR** — nonstandard (RECOMMENDED in OAuth; the atproto profile
    does not require it). A client relying on PKCE alone gets `invalid_request`.
-8. **Client metadata is barely validated**: only `client_id` and `redirect_uris` are read.
+1. **Gap 8 — Client metadata is barely validated**: only `client_id` and `redirect_uris` are read.
    `grant_types`, `response_types`, `scope`, `application_type`, `dpop_bound_access_tokens`,
    `token_endpoint_auth_method`, `jwks`/`jwks_uri` are ignored. The reference validates and
    *enforces* these (e.g. a client whose metadata omits a scope can't be granted it; auth
    method must match). Prerequisite for fixing gap 2.
-9. **`prompt` parameter unsupported** (`login`/`consent`/`create` — reference added
+1. **Gap 9 — `prompt` parameter unsupported** (`login`/`consent`/`create` — reference added
    `prompt=create` account-signup flows in Jan 2026; `prompt_values_supported` absent from our
    metadata is fine, but an arriving `prompt` param should not be silently dropped).
-10. **Scope-consent checkbox narrowing is invisible to clients that don't check `scope`** —
+1. **Gap 10 — Scope-consent checkbox narrowing is invisible to clients that don't check `scope`** —
     fine per the negotiated-scope model, but combined with the refresh-path legacy coercion
     (an unparseable stored scope silently becomes bare `atproto`, which grants *nothing*), a
     session can degrade to useless while staying authenticated.
-11. **Resource endpoints never issue or require DPoP nonces.** The reference PDS runs the
+1. **Gap 11 — Resource endpoints never issue or require DPoP nonces.** The reference PDS runs the
     nonce scheme on the resource server too (clients track nonces per-AS *and* per-PDS). Being
     lenient here is survivable, but clients that expect a `DPoP-Nonce` header to appear on
     resource responses (python cookbook pattern) never see one.
@@ -155,8 +155,15 @@ months of interop bugs if we don't build a conformance harness.
 Five commits, one per gap, each with tests: the flat XRPC error shape (`e0fcd2f2`), token
 lifetimes + refresh grace/reuse detection (`28c9e25d`, V061), `rpc:` audience fragment
 normalization (`0b04bdb4`), `private_key_jwt` client authentication (`3cfdaf3b`), and DPoP
-key binding at PAR + optional `state` (`bfd3f8c8`, V062). Items 6 and 7 below are still open,
-and none of this is verified against a live third-party client yet — that is item 6's job.
+key binding at PAR + optional `state` (`bfd3f8c8`, V062).
+
+**Item 6 (the conformance harness) also shipped** as `tools/oauth-conformance/`, running in
+CI's PDS lane. Building it surfaced two further gaps not in the matrix above — a `jwks_uri`
+held to a stricter transport rule than the `client_id` it is fetched from, and no support for
+the spec's loopback client identifiers — both now fixed. Item 7 remains open, and **none of
+this is verified against a live third-party client yet**: the suite is hermetic by
+construction, so re-running the real pckt.blog and Beacon logins after deploy is still what
+would close them.
 
 ## Recommended order of work
 
@@ -168,7 +175,7 @@ and none of this is verified against a live third-party client yet — that is i
 4. Implement `private_key_jwt` (with 30 s clock tolerance) or de-advertise it; validate client
    metadata fields while there.
 5. Bind `dpop_jkt` at PAR/code issuance; make `state` optional.
-6. Build a client-conformance smoke harness: drive a real login with `@atproto/oauth-client-node`,
+6. ~~Build a client-conformance smoke harness~~ — **done** (`tools/oauth-conformance/`). Drive a real login with `@atproto/oauth-client-node`,
    atcute, and a hand-rolled non-PAR client against a hermetic PDS in CI — the tangled `sub`
    bug and this entire audit both trace to "we only ever tested our own clients."
 7. Reproduce pckt.blog (callback capture) and Beacon (log tail) individually.

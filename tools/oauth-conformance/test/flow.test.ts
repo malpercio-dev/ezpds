@@ -241,3 +241,67 @@ test('unparseable scopes are rejected at PAR rather than silently dropped', asyn
   assert.equal(pushed.status, 400);
   assert.equal(pushed.json.error, 'invalid_scope');
 });
+
+test('a PAR DPoP proof is accepted, but the password consent path drops the binding', async () => {
+  // Written to prove the DPoP key binding end-to-end; it proved the opposite, which is worth
+  // pinning. PAR accepts the proof and records the key — but the password consent path cannot
+  // carry it: its PAR row is consumed by the GET that renders the form, and the POST rebuilds
+  // the request from attacker-controllable hidden fields, so `oauth_authorize.rs` deliberately
+  // issues the code with no binding rather than trusting one an attacker could omit.
+  //
+  // The consequence is that `dpop_jkt` enforcement is only reachable through the *wallet*
+  // consent path, which keeps its pending request server-side — and that path has no coverage
+  // here yet (MM-502). Until it does, the binding is exercised end-to-end nowhere, and the
+  // enforcement itself is covered only by the Rust test
+  // `authorization_code_bound_to_another_dpop_key_is_rejected`, which writes the binding
+  // directly onto the code row.
+  //
+  // This test exists so that stops being invisible: if the password path ever starts binding,
+  // it fails and someone updates it deliberately.
+  const flowKey = await generateDpopKey();
+  const otherKey = await generateDpopKey();
+  const { verifier, challenge } = pkce();
+
+  const pushed = await par(
+    metadata,
+    {
+      client_id: CLIENT_ID,
+      redirect_uri: REDIRECT_URI,
+      response_type: 'code',
+      code_challenge: challenge,
+      code_challenge_method: 'S256',
+      scope: 'atproto',
+    },
+    // PAR must accept a proof without a server nonce — a client has none on first contact.
+    { dpopKey: flowKey },
+  );
+  assert.equal(pushed.status, 201, `a PAR carrying a DPoP proof must succeed: ${pushed.text}`);
+
+  const approval = await approveConsent(
+    fixture.baseUrl,
+    `${metadata.authorization_endpoint}?client_id=${encodeURIComponent(CLIENT_ID)}` +
+      `&request_uri=${encodeURIComponent(pushed.json.request_uri)}`,
+    { identifier: fixture.account.did, password: fixture.account.password },
+  );
+  const code = approval.params.get('code');
+  assert.ok(code, `consent must yield a code: ${approval.location}`);
+
+  const redeemed = await tokenRequestWithNonceRetry(metadata, otherKey, {
+    grant_type: 'authorization_code',
+    code,
+    redirect_uri: REDIRECT_URI,
+    client_id: CLIENT_ID,
+    code_verifier: verifier,
+  });
+  assert.equal(
+    redeemed.final.status,
+    200,
+    'documents the current gap: a code issued through the password consent path carries no ' +
+      'PAR-time key binding, so a different key redeems it. Change this to expect 400 once ' +
+      'the wallet consent path is covered (MM-502) or the password path can bind.',
+  );
+  // The issued token is still sender-constrained to whoever redeemed it — the binding that
+  // is missing is to the key that *pushed the request*, not to the presenter.
+  const claims = decodeJwtPayload(redeemed.final.json.access_token);
+  assert.equal(claims.cnf?.jkt, otherKey.thumbprint);
+});
