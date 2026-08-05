@@ -1,0 +1,51 @@
+Let’s look into the conformance harness next
+
+---
+
+add the TTL knob and close the expired-token gap
+
+---
+
+keep going into refresh-semantics
+
+---
+
+let's keep going!
+
+---
+
+SDK oracle, then PR, and an issue for the wallet consent path
+
+---
+
+<task-notification>
+<task-id>bjeoc39nq</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-jacob-zweifel-workspace-malpercio-dev-ezpds--claude-worktrees-oauth-atproto-failures-4ff55e/8ed01988-30df-44dc-aa1e-d4f25a8d9e5b/tasks/bjeoc39nq.output</output-file>
+<status>completed</status>
+<summary>Background command "Wait for CI and check status" completed (exit code 0)</summary>
+</task-notification>
+
+---
+
+<task-notification>
+<task-id>b68ocdrnd</task-id>
+<tool-use-id>toolu_01QgBaffykDtyJXEPtjWVcpf</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-jacob-zweifel-workspace-malpercio-dev-ezpds--claude-worktrees-oauth-atproto-failures-4ff55e/8ed01988-30df-44dc-aa1e-d4f25a8d9e5b/tasks/b68ocdrnd.output</output-file>
+<status>completed</status>
+<summary>Background command "Wait for the PDS gate on the new run" completed (exit code 0)</summary>
+</task-notification>
+
+---
+
+coderabbit has requested changes on the pr
+
+---
+
+<task-notification>
+<task-id>b2dt0lwra</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-jacob-zweifel-workspace-malpercio-dev-ezpds--claude-worktrees-oauth-atproto-failures-4ff55e/8ed01988-30df-44dc-aa1e-d4f25a8d9e5b/tasks/b2dt0lwra.output</output-file>
+<status>completed</status>
+<summary>Background command "Wait for CI on the review-fix push" completed (exit code 0)</summary>
+</task-notification>
