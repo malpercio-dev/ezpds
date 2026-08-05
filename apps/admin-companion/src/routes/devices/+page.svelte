@@ -97,10 +97,6 @@
   {:else if devicesView.kind === 'error'}
     <ErrorState view={devicesView.view} server={identity} onretry={() => loadDevices(pairing.id)} />
   {:else}
-    <p class="lede">
-      Every admin device registered on this server, active and revoked. Revoke a lost
-      device to cut off its access — signed by the device in your hand.
-    </p>
 
     <section class="panel" aria-labelledby="devices-label">
       <span id="devices-label" class="label">Registered devices</span>
@@ -214,12 +210,6 @@
     font-size: var(--text-label);
     font-weight: var(--weight-medium);
     color: var(--color-muted);
-  }
-  .lede {
-    margin: 0;
-    font-size: var(--text-body);
-    line-height: var(--leading-body);
-    color: var(--color-ink-soft);
   }
   .note {
     margin: 0;

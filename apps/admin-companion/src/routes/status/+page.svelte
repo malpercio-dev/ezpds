@@ -57,10 +57,7 @@
 <ScreenShell prompt="status" title="Server status" onback={() => history.back()} server={identity}>
   <PinnedPairingGate view={pairingsView} {pairing} resource="status always reads from a specific server.">
     {#snippet children()}
-    <p class="lede">
-      This server's health as it reports it — row counts, firehose state, and
-      background-sweep last-runs. Facts only; nothing here is a verdict.
-    </p>
+    <p class="lede">Facts as this server reports them; nothing here is a verdict.</p>
 
     {#if healthView.kind === 'loading'}
       <p class="resolving">reading status…</p>

@@ -152,9 +152,8 @@
   <PinnedPairingGate view={pairingsView} {pairing} resource="the account list always reads from a specific server.">
     {#snippet children()}
     <p class="lede">
-      Every account on this server: accounts flagged by a watched labeler first, then
-      DID order. Tap an account for its detail — usage, storage, and moderation; the
-      meter is each account's blob-storage quota.
+      Flagged accounts first, then DID order; the meter is each account's blob-storage
+      quota.
     </p>
 
     <section class="panel" aria-labelledby="accounts-filter-label">

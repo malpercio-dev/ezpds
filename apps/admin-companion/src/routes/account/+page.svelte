@@ -147,10 +147,6 @@
       <p class="note">No account is selected. Open an account from the Accounts list.</p>
     </section>
   {:else}
-    <p class="lede">
-      This account as the server reports it: usage and storage below, moderation one
-      tap deeper — takedown, restore, and credential revocation.
-    </p>
 
     <section class="panel" aria-labelledby="identity-label">
       <span id="identity-label" class="label">Identity</span>
@@ -296,12 +292,6 @@
     font-size: var(--text-label);
     font-weight: var(--weight-medium);
     color: var(--color-muted);
-  }
-  .lede {
-    margin: 0;
-    font-size: var(--text-body);
-    line-height: var(--leading-body);
-    color: var(--color-ink-soft);
   }
   .note {
     margin: 0;
