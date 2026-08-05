@@ -606,7 +606,7 @@ mod tests {
             "replay must be rejected"
         );
         let json = body_json(replay).await;
-        assert_eq!(json["error"]["code"], "INVALID_TOKEN");
+        assert_eq!(json["error"], "InvalidToken");
     }
 
     #[tokio::test]
@@ -650,7 +650,7 @@ mod tests {
             "replay must return 401"
         );
         let json = body_json(replay).await;
-        assert_eq!(json["error"]["code"], "INVALID_TOKEN");
+        assert_eq!(json["error"], "InvalidToken");
 
         let session_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM sessions WHERE id = ?")
             .bind(&session_id)
@@ -693,7 +693,7 @@ mod tests {
 
         assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
         let json = body_json(response).await;
-        assert_eq!(json["error"]["code"], "TOKEN_EXPIRED");
+        assert_eq!(json["error"], "ExpiredToken");
     }
 
     #[tokio::test]
@@ -724,7 +724,7 @@ mod tests {
 
         assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
         let json = body_json(response).await;
-        assert_eq!(json["error"]["code"], "INVALID_TOKEN");
+        assert_eq!(json["error"], "InvalidToken");
     }
 
     #[tokio::test]
@@ -736,7 +736,7 @@ mod tests {
 
         assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
         let json = body_json(response).await;
-        assert_eq!(json["error"]["code"], "INVALID_TOKEN");
+        assert_eq!(json["error"], "InvalidToken");
     }
 
     #[tokio::test]
@@ -765,7 +765,7 @@ mod tests {
             "access token must be rejected at the refresh endpoint"
         );
         let json = body_json(response).await;
-        assert_eq!(json["error"]["code"], "INVALID_TOKEN");
+        assert_eq!(json["error"], "InvalidToken");
     }
 
     #[tokio::test]
@@ -780,7 +780,7 @@ mod tests {
 
         assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
         let json = body_json(response).await;
-        assert_eq!(json["error"]["code"], "AUTHENTICATION_REQUIRED");
+        assert_eq!(json["error"], "AuthMissing");
     }
 
     // ── App-password scope preservation ───────────────────────────────────────
@@ -905,6 +905,6 @@ mod tests {
             .unwrap();
         assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
         let json = body_json(response).await;
-        assert_eq!(json["error"]["code"], "INVALID_TOKEN");
+        assert_eq!(json["error"], "InvalidToken");
     }
 }

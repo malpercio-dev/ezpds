@@ -245,6 +245,18 @@ mcp-sidecar-test:
     cargo build -p pds
     cd tools/mcp-sidecar && pnpm test && pnpm test:e2e
 
+# Install dependencies for the OAuth conformance suite (tools/oauth-conformance).
+oauth-conformance-setup:
+    cd tools/oauth-conformance && pnpm install
+
+# Drive real OAuth client behaviour against a hermetic local PDS: full
+# PAR → consent → token → authenticated-call flows, asserting the wire contract
+# third-party atproto clients actually depend on. Every regression the
+# 2026-08-03 interop audit found is pinned here. See its README.
+oauth-conformance-test:
+    cargo build -p pds
+    cd tools/oauth-conformance && pnpm test
+
 # Shared gate list both `ci` variants run before their clippy/test/audit/deny tail.
 # Adding a check here covers `just ci` (macOS/full) and `just ci-pds` (Linux) at once —
 # the old design re-stated all twelve checks in each, so a gate added to one and

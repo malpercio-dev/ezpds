@@ -54,6 +54,7 @@ changing the environment variable alone.
 | `EZPDS_PUBLIC_URL` | The externally reachable origin of the PDS. |
 | `EZPDS_AVAILABLE_USER_DOMAINS` | Domains users may claim handles on. |
 | `EZPDS_LABELER_WATCHED` | Comma-separated labeler DIDs to watch; hosted accounts they label are flagged on the operator console. Off (empty) by default — see [Moderation § Labeler watching](/operator/moderation/#labeler-watching--flagged-accounts). |
+| `EZPDS_OAUTH_ACCESS_TOKEN_TTL_SECS` | How long an OAuth access token stays valid, in seconds. Defaults to `900` (15 minutes), matching the reference implementation; accepted range is 1–1800. Leave it alone unless you have a specific reason: shortening it makes every app refresh more often, and lengthening it widens the window in which a leaked token still works. |
 
 The table above is the operator-facing subset. Every remaining setting, with
 its type, default, and doc-comment, is in the

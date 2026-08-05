@@ -326,9 +326,6 @@ mod tests {
 
         let (status, body) = list(&app, "?limit=0").await;
         assert_eq!(status, StatusCode::BAD_REQUEST);
-        assert_eq!(
-            body["error"]["message"],
-            "Params/limit can not be less than 1"
-        );
+        assert_eq!(body["message"], "Params/limit can not be less than 1");
     }
 }

@@ -441,7 +441,7 @@ mod tests {
 
         assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
         let json = body_json(response).await;
-        assert_eq!(json["error"]["code"], "INVALID_TOKEN");
+        assert_eq!(json["error"], "InvalidToken");
     }
 
     #[tokio::test]
@@ -453,7 +453,7 @@ mod tests {
 
         assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
         let json = body_json(response).await;
-        assert_eq!(json["error"]["code"], "INVALID_TOKEN");
+        assert_eq!(json["error"], "InvalidToken");
     }
 
     #[tokio::test]
@@ -468,7 +468,7 @@ mod tests {
 
         assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
         let json = body_json(response).await;
-        assert_eq!(json["error"]["code"], "AUTHENTICATION_REQUIRED");
+        assert_eq!(json["error"], "AuthMissing");
     }
 
     #[tokio::test]

@@ -401,7 +401,7 @@ mod tests {
 
         assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
         let json = body_json(response).await;
-        assert_eq!(json["error"]["code"], "AUTHENTICATION_REQUIRED");
+        assert_eq!(json["error"], "AuthMissing");
     }
 
     #[tokio::test]
@@ -413,7 +413,7 @@ mod tests {
 
         assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
         let json = body_json(response).await;
-        assert_eq!(json["error"]["code"], "AUTHENTICATION_REQUIRED");
+        assert_eq!(json["error"], "AuthMissing");
     }
 
     #[tokio::test]
@@ -514,14 +514,8 @@ mod tests {
         assert_eq!(wrong_pw.status(), unknown.status());
         let wrong_pw_json = body_json(wrong_pw).await;
         let unknown_json = body_json(unknown).await;
-        assert_eq!(
-            wrong_pw_json["error"]["code"],
-            unknown_json["error"]["code"]
-        );
-        assert_eq!(
-            wrong_pw_json["error"]["message"],
-            unknown_json["error"]["message"]
-        );
+        assert_eq!(wrong_pw_json["error"], unknown_json["error"]);
+        assert_eq!(wrong_pw_json["message"], unknown_json["message"]);
     }
 
     #[tokio::test]

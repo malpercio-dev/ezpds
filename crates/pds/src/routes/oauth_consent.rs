@@ -512,6 +512,7 @@ pub async fn post_authorization_complete(
         &completed.code_challenge_method,
         &completed.redirect_uri,
         &completed.granted_scope,
+        completed.dpop_jkt.as_deref(),
     )
     .await
     {
@@ -649,6 +650,7 @@ mod tests {
             origin: Some("https://app.example.com"),
             ip: Some("203.0.113.5"),
             user_agent: Some("test/1.0"),
+            dpop_jkt: None,
             ttl_secs: 300,
         };
         crate::db::pending_oauth_authorizations::insert_pending_authorization(&state.db, &new)
@@ -1168,6 +1170,7 @@ mod tests {
             origin: None,
             ip: None,
             user_agent: None,
+            dpop_jkt: None,
             ttl_secs: -10,
         };
         crate::db::pending_oauth_authorizations::insert_pending_authorization(&state.db, &new)
@@ -1389,6 +1392,7 @@ mod tests {
             origin: None,
             ip: None,
             user_agent: None,
+            dpop_jkt: None,
             ttl_secs: 300,
         };
         crate::db::pending_oauth_authorizations::insert_pending_authorization(&state.db, &new)

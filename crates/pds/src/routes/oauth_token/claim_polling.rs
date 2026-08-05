@@ -212,6 +212,7 @@ async fn claim_success(state: &AppState, identity: &AgentIdentityRow) -> Respons
         None,
         Some(&identity.id),
         &state.config.public_url,
+        super::AGENT_ACCESS_TOKEN_TTL_SECS,
     ) {
         Ok(t) => t,
         Err(e) => return e.into_response(),
@@ -247,7 +248,7 @@ async fn claim_success(state: &AppState, identity: &AgentIdentityRow) -> Respons
         Json(ClaimPollingResponse {
             access_token,
             token_type: "Bearer",
-            expires_in: 300,
+            expires_in: super::AGENT_ACCESS_TOKEN_TTL_SECS,
             scope,
             identity_assertion: assertion.to_string(),
             assertion_expires,

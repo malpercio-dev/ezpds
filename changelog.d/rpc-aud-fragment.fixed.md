@@ -1,0 +1,1 @@
+Granular `rpc:` OAuth scopes now match their `aud` on the service DID regardless of `#serviceId` fragments, so a grant written in either convention (bare DID or fragment-qualified) authorizes both PDS proxying and `getServiceAuth` consistently.

@@ -1027,7 +1027,7 @@ mod tests {
                 .unwrap(),
         )
         .unwrap();
-        assert_eq!(body["error"]["code"], "HANDLE_RESOLUTION_FAILED");
+        assert_eq!(body["error"], "HandleResolutionFailed");
     }
 
     /// When the new handle is on an external domain and resolves to a different DID, return 400.
@@ -1054,7 +1054,7 @@ mod tests {
                 .unwrap(),
         )
         .unwrap();
-        assert_eq!(body["error"]["code"], "HANDLE_RESOLUTION_FAILED");
+        assert_eq!(body["error"], "HandleResolutionFailed");
     }
 
     // ── Handle already taken ──────────────────────────────────────────────────
@@ -1103,7 +1103,7 @@ mod tests {
                 .unwrap(),
         )
         .unwrap();
-        assert_eq!(body["error"]["code"], "HANDLE_TAKEN");
+        assert_eq!(body["error"], "HandleNotAvailable");
     }
 
     // ── Invalid handle format ─────────────────────────────────────────────────
@@ -1131,11 +1131,8 @@ mod tests {
         .unwrap();
         // A structurally invalid handle is now caught by the lexicon input layer (before the
         // handler's own domain-policy checks), with the reference PDS's message shape.
-        assert_eq!(body["error"]["code"], "InvalidRequest");
-        assert_eq!(
-            body["error"]["message"],
-            "Input/handle must be a valid handle"
-        );
+        assert_eq!(body["error"], "InvalidRequest");
+        assert_eq!(body["message"], "Input/handle must be a valid handle");
     }
 
     // ── Auth failures ──────────────────────────────────────────────────────────

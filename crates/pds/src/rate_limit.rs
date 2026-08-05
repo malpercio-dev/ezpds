@@ -479,7 +479,8 @@ mod tests {
         assert!(resp.headers().contains_key("retry-after"));
         let body = axum::body::to_bytes(resp.into_body(), 4096).await.unwrap();
         let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
-        assert_eq!(json["error"]["code"], "RATE_LIMITED");
+        // An XRPC path: the 429 leaves in the flat XRPC dialect.
+        assert_eq!(json["error"], "RateLimitExceeded");
 
         // The rejection is counted against the limiter that tripped.
         let rendered = metrics.render().unwrap().unwrap();

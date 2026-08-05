@@ -358,7 +358,7 @@ mod tests {
             .unwrap();
         assert_eq!(response.status(), StatusCode::BAD_REQUEST);
         let body = body_json(response).await;
-        assert_eq!(body["error"]["code"], "BlockNotFound");
+        assert_eq!(body["error"], "BlockNotFound");
     }
 
     #[tokio::test]
@@ -392,7 +392,7 @@ mod tests {
             .unwrap();
         assert_eq!(response.status(), StatusCode::BAD_REQUEST);
         let body = body_json(response).await;
-        assert_eq!(body["error"]["code"], "BlockNotFound");
+        assert_eq!(body["error"], "BlockNotFound");
     }
 
     #[tokio::test]
@@ -417,8 +417,8 @@ mod tests {
         // Any missing block fails the whole request; both absent CIDs are reported.
         assert_eq!(response.status(), StatusCode::BAD_REQUEST);
         let body = body_json(response).await;
-        assert_eq!(body["error"]["code"], "BlockNotFound");
-        let msg = body["error"]["message"].as_str().unwrap();
+        assert_eq!(body["error"], "BlockNotFound");
+        let msg = body["message"].as_str().unwrap();
         assert!(
             msg.contains(&absent_a),
             "message must report {absent_a}: {msg}"

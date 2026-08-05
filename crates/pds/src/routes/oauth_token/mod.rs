@@ -22,6 +22,7 @@
 
 mod authorization_code;
 mod claim_polling;
+mod client_auth;
 mod jwt_bearer;
 mod refresh;
 
@@ -57,6 +58,10 @@ pub struct TokenRequestForm {
     pub code_verifier: Option<String>,
     // refresh_token grant
     pub refresh_token: Option<String>,
+    // private_key_jwt client authentication (RFC 7523), enforced per the client's
+    // registered token_endpoint_auth_method
+    pub client_assertion: Option<String>,
+    pub client_assertion_type: Option<String>,
     // jwt-bearer grant (RFC 7523): agent identity-assertion exchange
     pub assertion: Option<String>,
     pub resource: Option<String>,
@@ -119,10 +124,17 @@ struct CnfClaim {
     jkt: String,
 }
 
+/// Agent-flow (jwt-bearer / claim-polling) access-token lifetime. Deliberately shorter than
+/// the OAuth lifetime and deliberately not configurable: agent tokens are minted headlessly,
+/// with no consent leg and no human to notice a session behaving oddly.
+pub(super) const AGENT_ACCESS_TOKEN_TTL_SECS: u64 = 300;
+
 /// Sign an ES256 `at+jwt` access token. `jkt` is the DPoP key thumbprint for a sender-constrained
 /// token, or `None` for a plain Bearer token (jwt-bearer grant) that carries no `cnf` binding.
 /// `registration_id` is set only for agent-derived tokens (jwt-bearer), marking them as such and
 /// tying them to their `agent_identities` row; `None` for ordinary session/OAuth grants.
+/// `ttl_secs` is the token's lifetime — [`crate::app::AppState`]'s configured
+/// `oauth.access_token_ttl_secs` for OAuth grants, [`AGENT_ACCESS_TOKEN_TTL_SECS`] for agent ones.
 fn issue_access_token(
     signing_key: &crate::auth::OAuthSigningKey,
     did: &str,
@@ -130,6 +142,7 @@ fn issue_access_token(
     jkt: Option<&str>,
     registration_id: Option<&str>,
     public_url: &str,
+    ttl_secs: u64,
 ) -> Result<String, OAuthTokenError> {
     use uuid::Uuid;
 
@@ -144,7 +157,7 @@ fn issue_access_token(
         sub: did.to_string(),
         aud: public_url.to_string(),
         iat: now,
-        exp: now + 300,
+        exp: now + ttl_secs,
         scope: scope.to_string(),
         cnf: jkt.map(|jkt| CnfClaim {
             jkt: jkt.to_string(),

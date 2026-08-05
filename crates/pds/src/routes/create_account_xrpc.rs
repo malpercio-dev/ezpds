@@ -997,7 +997,7 @@ mod tests {
             .unwrap();
         assert_eq!(response.status(), StatusCode::BAD_REQUEST);
         let json = body_json(response).await;
-        assert_eq!(json["error"]["code"], "INVALID_CLAIM");
+        assert_eq!(json["error"], "InvalidClaim");
     }
 
     #[tokio::test]
@@ -1053,7 +1053,7 @@ mod tests {
             .unwrap();
         assert_eq!(response.status(), StatusCode::BAD_REQUEST);
         let json = body_json(response).await;
-        assert_eq!(json["error"]["code"], "INVALID_HANDLE");
+        assert_eq!(json["error"], "InvalidHandle");
     }
 
     // ── Invite codes ──────────────────────────────────────────────────────────
@@ -1084,7 +1084,7 @@ mod tests {
             .unwrap();
         assert_eq!(response.status(), StatusCode::BAD_REQUEST);
         let json = body_json(response).await;
-        assert_eq!(json["error"]["code"], "InvalidRequest");
+        assert_eq!(json["error"], "InvalidRequest");
     }
 
     #[tokio::test]

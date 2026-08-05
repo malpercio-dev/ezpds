@@ -19,7 +19,7 @@
 
 use axum::{
     extract::State,
-    http::StatusCode,
+    http::{HeaderMap, StatusCode},
     response::{IntoResponse, Response},
     Form, Json,
 };
@@ -49,6 +49,9 @@ pub struct PARForm {
     pub response_mode: Option<String>,
     pub scope: Option<String>,
     pub login_hint: Option<String>,
+    /// RFC 9449 §10: the client may name its DPoP key thumbprint directly instead of (or
+    /// as well as) sending a proof header. When both arrive they must agree.
+    pub dpop_jkt: Option<String>,
 }
 
 /// Successful PAR response body (RFC 9126 §2.2).
@@ -93,13 +96,73 @@ impl IntoResponse for PARError {
 
 // ── Handler ───────────────────────────────────────────────────────────────────
 
+/// Resolve the DPoP key this pushed request is bound to, from a proof header, an explicit
+/// `dpop_jkt` parameter, or both (which must then agree).
+///
+/// Unlike the token endpoint, a proof here is **not** required to carry a server nonce: a
+/// PAR is typically a flow's first contact, so the client cannot hold one yet, and the proof
+/// only asserts the client's own key rather than authorizing issuance. Requiring a nonce
+/// here is a known interop trap (bluesky-social/atproto#3078).
+async fn resolve_par_dpop_jkt(
+    state: &AppState,
+    headers: &HeaderMap,
+    declared_jkt: Option<&str>,
+) -> Result<Option<String>, Response> {
+    if headers.get_all("DPoP").iter().count() > 1 {
+        return Err(PARError::new(
+            "invalid_dpop_proof",
+            "multiple DPoP headers are not permitted",
+        )
+        .into_response());
+    }
+
+    let par_url = format!(
+        "{}/oauth/par",
+        state.config.public_url.trim_end_matches('/')
+    );
+    let proven_jkt = match headers.get("DPoP").and_then(|v| v.to_str().ok()) {
+        Some(proof) => {
+            match crate::auth::validate_dpop_for_par(proof, "POST", &par_url).await {
+                Ok(jkt) => Some(jkt),
+                Err(crate::auth::DpopTokenEndpointError::InvalidProof(msg)) => {
+                    return Err(PARError::new("invalid_dpop_proof", msg).into_response());
+                }
+                // `validate_dpop_for_par` never asks for a nonce and never reports a missing
+                // header (one was present to get here).
+                Err(_) => {
+                    return Err(
+                        PARError::new("invalid_dpop_proof", "DPoP proof invalid").into_response()
+                    );
+                }
+            }
+        }
+        None => None,
+    };
+
+    let declared_jkt = declared_jkt.filter(|s| !s.is_empty());
+    match (proven_jkt, declared_jkt) {
+        (Some(proven), Some(declared)) if proven != declared => Err(PARError::new(
+            "invalid_request",
+            "dpop_jkt does not match the DPoP proof's key",
+        )
+        .into_response()),
+        (Some(proven), _) => Ok(Some(proven)),
+        (None, Some(declared)) => Ok(Some(declared.to_string())),
+        (None, None) => Ok(None),
+    }
+}
+
 /// `POST /oauth/par` — accept pushed authorization request parameters.
 ///
 /// Clients POST their authorization parameters here first, receiving back an opaque
 /// `request_uri` they then pass to `GET /oauth/authorize?request_uri=...`. This keeps
 /// large payloads (DPoP key assertions, PKCE challenges) out of query strings and
 /// browser history (RFC 9126).
-pub async fn post_par(State(state): State<AppState>, Form(form): Form<PARForm>) -> Response {
+pub async fn post_par(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Form(form): Form<PARForm>,
+) -> Response {
     let client_id = match form.client_id.as_deref().filter(|s| !s.is_empty()) {
         Some(id) => id.to_string(),
         None => return PARError::new("invalid_request", "client_id is required").into_response(),
@@ -131,10 +194,16 @@ pub async fn post_par(State(state): State<AppState>, Form(form): Form<PARForm>) 
         }
     };
 
-    let state_param = match form.state.as_deref().filter(|s| !s.is_empty()) {
-        Some(s) => s.to_string(),
-        None => return PARError::new("invalid_request", "state is required").into_response(),
-    };
+    // `state` is RECOMMENDED, not required (RFC 6749 §4.1.1) and the atproto profile adds
+    // no requirement of its own — PKCE already binds the flow. Requiring it rejected
+    // conformant clients that rely on PKCE alone; an absent one is simply not echoed back
+    // on the authorization response.
+    let state_param = form
+        .state
+        .as_deref()
+        .filter(|s| !s.is_empty())
+        .unwrap_or_default()
+        .to_string();
 
     let response_type = match form.response_type.as_deref().filter(|s| !s.is_empty()) {
         Some(r) => r.to_string(),
@@ -236,6 +305,15 @@ pub async fn post_par(State(state): State<AppState>, Form(form): Form<PARForm>) 
             .into_response();
     }
 
+    // Bind the flow to the client's DPoP key when it proves one here (RFC 9449 §10), so the
+    // authorization code this request eventually yields can only be redeemed by that key.
+    // The key may arrive as a proof header (which is verified) or as a bare `dpop_jkt`
+    // parameter; a client sending both must be consistent.
+    let dpop_jkt = match resolve_par_dpop_jkt(&state, &headers, form.dpop_jkt.as_deref()).await {
+        Ok(jkt) => jkt,
+        Err(response) => return response,
+    };
+
     let params = StoredPARParams {
         redirect_uri,
         code_challenge,
@@ -245,6 +323,7 @@ pub async fn post_par(State(state): State<AppState>, Form(form): Form<PARForm>) 
         response_mode: response_mode.as_str().to_string(),
         scope,
         login_hint: form.login_hint.filter(|s| !s.is_empty()),
+        dpop_jkt,
     };
 
     let params_json = match serde_json::to_string(&params) {
@@ -587,7 +666,9 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn post_par_returns_400_when_state_missing() {
+    /// `state` is RECOMMENDED, not required (RFC 6749 §4.1.1) — PKCE already binds the
+    /// flow — so a client that relies on PKCE alone must not be turned away.
+    async fn post_par_accepts_a_request_without_state() {
         let state = test_state().await;
         register_client(&state).await;
 
@@ -603,12 +684,7 @@ mod tests {
             .await
             .unwrap();
 
-        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
-        let body = axum::body::to_bytes(response.into_body(), 4096)
-            .await
-            .unwrap();
-        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
-        assert_eq!(json["error"].as_str(), Some("invalid_request"));
+        assert_eq!(response.status(), StatusCode::CREATED);
     }
 
     #[tokio::test]

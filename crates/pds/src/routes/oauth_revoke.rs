@@ -42,7 +42,7 @@ use subtle::ConstantTimeEq;
 use crate::app::AppState;
 use crate::auth::{issue_nonce, validate_dpop_for_token_endpoint, DpopTokenEndpointError};
 use crate::db::oauth::{
-    cleanup_expired_refresh_tokens, delete_oauth_refresh_token, get_oauth_refresh_token,
+    cleanup_expired_refresh_tokens, delete_oauth_refresh_session, get_oauth_refresh_token,
 };
 use crate::routes::oauth_errors::OAuthTokenError;
 
@@ -159,8 +159,13 @@ pub async fn post_revoke(
                     None => true,
                 };
                 if jkt_matches && client_matches {
-                    if let Err(e) = delete_oauth_refresh_token(&state.db, &token_hash).await {
-                        tracing::error!(error = %e, "failed to delete refresh token during revocation");
+                    // Revoking any refresh token ends the whole session family it belongs
+                    // to (every rotation of the same grant) — revocation means "end this
+                    // session", not "retire this one artifact".
+                    if let Err(e) =
+                        delete_oauth_refresh_session(&state.db, &stored.session_id).await
+                    {
+                        tracing::error!(error = %e, "failed to delete refresh session during revocation");
                         return OAuthTokenError::new("server_error", "database error")
                             .into_response();
                     }
@@ -282,7 +287,7 @@ mod tests {
         .unwrap();
 
         let token = generate_token();
-        crate::db::oauth::store_oauth_refresh_token(
+        crate::db::oauth::store_initial_oauth_refresh_token(
             &state.db,
             &token.hash,
             TEST_CLIENT,

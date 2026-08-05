@@ -192,7 +192,7 @@ mod tests {
 
         let (status, body) = get_latest(&app, did).await;
         assert_eq!(status, StatusCode::NOT_FOUND);
-        assert_eq!(body["error"]["code"], "NOT_FOUND");
+        assert_eq!(body["error"], "NotFound");
     }
 
     #[tokio::test]
@@ -202,7 +202,7 @@ mod tests {
 
         let (status, body) = get_latest(&app, "did:plc:latestcommitghost").await;
         assert_eq!(status, StatusCode::NOT_FOUND);
-        assert_eq!(body["error"]["code"], "NOT_FOUND");
+        assert_eq!(body["error"], "NotFound");
     }
 
     #[tokio::test]
@@ -233,7 +233,7 @@ mod tests {
 
         let (status, body) = get_latest(&app, "did:plc:latestcommitbad").await;
         assert_eq!(status, StatusCode::NOT_FOUND);
-        assert_eq!(body["error"]["code"], "NOT_FOUND");
+        assert_eq!(body["error"], "NotFound");
     }
 
     #[tokio::test]
@@ -256,7 +256,7 @@ mod tests {
 
         let (status, body) = get_latest(&app, "did:plc:latestcommitmalformed").await;
         assert_eq!(status, StatusCode::NOT_FOUND);
-        assert_eq!(body["error"]["code"], "NOT_FOUND");
+        assert_eq!(body["error"], "NotFound");
     }
 
     #[tokio::test]

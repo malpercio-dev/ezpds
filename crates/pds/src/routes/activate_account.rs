@@ -362,7 +362,7 @@ mod tests {
         let response = app(state).oneshot(activate_request(&token)).await.unwrap();
         assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
         let json = body_json(response).await;
-        assert_eq!(json["error"]["code"], "INVALID_TOKEN");
+        assert_eq!(json["error"], "InvalidToken");
     }
 
     #[tokio::test]

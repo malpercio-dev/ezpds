@@ -13,6 +13,19 @@ use axum::response::{Html, Redirect};
 use crate::auth::oauth_response_mode::ResponseMode;
 
 // ── Public rendering functions ────────────────────────────────────────────────
+/// Render the `state` parameter for an authorization response, or nothing at all.
+///
+/// `state` is RECOMMENDED rather than required (RFC 6749 §4.1.1), and §4.1.2 says to echo it
+/// back "if present in the client authorization request" — so a client that sent none must
+/// not receive an empty `state=`, which some clients reject as a mismatched value. An empty
+/// stored state means the client sent none.
+fn state_param(state: &str) -> String {
+    if state.is_empty() {
+        String::new()
+    } else {
+        format!("&state={}", encode_param(state))
+    }
+}
 
 /// Build an OAuth error redirect (303) to `redirect_uri` with error parameters.
 ///
@@ -39,12 +52,12 @@ pub(super) fn error_redirect(
         "OAuth authorization error redirect issued"
     );
     let url = format!(
-        "{}{}error={}&error_description={}&state={}&iss={}",
+        "{}{}error={}&error_description={}{}&iss={}",
         redirect_uri,
         mode.separator(redirect_uri),
         encode_param(error),
         encode_param(description),
-        encode_param(state),
+        state_param(state),
         encode_param(issuer),
     );
     Redirect::to(&url)
@@ -87,11 +100,11 @@ pub(super) fn build_code_redirect(
     mode: ResponseMode,
 ) -> Redirect {
     let url = format!(
-        "{}{}code={}&state={}&iss={}",
+        "{}{}code={}{}&iss={}",
         redirect_uri,
         mode.separator(redirect_uri),
         encode_param(code),
-        encode_param(state),
+        state_param(state),
         encode_param(issuer),
     );
     Redirect::to(&url)

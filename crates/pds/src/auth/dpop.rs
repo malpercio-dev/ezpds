@@ -295,6 +295,41 @@ fn check_dpop_freshness(iat: i64) -> Result<(), FreshnessError> {
     Ok(())
 }
 
+/// Validate a DPoP proof presented at the PAR endpoint and return the JWK thumbprint.
+///
+/// Like [`validate_dpop_for_token_endpoint`] (same prologue: typ/crv/alg/signature,
+/// `htm`/`htu`, `jti` presence, freshness) but with **no server-nonce requirement**: a PAR
+/// is usually a flow's first contact, so the client cannot yet hold a nonce, and the proof
+/// here only *asserts the client's own key* for `dpop_jkt` binding (RFC 9449 §10) — there
+/// is nothing an attacker gains by replaying it, unlike at the token endpoint where the
+/// nonce gates actual token issuance.
+pub async fn validate_dpop_for_par(
+    dpop_token: &str,
+    htm: &str,
+    htu: &str,
+) -> Result<String, DpopTokenEndpointError> {
+    let proof = verify_dpop_proof_prologue(dpop_token)
+        .map_err(|e| DpopTokenEndpointError::InvalidProof(e.token_endpoint_message()))?;
+    let claims = proof.claims;
+
+    if claims.htm.to_uppercase() != htm.to_uppercase() {
+        return Err(DpopTokenEndpointError::InvalidProof("DPoP htm mismatch"));
+    }
+    if claims.htu != htu {
+        return Err(DpopTokenEndpointError::InvalidProof("DPoP htu mismatch"));
+    }
+    if claims.jti.is_empty() {
+        return Err(DpopTokenEndpointError::InvalidProof("DPoP jti missing"));
+    }
+    check_dpop_freshness(claims.iat).map_err(|e| match e {
+        FreshnessError::ClockError => DpopTokenEndpointError::InvalidProof("system clock error"),
+        FreshnessError::Stale => DpopTokenEndpointError::InvalidProof("DPoP proof stale"),
+    })?;
+
+    jwk_thumbprint(&proof.header.jwk)
+        .map_err(|_| DpopTokenEndpointError::InvalidProof("JWK thumbprint computation failed"))
+}
+
 /// Validate the DPoP proof at the token endpoint and return the JWK thumbprint.
 ///
 /// This is a token-endpoint-specific variant of `validate_dpop`:
