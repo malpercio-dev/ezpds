@@ -144,10 +144,6 @@
 <div class="pair-shell" class:hidden={scanning}>
   <ScreenShell prompt="pair device" title="Pair this device" onback={() => goto('/')}>
     <section class="intro">
-      <p class="lede">
-        Claim the single-use pairing code from the server. Scan its QR, or enter the server
-        URL and code by hand.
-      </p>
       <div bind:this={triggerEl}>
         <Button variant="secondary" loading={scanning} onclick={scan}>Scan QR code</Button>
       </div>
@@ -245,12 +241,6 @@
     display: flex;
     flex-direction: column;
     gap: var(--space-sm);
-  }
-  .lede {
-    margin: 0;
-    font-size: var(--text-body);
-    line-height: var(--leading-body);
-    color: var(--color-ink-soft);
   }
   .form {
     display: flex;

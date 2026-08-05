@@ -137,10 +137,6 @@
   {:else if inventory.kind === 'error'}
     <ErrorState view={inventory.errorView!} server={identity} onretry={() => inventory.load()} />
   {:else if grouped}
-    <p class="lede">
-      Every claim code minted on this server. An outstanding code is a live signup
-      credential — revoke one to kill it before anyone redeems it.
-    </p>
 
     <section class="panel" aria-labelledby="outstanding-label">
       <span id="outstanding-label" class="label">
@@ -211,12 +207,6 @@
     font-size: var(--text-label);
     font-weight: var(--weight-medium);
     color: var(--color-muted);
-  }
-  .lede {
-    margin: 0;
-    font-size: var(--text-body);
-    line-height: var(--leading-body);
-    color: var(--color-ink-soft);
   }
   .note {
     margin: 0;

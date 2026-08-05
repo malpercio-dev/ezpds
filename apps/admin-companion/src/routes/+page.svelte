@@ -288,11 +288,6 @@
       {/key}
     {/if}
 
-    <p class="lede">
-      Mint a single-use account claim code, signed by this device. Share it with the person
-      onboarding, or copy it.
-    </p>
-
     {#if claimCode && claimCodeServer}
       <div class="code-block">
         <div class="code-server">
@@ -373,12 +368,6 @@
   }
   .flag-notice-glyph {
     color: var(--color-warning);
-  }
-  .lede {
-    margin: 0;
-    font-size: var(--text-body);
-    line-height: var(--leading-body);
-    color: var(--color-ink-soft);
   }
   .note {
     margin: 0;

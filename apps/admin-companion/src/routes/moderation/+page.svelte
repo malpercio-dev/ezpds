@@ -167,11 +167,6 @@
 >
   <PinnedPairingGate view={pairingsView} {pairing} resource="moderation always acts on a specific server.">
     {#snippet children()}
-    <p class="lede">
-      Look up an account on this server by its DID, then take it down or restore it. A
-      taken-down account stops being served: logins, writes, and sync are all refused
-      until it is restored.
-    </p>
 
     <section class="panel" aria-labelledby="lookup-label">
       <span id="lookup-label" class="label">Account lookup</span>
@@ -232,7 +227,7 @@
             <p class="confirm-text">
               {#if takenDown}
                 Restore <span class="confirm-did">{statusView.status.subject.did}</span>
-                on {identity?.host}? The server resumes serving it — unless the account
+                on {identity?.host}? The server resumes serving it unless the account
                 is also suspended or deactivated.
               {:else}
                 Take down <span class="confirm-did">{statusView.status.subject.did}</span>
@@ -310,7 +305,7 @@
             <p class="confirm-text">
               Revoke every credential of
               <span class="confirm-did">{statusView.status.subject.did}</span>
-              on {identity?.host}? Every holder — including the account owner — is
+              on {identity?.host}? Every holder, including the account owner, is
               signed out and must log in again with the account password.
             </p>
             <Button
@@ -363,12 +358,6 @@
     font-size: var(--text-label);
     font-weight: var(--weight-medium);
     color: var(--color-muted);
-  }
-  .lede {
-    margin: 0;
-    font-size: var(--text-body);
-    line-height: var(--leading-body);
-    color: var(--color-ink-soft);
   }
   .note {
     margin: 0;

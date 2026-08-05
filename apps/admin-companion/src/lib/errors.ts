@@ -119,6 +119,6 @@ export function describeRelayError(error: unknown): string {
     case 'BAD_RESPONSE':
       return 'The relay returned an unexpected response.';
     default:
-      return 'Something went wrong. Please try again.';
+      return 'Something went wrong. Try again.';
   }
 }

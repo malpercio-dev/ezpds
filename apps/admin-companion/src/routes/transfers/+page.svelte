@@ -144,11 +144,6 @@
   {:else if inflight.kind === 'error'}
     <ErrorState view={inflight.errorView!} server={identity} onretry={() => inflight.load()} />
   {:else}
-    <p class="lede">
-      Every planned device swap on this server that can still advance. A transfer whose
-      code was accepted means a new device already holds a working credential — cancel
-      it to interrupt the swap.
-    </p>
 
     <section class="panel" aria-labelledby="inflight-label">
       <span id="inflight-label" class="label">In flight · {inflight.items.length}</span>
@@ -209,12 +204,6 @@
     font-size: var(--text-label);
     font-weight: var(--weight-medium);
     color: var(--color-muted);
-  }
-  .lede {
-    margin: 0;
-    font-size: var(--text-body);
-    line-height: var(--leading-body);
-    color: var(--color-ink-soft);
   }
   .note {
     margin: 0;

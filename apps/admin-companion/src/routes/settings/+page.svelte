@@ -365,7 +365,7 @@
       Export diagnostics
     </Button>
     {#if exportError}
-      <p class="note" role="alert">Couldn’t open the share sheet. Please try again.</p>
+      <p class="note" role="alert">Couldn’t open the share sheet. Try again.</p>
     {/if}
   </section>
 
