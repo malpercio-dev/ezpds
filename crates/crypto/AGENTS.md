@@ -1,13 +1,27 @@
 # Crypto Crate
 
-Last verified: 2026-07-27
+Last verified: 2026-08-06
 
 ## Purpose
-Provides cryptographic primitives for the ezpds workspace: P-256 key generation,
-did:key derivation, AES-256-GCM encryption/decryption of private key material,
-Shamir Secret Sharing for DID rotation key recovery, and did:plc genesis
-operation building and verification.
-This is a pure functional core -- no I/O, no database, no config.
+Provides cryptographic primitives for the ezpds workspace:
+
+- P-256 key generation and did:key derivation, plus deterministic recovery-key
+  derivation from a reconstructed Shamir seed;
+- AES-256-GCM encryption/decryption of stored key material (the fixed-length
+  32-byte form and the generic-length form the KEK-wrapped columns share);
+- Shamir Secret Sharing (2-of-3) for DID rotation-key recovery, with the
+  self-describing v2 share envelope (base32 + human-custody mnemonic);
+- did:plc operation building and verification — genesis, rotation, and
+  tombstone ops, with dual-curve (P-256 + secp256k1) verification;
+- the device-signed canonical envelope encoders behind the passwordless
+  surfaces (sovereign session, OAuth consent, account deletion);
+- RFC 9180 HPKE sealing (plus length-bucket padding) for the notification
+  relay's push payloads; and
+- offline atproto inter-service (`getServiceAuth`-style) JWT minting, so a
+  wallet-held key can mint its own migration token for sovereign recovery.
+
+This is a pure functional core -- no I/O, no database, no config. Each
+primitive's full contract is in [Contracts](#contracts) below.
 
 ## Contracts
 
@@ -219,6 +233,25 @@ pub fn encode_account_delete_envelope(
 - The account-deletion counterpart of the sovereign-session encoder, field-for-field identical to it apart from the domain and path: the credential factor a key-sovereign account presents to `com.atproto.server.deleteAccount` in place of a password it may never have had. The deletion *intent* is carried by the domain plus the bound method/path, so a proof signed for a session or a consent approval can never be replayed as a deletion.
 - The emailed single-use token is deliberately **not** bound in: both factors already name the same account DID and the same one action, and binding them would force a re-sign whenever the user corrects a mistyped code.
 - `ACCOUNT_DELETE_DOMAIN` (`org.obsign.custos.account-delete.v1`), `ACCOUNT_DELETE_METHOD`, and `ACCOUNT_DELETE_PATH` expose the pinned protocol constants. Golden vector: `test-vectors/account-delete-envelope-v1.json` (shared with the wallet client).
+
+**`mint_service_auth_jwt`**
+
+```rust
+pub fn mint_service_auth_jwt<F>(
+    sign: F,                        // callback: &[u8] -> Result<Vec<u8>, CryptoError>
+    iss: &str,                      // issuer: the account DID
+    aud: &str,                      // audience: receiving service DID, no #fragment
+    lxm: Option<&str>,              // optional lexicon method the token authorizes
+    iat: u64,
+    exp: u64,                       // absolute expiry
+) -> Result<String, CryptoError>
+where F: FnOnce(&[u8]) -> Result<Vec<u8>, CryptoError>
+```
+
+- Mints an atproto inter-service auth JWT (`base64url(header).base64url(payload).base64url(signature)`, ES256) from the crate's standard external-signer callback, so a wallet-held key (software scalar or Secure Enclave) can sign it. The wallet-side twin of the PDS's own `mint_service_auth_jwt` (`crates/pds/src/auth/jwt.rs`); this offline form is what lets the wallet mint the migration `createAccount` service-auth token from a self-controlled `atproto` signing key when the source PDS is gone (sovereign disaster recovery).
+- Header is `{"typ":"JWT","alg":"ES256"}`; claims are `iss`/`aud`/`iat`/`exp`, plus `lxm` only when `Some`.
+- The callback must return a **low-S canonical** 64-byte r‖s P-256 signature (the same contract as the PLC op builders) — a non-64-byte or high-S signature is rejected here rather than minting a token the network would refuse.
+- Errors: propagates any `CryptoError` from the callback, or `CryptoError::PlcOperation` for a malformed callback signature or serialization failure.
 
 **`seal_notification`** / **`open_notification`** / **`public_key_for_secret`**
 
@@ -436,7 +469,7 @@ pub fn diff_audit_logs(cached: &[AuditEntry], current: &[AuditEntry]) -> Vec<Aud
 ## Dependencies
 
 - **Uses**: hpke (RFC 9180 sealing for notification payloads; 0.13 deliberately, so it resolves onto the workspace's p256 0.13 / aes-gcm 0.10 / hkdf 0.12 rather than forking a second major of each — guard-banned in `deny.toml`), rand_core_os (renamed rand_core 0.9 with `os_rng`, the CSPRNG hpke 0.13 expects), p256 (ECDSA/key generation), k256 (secp256k1 ECDSA — verification only, for ops signed by the reference ecosystem), aes-gcm (AES-256-GCM), multibase (base58btc encoding), rand_core (OS RNG), base64 (storage encoding), zeroize (secret cleanup), ciborium (CBOR serialization for did:plc), data-encoding (base32-lowercase for DIDs; base32 uppercase for share envelopes), sha2 (SHA-256), hkdf (HKDF-SHA256 for recovery-key derivation), serde/serde_json (struct serialization)
-- **Used by**: `crates/pds/` (key generation, did:plc genesis building and verification in POST /v1/dids; `seal_notification` + the padding arithmetic for outbound push notifications, with `p256_public_key_from_did_key`/`p256_keypair_from_secret` for the device-key and sender-key encodings; sovereign-session canonical proof encoding and dual-curve verification; `crates/pds/src/plc_ops.rs` shares the interop PLC-signing surface's audit-log fetch + service parsing; `routes/sign_plc_operation.rs`/`routes/submit_plc_operation.rs` build/verify rotation ops via `build_did_plc_rotation_op`/`verify_plc_operation`), `apps/identity-wallet/` (external signer genesis op building in DID ceremony; shared sovereign-session encoder for the wallet client)
+- **Used by**: `crates/pds/` (key generation, did:plc genesis building and verification in POST /v1/dids; `seal_notification` + the padding arithmetic for outbound push notifications, with `p256_public_key_from_did_key`/`p256_keypair_from_secret` for the device-key and sender-key encodings; sovereign-session canonical proof encoding and dual-curve verification; `crates/pds/src/plc_ops.rs` shares the interop PLC-signing surface's audit-log fetch + service parsing; `routes/sign_plc_operation.rs`/`routes/submit_plc_operation.rs` build/verify rotation ops via `build_did_plc_rotation_op`/`verify_plc_operation`), `apps/identity-wallet/` (external signer genesis op building in DID ceremony; shared sovereign-session encoder for the wallet client; `mint_service_auth_jwt` for the disaster-recovery `createAccount` service-auth token — `src-tauri/src/disaster_recovery.rs`)
 
 ## Invariants
 - Private key bytes are always wrapped in `Zeroizing` -- callers must not copy them into non-zeroizing storage
@@ -458,6 +491,7 @@ pub fn diff_audit_logs(cached: &[AuditEntry], current: &[AuditEntry]) -> Vec<Aud
 - `src/sovereign_session.rs` - canonical sovereign-session signed-envelope encoder and protocol constants
 - `src/oauth_consent.rs` - canonical wallet-confirmed OAuth-consent approval/denial signed-envelope encoder, `granted_scope_hash`, and protocol constants
 - `src/account_delete.rs` - canonical wallet-authorized account-deletion signed-envelope encoder and protocol constants
+- `src/service_auth.rs` - offline atproto inter-service (service-auth) JWT minting via the external-signer callback; the wallet-side twin of the PDS's `auth/jwt.rs` minting, used for sovereign disaster recovery
 - `src/shamir.rs` - Shamir Secret Sharing (split/combine, GF(2^8) arithmetic) + share envelope v2 (`ShareEnvelope`, base32/mnemonic encode-decode, `split_secret_into_envelopes`/`combine_envelopes`)
 - `src/mnemonic.rs` - BIP-39-style 256-word list + byte↔word encoding for the human-custody Share 3 (module-private; used by `shamir.rs`)
 - `src/hpke.rs` - HPKE seal/open for notification payloads (pinned suite) + serialized-body padding arithmetic
