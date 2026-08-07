@@ -1,0 +1,26 @@
+{
+  "cli_version": "0.9.0",
+  "checkpoint_id": "9037b0a3ee5d",
+  "strategy": "manual-commit",
+  "branch": "claude/mm-492-multi-identity-push-handles-a45b97",
+  "checkpoints_count": 7,
+  "files_touched": [
+    "crates/pds/src/notify_relay_client.rs"
+  ],
+  "sessions": [
+    {
+      "metadata": "/90/37b0a3ee5d/0/metadata.json",
+      "transcript": "/90/37b0a3ee5d/0/full.jsonl",
+      "compact_transcript": "/90/37b0a3ee5d/0/transcript.jsonl",
+      "content_hash": "/90/37b0a3ee5d/0/content_hash.txt",
+      "prompt": "/90/37b0a3ee5d/0/prompt.txt"
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 7137,
+    "cache_creation_tokens": 5584209,
+    "cache_read_tokens": 145877119,
+    "output_tokens": 582065,
+    "api_call_count": 615
+  }
+}
