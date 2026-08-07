@@ -193,7 +193,19 @@ pub async fn list_registrations(
     Ok(rows.into_iter().map(into_registration).collect())
 }
 
-/// Record the relay handle a registration was assigned. No-op if the row is gone.
+/// Record the relay handle that every registration naming this APNs token now resolves through.
+///
+/// Scoped to the **token**, not to the `(did, device_uuid)` whose request minted the handle,
+/// because the token is the relay's own rotation key: registering it there drops the previous
+/// handle for it, so one token has exactly one live handle at any instant. A device holding
+/// several identities on this instance re-registers all of them on every app open, and a
+/// per-DID write-back left every identity but the last naming a handle the relay had already
+/// rotated away. Those pushes come back `unknownHandle`, which is correctly not a prune
+/// signal — so the rows survive to fail again on the next open, silently.
+///
+/// Keying on the token rather than on `device_uuid` is what keeps a token change honest: a row
+/// whose token has already moved on matches nothing here, and the job for its new token stamps
+/// it instead.
 ///
 /// Deliberately **unconditional** — no `push_handle IS NULL` guard. The send worker is a
 /// single task draining a FIFO queue and awaiting each job to completion, so handle writes
@@ -201,22 +213,23 @@ pub async fn list_registrations(
 /// is load-bearing: a guarded write would reject the *second* of two re-registrations
 /// (the first job's handle is already stored by then), stranding the handle for the
 /// superseded APNs token — the exact staleness a guard looks like it would prevent.
-pub async fn set_registration_handle(
+///
+/// Reports how many rows were stamped, so a caller can tell a normal write from a handle no
+/// registration claims.
+pub async fn set_registration_handles_for_token(
     pool: &SqlitePool,
-    did: &str,
-    device_uuid: &str,
+    apns_token: &str,
     push_handle: &str,
-) -> Result<(), sqlx::Error> {
-    sqlx::query(
+) -> Result<u64, sqlx::Error> {
+    let result = sqlx::query(
         "UPDATE notification_registrations SET push_handle = ?, updated_at = datetime('now') \
-         WHERE did = ? AND device_uuid = ?",
+         WHERE apns_token = ?",
     )
     .bind(push_handle)
-    .bind(did)
-    .bind(device_uuid)
+    .bind(apns_token)
     .execute(pool)
     .await?;
-    Ok(())
+    Ok(result.rows_affected())
 }
 
 /// Delete a registration, returning whether a row existed.
@@ -307,23 +320,27 @@ pub async fn admin_registration_handle(
     Ok(row.and_then(|(handle,)| handle))
 }
 
-/// Record the relay handle an admin registration was assigned.
+/// The operator analog: stamp the handle onto every admin registration naming this APNs token.
 ///
-/// Unconditional for the same reason as [`set_registration_handle`] — one FIFO worker.
-pub async fn set_admin_registration_handle(
+/// Token-scoped and unconditional for the same reasons as
+/// [`set_registration_handles_for_token`]. The two tables fan out separately rather than
+/// through one query because Apple issues a device token per *app*: the wallet and the console
+/// can never present the same one, so a row here and a row there are never two claims on a
+/// single relay handle.
+pub async fn set_admin_registration_handles_for_token(
     pool: &SqlitePool,
-    admin_device_id: &str,
+    apns_token: &str,
     push_handle: &str,
-) -> Result<(), sqlx::Error> {
-    sqlx::query(
+) -> Result<u64, sqlx::Error> {
+    let result = sqlx::query(
         "UPDATE admin_notification_registrations \
-         SET push_handle = ?, updated_at = datetime('now') WHERE admin_device_id = ?",
+         SET push_handle = ?, updated_at = datetime('now') WHERE apns_token = ?",
     )
     .bind(push_handle)
-    .bind(admin_device_id)
+    .bind(apns_token)
     .execute(pool)
     .await?;
-    Ok(())
+    Ok(result.rows_affected())
 }
 
 /// Delete an admin device's registration. Idempotent; called on revoke and on 410 pruning.
@@ -487,7 +504,7 @@ mod tests {
         upsert_admin_registration(&pool, "adm-1", "pk", "tok", "org.obsign.admin")
             .await
             .unwrap();
-        set_admin_registration_handle(&pool, "adm-1", "handle-1")
+        set_admin_registration_handles_for_token(&pool, "tok", "handle-1")
             .await
             .unwrap();
         sqlx::query("UPDATE admin_devices SET revoked_at = datetime('now') WHERE id = 'adm-1'")
@@ -527,7 +544,7 @@ mod tests {
         )
         .await
         .unwrap();
-        set_registration_handle(&pool, "did:plc:notif", "dev-1", "handle-1")
+        set_registration_handles_for_token(&pool, "tok1", "handle-1")
             .await
             .unwrap();
         upsert_registration(
@@ -554,6 +571,98 @@ mod tests {
         assert_eq!(
             rows[0].push_handle, None,
             "the old handle names the old token; it must not survive re-registration"
+        );
+    }
+
+    async fn seed_second_account(pool: &SqlitePool) {
+        sqlx::query(
+            "INSERT INTO accounts (did, email, password_hash, created_at, updated_at) \
+             VALUES ('did:plc:notif2', 'n2@example.com', 'hash', datetime('now'), datetime('now'))",
+        )
+        .execute(pool)
+        .await
+        .expect("seed second account");
+    }
+
+    /// Two identities on one device share one APNs token, and the relay keeps one live handle
+    /// per token — so a mint made on either identity's behalf is the handle *both* must use.
+    /// Stamping only the requesting row left the other naming a rotated-away handle, whose
+    /// pushes the relay refuses as `unknownHandle` with nothing surfacing to the user.
+    #[tokio::test]
+    async fn one_mint_carries_every_identity_sharing_the_device_token() {
+        let pool = pool().await;
+        seed_second_account(&pool).await;
+        for did in ["did:plc:notif", "did:plc:notif2"] {
+            upsert_registration(&pool, did, "dev-1", "pk", "shared-tok", "org.obsign.app")
+                .await
+                .unwrap();
+        }
+
+        // One registration's round trip completes. It speaks for the token, not for its row.
+        let stamped = set_registration_handles_for_token(&pool, "shared-tok", "handle-live")
+            .await
+            .unwrap();
+        assert_eq!(stamped, 2, "both identities name this token");
+
+        for did in ["did:plc:notif", "did:plc:notif2"] {
+            let rows = list_registrations(&pool, did).await.unwrap();
+            assert_eq!(
+                rows[0].push_handle.as_deref(),
+                Some("handle-live"),
+                "{did} must resolve through the relay's one live handle"
+            );
+        }
+    }
+
+    /// The reason the fan-out keys on the token and not on `device_uuid`: a row whose token has
+    /// already moved on must not be handed a handle minted for the token it left behind.
+    #[tokio::test]
+    async fn a_registration_that_changed_token_is_left_to_its_own_mint() {
+        let pool = pool().await;
+        seed_second_account(&pool).await;
+        upsert_registration(
+            &pool,
+            "did:plc:notif",
+            "dev-1",
+            "pk",
+            "old-tok",
+            "org.obsign.app",
+        )
+        .await
+        .unwrap();
+        upsert_registration(
+            &pool,
+            "did:plc:notif2",
+            "dev-1",
+            "pk",
+            "new-tok",
+            "org.obsign.app",
+        )
+        .await
+        .unwrap();
+
+        let stamped = set_registration_handles_for_token(&pool, "old-tok", "handle-old")
+            .await
+            .unwrap();
+        assert_eq!(stamped, 1);
+        assert_eq!(
+            list_registrations(&pool, "did:plc:notif2").await.unwrap()[0].push_handle,
+            None,
+            "a handle for the old token says nothing about the new one"
+        );
+    }
+
+    /// Nothing claiming the handle is a distinguishable outcome, not a silent no-op: the caller
+    /// gives the orphaned handle back to the relay rather than leaving a live route to a device
+    /// this instance can no longer address.
+    #[tokio::test]
+    async fn a_handle_no_registration_claims_reports_zero() {
+        let pool = pool().await;
+        assert_eq!(
+            set_registration_handles_for_token(&pool, "vanished-tok", "handle-orphan")
+                .await
+                .unwrap(),
+            0
         );
     }
 
@@ -591,6 +700,36 @@ mod tests {
         .execute(pool)
         .await
         .expect("seed admin device");
+    }
+
+    /// The operator surface composes the same way: an operator who re-pairs gets a second
+    /// `admin_devices` row for one physical console, and both registrations present that
+    /// console's single APNs token. The relay keeps one handle for it, so both rows must
+    /// follow it.
+    #[tokio::test]
+    async fn one_mint_carries_every_admin_device_sharing_the_console_token() {
+        let pool = pool().await;
+        for id in ["adm-1", "adm-2"] {
+            seed_admin_device(&pool, id).await;
+            upsert_admin_registration(&pool, id, "pk", "console-tok", "org.obsign.admin")
+                .await
+                .unwrap();
+        }
+
+        let stamped = set_admin_registration_handles_for_token(&pool, "console-tok", "handle-live")
+            .await
+            .unwrap();
+        assert_eq!(stamped, 2);
+        for id in ["adm-1", "adm-2"] {
+            assert_eq!(
+                admin_registration_handle(&pool, id)
+                    .await
+                    .unwrap()
+                    .as_deref(),
+                Some("handle-live"),
+                "{id} must resolve through the relay's one live handle"
+            );
+        }
     }
 
     /// Revoking the device is enough to stop its pushes — the fan-out query joins on the

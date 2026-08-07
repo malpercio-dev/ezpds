@@ -18,8 +18,10 @@
 //!
 //! The second half of the file is the fire-and-forget send worker: trigger sites enqueue
 //! `NotifyJob`s onto an unbounded in-process mpsc (`NotifySender`) and return immediately.
-//! The worker drains jobs sequentially, writes relay handles back to the registration rows,
-//! and prunes a registration the relay reports `unregistered` (APNs 410).
+//! The worker drains jobs sequentially, writes each minted handle back to every registration
+//! naming that APNs token — the relay's rotation key, so one token has exactly one live handle
+//! however many identities on a device share it — and prunes a registration the relay reports
+//! `unregistered` (APNs 410).
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -336,20 +338,28 @@ async fn run_job(
         } => {
             let response = client
                 .call(Request::RegisterHandle {
-                    apns_token,
+                    apns_token: apns_token.clone(),
                     apns_topic,
                 })
                 .await?;
             let Response::Handle { handle } = response else {
                 anyhow::bail!("relay refused handle registration: {response:?}");
             };
-            match &owner {
-                RegistrationOwner::Account { did, device_uuid } => {
-                    store::set_registration_handle(db, did, device_uuid, &handle).await?;
+            // The relay rotates per `(node, token)`, so this handle supersedes every earlier
+            // one for this token — including handles minted for a *different* identity on the
+            // same device. `owner` therefore picks the table, not the row: every registration
+            // naming this token is now reachable only through the handle we just got back.
+            let stamped = match &owner {
+                RegistrationOwner::Account { .. } => {
+                    store::set_registration_handles_for_token(db, &apns_token, &handle).await?
                 }
-                RegistrationOwner::AdminDevice { admin_device_id } => {
-                    store::set_admin_registration_handle(db, admin_device_id, &handle).await?;
+                RegistrationOwner::AdminDevice { .. } => {
+                    store::set_admin_registration_handles_for_token(db, &apns_token, &handle)
+                        .await?
                 }
+            };
+            if stamped == 0 {
+                reclaim_unclaimed_handle(client, handle).await;
             }
         }
         NotifyJob::DropHandle { handle } => {
@@ -397,6 +407,24 @@ async fn run_job(
         }
     }
     Ok(())
+}
+
+/// Give back a freshly minted handle that no registration claims.
+///
+/// Reachable when the row that asked for it was deleted, or had its APNs token replaced,
+/// between the request that enqueued the job and the relay's answer. Left alone, the relay
+/// would hold a live route to a device this instance can no longer address, expiring only when
+/// the device token itself dies — the stale capability that rotate-on-register exists to
+/// prevent, and the same thing the unregister route drops when it removes a row.
+///
+/// Best effort by construction, and deliberately not folded into the job's error channel: the
+/// mint itself succeeded, and a failed reclaim costs a little of the relay's storage, never a
+/// delivery.
+async fn reclaim_unclaimed_handle(client: &NotifyRelayClient, handle: String) {
+    tracing::info!("reclaiming a relay push handle that no registration claims");
+    if let Err(e) = client.call(Request::DropHandle { handle }).await {
+        tracing::warn!(error = %e, "failed to reclaim an unclaimed push handle");
+    }
 }
 
 async fn prune(db: &sqlx::SqlitePool, owner: &RegistrationOwner) -> Result<(), sqlx::Error> {
