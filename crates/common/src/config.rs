@@ -52,8 +52,13 @@ pub struct Config {
     /// comma-separated `EZPDS_RESERVED_HANDLES` env var.
     pub reserved_handles: Vec<String>,
     pub invite_code_required: bool,
+    /// Optional privacy-policy / terms-of-service links surfaced by
+    /// `com.atproto.server.describeServer`.
     pub links: ServerLinksConfig,
+    /// Optional admin contact surfaced by `com.atproto.server.describeServer`.
     pub contact: ContactConfig,
+    /// Blob storage limits and garbage-collection cadence (max blob size, per-account
+    /// quota, GC interval, unreferenced-blob TTL).
     pub blobs: BlobsConfig,
     /// Off-volume blob replication to an S3-compatible bucket (the Litestream analogue for
     /// blob bytes). Disabled unless a bucket is configured.
@@ -72,19 +77,30 @@ pub struct Config {
     /// Operator companion-app admin-device knobs (the stale-nonce sweep interval
     /// and retention).
     pub admin_devices: AdminDevicesConfig,
+    /// Stub for future OAuth configuration (no fields yet).
     pub oauth: OAuthConfig,
     /// auth.md agent-registration knobs (per-flow enablement, issuer trust list, TTLs).
     pub agent_auth: AgentAuthConfig,
+    /// Iroh QUIC networking — the peer-to-peer endpoint run alongside the HTTP server.
+    /// Off by default.
     pub iroh: IrohConfig,
     /// Push notifications via a blind-courier relay. Off unless `relay` names a node id.
     pub notifications: NotificationsConfig,
+    /// Upstream Bluesky AppView that `app.bsky.*` XRPC methods not served locally are
+    /// proxied to (the catch-all `atproto-proxy` target).
     pub appview: AppViewConfig,
+    /// Upstream chat service that `chat.bsky.*` (direct-message) XRPC methods are proxied
+    /// to; direct messages are not served locally.
     pub chat: ChatConfig,
+    /// Crawler (relay/BGS) `com.atproto.sync.requestCrawl` notification targets, pinged on
+    /// new content. Defaults to the public bsky.network BGS; an empty list disables it.
     pub crawlers: CrawlersConfig,
     /// Labeler watching: flag hosted accounts carrying labels from watched labelers.
     pub labeler: LabelerConfig,
     /// Request rate-limiting knobs (global IP + per-endpoint IP + per-account write points).
     pub rate_limit: RateLimitConfig,
+    /// Telemetry configuration: OpenTelemetry trace export, the `/metrics` endpoint, and
+    /// the stdout log format.
     pub telemetry: TelemetryConfig,
     /// Outbound email delivery (password reset, email confirmation, email update).
     pub email: EmailConfig,

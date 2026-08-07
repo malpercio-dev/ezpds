@@ -21,9 +21,9 @@ Fields come from the validated Rust configuration types. Environment overrides c
 | `available_user_domains` | `EZPDS_AVAILABLE_USER_DOMAINS` | `Vec<String>` | No field-level description. |
 | `reserved_handles` | `EZPDS_RESERVED_HANDLES` | `Vec<String>` | Handle names (the first DNS label) that may never be claimed under a served domain — infrastructure hostnames living inside the user-handle wildcard space (e.g. `identitywallet`, the wallet's OAuth client_id host; `about`, a marketing subdomain). Compared case-insensitively against the first label. Defaults to [`default_reserved_handles`]; override via `reserved_handles` in TOML or the comma-separated `EZPDS_RESERVED_HANDLES` env var. |
 | `invite_code_required` | `EZPDS_INVITE_CODE_REQUIRED` | `bool` | No field-level description. |
-| `links` | — | `ServerLinksConfig` | No field-level description. |
-| `contact` | — | `ContactConfig` | No field-level description. |
-| `blobs` | — | `BlobsConfig` | No field-level description. |
+| `links` | — | `ServerLinksConfig` | Optional privacy-policy / terms-of-service links surfaced by `com.atproto.server.describeServer`. |
+| `contact` | — | `ContactConfig` | Optional admin contact surfaced by `com.atproto.server.describeServer`. |
+| `blobs` | — | `BlobsConfig` | Blob storage limits and garbage-collection cadence (max blob size, per-account quota, GC interval, unreferenced-blob TTL). |
 | `blob_mirror` | — | `BlobMirrorConfig` | Off-volume blob replication to an S3-compatible bucket (the Litestream analogue for blob bytes). Disabled unless a bucket is configured. |
 | `blob_scrub` | — | `BlobScrubConfig` | Periodic blob-integrity scrub sweep (re-hash stored bytes against their CID/size, walk for orphans in both directions). |
 | `firehose` | — | `FirehoseConfig` | Persistent firehose event log (`repo_seq`) retention / pruning configuration. |
@@ -31,16 +31,16 @@ Fields come from the validated Rust configuration types. Environment overrides c
 | `recovery` | — | `RecoveryConfig` | Escrow-assisted recovery knobs (the cancellable release-delay window). |
 | `waitlist` | — | `WaitlistConfig` | Public interest-signup waitlist (the `waitlist` capability). Off by default. |
 | `admin_devices` | — | `AdminDevicesConfig` | Operator companion-app admin-device knobs (the stale-nonce sweep interval and retention). |
-| `oauth` | — | `OAuthConfig` | No field-level description. |
+| `oauth` | — | `OAuthConfig` | Stub for future OAuth configuration (no fields yet). |
 | `agent_auth` | — | `AgentAuthConfig` | auth.md agent-registration knobs (per-flow enablement, issuer trust list, TTLs). |
-| `iroh` | — | `IrohConfig` | No field-level description. |
+| `iroh` | — | `IrohConfig` | Iroh QUIC networking — the peer-to-peer endpoint run alongside the HTTP server. Off by default. |
 | `notifications` | — | `NotificationsConfig` | Push notifications via a blind-courier relay. Off unless `relay` names a node id. |
-| `appview` | — | `AppViewConfig` | No field-level description. |
-| `chat` | — | `ChatConfig` | No field-level description. |
-| `crawlers` | — | `CrawlersConfig` | No field-level description. |
+| `appview` | — | `AppViewConfig` | Upstream Bluesky AppView that `app.bsky.*` XRPC methods not served locally are proxied to (the catch-all `atproto-proxy` target). |
+| `chat` | — | `ChatConfig` | Upstream chat service that `chat.bsky.*` (direct-message) XRPC methods are proxied to; direct messages are not served locally. |
+| `crawlers` | — | `CrawlersConfig` | Crawler (relay/BGS) `com.atproto.sync.requestCrawl` notification targets, pinged on new content. Defaults to the public bsky.network BGS; an empty list disables it. |
 | `labeler` | — | `LabelerConfig` | Labeler watching: flag hosted accounts carrying labels from watched labelers. |
 | `rate_limit` | — | `RateLimitConfig` | Request rate-limiting knobs (global IP + per-endpoint IP + per-account write points). |
-| `telemetry` | — | `TelemetryConfig` | No field-level description. |
+| `telemetry` | — | `TelemetryConfig` | Telemetry configuration: OpenTelemetry trace export, the `/metrics` endpoint, and the stdout log format. |
 | `email` | — | `EmailConfig` | Outbound email delivery (password reset, email confirmation, email update). |
 | `admin_token` | `EZPDS_ADMIN_TOKEN` | `Option<Sensitive<String>>` | No field-level description. |
 | `signing_key_master_key` | `EZPDS_SIGNING_KEY_MASTER_KEY` | `Option<Sensitive<Zeroizing<[u8; 32]>>>` | No field-level description. |
