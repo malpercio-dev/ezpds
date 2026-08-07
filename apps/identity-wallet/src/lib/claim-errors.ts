@@ -31,10 +31,37 @@ export function formatRateLimitMessage(retryAfter: string | null): string {
 }
 
 /**
- * Text for a `SERVER_ERROR` — the PDS's own error message, shown verbatim behind a short lead so a
- * third-party PDS's real reason reaches the user. Falls back when the server sent no message.
+ * The most server-quoted text a sentence will carry. A real atproto error-envelope message fits
+ * comfortably; anything longer is a gateway HTML page or other non-message, and rendering it
+ * would put kilobytes of markup where a sentence belongs (ADR-0031 bounds server-quoted renders).
+ */
+const MAX_QUOTED_SERVER_TEXT = 240;
+
+/**
+ * Text for a `SERVER_ERROR` whose `message` is declared server-quoted (ADR-0031) — the PDS's own
+ * error message, shown behind an attributing lead so a third-party PDS's real reason reaches the
+ * user. Falls back when the server sent no message; truncates when it sent something that isn't
+ * one (a proxy's HTML error page). Only pass fields the Rust enum documents as server-quoted —
+ * for the mixed-provenance buckets use {@link formatServerRefusal}.
  */
 export function formatServerErrorMessage(message: string): string {
   const trimmed = message.trim();
-  return trimmed.length > 0 ? `Your PDS reported: ${trimmed}` : 'Your PDS rejected the request.';
+  if (trimmed.length === 0) return 'Your PDS rejected the request.';
+  if (trimmed.length > MAX_QUOTED_SERVER_TEXT) {
+    return `Your PDS reported: ${trimmed.slice(0, MAX_QUOTED_SERVER_TEXT)}…`;
+  }
+  return `Your PDS reported: ${trimmed}`;
+}
+
+/**
+ * Text for a `SERVER_ERROR` whose `message` is mixed-provenance and must not be quoted
+ * (ADR-0031: the session-mapped buckets, where `status: null` means a failure local to
+ * restoring the session). A present `status` is a real server verdict, so the sentence may
+ * name the server; an absent one blames neither the server nor the user.
+ */
+export function formatServerRefusal(status: number | null | undefined): string {
+  if (status != null) {
+    return `Your server refused this request (HTTP ${status}). Please try again.`;
+  }
+  return 'Couldn’t restore this identity’s session. Please try again.';
 }

@@ -40,10 +40,10 @@
         case 'NETWORK_ERROR':
           return 'Network error. Check your connection and try again.';
         default:
-          return `An unexpected error occurred (${(raw as ShareRecoveryError).code}). Please try again.`;
+          return `Something went wrong (${(raw as ShareRecoveryError).code}). Please try again.`;
       }
     }
-    return 'An unexpected error occurred. Please try again.';
+    return 'Something went wrong. Please try again.';
   }
 
   async function verify() {

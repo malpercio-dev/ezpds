@@ -107,6 +107,9 @@ pub enum UnlockError {
     InsecureHostUrl,
     #[error("the hosting server rate limited the sign-in")]
     RateLimited { retry_after: Option<String> },
+    /// A non-2xx the wallet doesn't model specially. `message` is the host's own error text
+    /// (mapped from [`SourceLoginError::ServerError`]) — server-quoted per ADR-0031, so the
+    /// dialog may render it behind explicit attribution.
     #[error("hosting server failure: {message}")]
     ServerError { message: String },
     #[error("offline or transport failure: {message}")]

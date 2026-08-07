@@ -13,6 +13,14 @@ import type { Status } from './components/ui/StatusChip.svelte';
 export type Recovery = 'pair' | 'retry' | 'forget-or-switch' | 'none';
 
 /**
+ * Bound on rendered server-quoted text (ADR-0031 rule 4), measured on the trimmed relay
+ * text before the attributing lead is prepended — a proxy's HTML error page is not a
+ * reason. Matches the wallet's `MAX_QUOTED_SERVER_TEXT`; the two apps share no code, so
+ * the number is duplicated deliberately rather than imported across app boundaries.
+ */
+const MAX_QUOTED_RELAY_TEXT = 240;
+
+/**
  * A failure rendered as a recovery state: the status chip to show, a short chip label, the
  * full message, and which recovery affordance the screen should offer. This is the
  * error matrix in one place — `describeRelayError` supplies the prose, this adds the chip
@@ -103,9 +111,17 @@ export function describeRelayError(error: unknown): string {
       }
       // 400: a well-formed request refused on its merits. The relay's own reason is the
       // most useful thing to show an authenticated operator; fall back if it sent none.
+      // Attributed and length-bounded (ADR-0031 rule 4): a pairing set can include a relay
+      // this operator does not run, so its text must never read as the console's own voice,
+      // and an HTML error page from something in front of it must not render as a reason.
       if (e.status === 400) {
         const reason = e.message?.trim();
-        return reason ? reason : 'The relay rejected the request as invalid.';
+        if (!reason) return 'The relay rejected the request as invalid.';
+        const quoted =
+          reason.length > MAX_QUOTED_RELAY_TEXT
+            ? `${reason.slice(0, MAX_QUOTED_RELAY_TEXT)}…`
+            : reason;
+        return `The relay reported: ${quoted}`;
       }
       return `The relay rejected the request (HTTP ${e.status}).`;
     case 'NO_SUCH_PAIRING':

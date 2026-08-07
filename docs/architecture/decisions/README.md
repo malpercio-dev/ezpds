@@ -65,3 +65,4 @@ understand why the architecture is the way it is.
 | [0028](0028-otel-native-backend-observability.md) | Accepted | OpenTelemetry-native observability for the backend (traces + metrics + logs into one self-hosted OTLP backend, not Sentry/Bugsink); mobile stays on user-initiated log export |
 | [0029](0029-self-hosted-web-analytics-marketing-only.md) | Accepted | Self-hosted, cookieless web analytics (Umami-class) on the public marketing site only — never the apps, PDS backend, or auth/PII surfaces |
 | [0030](0030-stable-keychain-group-and-frozen-icloud-container.md) | Accepted | A stable Keychain access group and a frozen iCloud container, both decoupled from the bundle id (a rename must never orphan identity material) |
+| [0031](0031-user-facing-error-seam.md) | Accepted | The typed IPC error is the user-facing seam: frontend owns the sentence keyed by `code`, `message` fields are diagnostic unless declared server-quoted, and server attribution must be true |

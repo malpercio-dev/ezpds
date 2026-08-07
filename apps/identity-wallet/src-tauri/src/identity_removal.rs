@@ -197,6 +197,9 @@ fn clear_removal_pending_best_effort(did: &str) {
 /// `PlcDirectoryError`/`RateLimited`/`NetworkError` *after* `InvalidToken` succeeded
 /// means the PDS account is gone and only the tombstone + wipe remain (resume via
 /// `tombstone_identity`).
+///
+/// Every `message` field here is a wrapped diagnostic chain — diagnostic only (ADR-0031);
+/// the screen keys on `code` for its sentence.
 #[derive(Debug, Serialize, thiserror::Error)]
 #[serde(
     tag = "code",

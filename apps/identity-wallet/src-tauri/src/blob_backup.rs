@@ -96,7 +96,10 @@ pub enum BlobBackupError {
     #[error("PLC directory error: {message}")]
     PlcDirectoryError { message: String },
     /// A server-side step failed for a non-connectivity reason (an XRPC refusal, a
-    /// session refresh verdict, unsupported host, or malformed response).
+    /// session refresh verdict, unsupported host, or malformed response). `status` is
+    /// `Some` only for a real HTTP verdict; because the `None` bucket includes local
+    /// session failures, `message` is mixed-provenance and therefore diagnostic only
+    /// (ADR-0031): the screen keys on `code` + `status` and never quotes it.
     #[error("server error: {message}")]
     ServerError {
         status: Option<u16>,

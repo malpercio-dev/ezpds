@@ -200,10 +200,19 @@ export const registerHandle = (handle: string): Promise<RegisterHandleResult> =>
  *
  * The handle screen uses this to show the domain suffix and assemble the full handle BEFORE
  * the DID ceremony, so the genesis op's `alsoKnownAs` carries the real, resolvable handle.
- * Resolves to the (possibly empty) domain list; rejects with a message string on failure.
+ * Resolves to the (possibly empty) domain list; rejects with a typed `AvailableDomainsError`.
  */
 export const getAvailableUserDomains = (): Promise<string[]> =>
   invoke('get_available_user_domains');
+
+/**
+ * Error returned by the `get_available_user_domains` Rust command. Every `message` is
+ * diagnostic only (ADR-0031): key on `code` and write the screen's own sentence.
+ */
+export type AvailableDomainsError =
+  | { code: 'SERVER_ERROR'; status: number }
+  | { code: 'INVALID_RESPONSE'; message: string }
+  | { code: 'NETWORK_ERROR'; message: string };
 
 /**
  * Error returned by the `register_created_identity` Rust command.

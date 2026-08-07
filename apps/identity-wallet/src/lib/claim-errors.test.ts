@@ -1,5 +1,9 @@
 import { describe, it, expect } from 'vitest';
-import { formatRateLimitMessage, formatServerErrorMessage } from './claim-errors';
+import {
+  formatRateLimitMessage,
+  formatServerErrorMessage,
+  formatServerRefusal,
+} from './claim-errors';
 
 describe('formatRateLimitMessage', () => {
   it('phrases a sub-minute Retry-After in seconds', () => {
@@ -52,5 +56,29 @@ describe('formatServerErrorMessage', () => {
   it('falls back when the server sent no message', () => {
     expect(formatServerErrorMessage('   ')).toBe('Your PDS rejected the request.');
     expect(formatServerErrorMessage('')).toBe('Your PDS rejected the request.');
+  });
+
+  it('truncates a non-message body (a proxy HTML page) instead of rendering kilobytes', () => {
+    const page = `<html><body>${'x'.repeat(8000)}</body></html>`;
+    const rendered = formatServerErrorMessage(page);
+    expect(rendered.length).toBeLessThan(300);
+    expect(rendered.startsWith('Your PDS reported: <html>')).toBe(true);
+    expect(rendered.endsWith('…')).toBe(true);
+  });
+});
+
+describe('formatServerRefusal', () => {
+  it('names the server only when a real HTTP verdict exists', () => {
+    expect(formatServerRefusal(500)).toBe(
+      'Your server refused this request (HTTP 500). Please try again.',
+    );
+  });
+
+  it('blames neither side for a local session failure (no status)', () => {
+    for (const status of [null, undefined]) {
+      const rendered = formatServerRefusal(status);
+      expect(rendered).toBe('Couldn’t restore this identity’s session. Please try again.');
+      expect(rendered.toLowerCase()).not.toContain('server');
+    }
   });
 });

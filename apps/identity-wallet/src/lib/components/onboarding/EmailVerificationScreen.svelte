@@ -89,7 +89,8 @@
             verifyError = 'Invalid or expired verification code. Check your email and try again.';
             break;
           case 'VERIFICATION_FAILED':
-            verifyError = `Verification failed: ${err.message ?? 'Please try again.'}`;
+            verifyError =
+              'The claim was blocked by a safety check and was not signed. Go back and restart the import.';
             break;
           case 'RATE_LIMITED':
             verifyError = formatRateLimitMessage(err.retryAfter);
@@ -101,10 +102,10 @@
             verifyError = 'Network error. Check your connection and try again.';
             break;
           default:
-            verifyError = `An error occurred (${err.code}). Please try again.`;
+            verifyError = `Something went wrong (${err.code}). Please try again.`;
         }
       } else {
-        verifyError = 'An error occurred. Please try again.';
+        verifyError = 'Something went wrong. Please try again.';
       }
     }
   }

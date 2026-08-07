@@ -158,7 +158,7 @@
     } catch (e) {
       console.error('Failed to load identities:', e);
       identities = [];
-      loadError = 'Failed to load identities. Tap refresh to try again.';
+      loadError = 'Couldn’t load your identities. Tap refresh to try again.';
     } finally {
       rekeyEligible = rekeyMap;
       loading = false;

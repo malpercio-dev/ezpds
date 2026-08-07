@@ -86,10 +86,10 @@
         case 'EPILOGUE_CORRUPT':
           return 'The saved rotation record could not be read. Contact support before retrying.';
         default:
-          return `An unexpected error occurred (${(raw as ShareRecoveryError).code}). Please try again.`;
+          return `Something went wrong (${(raw as ShareRecoveryError).code}). Please try again.`;
       }
     }
-    return 'An unexpected error occurred. Please try again.';
+    return 'Something went wrong. Please try again.';
   }
 
   /** Re-derive the checklist from the durable record's progress flags. */

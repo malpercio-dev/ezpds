@@ -6,7 +6,7 @@
   import Spinner from '$lib/components/ui/Spinner.svelte';
   import SkeletonCard from '$lib/components/ui/SkeletonCard.svelte';
   import { authenticateBiometric } from '$lib/biometric';
-  import { formatRateLimitMessage, formatServerErrorMessage } from '$lib/claim-errors';
+  import { formatRateLimitMessage, formatServerRefusal } from '$lib/claim-errors';
   import { formatTimestamp } from '$lib/datetime';
   import {
     listAppPasswords,
@@ -77,7 +77,7 @@
       case 'IDENTITY_NOT_FOUND':
         return 'This identity isn’t registered in the wallet.';
       case 'SERVER_ERROR':
-        return formatServerErrorMessage(err.message);
+        return formatServerRefusal(err.status);
       case 'NETWORK_ERROR':
         return 'Couldn’t reach the server. Check your connection.';
       default:
