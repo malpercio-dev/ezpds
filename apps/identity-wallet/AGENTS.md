@@ -92,6 +92,11 @@ and invariants. **Wire contract (every module):** IPC error enums serialize as
 `{ code: "SCREAMING_SNAKE_CASE" }` with camelCase payload fields, and IPC types serialize
 `#[serde(rename_all = "camelCase")]`; the TypeScript unions/types in `$lib/ipc` must match
 exactly. Which variants exist, what they carry, and which reach the frontend: the module doc.
+The typed error is also the user-facing seam
+([ADR-0031](../../docs/architecture/decisions/0031-user-facing-error-seam.md)): screens own
+the sentence keyed on `code`; a `message` field is diagnostic only unless its doc comment
+declares it server-quoted, and only declared server-quoted text may render behind server
+attribution.
 
 **Seven strict pre-sign guards** protect every wallet-signed PLC op; each guard's full
 allowlist lives in its module's doc — `claim.rs` (the 4-point claim verification),

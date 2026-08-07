@@ -35,7 +35,51 @@
   let loading = $state(false);
   let submitting = $state(false);
   let error = $state<string | null>(null);
+  // The carried diagnostic chain, rendered subordinate to the sentence in the data register
+  // (ADR-0031's detail slot) — on this screen a failed override is worth diagnosing in place.
+  let errorDetail = $state<string | null>(null);
   let signedOp = $state<SignedRecoveryOp | null>(null);
+
+  /**
+   * The screen-owned sentence for a RecoveryError, per the seam rule: key on `code`, never
+   * interpolate the diagnostic `message` (it renders separately, beneath the sentence).
+   * `phase` picks between preparing the override (the on-mount build) and submitting it.
+   */
+  function describeRecoveryError(raw: unknown, phase: 'build' | 'submit'): string {
+    if (!isCodedError(raw)) {
+      return phase === 'build'
+        ? 'Couldn’t prepare the override. Please try again.'
+        : 'The override wasn’t submitted. Please try again.';
+    }
+    const err = raw as RecoveryError;
+    switch (err.code) {
+      case 'RECOVERY_WINDOW_EXPIRED':
+        return phase === 'build'
+          ? 'The recovery window has expired. This change can no longer be reversed.'
+          : 'The recovery window has expired. This override can no longer be submitted.';
+      case 'SIGNING_FAILED':
+        return 'This device couldn’t sign the override. Nothing was submitted — try again.';
+      case 'IDENTITY_NOT_FOUND':
+        return 'This wallet doesn’t hold the key for this identity, so it can’t sign the override.';
+      case 'UNAUTHORIZED_CHANGE_NOT_FOUND':
+        return 'The flagged change is no longer in this identity’s public history. Go back and review the history again.';
+      case 'PLC_DIRECTORY_ERROR':
+        return phase === 'build'
+          ? 'Couldn’t read this identity’s public history. Try again in a moment.'
+          : 'The public record refused the override. Nothing has changed — the flagged operation is still in place. Try again.';
+      case 'NETWORK_ERROR':
+        return 'Couldn’t reach the identity’s public record. Check your connection and try again.';
+      default:
+        return 'Something went wrong. Please try again.';
+    }
+  }
+
+  /** The diagnostic detail carried on the error, when there is one. */
+  function detailFor(raw: unknown): string | null {
+    if (!isCodedError(raw)) return null;
+    const message = (raw as { message?: string }).message?.trim();
+    return message ? message : null;
+  }
 
   const countdown = useCountdown(15_000);
 
@@ -69,41 +113,15 @@
   onMount(async () => {
     loading = true;
     error = null;
+    errorDetail = null;
 
     try {
       const op = await buildRecoveryOverride(did, operationCid);
       signedOp = op;
     } catch (raw: unknown) {
       console.error('Failed to build recovery override:', raw);
-
-      if (isCodedError(raw)) {
-        const err = raw as RecoveryError;
-        switch (err.code) {
-          case 'RECOVERY_WINDOW_EXPIRED':
-            error = 'The recovery window has expired. This change can no longer be reversed.';
-            break;
-          case 'SIGNING_FAILED':
-            error = `Signing failed: ${err.message || 'unknown error'}`;
-            break;
-          case 'IDENTITY_NOT_FOUND':
-            error = `Identity not found: ${err.message || 'unknown error'}`;
-            break;
-          case 'UNAUTHORIZED_CHANGE_NOT_FOUND':
-            error = 'Unauthorized change not found in audit log.';
-            break;
-          case 'PLC_DIRECTORY_ERROR':
-            error = `PLC directory error: ${err.message || 'unknown error'}`;
-            break;
-          case 'NETWORK_ERROR':
-            error = `Network error: ${err.message || 'unknown error'}`;
-            break;
-          default:
-            error = (err as { message?: string }).message || 'An unexpected error occurred.';
-            break;
-        }
-      } else {
-        error = 'Failed to build recovery operation. Please try again.';
-      }
+      error = describeRecoveryError(raw, 'build');
+      errorDetail = detailFor(raw);
     } finally {
       loading = false;
     }
@@ -112,6 +130,7 @@
   async function handleSubmit() {
     submitting = true;
     error = null;
+    errorDetail = null;
 
     try {
       await submitRecoveryOverride(did);
@@ -119,35 +138,8 @@
       onsuccess();
     } catch (raw: unknown) {
       console.error('Recovery submission failed:', raw);
-
-      if (isCodedError(raw)) {
-        const err = raw as RecoveryError;
-        switch (err.code) {
-          case 'RECOVERY_WINDOW_EXPIRED':
-            error = 'The recovery window has expired. This override can no longer be submitted.';
-            break;
-          case 'SIGNING_FAILED':
-            error = `Signing failed: ${err.message || 'unknown error'}`;
-            break;
-          case 'PLC_DIRECTORY_ERROR':
-            error = `PLC directory rejected the operation: ${err.message || 'unknown error'}`;
-            break;
-          case 'NETWORK_ERROR':
-            error = `Network error: ${err.message || 'unknown error'}`;
-            break;
-          case 'IDENTITY_NOT_FOUND':
-            error = `Identity not found: ${err.message || 'unknown error'}`;
-            break;
-          case 'UNAUTHORIZED_CHANGE_NOT_FOUND':
-            error = 'Unauthorized change not found in audit log.';
-            break;
-          default:
-            error = (err as { message?: string }).message || 'An unexpected error occurred.';
-            break;
-        }
-      } else {
-        error = 'Submission failed. Please try again.';
-      }
+      error = describeRecoveryError(raw, 'submit');
+      errorDetail = detailFor(raw);
       submitting = false;
       hold.state.progress = 0; // reset so the user can retry the hold
     }
@@ -217,6 +209,9 @@
     {#if error}
       <div class="error-box" role="alert">
         <p class="error-text">{error}</p>
+        {#if errorDetail}
+          <p class="error-detail">{errorDetail}</p>
+        {/if}
       </div>
     {/if}
   </div>
@@ -381,6 +376,15 @@
     color: var(--color-critical);
     margin: 0;
     line-height: 1.4;
+  }
+  /* The carried diagnostic, subordinate to the sentence: data register, never the headline. */
+  .error-detail {
+    font-family: var(--font-mono);
+    font-size: var(--text-label);
+    color: var(--color-critical-soft);
+    margin: var(--space-xs) 0 0;
+    line-height: 1.4;
+    word-break: break-word;
   }
 
   .actions {

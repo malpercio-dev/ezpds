@@ -48,10 +48,10 @@
             error = 'Network error. Check your connection and try again.';
             break;
           default:
-            error = `An unexpected error occurred (${raw.code}). Please try again.`;
+            error = `Something went wrong (${raw.code}). Please try again.`;
         }
       } else {
-        error = 'An unexpected error occurred. Please try again.';
+        error = 'Something went wrong. Please try again.';
       }
       resolved = null;
     } finally {

@@ -35,8 +35,8 @@ pub(crate) enum SourceLoginError {
     /// The account has email two-factor enabled: `createSession` returned `AuthFactorTokenRequired`
     /// and the PDS emailed a one-time code. The UI prompts for the code and re-invokes with it.
     TwoFactorRequired,
-    /// The source PDS rejected the password (`createSession` 401). `message` is a fixed,
-    /// user-safe string — never the server's raw text — so the UI can say "wrong password".
+    /// The source PDS rejected the password (`createSession` 401). The screen keys on the code to
+    /// say "wrong password"; `message` is diagnostic only (ADR-0031), never the server's raw text.
     SourceAuthFailed { message: String },
     /// The session the PDS returned is for a different account than the one being claimed/migrated.
     AccountMismatch,
@@ -45,9 +45,11 @@ pub(crate) enum SourceLoginError {
     InsecureSourceUrl,
     /// The source PDS rate-limited the login (HTTP 429). `retry_after` carries `Retry-After`.
     RateLimited { retry_after: Option<String> },
-    /// A non-2xx the wallet doesn't model specially. `message` is the server's own error text.
+    /// A non-2xx the wallet doesn't model specially. `message` is the server's own error text —
+    /// server-quoted per ADR-0031, so screens may render it behind explicit attribution.
     ServerError { message: String },
     /// Transport failure, or the returned session couldn't be turned into a Bearer client.
+    /// `message` is diagnostic only (ADR-0031).
     NetworkError { message: String },
 }
 
@@ -114,7 +116,7 @@ pub(crate) async fn create_source_session(
             crate::pds_client::PdsClientError::InvalidCredentials { message } => {
                 tracing::warn!(detail = %message, "source createSession rejected the password");
                 SourceLoginError::SourceAuthFailed {
-                    message: "The PDS did not accept that password.".to_string(),
+                    message: "createSession rejected the credentials (401)".to_string(),
                 }
             }
             crate::pds_client::PdsClientError::InsecurePdsUrl { url } => {

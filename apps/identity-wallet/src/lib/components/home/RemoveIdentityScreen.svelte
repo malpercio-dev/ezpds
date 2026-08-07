@@ -159,7 +159,12 @@
     phase = 'forget_confirm';
   }
 
-  /** Translate a typed RemovalError (or any throwable) into a display string. */
+  /**
+   * The screen-owned sentence for a typed RemovalError (or any throwable), keyed on `code` —
+   * the diagnostic `message` stays in the console log, never in the sentence. The tombstone-leg
+   * sentences don't claim the account was deleted: the same codes surface from the
+   * forget-with-retirement path, where no `deleteAccount` ran.
+   */
   function messageFor(raw: unknown): string | null {
     // A dismissed unlock prompt is the user's decision, not a failure: say nothing.
     if (isUnlockCancelled(raw)) return null;
@@ -169,7 +174,7 @@
         case 'SESSION_REQUIRED':
           return 'This identity needs to be unlocked first.';
         case 'REQUEST_DELETE_FAILED':
-          return `Couldn't start deletion: ${err.message || 'unknown error'}`;
+          return 'Your server couldn’t start the deletion. Nothing was removed — try again in a moment.';
         case 'INVALID_TOKEN':
           return 'That password or confirmation code was not accepted. Check your email and try again.';
         case 'INVALID_CONFIRMATION_CODE':
@@ -177,28 +182,28 @@
         case 'PASSWORD_REQUIRED':
           return 'This server needs your account password to remove an identity.';
         case 'PROOF_SIGNING_FAILED':
-          return `Couldn't sign the removal authorization: ${err.message || 'unknown error'}`;
+          return 'This device couldn’t sign the removal authorization. Nothing was removed — try again.';
         case 'ACCOUNT_DELETE_FAILED':
-          return `Account deletion failed: ${err.message || 'unknown error'}`;
+          return 'Your server couldn’t complete the deletion. The account is still there — try again.';
         case 'INVALID_AUDIT_LOG':
-          return `Couldn't read the identity's public record: ${err.message || 'unknown error'}`;
+          return 'Couldn’t read this identity’s public history. Try again in a moment.';
         case 'TOMBSTONE_SIGNING_FAILED':
-          return `Couldn't sign the identity's retirement: ${err.message || 'unknown error'}`;
+          return 'This device couldn’t sign the identity’s retirement. Nothing was retired — try again.';
         case 'PLC_DIRECTORY_ERROR':
-          return `The public record rejected the retirement: ${err.message || 'unknown error'}`;
+          return 'The public record refused the identity’s retirement. Try again in a moment.';
         case 'IDENTITY_NOT_FOUND':
-          return `Identity not found: ${err.message || 'unknown error'}`;
+          return 'This identity isn’t registered in this wallet.';
         case 'LOCAL_WIPE_FAILED':
-          return `The account was removed, but local cleanup failed: ${err.message || 'unknown error'}`;
+          return 'The account was removed, but this device couldn’t finish cleaning up. Try again to clear the leftover data.';
         case 'RATE_LIMITED':
           return 'The server is busy. Wait a moment and try again.';
         case 'NETWORK_ERROR':
-          return `Network error: ${err.message || 'unknown error'}`;
+          return 'Couldn’t reach the server. Check your connection and try again.';
         default:
-          return (err as { message?: string }).message || 'An unexpected error occurred.';
+          return 'Something went wrong. Please try again.';
       }
     }
-    return 'An unexpected error occurred. Please try again.';
+    return 'Something went wrong. Please try again.';
   }
 
   /** Step 1: ask the PDS to email a confirmation code (unlocking the session if needed). */

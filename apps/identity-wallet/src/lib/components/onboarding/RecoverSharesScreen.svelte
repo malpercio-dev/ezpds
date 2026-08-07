@@ -57,10 +57,10 @@
             error = "This doesn't look like a backup share. Paste the word phrase or the code from your QR backup.";
             break;
           default:
-            error = `An unexpected error occurred (${raw.code}). Please try again.`;
+            error = `Something went wrong (${raw.code}). Please try again.`;
         }
       } else {
-        error = 'An unexpected error occurred. Please try again.';
+        error = 'Something went wrong. Please try again.';
       }
     } finally {
       adding = false;

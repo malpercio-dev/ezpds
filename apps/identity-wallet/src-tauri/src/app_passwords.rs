@@ -73,13 +73,15 @@ pub enum AppPasswordsError {
     /// the request (non-2xx other than the cases above, `status` carries the HTTP code),
     /// or the session could not be resolved for a reason that is not a transport failure
     /// (refresh verdict, unsupported host, malformed response, or local session storage —
-    /// `status` is `None` for these).
+    /// `status` is `None` for these). Because the `None` bucket includes local failures,
+    /// `message` is mixed-provenance and therefore diagnostic only (ADR-0031): the screen
+    /// keys on `code` + `status` and never quotes it.
     #[error("server error: {message}")]
     ServerError {
         status: Option<u16>,
         message: String,
     },
-    /// A network / transport call failed.
+    /// A network / transport call failed. `message` is diagnostic only (ADR-0031).
     #[error("network error: {message}")]
     NetworkError { message: String },
 }

@@ -54,6 +54,9 @@ pub struct RecoveryState {
 }
 
 /// Errors from recovery override operations.
+///
+/// Every `message` field here is a wrapped diagnostic chain — diagnostic only (ADR-0031). The
+/// screen keys on `code` for its sentence and may show `message` in its subordinate detail slot.
 #[derive(Debug, Serialize, thiserror::Error)]
 #[serde(tag = "code", rename_all = "SCREAMING_SNAKE_CASE")]
 pub enum RecoveryError {

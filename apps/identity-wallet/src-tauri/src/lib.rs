@@ -938,33 +938,59 @@ async fn register_handle(
     }
 }
 
+/// Error returned by `get_available_user_domains`.
+///
+/// Serializes as `{ "code": "SCREAMING_SNAKE_CASE", ... }` to match the sibling wallet error
+/// enums. Every `message` here is diagnostic only (ADR-0031): the screen keys on `code` and
+/// writes its own sentence.
+#[derive(Debug, Serialize, thiserror::Error)]
+#[serde(
+    tag = "code",
+    rename_all = "SCREAMING_SNAKE_CASE",
+    rename_all_fields = "camelCase"
+)]
+pub enum AvailableDomainsError {
+    /// The configured PDS answered `describeServer` with a non-2xx.
+    #[error("describeServer returned HTTP {status}")]
+    ServerError { status: u16 },
+    /// The response body could not be parsed as a describeServer document.
+    #[error("invalid describeServer response: {message}")]
+    InvalidResponse { message: String },
+    /// Transport failure reaching the configured PDS.
+    #[error("network error: {message}")]
+    NetworkError { message: String },
+}
+
 /// Fetch the PDS's configured handle domains (`availableUserDomains` from describeServer) so the
 /// client can build the full `{label}.{domain}` handle BEFORE the DID ceremony — ensuring the
 /// did:plc genesis op's `alsoKnownAs` carries the real, resolvable handle.
 ///
 /// Returns the (possibly empty) domain list on success; the caller decides what to do when the
-/// list is empty. Rejects with a message string on network/parse failure.
+/// list is empty.
 #[tauri::command]
 async fn get_available_user_domains(
     state: tauri::State<'_, oauth::AppState>,
-) -> Result<Vec<String>, String> {
+) -> Result<Vec<String>, AvailableDomainsError> {
     let resp = state
         .custos_client()
         .get("/xrpc/com.atproto.server.describeServer")
         .await
-        .map_err(|e| e.to_string())?;
+        .map_err(|e| AvailableDomainsError::NetworkError {
+            message: e.to_string(),
+        })?;
 
     if !resp.status().is_success() {
-        return Err(format!(
-            "describeServer returned HTTP {}",
-            resp.status().as_u16()
-        ));
+        return Err(AvailableDomainsError::ServerError {
+            status: resp.status().as_u16(),
+        });
     }
 
     let server_info: DescribeServerResponse = resp
         .json()
         .await
-        .map_err(|e| format!("failed to parse describeServer response: {e}"))?;
+        .map_err(|e| AvailableDomainsError::InvalidResponse {
+            message: e.to_string(),
+        })?;
 
     Ok(server_info.available_user_domains)
 }
@@ -1202,7 +1228,8 @@ fn get_device_key_id(did: String) -> Result<String, identity_store::IdentityStor
 /// Returns `true` when the PDS resolves the handle to the expected DID (HTTP 200 + matching
 /// `did` field). Returns `false` for any other response (handle not yet propagated, PDS
 /// unreachable, DID mismatch). Returns `Result<bool, String>` for Tauri IPC compatibility, but
-/// never returns `Err` — callers can safely poll on an interval.
+/// never returns `Err` — callers can safely poll on an interval. The nominal `String` error
+/// type is the ADR-0031 allowance for a command that never rejects.
 #[tauri::command]
 async fn check_handle_resolution(
     handle: String,

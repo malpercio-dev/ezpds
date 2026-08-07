@@ -119,7 +119,7 @@
           return `Something went wrong (${err.code}).`;
       }
     }
-    return 'An unexpected error occurred.';
+    return 'Something went wrong. Please try again.';
   }
 
   // The headline above stays a fixed, human sentence per code; this pulls out the carried
@@ -138,7 +138,9 @@
 
   function toMigrationError(raw: unknown): MigrationError {
     if (isCodedError(raw)) return raw as MigrationError;
-    return { code: 'NETWORK_ERROR', message: 'An unexpected error occurred.' };
+    // No fabricated diagnostic: an empty message keeps the detail slot silent, so the
+    // headline sentence stands alone (the real throwable is already in the console log).
+    return { code: 'NETWORK_ERROR', message: '' };
   }
 
   async function runLeg(id: LegId, fn: () => Promise<void>) {

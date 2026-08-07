@@ -183,10 +183,12 @@ pub enum ClaimError {
     /// PDS XRPC token request failed or returned invalid token
     #[error("invalid token")]
     InvalidToken,
-    /// Claim verification failed (operation verification, signature validation, etc.)
+    /// Claim verification failed (operation verification, signature validation, etc.).
+    /// `message` is diagnostic only (ADR-0031).
     #[error("verification failed: {message}")]
     VerificationFailed { message: String },
-    /// PLC directory operation submission failed
+    /// PLC directory operation submission failed. `message` is a wrapped chain over the
+    /// directory's raw response — diagnostic only (ADR-0031), never rendered as the sentence.
     #[error("plc directory error: {message}")]
     PlcDirectoryError { message: String },
     /// User is not authorized for this operation
@@ -224,11 +226,13 @@ pub enum ClaimError {
         retry_after: Option<String>,
     },
     /// The source PDS rejected the PLC operation with a non-2xx the wallet doesn't model specially.
-    /// `message` is the server's own error text (the atproto error envelope), shown verbatim so a
-    /// third-party PDS's real reason reaches the user instead of connectivity boilerplate.
+    /// `message` is the server's own error text (the atproto error envelope) — server-quoted per
+    /// ADR-0031, shown behind attribution so a third-party PDS's real reason reaches the user
+    /// instead of connectivity boilerplate.
     #[error("server error: {message}")]
     ServerError { message: String },
-    /// Network error during claim flow (timeout, connection refused, etc.)
+    /// Network error during claim flow (timeout, connection refused, etc.).
+    /// `message` is diagnostic only (ADR-0031).
     #[error("network error: {message}")]
     NetworkError { message: String },
 }
@@ -1692,9 +1696,9 @@ mod tests {
         ));
         assert!(matches!(
             ClaimError::from(S::SourceAuthFailed {
-                message: "The PDS did not accept that password.".to_string()
+                message: "createSession rejected the credentials (401)".to_string()
             }),
-            ClaimError::SourceAuthFailed { message } if message == "The PDS did not accept that password."
+            ClaimError::SourceAuthFailed { message } if message == "createSession rejected the credentials (401)"
         ));
         assert!(matches!(
             ClaimError::from(S::RateLimited {

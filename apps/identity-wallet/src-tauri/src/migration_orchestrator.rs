@@ -2212,9 +2212,9 @@ mod tests {
         ));
         assert!(matches!(
             MigrationError::from(S::SourceAuthFailed {
-                message: "The PDS did not accept that password.".to_string()
+                message: "createSession rejected the credentials (401)".to_string()
             }),
-            MigrationError::SourceAuthFailed { message } if message == "The PDS did not accept that password."
+            MigrationError::SourceAuthFailed { message } if message == "createSession rejected the credentials (401)"
         ));
         assert!(matches!(
             MigrationError::from(S::RateLimited {

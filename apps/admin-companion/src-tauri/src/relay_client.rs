@@ -58,6 +58,9 @@ pub enum RelayClientError {
     Unreachable { message: String },
     /// The relay returned a non-success status. `status` lets the UI distinguish a
     /// revoked device (403) from a generic auth failure (401, often clock skew).
+    /// `message` is the relay's own stated reason — server-quoted per ADR-0031, the one
+    /// field `errors.ts` may render (it does so only for a 400, where the relay's reason
+    /// is a definitive answer). Every other `message` on this enum is diagnostic only.
     #[error("relay rejected the request (HTTP {status})")]
     RelayRejected { status: u16, message: String },
     /// A 2xx response whose body did not match the expected schema.

@@ -142,7 +142,7 @@
     if (raw === BIOMETRIC_CANCELLED) {
       return 'Authentication was cancelled. Nothing was signed — retry when ready.';
     }
-    return 'An unexpected error occurred.';
+    return 'Something went wrong. Please try again.';
   }
 
   function describeErrorDetail(raw: unknown): string | null {

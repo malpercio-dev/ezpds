@@ -4,7 +4,7 @@
   import Button from '$lib/components/ui/Button.svelte';
   import Spinner from '$lib/components/ui/Spinner.svelte';
   import SkeletonCard from '$lib/components/ui/SkeletonCard.svelte';
-  import { formatRateLimitMessage, formatServerErrorMessage } from '$lib/claim-errors';
+  import { formatRateLimitMessage, formatServerRefusal } from '$lib/claim-errors';
   import { formatTimestamp } from '$lib/datetime';
   import {
     getBlobBackupStatus,
@@ -97,7 +97,7 @@
       case 'PLC_DIRECTORY_ERROR':
         return 'Couldn’t look up where this identity is hosted. Try again in a moment.';
       case 'SERVER_ERROR':
-        return formatServerErrorMessage(err.message);
+        return formatServerRefusal(err.status);
       case 'STORAGE_ERROR':
         return 'Couldn’t write to the backup folder. Check your iCloud storage and try again.';
       case 'MANIFEST_CORRUPT':
@@ -122,7 +122,7 @@
       case 'PLC_DIRECTORY_ERROR':
         return 'Couldn’t look up where this identity is hosted. Try again in a moment.';
       case 'SERVER_ERROR':
-        return formatServerErrorMessage(err.message);
+        return formatServerRefusal(err.status);
       case 'STORAGE_ERROR':
         return 'Couldn’t write to the backup folder. Check your iCloud storage and try again.';
       case 'MANIFEST_CORRUPT':
