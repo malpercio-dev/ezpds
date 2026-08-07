@@ -95,8 +95,10 @@ exactly. Which variants exist, what they carry, and which reach the frontend: th
 The typed error is also the user-facing seam
 ([ADR-0031](../../docs/architecture/decisions/0031-user-facing-error-seam.md)): screens own
 the sentence keyed on `code`; a `message` field is diagnostic only unless its doc comment
-declares it server-quoted, and only declared server-quoted text may render behind server
-attribution.
+declares it server-quoted. Diagnostic ≠ unrenderable — it may never appear *inside* the
+user's sentence, but a screen may carry it in a visually subordinate, explicitly-diagnostic
+detail slot (the MigrationProgressScreen pattern). Only declared server-quoted text may
+render behind server attribution, and then only length-bounded.
 
 **Seven strict pre-sign guards** protect every wallet-signed PLC op; each guard's full
 allowlist lives in its module's doc — `claim.rs` (the 4-point claim verification),

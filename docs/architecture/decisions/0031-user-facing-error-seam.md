@@ -67,11 +67,19 @@ The typed IPC error — `{ code, …fields }` — is the seam. Four rules:
    contract on the *producer*: nothing but server-supplied text may flow into
    that field, so local failures can never surface under a server's name.
    Renders of server-quoted text are length-bounded — an 8 KB gateway HTML page
-   is not a message.
+   is not a message. The bound is **240 characters, measured on the trimmed
+   server text before the attributing lead is prepended**, with the overflow
+   replaced by a single `…`; empty text falls back to a fixed sentence rather
+   than rendering an empty quote (`claim-errors.ts`'s `MAX_QUOTED_SERVER_TEXT`
+   is the one implementation). Bounding before attribution keeps the limit a
+   property of the server's text, so changing the lead can never change what
+   counts as oversized.
 
-Every error enum's variants get classified under rule 3/4 in their doc comments,
-which makes the seam reviewable: a `format!("…: {e}")` flowing into a
-server-quoted field, or a screen interpolating a diagnostic field, is now a
+Every **message-bearing** variant gets classified under rule 3/4 in its doc
+comment. Unit variants (`RecoveryWindowExpired`, `TwoFactorRequired`) carry no
+text to classify — their `code` is the whole payload, and rules 1/2 already
+govern them. That makes the seam reviewable: a `format!("…: {e}")` flowing into
+a server-quoted field, or a screen interpolating a diagnostic field, is now a
 violation with a citable rule.
 
 ## Consequences
@@ -82,9 +90,15 @@ violation with a citable rule.
 - Screens can no longer lie about where a failure happened. The session-mapped
   `SERVER_ERROR { status: None }` bucket (a local session-layer failure) renders
   a non-attributing sentence; only a real server verdict gets server attribution.
-- Rust sheds its embedded user prose over time (`source_login.rs`'s fixed
-  sentence field is removed by the same change that declares the seam); wire
-  payloads shrink toward codes + structured facts.
+- Rust sheds its embedded user prose over time. `source_login.rs` is the worked
+  example: `SourceAuthFailed { message }` used to carry the screen's sentence
+  ("The PDS did not accept that password."), and the same change that declares
+  the seam **reclassifies** it as a diagnostic — the field stays on the wire,
+  but its content is now a log line ("createSession rejected the credentials
+  (401)") and the sentence moved to the screens. Reclassifying rather than
+  deleting keeps the variant's shape stable for `claim.rs` and
+  `migration_orchestrator.rs`; wire payloads shrink toward codes + structured
+  facts as variants are revisited, not in one sweep.
 - Diagnostic detail is not lost: it still flows to `tracing`, `console.error`,
   and the redacted diagnostics export — the log, where the style guide says it
   belongs.
