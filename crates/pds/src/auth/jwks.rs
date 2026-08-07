@@ -7,15 +7,29 @@
 //! touches this module) or as a JWKS URL — `[agent_auth] trusted_issuers[].jwks_url` — fetched and
 //! cached here. This module owns a `JwksFetcher` abstraction (production `HttpJwksFetcher` +
 //! injectable test mocks, mirroring the `dns::TxtResolver` pattern) and a TTL cache (`JwksCache`)
-//! keyed by URL that selects an ID-JAG's `kid` header out of the issuer's key set and hands back
-//! a `DecodingKey`.
+//! keyed by URL that selects a token's `kid` header out of the key set and hands back a
+//! `DecodingKey`.
 //!
-//! The cache is reachable from public, unauthenticated endpoints (`POST /agent/identity`,
-//! `POST /agent/event/notify`), where the `kid` comes from an *unverified* JWT header. A per-URL
-//! refetch cooldown (`[agent_auth] jwks_refetch_cooldown_secs`, stamped per fetch *attempt*)
-//! bounds how often those requests — or a failing issuer — can force an outbound JWKS fetch.
-//! Without it, a stream of bogus-`kid` tokens naming a trusted issuer would translate one inbound
-//! request into one outbound fetch (amplification toward the issuer, wasted work here).
+//! `JwksCache` is generic over trust source: agent-auth's dynamic-trust issuers are one consumer,
+//! `routes::oauth_token::client_auth` is a second — a confidential OAuth client's `jwks_uri`. The
+//! two get **separate `JwksCache` instances** (each in `AppState`, distinct `[agent_auth]` vs.
+//! `[oauth]` TTL/cooldown config) rather than sharing one: an agent-auth issuer URL is operator-
+//! typed into config, while a client's `jwks_uri` is supplied by whoever registers the client, so
+//! the two sides of the URL-keyed cache have different trust models and should not share tuning or
+//! blast radius. The OAuth-client instance also wires `HttpJwksFetcher` to the SSRF-hardened client
+//! rather than the plain one, matching the transport policy client_id resolution already applies to
+//! that URL.
+//!
+//! Both cache instances are reachable from requests where the `kid` comes from an *unverified* JWT
+//! header (`POST /agent/identity`, `POST /agent/event/notify`, and the token endpoint's
+//! `private_key_jwt` client assertion). A per-URL refetch cooldown (stamped per fetch *attempt*)
+//! bounds how often those requests — or a failing key host — can force an outbound JWKS fetch.
+//! Without it, a stream of bogus-`kid` tokens would translate one inbound request into one outbound
+//! fetch (amplification toward the key host, wasted work here).
+//!
+//! `HttpJwksFetcher` bounds a fetched document to [`MAX_JWKS_BYTES`]: real key sets are a few
+//! hundred bytes, and without a cap a hostile or merely broken key host could stream an unbounded
+//! response into memory.
 
 use std::collections::HashMap;
 use std::future::Future;
@@ -30,6 +44,10 @@ use jsonwebtoken::DecodingKey;
 #[derive(Debug, thiserror::Error)]
 #[error("JWKS fetch error: {0}")]
 pub struct JwksError(pub String);
+
+/// Upper bound on a fetched JWKS document. Real key sets are a few hundred bytes; the cap only
+/// exists so a hostile or broken key host cannot stream an unbounded body into memory.
+const MAX_JWKS_BYTES: usize = 64 * 1024;
 
 /// Abstraction over fetching a JWKS document from an issuer's `jwks_url`.
 ///
@@ -71,8 +89,25 @@ impl JwksFetcher for HttpJwksFetcher {
                     resp.status()
                 )));
             }
-            resp.json::<JwkSet>()
+            if resp
+                .content_length()
+                .is_some_and(|len| len > MAX_JWKS_BYTES as u64)
+            {
+                return Err(JwksError(format!(
+                    "issuer JWKS endpoint {url} response exceeds {MAX_JWKS_BYTES} bytes"
+                )));
+            }
+            let body = resp
+                .bytes()
                 .await
+                .map_err(|e| JwksError(format!("reading JWKS response from {url} failed: {e}")))?;
+            // Re-checked after reading: a chunked response carries no content-length to check.
+            if body.len() > MAX_JWKS_BYTES {
+                return Err(JwksError(format!(
+                    "issuer JWKS endpoint {url} response exceeds {MAX_JWKS_BYTES} bytes"
+                )));
+            }
+            serde_json::from_slice(&body)
                 .map_err(|e| JwksError(format!("issuer JWKS at {url} is not a valid JWK set: {e}")))
         })
     }

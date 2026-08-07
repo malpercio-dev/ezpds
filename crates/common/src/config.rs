@@ -682,16 +682,40 @@ pub struct OAuthConfig {
     /// production instance running a 1-second token would refresh on every request.
     #[serde(default = "default_access_token_ttl_secs")]
     pub access_token_ttl_secs: u64,
+    /// TTL, in seconds, of a confidential client's fetched `jwks_uri` document before it is
+    /// re-fetched (`private_key_jwt` client authentication at the token endpoint). Default 3600
+    /// (1 hour) — comfortably longer than `access_token_ttl_secs`, so a client refreshing on its
+    /// access-token TTL reuses the cached key instead of re-fetching on every refresh. Deliberately
+    /// its own [`crate::auth::jwks::JwksCache`] instance rather than sharing `[agent_auth]`'s: a
+    /// client's `jwks_uri` is supplied by whoever registers the client, not operator-typed config.
+    #[serde(default = "default_oauth_client_jwks_cache_ttl_secs")]
+    pub client_jwks_cache_ttl_secs: u64,
+    /// Minimum interval, in seconds, between `jwks_uri` fetch attempts for a given confidential
+    /// client. The requesting `kid` comes from an unverified `client_assertion` header, so without
+    /// this cooldown a stream of bogus-`kid` assertions would force one outbound fetch per token
+    /// request. `0` disables the cooldown. Default 30.
+    #[serde(default = "default_oauth_client_jwks_refetch_cooldown_secs")]
+    pub client_jwks_refetch_cooldown_secs: u64,
 }
 
 fn default_access_token_ttl_secs() -> u64 {
     900
 }
 
+fn default_oauth_client_jwks_cache_ttl_secs() -> u64 {
+    60 * 60 // 1 hour
+}
+
+fn default_oauth_client_jwks_refetch_cooldown_secs() -> u64 {
+    30
+}
+
 impl Default for OAuthConfig {
     fn default() -> Self {
         Self {
             access_token_ttl_secs: default_access_token_ttl_secs(),
+            client_jwks_cache_ttl_secs: default_oauth_client_jwks_cache_ttl_secs(),
+            client_jwks_refetch_cooldown_secs: default_oauth_client_jwks_refetch_cooldown_secs(),
         }
     }
 }
@@ -1718,6 +1742,14 @@ pub(crate) fn apply_env_overrides(
     // PDS with a near-instant expiry and assert what a client sees when a token lapses.
     if let Some(v) = env.get("EZPDS_OAUTH_ACCESS_TOKEN_TTL_SECS") {
         raw.oauth.access_token_ttl_secs = parse_u64("EZPDS_OAUTH_ACCESS_TOKEN_TTL_SECS", v)?;
+    }
+    if let Some(v) = env.get("EZPDS_OAUTH_CLIENT_JWKS_CACHE_TTL_SECS") {
+        raw.oauth.client_jwks_cache_ttl_secs =
+            parse_u64("EZPDS_OAUTH_CLIENT_JWKS_CACHE_TTL_SECS", v)?;
+    }
+    if let Some(v) = env.get("EZPDS_OAUTH_CLIENT_JWKS_REFETCH_COOLDOWN_SECS") {
+        raw.oauth.client_jwks_refetch_cooldown_secs =
+            parse_u64("EZPDS_OAUTH_CLIENT_JWKS_REFETCH_COOLDOWN_SECS", v)?;
     }
     // Agent-auth (auth.md) scalar/bool overrides. The issuer trust list is a list of structs
     // (each carrying a PEM key or a JWKS URL), which does not map to a flat env var — it stays
@@ -2923,6 +2955,37 @@ mod tests {
                 "the error must name the offending setting, got: {err}"
             );
         }
+    }
+
+    /// A confidential client's `jwks_uri` fetch is cached rather than repeated on every
+    /// token request. Default is 1 hour, comfortably longer than the 15-minute access-token TTL.
+    #[test]
+    fn oauth_client_jwks_cache_defaults_to_one_hour_and_thirty_second_cooldown() {
+        let config = validate_and_build(minimal_raw()).unwrap();
+        assert_eq!(config.oauth.client_jwks_cache_ttl_secs, 3600);
+        assert_eq!(config.oauth.client_jwks_refetch_cooldown_secs, 30);
+    }
+
+    #[test]
+    fn oauth_client_jwks_cache_ttl_env_override() {
+        let env = HashMap::from([(
+            "EZPDS_OAUTH_CLIENT_JWKS_CACHE_TTL_SECS".to_string(),
+            "120".to_string(),
+        )]);
+        let raw = apply_env_overrides(minimal_raw(), &env).unwrap();
+        let config = validate_and_build(raw).unwrap();
+        assert_eq!(config.oauth.client_jwks_cache_ttl_secs, 120);
+    }
+
+    #[test]
+    fn oauth_client_jwks_refetch_cooldown_env_override() {
+        let env = HashMap::from([(
+            "EZPDS_OAUTH_CLIENT_JWKS_REFETCH_COOLDOWN_SECS".to_string(),
+            "5".to_string(),
+        )]);
+        let raw = apply_env_overrides(minimal_raw(), &env).unwrap();
+        let config = validate_and_build(raw).unwrap();
+        assert_eq!(config.oauth.client_jwks_refetch_cooldown_secs, 5);
     }
 
     #[test]
