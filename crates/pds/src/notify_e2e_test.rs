@@ -34,7 +34,12 @@ use crate::app::AppState;
 use crate::db::notifications as store;
 
 const ACCOUNT_DID: &str = "did:plc:notifye2e";
+/// A second identity on the *same* device, for the multi-identity case.
+const SECOND_DID: &str = "did:plc:notifye2e2";
 const DEVICE_UUID: &str = "device-e2e-1";
+/// One physical device means one APNs token, whatever the identity count: the wallet
+/// registers this same value for every identity it holds.
+const APNS_TOKEN: &str = "deadbeef0123456789";
 const MASTER_KEY: [u8; 32] = [0x5au8; 32];
 
 /// An offline endpoint on loopback (`Minimal` preset: rustls only — no relay, no discovery),
@@ -128,19 +133,24 @@ async fn start_pds(relay_addr: EndpointAddr) -> (AppState, Endpoint) {
     );
     state.notify_sender = Some(sender);
 
-    sqlx::query(
-        "INSERT INTO accounts (did, email, password_hash, created_at, updated_at) \
-         VALUES (?, 'e2e@example.com', 'hash', datetime('now'), datetime('now'))",
-    )
-    .bind(ACCOUNT_DID)
-    .execute(&state.db)
-    .await
-    .expect("seed account");
+    seed_account(&state, ACCOUNT_DID).await;
 
     (state, dialer)
 }
 
-fn access_token(state: &AppState) -> String {
+async fn seed_account(state: &AppState, did: &str) {
+    sqlx::query(
+        "INSERT INTO accounts (did, email, password_hash, created_at, updated_at) \
+         VALUES (?, ? || '@example.com', 'hash', datetime('now'), datetime('now'))",
+    )
+    .bind(did)
+    .bind(did)
+    .execute(&state.db)
+    .await
+    .expect("seed account");
+}
+
+fn access_token(state: &AppState, did: &str) -> String {
     #[derive(serde::Serialize)]
     struct Claims {
         sub: String,
@@ -151,7 +161,7 @@ fn access_token(state: &AppState) -> String {
     jsonwebtoken::encode(
         &jsonwebtoken::Header::new(jsonwebtoken::Algorithm::HS256),
         &Claims {
-            sub: ACCOUNT_DID.to_string(),
+            sub: did.to_string(),
             aud: "did:plc:test".to_string(),
             exp: (chrono::Utc::now().timestamp() + 3600) as u64,
             scope: "com.atproto.access".to_string(),
@@ -164,16 +174,26 @@ fn access_token(state: &AppState) -> String {
 /// Register `device_public_key` through the real HTTP route, then wait for the background
 /// worker to complete the relay round trip.
 async fn register_device(state: &AppState, device_public_key: &str) {
+    register_identity(state, ACCOUNT_DID, device_public_key).await;
+}
+
+/// The same, for a named identity. Every identity registers one `DEVICE_UUID` and one
+/// `APNS_TOKEN` because they are all on one physical device — the composition that makes the
+/// relay's per-token handle shared between them.
+async fn register_identity(state: &AppState, did: &str, device_public_key: &str) {
     let response = crate::app::app(state.clone())
         .oneshot(
             Request::post("/v1/notifications/register")
-                .header("authorization", format!("Bearer {}", access_token(state)))
+                .header(
+                    "authorization",
+                    format!("Bearer {}", access_token(state, did)),
+                )
                 .header("content-type", "application/json")
                 .body(Body::from(
                     json!({
                         "deviceUuid": DEVICE_UUID,
                         "notificationPublicKey": device_public_key,
-                        "apnsToken": "deadbeef0123456789",
+                        "apnsToken": APNS_TOKEN,
                         "apnsTopic": "org.obsign.identitywallet",
                     })
                     .to_string(),
@@ -187,14 +207,19 @@ async fn register_device(state: &AppState, device_public_key: &str) {
     // The route returns before the relay knows anything — that is the deliberate design.
     // Wait for the handle rather than sleeping a fixed amount, so the test is not timing-luck.
     let handle = await_condition("a relay push handle", || async {
-        store::list_registrations(&state.db, ACCOUNT_DID)
-            .await
-            .ok()
-            .and_then(|rows| rows.into_iter().next())
-            .and_then(|row| row.push_handle)
+        registration_handle(state, did).await
     })
     .await;
     assert!(!handle.is_empty());
+}
+
+/// This identity's stored relay handle, if its round trip has landed.
+async fn registration_handle(state: &AppState, did: &str) -> Option<String> {
+    store::list_registrations(&state.db, did)
+        .await
+        .ok()
+        .and_then(|rows| rows.into_iter().next())
+        .and_then(|row| row.push_handle)
 }
 
 /// Poll `probe` until it yields a value, or fail the test. Condition-based rather than a
@@ -456,6 +481,105 @@ async fn a_hinted_login_pushes_a_sealed_login_approval_to_the_wallet() {
         opened.get("code").is_none() && opened["data"].get("code").is_none(),
         "no code field may ride in the push payload"
     );
+
+    dialer.close().await;
+    relay_endpoint.close().await;
+}
+
+/// Two identities on one device, both hosted here.
+///
+/// One device means one APNs token, and the relay keeps exactly one live handle per token — so
+/// the second identity's registration rotates the first identity's handle away. Both must keep
+/// receiving anyway. Writing the mint back only to the identity that asked for it left the
+/// first naming a handle the relay no longer knew, and its pushes came back `unknownHandle`,
+/// which is correctly not a prune signal: the row survived to fail again on every app open,
+/// with nothing user-visible to explain the silence.
+#[tokio::test]
+async fn two_identities_on_one_device_both_keep_receiving() {
+    let apple = MockServer::start().await;
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(200))
+        .mount(&apple)
+        .await;
+
+    let (relay_endpoint, _relay, _keydir) = start_relay(&apple.uri()).await;
+    let relay_addr =
+        EndpointAddr::new(relay_endpoint.id()).with_ip_addr(relay_endpoint.bound_sockets()[0]);
+    let (state, dialer) = start_pds(relay_addr).await;
+    seed_account(&state, SECOND_DID).await;
+
+    // Each identity carries its own notification keypair: a payload is sealed to the identity
+    // it is for, not to the hardware it lands on.
+    let first = crypto::generate_p256_keypair().expect("device keypair");
+    let second = crypto::generate_p256_keypair().expect("device keypair");
+    register_identity(&state, ACCOUNT_DID, &first.key_id.0).await;
+    register_identity(&state, SECOND_DID, &second.key_id.0).await;
+
+    // Both rows must name the one handle the relay still resolves — the second registration's.
+    let first_handle = registration_handle(&state, ACCOUNT_DID)
+        .await
+        .expect("the first identity keeps a handle");
+    let second_handle = registration_handle(&state, SECOND_DID)
+        .await
+        .expect("the second identity has a handle");
+    assert_eq!(
+        first_handle, second_handle,
+        "one device token has one live handle; both identities must resolve through it"
+    );
+
+    let (_kid, sender_public_key) = published_sender_key(&state).await;
+    for did in [ACCOUNT_DID, SECOND_DID] {
+        crate::notifications::notify_device(
+            &state,
+            did,
+            crate::notifications::NotificationPayload::new(
+                "agent_claim_pending",
+                "Confirm agent access",
+                "An agent is waiting for you to approve it.",
+            ),
+        )
+        .await;
+    }
+
+    // The relay refuses a push on a rotated-away handle before ever calling Apple, so "two
+    // bodies reached Apple" is the delivery assertion: with a per-identity write-back only one
+    // ever arrives and this times out.
+    let bodies = await_condition("both identities' pushed APNs bodies", || async {
+        let parsed: Vec<serde_json::Value> = apple
+            .received_requests()
+            .await
+            .unwrap_or_default()
+            .iter()
+            .filter_map(|req| serde_json::from_slice(&req.body).ok())
+            .collect();
+        (parsed.len() >= 2).then_some(parsed)
+    })
+    .await;
+    assert_eq!(bodies.len(), 2, "one push per identity, no more");
+
+    // Delivered *and* addressed correctly: each identity's key opens exactly one of the two.
+    // A shared transport handle must not become a shared payload.
+    let opened_by = |device: &crypto::P256Keypair| {
+        bodies
+            .iter()
+            .filter(|body| {
+                let decode = |field: &str| {
+                    data_encoding::BASE64URL_NOPAD
+                        .decode(body["ezpds"][field].as_str().expect("string").as_bytes())
+                        .expect("base64url")
+                };
+                crypto::open_notification(
+                    &device.private_key_bytes,
+                    &sender_public_key,
+                    &decode("enc"),
+                    &decode("ct"),
+                )
+                .is_ok()
+            })
+            .count()
+    };
+    assert_eq!(opened_by(&first), 1, "the first identity's own payload");
+    assert_eq!(opened_by(&second), 1, "the second identity's own payload");
 
     dialer.close().await;
     relay_endpoint.close().await;
