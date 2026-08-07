@@ -1,0 +1,41 @@
+Work on Linear issue MM-492:
+
+Suggested branch name: malpercio/mm-492-multi-identity-same-host-push-registrations-rotate-each
+
+<issue identifier="MM-492">
+<title>Multi-identity same-host push registrations rotate each other's relay handles — only the last-registered DID receives pushes</title>
+<description>
+## Symptom
+
+On a device holding two or more identities hosted on the **same** Custos instance, only one of them can receive pushes at any time — whichever registered last. Observed live on production 2026-07-29: the device holds multiple production-hosted identities, the relay's `handles` table holds exactly one row, and only the last-registered identity's pushes deliver. Pushes for the others fail at the relay as `unknownHandle` and surface only as a PDS-side `WARN notify relay declined a push` — the user sees nothing.
+
+## Mechanism
+
+Three individually-sound pieces compose into the bug:
+
+1. **The wallet registers every identity with its host on each app open**, and each `POST /v1/notifications/register` enqueues its own `RegisterHandle` mint (`crates/pds/src/routes/notifications.rs`). All identities on one device share one APNs token and one `device_uuid`.
+2. **The relay rotates on re-register**: `register_handle` deletes any existing row for the same `(node_id, apns_token)` before inserting (`crates/notify-relay/src/db/handles.rs`). Rotation is deliberate — a handle outliving its registration would be a stale capability.
+3. **The PDS write-back is scoped to one row**: `set_registration_handle` updates only `(did, device_uuid)` (`crates/pds/src/db/notifications.rs`).
+
+So N same-host identities produce N sequential mints; each rotation kills the previous identity's stored handle; after the last job only one `notification_registrations` row holds a live handle. The dead-handle pushes return `unknownHandle`, which is (correctly) not a prune signal — so the stale rows persist and the cycle repeats every app open.
+
+## Why no test caught it
+
+Every harness/conformance scenario registers a single identity per instance. The composition only fails with ≥2 identities on one host from one device.
+
+## Fix directions (either restores all-identity delivery)
+
+* **Write-back by token, not by DID**: after a successful mint, stamp the new handle onto *every* registration row on the instance sharing that `apns_token` (or `device_uuid`). Minimal change, keeps the rotate-on-register semantics.
+* **Dedupe the mint**: enqueue one `RegisterHandle` per `(apns_token, apns_topic)` rather than per DID, and fan the resulting handle out to all owning rows.
+
+Admin-companion registrations (`RegistrationOwner::AdminDevice`) share the mechanism and should be checked for the same composition once fixed.
+
+## Verification
+
+A PDS-level test: register two DIDs with the same `device_uuid`/`apns_token` against a stub relay, then assert both rows resolve to the relay's single live handle and a push to *each* DID delivers.
+</description>
+<team name="Mal's Machinations"/>
+<label>Bug</label>
+<project name="ezpds">An easy-to-host PDS on the ATProtocol, MacOS. Grandma-approved.</project>
+<issue-relations><related><issue-ref identifier="MM-493" title="NSE timeout path renders the unverified notice without recording a breadcrumb — Settings stays green while banners say &quot;couldn't verify&quot;"/></related></issue-relations>
+</issue>
