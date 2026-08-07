@@ -985,12 +985,12 @@ async fn get_available_user_domains(
         });
     }
 
-    let server_info: DescribeServerResponse = resp
-        .json()
-        .await
-        .map_err(|e| AvailableDomainsError::InvalidResponse {
-            message: e.to_string(),
-        })?;
+    let server_info: DescribeServerResponse =
+        resp.json()
+            .await
+            .map_err(|e| AvailableDomainsError::InvalidResponse {
+                message: e.to_string(),
+            })?;
 
     Ok(server_info.available_user_domains)
 }
