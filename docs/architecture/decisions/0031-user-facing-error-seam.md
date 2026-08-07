@@ -70,10 +70,20 @@ The typed IPC error — `{ code, …fields }` — is the seam. Four rules:
    is not a message. The bound is **240 characters, measured on the trimmed
    server text before the attributing lead is prepended**, with the overflow
    replaced by a single `…`; empty text falls back to a fixed sentence rather
-   than rendering an empty quote (`claim-errors.ts`'s `MAX_QUOTED_SERVER_TEXT`
-   is the one implementation). Bounding before attribution keeps the limit a
+   than rendering an empty quote. Bounding before attribution keeps the limit a
    property of the server's text, so changing the lead can never change what
-   counts as oversized.
+   counts as oversized. Both apps implement it independently — the wallet's
+   `claim-errors.ts` (`MAX_QUOTED_SERVER_TEXT`) and the console's `errors.ts`
+   (`MAX_QUOTED_RELAY_TEXT`), which render the two declared server-quoted
+   fields. The apps share no code, so the constant is duplicated rather than
+   imported across an app boundary; a third server-quoted field anywhere means
+   a third renderer that must satisfy this rule.
+
+   Attribution is not decoration. A declared server-quoted field renders behind
+   a lead naming the source ("Your PDS reported: …", "The relay reported: …")
+   because the operator's pairing set can include a server they do not run:
+   unattributed remote text reads as the app's own voice, which is a stronger
+   claim than the app can make for someone else's string.
 
 Every **message-bearing** variant gets classified under rule 3/4 in its doc
 comment. Unit variants (`RecoveryWindowExpired`, `TwoFactorRequired`) carry no

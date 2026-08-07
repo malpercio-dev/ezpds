@@ -164,6 +164,36 @@ describe('describeRelayError', () => {
     expect(describeRelayError(REJECTED_500)).toBe('The relay rejected the request (HTTP 500).');
   });
 
+  // The 400 branch is the enum's ONE server-quoted field (ADR-0031 rule 4): the relay's
+  // own stated reason, which is the only remote text this console renders. A pairing set
+  // can include a relay the operator does not run, so both guarantees are load-bearing.
+  it('attributes a relay-supplied 400 reason instead of speaking it in the console voice', () => {
+    const rejected: RelayClientError = {
+      code: 'RELAY_REJECTED',
+      status: 400,
+      message: 'claim code already redeemed',
+    };
+    expect(describeRelayError(rejected)).toBe('The relay reported: claim code already redeemed');
+  });
+
+  it('bounds a relay-supplied 400 reason so an HTML error page cannot render as one', () => {
+    const rejected: RelayClientError = {
+      code: 'RELAY_REJECTED',
+      status: 400,
+      message: `<html>${'x'.repeat(9000)}</html>`,
+    };
+    const message = describeRelayError(rejected);
+    // 240 chars of quoted text + the single-character ellipsis, behind the lead.
+    expect(message.startsWith('The relay reported: ')).toBe(true);
+    expect(message).toHaveLength('The relay reported: '.length + 240 + 1);
+    expect(message.endsWith('…')).toBe(true);
+  });
+
+  it('falls back to a fixed sentence when the relay sent no 400 reason', () => {
+    const blank: RelayClientError = { code: 'RELAY_REJECTED', status: 400, message: '   ' };
+    expect(describeRelayError(blank)).toBe('The relay rejected the request as invalid.');
+  });
+
   it('produces a distinct message per error code', () => {
     const messages = [
       NOT_PAIRED,
