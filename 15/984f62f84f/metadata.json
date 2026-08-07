@@ -1,0 +1,28 @@
+{
+  "cli_version": "0.9.0",
+  "checkpoint_id": "15984f62f84f",
+  "strategy": "manual-commit",
+  "branch": "malpercio/mm-501-define-and-style-the-user-facing-error-seam-rust-screen",
+  "checkpoints_count": 1,
+  "files_touched": [
+    "apps/identity-wallet/AGENTS.md",
+    "changelog.d/mm-501.changed.md",
+    "docs/architecture/decisions/0031-user-facing-error-seam.md"
+  ],
+  "sessions": [
+    {
+      "metadata": "/15/984f62f84f/0/metadata.json",
+      "transcript": "/15/984f62f84f/0/full.jsonl",
+      "compact_transcript": "/15/984f62f84f/0/transcript.jsonl",
+      "content_hash": "/15/984f62f84f/0/content_hash.txt",
+      "prompt": ""
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 10,
+    "cache_creation_tokens": 16614,
+    "cache_read_tokens": 1290828,
+    "output_tokens": 1939,
+    "api_call_count": 5
+  }
+}
