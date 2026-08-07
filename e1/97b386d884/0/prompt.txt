@@ -1,0 +1,25 @@
+Work on Linear issue MM-503:
+
+Suggested branch name: malpercio/mm-503-cache-the-oauth-client-jwks_uri-fetch
+
+<issue identifier="MM-503">
+<title>Cache the OAuth client jwks_uri fetch</title>
+<description>
+`resolve_client_key` in `crates/pds/src/routes/oauth_token/client_auth.rs` fetches a confidential client's `jwks_uri` on **every** token request that uses it. Two consequences:
+
+* A client refreshing on the 15-minute access-token TTL adds an outbound round trip to its own key host on every refresh.
+* An outage or slowdown at that host makes the client unable to authenticate at all, since there is no cached key to fall back on. The shared hardened client bounds how long it can hang, but the request still fails.
+
+The repository already models the fix for agent-auth trusted issuers: `auth/jwks.rs`'s `JwksCache` with `jwks_cache_ttl_secs` and `jwks_refetch_cooldown_secs` in `crates/common/src/config.rs`. That cache also carries a per-URL refetch cooldown, which matters here for the same reason it does there — an unauthenticated caller naming arbitrary `kid`s should not be able to drive outbound fetches.
+
+Reusing `JwksCache` looks like the right move rather than adding a second caching layer; it is already in `AppState` as `jwks_cache`. The main design question is whether confidential-client keys should share that cache instance with agent-auth issuers or get their own, since the two have different trust models and possibly different TTLs.
+
+Raised by CodeRabbit on #506 and deliberately deferred there: the fetch was newly added in that PR and correct, just uncached, and wiring the config-driven cache is its own change.
+
+Note the fetch is now size-capped (64 KiB) and the transport policy matches `client_id` resolution — that part is done.
+</description>
+<team name="Mal's Machinations"/>
+<label>Wave 7: Hardening</label>
+<label>Improvement</label>
+<project name="ezpds">An easy-to-host PDS on the ATProtocol, MacOS. Grandma-approved.</project>
+</issue>
