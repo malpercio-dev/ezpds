@@ -50,6 +50,12 @@ pub struct AppState {
     /// to a decoding key when verifying an ID-JAG. Shared via Arc; the static-PEM trust path never
     /// touches it. See [`crate::auth::jwks::JwksCache`].
     pub jwks_cache: Arc<crate::auth::jwks::JwksCache>,
+    /// TTL cache resolving a confidential OAuth client's `jwks_uri` to a decoding key for
+    /// `private_key_jwt` client authentication at the token endpoint. A separate instance from
+    /// `jwks_cache` (own `[oauth] client_jwks_*` config, and a fetcher wired to the SSRF-hardened
+    /// client) — see [`crate::auth::jwks::JwksCache`]'s module doc for why the two trust domains
+    /// don't share a cache instance.
+    pub oauth_client_jwks_cache: Arc<crate::auth::jwks::JwksCache>,
     /// HS256 signing secret for JWT access/refresh tokens.
     /// Generated randomly at startup via OsRng (ephemeral — rotates on restart).
     pub jwt_secret: [u8; 32],
@@ -229,7 +235,7 @@ pub async fn test_state_with_plc_url(plc_directory_url: String) -> AppState {
         }),
         db,
         http_client: http_client.clone(),
-        hardened_http_client,
+        hardened_http_client: hardened_http_client.clone(),
         dns_provider: None,
         txt_resolver: None,
         well_known_resolver: None,
@@ -239,6 +245,16 @@ pub async fn test_state_with_plc_url(plc_directory_url: String) -> AppState {
             Arc::new(crate::auth::jwks::HttpJwksFetcher::new(http_client.clone())),
             Duration::from_secs(3600),
             // Cooldown disabled so a test's every lookup reaches its injected mock fetcher.
+            Duration::ZERO,
+        )),
+        // Loopback-permitting hardened client (see above), matching production's wiring of a
+        // confidential client's attacker-reachable `jwks_uri`. Cooldown disabled for the same
+        // reason as `jwks_cache`.
+        oauth_client_jwks_cache: Arc::new(crate::auth::jwks::JwksCache::new(
+            Arc::new(crate::auth::jwks::HttpJwksFetcher::new(
+                hardened_http_client.clone(),
+            )),
+            Duration::from_secs(3600),
             Duration::ZERO,
         )),
         // Fixed key for tests — predictable JWTs in unit tests.

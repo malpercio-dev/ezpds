@@ -415,6 +415,19 @@ async fn run() -> anyhow::Result<()> {
         std::time::Duration::from_secs(config.agent_auth.jwks_refetch_cooldown_secs),
     ));
 
+    // Separate JWKS cache for confidential OAuth clients' `jwks_uri` (`private_key_jwt` client
+    // authentication at the token endpoint): its own `[oauth]` TTL + refetch cooldown, and the
+    // SSRF-hardened client rather than the plain one, since a client's `jwks_uri` is supplied by
+    // whoever registers the client rather than operator-typed config. See `auth::jwks`'s module
+    // doc for why this doesn't share `jwks_cache` above.
+    let oauth_client_jwks_cache = Arc::new(auth::jwks::JwksCache::new(
+        Arc::new(auth::jwks::HttpJwksFetcher::new(
+            hardened_http_client.clone(),
+        )),
+        std::time::Duration::from_secs(config.oauth.client_jwks_cache_ttl_secs),
+        std::time::Duration::from_secs(config.oauth.client_jwks_refetch_cooldown_secs),
+    ));
+
     let jwt_secret = auth::load_or_create_jwt_secret(
         &pool,
         config.signing_key_master_key.as_ref().map(|s| &*s.0),
@@ -578,6 +591,7 @@ async fn run() -> anyhow::Result<()> {
         txt_resolver,
         well_known_resolver,
         jwks_cache,
+        oauth_client_jwks_cache,
         jwt_secret,
         oauth_signing_keypair,
         dpop_nonces: auth::new_nonce_store(),

@@ -18,7 +18,9 @@
 //! bluesky-social/atproto#4474). The verification key comes from the metadata's inline
 //! `jwks` or its `jwks_uri`; the latter is a client-controlled URL, so it gets the same
 //! transport policy as `client_id` itself (https except loopback, no credentials) and is
-//! fetched with the SSRF-hardened client, which is the actual guard. `jti` presence
+//! fetched with the SSRF-hardened client, which is the actual guard, and cached
+//! (`AppState::oauth_client_jwks_cache`, `[oauth] client_jwks_*` config — see `auth::jwks`'s
+//! module doc) rather than repeated on every token request. `jti` presence
 //! is required but not replay-tracked: every protected grant is already single-use
 //! (authorization codes) or rotation-guarded (refresh tokens), so a replayed assertion alone
 //! wins nothing.
@@ -37,11 +39,6 @@ pub(super) const CLIENT_ASSERTION_TYPE_JWT_BEARER: &str =
 /// Clock skew tolerated on the assertion's time claims (RFC 7523 permits a few minutes;
 /// 30 seconds covers real-world drift without meaningfully widening the replay window).
 const CLOCK_TOLERANCE_SECS: u64 = 30;
-
-/// Upper bound on a fetched JWK set. Real key sets are a few hundred bytes; the cap only
-/// exists so a hostile `jwks_uri` host cannot stream an unbounded body into memory. Matches
-/// the client-metadata document cap.
-const MAX_JWKS_BYTES: usize = 64 * 1024;
 
 #[derive(Debug, Deserialize)]
 struct ClientAssertionClaims {
@@ -145,7 +142,7 @@ async fn verify_private_key_jwt(
 }
 
 /// Resolve the client's assertion-verification key from its metadata: the inline `jwks`
-/// first, else a policy-checked fetch of `jwks_uri` via the SSRF-hardened client.
+/// first, else a policy-checked, cached fetch of `jwks_uri` via the SSRF-hardened client.
 async fn resolve_client_key(
     state: &AppState,
     metadata: &ClientMetadata,
@@ -180,40 +177,17 @@ async fn resolve_client_key(
                 "client metadata jwks_uri must be an https URL",
             ));
         }
-        let resp = state
-            .hardened_http_client
-            .get(parsed)
-            .send()
+        // Cached (own TTL + refetch cooldown from `[oauth]`, fetched via the SSRF-hardened
+        // client) rather than fetched on every token request — see `auth::jwks`'s module doc.
+        return state
+            .oauth_client_jwks_cache
+            .decoding_key(url, kid)
             .await
-            .map_err(|_| invalid_client("failed to fetch client jwks_uri"))?;
-        if !resp.status().is_success() {
-            return Err(invalid_client(format!(
-                "client jwks_uri returned HTTP {}",
-                resp.status()
-            )));
-        }
-        // The body comes from a host the client names, so it is bounded before it is parsed:
-        // a real JWK set is a few hundred bytes, and without a cap a hostile (or merely
-        // broken) key host could stream an unbounded response into memory. The shared client
-        // already bounds how *long* this can take; this bounds how *large* it can get. Same
-        // reasoning and same limit as the client-metadata fetch next door.
-        if resp
-            .content_length()
-            .is_some_and(|len| len > MAX_JWKS_BYTES as u64)
-        {
-            return Err(invalid_client("client jwks_uri response is too large"));
-        }
-        let body = resp
-            .bytes()
-            .await
-            .map_err(|_| invalid_client("failed to read the client jwks_uri response"))?;
-        // Re-checked after reading: a chunked response carries no content-length to check.
-        if body.len() > MAX_JWKS_BYTES {
-            return Err(invalid_client("client jwks_uri response is too large"));
-        }
-        let set: JwkSet = serde_json::from_slice(&body)
-            .map_err(|_| invalid_client("client jwks_uri did not return a valid JWK set"))?;
-        return select_key(&set, kid);
+            .map_err(|e| {
+                tracing::error!(jwks_uri = url, error = %e, "failed to resolve client jwks_uri");
+                invalid_client(format!("failed to fetch client jwks_uri: {e}"))
+            })?
+            .ok_or_else(|| invalid_client("no matching key in the client's JWK set"));
     }
     Err(invalid_client(
         "client metadata declares private_key_jwt but provides neither jwks nor jwks_uri",
@@ -486,6 +460,51 @@ mod tests {
         )
         .await
         .expect("a key published at jwks_uri must authenticate the assertion");
+    }
+
+    /// A `jwks_uri` fetch must be cached rather than repeated on every token request — a
+    /// client refreshing on its 15-minute access-token TTL would otherwise add an outbound round
+    /// trip to its own key host on every refresh. `.expect(1)` is verified when `server` drops.
+    #[tokio::test]
+    async fn confidential_client_jwks_uri_is_fetched_once_across_requests() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let state = test_state().await;
+        let key = SigningKey::random(&mut OsRng);
+
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/jwks.json"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "keys": [jwk_with_kid(&key, "k1")],
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        seed_client(
+            &state,
+            serde_json::json!({
+                "client_id": CLIENT_ID,
+                "redirect_uris": ["https://app.example.com/callback"],
+                "token_endpoint_auth_method": "private_key_jwt",
+                "jwks_uri": format!("{}/jwks.json", server.uri()),
+            }),
+        )
+        .await;
+
+        for _ in 0..3 {
+            let assertion = sign_assertion(&key, "k1", valid_claims(CLIENT_ID));
+            authenticate_token_client(
+                &state,
+                CLIENT_ID,
+                Some(CLIENT_ASSERTION_TYPE_JWT_BEARER),
+                Some(&assertion),
+            )
+            .await
+            .expect("a cached jwks_uri key must keep authenticating the assertion");
+        }
     }
 
     /// A `jwks_uri` gets the same transport policy as the client_id itself: plain http is
