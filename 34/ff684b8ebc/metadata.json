@@ -1,0 +1,32 @@
+{
+  "cli_version": "0.9.0",
+  "checkpoint_id": "34ff684b8ebc",
+  "strategy": "manual-commit",
+  "branch": "claude/oauth-client-jwks-cache-f978f3",
+  "checkpoints_count": 1,
+  "files_touched": [
+    "changelog.d/mm-503.changed.md",
+    "crates/common/src/config.rs",
+    "crates/pds/src/auth/jwks.rs",
+    "crates/pds/src/main.rs",
+    "crates/pds/src/routes/oauth_token/client_auth.rs",
+    "crates/pds/src/state.rs",
+    "sites/docs/src/content/docs/operator/reference/config.md"
+  ],
+  "sessions": [
+    {
+      "metadata": "/34/ff684b8ebc/0/metadata.json",
+      "transcript": "/34/ff684b8ebc/0/full.jsonl",
+      "compact_transcript": "/34/ff684b8ebc/0/transcript.jsonl",
+      "content_hash": "/34/ff684b8ebc/0/content_hash.txt",
+      "prompt": "/34/ff684b8ebc/0/prompt.txt"
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 164,
+    "cache_creation_tokens": 311554,
+    "cache_read_tokens": 16777091,
+    "output_tokens": 44972,
+    "api_call_count": 82
+  }
+}
