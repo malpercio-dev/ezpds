@@ -33,7 +33,8 @@ docs {
 
   The body is optional: omit it for an immediate deactivation, or pass
   `{ "deleteAfter": "<RFC 3339 datetime>" }` to record a requested permanent-deletion time (the
-  reaper that acts on it is not yet implemented). A present but malformed `deleteAfter` returns
+  scheduled-deletion reaper permanently deletes the account once that instant passes). A present
+  but malformed `deleteAfter` returns
   400. Idempotent — re-deactivating an already-deactivated account returns 200 (refreshing
   `deleteAfter`) without emitting another `#account` frame. Requires a full access-scope token;
   app-password tokens are rejected. Returns 200 with an empty body.
