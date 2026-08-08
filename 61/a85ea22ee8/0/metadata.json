@@ -1,0 +1,69 @@
+{
+  "cli_version": "0.9.0",
+  "checkpoint_id": "61a85ea22ee8",
+  "session_id": "57c21aa0-f874-43cd-8041-99abd613582e",
+  "strategy": "manual-commit",
+  "created_at": "2026-08-08T17:08:23.091115Z",
+  "branch": "claude/production-release-5151dd",
+  "checkpoints_count": 1,
+  "files_touched": [
+    "CHANGELOG.md",
+    "Cargo.lock",
+    "Cargo.toml",
+    "changelog.d/496.changed.md",
+    "changelog.d/dpop-jkt-binding.fixed.md",
+    "changelog.d/loopback-oauth-clients.added.md",
+    "changelog.d/mm-492.fixed.md",
+    "changelog.d/mm-495-wallet.changed.md",
+    "changelog.d/mm-495.changed.md",
+    "changelog.d/mm-496.changed.md",
+    "changelog.d/mm-498.changed.md",
+    "changelog.d/mm-499.changed.md",
+    "changelog.d/mm-500.changed.md",
+    "changelog.d/mm-501.changed.md",
+    "changelog.d/mm-503.changed.md",
+    "changelog.d/oauth-access-token-ttl.added.md",
+    "changelog.d/oauth-conformance-confidential.added.md",
+    "changelog.d/oauth-conformance-refresh.added.md",
+    "changelog.d/oauth-token-lifetimes.fixed.md",
+    "changelog.d/private-key-jwt.fixed.md",
+    "changelog.d/rpc-aud-fragment.fixed.md",
+    "changelog.d/xrpc-error-shape.fixed.md",
+    "sites/docs/src/content/docs/operator/reference/api.md",
+    "sites/docs/src/content/docs/operator/reference/capabilities.md",
+    "sites/docs/src/content/docs/operator/reference/config.md",
+    "sites/docs/src/content/docs/operator/reference/ipc.md"
+  ],
+  "agent": "Claude Code",
+  "model": "claude-opus-5",
+  "turn_id": "83a4759cd02e",
+  "compact_transcript_start": 0,
+  "token_usage": {
+    "input_tokens": 2221,
+    "cache_creation_tokens": 110019,
+    "cache_read_tokens": 1623746,
+    "output_tokens": 9195,
+    "api_call_count": 18
+  },
+  "initial_attribution": {
+    "calculated_at": "2026-08-08T17:08:23.069844Z",
+    "agent_lines": 61,
+    "agent_removed": 31,
+    "human_added": 0,
+    "human_modified": 0,
+    "human_removed": 0,
+    "total_committed": 61,
+    "total_lines_changed": 92,
+    "agent_percentage": 100,
+    "metric_version": 2
+  },
+  "prompt_attributions": [
+    {
+      "checkpoint_number": 1,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 0,
+      "agent_lines_removed": 0
+    }
+  ]
+}

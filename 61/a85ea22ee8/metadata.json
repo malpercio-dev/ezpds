@@ -1,0 +1,51 @@
+{
+  "cli_version": "0.9.0",
+  "checkpoint_id": "61a85ea22ee8",
+  "strategy": "manual-commit",
+  "branch": "claude/production-release-5151dd",
+  "checkpoints_count": 1,
+  "files_touched": [
+    "CHANGELOG.md",
+    "Cargo.lock",
+    "Cargo.toml",
+    "changelog.d/496.changed.md",
+    "changelog.d/dpop-jkt-binding.fixed.md",
+    "changelog.d/loopback-oauth-clients.added.md",
+    "changelog.d/mm-492.fixed.md",
+    "changelog.d/mm-495-wallet.changed.md",
+    "changelog.d/mm-495.changed.md",
+    "changelog.d/mm-496.changed.md",
+    "changelog.d/mm-498.changed.md",
+    "changelog.d/mm-499.changed.md",
+    "changelog.d/mm-500.changed.md",
+    "changelog.d/mm-501.changed.md",
+    "changelog.d/mm-503.changed.md",
+    "changelog.d/oauth-access-token-ttl.added.md",
+    "changelog.d/oauth-conformance-confidential.added.md",
+    "changelog.d/oauth-conformance-refresh.added.md",
+    "changelog.d/oauth-token-lifetimes.fixed.md",
+    "changelog.d/private-key-jwt.fixed.md",
+    "changelog.d/rpc-aud-fragment.fixed.md",
+    "changelog.d/xrpc-error-shape.fixed.md",
+    "sites/docs/src/content/docs/operator/reference/api.md",
+    "sites/docs/src/content/docs/operator/reference/capabilities.md",
+    "sites/docs/src/content/docs/operator/reference/config.md",
+    "sites/docs/src/content/docs/operator/reference/ipc.md"
+  ],
+  "sessions": [
+    {
+      "metadata": "/61/a85ea22ee8/0/metadata.json",
+      "transcript": "/61/a85ea22ee8/0/full.jsonl",
+      "compact_transcript": "/61/a85ea22ee8/0/transcript.jsonl",
+      "content_hash": "/61/a85ea22ee8/0/content_hash.txt",
+      "prompt": "/61/a85ea22ee8/0/prompt.txt"
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 2221,
+    "cache_creation_tokens": 110019,
+    "cache_read_tokens": 1623746,
+    "output_tokens": 9195,
+    "api_call_count": 18
+  }
+}
