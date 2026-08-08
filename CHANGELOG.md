@@ -7,6 +7,55 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Changes are collected in `changelog.d/` during development and inserted here when
 `just set-version` prepares a release. There is intentionally no `Unreleased` section.
 
+## [0.11.0] - 2026-08-08
+
+### Added
+
+- OAuth loopback client identifiers (`http://localhost?redirect_uri=…&scope=…`) are now supported, so a developer building an app against a locally running Custos can use the standard atproto development client instead of publishing a metadata document.
+
+- Operators can now tune the OAuth access-token lifetime with `EZPDS_OAUTH_ACCESS_TOKEN_TTL_SECS` (default 900 seconds, accepted range 1–1800). The conformance suite uses it to test what a client sees when its token expires.
+
+- The OAuth conformance suite now covers confidential clients (`private_key_jwt`), and a client publishing its keys at a loopback `jwks_uri` is no longer refused for using plain http — the same development exception `client_id` resolution already made.
+
+- The OAuth conformance suite now covers refresh-token rotation, including the concurrent-refresh case that used to log clients out silently.
+
+
+### Changed
+
+- User documentation is rewritten in plainer language for a security-minded audience, and the signing-in guide now documents push-to-approve with number matching.
+
+- Obsign developer documentation moved from the app overview into module docs beside the code it describes; no runtime behavior changed.
+
+- Server developer documentation moved from the crate overview into module docs beside the code it describes; no runtime behavior changed.
+
+- Marketing site copy now speaks to the launch audience: security outcomes lead (ownership reads as the consequence, not the pitch), protocol vocabulary like rotation-key indexes and PLC moved off the Obsign page to the Custos and docs tiers, the recovery-share wording matches where shares actually live, and the privacy page accurately scopes what analytics records.
+
+- The pages Custos renders in the browser now follow the writing-style guide's user register: OAuth error pages say what happened, what it means, and what to do next (with mechanical detail moved to the server log), the consent page's wallet path drops protocol vocabulary, and the landing page describes key custody in plain words.
+
+- The wallet's everyday and onboarding copy now follows the writing-style guide's user register: protocol vocabulary ("rotation key", "PLC directory", "PDS", "tombstone", "did:web") is replaced with the established plain words ("deciding key", "the public record", "server", "retire", "domain identity") on every surface outside the advanced tier, and error messages state what happened and what to do next.
+
+- The Brass Console drops the descriptive lede paragraph that opened every screen — the elements speak for themselves, with the load-bearing facts kept as one-liners (the accounts sort order and meter legend, the status screen's facts-not-verdict contract) — and the remaining prose loses its machine-flavored tells while keeping the operator register's protocol vocabulary untouched.
+
+- Obsign's error surface now has a declared seam (ADR-0031): screens own every error sentence keyed on the typed `code`, diagnostic detail stays in the log (or a visibly subordinate detail slot), and server attribution is only ever true — a local Keychain failure can no longer render as "Your PDS reported: …". The recovery-override, identity-removal, and claim screens drop their raw error-chain interpolations for calm, styled sentences, and `get_available_user_domains` rejects with a typed error instead of a bare string. In the operator console, a relay's own rejection reason is now attributed to the relay and length-bounded instead of being spoken in the console's voice at whatever length the relay sent — so a server the operator doesn't run can't put words in their tools' mouth.
+
+- A confidential OAuth client's published key set (`jwks_uri`) is now cached instead of fetched on every token request. Previously each token refresh added a round trip to the client's key host, and an outage there made the client unable to authenticate at all; the key is now reused for up to an hour (configurable via `[oauth] client_jwks_cache_ttl_secs`).
+
+
+### Fixed
+
+- Pushed authorization requests now record the client's DPoP key, and the token endpoint refuses a code bound to a different one. The binding currently reaches codes issued through the wallet consent path; the password consent form cannot carry it (its pushed request is already consumed by the time the form is submitted). The PAR endpoint also no longer requires a `state` parameter, and an authorization response no longer echoes an empty `state` back to a client that sent none.
+
+- A device holding more than one identity on the same Custos instance now receives notifications for every one of them. Previously each identity's registration replaced the last one's route to the device, so only the most recently opened identity got pushes and the rest went silent with nothing to explain it.
+
+- OAuth sessions now match the reference PDS's lifetimes and refresh semantics: access tokens live 15 minutes (was 5), refresh sessions 14 days (was 24 hours), and a concurrent duplicate refresh (multi-tab, background+foreground) no longer silently logs the client out — while replaying an old refresh token later revokes the whole session as a theft signal.
+
+- The token endpoint now actually verifies `private_key_jwt` client authentication (RFC 7523, ES256, 30-second clock tolerance) instead of silently ignoring a confidential client's `client_assertion` and treating it as public. The client's registered `token_endpoint_auth_method` decides what is required, with keys taken from its metadata `jwks` or a policy-checked `jwks_uri` fetch.
+
+- Granular `rpc:` OAuth scopes now match their `aud` on the service DID regardless of `#serviceId` fragments, so a grant written in either convention (bare DID or fragment-qualified) authorizes both PDS proxying and `getServiceAuth` consistently.
+
+- XRPC endpoints now answer errors in the flat AT Protocol shape (`{"error": "ExpiredToken", "message": ...}`) with the canonical atproto error names, so third-party app sessions refresh instead of dying when an access token expires. The provisioning API's nested envelope is unchanged.
+
+
 ## [0.10.2] - 2026-07-29
 
 ### Fixed

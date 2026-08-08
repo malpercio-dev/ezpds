@@ -1,1 +1,0 @@
-The token endpoint now actually verifies `private_key_jwt` client authentication (RFC 7523, ES256, 30-second clock tolerance) instead of silently ignoring a confidential client's `client_assertion` and treating it as public. The client's registered `token_endpoint_auth_method` decides what is required, with keys taken from its metadata `jwks` or a policy-checked `jwks_uri` fetch.

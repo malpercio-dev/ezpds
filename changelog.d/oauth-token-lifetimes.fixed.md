@@ -1,1 +1,0 @@
-OAuth sessions now match the reference PDS's lifetimes and refresh semantics: access tokens live 15 minutes (was 5), refresh sessions 14 days (was 24 hours), and a concurrent duplicate refresh (multi-tab, background+foreground) no longer silently logs the client out — while replaying an old refresh token later revokes the whole session as a theft signal.
