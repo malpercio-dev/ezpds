@@ -1,1 +1,0 @@
-XRPC endpoints now answer errors in the flat AT Protocol shape (`{"error": "ExpiredToken", "message": ...}`) with the canonical atproto error names, so third-party app sessions refresh instead of dying when an access token expires. The provisioning API's nested envelope is unchanged.

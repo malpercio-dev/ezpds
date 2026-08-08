@@ -1,1 +1,0 @@
-OAuth loopback client identifiers (`http://localhost?redirect_uri=…&scope=…`) are now supported, so a developer building an app against a locally running Custos can use the standard atproto development client instead of publishing a metadata document.

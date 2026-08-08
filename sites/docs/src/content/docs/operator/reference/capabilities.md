@@ -3,7 +3,7 @@ title: Capability reference
 description: Generated list of the capabilities a Custos deployment advertises.
 ---
 
-> Generated from source for ezpds **v0.10.2**. Do not edit this page by hand.
+> Generated from source for ezpds **v0.11.0**. Do not edit this page by hand.
 
 Custos advertises these under the `custos` extension object of `com.atproto.server.describeServer`, alongside the running version. A client feature-gates on the presence of a name; a server that sends no `custos` object — the reference PDS, rsky-pds, millipds — has none of them, and clients fall back to standard AT Protocol behaviour. See [Capabilities](/operator/capabilities/) for what each one means for your deployment and how to turn it on.
 
