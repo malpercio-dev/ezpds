@@ -180,7 +180,7 @@ would close them.
    bug and this entire audit both trace to "we only ever tested our own clients."
 7. Reproduce pckt.blog (callback capture) and Beacon (log tail) individually.
 
-## Addendum (2026-08-12): pckt.blog root cause — gap 9, absent `request_uri` capability fields
+## Addendum (2026-08-12): pckt.blog root cause — gap 12, absent `request_uri` capability fields
 
 The instrumented repro (item 7) landed and the pckt.blog failure is fully explained. It was
 never the callback redirect: a HAR of the real flow plus controlled curl probes against
@@ -194,16 +194,20 @@ third-party self-hosted reference PDS (pds.robocracy.org) — but silently downg
 legacy direct-authorize flow against us, for did:plc and did:web accounts alike. The one
 relevant metadata difference: the reference provider emits `request_uri_parameter_supported`,
 `require_request_uri_registration`, and `request_parameter_supported` explicitly, and we
-emitted none of them. RFC 8414 defaults `request_uri_parameter_supported` to `true` when
-absent, but pckt's client reads absence as "legacy server without PAR" and takes a fallback
-path whose callback half is broken (their bug — but absence is indistinguishable from
-incapability to such clients). Beacon remains unexplained (still zero server contact).
+emitted none of them. OpenID Connect Discovery §3 (which defines all three fields) defaults
+`request_uri_parameter_supported` to `true` when absent — and the atproto profile pins
+`require_request_uri_registration`'s default to `true` and forbids `false` — but pckt's
+client reads absence as "legacy server without PAR" and takes a fallback path whose callback
+half is broken (their bug — but absence is indistinguishable from incapability to such
+clients). Beacon remains unexplained (still zero server contact).
 
 Fix: emit the three fields explicitly (`request_uri_parameter_supported: true`,
 `require_request_uri_registration: true`, and — honestly, diverging from the reference —
 `request_parameter_supported: false`, since we do not implement JAR). Conformance suite pins
-their presence. Verification after deploy needs no login: start pckt's flow for an
-obsign-hosted handle and check the redirect URL for `request_uri=` (PAR path) instead of
-inline `state`/`code_challenge` (legacy path). If pckt still downgrades, the next lever is
-their gate possibly requiring `request_parameter_supported: true`, which we should not lie
-about — that would mean implementing JAR or contacting pckt.
+their presence. The suites only prove serialization — they cannot prove a deployed client
+*selects* PAR — so the live probe is the release gate for this item: after the production
+deploy, start pckt's flow for an obsign-hosted handle and check the redirect URL for
+`request_uri=` (PAR path) instead of inline `state`/`code_challenge` (legacy path), and
+record the outcome here before closing the pckt.blog item. If pckt still downgrades, the
+next lever is their gate possibly requiring `request_parameter_supported: true`, which we
+should not lie about — that would mean implementing JAR or contacting pckt.

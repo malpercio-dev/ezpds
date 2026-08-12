@@ -54,20 +54,23 @@ struct OAuthServerMetadata {
     code_challenge_methods_supported: Vec<String>,
     dpop_signing_alg_values_supported: Vec<String>,
     require_pushed_authorization_requests: bool,
-    /// Explicit rather than relying on the RFC 8414 defaults (`request_uri` support defaults
-    /// to `true` when absent): the reference provider emits all three `request`/`request_uri`
-    /// capability fields, and at least one real client (a Laravel atproto app) treats their
-    /// *absence* as "legacy server without PAR" and silently downgrades to a non-PAR
-    /// authorization flow. Absence is indistinguishable from incapability to such clients,
-    /// so this seam states its capabilities outright.
+    /// Explicit rather than relying on the absent-field defaults (OpenID Connect Discovery §3
+    /// defines all three `request`/`request_uri` capability fields; `request_uri` support
+    /// defaults to `true` when absent): the reference provider emits all three, and at least
+    /// one real client (a Laravel atproto app) treats their *absence* as "legacy server
+    /// without PAR" and silently downgrades to a non-PAR authorization flow. Absence is
+    /// indistinguishable from incapability to such clients, so this seam states its
+    /// capabilities outright.
     request_uri_parameter_supported: bool,
     /// `true`: the only `request_uri` values the authorization endpoint accepts are the
     /// PAR-minted `urn:ietf:params:oauth:request_uri:` ones — PAR *is* the registration.
+    /// The atproto OAuth profile also pins this field's *default* to `true` and forbids
+    /// `false`, so stating `true` is the only compliant explicit value.
     require_request_uri_registration: bool,
     /// `false`, diverging from the reference provider's `true`: this server does not accept
     /// JAR (RFC 9101) `request` objects, and metadata must not advertise a capability the
-    /// endpoint would reject. RFC 8414 defaults this to `false` anyway; stating it keeps the
-    /// divergence from the reference visible and deliberate.
+    /// endpoint would reject. OpenID Connect Discovery defaults this to `false` anyway;
+    /// stating it keeps the divergence from the reference visible and deliberate.
     request_parameter_supported: bool,
     authorization_response_iss_parameter_supported: bool,
     client_id_metadata_document_supported: bool,
@@ -414,11 +417,11 @@ mod tests {
 
     #[tokio::test]
     async fn request_uri_capability_fields_are_explicit() {
-        // RFC 8414 gives all three fields defaults when absent, but real clients gate their
-        // PAR flow on the fields' *presence*: a Laravel atproto client observed in production
-        // read our field-less metadata as "legacy server", downgraded to a non-PAR
-        // authorization flow, and its callback half then failed before ever reaching the
-        // token endpoint. The keys must exist, not merely default.
+        // OpenID Connect Discovery §3 gives all three fields defaults when absent, but real
+        // clients gate their PAR flow on the fields' *presence*: a Laravel atproto client
+        // observed in production read our field-less metadata as "legacy server", downgraded
+        // to a non-PAR authorization flow, and its callback half then failed before ever
+        // reaching the token endpoint. The keys must exist, not merely default.
         let json = metadata_json().await;
         assert_eq!(json["request_uri_parameter_supported"], true);
         assert_eq!(json["require_request_uri_registration"], true);

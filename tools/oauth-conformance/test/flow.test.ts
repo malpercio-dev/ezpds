@@ -68,8 +68,9 @@ test('metadata advertises a same-origin issuer and S256 PKCE', () => {
 test('metadata states the request_uri capability fields explicitly', () => {
   // REGRESSION: pckt.blog's client gates its PAR flow on these fields' *presence* — with
   // them absent it read the server as legacy/non-PAR, downgraded to a direct authorization
-  // request, and its callback then failed before ever calling the token endpoint. RFC 8414
-  // defaults are not enough; the keys must exist on the wire.
+  // request, and its callback then failed before ever calling the token endpoint. The
+  // OpenID Connect Discovery absent-field defaults are not enough; the keys must exist on
+  // the wire.
   assert.equal(metadata.request_uri_parameter_supported, true);
   assert.equal(metadata.require_request_uri_registration, true);
   // Deliberately false: JAR (RFC 9101) request objects are not implemented, and metadata
