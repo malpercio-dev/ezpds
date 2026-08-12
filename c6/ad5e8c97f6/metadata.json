@@ -1,0 +1,30 @@
+{
+  "cli_version": "0.9.0",
+  "checkpoint_id": "c6ad5e8c97f6",
+  "strategy": "manual-commit",
+  "branch": "claude/oauth-compatibility-issues-fc3dd4",
+  "checkpoints_count": 2,
+  "files_touched": [
+    "bruno/oauth_server_metadata.bru",
+    "changelog.d/oauth-request-uri-metadata.fixed.md",
+    "crates/pds/src/routes/oauth_server_metadata.rs",
+    "docs/2026-08-03-oauth-interop-audit.md",
+    "tools/oauth-conformance/test/flow.test.ts"
+  ],
+  "sessions": [
+    {
+      "metadata": "/c6/ad5e8c97f6/0/metadata.json",
+      "transcript": "/c6/ad5e8c97f6/0/full.jsonl",
+      "compact_transcript": "/c6/ad5e8c97f6/0/transcript.jsonl",
+      "content_hash": "/c6/ad5e8c97f6/0/content_hash.txt",
+      "prompt": "/c6/ad5e8c97f6/0/prompt.txt"
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 196,
+    "cache_creation_tokens": 424333,
+    "cache_read_tokens": 19750106,
+    "output_tokens": 96660,
+    "api_call_count": 106
+  }
+}

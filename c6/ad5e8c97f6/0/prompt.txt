@@ -1,0 +1,5 @@
+I'm still seeing oauth compatibility issues, despite yet another round of fixes that recently landed. What's going on?
+
+---
+
+okay, in my downloads folder, you'll find a har from pckt.blog

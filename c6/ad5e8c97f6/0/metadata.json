@@ -1,0 +1,155 @@
+{
+  "cli_version": "0.9.0",
+  "checkpoint_id": "c6ad5e8c97f6",
+  "session_id": "d85b128f-3856-458c-833f-2b25a68624d6",
+  "strategy": "manual-commit",
+  "created_at": "2026-08-12T14:59:19.731675Z",
+  "branch": "claude/oauth-compatibility-issues-fc3dd4",
+  "checkpoints_count": 2,
+  "save_step_count": 1,
+  "files_touched": [
+    "bruno/oauth_server_metadata.bru",
+    "changelog.d/oauth-request-uri-metadata.fixed.md",
+    "crates/pds/src/routes/oauth_server_metadata.rs",
+    "docs/2026-08-03-oauth-interop-audit.md",
+    "tools/oauth-conformance/test/flow.test.ts"
+  ],
+  "agent": "Claude Code",
+  "model": "claude-fable-5",
+  "turn_id": "9fab3b3b4ddc",
+  "compact_transcript_start": 0,
+  "token_usage": {
+    "input_tokens": 196,
+    "cache_creation_tokens": 424333,
+    "cache_read_tokens": 19750106,
+    "output_tokens": 96660,
+    "api_call_count": 106
+  },
+  "skill_events_version": 1,
+  "skill_events": [
+    {
+      "id": "claude-skill-toolu_01Fvy3M5HxbBJRu5YP1gR9vn",
+      "event_type": "tool_invocation",
+      "skill": {
+        "name": "ed3d-plan-and-execute:systematic-debugging"
+      },
+      "source": {
+        "agent": "claude-code",
+        "signal": "skill_tool_use",
+        "confidence": "explicit"
+      },
+      "turn_id": "9fab3b3b4ddc",
+      "transcript_anchor": {
+        "unit": "line",
+        "start": 18,
+        "end": 19,
+        "entry_ids": [
+          "2f458e4b-6e8a-4fd5-bd8e-35640a8ad421"
+        ],
+        "tool_use_id": "toolu_01Fvy3M5HxbBJRu5YP1gR9vn"
+      },
+      "native": {
+        "tool_name": "Skill",
+        "tool_use_id": "toolu_01Fvy3M5HxbBJRu5YP1gR9vn"
+      },
+      "collapse": {
+        "target": "tool_pair",
+        "label": "Skill: ed3d-plan-and-execute:systematic-debugging",
+        "default_collapsed": true
+      }
+    },
+    {
+      "id": "claude-skill-toolu_01C9SXkJVuRP3foL4Sa6Ss4Y",
+      "event_type": "tool_invocation",
+      "skill": {
+        "name": "commit-commands:commit-push-pr"
+      },
+      "source": {
+        "agent": "claude-code",
+        "signal": "skill_tool_use",
+        "confidence": "explicit"
+      },
+      "turn_id": "9fab3b3b4ddc",
+      "transcript_anchor": {
+        "unit": "line",
+        "start": 494,
+        "end": 495,
+        "entry_ids": [
+          "f99076d2-ca96-4bcc-99b1-5b90604b391e"
+        ],
+        "tool_use_id": "toolu_01C9SXkJVuRP3foL4Sa6Ss4Y"
+      },
+      "native": {
+        "tool_name": "Skill",
+        "tool_use_id": "toolu_01C9SXkJVuRP3foL4Sa6Ss4Y"
+      },
+      "collapse": {
+        "target": "tool_pair",
+        "label": "Skill: commit-commands:commit-push-pr",
+        "default_collapsed": true
+      }
+    },
+    {
+      "id": "claude-skill-toolu_018t29U9Mmu6GUU3s8S6sLKi",
+      "event_type": "tool_invocation",
+      "skill": {
+        "name": "pr-review-comments"
+      },
+      "source": {
+        "agent": "claude-code",
+        "signal": "skill_tool_use",
+        "confidence": "explicit"
+      },
+      "turn_id": "9fab3b3b4ddc",
+      "transcript_anchor": {
+        "unit": "line",
+        "start": 514,
+        "end": 515,
+        "entry_ids": [
+          "396b687c-2282-49b2-813e-c80a3e8e88fc"
+        ],
+        "tool_use_id": "toolu_018t29U9Mmu6GUU3s8S6sLKi"
+      },
+      "native": {
+        "tool_name": "Skill",
+        "tool_use_id": "toolu_018t29U9Mmu6GUU3s8S6sLKi"
+      },
+      "collapse": {
+        "target": "tool_pair",
+        "label": "Skill: pr-review-comments",
+        "default_collapsed": true
+      }
+    }
+  ],
+  "session_metrics": {
+    "turn_count": 2
+  },
+  "initial_attribution": {
+    "calculated_at": "2026-08-12T14:59:19.663472Z",
+    "agent_lines": 49,
+    "agent_removed": 0,
+    "human_added": 11,
+    "human_modified": 31,
+    "human_removed": 0,
+    "total_committed": 91,
+    "total_lines_changed": 91,
+    "agent_percentage": 53.84615384615385,
+    "metric_version": 2
+  },
+  "prompt_attributions": [
+    {
+      "checkpoint_number": 1,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 0,
+      "agent_lines_removed": 0
+    },
+    {
+      "checkpoint_number": 2,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 0,
+      "agent_lines_removed": 0
+    }
+  ]
+}
