@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Changes are collected in `changelog.d/` during development and inserted here when
 `just set-version` prepares a release. There is intentionally no `Unreleased` section.
 
+## [0.11.1] - 2026-08-12
+
+### Fixed
+
+- OAuth server metadata now states the `request_uri` capability fields explicitly (`request_uri_parameter_supported`, `require_request_uri_registration`, `request_parameter_supported`) instead of leaning on their OpenID Connect Discovery absent-field defaults — a real client read their absence as "no PAR support", silently downgraded to a legacy non-PAR flow, and its login died after consent without ever reaching the token endpoint.
+
+
 ## [0.11.0] - 2026-08-08
 
 ### Added
