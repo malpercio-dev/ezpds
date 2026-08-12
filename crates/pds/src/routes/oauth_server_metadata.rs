@@ -54,6 +54,21 @@ struct OAuthServerMetadata {
     code_challenge_methods_supported: Vec<String>,
     dpop_signing_alg_values_supported: Vec<String>,
     require_pushed_authorization_requests: bool,
+    /// Explicit rather than relying on the RFC 8414 defaults (`request_uri` support defaults
+    /// to `true` when absent): the reference provider emits all three `request`/`request_uri`
+    /// capability fields, and at least one real client (a Laravel atproto app) treats their
+    /// *absence* as "legacy server without PAR" and silently downgrades to a non-PAR
+    /// authorization flow. Absence is indistinguishable from incapability to such clients,
+    /// so this seam states its capabilities outright.
+    request_uri_parameter_supported: bool,
+    /// `true`: the only `request_uri` values the authorization endpoint accepts are the
+    /// PAR-minted `urn:ietf:params:oauth:request_uri:` ones — PAR *is* the registration.
+    require_request_uri_registration: bool,
+    /// `false`, diverging from the reference provider's `true`: this server does not accept
+    /// JAR (RFC 9101) `request` objects, and metadata must not advertise a capability the
+    /// endpoint would reject. RFC 8414 defaults this to `false` anyway; stating it keeps the
+    /// divergence from the reference visible and deliberate.
+    request_parameter_supported: bool,
     authorization_response_iss_parameter_supported: bool,
     client_id_metadata_document_supported: bool,
     agent_auth: AgentAuthMetadata,
@@ -108,6 +123,9 @@ pub async fn oauth_server_metadata(State(state): State<AppState>) -> impl IntoRe
         code_challenge_methods_supported: vec!["S256".to_string()],
         dpop_signing_alg_values_supported: vec!["ES256".to_string()],
         require_pushed_authorization_requests: true,
+        request_uri_parameter_supported: true,
+        require_request_uri_registration: true,
+        request_parameter_supported: false,
         authorization_response_iss_parameter_supported: true,
         client_id_metadata_document_supported: true,
         agent_auth: AgentAuthMetadata {
@@ -392,6 +410,21 @@ mod tests {
     async fn par_is_required() {
         let json = metadata_json().await;
         assert_eq!(json["require_pushed_authorization_requests"], true);
+    }
+
+    #[tokio::test]
+    async fn request_uri_capability_fields_are_explicit() {
+        // RFC 8414 gives all three fields defaults when absent, but real clients gate their
+        // PAR flow on the fields' *presence*: a Laravel atproto client observed in production
+        // read our field-less metadata as "legacy server", downgraded to a non-PAR
+        // authorization flow, and its callback half then failed before ever reaching the
+        // token endpoint. The keys must exist, not merely default.
+        let json = metadata_json().await;
+        assert_eq!(json["request_uri_parameter_supported"], true);
+        assert_eq!(json["require_request_uri_registration"], true);
+        // Deliberately false: JAR (RFC 9101) request objects are not accepted, and the
+        // metadata must not claim otherwise even though the reference provider says true.
+        assert_eq!(json["request_parameter_supported"], false);
     }
 
     #[tokio::test]
