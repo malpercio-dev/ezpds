@@ -24,4 +24,13 @@ docs {
 
   `["atproto", "transition:email", "transition:generic", "transition:chat.bsky", "repo:*",
   "rpc:*", "blob:*/*", "account:*", "identity:*", "include:*"]`
+
+  The `request`/`request_uri` capability fields (defined in OpenID Connect Discovery §3,
+  absent-field defaults `request_parameter_supported: false`,
+  `request_uri_parameter_supported: true`, `require_request_uri_registration: false`) are
+  stated explicitly rather than left to those defaults, because real clients gate their PAR
+  flow on the fields' presence and downgrade to a legacy non-PAR flow when they are absent.
+  Served values: `request_uri_parameter_supported: true`,
+  `require_request_uri_registration: true` (the atproto profile forbids `false` here),
+  `request_parameter_supported: false` (no JAR support).
 }
