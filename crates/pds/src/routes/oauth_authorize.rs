@@ -1,9 +1,9 @@
 // pattern: Imperative Shell
 //
-// Gathers: query params (client_id, redirect_uri, code_challenge, code_challenge_method,
-//          state, scope, response_type) on GET; form body (action + same fields) on POST
+// Gathers: query params (client_id + PAR request_uri) on GET; form body (action +
+//          the consent fields) on POST
 // Processes:
-//   GET:  looks up client → validates redirect_uri → validates remaining params → renders HTML
+//   GET:  resolves the PAR request → looks up client → validates redirect_uri → renders HTML
 //   POST: validates client + redirect_uri first → handles deny/approve → generates auth code
 // Returns:
 //   GET:  HTML consent page (200) or HTML error page (400) when redirect is unsafe
@@ -11,11 +11,13 @@
 
 //! `GET`/`POST /oauth/authorize` — the authorization endpoint and its consent page.
 //!
-//! **Non-PAR requests resolve live.** A cache miss on a URL-shaped `client_id` fetches the
-//! client-metadata document with the same resolver PAR uses (`auth/oauth_client_resolution.rs`),
-//! so direct authorization requests from real-world clients that skip PAR (bsky.social tolerates
-//! them) still work; the document is cached only after the request fully validates. The
-//! reverse-FQDN private-use-redirect rule is enforced here as well as at PAR.
+//! **PAR only.** The server metadata advertises `require_pushed_authorization_requests: true`
+//! (the atproto OAuth profile mandates PAR), and this endpoint enforces it: a GET without a
+//! PAR-issued `request_uri` gets the no-redirect error page, as does one carrying a JAR
+//! (RFC 9101) `request` object — advertised unsupported via
+//! `request_parameter_supported: false` and rejected rather than silently ignored. Client
+//! registration therefore happens at `/oauth/par`; this endpoint only reads the cached row.
+//! The reverse-FQDN private-use-redirect rule is enforced here as well as at PAR.
 //!
 //! **`response_mode`.** Honored on every success and error redirect: `query` (the default) or
 //! `fragment` (the `@atproto/oauth-client-browser` default).
@@ -42,8 +44,8 @@ use crate::auth::token::generate_token;
 use crate::code_gen::{generate_login_code, generate_match_code};
 use crate::db::accounts::{active_local_account_exists, resolve_identifier};
 use crate::db::oauth::{
-    consume_par_request, get_oauth_client, store_authorization_code, upsert_oauth_client,
-    ClientMetadata, StoredPARParams,
+    consume_par_request, get_oauth_client, store_authorization_code, ClientMetadata,
+    StoredPARParams,
 };
 use crate::db::pending_oauth_authorizations::{
     cleanup_expired_pending_authorizations, insert_oauth_consent_audit_event,
@@ -76,8 +78,8 @@ fn sanitize_origin(raw: &str) -> Option<String> {
 
 /// Fully-resolved parameters for the authorization consent page.
 ///
-/// Constructed either directly from query params (non-PAR flow) or by looking up
-/// the stored PAR request and deserializing its JSON (PAR flow via `request_uri`).
+/// Constructed by looking up the stored PAR request named by `request_uri` and
+/// deserializing its JSON — the only way in, since this endpoint is PAR-only.
 pub struct AuthorizeQuery {
     pub client_id: String,
     pub redirect_uri: String,
@@ -93,35 +95,24 @@ pub struct AuthorizeQuery {
     /// ATProto extension: the client's hint about which account is authorizing.
     /// Pre-populates the identifier field on the consent page.
     pub login_hint: Option<String>,
-    /// The DPoP key thumbprint bound at PAR time (RFC 9449 §10), when the flow came
-    /// through PAR and proved a key. Never populated on the direct (non-PAR) path: there
-    /// is no authenticated channel on which a client could assert a key there.
+    /// The DPoP key thumbprint bound at PAR time (RFC 9449 §10), when the pushing
+    /// client proved a key. `None` when it pushed without one.
     pub dpop_jkt: Option<String>,
 }
 
 /// Raw query parameters for `GET /oauth/authorize`.
 ///
-/// All authorization-specific fields are `Option<String>` so that PAR requests
-/// (which only send `client_id` and `request_uri`) pass serde deserialization.
-/// The handler resolves these into a fully-populated `AuthorizeQuery`.
+/// A conformant request carries exactly `client_id` and `request_uri` (PAR-only).
+/// `request` exists only to be rejected: serde drops unknown query fields silently,
+/// and a JAR request object we advertise as unsupported must fail loudly rather
+/// than have its inner parameters ignored.
 #[derive(Deserialize)]
 pub struct GetAuthorizationQuery {
     pub client_id: String,
-    /// PAR reference. When present, all other params come from the stored request.
+    /// PAR reference. All authorization parameters come from the stored request.
     pub request_uri: Option<String>,
-    // Direct auth params — required when request_uri is absent:
-    pub redirect_uri: Option<String>,
-    pub code_challenge: Option<String>,
-    pub code_challenge_method: Option<String>,
-    pub state: Option<String>,
-    pub response_type: Option<String>,
-    pub response_mode: Option<String>,
-    pub scope: Option<String>,
-    pub login_hint: Option<String>,
-}
-
-fn default_scope() -> String {
-    "atproto".to_string()
+    /// JAR (RFC 9101) request object — not supported, present only for rejection.
+    pub request: Option<String>,
 }
 
 /// Form body for `POST /oauth/authorize`.
@@ -186,99 +177,103 @@ const UNSUPPORTED_RESPONSE_MODE_MSG: &str = "The app asked for a kind of sign-in
 
 /// Resolve `GetAuthorizationQuery` into a fully-populated `AuthorizeQuery`.
 ///
-/// When `request_uri` is present (PAR flow), atomically consumes the stored request
-/// (single-use per RFC 9126 §4), deserializes the params JSON, and validates `client_id`
-/// matches. When absent (direct flow), constructs `AuthorizeQuery` from raw params.
+/// PAR-only: atomically consumes the stored request named by `request_uri` (single-use
+/// per RFC 9126 §4), deserializes the params JSON, and validates `client_id` matches.
+/// A request carrying a JAR `request` object or arriving without a `request_uri` is
+/// rejected before anything is consumed — neither names a redirect target this server
+/// has validated, so both get the no-redirect error page.
 async fn resolve_authorize_params(
     state: &AppState,
     raw: GetAuthorizationQuery,
 ) -> Result<AuthorizeQuery, ResolveError> {
-    if let Some(uri) = raw.request_uri {
-        let row = match consume_par_request(&state.db, &uri).await {
-            Ok(Some(r)) => r,
-            Ok(None) => {
-                return Err(ResolveError::Client(
-                    "This sign-in link has expired or was already used. Nothing was \
-                     granted. Go back to the app and start the sign-in again.",
-                ))
-            }
-            Err(e) => {
-                tracing::error!(error = %e, "db error consuming PAR request");
-                return Err(ResolveError::Server(SERVER_ERROR_PAGE_MSG));
-            }
-        };
+    // Checked before the PAR row is touched, so a request that mixes a valid
+    // `request_uri` with a `request` object fails without burning the single-use row.
+    if raw.request.is_some() {
+        tracing::info!(
+            client_id = %raw.client_id,
+            "authorize request rejected: JAR request objects are not supported"
+        );
+        return Err(ResolveError::Client(
+            "The app sent its sign-in request in a format this server doesn't \
+             support, so the request stopped here. Nothing was granted. If this \
+             keeps happening, the problem is on the app's side.",
+        ));
+    }
 
-        if row.client_id != raw.client_id {
-            tracing::info!(
-                client_id = %raw.client_id,
-                "authorize request rejected: client_id does not match the pushed authorization request"
-            );
+    let Some(uri) = raw.request_uri else {
+        // The metadata advertises `require_pushed_authorization_requests: true`; a
+        // client sending inline authorization parameters skipped PAR and is refused
+        // at flow start rather than allowed down a path the metadata says is closed.
+        tracing::info!(
+            client_id = %raw.client_id,
+            "authorize request rejected: no PAR request_uri (this server is PAR-only)"
+        );
+        return Err(ResolveError::Client(
+            "The app started sign-in without the preliminary step this server \
+             requires, so the request stopped here. Nothing was granted. If this \
+             keeps happening, the problem is on the app's side.",
+        ));
+    };
+
+    let row = match consume_par_request(&state.db, &uri).await {
+        Ok(Some(r)) => r,
+        Ok(None) => {
             return Err(ResolveError::Client(
-                "This sign-in request doesn't match the app that started it, so it \
-                 stopped here. Nothing was granted. Go back to the app and start the \
-                 sign-in again.",
-            ));
+                "This sign-in link has expired or was already used. Nothing was \
+                 granted. Go back to the app and start the sign-in again.",
+            ))
         }
+        Err(e) => {
+            tracing::error!(error = %e, "db error consuming PAR request");
+            return Err(ResolveError::Server(SERVER_ERROR_PAGE_MSG));
+        }
+    };
 
-        let stored: StoredPARParams = match serde_json::from_str(&row.request_parameters) {
-            Ok(p) => p,
-            Err(e) => {
-                tracing::error!(
-                    client_id = %raw.client_id,
-                    error = %e,
-                    "failed to deserialize stored PAR request parameters; possible schema drift or DB corruption"
-                );
-                return Err(ResolveError::Server(SERVER_ERROR_PAGE_MSG));
-            }
-        };
+    if row.client_id != raw.client_id {
+        tracing::info!(
+            client_id = %raw.client_id,
+            "authorize request rejected: client_id does not match the pushed authorization request"
+        );
+        return Err(ResolveError::Client(
+            "This sign-in request doesn't match the app that started it, so it \
+             stopped here. Nothing was granted. Go back to the app and start the \
+             sign-in again.",
+        ));
+    }
 
-        // The PAR endpoint validated the mode before storing it, so a parse failure here
-        // means the stored row was hand-edited or the schema drifted — a client error is
-        // still the safer framing (nothing redirects yet).
-        let response_mode =
-            ResponseMode::parse(Some(stored.response_mode.as_str())).map_err(|desc| {
-                tracing::info!(desc, "authorize request rejected: bad stored response_mode");
-                ResolveError::Client(UNSUPPORTED_RESPONSE_MODE_MSG)
-            })?;
+    let stored: StoredPARParams = match serde_json::from_str(&row.request_parameters) {
+        Ok(p) => p,
+        Err(e) => {
+            tracing::error!(
+                client_id = %raw.client_id,
+                error = %e,
+                "failed to deserialize stored PAR request parameters; possible schema drift or DB corruption"
+            );
+            return Err(ResolveError::Server(SERVER_ERROR_PAGE_MSG));
+        }
+    };
 
-        Ok(AuthorizeQuery {
-            client_id: raw.client_id,
-            redirect_uri: stored.redirect_uri,
-            code_challenge: stored.code_challenge,
-            code_challenge_method: stored.code_challenge_method,
-            state: stored.state,
-            response_type: stored.response_type,
-            response_mode,
-            scope: stored.scope,
-            login_hint: stored.login_hint,
-            dpop_jkt: stored.dpop_jkt,
-        })
-    } else {
-        // Direct (non-PAR) flow: the mode arrives as a raw query parameter. Rejecting an
-        // unknown mode here — before any redirect is issued — matches the PAR posture.
-        let response_mode = ResponseMode::parse(raw.response_mode.as_deref()).map_err(|desc| {
-            tracing::info!(desc, "authorize request rejected: bad response_mode");
+    // The PAR endpoint validated the mode before storing it, so a parse failure here
+    // means the stored row was hand-edited or the schema drifted — a client error is
+    // still the safer framing (nothing redirects yet).
+    let response_mode =
+        ResponseMode::parse(Some(stored.response_mode.as_str())).map_err(|desc| {
+            tracing::info!(desc, "authorize request rejected: bad stored response_mode");
             ResolveError::Client(UNSUPPORTED_RESPONSE_MODE_MSG)
         })?;
 
-        Ok(AuthorizeQuery {
-            client_id: raw.client_id,
-            redirect_uri: raw.redirect_uri.unwrap_or_default(),
-            code_challenge: raw.code_challenge.unwrap_or_default(),
-            code_challenge_method: raw.code_challenge_method.unwrap_or_default(),
-            state: raw.state.unwrap_or_default(),
-            response_type: raw.response_type.unwrap_or_default(),
-            response_mode,
-            scope: raw
-                .scope
-                .filter(|s| !s.is_empty())
-                .unwrap_or_else(default_scope),
-            login_hint: raw.login_hint,
-            // The direct (non-PAR) path has no channel on which the client could assert a
-            // DPoP key: query parameters are attacker-controllable.
-            dpop_jkt: None,
-        })
-    }
+    Ok(AuthorizeQuery {
+        client_id: raw.client_id,
+        redirect_uri: stored.redirect_uri,
+        code_challenge: stored.code_challenge,
+        code_challenge_method: stored.code_challenge_method,
+        state: stored.state,
+        response_type: stored.response_type,
+        response_mode,
+        scope: stored.scope,
+        login_hint: stored.login_hint,
+        dpop_jkt: stored.dpop_jkt,
+    })
 }
 
 /// Failure modes of [`lookup_and_validate_client`].
@@ -288,9 +283,6 @@ async fn resolve_authorize_params(
 enum ClientValidationError {
     /// No client is registered under the supplied `client_id`.
     UnknownClient,
-    /// A URL-shaped `client_id` had no cached row and its metadata document could not
-    /// be fetched/validated. Carries the resolver's client-developer-facing reason.
-    ResolutionFailed(String),
     /// A database error occurred while looking up the client.
     DbError,
     /// The stored client metadata could not be deserialized.
@@ -309,35 +301,18 @@ enum ClientValidationError {
 /// parsed [`ClientMetadata`] on success, or a [`ClientValidationError`] the caller
 /// renders as its own error page.
 ///
-/// A cache miss for a URL-shaped `client_id` resolves the client's metadata document
-/// live (the same ATProto resolver `/oauth/par` uses). PAR normally does this first —
-/// but not every real client uses PAR (bsky.social tolerates direct authorization
-/// requests, so non-PAR clients exist in the wild), and without this branch such a
-/// client dies here with "not registered" despite publishing valid metadata. The
-/// fetched document is cached only after the whole request validates, mirroring PAR's
-/// rejected-requests-must-not-plant-rows doctrine.
+/// Lookup is cache-only: the PAR endpoint resolves and caches the client's metadata
+/// document before it issues a `request_uri`, and this endpoint refuses requests
+/// that didn't come through PAR, so an unknown `client_id` here means the request
+/// never pushed (a forged POST, or a row lost between PAR and now) — not a real
+/// client this server should go fetch on demand.
 async fn lookup_and_validate_client(
     state: &AppState,
     client_id: &str,
     redirect_uri: &str,
 ) -> Result<ClientMetadata, ClientValidationError> {
-    let (client_metadata_json, freshly_fetched) = match get_oauth_client(&state.db, client_id).await
-    {
-        Ok(Some(row)) => (row.client_metadata, false),
-        Ok(None) if client_id.starts_with("https://") || client_id.starts_with("http://") => {
-            match crate::auth::oauth_client_resolution::resolve_client_metadata(
-                &state.http_client,
-                client_id,
-            )
-            .await
-            {
-                Ok(json) => (json, true),
-                Err(e) => {
-                    tracing::info!(client_id = %client_id, error = %e, "URL client_id resolution failed at authorize");
-                    return Err(ClientValidationError::ResolutionFailed(e.to_string()));
-                }
-            }
-        }
+    let client_metadata_json = match get_oauth_client(&state.db, client_id).await {
+        Ok(Some(row)) => row.client_metadata,
         Ok(None) => return Err(ClientValidationError::UnknownClient),
         Err(e) => {
             tracing::error!(error = %e, "db error looking up OAuth client");
@@ -362,20 +337,12 @@ async fn lookup_and_validate_client(
     }
 
     // The reverse-FQDN rule for private-use-scheme redirects, enforced here as well as
-    // at PAR so the direct (non-PAR) flow can't sidestep it.
+    // at PAR so a forged consent POST (hidden fields are attacker-controllable) can't
+    // sidestep it.
     if let Err(desc) =
         crate::auth::oauth_client_resolution::validate_private_use_redirect(client_id, redirect_uri)
     {
         return Err(ClientValidationError::PrivateUseRedirectMismatch(desc));
-    }
-
-    // Cache a freshly resolved document only after the request fully validated, so a
-    // rejected request never plants a client row.
-    if freshly_fetched {
-        if let Err(e) = upsert_oauth_client(&state.db, client_id, &client_metadata_json).await {
-            tracing::error!(error = %e, client_id = %client_id, "failed to cache resolved OAuth client metadata");
-            return Err(ClientValidationError::DbError);
-        }
     }
 
     Ok(metadata)
@@ -383,9 +350,10 @@ async fn lookup_and_validate_client(
 
 /// `GET /oauth/authorize` — validate request parameters and render the consent page.
 ///
-/// Accepts either direct query parameters or a PAR `request_uri` (RFC 9126).
-/// Returns an HTML error page (400) for errors that make a redirect unsafe:
-/// unknown `client_id` or mismatched `redirect_uri`. All other parameter errors
+/// Accepts only a PAR `request_uri` (RFC 9126); direct parameters and JAR `request`
+/// objects are rejected in `resolve_authorize_params`. Returns an HTML error page
+/// (400) for errors that make a redirect unsafe: no resolvable pushed request,
+/// unknown `client_id`, or mismatched `redirect_uri`. All other parameter errors
 /// redirect to `redirect_uri` with an `error` query parameter per RFC 6749 §4.1.2.1.
 pub async fn get_authorization(
     State(state): State<AppState>,
@@ -415,17 +383,6 @@ pub async fn get_authorization(
                     "This server doesn't recognize the app asking to sign you in, so \
                      the request stopped here. Nothing was granted. If this keeps \
                      happening, the problem is on the app's side.",
-                )
-                .into_response()
-            }
-            Err(ClientValidationError::ResolutionFailed(desc)) => {
-                return error_page(
-                    "This app isn't recognized",
-                    &format!(
-                        "This server couldn't verify the app asking to sign you in, so \
-                         the request stopped here. Nothing was granted. Details for the \
-                         app's developer: {desc}"
-                    ),
                 )
                 .into_response()
             }
@@ -822,17 +779,6 @@ pub async fn post_authorization(
                     "This server doesn't recognize the app asking to sign you in, so the \
                  request stopped here. Nothing was granted. If this keeps happening, \
                  the problem is on the app's side.",
-                )
-                .into_response()
-            }
-            Err(ClientValidationError::ResolutionFailed(desc)) => {
-                return error_page(
-                    "This app isn't recognized",
-                    &format!(
-                        "This server couldn't verify the app asking to sign you in, so the \
-                     request stopped here. Nothing was granted. Details for the app's \
-                     developer: {desc}"
-                    ),
                 )
                 .into_response()
             }
@@ -1368,18 +1314,53 @@ mod tests {
         state
     }
 
-    fn authorize_url(extra_params: &str) -> String {
-        format!(
-            "/oauth/authorize\
-             ?client_id=https%3A%2F%2Fapp.example.com%2Fclient-metadata.json\
-             &redirect_uri=https%3A%2F%2Fapp.example.com%2Fcallback\
-             &code_challenge=e3b0c44298fc1c149afb\
-             &code_challenge_method=S256\
-             &state=teststate\
-             &response_type=code\
-             &scope=atproto\
-             {extra_params}"
+    /// Default stored-PAR parameters; tests mutate individual fields before storing.
+    fn par_params() -> serde_json::Value {
+        serde_json::json!({
+            "redirect_uri": REDIRECT_URI,
+            "code_challenge": "e3b0c44298fc1c149afb",
+            "code_challenge_method": "S256",
+            "state": "teststate",
+            "response_type": "code",
+            "scope": "atproto",
+            "login_hint": null,
+        })
+    }
+
+    /// Store `params` as a PAR request under a fresh `request_uri` and return the
+    /// authorize URL referencing it — the only shape the PAR-only endpoint accepts.
+    async fn authorize_url_via_par(
+        state: &crate::app::AppState,
+        params: &serde_json::Value,
+    ) -> String {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static SEQ: AtomicU64 = AtomicU64::new(0);
+        let request_uri = format!(
+            "urn:ietf:params:oauth:request_uri:test-{}",
+            SEQ.fetch_add(1, Ordering::Relaxed)
+        );
+        crate::db::oauth::store_par_request(
+            &state.db,
+            &request_uri,
+            CLIENT_ID,
+            &params.to_string(),
         )
+        .await
+        .unwrap();
+        format!(
+            "/oauth/authorize?client_id={}&request_uri={}",
+            crate::routes::oauth_templates::encode_param(CLIENT_ID),
+            crate::routes::oauth_templates::encode_param(&request_uri),
+        )
+    }
+
+    /// Push `params` via PAR, then GET the authorize endpoint with the issued reference.
+    async fn get_authorize_via_par(
+        state: crate::app::AppState,
+        params: serde_json::Value,
+    ) -> axum::response::Response {
+        let url = authorize_url_via_par(&state, &params).await;
+        get_authorize(state, &url).await
     }
 
     async fn get_authorize(state: crate::app::AppState, url: &str) -> axum::response::Response {
@@ -1432,7 +1413,7 @@ mod tests {
 
     #[tokio::test]
     async fn get_returns_200_with_html_content_type() {
-        let resp = get_authorize(state_with_client().await, &authorize_url("")).await;
+        let resp = get_authorize_via_par(state_with_client().await, par_params()).await;
         assert_eq!(resp.status(), StatusCode::OK);
         assert!(resp
             .headers()
@@ -1444,33 +1425,19 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn get_returns_400_for_unknown_client_id() {
-        let state = test_state().await; // no client registered
-        let resp = get_authorize(state, &authorize_url("")).await;
-        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
-    }
-
-    #[tokio::test]
     async fn get_returns_400_for_mismatched_redirect_uri() {
-        let resp = get_authorize(
-            state_with_client().await,
-            &authorize_url("").replace(
-                "redirect_uri=https%3A%2F%2Fapp.example.com%2Fcallback",
-                "redirect_uri=https%3A%2F%2Fevil.example.com%2Fcallback",
-            ),
-        )
-        .await;
+        let mut params = par_params();
+        params["redirect_uri"] = "https://evil.example.com/callback".into();
+        let resp = get_authorize_via_par(state_with_client().await, params).await;
         assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
     }
 
     #[tokio::test]
     async fn get_redirects_with_error_for_wrong_response_type() {
         // response_type check happens after redirect_uri validation — redirects, not error page.
-        let resp = get_authorize(
-            state_with_client().await,
-            &authorize_url("").replace("response_type=code", "response_type=token"),
-        )
-        .await;
+        let mut params = par_params();
+        params["response_type"] = "token".into();
+        let resp = get_authorize_via_par(state_with_client().await, params).await;
         assert_eq!(resp.status(), StatusCode::SEE_OTHER);
         let location = resp.headers().get("location").unwrap().to_str().unwrap();
         assert!(location.contains("error=unsupported_response_type"));
@@ -1478,9 +1445,9 @@ mod tests {
 
     #[tokio::test]
     async fn get_redirects_with_error_for_non_s256_challenge_method() {
-        let url =
-            authorize_url("").replace("code_challenge_method=S256", "code_challenge_method=plain");
-        let resp = get_authorize(state_with_client().await, &url).await;
+        let mut params = par_params();
+        params["code_challenge_method"] = "plain".into();
+        let resp = get_authorize_via_par(state_with_client().await, params).await;
         assert_eq!(resp.status(), StatusCode::SEE_OTHER);
         let location = resp.headers().get("location").unwrap().to_str().unwrap();
         assert!(location.contains("error=invalid_request"));
@@ -1488,7 +1455,7 @@ mod tests {
 
     #[tokio::test]
     async fn get_consent_page_contains_client_name() {
-        let resp = get_authorize(state_with_client().await, &authorize_url("")).await;
+        let resp = get_authorize_via_par(state_with_client().await, par_params()).await;
         let body = axum::body::to_bytes(resp.into_body(), 32768).await.unwrap();
         let html = std::str::from_utf8(&body).unwrap();
         assert!(
@@ -1504,7 +1471,7 @@ mod tests {
         register_oauth_client(&state.db, CLIENT_ID, metadata_no_name)
             .await
             .unwrap();
-        let resp = get_authorize(state, &authorize_url("")).await;
+        let resp = get_authorize_via_par(state, par_params()).await;
         let body = axum::body::to_bytes(resp.into_body(), 32768).await.unwrap();
         let html = std::str::from_utf8(&body).unwrap();
         assert!(
@@ -1520,7 +1487,7 @@ mod tests {
         register_oauth_client(&state.db, CLIENT_ID, xss_metadata)
             .await
             .unwrap();
-        let resp = get_authorize(state, &authorize_url("")).await;
+        let resp = get_authorize_via_par(state, par_params()).await;
         let body = axum::body::to_bytes(resp.into_body(), 32768).await.unwrap();
         let html = std::str::from_utf8(&body).unwrap();
         // The page carries a legitimate inline poll <script> for the wallet path, so assert on the
@@ -1538,12 +1505,13 @@ mod tests {
 
     #[tokio::test]
     async fn get_consent_page_rejects_malformed_scope_instead_of_rendering_it() {
-        // scope=<b>bold</b> URL-encoded in the request — not a valid scope (no `atproto` base,
+        // scope=<b>bold</b> in the stored request — not a valid scope (no `atproto` base,
         // not a recognized token). `expand_include_scopes`'s embedded `normalize_scope_request`
         // validates the GET path's scope too, so this is rejected via redirect before ever
         // reaching render — a stronger property than merely escaping malicious/malformed content.
-        let url = authorize_url("").replace("scope=atproto", "scope=%3Cb%3Ebold%3C%2Fb%3E");
-        let resp = get_authorize(state_with_client().await, &url).await;
+        let mut params = par_params();
+        params["scope"] = "<b>bold</b>".into();
+        let resp = get_authorize_via_par(state_with_client().await, params).await;
         assert_eq!(resp.status(), StatusCode::SEE_OTHER);
         let location = resp.headers().get("location").unwrap().to_str().unwrap();
         assert!(location.contains("error=invalid_scope"), "got: {location}");
@@ -1597,11 +1565,9 @@ mod tests {
     #[tokio::test]
     async fn hinted_login_without_a_relay_requires_no_number() {
         let state = state_with_client_and_mobile_account().await;
-        let resp = get_authorize(
-            state.clone(),
-            &authorize_url(&format!("&login_hint={TEST_HANDLE}")),
-        )
-        .await;
+        let mut params = par_params();
+        params["login_hint"] = TEST_HANDLE.into();
+        let resp = get_authorize_via_par(state.clone(), params).await;
         assert_eq!(resp.status(), StatusCode::OK);
         let body = axum::body::to_bytes(resp.into_body(), 32768).await.unwrap();
         let html = std::str::from_utf8(&body).unwrap();
@@ -1621,7 +1587,7 @@ mod tests {
     #[tokio::test]
     async fn get_consent_page_creates_pending_request_and_renders_wallet_path() {
         let state = state_with_client().await;
-        let resp = get_authorize(state.clone(), &authorize_url("")).await;
+        let resp = get_authorize_via_par(state.clone(), par_params()).await;
         assert_eq!(resp.status(), StatusCode::OK);
         let body = axum::body::to_bytes(resp.into_body(), 32768).await.unwrap();
         let html = std::str::from_utf8(&body).unwrap();
@@ -1650,7 +1616,7 @@ mod tests {
 
     #[tokio::test]
     async fn get_consent_page_contains_scope_tag() {
-        let resp = get_authorize(state_with_client().await, &authorize_url("")).await;
+        let resp = get_authorize_via_par(state_with_client().await, par_params()).await;
         let body = axum::body::to_bytes(resp.into_body(), 32768).await.unwrap();
         let html = std::str::from_utf8(&body).unwrap();
         assert!(
@@ -1661,7 +1627,7 @@ mod tests {
 
     #[tokio::test]
     async fn get_consent_page_has_approve_and_deny_buttons() {
-        let resp = get_authorize(state_with_client().await, &authorize_url("")).await;
+        let resp = get_authorize_via_par(state_with_client().await, par_params()).await;
         let body = axum::body::to_bytes(resp.into_body(), 32768).await.unwrap();
         let html = std::str::from_utf8(&body).unwrap();
         assert!(html.contains("value=\"approve\""));
@@ -1670,7 +1636,7 @@ mod tests {
 
     #[tokio::test]
     async fn get_consent_page_has_hidden_inputs_with_request_values() {
-        let resp = get_authorize(state_with_client().await, &authorize_url("")).await;
+        let resp = get_authorize_via_par(state_with_client().await, par_params()).await;
         let body = axum::body::to_bytes(resp.into_body(), 32768).await.unwrap();
         let html = std::str::from_utf8(&body).unwrap();
         assert!(html.contains("name=\"state\""));
@@ -1816,7 +1782,7 @@ mod tests {
 
     #[tokio::test]
     async fn get_consent_page_renders_identifier_input() {
-        let resp = get_authorize(state_with_client().await, &authorize_url("")).await;
+        let resp = get_authorize_via_par(state_with_client().await, par_params()).await;
         let body = axum::body::to_bytes(resp.into_body(), 32768).await.unwrap();
         let html = std::str::from_utf8(&body).unwrap();
         assert!(
@@ -1827,7 +1793,7 @@ mod tests {
 
     #[tokio::test]
     async fn get_consent_page_renders_password_input() {
-        let resp = get_authorize(state_with_client().await, &authorize_url("")).await;
+        let resp = get_authorize_via_par(state_with_client().await, par_params()).await;
         let body = axum::body::to_bytes(resp.into_body(), 32768).await.unwrap();
         let html = std::str::from_utf8(&body).unwrap();
         assert!(
@@ -1838,8 +1804,9 @@ mod tests {
 
     #[tokio::test]
     async fn get_consent_page_prepopulates_identifier_from_login_hint() {
-        let url = authorize_url("&login_hint=alice.test");
-        let resp = get_authorize(state_with_client().await, &url).await;
+        let mut params = par_params();
+        params["login_hint"] = "alice.test".into();
+        let resp = get_authorize_via_par(state_with_client().await, params).await;
         let body = axum::body::to_bytes(resp.into_body(), 32768).await.unwrap();
         let html = std::str::from_utf8(&body).unwrap();
         assert!(
@@ -2173,16 +2140,17 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn get_authorization_direct_flow_without_redirect_uri_returns_error_page() {
+    async fn get_authorization_without_request_uri_is_rejected() {
+        // The metadata advertises require_pushed_authorization_requests: true — a direct
+        // authorization request with inline parameters must be refused at flow start,
+        // with no consent page and no pending wallet request created.
         let state = state_with_client().await;
-
-        // No redirect_uri → resolves to "" → fails registered-URIs check
-        let response = app(state)
+        let response = app(state.clone())
             .oneshot(
                 Request::builder()
                     .uri(format!(
-                        "/oauth/authorize?client_id={}&code_challenge=abc&code_challenge_method=S256&state=s&response_type=code",
-                        CLIENT_ID
+                        "/oauth/authorize?client_id={}&redirect_uri=https%3A%2F%2Fapp.example.com%2Fcallback&code_challenge=abc&code_challenge_method=S256&state=s&response_type=code&scope=atproto",
+                        crate::routes::oauth_templates::encode_param(CLIENT_ID)
                     ))
                     .body(Body::empty())
                     .unwrap(),
@@ -2196,8 +2164,53 @@ mod tests {
             .unwrap();
         let html = std::str::from_utf8(&body).unwrap();
         assert!(
-            html.contains("Can&#39;t return you to the app"),
-            "missing redirect_uri on direct flow should return the no-redirect error page"
+            html.contains("This sign-in request didn&#39;t work"),
+            "a non-PAR request must get the no-redirect error page"
+        );
+        let pending: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM pending_oauth_authorizations")
+            .fetch_one(&state.db)
+            .await
+            .unwrap();
+        assert_eq!(
+            pending, 0,
+            "a rejected request must not create consent state"
+        );
+    }
+
+    #[tokio::test]
+    async fn get_authorization_with_jar_request_parameter_is_rejected() {
+        // request_parameter_supported: false is advertised — a JAR `request` object must be
+        // rejected, not silently ignored, even alongside a valid request_uri. The rejection
+        // happens before the PAR row is consumed, so the single-use row survives.
+        let state = state_with_client().await;
+        let params = par_params();
+        let url = authorize_url_via_par(&state, &params).await;
+        let response = app(state.clone())
+            .oneshot(
+                Request::builder()
+                    .uri(format!("{url}&request=eyJhbGciOiJub25lIn0.e30."))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let body = axum::body::to_bytes(response.into_body(), 32768)
+            .await
+            .unwrap();
+        let html = std::str::from_utf8(&body).unwrap();
+        assert!(
+            html.contains("This sign-in request didn&#39;t work"),
+            "a JAR request must get the no-redirect error page"
+        );
+        let rows: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM oauth_par_requests")
+            .fetch_one(&state.db)
+            .await
+            .unwrap();
+        assert_eq!(
+            rows, 1,
+            "the pushed request must not be consumed by the rejection"
         );
     }
 
@@ -2424,16 +2437,9 @@ mod tests {
         ]))
         .await;
 
-        let url = authorize_url("").replace(
-            "scope=atproto",
-            &format!(
-                "scope={}",
-                crate::routes::oauth_templates::encode_param(&format!(
-                    "atproto include:{AUTHORITY_NSID}"
-                ))
-            ),
-        );
-        let resp = get_authorize(state, &url).await;
+        let mut params = par_params();
+        params["scope"] = format!("atproto include:{AUTHORITY_NSID}").into();
+        let resp = get_authorize_via_par(state, params).await;
         assert_eq!(resp.status(), StatusCode::OK);
         let body = axum::body::to_bytes(resp.into_body(), 32768).await.unwrap();
         let html = std::str::from_utf8(&body).unwrap();
@@ -2454,14 +2460,9 @@ mod tests {
         // desync from what post_authorization later grants if the authority becomes reachable
         // by the time the user submits (see oauth-scopes-permission-sets design notes).
         let state = state_with_client().await;
-        let url = authorize_url("").replace(
-            "scope=atproto",
-            &format!(
-                "scope={}",
-                crate::routes::oauth_templates::encode_param("atproto include:app.bsky.authFull")
-            ),
-        );
-        let resp = get_authorize(state, &url).await;
+        let mut params = par_params();
+        params["scope"] = "atproto include:app.bsky.authFull".into();
+        let resp = get_authorize_via_par(state, params).await;
         assert_eq!(resp.status(), StatusCode::SEE_OTHER);
         let location = resp.headers().get("location").unwrap().to_str().unwrap();
         assert!(location.contains("error=invalid_scope"), "got: {location}");
@@ -2490,16 +2491,9 @@ mod tests {
     #[tokio::test]
     async fn ac5_1_consent_page_groups_permissions_by_resource_type() {
         let state = state_with_client().await;
-        let url = authorize_url("").replace(
-            "scope=atproto",
-            &format!(
-                "scope={}",
-                crate::routes::oauth_templates::encode_param(
-                    "atproto repo:app.bsky.feed.post identity:handle"
-                )
-            ),
-        );
-        let resp = get_authorize(state, &url).await;
+        let mut params = par_params();
+        params["scope"] = "atproto repo:app.bsky.feed.post identity:handle".into();
+        let resp = get_authorize_via_par(state, params).await;
         assert_eq!(resp.status(), StatusCode::OK);
         let body = axum::body::to_bytes(resp.into_body(), 32768).await.unwrap();
         let html = std::str::from_utf8(&body).unwrap();
@@ -2608,7 +2602,9 @@ mod tests {
     #[tokio::test]
     async fn get_carries_a_fragment_response_mode_into_the_consent_form() {
         let state = state_with_client().await;
-        let resp = get_authorize(state, &authorize_url("&response_mode=fragment")).await;
+        let mut params = par_params();
+        params["response_mode"] = "fragment".into();
+        let resp = get_authorize_via_par(state, params).await;
         assert_eq!(resp.status(), StatusCode::OK);
         let html = body_string(resp).await;
         assert!(
@@ -2619,8 +2615,12 @@ mod tests {
 
     #[tokio::test]
     async fn get_rejects_an_unsupported_response_mode() {
+        // An unsupported mode in the stored PAR row (schema drift / hand-edited row —
+        // the PAR endpoint validates before storing) still fails before any redirect.
         let state = state_with_client().await;
-        let resp = get_authorize(state, &authorize_url("&response_mode=form_post")).await;
+        let mut params = par_params();
+        params["response_mode"] = "form_post".into();
+        let resp = get_authorize_via_par(state, params).await;
         assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
         let html = body_string(resp).await;
         assert!(
@@ -2641,152 +2641,28 @@ mod tests {
         assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
     }
 
-    // ── Live client resolution at the authorize endpoint (non-PAR clients) ────
-
-    /// Serve a client-metadata document at `/oauth/client-metadata.json` on an ephemeral
-    /// loopback port; returns the document's URL (which doubles as the client_id). Mirrors
-    /// the PAR test harness — routes cannot share test helpers across modules.
-    async fn serve_client_metadata(make_json: impl FnOnce(&str) -> String) -> String {
-        use std::future::IntoFuture;
-
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let url = format!(
-            "http://127.0.0.1:{}/oauth/client-metadata.json",
-            listener.local_addr().unwrap().port()
-        );
-        let json = make_json(&url);
-        let router = axum::Router::new().route(
-            "/oauth/client-metadata.json",
-            axum::routing::get(move || {
-                let json = json.clone();
-                async move { ([("content-type", "application/json")], json) }
-            }),
-        );
-        tokio::spawn(axum::serve(listener, router).into_future());
-        url
-    }
-
-    fn authorize_url_for(client_id: &str, redirect_uri: &str) -> String {
-        format!(
-            "/oauth/authorize?client_id={}&redirect_uri={}\
-             &code_challenge=e3b0c44298fc1c149afb\
-             &code_challenge_method=S256\
-             &state=teststate\
-             &response_type=code\
-             &scope=atproto",
-            crate::routes::oauth_templates::encode_param(client_id),
-            crate::routes::oauth_templates::encode_param(redirect_uri),
-        )
-    }
+    // ── Cache-only client lookup at the authorize endpoint ────────────────────
 
     #[tokio::test]
-    async fn get_resolves_an_unregistered_url_client_id_and_caches_it() {
-        let state = test_state().await;
-        let client_id = serve_client_metadata(|url| {
-            serde_json::json!({
-                "client_id": url,
-                "redirect_uris": ["https://app.example.com/callback"],
-                "client_name": "Fetched Test App",
-            })
-            .to_string()
-        })
-        .await;
-
-        let resp = get_authorize(
-            state.clone(),
-            &authorize_url_for(&client_id, "https://app.example.com/callback"),
-        )
-        .await;
-
-        assert_eq!(
-            resp.status(),
-            StatusCode::OK,
-            "a direct (non-PAR) authorize request must resolve the client metadata live"
-        );
-        let html = body_string(resp).await;
-        assert!(html.contains("Fetched Test App"), "consent page renders");
-        let cached = crate::db::oauth::get_oauth_client(&state.db, &client_id)
-            .await
-            .unwrap();
-        assert!(
-            cached.is_some(),
-            "the resolved metadata must be cached for the POST/token legs"
-        );
-    }
-
-    #[tokio::test]
-    async fn get_reports_an_unresolvable_url_client_id() {
-        let state = test_state().await;
-        // Bind then drop a listener to get a loopback port that refuses connections.
-        let port = {
-            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-            listener.local_addr().unwrap().port()
-        };
-        let client_id = format!("http://127.0.0.1:{port}/oauth/client-metadata.json");
-
-        let resp = get_authorize(
-            state,
-            &authorize_url_for(&client_id, "https://app.example.com/callback"),
-        )
-        .await;
-
-        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
-        let html = body_string(resp).await;
-        assert!(
-            html.contains("Details for the app&#39;s developer:"),
-            "resolution failure must be reported distinctly from an unregistered client"
-        );
-    }
-
-    #[tokio::test]
-    async fn get_still_rejects_an_unknown_non_url_client_id() {
-        let state = test_state().await;
-        let resp = get_authorize(
-            state,
-            &authorize_url_for(
-                "dev.unregistered.client",
-                "https://app.example.com/callback",
-            ),
-        )
-        .await;
+    async fn post_never_resolves_client_metadata_live() {
+        // Registration happens at PAR; client lookup here is cache-only. The GET leg
+        // can't even reach an unknown client (the PAR row's client_id is FK-bound to a
+        // registered row), so the reachable case is a consent POST whose hidden,
+        // attacker-controllable client_id names an unregistered URL — refused as
+        // unknown, without attempting the live metadata fetch this endpoint used to
+        // fall back to for non-PAR clients.
+        let state = test_state().await; // CLIENT_ID not registered
+        let resp = post_authorize(state, &approve_form("")).await;
         assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
         let html = body_string(resp).await;
         assert!(html.contains("This server doesn&#39;t recognize the app"));
     }
 
     #[tokio::test]
-    async fn get_rejects_a_resolved_client_whose_redirect_uri_is_unlisted() {
-        let state = test_state().await;
-        let client_id = serve_client_metadata(|url| {
-            serde_json::json!({
-                "client_id": url,
-                "redirect_uris": ["https://other.example.com/cb"],
-            })
-            .to_string()
-        })
-        .await;
-
-        let resp = get_authorize(
-            state.clone(),
-            &authorize_url_for(&client_id, "https://app.example.com/callback"),
-        )
-        .await;
-
-        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
-        let cached = crate::db::oauth::get_oauth_client(&state.db, &client_id)
-            .await
-            .unwrap();
-        assert!(
-            cached.is_none(),
-            "metadata must be cached only after the request fully validates"
-        );
-    }
-
-    #[tokio::test]
     async fn get_enforces_the_reverse_fqdn_rule_for_private_use_redirects() {
         // A registered discoverable client whose metadata lists a custom-scheme redirect
-        // that does NOT reverse the client_id host — the direct (non-PAR) flow must
-        // enforce the same rule PAR does.
+        // that does NOT reverse the client_id host — the authorize leg re-checks the
+        // rule PAR enforces, so a stale/hand-edited row can't sidestep it.
         let state = test_state().await;
         register_oauth_client(
             &state.db,
@@ -2796,11 +2672,9 @@ mod tests {
         .await
         .unwrap();
 
-        let resp = get_authorize(
-            state,
-            &authorize_url_for(CLIENT_ID, "dev.other.app:/oauth/callback"),
-        )
-        .await;
+        let mut params = par_params();
+        params["redirect_uri"] = "dev.other.app:/oauth/callback".into();
+        let resp = get_authorize_via_par(state, params).await;
 
         assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
         let html = body_string(resp).await;

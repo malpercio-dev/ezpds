@@ -405,19 +405,25 @@ async fn a_hinted_login_pushes_a_sealed_login_approval_to_the_wallet() {
     .await
     .expect("register client");
 
+    // The authorize endpoint is PAR-only, so the login's parameters are pushed first
+    // and the GET carries only the issued reference.
+    let request_uri = "urn:ietf:params:oauth:request_uri:notify-e2e-hinted-login";
+    crate::db::oauth::store_par_request(
+        &state.db,
+        request_uri,
+        "https://app.example.com/client-metadata.json",
+        r#"{"redirect_uri":"https://app.example.com/callback","code_challenge":"e3b0c44298fc1c149afb","code_challenge_method":"S256","state":"teststate","response_type":"code","scope":"atproto","login_hint":"notifye2e.example.com"}"#,
+    )
+    .await
+    .expect("store PAR request");
+
     let response = crate::app::app(state.clone())
         .oneshot(
-            Request::get(
+            Request::get(format!(
                 "/oauth/authorize\
                  ?client_id=https%3A%2F%2Fapp.example.com%2Fclient-metadata.json\
-                 &redirect_uri=https%3A%2F%2Fapp.example.com%2Fcallback\
-                 &code_challenge=e3b0c44298fc1c149afb\
-                 &code_challenge_method=S256\
-                 &state=teststate\
-                 &response_type=code\
-                 &scope=atproto\
-                 &login_hint=notifye2e.example.com",
-            )
+                 &request_uri={request_uri}"
+            ))
             .body(Body::empty())
             .unwrap(),
         )
