@@ -8,6 +8,11 @@
 // The one thing this fixture adds is the account's **password**. tools/mcp's `TestAccount`
 // omits it (its suite authenticates with a session JWT), but the OAuth consent form needs a
 // real credential, so provisioning is repeated here against interop's richer return value.
+//
+// It also keeps the ceremony's **rotation key** and publishes the account's PLC audit log,
+// which together are what make the wallet consent path drivable: an approval is signed by a
+// key in the account's authoritative `rotationKeys`, and the server reads that set live from
+// the directory rather than from any cached document.
 
 import * as fs from 'node:fs';
 import * as http from 'node:http';
@@ -17,6 +22,8 @@ import * as path from 'node:path';
 
 import { ADMIN_TOKEN, spawnPds, type SpawnedPds } from '../../mcp/test/harness.ts';
 import { startMockPlc, type MockPlc } from './mock-plc.ts';
+import { buildAccountAuditLog } from './plc-audit-log.ts';
+import { keypairFromHex, type Keypair } from 'ezpds-interop/src/crypto.js';
 
 export { ADMIN_TOKEN };
 
@@ -96,14 +103,29 @@ export interface ConformanceAccount {
   email: string;
   /** The credential the consent form needs; interop sets it during the DID ceremony. */
   password: string;
+  /**
+   * `rotationKeys[0]` — the account's root of control, held by the wallet in production and
+   * by the test in-process here. Its `did:key` is what an approval envelope names as `key`,
+   * and the server accepts the envelope only because this key is in the account's
+   * authoritative rotation set (published by the fixture as the account's PLC audit log).
+   */
+  rotationKey: Keypair;
+  rotationKeyId: string;
 }
 
 export interface Fixture {
   baseUrl: string;
   account: ConformanceAccount;
   /**
-   * The directory the spawned PDS was pointed at, carrying the account's real DID document.
-   * A client that resolves DIDs (the official SDK does) must be pointed here too.
+   * The server's own DID, read from `describeServer` rather than derived from the base URL.
+   * It is the `aud` of every consent envelope, so a wallet that derived it independently
+   * would sign envelopes this server rejects the moment `server_did` is configured.
+   */
+  serverDid: string;
+  /**
+   * The directory the spawned PDS was pointed at, carrying the account's real DID document
+   * and PLC audit log. A client that resolves DIDs (the official SDK does) must be pointed
+   * here too.
    */
   plcUrl: string;
   stop: () => void;
@@ -174,15 +196,50 @@ export async function startFixture(
     }
     plc.register(created.did, didDoc);
 
+    // Publish the account's operation log too. `rotationKeys` live only in PLC operations —
+    // never in a DID document — and the wallet consent path resolves an approver's authority
+    // from the newest non-nullified entry here, live, on every approval.
+    plc.registerAuditLog(
+      created.did,
+      await buildAccountAuditLog(
+        {
+          did: created.did,
+          handle: created.handle,
+          rotationKeyId: created.rotationKeyId,
+          rotationKeyPrivateHex: created.rotationKeyPrivateHex,
+          recoveryKeyId: created.recoveryKeyId,
+          repoSigningKeyId: created.repoSigningKeyId,
+        },
+        pds.baseUrl,
+      ),
+    );
+
+    // The consent envelope's `aud`. Asked for rather than derived: `resolve_server_did()`
+    // prefers a configured `server_did` over the did:web form, and a wallet guessing wrong
+    // signs bytes the server will not reconstruct.
+    const describedServer = await fetch(
+      `${pds.baseUrl}/xrpc/com.atproto.server.describeServer`,
+    );
+    if (!describedServer.ok) {
+      throw new Error(`could not read describeServer: HTTP ${describedServer.status}`);
+    }
+    const { did: serverDid } = (await describedServer.json()) as { did?: string };
+    if (!serverDid) {
+      throw new Error('describeServer returned no did; consent envelopes have no audience');
+    }
+
     const spawned = pds;
     return {
       baseUrl: spawned.baseUrl,
       plcUrl: plc.url,
+      serverDid,
       account: {
         did: created.did,
         handle: created.handle,
         email: created.email,
         password: created.password,
+        rotationKeyId: created.rotationKeyId,
+        rotationKey: await keypairFromHex(created.rotationKeyPrivateHex),
       },
       // Best-effort teardown: attempt every step even if an earlier one throws, because a
       // leaked pds child keeps `node --test` alive on an open handle.

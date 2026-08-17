@@ -28,7 +28,8 @@ spawned PDS and fails when our wire behavior stops matching what real atproto cl
 - Not a load or fuzz harness.
 - Not a replacement for the Rust unit tests. Those pin internal behavior fast; this pins
   *external contract* and is allowed to be slower.
-- Not a test of the wallet (device-key) consent path — see Coverage gaps.
+- Not a test of the wallet (device-key) consent path — see Coverage gaps. *(Closed in a second
+  phase; see the Status section.)*
 
 ## Shape
 
@@ -104,11 +105,10 @@ would need its own `cargo build -p pds` and roughly doubles the lane's cost.
 
 ## Coverage gaps (stated, not hidden)
 
-- **The wallet consent path is not covered.** Production logs show real third-party logins to
-  sovereign accounts going through the device-key path, not the password form. Covering it
-  needs a registered device key and a signed approval envelope — worth doing, but it is a
-  second phase, and the protocol legs on either side of consent are shared with the path this
-  suite does cover.
+- ~~**The wallet consent path is not covered.**~~ **Closed** by the second phase described in
+  Status. Production logs show real third-party logins to sovereign accounts going through the
+  device-key path, not the password form; that path is now driven end to end by
+  `wallet-consent.test.ts`.
 - **No real-network test.** Everything is hermetic by design; a live check against the
   deployed instance stays a manual step (`tools/interop/`).
 - **Persona B pins one SDK version.** A `@atproto/oauth-client-node` bump can change what
@@ -121,3 +121,15 @@ Implemented as `tools/oauth-conformance/`. The persona plan above survived conta
 partly: personas A (hand-rolled wire client) and C (deliberately naive shapes, folded into the
 individual test files) exist; persona B, the official SDK, is blocked — see the README's gap
 list for the reason and the two ways past it.
+
+**Second phase (wallet consent path).** Landed as `wallet-consent.test.ts`, with the two pieces
+of infrastructure it needed: a JavaScript port of the consent envelope
+(`src/consent-envelope.ts`, pinned to the same golden vector as the Rust encoder) and a mock
+plc.directory that serves real operation logs at `GET /{did}/log/audit`, since `rotationKeys`
+appear only in PLC operations. The phase also settled a question this document did not
+anticipate: the wallet path is the **only** consent leg that carries a pushed request's DPoP
+key through to the issued code, so before it there was no end-to-end evidence for that control
+anywhere. The password path's deliberate absence of the binding is pinned separately in
+`flow.test.ts`. The README's gap list remains the living record — it now carries the one part
+of the wallet path that stayed out of reach (number matching on a push-delivered request, which
+needs a notification relay and an iroh endpoint, i.e. network this suite does not touch).

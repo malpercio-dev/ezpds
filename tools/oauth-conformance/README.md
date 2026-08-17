@@ -29,7 +29,15 @@ suite's justification and should not be deleted without a replacement.
   rather than growing a second spawner. Nothing reaches the network.
 - **A real account.** Provisioned through the same ceremony the identity wallet uses
   (claim code → mobile account → client-signed did:plc genesis → handle), via `tools/interop`.
-  The fixture keeps the account's **password**, which the consent form needs.
+  The fixture keeps the account's **password**, which the consent form needs, and its
+  **rotation key**, which the wallet consent path signs with.
+- **A directory that answers.** `test/mock-plc.ts` serves the account's DID document *and* its
+  operation log at `GET /{did}/log/audit`, because `rotationKeys` — the set an approval is
+  checked against — exist only in PLC operations, never in a DID document. The log is not
+  synthesized: `test/plc-audit-log.ts` rebuilds the ceremony's genesis operation from the
+  persisted key material and refuses to serve it unless the DID it derives is the account's,
+  which (a did:plc *being* the hash of its signed genesis op) proves the bytes are the ones the
+  PDS accepted.
 - **A loopback client.** `startClientHost()` publishes an OAuth client metadata document over
   plain-http loopback. The PDS resolves URL-shaped `client_id`s by fetching them, and loopback
   is the spec's local-development exception — which is what makes a hermetic third-party-client
@@ -40,17 +48,33 @@ suite's justification and should not be deleted without a replacement.
 
 ## The consent seam
 
-An authorization flow needs a human to approve at a consent page. Ours is a password form, so
-`src/consent.ts` fills it directly — no browser.
+An authorization flow needs a human to approve at a consent page, and ours offers two ways to
+do it. The **password form** is filled directly by `src/consent.ts` — no browser. The **wallet
+path** is what real third-party logins to sovereign accounts take: the account approves out of
+band by signing a canonical envelope with a key in its PLC rotation set, and the browser's only
+remaining job is to POST the completion form.
 
-**`src/consent.ts` is the only file that knows the consent page's markup.** Every test goes
-through `approveConsent()`, so restyling the page is a one-line fix here rather than a diff
-across the suite, and `parseConsentForm()` throws a message naming itself when the page stops
-matching instead of failing downstream as a confusing "missing parameter" from the server.
+**`src/consent.ts` is the only file that knows the consent page's markup**, for both paths.
+Every test goes through `approveConsent()` or `parseWalletPath()`, so restyling the page is a
+one-line fix here rather than a diff across the suite, and both parsers throw a message naming
+themselves when the page stops matching instead of failing downstream as a confusing "missing
+parameter" from the server.
+
+The wallet's own side is `src/wallet-consent.ts` — a hand-rolled client for the four device-key
+endpoints, hand-rolled for the same reason as `wire-client.ts`. It signs with
+`src/consent-envelope.ts`, a **JavaScript port of a wire format defined only in Rust**
+(`crates/crypto/src/oauth_consent.rs`). Two implementations of one format are safe here only
+because both are pinned to a file neither owns: `test-vectors/oauth-consent-envelope-v1.json`,
+asserted by `consent-envelope.test.ts` on this side and
+`canonical_envelope_has_a_stable_golden_vector` on the other. A drift in either direction fails
+a test rather than producing envelopes the server rejects as an unexplained
+"consent approval rejected".
 
 A test-only auto-approve endpoint was considered and rejected: it would be immune to markup
 changes, but it would exercise a code path no real client takes — the same
-test-our-own-assumptions failure mode this suite exists to correct.
+test-our-own-assumptions failure mode this suite exists to correct. The same rule is why the
+wallet path is driven over HTTP with a real signature rather than by writing the approval into
+the PDS's database.
 
 ## Conventions
 
@@ -77,6 +101,16 @@ suite waiting out a real one.
 that rotations chain, that `sub` and the granted scope survive each one, that the DPoP key and
 `client_id` are enforced, that a rejected refresh does not consume the token, and — the case
 that matters most — that **two concurrent refreshes carrying the same token both succeed**.
+
+`wallet-consent.test.ts` covers the device-key path: preview by `user_code` and by
+`request_id`, the uniform 404 that keeps a guessed code from probing request state, a signed
+approval driving a full flow to a working session, scope narrowing surviving to the issued
+token, denial, and the single-use completion. Its envelope-binding half proves an approval
+cannot be replayed onto its own request or re-pointed at another, widened past the scope it
+signed, back-dated, or signed by a key outside the account's current `rotationKeys`. And — the
+assertion the password path cannot reach — that a code issued here **is** bound to the DPoP key
+proved at PAR time: a second key gets `invalid_grant`, and the rightful key still redeems
+afterwards.
 
 `confidential-client.test.ts` covers `private_key_jwt`: a full flow with a valid assertion,
 and refusal when the assertion is missing, signed by the wrong key, minted for another
@@ -117,15 +151,19 @@ Not yet covered, in rough priority order:
    developer building an app against a local Custos can use the standard development
    client. One run of an oracle we did not write found a real conformance gap before it
    ever completed a flow.
-4. **The wallet consent path — and with it, the DPoP key binding.** Real third-party logins to
-   sovereign accounts go through the device-key path, not this password form. That is also the
-   only path that carries a pushed request's DPoP key through to the issued code: the password
-   form's pushed request is consumed by the GET that renders it, so the code is issued unbound
-   (deliberately — see `oauth_authorize.rs`). `flow.test.ts` pins that gap rather than leaving
-   it implicit, and the enforcement itself is covered only by a Rust test that writes the
-   binding directly onto the code row. Covering the wallet path needs a JS port of the consent
-   envelope (Rust-only today, with a golden vector at
-   `test-vectors/oauth-consent-envelope-v1.json` to pin against) and a mock plc.directory that
-   serves real audit logs — the current one serves DID documents only. Tracked as MM-502.
+4. **Number matching on a push-delivered request (V060).** Once a `login-approval` push has
+   gone out, approval additionally requires the two-digit number displayed on the sign-in page
+   — the anti-MFA-fatigue proof that the approver can see the login surface. Reaching that
+   state black-box is not possible here: the requirement latches only after `notify_device`
+   actually enqueues a sealed payload, which needs `[notifications] relay` **and**
+   `[iroh] enabled`, and iroh binds with the `N0` preset (n0 discovery + relay servers) — real
+   network, which this suite deliberately does not touch. `wallet-consent.test.ts` covers the
+   half that is reachable and is the half an over-eager mitigation would break: with no push
+   dispatched, `matchRequired` is false, no number is disclosed anywhere, and approval does not
+   demand one. The enforcement itself is covered by the Rust test
+   `push_delivered_request_requires_the_matching_number` (wrong number → 403 with the request
+   left pending; a denial never requires it). Latching the code by writing to the spawned PDS's
+   database was considered and rejected for the same reason as a test-only auto-approve
+   endpoint.
 
 Design and rationale: [docs/archive/design-plans/2026-08-03-oauth-conformance-harness.md](../../docs/archive/design-plans/2026-08-03-oauth-conformance-harness.md).

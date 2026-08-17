@@ -1,13 +1,17 @@
-// The consent seam: drives the PDS's password consent page the way a browser would.
+// The consent seam: drives the PDS's consent page the way a browser would.
 //
-// An authorization-code flow needs a human to approve at the authorization server. Since the
-// server under test is ours and its consent page is a plain password form, the suite fills
-// that form directly instead of running a browser.
+// An authorization-code flow needs a human to approve at the authorization server. The page
+// offers two ways to do that, and this file drives the browser's side of both: the password
+// form (filled directly, no browser needed) and the wallet path, where the browser's only jobs
+// are to display the codes and, once the wallet has approved out of band, to POST the
+// completion form. The wallet's own side — the signed approval — is not a browser concern and
+// lives in `wallet-consent.ts`.
 //
 // This file is the ONLY place that knows the page's markup. Every test goes through
-// `approveConsent`, so a change to the page is a one-line fix here rather than a diff across
-// the whole suite — and when the markup does change, `parseConsentForm` throws a message
-// naming itself, instead of failing later as a confusing "missing parameter" from the server.
+// `approveConsent` or `parseWalletPath`, so a change to the page is a one-line fix here rather
+// than a diff across the whole suite — and when the markup does change, the parsers throw a
+// message naming themselves, instead of failing later as a confusing "missing parameter" from
+// the server.
 //
 // Rejected alternative: a test-only auto-approve endpoint. It would be immune to markup
 // changes, but it would exercise a code path no real client takes — which is the exact
@@ -63,6 +67,48 @@ export function parseConsentForm(html: string): ConsentFormFields {
     );
   }
   return { hidden, grantedScopes };
+}
+
+/** What the wallet-approval block of the consent page shows the user. */
+export interface WalletPathFields {
+  /** The poll / handoff / completion key, carried on the block's data attribute. */
+  requestId: string;
+  /** The human-typeable code the user enters in the wallet. */
+  userCode: string;
+  /**
+   * The two-digit number the page displays, present only when a `login-approval` push was
+   * dispatched for this request. `null` on every other channel — and the wallet's own preview
+   * is what states whether a number is *required*; this is only what the page shows.
+   */
+  matchCode: string | null;
+}
+
+/**
+ * Extract the wallet-approval block's fields from the rendered page.
+ *
+ * Throws rather than returning `null` when the block is absent: every caller is a test that
+ * has just asked the server for a page it expects to carry one, and "the wallet path did not
+ * render" is a far more useful failure than a downstream 404 on an undefined user code.
+ */
+export function parseWalletPath(html: string): WalletPathFields {
+  const requestId = /<div[^>]*id="wallet-path"[^>]*data-request-id="([^"]+)"/.exec(html)?.[1];
+  const userCode = /<div class="user-code mono">([^<]*)<\/div>/.exec(html)?.[1];
+  if (!requestId || !userCode) {
+    throw new Error(
+      'the consent page rendered no wallet-approval block, or its markup no longer matches ' +
+        'what tools/oauth-conformance/src/consent.ts expects (looked for #wallet-path\'s ' +
+        'data-request-id and the .user-code element). Note that the block is best-effort in ' +
+        'oauth_authorize.rs — a rate-limited or failed pending-request creation degrades the ' +
+        'page to password-only.\n' +
+        `Received ${html.length} bytes starting: ${html.slice(0, 200)}`,
+    );
+  }
+  const matchCode = /<div class="match-code mono" id="match-code">([^<]*)<\/div>/.exec(html)?.[1];
+  return {
+    requestId: decodeEntities(requestId),
+    userCode: decodeEntities(userCode),
+    matchCode: matchCode === undefined ? null : decodeEntities(matchCode),
+  };
 }
 
 export interface ApprovalResult {
@@ -128,4 +174,35 @@ export async function approveConsent(
     );
   }
   return { status: res.status, location, params: parseAuthorizationRedirect(location) };
+}
+
+/**
+ * Submit the wallet block's completion form — the browser's last act on the wallet path.
+ *
+ * This is the page's no-JS "I've approved — continue" button; its inline poller submits the
+ * identical form on approval, so driving the form covers both. Unlike `approveConsent`, this
+ * carries no credential: the approval already happened out of band, and all this does is
+ * exchange an approved request for its authorization code.
+ *
+ * Returns the raw response rather than throwing on a non-redirect, because "completion did not
+ * redirect" is a result several tests assert on (a request that is not approved, or was
+ * already completed, renders an error page instead).
+ */
+export async function completeWalletConsent(
+  baseUrl: string,
+  requestId: string,
+): Promise<{ status: number; location: string | null; params: URLSearchParams; body: string }> {
+  const res = await fetch(`${baseUrl}/oauth/authorize/complete`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/x-www-form-urlencoded' },
+    body: new URLSearchParams({ request_id: requestId }).toString(),
+    redirect: 'manual',
+  });
+  const location = res.headers.get('location');
+  return {
+    status: res.status,
+    location,
+    params: location ? parseAuthorizationRedirect(location) : new URLSearchParams(),
+    body: location ? '' : await res.text(),
+  };
 }
