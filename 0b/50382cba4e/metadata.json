@@ -1,0 +1,28 @@
+{
+  "cli_version": "0.9.0",
+  "checkpoint_id": "0b50382cba4e",
+  "strategy": "manual-commit",
+  "branch": "claude/archive-design-plans-mm-497-f537e3",
+  "checkpoints_count": 1,
+  "files_touched": [
+    "docs/archive/design-plans/2026-07-18-wallet-confirmed-oauth-consent.md",
+    "docs/archive/design-plans/2026-08-03-oauth-conformance-harness.md",
+    "tools/oauth-conformance/README.md"
+  ],
+  "sessions": [
+    {
+      "metadata": "/0b/50382cba4e/0/metadata.json",
+      "transcript": "/0b/50382cba4e/0/full.jsonl",
+      "compact_transcript": "/0b/50382cba4e/0/transcript.jsonl",
+      "content_hash": "/0b/50382cba4e/0/content_hash.txt",
+      "prompt": ""
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 86,
+    "cache_creation_tokens": 133857,
+    "cache_read_tokens": 4930908,
+    "output_tokens": 13949,
+    "api_call_count": 43
+  }
+}
