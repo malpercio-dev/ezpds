@@ -1,0 +1,33 @@
+{
+  "cli_version": "0.9.0",
+  "checkpoint_id": "0323b33de47e",
+  "strategy": "manual-commit",
+  "branch": "claude/nse-timeout-breadcrumb-69d830",
+  "checkpoints_count": 2,
+  "files_touched": [
+    "apps/identity-wallet/src-tauri/src/notifications.rs",
+    "apps/identity-wallet/src/lib/ipc/notifications.ts",
+    "apps/identity-wallet/src/lib/notification-health.test.ts",
+    "apps/identity-wallet/src/lib/notification-health.ts",
+    "changelog.d/mm-493.fixed.md",
+    "ios/NotificationService/NotificationService.swift",
+    "ios/NotificationService/NotifyBreadcrumbs.swift",
+    "ios/NotificationServiceTests/NotifyResolverTests.swift"
+  ],
+  "sessions": [
+    {
+      "metadata": "/03/23b33de47e/0/metadata.json",
+      "transcript": "/03/23b33de47e/0/full.jsonl",
+      "compact_transcript": "/03/23b33de47e/0/transcript.jsonl",
+      "content_hash": "/03/23b33de47e/0/content_hash.txt",
+      "prompt": "/03/23b33de47e/0/prompt.txt"
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 146,
+    "cache_creation_tokens": 557209,
+    "cache_read_tokens": 11559373,
+    "output_tokens": 37360,
+    "api_call_count": 73
+  }
+}

@@ -1,0 +1,45 @@
+Work on Linear issue MM-493:
+
+Suggested branch name: malpercio/mm-493-nse-timeout-path-renders-the-unverified-notice-without
+
+<issue identifier="MM-493">
+<title>NSE timeout path renders the unverified notice without recording a breadcrumb — Settings stays green while banners say "couldn't verify"</title>
+<description>
+## Symptom
+
+Observed live 2026-07-29 during the first production push-to-approve exercise: every push renders the "Couldn't verify a notification from your Custos instance" banner, while Settings → Notifications reports zero recent failures (green). The diagnostics surface exists precisely to explain that banner, and in this state it silently contradicts it.
+
+## Mechanism
+
+`ios/NotificationService/NotificationService.swift` has two paths that render the unverified notice **without** writing a breadcrumb:
+
+1. `serviceExtensionTimeWillExpire()` — the timeout path substitutes the notice and strips the sealed block, but never calls `NotifyBreadcrumbs.record`. Every timed-out push is invisible to Settings.
+2. The `mutableCopy` platform-contract guard at the top of `didReceive` (deliberate, documented — probably fine to leave).
+
+There is also a structural blind spot shared by all breadcrumbs: if the extension cannot reach the shared keychain access group at all, the key/pin reads fail (→ notice via `.unverified(.openFailed)`) and the `NotifyBreadcrumbs.record` write fails just as silently (→ green Settings). A fully broken app↔extension keychain contract is therefore indistinguishable from perfect health in the one place built to explain it.
+
+## Fix directions
+
+* Record a `.timedOut` (or equivalent) breadcrumb in `serviceExtensionTimeWillExpire` before substituting the notice — the write is cheap and last-gasp-safe (delete-then-add under AfterFirstUnlock).
+* Consider a sentinel the app can check for the keychain-broken case: e.g. the extension writes a tiny "extension ran at <ts>" heartbeat on every invocation; Settings showing "notices rendered but the extension has never checked in" converts the silent contradiction into a named diagnosis. (The app can compare against `UNUserNotificationCenter` delivered notifications carrying the unverified title.)
+
+## Context
+
+Found while diagnosing production pushes that render unverified with green diagnostics on the newest TestFlight build — root cause of that incident may be the timeout path itself or the keychain mismatch; this issue covers the observability gap that made the two indistinguishable. Related: <issue id="3eccfd8b-d483-42dd-93d5-125a4096d8d2" href="https://linear.app/malpercio/issue/MM-492/multi-identity-same-host-push-registrations-rotate-each-others-relay">MM-492</issue> (handle rotation).
+</description>
+<team name="Mal's Machinations"/>
+<label>Bug</label>
+<label>Mobile: Identity Wallet</label>
+<project name="ezpds">An easy-to-host PDS on the ATProtocol, MacOS. Grandma-approved.</project>
+<issue-relations><related><issue-ref identifier="MM-492" title="Multi-identity same-host push registrations rotate each other's relay handles — only the last-registered DID receives pushes"/></related></issue-relations>
+</issue>
+
+---
+
+<task-notification>
+<task-id>bv7s7znkx</task-id>
+<tool-use-id>toolu_01JVTujVXSHgMqaZmf1ALiuZ</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-jacob-zweifel-workspace-malpercio-dev-ezpds--claude-worktrees-oauth-client-jwks-cache-f978f3/4853e82c-acfc-42d2-bf0a-6404bded86c9/tasks/bv7s7znkx.output</output-file>
+<status>completed</status>
+<summary>Background command "Locate XCTest framework for the toolchain" completed (exit code 0)</summary>
+</task-notification>
