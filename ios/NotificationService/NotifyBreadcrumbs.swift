@@ -34,6 +34,10 @@ enum NotifyFailureReason: String {
     case openFailed = "OPEN_FAILED"
     /// The payload opened — so it *was* authentic — but carried nothing renderable.
     case malformedPlaintext = "MALFORMED_PLAINTEXT"
+    /// iOS's ~30-second budget ran out before `didReceive` finished — mid-Keychain-read,
+    /// mid-decrypt, or before either began. Unlike every other reason, this says nothing about
+    /// keys or pins: the payload may well have been about to authenticate.
+    case timedOut = "TIMED_OUT"
 }
 
 /// One recorded failure.

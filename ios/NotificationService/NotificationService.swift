@@ -84,6 +84,34 @@ enum NotifyResolver {
     }
 }
 
+/// What `serviceExtensionTimeWillExpire` should do about a `bestAttempt` it was handed.
+enum NotifyTimeoutOutcome: Equatable {
+    /// `didReceive` had not finished — render the notice and record why.
+    case cutShort(kid: Int?)
+    /// `didReceive` already ran to completion (rendered or already-recorded-unverified) before
+    /// the timeout fired; there is nothing left to do.
+    case alreadyResolved
+}
+
+enum NotifyTimeout {
+    /// Decide what a timeout means for one `bestAttempt`, split out from
+    /// `UNNotificationServiceExtension` for the same reason `NotifyResolver.resolve` is: so the
+    /// interlock between `didReceive` stripping the sealed block and a timeout racing it is
+    /// exercisable from a test without threads or a real 30-second wait.
+    ///
+    /// Pure over `userInfo`: the presence of the sealed block IS the "we never finished" signal
+    /// — `didReceive`'s `finish()` strips it and writes the notice in the same breath, so it can
+    /// only still be present here if resolution was cut short. Testing that rather than the
+    /// title keeps the two facts from drifting.
+    static func evaluate(userInfo: [AnyHashable: Any]) -> NotifyTimeoutOutcome {
+        guard userInfo[NotifyEnvelope.userInfoKey] != nil else { return .alreadyResolved }
+        // `kid` comes along when the envelope parsed far enough to have one, same as every other
+        // breadcrumb `NotifyResolver.resolve` records — a key-desync signature arriving via the
+        // timeout path is still worth showing.
+        return .cutShort(kid: NotifyEnvelope.parse(userInfo: userInfo)?.kid)
+    }
+}
+
 final class NotificationService: UNNotificationServiceExtension {
     private var contentHandler: ((UNNotificationContent) -> Void)?
     private var bestAttempt: UNMutableNotificationContent?
@@ -140,19 +168,19 @@ final class NotificationService: UNNotificationServiceExtension {
 
     /// iOS is about to give up on us.
     ///
-    /// Whatever is in `bestAttempt` is delivered, so this path has to satisfy the same two
+    /// Whatever is in `bestAttempt` is delivered, so this path has to satisfy the same three
     /// obligations `didReceive` does — say "unverified" rather than let the relay's placeholder
-    /// stand in for the server's words, and strip the sealed block. Neither gets an exception
-    /// for running late: a timeout is the one route by which unstripped ciphertext, under a
-    /// title the user reads as authentic, could reach the delivered-notification list.
+    /// stand in for the server's words, strip the sealed block, and record why. None gets an
+    /// exception for running late: a timeout is the one route by which unstripped ciphertext,
+    /// under a title the user reads as authentic, could reach the delivered-notification list —
+    /// and a timeout that skipped the breadcrumb is the one route by which Settings could report
+    /// a clean bill of health while the banner says otherwise.
     override func serviceExtensionTimeWillExpire() {
         guard let contentHandler, let bestAttempt else { return }
-        // The presence of the sealed block IS the "we never finished" signal — `finish` strips it
-        // and writes the notice in the same breath, so it can only still be here if resolution
-        // was cut short. Testing that rather than the title keeps the two facts from drifting.
-        if bestAttempt.userInfo[NotifyEnvelope.userInfoKey] != nil {
+        if case let .cutShort(kid) = NotifyTimeout.evaluate(userInfo: bestAttempt.userInfo) {
             bestAttempt.title = NotifyResolver.unverifiedTitle
             bestAttempt.body = NotifyResolver.unverifiedBody
+            NotifyBreadcrumbs.record(.timedOut, kid: kid)
         }
         Self.finish(bestAttempt)
         contentHandler(bestAttempt)

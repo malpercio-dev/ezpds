@@ -53,6 +53,15 @@ describe('summarizeNotificationFailures', () => {
     expect(health.detail).toContain('restarted');
   });
 
+  // A timeout says nothing about keys or the server, so it gets the same non-actionable
+  // treatment as a locked Keychain rather than being lumped in with `attention`.
+  it('treats a timeout as informational, with nothing to do', () => {
+    const health = summarizeNotificationFailures([failure('TIMED_OUT')], NOW);
+    expect(health.level).toBe('info');
+    expect(health.advice).toBeNull();
+    expect(health.detail).toContain('too little time');
+  });
+
   // The whole point of levelling before choosing wording: a benign failure must never be the
   // sentence shown for a week that also contains a real one.
   it('lets the real problem win the wording over a benign one', () => {

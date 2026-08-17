@@ -96,6 +96,12 @@ const REASONS: Record<string, { level: NotificationHealthLevel; detail: string; 
       'These arrived before this iPhone had been unlocked since it last restarted, so the keys needed to read them were not available yet.',
     advice: null,
   },
+  TIMED_OUT: {
+    level: 'info',
+    detail:
+      'iOS gave this device too little time to check these before it had to show something. That is usually a slow moment for the phone or its connection, not a problem with your keys or your server.',
+    advice: null,
+  },
 };
 
 function headlineFor(count: number): string {

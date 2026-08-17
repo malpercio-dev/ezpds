@@ -82,6 +82,9 @@ export type NotificationFailureReason =
   | 'OPEN_FAILED'
   /** It opened — so it was authentic — but carried nothing renderable. */
   | 'MALFORMED_PLAINTEXT'
+  /** iOS's ~30s budget ran out before the extension finished checking. Says nothing about
+   *  keys or pins — the payload may have been about to authenticate. */
+  | 'TIMED_OUT'
   // eslint-disable-next-line @typescript-eslint/ban-types
   | (string & {});
 

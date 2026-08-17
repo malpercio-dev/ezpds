@@ -195,6 +195,35 @@ final class NotifyPayloadRouteTests: XCTestCase {
     }
 }
 
+final class NotifyTimeoutTests: XCTestCase {
+    /// The sealed block still present is the "we never finished" signal — the timeout must
+    /// treat it exactly as `didReceive` would have: render the notice and record why.
+    func testAnUnfinishedResolutionIsCutShortWithItsKid() {
+        XCTAssertEqual(
+            NotifyTimeout.evaluate(userInfo: envelope(kid: 4)),
+            .cutShort(kid: 4)
+        )
+    }
+
+    /// A malformed envelope still counts as cut short — there was work in flight, just none
+    /// that ever reached a `kid` to report.
+    func testAMalformedEnvelopeIsStillCutShortWithNoKid() {
+        XCTAssertEqual(
+            NotifyTimeout.evaluate(userInfo: ["ezpds": ["v": 1]]),
+            .cutShort(kid: nil)
+        )
+    }
+
+    /// No sealed block means `didReceive` already ran `finish()` and delivered — the ordinary
+    /// case where the timeout narrowly loses a race it does not need to win.
+    func testAResolutionThatAlreadyFinishedIsLeftAlone() {
+        XCTAssertEqual(
+            NotifyTimeout.evaluate(userInfo: ["aps": ["alert": "hi"]]),
+            .alreadyResolved
+        )
+    }
+}
+
 final class NotifyBreadcrumbTests: XCTestCase {
     func testTheLogIsNewestFirstAndBounded() {
         var log = NotifyFailureLog.empty
