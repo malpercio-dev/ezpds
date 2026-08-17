@@ -8,7 +8,7 @@ Companion to: Provisioning API Spec, Mobile Architecture Spec
 
 ---
 
-> **Status (verified 2026-07-28): superseded pre-build planning draft — read §§5–5.1 as trued-up, treat the crate-integration plan as the road not taken.**
+> **Status (verified 2026-08-13): superseded pre-build planning draft — read §§5–5.1 as trued-up, treat the crate-integration plan as the road not taken.**
 >
 > This document was written before the OAuth server was built, and its central
 > thesis — that the PDS would *integrate an existing Rust OAuth crate rather than
@@ -235,6 +235,9 @@ by that validator**, not optional — omitting them breaks client discovery:
   "code_challenge_methods_supported": ["S256"],
   "dpop_signing_alg_values_supported": ["ES256"],
   "require_pushed_authorization_requests": true,
+  "request_uri_parameter_supported": true,
+  "require_request_uri_registration": true,
+  "request_parameter_supported": false,
   "authorization_response_iss_parameter_supported": true,
   "client_id_metadata_document_supported": true,
   "agent_auth": {
@@ -263,6 +266,17 @@ into the endpoint/`agent_auth` URLs. Notes on the fields the March draft omitted
   (the RFC 9207 `iss` the authorize endpoint returns), and
   `client_id_metadata_document_supported` (clients are identified by a
   metadata-document URL, not pre-registration) must all be `true`.
+- The three `request`/`request_uri` capability fields (OpenID Connect Discovery §3)
+  are stated explicitly rather than left to their absent-field defaults, because
+  real clients gate their PAR flow on the fields' presence: `request_uri_parameter_supported:
+  true` and `require_request_uri_registration: true` (the atproto profile forbids
+  `false` here — the only `request_uri` values the authorize endpoint accepts are
+  the PAR-minted `urn:ietf:params:oauth:request_uri:` ones), and
+  `request_parameter_supported: false` (this server does not implement JAR / RFC 9101,
+  diverging from the reference provider's `true`). A Laravel atproto client read
+  their *absence* as "legacy server without PAR" and silently downgraded to a broken
+  non-PAR flow — see the 2026-08-12 addendum in
+  [the OAuth interop audit](2026-08-03-oauth-interop-audit.md).
 - `response_modes_supported: ["query", "fragment"]` is stated explicitly rather
   than left to the RFC 8414 default (which is the same `["query", "fragment"]`
   when absent): the authorize endpoint really answers redirects in both modes —
