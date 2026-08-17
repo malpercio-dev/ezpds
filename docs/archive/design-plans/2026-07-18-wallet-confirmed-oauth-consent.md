@@ -1,7 +1,7 @@
 # Wallet-Confirmed OAuth Consent (Passwordless Sign-In to OAuth Apps)
 
 Status: **design exploration** — extends the passwordless-auth exploration
-([2026-07-12-passwordless-auth.md](2026-07-12-passwordless-auth.md), MM-312) by deciding
+([2026-07-12-passwordless-auth.md](../../design-plans/2026-07-12-passwordless-auth.md), MM-312) by deciding
 the concrete cross-device mechanism it left open: device-code entry (Netflix-style) vs
 number matching (GitHub-style) vs QR vs push. Captures the discussion of 2026-07-18.
 Implementation tracked as sub-issues of MM-312:
@@ -39,7 +39,7 @@ Nearly all of this already exists in the tree:
 | Canonical signed-envelope pattern | ADR-0018 admin envelope (`auth/guards.rs::verify_admin_device_request`, `apps/admin-companion/src-tauri/src/signing.rs`) |
 | Wallet approval UX (enter code → preview grants → biometric → confirm) | `AgentClaimApprovalScreen.svelte` + `agents.rs` IPC (claim-preview / claim-confirm) |
 | Consent page + per-scope checkboxes | `oauth_templates.rs::render_consent_page`, MM-237 scope reduction |
-| Push envelope for a future `login-approval` type | notification relay design ([2026-07-10-notification-relay.md](2026-07-10-notification-relay.md)) already names `{type: "login-approval", request_id, client_name, origin, code}` |
+| Push envelope for a future `login-approval` type | notification relay design ([2026-07-10-notification-relay.md](../../design-plans/2026-07-10-notification-relay.md)) already names `{type: "login-approval", request_id, client_name, origin, code}` |
 
 The genuinely new pieces are one table, one approval route, one status route, a second
 path through `oauth_authorize.rs`, and one wallet screen variant.
@@ -205,7 +205,7 @@ completion path changes.
 Prerequisite note: the 2026-07-12 exploration named the Shamir **reconstruction**
 ceremony a hard prerequisite for removing the password escape hatch; both reconstruction
 ceremonies (escrow-assisted and sovereign) have since landed (`share_recovery.rs`;
-[identity-and-key-custody.md](../architecture/identity-and-key-custody.md), verified
+[identity-and-key-custody.md](../../architecture/identity-and-key-custody.md), verified
 2026-07-18), so that gate is satisfied.
 
 ## Security invariants (all channels)

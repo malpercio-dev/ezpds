@@ -128,4 +128,4 @@ Not yet covered, in rough priority order:
    `test-vectors/oauth-consent-envelope-v1.json` to pin against) and a mock plc.directory that
    serves real audit logs — the current one serves DID documents only. Tracked as MM-502.
 
-Design and rationale: [docs/design-plans/2026-08-03-oauth-conformance-harness.md](../../docs/design-plans/2026-08-03-oauth-conformance-harness.md).
+Design and rationale: [docs/archive/design-plans/2026-08-03-oauth-conformance-harness.md](../../docs/archive/design-plans/2026-08-03-oauth-conformance-harness.md).

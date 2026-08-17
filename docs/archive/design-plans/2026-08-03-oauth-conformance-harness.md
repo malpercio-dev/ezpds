@@ -1,6 +1,6 @@
 # OAuth conformance harness
 
-Status: design. Follows [the 2026-08-03 OAuth interop audit](../2026-08-03-oauth-interop-audit.md),
+Status: implemented — see [Status](#status) below. Follows [the 2026-08-03 OAuth interop audit](../../2026-08-03-oauth-interop-audit.md),
 whose item 6 this is.
 
 ## Why
