@@ -13,24 +13,57 @@
 // The documents served here are not synthesized. The harness reads each one back from the PDS
 // (`com.atproto.repo.describeRepo` returns `didDoc`) and registers it, so a client resolving a
 // DID sees the same document the server would have published to the real directory.
+//
+// `GET /{did}/log/audit` is the second surface, and it is the *server's* dependency rather than
+// a client's: the wallet consent path verifies an approval against the account's authoritative
+// signing authority, which for a did:plc account is its current `rotationKeys` — a field that
+// appears only in PLC operations and never in a DID document. `identity/authority.rs` →
+// `identity/plc.rs` reads it from the newest non-nullified audit-log entry, so an account with
+// no audit log here cannot approve anything.
 
 import * as http from 'node:http';
+
+/** One plc.directory audit-log entry: the signed operation plus the directory's own metadata. */
+export interface AuditEntry {
+  did: string;
+  cid: string;
+  createdAt: string;
+  nullified: boolean;
+  operation: unknown;
+}
 
 export interface MockPlc {
   url: string;
   /** Publish a DID document, making `GET /{did}` resolvable. */
   register: (did: string, document: unknown) => void;
+  /** Publish an operation log, making `GET /{did}/log/audit` resolvable. */
+  registerAuditLog: (did: string, entries: AuditEntry[]) => void;
   close: () => void;
 }
 
 export function startMockPlc(): Promise<MockPlc> {
   const documents = new Map<string, unknown>();
+  const auditLogs = new Map<string, AuditEntry[]>();
 
   return new Promise((resolve) => {
     const server = http.createServer((req, res) => {
       const path = decodeURIComponent((req.url ?? '/').split('?')[0] ?? '/');
       const did = path.slice(1);
       const document = documents.get(did);
+
+      // The audit log sits under the DID, so it must be matched before the bare-DID lookup.
+      const auditMatch = /^\/(did:[^/]+)\/log\/audit$/.exec(path);
+      if (req.method === 'GET' && auditMatch) {
+        const log = auditLogs.get(auditMatch[1] as string);
+        if (!log) {
+          res.writeHead(404, { 'content-type': 'application/json' });
+          res.end(JSON.stringify({ message: 'DID not registered in the mock directory' }));
+          return;
+        }
+        res.writeHead(200, { 'content-type': 'application/json' });
+        res.end(JSON.stringify(log));
+        return;
+      }
 
       if (req.method === 'GET' && document) {
         res.writeHead(200, { 'content-type': 'application/json' });
@@ -55,7 +88,12 @@ export function startMockPlc(): Promise<MockPlc> {
       const address = server.address() as { port: number };
       resolve({
         url: `http://127.0.0.1:${address.port}`,
-        register: (did, document) => documents.set(did, document),
+        register: (did, document) => {
+          documents.set(did, document);
+        },
+        registerAuditLog: (did, entries) => {
+          auditLogs.set(did, entries);
+        },
         close: () => {
           // Idle keep-alive sockets would otherwise keep the test process alive.
           server.closeAllConnections();

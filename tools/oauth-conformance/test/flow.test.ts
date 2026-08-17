@@ -262,15 +262,14 @@ test('a PAR DPoP proof is accepted, but the password consent path drops the bind
   // the request from attacker-controllable hidden fields, so `oauth_authorize.rs` deliberately
   // issues the code with no binding rather than trusting one an attacker could omit.
   //
-  // The consequence is that `dpop_jkt` enforcement is only reachable through the *wallet*
-  // consent path, which keeps its pending request server-side — and that path has no coverage
-  // here yet (MM-502). Until it does, the binding is exercised end-to-end nowhere, and the
-  // enforcement itself is covered only by the Rust test
-  // `authorization_code_bound_to_another_dpop_key_is_rejected`, which writes the binding
-  // directly onto the code row.
+  // `dpop_jkt` enforcement is therefore reachable only through the *wallet* consent path,
+  // which keeps its pending request server-side. That path is now covered — see
+  // `wallet-consent.test.ts`'s "a code issued through the wallet path is bound to the PAR-time
+  // DPoP key", which drives PAR → consent → token and watches a second key be refused. So the
+  // control has end-to-end evidence; what this test pins is the deliberate *absence* of the
+  // binding on the other branch of the same page, which is otherwise invisible.
   //
-  // This test exists so that stops being invisible: if the password path ever starts binding,
-  // it fails and someone updates it deliberately.
+  // If the password path ever starts binding, this fails and someone updates it deliberately.
   const flowKey = await generateDpopKey();
   const otherKey = await generateDpopKey();
   const { verifier, challenge } = pkce();
@@ -309,9 +308,10 @@ test('a PAR DPoP proof is accepted, but the password consent path drops the bind
   assert.equal(
     redeemed.final.status,
     200,
-    'documents the current gap: a code issued through the password consent path carries no ' +
-      'PAR-time key binding, so a different key redeems it. Change this to expect 400 once ' +
-      'the wallet consent path is covered (MM-502) or the password path can bind.',
+    'documents deliberate behaviour: a code issued through the password consent path carries ' +
+      'no PAR-time key binding, so a different key redeems it. The wallet path does bind ' +
+      '(wallet-consent.test.ts). Change this to expect 400 only when the password path can ' +
+      'carry the binding without trusting an attacker-controllable field.',
   );
   // The issued token is still sender-constrained to whoever redeemed it — the binding that
   // is missing is to the key that *pushed the request*, not to the presenter.

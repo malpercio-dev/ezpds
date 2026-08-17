@@ -60,6 +60,20 @@ export async function signPlcOp(unsignedOp, rotationKeypair) {
 }
 
 /**
+ * The CIDv1 (dag-cbor, sha-256) of a signed PLC operation, multibase base32-lower
+ * encoded — the form plc.directory reports and the next operation carries as `prev`.
+ *
+ * The sibling of the DID derivation below: both hash the same signed bytes, which is
+ * why they live together (mirroring `compute_cid` alongside `build_did_plc_genesis_op`
+ * in crates/crypto).
+ */
+export function computeCid(signedOp) {
+  const digest = crypto.createHash('sha256').update(dagCbor.encode(signedOp)).digest();
+  // version(1) || codec(dag-cbor, 0x71) || hash(sha2-256, 0x12) || length(0x20) || digest
+  return `b${base32Encode(Buffer.concat([Buffer.from([0x01, 0x71, 0x12, 0x20]), digest]))}`;
+}
+
+/**
  * Build and sign a did:plc genesis operation for the client-share ceremony.
  *
  * rotationKeys = [rotation, recovery, PDS] (the recovery slot mirrors the wallet's
@@ -72,7 +86,8 @@ export async function signPlcOp(unsignedOp, rotationKeypair) {
  *                     verificationMethods.atproto (it signs repo commits on the PDS).
  *
  * Returns the derived DID (`did:plc:` + first 24 chars of base32(sha256(signed
- * op DAG-CBOR))) and the signed op as a JSON-ready object.
+ * op DAG-CBOR))), the signed op as a JSON-ready object, and the op's CID (the
+ * `prev` of whatever operation comes next).
  */
 export async function buildGenesisOp({
   rotationKeyId,
@@ -104,7 +119,7 @@ export async function buildGenesisOp({
   const hash = crypto.createHash('sha256').update(signedBytes).digest();
   const did = `did:plc:${base32Encode(hash).slice(0, 24)}`;
 
-  return { did, signedOp };
+  return { did, signedOp, cid: computeCid(signedOp) };
 }
 
 /**
