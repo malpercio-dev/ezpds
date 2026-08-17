@@ -119,8 +119,9 @@ pub async fn get_oauth_client(
 ///
 /// The code expires 60 seconds after creation (single-use, short-lived per RFC 6749 §4.1.2).
 /// `dpop_jkt` is the DPoP key thumbprint the client proved at PAR time, or `None` when the
-/// flow carried no proof (a non-PAR authorize, or a PAR without a DPoP header). When
-/// present, the token endpoint requires the redeeming proof to use that same key.
+/// flow carries no binding (a PAR without a DPoP header, or the password-consent POST,
+/// which deliberately drops it). When present, the token endpoint requires the redeeming
+/// proof to use that same key.
 #[allow(clippy::too_many_arguments)]
 pub async fn store_authorization_code<'e, E>(
     executor: E,

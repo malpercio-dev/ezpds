@@ -78,6 +78,51 @@ test('metadata states the request_uri capability fields explicitly', () => {
   assert.equal(metadata.request_parameter_supported, false);
 });
 
+test('a direct (non-PAR) authorization request is rejected at flow start', async () => {
+  // The metadata mandates PAR; the endpoint must actually enforce it. Before this was
+  // enforced, a client that skipped PAR (pckt.blog's legacy fallback — see the
+  // 2026-08-03 interop audit, gap 12 addendum) got a working consent page from a server
+  // whose metadata said that path was closed, and died silently much later in its own
+  // callback. Rejecting at flow start makes the mismatch loud and immediate.
+  assert.equal(metadata.require_pushed_authorization_requests, true);
+  const { challenge } = pkce();
+  const url =
+    `${metadata.authorization_endpoint}?client_id=${encodeURIComponent(CLIENT_ID)}` +
+    `&redirect_uri=${encodeURIComponent(REDIRECT_URI)}` +
+    `&response_type=code&code_challenge=${challenge}&code_challenge_method=S256` +
+    `&scope=atproto&state=direct-attempt`;
+  const res = await fetch(url, { redirect: 'manual' });
+  assert.equal(res.status, 400, 'inline authorization parameters must be refused');
+  const body = await res.text();
+  assert.ok(
+    !body.includes('type="password"'),
+    'no consent form may render for a request that skipped PAR',
+  );
+});
+
+test('a JAR request parameter is rejected rather than silently ignored', async () => {
+  // request_parameter_supported: false is advertised; a `request` object arriving anyway
+  // must fail loudly. Silently dropping it would process a request whose inner parameters
+  // differ from what the client believes it sent.
+  const { challenge } = pkce();
+  const pushed = await par(metadata, {
+    client_id: CLIENT_ID,
+    redirect_uri: REDIRECT_URI,
+    response_type: 'code',
+    code_challenge: challenge,
+    code_challenge_method: 'S256',
+    scope: 'atproto',
+    state: 'jar-attempt',
+  });
+  assert.equal(pushed.status, 201);
+  const url =
+    `${metadata.authorization_endpoint}?client_id=${encodeURIComponent(CLIENT_ID)}` +
+    `&request_uri=${encodeURIComponent(pushed.json.request_uri)}` +
+    `&request=${encodeURIComponent('eyJhbGciOiJub25lIn0.e30.')}`;
+  const res = await fetch(url, { redirect: 'manual' });
+  assert.equal(res.status, 400, 'a JAR request object must be refused, not ignored');
+});
+
 test('a full flow issues a DPoP-bound session and reaches an authenticated endpoint', async () => {
   const key = await generateDpopKey();
   const { verifier, challenge } = pkce();

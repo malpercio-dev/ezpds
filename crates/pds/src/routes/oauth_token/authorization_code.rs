@@ -194,9 +194,9 @@ pub(super) async fn handle_authorization_code(
 
     // Enforce the DPoP key this flow was bound to at PAR time (RFC 9449 §10): a code issued
     // for a client that proved a key can only be redeemed by that key, so an intercepted
-    // code is useless to anyone else. Codes carrying no binding (non-PAR flows, or a PAR
-    // that proved no key) redeem as before — the issued tokens still bind to whatever key
-    // presents the proof here.
+    // code is useless to anyone else. Codes carrying no binding (a PAR that proved no key,
+    // or the password-consent path, which deliberately drops it) redeem as before — the
+    // issued tokens still bind to whatever key presents the proof here.
     if let Some(bound_jkt) = auth_code.dpop_jkt.as_deref() {
         use subtle::ConstantTimeEq;
         if !bool::from(bound_jkt.as_bytes().ct_eq(jkt.as_bytes())) {
