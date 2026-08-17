@@ -1,0 +1,38 @@
+{
+  "cli_version": "0.9.0",
+  "checkpoint_id": "74f422513cb3",
+  "strategy": "manual-commit",
+  "branch": "claude/oauth-wallet-consent-coverage-49ac53",
+  "checkpoints_count": 1,
+  "files_touched": [
+    "docs/design-plans/2026-08-03-oauth-conformance-harness.md",
+    "tools/interop/src/crypto.js",
+    "tools/oauth-conformance/README.md",
+    "tools/oauth-conformance/src/consent-envelope.ts",
+    "tools/oauth-conformance/src/consent.ts",
+    "tools/oauth-conformance/src/wallet-consent.ts",
+    "tools/oauth-conformance/test/consent-envelope.test.ts",
+    "tools/oauth-conformance/test/fixture.ts",
+    "tools/oauth-conformance/test/flow.test.ts",
+    "tools/oauth-conformance/test/interop.d.ts",
+    "tools/oauth-conformance/test/mock-plc.ts",
+    "tools/oauth-conformance/test/plc-audit-log.ts",
+    "tools/oauth-conformance/test/wallet-consent.test.ts"
+  ],
+  "sessions": [
+    {
+      "metadata": "/74/f422513cb3/0/metadata.json",
+      "transcript": "/74/f422513cb3/0/full.jsonl",
+      "compact_transcript": "/74/f422513cb3/0/transcript.jsonl",
+      "content_hash": "/74/f422513cb3/0/content_hash.txt",
+      "prompt": "/74/f422513cb3/0/prompt.txt"
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 240,
+    "cache_creation_tokens": 319143,
+    "cache_read_tokens": 25802294,
+    "output_tokens": 72726,
+    "api_call_count": 103
+  }
+}

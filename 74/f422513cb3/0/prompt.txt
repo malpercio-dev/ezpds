@@ -1,0 +1,47 @@
+Work on Linear issue MM-502:
+
+Suggested branch name: malpercio/mm-502-oauth-conformance-cover-the-wallet-device-key-consent-path
+
+<issue identifier="MM-502">
+<title>OAuth conformance: cover the wallet (device-key) consent path</title>
+<description>
+The OAuth conformance suite added in #506 (`tools/oauth-conformance/`) drives every flow through the **password** consent form. Production logs show that real third-party logins to sovereign accounts go through the **wallet** path instead — the device-key-signed approve/complete endpoints in `crates/pds/src/routes/oauth_consent.rs`. So the consent leg that users actually exercise is the one leg the suite does not cover.
+
+The protocol legs on either side of consent (PAR, token exchange, refresh, resource errors) are shared and are covered, so this is a real but bounded gap: what is untested is the approval ceremony itself and everything that depends on it.
+
+## Why it matters
+
+The consent paths are not equivalent. The password path could not carry the PAR-time DPoP key binding at all — its PAR row is consumed by the GET that renders the form, so the only carrier left is an attacker-controllable hidden field (see the comment in `oauth_authorize.rs`). The wallet path keeps its pending request server-side and **does** bind.
+
+**Confirmed empirically during review of #506.** A conformance test written to prove the binding end-to-end failed: PAR accepted the DPoP proof, but a *different* key then redeemed the resulting code with a 200. So `dpop_jkt` enforcement is currently exercised end-to-end **nowhere** — the only coverage is a Rust unit test that writes the binding directly onto the code row, skipping the PAR and consent legs entirely. The failing test was kept, inverted to pin the gap (`flow.test.ts`, "a PAR DPoP proof is accepted, but the password consent path drops the binding"); it will fail and demand attention if the behaviour ever changes.
+
+That raises this from a coverage gap to the thing standing between a shipped security control and any evidence it works.
+
+## What it needs
+
+Two pieces of infrastructure, neither of which exists today:
+
+1. **A JS port of the OAuth consent envelope.** The canonical encoding lives only in Rust (`crates/crypto/src/oauth_consent.rs`): length-prefixed `name:len:value\n` in fixed field order, with `scopeHash` as lowercase-hex SHA-256 of the space-joined granted scope. There is a golden vector at `test-vectors/oauth-consent-envelope-v1.json` already consumed by a Rust test, so the port can be pinned against the identical file — the same pattern as the sovereign-session and account-delete envelopes.
+2. **A mock [plc.directory](<http://plc.directory>) serving audit logs.** Wallet approval verifies the signature against the account's authoritative signing authority, resolved live from `/{did}/log/audit` (`identity/authority.rs` → `identity/plc.rs`). The suite's mock directory (`tools/oauth-conformance/test/mock-plc.ts`) currently serves DID documents only; it would need to serve a real audit-log array. The genesis op is available client-side from `tools/interop`'s `buildGenesisOp`, so the material exists.
+
+Signing reuses `@atproto/crypto` via `tools/interop/src/crypto.js`, and the rotation key is already persisted in interop state as `rotationKeyPrivateHex`.
+
+## Scope
+
+* Port the consent envelope to TS, pinned against the existing golden vector.
+* Extend the suite's mock plc to serve `/{did}/log/audit`.
+* A `wallet-consent.test.ts` covering: preview by `user_code`, the device-key-signed approval, the number-match requirement when a push was dispatched (V060), completion issuing a code, and — the one the password path cannot reach — that a code issued through this path is bound to the PAR-time DPoP key and refuses a different one.
+* A replayed approval envelope must win nothing (the guarded single-use transition).
+
+## Out of scope
+
+Anything requiring a real device or push delivery; the envelope is signed in-process by the test.
+
+Context: `docs/2026-08-03-oauth-interop-audit.md`, `docs/design-plans/2026-08-03-oauth-conformance-harness.md`, and the gap list in `tools/oauth-conformance/README.md`.
+</description>
+<team name="Mal's Machinations"/>
+<label>Security</label>
+<label>Wave 7: Hardening</label>
+<project name="ezpds">An easy-to-host PDS on the ATProtocol, MacOS. Grandma-approved.</project>
+<issue-relations><related><issue-ref identifier="MM-497" title="Archive discipline: 2 shipped design plan(s) awaiting move to docs/archive/"/></related></issue-relations>
+</issue>
