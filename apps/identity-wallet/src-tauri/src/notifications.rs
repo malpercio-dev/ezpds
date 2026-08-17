@@ -257,7 +257,7 @@ pub struct NotificationFailure {
     /// ISO 8601, from the extension's clock.
     pub at: String,
     /// `MALFORMED_PAYLOAD` · `KEYS_UNAVAILABLE` · `UNKNOWN_KID` · `OPEN_FAILED` ·
-    /// `MALFORMED_PLAINTEXT` — see Swift's `NotifyFailureReason`.
+    /// `MALFORMED_PLAINTEXT` · `TIMED_OUT` — see Swift's `NotifyFailureReason`.
     pub reason: String,
     /// The envelope's `kid`, where the payload got far enough to have one.
     pub kid: Option<i64>,
