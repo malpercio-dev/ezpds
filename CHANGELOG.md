@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Changes are collected in `changelog.d/` during development and inserted here when
 `just set-version` prepares a release. There is intentionally no `Unreleased` section.
 
+## [0.11.2] - 2026-08-17
+
+### Changed
+
+- The operator configuration reference now describes every top-level configuration section — nine (including `crawlers`, `appview`, `chat`, `iroh`, and `telemetry`) previously rendered no description.
+
+
+### Fixed
+
+- A notification that timed out before Obsign could verify it now leaves a breadcrumb behind, just like every other unverified notification. Previously a timeout rendered the same "Couldn't verify" banner but left Settings → Notifications reporting no recent failures, so the one surface built to explain the banner silently contradicted it.
+
+
+### Security
+
+- The OAuth authorization endpoint now enforces the PAR-only flow its metadata has always advertised: a direct `/oauth/authorize` request with inline parameters, or one carrying an unsupported JAR `request` object, is refused at flow start instead of being processed (or silently stripped).
+
+
 ## [0.11.1] - 2026-08-12
 
 ### Fixed
