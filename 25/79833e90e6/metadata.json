@@ -1,0 +1,33 @@
+{
+  "cli_version": "0.9.0",
+  "checkpoint_id": "2579833e90e6",
+  "strategy": "manual-commit",
+  "branch": "malpercio/mm-505-enforce-the-advertised-par-only-authorization-flow-at",
+  "checkpoints_count": 1,
+  "files_touched": [
+    "bruno/oauth_authorize_get.bru",
+    "changelog.d/mm-505.security.md",
+    "crates/pds/AGENTS.md",
+    "crates/pds/src/db/AGENTS.md",
+    "crates/pds/src/db/oauth.rs",
+    "crates/pds/src/routes/oauth_authorize.rs",
+    "crates/pds/src/routes/oauth_token/authorization_code.rs",
+    "tools/oauth-conformance/test/flow.test.ts"
+  ],
+  "sessions": [
+    {
+      "metadata": "/25/79833e90e6/0/metadata.json",
+      "transcript": "/25/79833e90e6/0/full.jsonl",
+      "compact_transcript": "/25/79833e90e6/0/transcript.jsonl",
+      "content_hash": "/25/79833e90e6/0/content_hash.txt",
+      "prompt": "/25/79833e90e6/0/prompt.txt"
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 196,
+    "cache_creation_tokens": 287621,
+    "cache_read_tokens": 22061579,
+    "output_tokens": 73784,
+    "api_call_count": 100
+  }
+}

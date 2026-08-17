@@ -1,0 +1,24 @@
+Work on Linear issue MM-505:
+
+Suggested branch name: malpercio/mm-505-enforce-the-advertised-par-only-authorization-flow-at
+
+<issue identifier="MM-505">
+<title>Enforce the advertised PAR-only authorization flow at /oauth/authorize</title>
+<description>
+Our authorization-server metadata advertises `require_pushed_authorization_requests: true` and (since PR #517) `require_request_uri_registration: true`, but `resolve_authorize_params` in `crates/pds/src/routes/oauth_authorize.rs` still accepts a direct (non-PAR) `GET /oauth/authorize` with inline parameters, and `GetAuthorizationQuery` silently ignores a JAR `request` parameter we advertise as unsupported (`request_parameter_supported: false`). The atproto OAuth profile mandates PAR; the reference provider rejects non-PAR authorize requests.
+
+Scope:
+
+* Reject direct authorization requests that arrive without a PAR-issued `request_uri` (spec-correct error page / `invalid_request`), keeping the wallet/consent paths working.
+* Reject requests carrying a `request` (JAR) parameter rather than silently dropping it.
+* Conformance-suite coverage for both rejections.
+
+**Sequencing gate — do not start until the gap-12 verification passes.** [pckt.blog](<http://pckt.blog>) currently reaches us via the direct-authorize fallback; enforcement before their metadata cache picks up PR #517's `request_uri` capability fields would turn their silent post-consent failure into a hard failure at flow start. First confirm (per the addendum in `docs/2026-08-03-oauth-interop-audit.md`) that pckt's redirect for an obsign-hosted handle carries `request_uri=`, then enforce.
+
+Context: gap identified in the 2026-08-03 OAuth interop audit ("we accept despite advertising require_pushed_authorization_requests: true"), re-raised by review on PR #517.
+</description>
+<team name="Mal's Machinations"/>
+<label>Wave 2: Auth</label>
+<label>Security</label>
+<project name="ezpds">An easy-to-host PDS on the ATProtocol, MacOS. Grandma-approved.</project>
+</issue>
