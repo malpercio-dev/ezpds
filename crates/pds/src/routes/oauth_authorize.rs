@@ -717,6 +717,15 @@ async fn dispatch_login_approval_push(
     );
     let enqueued = notify_device(state, &did, payload).await;
     if enqueued == 0 {
+        // Worth one line: the hint named a real local account, notifications are configured,
+        // and yet nothing could be sent — the account has no registration with a live relay
+        // handle. Every earlier exit on this path is either deliberate silence (no relay, no
+        // hint) or already logged by `notify_device`; this is the one outcome that otherwise
+        // leaves no trace anywhere while the user waits for a push that cannot arrive.
+        tracing::info!(
+            account_did = %did,
+            "login-approval push not sent: the account has no reachable registered device"
+        );
         return None;
     }
 

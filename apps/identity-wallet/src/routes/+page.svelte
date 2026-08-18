@@ -103,6 +103,10 @@
   import { createAccount, confirmShareBackup, confirmRekey, confirmSelfHeldKit, selfHeldKitInProgress, getPdsCapabilities, hasPdsCapability, confirmRecoveryBackup, getPendingRecoveryEpilogue, registerCreatedIdentity, importDidWebIdentity, listIdentities, listPendingRemovals, getStoredDidDoc, checkIdentityStatus, getBlobBackupStatus, runBlobBackup, getRepoBackupStatus, runRepoBackup, registerForNotifications, takePendingNotificationRoute, NOTIFICATION_ROUTE_EVENT, isCodedError, type CreateAccountError, type PdsCapabilities, type IdentityInfo, type VerifiedClaimOp, type ClaimResult, type RekeyResult, type SelfHeldKitResult, type UnauthorizedChange, type IdentityStatus, type CollectedShare, type PendingNotificationRoute } from '$lib/ipc';
   import { decideAlarmLanding } from '$lib/alarm-landing';
   import { authenticateBiometric } from '$lib/biometric';
+  import {
+    recordRegistrationFailure,
+    recordRegistrationOutcome,
+  } from '$lib/notification-registration';
   import { normalizePlcDocToW3c, extractHandle, extractPdsFromPlcDoc } from '$lib/did-doc-utils';
   import IdentityListHome from '$lib/components/home/IdentityListHome.svelte';
   import ProtectionScreen from '$lib/components/home/ProtectionScreen.svelte';
@@ -818,9 +822,16 @@
    * a sender key the operator revokes keeps being trusted by this device until it next re-pins.
    */
   function syncNotifications(did: string) {
-    registerForNotifications(did).catch((e) => {
-      console.warn('push registration pass failed:', did, e);
-    });
+    // Fire-and-forget, but never silent: the outcome (or the failure code) lands in the
+    // per-identity registration ledger Settings reads back. Before the ledger existed, an
+    // identity whose registration failed on every open — a locked sovereign session, say —
+    // could never receive a push, while the notification surface reported perfect health.
+    registerForNotifications(did)
+      .then((outcome) => recordRegistrationOutcome(did, outcome))
+      .catch((e) => {
+        recordRegistrationFailure(did, e);
+        console.warn('push registration pass failed:', did, e);
+      });
   }
 </script>
 

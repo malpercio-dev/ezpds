@@ -1,11 +1,14 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { get } from 'svelte/store';
 
 const getIdentityUnlockRoute = vi.fn();
 const sovereignLogin = vi.fn();
+const registerForNotifications = vi.fn();
 
 vi.mock('$lib/ipc', () => ({
   getIdentityUnlockRoute: (did: string) => getIdentityUnlockRoute(did),
   sovereignLogin: (did: string) => sovereignLogin(did),
+  registerForNotifications: (did: string) => registerForNotifications(did),
 }));
 
 const {
@@ -14,6 +17,7 @@ const {
   isUnlockCancelled,
   UNLOCK_CANCELLED,
 } = await import('./unlock');
+const { registrationRecords } = await import('./notification-registration');
 
 const DID = 'did:plc:abcdefghijklmnopqrstuvwx';
 
@@ -30,6 +34,12 @@ describe('unlockIdentity', () => {
   beforeEach(() => {
     getIdentityUnlockRoute.mockReset();
     sovereignLogin.mockReset().mockResolvedValue(undefined);
+    registerForNotifications.mockReset().mockResolvedValue({
+      status: 'REGISTERED',
+      deviceUuid: 'device-1',
+      notificationKeyId: null,
+    });
+    registrationRecords.set({});
     unregister?.();
     unregister = null;
   });
@@ -119,6 +129,50 @@ describe('unlockIdentity', () => {
     getIdentityUnlockRoute.mockResolvedValue(passwordRoute);
 
     await expect(unlockIdentity(DID)).rejects.toMatchObject({ code: 'INVALID_RESPONSE' });
+  });
+
+  it('a successful unlock re-fires push registration for the identity', async () => {
+    // The repair moment this hook exists for: an identity locked at app open failed its
+    // registration pass silently, and until this hook the fix waited for the NEXT launch to
+    // happen to find the session live.
+    getIdentityUnlockRoute.mockResolvedValue(sovereignRoute);
+
+    await unlockIdentity(DID);
+    expect(registerForNotifications).toHaveBeenCalledWith(DID);
+
+    // The outcome lands in the ledger Settings reads, so the repair is visible immediately.
+    await vi.waitFor(() => {
+      expect(get(registrationRecords)[DID]).toEqual({ kind: 'outcome', status: 'REGISTERED' });
+    });
+  });
+
+  it('the password route re-fires registration too, after the prompt resolves', async () => {
+    getIdentityUnlockRoute.mockResolvedValue(passwordRoute);
+    unregister = registerPasswordUnlockPrompt(vi.fn().mockResolvedValue(undefined));
+
+    await unlockIdentity(DID);
+    expect(registerForNotifications).toHaveBeenCalledWith(DID);
+  });
+
+  it('a failed post-unlock registration never fails the unlock, and is recorded', async () => {
+    getIdentityUnlockRoute.mockResolvedValue(sovereignRoute);
+    registerForNotifications.mockRejectedValue({ code: 'NETWORK_ERROR', message: 'timeout' });
+
+    // The unlock's caller is about to retry the operation that hit the lock; a registration
+    // hiccup must not turn that into a failure.
+    await expect(unlockIdentity(DID)).resolves.toBeUndefined();
+
+    await vi.waitFor(() => {
+      expect(get(registrationRecords)[DID]).toEqual({ kind: 'error', code: 'NETWORK_ERROR' });
+    });
+  });
+
+  it('a dismissed prompt fires no registration — nothing was unlocked', async () => {
+    getIdentityUnlockRoute.mockResolvedValue(passwordRoute);
+    unregister = registerPasswordUnlockPrompt(() => Promise.reject({ code: UNLOCK_CANCELLED }));
+
+    await unlockIdentity(DID).catch(() => {});
+    expect(registerForNotifications).not.toHaveBeenCalled();
   });
 
   it('unregistering restores the no-prompt state without clobbering a newer handler', async () => {
