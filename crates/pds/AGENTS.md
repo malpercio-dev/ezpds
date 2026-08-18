@@ -212,7 +212,10 @@ and return data; callers decide what to do with it.
 One file per HTTP endpoint. Each handler is a thin Imperative Shell:
 **gather** (extract state/body/headers) → **process** (call `auth/` or `db/`) → **respond**.
 Rows below name the endpoint and the fact to know before opening the file; the module doc has
-the rest.
+the rest. The client-facing wire contract of the OAuth endpoints (`PAR → consent → token →
+authenticated call`) is pinned from the client's side by an out-of-crate suite,
+`tools/oauth-conformance/`; the interop failures it guards slipped past this crate's own Rust
+tests, so check it when changing an OAuth response shape — see its README.
 
 | File | Endpoint |
 |---|---|
