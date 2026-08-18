@@ -17,6 +17,14 @@
 //! portable, host-tested half), and emits the `notification_route` event — the deep-link path
 //! for push-to-approve.
 //!
+//! A fourth add-only method, `application:openURL:options:`, is the **Camera-app half of the
+//! consent QR**: the QR the consent page renders is a plain `org.obsign.identitywallet:` URL,
+//! and scanning it outside Obsign launches the app through this callback (the scheme is
+//! registered in Info.ios.plist; nothing consumed the URL after the deep-link plugin was
+//! retired with the Safari OAuth flow). The `/consent` handoff parses via the host-tested
+//! `notification_routes::route_from_handoff_url` into the same pending-route slot and event
+//! the tap path uses; every other URL on the scheme is declined untouched.
+//!
 //! Everything here is compiled only for iOS (`lib.rs` gates the whole module), which also
 //! means it is compiled only by the `aarch64-apple-ios` cross-compile in the PR lane and
 //! exercised only on a device. Both consequences shape the code: the logic that *can* be
@@ -44,7 +52,7 @@ use block2::{Block, RcBlock};
 use objc2::rc::Retained;
 use objc2::runtime::{AnyClass, AnyObject, Bool, Imp, ProtocolObject, Sel};
 use objc2::{sel, MainThreadMarker};
-use objc2_foundation::{NSData, NSDictionary, NSError, NSString};
+use objc2_foundation::{NSData, NSDictionary, NSError, NSString, NSURL};
 use objc2_ui_kit::UIApplication;
 use objc2_user_notifications::{
     UNAuthorizationOptions, UNNotificationResponse, UNUserNotificationCenter,
@@ -158,6 +166,32 @@ fn install_delegate_methods(mtm: MainThreadMarker) -> bool {
         tracing::warn!("could not install the APNs registration-failure callback");
     }
 
+    // The URL-open callback: how a consent QR scanned OUTSIDE Obsign (the iOS Camera app)
+    // deep-links into the same consent approval screen. The scheme is registered in
+    // Info.ios.plist, so iOS launches/foregrounds the app on `org.obsign.identitywallet:…` —
+    // but without this method the URL itself arrived nowhere and the scan landed on the home
+    // screen. (The old deep-link plugin was removed with the OAuth Safari flow; the
+    // ASWebAuthenticationSession callback never goes through openURL, so this add-only method
+    // has the selector to itself.) Best-effort like the tap callback below: without it a scan
+    // still opens the app, it just cannot say where to.
+    //
+    // "B@:@@@" — returns BOOL, takes (self, _cmd, UIApplication, NSURL, NSDictionary).
+    const OPEN_URL_SIGNATURE: &[u8] = b"B@:@@@\0";
+    let open_url_registered = unsafe {
+        objc2::ffi::class_addMethod(
+            class,
+            sel!(application:openURL:options:),
+            std::mem::transmute::<OpenUrlFn, Imp>(application_open_url),
+            OPEN_URL_SIGNATURE.as_ptr().cast(),
+        )
+    };
+    if !open_url_registered.as_bool() {
+        tracing::error!(
+            "the application delegate already handles application:openURL:options:; \
+             leaving it alone — Camera-app consent QR scans will not deep-link"
+        );
+    }
+
     // The notification-tap callback: how a `login-approval` push deep-links into the consent
     // approval screen. `didReceiveNotificationResponse` is only ever delivered to
     // `UNUserNotificationCenter`'s delegate, which no one sets today — so the method is added
@@ -194,6 +228,13 @@ fn install_delegate_methods(mtm: MainThreadMarker) -> bool {
 
 type DidRegisterFn = unsafe extern "C-unwind" fn(*mut AnyObject, Sel, *mut AnyObject, *mut NSData);
 type DidFailFn = unsafe extern "C-unwind" fn(*mut AnyObject, Sel, *mut AnyObject, *mut NSError);
+type OpenUrlFn = unsafe extern "C-unwind" fn(
+    *mut AnyObject,
+    Sel,
+    *mut AnyObject,
+    *mut NSURL,
+    *mut AnyObject,
+) -> Bool;
 type DidReceiveResponseFn = unsafe extern "C-unwind" fn(
     *mut AnyObject,
     Sel,
@@ -234,6 +275,40 @@ unsafe extern "C-unwind" fn did_register_with_token(
         }
         Err(e) => tracing::error!(error = ?e, "could not store the APNs device token"),
     }
+}
+
+/// `-application:openURL:options:`
+///
+/// iOS hands the app a URL on its registered scheme — for Obsign, that is a consent QR
+/// scanned from outside the app (the Camera app renders the QR's payload as a plain link).
+/// The `/consent` handoff parses into the same pending-route slot a tapped notification
+/// uses, so both cold start (the URL arrives before the frontend exists; the mount drain
+/// finds it) and warm foreground (the event fires; the listener drains it) are already
+/// covered by machinery the tap path proved out. Any URL that is not the consent handoff is
+/// declined with NO so a future owner of the scheme sees its URLs untouched.
+unsafe extern "C-unwind" fn application_open_url(
+    _this: *mut AnyObject,
+    _cmd: Sel,
+    _application: *mut AnyObject,
+    url: *mut NSURL,
+    _options: *mut AnyObject,
+) -> Bool {
+    if url.is_null() {
+        return Bool::NO;
+    }
+    let Some(absolute) = (unsafe { &*url }).absoluteString() else {
+        return Bool::NO;
+    };
+    let Some(route) = crate::notification_routes::route_from_handoff_url(&absolute.to_string())
+    else {
+        return Bool::NO;
+    };
+    tracing::info!(kind = %route.kind, "a handoff URL carried a route");
+    crate::notification_routes::store_pending_route(route.clone());
+    if let Some(app) = APP.get() {
+        let _ = app.emit("notification_route", route);
+    }
+    Bool::YES
 }
 
 /// `-userNotificationCenter:didReceiveNotificationResponse:withCompletionHandler:`

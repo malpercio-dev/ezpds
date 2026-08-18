@@ -100,13 +100,15 @@
   import SettingsScreen from '$lib/components/home/SettingsScreen.svelte';
   import RemoveIdentityScreen from '$lib/components/home/RemoveIdentityScreen.svelte';
   import PasswordUnlockDialog from '$lib/components/home/PasswordUnlockDialog.svelte';
-  import { createAccount, confirmShareBackup, confirmRekey, confirmSelfHeldKit, selfHeldKitInProgress, getPdsCapabilities, hasPdsCapability, confirmRecoveryBackup, getPendingRecoveryEpilogue, registerCreatedIdentity, importDidWebIdentity, listIdentities, listPendingRemovals, getStoredDidDoc, checkIdentityStatus, getBlobBackupStatus, runBlobBackup, getRepoBackupStatus, runRepoBackup, registerForNotifications, takePendingNotificationRoute, NOTIFICATION_ROUTE_EVENT, isCodedError, type CreateAccountError, type PdsCapabilities, type IdentityInfo, type VerifiedClaimOp, type ClaimResult, type RekeyResult, type SelfHeldKitResult, type UnauthorizedChange, type IdentityStatus, type CollectedShare, type PendingNotificationRoute } from '$lib/ipc';
+  import { createAccount, confirmShareBackup, confirmRekey, confirmSelfHeldKit, selfHeldKitInProgress, getPdsCapabilities, hasPdsCapability, confirmRecoveryBackup, getPendingRecoveryEpilogue, registerCreatedIdentity, importDidWebIdentity, listIdentities, listPendingRemovals, getStoredDidDoc, checkIdentityStatus, getBlobBackupStatus, runBlobBackup, getRepoBackupStatus, runRepoBackup, registerForNotifications, previewOAuthConsentByRequestId, takePendingNotificationRoute, NOTIFICATION_ROUTE_EVENT, isCodedError, type CreateAccountError, type PdsCapabilities, type IdentityInfo, type VerifiedClaimOp, type ClaimResult, type RekeyResult, type SelfHeldKitResult, type UnauthorizedChange, type IdentityStatus, type CollectedShare, type PendingNotificationRoute } from '$lib/ipc';
   import { decideAlarmLanding } from '$lib/alarm-landing';
   import { authenticateBiometric } from '$lib/biometric';
   import {
     recordRegistrationFailure,
     recordRegistrationOutcome,
   } from '$lib/notification-registration';
+  import { resolveConsentIdentity } from '$lib/consent-route';
+  import { loadIdentityCards } from '$lib/identity-cards';
   import { normalizePlcDocToW3c, extractHandle, extractPdsFromPlcDoc } from '$lib/did-doc-utils';
   import IdentityListHome from '$lib/components/home/IdentityListHome.svelte';
   import ProtectionScreen from '$lib/components/home/ProtectionScreen.svelte';
@@ -417,12 +419,17 @@
     if (!interruptible.includes(step)) return false;
     try {
       const identities = await listIdentities();
-      const did =
-        route.did && identities.includes(route.did)
-          ? route.did
-          : identities.length === 1
-            ? identities[0]
-            : null;
+      let did = route.did && identities.includes(route.did) ? route.did : null;
+      if (!did) {
+        // A route with no DID — the Camera-app QR path, where the handoff URL carries only a
+        // request_id — or one naming an identity this wallet doesn't hold. Work out which
+        // managed identity can answer: sole identity, else probe each identity's hosting PDS
+        // for the request and let its login_hint disambiguate (see $lib/consent-route).
+        const cards = await loadIdentityCards();
+        did = await resolveConsentIdentity(route.requestId, cards, (probeDid, requestId) =>
+          previewOAuthConsentByRequestId(probeDid, requestId)
+        );
+      }
       if (!did) return false;
       selectedDid = did;
       try {

@@ -67,6 +67,57 @@ pub fn store_pending_route(route: PendingNotificationRoute) {
     *slot().lock().unwrap_or_else(|e| e.into_inner()) = Some(route);
 }
 
+/// The custom scheme iOS launches the wallet on. One spelling shared by `Info.ios.plist`'s
+/// `CFBundleURLSchemes` and the server's consent-page handoff QR — the same string the Custos
+/// consent page renders into `org.obsign.identitywallet:/consent?request_id=…`.
+const HANDOFF_SCHEME: &str = "org.obsign.identitywallet";
+
+/// Parse a wallet handoff URL into a route, or `None` for any URL this module does not own.
+///
+/// This is the Camera-app half of the consent QR: the same QR the in-app scanner reads is a
+/// plain URL to iOS, and scanning it from outside Obsign launches the app through
+/// `application:openURL:` with nothing but this string. Only the `/consent` path routes —
+/// every other URL on the scheme (the ASWebAuthenticationSession OAuth callback, anything a
+/// future feature claims) reads as `None` so the caller can decline it untouched.
+///
+/// The URL is attacker-suppliable by construction (anyone can print a QR), which is why the
+/// result is a pointer and nothing more: the same `request_id`-only discipline as the in-app
+/// scan path, with everything displayed re-fetched from the server and approval still behind
+/// the number-match + biometric-signed envelope.
+///
+/// Both `scheme:/consent` (the server's spelling) and `scheme://consent` (a scanner that
+/// normalizes an authority slot into the URL) are accepted; they are the same instruction.
+pub fn route_from_handoff_url(raw: &str) -> Option<PendingNotificationRoute> {
+    let url = url::Url::parse(raw.trim()).ok()?;
+    if !url.scheme().eq_ignore_ascii_case(HANDOFF_SCHEME) {
+        return None;
+    }
+    let names_consent = |segment: Option<&str>| segment == Some("consent");
+    let path = url.path().trim_matches('/');
+    let is_consent = if path.is_empty() {
+        names_consent(url.host_str())
+    } else {
+        names_consent(Some(path)) && url.host_str().is_none()
+    };
+    if !is_consent {
+        return None;
+    }
+
+    let request_id = url
+        .query_pairs()
+        .find(|(name, _)| name == "request_id")
+        .map(|(_, value)| value.into_owned())
+        .filter(|value| !value.is_empty())?;
+
+    // No `did`: the QR names a pending request, not an identity. The frontend resolves which
+    // managed identity can answer it (sole identity, or by probing the request's preview).
+    Some(PendingNotificationRoute {
+        kind: "login-approval".to_string(),
+        request_id: Some(request_id),
+        did: None,
+    })
+}
+
 /// Take (and clear) the pending route. Clearing is what keeps the cold-start drain and the
 /// warm-event handler from both navigating on one tap.
 #[tauri::command]
@@ -133,5 +184,62 @@ mod tests {
         assert_eq!(json["kind"], "login-approval");
         assert_eq!(json["requestId"], "poauth_x");
         assert_eq!(json["did"], "did:plc:abc");
+    }
+
+    // ── the Camera-app handoff URL ──
+
+    /// The exact string the Custos consent page renders into its QR
+    /// (`oauth_templates::wallet_handoff_uri`), origin rider included.
+    #[test]
+    fn the_servers_handoff_url_routes_to_the_consent_request() {
+        let route = route_from_handoff_url(
+            "org.obsign.identitywallet:/consent?request_id=poauth_abc123&origin=https%3A%2F%2Fapp.example.com",
+        )
+        .unwrap();
+        assert_eq!(route.kind, "login-approval");
+        assert_eq!(route.request_id.as_deref(), Some("poauth_abc123"));
+        assert_eq!(
+            route.did, None,
+            "the QR names a request, not an identity — resolution is the frontend's job"
+        );
+    }
+
+    /// A scanner that rewrites `scheme:/x` into `scheme://x` has not changed the instruction.
+    #[test]
+    fn an_authority_spelled_consent_url_routes_identically() {
+        let route =
+            route_from_handoff_url("org.obsign.identitywallet://consent?request_id=poauth_abc")
+                .unwrap();
+        assert_eq!(route.request_id.as_deref(), Some("poauth_abc"));
+    }
+
+    /// Everything on the scheme that is not the consent handoff must read as "not ours":
+    /// returning `None` is what lets the openURL handler decline a URL without consuming it.
+    #[test]
+    fn other_urls_on_the_scheme_are_declined_untouched() {
+        for raw in [
+            // The ASWebAuthenticationSession OAuth callback — same scheme, different owner.
+            "org.obsign.identitywallet:/oauth/callback?code=xyz",
+            // A consent path with nothing to route on.
+            "org.obsign.identitywallet:/consent",
+            "org.obsign.identitywallet:/consent?request_id=",
+            // A hostile spelling that puts `consent` where it doesn't belong.
+            "org.obsign.identitywallet://evil.example/consent?request_id=poauth_x",
+            // Someone else's scheme entirely.
+            "https://pds.example.com/consent?request_id=poauth_x",
+            "not a url at all",
+        ] {
+            assert_eq!(route_from_handoff_url(raw), None, "must decline: {raw}");
+        }
+    }
+
+    /// The request id round-trips percent-decoding, since the server percent-encodes it.
+    #[test]
+    fn the_request_id_is_percent_decoded() {
+        let route = route_from_handoff_url(
+            "org.obsign.identitywallet:/consent?request_id=poauth_a%2Db%5Fc",
+        )
+        .unwrap();
+        assert_eq!(route.request_id.as_deref(), Some("poauth_a-b_c"));
     }
 }
