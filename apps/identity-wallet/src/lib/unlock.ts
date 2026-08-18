@@ -18,8 +18,21 @@
  *
  * This is a policy gate over IPC wrappers, not an `invoke()` wrapper itself, so it lives
  * outside `$lib/ipc` — the same reasoning that puts the biometric gate in `$lib/biometric.ts`.
+ *
+ * A successful unlock also re-fires push registration for the identity (fire-and-forget; see
+ * {@link registerAfterUnlock}) — the unlock is the exact moment a registration that failed
+ * `SESSION_LOCKED` at app open becomes repairable.
  */
-import { getIdentityUnlockRoute, sovereignLogin, type UnlockRoute } from '$lib/ipc';
+import {
+  getIdentityUnlockRoute,
+  registerForNotifications,
+  sovereignLogin,
+  type UnlockRoute,
+} from '$lib/ipc';
+import {
+  recordRegistrationFailure,
+  recordRegistrationOutcome,
+} from '$lib/notification-registration';
 
 /** What the password dialog needs to render one unlock request. */
 export type PasswordUnlockRequest = {
@@ -77,6 +90,7 @@ export const unlockIdentity = async (did: string, route?: UnlockRoute): Promise<
 
   if (resolved.method === 'SOVEREIGN') {
     await sovereignLogin(did);
+    registerAfterUnlock(did);
     return;
   }
 
@@ -85,4 +99,22 @@ export const unlockIdentity = async (did: string, route?: UnlockRoute): Promise<
     throw { code: 'INVALID_RESPONSE', message: 'No password prompt is available.' };
   }
   await prompt({ did, pdsUrl: resolved.pdsUrl, handle: resolved.handle });
+  registerAfterUnlock(did);
+};
+
+/**
+ * Re-register for push the moment an unlock succeeds — fire-and-forget, never blocking the
+ * operation the caller is about to retry.
+ *
+ * An unlock is exactly when a failed registration becomes repairable: the per-app-open pass
+ * runs fire-and-forget with whatever session state it finds, so an identity that was locked at
+ * launch stayed unregistered (and unable to receive a sign-in request push) until the NEXT
+ * launch happened to find it unlocked. Doing it here closes that gap at the only moment the
+ * session is known fresh. The outcome lands in the same ledger the app-open pass writes, so
+ * Settings reflects the repair immediately.
+ */
+const registerAfterUnlock = (did: string): void => {
+  void registerForNotifications(did)
+    .then((outcome) => recordRegistrationOutcome(did, outcome))
+    .catch((error) => recordRegistrationFailure(did, error));
 };

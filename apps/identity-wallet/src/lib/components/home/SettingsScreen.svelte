@@ -22,6 +22,11 @@
     summarizeNotificationFailures,
     type NotificationHealth,
   } from '$lib/notification-health';
+  import {
+    describeRegistration,
+    registrationRecords,
+  } from '$lib/notification-registration';
+  import { loadIdentityCards, type IdentityCard } from '$lib/identity-cards';
 
   let { onback }: { onback: () => void } = $props();
 
@@ -40,6 +45,31 @@
   );
   /** Whether this device has ever minted its notification key — i.e. whether push is set up. */
   const notificationsConfigured = $derived(notifications?.notificationKeyId != null);
+
+  // ── Registration by identity ────────────────────────────────────────────────
+  // The other half of notification health. The breadcrumb summary above can only describe
+  // pushes that ARRIVED broken; an identity whose registration fails on every app open
+  // receives nothing at all, and used to read as perfect health here. These rows state, per
+  // identity, whether this launch's registration pass succeeded — and when it didn't, why
+  // and what fixes it.
+  let identityCards = $state<IdentityCard[]>([]);
+
+  async function loadRegistrationIdentities() {
+    try {
+      identityCards = await loadIdentityCards();
+    } catch (e) {
+      console.error('Failed to list identities for the registration readout:', e);
+      // An empty list hides the rows rather than rendering a wrong one.
+      identityCards = [];
+    }
+  }
+
+  /** The mark glyph + screen-reader prefix for a health level (shared with the summary above). */
+  function levelMark(level: 'quiet' | 'info' | 'attention'): { glyph: string; prefix: string } {
+    if (level === 'attention') return { glyph: '!', prefix: 'Needs attention: ' };
+    if (level === 'info') return { glyph: 'i', prefix: 'For information: ' };
+    return { glyph: '✓', prefix: 'All clear: ' };
+  }
 
   async function loadNotifications() {
     try {
@@ -86,6 +116,7 @@
       // Keep the defaults; a failed read must not present a wrong state as if saved.
     }
     await loadNotifications();
+    await loadRegistrationIdentities();
   });
 
   async function updateBgBackup(patch: Partial<BackgroundBackupSettings>) {
@@ -353,6 +384,38 @@
         </Button>
       {/if}
     {/if}
+
+    {#if identityCards.length > 0}
+      <!-- Per-identity registration state: whether this launch's registration pass succeeded
+           for each identity. Complements the breadcrumb summary above, which can only describe
+           pushes that arrived — an identity that never registered receives nothing, and these
+           rows are the one place that says so. Level is carried by mark + wording + the
+           screen-reader prefix, never tint alone. -->
+      <div class="reg-list" role="list" aria-label="Notification registration by identity">
+        <h3 class="reg-title">Delivery by identity</h3>
+        {#each identityCards as card (card.did)}
+          {@const health = describeRegistration($registrationRecords[card.did])}
+          {@const mark = levelMark(health.level)}
+          <p
+            class="notice notice--{health.level}"
+            role={health.level === 'attention' ? 'alert' : 'status'}
+          >
+            <span class="notice-mark" aria-hidden="true">{mark.glyph}</span>
+            <span class="notice-text">
+              <span class="notice-headline">
+                <span class="sr-only">{mark.prefix}</span>
+                <span class="reg-identity">{card.handle ?? card.did}</span>
+                — {health.headline}
+              </span>
+              <span class="notice-detail">{health.detail}</span>
+              {#if health.advice}
+                <span class="notice-advice">{health.advice}</span>
+              {/if}
+            </span>
+          </p>
+        {/each}
+      </div>
+    {/if}
   </section>
 
   <section class="group" aria-labelledby="diagnostics-title">
@@ -545,6 +608,27 @@
   }
   .notice--info {
     color: var(--color-muted);
+  }
+
+  /* Per-identity registration rows: same notice vocabulary, grouped under a small label so
+     they read as detail beneath the device-level summary rather than as more alarms. */
+  .reg-list {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-xs);
+    padding-top: var(--space-2xs);
+    border-top: 1px solid var(--color-line);
+  }
+  .reg-title {
+    font-family: var(--font-sans);
+    font-size: var(--text-label);
+    font-weight: var(--weight-semibold);
+    color: var(--color-muted);
+    margin: 0;
+  }
+  .reg-identity {
+    font-weight: var(--weight-semibold);
+    overflow-wrap: anywhere;
   }
 
   .save-error {
