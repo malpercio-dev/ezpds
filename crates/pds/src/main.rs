@@ -594,7 +594,7 @@ async fn run() -> anyhow::Result<()> {
         oauth_client_jwks_cache,
         jwt_secret,
         oauth_signing_keypair,
-        dpop_nonces: auth::new_nonce_store(),
+        dpop_nonces: Arc::new(auth::DpopNonceRotator::from_jwt_secret(&jwt_secret)),
         poll_tracker: auth::new_claim_poll_tracker(),
         permission_set_cache: auth::new_permission_set_cache(),
         failed_login_attempts: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),

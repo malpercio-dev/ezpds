@@ -21,7 +21,7 @@ use super::{
 };
 use crate::app::AppState;
 use crate::auth::token::generate_token;
-use crate::auth::{issue_nonce, validate_dpop_for_token_endpoint, DpopTokenEndpointError};
+use crate::auth::{validate_dpop_for_token_endpoint, DpopTokenEndpointError};
 use crate::db::oauth::{
     delete_oauth_refresh_session, get_oauth_refresh_token, store_rotated_oauth_refresh_token,
     supersede_oauth_refresh_token,
@@ -89,7 +89,6 @@ pub(super) async fn handle_refresh_token(
 
     let jkt =
         match validate_dpop_for_token_endpoint(&dpop_token, "POST", &token_url, &state.dpop_nonces)
-            .await
         {
             Ok(jkt) => jkt,
             Err(DpopTokenEndpointError::MissingHeader) => {
@@ -238,7 +237,7 @@ pub(super) async fn handle_refresh_token(
     }
 
     // Issue fresh DPoP nonce for the next request.
-    let fresh_nonce = issue_nonce(&state.dpop_nonces).await;
+    let fresh_nonce = state.dpop_nonces.issue();
 
     let response_headers = match token_response_headers(&fresh_nonce) {
         Ok(h) => h,
@@ -272,7 +271,6 @@ mod tests {
         dpop_thumbprint, json_body, make_dpop_proof, now_secs, post_token_with_dpop,
     };
     use crate::app::{app, test_state, AppState};
-    use crate::auth::issue_nonce;
     use crate::auth::token::generate_token;
     use crate::db::oauth::{register_oauth_client, store_initial_oauth_refresh_token};
 
@@ -390,7 +388,7 @@ mod tests {
         let jkt = dpop_thumbprint(&key);
 
         let plaintext = seed_legacy_refresh_token(&state, &jkt).await;
-        let nonce = issue_nonce(&state.dpop_nonces).await;
+        let nonce = state.dpop_nonces.issue();
         let dpop = make_dpop_proof(
             &key,
             "POST",
@@ -433,7 +431,7 @@ mod tests {
         let jkt = dpop_thumbprint(&key);
 
         let plaintext = seed_refresh_token(&state, &jkt).await;
-        let nonce = issue_nonce(&state.dpop_nonces).await;
+        let nonce = state.dpop_nonces.issue();
         let dpop = make_dpop_proof(
             &key,
             "POST",
@@ -528,7 +526,7 @@ mod tests {
         );
 
         // First use: succeeds. Clone state so the second request shares the same DB.
-        let nonce1 = issue_nonce(&state.dpop_nonces).await;
+        let nonce1 = state.dpop_nonces.issue();
         let dpop1 = make_dpop_proof(
             &key,
             "POST",
@@ -549,7 +547,7 @@ mod tests {
 
         // Second use of the same original token, seconds later: still inside the grace
         // window, so it must succeed and mint its own distinct token pair.
-        let nonce2 = issue_nonce(&state.dpop_nonces).await;
+        let nonce2 = state.dpop_nonces.issue();
         let dpop2 = make_dpop_proof(
             &key,
             "POST",
@@ -591,7 +589,7 @@ mod tests {
              &refresh_token={plaintext}\
              &client_id=https%3A%2F%2Fapp.example.com%2Fclient-metadata.json"
         );
-        let nonce1 = issue_nonce(&state.dpop_nonces).await;
+        let nonce1 = state.dpop_nonces.issue();
         let dpop1 = make_dpop_proof(
             &key,
             "POST",
@@ -620,7 +618,7 @@ mod tests {
         .unwrap();
 
         // Replaying the superseded token now must fail AND revoke the successor too.
-        let nonce2 = issue_nonce(&state.dpop_nonces).await;
+        let nonce2 = state.dpop_nonces.issue();
         let dpop2 = make_dpop_proof(
             &key,
             "POST",
@@ -642,7 +640,7 @@ mod tests {
              &refresh_token={successor}\
              &client_id=https%3A%2F%2Fapp.example.com%2Fclient-metadata.json"
         );
-        let nonce3 = issue_nonce(&state.dpop_nonces).await;
+        let nonce3 = state.dpop_nonces.issue();
         let dpop3 = make_dpop_proof(
             &key,
             "POST",
@@ -683,7 +681,7 @@ mod tests {
              &refresh_token={plaintext}\
              &client_id=https%3A%2F%2Fapp.example.com%2Fclient-metadata.json"
         );
-        let nonce = issue_nonce(&state.dpop_nonces).await;
+        let nonce = state.dpop_nonces.issue();
         let dpop = make_dpop_proof(
             &key,
             "POST",
@@ -716,7 +714,7 @@ mod tests {
         let jkt = dpop_thumbprint(&key);
 
         let plaintext = seed_expired_refresh_token(&state, &jkt).await;
-        let nonce = issue_nonce(&state.dpop_nonces).await;
+        let nonce = state.dpop_nonces.issue();
         let dpop = make_dpop_proof(
             &key,
             "POST",
@@ -755,7 +753,7 @@ mod tests {
 
         // Build proof with a DIFFERENT key — thumbprint will not match stored_jkt.
         let different_key = SigningKey::random(&mut OsRng);
-        let nonce = issue_nonce(&state.dpop_nonces).await;
+        let nonce = state.dpop_nonces.issue();
         let dpop = make_dpop_proof(
             &different_key,
             "POST",
@@ -793,7 +791,7 @@ mod tests {
         let jkt = dpop_thumbprint(&key);
         let plaintext = seed_refresh_token(&state, &jkt).await;
 
-        let nonce = issue_nonce(&state.dpop_nonces).await;
+        let nonce = state.dpop_nonces.issue();
         let dpop = make_dpop_proof(
             &key,
             "POST",
@@ -817,7 +815,7 @@ mod tests {
         assert_eq!(bad_json["error"], "invalid_grant");
 
         // Attempt 2: correct client_id — must succeed (token was not consumed above).
-        let nonce2 = issue_nonce(&state.dpop_nonces).await;
+        let nonce2 = state.dpop_nonces.issue();
         let dpop2 = make_dpop_proof(
             &key,
             "POST",
@@ -881,7 +879,7 @@ mod tests {
         .await
         .unwrap();
 
-        let nonce = issue_nonce(&state.dpop_nonces).await;
+        let nonce = state.dpop_nonces.issue();
         let dpop = make_dpop_proof(
             &key,
             "POST",
@@ -915,7 +913,7 @@ mod tests {
         let jkt = dpop_thumbprint(&key);
 
         let plaintext = seed_refresh_token(&state, &jkt).await;
-        let nonce = issue_nonce(&state.dpop_nonces).await;
+        let nonce = state.dpop_nonces.issue();
         let dpop = make_dpop_proof(
             &key,
             "POST",

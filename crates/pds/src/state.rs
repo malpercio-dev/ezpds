@@ -7,7 +7,7 @@ use std::time::Instant;
 use common::Config;
 use reqwest::Client;
 
-use crate::auth::{ClaimPollTracker, DpopNonceStore, OAuthSigningKey, PermissionSetCache};
+use crate::auth::{ClaimPollTracker, DpopNonces, OAuthSigningKey, PermissionSetCache};
 use crate::identity::dns::{DnsProvider, TxtResolver};
 use crate::identity::well_known::WellKnownResolver;
 
@@ -56,14 +56,16 @@ pub struct AppState {
     /// client) — see [`crate::auth::jwks::JwksCache`]'s module doc for why the two trust domains
     /// don't share a cache instance.
     pub oauth_client_jwks_cache: Arc<crate::auth::jwks::JwksCache>,
-    /// HS256 signing secret for JWT access/refresh tokens.
-    /// Generated randomly at startup via OsRng (ephemeral — rotates on restart).
+    /// HS256 signing secret for JWT access/refresh tokens. Loaded at startup from the
+    /// `jwt_signing_secret` table (V015) when `signing_key_master_key` is configured;
+    /// otherwise generated per boot (ephemeral — tokens invalidate on restart).
     pub jwt_secret: [u8; 32],
     /// Persistent ES256 keypair for signing OAuth access tokens.
     /// Loaded at startup from `oauth_signing_key` table (or generated + stored on first boot).
     pub oauth_signing_keypair: OAuthSigningKey,
-    /// In-memory store for server-issued DPoP nonces. Shared across all token endpoint requests.
-    pub dpop_nonces: DpopNonceStore,
+    /// Rotating server-issued DPoP nonce, derived from `jwt_secret` — stateless, so it needs
+    /// no map or cleanup and agrees across instances and restarts whenever the JWT secret does.
+    pub dpop_nonces: DpopNonces,
     /// In-memory last-poll clock for the auth.md claim-polling grant, keyed by the SHA-256 of each
     /// agent's `claim_token`. Paces polling to the advertised `interval` (returns `slow_down` when
     /// exceeded). Shared across all token endpoint requests; ephemeral (resets on restart).
@@ -123,7 +125,7 @@ pub(crate) async fn test_state() -> AppState {
 
 #[cfg(test)]
 pub async fn test_state_with_plc_url(plc_directory_url: String) -> AppState {
-    use crate::auth::{new_claim_poll_tracker, new_nonce_store, new_permission_set_cache};
+    use crate::auth::{new_claim_poll_tracker, new_permission_set_cache};
     use crate::db::{open_pool, run_migrations};
     use common::{
         AppViewConfig, BlobsConfig, ChatConfig, CrawlersConfig, FirehoseConfig, IrohConfig,
@@ -170,7 +172,10 @@ pub async fn test_state_with_plc_url(plc_directory_url: String) -> AppState {
             public_key_jwk,
         }
     };
-    let dpop_nonces = new_nonce_store();
+    // Matches the fixed `jwt_secret` below, mirroring production's derivation.
+    let dpop_nonces = Arc::new(crate::auth::DpopNonceRotator::from_jwt_secret(
+        &[0x42u8; 32],
+    ));
 
     // Enabled in tests so instrument assertions can read the rendered output; each test
     // state gets its own registry (no global exporter state to collide on).

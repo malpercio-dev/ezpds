@@ -211,3 +211,104 @@ deploy, start pckt's flow for an obsign-hosted handle and check the redirect URL
 record the outcome here before closing the pckt.blog item. If pckt still downgrades, the
 next lever is their gate possibly requiring `request_parameter_supported: true`, which we
 should not lie about — that would mean implementing JAR or contacting pckt.
+
+## Addendum (2026-08-18): the Vercel-egress failure class, and gap 16 (single-use DPoP nonces)
+
+A broader app sweep (marque, atstore, standard-reader, mu.social, flushes, blento, tangled,
+rpg.actor, cocore, anisota, beacon — both a did:plc and a did:web account) split the failures
+into two new root causes, neither of which was a metadata gap.
+
+### Finding 1 — every remaining hard failure is a Vercel-hosted backend (edge, not OAuth)
+
+cocore.dev, anisota.net, and beaconbits.app all fail at flow *initiation*, and all three run
+their OAuth flow server-side on Vercel (`cocoon.anisota.net` is a vercel-dns CNAME;
+beaconbits.app and cocore.dev resolve into `216.150.0.0/16`, VERCEL-09). The discriminating
+evidence, reproduced live 2026-08-18:
+
+- anisota's backend uses the **official `@atproto/oauth-client-node`** (its error string,
+  "Unexpected response Content-Type (text/html)", is thrown by `@atproto-labs/fetch`'s JSON
+  processor — the layer that fetches DID documents, server metadata, and PAR responses). It
+  succeeds against bsky.social and tranquil.farm but receives **HTML instead of JSON** from
+  some pds.obsign.org URL, for did:plc and did:web accounts alike.
+- beacon's `POST /api/auth/login` 500s against us but redirects cleanly into tranquil.farm's
+  authorize page — same app, same egress, non-Cloudflare target works.
+- The identical official-client `authorize()` leg (identity → metadata → PAR) run from a
+  residential vantage and from Anthropic datacenter infra succeeds against us; every one of
+  our chain URLs serves clean `application/json` (or `text/plain` for the handle well-known)
+  to curl under bot-like user agents.
+- pds.obsign.org is Cloudflare-proxied (104.21/172.67 + `cf-ray`); tranquil.farm and
+  bsky.social are not. A Cloudflare challenge page is text/html, served at the edge — which
+  also explains why Beacon has had **zero trace in Railway logs from the beginning**.
+- flushes.app is also Vercel-hosted but is a *browser-side* public client
+  (`token_endpoint_auth_method: none`) — its PDS fetches come from the user's browser, and it
+  works. The line is exactly "server-side fetches from Vercel egress vs everything else".
+
+Conclusion: our OAuth surface passes the reference client end-to-end; the blocker is the
+Cloudflare zone challenging/blocking Vercel's shared egress IPs. Verification and fix are
+operator actions, not code: check Cloudflare Security → Events for mitigations against
+Vercel/AWS ASNs on pds.obsign.org (the repro timestamps above give exact windows), then
+either add a WAF skip rule for the PDS API surface (`/.well-known/*`, `/oauth/*`, `/xrpc/*`),
+relax the responsible bot/security feature, or gray-cloud pds.obsign.org. Retest = one
+anisota login probe (their `/oauth/login?handle=` endpoint is unauthenticated).
+
+**RESOLVED 2026-08-18: gray-clouding pds.obsign.org fixed every app in this class.** Verified
+same day: cocore and **pckt.blog** (live logins by the operator), anisota (307 → authorize
+with a PAR `request_uri`, both DID types), beacon (`/api/auth/login` → 200 with
+`authorizationUrl`). pckt recovering **revises the 2026-08-14 "frozen classification"
+conclusion**: pckt's Laravel backend was re-probing us all along — its probes were being
+challenged at the Cloudflare edge, so it kept observing "no PAR" and kept taking its broken
+legacy path. The earlier counter-evidence ("our `/oauth/par` accepts their exact request
+shape, 201") was gathered from *our* vantage, not theirs — the same trap this whole class
+fell into: an edge that discriminates by source IP makes your own probes worthless as
+evidence about someone else's. Note the trade-off of the fix: DNS-only means Cloudflare's
+DDoS shield no longer fronts the PDS (Railway's edge still terminates TLS); re-enabling the
+proxy requires the WAF skip rule route instead.
+
+### Finding 2 — gap 16: single-use, process-local DPoP nonces (reference: rotating window)
+
+The reference provider derives its DPoP nonce from a rotating HMAC secret
+(`DPOP_NONCE_MAX_AGE` = 3 min, rotation every 1 min, prev/current/next all accepted): every
+client sees the same nonce, it stays valid ~1–3 minutes, it is **reusable**, stateless, and
+identical across instances. Ours (`auth/dpop.rs`) issues random single-use nonces
+(consumed on first validation) with a 5-minute TTL in a per-process map. Client-visible
+consequences we produce and the reference does not:
+
+- Two concurrent token-endpoint calls holding the same nonce race; the loser gets
+  `use_dpop_nonce` and must re-dance — and a concurrent double-refresh can then burn the
+  refresh-token rotation. Serverless confidential clients (parallel invocations sharing one
+  session) hit this constantly.
+- A client that caches a nonce per session and only implements the nonce dance at the
+  initial exchange works against bsky.social (its cached nonce stays valid for minutes,
+  every instance agrees) and hard-fails against us on every later token call.
+
+Production logs 2026-08-18 show the signature: blento.app logs in at 12:20 (dance → success),
+then standalone unretried `use_dpop_nonce` 400s at 12:22, 12:34, 12:39, 12:48 — matching the
+user-visible "login worked, everything after 500s". Fix: adopt the reference scheme (HMAC of
+a rotation counter over a persisted secret; accept prev/current/next). This also retires the
+process-local nonce store — audit item 12's worst entry — for free: restart-safe and
+multi-instance-correct by construction. Note the trade-off consciously: reusable nonces
+weaken the token endpoint's replay bound to the ±60s `iat` window + `ath`/`cnf.jkt` binding,
+which is exactly the reference's posture.
+
+**Implemented 2026-08-18** ([ADR-0032](architecture/decisions/0032-rotating-reusable-dpop-nonces.md)):
+`auth/dpop.rs` now derives the nonce as `HMAC-SHA256(secret, unix_seconds / 60)` with the
+previous/current/next windows accepted, the secret domain-separated off the persistent V015
+JWT secret. The map, mutex, and cleanup pass are deleted. blento is the live release gate:
+retest its post-login site flow once this deploys, and record the outcome here.
+
+### Per-app disposition (2026-08-18 sweep)
+
+| app | verdict |
+|---|---|
+| cocore, anisota, beacon | Finding 1 (edge blocked Vercel egress) — **fixed by the gray-cloud, all verified 2026-08-18** |
+| pckt.blog | same class, **fixed by the gray-cloud** (login verified live) — the 2026-08-14 "frozen classification" read is retracted, see above |
+| blento (login ok, then 500s) | retest post-gray-cloud; if it still 500s, gap 16 is the standing hypothesis |
+| rpg.actor (did:web: "actor" won't load) | our side verified clean — repo reads, did.json, and CORS all correct for did:web; their indexer/resolver likely handles did:plc only. Their bug; report upstream |
+| marque, atstore, standard-reader, mu.social, flushes, tangled | working, both DID types |
+
+Two small operator hygiene items surfaced in passing: `https://malpercio.dev/.well-known/atproto-did`
+404s (DNS TXT exists, so spec-compliant resolvers are fine, but HTTPS-only resolvers exist —
+one Caddy line closes the class), and the did:plc test account (`jzweifel.obsign.org`, no
+profile record) is invisible to the appview's `searchActorsTypeahead`, which is why Beacon's
+account picker can't even find it (its did:plc "no" row is a search miss, not an OAuth
+failure).

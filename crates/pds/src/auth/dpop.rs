@@ -3,14 +3,11 @@
 use axum::http::Method;
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
 use common::{ApiError, ErrorCode};
+use hmac::{Hmac, Mac};
 use jsonwebtoken::{decode, Algorithm, DecodingKey, Validation};
-use rand_core::{OsRng, RngCore};
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
-use std::collections::HashMap;
 use std::sync::Arc;
-use std::time::Instant;
-use tokio::sync::Mutex;
 
 use super::jwt::AccessTokenClaims;
 
@@ -37,8 +34,8 @@ struct DPopClaims {
     /// Unique token ID (RFC 9449 §4.2). Validated for **presence** only — the server keeps no
     /// `jti` store, so proofs are never deduplicated by `jti` (RFC 9449 §11.1 makes such tracking
     /// a SHOULD, not a MUST). Replay is bounded instead by the ±60s `iat` freshness window, plus
-    /// the single-use server nonce at the token endpoint and the `ath` access-token binding at
-    /// resource endpoints. See the posture notes on `validate_dpop` /
+    /// the server nonce at the token endpoint and the `ath` access-token binding at resource
+    /// endpoints. See the posture notes on `validate_dpop` /
     /// `validate_dpop_for_token_endpoint`.
     jti: String,
     /// Server-issued DPoP nonce (RFC 9449 §8). Required at the token endpoint.
@@ -50,11 +47,110 @@ struct DPopClaims {
     ath: Option<String>,
 }
 
-/// In-memory store for server-issued DPoP nonces.
+/// Rotation interval for the server-issued DPoP nonce, in seconds.
 ///
-/// Maps nonce string → expiry `Instant`. Protected by a `Mutex` so handlers can issue,
-/// validate, and prune concurrently. Held in `AppState`.
-pub type DpopNonceStore = Arc<Mutex<HashMap<String, Instant>>>;
+/// Matches the reference `@atproto/oauth-provider` (`DPOP_NONCE_MAX_AGE` = 3 minutes,
+/// secret rotating every third of it): with the previous, current, and next windows all
+/// accepted, a nonce stays valid for one to three minutes.
+const NONCE_ROTATION_INTERVAL_SECS: u64 = 60;
+
+/// Stateless, rotating server-issued DPoP nonce (RFC 9449 §8).
+///
+/// The nonce for a moment in time is `base64url(HMAC-SHA256(secret, rotation_counter))`,
+/// where the counter is `unix_seconds / NONCE_ROTATION_INTERVAL_SECS`; validation accepts
+/// the previous, current, and next windows, so a nonce is **deliberately reusable** for its
+/// validity span. Derived rather than stored: no map, no lock, no cleanup, and every
+/// instance sharing the secret agrees on the valid set. Why this replaced the single-use
+/// store, and the replay-bound trade-off it accepts: ADR-0032.
+pub struct DpopNonceRotator {
+    secret: [u8; 32],
+}
+
+/// Shared handle to the rotator, held in `AppState`.
+pub type DpopNonces = Arc<DpopNonceRotator>;
+
+impl DpopNonceRotator {
+    /// Derive the nonce secret from the server's persistent JWT signing secret.
+    ///
+    /// Domain-separated (HMAC over a fixed label) so the nonce values could never double as
+    /// a MAC forgery oracle against anything else keyed on `jwt_secret`. Inherits that
+    /// secret's persistence posture: stable across restarts and instances when
+    /// `signing_key_master_key` is configured, per-boot otherwise.
+    pub fn from_jwt_secret(jwt_secret: &[u8; 32]) -> Self {
+        let mut mac =
+            Hmac::<Sha256>::new_from_slice(jwt_secret).expect("HMAC-SHA256 accepts any key length");
+        mac.update(b"custos-dpop-nonce-v1");
+        let derived = mac.finalize().into_bytes();
+        let mut secret = [0u8; 32];
+        secret.copy_from_slice(&derived);
+        Self { secret }
+    }
+
+    /// The nonce value for one rotation window.
+    fn compute(&self, counter: u64) -> String {
+        let mut mac = Hmac::<Sha256>::new_from_slice(&self.secret)
+            .expect("HMAC-SHA256 accepts any key length");
+        mac.update(&counter.to_be_bytes());
+        URL_SAFE_NO_PAD.encode(mac.finalize().into_bytes())
+    }
+
+    /// Rotation counter for a Unix timestamp.
+    fn counter_at(now_secs: u64) -> u64 {
+        now_secs / NONCE_ROTATION_INTERVAL_SECS
+    }
+
+    /// The nonce to hand out at `now_secs` (Unix seconds).
+    fn issue_at(&self, now_secs: u64) -> String {
+        self.compute(Self::counter_at(now_secs))
+    }
+
+    /// Whether `nonce` is acceptable at `now_secs`: the previous, current, or next window.
+    fn validate_at(&self, nonce: &str, now_secs: u64) -> bool {
+        use subtle::ConstantTimeEq;
+        let counter = Self::counter_at(now_secs);
+        // `counter.checked_sub(1)` only matters within the first minute after the epoch;
+        // skipping the previous window there is harmless.
+        let candidates = [
+            counter.checked_sub(1).map(|c| self.compute(c)),
+            Some(self.compute(counter)),
+            Some(self.compute(counter + 1)),
+        ];
+        candidates
+            .into_iter()
+            .flatten()
+            .fold(false, |ok, expected| {
+                ok | bool::from(nonce.as_bytes().ct_eq(expected.as_bytes()))
+            })
+    }
+
+    /// The nonce to hand out right now (the `DPoP-Nonce` response header value).
+    pub fn issue(&self) -> String {
+        self.issue_at(unix_now_secs())
+    }
+
+    /// Validate a client-presented nonce against the currently acceptable windows.
+    ///
+    /// Never consumes anything — reuse within the validity span is the intended semantics.
+    pub fn validate(&self, nonce: &str) -> bool {
+        let ok = self.validate_at(nonce, unix_now_secs());
+        if !ok {
+            tracing::debug!(nonce = %nonce, "DPoP nonce rejected: outside the acceptance window");
+        }
+        ok
+    }
+}
+
+/// Current Unix time in seconds.
+///
+/// A pre-epoch system clock degrades to counter 0, which stays self-consistent between
+/// issuance and validation; the token endpoint's freshness check rejects such requests
+/// on its own `ClockError` path anyway.
+fn unix_now_secs() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
+}
 
 /// Error from DPoP validation at the token endpoint.
 ///
@@ -69,60 +165,9 @@ pub enum DpopTokenEndpointError {
     MissingHeader,
     /// DPoP proof is syntactically or semantically invalid.
     InvalidProof(&'static str),
-    /// Nonce is missing, unknown, or expired — fresh nonce included for the response header.
+    /// Nonce is missing or outside the acceptance window — fresh nonce included for the
+    /// response header.
     UseNonce(String),
-}
-
-/// Create an empty `DpopNonceStore`.
-pub fn new_nonce_store() -> DpopNonceStore {
-    Arc::new(Mutex::new(HashMap::new()))
-}
-
-/// Issue a fresh DPoP nonce with a 5-minute TTL.
-///
-/// Returns a 22-character base64url string (16 random bytes). The nonce is
-/// inserted into the store with an expiry of `Instant::now() + 5 minutes`.
-pub async fn issue_nonce(store: &DpopNonceStore) -> String {
-    let mut bytes = [0u8; 16];
-    OsRng.fill_bytes(&mut bytes);
-    let nonce = URL_SAFE_NO_PAD.encode(bytes);
-    let expiry = std::time::Instant::now() + std::time::Duration::from_secs(300);
-    store.lock().await.insert(nonce.clone(), expiry);
-    nonce
-}
-
-/// Validate and consume a DPoP nonce.
-///
-/// Returns `true` if the nonce is present in the store and has not expired.
-/// Removes the nonce unconditionally (whether valid or expired) to prevent reuse.
-/// Returns `false` for unknown nonces.
-///
-/// Logs rejection reasons so operators can distinguish replay attempts from expiry from server restarts.
-pub async fn validate_and_consume_nonce(store: &DpopNonceStore, nonce: &str) -> bool {
-    let mut map = store.lock().await;
-    match map.remove(nonce) {
-        Some(expiry) => {
-            if expiry > std::time::Instant::now() {
-                true
-            } else {
-                tracing::debug!(nonce = %nonce, "DPoP nonce rejected: expired");
-                false
-            }
-        }
-        None => {
-            tracing::debug!(nonce = %nonce, "DPoP nonce rejected: unknown (possible replay or server restart)");
-            false
-        }
-    }
-}
-
-/// Remove all expired nonces from the store.
-///
-/// Call this on every token request to prevent unbounded memory growth.
-/// Under normal PDS load (low request volume) this is sufficient without a background task.
-pub async fn cleanup_expired_nonces(store: &DpopNonceStore) {
-    let now = std::time::Instant::now();
-    store.lock().await.retain(|_, expiry| *expiry > now);
 }
 
 /// A DPoP proof whose header and signature have passed the shared prologue.
@@ -303,7 +348,7 @@ fn check_dpop_freshness(iat: i64) -> Result<(), FreshnessError> {
 /// here only *asserts the client's own key* for `dpop_jkt` binding (RFC 9449 §10) — there
 /// is nothing an attacker gains by replaying it, unlike at the token endpoint where the
 /// nonce gates actual token issuance.
-pub async fn validate_dpop_for_par(
+pub fn validate_dpop_for_par(
     dpop_token: &str,
     htm: &str,
     htu: &str,
@@ -334,16 +379,16 @@ pub async fn validate_dpop_for_par(
 ///
 /// This is a token-endpoint-specific variant of `validate_dpop`:
 /// - Does NOT check `cnf.jkt` against an existing access token (no token yet).
-/// - DOES validate the `nonce` claim against the nonce store.
+/// - DOES validate the `nonce` claim against the rotating server nonce.
 /// - Returns the JWK thumbprint (jkt) so the handler can embed it in `cnf.jkt`.
 ///
 /// `htm` must be `"POST"`. `htu` must be the token endpoint URL (e.g.
 /// `"https://pds.example.com/oauth/token"`).
-pub async fn validate_dpop_for_token_endpoint(
+pub fn validate_dpop_for_token_endpoint(
     dpop_token: &str,
     htm: &str,
     htu: &str,
-    nonce_store: &DpopNonceStore,
+    nonces: &DpopNonceRotator,
 ) -> Result<String, DpopTokenEndpointError> {
     // Shared prologue: header decode + typ/crv/alg/signature checks.
     let proof = verify_dpop_proof_prologue(dpop_token)
@@ -374,15 +419,13 @@ pub async fn validate_dpop_for_token_endpoint(
     // Validate nonce claim.
     match claims.nonce.as_deref() {
         None | Some("") => {
-            // No nonce — issue a fresh one for the client to retry with.
-            let fresh = issue_nonce(nonce_store).await;
-            return Err(DpopTokenEndpointError::UseNonce(fresh));
+            // No nonce — tell the client the current one to retry with.
+            return Err(DpopTokenEndpointError::UseNonce(nonces.issue()));
         }
         Some(nonce) => {
-            if !validate_and_consume_nonce(nonce_store, nonce).await {
-                // Unknown or expired nonce — issue a fresh one.
-                let fresh = issue_nonce(nonce_store).await;
-                return Err(DpopTokenEndpointError::UseNonce(fresh));
+            if !nonces.validate(nonce) {
+                // Outside the acceptance window — tell the client the current one.
+                return Err(DpopTokenEndpointError::UseNonce(nonces.issue()));
             }
         }
     }
@@ -405,8 +448,8 @@ pub async fn validate_dpop_for_token_endpoint(
 ///
 /// # Replay
 ///
-/// There is no `jti` store anywhere in the codebase (the only store here is the token-endpoint
-/// nonce map), so resource-endpoint proofs are **not** deduplicated — RFC 9449 §11.1 makes `jti`
+/// There is no `jti` store anywhere in the codebase (and the token-endpoint nonce is derived,
+/// not stored), so resource-endpoint proofs are **not** deduplicated — RFC 9449 §11.1 makes `jti`
 /// tracking a SHOULD, not a MUST, and the reference PDS's posture is similar. Replay is bounded
 /// only by the ±60s `iat` freshness window plus the `ath` access-token binding: a captured
 /// (access token + proof) pair is replayable against the same method+URI until the proof goes
@@ -570,4 +613,98 @@ pub fn jwk_thumbprint(jwk: &serde_json::Value) -> Result<String, String> {
         serde_json::to_string(&canonical).map_err(|e| format!("serialization failed: {e}"))?;
     let hash = Sha256::digest(canonical_json.as_bytes());
     Ok(URL_SAFE_NO_PAD.encode(hash))
+}
+
+// ── Tests ────────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A timestamp comfortably past the epoch guard in `validate_at`, on a window boundary
+    /// so per-test offsets stay easy to reason about.
+    const T0: u64 = 1_000_000 * NONCE_ROTATION_INTERVAL_SECS;
+
+    #[test]
+    fn issued_nonce_is_reusable_within_its_window() {
+        let rotator = DpopNonceRotator { secret: [7u8; 32] };
+        let nonce = rotator.issue_at(T0);
+        assert!(
+            rotator.validate_at(&nonce, T0),
+            "freshly issued nonce must validate"
+        );
+        assert!(
+            rotator.validate_at(&nonce, T0 + 1),
+            "nonce must stay valid on reuse — it is derived, not consumed"
+        );
+    }
+
+    #[test]
+    fn unknown_nonce_is_rejected() {
+        let rotator = DpopNonceRotator { secret: [7u8; 32] };
+        assert!(!rotator.validate_at("this-nonce-was-never-issued", T0));
+        assert!(!rotator.validate_at("", T0));
+    }
+
+    #[test]
+    fn adjacent_windows_accepted_older_rejected() {
+        let rotator = DpopNonceRotator { secret: [7u8; 32] };
+        let nonce = rotator.issue_at(T0);
+
+        // Still valid through the whole next window (issued in "prev").
+        assert!(rotator.validate_at(&nonce, T0 + NONCE_ROTATION_INTERVAL_SECS));
+        // Two windows on, it has aged out.
+        assert!(!rotator.validate_at(&nonce, T0 + 2 * NONCE_ROTATION_INTERVAL_SECS));
+
+        // Clock skew the other way: a nonce from the next window is already acceptable.
+        let upcoming = rotator.issue_at(T0 + NONCE_ROTATION_INTERVAL_SECS);
+        assert!(rotator.validate_at(&upcoming, T0));
+        // But not from two windows ahead.
+        let far = rotator.issue_at(T0 + 2 * NONCE_ROTATION_INTERVAL_SECS);
+        assert!(!rotator.validate_at(&far, T0));
+    }
+
+    #[test]
+    fn same_secret_agrees_across_instances() {
+        // The multi-instance / restart property: two rotators over the same secret accept
+        // each other's nonces with no shared state.
+        let a = DpopNonceRotator { secret: [9u8; 32] };
+        let b = DpopNonceRotator { secret: [9u8; 32] };
+        assert_eq!(a.issue_at(T0), b.issue_at(T0));
+        assert!(b.validate_at(&a.issue_at(T0), T0));
+    }
+
+    #[test]
+    fn different_secret_rejects() {
+        let a = DpopNonceRotator { secret: [1u8; 32] };
+        let b = DpopNonceRotator { secret: [2u8; 32] };
+        assert!(!b.validate_at(&a.issue_at(T0), T0));
+    }
+
+    #[test]
+    fn jwt_secret_derivation_is_domain_separated() {
+        // Using the JWT secret directly as the nonce secret must not produce the same
+        // nonces as the derived rotator.
+        let jwt_secret = [5u8; 32];
+        let derived = DpopNonceRotator::from_jwt_secret(&jwt_secret);
+        let raw = DpopNonceRotator { secret: jwt_secret };
+        assert_ne!(derived.issue_at(T0), raw.issue_at(T0));
+        // And the derivation itself is deterministic.
+        let derived2 = DpopNonceRotator::from_jwt_secret(&jwt_secret);
+        assert_eq!(derived.issue_at(T0), derived2.issue_at(T0));
+    }
+
+    #[test]
+    fn nonce_is_43_chars_base64url() {
+        let rotator = DpopNonceRotator { secret: [7u8; 32] };
+        let nonce = rotator.issue_at(T0);
+        assert_eq!(
+            nonce.len(),
+            43,
+            "nonce must be 43 chars (32-byte HMAC, base64url no-pad)"
+        );
+        assert!(nonce
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_'));
+    }
 }

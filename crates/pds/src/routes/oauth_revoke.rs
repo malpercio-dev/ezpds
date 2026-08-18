@@ -40,7 +40,7 @@ use serde::Deserialize;
 use subtle::ConstantTimeEq;
 
 use crate::app::AppState;
-use crate::auth::{issue_nonce, validate_dpop_for_token_endpoint, DpopTokenEndpointError};
+use crate::auth::{validate_dpop_for_token_endpoint, DpopTokenEndpointError};
 use crate::db::oauth::{
     cleanup_expired_refresh_tokens, delete_oauth_refresh_session, get_oauth_refresh_token,
 };
@@ -109,9 +109,7 @@ pub async fn post_revoke(
         "POST",
         &revoke_url,
         &state.dpop_nonces,
-    )
-    .await
-    {
+    ) {
         Ok(jkt) => jkt,
         Err(DpopTokenEndpointError::MissingHeader) => {
             return OAuthTokenError::new("invalid_dpop_proof", "DPoP header required")
@@ -181,7 +179,7 @@ pub async fn post_revoke(
 
     // 200 with an empty body (RFC 7009 §2.2), a fresh DPoP nonce so the client can chain another
     // revocation without a challenge round-trip, and no-store so the response is never cached.
-    let fresh_nonce = issue_nonce(&state.dpop_nonces).await;
+    let fresh_nonce = state.dpop_nonces.issue();
     let mut response_headers = HeaderMap::new();
     if let Ok(hval) = axum::http::HeaderValue::from_str(&fresh_nonce) {
         response_headers.insert("DPoP-Nonce", hval);
@@ -208,7 +206,6 @@ mod tests {
     use uuid::Uuid;
 
     use crate::app::{app, test_state, AppState};
-    use crate::auth::issue_nonce;
     use crate::auth::token::generate_token;
     use crate::db::oauth::register_oauth_client;
 
@@ -399,7 +396,7 @@ mod tests {
         // A proof minted for the token endpoint must not be replayable at /oauth/revoke.
         let state = test_state().await;
         let key = SigningKey::random(&mut OsRng);
-        let nonce = issue_nonce(&state.dpop_nonces).await;
+        let nonce = state.dpop_nonces.issue();
         let dpop = make_dpop_proof(
             &key,
             "POST",
@@ -426,7 +423,7 @@ mod tests {
         let plaintext = seed_refresh_token(&state, &jkt).await;
         assert!(refresh_token_exists(&state, &plaintext).await);
 
-        let nonce = issue_nonce(&state.dpop_nonces).await;
+        let nonce = state.dpop_nonces.issue();
         let dpop = make_dpop_proof(&key, "POST", REVOKE_HTU, Some(&nonce), now_secs());
 
         let resp = app(state.clone())
@@ -456,7 +453,7 @@ mod tests {
         let plaintext = seed_refresh_token(&state, &jkt).await;
 
         // First revocation deletes the token.
-        let nonce1 = issue_nonce(&state.dpop_nonces).await;
+        let nonce1 = state.dpop_nonces.issue();
         let dpop1 = make_dpop_proof(&key, "POST", REVOKE_HTU, Some(&nonce1), now_secs());
         let resp1 = app(state.clone())
             .oneshot(post_revoke_with_dpop(&format!("token={plaintext}"), &dpop1))
@@ -465,7 +462,7 @@ mod tests {
         assert_eq!(resp1.status(), StatusCode::OK);
 
         // Second revocation of the now-unknown token still returns 200 (RFC 7009 §2.2).
-        let nonce2 = issue_nonce(&state.dpop_nonces).await;
+        let nonce2 = state.dpop_nonces.issue();
         let dpop2 = make_dpop_proof(&key, "POST", REVOKE_HTU, Some(&nonce2), now_secs());
         let resp2 = app(state)
             .oneshot(post_revoke_with_dpop(&format!("token={plaintext}"), &dpop2))
@@ -482,7 +479,7 @@ mod tests {
     async fn unknown_token_returns_200() {
         let state = test_state().await;
         let key = SigningKey::random(&mut OsRng);
-        let nonce = issue_nonce(&state.dpop_nonces).await;
+        let nonce = state.dpop_nonces.issue();
         let dpop = make_dpop_proof(&key, "POST", REVOKE_HTU, Some(&nonce), now_secs());
 
         // A well-formed base64url token that was never issued — non-disclosure means 200.
@@ -504,7 +501,7 @@ mod tests {
         // An access-token JWT (carries dots) can't be a refresh-token hash — accepted as a no-op.
         let state = test_state().await;
         let key = SigningKey::random(&mut OsRng);
-        let nonce = issue_nonce(&state.dpop_nonces).await;
+        let nonce = state.dpop_nonces.issue();
         let dpop = make_dpop_proof(&key, "POST", REVOKE_HTU, Some(&nonce), now_secs());
 
         let resp = app(state)
@@ -527,7 +524,7 @@ mod tests {
         let plaintext = seed_refresh_token(&state, &jkt).await;
 
         let attacker_key = SigningKey::random(&mut OsRng);
-        let nonce = issue_nonce(&state.dpop_nonces).await;
+        let nonce = state.dpop_nonces.issue();
         let dpop = make_dpop_proof(&attacker_key, "POST", REVOKE_HTU, Some(&nonce), now_secs());
 
         let resp = app(state.clone())
@@ -553,7 +550,7 @@ mod tests {
         let jkt = dpop_thumbprint(&key);
         let plaintext = seed_refresh_token(&state, &jkt).await;
 
-        let nonce = issue_nonce(&state.dpop_nonces).await;
+        let nonce = state.dpop_nonces.issue();
         let dpop = make_dpop_proof(&key, "POST", REVOKE_HTU, Some(&nonce), now_secs());
 
         let resp = app(state.clone())

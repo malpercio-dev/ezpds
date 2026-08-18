@@ -23,8 +23,8 @@ pub(crate) use bearer::extract_bearer_token;
 // Re-export the public API so callers don't need to know the internal layout.
 pub use agent_assertion::{new_claim_poll_tracker, ClaimPollTracker};
 pub use dpop::{
-    cleanup_expired_nonces, issue_nonce, new_nonce_store, validate_dpop_for_par,
-    validate_dpop_for_token_endpoint, DpopNonceStore, DpopTokenEndpointError,
+    validate_dpop_for_par, validate_dpop_for_token_endpoint, DpopNonceRotator, DpopNonces,
+    DpopTokenEndpointError,
 };
 pub use permission_sets::{new_permission_set_cache, PermissionSetCache};
 // Foundational types: used once authenticated routes are wired up.
@@ -39,7 +39,7 @@ pub use signing_key::{
 
 // Test-only: make private helpers visible to the test module below (which uses `use super::*`).
 #[cfg(test)]
-pub(super) use dpop::{jwk_thumbprint, validate_and_consume_nonce};
+pub(super) use dpop::jwk_thumbprint;
 
 // ── Tests ────────────────────────────────────────────────────────────────────
 
@@ -847,100 +847,6 @@ mod tests {
         );
         // Stable regression guard — verified against this implementation.
         assert_eq!(thumb, "oKIywvGUpTVTyxMQ3bwIIeQUudfr_CkLMjCE19ECD-U");
-    }
-
-    // ── DPoP nonce store tests ────────────────────────────────────────────────
-
-    #[tokio::test]
-    async fn issued_nonce_validates_once() {
-        let store = new_nonce_store();
-        let nonce = issue_nonce(&store).await;
-
-        // First use: valid.
-        assert!(
-            validate_and_consume_nonce(&store, &nonce).await,
-            "freshly issued nonce must validate"
-        );
-
-        // Second use: consumed — must fail (even though not expired).
-        assert!(
-            !validate_and_consume_nonce(&store, &nonce).await,
-            "already-consumed nonce must not validate again"
-        );
-    }
-
-    #[tokio::test]
-    async fn unknown_nonce_is_rejected() {
-        let store = new_nonce_store();
-        assert!(
-            !validate_and_consume_nonce(&store, "this-nonce-was-never-issued").await,
-            "unknown nonce must be rejected"
-        );
-    }
-
-    #[tokio::test]
-    async fn expired_nonce_is_rejected() {
-        let store = new_nonce_store();
-        // Manually insert a nonce that expired 1 second in the past.
-        let nonce = "expired-nonce-test";
-        {
-            let mut map = store.lock().await;
-            let past = std::time::Instant::now()
-                .checked_sub(std::time::Duration::from_secs(1))
-                .unwrap();
-            map.insert(nonce.to_string(), past);
-        }
-
-        assert!(
-            !validate_and_consume_nonce(&store, nonce).await,
-            "expired nonce must be rejected"
-        );
-    }
-
-    #[tokio::test]
-    async fn cleanup_removes_only_expired_nonces() {
-        let store = new_nonce_store();
-
-        // Insert one fresh nonce (not yet expired).
-        let fresh_nonce = issue_nonce(&store).await;
-
-        // Insert one already-expired nonce directly.
-        {
-            let mut map = store.lock().await;
-            let past = std::time::Instant::now()
-                .checked_sub(std::time::Duration::from_secs(1))
-                .unwrap();
-            map.insert("stale-nonce".to_string(), past);
-        }
-
-        cleanup_expired_nonces(&store).await;
-
-        let map = store.lock().await;
-        assert!(
-            map.contains_key(&fresh_nonce),
-            "fresh nonce must survive cleanup"
-        );
-        assert!(
-            !map.contains_key("stale-nonce"),
-            "stale nonce must be pruned by cleanup"
-        );
-    }
-
-    #[tokio::test]
-    async fn issued_nonce_is_22_chars_base64url() {
-        let store = new_nonce_store();
-        let nonce = issue_nonce(&store).await;
-        assert_eq!(
-            nonce.len(),
-            22,
-            "nonce must be 22 chars (16 bytes base64url no-pad)"
-        );
-        assert!(
-            nonce
-                .chars()
-                .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_'),
-            "nonce must be base64url charset"
-        );
     }
 
     #[test]
