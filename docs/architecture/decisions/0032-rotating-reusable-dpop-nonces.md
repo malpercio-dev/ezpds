@@ -53,10 +53,13 @@ with no new table, config key, or migration.
   instances holds by construction — one process-local-state item from the audit's item 12
   retired for free.
 - The replay bound at the token endpoint loosens from "single use" to "the nonce's validity
-  span": a captured proof is now replayable for up to ~3 minutes, further bounded by the
-  ±60s `iat` freshness check that runs before nonce validation. This is precisely the
-  reference provider's posture, and token-endpoint replay of an authorization-code or
-  refresh grant is separately neutralized by single-use codes and refresh-token rotation.
+  span": a captured proof remains usable while its ±60s `iat` freshness window and an
+  accepted nonce window overlap. This is precisely the reference provider's posture. Within
+  that bound, authorization codes remain single-use; refresh tokens follow the existing
+  reuse-grace policy — a superseded token is deliberately accepted again inside the ~60s
+  concurrency grace window (minting another rotated pair), and reuse beyond it revokes the
+  session family — so nonce reuse adds no replay surface beyond what that policy already
+  accepts.
 - Without `signing_key_master_key`, the JWT secret — and therefore the nonce secret — is
   per-boot. That degrades to the reference provider's own default (random per-boot secret),
   not below it.

@@ -54,20 +54,14 @@ struct DPopClaims {
 /// accepted, a nonce stays valid for one to three minutes.
 const NONCE_ROTATION_INTERVAL_SECS: u64 = 60;
 
-/// Stateless, rotating server-issued DPoP nonce (RFC 9449 §8), reference-parity semantics.
+/// Stateless, rotating server-issued DPoP nonce (RFC 9449 §8).
 ///
 /// The nonce for a moment in time is `base64url(HMAC-SHA256(secret, rotation_counter))`,
-/// where the counter is `unix_seconds / NONCE_ROTATION_INTERVAL_SECS`. Every request in the
-/// same window sees the same nonce, and validation accepts the previous, current, and next
-/// windows — so a nonce is **deliberately reusable** for its validity span, exactly like the
-/// reference provider. Single-use consumed nonces (the previous design here) break real
-/// clients the reference does not: concurrent token calls holding the same cached nonce race
-/// each other, and serverless backends that share one session across invocations fail every
-/// call after the first. See ADR-0032 for the posture trade-off.
-///
-/// Because the value is derived rather than stored, there is no map, no lock, no cleanup, and
-/// no per-process state: every instance sharing the same secret — including the same instance
-/// across restarts, when the secret is persistent — agrees on the valid set.
+/// where the counter is `unix_seconds / NONCE_ROTATION_INTERVAL_SECS`; validation accepts
+/// the previous, current, and next windows, so a nonce is **deliberately reusable** for its
+/// validity span. Derived rather than stored: no map, no lock, no cleanup, and every
+/// instance sharing the secret agrees on the valid set. Why this replaced the single-use
+/// store, and the replay-bound trade-off it accepts: ADR-0032.
 pub struct DpopNonceRotator {
     secret: [u8; 32],
 }
@@ -81,8 +75,7 @@ impl DpopNonceRotator {
     /// Domain-separated (HMAC over a fixed label) so the nonce values could never double as
     /// a MAC forgery oracle against anything else keyed on `jwt_secret`. Inherits that
     /// secret's persistence posture: stable across restarts and instances when
-    /// `signing_key_master_key` is configured, per-boot otherwise (the reference provider's
-    /// own default is likewise a random per-boot secret).
+    /// `signing_key_master_key` is configured, per-boot otherwise.
     pub fn from_jwt_secret(jwt_secret: &[u8; 32]) -> Self {
         let mut mac =
             Hmac::<Sha256>::new_from_slice(jwt_secret).expect("HMAC-SHA256 accepts any key length");
