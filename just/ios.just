@@ -264,6 +264,15 @@ _ipa app_dir build_number:
 # export costs seconds. This keeps the fix inside one recipe instead of forking the whole
 # release lane away from tauri.
 #
+# The recipe also owns the extension's ENTITLEMENTS, not just its profile. Tauri's build
+# invocation blanks CODE_SIGN_ENTITLEMENTS from the command line (overriding the template's
+# per-target setting for every target) and builds with CODE_SIGNING_ALLOWED=NO, so the
+# archived extension carries no entitlements for the export re-sign to preserve — the state
+# that shipped an extension which could not read the shared keychain, rendered every push as
+# the unverified notice, and wrote its breadcrumbs where the app could not see them. The
+# archived .appex is therefore signed with the resolved tracked Entitlements.NSE.plist before
+# the export runs (see the block below), and `_verify-signed-ipa` asserts the exported groups.
+#
 # No-ops for an app with no embedded extensions (admin-companion today), so both lanes share it.
 _reexport-embedded-extensions app_dir:
     #!/usr/bin/env bash
@@ -402,6 +411,56 @@ _reexport-embedded-extensions app_dir:
       security list-keychains -d user -s "$reexport_keychain" "${prior_keychains[@]}"
     fi
 
+    # Sign each archived extension with its TRACKED entitlements before the export re-sign.
+    #
+    # The archive cannot have done it: tauri invokes xcodebuild with CODE_SIGNING_ALLOWED=NO
+    # and a command-line CODE_SIGN_ENTITLEMENTS="" override, and command-line settings beat
+    # the template's per-target CODE_SIGN_ENTITLEMENTS for EVERY target — so the extension
+    # sits in the archive unsigned and entitlement-less. `-exportArchive` re-signs each bundle
+    # from the entitlements its archived signature already carries; with none, the extension
+    # ships with profile-derived basics only. Nothing objects: the upload passes, the app
+    # installs — and at runtime the extension has no keychain-access-groups, so it cannot
+    # read the notification key (every push renders as the unverified notice) and the
+    # breadcrumbs it writes land in its own implicit keychain group, where the app's
+    # diagnostics can never see them. The app itself is unaffected only because tauri's own
+    # post-build codesign applies the Patch-H-installed entitlements to the app bundle;
+    # nothing equivalent ever touched the extension. `_verify-signed-ipa` now asserts the
+    # exported groups against the tracked file, so a regression here fails the lane instead
+    # of shipping a mute extension.
+    #
+    # `$(AppIdentifierPrefix)` resolves to "<team id>." — the substitution Xcode's signing
+    # would have performed from the profile, done explicitly because bare `codesign` does
+    # none. The identity name matches the ExportOptions' `signingCertificate`, so whatever
+    # resolves for the export resolves identically here.
+    resolved_ents_dir="$(mktemp -d)"
+    resolved_ents="$resolved_ents_dir/entitlements.plist"
+    ENTS_SRC="{{app_dir}}/src-tauri/Entitlements.NSE.plist" ENTS_TEAM="$team" \
+      python3 - "$resolved_ents" <<'PY'
+    import os, plistlib, sys
+
+    with open(os.environ["ENTS_SRC"], "rb") as handle:
+        entitlements = plistlib.load(handle)
+
+    prefix = os.environ["ENTS_TEAM"] + "."
+
+    def resolve(value):
+        if isinstance(value, str):
+            return value.replace("$(AppIdentifierPrefix)", prefix)
+        if isinstance(value, list):
+            return [resolve(item) for item in value]
+        if isinstance(value, dict):
+            return {key: resolve(item) for key, item in value.items()}
+        return value
+
+    with open(sys.argv[1], "wb") as handle:
+        plistlib.dump(resolve(entitlements), handle)
+    PY
+    for appex in "${appexes[@]}"; do
+      codesign --force --sign "Apple Distribution" --entitlements "$resolved_ents" "$appex"
+      echo "  signed $(basename "$appex") with Entitlements.NSE.plist (AppIdentifierPrefix = $team.)"
+    done
+    rm -rf "$resolved_ents_dir"
+
     echo "re-exporting $(basename "$archive") with profiles for every embedded bundle..."
     rm -f "$gen"/build/arm64/*.ipa
     xcodebuild -exportArchive \
@@ -413,12 +472,23 @@ _reexport-embedded-extensions app_dir:
     echo "✓ re-exported with ${#appexes[@]} embedded extension(s) signed"
 
 # Assert the exported .ipa is actually shippable: every bundle in it — the app and each
-# embedded extension — must carry non-empty entitlements and its own embedded.mobileprovision.
+# embedded extension — must carry non-empty entitlements and its own embedded.mobileprovision,
+# and any keychain-access-groups the bundle's TRACKED entitlements file declares must appear
+# in the signed bundle verbatim (with `$(AppIdentifierPrefix)` resolved), in the same order.
 #
 # This is the check whose absence cost a full build-and-upload round trip. The failure it
 # catches is completely silent locally: the archive succeeds, the export succeeds, the .ipa
 # looks normal, and only App Store Connect objects, minutes later, with a 409. Two seconds of
 # `codesign -d` turns that into an immediate local failure.
+#
+# The CONTENT half exists because non-empty is not shippable-in-practice: an extension whose
+# keychain-access-groups were dropped between the template and the export still carries a
+# plausible entitlements dict (application-identifier, team), uploads cleanly, and installs —
+# it just cannot read the notification key or write a breadcrumb the app can see, so every
+# push renders as the unverified notice while Settings reports perfect health. Order matters
+# as much as presence: iOS files unqualified writes into the FIRST entitled group (the
+# entitlements files call this out as load-bearing), so the comparison is exact, not a
+# set-membership test.
 _verify-signed-ipa app_dir:
     #!/usr/bin/env bash
     set -euo pipefail
@@ -433,8 +503,8 @@ _verify-signed-ipa app_dir:
     app="$(ls -d "$work"/Payload/*.app | head -n1)"
 
     fail=0
-    check() { # <bundle> <label>
-      local bundle="$1" label="$2" ents
+    check() { # <bundle> <label> [tracked entitlements plist]
+      local bundle="$1" label="$2" tracked="${3:-}" ents
       if [ ! -f "$bundle/embedded.mobileprovision" ]; then
         echo "✗ $label has no embedded.mobileprovision — it was signed without a provisioning profile" >&2
         fail=1
@@ -450,15 +520,56 @@ _verify-signed-ipa app_dir:
     ' <<<"$ents"; then
         echo "✗ $label has no code-signing entitlements (App Store Connect rejects this with a 409)" >&2
         fail=1
-      else
-        echo "  ✓ $label — entitlements present, profile embedded"
+        return
+      fi
+      echo "  ✓ $label — entitlements present, profile embedded"
+
+      # Content check: the keychain groups the tracked file declares must survive signing
+      # exactly — same values (prefix resolved), same order. Skipped when there is no tracked
+      # file or it declares no groups; a bundle can only drift from a contract it has.
+      [ -n "$tracked" ] && [ -f "$tracked" ] || return 0
+      if ! VERIFY_TRACKED="$tracked" VERIFY_LABEL="$label" python3 -c '
+    import os, plistlib, sys
+
+    tracked_path = os.environ["VERIFY_TRACKED"]
+    label = os.environ["VERIFY_LABEL"]
+
+    raw = sys.stdin.buffer.read()
+    signed = plistlib.loads(raw[raw.find(b"<?xml"):])
+    with open(tracked_path, "rb") as handle:
+        tracked = plistlib.load(handle)
+
+    declared = tracked.get("keychain-access-groups")
+    if declared is None:
+        sys.exit(0)
+
+    app_id = signed.get("application-identifier", "")
+    if "." not in app_id:
+        print(f"signed entitlements carry no application-identifier to resolve "
+              f"$(AppIdentifierPrefix) against (got {app_id!r})", file=sys.stderr)
+        sys.exit(1)
+    prefix = app_id.split(".", 1)[0] + "."
+
+    expected = [group.replace("$(AppIdentifierPrefix)", prefix) for group in declared]
+    actual = signed.get("keychain-access-groups")
+    if actual != expected:
+        print(f"keychain-access-groups mismatch:\n"
+              f"  tracked  ({tracked_path}): {expected}\n"
+              f"  signed   ({label}): {actual}", file=sys.stderr)
+        sys.exit(1)
+    print(f"  ✓ {label} — keychain-access-groups match {tracked_path}")
+    ' <<<"$ents"; then
+        echo "✗ $label was signed without the keychain-access-groups its tracked entitlements declare" >&2
+        echo "  (an extension in this state runs, but renders every push as the unverified notice" >&2
+        echo "   and writes breadcrumbs into a keychain group the app cannot read)" >&2
+        fail=1
       fi
     }
 
-    check "$app" "$(basename "$app")"
+    check "$app" "$(basename "$app")" "{{app_dir}}/src-tauri/Entitlements.ios.plist"
     for appex in "$app"/PlugIns/*.appex; do
       [ -d "$appex" ] || continue
-      check "$appex" "PlugIns/$(basename "$appex")"
+      check "$appex" "PlugIns/$(basename "$appex")" "{{app_dir}}/src-tauri/Entitlements.NSE.plist"
     done
 
     [ "$fail" -eq 0 ] || { echo "✗ $(basename "$ipa") is not shippable — see above" >&2; exit 1; }

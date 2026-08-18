@@ -352,8 +352,12 @@ targets:
         # Path-relative to gen/apple, i.e. apps/<app>/src-tauri/Entitlements.NSE.plist.
         # Referenced directly rather than installed by ios-postinit's Patch H: that patch
         # exists because tauri's build-time codesign reads the APP target's default
-        # entitlements path whatever the template says. Tauri signs only the app — Xcode
-        # signs the extension from this setting — so the tracked file is used as-is.
+        # entitlements path whatever the template says. This setting only reaches a build
+        # signed BY XCODE (local `just ios-dev`): the release lane's archive is built with
+        # a command-line CODE_SIGN_ENTITLEMENTS="" override that beats it, so there the
+        # tracked file is applied by `_reexport-embedded-extensions` (just/ios.just), which
+        # signs the archived .appex with it before the export re-sign — and
+        # `_verify-signed-ipa` asserts the exported keychain groups against it.
         CODE_SIGN_ENTITLEMENTS: ../../Entitlements.NSE.plist
         {{#if apple.development-team}}
         DEVELOPMENT_TEAM: {{apple.development-team}}

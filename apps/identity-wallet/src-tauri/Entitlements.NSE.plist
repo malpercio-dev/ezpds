@@ -9,8 +9,19 @@
     CODE_SIGN_ENTITLEMENTS build setting, path-relative to gen/apple. Unlike the app's
     Entitlements.ios.plist this does NOT go through ios-postinit's Patch H: that patch exists
     because tauri-cli's build-time codesign reads the app target's default entitlements path
-    regardless of the template. Tauri signs only the app; the extension is signed by Xcode
-    from this setting, so the tracked file is used directly and there is nothing to install.
+    regardless of the template.
+
+    HOW THIS FILE ACTUALLY REACHES A SHIPPED BUILD. The build setting above covers Xcode-driven
+    signing (a local `just ios-dev` run). The RELEASE lane never sees it: tauri's archive
+    invocation passes CODE_SIGNING_ALLOWED=NO and a command-line CODE_SIGN_ENTITLEMENTS=""
+    override — command-line settings beat target settings for every target — so the archived
+    extension is unsigned and entitlement-less. `_reexport-embedded-extensions` (just/ios.just)
+    therefore signs the archived .appex with THIS file (resolving $(AppIdentifierPrefix) from
+    the extension's profile) before `xcodebuild -exportArchive` re-signs everything, and
+    `_verify-signed-ipa` asserts the exported bundle's keychain-access-groups against this
+    file. An extension that ships without them still installs and runs — it just renders every
+    push as the unverified notice and writes breadcrumbs the app cannot read, which is exactly
+    the silent state the verify gate exists to catch.
 
     ONE entitlement, and it is the whole reason the extension can do anything: the shared
     keychain access group holding the notification private key and the pinned sender-key set.

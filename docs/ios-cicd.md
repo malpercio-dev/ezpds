@@ -358,9 +358,25 @@ profile for **every** embedded bundle, and re-exports over the `.ipa`. `-exportA
 everything from scratch, so the ad-hoc-signed archive is a fine input and the second export costs
 seconds. It no-ops for an app with no extensions, so admin-companion shares the recipe untouched.
 
+The recipe also signs the archived `.appex` with the tracked `Entitlements.NSE.plist` (resolving
+`$(AppIdentifierPrefix)` from the extension profile's team id) **before** the re-export. The
+template's `CODE_SIGN_ENTITLEMENTS` setting never reaches this lane: tauri's archive invocation
+passes `CODE_SIGNING_ALLOWED=NO` and a command-line `CODE_SIGN_ENTITLEMENTS=""` override, which
+beats the per-target setting for every target — so the archived extension carries no entitlements
+for the export re-sign to preserve. An extension exported that way is *worse* than the 409 above:
+it carries profile-derived basics, uploads cleanly, installs, and runs — but has no
+`keychain-access-groups`, so it cannot read the notification key (every push renders as the
+unverified notice) and its failure breadcrumbs land in its own implicit keychain group, where the
+app's Settings diagnostics can never see them. Pre-signing the archived bundle gives the export
+real entitlements to carry through.
+
 `just _verify-signed-ipa` then asserts every bundle in the `.ipa` — app and each `.appex` — has
-non-empty entitlements and its own `embedded.mobileprovision`. That check exists because this
-failure is invisible locally; without it the only signal is a 409 after a full upload.
+non-empty entitlements and its own `embedded.mobileprovision`, **and** that any
+`keychain-access-groups` the bundle's tracked entitlements file declares survived signing exactly
+(same groups, same order — the first entry is where iOS files unqualified writes). Both checks
+exist because these failures are invisible locally; without them the only signals are a 409 after
+a full upload, or — for the entitlements half — a shipped build whose every push says
+"couldn't verify" while the app reports no notification problems.
 
 Verify locally first — `just ios-release` on your Mac with both profiles installed — before
 trusting the cloud job, exactly as the Admin Companion section advises.
