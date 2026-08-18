@@ -38,7 +38,6 @@ use serde::{Deserialize, Serialize};
 
 use crate::app::AppState;
 use crate::auth::agent_assertion::POLL_INTERVAL_SECS;
-use crate::auth::cleanup_expired_nonces;
 use crate::db::oauth::{cleanup_expired_auth_codes, cleanup_expired_refresh_tokens};
 use crate::routes::oauth_errors::OAuthTokenError;
 
@@ -175,9 +174,8 @@ fn issue_access_token(
     })
 }
 
-/// Prune stale nonces and expired tokens. Run on every token request.
+/// Prune expired tokens and stale poll marks. Run on every token request.
 async fn cleanup_expired_state(state: &AppState) {
-    cleanup_expired_nonces(&state.dpop_nonces).await;
     // Drop claim-poll marks older than the interval: once a mark is older than `POLL_INTERVAL_SECS`
     // it can no longer trigger `slow_down`, so keeping it only grows the map. Bounds memory to the
     // set of claim tokens polled within the last interval.

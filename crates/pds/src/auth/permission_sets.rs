@@ -46,8 +46,8 @@ pub(crate) enum CacheEntry {
 }
 
 /// In-memory cache of resolved permission sets, keyed on the full `include:` token (NSID + any
-/// `aud` param — a different `aud` can change the expansion via `inheritAud` entries). Mirrors
-/// `auth::dpop::DpopNonceStore`'s shape (`Arc<Mutex<HashMap<...>>>`); held in `AppState`.
+/// `aud` param — a different `aud` can change the expansion via `inheritAud` entries).
+/// `Arc<Mutex<HashMap<...>>>`, held in `AppState`.
 pub type PermissionSetCache = Arc<Mutex<HashMap<String, CacheEntry>>>;
 
 /// Create an empty `PermissionSetCache`.

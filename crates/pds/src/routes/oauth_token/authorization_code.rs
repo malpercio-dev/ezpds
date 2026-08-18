@@ -19,7 +19,7 @@ use super::{
 };
 use crate::app::AppState;
 use crate::auth::token::generate_token;
-use crate::auth::{issue_nonce, validate_dpop_for_token_endpoint, DpopTokenEndpointError};
+use crate::auth::{validate_dpop_for_token_endpoint, DpopTokenEndpointError};
 use crate::db::oauth::{
     delete_authorization_code, get_authorization_code, store_initial_oauth_refresh_token,
 };
@@ -125,7 +125,6 @@ pub(super) async fn handle_authorization_code(
 
     let jkt =
         match validate_dpop_for_token_endpoint(&dpop_token, "POST", &token_url, &state.dpop_nonces)
-            .await
         {
             Ok(jkt) => jkt,
             Err(DpopTokenEndpointError::MissingHeader) => {
@@ -260,7 +259,7 @@ pub(super) async fn handle_authorization_code(
     );
 
     // Issue a fresh DPoP nonce for the next request.
-    let fresh_nonce = issue_nonce(&state.dpop_nonces).await;
+    let fresh_nonce = state.dpop_nonces.issue();
 
     let response_headers = match token_response_headers(&fresh_nonce) {
         Ok(h) => h,
@@ -300,7 +299,6 @@ mod tests {
         post_token_with_dpop,
     };
     use crate::app::{app, test_state, AppState};
-    use crate::auth::issue_nonce;
     use crate::auth::token::generate_token;
     use crate::db::oauth::{register_oauth_client, store_authorization_code};
 
@@ -367,7 +365,7 @@ mod tests {
     async fn dpop_wrong_htm_returns_invalid_dpop_proof() {
         let state = test_state().await;
         let key = SigningKey::random(&mut OsRng);
-        let nonce = issue_nonce(&state.dpop_nonces).await;
+        let nonce = state.dpop_nonces.issue();
         let dpop = make_dpop_proof(
             &key,
             "GET", // wrong — must be POST
@@ -395,7 +393,7 @@ mod tests {
     async fn dpop_wrong_htu_returns_invalid_dpop_proof() {
         let state = test_state().await;
         let key = SigningKey::random(&mut OsRng);
-        let nonce = issue_nonce(&state.dpop_nonces).await;
+        let nonce = state.dpop_nonces.issue();
         let dpop = make_dpop_proof(
             &key,
             "POST",
@@ -420,7 +418,7 @@ mod tests {
     async fn dpop_stale_iat_returns_invalid_dpop_proof() {
         let state = test_state().await;
         let key = SigningKey::random(&mut OsRng);
-        let nonce = issue_nonce(&state.dpop_nonces).await;
+        let nonce = state.dpop_nonces.issue();
         let dpop = make_dpop_proof(
             &key,
             "POST",
@@ -516,7 +514,7 @@ mod tests {
         };
 
         seed_auth_code(&state, &code_hash, &code_challenge).await;
-        let nonce = issue_nonce(&state.dpop_nonces).await;
+        let nonce = state.dpop_nonces.issue();
 
         let dpop = make_dpop_proof(
             &key,
@@ -626,7 +624,7 @@ mod tests {
             hash.iter().map(|b| format!("{b:02x}")).collect::<String>()
         };
         seed_auth_code(&state, &code_hash, &code_challenge).await;
-        let nonce = issue_nonce(&state.dpop_nonces).await;
+        let nonce = state.dpop_nonces.issue();
         let dpop = make_dpop_proof(
             &key,
             "POST",
@@ -671,7 +669,7 @@ mod tests {
         );
 
         // First use — should succeed.
-        let nonce1 = issue_nonce(&state.dpop_nonces).await;
+        let nonce1 = state.dpop_nonces.issue();
         let dpop1 = make_dpop_proof(
             &key,
             "POST",
@@ -690,7 +688,7 @@ mod tests {
 
         // Second use — code was consumed.
         let state2 = state.clone();
-        let nonce2 = issue_nonce(&state2.dpop_nonces).await;
+        let nonce2 = state2.dpop_nonces.issue();
         let dpop2 = make_dpop_proof(
             &key,
             "POST",
@@ -722,7 +720,7 @@ mod tests {
             hash.iter().map(|b| format!("{b:02x}")).collect::<String>()
         };
         seed_auth_code(&state, &code_hash, &code_challenge).await;
-        let nonce = issue_nonce(&state.dpop_nonces).await;
+        let nonce = state.dpop_nonces.issue();
         let dpop = make_dpop_proof(
             &key,
             "POST",
@@ -761,7 +759,7 @@ mod tests {
             hash.iter().map(|b| format!("{b:02x}")).collect::<String>()
         };
         seed_auth_code(&state, &code_hash, &code_challenge).await;
-        let nonce = issue_nonce(&state.dpop_nonces).await;
+        let nonce = state.dpop_nonces.issue();
         let dpop = make_dpop_proof(
             &key,
             "POST",
@@ -800,7 +798,7 @@ mod tests {
         let code = generate_token();
         seed_auth_code(&state, &code.hash, &challenge).await;
 
-        let nonce = issue_nonce(&state.dpop_nonces).await;
+        let nonce = state.dpop_nonces.issue();
         let dpop = make_dpop_proof(
             &key,
             "POST",
@@ -827,7 +825,7 @@ mod tests {
         assert_eq!(bad_json["error"], "invalid_grant");
 
         // Attempt 2: correct client_id — must succeed (code was not consumed above).
-        let nonce2 = issue_nonce(&state.dpop_nonces).await;
+        let nonce2 = state.dpop_nonces.issue();
         let dpop2 = make_dpop_proof(
             &key,
             "POST",
@@ -923,7 +921,7 @@ mod tests {
         .await
         .unwrap();
 
-        let nonce = issue_nonce(&state.dpop_nonces).await;
+        let nonce = state.dpop_nonces.issue();
         let dpop = make_dpop_proof(
             &key,
             "POST",
@@ -965,7 +963,7 @@ mod tests {
         let code = generate_token();
         seed_auth_code(&state, &code.hash, &challenge).await;
 
-        let nonce = issue_nonce(&state.dpop_nonces).await;
+        let nonce = state.dpop_nonces.issue();
         let dpop = make_dpop_proof(
             &key,
             "POST",
@@ -1005,7 +1003,7 @@ mod tests {
         let code = generate_token();
         seed_auth_code(&state, &code.hash, &challenge).await;
 
-        let nonce = issue_nonce(&state.dpop_nonces).await;
+        let nonce = state.dpop_nonces.issue();
         let dpop = make_dpop_proof(
             &key,
             "POST",
@@ -1106,7 +1104,7 @@ mod tests {
         .await
         .unwrap();
 
-        let nonce = issue_nonce(&state.dpop_nonces).await;
+        let nonce = state.dpop_nonces.issue();
         let dpop = make_dpop_proof(
             &key,
             "POST",
@@ -1195,7 +1193,7 @@ mod tests {
         );
 
         // The attacker holds the code (and even the verifier) but not the flow's key.
-        let nonce = issue_nonce(&state.dpop_nonces).await;
+        let nonce = state.dpop_nonces.issue();
         let attacker_proof = make_dpop_proof(
             &attacker_key,
             "POST",
@@ -1211,7 +1209,7 @@ mod tests {
         assert_eq!(json_body(resp).await["error"], "invalid_grant");
 
         // The legitimate client, holding the bound key, still redeems it.
-        let nonce = issue_nonce(&state.dpop_nonces).await;
+        let nonce = state.dpop_nonces.issue();
         let flow_proof = make_dpop_proof(
             &flow_key,
             "POST",

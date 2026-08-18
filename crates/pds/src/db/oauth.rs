@@ -577,8 +577,8 @@ pub async fn cleanup_expired_par_requests(pool: &SqlitePool) -> Result<(), sqlx:
 
 /// Delete all expired authorization codes from the database.
 ///
-/// Call alongside `cleanup_expired_nonces` on every token request to prevent unbounded
-/// DB growth from abandoned authorization flows.
+/// Call on every token request to prevent unbounded DB growth from abandoned
+/// authorization flows.
 pub async fn cleanup_expired_auth_codes(pool: &SqlitePool) -> Result<(), sqlx::Error> {
     sqlx::query("DELETE FROM oauth_authorization_codes WHERE expires_at <= datetime('now')")
         .execute(pool)
@@ -588,8 +588,7 @@ pub async fn cleanup_expired_auth_codes(pool: &SqlitePool) -> Result<(), sqlx::E
 
 /// Delete all expired refresh tokens from the database.
 ///
-/// Call alongside `cleanup_expired_nonces` on every token request to prevent unbounded
-/// DB growth from expired sessions.
+/// Call on every token request to prevent unbounded DB growth from expired sessions.
 pub async fn cleanup_expired_refresh_tokens(pool: &SqlitePool) -> Result<(), sqlx::Error> {
     sqlx::query("DELETE FROM oauth_tokens WHERE expires_at <= datetime('now')")
         .execute(pool)

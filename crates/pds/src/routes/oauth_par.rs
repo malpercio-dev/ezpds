@@ -122,7 +122,7 @@ async fn resolve_par_dpop_jkt(
     );
     let proven_jkt = match headers.get("DPoP").and_then(|v| v.to_str().ok()) {
         Some(proof) => {
-            match crate::auth::validate_dpop_for_par(proof, "POST", &par_url).await {
+            match crate::auth::validate_dpop_for_par(proof, "POST", &par_url) {
                 Ok(jkt) => Some(jkt),
                 Err(crate::auth::DpopTokenEndpointError::InvalidProof(msg)) => {
                     return Err(PARError::new("invalid_dpop_proof", msg).into_response());
