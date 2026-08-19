@@ -7,6 +7,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Changes are collected in `changelog.d/` during development and inserted here when
 `just set-version` prepares a release. There is intentionally no `Unreleased` section.
 
+## [0.12.0] - 2026-08-19
+
+### Added
+
+- Settings → Notifications now shows, per identity, whether this launch's push registration succeeded — and when it didn't, why and what fixes it. An identity that can't receive notifications (for example, one whose session is locked) no longer reads as perfectly healthy.
+
+- App passwords can now be minted with an opt-in personal-details grant (an "Allow personal details" checkbox in Obsign, beside the existing direct-messages one), letting that password's sessions read and set the personal-details preferences — today the birth date the official Bluesky app's age verification requires, which a passwordless sovereign account previously could not get past at all. A deliberate, per-credential divergence from the reference PDS (ADR-0033); unchecked, behavior is unchanged, and the server advertises support as the `appPasswordPersonalDetails` capability.
+
+- The wallet's Change handle screen now supports domains you own, including the bare domain itself (an apex handle like `obsign.org`): choose "Use a domain you own", and Obsign shows the exact `_atproto` DNS TXT record to publish, verifies it from both your DNS and your hosting server's vantage — distinguishing a missing record, one still propagating, and one pointing at a different identity — and only enables the change once the record verifies.
+
+
+### Changed
+
+- The handle step of onboarding now says which failure it hit when it can't load the server's handle domains, instead of one generic message: an unreachable server points at your connection, a server that answers with a failure asks you to try again shortly, and an address that answers but not like a server tells you to check the address you entered.
+
+
+### Fixed
+
+- OAuth token-endpoint DPoP nonces now follow the reference provider's rotating-window scheme (valid one to three minutes, reusable, consistent across restarts) instead of being single-use — fixing clients that cache a nonce or make concurrent token calls, which logged in fine and then failed every subsequent call.
+
+- Push notifications now decrypt and render on device: the release lane previously shipped the wallet's Notification Service Extension without its shared-keychain entitlement, so every push showed "Couldn't verify a notification from your Custos instance" while Settings reported no problems. The signed IPA gate now also fails loudly if an extension's keychain access groups ever go missing again.
+
+- Unlocking an identity now re-registers it for push notifications on the spot, so an identity that was locked when Obsign opened starts receiving sign-in requests and other notifications right after the unlock instead of waiting for a future launch. The server also logs when a sign-in push could not be sent because the account has no registered device.
+
+- Consent QR codes scanned with the iPhone Camera app now open the consent approval screen in Obsign (when the app is running or backgrounded), instead of landing on the overview. When several identities are managed, Obsign works out which one the sign-in request is for before navigating.
+
+- The "Open in …" chip shown when scanning a sign-in QR with the iPhone Camera app now reads "Open in obsign" instead of the technical "org.obsign.identitywallet" scheme name. QR codes from servers that haven't updated yet still open the app.
+
+- Creating an identity on a server whose handle domains are configured with a leading dot (`.example.com`, the form the wider network uses) no longer builds a broken handle. The handle step composed `alice..example.com`, which the server rejects as malformed, so account creation failed at the last step with nothing on screen explaining why. Handle composition now accepts either form, matching what changing a handle already did.
+
+
 ## [0.11.2] - 2026-08-17
 
 ### Changed
