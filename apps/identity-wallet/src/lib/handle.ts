@@ -28,3 +28,32 @@ export function isValidLabel(label: string): boolean {
 export function composeHandle(label: string, domain: string): string {
   return `${label.trim()}.${domain}`;
 }
+
+/**
+ * Validate a FULL handle the user typed themselves (the custom-domain path, e.g.
+ * `alice.example.com` or an apex like `example.com`), mirroring the server's structural
+ * rule so obviously-invalid input fails locally before any network round trip: at least
+ * two DNS labels, each a valid RFC 1035 label, at most 253 chars total, and a final
+ * label (the effective TLD) that doesn't start with a digit.
+ *
+ * Surrounding whitespace and a leading `@` are tolerated (the caller normalizes them
+ * away before use); interior whitespace is invalid.
+ */
+export function isValidHandle(handle: string): boolean {
+  const h = handle.trim().replace(/^@/, '');
+  if (h.length === 0 || h.length > 253 || /\s/.test(h)) return false;
+  const labels = h.split('.');
+  if (labels.length < 2) return false;
+  // isValidLabel trims its input; interior whitespace was already rejected above, so
+  // that leniency cannot mask a malformed label here.
+  if (!labels.every((label) => isValidLabel(label))) return false;
+  return !/^[0-9]/.test(labels[labels.length - 1]);
+}
+
+/**
+ * Normalize a user-typed full handle to its canonical form: trimmed, no leading `@`,
+ * lowercase (handles are case-insensitive; the canonical form is lowercase).
+ */
+export function normalizeHandle(handle: string): string {
+  return handle.trim().replace(/^@/, '').toLowerCase();
+}

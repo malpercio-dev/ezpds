@@ -64,3 +64,37 @@ export const changeHandle = async (did: string, handle: string): Promise<ClaimRe
   await authenticateBiometric('Confirm your handle change');
   return invoke('change_handle_cmd', { did, handle });
 };
+
+// ── Custom-handle DNS pre-flight ──────────────────────────────────────────────
+
+/**
+ * Where a custom-domain handle currently points.
+ * Matches `CustomHandleDnsStatus` in `handle_change.rs` — values must match exactly.
+ *
+ * - `VERIFIED` — the hosting PDS resolves the handle to this DID; `updateHandle`'s gate will pass.
+ * - `PROPAGATING` — the wallet's own DNS lookup sees the record but the hosting PDS doesn't yet.
+ * - `WRONG_DID` — the handle currently resolves to a different DID (`foundDid`).
+ * - `NOT_FOUND` — no `_atproto` TXT record (or well-known fallback) found from either vantage.
+ */
+export type CustomHandleDnsStatus = 'VERIFIED' | 'PROPAGATING' | 'WRONG_DID' | 'NOT_FOUND';
+
+/** Result of {@link checkCustomHandleDns}. Matches `CustomHandleDnsCheck` in `handle_change.rs`. */
+export type CustomHandleDnsCheck = {
+  status: CustomHandleDnsStatus;
+  /** The DID the handle currently resolves to when it isn't this identity's (status `WRONG_DID`). */
+  foundDid: string | null;
+  /** The DNS record name the domain owner must create: `_atproto.<handle>`. */
+  recordName: string;
+  /** The exact TXT record value: `did=<did>`. */
+  recordValue: string;
+};
+
+/**
+ * Read-only pre-flight for a handle on a domain the user owns: reports where the handle
+ * currently points (the hosting PDS's vantage — the gate `updateHandle` enforces — plus the
+ * wallet's own DNS TXT lookup) and the exact `_atproto` TXT record required. No biometric
+ * gate: nothing is signed or changed. Rejections use the same {@link HandleChangeError} union
+ * as {@link changeHandle}.
+ */
+export const checkCustomHandleDns = (did: string, handle: string): Promise<CustomHandleDnsCheck> =>
+  invoke('check_custom_handle_dns', { did, handle });
