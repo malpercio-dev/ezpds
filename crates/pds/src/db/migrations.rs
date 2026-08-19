@@ -274,4 +274,8 @@ pub(super) static MIGRATIONS: &[Migration] = &[
         version: 63,
         sql: include_str!("migrations/V063__app_password_personal_details.sql"),
     },
+    Migration {
+        version: 64,
+        sql: include_str!("migrations/V064__notification_ping.sql"),
+    },
 ];

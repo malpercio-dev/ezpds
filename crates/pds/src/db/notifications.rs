@@ -136,6 +136,9 @@ pub struct RegistrationRow {
     pub notification_public_key: String,
     /// The relay's opaque handle; `None` until the relay round trip has succeeded.
     pub push_handle: Option<String>,
+    /// Metadata-minimizing ping mode: the device asked for content-free background pushes
+    /// instead of sealed payloads. Default `false` — sealed stays the default.
+    pub ping: bool,
 }
 
 // `apns_token`/`apns_topic` are deliberately absent: they are written from the request body
@@ -155,16 +158,18 @@ pub async fn upsert_registration(
     notification_public_key: &str,
     apns_token: &str,
     apns_topic: &str,
+    ping: bool,
 ) -> Result<(), sqlx::Error> {
     sqlx::query(
         "INSERT INTO notification_registrations \
-             (did, device_uuid, notification_public_key, apns_token, apns_topic, \
+             (did, device_uuid, notification_public_key, apns_token, apns_topic, ping, \
               push_handle, created_at, updated_at) \
-         VALUES (?, ?, ?, ?, ?, NULL, datetime('now'), datetime('now')) \
+         VALUES (?, ?, ?, ?, ?, ?, NULL, datetime('now'), datetime('now')) \
          ON CONFLICT(did, device_uuid) DO UPDATE SET \
              notification_public_key = excluded.notification_public_key, \
              apns_token = excluded.apns_token, \
              apns_topic = excluded.apns_topic, \
+             ping = excluded.ping, \
              push_handle = NULL, \
              updated_at = datetime('now')",
     )
@@ -173,6 +178,7 @@ pub async fn upsert_registration(
     .bind(notification_public_key)
     .bind(apns_token)
     .bind(apns_topic)
+    .bind(ping)
     .execute(pool)
     .await?;
     Ok(())
@@ -183,8 +189,8 @@ pub async fn list_registrations(
     pool: &SqlitePool,
     did: &str,
 ) -> Result<Vec<RegistrationRow>, sqlx::Error> {
-    let rows: Vec<(String, String, Option<String>)> = sqlx::query_as(
-        "SELECT device_uuid, notification_public_key, push_handle \
+    let rows: Vec<(String, String, Option<String>, bool)> = sqlx::query_as(
+        "SELECT device_uuid, notification_public_key, push_handle, ping \
          FROM notification_registrations WHERE did = ? ORDER BY device_uuid",
     )
     .bind(did)
@@ -261,16 +267,18 @@ pub async fn upsert_admin_registration(
     notification_public_key: &str,
     apns_token: &str,
     apns_topic: &str,
+    ping: bool,
 ) -> Result<(), sqlx::Error> {
     sqlx::query(
         "INSERT INTO admin_notification_registrations \
-             (admin_device_id, notification_public_key, apns_token, apns_topic, \
+             (admin_device_id, notification_public_key, apns_token, apns_topic, ping, \
               push_handle, created_at, updated_at) \
-         VALUES (?, ?, ?, ?, NULL, datetime('now'), datetime('now')) \
+         VALUES (?, ?, ?, ?, ?, NULL, datetime('now'), datetime('now')) \
          ON CONFLICT(admin_device_id) DO UPDATE SET \
              notification_public_key = excluded.notification_public_key, \
              apns_token = excluded.apns_token, \
              apns_topic = excluded.apns_topic, \
+             ping = excluded.ping, \
              push_handle = NULL, \
              updated_at = datetime('now')",
     )
@@ -278,6 +286,7 @@ pub async fn upsert_admin_registration(
     .bind(notification_public_key)
     .bind(apns_token)
     .bind(apns_topic)
+    .bind(ping)
     .execute(pool)
     .await?;
     Ok(())
@@ -291,8 +300,8 @@ pub async fn upsert_admin_registration(
 pub async fn list_active_admin_registrations(
     pool: &SqlitePool,
 ) -> Result<Vec<RegistrationRow>, sqlx::Error> {
-    let rows: Vec<(String, String, Option<String>)> = sqlx::query_as(
-        "SELECT r.admin_device_id, r.notification_public_key, r.push_handle \
+    let rows: Vec<(String, String, Option<String>, bool)> = sqlx::query_as(
+        "SELECT r.admin_device_id, r.notification_public_key, r.push_handle, r.ping \
          FROM admin_notification_registrations r \
          JOIN admin_devices d ON d.id = r.admin_device_id \
          WHERE d.revoked_at IS NULL ORDER BY r.admin_device_id",
@@ -357,12 +366,13 @@ pub async fn delete_admin_registration(
 }
 
 fn into_registration(
-    (device_id, notification_public_key, push_handle): (String, String, Option<String>),
+    (device_id, notification_public_key, push_handle, ping): (String, String, Option<String>, bool),
 ) -> RegistrationRow {
     RegistrationRow {
         device_id,
         notification_public_key,
         push_handle,
+        ping,
     }
 }
 
@@ -501,7 +511,7 @@ mod tests {
     async fn an_admin_handle_is_still_readable_after_the_device_is_revoked() {
         let pool = pool().await;
         seed_admin_device(&pool, "adm-1").await;
-        upsert_admin_registration(&pool, "adm-1", "pk", "tok", "org.obsign.admin")
+        upsert_admin_registration(&pool, "adm-1", "pk", "tok", "org.obsign.admin", false)
             .await
             .unwrap();
         set_admin_registration_handles_for_token(&pool, "tok", "handle-1")
@@ -541,6 +551,7 @@ mod tests {
             "pk1",
             "tok1",
             "org.obsign.app",
+            false,
         )
         .await
         .unwrap();
@@ -554,6 +565,7 @@ mod tests {
             "pk2",
             "tok2",
             "org.obsign.app",
+            false,
         )
         .await
         .unwrap();
@@ -572,6 +584,47 @@ mod tests {
             rows[0].push_handle, None,
             "the old handle names the old token; it must not survive re-registration"
         );
+    }
+
+    /// The ping preference round-trips through the upsert, and — like every other field — a
+    /// re-registration overwrites it, so turning the toggle back off actually lands.
+    #[tokio::test]
+    async fn the_ping_preference_round_trips_and_defaults_to_sealed() {
+        let pool = pool().await;
+        upsert_registration(
+            &pool,
+            "did:plc:notif",
+            "dev-1",
+            "pk",
+            "tok",
+            "org.obsign.app",
+            false,
+        )
+        .await
+        .unwrap();
+        assert!(
+            !list_registrations(&pool, "did:plc:notif").await.unwrap()[0].ping,
+            "sealed is the default"
+        );
+
+        for ping in [true, false] {
+            upsert_registration(
+                &pool,
+                "did:plc:notif",
+                "dev-1",
+                "pk",
+                "tok",
+                "org.obsign.app",
+                ping,
+            )
+            .await
+            .unwrap();
+            assert_eq!(
+                list_registrations(&pool, "did:plc:notif").await.unwrap()[0].ping,
+                ping,
+                "a re-registration must carry the toggle in both directions"
+            );
+        }
     }
 
     async fn seed_second_account(pool: &SqlitePool) {
@@ -593,9 +646,17 @@ mod tests {
         let pool = pool().await;
         seed_second_account(&pool).await;
         for did in ["did:plc:notif", "did:plc:notif2"] {
-            upsert_registration(&pool, did, "dev-1", "pk", "shared-tok", "org.obsign.app")
-                .await
-                .unwrap();
+            upsert_registration(
+                &pool,
+                did,
+                "dev-1",
+                "pk",
+                "shared-tok",
+                "org.obsign.app",
+                false,
+            )
+            .await
+            .unwrap();
         }
 
         // One registration's round trip completes. It speaks for the token, not for its row.
@@ -627,6 +688,7 @@ mod tests {
             "pk",
             "old-tok",
             "org.obsign.app",
+            false,
         )
         .await
         .unwrap();
@@ -637,6 +699,7 @@ mod tests {
             "pk",
             "new-tok",
             "org.obsign.app",
+            false,
         )
         .await
         .unwrap();
@@ -676,6 +739,7 @@ mod tests {
             "pk",
             "tok",
             "org.obsign.app",
+            false,
         )
         .await
         .unwrap();
@@ -711,7 +775,7 @@ mod tests {
         let pool = pool().await;
         for id in ["adm-1", "adm-2"] {
             seed_admin_device(&pool, id).await;
-            upsert_admin_registration(&pool, id, "pk", "console-tok", "org.obsign.admin")
+            upsert_admin_registration(&pool, id, "pk", "console-tok", "org.obsign.admin", false)
                 .await
                 .unwrap();
         }
@@ -739,10 +803,10 @@ mod tests {
         let pool = pool().await;
         seed_admin_device(&pool, "adm-1").await;
         seed_admin_device(&pool, "adm-2").await;
-        upsert_admin_registration(&pool, "adm-1", "pk1", "tok1", "org.obsign.admin")
+        upsert_admin_registration(&pool, "adm-1", "pk1", "tok1", "org.obsign.admin", false)
             .await
             .unwrap();
-        upsert_admin_registration(&pool, "adm-2", "pk2", "tok2", "org.obsign.admin")
+        upsert_admin_registration(&pool, "adm-2", "pk2", "tok2", "org.obsign.admin", false)
             .await
             .unwrap();
 

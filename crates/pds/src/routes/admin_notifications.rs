@@ -42,6 +42,10 @@ pub struct AdminRegisterRequest {
     pub notification_public_key: String,
     pub apns_token: String,
     pub apns_topic: String,
+    /// Metadata-minimizing ping mode: content-free `content-available` background pushes
+    /// instead of sealed payloads. Optional; the default — and the default mode — is sealed.
+    #[serde(default)]
+    pub ping: bool,
 }
 
 #[derive(serde::Serialize)]
@@ -99,6 +103,7 @@ pub async fn register_admin_notifications(
         &payload.notification_public_key,
         &payload.apns_token,
         &payload.apns_topic,
+        payload.ping,
     )
     .await
     {
@@ -265,6 +270,55 @@ mod tests {
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].device_id, "adm-1");
         assert_eq!(rows[0].notification_public_key, key);
+    }
+
+    /// The admin surface honours the same ping toggle, with the same sealed default.
+    #[tokio::test]
+    async fn the_admin_ping_toggle_round_trips_and_sealed_stays_the_default() {
+        let state = state_with_notifications().await;
+        let keypair = seed_device(&state, "adm-1").await;
+        let key = crypto::generate_p256_keypair().unwrap().key_id.0;
+
+        let stored_ping = |state: &AppState| {
+            let db = state.db.clone();
+            async move { store::list_active_admin_registrations(&db).await.unwrap()[0].ping }
+        };
+
+        let body = body_for(&key);
+        let (status, _) = call(
+            state.clone(),
+            signed(
+                "POST",
+                "/v1/admin/notifications/register",
+                "adm-1",
+                &keypair,
+                &body,
+                "nonce-default",
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert!(!stored_ping(&state).await, "the default must stay sealed");
+
+        for ping in [true, false] {
+            let mut parsed: Value = serde_json::from_slice(&body).unwrap();
+            parsed["ping"] = json!(ping);
+            let body = parsed.to_string().into_bytes();
+            let (status, _) = call(
+                state.clone(),
+                signed(
+                    "POST",
+                    "/v1/admin/notifications/register",
+                    "adm-1",
+                    &keypair,
+                    &body,
+                    &format!("nonce-ping-{ping}"),
+                ),
+            )
+            .await;
+            assert_eq!(status, StatusCode::OK);
+            assert_eq!(stored_ping(&state).await, ping);
+        }
     }
 
     /// The credential names the device — a body field never could, and this is what stops one

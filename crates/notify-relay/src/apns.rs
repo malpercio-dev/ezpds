@@ -38,6 +38,10 @@ const SANDBOX_ENDPOINT: &str = "https://api.sandbox.push.apple.com";
 /// Priority for a user-visible alert. Apple only accepts 10 or 5 for an alert push.
 const ALERT_PRIORITY: u8 = 10;
 
+/// Priority for a content-free ping. Apple *requires* 5 for a background push — a 10 is
+/// rejected outright, not merely delivered eagerly.
+const BACKGROUND_PRIORITY: u8 = 5;
+
 /// Cap on how much of a refusal body is read for the operator log. Apple's `reason`
 /// payloads are tens of bytes; anything past this is an endpoint that is not APNs.
 const MAX_REASON_BYTES: usize = 1024;
@@ -81,6 +85,10 @@ pub struct PushRequest<'a> {
     /// Base64url HPKE ciphertext, verbatim from the RPC.
     pub ct: &'a str,
     pub ttl_secs: Option<u32>,
+    /// Metadata-minimizing ping mode: send a content-free `content-available` background
+    /// push instead of the sealed envelope. `kid`/`enc`/`ct` are ignored — nothing of the
+    /// notification, not even ciphertext, reaches Apple; the device fetches on wake.
+    pub ping: bool,
 }
 
 /// The APNs client: an HTTP client, the operator's token-auth key, and the current
@@ -150,7 +158,11 @@ impl ApnsClient {
     /// unreachable Apple — is a `PushOutcome` the instance is meant to act on, so it
     /// travels in the RPC response rather than as a transport error.
     pub async fn send(&self, request: &PushRequest<'_>) -> PushOutcome {
-        let body = build_envelope(request.kid, request.enc, request.ct);
+        let body = if request.ping {
+            ping_envelope()
+        } else {
+            build_envelope(request.kid, request.enc, request.ct)
+        };
         let Ok(body) = serialize_within_cap(&body) else {
             // Charged to the sender, not to Apple: the padding budget that should have
             // kept this under the cap is computed instance-side.
@@ -165,13 +177,18 @@ impl ApnsClient {
         let expiration =
             unix_now().saturating_add(u64::from(request.ttl_secs.unwrap_or(DEFAULT_TTL_SECS)));
 
+        let (push_type, priority) = if request.ping {
+            ("background", BACKGROUND_PRIORITY)
+        } else {
+            ("alert", ALERT_PRIORITY)
+        };
         let response = self
             .http
             .post(url)
             .header("authorization", format!("bearer {}", self.token()))
             .header("apns-topic", request.topic)
-            .header("apns-push-type", "alert")
-            .header("apns-priority", ALERT_PRIORITY.to_string())
+            .header("apns-push-type", push_type)
+            .header("apns-priority", priority.to_string())
             .header("apns-expiration", expiration.to_string())
             .header("content-type", "application/json")
             .body(body)
@@ -290,6 +307,15 @@ fn b64url(bytes: &[u8]) -> String {
 /// arithmetic is computed against exactly these bytes.
 fn build_envelope(kid: u32, enc: &str, ct: &str) -> serde_json::Value {
     crate::protocol::apns_envelope(kid, enc, ct)
+}
+
+/// The ping-mode body: a content-free background wake and nothing else. No `ezpds` block,
+/// no alert, no `mutable-content` — the relay carries only the fact that *something*
+/// happened, which is the whole point of ping mode. Lives here rather than in the shared
+/// protocol because the sender never has to model these bytes: there is no ciphertext to
+/// pad, and every ping body is byte-identical.
+fn ping_envelope() -> serde_json::Value {
+    serde_json::json!({ "aps": { "content-available": 1 } })
 }
 
 /// Serialize the envelope, refusing anything Apple would reject on size.
@@ -458,6 +484,19 @@ pub(crate) mod tests {
         assert_eq!(envelope["ezpds"]["ct"], "CT");
     }
 
+    /// The ping body is the metadata-minimizing contract: no ciphertext, no alert, nothing
+    /// but the wake bit. An `ezpds` key here would put sealed material on a push whose whole
+    /// point is that the relay forwards nothing of the notification at all.
+    #[test]
+    fn the_ping_envelope_carries_only_the_wake_bit() {
+        let envelope = ping_envelope();
+        assert_eq!(
+            envelope,
+            serde_json::json!({ "aps": { "content-available": 1 } }),
+            "a ping body must be exactly the content-available wake and nothing else"
+        );
+    }
+
     /// The cap is inclusive: a body of exactly 4096 bytes is what a sender aiming at the
     /// largest padding bucket produces, and rejecting it would make the buckets unusable.
     #[test]
@@ -584,6 +623,7 @@ pub(crate) mod tests {
             enc: "ENCAPSULATED",
             ct,
             ttl_secs,
+            ping: false,
         }
     }
 
@@ -635,6 +675,47 @@ pub(crate) mod tests {
         assert_eq!(
             body["ezpds"]["ct"], "CIPHERTEXT",
             "the sealed payload must reach Apple byte-for-byte as the instance sent it"
+        );
+    }
+
+    /// Ping mode over the wire: Apple must receive a background push at priority 5 whose
+    /// body carries no `ezpds` key — not even the ciphertext the sender handed over.
+    #[tokio::test]
+    async fn a_ping_push_is_a_content_free_background_push() {
+        let server = mock_apns(200).await;
+        let (_dir, client) = client_for(&server.uri());
+
+        let outcome = client
+            .send(&PushRequest {
+                ping: true,
+                ..request("CIPHERTEXT-THE-RELAY-MUST-DROP", Some(90))
+            })
+            .await;
+        assert_eq!(outcome, PushOutcome::Delivered);
+
+        let requests = server.received_requests().await.expect("recorded requests");
+        assert_eq!(requests.len(), 1);
+        let sent = &requests[0];
+
+        assert_eq!(
+            sent.headers["apns-push-type"].to_str().unwrap(),
+            "background"
+        );
+        assert_eq!(
+            sent.headers["apns-priority"].to_str().unwrap(),
+            "5",
+            "Apple rejects a background push at any priority but 5"
+        );
+
+        let body: serde_json::Value = serde_json::from_slice(&sent.body).expect("JSON body");
+        assert!(
+            body.get("ezpds").is_none(),
+            "a ping body must carry no ciphertext at all: {body}"
+        );
+        assert_eq!(body["aps"]["content-available"], 1);
+        assert!(
+            body["aps"].get("alert").is_none(),
+            "a ping is silent by design; an alert would need content to show"
         );
     }
 

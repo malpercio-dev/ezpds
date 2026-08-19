@@ -174,13 +174,13 @@ fn access_token(state: &AppState, did: &str) -> String {
 /// Register `device_public_key` through the real HTTP route, then wait for the background
 /// worker to complete the relay round trip.
 async fn register_device(state: &AppState, device_public_key: &str) {
-    register_identity(state, ACCOUNT_DID, device_public_key).await;
+    register_identity(state, ACCOUNT_DID, device_public_key, false).await;
 }
 
 /// The same, for a named identity. Every identity registers one `DEVICE_UUID` and one
 /// `APNS_TOKEN` because they are all on one physical device — the composition that makes the
 /// relay's per-token handle shared between them.
-async fn register_identity(state: &AppState, did: &str, device_public_key: &str) {
+async fn register_identity(state: &AppState, did: &str, device_public_key: &str, ping: bool) {
     let response = crate::app::app(state.clone())
         .oneshot(
             Request::post("/v1/notifications/register")
@@ -195,6 +195,7 @@ async fn register_identity(state: &AppState, did: &str, device_public_key: &str)
                         "notificationPublicKey": device_public_key,
                         "apnsToken": APNS_TOKEN,
                         "apnsTopic": "org.obsign.identitywallet",
+                        "ping": ping,
                     })
                     .to_string(),
                 ))
@@ -367,6 +368,80 @@ async fn a_notification_travels_from_custos_through_the_relay_to_a_device_that_o
     relay_endpoint.close().await;
 }
 
+/// Ping mode, end to end: a registration that opted in receives a content-free
+/// `content-available` background push — the body Apple (and the relay) sees carries no
+/// `ezpds` key, no alert, and nothing derived from the notification at all.
+#[tokio::test]
+async fn a_ping_registration_receives_no_ciphertext_at_the_relay() {
+    let apple = MockServer::start().await;
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(200))
+        .mount(&apple)
+        .await;
+
+    let (relay_endpoint, _relay, _keydir) = start_relay(&apple.uri()).await;
+    let relay_addr =
+        EndpointAddr::new(relay_endpoint.id()).with_ip_addr(relay_endpoint.bound_sockets()[0]);
+    let (state, dialer) = start_pds(relay_addr).await;
+
+    let device = crypto::generate_p256_keypair().expect("device keypair");
+    register_identity(&state, ACCOUNT_DID, &device.key_id.0, true).await;
+
+    let enqueued = crate::notifications::notify_device(
+        &state,
+        ACCOUNT_DID,
+        crate::notifications::NotificationPayload::new(
+            "agent_claim_pending",
+            "Confirm agent access",
+            "SECRET-BODY-THAT-MUST-NOT-LEAVE",
+        ),
+    )
+    .await;
+    assert_eq!(enqueued, 1);
+
+    let request = await_condition("the pushed APNs request", || async {
+        apple
+            .received_requests()
+            .await
+            .unwrap_or_default()
+            .into_iter()
+            .find(|req| !req.body.is_empty())
+    })
+    .await;
+
+    assert_eq!(
+        request.headers["apns-push-type"].to_str().expect("ascii"),
+        "background"
+    );
+    assert_eq!(
+        request.headers["apns-priority"].to_str().expect("ascii"),
+        "5",
+        "Apple requires priority 5 for a background push"
+    );
+
+    let body: serde_json::Value = serde_json::from_slice(&request.body).expect("JSON body");
+    assert!(
+        body.get("ezpds").is_none(),
+        "a ping push must carry no ciphertext at the relay: {body}"
+    );
+    assert_eq!(
+        body,
+        json!({ "aps": { "content-available": 1 } }),
+        "the whole body is the wake bit — nothing derived from the notification"
+    );
+
+    // A pure-ping fan-out seals nothing, so it must not have minted the instance's first
+    // sender key just to throw it away.
+    let keys: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM notification_sender_keys")
+        .fetch_one(&state.db)
+        .await
+        .expect("count");
+    assert_eq!(keys, 0, "a ping-only fan-out must not mint key material");
+
+    dialer.close().await;
+    relay_endpoint.close().await;
+}
+
 /// Phase C of wallet-confirmed OAuth consent, end to end on the server side: a login started
 /// on another surface (`GET /oauth/authorize` with a `login_hint` naming a hosted account)
 /// produces a sealed `login-approval` push through the real relay; the device opens it and
@@ -518,8 +593,8 @@ async fn two_identities_on_one_device_both_keep_receiving() {
     // it is for, not to the hardware it lands on.
     let first = crypto::generate_p256_keypair().expect("device keypair");
     let second = crypto::generate_p256_keypair().expect("device keypair");
-    register_identity(&state, ACCOUNT_DID, &first.key_id.0).await;
-    register_identity(&state, SECOND_DID, &second.key_id.0).await;
+    register_identity(&state, ACCOUNT_DID, &first.key_id.0, false).await;
+    register_identity(&state, SECOND_DID, &second.key_id.0, false).await;
 
     // Both rows must name the one handle the relay still resolves — the second registration's.
     let first_handle = registration_handle(&state, ACCOUNT_DID)

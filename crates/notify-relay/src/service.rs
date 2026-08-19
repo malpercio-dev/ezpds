@@ -72,8 +72,20 @@ impl RelayService {
                 enc,
                 ct,
                 ttl_secs,
+                ping,
                 ..
-            } => self.push(node_id, &handle, kid, &enc, &ct, ttl_secs).await,
+            } => {
+                self.push(
+                    node_id,
+                    &handle,
+                    kid,
+                    &enc,
+                    &ct,
+                    ttl_secs,
+                    ping.unwrap_or(false),
+                )
+                .await
+            }
         }
     }
 
@@ -187,11 +199,13 @@ impl RelayService {
     /// normal result the instance acts on — `unregistered` prunes a registration,
     /// `throttled` backs off, `tooLarge` is a sender bug to fix.
     ///
-    /// The request's `priority` and `ping` fields are not consulted yet. Ping mode is its
-    /// own phase — it replaces the whole envelope with `content-available` and changes the
-    /// push type — and until it lands every push is a user-visible alert at priority 10.
-    /// Honouring a caller's `priority: 5` on an alert envelope would ask Apple to delay a
-    /// banner the device is meant to show immediately.
+    /// `ping` swaps the sealed alert envelope for a content-free `content-available`
+    /// background push — the metadata-minimizing mode where the relay forwards only the fact
+    /// that something happened. The request's `priority` field stays unconsulted: the push
+    /// type dictates the priority (10 for an alert, and Apple *requires* 5 for a background
+    /// push), and honouring a caller's `priority: 5` on an alert envelope would ask Apple to
+    /// delay a banner the device is meant to show immediately.
+    #[allow(clippy::too_many_arguments)]
     async fn push(
         &self,
         node_id: &str,
@@ -200,6 +214,7 @@ impl RelayService {
         enc: &str,
         ct: &str,
         ttl_secs: Option<u32>,
+        ping: bool,
     ) -> Response {
         match db::enrollments::is_enrolled(&self.db, node_id).await {
             Ok(true) => {}
@@ -236,6 +251,7 @@ impl RelayService {
                 enc,
                 ct,
                 ttl_secs,
+                ping,
             })
             .await;
 

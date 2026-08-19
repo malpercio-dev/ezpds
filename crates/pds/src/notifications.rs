@@ -18,7 +18,10 @@
 //!    notification *length* betrays notification *kind*. Every payload is padded up to a
 //!    bucket before sealing, computed against the serialized APNs body via the shared
 //!    `notify_relay::protocol::apns_envelope` (see `pad_len_for`); a payload too large for
-//!    the top bucket is dropped, never sent unpadded or truncated (see `seal_for`).
+//!    the top bucket is dropped, never sent unpadded or truncated (see `seal_for`). A
+//!    registration that opted into **ping mode** takes this to its limit: it gets a
+//!    content-free `content-available` wake instead of a sealed payload — nothing of the
+//!    notification, not even ciphertext, leaves this process for it.
 //!
 //! Fan-out is one seal per registration, never one seal reused: HPKE seals to a single
 //! recipient key, and reusing an encapsulated key across devices would be a different (and
@@ -142,8 +145,12 @@ async fn fan_out(
     // Load the sealing key once for the whole fan-out. Doing it per device would mean a
     // rotation landing mid-fan-out seals some devices under the old key and some under the
     // new — both valid, but needlessly hard to reason about when debugging a delivery.
-    let Some((kid, secret)) = active_sender_key(state).await else {
-        return 0;
+    // Skipped entirely when every registration is ping-mode: a ping seals nothing, so a
+    // pure-ping fan-out must not be the thing that mints the instance's first key.
+    let sealing_key = if registrations.iter().any(|r| !r.ping) {
+        active_sender_key(state).await
+    } else {
+        None
     };
 
     let mut enqueued = 0;
@@ -154,6 +161,28 @@ async fn fan_out(
         let Some(handle) = registration.push_handle.clone() else {
             continue;
         };
+
+        // Ping mode: the device asked for a content-free wake instead of a sealed payload.
+        // Nothing of `payload` — not even ciphertext — leaves this process for it.
+        if registration.ping {
+            sender.send(NotifyJob::Push {
+                owner: owner_of(registration.device_id),
+                handle,
+                kid: 0,
+                enc: String::new(),
+                ct: String::new(),
+                ping: true,
+            });
+            enqueued += 1;
+            continue;
+        }
+
+        let Some((kid, secret)) = sealing_key.as_ref() else {
+            // Sealed registrations exist but no key could be loaded (already logged where it
+            // failed); the ping sends above still went out.
+            continue;
+        };
+        let (kid, secret) = (*kid, secret);
 
         let recipient =
             match crypto::p256_public_key_from_did_key(&registration.notification_public_key) {
@@ -166,7 +195,7 @@ async fn fan_out(
                 }
             };
 
-        let Some(sealed) = seal_for(kid, &secret, &recipient, &payload) else {
+        let Some(sealed) = seal_for(kid, secret, &recipient, &payload) else {
             continue;
         };
 
@@ -178,6 +207,7 @@ async fn fan_out(
             kid,
             enc: base64url(&sealed.enc),
             ct: base64url(&sealed.ct),
+            ping: false,
         });
         enqueued += 1;
     }
