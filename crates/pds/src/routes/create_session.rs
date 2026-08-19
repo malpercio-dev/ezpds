@@ -45,10 +45,10 @@ pub struct CreateSessionResponse {
     email: Option<String>,
 }
 
-/// An app password matched during `createSession`: its name and whether it is privileged.
+/// An app password matched during `createSession`: its name and mint-time grants.
 struct MatchedAppPassword {
     name: String,
-    privileged: bool,
+    grants: crate::db::app_passwords::AppPasswordGrants,
 }
 
 /// Try `password` against each of the account's stored app passwords, returning the first
@@ -66,7 +66,7 @@ async fn match_app_password(
         ) {
             return Ok(Some(MatchedAppPassword {
                 name: candidate.name,
-                privileged: candidate.privileged,
+                grants: candidate.grants,
             }));
         }
     }
@@ -130,7 +130,7 @@ pub async fn create_session(
                             row,
                             SessionKind::AppPassword {
                                 name: matched.name,
-                                privileged: matched.privileged,
+                                grants: matched.grants,
                             },
                         ),
                         None => {
@@ -640,6 +640,70 @@ mod tests {
         assert_eq!(
             decode_scope(json["accessJwt"].as_str().unwrap(), &secret),
             "com.atproto.appPassPrivileged"
+        );
+    }
+
+    #[tokio::test]
+    async fn granted_app_password_login_carries_personal_details_claim() {
+        // ADR-0033: an app password minted with the personal-details grant opens sessions whose
+        // access JWT carries the claim; an ungranted login's token omits it entirely.
+        let state = test_state().await;
+        insert_account_with_password(
+            &state.db,
+            "did:plc:pdets",
+            "pdets.test.example.com",
+            "pdets@example.com",
+            "mainpass",
+        )
+        .await;
+        crate::routes::test_utils::seed_personal_details_app_password(
+            &state.db,
+            "did:plc:pdets",
+            "bsky-app",
+            "pdet-pdet-pdet-pdet",
+        )
+        .await;
+        seed_app_password(
+            &state.db,
+            "did:plc:pdets",
+            "plain",
+            "plyn-plyn-plyn-plyn",
+            false,
+        )
+        .await;
+
+        let router = app(state);
+        let decode_payload = |token: &str| -> serde_json::Value {
+            use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
+            serde_json::from_slice(
+                &URL_SAFE_NO_PAD
+                    .decode(token.split('.').nth(1).unwrap())
+                    .unwrap(),
+            )
+            .unwrap()
+        };
+
+        let response = router
+            .clone()
+            .oneshot(post_create_session("did:plc:pdets", "pdet-pdet-pdet-pdet"))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let json = body_json(response).await;
+        let payload = decode_payload(json["accessJwt"].as_str().unwrap());
+        assert_eq!(payload["scope"], "com.atproto.appPass");
+        assert_eq!(payload["personal_details"], true);
+
+        let response = router
+            .oneshot(post_create_session("did:plc:pdets", "plyn-plyn-plyn-plyn"))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let json = body_json(response).await;
+        let payload = decode_payload(json["accessJwt"].as_str().unwrap());
+        assert!(
+            payload.get("personal_details").is_none(),
+            "an ungranted app-password token must omit the claim"
         );
     }
 

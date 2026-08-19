@@ -1,8 +1,10 @@
 // pattern: Imperative Shell
 //
-// Gathers: AuthenticatedUser (full access required), DB pool, JSON body {name, privileged?}
+// Gathers: AuthenticatedUser (full access required), DB pool,
+//          JSON body {name, privileged?, personalDetails?}
 // Processes: scope gate → validate name → generate + argon2id-hash a secret → store keyed (did, name)
-// Returns: JSON {name, password, createdAt, privileged} — the secret is surfaced once, never again
+// Returns: JSON {name, password, createdAt, privileged, personalDetails} — the secret is
+//          surfaced once, never again
 //
 // Implements: POST /xrpc/com.atproto.server.createAppPassword
 
@@ -29,10 +31,16 @@ const MAX_NAME_LEN: usize = 255;
 const SECRET_CHARSET: &[u8] = b"abcdefghijklmnopqrstuvwxyz234567";
 
 #[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct CreateAppPasswordRequest {
     name: String,
     #[serde(default)]
     privileged: bool,
+    /// Off-lexicon (ADR-0033): grants sessions opened with this app password read/write
+    /// access to the full-access-only preference types (e.g. the birth date). Lexicon
+    /// objects are open, so the validator admits it here and other PDSes ignore it.
+    #[serde(default)]
+    personal_details: bool,
 }
 
 #[derive(Serialize)]
@@ -44,6 +52,9 @@ pub struct CreateAppPasswordResponse {
     password: String,
     created_at: String,
     privileged: bool,
+    /// Off-lexicon echo of the ADR-0033 grant, so a client can tell whether the grant it
+    /// requested actually took (a non-Custos PDS omits the field entirely).
+    personal_details: bool,
 }
 
 /// Generate an app-password secret: 16 random charset characters grouped as `xxxx-xxxx-xxxx-xxxx`
@@ -103,12 +114,16 @@ pub async fn create_app_password(
     let password_hash = hash_password(&password)?;
     let created_at = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
 
+    let grants = crate::db::app_passwords::AppPasswordGrants {
+        privileged: payload.privileged,
+        personal_details: payload.personal_details,
+    };
     match insert_app_password(
         &state.db,
         &user.did,
         &name,
         &password_hash,
-        payload.privileged,
+        grants,
         &created_at,
     )
     .await?
@@ -118,6 +133,7 @@ pub async fn create_app_password(
             password,
             created_at,
             privileged: payload.privileged,
+            personal_details: payload.personal_details,
         })),
         InsertOutcome::DuplicateName => Err(ApiError::new(
             ErrorCode::Conflict,
@@ -208,6 +224,41 @@ mod tests {
         assert_eq!(response.status(), StatusCode::OK);
         let json = body_json(response).await;
         assert_eq!(json["privileged"], true);
+    }
+
+    #[tokio::test]
+    async fn personal_details_grant_is_persisted_and_echoed() {
+        let state = test_state().await;
+        insert_account_with_password(
+            &state.db,
+            "did:plc:pdets",
+            "pdets.test.example.com",
+            "pdets@example.com",
+            "hunter2",
+        )
+        .await;
+        let token = access_jwt(&state.jwt_secret, "did:plc:pdets");
+
+        let response = app(state.clone())
+            .oneshot(post_create(
+                Some(&token),
+                serde_json::json!({"name": "bsky-app", "personalDetails": true}),
+            ))
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let json = body_json(response).await;
+        assert_eq!(json["personalDetails"], true);
+        assert_eq!(json["privileged"], false);
+
+        let stored: (i64, i64) = sqlx::query_as(
+            "SELECT privileged, personal_details FROM app_passwords WHERE did = 'did:plc:pdets'",
+        )
+        .fetch_one(&state.db)
+        .await
+        .unwrap();
+        assert_eq!(stored, (0, 1));
     }
 
     #[tokio::test]

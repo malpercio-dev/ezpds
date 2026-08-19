@@ -21,7 +21,6 @@ use common::{ApiError, ErrorCode};
 
 use crate::app::AppState;
 use crate::auth::extractors::AuthenticatedUser;
-use crate::auth::jwt::AuthScope;
 use crate::db::accounts::{account_lifecycle, AccountLifecycle};
 use crate::db::preferences::{get_preferences, put_preferences};
 use crate::routes::preference_scope::is_full_access_only_pref;
@@ -53,14 +52,16 @@ fn is_app_bsky_namespace(ty: &str) -> bool {
 /// `{ "preferences": [ {…}, … ] }`; a malformed body — not an object, missing the field, a
 /// non-object entry, or an entry whose `$type` is missing or outside the `app.bsky` namespace
 /// — returns 400, as does an app-password caller submitting a full-access-only type (e.g.
-/// `personalDetailsPref`).
+/// `personalDetailsPref`) — unless the app password was minted with the personal-details
+/// grant (ADR-0033), which admits those types like a full session.
 ///
 /// The write is a *scope-limited partial replace*, not a blind overwrite: it deletes only the
 /// preference types the caller's scope is allowed to manage and replaces those with the
 /// request's array, leaving any full-access-only entries the caller can't touch untouched. A
-/// full-access token can manage every type, so for it this is still a full overwrite; an
-/// app-password caller instead layers its write on top of whatever full-access-only
-/// preferences (e.g. `personalDetailsPref`) are already stored, rather than erasing them.
+/// full-access token (or a personal-details-granted app password) can manage every type, so
+/// for it this is still a full overwrite; any other app-password caller instead layers its
+/// write on top of whatever full-access-only preferences (e.g. `personalDetailsPref`) are
+/// already stored, rather than erasing them.
 pub async fn put_preferences_handler(
     user: AuthenticatedUser,
     State(state): State<AppState>,
@@ -72,7 +73,7 @@ pub async fn put_preferences_handler(
             "access token required",
         ));
     }
-    let has_access_full = user.scope == AuthScope::Access;
+    let can_manage_personal_details = user.can_manage_personal_details();
 
     // A valid JWT is not enough: reject tokens for a removed account or one in a moderation
     // state (takedown/suspension), mirroring `getPreferences`. A self-service-deactivated
@@ -113,7 +114,7 @@ pub async fn put_preferences_handler(
                     "preference $type must be in the app.bsky namespace",
                 ));
             }
-            Some(ty) if !has_access_full && is_full_access_only_pref(ty) => {
+            Some(ty) if !can_manage_personal_details && is_full_access_only_pref(ty) => {
                 return Err(ApiError::new(
                     ErrorCode::InvalidRequest,
                     format!("do not have authorization to set preference type {ty}"),
@@ -139,9 +140,9 @@ pub async fn put_preferences_handler(
 
     // Preserve whichever stored entries this caller's scope can't manage — an app-password
     // caller's write must not erase a full-access-only preference (e.g. `personalDetailsPref`)
-    // that a full-access session stored earlier. A full-access caller can manage everything, so
-    // nothing is preserved and this is a full overwrite, matching the previous behavior.
-    let preserved: Vec<Value> = if has_access_full {
+    // that a full-access session stored earlier. A caller that can manage everything (full
+    // access, or the ADR-0033 grant) preserves nothing and this is a full overwrite.
+    let preserved: Vec<Value> = if can_manage_personal_details {
         Vec::new()
     } else {
         match get_preferences(&mut *tx, &user.did).await? {
@@ -687,6 +688,58 @@ mod tests {
             json["preferences"], second,
             "a full-access write must still fully overwrite, including personalDetailsPref"
         );
+    }
+
+    #[tokio::test]
+    async fn granted_app_pass_token_manages_personal_details_like_full_access() {
+        // The ADR-0033 divergence: an app-password token carrying the personal-details claim
+        // can set personalDetailsPref, and its write is a full overwrite (nothing preserved).
+        let state = test_state().await;
+        insert_account(&state.db, "did:plc:granted", "granted@example.com").await;
+        let granted_token = crate::routes::test_utils::personal_details_app_pass_jwt(
+            &state.jwt_secret,
+            "did:plc:granted",
+        );
+        let router = app(state);
+
+        let personal = serde_json::json!(
+            { "$type": "app.bsky.actor.defs#personalDetailsPref", "birthDate": "1990-01-01" }
+        );
+        let response = router
+            .clone()
+            .oneshot(put_request(
+                &granted_token,
+                serde_json::json!({ "preferences": [personal] }),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+
+        // The granted session reads its own write back — the read side of the grant.
+        let response = router
+            .clone()
+            .oneshot(get_request(&granted_token))
+            .await
+            .unwrap();
+        let json = body_json(response).await;
+        assert_eq!(json["preferences"], serde_json::json!([personal]));
+
+        // A later granted write overwrites everything, personalDetailsPref included.
+        let replacement = serde_json::json!([
+            { "$type": "app.bsky.actor.defs#adultContentPref", "enabled": true }
+        ]);
+        let response = router
+            .clone()
+            .oneshot(put_request(
+                &granted_token,
+                serde_json::json!({ "preferences": replacement }),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let response = router.oneshot(get_request(&granted_token)).await.unwrap();
+        let json = body_json(response).await;
+        assert_eq!(json["preferences"], replacement);
     }
 
     #[tokio::test]

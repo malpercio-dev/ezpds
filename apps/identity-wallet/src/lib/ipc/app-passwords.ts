@@ -10,7 +10,9 @@ import type { UnlockReason } from './identity';
 // a scoped, revocable password that opens a `com.atproto.appPass` session. That
 // session can post, like, follow, and browse via the AppView, but can never touch
 // account management, identity/PLC operations, agents, or app passwords themselves.
-// Direct messages (chat) additionally require the `privileged` flag at mint time.
+// Direct messages (chat) additionally require the `privileged` flag at mint time, and
+// the birth date the app's age checks need requires the Custos-only `personalDetails`
+// grant (ADR-0033) — offered only when the host advertises `appPasswordPersonalDetails`.
 
 /** Result of minting an app password. `password` is shown ONCE — never retrievable again. */
 export type AppPasswordCreated = {
@@ -19,6 +21,8 @@ export type AppPasswordCreated = {
   password: string;
   createdAt: string;
   privileged: boolean;
+  /** The Custos personal-details grant (ADR-0033). False when the host ignored the request. */
+  personalDetails: boolean;
 };
 
 /** One existing app password — metadata only, never the secret. */
@@ -26,6 +30,8 @@ export type AppPasswordEntry = {
   name: string;
   createdAt: string;
   privileged: boolean;
+  /** The Custos personal-details grant (ADR-0033); false on hosts that don't support it. */
+  personalDetails: boolean;
 };
 
 /**
@@ -56,15 +62,19 @@ export type AppPasswordsError =
  *
  * The biometric prompt precedes the IPC invocation: minting creates a durable login
  * credential for the account, so cancellation must reach neither Rust nor the network.
- * Set `privileged` only when the credential needs direct-message (chat) access.
+ * Set `privileged` only when the credential needs direct-message (chat) access, and
+ * `personalDetails` only when it needs the birth date / personal-details preferences
+ * (Custos-only, ADR-0033 — a non-Custos host silently ignores it, and the response's
+ * `personalDetails` reports what was actually granted).
  */
 export const createAppPassword = async (
   did: string,
   name: string,
-  privileged: boolean
+  privileged: boolean,
+  personalDetails: boolean
 ): Promise<AppPasswordCreated> => {
   await authenticateBiometric('Create an app password for this identity');
-  return invoke('create_app_password', { did, name, privileged });
+  return invoke('create_app_password', { did, name, privileged, personalDetails });
 };
 
 /** List the identity's app passwords — names, creation times, privilege; never secrets. */

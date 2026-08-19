@@ -562,6 +562,47 @@ pub async fn seed_app_password(
     .unwrap();
 }
 
+/// Like [`seed_app_password`], but the credential also carries the ADR-0033
+/// personal-details grant.
+#[allow(dead_code)]
+pub async fn seed_personal_details_app_password(
+    db: &sqlx::SqlitePool,
+    did: &str,
+    name: &str,
+    password: &str,
+) {
+    seed_app_password(db, did, name, password, false).await;
+    sqlx::query("UPDATE app_passwords SET personal_details = 1 WHERE did = ? AND name = ?")
+        .bind(did)
+        .bind(name)
+        .execute(db)
+        .await
+        .unwrap();
+}
+
+/// Issue an app-password-scoped HS256 access JWT carrying the ADR-0033 personal-details claim.
+#[allow(dead_code)]
+pub(crate) fn personal_details_app_pass_jwt(secret: &[u8; 32], sub: &str) -> String {
+    use jsonwebtoken::{encode, Algorithm, EncodingKey, Header};
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    encode(
+        &Header::new(Algorithm::HS256),
+        &serde_json::json!({
+            "scope": "com.atproto.appPass",
+            "sub": sub,
+            "iat": now,
+            "exp": now + 7200_u64,
+            "personal_details": true,
+        }),
+        &EncodingKey::from_secret(secret),
+    )
+    .unwrap()
+}
+
 /// Deserialise a response body as `serde_json::Value`, consuming the response.
 pub async fn body_json(response: axum::response::Response) -> serde_json::Value {
     let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)

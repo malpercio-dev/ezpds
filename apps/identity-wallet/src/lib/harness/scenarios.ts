@@ -319,11 +319,13 @@ export const scenarios: Record<ScenarioName, () => WalletState> = {
     const state = emptyWalletState();
     state.pdsUrl = DEFAULT_PDS_URL;
     const identity = seedIdentity({ handle: 'alice.harness.pds.local' });
-    // One plain credential and one privileged (chat-capable) one, so the list
-    // screen's privilege badge and per-entry revoke are both reachable.
+    // One plain credential, one privileged (chat-capable), and one carrying the
+    // personal-details grant, so the list screen's badges and per-entry revoke are
+    // all reachable.
     identity.appPasswords = [
       seedAppPassword('Bluesky app'),
       seedAppPassword('Chat client', true),
+      seedAppPassword('Bluesky with age checks', false, true),
     ];
     upsertIdentity(state, identity);
     return state;

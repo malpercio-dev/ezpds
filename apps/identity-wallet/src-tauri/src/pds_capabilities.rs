@@ -62,6 +62,9 @@ pub mod capability {
     pub const OPTIONAL_PASSWORD: &str = "optionalPassword";
     /// `deleteAccount` accepts a device-key-signed proof in place of the account password.
     pub const WALLET_ACCOUNT_DELETE: &str = "walletAccountDelete";
+    /// App passwords can be minted with the personal-details grant (ADR-0033): their
+    /// sessions read/write the full-access-only preferences (e.g. the birth date).
+    pub const APP_PASSWORD_PERSONAL_DETAILS: &str = "appPasswordPersonalDetails";
 }
 
 /// One host's advertised capabilities, as read from its describeServer response.

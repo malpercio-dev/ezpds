@@ -51,9 +51,20 @@ pub struct AuthenticatedUser {
     /// `identity_assertion`. `Some(_)` marks the caller as an agent; ordinary session/OAuth tokens
     /// carry `None`.
     pub registration_id: Option<String>,
+    /// The app-password personal-details grant (ADR-0033), from the token's `personal_details`
+    /// claim. Only ever `true` on an app-password token whose credential was minted with the
+    /// grant; gates ask [`Self::can_manage_personal_details`], never this field directly.
+    pub personal_details: bool,
 }
 
 impl AuthenticatedUser {
+    /// Whether this caller may read and write the full-access-only preference types
+    /// (`routes/preference_scope.rs`): full access always may; an app-password caller only
+    /// with the mint-time personal-details grant (ADR-0033).
+    pub fn can_manage_personal_details(&self) -> bool {
+        self.scope == crate::auth::jwt::AuthScope::Access || self.personal_details
+    }
+
     /// Whether this caller is an auth.md agent (its token carries a `registration_id`).
     pub fn is_agent(&self) -> bool {
         self.registration_id.is_some()
@@ -183,6 +194,7 @@ pub fn authenticate_access(
         scope,
         scope_claim: claims.scope,
         registration_id: claims.registration_id,
+        personal_details: claims.personal_details,
     })
 }
 
@@ -207,6 +219,7 @@ mod tests {
             scope: AuthScope::Access,
             scope_claim: "atproto repo:*?action=create&action=update".to_string(),
             registration_id: registration_id.map(str::to_string),
+            personal_details: false,
         }
     }
 

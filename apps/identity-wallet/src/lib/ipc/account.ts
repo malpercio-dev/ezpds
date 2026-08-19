@@ -288,6 +288,7 @@ export type PdsCapability =
   | 'walletConsent'
   | 'didWebHosting'
   | 'optionalPassword'
+  | 'appPasswordPersonalDetails'
   | (string & {});
 
 /** What a PDS advertises. Every PDS that is not Custos reports no capabilities. */

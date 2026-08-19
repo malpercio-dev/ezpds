@@ -4,10 +4,14 @@
 //! the official Bluesky app (and other password-login clients) into a passwordless
 //! sovereign Custos account. Three Tauri IPC commands:
 //!
-//! - `create_app_password(did, name, privileged) -> AppPasswordCreated` — mints via
-//!   `com.atproto.server.createAppPassword`. The returned secret is surfaced ONCE:
-//!   displayed once, offered for copy, never persisted by the wallet. The biometric
+//! - `create_app_password(did, name, privileged, personalDetails) -> AppPasswordCreated` —
+//!   mints via `com.atproto.server.createAppPassword`. The returned secret is surfaced
+//!   ONCE: displayed once, offered for copy, never persisted by the wallet. The biometric
 //!   gate on minting lives in the frontend wrapper (`$lib/ipc/app-passwords.ts`).
+//!   `personalDetails` is the Custos ADR-0033 grant (read/write the full-access-only
+//!   preferences, e.g. the birth date age checks require); the screen offers it only when
+//!   the host advertises the `appPasswordPersonalDetails` capability, and the response
+//!   echoes what was actually granted.
 //! - `list_app_passwords(did) -> Vec<AppPasswordEntry>` — metadata only, never the
 //!   secret.
 //! - `revoke_app_password(did, name)` — the server deletes the credential and its
@@ -171,9 +175,10 @@ pub async fn create_app_password(
     did: String,
     name: String,
     privileged: bool,
+    personal_details: bool,
 ) -> Result<AppPasswordCreated, AppPasswordsError> {
     let session = full_access_session(state.pds_client(), &did).await?;
-    pds_client::create_app_password(&session.client, &name, privileged)
+    pds_client::create_app_password(&session.client, &name, privileged, personal_details)
         .await
         .map_err(map_pds_error)
 }

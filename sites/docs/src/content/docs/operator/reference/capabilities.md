@@ -17,4 +17,5 @@ Custos advertises these under the `custos` extension object of `com.atproto.serv
 | `optionalPassword` | An account can be created here with no password at all, authenticating thereafter with its device key. | `accounts.password_optional` |
 | `walletAccountDelete` | An account can be permanently deleted with a device-key-signed proof from one of its current rotation keys instead of the account password. | Always offered |
 | `didWebHosting` | Custos serves an opted-in account's did:web document at the account's own domain and propagates edits to relays. | Always offered |
+| `appPasswordPersonalDetails` | An app password can be minted with the personal-details grant, letting its sessions read and set the full-access-only preferences (e.g. the birth date age checks require). | Always offered |
 | `waitlist` | Public interest-signup waitlist: unauthenticated email (+ optional atproto handle) signups a marketing page can post to, readable back by the operator. | `waitlist.enabled` |

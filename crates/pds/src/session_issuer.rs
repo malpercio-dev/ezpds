@@ -3,7 +3,7 @@
 //! Shared legacy-session issuance for password, migration, and sovereign authentication.
 //!
 //! A session's authority is explicit at the call site: full-access sessions carry no app-password
-//! identity, while app-password sessions carry both their name and privilege. The latter is
+//! identity, while app-password sessions carry their name and mint-time grants. The latter are
 //! re-checked on the transaction connection before any credential is persisted, so a concurrent
 //! revocation cannot race a previously verified password into a fresh session. Issuance is one
 //! transaction: the `sessions` row and its initial `refresh_tokens` row commit together or not
@@ -16,6 +16,7 @@ use uuid::Uuid;
 
 use crate::app::AppState;
 use crate::auth::jwt::{app_pass_scope, issue_access_jwt, issue_refresh_jwt, SCOPE_ACCESS};
+use crate::db::app_passwords::AppPasswordGrants;
 
 /// The authority and revocation identity of a legacy ATProto session.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -23,14 +24,26 @@ pub enum SessionKind {
     /// A normal account-owner session with `com.atproto.access` scope.
     FullAccess,
     /// A limited session whose refresh lineage remains tied to a named app password.
-    AppPassword { name: String, privileged: bool },
+    AppPassword {
+        name: String,
+        grants: AppPasswordGrants,
+    },
 }
 
 impl SessionKind {
     fn scope(&self) -> &'static str {
         match self {
             Self::FullAccess => SCOPE_ACCESS,
-            Self::AppPassword { privileged, .. } => app_pass_scope(*privileged),
+            Self::AppPassword { grants, .. } => app_pass_scope(grants.privileged),
+        }
+    }
+
+    /// The personal-details claim (ADR-0033) to embed in the access JWT. Always `false` for a
+    /// full session — full access implies it, and `issue_access_jwt` refuses the combination.
+    fn personal_details(&self) -> bool {
+        match self {
+            Self::FullAccess => false,
+            Self::AppPassword { grants, .. } => grants.personal_details,
         }
     }
 
@@ -89,10 +102,10 @@ pub async fn issue_session_in_transaction(
     did: &str,
     kind: &SessionKind,
 ) -> Result<IssuedSession, ApiError> {
-    if let SessionKind::AppPassword { name, privileged } = kind {
-        let stored_privileged =
-            crate::db::app_passwords::app_password_privileged(&mut **tx, did, name).await?;
-        if stored_privileged != Some(*privileged) {
+    if let SessionKind::AppPassword { name, grants } = kind {
+        let stored_grants =
+            crate::db::app_passwords::app_password_grants(&mut **tx, did, name).await?;
+        if stored_grants != Some(*grants) {
             return Err(ApiError::new(
                 ErrorCode::AuthenticationRequired,
                 "invalid identifier or password",
@@ -133,7 +146,14 @@ pub async fn issue_session_in_transaction(
         .as_deref()
         .unwrap_or(&state.config.public_url);
 
-    let access_jwt = issue_access_jwt(&state.jwt_secret, did, aud, now, kind.scope())?;
+    let access_jwt = issue_access_jwt(
+        &state.jwt_secret,
+        did,
+        aud,
+        now,
+        kind.scope(),
+        kind.personal_details(),
+    )?;
     let refresh_jti = Uuid::new_v4().to_string();
     let refresh_jwt = issue_refresh_jwt(&state.jwt_secret, did, aud, &refresh_jti, now)?;
     let session_id = Uuid::new_v4().to_string();
@@ -258,8 +278,8 @@ mod tests {
         seed_account(&state, did).await;
         sqlx::query(
             "INSERT INTO app_passwords \
-             (did, name, password_hash, privileged, created_at) \
-             VALUES (?, 'cli', 'unused-by-issuer', 1, datetime('now'))",
+             (did, name, password_hash, privileged, personal_details, created_at) \
+             VALUES (?, 'cli', 'unused-by-issuer', 1, 1, datetime('now'))",
         )
         .bind(did)
         .execute(&state.db)
@@ -271,7 +291,10 @@ mod tests {
             did,
             &SessionKind::AppPassword {
                 name: "cli".to_string(),
-                privileged: true,
+                grants: AppPasswordGrants {
+                    privileged: true,
+                    personal_details: true,
+                },
             },
         )
         .await
@@ -280,6 +303,10 @@ mod tests {
         assert_eq!(
             parse_scope(&claims.scope).unwrap(),
             AuthScope::AppPassPrivileged
+        );
+        assert!(
+            claims.personal_details,
+            "the mint-time grant must ride the access JWT"
         );
         assert_eq!(issued.email, None);
         let stored_name: Option<String> =
@@ -292,14 +319,14 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn app_password_session_rejects_caller_privilege_mismatch() {
+    async fn app_password_session_rejects_caller_grants_mismatch() {
         let state = test_state().await;
         let did = "did:plc:app-session-mismatch";
         seed_account(&state, did).await;
         sqlx::query(
             "INSERT INTO app_passwords \
-             (did, name, password_hash, privileged, created_at) \
-             VALUES (?, 'cli', 'unused-by-issuer', 0, datetime('now'))",
+             (did, name, password_hash, privileged, personal_details, created_at) \
+             VALUES (?, 'cli', 'unused-by-issuer', 0, 0, datetime('now'))",
         )
         .bind(did)
         .execute(&state.db)
@@ -311,7 +338,10 @@ mod tests {
             did,
             &SessionKind::AppPassword {
                 name: "cli".to_string(),
-                privileged: true,
+                grants: AppPasswordGrants {
+                    privileged: true,
+                    personal_details: false,
+                },
             },
         )
         .await
