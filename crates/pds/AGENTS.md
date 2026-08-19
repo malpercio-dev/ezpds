@@ -243,7 +243,7 @@ tests, so check it when changing an OAuth response shape — see its README.
 | `landing.rs` | `GET /` — the instance landing page (embedded `assets/landing.html`): config facts, a `_health` status chip, joiner/developer pointers |
 | `create_session.rs` | `POST /xrpc/com.atproto.server.createSession` — password auth with app-password fallback — see module doc |
 | `sovereign_session.rs` | `POST /v1/sessions/sovereign` — passwordless full session from a rotation-key-signed proof; envelope and verification rules in the module doc |
-| `create_app_password.rs` | `POST /xrpc/com.atproto.server.createAppPassword` — mint a named app password; secret returned once, full access required, duplicate name → 409 |
+| `create_app_password.rs` | `POST /xrpc/com.atproto.server.createAppPassword` — mint a named app password; secret returned once, full access required, duplicate name → 409; off-lexicon `personalDetails` grant (ADR-0033) |
 | `list_app_passwords.rs` | `GET /xrpc/com.atproto.server.listAppPasswords` — metadata only, never the secret; full access required |
 | `revoke_app_password.rs` | `POST /xrpc/com.atproto.server.revokeAppPassword` — delete an app password and its sessions atomically (idempotent 200); full access required |
 | `get_session.rs` | `GET /xrpc/com.atproto.server.getSession` |
@@ -310,9 +310,9 @@ tests, so check it when changing an OAuth response shape — see its README.
 | `delete_record.rs` | `POST /xrpc/com.atproto.repo.deleteRecord` |
 | `describe_repo.rs` | `GET /xrpc/com.atproto.repo.describeRepo` |
 | `service_proxy.rs` | `GET/POST /xrpc/{app.bsky,chat.bsky,com.atproto.moderation}.*` — dual-path proxy (namespace defaults / SSRF-guarded header targets); dispatch, munge routing, and the header-forwarding seam are in the module doc |
-| `get_preferences.rs` | `GET /xrpc/app.bsky.actor.getPreferences` — local read, registered ahead of the catch-all; app-password callers never see full-access-only types |
-| `put_preferences.rs` | `POST /xrpc/app.bsky.actor.putPreferences` — local scope-limited write; an app-password write preserves full-access-only entries |
-| `preference_scope.rs` | shared (non-handler): which preference `$type`s are full-access-only, matching the reference PDS |
+| `get_preferences.rs` | `GET /xrpc/app.bsky.actor.getPreferences` — local read, registered ahead of the catch-all; app-password callers never see full-access-only types unless minted with the personal-details grant (ADR-0033) |
+| `put_preferences.rs` | `POST /xrpc/app.bsky.actor.putPreferences` — local scope-limited write; an ungranted app-password write preserves full-access-only entries |
+| `preference_scope.rs` | shared (non-handler): which preference `$type`s are full-access-only, matching the reference PDS; the personal-details grant is the one divergence (ADR-0033) |
 | `resolve_handle.rs` | `GET /xrpc/com.atproto.identity.resolveHandle` |
 | `resolve_identity.rs` | `GET resolveDid` / `GET resolveIdentity` / `POST refreshIdentity` — shared local→network resolution; the refresh `#identity` change-gate is in the module doc |
 | `get_recommended_did_credentials.rs` | `GET /xrpc/com.atproto.identity.getRecommendedDidCredentials` — the PLC-op fields this PDS recommends (ADR-0002) — see module doc |

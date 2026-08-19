@@ -13,11 +13,14 @@
     createAppPassword,
     revokeAppPassword,
     ensureIdentitySession,
+    getPdsCapabilities,
+    hasPdsCapability,
     isCodedError,
     type AppPasswordEntry,
     type AppPasswordCreated,
     type AppPasswordsError,
   } from '$lib/ipc';
+  import { loadIdentityCard } from '$lib/identity-cards';
   import { unlockIdentity, isUnlockCancelled } from '$lib/unlock';
 
   // The app-password surface, reached from the identity screen's Use zone ("Sign in to
@@ -46,8 +49,15 @@
   // Create form.
   let name = $state('');
   let privileged = $state(false);
+  let personalDetails = $state(false);
   let creating = $state(false);
   let createError = $state<string | null>(null);
+
+  // Whether the identity's host supports the personal-details grant (ADR-0033, Custos
+  // capability `appPasswordPersonalDetails`). The checkbox is offered only when it does —
+  // on any other host the request would be silently ignored, and a checkbox that grants
+  // nothing is a lie. Unreachable/unknown hosts degrade to not offering it.
+  let personalDetailsAvailable = $state(false);
 
   // The one-time secret reveal after a successful mint. Dismissing drops the secret
   // for good — it exists nowhere else but the server's hash.
@@ -134,12 +144,12 @@
 
       let result: AppPasswordCreated;
       try {
-        result = await createAppPassword(did, trimmed, privileged);
+        result = await createAppPassword(did, trimmed, privileged, personalDetails);
       } catch (e) {
         // A live token can lapse between the pre-flight and the command. Unlock once and retry.
         if (isCodedError(e) && e.code === 'SESSION_LOCKED') {
           await unlockIdentity(did);
-          result = await createAppPassword(did, trimmed, privileged);
+          result = await createAppPassword(did, trimmed, privileged, personalDetails);
         } else {
           throw e;
         }
@@ -149,10 +159,16 @@
       copyFailed = false;
       passwords = [
         ...passwords,
-        { name: result.name, createdAt: result.createdAt, privileged: result.privileged },
+        {
+          name: result.name,
+          createdAt: result.createdAt,
+          privileged: result.privileged,
+          personalDetails: result.personalDetails,
+        },
       ];
       name = '';
       privileged = false;
+      personalDetails = false;
     } catch (e) {
       console.error('[AppPasswordsScreen] create app password failed:', e);
       createError = messageFor(e);
@@ -211,7 +227,23 @@
     }
   }
 
-  onMount(load);
+  // Best-effort capability probe for the identity's own host. Any failure — no card, no
+  // pdsUrl, unreachable host — leaves the grant unoffered, which is the safe degrade.
+  async function probePersonalDetailsSupport() {
+    try {
+      const card = await loadIdentityCard(did);
+      if (!card.pdsUrl) return;
+      const capabilities = await getPdsCapabilities(card.pdsUrl);
+      personalDetailsAvailable = hasPdsCapability(capabilities, 'appPasswordPersonalDetails');
+    } catch (e) {
+      console.warn('[AppPasswordsScreen] capability probe failed:', e);
+    }
+  }
+
+  onMount(() => {
+    void load();
+    void probePersonalDetailsSupport();
+  });
 </script>
 
 <div class="screen">
@@ -242,6 +274,14 @@
       </span>
       Direct messages stay off unless you allow them below.
     </p>
+    {#if personalDetailsAvailable}
+      <p class="scope-row scope-row--cant">
+        <span class="scope-ic" aria-hidden="true">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="m5.5 5.5 13 13"/></svg>
+        </span>
+        Personal details — like your birth date — stay hidden unless you allow them below.
+      </p>
+    {/if}
   </div>
 
   {#if loading}
@@ -284,6 +324,11 @@
         {#if created.privileged}
           <p class="reveal-priv">This password can also access your direct messages.</p>
         {/if}
+        {#if created.personalDetails}
+          <p class="reveal-priv">
+            This password can also read and set your personal details, like your birth date.
+          </p>
+        {/if}
         <Button variant="secondary" onclick={() => (created = null)}>Done — I saved it</Button>
       </div>
     {:else}
@@ -304,6 +349,19 @@
             </span>
           </span>
         </label>
+        {#if personalDetailsAvailable}
+          <label class="priv">
+            <input type="checkbox" bind:checked={personalDetails} />
+            <span class="priv-body">
+              <span class="priv-t">Allow personal details</span>
+              <span class="priv-s">
+                Lets the app read and set the personal details stored with your account —
+                today that's the birth date the official Bluesky app's age verification
+                requires.
+              </span>
+            </span>
+          </label>
+        {/if}
         <Button onclick={doCreate} disabled={!nameValid || creating}>
           {#if creating}<Spinner size={16} /> Creating…{:else}Create app password{/if}
         </Button>
@@ -329,6 +387,12 @@
                     <span class="badge badge--priv">
                       <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
                       DMs allowed
+                    </span>
+                  {/if}
+                  {#if entry.personalDetails}
+                    <span class="badge badge--priv">
+                      <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="17" rx="2"/><path d="M16 2v4M8 2v4M3 10h18"/></svg>
+                      Personal details allowed
                     </span>
                   {/if}
                 </span>

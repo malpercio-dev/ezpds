@@ -140,24 +140,28 @@ pub async fn refresh_session(
         .unwrap_or(&state.config.public_url)
         .to_string();
 
-    // An app-pass session stays app-pass on refresh; re-derive the privilege from the stored
+    // An app-pass session stays app-pass on refresh; re-derive its grants from the stored
     // app password. A missing row means the app password was revoked out from under the session
     // (defence in depth — revoke also deletes the refresh tokens), so refuse to rotate rather
     // than keep a revoked credential alive.
-    let session_scope = match &app_password_name {
+    let (session_scope, personal_details) = match &app_password_name {
         Some(name) => {
-            let privileged =
-                crate::db::app_passwords::app_password_privileged(&state.db, &did, name)
-                    .await?
-                    .ok_or_else(|| {
-                        ApiError::new(ErrorCode::InvalidToken, "app password revoked")
-                    })?;
-            app_pass_scope(privileged)
+            let grants = crate::db::app_passwords::app_password_grants(&state.db, &did, name)
+                .await?
+                .ok_or_else(|| ApiError::new(ErrorCode::InvalidToken, "app password revoked"))?;
+            (app_pass_scope(grants.privileged), grants.personal_details)
         }
-        None => SCOPE_ACCESS,
+        None => (SCOPE_ACCESS, false),
     };
 
-    let new_access_jwt = issue_access_jwt(&state.jwt_secret, &did, &aud, now, session_scope)?;
+    let new_access_jwt = issue_access_jwt(
+        &state.jwt_secret,
+        &did,
+        &aud,
+        now,
+        session_scope,
+        personal_details,
+    )?;
     let new_refresh_jti = Uuid::new_v4().to_string();
     let new_refresh_jwt = issue_refresh_jwt(&state.jwt_secret, &did, &aud, &new_refresh_jti, now)?;
 

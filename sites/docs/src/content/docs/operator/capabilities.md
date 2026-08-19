@@ -206,6 +206,24 @@ holder's decision. Exit is a DNS repoint away.
 Custos and has no operator switch; whether any given account uses it is that
 account holder's choice.
 
+### `appPasswordPersonalDetails`
+
+An app password can be minted with an opt-in **personal-details grant**
+(`personalDetails` on `createAppPassword`, chosen at mint time like the standard
+`privileged` DM flag). Sessions opened with a granted app password can read and
+set the preference types the reference PDS reserves for full-access sessions —
+today exactly `personalDetailsPref`, the birth date age-assurance checks require.
+
+This is a deliberate divergence from the reference PDS (ADR-0033). A passwordless
+sovereign account has no full-access password login, so an app password is the
+only credential the official Bluesky app can use — and without this grant that
+app cannot get past its mandatory birth-date prompt. Ungranted app passwords
+behave exactly as they do on the reference PDS.
+
+**Controlled by:** always. The grant is a stored property of each credential with
+no operator switch; whether any given app password carries it is the account
+holder's mint-time choice, and it cannot be added to an existing credential.
+
 ### `waitlist`
 
 A public interest-signup waitlist for a pre-launch deployment: an unauthenticated

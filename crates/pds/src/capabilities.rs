@@ -126,6 +126,14 @@ pub const CAPABILITIES: &[Capability] = &[
         enabled: |_| true,
     },
     Capability {
+        name: "appPasswordPersonalDetails",
+        control: CONTROL_ALWAYS,
+        summary: "An app password can be minted with the personal-details grant, letting its sessions read and set the full-access-only preferences (e.g. the birth date age checks require).",
+        // The grant is a stored property of the credential (V063) with no operator switch;
+        // the preference routes honor the resulting token claim unconditionally (ADR-0033).
+        enabled: |_| true,
+    },
+    Capability {
         name: "waitlist",
         control: "waitlist.enabled",
         summary: "Public interest-signup waitlist: unauthenticated email (+ optional atproto handle) signups a marketing page can post to, readable back by the operator.",

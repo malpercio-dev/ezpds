@@ -57,6 +57,10 @@ pub(crate) struct AccessTokenClaims {
     /// revocation and audit attribution.
     #[serde(default)]
     pub registration_id: Option<String>,
+    /// The app-password personal-details grant (ADR-0033) — present (`true`) only on
+    /// app-password tokens whose credential was minted with the grant.
+    #[serde(default)]
+    pub personal_details: bool,
 }
 
 /// `cnf` (confirmation) claim carrying the JWK thumbprint for DPoP binding.
@@ -536,6 +540,10 @@ struct LegacyAccessClaims {
     aud: String,
     iat: u64,
     exp: u64,
+    /// The app-password personal-details grant (ADR-0033). Emitted only when granted, so
+    /// ungranted and full-access tokens keep the pre-V063 claim shape byte-for-byte.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    personal_details: bool,
 }
 
 #[derive(Serialize)]
@@ -554,18 +562,30 @@ struct LegacyRefreshClaims {
 /// the app-pass scope from [`app_pass_scope`] for an app-password session. Any other scope
 /// (e.g. a refresh scope) is rejected here rather than trusted to every call site, so the
 /// "an access token only ever carries an access-level scope" invariant stays centralized.
+///
+/// `personal_details` embeds the app-password personal-details grant (ADR-0033). It is
+/// meaningful only for app-pass scopes — full access already implies it — so setting it on a
+/// [`SCOPE_ACCESS`] token is rejected here for the same centralization reason.
 pub(crate) fn issue_access_jwt(
     secret: &[u8; 32],
     did: &str,
     aud: &str,
     now: u64,
     scope: &str,
+    personal_details: bool,
 ) -> Result<String, ApiError> {
     if scope != SCOPE_ACCESS && scope != app_pass_scope(false) && scope != app_pass_scope(true) {
         tracing::error!(
             scope,
             "attempted to issue an access JWT with a non-access scope"
         );
+        return Err(ApiError::new(
+            ErrorCode::InternalError,
+            "failed to issue token",
+        ));
+    }
+    if personal_details && scope == SCOPE_ACCESS {
+        tracing::error!("attempted to issue a full-access JWT with the personal-details claim");
         return Err(ApiError::new(
             ErrorCode::InternalError,
             "failed to issue token",
@@ -580,6 +600,7 @@ pub(crate) fn issue_access_jwt(
             aud: aud.to_string(),
             iat: now,
             exp: now + ACCESS_TOKEN_TTL_SECS,
+            personal_details,
         },
         &EncodingKey::from_secret(secret),
     )
@@ -924,15 +945,64 @@ mod tests {
         let secret = [0u8; 32];
         for scope in [SCOPE_ACCESS, app_pass_scope(false), app_pass_scope(true)] {
             assert!(
-                issue_access_jwt(&secret, "did:plc:x", "aud", 1_000, scope).is_ok(),
+                issue_access_jwt(&secret, "did:plc:x", "aud", 1_000, scope, false).is_ok(),
                 "access-level scope {scope} must be accepted"
             );
         }
         for scope in ["com.atproto.refresh", "com.atproto.access.bogus", ""] {
             assert!(
-                issue_access_jwt(&secret, "did:plc:x", "aud", 1_000, scope).is_err(),
+                issue_access_jwt(&secret, "did:plc:x", "aud", 1_000, scope, false).is_err(),
                 "non-access scope {scope:?} must be rejected"
             );
         }
+    }
+
+    /// The personal-details claim (ADR-0033) rides only app-pass tokens: it round-trips
+    /// through issuance and verification for both app-pass scopes, is absent from the payload
+    /// when not granted, and cannot be minted onto a full-access token.
+    #[test]
+    fn issue_access_jwt_personal_details_claim_round_trips() {
+        let secret = [7u8; 32];
+        for scope in [app_pass_scope(false), app_pass_scope(true)] {
+            let token = issue_access_jwt(&secret, "did:plc:x", "aud", 1_000, scope, true).unwrap();
+            let payload: serde_json::Value = {
+                use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
+                serde_json::from_slice(
+                    &URL_SAFE_NO_PAD
+                        .decode(token.split('.').nth(1).unwrap())
+                        .unwrap(),
+                )
+                .unwrap()
+            };
+            assert_eq!(payload["personal_details"], true, "scope {scope}");
+        }
+
+        let plain = issue_access_jwt(
+            &secret,
+            "did:plc:x",
+            "aud",
+            1_000,
+            app_pass_scope(false),
+            false,
+        )
+        .unwrap();
+        let payload: serde_json::Value = {
+            use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
+            serde_json::from_slice(
+                &URL_SAFE_NO_PAD
+                    .decode(plain.split('.').nth(1).unwrap())
+                    .unwrap(),
+            )
+            .unwrap()
+        };
+        assert!(
+            payload.get("personal_details").is_none(),
+            "ungranted tokens keep the pre-V063 claim shape"
+        );
+
+        assert!(
+            issue_access_jwt(&secret, "did:plc:x", "aud", 1_000, SCOPE_ACCESS, true).is_err(),
+            "a full-access token must never carry the claim"
+        );
     }
 }

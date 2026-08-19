@@ -1899,6 +1899,11 @@ pub struct AppPasswordCreated {
     pub password: String,
     pub created_at: String,
     pub privileged: bool,
+    /// The Custos personal-details grant (ADR-0033). Defaults to `false` when the field is
+    /// absent — which is exactly what a non-Custos PDS returns, so a requested-but-ignored
+    /// grant reads back honestly as not granted.
+    #[serde(default)]
+    pub personal_details: bool,
 }
 
 /// One app-password entry from `listAppPasswords` — public metadata only, never the secret.
@@ -1908,6 +1913,9 @@ pub struct AppPasswordEntry {
     pub name: String,
     pub created_at: String,
     pub privileged: bool,
+    /// The Custos personal-details grant (ADR-0033); `false` when the host omits the field.
+    #[serde(default)]
+    pub personal_details: bool,
 }
 
 #[derive(Deserialize)]
@@ -1924,11 +1932,16 @@ pub async fn create_app_password(
     client: &crate::oauth_client::OAuthClient,
     name: &str,
     privileged: bool,
+    personal_details: bool,
 ) -> Result<AppPasswordCreated, PdsClientError> {
     let resp = client
         .post(
             "/xrpc/com.atproto.server.createAppPassword",
-            &serde_json::json!({ "name": name, "privileged": privileged }),
+            &serde_json::json!({
+                "name": name,
+                "privileged": privileged,
+                "personalDetails": personal_details,
+            }),
         )
         .await
         .map_err(|e| PdsClientError::NetworkError {
@@ -4705,7 +4718,13 @@ mod tests {
         mock_server.mock(|when, then| {
             when.method(httpmock::Method::POST)
                 .path("/xrpc/com.atproto.server.createAppPassword")
-                .json_body(serde_json::json!({ "name": "Bluesky app", "privileged": false }));
+                .json_body(serde_json::json!({
+                    "name": "Bluesky app",
+                    "privileged": false,
+                    "personalDetails": false
+                }));
+            // The response deliberately omits `personalDetails` — a non-Custos PDS's shape —
+            // so this also pins the serde default of the grant field to false.
             then.status(200).json_body(serde_json::json!({
                 "name": "Bluesky app",
                 "password": expected_password.clone(),
@@ -4714,12 +4733,17 @@ mod tests {
             }));
         });
 
-        let created = create_app_password(&bearer_client_for(&mock_server), "Bluesky app", false)
-            .await
-            .unwrap();
+        let created =
+            create_app_password(&bearer_client_for(&mock_server), "Bluesky app", false, false)
+                .await
+                .unwrap();
         assert_eq!(created.name, "Bluesky app");
         assert_eq!(created.password, expected_password);
         assert!(!created.privileged);
+        assert!(
+            !created.personal_details,
+            "an absent personalDetails field must read back as not granted"
+        );
     }
 
     /// A duplicate name surfaces as XrpcError with the 409 status preserved.
@@ -4736,9 +4760,10 @@ mod tests {
             }));
         });
 
-        let err = create_app_password(&bearer_client_for(&mock_server), "Bluesky app", false)
-            .await
-            .unwrap_err();
+        let err =
+            create_app_password(&bearer_client_for(&mock_server), "Bluesky app", false, false)
+                .await
+                .unwrap_err();
         match err {
             PdsClientError::XrpcError { status: 409, .. } => {}
             e => panic!("Expected XrpcError 409, got: {:?}", e),

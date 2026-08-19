@@ -385,6 +385,7 @@ export function emptyWalletState(): WalletState {
         'walletConsent',
         'walletAccountDelete',
         'didWebHosting',
+        'appPasswordPersonalDetails',
       ],
     },
     appearance: null,
@@ -562,11 +563,16 @@ export function seedAgent(seed: string, did: string): FakeAgent {
 }
 
 /** Build a fake app-password entry (metadata only, mirroring the real list route). */
-export function seedAppPassword(name: string, privileged = false): AppPasswordEntry {
+export function seedAppPassword(
+  name: string,
+  privileged = false,
+  personalDetails = false
+): AppPasswordEntry {
   return {
     name,
     createdAt: '2026-07-15T12:00:00.000Z',
     privileged,
+    personalDetails,
   };
 }
 

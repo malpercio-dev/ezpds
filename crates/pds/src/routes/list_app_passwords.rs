@@ -2,7 +2,7 @@
 //
 // Gathers: AuthenticatedUser (full access required), DB pool
 // Processes: scope gate → read the account's app passwords (public metadata only)
-// Returns: JSON {passwords: [{name, createdAt, privileged}]}; ApiError on failure
+// Returns: JSON {passwords: [{name, createdAt, privileged, personalDetails}]}; ApiError on failure
 //
 // Implements: GET /xrpc/com.atproto.server.listAppPasswords
 
@@ -22,6 +22,8 @@ struct AppPasswordItem {
     name: String,
     created_at: String,
     privileged: bool,
+    /// Off-lexicon (ADR-0033): whether this app password carries the personal-details grant.
+    personal_details: bool,
 }
 
 #[derive(Serialize)]
@@ -53,7 +55,8 @@ pub async fn list_app_passwords_handler(
         .map(|p| AppPasswordItem {
             name: p.name,
             created_at: p.created_at,
-            privileged: p.privileged,
+            privileged: p.grants.privileged,
+            personal_details: p.grants.personal_details,
         })
         .collect();
 

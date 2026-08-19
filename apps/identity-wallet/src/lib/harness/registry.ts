@@ -1272,10 +1272,11 @@ export function buildRegistry(state: WalletState): Registry {
       if (!identity) throw { code: 'IDENTITY_NOT_FOUND', message: 'identity not found' };
       const name = String(args.name ?? '');
       const privileged = Boolean(args.privileged ?? false);
+      const personalDetails = Boolean(args.personalDetails ?? false);
       if (identity.appPasswords.some((p) => p.name === name)) {
         throw { code: 'DUPLICATE_NAME' };
       }
-      const entry = { name, createdAt: '2026-07-15T12:00:00.000Z', privileged };
+      const entry = { name, createdAt: '2026-07-15T12:00:00.000Z', privileged, personalDetails };
       identity.appPasswords.push(entry);
       return { ...entry, password: fakeAppPasswordSecret(name) };
     },
