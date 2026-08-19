@@ -21,7 +21,8 @@ body:json {
   {
     "notificationPublicKey": "did:key:zDnaeoYytsARBq9NiBk1TbJESQcPRy5RPVvdT7FqpjrQtJ5DL",
     "apnsToken": "740f4707bebcf74f9b7c25d48e3358945f6aa01da5ddb387462c7eaf61bb78ad",
-    "apnsTopic": "org.obsign.admincompanion"
+    "apnsTopic": "org.obsign.admincompanion",
+    "ping": false
   }
 }
 
@@ -51,6 +52,9 @@ docs {
     device, shared across every relay it is paired with.
   - `apnsToken` — the APNs device token (hex).
   - `apnsTopic` — the companion app's bundle id.
+  - `ping` (optional, default `false`) — metadata-minimizing ping mode: content-free
+    `content-available: 1` background pushes instead of sealed payloads, as on the account
+    surface. iOS aggressively throttles background pushes, so alert quality suffers.
 
   ## Response (200)
 

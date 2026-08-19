@@ -205,13 +205,16 @@ pub enum NotifyJob {
     /// Forget a handle at the relay. Best effort: a handle we fail to drop expires with the
     /// device token rather than lingering forever.
     DropHandle { handle: String },
-    /// Deliver one sealed payload.
+    /// Deliver one sealed payload — or, for a ping-mode registration, a content-free wake.
     Push {
         owner: RegistrationOwner,
         handle: String,
         kid: i64,
         enc: String,
         ct: String,
+        /// Ping mode: the relay sends a `content-available` background push and the sealed
+        /// fields above are empty — nothing of the notification travels at all.
+        ping: bool,
     },
 }
 
@@ -371,6 +374,7 @@ async fn run_job(
             kid,
             enc,
             ct,
+            ping,
         } => {
             let response = client
                 .call(Request::Push {
@@ -382,7 +386,7 @@ async fn run_job(
                     ct,
                     priority: None,
                     ttl_secs: None,
-                    ping: None,
+                    ping: ping.then_some(true),
                 })
                 .await?;
             match response {

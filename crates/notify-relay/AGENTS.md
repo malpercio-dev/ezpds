@@ -31,7 +31,7 @@ src/
   transport.rs   — iroh endpoint bind + accept loop; one JSON RPC per bidi stream, FIN-delimited, 30 s deadline
   service.rs     — RPC dispatch: the authorization order and the cross-table enrollment transaction
   rate_limit.rs  — in-memory token buckets (registration + per-node push + per-handle push budgets)
-  apns.rs        — the APNs leg: ES256 provider token, envelope assembly, 4 KiB cap, status → outcome
+  apns.rs        — the APNs leg: ES256 provider token, envelope assembly (sealed alert, or the content-free `content-available` body for a `ping: true` push), 4 KiB cap, status → outcome
   db/            — `enrollment_codes`, `enrollments`, `handles`, plus the pool/migration runner
 ```
 

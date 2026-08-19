@@ -19,7 +19,8 @@ body:json {
     "deviceUuid": "8B2F1C4E-6A3D-4F19-9C77-1E5A0D2B7F33",
     "notificationPublicKey": "did:key:zDnaeoYytsARBq9NiBk1TbJESQcPRy5RPVvdT7FqpjrQtJ5DL",
     "apnsToken": "740f4707bebcf74f9b7c25d48e3358945f6aa01da5ddb387462c7eaf61bb78ad",
-    "apnsTopic": "org.obsign.identitywallet"
+    "apnsTopic": "org.obsign.identitywallet",
+    "ping": false
   }
 }
 
@@ -47,6 +48,11 @@ docs {
     this device can open them. Generated on-device; the private half never leaves it.
   - `apnsToken` — the APNs device token (hex), from `didRegisterForRemoteNotifications`.
   - `apnsTopic` — the app's bundle id.
+  - `ping` (optional, default `false`) — metadata-minimizing ping mode. When `true`, this
+    device receives a content-free `content-available: 1` background push instead of a sealed
+    payload: no `ezpds` envelope reaches the relay or Apple at all — they see only that
+    *something* happened — and the app fetches the actual events from its Custos on wake.
+    The trade-off is delivery quality: iOS aggressively throttles background pushes.
 
   Re-registering the same `deviceUuid` replaces the row, so call this on every APNs token
   change without accumulating stale registrations.
