@@ -22,11 +22,24 @@ export function isValidLabel(label: string): boolean {
 }
 
 /**
+ * Strip the leading dot a `describeServer.availableUserDomains` entry may carry.
+ *
+ * Both shapes reach the wallet: the leading-dot form (`.bsky.social`) is the upstream
+ * convention, and Custos serves its operator's configured list verbatim, so a dotted entry
+ * arrives from a first-party server too. A doubled separator is not a cosmetic slip — the
+ * empty label makes the handle structurally invalid, and the server rejects it.
+ */
+export function normalizeDomain(domain: string): string {
+  return domain.replace(/^\.+/, '');
+}
+
+/**
  * Assemble a full handle from the user's label and the PDS domain, e.g.
- * `composeHandle('alice', 'ezpds.com') === 'alice.ezpds.com'`.
+ * `composeHandle('alice', 'ezpds.com') === 'alice.ezpds.com'`. The domain is normalized, so
+ * either shape a server serves composes to the same handle.
  */
 export function composeHandle(label: string, domain: string): string {
-  return `${label.trim()}.${domain}`;
+  return `${label.trim()}.${normalizeDomain(domain)}`;
 }
 
 /**

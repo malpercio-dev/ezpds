@@ -5,7 +5,13 @@
   import Button from '$lib/components/ui/Button.svelte';
   import Spinner from '$lib/components/ui/Spinner.svelte';
   import SealEmblem from '$lib/components/ui/SealEmblem.svelte';
-  import { composeHandle, isValidHandle, isValidLabel, normalizeHandle } from '$lib/handle';
+  import {
+    composeHandle,
+    isValidHandle,
+    isValidLabel,
+    normalizeDomain,
+    normalizeHandle,
+  } from '$lib/handle';
   import {
     getIdentityHandleDomains,
     changeHandle,
@@ -65,16 +71,12 @@
     | { kind: 'failed'; forHandle: string; message: string };
   let dns = $state<DnsState>({ kind: 'idle' });
 
-  // describeServer may return domains with a leading dot (".ezpds.com"); normalize so the
-  // composed handle never gets a doubled separator ("alice..ezpds.com").
-  const cleanDomain = (domain: string) => domain.replace(/^\.+/, '');
-
   let isValid = $derived(
     phase.kind === 'ready' && selectedDomain !== '' && isValidLabel(label)
   );
   let preview = $derived(
     phase.kind === 'ready' && selectedDomain !== ''
-      ? composeHandle(label.trim() || 'your-name', cleanDomain(selectedDomain))
+      ? composeHandle(label.trim() || 'your-name', selectedDomain)
       : ''
   );
 
@@ -86,7 +88,7 @@
     if (phase.kind !== 'ready' || !customValid) return false;
     const dot = normalizedCustom.indexOf('.');
     const domain = normalizedCustom.slice(dot + 1);
-    return phase.domains.some((d) => cleanDomain(d).toLowerCase() === domain);
+    return phase.domains.some((d) => normalizeDomain(d).toLowerCase() === domain);
   });
   // The pre-flight result only counts while the typed handle still matches it.
   let dnsCurrent = $derived(
@@ -182,7 +184,7 @@
     if (phase.kind !== 'ready' || !isValid) return;
     // Preserve the loaded domain list so a failed attempt can rebuild the form.
     const domains = phase.domains;
-    const fullHandle = composeHandle(label, cleanDomain(selectedDomain));
+    const fullHandle = composeHandle(label, selectedDomain);
     phase = { kind: 'working' };
 
     try {
@@ -365,11 +367,11 @@
           <label class="domain-label" for="domain-select">Domain</label>
           <select id="domain-select" class="domain-select" bind:value={selectedDomain}>
             {#each phase.domains as domain}
-              <option value={domain}>.{cleanDomain(domain)}</option>
+              <option value={domain}>.{normalizeDomain(domain)}</option>
             {/each}
           </select>
         {:else}
-          <p class="suffix">Domain: <span class="handle">.{cleanDomain(selectedDomain)}</span></p>
+          <p class="suffix">Domain: <span class="handle">.{normalizeDomain(selectedDomain)}</span></p>
         {/if}
 
         <p class="preview">New handle: <span class="handle">{preview}</span></p>

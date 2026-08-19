@@ -1,5 +1,11 @@
 import { describe, it, expect } from 'vitest';
-import { composeHandle, isValidHandle, isValidLabel, normalizeHandle } from './handle';
+import {
+  composeHandle,
+  isValidHandle,
+  isValidLabel,
+  normalizeDomain,
+  normalizeHandle,
+} from './handle';
 
 describe('handle utils', () => {
   describe('composeHandle', () => {
@@ -13,6 +19,28 @@ describe('handle utils', () => {
 
     it('preserves a multi-label domain', () => {
       expect(composeHandle('bob', 'users.ezpds.com')).toBe('bob.users.ezpds.com');
+    });
+
+    // describeServer may serve either shape; a doubled separator would be an empty DNS
+    // label, which the server rejects as structurally invalid.
+    it('does not double the separator when the domain carries the leading dot', () => {
+      expect(composeHandle('alice', '.ezpds.com')).toBe('alice.ezpds.com');
+      expect(composeHandle('alice', '.bsky.social')).toBe('alice.bsky.social');
+    });
+  });
+
+  describe('normalizeDomain', () => {
+    it('strips a leading dot', () => {
+      expect(normalizeDomain('.ezpds.com')).toBe('ezpds.com');
+    });
+
+    it('leaves a dotless domain alone', () => {
+      expect(normalizeDomain('ezpds.com')).toBe('ezpds.com');
+    });
+
+    it('never strips an interior or trailing dot', () => {
+      expect(normalizeDomain('users.ezpds.com')).toBe('users.ezpds.com');
+      expect(normalizeDomain('.users.ezpds.com')).toBe('users.ezpds.com');
     });
   });
 
