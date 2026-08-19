@@ -3,12 +3,21 @@
 //! The sovereign "change handle" flow for a wallet-custodied did:plc. On a reference
 //! PDS, changing a handle is one call because the PDS custodies the rotation key and
 //! rewrites the PLC doc itself; here the alsoKnownAs op is DEVICE-KEY-SIGNED, like
-//! the migration identity leg. Two Tauri commands:
+//! the migration identity leg. Three Tauri commands:
 //!
 //! - `get_identity_handle_domains(did)` — discovers the DID's HOSTING PDS via
 //!   `discover_pds` and returns its `describeServer.availableUserDomains` (distinct
 //!   from the create flow's `get_available_user_domains`, which targets only the
 //!   configured Custos).
+//! - `check_custom_handle_dns(did, handle)` — read-only pre-flight for a handle on a
+//!   domain the USER owns (not a served domain). The hosting PDS verifies such a handle
+//!   already resolves to the DID (DNS TXT / well-known) before allocating it, so the
+//!   screen shows the exact `_atproto.{handle}` TXT record required and gates the change
+//!   on this check. Two vantages, folded by `dns_check_verdict`: the hosting PDS's
+//!   `resolveHandle` (authoritative — the same chain `updateHandle` consults, and the
+//!   only vantage that sees a local allocation by another account) and the wallet's own
+//!   DNS TXT lookup (best-effort diagnostics — it sees a fresh record before the server
+//!   does, distinguishing "still propagating" from "record missing").
 //! - `change_handle_cmd(did, handle)` — the full passwordless flow (sovereign login +
 //!   the per-DID session provider supply the session; the biometric gate lives in the
 //!   frontend, `$lib/ipc/handle-change.ts`'s `changeHandle`, in front of the
@@ -701,6 +710,91 @@ pub async fn change_handle(
     }
 }
 
+// ── Custom-handle DNS pre-flight ─────────────────────────────────────────────
+
+/// Where a custom-domain handle currently points.
+///
+/// Serializes as a bare SCREAMING_SNAKE_CASE string; the `$lib/ipc` union must match.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum CustomHandleDnsStatus {
+    /// The hosting PDS resolves the handle to this DID — `updateHandle`'s
+    /// resolution gate will pass.
+    Verified,
+    /// The wallet's own DNS lookup finds the record, but the hosting PDS cannot
+    /// resolve it yet — usually DNS propagation still in flight; check again shortly.
+    Propagating,
+    /// The handle currently resolves to a different DID (`found_did`).
+    WrongDid,
+    /// No `_atproto` TXT record (or well-known fallback) found from either vantage.
+    NotFound,
+}
+
+/// Result of `check_custom_handle_dns`. Carries the exact DNS record the domain owner
+/// must publish, so the screen's instructions cannot drift from what is verified.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CustomHandleDnsCheck {
+    pub status: CustomHandleDnsStatus,
+    /// The DID the handle currently resolves to, when it is not this identity's
+    /// (status `WRONG_DID`); `None` otherwise.
+    pub found_did: Option<String>,
+    /// The DNS record name the domain owner must create: `_atproto.{handle}`.
+    pub record_name: String,
+    /// The exact TXT record value: `did={did}`.
+    pub record_value: String,
+}
+
+/// Fold the two resolution vantages into one verdict. The hosting PDS wins whenever it
+/// answers: its resolver is the one `updateHandle` consults, and a local allocation of
+/// the handle by another account on that PDS is visible only from there.
+fn dns_check_verdict(
+    expected_did: &str,
+    pds_answer: Option<&str>,
+    dns_answer: Option<&str>,
+) -> (CustomHandleDnsStatus, Option<String>) {
+    match pds_answer {
+        Some(did) if did == expected_did => (CustomHandleDnsStatus::Verified, None),
+        Some(did) => (CustomHandleDnsStatus::WrongDid, Some(did.to_string())),
+        None => match dns_answer {
+            Some(did) if did == expected_did => (CustomHandleDnsStatus::Propagating, None),
+            Some(did) => (CustomHandleDnsStatus::WrongDid, Some(did.to_string())),
+            None => (CustomHandleDnsStatus::NotFound, None),
+        },
+    }
+}
+
+/// Ask the DID's hosting PDS to resolve `handle` via `com.atproto.identity.resolveHandle`.
+///
+/// `Ok(None)` for any non-success or unparseable answer — "the PDS cannot resolve it" is
+/// one condition to the caller; only a transport failure is an error. Handles are ASCII
+/// alphanumerics, hyphens, and dots — URL-safe with no percent-encoding.
+async fn resolve_handle_via_pds(
+    pds_client: &PdsClient,
+    pds_url: &str,
+    handle: &str,
+) -> Result<Option<String>, HandleChangeError> {
+    #[derive(serde::Deserialize)]
+    struct Resolved {
+        did: String,
+    }
+
+    let url = format!(
+        "{}/xrpc/com.atproto.identity.resolveHandle?handle={}",
+        pds_url.trim_end_matches('/'),
+        handle
+    );
+    let resp = pds_client.client().get(&url).send().await.map_err(|e| {
+        HandleChangeError::NetworkError {
+            message: format!("resolveHandle on hosting PDS failed: {e}"),
+        }
+    })?;
+    if !resp.status().is_success() {
+        return Ok(None);
+    }
+    Ok(resp.json::<Resolved>().await.ok().map(|r| r.did))
+}
+
 // ── Tauri commands ───────────────────────────────────────────────────────────
 
 /// Tauri command: change the handle of a wallet-custodied did:plc identity.
@@ -742,6 +836,42 @@ pub async fn get_identity_handle_domains(
             message: format!("describeServer failed: {e}"),
         })?;
     Ok(description.available_user_domains)
+}
+
+/// Tauri command: read-only DNS pre-flight for a custom-domain handle, run before
+/// `change_handle_cmd` when the new handle is on a domain the user owns rather than a
+/// served domain. Resolves and reports; changes nothing.
+///
+/// The wallet-side DNS leg is best-effort diagnostics: its transport failure must not
+/// fail the check when the authoritative (hosting-PDS) leg already answered.
+#[tauri::command]
+pub async fn check_custom_handle_dns(
+    state: tauri::State<'_, crate::oauth::AppState>,
+    did: String,
+    handle: String,
+) -> Result<CustomHandleDnsCheck, HandleChangeError> {
+    let pds_client = state.pds_client();
+    let handle = handle.trim().trim_start_matches('@').to_ascii_lowercase();
+
+    // Discovery reads plc.directory — preserve its throttle/verdict classification,
+    // like get_identity_handle_domains.
+    let (pds_url, _doc) = pds_client
+        .discover_pds(&did)
+        .await
+        .map_err(|e| map_plc_fetch_error("failed to discover hosting PDS", e))?;
+
+    let pds_answer = resolve_handle_via_pds(pds_client, &pds_url, &handle).await?;
+    let dns_answer = crate::pds_client::try_resolve_dns(&handle)
+        .await
+        .unwrap_or_default();
+
+    let (status, found_did) = dns_check_verdict(&did, pds_answer.as_deref(), dns_answer.as_deref());
+    Ok(CustomHandleDnsCheck {
+        status,
+        found_did,
+        record_name: format!("_atproto.{handle}"),
+        record_value: format!("did={did}"),
+    })
 }
 
 #[cfg(test)]
@@ -1118,6 +1248,84 @@ mod tests {
         assert_eq!(
             json.get("reason").and_then(|v| v.as_str()),
             Some("NO_REFRESH_CHAIN")
+        );
+    }
+
+    // ── Custom-handle DNS pre-flight verdict ───────────────────────────────────
+
+    const OWN_DID: &str = "did:plc:brand";
+    const OTHER_DID: &str = "did:plc:squatter";
+
+    #[test]
+    fn verdict_pds_match_is_verified() {
+        // The wallet-side answer is irrelevant once the PDS resolves correctly (its
+        // resolver is the one updateHandle consults).
+        for dns in [Some(OWN_DID), Some(OTHER_DID), None] {
+            assert_eq!(
+                dns_check_verdict(OWN_DID, Some(OWN_DID), dns),
+                (CustomHandleDnsStatus::Verified, None)
+            );
+        }
+    }
+
+    #[test]
+    fn verdict_pds_mismatch_is_wrong_did() {
+        assert_eq!(
+            dns_check_verdict(OWN_DID, Some(OTHER_DID), Some(OWN_DID)),
+            (CustomHandleDnsStatus::WrongDid, Some(OTHER_DID.to_string()))
+        );
+    }
+
+    #[test]
+    fn verdict_dns_only_match_is_propagating() {
+        assert_eq!(
+            dns_check_verdict(OWN_DID, None, Some(OWN_DID)),
+            (CustomHandleDnsStatus::Propagating, None)
+        );
+    }
+
+    #[test]
+    fn verdict_dns_only_mismatch_is_wrong_did() {
+        assert_eq!(
+            dns_check_verdict(OWN_DID, None, Some(OTHER_DID)),
+            (CustomHandleDnsStatus::WrongDid, Some(OTHER_DID.to_string()))
+        );
+    }
+
+    #[test]
+    fn verdict_no_answer_anywhere_is_not_found() {
+        assert_eq!(
+            dns_check_verdict(OWN_DID, None, None),
+            (CustomHandleDnsStatus::NotFound, None)
+        );
+    }
+
+    /// The check result crosses the IPC wire: status as a bare SCREAMING_SNAKE_CASE
+    /// string, fields camelCase — the `$lib/ipc` type must match exactly.
+    #[test]
+    fn dns_check_serializes_to_wire_contract() {
+        let json = serde_json::to_value(CustomHandleDnsCheck {
+            status: CustomHandleDnsStatus::WrongDid,
+            found_did: Some(OTHER_DID.to_string()),
+            record_name: "_atproto.obsign.org".to_string(),
+            record_value: format!("did={OWN_DID}"),
+        })
+        .expect("serialize");
+        assert_eq!(
+            json.get("status").and_then(|v| v.as_str()),
+            Some("WRONG_DID")
+        );
+        assert_eq!(
+            json.get("foundDid").and_then(|v| v.as_str()),
+            Some(OTHER_DID)
+        );
+        assert_eq!(
+            json.get("recordName").and_then(|v| v.as_str()),
+            Some("_atproto.obsign.org")
+        );
+        assert_eq!(
+            json.get("recordValue").and_then(|v| v.as_str()),
+            Some("did=did:plc:brand")
         );
     }
 }

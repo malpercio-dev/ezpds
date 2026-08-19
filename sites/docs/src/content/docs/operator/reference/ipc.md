@@ -25,6 +25,7 @@ Source: `apps/identity-wallet/src/lib/ipc/`
 | `build_repo_key_rotation_cmd` | App command |
 | `build_self_held_kit_cmd` | App command |
 | `change_handle_cmd` | App command |
+| `check_custom_handle_dns` | App command |
 | `check_handle_resolution` | App command |
 | `check_identity_status` | App command |
 | `clear_notification_failures` | App command |

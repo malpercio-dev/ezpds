@@ -34,6 +34,7 @@ import type {
   PendingEpilogue,
   RemovalOutcome,
   SignedMigrationOp,
+  CustomHandleDnsCheck,
   MigrationPathDecision,
   PreparedMigration,
   AccountStatus,
@@ -205,6 +206,7 @@ export type CommandName =
   // handle-change.ts
   | 'get_identity_handle_domains'
   | 'change_handle_cmd'
+  | 'check_custom_handle_dns'
   // endpoint-repair.ts
   | 'repair_hosting_endpoint'
   // rotation.ts
@@ -978,6 +980,28 @@ export function buildRegistry(state: WalletState): Registry {
       const identity = findIdentity(state, didArg(args));
       if (identity) identity.handle = String(args.handle ?? identity.handle);
       return identity ? claimResult(identity) : { updatedDidDoc: {} };
+    },
+    // Deterministic scriptable outcomes, keyed by the typed handle so every state is
+    // reachable from the UI without console scripting: a handle under `missing.` /
+    // `propagating.` simulates that verdict, a handle another fake identity holds
+    // reports WRONG_DID, anything else verifies. (`failNext` still injects the error
+    // paths, e.g. NETWORK_ERROR.)
+    check_custom_handle_dns: (args): CustomHandleDnsCheck => {
+      const did = didArg(args);
+      const handle = String(args.handle ?? '')
+        .trim()
+        .replace(/^@/, '')
+        .toLowerCase();
+      const base = {
+        foundDid: null,
+        recordName: `_atproto.${handle}`,
+        recordValue: `did=${did}`,
+      };
+      if (handle.startsWith('missing.')) return { status: 'NOT_FOUND', ...base };
+      if (handle.startsWith('propagating.')) return { status: 'PROPAGATING', ...base };
+      const other = state.identities.find((i) => i.handle === handle && i.did !== did);
+      if (other) return { status: 'WRONG_DID', ...base, foundDid: other.did };
+      return { status: 'VERIFIED', ...base };
     },
 
     // ── repair hosting endpoint ──────────────────────────────────────────────

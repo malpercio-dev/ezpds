@@ -1700,7 +1700,10 @@ pub fn rotation_keys_from_audit_log(raw_json: &str) -> Vec<String> {
 
 /// DNS TXT lookup for `_atproto.{handle}`. Returns `Ok(Some(did))` on success,
 /// `Ok(None)` if no matching TXT record found, `Err` on transport failure.
-async fn try_resolve_dns(handle: &str) -> Result<Option<String>, PdsClientError> {
+///
+/// `pub(crate)` for the change-handle DNS pre-flight, which reports this wallet-side
+/// vantage separately from the hosting PDS's resolution.
+pub(crate) async fn try_resolve_dns(handle: &str) -> Result<Option<String>, PdsClientError> {
     let dns_name = format!("_atproto.{}", handle);
     tracing::debug!(dns_name = %dns_name, "attempting DNS TXT lookup");
 

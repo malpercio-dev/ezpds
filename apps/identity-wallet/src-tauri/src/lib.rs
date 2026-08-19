@@ -1886,6 +1886,7 @@ pub fn run() {
             password_unlock::unlock_identity_with_password,
             handle_change::change_handle_cmd,
             handle_change::get_identity_handle_domains,
+            handle_change::check_custom_handle_dns,
             endpoint_repair::repair_hosting_endpoint,
             share_recovery::start_share_recovery,
             share_recovery::add_recovery_share,

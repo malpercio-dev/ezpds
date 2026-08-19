@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { composeHandle, isValidLabel } from './handle';
+import { composeHandle, isValidHandle, isValidLabel, normalizeHandle } from './handle';
 
 describe('handle utils', () => {
   describe('composeHandle', () => {
@@ -49,6 +49,58 @@ describe('handle utils', () => {
     it('enforces the RFC 1035 63-character label limit', () => {
       expect(isValidLabel('a'.repeat(63))).toBe(true);
       expect(isValidLabel('a'.repeat(64))).toBe(false);
+    });
+  });
+
+  describe('isValidHandle', () => {
+    it('accepts a two-label handle and an apex domain', () => {
+      expect(isValidHandle('alice.example.com')).toBe(true);
+      expect(isValidHandle('example.com')).toBe(true);
+      expect(isValidHandle('obsign.org')).toBe(true);
+    });
+
+    it('tolerates surrounding whitespace and a leading @', () => {
+      expect(isValidHandle('  alice.example.com  ')).toBe(true);
+      expect(isValidHandle('@obsign.org')).toBe(true);
+    });
+
+    it('rejects a bare single label (the handle.invalid bug)', () => {
+      expect(isValidHandle('alice')).toBe(false);
+    });
+
+    it('rejects empty and interior-whitespace input', () => {
+      expect(isValidHandle('')).toBe(false);
+      expect(isValidHandle('ali ce.example.com')).toBe(false);
+    });
+
+    it('rejects empty labels', () => {
+      expect(isValidHandle('.example.com')).toBe(false);
+      expect(isValidHandle('alice..com')).toBe(false);
+      expect(isValidHandle('alice.')).toBe(false);
+    });
+
+    it('rejects invalid label characters and hyphen placement', () => {
+      expect(isValidHandle('ali_ce.example.com')).toBe(false);
+      expect(isValidHandle('-alice.example.com')).toBe(false);
+      expect(isValidHandle('alice-.example.com')).toBe(false);
+    });
+
+    it('rejects a final label starting with a digit (never IPv4-shaped)', () => {
+      expect(isValidHandle('alice.123')).toBe(false);
+      expect(isValidHandle('123.example.com')).toBe(true);
+    });
+
+    it('enforces the 253-character total limit', () => {
+      const label63 = 'a'.repeat(63);
+      // 63*4 + 3 dots = 255 chars: every label valid, total too long.
+      expect(isValidHandle([label63, label63, label63, label63].join('.'))).toBe(false);
+    });
+  });
+
+  describe('normalizeHandle', () => {
+    it('trims, strips a leading @, and lowercases', () => {
+      expect(normalizeHandle('  @Obsign.ORG ')).toBe('obsign.org');
+      expect(normalizeHandle('alice.example.com')).toBe('alice.example.com');
     });
   });
 });
