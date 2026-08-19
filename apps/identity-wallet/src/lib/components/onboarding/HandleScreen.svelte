@@ -4,7 +4,7 @@
   import TextField from '$lib/components/ui/TextField.svelte';
   import Button from '$lib/components/ui/Button.svelte';
   import Spinner from '$lib/components/ui/Spinner.svelte';
-  import { getAvailableUserDomains } from '$lib/ipc';
+  import { getAvailableUserDomains, isCodedError, type AvailableDomainsError } from '$lib/ipc';
   import { composeHandle, isValidLabel } from '$lib/handle';
 
   let {
@@ -26,7 +26,24 @@
     | { kind: 'loading' }
     | { kind: 'ready'; domain: string }
     | { kind: 'none' }
-    | { kind: 'error' };
+    | { kind: 'error'; code: string };
+
+  // Each failure implies a different next step, so the screen keys on the rejection's `code` and
+  // writes its own sentence; `message` never reaches the user (ADR-0031). Exhaustive over the wire
+  // codes, so adding one to the Rust enum without copy for it fails the type check.
+  const DOMAIN_ERROR_COPY: Record<AvailableDomainsError['code'], string> = {
+    NETWORK_ERROR: 'Couldn’t reach the server. Check your connection and try again.',
+    SERVER_ERROR: 'The server ran into a problem answering. Try again in a moment.',
+    INVALID_RESPONSE:
+      'That address answered, but not the way a server should. Check the address you entered.',
+  };
+
+  function domainErrorCopy(code: string): string {
+    return (
+      DOMAIN_ERROR_COPY[code as AvailableDomainsError['code']] ??
+      'Couldn’t load handle domains. Please try again.'
+    );
+  }
 
   let domains = $state<DomainState>({ kind: 'loading' });
   // The leftmost label the user types; the domain suffix is supplied by the PDS.
@@ -54,7 +71,7 @@
       }
     } catch (e) {
       console.error('[HandleScreen] failed to load user domains:', e);
-      domains = { kind: 'error' };
+      domains = { kind: 'error', code: isCodedError(e) ? e.code : 'UNKNOWN' };
     }
   }
 
@@ -75,7 +92,7 @@
   {#if domains.kind === 'loading'}
     <Spinner size={28} label="Loading available handle domains" />
   {:else if domains.kind === 'error'}
-    <p class="status">Couldn’t reach the server to load handle domains.</p>
+    <p class="status">{domainErrorCopy(domains.code)}</p>
     <Button onclick={loadDomains}>Try again</Button>
   {:else if domains.kind === 'none'}
     <p class="status">This server has no handle domains configured. Please contact your operator.</p>
