@@ -4,7 +4,8 @@ import { parseConsentQr } from './consent-qr';
 describe('parseConsentQr', () => {
   const REQ = 'poauth_abcDEF012_-xyz98765';
 
-  it('extracts request_id from the full private-use URI', () => {
+  it('extracts request_id from the full private-use URI, current and legacy scheme alike', () => {
+    expect(parseConsentQr(`obsign:/consent?request_id=${REQ}`)).toBe(REQ);
     expect(parseConsentQr(`org.obsign.identitywallet:/consent?request_id=${REQ}`)).toBe(REQ);
   });
 

@@ -124,10 +124,13 @@ pub(super) struct WalletConsentPath<'a> {
     pub match_code: Option<&'a str>,
 }
 
-/// Custom URL scheme the identity wallet registers; the "Open in Obsign" handoff link targets it.
-/// The wallet has no deep-link handler yet (ADR-0006 removed server-initiated redirects), so this
-/// link may degrade to "copy the code" — the typed `user_code` is the guaranteed path.
-const WALLET_HANDOFF_SCHEME: &str = "org.obsign.identitywallet";
+/// Custom URL scheme the identity wallet registers for the consent handoff; the QR and the
+/// "Open in Obsign" link target it. Deliberately the product name rather than the wallet's
+/// reverse-FQDN OAuth-callback scheme: the iOS Camera app's chip displays the raw scheme
+/// string ("Open in obsign"), so the scheme is the user-facing label. The wallet's handoff
+/// parser accepts this and the old `org.obsign.identitywallet` spelling; the typed
+/// `user_code` remains the guaranteed path for wallets that predate either.
+const WALLET_HANDOFF_SCHEME: &str = "obsign";
 
 /// Render the OAuth consent + sign-in page.
 ///
@@ -1019,21 +1022,18 @@ mod tests {
     #[test]
     fn wallet_handoff_uri_encodes_request_id_and_origin() {
         let uri = wallet_handoff_uri("poauth_xyz", Some("https://app.example.com"));
-        assert!(uri.starts_with("org.obsign.identitywallet:/consent?request_id=poauth_xyz"));
+        assert!(uri.starts_with("obsign:/consent?request_id=poauth_xyz"));
         assert!(uri.contains("&origin=https%3A%2F%2Fapp.example.com"));
         // Origin is optional — a request created without an Origin/Referer header omits it.
         let bare = wallet_handoff_uri("poauth_xyz", None);
-        assert_eq!(
-            bare,
-            "org.obsign.identitywallet:/consent?request_id=poauth_xyz"
-        );
+        assert_eq!(bare, "obsign:/consent?request_id=poauth_xyz");
     }
 
     /// The QR renderer produces a self-contained SVG that scans dark-on-white regardless of page
     /// theme, and reports `None` only when the data cannot fit in a QR at all.
     #[test]
     fn render_qr_svg_produces_a_self_contained_svg() {
-        let svg = render_qr_svg("org.obsign.identitywallet:/consent?request_id=poauth_abc")
+        let svg = render_qr_svg("obsign:/consent?request_id=poauth_abc")
             .expect("a short payload always fits in a QR");
         assert!(svg.starts_with("<svg"));
         assert!(svg.contains("viewBox="));

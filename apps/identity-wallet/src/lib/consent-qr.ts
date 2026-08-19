@@ -14,8 +14,10 @@
  * Returns the `request_id` string, or `null` if the text is not a well-formed consent payload (the
  * caller then keeps the typed-code entry — the guaranteed fallback).
  */
-/** The wallet's private-use scheme the consent page encodes the handoff URI under. */
-const WALLET_HANDOFF_PROTOCOL = 'org.obsign.identitywallet:';
+/** The handoff schemes the consent page encodes the URI under: `obsign:` today (the product
+ *  name — the iOS Camera chip displays the raw scheme string, so the scheme is the label),
+ *  plus the old reverse-FQDN spelling from not-yet-updated Custos instances. */
+const WALLET_HANDOFF_PROTOCOLS = ['obsign:', 'org.obsign.identitywallet:'];
 /** The single path the handoff URI targets. */
 const WALLET_HANDOFF_PATH = '/consent';
 
@@ -30,7 +32,7 @@ export function parseConsentQr(text: string): string | null {
     // URL that merely carries a `request_id` param (e.g. an attacker's `https://…?request_id=…`) is
     // not a consent payload, so gate on both the scheme and the path before reading the id.
     const url = new URL(trimmed);
-    if (url.protocol === WALLET_HANDOFF_PROTOCOL && url.pathname === WALLET_HANDOFF_PATH) {
+    if (WALLET_HANDOFF_PROTOCOLS.includes(url.protocol) && url.pathname === WALLET_HANDOFF_PATH) {
       requestId = url.searchParams.get('request_id');
     }
   } catch {
