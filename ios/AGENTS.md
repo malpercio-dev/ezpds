@@ -1,6 +1,6 @@
 # Shared iOS Swift sources
 
-Last verified: 2026-07-29
+Last verified: 2026-08-19
 
 ## Purpose
 
@@ -47,7 +47,7 @@ instantiates via `NSExtensionPrincipalClass` when a push carries `mutable-conten
 
 | File | What it holds |
 |---|---|
-| `NotificationService.swift` | The `UNNotificationServiceExtension` shell, plus `NotifyResolver` — the pure failure ladder every branch of which is a banner someone reads |
+| `NotificationService.swift` | The `UNNotificationServiceExtension` shell, plus `NotifyResolver` — the pure failure ladder every branch of which is a banner someone reads — and `NotifyTimeout`, the pure timeout-path decision split out for the same testability reason (the sealed block's presence, not the title, is the "resolution was cut short" signal), so a timed-out push records its breadcrumb instead of leaving Settings reporting a clean bill of health under a "couldn't verify" banner |
 | `NotifyCrypto.swift` | CryptoKit `HPKE.Recipient` in auth mode, suite/`info`/`aad` pinned to `crates/crypto/src/hpke.rs` |
 | `NotifyEnvelope.swift` | Envelope + payload parsing, base64url, `did:key` → SEC1, base58 |
 | `NotifyKeychain.swift` | The shared-Keychain reads, and the pin document's shape |
