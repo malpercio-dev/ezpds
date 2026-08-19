@@ -4733,10 +4733,14 @@ mod tests {
             }));
         });
 
-        let created =
-            create_app_password(&bearer_client_for(&mock_server), "Bluesky app", false, false)
-                .await
-                .unwrap();
+        let created = create_app_password(
+            &bearer_client_for(&mock_server),
+            "Bluesky app",
+            false,
+            false,
+        )
+        .await
+        .unwrap();
         assert_eq!(created.name, "Bluesky app");
         assert_eq!(created.password, expected_password);
         assert!(!created.privileged);
@@ -4760,10 +4764,14 @@ mod tests {
             }));
         });
 
-        let err =
-            create_app_password(&bearer_client_for(&mock_server), "Bluesky app", false, false)
-                .await
-                .unwrap_err();
+        let err = create_app_password(
+            &bearer_client_for(&mock_server),
+            "Bluesky app",
+            false,
+            false,
+        )
+        .await
+        .unwrap_err();
         match err {
             PdsClientError::XrpcError { status: 409, .. } => {}
             e => panic!("Expected XrpcError 409, got: {:?}", e),
