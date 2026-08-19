@@ -1898,8 +1898,25 @@ pub fn run() {
             share_recovery::get_pending_recovery_epilogue,
             share_recovery::confirm_recovery_backup,
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while running tauri application")
+        .run(|app, event| {
+            // The Camera-app half of the consent QR. tao runs the UIScene lifecycle on iOS,
+            // so a URL opened from outside the app arrives as `scene:openURLContexts:` and
+            // surfaces here as `RunEvent::Opened` — never through an application-delegate
+            // `openURL` method (adding one is dead code under scenes). Routed through the
+            // same pending-route slot + event a tapped notification uses, so cold-start
+            // drain and warm-foreground listener both already handle it.
+            if let tauri::RunEvent::Opened { urls } = event {
+                use tauri::Emitter;
+                for url in urls {
+                    if let Some(route) = notification_routes::route_from_handoff_url(url.as_str()) {
+                        notification_routes::store_pending_route(route.clone());
+                        let _ = app.emit("notification_route", route);
+                    }
+                }
+            }
+        });
 }
 
 #[cfg(test)]
