@@ -67,10 +67,11 @@ pub fn store_pending_route(route: PendingNotificationRoute) {
     *slot().lock().unwrap_or_else(|e| e.into_inner()) = Some(route);
 }
 
-/// The custom scheme iOS launches the wallet on. One spelling shared by `Info.ios.plist`'s
-/// `CFBundleURLSchemes` and the server's consent-page handoff QR — the same string the Custos
-/// consent page renders into `org.obsign.identitywallet:/consent?request_id=…`.
-const HANDOFF_SCHEME: &str = "org.obsign.identitywallet";
+/// The custom schemes iOS launches the wallet on for a consent handoff, both registered in
+/// `Info.ios.plist`. `obsign` is what the Custos consent page emits today — the product name,
+/// because the iOS Camera chip displays the raw scheme string ("Open in obsign"). The old
+/// reverse-FQDN spelling stays accepted for QR codes from not-yet-updated Custos instances.
+const HANDOFF_SCHEMES: [&str; 2] = ["obsign", "org.obsign.identitywallet"];
 
 /// Parse a wallet handoff URL into a route, or `None` for any URL this module does not own.
 ///
@@ -89,7 +90,10 @@ const HANDOFF_SCHEME: &str = "org.obsign.identitywallet";
 /// normalizes an authority slot into the URL) are accepted; they are the same instruction.
 pub fn route_from_handoff_url(raw: &str) -> Option<PendingNotificationRoute> {
     let url = url::Url::parse(raw.trim()).ok()?;
-    if !url.scheme().eq_ignore_ascii_case(HANDOFF_SCHEME) {
+    if !HANDOFF_SCHEMES
+        .iter()
+        .any(|scheme| url.scheme().eq_ignore_ascii_case(scheme))
+    {
         return None;
     }
     let names_consent = |segment: Option<&str>| segment == Some("consent");
@@ -189,27 +193,28 @@ mod tests {
     // ── the Camera-app handoff URL ──
 
     /// The exact string the Custos consent page renders into its QR
-    /// (`oauth_templates::wallet_handoff_uri`), origin rider included.
+    /// (`oauth_templates::wallet_handoff_uri`), origin rider included — and the old
+    /// reverse-FQDN spelling still emitted by not-yet-updated Custos instances.
     #[test]
     fn the_servers_handoff_url_routes_to_the_consent_request() {
-        let route = route_from_handoff_url(
-            "org.obsign.identitywallet:/consent?request_id=poauth_abc123&origin=https%3A%2F%2Fapp.example.com",
-        )
-        .unwrap();
-        assert_eq!(route.kind, "login-approval");
-        assert_eq!(route.request_id.as_deref(), Some("poauth_abc123"));
-        assert_eq!(
-            route.did, None,
-            "the QR names a request, not an identity — resolution is the frontend's job"
-        );
+        for scheme in ["obsign", "org.obsign.identitywallet"] {
+            let route = route_from_handoff_url(&format!(
+                "{scheme}:/consent?request_id=poauth_abc123&origin=https%3A%2F%2Fapp.example.com",
+            ))
+            .unwrap();
+            assert_eq!(route.kind, "login-approval");
+            assert_eq!(route.request_id.as_deref(), Some("poauth_abc123"));
+            assert_eq!(
+                route.did, None,
+                "the QR names a request, not an identity — resolution is the frontend's job"
+            );
+        }
     }
 
     /// A scanner that rewrites `scheme:/x` into `scheme://x` has not changed the instruction.
     #[test]
     fn an_authority_spelled_consent_url_routes_identically() {
-        let route =
-            route_from_handoff_url("org.obsign.identitywallet://consent?request_id=poauth_abc")
-                .unwrap();
+        let route = route_from_handoff_url("obsign://consent?request_id=poauth_abc").unwrap();
         assert_eq!(route.request_id.as_deref(), Some("poauth_abc"));
     }
 
@@ -236,10 +241,7 @@ mod tests {
     /// The request id round-trips percent-decoding, since the server percent-encodes it.
     #[test]
     fn the_request_id_is_percent_decoded() {
-        let route = route_from_handoff_url(
-            "org.obsign.identitywallet:/consent?request_id=poauth_a%2Db%5Fc",
-        )
-        .unwrap();
+        let route = route_from_handoff_url("obsign:/consent?request_id=poauth_a%2Db%5Fc").unwrap();
         assert_eq!(route.request_id.as_deref(), Some("poauth_a-b_c"));
     }
 }

@@ -53,6 +53,24 @@
         <string>dev.malpercio.identitywallet</string>
       </array>
     </dict>
+    <!--
+      The consent-handoff scheme (the QR on the Custos consent page, and its "Open in
+      Obsign" link). Deliberately the product name, not a reverse-FQDN: the iOS Camera
+      app's chip displays the raw scheme string ("Open in obsign"), so the scheme IS the
+      user-facing label. Kept separate from the OAuth callback scheme above, whose
+      reverse-FQDN spelling the atproto OAuth spec pins to the client_id host and which
+      cannot be renamed. Consumed by tao's scene delegate → RunEvent::Opened → the
+      handoff parser in notification_routes.rs, which also still accepts the old
+      org.obsign.identitywallet:/consent spelling from not-yet-updated Custos instances.
+    -->
+    <dict>
+      <key>CFBundleURLName</key>
+      <string>obsign</string>
+      <key>CFBundleURLSchemes</key>
+      <array>
+        <string>obsign</string>
+      </array>
+    </dict>
   </array>
 
   <!--
