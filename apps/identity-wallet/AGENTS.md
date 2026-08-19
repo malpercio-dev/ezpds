@@ -74,7 +74,9 @@ screen and reproduce any state without a Mac/Xcode/simulator. Design + ACs:
   - `src/lib/unlock.ts` — `unlockIdentity`, the one sovereign-vs-password unlock gate; inverted-dialog design, `UNLOCK_CANCELLED` is a decision not a fault
   - `src/lib/biometric.ts` — `authenticateBiometric`, the fail-closed user-presence gate before irreversible signing
   - `src/lib/notification-health.ts` — folds NSE failure breadcrumbs into one Settings sentence; two-level severity rules
+  - `src/lib/notification-registration.ts` — session-scoped newest-wins ledger of each identity's last push-registration outcome, rendered per identity in Settings; the `SESSION_LOCKED` entry names its own fix, and `unlockIdentity` re-fires the registration
   - `src/lib/consent-qr.ts` — pure `parseConsentQr`; ignores the QR's origin (the server re-verifies by `request_id`)
+  - `src/lib/consent-route.ts` — which managed identity answers a consent request that arrived with no identity attached (Camera-app QR); unauthenticated-preview probe over the `request_id`, refuses to guess a `login_hint`-bound account rather than open the wrong one
   - `src/lib/claim-errors.ts` — shared RATE_LIMITED / SERVER_ERROR message formatting
 
 **Guarantees:** SSR is disabled globally (`ssr = false` in `src/routes/+layout.ts`) — the
