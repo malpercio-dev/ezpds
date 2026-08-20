@@ -219,6 +219,7 @@ by that validator**, not optional — omitting them breaks client discovery:
     "blob:*/*",
     "account:*",
     "identity:*",
+    "space:*",
     "include:*"
   ],
   "response_types_supported": ["code"],
@@ -288,8 +289,9 @@ into the endpoint/`agent_auth` URLs. Notes on the fields the March draft omitted
   (`jwt-bearer` service-assertion exchange and the machine-pollable `claim`
   grant); see the `oauth_token/` and `agent_*` route docs.
 - `scopes_supported` is `auth/oauth_scopes::supported_scopes()`: the four
-  fixed/transition scopes **plus** a six-entry resource-prefix *summary*
-  (`repo:*`, `rpc:*`, `blob:*/*`, `account:*`, `identity:*`, `include:*`).
+  fixed/transition scopes **plus** a seven-entry resource-prefix *summary*
+  (`repo:*`, `rpc:*`, `blob:*/*`, `account:*`, `identity:*`, `space:*`,
+  `include:*`).
   Each prefix accepts further positional/query parameters per the granular
   atproto scope grammar, so the grantable space is unbounded — the metadata
   summarizes it by prefix rather than enumerating every concrete value.

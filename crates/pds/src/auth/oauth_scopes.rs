@@ -5,10 +5,13 @@
 //!
 //! This is the *functional core* of the granular-scope work: it parses,
 //! validates, and canonically normalizes the scope grammar
-//! `resource[:positional][?param=value...]` across the five resource types
-//! (`repo`, `rpc`, `blob`, `account`, `identity`), the permission-set reference
-//! (`include:`), and the fixed scopes (`atproto`, `transition:generic`,
+//! `resource[:positional][?param=value...]` across the six resource types
+//! (`repo`, `rpc`, `blob`, `account`, `identity`, `space`), the permission-set
+//! reference (`include:`), and the fixed scopes (`atproto`, `transition:generic`,
 //! `transition:email`, `transition:chat.bsky`).
+//!
+//! `space:` comes from Atproto Spaces (proposal 0016) rather than 0011, and is ported
+//! from that branch's `SpacePermission` for the same round-tripping reason.
 //!
 //! The grammar and canonical forms are ported from the reference implementation
 //! (`@atproto/oauth-scopes`), so a scope string minted by a real atproto client
@@ -37,16 +40,30 @@ const ACCOUNT_ATTRS: [&str; 3] = ["email", "repo", "status"];
 const ACCOUNT_ACTIONS: [&str; 2] = ["read", "manage"];
 const IDENTITY_ATTRS: [&str; 2] = ["handle", "*"];
 
+/// Every `space:` `action=` value, in the canonical order a normalized token emits them.
+/// `read_self` sorts first, mirroring the reference's `SPACE_ACTIONS`.
+const SPACE_ACTIONS: [&str; 5] = ["read_self", "read", "create", "update", "delete"];
+
+/// The `action` set a `space:` grant carries when it names none. `read_self` is absent
+/// because `read` already implies it, so spelling both would be redundant.
+const SPACE_DEFAULT_ACTIONS: [&str; 4] = ["read", "create", "update", "delete"];
+
+/// Every `space:` `manage=` verb, in canonical order. These act on the space itself rather
+/// than its records; deliberately a separate list from `REPO_ACTIONS` despite the identical
+/// spelling, because their default differs (no management capability unless asked for).
+const SPACE_MANAGE_OPS: [&str; 3] = ["create", "update", "delete"];
+
 /// A declarative summary of each granular resource-type prefix, for `scopes_supported` in
 /// OAuth discovery metadata. Each prefix accepts further positional/query parameters per the
 /// grammar above — the full grantable scope space is unbounded, so this summarizes it by
 /// prefix rather than enumerating every concrete value.
-const SCOPE_PREFIX_SUMMARY: [&str; 6] = [
+const SCOPE_PREFIX_SUMMARY: [&str; 7] = [
     "repo:*",
     "rpc:*",
     "blob:*/*",
     "account:*",
     "identity:*",
+    "space:*",
     "include:*",
 ];
 
@@ -71,6 +88,7 @@ pub(crate) fn resource_group_label(token: &str) -> &'static str {
         "blob" => "File uploads",
         "account" => "Account settings",
         "identity" => "Identity",
+        "space" => "Spaces",
         "transition" => "Legacy full access",
         "include" => "Permission set",
         _ => "Other",
@@ -176,6 +194,7 @@ pub(super) fn normalize_token(token: &str) -> Option<String> {
         "blob" => normalize_blob(&syntax),
         "account" => normalize_account(&syntax),
         "identity" => normalize_identity(&syntax),
+        "space" => normalize_space(&syntax),
         "include" => normalize_include(&syntax),
         _ => None,
     }
@@ -559,6 +578,166 @@ fn normalize_identity(syntax: &ScopeSyntax) -> Option<String> {
     Some(format_scope("identity", Some(&attr), &[]))
 }
 
+// ── space (Atproto Spaces, proposal 0016) ─────────────────────────────────────
+
+/// A parsed, validated `space:` grant — the reference's `SpacePermission`.
+///
+/// `space_type`/`authority`/`skey` select **which spaces** the grant covers (the first three
+/// segments of a space URI); `action` + `collection` govern the records in them; `manage`
+/// governs the spaces themselves.
+struct SpaceGrant {
+    space_type: String,
+    authority: String,
+    skey: String,
+    /// Explicit `collection=` values. Empty means the grant named none — the space type
+    /// declaration then supplies the write targets at match time. Empty is never "all".
+    collection: Vec<String>,
+    action: Vec<String>,
+    manage: Vec<String>,
+}
+
+fn is_space_type_param(v: &str) -> bool {
+    v == "*" || is_nsid(v)
+}
+
+/// A space authority: `self` (the granting account), `*` (any), or a concrete DID.
+///
+/// The reference accepts any syntactically valid DID here; this server narrows that to the
+/// atproto DID methods it can actually resolve, the same line every other DID position in this
+/// grammar draws. A `did:example:` authority would parse there and still be unreachable here.
+fn is_space_authority_param(v: &str) -> bool {
+    v == "*" || v == "self" || is_atproto_did(v)
+}
+
+fn is_space_skey_param(v: &str) -> bool {
+    v == "*" || is_record_key(v)
+}
+
+/// Parse a `space:` token's syntax into a validated grant, or `None` if it is malformed.
+///
+/// Shared by normalization and matching so the two can never disagree about what a token
+/// means — a token that fails to parse authorizes nothing.
+fn parse_space_grant(syntax: &ScopeSyntax) -> Option<SpaceGrant> {
+    if !keys_allowed(
+        syntax,
+        &[
+            "type",
+            "authority",
+            "skey",
+            "collection",
+            "action",
+            "manage",
+        ],
+    ) {
+        return None;
+    }
+
+    // type (positional name; required, single)
+    let space_type = collect_positional_single(syntax, "type")?;
+    if !is_space_type_param(&space_type) {
+        return None;
+    }
+
+    // authority (optional, single, default "self")
+    let authority = match syntax.get_single("authority") {
+        None => "self".to_string(),
+        Some(Some(v)) if is_space_authority_param(v) => v.to_string(),
+        Some(_) => return None,
+    };
+
+    // skey (optional, single, default "*")
+    let skey = match syntax.get_single("skey") {
+        None => "*".to_string(),
+        Some(Some(v)) if is_space_skey_param(v) => v.to_string(),
+        Some(_) => return None,
+    };
+
+    // collection (optional, multi, default empty)
+    let mut collection: Vec<String> = syntax
+        .get_multi("collection")
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
+    if !collection.iter().all(|v| is_collection_param(v)) {
+        return None;
+    }
+    if collection.iter().any(|c| c == "*") {
+        collection = vec!["*".to_string()];
+    } else {
+        collection = dedupe_sorted(collection);
+    }
+
+    // action (optional, multi, default read + create + update + delete)
+    let action: Vec<String> = match syntax.get_multi("action") {
+        v if v.is_empty() => SPACE_DEFAULT_ACTIONS
+            .iter()
+            .map(|s| s.to_string())
+            .collect(),
+        v => {
+            if !v.iter().all(|a| SPACE_ACTIONS.contains(a)) {
+                return None;
+            }
+            SPACE_ACTIONS
+                .iter()
+                .filter(|a| v.contains(a))
+                .map(|s| s.to_string())
+                .collect()
+        }
+    };
+
+    // manage (optional, multi, default empty)
+    let manage_values = syntax.get_multi("manage");
+    if !manage_values.iter().all(|m| SPACE_MANAGE_OPS.contains(m)) {
+        return None;
+    }
+    let manage: Vec<String> = SPACE_MANAGE_OPS
+        .iter()
+        .filter(|m| manage_values.contains(m))
+        .map(|s| s.to_string())
+        .collect();
+
+    Some(SpaceGrant {
+        space_type,
+        authority,
+        skey,
+        collection,
+        action,
+        manage,
+    })
+}
+
+fn normalize_space(syntax: &ScopeSyntax) -> Option<String> {
+    let grant = parse_space_grant(syntax)?;
+
+    // Param order mirrors the reference parser's schema order, and every param equal to its
+    // default is omitted, so two spellings of the same grant land on one canonical string.
+    let mut params: Vec<(String, String)> = Vec::new();
+    if grant.authority != "self" {
+        params.push(("authority".to_string(), grant.authority));
+    }
+    if grant.skey != "*" {
+        params.push(("skey".to_string(), grant.skey));
+    }
+    for c in &grant.collection {
+        params.push(("collection".to_string(), c.clone()));
+    }
+    if !grant
+        .action
+        .iter()
+        .map(String::as_str)
+        .eq(SPACE_DEFAULT_ACTIONS)
+    {
+        for a in &grant.action {
+            params.push(("action".to_string(), a.clone()));
+        }
+    }
+    for m in &grant.manage {
+        params.push(("manage".to_string(), m.clone()));
+    }
+
+    Some(format_scope("space", Some(&grant.space_type), &params))
+}
+
 fn normalize_include(syntax: &ScopeSyntax) -> Option<String> {
     if !keys_allowed(syntax, &["nsid", "aud"]) {
         return None;
@@ -712,6 +891,17 @@ fn is_atproto_did_web(v: &str) -> bool {
         .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'-' | b'_' | b'%'))
 }
 
+/// An atproto record key, which is also the syntax a space's `skey` takes: 1-512 characters
+/// from `[A-Za-z0-9._~:-]`, excluding the relative-path spellings `.` and `..`. Mirrors
+/// `@atproto/syntax`'s `ensureValidRecordKey`.
+fn is_record_key(v: &str) -> bool {
+    (1..=512).contains(&v.len())
+        && v != "."
+        && v != ".."
+        && v.bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'~' | b':' | b'-'))
+}
+
 /// A MIME `accept` value: `*/*`, `type/*`, or a concrete `type/subtype`.
 fn is_accept(v: &str) -> bool {
     if v == "*/*" {
@@ -819,6 +1009,18 @@ pub fn require_blob(scope: &str, mime_type: &str) -> Result<(), ApiError> {
     } else {
         Err(insufficient_scope(
             "token scope does not permit this blob upload",
+        ))
+    }
+}
+
+/// Require that a non-legacy granular OAuth grant permits a space operation.
+#[allow(dead_code)]
+pub fn require_space(scope: &str, req: &SpaceRequest<'_>) -> Result<(), ApiError> {
+    if scope == SCOPE_ACCESS || allows_space(scope, req) {
+        Ok(())
+    } else {
+        Err(insufficient_scope(
+            "token scope does not permit this space operation",
         ))
     }
 }
@@ -931,6 +1133,111 @@ pub fn allows_blob(scope: &str, mime_type: &str) -> bool {
                     .any(|(_, accept)| accept_matches(accept, mime_type)),
                 _ => false,
             })
+}
+
+/// The operation a `space:` grant is being checked against.
+///
+/// `Manage` reuses [`RepoAction`] because the `manage=` verbs are spelled with the same three
+/// words — but they act on the space itself, not on a record in it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+// Declared ahead of the space routes that will call them, so the grammar, its gate, and
+// their tests land as one reviewable unit rather than riding along with the first route.
+#[allow(dead_code)]
+pub enum SpaceOp<'a> {
+    /// Whole-space read and sync, plus `getDelegationToken`. Ignores `collection`, because
+    /// read access is all-or-nothing at the space boundary.
+    Read,
+    /// The holder's own repo only, and no delegation token. Also satisfied by a `read` grant.
+    ReadSelf,
+    /// A record write, additionally constrained by the grant's `collection`.
+    Record {
+        action: RepoAction,
+        collection: &'a str,
+    },
+    /// An operation on the space itself, governed by `manage`.
+    Manage(RepoAction),
+}
+
+/// A space operation to authorize, plus the context a grant's defaults resolve against.
+///
+/// The two context fields exist because a `space:` token is deliberately context-free — the
+/// reference materializes them into the permission at token-issuance time, and this server
+/// resolves them at match time instead so the canonical token string stays stable (agent
+/// scope clamping compares tokens by exact string, so a rewritten `self` would stop matching
+/// the operator's config).
+#[allow(dead_code)]
+pub struct SpaceRequest<'a> {
+    /// The target space's type NSID.
+    pub space_type: &'a str,
+    /// The target space authority's concrete DID.
+    pub authority: &'a str,
+    /// The target space's key.
+    pub skey: &'a str,
+    pub op: SpaceOp<'a>,
+    /// The authenticated account's DID — what an `authority=self` grant resolves to.
+    pub account_did: &'a str,
+    /// The space type declaration's `collections`: the write targets of a grant that names no
+    /// `collection` of its own. Resolved per request rather than frozen at consent time, so a
+    /// declaration that later adds a collection widens existing bare grants.
+    pub declared_collections: &'a [String],
+}
+
+#[allow(dead_code)]
+impl SpaceGrant {
+    fn matches(&self, req: &SpaceRequest<'_>) -> bool {
+        if self.space_type != "*" && self.space_type != req.space_type {
+            return false;
+        }
+        let authority = if self.authority == "self" {
+            req.account_did
+        } else {
+            self.authority.as_str()
+        };
+        if authority != "*" && authority != req.authority {
+            return false;
+        }
+        if self.skey != "*" && self.skey != req.skey {
+            return false;
+        }
+
+        match req.op {
+            SpaceOp::Read => self.action.iter().any(|a| a == "read"),
+            // `read` implies `read_self`, so either satisfies the narrower request.
+            SpaceOp::ReadSelf => self.action.iter().any(|a| a == "read" || a == "read_self"),
+            SpaceOp::Record { action, collection } => {
+                self.action.iter().any(|a| a == action.as_str())
+                    && self.collection_allows(collection, req)
+            }
+            SpaceOp::Manage(op) => self.manage.iter().any(|m| m == op.as_str()),
+        }
+    }
+
+    /// Whether the grant's write targets cover `collection`.
+    ///
+    /// A grant naming no `collection` falls back to the space type declaration's — but only
+    /// when it names a concrete space type. `space:*` has no declaration to draw from, so it
+    /// confers read access without ever conferring a write target.
+    fn collection_allows(&self, collection: &str, req: &SpaceRequest<'_>) -> bool {
+        if self.collection.is_empty() {
+            return self.space_type != "*"
+                && req.declared_collections.iter().any(|c| c == collection);
+        }
+        self.collection.iter().any(|c| c == "*" || c == collection)
+    }
+}
+
+/// Whether a granular OAuth grant permits a space operation.
+///
+/// Like [`allows_identity`], this deliberately does **not** honor `transition:generic`. That
+/// scope is app-password-equivalent and predates Atproto Spaces entirely, so treating it as
+/// covering permissioned data would hand every legacy client the user's private spaces.
+#[allow(dead_code)]
+pub fn allows_space(scope: &str, req: &SpaceRequest<'_>) -> bool {
+    scope.split_whitespace().any(|token| {
+        let syntax = ScopeSyntax::parse(token);
+        syntax.prefix == "space"
+            && parse_space_grant(&syntax).is_some_and(|grant| grant.matches(req))
+    })
 }
 
 fn parse_token(token: &str) -> (String, Option<String>, Vec<(String, String)>) {
@@ -1203,6 +1510,375 @@ mod tests {
     fn identity_invalid_rejected() {
         assert_eq!(norm("identity:invalid"), None);
         assert_eq!(norm("identity:*?action=manage"), None); // unknown param
+    }
+
+    // ── space ─────────────────────────────────────────────────────────────────
+
+    /// A `did:plc` the grammar accepts (24 base32 characters).
+    const AUTHORITY_DID: &str = "did:plc:abc234567abc234567abc234";
+    const ACCOUNT_DID: &str = "did:plc:zzz234567zzz234567zzz234";
+    const NO_COLLECTIONS: &[String] = &[];
+
+    fn space_req<'a>(op: SpaceOp<'a>, declared: &'a [String]) -> SpaceRequest<'a> {
+        SpaceRequest {
+            space_type: "com.atmoboards.forum",
+            authority: AUTHORITY_DID,
+            skey: "default",
+            op,
+            account_did: ACCOUNT_DID,
+            declared_collections: declared,
+        }
+    }
+
+    #[test]
+    fn space_bare_grant_and_omitted_defaults() {
+        assert_eq!(
+            norm("space:com.atmoboards.forum").as_deref(),
+            Some("space:com.atmoboards.forum")
+        );
+        assert_eq!(norm("space:*").as_deref(), Some("space:*"));
+        // Every default spelled out collapses back to the bare form.
+        assert_eq!(
+            norm("space:com.atmoboards.forum?authority=self&skey=*&action=read&action=create&action=update&action=delete")
+                .as_deref(),
+            Some("space:com.atmoboards.forum")
+        );
+    }
+
+    #[test]
+    fn space_params_emit_in_schema_order() {
+        assert_eq!(
+            norm("space:com.atmoboards.forum?manage=delete&action=create&collection=com.atmoboards.thread&skey=default&authority=did:plc:abc234567abc234567abc234")
+                .as_deref(),
+            Some("space:com.atmoboards.forum?authority=did:plc:abc234567abc234567abc234&skey=default&collection=com.atmoboards.thread&action=create&manage=delete")
+        );
+    }
+
+    #[test]
+    fn space_actions_take_canonical_order_with_read_self_first() {
+        assert_eq!(
+            norm("space:com.example.x?action=delete&action=read&action=read_self").as_deref(),
+            Some("space:com.example.x?action=read_self&action=read&action=delete")
+        );
+        // `read_self` is not part of the default set, so naming it is never a no-op.
+        assert_eq!(
+            norm("space:com.example.x?action=read_self&action=read&action=create&action=update&action=delete")
+                .as_deref(),
+            Some("space:com.example.x?action=read_self&action=read&action=create&action=update&action=delete")
+        );
+    }
+
+    #[test]
+    fn space_manage_ops_are_canonically_ordered_and_default_empty() {
+        assert_eq!(
+            norm("space:com.example.x?manage=delete&manage=create").as_deref(),
+            Some("space:com.example.x?manage=create&manage=delete")
+        );
+        assert_eq!(
+            norm("space:com.example.x").as_deref(),
+            Some("space:com.example.x")
+        );
+    }
+
+    #[test]
+    fn space_collections_dedupe_sort_and_collapse_on_wildcard() {
+        assert_eq!(
+            norm("space:com.example.x?collection=com.example.b&collection=com.example.a&collection=com.example.b")
+                .as_deref(),
+            Some("space:com.example.x?collection=com.example.a&collection=com.example.b")
+        );
+        assert_eq!(
+            norm("space:com.example.x?collection=com.example.a&collection=*").as_deref(),
+            Some("space:com.example.x?collection=*")
+        );
+    }
+
+    #[test]
+    fn space_skey_takes_record_key_syntax() {
+        let long = "x".repeat(512);
+        let too_long = "x".repeat(513);
+        for skey in ["self", "3jui7kd54zh2y", "a.b-c_d~e:f", "*", long.as_str()] {
+            assert!(
+                norm(&format!("space:com.example.x?skey={skey}")).is_some(),
+                "skey {skey:?} should be accepted"
+            );
+        }
+        for skey in [
+            "hello%20world",
+            ".",
+            "..",
+            "a%2Fb",
+            "a%23b",
+            "",
+            too_long.as_str(),
+        ] {
+            assert_eq!(
+                norm(&format!("space:com.example.x?skey={skey}")),
+                None,
+                "skey {skey:?} should be rejected"
+            );
+        }
+    }
+
+    #[test]
+    fn space_invalid_is_rejected() {
+        assert_eq!(norm("space"), None);
+        assert_eq!(norm("space:"), None);
+        assert_eq!(norm("space:not_an_nsid"), None);
+        assert_eq!(norm("space:com.example.x?authority=not-a-did"), None);
+        assert_eq!(norm("space:com.example.x?authority=did:"), None);
+        assert_eq!(norm("space:com.example.x?action=bogus"), None);
+        assert_eq!(norm("space:com.example.x?manage=bogus"), None);
+        assert_eq!(norm("space:com.example.x?collection=not_an_nsid"), None);
+        assert_eq!(norm("space:com.example.x?unknown=1"), None);
+        // The positional argument and its named spelling are the same parameter.
+        assert_eq!(norm("space:com.example.x?type=com.example.y"), None);
+        // A repeated single-valued param has no single value to take.
+        assert_eq!(norm("space:com.example.x?authority=self&authority=*"), None);
+    }
+
+    // ── space matching ────────────────────────────────────────────────────────
+
+    #[test]
+    fn space_read_is_all_or_nothing_and_ignores_collection() {
+        let scope =
+            format!("atproto space:com.atmoboards.forum?authority={AUTHORITY_DID}&action=read");
+        assert!(allows_space(
+            &scope,
+            &space_req(SpaceOp::Read, NO_COLLECTIONS)
+        ));
+        // No collection was named, and read never needs one.
+        assert!(allows_space(
+            &scope,
+            &space_req(SpaceOp::ReadSelf, NO_COLLECTIONS)
+        ));
+        // ...but it confers no writes.
+        assert!(!allows_space(
+            &scope,
+            &space_req(
+                SpaceOp::Record {
+                    action: RepoAction::Create,
+                    collection: "com.atmoboards.thread",
+                },
+                &["com.atmoboards.thread".to_string()],
+            )
+        ));
+    }
+
+    #[test]
+    fn space_read_self_is_narrower_than_read() {
+        let scope = format!(
+            "atproto space:com.atmoboards.forum?authority={AUTHORITY_DID}&action=read_self"
+        );
+        assert!(allows_space(
+            &scope,
+            &space_req(SpaceOp::ReadSelf, NO_COLLECTIONS)
+        ));
+        assert!(!allows_space(
+            &scope,
+            &space_req(SpaceOp::Read, NO_COLLECTIONS)
+        ));
+    }
+
+    #[test]
+    fn space_writes_are_collection_constrained() {
+        let scope = format!(
+            "atproto space:com.atmoboards.forum?authority={AUTHORITY_DID}&collection=com.atmoboards.thread&action=create"
+        );
+        assert!(allows_space(
+            &scope,
+            &space_req(
+                SpaceOp::Record {
+                    action: RepoAction::Create,
+                    collection: "com.atmoboards.thread",
+                },
+                NO_COLLECTIONS
+            )
+        ));
+        assert!(!allows_space(
+            &scope,
+            &space_req(
+                SpaceOp::Record {
+                    action: RepoAction::Create,
+                    collection: "com.atmoboards.reply",
+                },
+                NO_COLLECTIONS
+            )
+        ));
+        assert!(!allows_space(
+            &scope,
+            &space_req(
+                SpaceOp::Record {
+                    action: RepoAction::Delete,
+                    collection: "com.atmoboards.thread",
+                },
+                NO_COLLECTIONS
+            )
+        ));
+    }
+
+    #[test]
+    fn space_bare_grant_writes_the_declared_collections() {
+        let scope = format!("atproto space:com.atmoboards.forum?authority={AUTHORITY_DID}");
+        let declared = ["com.atmoboards.thread".to_string()];
+        assert!(allows_space(
+            &scope,
+            &space_req(
+                SpaceOp::Record {
+                    action: RepoAction::Update,
+                    collection: "com.atmoboards.thread",
+                },
+                &declared
+            )
+        ));
+        // A collection the declaration does not list stays out of reach.
+        assert!(!allows_space(
+            &scope,
+            &space_req(
+                SpaceOp::Record {
+                    action: RepoAction::Update,
+                    collection: "com.atmoboards.reply",
+                },
+                &declared
+            )
+        ));
+    }
+
+    #[test]
+    fn space_wildcard_type_grant_confers_no_write_targets() {
+        // There is no declaration to draw a default from, so a bare `space:*` reads but never
+        // writes — even when the target type declares collections.
+        let scope = format!("atproto space:*?authority={AUTHORITY_DID}");
+        let declared = ["com.atmoboards.thread".to_string()];
+        assert!(allows_space(&scope, &space_req(SpaceOp::Read, &declared)));
+        assert!(!allows_space(
+            &scope,
+            &space_req(
+                SpaceOp::Record {
+                    action: RepoAction::Create,
+                    collection: "com.atmoboards.thread",
+                },
+                &declared
+            )
+        ));
+        // Naming the collection explicitly still works.
+        let explicit =
+            format!("atproto space:*?authority={AUTHORITY_DID}&collection=com.atmoboards.thread");
+        assert!(allows_space(
+            &explicit,
+            &space_req(
+                SpaceOp::Record {
+                    action: RepoAction::Create,
+                    collection: "com.atmoboards.thread",
+                },
+                &declared
+            )
+        ));
+    }
+
+    #[test]
+    fn space_self_authority_resolves_to_the_account_did() {
+        let scope = "atproto space:com.atmoboards.forum";
+        // The default `authority=self` does not reach a space anchored on someone else.
+        assert!(!allows_space(
+            scope,
+            &space_req(SpaceOp::Read, NO_COLLECTIONS)
+        ));
+
+        let own = SpaceRequest {
+            authority: ACCOUNT_DID,
+            ..space_req(SpaceOp::Read, NO_COLLECTIONS)
+        };
+        assert!(allows_space(scope, &own));
+    }
+
+    #[test]
+    fn space_identifier_components_all_have_to_match() {
+        let scope = format!(
+            "atproto space:com.atmoboards.forum?authority={AUTHORITY_DID}&skey=default&action=read"
+        );
+        assert!(allows_space(
+            &scope,
+            &space_req(SpaceOp::Read, NO_COLLECTIONS)
+        ));
+        for wrong in [
+            SpaceRequest {
+                space_type: "com.atmoboards.other",
+                ..space_req(SpaceOp::Read, NO_COLLECTIONS)
+            },
+            SpaceRequest {
+                authority: ACCOUNT_DID,
+                ..space_req(SpaceOp::Read, NO_COLLECTIONS)
+            },
+            SpaceRequest {
+                skey: "other",
+                ..space_req(SpaceOp::Read, NO_COLLECTIONS)
+            },
+        ] {
+            assert!(!allows_space(&scope, &wrong));
+        }
+        // Wildcards on each component open it back up.
+        assert!(allows_space(
+            "atproto space:*?authority=*&action=read",
+            &space_req(SpaceOp::Read, NO_COLLECTIONS)
+        ));
+    }
+
+    #[test]
+    fn space_manage_is_separate_from_record_access() {
+        let record_only = format!("atproto space:com.atmoboards.forum?authority={AUTHORITY_DID}");
+        assert!(!allows_space(
+            &record_only,
+            &space_req(SpaceOp::Manage(RepoAction::Update), NO_COLLECTIONS)
+        ));
+
+        let managing = format!(
+            "atproto space:com.atmoboards.forum?authority={AUTHORITY_DID}&action=read_self&manage=update"
+        );
+        assert!(allows_space(
+            &managing,
+            &space_req(SpaceOp::Manage(RepoAction::Update), NO_COLLECTIONS)
+        ));
+        assert!(!allows_space(
+            &managing,
+            &space_req(SpaceOp::Manage(RepoAction::Delete), NO_COLLECTIONS)
+        ));
+        // ...and it did not quietly grant record writes.
+        assert!(!allows_space(
+            &managing,
+            &space_req(
+                SpaceOp::Record {
+                    action: RepoAction::Create,
+                    collection: "com.atmoboards.thread",
+                },
+                &["com.atmoboards.thread".to_string()]
+            )
+        ));
+    }
+
+    #[test]
+    fn space_access_needs_a_granular_grant_not_a_transition_scope() {
+        // `transition:generic` is app-password-equivalent and predates spaces entirely.
+        assert!(!allows_space(
+            "atproto transition:generic",
+            &space_req(SpaceOp::Read, NO_COLLECTIONS)
+        ));
+        assert!(require_space(
+            "atproto transition:generic",
+            &space_req(SpaceOp::Read, NO_COLLECTIONS)
+        )
+        .is_err());
+        // A full `com.atproto.access` session is the account owner and passes the gate.
+        assert!(require_space(SCOPE_ACCESS, &space_req(SpaceOp::Read, NO_COLLECTIONS)).is_ok());
+    }
+
+    #[test]
+    fn space_malformed_token_authorizes_nothing() {
+        // A token that would fail normalization must not match by accident.
+        assert!(!allows_space(
+            "atproto space:com.atmoboards.forum?action=bogus",
+            &space_req(SpaceOp::Read, NO_COLLECTIONS)
+        ));
     }
 
     // ── include ───────────────────────────────────────────────────────────────
@@ -1483,6 +2159,27 @@ mod tests {
         );
     }
 
+    #[test]
+    fn intersect_never_widens_into_an_uncovered_space() {
+        let registered = vec![
+            "atproto".to_string(),
+            "space:com.atmoboards.forum".to_string(),
+        ];
+        // The operator's ceiling names a *different*, broader space grant. Clamping is
+        // token-exact, so neither the broader token nor the registered one survives.
+        let ceiling = vec![
+            "atproto".to_string(),
+            "space:*?authority=*".to_string(),
+            "space:com.other.space".to_string(),
+        ];
+        assert_eq!(
+            intersect_scope_tokens(&registered, &ceiling),
+            vec!["atproto".to_string()]
+        );
+        // The same grant on both sides is kept.
+        assert_eq!(intersect_scope_tokens(&registered, &registered), registered);
+    }
+
     // ── idempotent normalization (parse→normalize→serialize round-trip) ────────
 
     #[test]
@@ -1498,6 +2195,9 @@ mod tests {
             "atproto account:email?action=manage",
             "atproto identity:*",
             "atproto include:com.example.perms",
+            "atproto space:com.atmoboards.forum",
+            "atproto space:*?authority=*&action=read",
+            "atproto space:com.atmoboards.forum?authority=did:plc:abc234567abc234567abc234&skey=default&collection=com.atmoboards.thread&action=create&manage=update",
         ];
         for input in inputs {
             let once = normalize_scope_request(input)
