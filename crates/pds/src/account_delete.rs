@@ -98,6 +98,14 @@ const DELETE_BY_DID: &[&str] = &[
     "DELETE FROM transfer_devices WHERE did = ?",
     "DELETE FROM did_documents WHERE did = ?",
     "DELETE FROM reserved_signing_keys WHERE did = ?",
+    // The account's permissioned space repos, in FK order (ops and records reference the repo
+    // row). `spaces` rows deliberately survive even when this account is the authority: members'
+    // records are their own, and an unanswerable space is exactly the spec's deletion semantics.
+    "DELETE FROM space_repo_ops WHERE account_did = ?",
+    "DELETE FROM space_records WHERE account_did = ?",
+    "DELETE FROM space_repos WHERE account_did = ?",
+    "DELETE FROM space_members WHERE member_did = ?",
+    "DELETE FROM space_notify_registrations WHERE subscriber_did = ?",
 ];
 
 /// The account's ownership rows in the content-addressed repo block store.

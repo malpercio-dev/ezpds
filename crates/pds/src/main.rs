@@ -47,6 +47,8 @@ mod rewrap;
 mod routes;
 mod session_issuer;
 mod sovereign_session_nonce_sweep;
+mod space_jti_sweep;
+mod space_record_write;
 mod state;
 mod sweep_status;
 mod telemetry;
@@ -775,6 +777,15 @@ async fn run() -> anyhow::Result<()> {
         interval_secs = sovereign_session_nonce_sweep::SWEEP_INTERVAL.as_secs(),
         max_age_secs = sovereign_session_nonce_sweep::MAX_AGE_SECS,
         "sovereign-session nonce retention sweep started"
+    );
+
+    // Spawn the spaces jti retention sweep. The (scope, jti) primary key enforces anti-replay;
+    // each row's expires_at carries its own token's acceptance horizon, so the sweep only
+    // bounds storage growth.
+    let _space_jti_sweep = space_jti_sweep::spawn_space_jti_sweep(state.clone());
+    tracing::info!(
+        interval_secs = space_jti_sweep::SWEEP_INTERVAL.as_secs(),
+        "space jti retention sweep started"
     );
 
     // Spawn the Iroh accept loop when the tunnel is enabled. Like the blob GC it is detached

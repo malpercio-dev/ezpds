@@ -33,6 +33,9 @@ pub mod repo_keys;
 pub mod server_stats;
 pub mod sessions;
 pub mod sovereign_session_nonces;
+pub mod space_jti;
+pub mod space_repos;
+pub mod spaces;
 pub mod transfers;
 pub mod waitlist;
 

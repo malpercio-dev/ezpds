@@ -24,7 +24,7 @@ src/
   firehose/        — persistent subscribeRepos event pipeline (see section below)
   firehose_gc.rs   — periodic `repo_seq` retention sweep (age/count pruning below the live frontier)
   blob_store.rs    — blob storage backend: durable filesystem I/O, CID computation, MIME detection; blobs at `{data_dir}/blobs/{cid[0:2]}/{cid}` — see module doc
-  blob_gc.rs       — periodic blob GC over per-account ownership rows (`blob_owners`, V039); fails closed on a failed reconcile (that account leaks disk until fixed) — see module doc
+  blob_gc.rs       — periodic blob GC over per-account ownership rows (`blob_owners`, V039); references union the public MST and stored space records (V065); fails closed on a failed reconcile (that account leaks disk until fixed) — see module doc
   blob_mirror/     — off-volume blob replication to an S3-compatible bucket (`[blob_mirror]` / `EZPDS_BLOB_MIRROR_*`); boot restore runs before the listener binds; `s3.rs` is a hand-rolled SigV4 client — see module doc
   blob_scrub.rs    — periodic blob-integrity scrub: re-hash every stored blob + walk both orphan directions; auto-heals from the mirror when configured — see module doc
   crawler.rs       — outbound requestCrawl notifier (rate-limited, retrying, fire-and-forget) — see section below
@@ -35,6 +35,8 @@ src/
   notify_relay_client.rs — outbound iroh leg to the notification relay (`ezpds/notify/0`) + the fire-and-forget send worker; lazy cached connection, self-healing enrollment — see module doc
   notifications.rs — sending side: pad + HPKE-seal one payload per registered device and enqueue; inert when `[notifications] relay` is unset — see module doc
   record_write.rs  — shared repo write flow + firehose commit emission + post-commit block GC (one reachability walk per commit) — see module doc
+  space_record_write.rs — the single write choke point for permissioned space repos (V065, DB-backed, no MST): validate → CAS rev → LtHash fold → oplog append, all one transaction; blob refs are GC-derived and notification fan-out attaches to the returned rev+hash — see module doc
+  space_jti_sweep.rs — periodic `space_jti_replay` retention sweep; each row carries its own token's acceptance horizon (template: sovereign_session_nonce_sweep.rs)
   repo_rev.rs      — shared `read_repo_rev`, homed beside `record_write.rs` so the public sync endpoints share it without a route-to-route import
   time.rs          — shared epoch/RFC-3339 time helpers; the variants differ on return type + pre-epoch handling — pick by call-site contract (module doc)
   account_delete.rs— shared permanent account-deletion transaction (FK-ordered child tables, blob-file reclamation, `#account` deleted frame), used by deleteAccount and the reaper — see module doc
@@ -199,6 +201,9 @@ and async query functions; no business logic lives here.
 | `admin_audit.rs` | server-wide append-only admin-action audit log (V052); doctrine and function inventory in the module doc |
 | `admin_devices.rs` | admin-device model (V025): pairing codes, devices, anti-replay nonces — see module doc |
 | `sovereign_session_nonces.rs` | sovereign-session anti-replay store (V043); the sweep-retention rule is in the module doc |
+| `spaces.rs` | `spaces` rows (V065): every space this PDS interacts with, keyed by canonical URI; member/notify queries land with their consuming surfaces — see module doc |
+| `space_repos.rs` | permissioned repo store queries (V065): repo heads (rev + LtHash state), record blocks, oplog; the write transaction lives in `space_record_write.rs` — see module doc |
+| `space_jti.rs` | spaces-token jti replay store (V065): scope-discriminated insert-if-absent + the expiry sweep — see module doc |
 | `waitlist.rs` | public waitlist signup store (V057, no FKs — off the purge path) — see module doc |
 | `account_labels.rs` | watched-labeler flag store (V051) — see module doc; the filtered listing predicates live beside `list_accounts_admin` in `accounts.rs` |
 

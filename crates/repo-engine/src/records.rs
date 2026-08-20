@@ -85,6 +85,36 @@ fn next_commit_rev(prev_rev: &str) -> Result<Tid, RecordError> {
         .map_err(|e| RecordError::Repo(format!("construct monotonic commit rev: {e}")))
 }
 
+/// Compute the `rev` for a new commit as a plain string: a fresh time-ordered TID strictly
+/// greater than `prev_rev`. The string form of [`next_commit_rev`], for stores that keep the
+/// rev in a database column rather than an atrium commit (permissioned space repos).
+pub fn next_record_rev(prev_rev: &str) -> Result<String, RecordError> {
+    Ok(next_commit_rev(prev_rev)?.as_str().to_string())
+}
+
+/// Encode a record value as its canonical DAG-CBOR block and compute the block CID
+/// (CIDv1, dag-cbor codec, SHA2-256 multihash — the same shape every repo block carries).
+///
+/// For MST-backed repos the block store does this implicitly on write; DB-backed stores
+/// (permissioned space repos) call it directly to persist the `(cid, bytes)` pair as a row.
+pub fn encode_record_block(value: &Ipld) -> Result<(Cid, Vec<u8>), RecordError> {
+    use sha2::Digest;
+    let bytes = serde_ipld_dagcbor::to_vec(value)
+        .map_err(|e| RecordError::InvalidRecord(format!("DAG-CBOR encode: {e}")))?;
+    let mh = atrium_repo::Multihash::wrap(
+        atrium_repo::blockstore::SHA2_256,
+        sha2::Sha256::digest(&bytes).as_slice(),
+    )
+    .map_err(|e| RecordError::Repo(format!("multihash wrap: {e}")))?;
+    Ok((Cid::new_v1(atrium_repo::blockstore::DAG_CBOR, mh), bytes))
+}
+
+/// Decode a stored DAG-CBOR record block back to its IPLD value.
+pub fn decode_record_block(bytes: &[u8]) -> Result<Ipld, RecordError> {
+    serde_ipld_dagcbor::from_slice(bytes)
+        .map_err(|e| RecordError::InvalidRecord(format!("DAG-CBOR decode: {e}")))
+}
+
 /// Errors from record operations.
 #[derive(Debug, thiserror::Error)]
 pub enum RecordError {

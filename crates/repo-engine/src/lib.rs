@@ -38,10 +38,11 @@ pub use lexicon::{
     LexiconRecordError, LexiconSchemaError,
 };
 pub use records::{
-    apply_writes, count_records, delete_record, generate_tid, get_record, get_record_cid,
-    get_record_json, json_to_record_value, list_collections, list_records_json, put_record,
-    put_record_json, record_blob_cids, record_value_to_json, validate_collection,
-    validate_record_path, ListRecordsPage, ListedRecord, RecordError, WriteOp, WriteOutcome,
+    apply_writes, count_records, decode_record_block, delete_record, encode_record_block,
+    generate_tid, get_record, get_record_cid, get_record_json, json_to_record_value,
+    list_collections, list_records_json, next_record_rev, put_record, put_record_json,
+    record_blob_cids, record_value_to_json, validate_collection, validate_record_path,
+    ListRecordsPage, ListedRecord, RecordError, WriteOp, WriteOutcome,
 };
 pub use signer::{CommitSigner, CommitSignerError};
 
