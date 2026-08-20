@@ -1,6 +1,6 @@
 # Crypto Crate
 
-Last verified: 2026-08-06
+Last verified: 2026-08-20
 
 ## Purpose
 Provides cryptographic primitives for the ezpds workspace:
@@ -18,7 +18,11 @@ Provides cryptographic primitives for the ezpds workspace:
 - RFC 9180 HPKE sealing (plus length-bucket padding) for the notification
   relay's push payloads; and
 - offline atproto inter-service (`getServiceAuth`-style) JWT minting, so a
-  wallet-held key can mint its own migration token for sovereign recovery.
+  wallet-held key can mint its own migration token for sovereign recovery; and
+- the Spaces (permissioned data) primitives: the LtHash multiset hash over a
+  permissioned repo's contents and the deniable commit sign/verify pair,
+  pinned to the reference golden vectors from the atproto `permissioned-data`
+  branch.
 
 This is a pure functional core -- no I/O, no database, no config. Each
 primitive's full contract is in [Contracts](#contracts) below.
@@ -396,6 +400,45 @@ pub fn diff_audit_logs(cached: &[AuditEntry], current: &[AuditEntry]) -> Vec<Aud
 - Returns the new entries in the order they appear in `current`
 - Used to detect PLC operations a caller's cache hasn't seen yet (e.g. a refreshed audit log fetch)
 
+**`LtHash`** / **`format_set_hash_element`**
+
+```rust
+impl LtHash {
+    pub fn new() -> Self;                                       // empty multiset (all-zero state)
+    pub fn from_state(state: &[u8]) -> Result<Self, CryptoError>; // resume persisted state (must be 2048 bytes)
+    pub fn add(&mut self, element: &str);
+    pub fn remove(&mut self, element: &str);
+    pub fn state(&self) -> [u8; LTHASH_STATE_BYTES];            // 2048 bytes, for persistence
+    pub fn digest(&self) -> [u8; 32];                           // sha256(state), the commit hash
+    pub fn is_empty(&self) -> bool;
+}
+pub fn format_set_hash_element(collection: &str, rkey: &str, cid: &str) -> String
+```
+
+- The Spaces homomorphic multiset hash: each element expands to 1024 little-endian u16 lanes (BLAKE3 XOF, dkLen = 2048) summed into the state mod 2^16, so add/remove commute and a repo host updates the digest incrementally per record write. Golden-vector pinned (empty digest `e5a00aa9…`, `one`+`two` digest `ae05cb6d…`) — a lane-format change invalidates every persisted state.
+- `format_set_hash_element` builds the per-record element `{collection}/{rkey}/{cid}`. Injectivity rests on the outer fields being slash-free (NSID + base32 CID), inherited from lexicon validation — not enforced here.
+
+**`sign_space_commit`** / **`verify_space_commit`** / **`encode_space_commit_ctx`**
+
+```rust
+pub fn encode_space_commit_ctx(ctx: &SpaceCommitCtx<'_>, ikm: &[u8]) -> Result<Vec<u8>, CryptoError>
+pub fn sign_space_commit(
+    ctx: &SpaceCommitCtx<'_>,       // space URI + author DID + rev TID
+    hash: [u8; 32],                 // LtHash::digest of the repo contents
+    signing_private_key: &[u8; 32], // author's P-256 signing key scalar
+) -> Result<SignedSpaceCommit, CryptoError>
+pub fn verify_space_commit(
+    commit: &SignedSpaceCommit,
+    ctx: &SpaceCommitCtx<'_>,
+    author_key: &DidKeyUri,         // dual-curve: P-256 or secp256k1
+) -> Result<(), CryptoError>
+```
+
+- The deniable commit over a permissioned repo digest. `ctx` is TLS-vector encoded (`"atproto-space-v1"` + u16be-len-prefixed space/author/rev/ikm); `sig = sign(ctx)` (low-S P-256) deliberately never covers `hash` — the binding is `mac = HMAC-SHA256(HKDF-Expand(ikm, ctx, 32), hash)` (RFC 5869 expand only, `ikm` as PRK). Anyone holding the commit knows `ikm` and can forge a MAC for any hash, so a leaked commit proves nothing about content.
+- `sign_space_commit` draws a fresh 32-byte `ikm` per call — each reader served gets a distinct `ikm`/`sig`/`mac` triple over the same hash.
+- `verify_space_commit` checks version, rev-vs-ctx agreement, MAC, then the signature via the dual-curve `did:key` path (foreign authors may sign ES256K; signing here stays P-256-only).
+- Errors: `CryptoError::Space` for a ctx field over the u16 length prefix, a bad state length, version/rev/MAC mismatch; `CryptoError::SignatureVerification` from the signature path.
+
 ### Public types
 
 **`P256Keypair`**
@@ -454,7 +497,7 @@ pub fn diff_audit_logs(cached: &[AuditEntry], current: &[AuditEntry]) -> Vec<Aud
 - `Debug` redacts `payload`
 
 **`CryptoError`** variants:
-- `KeyGeneration`, `Encryption`, `Decryption`, `SecretSharing`, `SecretReconstruction`, `ShareVersion`, `ShareChecksum`, `ShareFormat`, `PlcOperation`, `SignatureVerification`
+- `KeyGeneration`, `Encryption`, `Decryption`, `SecretSharing`, `SecretReconstruction`, `ShareVersion`, `ShareChecksum`, `ShareFormat`, `PlcOperation`, `SignatureVerification`, `Space`
 - The three `Share*` variants are the **distinct** share-envelope decode failures: `ShareVersion` (unsupported version), `ShareChecksum` (integrity check failed), `ShareFormat` (structural/encoding error)
 
 ### Format guarantees
@@ -468,7 +511,7 @@ pub fn diff_audit_logs(cached: &[AuditEntry], current: &[AuditEntry]) -> Vec<Aud
 
 ## Dependencies
 
-- **Uses**: hpke (RFC 9180 sealing for notification payloads; 0.13 deliberately, so it resolves onto the workspace's p256 0.13 / aes-gcm 0.10 / hkdf 0.12 rather than forking a second major of each — guard-banned in `deny.toml`), rand_core_os (renamed rand_core 0.9 with `os_rng`, the CSPRNG hpke 0.13 expects), p256 (ECDSA/key generation), k256 (secp256k1 ECDSA — verification only, for ops signed by the reference ecosystem), aes-gcm (AES-256-GCM), multibase (base58btc encoding), rand_core (OS RNG), base64 (storage encoding), zeroize (secret cleanup), ciborium (CBOR serialization for did:plc), data-encoding (base32-lowercase for DIDs; base32 uppercase for share envelopes), sha2 (SHA-256), hkdf (HKDF-SHA256 for recovery-key derivation), serde/serde_json (struct serialization)
+- **Uses**: hpke (RFC 9180 sealing for notification payloads; 0.13 deliberately, so it resolves onto the workspace's p256 0.13 / aes-gcm 0.10 / hkdf 0.12 rather than forking a second major of each — guard-banned in `deny.toml`), rand_core_os (renamed rand_core 0.9 with `os_rng`, the CSPRNG hpke 0.13 expects), p256 (ECDSA/key generation), k256 (secp256k1 ECDSA — verification only, for ops signed by the reference ecosystem), aes-gcm (AES-256-GCM), multibase (base58btc encoding), rand_core (OS RNG), base64 (storage encoding), zeroize (secret cleanup), ciborium (CBOR serialization for did:plc), data-encoding (base32-lowercase for DIDs; base32 uppercase for share envelopes), sha2 (SHA-256), hkdf (HKDF-SHA256 for recovery-key derivation and the space-commit MAC key), hmac (HMAC-SHA256 for the space-commit MAC), blake3 (XOF element expansion for the Spaces LtHash), serde/serde_json (struct serialization)
 - **Used by**: `crates/pds/` (key generation, did:plc genesis building and verification in POST /v1/dids; `seal_notification` + the padding arithmetic for outbound push notifications, with `p256_public_key_from_did_key`/`p256_keypair_from_secret` for the device-key and sender-key encodings; sovereign-session canonical proof encoding and dual-curve verification; `crates/pds/src/plc_ops.rs` shares the interop PLC-signing surface's audit-log fetch + service parsing; `routes/sign_plc_operation.rs`/`routes/submit_plc_operation.rs` build/verify rotation ops via `build_did_plc_rotation_op`/`verify_plc_operation`), `apps/identity-wallet/` (external signer genesis op building in DID ceremony; shared sovereign-session encoder for the wallet client; `mint_service_auth_jwt` for the disaster-recovery `createAccount` service-auth token — `src-tauri/src/disaster_recovery.rs`)
 
 ## Invariants
@@ -495,4 +538,5 @@ pub fn diff_audit_logs(cached: &[AuditEntry], current: &[AuditEntry]) -> Vec<Aud
 - `src/shamir.rs` - Shamir Secret Sharing (split/combine, GF(2^8) arithmetic) + share envelope v2 (`ShareEnvelope`, base32/mnemonic encode-decode, `split_secret_into_envelopes`/`combine_envelopes`)
 - `src/mnemonic.rs` - BIP-39-style 256-word list + byte↔word encoding for the human-custody Share 3 (module-private; used by `shamir.rs`)
 - `src/hpke.rs` - HPKE seal/open for notification payloads (pinned suite) + serialized-body padding arithmetic
+- `src/space.rs` - Spaces LtHash multiset hash + deniable commit sign/verify (golden-vector pinned)
 - `src/error.rs` - CryptoError enum

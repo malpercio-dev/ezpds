@@ -10,6 +10,7 @@ pub mod plc;
 pub mod service_auth;
 pub mod shamir;
 pub mod sovereign_session;
+pub mod space;
 
 pub use account_delete::{
     encode_account_delete_envelope, ACCOUNT_DELETE_DOMAIN, ACCOUNT_DELETE_METHOD,
@@ -48,4 +49,8 @@ pub use shamir::{
 pub use sovereign_session::{
     encode_sovereign_session_envelope, SOVEREIGN_SESSION_DOMAIN, SOVEREIGN_SESSION_METHOD,
     SOVEREIGN_SESSION_PATH,
+};
+pub use space::{
+    encode_space_commit_ctx, format_set_hash_element, sign_space_commit, verify_space_commit,
+    LtHash, SignedSpaceCommit, SpaceCommitCtx, LTHASH_STATE_BYTES, SPACE_COMMIT_VERSION,
 };
