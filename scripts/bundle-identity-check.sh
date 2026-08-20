@@ -63,6 +63,11 @@ WALLET_BUNDLE_ID='dev.malpercio.identitywallet'
 ADMIN_BUNDLE_ID='dev.malpercio.admincompanion'
 STABLE_ACCESS_GROUP='org.obsign.shared'
 LEGACY_ACCESS_GROUP='dev.malpercio.identitywallet'
+# The console's own pair, same design (ADR-0030), deliberately DISTINCT from the wallet's
+# stable group so neither app's Notification Service Extension can read the other's
+# notification private key.
+ADMIN_STABLE_ACCESS_GROUP='org.obsign.admin.shared'
+ADMIN_LEGACY_ACCESS_GROUP='dev.malpercio.admincompanion'
 FROZEN_ICLOUD_CONTAINER='iCloud.dev.malpercio.identitywallet'
 
 WALLET_DIR="${REPO_ROOT}/apps/identity-wallet/src-tauri"
@@ -189,14 +194,45 @@ if ! printf '%s\n' "${WALLET_INFO_NODES}" |
   '${FROZEN_ICLOUD_CONTAINER}' — the mirror would vanish from the Files app."
 fi
 
-# --- 4. Least privilege on the console -----------------------------------------------------
-# The operator console's keychain items are all re-derivable by re-pairing, so it gets no
-# shared group. (ios-template-check already forbids it an iCloud container.)
-if grep -qF 'keychain-access-groups' "${ADMIN_DIR}/Entitlements.ios.plist"; then
-  note "admin-companion declares keychain-access-groups. Its keychain items are re-derivable by
-  re-pairing, so it has no need to share a group — and sharing one would widen what the wallet's
-  identity material is reachable from."
+# --- 4. The console's access-group net ------------------------------------------------------
+# Since notification adoption the console shares its notification key and pin mirror with its
+# OWN extension through its OWN stable group — the same order-is-the-mechanism design as the
+# wallet's (section 2), console-scoped. It must never list the wallet's stable group: that
+# would let the console's extension read the wallet's notification private key.
+# (ios-template-check still forbids the console an iCloud container.)
+ADMIN_ENT_NODES="$(strip_xml_comments "${ADMIN_DIR}/Entitlements.ios.plist")"
+admin_groups="$(plist_strings_for_key 'keychain-access-groups' "${ADMIN_ENT_NODES}")"
+if [ -z "${admin_groups}" ]; then
+  note "admin-companion Entitlements.ios.plist declares no keychain-access-groups — its
+  Notification Service Extension could read neither the notification key nor the pinned
+  sender keys, and every operator alert would render as the unverified notice."
+else
+  admin_first="$(printf '%s\n' "${admin_groups}" | head -n1)"
+  if [ "${admin_first}" != "\$(AppIdentifierPrefix)${ADMIN_STABLE_ACCESS_GROUP}" ]; then
+    note "the console's stable group must be FIRST in its keychain-access-groups (that position
+  is what makes it the write target); found '${admin_first}', expected
+  '\$(AppIdentifierPrefix)${ADMIN_STABLE_ACCESS_GROUP}'."
+  fi
+  if ! printf '%s\n' "${admin_groups}" | grep -qxF -- "\$(AppIdentifierPrefix)${ADMIN_LEGACY_ACCESS_GROUP}"; then
+    note "the console's legacy group '\$(AppIdentifierPrefix)${ADMIN_LEGACY_ACCESS_GROUP}' is no
+  longer declared. It stopped being implicit the moment the explicit array appeared; only the
+  explicit entry keeps the device admin key and pairing document of pre-notification installs
+  readable."
+  fi
+  if printf '%s\n' "${admin_groups}" | grep -qxF -- "\$(AppIdentifierPrefix)${STABLE_ACCESS_GROUP}"; then
+    note "admin-companion lists the WALLET's stable group '${STABLE_ACCESS_GROUP}' — that would
+  let the console (and its extension) read the wallet's identity and notification material."
+  fi
 fi
+ADMIN_KEYCHAIN_RS="${ADMIN_DIR}/src/keychain.rs"
+for const_pair in "STABLE_ACCESS_GROUP ${ADMIN_STABLE_ACCESS_GROUP}" "LEGACY_ACCESS_GROUP ${ADMIN_LEGACY_ACCESS_GROUP}"; do
+  name="${const_pair%% *}"
+  value="${const_pair#* }"
+  if ! grep -qF -- "pub const ${name}: &str = \"${value}\";" "${ADMIN_KEYCHAIN_RS}"; then
+    note "the console keychain.rs's ${name} does not equal '${value}' — the entitlement and the
+  code that documents it have diverged."
+  fi
+done
 
 if [ "${fail}" -ne 0 ]; then
   exit 1

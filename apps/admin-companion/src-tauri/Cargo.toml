@@ -36,9 +36,23 @@ uuid = { workspace = true }
 # is the only viable TLS backend (same rationale as identity-wallet's pds_client).
 reqwest = { workspace = true }
 chrono = { workspace = true }
+# Wipe-on-drop for the notification private scalar (the same discipline the crypto crate's
+# own key buffers use).
+zeroize = { workspace = true }
 # Secure Enclave + Keychain access (real-device and macOS/simulator software paths both
 # touch the Keychain via this crate). OSX_10_12 enables the SE access-control APIs.
 security-framework = { workspace = true, features = ["OSX_10_12"] }
+
+# The APNs device-token bridge (apns.rs): iOS hands the token to two application-delegate
+# methods and exposes it nowhere else. Same objc2 crate family (and workspace versions) as
+# the wallet's bridge, so no duplicate major enters the lockfile. iOS-only — every other
+# platform treats "no token" as the ordinary state and never compiles this.
+[target.'cfg(target_os = "ios")'.dependencies]
+objc2 = { workspace = true }
+objc2-foundation = { workspace = true, features = ["NSData", "NSError", "NSString"] }
+objc2-ui-kit = { workspace = true, features = ["UIApplication", "UIResponder"] }
+objc2-user-notifications = { workspace = true, features = ["UNUserNotificationCenter", "block2"] }
+block2 = { workspace = true }
 
 # Mobile-only plugins (iOS/Android), gated to those targets so the macOS host build and
 # its test suite never compile them. Registered behind `#[cfg(mobile)]` in lib.rs, granted

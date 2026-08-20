@@ -10,9 +10,12 @@
 //! one — the loss response), and the **biometric-gate preference** that backs the
 //! Settings screen. The terminal-native operator screens consume these commands over IPC.
 
+#[cfg(target_os = "ios")]
+mod apns;
 mod device_key;
 mod diagnostics;
 mod keychain;
+mod notifications;
 mod pairings;
 mod relay_client;
 mod signing;
@@ -297,6 +300,30 @@ async fn issue_reset_token(
     relay_client::issue_reset_token(&pairing_id, &did).await
 }
 
+/// Register this device for operator push alerts on the given pairing's relay, using the
+/// device-global notification keypair. The APNs topic is the running bundle id. Reports
+/// what actually happened (`REGISTERED` / `AWAITING_APNS_TOKEN` / `UNSUPPORTED`) rather
+/// than pretending — no token yet and an older relay are both ordinary states.
+#[tauri::command]
+async fn register_for_notifications(
+    app: tauri::AppHandle,
+    pairing_id: String,
+) -> Result<relay_client::NotificationRegistration, relay_client::RelayClientError> {
+    let topic = app.config().identifier.clone();
+    relay_client::register_notifications(&pairing_id, &topic).await
+}
+
+/// Re-pin the given pairing's notification sender keys from its relay and rebuild the
+/// extension's pin mirror. Run on contact (Home load, pairing switch) — the re-pin cadence
+/// bounds a compromised sender key's window, so this is a security property, not a cache
+/// refresh. Returns the pinned set, or null when the relay predates notifications.
+#[tauri::command]
+async fn refresh_notification_sender_keys(
+    pairing_id: String,
+) -> Result<Option<Vec<pairings::SenderKey>>, relay_client::RelayClientError> {
+    relay_client::refresh_sender_keys(&pairing_id).await
+}
+
 /// Whether the biometric (user-presence) gate on signing actions is enabled. Defaults to
 /// `true` on a fresh install — signing is gated until the operator opts out in Settings.
 /// Errors serialize through `RelayClientError::Keychain` (the app's one Serialize error).
@@ -354,10 +381,19 @@ pub fn run() {
             revoke_account_credentials,
             set_account_email,
             issue_reset_token,
+            register_for_notifications,
+            refresh_notification_sender_keys,
             biometric_enabled,
             set_biometric_enabled,
             diagnostics::export_diagnostics
         ])
+        .setup(|_app| {
+            // The APNs bridge: permission prompt + device-token registration. iOS-only —
+            // the token callbacks land on the application delegate, which only exists there.
+            #[cfg(target_os = "ios")]
+            apns::register_for_remote_notifications(_app.handle());
+            Ok(())
+        })
         .run(tauri::generate_context!())
         .expect("error while running admin-companion");
 }

@@ -173,6 +173,10 @@ share sheet, and server-side self-revoke (Phase 8). Wired:
   head — verdict-free; the ok/warn/behind thresholds live in the pure, unit-tested
   `relay-status.ts`, not the endpoint) / `request_crawl(pairing_id)` (signed re-invite via
   `POST /v1/admin/request-crawl`, bypassing the auto-notify rate limit; reports each relay's outcome),
+  `register_for_notifications(pairing_id)` (operator push registration on that pairing's relay —
+  reports `REGISTERED` / `AWAITING_APNS_TOKEN` / `UNSUPPORTED`, all ordinary states) /
+  `refresh_notification_sender_keys(pairing_id)` (re-pin that relay's sender keys + rebuild the
+  NSE mirror; `null` from a relay predating notifications),
   `biometric_enabled`, `set_biometric_enabled` (plus Phase 6's `get_or_create_device_key`).
   `pairing_state` is gone — superseded by `list_pairings`.
 - **Screens**: **Pair** (`src/routes/pair/` — QR/manual + required nickname, reachable while
@@ -330,7 +334,15 @@ share sheet, and server-side self-revoke (Phase 8). Wired:
   (the app's single Serialize error type) rather than exposing `KeychainError` directly.
 - Keychain accounts: device-key accounts unchanged (`admin-device-key-priv`, `admin-device-key-pub` +
   `admin-device-key-app-label`); `admin-pairings` (the versioned multi-relay document, replaces the
-  legacy triple); `admin-biometric-enabled` (the gate preference, unchanged). Removal semantics:
+  legacy triple); `admin-biometric-enabled` (the gate preference, unchanged); plus the notification
+  trio `src-tauri/src/notifications.rs` owns — `notification-key-priv` (the device-global P-256
+  scalar, shared across pairings like the admin key), `notification-sender-keys` (the NSE pin
+  mirror, the wallet's `{version, hosts}` shape rebuilt from the pairing document on every
+  re-pin), and `notification-apns-token`. Key + mirror are written `AccessibleAfterFirstUnlock`
+  into the console's **stable access group** `org.obsign.admin.shared` (declared FIRST in
+  `Entitlements.ios.plist`, with the legacy bundle-id group second — ADR-0030's design,
+  console-scoped and deliberately distinct from the wallet's group; the NSE is entitled to
+  exactly the stable group). Removal semantics:
   a sole remaining pairing is always auto-promoted to active (unambiguous — even when the selection
   was already cleared by an earlier ambiguous removal); removing the active pairing with two or
   more remaining clears the selection and the UI must ask for an explicit pick (never silent
@@ -438,9 +450,21 @@ Host build / tests (no Xcode): `cargo build -p admin-companion`, `cargo test -p 
   CryptoKit's HPKE API — which the notification relay's decrypt-on-arrival extension needs —
   starts at iOS 17, and the deployment target previously rode tauri-cli's 13.0 default. This
   app has no installed base below 17, and raising both apps together keeps the SHARED
-  XcodeGen template's `{{apple.ios-version}}` rendering the same value for either lane. The
-  operator-alert side of notifications lands in a later phase; the floor is raised now so
-  that phase is a code change rather than a deployment-target change.
+  XcodeGen template's `{{apple.ios-version}}` rendering the same value for either lane.
+- **Operator push alerts (the console half of the notification relay).** One device-global
+  notification P-256 keypair across every pairing (the admin key model), registered per relay
+  via the signed `POST /v1/admin/notifications/register` and re-pinned against
+  `GET /v1/admin/notifications/sender-keys` on every Home load/switch (fire-and-forget; a
+  successful registration re-pins on the same contact). `Pairing` carries the per-relay
+  `notificationSenderKeys` set (serde default — doc version stays 1 — and unknown fields now
+  round-trip via flattened `extra` maps, so an older build can't strip a newer one's
+  additions); `notifications.rs` mirrors all pairings' pins into the NSE-readable
+  `notification-sender-keys` item. `apns.rs` is the iOS-only token bridge (the wallet's
+  add-only delegate pattern, minus tap routing — that lands with the flagged-account alert
+  work). The shared template renders the NSE target for this app too, reading this app's
+  keychain service via its Info.plist `EzpdsKeychainService`; the release lane needs the
+  extension's own provisioning profile (`IOS_MOBILE_PROVISION_ADMIN_NSE`), and the relay must
+  serve `dev.malpercio.admincompanion` as an APNs topic.
 - **Grotesk UI font is provisional** (system SF Pro via `--font-sans`) until the
   `/impeccable` font pass; JetBrains Mono (the signature voice) is bundled in `static/fonts/`.
 - **App icon: `app-icon.svg` is the source of truth** (brand rationale in DESIGN.md §6);

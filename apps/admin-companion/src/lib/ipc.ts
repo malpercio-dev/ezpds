@@ -42,15 +42,24 @@ export type RelayClientError =
   | { code: 'NO_SUCH_PAIRING' }
   | { code: 'SELF_REVOKE_NOT_ALLOWED' };
 
+/** One published notification sender key, as pinned per pairing. */
+export interface SenderKey {
+  kid: number;
+  publicKey: string;
+}
+
 /** One stored relay pairing. `id` is the stable local handle (a UUID minted at pair
  * time); `deviceId` is relay-assigned and changes on re-pair. `nickname` is the
- * operator's local display name and never leaves the device. */
+ * operator's local display name and never leaves the device.
+ * `notificationSenderKeys` is this relay's pinned sender-key set (absent until the
+ * first refresh — an older document parses as unpinned). */
 export interface Pairing {
   id: string;
   nickname: string;
   relayUrl: string;
   deviceId: string;
   deviceLabel: string;
+  notificationSenderKeys?: SenderKey[];
 }
 
 /** Every stored pairing plus the active selection (`null` when nothing is selected —
@@ -728,6 +737,31 @@ export function issueResetToken(
   did: string,
 ): Promise<IssuedResetToken> {
   return invoke<IssuedResetToken>('issue_reset_token', { pairingId, did });
+}
+
+/** What a notification-registration attempt actually did: `REGISTERED`, or the two
+ * ordinary non-failures — `AWAITING_APNS_TOKEN` (no device token yet: permission
+ * undecided/declined, or a simulator) and `UNSUPPORTED` (the relay predates the
+ * notification surface; relays in one pairing set upgrade independently). */
+export type NotificationRegistration = 'REGISTERED' | 'AWAITING_APNS_TOKEN' | 'UNSUPPORTED';
+
+/**
+ * Register this device for operator push alerts (flagged accounts, storage warnings)
+ * on the given pairing's relay. Fire-and-forget from the screens' perspective — every
+ * outcome is an ordinary state, and the next contact retries.
+ */
+export function registerForNotifications(pairingId: string): Promise<NotificationRegistration> {
+  return invoke<NotificationRegistration>('register_for_notifications', { pairingId });
+}
+
+/**
+ * Re-pin the given pairing's notification sender keys from its relay (and rebuild the
+ * extension's pin mirror). Run on contact — the re-pin cadence bounds a compromised
+ * sender key's window. Returns the pinned set, or `null` when the relay predates
+ * notifications.
+ */
+export function refreshNotificationSenderKeys(pairingId: string): Promise<SenderKey[] | null> {
+  return invoke<SenderKey[] | null>('refresh_notification_sender_keys', { pairingId });
 }
 
 /** Whether the biometric (user-presence) gate on signing actions is enabled (default on). */

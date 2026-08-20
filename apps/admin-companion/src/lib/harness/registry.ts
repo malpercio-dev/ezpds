@@ -29,6 +29,7 @@ import type {
   RevokedCredentials,
   RepairedEmail,
   IssuedResetToken,
+  SenderKey,
 } from '$lib/ipc';
 import { sortFlaggedFirst } from '$lib/flags';
 import {
@@ -73,6 +74,8 @@ export type CommandName =
   | 'revoke_account_credentials'
   | 'set_account_email'
   | 'issue_reset_token'
+  | 'register_for_notifications'
+  | 'refresh_notification_sender_keys'
   | 'biometric_enabled'
   | 'set_biometric_enabled'
   // biometric plugin gate (driven by $lib/biometric — resolves = allow)
@@ -335,6 +338,20 @@ export function buildRegistry(state: AdminState): Registry {
         token: `RESET-${hashToken(String(args.did ?? '')).toUpperCase().slice(0, 10)}`,
         expiresIn: 3600,
       };
+    },
+
+    register_for_notifications: (args): string => {
+      // The fake device always "has" an APNs token, so registration reports success;
+      // use failNext to exercise AWAITING_APNS_TOKEN / UNSUPPORTED / error states.
+      requireRelay(state, String(args.pairingId ?? ''));
+      return 'REGISTERED';
+    },
+
+    refresh_notification_sender_keys: (args): SenderKey[] => {
+      const relay = requireRelay(state, String(args.pairingId ?? ''));
+      // A stable per-relay set: kid derived from the pairing so two relays pin
+      // distinguishable keys.
+      return [{ kid: 1, publicKey: `did:key:zharness${hashToken(relay.pairingId)}` }];
     },
 
     biometric_enabled: (): boolean => state.biometricEnabled,

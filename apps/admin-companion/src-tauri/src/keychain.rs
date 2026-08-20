@@ -14,8 +14,11 @@
 //! trigger a password prompt.
 
 #[cfg(not(test))]
+use security_framework::access_control::{ProtectionMode, SecAccessControl};
+#[cfg(not(test))]
 use security_framework::passwords::{
     delete_generic_password, get_generic_password, set_generic_password,
+    set_generic_password_options, PasswordOptions,
 };
 
 use crate::pairings::PairingDoc;
@@ -28,6 +31,22 @@ use crate::pairings::PairingDoc;
 // sees it as unused. Real (non-test) builds use it on every Keychain call.
 #[allow(dead_code)]
 pub const SERVICE: &str = "ezpds-admin-companion";
+
+/// The stable Keychain access group, FIRST in `Entitlements.ios.plist` — the order is the
+/// mechanism (ADR-0030): iOS files unqualified writes into the first entitled group and
+/// searches all of them on reads, so new items (notification key, NSE pin mirror) land
+/// here, where the Notification Service Extension — entitled to exactly this group — can
+/// read them. Decoupled from the bundle id so a rename cannot orphan items; deliberately
+/// distinct from the wallet's `org.obsign.shared` so neither app's extension can read the
+/// other's notification private key.
+#[allow(dead_code)]
+pub const STABLE_ACCESS_GROUP: &str = "org.obsign.admin.shared";
+
+/// The legacy (implicit-until-the-entitlement-existed) group where every item a
+/// pre-notification install wrote still lives — the device admin key, the pairing
+/// document, the biometric pref. Listed second in the entitlements, indefinitely.
+#[allow(dead_code)]
+pub const LEGACY_ACCESS_GROUP: &str = "dev.malpercio.admincompanion";
 
 #[derive(Debug, thiserror::Error)]
 pub enum KeychainError {
@@ -72,6 +91,38 @@ pub fn get_item(account: &str) -> Result<Vec<u8>, KeychainError> {
     }
     #[cfg(not(test))]
     get_generic_password(SERVICE, account).map_err(KeychainError::Security)
+}
+
+/// Store bytes under `kSecAttrAccessibleAfterFirstUnlock`, so the Notification Service
+/// Extension can read them while the device is locked.
+///
+/// The console analogue of the wallet's accessor of the same name (see that module's doc
+/// for the full rationale): the class rides a `SecAccessControl` with **no** constraint
+/// flags (the extension runs headless and could not answer a biometric prompt), and the
+/// write is delete-then-add because `SecItemUpdate` cannot change an existing item's
+/// protection class. Reserve it for notification material; everything else stays at the
+/// framework default. The in-memory test store does not model protection classes.
+pub fn store_item_after_first_unlock(account: &str, data: &[u8]) -> Result<(), KeychainError> {
+    #[cfg(test)]
+    {
+        test_store::set(account, data.to_vec());
+        Ok(())
+    }
+    #[cfg(not(test))]
+    {
+        // Not-found is the ordinary first-write case, so the delete's verdict is discarded;
+        // a delete that fails for any other reason surfaces on the add below.
+        let _ = delete_generic_password(SERVICE, account);
+
+        let control = SecAccessControl::create_with_protection(
+            Some(ProtectionMode::AccessibleAfterFirstUnlock),
+            0,
+        )
+        .map_err(KeychainError::Security)?;
+        let mut options = PasswordOptions::new_generic_password(SERVICE, account);
+        options.set_access_control(control);
+        set_generic_password_options(data, options).map_err(KeychainError::Security)
+    }
 }
 
 /// Delete an item from the Keychain by account name.
@@ -219,6 +270,37 @@ pub fn clear_for_test() {
 mod tests {
     use super::*;
 
+    /// The entitlements files are the mechanism the constants above describe: the stable
+    /// group must be declared FIRST in the app's array (unqualified writes land there),
+    /// the legacy group must stay declared, and the NSE must be entitled to the stable
+    /// group it reads. Compile-time neighbors of `just bundle-identity-check`'s CI gate.
+    #[test]
+    fn entitlements_declare_the_stable_group_first() {
+        // Match the ACTIVE <string> nodes, never bare substrings: both plists' explanatory
+        // comments quote the very group names being asserted, so a bare `find` is satisfied
+        // (or misled) by prose alone. `just bundle-identity-check` strips comments for the
+        // same reason.
+        let node = |group: &str| format!("<string>$(AppIdentifierPrefix){group}</string>");
+
+        let app = include_str!("../Entitlements.ios.plist");
+        let stable = app
+            .find(&node(STABLE_ACCESS_GROUP))
+            .expect("the app must declare the stable access group");
+        let legacy = app
+            .find(&node(LEGACY_ACCESS_GROUP))
+            .expect("the app must keep the legacy access group declared");
+        assert!(
+            stable < legacy,
+            "the stable group must be FIRST — iOS files unqualified writes into it"
+        );
+
+        let nse = include_str!("../Entitlements.NSE.plist");
+        assert!(
+            nse.contains(&node(STABLE_ACCESS_GROUP)),
+            "the NSE must be entitled to the stable group it reads"
+        );
+    }
+
     #[test]
     fn biometric_pref_defaults_on_and_round_trips() {
         clear_for_test();
@@ -240,13 +322,7 @@ mod tests {
         relay_url: &str,
         device_id: &str,
     ) -> crate::pairings::Pairing {
-        crate::pairings::Pairing {
-            id: id.to_string(),
-            nickname: nickname.to_string(),
-            relay_url: relay_url.to_string(),
-            device_id: device_id.to_string(),
-            device_label: "Operator iPhone".to_string(),
-        }
+        crate::pairings::Pairing::new(id, nickname, relay_url, device_id, "Operator iPhone")
     }
 
     #[test]

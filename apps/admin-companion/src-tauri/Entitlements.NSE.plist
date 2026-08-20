@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <!--
+    The console's Notification Service Extension code-signing entitlements — the console
+    analog of the wallet's Entitlements.NSE.plist, whose header carries the full story of
+    how this file reaches a shipped build (Xcode-driven signing via the template's
+    CODE_SIGN_ENTITLEMENTS; the release lane's `_reexport-embedded-extensions` +
+    `_verify-signed-ipa` pair in just/ios.just).
+
+    ONE entitlement: the console's stable keychain group, where the app writes the
+    notification private key and the NSE pin mirror (`AccessibleAfterFirstUnlock`).
+    Without it the extension's unqualified Keychain reads search only its own implicit
+    group, find nothing, and every push renders as the unverified notice.
+
+    Unlike the wallet's NSE this lists NO legacy group: the console's notification items
+    are new with this extension and have only ever lived in the stable group, so there is
+    nothing legacy to read. And no `aps-environment` (an app entitlement) or cloud
+    container, as ever — least privilege.
+
+    PORTAL WORK: the extension is a separate bundle
+    (dev.malpercio.admincompanion.NotificationService), so it needs its own explicit App
+    ID and distribution profile (the IOS_MOBILE_PROVISION_ADMIN_NSE secret) before the
+    admin TestFlight lane can sign a build that embeds it. See docs/ios-cicd.md.
+  -->
+  <key>keychain-access-groups</key>
+  <array>
+    <string>$(AppIdentifierPrefix)org.obsign.admin.shared</string>
+  </array>
+</dict>
+</plist>

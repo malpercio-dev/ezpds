@@ -101,6 +101,10 @@ pub(crate) fn active_labels(
 pub(crate) struct LabelDiff {
     /// Labels in force that are missing from storage or stored with a different `cts`.
     pub(crate) upserts: Vec<ActiveLabel>,
+    /// The insert subset of `upserts`: labels with no stored `(did, val)` row at all —
+    /// genuinely new flags, as opposed to `cts` refreshes of labels the operator already
+    /// knows about. This is what the operator notifier fires on.
+    pub(crate) new_flags: Vec<ActiveLabel>,
     /// Stored `(did, val)` pairs no longer in force.
     pub(crate) removals: Vec<(String, String)>,
 }
@@ -120,9 +124,14 @@ pub(crate) fn diff_labels(desired: &[ActiveLabel], stored: &[ActiveLabel]) -> La
         .map(|l| (l.did.as_str(), l.val.as_str()))
         .collect();
 
-    let upserts = desired
+    let upserts: Vec<ActiveLabel> = desired
         .iter()
         .filter(|l| stored_by_key.get(&(l.did.as_str(), l.val.as_str())) != Some(&l.cts.as_str()))
+        .cloned()
+        .collect();
+    let new_flags = upserts
+        .iter()
+        .filter(|l| !stored_by_key.contains_key(&(l.did.as_str(), l.val.as_str())))
         .cloned()
         .collect();
     let removals = stored
@@ -131,7 +140,11 @@ pub(crate) fn diff_labels(desired: &[ActiveLabel], stored: &[ActiveLabel]) -> La
         .map(|l| (l.did.clone(), l.val.clone()))
         .collect();
 
-    LabelDiff { upserts, removals }
+    LabelDiff {
+        upserts,
+        new_flags,
+        removals,
+    }
 }
 
 /// Parse an RFC 3339 timestamp; `None` for anything unparseable.
@@ -259,6 +272,11 @@ mod tests {
         let diff = diff_labels(&desired, &stored);
         assert_eq!(diff.upserts, vec![desired[1].clone()]);
         assert_eq!(
+            diff.new_flags,
+            vec![desired[1].clone()],
+            "a label with no stored (did, val) row is a genuinely new flag"
+        );
+        assert_eq!(
             diff.removals,
             vec![("did:plc:carol".to_string(), "spam".to_string())]
         );
@@ -278,6 +296,10 @@ mod tests {
         }];
         let diff = diff_labels(&desired, &stored);
         assert_eq!(diff.upserts, desired);
+        assert!(
+            diff.new_flags.is_empty(),
+            "a cts refresh re-writes the row but is not a new flag — it must never notify"
+        );
         assert!(diff.removals.is_empty());
     }
 }

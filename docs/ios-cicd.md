@@ -313,9 +313,17 @@ in step 3.
 > the XcodeGen template, so from the change that added it onward the wallet's TestFlight lane
 > archives two bundles and needs a profile for each. Until the App ID and profile below exist,
 > `just ios-ipa` (and therefore `ios-testflight.yml`) fails at signing. Nothing else is blocked:
-> `just ios-pr-check` runs no `xcodebuild` and stays green, and admin-companion is untouched —
-> the extension is deliberately gated to the wallet's bundle id in `scripts/ios/project.yml`, so
-> the console needs none of this until MM-421 widens that gate.
+> `just ios-pr-check` runs no `xcodebuild` and stays green.
+>
+> **The same shape now applies to the Admin Companion.** Since the console's notification
+> adoption widened the template's gate, `admin-testflight.yml` also archives two bundles and
+> needs the console's own extension artifacts: an App ID for
+> `dev.malpercio.admincompanion.NotificationService`, a distribution profile bound to it, and
+> the **`IOS_MOBILE_PROVISION_ADMIN_NSE`** secret (fed to the reusable workflow's
+> `IOS_MOBILE_PROVISION_NSE`). The console's *app* profile must also be regenerated after
+> enabling Push Notifications on its App ID (its entitlements now carry `aps-environment`),
+> and the notification relay's served-topics list (`EZPDS_NOTIFY_APNS_TOPICS`) must include
+> `dev.malpercio.admincompanion`, or the relay refuses to mint push handles for the console.
 
 **Setting it up** (one time, mirroring the Admin Companion list above):
 

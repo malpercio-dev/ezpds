@@ -195,6 +195,28 @@ pub async fn upload_blob(
         ApiError::new(ErrorCode::InternalError, "failed to record blob metadata")
     })?;
 
+    // Operator alert when this upload crosses the storage-cap warning threshold.
+    // Edge-triggered on the crossing so a nearly-full account uploading repeatedly pages the
+    // operator once, not once per upload; freeing space below the threshold re-arms it.
+    let used_after = used + bytes.len() as i64;
+    if crosses_storage_warning(used, used_after, quota) {
+        let pct = used_after.saturating_mul(100) / quota;
+        crate::notifications::notify_admin_devices(
+            &state,
+            crate::notifications::NotificationPayload::new(
+                "storage_cap_approaching",
+                "Storage cap approaching",
+                format!("{did} has used {pct}% of its storage quota."),
+            )
+            .with_data(serde_json::json!({
+                "server": state.config.public_url,
+                "screen": "accounts",
+                "did": did,
+            })),
+        )
+        .await;
+    }
+
     // An agent-attributed upload records its audit row before the success response: the audit
     // trail is the accountability guarantee, so a failure here fails the request (the stored
     // blob is content-addressed — a retry is an idempotent duplicate-CID upload). Only OAuth
@@ -302,6 +324,22 @@ async fn collect_body_with_limit(body: Body, max_bytes: usize) -> Result<Vec<u8>
         })
 }
 
+/// Percentage of the per-account quota at which the operator hears about it.
+const STORAGE_CAP_WARN_PERCENT: i64 = 90;
+
+/// Whether this upload takes the account across the storage-cap warning threshold.
+///
+/// True only on the crossing itself — an account already past the threshold stays quiet
+/// until it drops below and crosses again. A non-positive quota never warns (the quota
+/// check above would have refused the upload long before).
+fn crosses_storage_warning(used_before: i64, used_after: i64, quota: i64) -> bool {
+    if quota <= 0 {
+        return false;
+    }
+    let threshold = quota.saturating_mul(STORAGE_CAP_WARN_PERCENT) / 100;
+    used_before < threshold && used_after >= threshold
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -310,6 +348,21 @@ mod tests {
     use axum::{body::Body, http::Request, routing::post, Router};
     use std::sync::Arc;
     use tower::ServiceExt;
+
+    #[test]
+    fn storage_warning_fires_only_on_the_threshold_crossing() {
+        let quota = 1000;
+        // Below → below: quiet.
+        assert!(!crosses_storage_warning(100, 500, quota));
+        // Crossing 90%: fires.
+        assert!(crosses_storage_warning(850, 910, quota));
+        // Landing exactly on the threshold counts as crossed.
+        assert!(crosses_storage_warning(899, 900, quota));
+        // Already past: quiet — the crossing already paged.
+        assert!(!crosses_storage_warning(910, 950, quota));
+        // A degenerate quota never warns.
+        assert!(!crosses_storage_warning(0, 10, 0));
+    }
 
     fn app_with_state(state: AppState) -> Router {
         Router::new()

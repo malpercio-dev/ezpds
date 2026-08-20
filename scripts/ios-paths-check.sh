@@ -65,6 +65,11 @@ path_deps() {
 #   .github/actions/ios-setup/**— the shared runner-preamble composite action all three
 #                                 lanes use (toolchain, cache, tauri-cli pin, brew shim)
 #   rust-toolchain.toml         — pins the toolchain + iOS targets
+#   ios/**                      — the shared Swift sources for the Notification Service
+#                                 Extension. Both apps render the NSE target since the
+#                                 console's notification adoption, so a Swift change there
+#                                 affects every lane. Not a cargo crate, so the dependency
+#                                 graph above cannot see it.
 INFRA=(
   "Cargo.toml"
   "Cargo.lock"
@@ -74,22 +79,17 @@ INFRA=(
   "scripts/ios/**"
   ".github/actions/ios-setup/**"
   "rust-toolchain.toml"
+  "ios/**"
 )
 
 # Non-crate entries that belong to ONE app rather than every lane. Kept apart from INFRA
 # because this gate enforces tightness as well as coverage: an entry here is asserted to be
 # absent from the lanes it does not belong to, so a lane cannot quietly acquire a trigger for
-# sources it never compiles.
-#
-#   ios/**  — the shared Swift sources for the Notification Service Extension. The NSE target
-#             in scripts/ios/project.yml is gated to the wallet's bundle id, so admin-companion's
-#             generated project contains no target that compiles them and a Swift change there
-#             cannot affect its build. Not a cargo crate either, so the dependency graph above
-#             cannot see it. Move it to INFRA (or add a second entry) in the same change that
-#             widens that gate — the console's own notification adoption.
+# sources it never compiles. Empty since the NSE gate widened to both apps (ios/** moved to
+# INFRA); the seam stays for the next single-app source tree.
 app_infra_for() { # <app>
   case "$1" in
-    identity-wallet) printf '%s\n' "ios/**" ;;
+    identity-wallet) ;;
     admin-companion) ;;
   esac
 }
