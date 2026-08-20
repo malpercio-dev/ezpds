@@ -66,6 +66,7 @@ screen and reproduce any state without a Mac/Xcode/simulator. Design + ACs:
 - Utilities (each file's header carries its rules):
   - `src/lib/appearance.ts` — System/Light/Dark override; Keychain is truth, localStorage mirror is pre-paint only
   - `src/lib/agent-scopes.ts` — plain-language OAuth scope descriptions; elevated flags + unknown-token honesty rule
+  - `src/lib/handle.ts` — handle assembly + validation shared by create (`HandleScreen`) and change-handle (`ChangeHandleScreen`); `composeHandle`/`isValidLabel` for the served-domain label path, `isValidHandle`/`normalizeHandle` for the custom-domain full-handle path
   - `src/lib/deadline.ts` — 72h PLC recovery-window math (`getDeadline`/`getUrgency`/`formatCountdown`)
   - `src/lib/identity-status.ts` — identity panel state derivation; panel-vs-badge `safe` and the load-bearing did:web `isVerified` short-circuit
   - `src/lib/protection.ts` — shared Defend derivations; ordering-vs-`activeStrip` rule, worst-state-wins summary
@@ -131,7 +132,7 @@ allowlist lives in its module's doc — `claim.rs` (the 4-point claim verificati
 | `migration_orchestrator.rs` | the outbound-migration state machine (prepare → … → finalize; also disaster recovery's transfer tail); cutover ordering, the capability-gated credential branch, blob-loss handling, and state-vs-session persistence in the module doc |
 | `disaster_recovery.rs` | sovereign disaster recovery ("Rebuild from backup"): two guarded PLC ops around an offline-JWT `createAccount` + iCloud-CAR import; sequencing and the anti-lockout rule in the module doc |
 | `endpoint_repair.rs` | sovereign `atproto_pds`-endpoint repair (device-key-signed, direct to plc.directory; new host probed first); the endpoint-string-only guard and its no-op reconcile in the module doc |
-| `handle_change.rs` | sovereign change-handle: `updateHandle` first, device-key-signed alsoKnownAs op second, retry self-heals; guard and error classifiers in the module doc |
+| `handle_change.rs` | sovereign change-handle: `updateHandle` first, device-key-signed alsoKnownAs op second, retry self-heals; also `check_custom_handle_dns`, the read-only DNS pre-flight for a handle on a user-owned domain (folds the hosting PDS's `resolveHandle` and the wallet's own TXT lookup, returning the exact `_atproto` record required); guard and error classifiers in the module doc |
 | `rotate_repo_key.rs` | sovereign repo signing-key rotation (ADR-0025): PDS stages, wallet signs, PDS submits + cuts over under the repo write lock — see module doc |
 | `self_held_kit.rs` | escrow-less self-held Shamir kit for claimed identities: build/submit/confirm + the escrow-offer seam; share custody and the plc.directory-only posture in the module doc |
 | `identity_removal.rs` | permanent removal: `deleteAccount` → (did:plc) tombstone → wipe-last, resumable via the pending-removals marker; password-vs-signed-proof resolution and the local-only forget hatch in the module doc |
