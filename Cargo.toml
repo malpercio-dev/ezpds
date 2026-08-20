@@ -154,6 +154,10 @@ hmac = "0.12"
 # HKDF-SHA256 for deriving the recovery keypair from the escrow seed (same RustCrypto family as
 # sha2/hmac, already resolved transitively via reqwest/rustls).
 hkdf = "0.12"
+# BLAKE3 in XOF mode for the Spaces LtHash element expansion (crypto). The reference
+# permissioned-data implementation pins BLAKE3 with dkLen=2048; no other hash in the tree
+# offers a compatible XOF. default-features = false drops std/rayon extras it doesn't need.
+blake3 = { version = "1", default-features = false }
 # RFC 9180 HPKE for the notification relay's sealed payloads (crypto). 0.13, not 0.14:
 # 0.14 pulls its own p256 0.14 / aes-gcm 0.11 / hkdf 0.13 line (plus p384 + p521, which its
 # coarse `nistp` feature can't exclude), compiling a second major of three crypto crates the
