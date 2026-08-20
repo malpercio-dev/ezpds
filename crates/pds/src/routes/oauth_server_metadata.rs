@@ -276,6 +276,7 @@ mod tests {
                 "blob:*/*",
                 "account:*",
                 "identity:*",
+                "space:*",
                 "include:*"
             ])
         );

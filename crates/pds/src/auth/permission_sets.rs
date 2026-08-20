@@ -272,6 +272,20 @@ enum PermissionEntry {
     Identity {
         attr: String,
     },
+    Space {
+        #[serde(rename = "spaceType")]
+        space_type: String,
+        #[serde(default)]
+        authority: Option<String>,
+        #[serde(default)]
+        skey: Option<String>,
+        #[serde(default, deserialize_with = "string_or_vec")]
+        collection: Vec<String>,
+        #[serde(default, deserialize_with = "string_or_vec")]
+        action: Vec<String>,
+        #[serde(default, deserialize_with = "string_or_vec")]
+        manage: Vec<String>,
+    },
 }
 
 /// Accept either a bare value or an array of values during deserialization — permission-set
@@ -340,7 +354,47 @@ fn render_permission_entry(entry: &PermissionEntry, include_aud: Option<&str>) -
             format_scope("account", Some(attr), &params)
         }
         PermissionEntry::Identity { attr } => format_scope("identity", Some(attr), &[]),
+        PermissionEntry::Space {
+            space_type,
+            authority,
+            skey,
+            collection,
+            action,
+            manage,
+        } => {
+            let mut params: Vec<(String, String)> = Vec::new();
+            if let Some(authority) = authority {
+                params.push(("authority".to_string(), authority.clone()));
+            }
+            if let Some(skey) = skey {
+                params.push(("skey".to_string(), skey.clone()));
+            }
+            params.extend(
+                collection
+                    .iter()
+                    .map(|c| ("collection".to_string(), c.clone())),
+            );
+            params.extend(action.iter().map(|a| ("action".to_string(), a.clone())));
+            params.extend(manage.iter().map(|m| ("manage".to_string(), m.clone())));
+            format_scope("space", Some(space_type), &params)
+        }
     }
+}
+
+/// Whether `nsid` falls under the namespace authority of the permission set `set_nsid`.
+///
+/// Per the permission spec, a set may only reference resources in its own NSID group or in a
+/// group nested below it — never a sibling group or a parent. A space entry's `spaceType` is
+/// held to this rule; its `collection` values deliberately are not, since a space routinely
+/// carries record types from other namespaces.
+fn under_namespace_authority(set_nsid: &str, nsid: &str) -> bool {
+    let Some((set_group, _)) = set_nsid.rsplit_once('.') else {
+        return false;
+    };
+    let Some((group, _)) = nsid.rsplit_once('.') else {
+        return false;
+    };
+    group == set_group || group.starts_with(&format!("{set_group}."))
 }
 
 /// Whether a permission entry is a `blob` grant covering `*/*` — disallowed inside a
@@ -452,6 +506,26 @@ pub(crate) async fn resolve_permission_set(
                         nsid,
                         aud,
                         "skipping permission-set rpc entry with a pinned audience"
+                    );
+                    return None;
+                }
+            }
+            // A set may not hand out a cross-type space grant: `spaceType` must name one
+            // concrete type, under the set's own namespace authority. `space:*` is
+            // expressible only as a standalone scope the user requests directly.
+            if let PermissionEntry::Space { space_type, .. } = entry {
+                if space_type == "*" {
+                    tracing::debug!(
+                        nsid,
+                        "skipping permission-set space entry with a wildcard spaceType"
+                    );
+                    return None;
+                }
+                if !under_namespace_authority(nsid, space_type) {
+                    tracing::debug!(
+                        nsid,
+                        space_type,
+                        "skipping permission-set space entry outside the set's namespace authority"
                     );
                     return None;
                 }
@@ -792,6 +866,128 @@ mod tests {
             vec!["rpc:app.bsky.feed.getFeed?aud=*".to_string()],
             "the pinned-audience entry is dropped; the wildcard-audience one survives"
         );
+    }
+
+    /// Space entries carry the same parameters as a `space:` scope string, and render through
+    /// the same grammar — including `manage`, which no other entry type has.
+    #[tokio::test]
+    async fn space_entry_expands_with_its_params() {
+        let server = MockServer::start().await;
+        let nsid = "app.bsky.authFull";
+        let schema = permission_set_schema(
+            nsid,
+            serde_json::json!([
+                {
+                    "type": "permission",
+                    "resource": "space",
+                    "spaceType": "app.bsky.forum",
+                    "authority": "*",
+                    "skey": "default",
+                    "collection": ["app.bsky.reply", "app.bsky.thread"],
+                    "action": ["read", "create"],
+                    "manage": ["update"],
+                },
+                { "type": "permission", "resource": "space", "spaceType": "app.bsky.bookmarks" },
+            ]),
+        );
+        let state = state_with_mock_authority(&server, nsid, schema).await;
+
+        let tokens = resolve_permission_set(&state, nsid, None)
+            .await
+            .expect("should expand");
+        assert_eq!(
+            tokens,
+            vec![
+                "space:app.bsky.forum?authority=*&skey=default&collection=app.bsky.reply&collection=app.bsky.thread&action=read&action=create&manage=update".to_string(),
+                "space:app.bsky.bookmarks".to_string(),
+            ]
+        );
+    }
+
+    /// A cross-type grant is expressible only as a standalone scope the user requests
+    /// directly, so a set that tries to bundle one has that entry dropped.
+    #[tokio::test]
+    async fn wildcard_space_type_entry_is_skipped() {
+        let server = MockServer::start().await;
+        let nsid = "app.bsky.authFull";
+        let schema = permission_set_schema(
+            nsid,
+            serde_json::json!([
+                { "type": "permission", "resource": "space", "spaceType": "*", "authority": "*" },
+                { "type": "permission", "resource": "space", "spaceType": "app.bsky.forum" },
+            ]),
+        );
+        let state = state_with_mock_authority(&server, nsid, schema).await;
+
+        let tokens = resolve_permission_set(&state, nsid, None)
+            .await
+            .expect("should expand");
+        assert_eq!(tokens, vec!["space:app.bsky.forum".to_string()]);
+    }
+
+    /// The set may only reach space types under its own namespace authority — a sibling
+    /// group or another organization's namespace is out of reach.
+    #[tokio::test]
+    async fn space_entry_outside_the_namespace_authority_is_skipped() {
+        let server = MockServer::start().await;
+        let nsid = "app.bsky.feed.authPost";
+        let schema = permission_set_schema(
+            nsid,
+            serde_json::json!([
+                { "type": "permission", "resource": "space", "spaceType": "com.atmoboards.forum" },
+                { "type": "permission", "resource": "space", "spaceType": "app.bsky.actor.space" },
+                {
+                    "type": "permission",
+                    "resource": "space",
+                    "spaceType": "app.bsky.feed.threads",
+                    "collection": ["com.atmoboards.thread"],
+                },
+            ]),
+        );
+        let state = state_with_mock_authority(&server, nsid, schema).await;
+
+        let tokens = resolve_permission_set(&state, nsid, None)
+            .await
+            .expect("should expand");
+        assert_eq!(
+            tokens,
+            vec!["space:app.bsky.feed.threads?collection=com.atmoboards.thread".to_string()],
+            "only the same-group space type survives; its foreign collection is allowed"
+        );
+    }
+
+    // ── under_namespace_authority ────────────────────────────────────────────
+
+    #[test]
+    fn namespace_authority_covers_the_same_group_and_its_children_only() {
+        // Same group.
+        assert!(under_namespace_authority(
+            "app.example.feed.authOnlyPost",
+            "app.example.feed.post"
+        ));
+        // A group above may reach down, recursively.
+        assert!(under_namespace_authority(
+            "app.example.authFull",
+            "app.example.feed.post"
+        ));
+        // Siblings and parents are out of reach.
+        assert!(!under_namespace_authority(
+            "app.example.feed.authOnlyPost",
+            "app.example.actor.profile"
+        ));
+        assert!(!under_namespace_authority(
+            "app.example.feed.authOnlyPost",
+            "app.example.profile"
+        ));
+        // A near-miss prefix is not a child group.
+        assert!(!under_namespace_authority(
+            "app.example.feed.authOnlyPost",
+            "app.example.feedback.post"
+        ));
+        assert!(!under_namespace_authority(
+            "nodots",
+            "app.example.feed.post"
+        ));
     }
 
     // ── resolve_permission_set_cached ────────────────────────────────────────
