@@ -12,8 +12,10 @@ This page covers **machine-local** routines (created on one developer's
 machine). Cloud-hosted Claude Code Routines — which run unattended and survive
 any one machine — are documented in their own files:
 [`release-docs-routine.md`](release-docs-routine.md) (per-release
-docs/marketing pass) and [`dream-routine.md`](dream-routine.md) (nightly
-documentation-consolidation PR).
+docs/marketing pass), [`dream-routine.md`](dream-routine.md) (nightly
+documentation-consolidation PR), and
+[`spaces-alpha-watch-routine.md`](spaces-alpha-watch-routine.md) (Friday
+Atproto Spaces alpha spec-delta watch).
 
 **Why this file exists.** These routines are stored **outside the repository**,
 per-developer, at `~/.claude/scheduled-tasks/<taskId>/SKILL.md`. They are not
