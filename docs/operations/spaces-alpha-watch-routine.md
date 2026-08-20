@@ -8,7 +8,7 @@ one machine — unlike the machine-local routines in
 alpha** release cadence. The alpha ships updates on **Thursdays**
 ([announcement](https://atproto.com/blog/atproto-spaces-alpha)); this routine
 runs **Fridays at 14:00 UTC** and re-diffs the spec so the gap analysis and the
-Wave 9 (Spaces) implementation issues never silently drift from upstream.
+Wave 10: Spaces implementation issues never silently drift from upstream.
 
 - **Schedule:** `0 14 * * 5` (Fridays 14:00 UTC)
 - **Mode:** fresh session per fire, in the ezpds remote environment; push
@@ -20,7 +20,7 @@ Wave 9 (Spaces) implementation issues never silently drift from upstream.
 - **Output:** nothing when the week is quiet; otherwise a PR updating
   [`docs/design-plans/2026-07-17-permissioned-data-gap-analysis.md`](../design-plans/2026-07-17-permissioned-data-gap-analysis.md)
   (dated entries in its §0 spec-delta log + corrections to affected sections)
-  with implementation impact on the Wave 9 issues named in the PR body.
+  with implementation impact on the Wave 10 issues named in the PR body.
 - **Retirement:** delete the Routine when Spaces reaches its official launch
   and the gap analysis is superseded by implementation docs (or fold the watch
   into a release-note check at that point).
@@ -34,8 +34,8 @@ Wave 9 (Spaces) implementation issues never silently drift from upstream.
 > Context: `docs/design-plans/2026-07-17-permissioned-data-gap-analysis.md` is
 > the living gap analysis pinned to the Spaces spec. Its §0 is a dated
 > spec-delta log naming the proposals-repo commits it was last synced against.
-> Implementation is tracked in Linear (team MM, project ezpds, label "Wave 9
-> (Spaces)"); the issue breakdown is §7 of that doc.
+> Implementation is tracked in Linear (team MM, project ezpds, label "Wave 10:
+> Spaces", issues MM-506…MM-518); the issue breakdown is §7 of that doc.
 >
 > Steps:
 > 1. In the ezpds checkout, `git fetch origin main` and read the gap-analysis
@@ -56,10 +56,10 @@ Wave 9 (Spaces) implementation issues never silently drift from upstream.
 >    `claude/spaces-alpha-watch-YYYYMMDD` from `origin/main`, run
 >    `scripts/docs-check.sh`, commit, push, and open a PR titled "Spaces alpha
 >    watch: spec deltas for YYYY-MM-DD". In the PR body, summarize each delta
->    and name the Wave 9 issues it affects. Docs-only changes need no
+>    and name the Wave 10 issues it affects. Docs-only changes need no
 >    changelog fragment.
 > 6. If the Linear connector is available in your session, also comment the
->    relevant deltas on the affected Wave 9 issues; if it is not, the PR body
+>    relevant deltas on the affected Wave 10 issues; if it is not, the PR body
 >    is the record.
 >
 > Follow the repo conventions in CLAUDE.md / AGENTS.md throughout.
