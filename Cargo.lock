@@ -13,10 +13,15 @@ name = "admin-companion"
 version = "0.12.0"
 dependencies = [
  "base64 0.21.7",
+ "block2",
  "chrono",
  "crypto",
  "log",
  "multibase",
+ "objc2",
+ "objc2-foundation",
+ "objc2-ui-kit",
+ "objc2-user-notifications",
  "p256",
  "reqwest",
  "security-framework",
@@ -32,6 +37,7 @@ dependencies = [
  "thiserror 2.0.18",
  "tracing",
  "uuid",
+ "zeroize",
 ]
 
 [[package]]

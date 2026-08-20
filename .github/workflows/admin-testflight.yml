@@ -35,6 +35,9 @@ on:
       # The shared iOS toolchain/patch scripts live in scripts/ios/ (per-app
       # scripts are thin wrappers). PDS-only scripts directly under scripts/
       # (bruno-parity, font-parity, ...) are deliberately excluded.
+      # The shared Swift sources for the Notification Service Extension — compiled
+      # into this app's project too since the console's notification adoption.
+      - "ios/**"
       - "scripts/ios/**"
       # The shared runner preamble (toolchain, cache, tauri-cli pin, brew shim).
       - ".github/actions/ios-setup/**"
@@ -63,8 +66,11 @@ jobs:
     secrets:
       # admin-companion signs with the profile bound to its own bundle id
       # (dev.malpercio.admincompanion), so its secret feeds the reusable workflow's
-      # IOS_MOBILE_PROVISION. Every other signing secret is team-wide and maps 1:1.
+      # IOS_MOBILE_PROVISION — and its Notification Service Extension (a separate
+      # bundle, dev.malpercio.admincompanion.NotificationService) needs its own
+      # profile the same way. Every other signing secret is team-wide and maps 1:1.
       IOS_MOBILE_PROVISION: ${{ secrets.IOS_MOBILE_PROVISION_ADMIN }}
+      IOS_MOBILE_PROVISION_NSE: ${{ secrets.IOS_MOBILE_PROVISION_ADMIN_NSE }}
       IOS_CERTIFICATE: ${{ secrets.IOS_CERTIFICATE }}
       IOS_CERTIFICATE_PASSWORD: ${{ secrets.IOS_CERTIFICATE_PASSWORD }}
       APPLE_DEVELOPMENT_TEAM: ${{ secrets.APPLE_DEVELOPMENT_TEAM }}

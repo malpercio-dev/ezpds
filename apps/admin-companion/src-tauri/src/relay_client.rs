@@ -210,13 +210,13 @@ pub async fn pair(
         .await?
         .device_id;
     let mut doc = keychain::load_pairings()?;
-    doc.append(Pairing {
-        id: uuid::Uuid::new_v4().to_string(),
-        nickname: nickname.to_string(),
-        relay_url: relay_url.to_string(),
-        device_id: device_id.clone(),
-        device_label: label.to_string(),
-    });
+    doc.append(Pairing::new(
+        uuid::Uuid::new_v4().to_string(),
+        nickname,
+        relay_url,
+        device_id.clone(),
+        label,
+    ));
     keychain::save_pairings(&doc)?;
     Ok(device_id)
 }
@@ -938,6 +938,142 @@ pub async fn request_crawl(pairing_id: &str) -> Result<RequestCrawlResult, Relay
     parse_success::<RequestCrawlResult>(response).await
 }
 
+// ── Notifications (operator alerts) ──────────────────────────────────────────
+
+/// The JSON body of `POST /v1/admin/notifications/register`. The registration is keyed by
+/// the *authenticated device id* server-side — the credential names the device, a body
+/// field never could — so the body carries only the key and APNs routing facts.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct RegisterNotificationsBody<'a> {
+    notification_public_key: &'a str,
+    apns_token: &'a str,
+    apns_topic: &'a str,
+}
+
+#[derive(serde::Deserialize)]
+struct RegisterNotificationsResponse {
+    #[allow(dead_code)]
+    status: String,
+}
+
+#[derive(serde::Deserialize)]
+struct SenderKeysResponse {
+    keys: Vec<crate::pairings::SenderKey>,
+}
+
+/// What a notification-registration attempt actually did.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum NotificationRegistration {
+    /// The relay stored the registration; its push handle is minted in the background.
+    Registered,
+    /// No APNs token yet (permission undecided or declined, a simulator, or the callback
+    /// simply hasn't fired) — an ordinary state, retried on the next contact.
+    AwaitingApnsToken,
+    /// The relay predates the notification surface (501) — not an error; older relays in
+    /// one pairing set upgrade independently.
+    Unsupported,
+}
+
+/// Build the signed notification registration (`POST /v1/admin/notifications/register`).
+pub fn build_register_notifications_request(
+    pairing: &Pairing,
+    notification_public_key: &str,
+    apns_token: &str,
+    apns_topic: &str,
+    timestamp: i64,
+    nonce: &str,
+) -> Result<SignedRequest, RelayClientError> {
+    let body = serde_json::to_vec(&RegisterNotificationsBody {
+        notification_public_key,
+        apns_token,
+        apns_topic,
+    })
+    .expect("RegisterNotificationsBody serializes");
+    build_signed_request(
+        pairing,
+        "POST",
+        "/v1/admin/notifications/register",
+        &body,
+        timestamp,
+        nonce,
+    )
+}
+
+/// Build the signed sender-key fetch (`GET /v1/admin/notifications/sender-keys`). No params,
+/// no body — the fixed path is the whole request.
+pub fn build_sender_keys_request(
+    pairing: &Pairing,
+    timestamp: i64,
+    nonce: &str,
+) -> Result<SignedRequest, RelayClientError> {
+    build_signed_request(
+        pairing,
+        "GET",
+        "/v1/admin/notifications/sender-keys",
+        b"",
+        timestamp,
+        nonce,
+    )
+}
+
+/// Register this device for operator push alerts on the given pairing's relay, using the
+/// device-global notification keypair (minted on first use). A successful registration
+/// re-pins the relay's sender keys on the same contact — the wallet's cadence, and a
+/// security property (it bounds a compromised sender key's window), not housekeeping.
+pub async fn register_notifications(
+    pairing_id: &str,
+    apns_topic: &str,
+) -> Result<NotificationRegistration, RelayClientError> {
+    let pairing = resolve_pairing(pairing_id)?;
+    let Some(apns_token) = crate::notifications::stored_apns_token() else {
+        return Ok(NotificationRegistration::AwaitingApnsToken);
+    };
+    let public_key = crate::notifications::notification_public_key()?;
+    let signed = build_register_notifications_request(
+        &pairing,
+        &public_key,
+        &apns_token,
+        apns_topic,
+        unix_now(),
+        &fresh_nonce(),
+    )?;
+    let response = send(signed).await?;
+    if response.status() == reqwest::StatusCode::NOT_IMPLEMENTED {
+        return Ok(NotificationRegistration::Unsupported);
+    }
+    parse_success::<RegisterNotificationsResponse>(response).await?;
+
+    // Best effort: the registration already landed, and the next contact re-pins anyway.
+    if let Err(e) = refresh_sender_keys(pairing_id).await {
+        tracing::warn!(error = %e, "sender-key re-pin after registration failed");
+    }
+    Ok(NotificationRegistration::Registered)
+}
+
+/// Fetch the relay's published sender-key set, pin it on the pairing (wholesale — whatever
+/// the relay no longer publishes must stop verifying), and rebuild the NSE pin mirror.
+/// Returns the pinned set, or `None` when the relay predates the surface (501 — pins left
+/// untouched). Id-addressed like every other signed read.
+pub async fn refresh_sender_keys(
+    pairing_id: &str,
+) -> Result<Option<Vec<crate::pairings::SenderKey>>, RelayClientError> {
+    let pairing = resolve_pairing(pairing_id)?;
+    let signed = build_sender_keys_request(&pairing, unix_now(), &fresh_nonce())?;
+    let response = send(signed).await?;
+    if response.status() == reqwest::StatusCode::NOT_IMPLEMENTED {
+        return Ok(None);
+    }
+    let keys = parse_success::<SenderKeysResponse>(response).await?.keys;
+
+    let mut doc = keychain::load_pairings()?;
+    doc.set_notification_sender_keys(pairing_id, keys.clone())?;
+    keychain::save_pairings(&doc)?;
+    crate::notifications::write_nse_pins(&doc)?;
+    Ok(Some(keys))
+}
+
 /// Send an already-built [`SignedRequest`] and return the raw response.
 async fn send(req: SignedRequest) -> Result<reqwest::Response, RelayClientError> {
     let method = reqwest::Method::from_bytes(req.method.as_bytes()).map_err(|_| {
@@ -1571,13 +1707,13 @@ mod tests {
     /// sign-string, header assertion, and relay-verifier call stays unchanged across
     /// pairing storage formats, which is what pins the envelope.
     fn test_pairing(device_id: &str, relay_url: &str) -> Pairing {
-        Pairing {
-            id: "test-pairing-id".to_string(),
-            nickname: "test".to_string(),
-            relay_url: relay_url.to_string(),
-            device_id: device_id.to_string(),
-            device_label: "Operator iPhone".to_string(),
-        }
+        Pairing::new(
+            "test-pairing-id",
+            "test",
+            relay_url,
+            device_id,
+            "Operator iPhone",
+        )
     }
 
     #[test]
@@ -1741,13 +1877,13 @@ mod tests {
 
         // Save a doc with one entry.
         let mut doc = crate::pairings::PairingDoc::empty();
-        doc.append(crate::pairings::Pairing {
-            id: "id-1".to_string(),
-            nickname: "test".to_string(),
-            relay_url: "https://relay.example".to_string(),
-            device_id: "device-1".to_string(),
-            device_label: "Operator iPhone".to_string(),
-        });
+        doc.append(crate::pairings::Pairing::new(
+            "id-1",
+            "test",
+            "https://relay.example",
+            "device-1",
+            "Operator iPhone",
+        ));
         keychain::save_pairings(&doc).expect("save");
 
         // Unpair removes it.
@@ -1771,27 +1907,27 @@ mod tests {
         keychain::clear_for_test();
         // Three entries, active = third.
         let mut doc = crate::pairings::PairingDoc::empty();
-        doc.append(crate::pairings::Pairing {
-            id: "id-1".to_string(),
-            nickname: "first".to_string(),
-            relay_url: "https://relay-1.example".to_string(),
-            device_id: "device-1".to_string(),
-            device_label: "Operator iPhone".to_string(),
-        });
-        doc.append(crate::pairings::Pairing {
-            id: "id-2".to_string(),
-            nickname: "second".to_string(),
-            relay_url: "https://relay-2.example".to_string(),
-            device_id: "device-2".to_string(),
-            device_label: "Operator iPhone".to_string(),
-        });
-        doc.append(crate::pairings::Pairing {
-            id: "id-3".to_string(),
-            nickname: "third".to_string(),
-            relay_url: "https://relay-3.example".to_string(),
-            device_id: "device-3".to_string(),
-            device_label: "Operator iPhone".to_string(),
-        });
+        doc.append(crate::pairings::Pairing::new(
+            "id-1",
+            "first",
+            "https://relay-1.example",
+            "device-1",
+            "Operator iPhone",
+        ));
+        doc.append(crate::pairings::Pairing::new(
+            "id-2",
+            "second",
+            "https://relay-2.example",
+            "device-2",
+            "Operator iPhone",
+        ));
+        doc.append(crate::pairings::Pairing::new(
+            "id-3",
+            "third",
+            "https://relay-3.example",
+            "device-3",
+            "Operator iPhone",
+        ));
         keychain::save_pairings(&doc).expect("save");
 
         // Unpair removes the active entry (id-3).
@@ -1816,20 +1952,20 @@ mod tests {
         keychain::clear_for_test();
         let key = device_key::get_or_create().expect("device key");
         let mut doc = crate::pairings::PairingDoc::empty();
-        doc.append(crate::pairings::Pairing {
-            id: "id-a".to_string(),
-            nickname: "staging".to_string(),
-            relay_url: "https://staging.example".to_string(),
-            device_id: "device-a".to_string(),
-            device_label: "Operator iPhone".to_string(),
-        });
-        doc.append(crate::pairings::Pairing {
-            id: "id-b".to_string(),
-            nickname: "prod".to_string(),
-            relay_url: "https://prod.example".to_string(),
-            device_id: "device-b".to_string(),
-            device_label: "Operator iPhone".to_string(),
-        });
+        doc.append(crate::pairings::Pairing::new(
+            "id-a".to_string(),
+            "staging".to_string(),
+            "https://staging.example".to_string(),
+            "device-a".to_string(),
+            "Operator iPhone".to_string(),
+        ));
+        doc.append(crate::pairings::Pairing::new(
+            "id-b".to_string(),
+            "prod".to_string(),
+            "https://prod.example".to_string(),
+            "device-b".to_string(),
+            "Operator iPhone".to_string(),
+        ));
         keychain::save_pairings(&doc).expect("save");
 
         // Initially active is B (prod).
@@ -1923,27 +2059,27 @@ mod tests {
         // Seed A, B, C (active C). unpair(C.id) — two remain, selection cleared.
         keychain::clear_for_test();
         let mut doc = crate::pairings::PairingDoc::empty();
-        doc.append(crate::pairings::Pairing {
-            id: "id-a".to_string(),
-            nickname: "a".to_string(),
-            relay_url: "https://a.example".to_string(),
-            device_id: "device-a".to_string(),
-            device_label: "Operator iPhone".to_string(),
-        });
-        doc.append(crate::pairings::Pairing {
-            id: "id-b".to_string(),
-            nickname: "b".to_string(),
-            relay_url: "https://b.example".to_string(),
-            device_id: "device-b".to_string(),
-            device_label: "Operator iPhone".to_string(),
-        });
-        doc.append(crate::pairings::Pairing {
-            id: "id-c".to_string(),
-            nickname: "c".to_string(),
-            relay_url: "https://c.example".to_string(),
-            device_id: "device-c".to_string(),
-            device_label: "Operator iPhone".to_string(),
-        });
+        doc.append(crate::pairings::Pairing::new(
+            "id-a".to_string(),
+            "a".to_string(),
+            "https://a.example".to_string(),
+            "device-a".to_string(),
+            "Operator iPhone".to_string(),
+        ));
+        doc.append(crate::pairings::Pairing::new(
+            "id-b".to_string(),
+            "b".to_string(),
+            "https://b.example".to_string(),
+            "device-b".to_string(),
+            "Operator iPhone".to_string(),
+        ));
+        doc.append(crate::pairings::Pairing::new(
+            "id-c".to_string(),
+            "c".to_string(),
+            "https://c.example".to_string(),
+            "device-c".to_string(),
+            "Operator iPhone".to_string(),
+        ));
         keychain::save_pairings(&doc).expect("save");
 
         // Active is C.
@@ -1964,13 +2100,13 @@ mod tests {
         // Err(RelayClientError::NoSuchPairing); list_pairings().active is still A.id.
         keychain::clear_for_test();
         let mut doc = crate::pairings::PairingDoc::empty();
-        doc.append(crate::pairings::Pairing {
-            id: "id-a".to_string(),
-            nickname: "a".to_string(),
-            relay_url: "https://a.example".to_string(),
-            device_id: "device-a".to_string(),
-            device_label: "Operator iPhone".to_string(),
-        });
+        doc.append(crate::pairings::Pairing::new(
+            "id-a".to_string(),
+            "a".to_string(),
+            "https://a.example".to_string(),
+            "device-a".to_string(),
+            "Operator iPhone".to_string(),
+        ));
         keychain::save_pairings(&doc).expect("save");
 
         assert_eq!(list_pairings().unwrap().active, Some("id-a".to_string()));
@@ -1989,13 +2125,13 @@ mod tests {
         // unchanged. rename_pairing("nope", "x") is Err(NoSuchPairing).
         keychain::clear_for_test();
         let mut doc = crate::pairings::PairingDoc::empty();
-        doc.append(crate::pairings::Pairing {
-            id: "id-a".to_string(),
-            nickname: "original".to_string(),
-            relay_url: "https://a.example".to_string(),
-            device_id: "device-a".to_string(),
-            device_label: "Operator iPhone".to_string(),
-        });
+        doc.append(crate::pairings::Pairing::new(
+            "id-a".to_string(),
+            "original".to_string(),
+            "https://a.example".to_string(),
+            "device-a".to_string(),
+            "Operator iPhone".to_string(),
+        ));
         keychain::save_pairings(&doc).expect("save");
 
         rename_pairing("id-a", "prod").expect("rename");
@@ -2027,20 +2163,20 @@ mod tests {
         keychain::clear_for_test();
         let key = device_key::get_or_create().expect("device key");
         let mut doc = crate::pairings::PairingDoc::empty();
-        doc.append(crate::pairings::Pairing {
-            id: "id-b".to_string(),
-            nickname: "prod".to_string(),
-            relay_url: "https://prod.example".to_string(),
-            device_id: "device-b".to_string(),
-            device_label: "Operator iPhone".to_string(),
-        });
-        doc.append(crate::pairings::Pairing {
-            id: "id-a".to_string(),
-            nickname: "staging".to_string(),
-            relay_url: "https://staging.example".to_string(),
-            device_id: "device-a".to_string(),
-            device_label: "Operator iPhone".to_string(),
-        });
+        doc.append(crate::pairings::Pairing::new(
+            "id-b".to_string(),
+            "prod".to_string(),
+            "https://prod.example".to_string(),
+            "device-b".to_string(),
+            "Operator iPhone".to_string(),
+        ));
+        doc.append(crate::pairings::Pairing::new(
+            "id-a".to_string(),
+            "staging".to_string(),
+            "https://staging.example".to_string(),
+            "device-a".to_string(),
+            "Operator iPhone".to_string(),
+        ));
         keychain::save_pairings(&doc).expect("save");
 
         // A is active (appended last), B is not.
@@ -2240,6 +2376,77 @@ mod tests {
     // its hash is what the signature commits to, and the relay's own verifier accepts
     // the envelope. A restore differs only in `applied`, which changes the body hash —
     // a takedown signature can never be replayed as a restore or vice versa.
+    #[test]
+    fn signed_register_notifications_request_pins_body_and_verifies() {
+        keychain::clear_for_test();
+        let key = device_key::get_or_create().expect("device key");
+        let pairing = test_pairing("device-xyz", "https://relay.example");
+
+        let req = build_register_notifications_request(
+            &pairing,
+            "did:key:zNotify",
+            "abcdef0123456789",
+            "dev.malpercio.admincompanion",
+            1_700_000_000,
+            "nonce-notify",
+        )
+        .expect("build signed registration");
+
+        assert_eq!(
+            req.url,
+            "https://relay.example/v1/admin/notifications/register"
+        );
+        assert_eq!(header(&req, "Content-Type"), "application/json");
+        // The relay's `AdminRegisterRequest` field spellings, pinned: the registration is
+        // keyed by the authenticated device id, so the body carries only key + routing.
+        assert_eq!(
+            std::str::from_utf8(&req.body).unwrap(),
+            r#"{"notificationPublicKey":"did:key:zNotify","apnsToken":"abcdef0123456789","apnsTopic":"dev.malpercio.admincompanion"}"#
+        );
+
+        let sign_string = signing::request_sign_string(
+            "POST",
+            "/v1/admin/notifications/register",
+            1_700_000_000,
+            "nonce-notify",
+            &req.body,
+        );
+        verify_p256_signature(
+            &DidKeyUri(key.key_id),
+            sign_string.as_bytes(),
+            &decode_sig(header(&req, signing::ADMIN_SIGNATURE_HEADER)),
+        )
+        .expect("the relay's verifier must accept this registration");
+    }
+
+    #[test]
+    fn signed_sender_keys_request_verifies() {
+        keychain::clear_for_test();
+        let key = device_key::get_or_create().expect("device key");
+        let pairing = test_pairing("device-xyz", "https://relay.example");
+
+        let req = build_sender_keys_request(&pairing, 1_700_000_000, "nonce-keys")
+            .expect("build signed fetch");
+        assert_eq!(
+            req.url,
+            "https://relay.example/v1/admin/notifications/sender-keys"
+        );
+
+        let sign_string = signing::request_sign_string(
+            "GET",
+            "/v1/admin/notifications/sender-keys",
+            1_700_000_000,
+            "nonce-keys",
+            b"",
+        );
+        verify_p256_signature(
+            &DidKeyUri(key.key_id),
+            sign_string.as_bytes(),
+            &decode_sig(header(&req, signing::ADMIN_SIGNATURE_HEADER)),
+        )
+        .expect("the relay's verifier must accept this fetch");
+    }
+
     #[test]
     fn signed_update_subject_status_request_pins_body_and_verifies() {
         keychain::clear_for_test();

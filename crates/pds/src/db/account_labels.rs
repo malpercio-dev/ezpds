@@ -172,3 +172,53 @@ pub(crate) async fn count_flagged_accounts(db: &sqlx::SqlitePool) -> Result<i64,
         .fetch_one(db)
         .await
 }
+
+/// Whether this labeler's initial backfill has already run (V065). Only flags first observed
+/// *after* seeding are news the operator notifier may page about.
+pub(crate) async fn is_labeler_seeded(
+    db: &sqlx::SqlitePool,
+    labeler_did: &str,
+) -> Result<bool, sqlx::Error> {
+    sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM labels_seeded WHERE labeler_did = ?")
+        .bind(labeler_did)
+        .fetch_one(db)
+        .await
+        .map(|n| n > 0)
+}
+
+/// Record that this labeler's backfill has run. Idempotent: re-marking keeps the original
+/// `seeded_at`.
+pub(crate) async fn mark_labeler_seeded(
+    db: &sqlx::SqlitePool,
+    labeler_did: &str,
+) -> Result<(), sqlx::Error> {
+    sqlx::query(
+        "INSERT INTO labels_seeded (labeler_did, seeded_at) VALUES (?, datetime('now')) \
+         ON CONFLICT (labeler_did) DO NOTHING",
+    )
+    .bind(labeler_did)
+    .execute(db)
+    .await?;
+    Ok(())
+}
+
+/// Drop the seeding markers of labelers no longer watched, so a labeler removed from the
+/// config and later re-added gets its backfill suppressed again rather than paging the
+/// operator with every label it ever applied.
+pub(crate) async fn delete_seeds_for_unwatched(
+    db: &sqlx::SqlitePool,
+    watched: &[String],
+) -> Result<(), sqlx::Error> {
+    if watched.is_empty() {
+        sqlx::query("DELETE FROM labels_seeded").execute(db).await?;
+    } else {
+        let placeholders = vec!["?"; watched.len()].join(", ");
+        let sql = format!("DELETE FROM labels_seeded WHERE labeler_did NOT IN ({placeholders})");
+        let mut query = sqlx::query(&sql);
+        for did in watched {
+            query = query.bind(did);
+        }
+        query.execute(db).await?;
+    }
+    Ok(())
+}

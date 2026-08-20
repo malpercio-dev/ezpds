@@ -278,4 +278,8 @@ pub(super) static MIGRATIONS: &[Migration] = &[
         version: 64,
         sql: include_str!("migrations/V064__notification_ping.sql"),
     },
+    Migration {
+        version: 65,
+        sql: include_str!("migrations/V065__labels_seeded.sql"),
+    },
 ];

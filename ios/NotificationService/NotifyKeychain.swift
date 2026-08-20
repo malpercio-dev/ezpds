@@ -1,26 +1,36 @@
-// The extension's half of the shared Keychain contract the wallet's notification registration
+// The extension's half of the shared Keychain contract each app's notification registration
 // established.
 //
-// Every constant here is a copy of one in `apps/identity-wallet/src-tauri/src/keychain.rs`
-// and `notifications.rs`, because the two processes are separate bundles that can only agree
-// by both spelling the same strings. Nothing else may be added: the app writes, the
-// extension reads, and the single exception (the breadcrumb log) is written by both.
+// Every constant here is a copy of one in the host app's `keychain.rs` and
+// `notifications.rs` (both apps spell the same account names), because the two processes
+// are separate bundles that can only agree by both spelling the same strings. Nothing else
+// may be added: the app writes, the extension reads, and the single exception (the
+// breadcrumb log) is written by both.
 //
 // # Why no `kSecAttrAccessGroup` anywhere below
 //
-// Exactly the wallet's stance, and for the same reason. Naming a group means discovering the
+// Exactly the apps' stance, and for the same reason. Naming a group means discovering the
 // team's `AppIdentifierPrefix` at runtime, which adds a failure mode to the one code path
 // that must work on a locked screen. Instead the entitlement's *shape* carries the contract:
-// `$(AppIdentifierPrefix)org.obsign.shared` is listed FIRST in both bundles' entitlements, so
-// an unqualified write lands there and an unqualified read searches every entitled group.
-// `just bundle-identity-check` and `just ios-template-check` enforce the ordering.
+// the app's stable group (`org.obsign.shared` for the wallet, `org.obsign.admin.shared` for
+// the console) is listed FIRST in both bundles' entitlements, so an unqualified write lands
+// there and an unqualified read searches every entitled group. `just bundle-identity-check`
+// and `just ios-template-check` enforce the ordering.
 
 import Foundation
 import Security
 
 enum NotifyKeychain {
-    /// `keychain::SERVICE`. Changing it orphans every item the app ever wrote.
-    static let service = "ezpds-identity-wallet"
+    /// The host app's `keychain::SERVICE` — which app's items this extension reads. These
+    /// sources are compiled into BOTH apps' extensions, and the two apps store under
+    /// different services, so the value rides the extension's Info.plist
+    /// (`EzpdsKeychainService`, set per app by the shared XcodeGen template). The wallet's
+    /// service is the fallback so an extension built from a template predating the key
+    /// behaves exactly as it always has. Changing an app's service name orphans every item
+    /// that app ever wrote.
+    static let service: String =
+        Bundle.main.object(forInfoDictionaryKey: "EzpdsKeychainService") as? String
+            ?? "ezpds-identity-wallet"
 
     /// `notifications::NOTIFICATION_KEY_ACCOUNT` — the raw 32-byte P-256 scalar.
     static let notificationKeyAccount = "notification-key-priv"
