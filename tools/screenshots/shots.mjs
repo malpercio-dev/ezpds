@@ -62,14 +62,14 @@ const WALLET_SHOTS = [
   {
     out: 'welcome',
     scenario: 'fresh-install',
-    waitForText: 'Your self-sovereign identity',
-    caption: 'First launch — create or import an identity.',
+    waitForText: "What's your situation?",
+    caption: 'First launch — the wallet asks the one question a newcomer can answer, and routes from there.',
   },
   {
     out: 'create-unavailable',
     scenario: 'foreign-pds',
     steps: [
-      { clickText: 'Create an identity' },
+      { clickText: 'Starting fresh' },
       { clickText: 'Create identity' },
       { fill: ['[aria-label="Server URL"]', 'https://foreign.pds.local'] },
       // Not `clickText: 'Connect'` — that resolves to the screen's own "Connect to Custos"
@@ -96,8 +96,11 @@ const WALLET_SHOTS = [
   {
     out: 'identity-detail',
     scenario: 'one-identity',
-    steps: [{ click: 'button.card' }],
-    waitForText: 'DID document',
+    // The identity screen is a hub now, so the document lives one tier in under "Manage
+    // identity". Wait on "Verification keys" rather than the screen title: "DID document"
+    // also appears as the hub row's own subtitle, so it would match before the tap lands.
+    steps: [{ click: 'button.card' }, { clickText: 'Manage identity' }, { clickText: 'DID document' }],
+    waitForText: 'Verification keys',
     caption:
       'An identity’s DID document, decoded — all three rotation keys (device, recovery, PDS).',
   },
@@ -111,10 +114,7 @@ const WALLET_SHOTS = [
   {
     out: 'app-passwords',
     scenario: 'app-password-minted',
-    steps: [
-      { click: 'button.card' },
-      { clickText: 'Sign in to Bluesky and other apps' },
-    ],
+    steps: [{ click: 'button.card' }, { clickText: 'Sign in to Bluesky' }],
     waitForText: 'Chat client',
     caption:
       'App passwords: scoped credentials for signing the official Bluesky app (and others) into a sovereign account.',
@@ -132,7 +132,8 @@ const WALLET_SHOTS = [
     // iCloud size + "Back up now" / "Restore to server") rather than the empty prompt.
     steps: [
       { click: 'button.card' },
-      { clickText: 'Back up media' },
+      { clickText: 'Manage identity' },
+      { clickText: 'Backups' },
       { clickText: 'Turn on media backup' },
     ],
     waitForText: 'Back up now',
@@ -155,7 +156,8 @@ const WALLET_SHOTS = [
     // Same screen, below the media section: drive the posts opt-in, then frame that section.
     steps: [
       { click: 'button.card' },
-      { clickText: 'Back up media' },
+      { clickText: 'Manage identity' },
+      { clickText: 'Backups' },
       { clickText: 'Turn on post backup' },
       { scrollTo: 'h2.section-title' },
     ],
@@ -166,20 +168,24 @@ const WALLET_SHOTS = [
   {
     out: 'agents',
     scenario: 'agent-connected',
-    steps: [{ click: 'button.agents-row' }],
+    steps: [{ click: 'button.card' }, { clickText: 'My agents' }],
     caption: 'Agents you have authorised to act on your behalf.',
   },
   {
+    // An unreversed change now takes the app over on launch rather than waiting on home, so
+    // these two are reached in the opposite order from before: the alert is the landing
+    // screen, and home-with-the-strip is what dismissing it ("Not now") reveals.
     out: 'home-alert',
     scenario: 'alert-active',
-    waitForText: 'need your attention',
+    steps: [{ clickText: 'Not now' }],
+    waitForText: 'needs your attention',
     caption: 'A tamper alert: an unauthorised change to the public record was detected.',
     rareState: true,
   },
   {
     out: 'alert-detail',
     scenario: 'alert-active',
-    steps: [{ click: 'button.alert-strip' }],
+    waitForText: 'Recovery deadline',
     caption: 'The alert detail with a live recovery-window countdown.',
     rareState: true,
   },
@@ -187,7 +193,7 @@ const WALLET_SHOTS = [
     out: 'recover-start',
     scenario: 'recover-sovereign',
     steps: [
-      { clickText: 'Recover from backup shares' },
+      { clickText: 'I lost access to my wallet' },
       { fill: ['[aria-label="Handle or DID"]', 'alice.harness.pds.local'] },
       { clickText: 'Find my identity' },
     ],
@@ -199,7 +205,7 @@ const WALLET_SHOTS = [
     out: 'recover-shares',
     scenario: 'recover-sovereign',
     steps: [
-      { clickText: 'Recover from backup shares' },
+      { clickText: 'I lost access to my wallet' },
       { fill: ['[aria-label="Handle or DID"]', 'alice.harness.pds.local'] },
       { clickText: 'Find my identity' },
       { waitForText: 'Found on this device' },
@@ -213,7 +219,7 @@ const WALLET_SHOTS = [
     out: 'recover-escrow-pending',
     scenario: 'recover-pending-delay',
     steps: [
-      { clickText: 'Recover from backup shares' },
+      { clickText: 'I lost access to my wallet' },
       { fill: ['[aria-label="Handle or DID"]', 'alice.harness.pds.local'] },
       { clickText: 'Find my identity' },
       { waitForText: 'Found on this device' },
@@ -236,7 +242,9 @@ const WALLET_SHOTS = [
       { failNext: ['list_identities', { code: 'KEYCHAIN_ERROR' }] },
       { click: '[aria-label="Refresh"]' },
     ],
-    waitForText: 'Failed to load identities',
+    // Matched without the leading "Couldn’t": the copy carries a typographic apostrophe, and
+    // a straight one here would silently never match.
+    waitForText: 'load your identities',
     caption: 'An injected local failure surfaces inline with a retry, never a dead end.',
     errorState: true,
   },

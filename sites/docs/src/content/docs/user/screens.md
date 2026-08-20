@@ -179,6 +179,6 @@ Opening the alert shows the change and a live countdown of the 72-hour recovery 
 Local failures are surfaced inline with a way to retry, never a dead end.
 
 <figure>
-  <img src="/screenshots/wallet/home-load-error.png" alt="Obsign home screen showing an inline 'Failed to load identities' error with a Try again button" width="280" />
+  <img src="/screenshots/wallet/home-load-error.png" alt="Obsign home screen showing an inline “Couldn’t load your identities” error with a Try again button" width="280" />
   <figcaption>An injected local failure surfaces inline with a retry, never a dead end.</figcaption>
 </figure>
