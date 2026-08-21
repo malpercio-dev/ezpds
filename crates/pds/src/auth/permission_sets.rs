@@ -35,20 +35,18 @@ const POSITIVE_CACHE_TTL: Duration = Duration::from_secs(24 * 60 * 60);
 /// broken authority don't re-trigger the full resolution chain on every retry.
 const NEGATIVE_CACHE_TTL: Duration = Duration::from_secs(60);
 
-pub(crate) enum CacheEntry {
-    Resolved {
-        scopes: Vec<String>,
-        expires_at: Instant,
-    },
-    Failed {
-        expires_at: Instant,
-    },
+pub(crate) enum CacheEntry<T> {
+    Resolved { value: T, expires_at: Instant },
+    Failed { expires_at: Instant },
 }
+
+/// A TTL cache over one flavour of Lexicon resolution, keyed by whatever identifies a result.
+pub(crate) type ResolutionCache<T> = Arc<Mutex<HashMap<String, CacheEntry<T>>>>;
 
 /// In-memory cache of resolved permission sets, keyed on the full `include:` token (NSID + any
 /// `aud` param — a different `aud` can change the expansion via `inheritAud` entries).
 /// `Arc<Mutex<HashMap<...>>>`, held in `AppState`.
-pub type PermissionSetCache = Arc<Mutex<HashMap<String, CacheEntry>>>;
+pub type PermissionSetCache = ResolutionCache<Vec<String>>;
 
 /// Create an empty `PermissionSetCache`.
 pub fn new_permission_set_cache() -> PermissionSetCache {
@@ -57,6 +55,48 @@ pub fn new_permission_set_cache() -> PermissionSetCache {
 
 fn cache_key(nsid: &str, include_aud: Option<&str>) -> String {
     format!("{nsid}|{}", include_aud.unwrap_or(""))
+}
+
+/// Serve `key` from `cache` while its entry is live, otherwise await `resolve` and record the
+/// outcome under the positive/negative TTLs above.
+///
+/// `resolve` is taken as a future rather than a closure result so a cache hit never starts the
+/// work — constructing an async fn's future does nothing until it is awaited, and this only
+/// awaits it on a miss. `cached_failure` builds the error a negatively-cached entry reports,
+/// which is per-caller wording rather than a shared string.
+pub(super) async fn resolve_cached<T: Clone>(
+    cache: &ResolutionCache<T>,
+    key: String,
+    cached_failure: impl FnOnce() -> String,
+    resolve: impl std::future::Future<Output = Result<T, String>>,
+) -> Result<T, String> {
+    let now = Instant::now();
+
+    {
+        let map = cache.lock().await;
+        match map.get(&key) {
+            Some(CacheEntry::Resolved { value, expires_at }) if *expires_at > now => {
+                return Ok(value.clone())
+            }
+            Some(CacheEntry::Failed { expires_at }) if *expires_at > now => {
+                return Err(cached_failure());
+            }
+            _ => {}
+        }
+    }
+
+    let result = resolve.await;
+    let entry = match &result {
+        Ok(value) => CacheEntry::Resolved {
+            value: value.clone(),
+            expires_at: now + POSITIVE_CACHE_TTL,
+        },
+        Err(_) => CacheEntry::Failed {
+            expires_at: now + NEGATIVE_CACHE_TTL,
+        },
+    };
+    cache.lock().await.insert(key, entry);
+    result
 }
 
 /// Resolve and expand a single `include:<nsid>` reference, consulting `cache` first and
@@ -68,34 +108,13 @@ pub(crate) async fn resolve_permission_set_cached(
     nsid: &str,
     include_aud: Option<&str>,
 ) -> Result<Vec<String>, String> {
-    let key = cache_key(nsid, include_aud);
-    let now = Instant::now();
-
-    {
-        let map = cache.lock().await;
-        match map.get(&key) {
-            Some(CacheEntry::Resolved { scopes, expires_at }) if *expires_at > now => {
-                return Ok(scopes.clone())
-            }
-            Some(CacheEntry::Failed { expires_at }) if *expires_at > now => {
-                return Err(format!("\"{nsid}\" could not be resolved (cached failure)"));
-            }
-            _ => {}
-        }
-    }
-
-    let result = resolve_permission_set(state, nsid, include_aud).await;
-    let entry = match &result {
-        Ok(scopes) => CacheEntry::Resolved {
-            scopes: scopes.clone(),
-            expires_at: now + POSITIVE_CACHE_TTL,
-        },
-        Err(_) => CacheEntry::Failed {
-            expires_at: now + NEGATIVE_CACHE_TTL,
-        },
-    };
-    cache.lock().await.insert(key, entry);
-    result
+    resolve_cached(
+        cache,
+        cache_key(nsid, include_aud),
+        || format!("\"{nsid}\" could not be resolved (cached failure)"),
+        resolve_permission_set(state, nsid, include_aud),
+    )
+    .await
 }
 
 /// Upper bound on distinct `include:` references processed per scope string. Each one can
@@ -414,7 +433,7 @@ struct GetRecordResponse {
 /// string, so the fetch goes through the shared SSRF-hardened client (`state.hardened_http_client`)
 /// — redirects disabled + a DNS resolver enforcing the public-address allowlist at connect time —
 /// the same client `routes::service_proxy` uses for its own caller-controlled targets.
-async fn fetch_lexicon_schema(
+pub(super) async fn fetch_lexicon_schema(
     client: &reqwest::Client,
     authority: &AuthorityEndpoint,
     nsid: &str,
@@ -540,6 +559,54 @@ pub(crate) async fn resolve_permission_set(
         .collect())
 }
 
+/// Doubles for a mocked Lexicon authority, shared with `auth::space_consent`'s tests — both
+/// modules resolve through the same DNS-TXT-then-DID-document chain, so they mock the same one.
+#[cfg(test)]
+pub(super) mod tests_support {
+    use std::future::Future;
+    use std::pin::Pin;
+    use std::sync::Arc;
+
+    use crate::app::AppState;
+    use crate::identity::dns::{DnsError, TxtResolver};
+
+    pub(crate) const AUTHORITY_DID: &str = "did:plc:authoritydidxxxxxxxxxxxxx";
+
+    pub(crate) struct FixedTxtResolver {
+        pub records: Vec<String>,
+    }
+
+    impl TxtResolver for FixedTxtResolver {
+        fn txt_lookup<'a>(
+            &'a self,
+            _name: &'a str,
+        ) -> Pin<Box<dyn Future<Output = Result<Vec<String>, DnsError>> + Send + 'a>> {
+            let records = self.records.clone();
+            Box::pin(async move { Ok(records) })
+        }
+    }
+
+    /// `state` with its DNS TXT resolver replaced by one that always answers `records`.
+    pub(crate) fn state_with_dns(state: AppState, records: Vec<String>) -> AppState {
+        AppState {
+            txt_resolver: Some(Arc::new(FixedTxtResolver { records })),
+            ..state
+        }
+    }
+
+    /// A DID document for `AUTHORITY_DID` advertising `endpoint` as its PDS.
+    pub(crate) fn pds_doc(endpoint: &str) -> serde_json::Value {
+        serde_json::json!({
+            "id": AUTHORITY_DID,
+            "service": [{
+                "id": "#atproto_pds",
+                "type": "AtprotoPersonalDataServer",
+                "serviceEndpoint": endpoint,
+            }],
+        })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::future::Future;
@@ -550,6 +617,7 @@ mod tests {
     use crate::db::dids::seed_did_document;
     use crate::identity::dns::{DnsError, TxtResolver};
 
+    use super::tests_support::{pds_doc, state_with_dns, AUTHORITY_DID};
     use super::*;
 
     // ── nsid_authority_domain ────────────────────────────────────────────────
@@ -575,20 +643,6 @@ mod tests {
 
     // ── Test doubles ─────────────────────────────────────────────────────────
 
-    struct FixedTxtResolver {
-        records: Vec<String>,
-    }
-
-    impl TxtResolver for FixedTxtResolver {
-        fn txt_lookup<'a>(
-            &'a self,
-            _name: &'a str,
-        ) -> Pin<Box<dyn Future<Output = Result<Vec<String>, DnsError>> + Send + 'a>> {
-            let records = self.records.clone();
-            Box::pin(async move { Ok(records) })
-        }
-    }
-
     struct ErrTxtResolver;
 
     impl TxtResolver for ErrTxtResolver {
@@ -598,26 +652,6 @@ mod tests {
         ) -> Pin<Box<dyn Future<Output = Result<Vec<String>, DnsError>> + Send + 'a>> {
             Box::pin(async move { Err(DnsError("connection refused".to_string())) })
         }
-    }
-
-    fn state_with_dns(state: AppState, records: Vec<String>) -> AppState {
-        AppState {
-            txt_resolver: Some(Arc::new(FixedTxtResolver { records })),
-            ..state
-        }
-    }
-
-    const AUTHORITY_DID: &str = "did:plc:authoritydidxxxxxxxxxxxxx";
-
-    fn pds_doc(endpoint: &str) -> serde_json::Value {
-        serde_json::json!({
-            "id": AUTHORITY_DID,
-            "service": [{
-                "id": "#atproto_pds",
-                "type": "AtprotoPersonalDataServer",
-                "serviceEndpoint": endpoint,
-            }],
-        })
     }
 
     // ── resolve_authority_endpoint ───────────────────────────────────────────
@@ -1044,7 +1078,7 @@ mod tests {
             map.insert(
                 cache_key(nsid, None),
                 CacheEntry::Resolved {
-                    scopes: vec!["stale:token".to_string()],
+                    value: vec!["stale:token".to_string()],
                     expires_at: past,
                 },
             );

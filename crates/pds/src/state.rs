@@ -7,7 +7,9 @@ use std::time::Instant;
 use common::Config;
 use reqwest::Client;
 
-use crate::auth::{ClaimPollTracker, DpopNonces, OAuthSigningKey, PermissionSetCache};
+use crate::auth::{
+    ClaimPollTracker, DpopNonces, OAuthSigningKey, PermissionSetCache, SpaceTypeCache,
+};
 use crate::identity::dns::{DnsProvider, TxtResolver};
 use crate::identity::well_known::WellKnownResolver;
 
@@ -73,6 +75,7 @@ pub struct AppState {
     /// In-memory cache of resolved `include:<nsid>` permission sets. Shared across all OAuth
     /// authorize requests.
     pub permission_set_cache: PermissionSetCache,
+    pub space_type_cache: SpaceTypeCache,
     /// In-memory sliding-window store for failed createSession attempts (rate limiting).
     /// Shared across all requests via Arc<Mutex<...>>.
     pub failed_login_attempts: FailedLoginStore,
@@ -125,7 +128,7 @@ pub(crate) async fn test_state() -> AppState {
 
 #[cfg(test)]
 pub async fn test_state_with_plc_url(plc_directory_url: String) -> AppState {
-    use crate::auth::{new_claim_poll_tracker, new_permission_set_cache};
+    use crate::auth::{new_claim_poll_tracker, new_permission_set_cache, new_space_type_cache};
     use crate::db::{open_pool, run_migrations};
     use common::{
         AppViewConfig, BlobsConfig, ChatConfig, CrawlersConfig, FirehoseConfig, IrohConfig,
@@ -268,6 +271,7 @@ pub async fn test_state_with_plc_url(plc_directory_url: String) -> AppState {
         dpop_nonces,
         poll_tracker: new_claim_poll_tracker(),
         permission_set_cache: new_permission_set_cache(),
+        space_type_cache: new_space_type_cache(),
         failed_login_attempts: Arc::new(Mutex::new(HashMap::new())),
         firehose,
         crawlers: Arc::new({

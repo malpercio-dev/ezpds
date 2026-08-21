@@ -481,6 +481,21 @@ pub async fn get_authorization(
         }
     };
 
+    // User-legible text for any `space:` tokens. Best-effort by design: unlike the `include:`
+    // expansion above, this changes only the labels — the checkbox values stay the raw tokens —
+    // so a failed lookup degrades to the raw NSID instead of failing the page.
+    let spaces = crate::auth::space_consent::resolve_space_displays(
+        &state,
+        &state.space_type_cache,
+        &display_scope,
+        &crate::auth::space_consent::preferred_languages(
+            headers
+                .get(axum::http::header::ACCEPT_LANGUAGE)
+                .and_then(|v| v.to_str().ok()),
+        ),
+    )
+    .await;
+
     // Wallet-confirmed consent path: create a single-use pending request that a sovereign /
     // passwordless account approves out-of-band from its wallet. This is best-effort — a creation
     // failure (rate limit, DB error) simply degrades to the legacy password-only page rather than
@@ -514,6 +529,7 @@ pub async fn get_authorization(
         params.login_hint.as_deref(),
         None,
         wallet.as_ref(),
+        &spaces,
     ))
     .into_response()
 }
@@ -900,6 +916,12 @@ pub async fn post_authorization(
         .clone()
         .unwrap_or_else(|| form.client_id.clone());
 
+    // Token-only space display: the broad-grant warning and everything else derivable without
+    // network I/O. Resolving declarations here would mean outbound DNS/HTTP *before* the
+    // identifier-keyed login rate-limit gate below — the amplification hole that gate exists to
+    // close — so this path shows the raw NSID and keeps the warning.
+    let spaces = crate::auth::space_consent::space_displays_without_resolution(&form.scope);
+
     // Helper closure to re-render the consent page without redirecting to the client.
     let rerender = |hint: Option<&str>, error: &str| -> Response {
         Html(render_consent_page(
@@ -918,6 +940,7 @@ pub async fn post_authorization(
             // The password-error re-render creates no pending request, so the wallet path is
             // omitted here; the user retries the password form (or reloads to get the wallet code).
             None,
+            &spaces,
         ))
         .into_response()
     };
