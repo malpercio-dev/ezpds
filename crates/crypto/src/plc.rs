@@ -266,6 +266,9 @@ pub struct VerifiedGenesisOp {
     pub verification_methods: BTreeMap<String, String>,
     /// Endpoint from `services["atproto_pds"]`, if present.
     pub atproto_pds_endpoint: Option<String>,
+    /// Full `services` map from the op — every entry, not only `atproto_pds`, so optional
+    /// entries such as `atproto_space_host` survive into the rendered DID document.
+    pub services: BTreeMap<String, PlcService>,
 }
 
 /// RFC 4648 base32 with lowercase symbols (a-z, 2-7).
@@ -1266,6 +1269,7 @@ pub fn verify_genesis_op(
         also_known_as: signed_op.also_known_as,
         verification_methods: signed_op.verification_methods.into_inner(),
         atproto_pds_endpoint,
+        services: signed_op.services.into_inner(),
     })
 }
 
@@ -2153,6 +2157,14 @@ mod tests {
             verified.atproto_pds_endpoint,
             Some("https://pds.example.com".to_string()),
             "atproto_pds_endpoint should be set correctly"
+        );
+        assert_eq!(
+            verified
+                .services
+                .get("atproto_pds")
+                .map(|s| s.endpoint.as_str()),
+            Some("https://pds.example.com"),
+            "the full services map should be carried through"
         );
     }
 

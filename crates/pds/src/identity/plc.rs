@@ -135,58 +135,78 @@ pub async fn fetch_current_plc_state(
     })
 }
 
-/// Render a minimal DID Core document from a PLC operation's fields.
+/// Render a DID Core document from a PLC operation's fields, the way plc.directory renders
+/// one: every `verificationMethods` entry becomes a `Multikey` method at `{did}#{name}` and
+/// every `services` entry a service at `#{name}`. Optional entries such as the Spaces
+/// `atproto_space` key and `atproto_space_host` service therefore survive into the document
+/// rather than being dropped; `atproto` / `atproto_pds` are rendered first, then the rest in
+/// name order.
 ///
-/// Used to refresh the locally-cached DID document after a self-submitted PLC
-/// operation repoints the identity (`submitPlcOperation`). Mirrors the shape
-/// `genesis::build_did_document` produces for a genesis op.
+/// Used to refresh the locally-cached DID document after a self-submitted PLC operation
+/// repoints the identity (`submitPlcOperation`), and by `genesis::build_did_document`.
 ///
 /// # Errors
-/// Returns `InternalError` if `verificationMethods["atproto"]` is absent or not a
-/// `did:key:` URI, or if there is no `atproto_pds` service endpoint.
+/// Returns `InternalError` if `verificationMethods["atproto"]` or `services["atproto_pds"]` is
+/// absent (an atproto identity needs both), or if any verification method is not a `did:key:`
+/// URI (plc.directory would have rejected the operation).
 pub fn build_did_document_from_op(
     did: &str,
     verification_methods: &BTreeMap<String, String>,
     also_known_as: &[String],
     services: &BTreeMap<String, crypto::PlcService>,
 ) -> Result<serde_json::Value, ApiError> {
-    let atproto_did_key = verification_methods.get("atproto").ok_or_else(|| {
-        ApiError::new(
+    if !verification_methods.contains_key("atproto") {
+        return Err(ApiError::new(
             ErrorCode::InternalError,
             "operation verificationMethods.atproto is missing",
-        )
-    })?;
-    let public_key_multibase = atproto_did_key.strip_prefix("did:key:").ok_or_else(|| {
-        ApiError::new(
+        ));
+    }
+    if !services.contains_key("atproto_pds") {
+        return Err(ApiError::new(
             ErrorCode::InternalError,
-            "operation atproto key is not a did:key: URI",
-        )
-    })?;
-    let service_endpoint = services
-        .get("atproto_pds")
-        .map(|s| s.endpoint.as_str())
-        .ok_or_else(|| {
-            ApiError::new(
-                ErrorCode::InternalError,
-                "operation is missing an atproto_pds service endpoint",
-            )
-        })?;
+            "operation is missing an atproto_pds service endpoint",
+        ));
+    }
+
+    let mut methods: Vec<(&String, &String)> = verification_methods.iter().collect();
+    methods.sort_by_key(|(name, _)| (name.as_str() != "atproto", name.as_str()));
+    let verification_method = methods
+        .into_iter()
+        .map(|(name, did_key)| {
+            let public_key_multibase = did_key.strip_prefix("did:key:").ok_or_else(|| {
+                ApiError::new(
+                    ErrorCode::InternalError,
+                    format!("operation {name} key is not a did:key: URI"),
+                )
+            })?;
+            Ok(serde_json::json!({
+                "id": format!("{did}#{name}"),
+                "type": "Multikey",
+                "controller": did,
+                "publicKeyMultibase": public_key_multibase
+            }))
+        })
+        .collect::<Result<Vec<_>, ApiError>>()?;
+
+    let mut entries: Vec<(&String, &crypto::PlcService)> = services.iter().collect();
+    entries.sort_by_key(|(name, _)| (name.as_str() != "atproto_pds", name.as_str()));
+    let service: Vec<serde_json::Value> = entries
+        .into_iter()
+        .map(|(name, svc)| {
+            serde_json::json!({
+                "id": format!("#{name}"),
+                "type": svc.service_type,
+                "serviceEndpoint": svc.endpoint
+            })
+        })
+        .collect();
 
     Ok(serde_json::json!({
         "@context": ["https://www.w3.org/ns/did/v1"],
         "id": did,
         "alsoKnownAs": also_known_as,
-        "verificationMethod": [{
-            "id": format!("{did}#atproto"),
-            "type": "Multikey",
-            "controller": did,
-            "publicKeyMultibase": public_key_multibase
-        }],
-        "service": [{
-            "id": "#atproto_pds",
-            "type": "AtprotoPersonalDataServer",
-            "serviceEndpoint": service_endpoint
-        }]
+        "verificationMethod": verification_method,
+        "service": service
     }))
 }
 
@@ -342,6 +362,72 @@ mod tests {
             "https://pds.example.com"
         );
         assert_eq!(doc["alsoKnownAs"][0], "at://alice.example.com");
+    }
+
+    #[test]
+    fn renders_every_verification_method_and_service_primary_first() {
+        let mut vms = BTreeMap::new();
+        vms.insert("atproto_space".to_string(), "did:key:zSpace".to_string());
+        vms.insert("atproto".to_string(), "did:key:zSign".to_string());
+        let mut services = BTreeMap::new();
+        services.insert(
+            "atproto_labeler".to_string(),
+            crypto::PlcService {
+                service_type: "AtprotoLabeler".to_string(),
+                endpoint: "https://labeler.example.com".to_string(),
+            },
+        );
+        services.insert(
+            "atproto_pds".to_string(),
+            plc_service("https://pds.example.com"),
+        );
+        services.insert(
+            "atproto_space_host".to_string(),
+            crypto::PlcService {
+                service_type: "AtprotoSpaceHost".to_string(),
+                endpoint: "https://space.example.com".to_string(),
+            },
+        );
+
+        let doc = build_did_document_from_op("did:plc:test", &vms, &[], &services).expect("doc");
+        let ids: Vec<&str> = doc["verificationMethod"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|m| m["id"].as_str().unwrap())
+            .collect();
+        assert_eq!(ids, ["did:plc:test#atproto", "did:plc:test#atproto_space"]);
+        assert_eq!(doc["verificationMethod"][1]["publicKeyMultibase"], "zSpace");
+        assert_eq!(doc["verificationMethod"][1]["type"], "Multikey");
+        let service_ids: Vec<&str> = doc["service"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|s| s["id"].as_str().unwrap())
+            .collect();
+        assert_eq!(
+            service_ids,
+            ["#atproto_pds", "#atproto_labeler", "#atproto_space_host"]
+        );
+        assert_eq!(doc["service"][2]["type"], "AtprotoSpaceHost");
+        assert_eq!(
+            doc["service"][2]["serviceEndpoint"],
+            "https://space.example.com"
+        );
+    }
+
+    #[test]
+    fn build_did_document_from_op_rejects_non_did_key_method() {
+        let mut vms = BTreeMap::new();
+        vms.insert("atproto".to_string(), "did:key:zSign".to_string());
+        vms.insert("atproto_space".to_string(), "zNotADidKey".to_string());
+        let mut services = BTreeMap::new();
+        services.insert(
+            "atproto_pds".to_string(),
+            plc_service("https://pds.example.com"),
+        );
+        let err = build_did_document_from_op("did:plc:test", &vms, &[], &services).unwrap_err();
+        assert_eq!(err.status_code(), 500);
     }
 
     #[test]

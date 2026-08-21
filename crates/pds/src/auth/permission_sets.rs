@@ -220,19 +220,7 @@ pub(crate) async fn resolve_authority_endpoint(
         .await
         .map_err(|_| format!("could not resolve the DID document for \"{authority_did}\""))?;
 
-    let endpoint = doc
-        .get("service")
-        .and_then(Value::as_array)
-        .into_iter()
-        .flatten()
-        .find(|entry| {
-            matches!(
-                entry.get("id").and_then(Value::as_str),
-                Some("#atproto_pds")
-            )
-        })
-        .and_then(|entry| entry.get("serviceEndpoint"))
-        .and_then(Value::as_str)
+    let endpoint = resolution::service_endpoint(&doc, "atproto_pds")
         .ok_or_else(|| format!("\"{authority_did}\" does not advertise a PDS service endpoint"))?;
 
     proxy::validate_proxy_endpoint(endpoint, state.allow_loopback_proxy_targets)
