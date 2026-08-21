@@ -321,12 +321,27 @@ async fn collect_referenced_blob_cids(
     // Space records are the store itself (no MST): decode each stored DAG-CBOR block and
     // collect its links through the same JSON walk the public path uses, so both surfaces
     // apply an identical (deliberately over-broad) reference definition.
-    for value in crate::db::space_repos::list_record_values_for_account(&state.db, did).await? {
-        let ipld = repo_engine::decode_record_block(&value)
-            .map_err(|e| GcError::Repo(format!("decode space record block: {e}")))?;
-        let json = repo_engine::record_value_to_json(&ipld)
-            .map_err(|e| GcError::Repo(format!("space record to JSON: {e}")))?;
-        collect_blob_links(&json, &mut counts);
+    let mut cursor: Option<crate::db::space_repos::SpaceRecordCursor> = None;
+    loop {
+        let page = crate::db::space_repos::list_record_blocks_for_account(
+            &state.db,
+            did,
+            cursor.as_ref(),
+            RECORD_PAGE_SIZE as i64,
+        )
+        .await?;
+        let last_page = page.len() < RECORD_PAGE_SIZE;
+        for (key, value) in page {
+            let ipld = repo_engine::decode_record_block(&value)
+                .map_err(|e| GcError::Repo(format!("decode space record block: {e}")))?;
+            let json = repo_engine::record_value_to_json(&ipld)
+                .map_err(|e| GcError::Repo(format!("space record to JSON: {e}")))?;
+            collect_blob_links(&json, &mut counts);
+            cursor = Some(key);
+        }
+        if last_page {
+            break;
+        }
     }
 
     Ok(counts)

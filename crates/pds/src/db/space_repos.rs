@@ -57,9 +57,10 @@ where
     E: sqlx::Executor<'e, Database = Sqlite>,
 {
     let result = sqlx::query(
-        "INSERT OR IGNORE INTO space_repos \
+        "INSERT INTO space_repos \
          (space_uri, account_did, rev, lthash_state, created_at, updated_at) \
-         VALUES (?, ?, ?, ?, datetime('now'), datetime('now'))",
+         VALUES (?, ?, ?, ?, datetime('now'), datetime('now')) \
+         ON CONFLICT DO NOTHING",
     )
     .bind(space_uri)
     .bind(account_did)
@@ -209,17 +210,55 @@ where
     Ok(())
 }
 
-/// Every stored record block for one account, across all of its space repos —
-/// the blob GC's input for unioning space blob references with the public
-/// repo's.
-// ponytail: one unpaged read per account per GC pass; switch to PK-keyset
-// paging if space stores grow beyond what one result set should hold.
-pub async fn list_record_values_for_account(
+/// The keyset cursor for [`list_record_blocks_for_account`]: the primary-key
+/// tail of the last row seen (`space_uri`, `collection`, `rkey`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SpaceRecordCursor {
+    pub space_uri: String,
+    pub collection: String,
+    pub rkey: String,
+}
+
+/// One page of an account's stored record blocks across all of its space
+/// repos, in primary-key order — the blob GC's input for unioning space blob
+/// references with the public repo's. Pass the last row's cursor to continue;
+/// a page shorter than `limit` is the last one.
+pub async fn list_record_blocks_for_account(
     pool: &SqlitePool,
     account_did: &str,
-) -> Result<Vec<Vec<u8>>, sqlx::Error> {
-    sqlx::query_scalar::<_, Vec<u8>>("SELECT value FROM space_records WHERE account_did = ?")
-        .bind(account_did)
-        .fetch_all(pool)
-        .await
+    after: Option<&SpaceRecordCursor>,
+    limit: i64,
+) -> Result<Vec<(SpaceRecordCursor, Vec<u8>)>, sqlx::Error> {
+    // Row-value comparison keysets on the PK tail; the empty-string triple
+    // sorts before every real key, so it doubles as "from the start".
+    let (space_uri, collection, rkey) = match after {
+        Some(c) => (c.space_uri.as_str(), c.collection.as_str(), c.rkey.as_str()),
+        None => ("", "", ""),
+    };
+    let rows: Vec<(String, String, String, Vec<u8>)> = sqlx::query_as(
+        "SELECT space_uri, collection, rkey, value FROM space_records \
+         WHERE account_did = ? AND (space_uri, collection, rkey) > (?, ?, ?) \
+         ORDER BY space_uri, collection, rkey \
+         LIMIT ?",
+    )
+    .bind(account_did)
+    .bind(space_uri)
+    .bind(collection)
+    .bind(rkey)
+    .bind(limit)
+    .fetch_all(pool)
+    .await?;
+    Ok(rows
+        .into_iter()
+        .map(|(space_uri, collection, rkey, value)| {
+            (
+                SpaceRecordCursor {
+                    space_uri,
+                    collection,
+                    rkey,
+                },
+                value,
+            )
+        })
+        .collect())
 }

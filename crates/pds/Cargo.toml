@@ -65,7 +65,7 @@ unicode-segmentation = { workspace = true }
 # Firehose frame encoding (com.atproto.sync.subscribeRepos): DAG-CBOR with CID tag-42
 # links. ipld-core's serde feature is what makes `repo_engine::Cid` serialize as tag 42;
 # serde_bytes is required for the CBOR byte-string `blocks` field.
-serde_ipld_dagcbor = "0.6"
+serde_ipld_dagcbor = { workspace = true }
 ipld-core = { version = "0.4", features = ["serde"] }
 serde_bytes = "0.11"
 futures-util = { version = "0.3", default-features = false, features = ["std", "sink", "async-await"] }

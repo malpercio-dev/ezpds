@@ -52,8 +52,9 @@ where
 {
     let modifier = format!("+{ttl_secs} seconds");
     let result = sqlx::query(
-        "INSERT OR IGNORE INTO space_jti_replay (scope, jti, expires_at) \
-         VALUES (?, ?, datetime('now', ?))",
+        "INSERT INTO space_jti_replay (scope, jti, expires_at) \
+         VALUES (?, ?, datetime('now', ?)) \
+         ON CONFLICT DO NOTHING",
     )
     .bind(scope.as_str())
     .bind(jti)

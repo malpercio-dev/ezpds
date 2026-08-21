@@ -46,9 +46,10 @@ where
     E: sqlx::Executor<'e, Database = Sqlite>,
 {
     let result = sqlx::query(
-        "INSERT OR IGNORE INTO spaces \
+        "INSERT INTO spaces \
          (uri, authority_did, space_type, skey, policy, app_access, managing_app, created_at) \
-         VALUES (?, ?, ?, ?, ?, ?, ?, datetime('now'))",
+         VALUES (?, ?, ?, ?, ?, ?, ?, datetime('now')) \
+         ON CONFLICT DO NOTHING",
     )
     .bind(space.uri)
     .bind(space.authority_did)

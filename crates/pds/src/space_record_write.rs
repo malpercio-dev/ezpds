@@ -115,23 +115,30 @@ pub async fn apply_space_writes(
         }
     }
 
+    let mut tx = state.db.begin().await.map_err(|e| {
+        tracing::error!(error = %e, did = %did, "failed to open space write transaction");
+        internal_error()
+    })?;
+
     // A deactivated, suspended, or taken-down account is read-only, exactly as
-    // on the public write path.
-    match crate::db::accounts::account_lifecycle(&state.db, did).await? {
+    // on the public write path. Checked *inside* the transaction: the public
+    // path folds this guard into its root CAS, but the space head's CAS is on
+    // `space_repos`, not `accounts`, so a pre-transaction check would leave a
+    // window for a concurrent deactivation to land between check and commit.
+    match crate::db::accounts::account_lifecycle(&mut *tx, did).await? {
         Some(crate::db::accounts::AccountLifecycle::Active) => {}
         Some(_) => {
+            tx.rollback().await.ok();
             return Err(ApiError::new(
                 ErrorCode::Forbidden,
                 "account is deactivated",
             ));
         }
-        None => return Err(ApiError::new(ErrorCode::NotFound, "account not found")),
+        None => {
+            tx.rollback().await.ok();
+            return Err(ApiError::new(ErrorCode::NotFound, "account not found"));
+        }
     }
-
-    let mut tx = state.db.begin().await.map_err(|e| {
-        tracing::error!(error = %e, did = %did, "failed to open space write transaction");
-        internal_error()
-    })?;
 
     // The space must exist and be alive. A deleted space refuses writes — its
     // members' existing records stay put (spec deletion semantics), they just
@@ -141,9 +148,13 @@ pub async fn apply_space_writes(
         .map_err(|e| {
             tracing::error!(error = %e, space = %space_uri, "failed to load space");
             internal_error()
-        })?
-        .ok_or_else(|| ApiError::new(ErrorCode::NotFound, "space not found"))?;
+        })?;
+    let Some(space) = space else {
+        tx.rollback().await.ok();
+        return Err(ApiError::new(ErrorCode::NotFound, "space not found"));
+    };
     if space.deleted_at.is_some() {
+        tx.rollback().await.ok();
         return Err(ApiError::new(ErrorCode::NotFound, "space has been deleted"));
     }
 
@@ -172,12 +183,14 @@ pub async fn apply_space_writes(
         None => repo_engine::generate_tid(),
     };
 
-    // Create or advance the head before touching any child row: record and
-    // oplog rows FK-reference the repo row keyed at the *new* rev's row, and
-    // SQLite enforces FKs immediately. The rev compare-and-swap happens here —
-    // a concurrent commit that moved the head since our read makes this a
-    // zero-row update and nothing lands. The LtHash state column is finalized
-    // after the ops fold below, inside the same transaction.
+    // Create or advance the head before touching any child row. Two distinct
+    // reasons share this spot: on a first write, `insert_repo` is what
+    // satisfies the record/oplog rows' `(space_uri, account_did)` foreign key
+    // (SQLite enforces FKs immediately); on every later write,
+    // `advance_repo_rev` is the rev compare-and-swap that serializes
+    // concurrent writers — a commit that moved the head since our read makes
+    // it a zero-row update, so we bail before doing any child-row work. The
+    // folded LtHash state is finalized after the ops loop, same transaction.
     let advanced = match &prev_rev {
         Some(prev) => {
             crate::db::space_repos::advance_repo_rev(
@@ -231,6 +244,7 @@ pub async fn apply_space_writes(
         match op.action {
             SpaceWriteAction::Create | SpaceWriteAction::Put => {
                 if op.action == SpaceWriteAction::Create && prev_cid.is_some() {
+                    tx.rollback().await.ok();
                     return Err(ApiError::new(
                         ErrorCode::Conflict,
                         "record already exists; use putRecord to update",
@@ -529,9 +543,10 @@ mod tests {
     async fn create_conflicts_on_existing_record() {
         let state = test_state().await;
         seed(&state).await;
-        apply_space_writes(&state, SPACE, DID, &[put("org.example.note", "aaa", "one")])
-            .await
-            .unwrap();
+        let first =
+            apply_space_writes(&state, SPACE, DID, &[put("org.example.note", "aaa", "one")])
+                .await
+                .unwrap();
 
         let create = SpaceWriteOp {
             action: SpaceWriteAction::Create,
@@ -556,7 +571,10 @@ mod tests {
                 .await
                 .unwrap();
         assert_eq!(ops, 1);
-        assert!(!repo.rev.is_empty());
+        assert_eq!(
+            repo.rev, first.rev,
+            "the failed batch must not advance the head"
+        );
     }
 
     /// Deleting an absent record is an idempotent no-op: the head stands and

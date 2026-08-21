@@ -30,6 +30,8 @@ pub struct SweepStats {
 pub fn spawn_space_jti_sweep(state: AppState) -> JoinHandle<()> {
     tokio::spawn(async move {
         let mut ticker = tokio::time::interval(SWEEP_INTERVAL);
+        // A late pass must not be followed by a burst of catch-up passes.
+        ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         ticker.tick().await;
         loop {
             ticker.tick().await;

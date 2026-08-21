@@ -233,10 +233,13 @@ pub(crate) async fn update_account_email(
 /// route can keep serving a self-service-deactivated account — the migration window between
 /// a deactivated `createAccount` and `activateAccount` — while still refusing moderation
 /// states. The caller decides which lifecycle states it admits.
-pub(crate) async fn account_lifecycle(
-    db: &sqlx::SqlitePool,
+pub(crate) async fn account_lifecycle<'e, E>(
+    db: E,
     did: &str,
-) -> Result<Option<AccountLifecycle>, ApiError> {
+) -> Result<Option<AccountLifecycle>, ApiError>
+where
+    E: sqlx::Executor<'e, Database = sqlx::Sqlite>,
+{
     let row: Option<(Option<String>, Option<String>, Option<String>)> = sqlx::query_as(
         "SELECT deactivated_at, suspended_at, taken_down_at FROM accounts WHERE did = ?",
     )
