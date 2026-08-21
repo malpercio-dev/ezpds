@@ -1,0 +1,37 @@
+meta {
+  name: Space List Records
+  type: http
+  seq: 146
+}
+
+get {
+  url: {{baseUrl}}/xrpc/com.atproto.space.listRecords?space=at://did:plc:authorityaaaaaaaaaaaaaaa/space/org.example.bucket/main&repo={{did}}&limit=50
+  body: none
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{accessToken}}
+}
+
+params:query {
+  space: at://did:plc:authorityaaaaaaaaaaaaaaa/space/org.example.bucket/main
+  repo: {{did}}
+  limit: 50
+  ~collection: org.example.note
+  ~reverse: false
+  ~excludeValues: false
+  ~cursor:
+}
+
+docs {
+  Page an account's records in one space repo, for full-state recovery. Each record's value
+  is inlined by default; set "excludeValues=true" for a metadata-only listing (collection,
+  rkey, cid), which is what the healing path wants — it diffs cids and fetches only what
+  changed.
+
+  Ordered by (collection, rkey), descending unless "reverse=true". The cursor is opaque; a
+  page shorter than "limit" is the last one and carries none. An account holding no repo in
+  the space returns 400 RepoNotFound, which does not distinguish a member who has never
+  written from a non-member.
+}

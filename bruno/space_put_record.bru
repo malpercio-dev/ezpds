@@ -1,0 +1,34 @@
+meta {
+  name: Space Put Record
+  type: http
+  seq: 141
+}
+
+post {
+  url: {{baseUrl}}/xrpc/com.atproto.space.putRecord
+  body: json
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{accessToken}}
+}
+
+body:json {
+  {
+    "space": "at://did:plc:authorityaaaaaaaaaaaaaaa/space/org.example.bucket/main",
+    "repo": {{did}},
+    "collection": "org.example.note",
+    "rkey": "self",
+    "record": {
+      "$type": "org.example.note",
+      "text": "Created or updated"
+    }
+  }
+}
+
+docs {
+  Upsert a record in a permissioned space repo. Because it is an upsert, the "space:"
+  action required depends on whether the record already exists: "create" if not, "update"
+  if so. An app granted only one of the two is not asked for both.
+}
