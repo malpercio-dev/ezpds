@@ -7,8 +7,9 @@
 //! collector works reference-by-reference and touches the shared file only when the last owner
 //! is gone. It runs in two phases on each pass:
 //!
-//! 1. **Reconcile** — for every account that owns a blob reference *or has a repo*, recompute
-//!    which blob CIDs its records actually reference (by walking the MST) and write that truth
+//! 1. **Reconcile** — for every account that owns a blob reference *or has a repo* (public or
+//!    space), recompute which blob CIDs its records actually reference (by walking the MST and
+//!    decoding its stored space records — the union of both surfaces) and write that truth
 //!    back to `blob_owners`: referenced blobs get a permanent ownership row (`ref_count` set,
 //!    `temp_until` cleared — created on the spot if the account references a stored blob it
 //!    never uploaded, which also heals pre-V039 rows that credited only the first uploader);
@@ -263,52 +264,83 @@ async fn reconcile_account(state: &AppState, did: &str) -> Result<(u64, u64), Gc
     Ok((reconciled, released))
 }
 
-/// Walk an account's repo and count how many records reference each blob CID.
-///
-/// Returns an empty map when the account has no repo root (nothing can reference a blob).
+/// Count how many of an account's records reference each blob CID — the union of its public
+/// repo (walked via the MST) and its permissioned space repos (each stored `space_records`
+/// block decoded in place). A blob referenced from either surface is equally pinned; a blob
+/// referenced from neither is equally collectable.
 async fn collect_referenced_blob_cids(
     state: &AppState,
     did: &str,
 ) -> Result<HashMap<String, i64>, GcError> {
     let mut counts: HashMap<String, i64> = HashMap::new();
 
-    let root_str = match accounts::get_repo_root_cid(&state.db, did).await? {
-        Some(root) => root,
-        None => return Ok(counts),
-    };
-    let root_cid = Cid::try_from(root_str.as_str())
-        .map_err(|e| GcError::Repo(format!("invalid root CID {root_str}: {e}")))?;
+    // A NULL `repo_root_cid` decodes as an empty string on this driver, and the space-repo
+    // candidate union means accounts with no public repo now reach this walk — filter both
+    // shapes of "no root" rather than trying to open a repo at an empty CID.
+    if let Some(root_str) = accounts::get_repo_root_cid(&state.db, did)
+        .await?
+        .filter(|root| !root.is_empty())
+    {
+        let root_cid = Cid::try_from(root_str.as_str())
+            .map_err(|e| GcError::Repo(format!("invalid root CID {root_str}: {e}")))?;
 
-    let store = SqliteBlockStore::new(state.db.clone(), did.to_string());
-    let mut repo = Repository::open(store, root_cid)
-        .await
-        .map_err(|e| GcError::Repo(format!("open repo: {e}")))?;
-
-    let collections = repo_engine::list_collections(&mut repo)
-        .await
-        .map_err(|e| GcError::Repo(format!("list collections: {e}")))?;
-
-    for collection in collections {
-        let mut cursor: Option<String> = None;
-        loop {
-            let page = repo_engine::list_records_json(
-                &mut repo,
-                &collection,
-                RECORD_PAGE_SIZE,
-                cursor.as_deref(),
-                false,
-            )
+        let store = SqliteBlockStore::new(state.db.clone(), did.to_string());
+        let mut repo = Repository::open(store, root_cid)
             .await
-            .map_err(|e| GcError::Repo(format!("list records: {e}")))?;
+            .map_err(|e| GcError::Repo(format!("open repo: {e}")))?;
 
-            for record in &page.records {
-                collect_blob_links(&record.value, &mut counts);
-            }
+        let collections = repo_engine::list_collections(&mut repo)
+            .await
+            .map_err(|e| GcError::Repo(format!("list collections: {e}")))?;
 
-            match page.cursor {
-                Some(next) => cursor = Some(next),
-                None => break,
+        for collection in collections {
+            let mut cursor: Option<String> = None;
+            loop {
+                let page = repo_engine::list_records_json(
+                    &mut repo,
+                    &collection,
+                    RECORD_PAGE_SIZE,
+                    cursor.as_deref(),
+                    false,
+                )
+                .await
+                .map_err(|e| GcError::Repo(format!("list records: {e}")))?;
+
+                for record in &page.records {
+                    collect_blob_links(&record.value, &mut counts);
+                }
+
+                match page.cursor {
+                    Some(next) => cursor = Some(next),
+                    None => break,
+                }
             }
+        }
+    }
+
+    // Space records are the store itself (no MST): decode each stored DAG-CBOR block and
+    // collect its links through the same JSON walk the public path uses, so both surfaces
+    // apply an identical (deliberately over-broad) reference definition.
+    let mut cursor: Option<crate::db::space_repos::SpaceRecordCursor> = None;
+    loop {
+        let page = crate::db::space_repos::list_record_blocks_for_account(
+            &state.db,
+            did,
+            cursor.as_ref(),
+            RECORD_PAGE_SIZE as i64,
+        )
+        .await?;
+        let last_page = page.len() < RECORD_PAGE_SIZE;
+        for (key, value) in page {
+            let ipld = repo_engine::decode_record_block(&value)
+                .map_err(|e| GcError::Repo(format!("decode space record block: {e}")))?;
+            let json = repo_engine::record_value_to_json(&ipld)
+                .map_err(|e| GcError::Repo(format!("space record to JSON: {e}")))?;
+            collect_blob_links(&json, &mut counts);
+            cursor = Some(key);
+        }
+        if last_page {
+            break;
         }
     }
 
@@ -819,5 +851,69 @@ mod tests {
         assert_eq!(owner_b.ref_count, 1);
         assert!(owner_b.temp_until.is_none());
         assert!(blob_file_exists(&state, &cid), "adopted file must survive");
+    }
+
+    /// A blob referenced only from a permissioned space record is pinned exactly like one
+    /// referenced from the public MST — for an account with **no public repo at all** (proving
+    /// the candidate query and the reference walk both cover the space surface) — while an
+    /// unreferenced expired blob on the same account is still collected.
+    #[tokio::test]
+    async fn gc_pins_blob_referenced_only_from_a_space_record() {
+        let (state, _dir) = gc_state().await;
+        let did = "did:plc:gcspaceref";
+        sqlx::query(
+            "INSERT INTO accounts (did, email, password_hash, created_at, updated_at) \
+             VALUES (?, ?, NULL, datetime('now'), datetime('now'))",
+        )
+        .bind(did)
+        .bind(format!("{did}@example.com"))
+        .execute(&state.db)
+        .await
+        .unwrap();
+        let space = "at://did:plc:gcspaceref/space/org.example.bucket/self";
+        crate::db::spaces::insert_space(
+            &state.db,
+            &crate::db::spaces::NewSpace {
+                uri: space,
+                authority_did: did,
+                space_type: "org.example.bucket",
+                skey: "self",
+                policy: Some("member-list"),
+                app_access: Some("open"),
+                managing_app: None,
+            },
+        )
+        .await
+        .unwrap();
+
+        // Both blobs are expired temporaries; only one gets referenced from a space record.
+        let referenced = add_blob(&state, did, b"space bytes", "2020-01-01 00:00:00").await;
+        let orphan = add_blob(&state, did, b"orphan bytes", "2020-01-01 00:00:00").await;
+        crate::space_record_write::apply_space_writes(
+            &state,
+            space,
+            did,
+            &[crate::space_record_write::SpaceWriteOp {
+                action: crate::space_record_write::SpaceWriteAction::Put,
+                collection: "org.example.note".to_string(),
+                rkey: "withblob".to_string(),
+                value: Some(blob_record(&referenced)),
+            }],
+        )
+        .await
+        .unwrap();
+
+        let stats = run_blob_gc(&state).await;
+        assert_eq!(stats.errors, 0);
+        assert_eq!(stats.deleted, 1, "the unreferenced blob is collected");
+
+        let owner = blobs::get_owner(&state.db, did, &referenced)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(owner.ref_count, 1);
+        assert!(owner.temp_until.is_none(), "space reference pins the blob");
+        assert!(blob_file_exists(&state, &referenced));
+        assert!(!blob_file_exists(&state, &orphan));
     }
 }

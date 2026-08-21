@@ -98,6 +98,14 @@ const DELETE_BY_DID: &[&str] = &[
     "DELETE FROM transfer_devices WHERE did = ?",
     "DELETE FROM did_documents WHERE did = ?",
     "DELETE FROM reserved_signing_keys WHERE did = ?",
+    // The account's permissioned space repos, in FK order (ops and records reference the repo
+    // row). `spaces` rows deliberately survive even when this account is the authority: members'
+    // records are their own, and an unanswerable space is exactly the spec's deletion semantics.
+    "DELETE FROM space_repo_ops WHERE account_did = ?",
+    "DELETE FROM space_records WHERE account_did = ?",
+    "DELETE FROM space_repos WHERE account_did = ?",
+    "DELETE FROM space_members WHERE member_did = ?",
+    "DELETE FROM space_notify_registrations WHERE subscriber_did = ?",
 ];
 
 /// The account's ownership rows in the content-addressed repo block store.
@@ -696,6 +704,100 @@ mod tests {
             PurgeOutcome::Deleted
         );
         assert_eq!(row_count(&state.db, "email_tokens", "did", did).await, 0);
+    }
+
+    /// Purge removes every space-table row the account owns or is party to — its repos (ops →
+    /// records → head, FK order), its memberships, and its notify registrations — while the
+    /// `spaces` row it is authority for survives as the tombstone that makes the space
+    /// unanswerable (members' own records are theirs; the space simply stops answering).
+    #[tokio::test]
+    async fn purge_removes_space_rows_and_keeps_authority_space_tombstone() {
+        let (state, _dir) = purge_state().await;
+        let did = "did:plc:purgespaces";
+        seed_account_with_repo(&state.db, did).await;
+        let space = "at://did:plc:purgespaces/space/org.example.bucket/self";
+        crate::db::spaces::insert_space(
+            &state.db,
+            &crate::db::spaces::NewSpace {
+                uri: space,
+                authority_did: did,
+                space_type: "org.example.bucket",
+                skey: "self",
+                policy: Some("member-list"),
+                app_access: Some("open"),
+                managing_app: None,
+            },
+        )
+        .await
+        .unwrap();
+        crate::space_record_write::apply_space_writes(
+            &state,
+            space,
+            did,
+            &[crate::space_record_write::SpaceWriteOp {
+                action: crate::space_record_write::SpaceWriteAction::Put,
+                collection: "org.example.note".to_string(),
+                rkey: "one".to_string(),
+                value: Some(serde_json::json!({"text": "purge me"})),
+            }],
+        )
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO space_members (space_uri, member_did, added_at) \
+             VALUES (?, ?, datetime('now'))",
+        )
+        .bind(space)
+        .bind(did)
+        .execute(&state.db)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO space_notify_registrations \
+             (space_uri, subscriber_did, repo_did, created_at, expires_at) \
+             VALUES (?, ?, '', datetime('now'), datetime('now', '+1 hour'))",
+        )
+        .bind(space)
+        .bind(did)
+        .execute(&state.db)
+        .await
+        .unwrap();
+
+        assert_eq!(
+            purge_account(&state, did).await.unwrap(),
+            PurgeOutcome::Deleted
+        );
+        assert_eq!(
+            row_count(&state.db, "space_repo_ops", "account_did", did).await,
+            0
+        );
+        assert_eq!(
+            row_count(&state.db, "space_records", "account_did", did).await,
+            0
+        );
+        assert_eq!(
+            row_count(&state.db, "space_repos", "account_did", did).await,
+            0
+        );
+        assert_eq!(
+            row_count(&state.db, "space_members", "member_did", did).await,
+            0
+        );
+        assert_eq!(
+            row_count(
+                &state.db,
+                "space_notify_registrations",
+                "subscriber_did",
+                did
+            )
+            .await,
+            0
+        );
+        assert_eq!(
+            row_count(&state.db, "spaces", "uri", space).await,
+            1,
+            "the authority's space row survives as the unanswerable-space tombstone"
+        );
     }
 
     /// Purging a parent with living sovereign children must not FK-fail on the children's
