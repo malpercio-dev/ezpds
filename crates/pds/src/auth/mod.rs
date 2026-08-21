@@ -14,6 +14,7 @@ pub mod rate_limit;
 pub mod service_auth;
 pub mod signed_proof;
 pub mod signing_key;
+pub mod space_consent;
 pub mod token;
 pub mod validation;
 
@@ -27,6 +28,7 @@ pub use dpop::{
     DpopTokenEndpointError,
 };
 pub use permission_sets::{new_permission_set_cache, PermissionSetCache};
+pub use space_consent::{new_space_type_cache, SpaceTypeCache};
 // Foundational types: used once authenticated routes are wired up.
 #[allow(unused_imports)]
 pub use extractors::{authenticate_access, AuthenticatedUser};

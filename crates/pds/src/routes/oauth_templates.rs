@@ -11,6 +11,7 @@ use axum::http::StatusCode;
 use axum::response::{Html, Redirect};
 
 use crate::auth::oauth_response_mode::ResponseMode;
+use crate::auth::space_consent::{SpaceDisplay, SpaceDisplayMap};
 
 // ── Public rendering functions ────────────────────────────────────────────────
 /// Render the `state` parameter for an authorization response, or nothing at all.
@@ -140,6 +141,8 @@ const WALLET_HANDOFF_SCHEME: &str = "obsign";
 /// `error` renders an error banner above the form when credential validation fails.
 /// `wallet` renders the wallet-approval path (typed code + handoff link + status polling) above
 /// the password form; `None` on a password-error re-render, where no pending request exists.
+/// `spaces` supplies the user-legible text for the request's `space:` tokens (see
+/// `auth::space_consent`); tokens missing from it render as the raw token.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn render_consent_page(
     client_name: &str,
@@ -155,6 +158,7 @@ pub(super) fn render_consent_page(
     login_hint: Option<&str>,
     error: Option<&str>,
     wallet: Option<&WalletConsentPath>,
+    spaces: &SpaceDisplayMap,
 ) -> String {
     // Monogram for the application mark — the first character of the client name.
     let app_initial = client_name
@@ -208,7 +212,7 @@ pub(super) fn render_consent_page(
     html.push_str(
         "    <div class=\"scopes\">\n        <span class=\"scope-tag\">atproto</span>\n    </div>\n",
     );
-    html.push_str(&render_permission_groups(scope));
+    html.push_str(&render_permission_groups(scope, spaces));
     html.push_str("    <p class=\"scope-note\">Uncheck anything you don't want to grant — the app will only be able to do what's left checked.</p>\n");
 
     // Sign in.
@@ -270,7 +274,12 @@ pub(super) fn render_consent_page(
 /// Render every non-`atproto` scope token as a checked-by-default checkbox, grouped under a
 /// resource-type heading. `atproto` is rendered separately by the caller — it's mandatory and
 /// never a checkbox.
-fn render_permission_groups(scope: &str) -> String {
+///
+/// A token with a `spaces` entry renders as a described row (space type name, who the spaces
+/// belong to, what it can write) instead of the bare token; a group holding a broad grant is
+/// preceded by a warning. The checkbox `value` is the raw token in both cases — only the label
+/// changes — so a token whose declaration didn't resolve still grants exactly what it says.
+fn render_permission_groups(scope: &str, spaces: &SpaceDisplayMap) -> String {
     let mut groups: Vec<(&'static str, Vec<&str>)> = Vec::new();
     for token in scope.split_whitespace() {
         if token == "atproto" {
@@ -287,16 +296,84 @@ fn render_permission_groups(scope: &str) -> String {
     for (label, tokens) in groups {
         html.push_str("    <div class=\"section-label\">");
         html.push_str(&html_escape(label));
-        html.push_str("</div>\n    <div class=\"permission-group\">\n");
+        html.push_str("</div>\n");
+        if tokens
+            .iter()
+            .any(|t| spaces.get(*t).is_some_and(|d| d.broad))
+        {
+            html.push_str(&render_broad_space_warning());
+        }
+        html.push_str("    <div class=\"permission-group\">\n");
         for token in tokens {
-            let escaped = html_escape(token);
-            html.push_str(&format!(
-                "      <label class=\"permission-row\"><input type=\"checkbox\" name=\"granted_scope\" value=\"{escaped}\" checked /> <span class=\"mono\">{escaped}</span></label>\n"
-            ));
+            match spaces.get(token) {
+                Some(display) => html.push_str(&render_space_row(token, display)),
+                None => {
+                    let escaped = html_escape(token);
+                    html.push_str(&format!(
+                        "      <label class=\"permission-row\"><input type=\"checkbox\" name=\"granted_scope\" value=\"{escaped}\" checked /> <span class=\"mono\">{escaped}</span></label>\n"
+                    ));
+                }
+            }
         }
         html.push_str("    </div>\n");
     }
     html
+}
+
+/// The prominent warning a grant wildcarding both `spaceType` and `authority` demands: it covers
+/// every kind of space under anyone, including ones the user has not joined yet.
+///
+/// Carried by words and an icon, not by the colour of the box — the same rule the wallet's
+/// urgency states follow, so the meaning survives for a user who can't distinguish the surface.
+fn render_broad_space_warning() -> String {
+    format!(
+        "    <div class=\"warn-banner\"><span class=\"warn-icon\" aria-hidden=\"true\">{ICON_ALERT}</span>\
+<span><strong>Warning: this is a very broad request.</strong> It covers every kind of space, \
+under any authority — including spaces you join later. Grant it only to an app you would trust \
+with all of them.</span></div>\n"
+    )
+}
+
+/// One `space:` row: the space type's declared name, a plain-language line for whose spaces it
+/// covers and what it can write there, and the raw token underneath.
+///
+/// The token stays visible on purpose. The friendly name is resolved from a declaration the
+/// requesting app's own authority publishes, so it is the app's claim about itself; the token is
+/// what the server will enforce, and a consent screen that shows only the claim hides the part
+/// that is actually binding.
+fn render_space_row(token: &str, display: &SpaceDisplay) -> String {
+    let mut detail: Vec<String> = Vec::new();
+
+    detail.push(match (&display.authority_label, display.any_authority) {
+        (_, true) => "In spaces under any authority".to_string(),
+        (Some(authority), _) => format!("In spaces under {authority}"),
+        (None, _) => "In your own spaces".to_string(),
+    });
+
+    if !display.collections.is_empty() {
+        detail.push(if display.collections.iter().any(|c| c == "*") {
+            "Can write any collection".to_string()
+        } else {
+            format!("Can write {}", display.collections.join(", "))
+        });
+    }
+
+    if !display.manage.is_empty() {
+        // Listed separately from the write verbs because `manage` acts on the spaces themselves,
+        // not on records in them — collapsing the two would read as one capability.
+        detail.push(format!("Can manage spaces: {}", display.manage.join(", ")));
+    }
+
+    format!(
+        "      <label class=\"permission-row permission-row--described\">\
+<input type=\"checkbox\" name=\"granted_scope\" value=\"{token}\" checked />\
+<span class=\"perm-body\"><span class=\"perm-title\">{title}</span>\
+<span class=\"perm-detail\">{detail}</span>\
+<span class=\"mono perm-token\">{token}</span></span></label>\n",
+        token = html_escape(token),
+        title = html_escape(&display.type_label),
+        detail = html_escape(&detail.join(" · ")),
+    )
 }
 
 // ── Wallet approval path ────────────────────────────────────────────────────────
@@ -579,6 +656,18 @@ const CONSENT_CSS: &str = r#"
     }
     .permission-row input[type="checkbox"] { width: 16px; height: 16px; accent-color: var(--aubergine); flex-shrink: 0; }
     .permission-row .mono { font-family: var(--mono); font-size: 12.5px; color: var(--ink-soft); word-break: break-all; }
+    .permission-row--described { align-items: flex-start; }
+    .perm-body { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+    .perm-title { font-size: 14px; font-weight: 600; color: var(--ink); }
+    .perm-detail { font-size: 12.5px; color: var(--muted); line-height: 1.45; }
+    .perm-token { font-family: var(--mono); font-size: 11.5px; color: var(--ink-soft); word-break: break-all; }
+    .warn-banner {
+      display: flex; align-items: flex-start; gap: 8px;
+      background: var(--crit-surface); color: var(--crit);
+      border: 1px solid var(--crit); border-radius: 10px;
+      font-size: 13px; line-height: 1.45; padding: 10px 12px; margin-bottom: 10px;
+    }
+    .warn-icon { flex-shrink: 0; display: flex; padding-top: 1px; }
     .error-banner {
       display: flex; align-items: center; gap: 8px;
       background: var(--crit-surface); color: var(--crit);
@@ -828,6 +917,137 @@ mod tests {
         );
     }
 
+    // ── `space:` consent rendering ───────────────────────────────────────────
+    /// Render `scope` with `spaces`, holding every other input fixed.
+    fn consent_html(scope: &str, spaces: &SpaceDisplayMap) -> String {
+        render_consent_page(
+            "Test App",
+            "https://app.example.com/client-metadata.json",
+            "https://app.example.com/callback",
+            "challenge",
+            "S256",
+            "state",
+            scope,
+            "code",
+            ResponseMode::Query,
+            "https://pds.example.com",
+            None,
+            None,
+            None,
+            spaces,
+        )
+    }
+
+    /// The declaration's name replaces the raw NSID as the row's title, and the resolved
+    /// collections are stated in words — but the token itself stays on the row, because it is
+    /// what the server enforces and the friendly name is only the app authority's own claim.
+    #[test]
+    fn a_resolved_space_renders_its_declared_name_and_keeps_the_token() {
+        let token = "space:com.atmoboards.forum";
+        let spaces = SpaceDisplayMap::from([(
+            token.to_string(),
+            SpaceDisplay {
+                type_label: "AtmoBoards Forum".to_string(),
+                collections: vec![
+                    "com.atmoboards.thread".to_string(),
+                    "com.atmoboards.reply".to_string(),
+                ],
+                ..SpaceDisplay::default()
+            },
+        )]);
+
+        let html = consent_html(&format!("atproto {token}"), &spaces);
+        assert!(html.contains("AtmoBoards Forum"), "{html}");
+        assert!(html.contains("In your own spaces"), "{html}");
+        assert!(
+            html.contains("Can write com.atmoboards.thread, com.atmoboards.reply"),
+            "{html}"
+        );
+        assert!(
+            html.contains(&format!("value=\"{token}\" checked")),
+            "the checkbox must still carry the raw token: {html}"
+        );
+        assert!(
+            html.contains("perm-token\">space:com.atmoboards.forum<"),
+            "the raw token must stay visible on the row: {html}"
+        );
+    }
+
+    /// A named authority is shown as the handle the resolver bidirectionally verified.
+    #[test]
+    fn a_named_authority_renders_as_its_verified_handle() {
+        let token = "space:com.atmoboards.forum?authority=did:plc:abc123";
+        let spaces = SpaceDisplayMap::from([(
+            token.to_string(),
+            SpaceDisplay {
+                type_label: "AtmoBoards Forum".to_string(),
+                authority_label: Some("atmoboards.com".to_string()),
+                ..SpaceDisplay::default()
+            },
+        )]);
+
+        assert!(consent_html(&format!("atproto {token}"), &spaces)
+            .contains("In spaces under atmoboards.com"),);
+    }
+
+    /// Wildcarding both axes must produce a warning the user cannot miss — and one that reads
+    /// as a warning in words, not only as a coloured box.
+    #[test]
+    fn a_broad_grant_renders_a_prominent_warning() {
+        let token = "space:*?authority=*";
+        let spaces = SpaceDisplayMap::from([(
+            token.to_string(),
+            SpaceDisplay {
+                type_label: crate::auth::space_consent::WILDCARD_TYPE_LABEL.to_string(),
+                any_authority: true,
+                broad: true,
+                ..SpaceDisplay::default()
+            },
+        )]);
+
+        let html = consent_html(&format!("atproto {token}"), &spaces);
+        // Anchored to the rendered element: the bare class name also appears in the stylesheet,
+        // so `contains("warn-banner")` would pass whether or not the banner rendered.
+        assert!(html.contains("<div class=\"warn-banner\">"), "{html}");
+        assert!(
+            html.contains("very broad request"),
+            "the warning must say so in words, not by colour alone: {html}"
+        );
+    }
+
+    /// An ordinary space grant is not a broad one, and must not carry the warning — a warning
+    /// on the common case trains users to click past the one that matters.
+    #[test]
+    fn an_ordinary_space_grant_renders_no_warning() {
+        let token = "space:com.atmoboards.forum?authority=*";
+        let spaces = SpaceDisplayMap::from([(
+            token.to_string(),
+            SpaceDisplay {
+                type_label: "AtmoBoards Forum".to_string(),
+                any_authority: true,
+                ..SpaceDisplay::default()
+            },
+        )]);
+
+        let html = consent_html(&format!("atproto {token}"), &spaces);
+        assert!(!html.contains("<div class=\"warn-banner\">"), "{html}");
+        assert!(html.contains("In spaces under any authority"), "{html}");
+    }
+
+    /// With nothing resolved — the password-error re-render — the row falls back to the raw
+    /// token rather than disappearing or changing what the checkbox grants.
+    #[test]
+    fn an_unresolved_space_falls_back_to_the_raw_token() {
+        let html = consent_html(
+            "atproto space:com.atmoboards.forum",
+            &SpaceDisplayMap::new(),
+        );
+        assert!(
+            html.contains("value=\"space:com.atmoboards.forum\" checked"),
+            "{html}"
+        );
+    }
+
     /// The consent form must round-trip the response mode as a hidden field — the POST
     /// handler rebuilds every redirect from the form, so a dropped mode would silently
     /// answer a fragment-mode client in the query string.
@@ -847,6 +1067,7 @@ mod tests {
             None,
             None,
             None,
+            &SpaceDisplayMap::new(),
         );
         assert!(
             html.contains("name=\"response_mode\" value=\"fragment\""),
@@ -874,6 +1095,7 @@ mod tests {
             None,
             None,
             None,
+            &SpaceDisplayMap::new(),
         );
 
         let form_open = html.find("<form").expect("consent form present");
@@ -912,6 +1134,7 @@ mod tests {
             None,
             None,
             None,
+            &SpaceDisplayMap::new(),
         );
 
         // Isolate the identifier input so the attribute assertions can't match another element.
@@ -959,6 +1182,7 @@ mod tests {
             None,
             None,
             Some(&wallet),
+            &SpaceDisplayMap::new(),
         );
         // Scan QR present as a self-contained inline SVG.
         assert!(html.contains("<svg"), "the scan QR SVG must render");
@@ -1003,6 +1227,7 @@ mod tests {
             None,
             None,
             Some(&wallet),
+            &SpaceDisplayMap::new(),
         );
         assert!(
             html.contains("<div class=\"match-code mono\" id=\"match-code\">42</div>"),

@@ -585,15 +585,39 @@ fn normalize_identity(syntax: &ScopeSyntax) -> Option<String> {
 /// `space_type`/`authority`/`skey` select **which spaces** the grant covers (the first three
 /// segments of a space URI); `action` + `collection` govern the records in them; `manage`
 /// governs the spaces themselves.
-struct SpaceGrant {
-    space_type: String,
-    authority: String,
-    skey: String,
+pub(super) struct SpaceGrant {
+    pub(super) space_type: String,
+    pub(super) authority: String,
+    pub(super) skey: String,
     /// Explicit `collection=` values. Empty means the grant named none — the space type
     /// declaration then supplies the write targets at match time. Empty is never "all".
-    collection: Vec<String>,
-    action: Vec<String>,
-    manage: Vec<String>,
+    pub(super) collection: Vec<String>,
+    pub(super) action: Vec<String>,
+    pub(super) manage: Vec<String>,
+}
+
+/// Parse a whole `space:` scope token into its grant, for callers outside the grammar itself.
+///
+/// The consent renderer needs the same `(type, authority, collection, action, manage)` view the
+/// matcher uses; routing it through this one parse is what keeps what the user is shown and what
+/// the token actually authorizes from drifting apart. Returns `None` for any non-`space:` or
+/// malformed token.
+pub(super) fn parse_space_token(token: &str) -> Option<SpaceGrant> {
+    let syntax = ScopeSyntax::parse(token);
+    if syntax.prefix != "space" {
+        return None;
+    }
+    parse_space_grant(&syntax)
+}
+
+/// Whether a grant's `action` set contains a verb that writes records — the only case in which
+/// its `collection` set means anything (`read`/`read_self` are all-or-nothing at the space
+/// boundary and ignore `collection` entirely).
+pub(super) fn space_grant_writes_records(grant: &SpaceGrant) -> bool {
+    grant
+        .action
+        .iter()
+        .any(|a| a == "create" || a == "update" || a == "delete")
 }
 
 fn is_space_type_param(v: &str) -> bool {
