@@ -452,9 +452,7 @@ pub fn atproto_verification_key(did_doc: &Value) -> Option<crypto::DidKeyUri> {
 
 /// The key a space authority signs space credentials with: its `#atproto_space` verification
 /// method, falling back to `#atproto` when the optional dedicated entry is absent (Atproto
-/// Spaces, proposal 0016). Its first consumer is space-credential verification; like the
-/// `oauth_scopes::require_space` gate, it lands ahead of the routes that call it.
-#[allow(dead_code)]
+/// Spaces, proposal 0016). Consumed by `auth::space::verify_space_credential`.
 pub fn space_verification_key(did_doc: &Value) -> Option<crypto::DidKeyUri> {
     verification_key(did_doc, "atproto_space").or_else(|| atproto_verification_key(did_doc))
 }

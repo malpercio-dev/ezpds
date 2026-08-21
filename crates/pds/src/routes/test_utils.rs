@@ -387,6 +387,29 @@ pub(crate) fn access_jwt(secret: &[u8; 32], sub: &str) -> String {
     .unwrap()
 }
 
+/// Mint a short-lived HS256 access JWT for `sub` carrying an arbitrary `scope` claim — the
+/// shape of an OAuth session with a granular grant (e.g. `atproto space:org.example.bucket`).
+/// Used by tests that exercise the granular `require_*` gates.
+pub(crate) fn scoped_access_jwt(secret: &[u8; 32], sub: &str, scope: &str) -> String {
+    use jsonwebtoken::{encode, Algorithm, EncodingKey, Header};
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    encode(
+        &Header::new(Algorithm::HS256),
+        &serde_json::json!({
+            "scope": scope,
+            "sub": sub,
+            "iat": now,
+            "exp": now + 7200_u64,
+        }),
+        &EncodingKey::from_secret(secret),
+    )
+    .unwrap()
+}
+
 /// Mint a short-lived HS256 access JWT bound to a DPoP key thumbprint (`cnf.jkt` present) — the
 /// shape of a DPoP-bound OAuth access token. Presented as plain `Bearer` with no proof, such a
 /// token must be rejected on every access-authed route (RFC 9449 binding-downgrade protection);
@@ -449,6 +472,16 @@ impl DpopProofKey {
     /// HTTP method and URL, with `iat = now`. `htu` must be the full request URL
     /// (`{public_url}{path}`), matching how the extractor reconstructs the expected value.
     pub(crate) fn proof(&self, htm: &str, htu: &str, access_token: &str) -> String {
+        self.proof_with(htm, htu, Some(access_token))
+    }
+
+    /// A proof with no `ath` — the mint-time shape a `getSpaceCredential` (or PAR) request
+    /// carries, where there is no bound token yet.
+    pub(crate) fn proof_no_ath(&self, htm: &str, htu: &str) -> String {
+        self.proof_with(htm, htu, None)
+    }
+
+    fn proof_with(&self, htm: &str, htu: &str, access_token: Option<&str>) -> String {
         use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
         use p256::ecdsa::{signature::Signer, Signature};
         use sha2::{Digest, Sha256};
@@ -458,15 +491,17 @@ impl DpopProofKey {
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_secs() as i64;
-        let ath = URL_SAFE_NO_PAD.encode(Sha256::digest(access_token.as_bytes()));
         let header = serde_json::json!({ "typ": "dpop+jwt", "alg": "ES256", "jwk": self.jwk() });
-        let payload = serde_json::json!({
+        let mut payload = serde_json::json!({
             "htm": htm,
             "htu": htu,
             "iat": now,
             "jti": uuid::Uuid::new_v4().to_string(),
-            "ath": ath,
         });
+        if let Some(token) = access_token {
+            payload["ath"] =
+                serde_json::Value::String(URL_SAFE_NO_PAD.encode(Sha256::digest(token.as_bytes())));
+        }
         let hdr_b64 = URL_SAFE_NO_PAD.encode(serde_json::to_string(&header).unwrap().as_bytes());
         let pay_b64 = URL_SAFE_NO_PAD.encode(serde_json::to_string(&payload).unwrap().as_bytes());
         let signing_input = format!("{hdr_b64}.{pay_b64}");

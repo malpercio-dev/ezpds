@@ -109,6 +109,11 @@ static LEXICON_SOURCES: &[&str] = &[
     include_str!("../../lexicons/com/atproto/server/resetPassword.json"),
     include_str!("../../lexicons/com/atproto/server/revokeAppPassword.json"),
     include_str!("../../lexicons/com/atproto/server/updateEmail.json"),
+    // Atproto Spaces (proposal 0016) alpha documents: `getSpaceCredential` (JSON-input
+    // procedure) and `getDelegationToken` (query), from the alpha's reference app, not the
+    // `@atproto/pds` tag — see the README's "Atproto Spaces" note.
+    include_str!("../../lexicons/com/atproto/space/getSpaceCredential.json"),
+    include_str!("../../lexicons/com/atproto/space/getDelegationToken.json"),
     // Query (`type: "query"`, GET) documents, vendored so natively-handled queries run
     // `LexiconParams` validation with `assertValidXrpcParams` parity.
     include_str!("../../lexicons/com/atproto/identity/resolveDid.json"),

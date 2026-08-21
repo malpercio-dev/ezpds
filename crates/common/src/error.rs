@@ -93,6 +93,23 @@ pub enum ErrorCode {
     /// lexicon's error name and the AT Protocol XRPC error format.
     #[serde(rename = "BlockNotFound")]
     BlockNotFound,
+    /// The named Atproto Spaces space is unknown to this server. Backs
+    /// `com.atproto.space.getSpaceCredential`; PascalCase to match the lexicon's error name.
+    #[serde(rename = "SpaceNotFound")]
+    SpaceNotFound,
+    /// The space has been deleted by its authority — the durable deletion signal a syncer sees
+    /// when it tries to renew a space credential (Spaces proposal, "Space deletion").
+    #[serde(rename = "SpaceDeleted")]
+    SpaceDeleted,
+    /// The space authority refused a credential on the basis of the requesting user.
+    #[serde(rename = "UserNotAuthorized")]
+    UserNotAuthorized,
+    /// The space authority refused a credential on the basis of the requesting app.
+    #[serde(rename = "AppNotAuthorized")]
+    AppNotAuthorized,
+    /// The delegation token presented to `getSpaceCredential` failed verification.
+    #[serde(rename = "InvalidDelegationToken")]
+    InvalidDelegationToken,
     // Codes for endpoints/designs not yet shipped (tiers, did:web self-service, device
     // leases, Shamir recovery, etc.) are catalogued in docs/provisioning-api-spec.md's
     // status-code appendix; add them here as those designs actually land.
@@ -151,6 +168,11 @@ impl ErrorCode {
             ErrorCode::InvalidRequest => "InvalidRequest",
             ErrorCode::HandleResolutionFailed => "HandleResolutionFailed",
             ErrorCode::BlockNotFound => "BlockNotFound",
+            ErrorCode::SpaceNotFound => "SpaceNotFound",
+            ErrorCode::SpaceDeleted => "SpaceDeleted",
+            ErrorCode::UserNotAuthorized => "UserNotAuthorized",
+            ErrorCode::AppNotAuthorized => "AppNotAuthorized",
+            ErrorCode::InvalidDelegationToken => "InvalidDelegationToken",
         }
     }
 
@@ -188,6 +210,13 @@ impl ErrorCode {
             ErrorCode::InvalidRequest => 400,
             ErrorCode::HandleResolutionFailed => 400,
             ErrorCode::BlockNotFound => 400,
+            ErrorCode::SpaceNotFound => 400,
+            ErrorCode::SpaceDeleted => 400,
+            ErrorCode::UserNotAuthorized => 403,
+            ErrorCode::AppNotAuthorized => 403,
+            // The delegation token is the request's authorization credential, so a bad one is an
+            // authentication failure, like InvalidToken.
+            ErrorCode::InvalidDelegationToken => 401,
         }
     }
 }
@@ -227,6 +256,18 @@ impl ApiError {
             details: None,
             headers: Vec::new(),
         }
+    }
+
+    /// The error's code.
+    pub fn code(&self) -> &ErrorCode {
+        &self.code
+    }
+
+    /// Re-code an error while keeping its message — for a seam whose caller speaks a more
+    /// specific error vocabulary than the shared verifier that produced the failure.
+    pub fn with_code(mut self, code: ErrorCode) -> Self {
+        self.code = code;
+        self
     }
 
     pub fn with_details(mut self, details: Value) -> Self {

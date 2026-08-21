@@ -277,6 +277,8 @@ pub enum StringFormat {
     Language,
     Nsid,
     RecordKey,
+    /// Atproto Spaces `at://{did}/space/{nsid}/{skey}` reference (proposal 0016 alpha lexicons).
+    SpaceRef,
     Tid,
     Uri,
 }
@@ -293,6 +295,7 @@ impl StringFormat {
             "language" => Self::Language,
             "nsid" => Self::Nsid,
             "record-key" => Self::RecordKey,
+            "space-ref" => Self::SpaceRef,
             "tid" => Self::Tid,
             "uri" => Self::Uri,
             _ => return None,

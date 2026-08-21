@@ -60,3 +60,15 @@ layer, MM-398 for the response-output layer, MM-399 for the `validate`-flag reco
 
 Do not hand-edit the JSON files: they must stay byte-identical to upstream so validation parity
 is auditable by diff.
+
+## Atproto Spaces (`com.atproto.space.*`)
+
+The Spaces alpha lexicons (proposal 0016) are not yet in the `@atproto/pds` tag above. They are
+vendored byte-identical from the alpha's reference app, which ships them as upstream copies:
+
+- **Source:** <https://github.com/bluesky-social/bulletin>, `lexicons/upstream/com/atproto/space/`
+- **Pinned at:** commit `ccca73d212167e20da56db4691ba7c94e9ad5ccc` (2026-08-20; retrieved 2026-08-21)
+- **Scope:** `getDelegationToken` (query) and `getSpaceCredential` (procedure) — the token
+  surfaces behind `auth/space.rs`. Both use the `space-ref` string format (`at://{did}/space/
+  {nsid}/{skey}`), validated by `auth::space::SpaceRef`. Further `com.atproto.space.*` documents
+  are vendored as their routes land.

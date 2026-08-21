@@ -184,7 +184,7 @@ pub fn authenticate_access(
             method,
             uri,
             &state.config.public_url,
-            &claims,
+            claims.cnf.as_ref().and_then(|c| c.jkt.as_deref()),
             token_str,
         )?;
     }

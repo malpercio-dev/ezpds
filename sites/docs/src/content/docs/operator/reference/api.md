@@ -135,6 +135,8 @@ Every path registered by the server is listed here. For `/xrpc/` endpoints, use 
 | `/xrpc/com.atproto.server.resetPassword` | AT Protocol XRPC |
 | `/xrpc/com.atproto.server.revokeAppPassword` | AT Protocol XRPC |
 | `/xrpc/com.atproto.server.updateEmail` | AT Protocol XRPC |
+| `/xrpc/com.atproto.space.getDelegationToken` | AT Protocol XRPC |
+| `/xrpc/com.atproto.space.getSpaceCredential` | AT Protocol XRPC |
 | `/xrpc/com.atproto.sync.getBlob` | AT Protocol XRPC |
 | `/xrpc/com.atproto.sync.getBlocks` | AT Protocol XRPC |
 | `/xrpc/com.atproto.sync.getLatestCommit` | AT Protocol XRPC |
