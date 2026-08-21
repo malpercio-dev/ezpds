@@ -117,7 +117,7 @@ example `authority.rs` reads through `plc.rs` and `resolution.rs`, and `well_kno
 | File | Contents |
 |---|---|
 | `mod.rs` | `pub mod` declarations only — no shared code |
-| `resolution.rs` | shared handle/DID resolution chain and the cache-first DID-document reads (the `did_documents` cache has no TTL; `resolve_did_document_force_refresh` is the only un-staling path) — see module doc |
+| `resolution.rs` | shared handle/DID resolution chain, the cache-first DID-document reads (the `did_documents` cache has no TTL; `resolve_did_document_force_refresh` is the only un-staling path), and the pure DID-document accessors including the Atproto Spaces fallbacks (`space_verification_key`, `space_host_endpoint`) — see module doc |
 | `proxy.rs` | the `atproto-proxy` header target guard and the shared SSRF-hardened client (`AppState::hardened_http_client`). Security-critical — the module doc carries the full design (`SsrfResolver` connect-time DNS allowlist, TOCTOU closure, all four consumers); `just ssrf-client-check` guards the well-known-resolver wiring |
 | `did.rs` | general `did:` syntax validation (Functional Core): the canonical `is_valid_did`, re-exported by `auth/validation.rs` and called by `lexicon/formats.rs` for the `did` string format — see module doc |
 | `handle.rs` | handle validation: structural + domain policy + reserved infrastructure names — see module doc |

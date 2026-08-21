@@ -5,7 +5,9 @@
 //! Returns the DID-document fields this PDS recommends a (new or migrating) account's PLC
 //! operation contain — `{ rotationKeys, alsoKnownAs, verificationMethods, services }`: the
 //! PDS-held rotation key, the account's `#atproto` verification method, its handle(s), and this
-//! server's `atproto_pds` endpoint.
+//! server's `atproto_pds` endpoint — plus the Atproto Spaces entries (`atproto_space`,
+//! `atproto_space_host`), set explicitly to the same key and host: Custos signs space
+//! credentials with the account signing key and serves as the account's space host itself.
 //!
 //! Consumed by migrating wallets/clients — which fetch these from the destination PDS and fold
 //! them into the operation they then sign, putting their own device key ahead of the
@@ -63,12 +65,22 @@ pub async fn get_recommended_did_credentials(
 
     let mut verification_methods = BTreeMap::new();
     verification_methods.insert("atproto".to_string(), signing_key.key_id.clone());
+    verification_methods.insert("atproto_space".to_string(), signing_key.key_id.clone());
 
     let mut services = BTreeMap::new();
     services.insert(
         "atproto_pds".to_string(),
         RecommendedService {
             service_type: "AtprotoPersonalDataServer".to_string(),
+            endpoint: state.config.public_url.clone(),
+        },
+    );
+    // Proposal 0016 names the service id but no service type; `AtprotoSpaceHost` follows the
+    // `AtprotoPersonalDataServer` / `AtprotoLabeler` naming, and resolvers match on id.
+    services.insert(
+        "atproto_space_host".to_string(),
+        RecommendedService {
+            service_type: "AtprotoSpaceHost".to_string(),
             endpoint: state.config.public_url.clone(),
         },
     );
@@ -131,6 +143,16 @@ mod tests {
             .as_str()
             .unwrap()
             .starts_with("https://"));
+        // Spaces entries: same key, same host, published explicitly.
+        assert_eq!(json["verificationMethods"]["atproto_space"], key_id);
+        assert_eq!(
+            json["services"]["atproto_space_host"]["type"],
+            "AtprotoSpaceHost"
+        );
+        assert_eq!(
+            json["services"]["atproto_space_host"]["endpoint"],
+            json["services"]["atproto_pds"]["endpoint"]
+        );
     }
 
     #[tokio::test]
