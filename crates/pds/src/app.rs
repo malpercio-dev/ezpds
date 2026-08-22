@@ -58,6 +58,7 @@ use crate::routes::did_web_hosting::{
     set_did_web_hosting_handler, update_did_web_document_handler,
 };
 use crate::routes::get_blob::get_blob;
+use crate::routes::get_delegation_token::get_delegation_token;
 use crate::routes::get_device_pds::get_device_pds;
 use crate::routes::get_did::get_did_handler;
 use crate::routes::get_metrics::get_metrics;
@@ -69,6 +70,7 @@ use crate::routes::get_repo::get_repo;
 use crate::routes::get_repo_signing_key::get_repo_signing_key;
 use crate::routes::get_service_auth::get_service_auth;
 use crate::routes::get_session::get_session;
+use crate::routes::get_space_credential::get_space_credential;
 use crate::routes::get_subject_status::get_subject_status;
 use crate::routes::health::health;
 use crate::routes::import_repo::import_repo;
@@ -300,6 +302,14 @@ pub fn app(state: AppState) -> Router {
         .route(
             "/xrpc/com.atproto.server.getServiceAuth",
             get(get_service_auth),
+        )
+        .route(
+            "/xrpc/com.atproto.space.getDelegationToken",
+            get(get_delegation_token),
+        )
+        .route(
+            "/xrpc/com.atproto.space.getSpaceCredential",
+            post(get_space_credential),
         )
         .route(
             "/xrpc/com.atproto.server.refreshSession",

@@ -78,3 +78,18 @@ where
     .fetch_optional(executor)
     .await
 }
+
+/// Whether `member_did` is on the simplespace member list of the space at `uri`. The
+/// `member-list` policy check behind `getSpaceCredential`.
+pub async fn is_member<'e, E>(executor: E, uri: &str, member_did: &str) -> Result<bool, sqlx::Error>
+where
+    E: sqlx::Executor<'e, Database = Sqlite>,
+{
+    let found: Option<i64> =
+        sqlx::query_scalar("SELECT 1 FROM space_members WHERE space_uri = ? AND member_did = ?")
+            .bind(uri)
+            .bind(member_did)
+            .fetch_optional(executor)
+            .await?;
+    Ok(found.is_some())
+}

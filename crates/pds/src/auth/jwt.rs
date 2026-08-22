@@ -327,17 +327,12 @@ pub fn mint_service_auth_jwt<F>(
 where
     F: FnOnce(&[u8]) -> Vec<u8>,
 {
-    use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
-    use rand_core::{OsRng, RngCore};
-
     let header = serde_json::json!({ "typ": "JWT", "alg": "ES256" });
     // A random per-token nonce, matching the reference `createServiceJwt` (16 random bytes,
     // hex). Bluesky's chat service enforces replay protection on `jti` and rejects tokens
     // without one, while the AppView tolerates its absence — so omitting it splits the
     // proxy surface into working reads and broken DMs.
-    let mut jti_bytes = [0u8; 16];
-    OsRng.fill_bytes(&mut jti_bytes);
-    let jti: String = jti_bytes.iter().map(|b| format!("{b:02x}")).collect();
+    let jti = random_jti();
     let mut payload = serde_json::json!({
         "iss": iss,
         "aud": aud,
@@ -349,14 +344,38 @@ where
         payload["lxm"] = serde_json::Value::String(lxm.to_string());
     }
 
+    sign_jwt(sign, &header, &payload)
+}
+
+/// Assemble and sign a JWT from arbitrary `header` and `payload` JSON: the
+/// `base64url(header).base64url(payload).base64url(signature)` triple, where `signature` is
+/// whatever `sign` returns over the `header.payload` bytes (for an account key, the 64-byte r‖s
+/// low-S ECDSA signature — see [`mint_service_auth_jwt`]). Shared by every account-key-signed
+/// token this server mints: service auth, and the Atproto Spaces delegation tokens and space
+/// credentials (`auth/space.rs`), which differ only in header `typ`/`kid` and claims.
+pub fn sign_jwt<F>(sign: F, header: &serde_json::Value, payload: &serde_json::Value) -> String
+where
+    F: FnOnce(&[u8]) -> Vec<u8>,
+{
+    use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
+
     let header_b64 =
-        URL_SAFE_NO_PAD.encode(serde_json::to_vec(&header).expect("JWT header serializes"));
+        URL_SAFE_NO_PAD.encode(serde_json::to_vec(header).expect("JWT header serializes"));
     let payload_b64 =
-        URL_SAFE_NO_PAD.encode(serde_json::to_vec(&payload).expect("JWT payload serializes"));
+        URL_SAFE_NO_PAD.encode(serde_json::to_vec(payload).expect("JWT payload serializes"));
     let signing_input = format!("{header_b64}.{payload_b64}");
 
     let sig_b64 = URL_SAFE_NO_PAD.encode(sign(signing_input.as_bytes()));
     format!("{signing_input}.{sig_b64}")
+}
+
+/// A random 16-byte hex `jti`, matching the reference `createServiceJwt` nonce shape. Shared by
+/// the service-auth mint and the space token mints.
+pub fn random_jti() -> String {
+    use rand_core::{OsRng, RngCore};
+    let mut jti_bytes = [0u8; 16];
+    OsRng.fill_bytes(&mut jti_bytes);
+    jti_bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
 
 // ── Service-auth JWT verification (inbound: authenticating a foreign account) ─
@@ -400,48 +419,39 @@ impl From<ServiceAuthError> for ApiError {
     }
 }
 
-/// Verify an inbound service-auth JWT — the counterpart to [`mint_service_auth_jwt`].
+/// A JWT whose signature verified against a `did:key`: its decoded header and payload, for the
+/// caller's own claim checks. Produced by [`verify_did_key_jwt`].
+#[derive(Debug)]
+pub struct DidKeyJwt {
+    pub header: serde_json::Value,
+    pub payload: serde_json::Value,
+}
+
+/// Verify a JWT's signature against an account's `did:key` — the structural core shared by
+/// every account-key-signed token this server accepts: service auth
+/// ([`verify_service_auth_jwt`]) and the Atproto Spaces delegation tokens and space credentials
+/// (`auth/space.rs`). Performs no claims checks beyond the header `alg`; callers check their own.
 ///
-/// Used by migration-mode `createAccount` to authenticate a foreign account: the client
-/// presents a token the **old** PDS minted (signed with the account's `#atproto` repo key),
-/// and this server verifies it against that key resolved from the incoming DID's document.
+/// The `alg` header is allowlisted to **ES256 or ES256K** — both curves atproto permits for an
+/// account's signing key; the reference ecosystem (bsky.social) signs with secp256k1, so its
+/// tokens arrive as ES256K. The declared `alg` must additionally **match the curve of the key**
+/// the token is verified against (ES256 ↔ P-256 `zDn…`, ES256K ↔ secp256k1 `zQ3…`): the key
+/// material is the trust anchor, so a mismatched header is algorithm confusion, not a preference
+/// to honor. Signature verification is delegated to [`crypto::verify_did_key_signature`]
+/// (ECDSA-SHA256 over the exact `header.payload` bytes, curve dispatched by the key's multicodec
+/// prefix, non-canonical high-S rejected on both curves).
 ///
-/// The `alg` header is allowlisted to **ES256 or ES256K** — both curves atproto permits for
-/// an account's signing key; the reference ecosystem (bsky.social) signs with secp256k1, so
-/// its tokens arrive as ES256K. The declared `alg` must additionally **match the curve of the
-/// `#atproto` key** the token will be verified against (ES256 ↔ P-256 `zDn…`, ES256K ↔
-/// secp256k1 `zQ3…`): the key material is the trust anchor, so a mismatched header is
-/// algorithm confusion, not a preference to honor.
-///
-/// Validates, independently of the signature: 3-part structure; the alg allowlist + curve
-/// binding above; `iss == expected_iss` (the migrating DID); `aud == expected_aud` (this
-/// server's DID); `exp` strictly in the future relative to `now`; and, when the token carries
-/// an `lxm`, that it equals `expected_lxm`. A method-unrestricted token (no `lxm`) is
-/// accepted — matching the reference PDS, whose `getServiceAuth` omits `lxm` when unrequested
-/// and caps such tokens' lifetime tightly. Signature verification is delegated to
-/// [`crypto::verify_did_key_signature`] (ECDSA-SHA256 over the exact `header.payload` bytes,
-/// curve dispatched by the key's multicodec prefix, non-canonical high-S rejected on both
-/// curves).
-///
-/// The error distinguishes a [`ServiceAuthError::SignatureMismatch`] — which the caller may retry
-/// against a force-refreshed `#atproto` key, in case the one supplied here is a stale cache — from
-/// every other, non-retriable [`ServiceAuthError::Invalid`] failure.
-pub fn verify_service_auth_jwt(
+/// A signature failure is the retriable [`ServiceAuthError::SignatureMismatch`] (the supplied key
+/// may be a fossil of a since-rotated DID document); everything else is a non-retriable
+/// [`ServiceAuthError::Invalid`].
+pub fn verify_did_key_jwt(
     token: &str,
-    expected_iss: &str,
-    expected_aud: &str,
-    expected_lxm: &str,
-    atproto_key: &crypto::DidKeyUri,
-    now: u64,
-) -> Result<(), ServiceAuthError> {
+    key: &crypto::DidKeyUri,
+) -> Result<DidKeyJwt, ServiceAuthError> {
     use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
 
-    let invalid = || {
-        ServiceAuthError::Invalid(ApiError::new(
-            ErrorCode::InvalidToken,
-            "invalid service auth token",
-        ))
-    };
+    let invalid =
+        || ServiceAuthError::Invalid(ApiError::new(ErrorCode::InvalidToken, "invalid token"));
 
     let mut parts = token.split('.');
     let header_b64 = parts.next().ok_or_else(invalid)?;
@@ -460,41 +470,78 @@ pub fn verify_service_auth_jwt(
         _ => {
             return Err(ServiceAuthError::Invalid(ApiError::new(
                 ErrorCode::InvalidToken,
-                "service auth token must be ES256 or ES256K",
+                "token must be ES256 or ES256K",
             )))
         }
     };
     // ...and require the declared alg to match the verification key's actual curve.
-    let key_curve = crypto::did_key_curve(atproto_key).map_err(|e| {
-        tracing::debug!(error = %e, "unsupported #atproto verification key");
+    let key_curve = crypto::did_key_curve(key).map_err(|e| {
+        tracing::debug!(error = %e, "unsupported verification key");
         ServiceAuthError::Invalid(ApiError::new(
             ErrorCode::InvalidToken,
-            "the DID's #atproto verification key is not a supported curve",
+            "the DID's verification key is not a supported curve",
         ))
     })?;
     if alg_curve != key_curve {
         return Err(ServiceAuthError::Invalid(ApiError::new(
             ErrorCode::InvalidToken,
-            "service auth token algorithm does not match the signing key's curve",
+            "token algorithm does not match the signing key's curve",
         )));
     }
 
-    // Signature over the exact `header.payload` bytes, against the issuer's #atproto key.
-    // The crypto layer rejects non-canonical high-S signatures on both curves, using each
-    // curve's own order — atproto verifiers require low-S. A failure here is classified as a
-    // retriable `SignatureMismatch`: the caller may be holding a fossil key.
+    // Signature over the exact `header.payload` bytes. The crypto layer rejects non-canonical
+    // high-S signatures on both curves, using each curve's own order — atproto verifiers require
+    // low-S. A failure here is classified as a retriable `SignatureMismatch`: the caller may be
+    // holding a fossil key.
     let signing_input = format!("{header_b64}.{payload_b64}");
     let sig_bytes = URL_SAFE_NO_PAD.decode(sig_b64).map_err(|_| invalid())?;
     let sig: [u8; 64] = sig_bytes.as_slice().try_into().map_err(|_| invalid())?;
-    crypto::verify_did_key_signature(atproto_key, signing_input.as_bytes(), &sig).map_err(|e| {
-        tracing::debug!(error = %e, "service auth signature verification failed");
+    crypto::verify_did_key_signature(key, signing_input.as_bytes(), &sig).map_err(|e| {
+        tracing::debug!(error = %e, "did:key JWT signature verification failed");
         ServiceAuthError::SignatureMismatch
     })?;
 
-    // Claims — validated independently of the signature.
     let payload_bytes = URL_SAFE_NO_PAD.decode(payload_b64).map_err(|_| invalid())?;
-    let claims: ServiceAuthClaims =
+    let payload: serde_json::Value =
         serde_json::from_slice(&payload_bytes).map_err(|_| invalid())?;
+    Ok(DidKeyJwt { header, payload })
+}
+
+/// Verify an inbound service-auth JWT — the counterpart to [`mint_service_auth_jwt`].
+///
+/// Used by migration-mode `createAccount` to authenticate a foreign account: the client
+/// presents a token the **old** PDS minted (signed with the account's `#atproto` repo key),
+/// and this server verifies it against that key resolved from the incoming DID's document.
+///
+/// Structure, algorithm allowlist + curve binding, and signature are [`verify_did_key_jwt`]'s.
+/// Validates, independently of the signature: `iss == expected_iss` (the migrating DID);
+/// `aud == expected_aud` (this server's DID); `exp` strictly in the future relative to `now`;
+/// and, when the token carries an `lxm`, that it equals `expected_lxm`. A method-unrestricted
+/// token (no `lxm`) is accepted — matching the reference PDS, whose `getServiceAuth` omits
+/// `lxm` when unrequested and caps such tokens' lifetime tightly.
+///
+/// The error distinguishes a [`ServiceAuthError::SignatureMismatch`] — which the caller may retry
+/// against a force-refreshed `#atproto` key, in case the one supplied here is a stale cache — from
+/// every other, non-retriable [`ServiceAuthError::Invalid`] failure.
+pub fn verify_service_auth_jwt(
+    token: &str,
+    expected_iss: &str,
+    expected_aud: &str,
+    expected_lxm: &str,
+    atproto_key: &crypto::DidKeyUri,
+    now: u64,
+) -> Result<(), ServiceAuthError> {
+    let invalid = || {
+        ServiceAuthError::Invalid(ApiError::new(
+            ErrorCode::InvalidToken,
+            "invalid service auth token",
+        ))
+    };
+
+    let jwt = verify_did_key_jwt(token, atproto_key)?;
+
+    // Claims — validated independently of the signature.
+    let claims: ServiceAuthClaims = serde_json::from_value(jwt.payload).map_err(|_| invalid())?;
     if claims.iss.as_deref() != Some(expected_iss) {
         return Err(ServiceAuthError::Invalid(ApiError::new(
             ErrorCode::InvalidToken,

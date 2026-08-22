@@ -14,7 +14,7 @@ use sqlx::{Sqlite, SqlitePool};
 
 /// Which token surface a jti was spent on. A jti spent on one surface is
 /// independent of the same string on another (the table key is `(scope, jti)`).
-// The token mint/verify surfaces that spend jtis land with the space auth work.
+// `Attestation` is spent by client-attestation verification, which lands with that work.
 #[allow(dead_code)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SpaceJtiScope {
@@ -39,8 +39,6 @@ impl SpaceJtiScope {
 /// Atomically record a spent jti, retained for `ttl_secs` (the token's
 /// acceptance horizon). Returns `true` only for the first insertion — a
 /// `false` is a replay and the caller must reject the request.
-// The token mint/verify surfaces that spend jtis land with the space auth work.
-#[allow(dead_code)]
 pub async fn insert_jti_if_absent<'e, E>(
     executor: E,
     scope: SpaceJtiScope,

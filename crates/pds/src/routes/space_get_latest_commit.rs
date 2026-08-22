@@ -33,7 +33,7 @@ pub async fn space_get_latest_commit(
     LexiconParams(params): LexiconParams<SpaceGetLatestCommitParams>,
 ) -> Result<impl IntoResponse, ApiError> {
     let space = super::space_views::parse_space(&params.space)?;
-    let user = crate::auth::space::authenticate_space_read(
+    crate::auth::space::authenticate_space_read(
         &state,
         &headers,
         &method,
@@ -45,17 +45,17 @@ pub async fn space_get_latest_commit(
 
     // `RepoNotFound` covers the member who has never written, too: with no rev and no state
     // there is no commit to sign, and the lexicon says so explicitly.
-    let repo = crate::db::space_repos::get_repo(&state.db, &space.uri, &user.did)
+    let repo = crate::db::space_repos::get_repo(&state.db, &space.uri, &params.repo)
         .await
         .map_err(|e| {
             tracing::error!(error = %e, space = %space.uri, "failed to load space repo");
             internal_error()
         })?
-        .ok_or_else(|| crate::auth::space::repo_not_found(&user.did))?;
+        .ok_or_else(|| crate::auth::space::repo_not_found(&params.repo))?;
 
     let hash = LtHash::from_state(&repo.lthash_state)
         .map_err(|e| {
-            tracing::error!(error = %e, space = %space.uri, did = %user.did, "stored LtHash state is malformed");
+            tracing::error!(error = %e, space = %space.uri, did = %params.repo, "stored LtHash state is malformed");
             internal_error()
         })?
         .digest();
@@ -72,19 +72,20 @@ pub async fn space_get_latest_commit(
             )
         })?;
     let signing_key =
-        crate::auth::signing_key::load_repo_signing_key(&state.db, &user.did, master_key).await?;
+        crate::auth::signing_key::load_repo_signing_key(&state.db, &params.repo, master_key)
+            .await?;
 
     let commit = crypto::sign_space_commit(
         &SpaceCommitCtx {
             space: &space.uri,
-            author: &user.did,
+            author: &params.repo,
             rev: &repo.rev,
         },
         hash,
         &signing_key,
     )
     .map_err(|e| {
-        tracing::error!(error = %e, space = %space.uri, did = %user.did, "failed to sign space commit");
+        tracing::error!(error = %e, space = %space.uri, did = %params.repo, "failed to sign space commit");
         internal_error()
     })?;
 

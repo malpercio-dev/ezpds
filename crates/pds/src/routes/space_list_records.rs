@@ -41,7 +41,7 @@ pub async fn space_list_records(
     LexiconParams(params): LexiconParams<SpaceListRecordsParams>,
 ) -> Result<impl IntoResponse, ApiError> {
     let space = super::space_views::parse_space(&params.space)?;
-    let user = crate::auth::space::authenticate_space_read(
+    crate::auth::space::authenticate_space_read(
         &state,
         &headers,
         &method,
@@ -50,7 +50,7 @@ pub async fn space_list_records(
         &params.repo,
     )
     .await?;
-    require_repo(&state, &space.uri, &user.did).await?;
+    require_repo(&state, &space.uri, &params.repo).await?;
 
     // The lexicon already rejects a `limit` outside [1, 1000], so this only applies the default.
     let limit = params.limit.unwrap_or(DEFAULT_LIMIT).clamp(1, MAX_LIMIT);
@@ -59,7 +59,7 @@ pub async fn space_list_records(
     let rows = crate::db::space_repos::list_repo_records(
         &state.db,
         &space.uri,
-        &user.did,
+        &params.repo,
         params.collection.as_deref(),
         cursor.as_ref().map(|(c, r)| (c.as_str(), r.as_str())),
         params.reverse,

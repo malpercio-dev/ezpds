@@ -39,7 +39,9 @@ layer, MM-398 for the response-output layer, MM-399 for the `validate`-flag reco
     one of them is never reached and is deliberately left un-vendored — the record-reachable closure
     is much smaller than the full `app.bsky` graph.
   - **Atproto Spaces (`com.atproto.space.*`):** the record CRUD and read documents behind the
-    permissioned-data surface, plus the `defs` document their `getLatestCommit` output reaches.
+    permissioned-data surface, plus the `defs` document their `getLatestCommit` output reaches,
+    and the two token-flow documents behind `auth/space.rs` (`getDelegationToken`,
+    `getSpaceCredential`; both use the `space-ref` string format `space_uri.rs` validates).
     These are pinned to the **`permissioned-data` branch**, not the `@atproto/pds` tag the rest
     of this list follows — the alpha ships no tag carrying them. Re-fetch them from the branch
     (substitute `refs/heads/permissioned-data` for the tag in the `curl` below) and expect them

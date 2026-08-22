@@ -28,7 +28,7 @@ pub async fn space_get_record(
     LexiconParams(params): LexiconParams<SpaceGetRecordParams>,
 ) -> Result<impl IntoResponse, ApiError> {
     let space = super::space_views::parse_space(&params.space)?;
-    let user = crate::auth::space::authenticate_space_read(
+    crate::auth::space::authenticate_space_read(
         &state,
         &headers,
         &method,
@@ -41,7 +41,7 @@ pub async fn space_get_record(
     let record = crate::db::space_repos::get_record(
         &state.db,
         &space.uri,
-        &user.did,
+        &params.repo,
         &params.collection,
         &params.rkey,
     )
@@ -55,7 +55,7 @@ pub async fn space_get_record(
     Ok((
         StatusCode::OK,
         axum::Json(serde_json::json!({
-            "uri": space.record_uri(&user.did, &params.collection, &params.rkey),
+            "uri": space.record_uri(&params.repo, &params.collection, &params.rkey),
             "cid": record.cid,
             "value": super::space_views::decode_value(&record.value)?,
         })),

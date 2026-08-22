@@ -9,8 +9,6 @@ use serde::Deserialize;
 use sha2::{Digest, Sha256};
 use std::sync::Arc;
 
-use super::jwt::AccessTokenClaims;
-
 /// Decoded DPoP proof JWT header fields relevant to validation.
 #[derive(Debug, Deserialize)]
 struct DPopHeader {
@@ -170,6 +168,27 @@ pub enum DpopTokenEndpointError {
     UseNonce(String),
 }
 
+impl DpopTokenEndpointError {
+    /// Render as the resource-endpoint error vocabulary. For the one proof validator that is
+    /// reused outside the OAuth token/PAR endpoints — `getSpaceCredential`'s mint-time proof,
+    /// which shares [`validate_dpop_for_par`]'s no-nonce, no-`ath` rules — where the RFC 6749
+    /// `{error, error_description}` shape does not apply.
+    pub fn into_api_error(self) -> ApiError {
+        match self {
+            DpopTokenEndpointError::MissingHeader => {
+                ApiError::new(ErrorCode::InvalidToken, "DPoP proof header required")
+            }
+            DpopTokenEndpointError::InvalidProof(msg) => {
+                ApiError::new(ErrorCode::InvalidToken, msg)
+            }
+            // Unreachable for the nonce-free validator; keep the mapping total.
+            DpopTokenEndpointError::UseNonce(_) => {
+                ApiError::new(ErrorCode::InvalidToken, "DPoP nonce required")
+            }
+        }
+    }
+}
+
 /// A DPoP proof whose header and signature have passed the shared prologue.
 ///
 /// Returned by [`verify_dpop_proof_prologue`]; the endpoint-specific tail reads
@@ -313,7 +332,7 @@ fn verify_dpop_proof_prologue(dpop_token: &str) -> Result<VerifiedProof, DPopPro
 /// Maximum age — and future-dating tolerance — of a DPoP proof's `iat`, in
 /// seconds. RFC 9449 §11.1 leaves the window to the server; a tight ±60s bounds
 /// replay without tripping on ordinary clock skew.
-const DPOP_MAX_AGE_SECS: u64 = 60;
+pub const DPOP_MAX_AGE_SECS: u64 = 60;
 
 /// Why the shared freshness check rejected a proof.
 enum FreshnessError {
@@ -435,35 +454,41 @@ pub fn validate_dpop_for_token_endpoint(
         .map_err(|_| DpopTokenEndpointError::InvalidProof("JWK thumbprint computation failed"))
 }
 
-/// Validate the DPoP proof JWT (RFC 9449).
+/// Validate the DPoP proof JWT (RFC 9449) presented with a DPoP-bound token at a resource
+/// endpoint, and return the proof's `jti`.
+///
+/// The bound token is an OAuth access token (`auth/extractors.rs`) or an Atproto Spaces space
+/// credential (`auth/space.rs`); `bound_jkt` is its `cnf.jkt` and `bound_token_str` its exact
+/// wire form (the `ath` input).
 ///
 /// Checks:
 /// - `typ` header is `"dpop+jwt"`
 /// - Signature verifies against the embedded JWK
 /// - `htm` matches request method, `htu` matches `public_url + path`
-/// - `jti` is present and non-empty (presence only — **not** deduplicated; see Replay below)
+/// - `jti` is present and non-empty (presence only here — see Replay below)
 /// - `iat` is within the 60-second freshness window
-/// - Access token `cnf.jkt` matches the computed JWK thumbprint
-/// - `ath` claim is present and matches the access token
+/// - the token's `cnf.jkt` matches the computed JWK thumbprint
+/// - `ath` claim is present and matches the token
 ///
 /// # Replay
 ///
-/// There is no `jti` store anywhere in the codebase (and the token-endpoint nonce is derived,
-/// not stored), so resource-endpoint proofs are **not** deduplicated — RFC 9449 §11.1 makes `jti`
-/// tracking a SHOULD, not a MUST, and the reference PDS's posture is similar. Replay is bounded
-/// only by the ±60s `iat` freshness window plus the `ath` access-token binding: a captured
-/// (access token + proof) pair is replayable against the same method+URI until the proof goes
-/// stale (~60s). This is safe only while every endpoint behind `AuthenticatedUser` stays
-/// idempotent / content-addressed; if one ever authorizes a non-idempotent side effect, add `jti`
-/// (or nonce) tracking here first. Same posture as `service_auth::require_service_auth`.
+/// This function keeps no `jti` store (and the token-endpoint nonce is derived, not stored), so
+/// OAuth resource-endpoint proofs are **not** deduplicated — RFC 9449 §11.1 makes `jti` tracking
+/// a SHOULD, not a MUST, and the reference PDS's posture is similar. Replay is bounded only by the
+/// ±60s `iat` freshness window plus the `ath` token binding: a captured (token + proof) pair is
+/// replayable against the same method+URI until the proof goes stale (~60s). This is safe only
+/// while every endpoint behind `AuthenticatedUser` stays idempotent / content-addressed; if one
+/// ever authorizes a non-idempotent side effect, add `jti` (or nonce) tracking there first. Same
+/// posture as `service_auth::require_service_auth`. The space-credential seam, whose spec makes
+/// per-host `jti` tracking a MUST, spends the returned `jti` in `space_jti_replay` itself.
 pub fn validate_dpop(
     dpop_token: &str,
     method: &Method,
     uri: &axum::http::Uri,
     public_url: &str,
-    access_claims: &AccessTokenClaims,
-    access_token_str: &str,
-) -> Result<(), ApiError> {
+    bound_jkt: Option<&str>,
+    bound_token_str: &str,
+) -> Result<String, ApiError> {
     let invalid = || ApiError::new(ErrorCode::InvalidToken, "DPoP proof invalid");
 
     // Shared prologue: header decode + typ/crv/alg/signature checks.
@@ -471,19 +496,15 @@ pub fn validate_dpop(
     let dpop_header = proof.header;
     let dpop_claims = proof.claims;
 
-    // Compute JWK thumbprint (RFC 7638) and verify the access token was bound to this key.
+    // Compute JWK thumbprint (RFC 7638) and verify the token was bound to this key.
     // Signature has already been verified above, so the JWK is authentic.
     let thumbprint = jwk_thumbprint(&dpop_header.jwk).map_err(|e| {
         tracing::debug!(error = %e, "failed to compute JWK thumbprint from DPoP proof header");
         invalid()
     })?;
-    let bound_thumbprint = access_claims
-        .cnf
-        .as_ref()
-        .and_then(|c| c.jkt.as_deref())
-        .ok_or_else(|| {
-            ApiError::new(ErrorCode::InvalidToken, "access token missing DPoP binding")
-        })?;
+    let bound_thumbprint = bound_jkt.ok_or_else(|| {
+        ApiError::new(ErrorCode::InvalidToken, "access token missing DPoP binding")
+    })?;
     if thumbprint != bound_thumbprint {
         tracing::debug!("DPoP proof key thumbprint does not match cnf.jkt in access token");
         return Err(ApiError::new(
@@ -492,9 +513,9 @@ pub fn validate_dpop(
         ));
     }
 
-    // Validate ath (RFC 9449 §4.3): binds the proof to a specific access token.
+    // Validate ath (RFC 9449 §4.3): binds the proof to a specific token.
     let expected_ath = {
-        let hash = Sha256::digest(access_token_str.as_bytes());
+        let hash = Sha256::digest(bound_token_str.as_bytes());
         URL_SAFE_NO_PAD.encode(hash)
     };
     match dpop_claims.ath.as_deref() {
@@ -565,7 +586,7 @@ pub fn validate_dpop(
         FreshnessError::Stale => ApiError::new(ErrorCode::InvalidToken, "DPoP proof is stale"),
     })?;
 
-    Ok(())
+    Ok(dpop_claims.jti)
 }
 
 /// Map a DPoP `alg` header string to a [`jsonwebtoken::Algorithm`].

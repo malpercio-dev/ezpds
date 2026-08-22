@@ -1038,7 +1038,6 @@ pub fn require_blob(scope: &str, mime_type: &str) -> Result<(), ApiError> {
 }
 
 /// Require that a non-legacy granular OAuth grant permits a space operation.
-#[allow(dead_code)]
 pub fn require_space(scope: &str, req: &SpaceRequest<'_>) -> Result<(), ApiError> {
     if scope == SCOPE_ACCESS || allows_space(scope, req) {
         Ok(())
@@ -1164,8 +1163,8 @@ pub fn allows_blob(scope: &str, mime_type: &str) -> bool {
 /// `Manage` reuses [`RepoAction`] because the `manage=` verbs are spelled with the same three
 /// words — but they act on the space itself, not on a record in it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-// Declared ahead of the space routes that will call them, so the grammar, its gate, and
-// their tests land as one reviewable unit rather than riding along with the first route.
+// `Record`/`Manage` are constructed by the space write and simplespace management routes,
+// which land after the read seam.
 #[allow(dead_code)]
 pub enum SpaceOp<'a> {
     /// Whole-space read and sync, plus `getDelegationToken`. Ignores `collection`, because
@@ -1189,7 +1188,6 @@ pub enum SpaceOp<'a> {
 /// resolves them at match time instead so the canonical token string stays stable (agent
 /// scope clamping compares tokens by exact string, so a rewritten `self` would stop matching
 /// the operator's config).
-#[allow(dead_code)]
 pub struct SpaceRequest<'a> {
     /// The target space's type NSID.
     pub space_type: &'a str,
@@ -1206,7 +1204,6 @@ pub struct SpaceRequest<'a> {
     pub declared_collections: &'a [String],
 }
 
-#[allow(dead_code)]
 impl SpaceGrant {
     fn matches(&self, req: &SpaceRequest<'_>) -> bool {
         if self.space_type != "*" && self.space_type != req.space_type {
@@ -1255,7 +1252,6 @@ impl SpaceGrant {
 /// Like [`allows_identity`], this deliberately does **not** honor `transition:generic`. That
 /// scope is app-password-equivalent and predates Atproto Spaces entirely, so treating it as
 /// covering permissioned data would hand every legacy client the user's private spaces.
-#[allow(dead_code)]
 pub fn allows_space(scope: &str, req: &SpaceRequest<'_>) -> bool {
     scope.split_whitespace().any(|token| {
         let syntax = ScopeSyntax::parse(token);
