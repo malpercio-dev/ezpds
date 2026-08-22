@@ -118,6 +118,13 @@ use crate::routes::resolve_identity::{
 };
 use crate::routes::revoke_app_password::revoke_app_password;
 use crate::routes::sign_plc_operation::sign_plc_operation;
+use crate::routes::simplespace_add_member::simplespace_add_member;
+use crate::routes::simplespace_create_space::simplespace_create_space;
+use crate::routes::simplespace_delete_space::simplespace_delete_space;
+use crate::routes::simplespace_get_space::simplespace_get_space;
+use crate::routes::simplespace_list_members::simplespace_list_members;
+use crate::routes::simplespace_remove_member::simplespace_remove_member;
+use crate::routes::simplespace_update_space::simplespace_update_space;
 use crate::routes::sovereign_session::create_sovereign_session;
 use crate::routes::space_apply_writes::space_apply_writes;
 use crate::routes::space_create_record::space_create_record;
@@ -496,6 +503,36 @@ pub fn app(state: AppState) -> Router {
         )
         .route("/xrpc/com.atproto.space.listSpaces", get(space_list_spaces))
         .route("/xrpc/com.atproto.space.putRecord", post(space_put_record))
+        // The PDS-required simplespace management surface: spaces anchored on a local account's
+        // own DID, managed by that account under `manage=` grants.
+        .route(
+            "/xrpc/com.atproto.simplespace.addMember",
+            post(simplespace_add_member),
+        )
+        .route(
+            "/xrpc/com.atproto.simplespace.createSpace",
+            post(simplespace_create_space),
+        )
+        .route(
+            "/xrpc/com.atproto.simplespace.deleteSpace",
+            post(simplespace_delete_space),
+        )
+        .route(
+            "/xrpc/com.atproto.simplespace.getSpace",
+            get(simplespace_get_space),
+        )
+        .route(
+            "/xrpc/com.atproto.simplespace.listMembers",
+            get(simplespace_list_members),
+        )
+        .route(
+            "/xrpc/com.atproto.simplespace.removeMember",
+            post(simplespace_remove_member),
+        )
+        .route(
+            "/xrpc/com.atproto.simplespace.updateSpace",
+            post(simplespace_update_space),
+        )
         // Stored locally for user data sovereignty rather than proxied to the AppView, so they
         // must be registered explicitly ahead of the `app.bsky.*` catch-all below.
         .route(

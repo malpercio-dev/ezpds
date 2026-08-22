@@ -99,6 +99,13 @@ pub mod resolve_identity;
 pub mod revoke_app_password;
 pub mod service_proxy;
 pub mod sign_plc_operation;
+pub mod simplespace_add_member;
+pub mod simplespace_create_space;
+pub mod simplespace_delete_space;
+pub mod simplespace_get_space;
+pub mod simplespace_list_members;
+pub mod simplespace_remove_member;
+pub mod simplespace_update_space;
 pub mod sovereign_session;
 pub mod space_apply_writes;
 pub mod space_create_record;
@@ -142,3 +149,6 @@ mod agent_auth_test;
 
 #[cfg(test)]
 mod space_routes_test;
+
+#[cfg(test)]
+mod simplespace_routes_test;

@@ -41,7 +41,11 @@ layer, MM-398 for the response-output layer, MM-399 for the `validate`-flag reco
   - **Atproto Spaces (`com.atproto.space.*`):** the record CRUD and read documents behind the
     permissioned-data surface, plus the `defs` document their `getLatestCommit` output reaches,
     and the two token-flow documents behind `auth/space.rs` (`getDelegationToken`,
-    `getSpaceCredential`; both use the `space-ref` string format `space_uri.rs` validates).
+    `getSpaceCredential`; both use the `space-ref` string format `space_uri.rs` validates), and
+    the PDS-required management surface `com.atproto.simplespace.*` (`createSpace`,
+    `updateSpace`, `deleteSpace`, `getSpace`, `addMember`, `removeMember`, `listMembers` + the
+    `defs` document their policy/appAccess unions reach; `checkUserAccess` is served by a
+    managing app, not the PDS, so it is not vendored).
     These are pinned to the **`permissioned-data` branch**, not the `@atproto/pds` tag the rest
     of this list follows — the alpha ships no tag carrying them. Re-fetch them from the branch
     (substitute `refs/heads/permissioned-data` for the tag in the `curl` below) and expect them
