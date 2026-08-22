@@ -1,0 +1,44 @@
+meta {
+  name: Space Create Record
+  type: http
+  seq: 140
+}
+
+post {
+  url: {{baseUrl}}/xrpc/com.atproto.space.createRecord
+  body: json
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{accessToken}}
+}
+
+body:json {
+  {
+    "space": "at://did:plc:authorityaaaaaaaaaaaaaaa/space/org.example.bucket/main",
+    "repo": {{did}},
+    "collection": "org.example.note",
+    "record": {
+      "$type": "org.example.note",
+      "text": "Hello from a permissioned space"
+    }
+  }
+}
+
+docs {
+  Atproto Spaces: create a record in the authenticated account's permissioned repo
+  within a space. "space" is a space ref — at://{authorityDid}/space/{spaceType}/{skey} —
+  and "repo" MUST be the authenticated account's own DID (403 otherwise).
+
+  The first write into a space this PDS has not seen records it, so a member can join a
+  foreign authority's space with no prior setup. Writing into a space the operator has
+  deleted returns 400 SpaceNotFound.
+
+  Optional "rkey" (a TID is generated when absent) and "validate" (same semantics as
+  com.atproto.repo.createRecord). The response "uri" is the full space record URI:
+  {space}/{authorDid}/{collection}/{rkey}.
+
+  Errors: 400 RecordAlreadyExists if the path is taken (use putRecord), 400 SpaceNotFound,
+  403 InsufficientScope when the OAuth grant carries no covering "space:" token.
+}

@@ -387,29 +387,6 @@ pub(crate) fn access_jwt(secret: &[u8; 32], sub: &str) -> String {
     .unwrap()
 }
 
-/// Mint a short-lived HS256 access JWT for `sub` carrying an arbitrary `scope` claim — the
-/// shape of an OAuth session with a granular grant (e.g. `atproto space:org.example.bucket`).
-/// Used by tests that exercise the granular `require_*` gates.
-pub(crate) fn scoped_access_jwt(secret: &[u8; 32], sub: &str, scope: &str) -> String {
-    use jsonwebtoken::{encode, Algorithm, EncodingKey, Header};
-    use std::time::{SystemTime, UNIX_EPOCH};
-    let now = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap()
-        .as_secs();
-    encode(
-        &Header::new(Algorithm::HS256),
-        &serde_json::json!({
-            "scope": scope,
-            "sub": sub,
-            "iat": now,
-            "exp": now + 7200_u64,
-        }),
-        &EncodingKey::from_secret(secret),
-    )
-    .unwrap()
-}
-
 /// Mint a short-lived HS256 access JWT bound to a DPoP key thumbprint (`cnf.jkt` present) — the
 /// shape of a DPoP-bound OAuth access token. Presented as plain `Bearer` with no proof, such a
 /// token must be rejected on every access-authed route (RFC 9449 binding-downgrade protection);
@@ -509,6 +486,29 @@ impl DpopProofKey {
         let sig_b64 = URL_SAFE_NO_PAD.encode(sig.to_bytes());
         format!("{hdr_b64}.{pay_b64}.{sig_b64}")
     }
+}
+
+/// Mint a short-lived HS256 access JWT with an arbitrary granular `scope` claim — the shape of
+/// an OAuth token. Used by tests that exercise a `require_*` scope gate, which distinguishes the
+/// legacy `com.atproto.access` claim (blanket permission) from a granular grant string.
+pub(crate) fn scoped_access_jwt(secret: &[u8; 32], sub: &str, scope: &str) -> String {
+    use jsonwebtoken::{encode, Algorithm, EncodingKey, Header};
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    encode(
+        &Header::new(Algorithm::HS256),
+        &serde_json::json!({
+            "scope": scope,
+            "sub": sub,
+            "iat": now,
+            "exp": now + 7200_u64,
+        }),
+        &EncodingKey::from_secret(secret),
+    )
+    .unwrap()
 }
 
 /// Mint a short-lived HS256 access JWT carrying a `registration_id` claim — the shape of an

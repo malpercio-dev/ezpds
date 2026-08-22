@@ -732,7 +732,7 @@ mod tests {
         .unwrap();
         crate::space_record_write::apply_space_writes(
             &state,
-            space,
+            &crate::space_uri::parse_space_ref(space).unwrap(),
             did,
             &[crate::space_record_write::SpaceWriteOp {
                 action: crate::space_record_write::SpaceWriteAction::Put,

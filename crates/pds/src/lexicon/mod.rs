@@ -54,6 +54,7 @@ use serde_json::Value;
 use schema::{LexDef, LexObject, LexRecord, LexSchema, LexXrpcBody};
 
 pub use extractor::{validate_procedure_body, LexiconInput};
+pub(crate) use formats::is_valid_record_key;
 #[cfg(test)]
 pub(crate) use output::validate_xrpc_output;
 pub use params::{parse_raw_query, validate_params_map, LexiconParams};
@@ -109,9 +110,9 @@ static LEXICON_SOURCES: &[&str] = &[
     include_str!("../../lexicons/com/atproto/server/resetPassword.json"),
     include_str!("../../lexicons/com/atproto/server/revokeAppPassword.json"),
     include_str!("../../lexicons/com/atproto/server/updateEmail.json"),
-    // Atproto Spaces (proposal 0016) alpha documents: `getSpaceCredential` (JSON-input
-    // procedure) and `getDelegationToken` (query), from the alpha's reference app, not the
-    // `@atproto/pds` tag — see the README's "Atproto Spaces" note.
+    // Atproto Spaces (proposal 0016) token-flow documents: `getSpaceCredential` (JSON-input
+    // procedure) and `getDelegationToken` (query) — from the `permissioned-data` branch, like
+    // the record documents below (see the README's "Atproto Spaces" note).
     include_str!("../../lexicons/com/atproto/space/getSpaceCredential.json"),
     include_str!("../../lexicons/com/atproto/space/getDelegationToken.json"),
     // Query (`type: "query"`, GET) documents, vendored so natively-handled queries run
@@ -137,6 +138,18 @@ static LEXICON_SOURCES: &[&str] = &[
     // validation roots, so `check_refs` requires them.
     include_str!("../../lexicons/com/atproto/identity/defs.json"),
     include_str!("../../lexicons/com/atproto/repo/defs.json"),
+    // Atproto Spaces (`com.atproto.space.*`), the permissioned-data surface. Pinned to the
+    // `permissioned-data` branch rather than the `@atproto/pds` tag the rest of this list
+    // follows — the alpha ships no tag carrying them (see the README).
+    include_str!("../../lexicons/com/atproto/space/applyWrites.json"),
+    include_str!("../../lexicons/com/atproto/space/createRecord.json"),
+    include_str!("../../lexicons/com/atproto/space/defs.json"),
+    include_str!("../../lexicons/com/atproto/space/deleteRecord.json"),
+    include_str!("../../lexicons/com/atproto/space/getLatestCommit.json"),
+    include_str!("../../lexicons/com/atproto/space/getRecord.json"),
+    include_str!("../../lexicons/com/atproto/space/listRecords.json"),
+    include_str!("../../lexicons/com/atproto/space/listSpaces.json"),
+    include_str!("../../lexicons/com/atproto/space/putRecord.json"),
 ];
 
 /// A procedure's declared input body: its encoding and (for JSON inputs) its schema.

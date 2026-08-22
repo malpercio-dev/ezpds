@@ -262,3 +262,96 @@ pub async fn list_record_blocks_for_account(
         })
         .collect())
 }
+
+/// One row of a `listRecords` page. `value` is the stored DAG-CBOR block, absent when the
+/// caller asked for a metadata-only listing (`excludeValues`).
+#[derive(Debug, Clone, sqlx::FromRow)]
+pub struct SpaceRecordListRow {
+    pub collection: String,
+    pub rkey: String,
+    pub cid: String,
+    pub value: Option<Vec<u8>>,
+}
+
+/// One page of an account's records in one space repo, ordered by `(collection, rkey)` — the
+/// `space_records` primary key, so the page walk is an index scan.
+///
+/// `after` is the last row of the previous page. `reverse` selects ascending order; the default
+/// (and so the reference's) is descending, newest rkey first.
+// Every argument is one independent axis of the lexicon's query — bundling them into a struct
+// would only move the same list one call frame up.
+#[allow(clippy::too_many_arguments)]
+pub async fn list_repo_records(
+    pool: &SqlitePool,
+    space_uri: &str,
+    account_did: &str,
+    collection: Option<&str>,
+    after: Option<(&str, &str)>,
+    reverse: bool,
+    exclude_values: bool,
+    limit: i64,
+) -> Result<Vec<SpaceRecordListRow>, sqlx::Error> {
+    // `value` is selected as a literal NULL rather than omitted so both shapes decode into one
+    // `FromRow` struct; SQLite never reads the (potentially large) blob in that branch.
+    let value_column = if exclude_values { "NULL" } else { "value" };
+    // Row-value comparison against the primary key: SQLite uses the index for both the seek and
+    // the ordering, so a deep page costs the same as a shallow one.
+    let (order, keyset) = if reverse {
+        ("ASC", "(collection, rkey) > (?, ?)")
+    } else {
+        ("DESC", "(collection, rkey) < (?, ?)")
+    };
+    // Every placeholder is a plain positional `?`: mixing `?` with `?N` makes SQLite number the
+    // bare ones from "one past the largest index seen so far", which silently shifts the binds
+    // that follow. The two cursor columns are each bound twice — once for the NULL test, once
+    // for the comparison — rather than reusing an index.
+    let sql = format!(
+        "SELECT collection, rkey, cid, {value_column} AS value FROM space_records \
+         WHERE space_uri = ? AND account_did = ? \
+           AND (? IS NULL OR collection = ?) \
+           AND (? IS NULL OR {keyset}) \
+         ORDER BY collection {order}, rkey {order} LIMIT ?"
+    );
+    sqlx::query_as::<_, SpaceRecordListRow>(&sql)
+        .bind(space_uri)
+        .bind(account_did)
+        .bind(collection)
+        .bind(collection)
+        .bind(after.map(|(c, _)| c))
+        .bind(after.map(|(c, _)| c))
+        .bind(after.map(|(_, r)| r))
+        .bind(limit)
+        .fetch_all(pool)
+        .await
+}
+
+/// One page of the spaces an account holds a repo in — spaces it has *written to*, which is
+/// what `listSpaces` reports (a repo host tracks writers, never a member list). Ordered by URI,
+/// deleted spaces omitted.
+pub async fn list_spaces_for_account(
+    pool: &SqlitePool,
+    account_did: &str,
+    space_type: Option<&str>,
+    authority: Option<&str>,
+    after: Option<&str>,
+    limit: i64,
+) -> Result<Vec<String>, sqlx::Error> {
+    sqlx::query_scalar(
+        "SELECT s.uri FROM space_repos r JOIN spaces s ON s.uri = r.space_uri \
+         WHERE r.account_did = ? AND s.deleted_at IS NULL \
+           AND (? IS NULL OR s.space_type = ?) \
+           AND (? IS NULL OR s.authority_did = ?) \
+           AND (? IS NULL OR s.uri > ?) \
+         ORDER BY s.uri ASC LIMIT ?",
+    )
+    .bind(account_did)
+    .bind(space_type)
+    .bind(space_type)
+    .bind(authority)
+    .bind(authority)
+    .bind(after)
+    .bind(after)
+    .bind(limit)
+    .fetch_all(pool)
+    .await
+}

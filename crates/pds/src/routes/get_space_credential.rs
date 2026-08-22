@@ -18,7 +18,7 @@ use crate::app::AppState;
 use crate::auth::extract_bearer_token;
 use crate::auth::space::{
     authorize_credential_request, mint_space_credential, mint_time_dpop_thumbprint, unix_now,
-    verify_delegation_token, SpaceRef,
+    verify_delegation_token,
 };
 use crate::lexicon::LexiconInput;
 
@@ -49,8 +49,7 @@ pub async fn get_space_credential(
     headers: HeaderMap,
     LexiconInput(input): LexiconInput<GetSpaceCredentialInput>,
 ) -> Result<Json<GetSpaceCredentialResponse>, ApiError> {
-    let space = SpaceRef::parse(&input.space)
-        .map_err(|msg| ApiError::new(ErrorCode::InvalidRequest, msg))?;
+    let space = super::space_views::parse_space(&input.space)?;
 
     let row = crate::db::spaces::get_space(&state.db, &space.uri)
         .await
@@ -115,14 +114,14 @@ pub async fn get_space_credential(
 mod tests {
     use crate::app::{app, AppState};
     use crate::auth::space::{
-        authenticate_space_read, mint_delegation_token, unix_now, SpaceReader, SpaceRef,
-        SPACE_CREDENTIAL_TYP,
+        authenticate_space_read, mint_delegation_token, unix_now, SpaceReader, SPACE_CREDENTIAL_TYP,
     };
     use crate::db::dids::seed_did_document;
     use crate::db::spaces::{insert_space, NewSpace};
     use crate::routes::test_utils::{
         body_json, seed_account_with_repo, state_with_master_key, DpopProofKey,
     };
+    use crate::space_uri::parse_space_ref;
     use axum::{
         body::Body,
         http::{header::AUTHORIZATION, HeaderMap, HeaderValue, Method, Request, StatusCode},
@@ -209,7 +208,7 @@ mod tests {
         let alice = seed_identity(&state, ALICE).await;
         seed_space(&state, "member-list").await;
         add_member(&state, ALICE).await;
-        let space = SpaceRef::parse(SPACE).unwrap();
+        let space = parse_space_ref(SPACE).unwrap();
         let key = DpopProofKey::generate();
         let now = unix_now().unwrap();
 
@@ -253,12 +252,12 @@ mod tests {
         );
         headers.insert("DPoP", HeaderValue::from_str(&read_proof).unwrap());
         let reader = authenticate_space_read(
+            &state,
             &headers,
             &Method::GET,
             &read_path.parse().unwrap(),
-            &state,
             &space,
-            Some(ALICE),
+            ALICE,
         )
         .await
         .unwrap();
@@ -280,7 +279,7 @@ mod tests {
         seed_identity(&state, AUTHORITY).await;
         let alice = seed_identity(&state, ALICE).await;
         seed_space(&state, "member-list").await;
-        let space = SpaceRef::parse(SPACE).unwrap();
+        let space = parse_space_ref(SPACE).unwrap();
         let key = DpopProofKey::generate();
         let now = unix_now().unwrap();
 
@@ -318,7 +317,7 @@ mod tests {
         let delegation = mint_delegation_token(
             |b| alice.sign(b),
             ALICE,
-            &SpaceRef::parse(other).unwrap(),
+            &parse_space_ref(other).unwrap(),
             now,
         );
         let proof = key.proof_no_ath("POST", HTU);
@@ -351,7 +350,7 @@ mod tests {
         let authority = seed_identity(&state, AUTHORITY).await;
         let alice = seed_identity(&state, ALICE).await;
         seed_space(&state, "public").await;
-        let space = SpaceRef::parse(SPACE).unwrap();
+        let space = parse_space_ref(SPACE).unwrap();
         let key = DpopProofKey::generate();
         let now = unix_now().unwrap();
 

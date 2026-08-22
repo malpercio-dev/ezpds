@@ -870,20 +870,9 @@ mod tests {
         .execute(&state.db)
         .await
         .unwrap();
-        let space = "at://did:plc:gcspaceref/space/org.example.bucket/self";
-        crate::db::spaces::insert_space(
-            &state.db,
-            &crate::db::spaces::NewSpace {
-                uri: space,
-                authority_did: did,
-                space_type: "org.example.bucket",
-                skey: "self",
-                policy: Some("member-list"),
-                app_access: Some("open"),
-                managing_app: None,
-            },
+        let space = crate::space_uri::parse_space_ref(
+            "at://did:plc:gcspaceref/space/org.example.bucket/self",
         )
-        .await
         .unwrap();
 
         // Both blobs are expired temporaries; only one gets referenced from a space record.
@@ -891,7 +880,7 @@ mod tests {
         let orphan = add_blob(&state, did, b"orphan bytes", "2020-01-01 00:00:00").await;
         crate::space_record_write::apply_space_writes(
             &state,
-            space,
+            &space,
             did,
             &[crate::space_record_write::SpaceWriteOp {
                 action: crate::space_record_write::SpaceWriteAction::Put,

@@ -119,6 +119,14 @@ use crate::routes::resolve_identity::{
 use crate::routes::revoke_app_password::revoke_app_password;
 use crate::routes::sign_plc_operation::sign_plc_operation;
 use crate::routes::sovereign_session::create_sovereign_session;
+use crate::routes::space_apply_writes::space_apply_writes;
+use crate::routes::space_create_record::space_create_record;
+use crate::routes::space_delete_record::space_delete_record;
+use crate::routes::space_get_latest_commit::space_get_latest_commit;
+use crate::routes::space_get_record::space_get_record;
+use crate::routes::space_list_records::space_list_records;
+use crate::routes::space_list_spaces::space_list_spaces;
+use crate::routes::space_put_record::space_put_record;
 use crate::routes::standard_signup::{
     check_handle_availability, check_signup_queue, create_invite_code, create_invite_codes,
     get_account_invite_codes,
@@ -462,6 +470,32 @@ pub fn app(state: AppState) -> Router {
         .route("/xrpc/com.atproto.repo.putRecord", post(put_record))
         .route("/xrpc/com.atproto.repo.deleteRecord", post(delete_record))
         .route("/xrpc/com.atproto.repo.describeRepo", get(describe_repo))
+        // Atproto Spaces: the permissioned-data surface for a user's own space repos. Reads and
+        // writes are OAuth-authed here; the space-credential branch a syncer uses arrives with
+        // the credential mint.
+        .route(
+            "/xrpc/com.atproto.space.applyWrites",
+            post(space_apply_writes),
+        )
+        .route(
+            "/xrpc/com.atproto.space.createRecord",
+            post(space_create_record),
+        )
+        .route(
+            "/xrpc/com.atproto.space.deleteRecord",
+            post(space_delete_record),
+        )
+        .route(
+            "/xrpc/com.atproto.space.getLatestCommit",
+            get(space_get_latest_commit),
+        )
+        .route("/xrpc/com.atproto.space.getRecord", get(space_get_record))
+        .route(
+            "/xrpc/com.atproto.space.listRecords",
+            get(space_list_records),
+        )
+        .route("/xrpc/com.atproto.space.listSpaces", get(space_list_spaces))
+        .route("/xrpc/com.atproto.space.putRecord", post(space_put_record))
         // Stored locally for user data sovereignty rather than proxied to the AppView, so they
         // must be registered explicitly ahead of the `app.bsky.*` catch-all below.
         .route(

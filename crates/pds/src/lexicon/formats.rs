@@ -22,7 +22,12 @@ pub(super) fn validate_format(format: StringFormat, value: &str) -> Result<(), &
                 is_valid_handle(value)
             }
         }
-        StringFormat::AtUri => repo_engine::AtUri::parse(value).is_ok(),
+        // Two disjoint families share this format: the public repo form `repo_engine::AtUri`
+        // parses, and the permissioned-space form (`at://…/space/…`), which the marker segment
+        // makes unambiguous. The reference splits them the same way.
+        StringFormat::AtUri => {
+            repo_engine::AtUri::parse(value).is_ok() || crate::space_uri::is_space_at_uri(value)
+        }
         StringFormat::Cid => repo_engine::Cid::try_from(value).is_ok(),
         StringFormat::Datetime => repo_engine::is_valid_datetime(value),
         StringFormat::Did => crate::identity::did::is_valid_did(value),
@@ -30,7 +35,7 @@ pub(super) fn validate_format(format: StringFormat, value: &str) -> Result<(), &
         StringFormat::Language => is_valid_language(value),
         StringFormat::Nsid => repo_engine::validate_collection(value).is_ok(),
         StringFormat::RecordKey => is_valid_record_key(value),
-        StringFormat::SpaceRef => crate::auth::space::SpaceRef::is_valid(value),
+        StringFormat::SpaceRef => crate::space_uri::is_valid_space_ref(value),
         StringFormat::Tid => is_valid_tid(value),
         StringFormat::Uri => is_valid_uri(value),
     };
@@ -48,7 +53,7 @@ pub(super) fn validate_format(format: StringFormat, value: &str) -> Result<(), &
         StringFormat::Language => "must be a well-formed BCP 47 language tag",
         StringFormat::Nsid => "must be a valid nsid",
         StringFormat::RecordKey => "must be a valid Record Key",
-        StringFormat::SpaceRef => "must be a valid space-ref",
+        StringFormat::SpaceRef => "must be a valid space ref",
         StringFormat::Tid => "must be a valid TID",
         StringFormat::Uri => "must be a uri",
     })
@@ -100,7 +105,7 @@ fn is_valid_handle(value: &str) -> bool {
 
 /// Record-key syntax per `@atproto/syntax`'s `ensureValidRecordKey`: 1–512 chars of
 /// `[A-Za-z0-9._~:-]`, and not the path-traversal literals `.` / `..`.
-pub(super) fn is_valid_record_key(value: &str) -> bool {
+pub(crate) fn is_valid_record_key(value: &str) -> bool {
     if value.is_empty() || value.len() > 512 || value == "." || value == ".." {
         return false;
     }

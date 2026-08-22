@@ -98,10 +98,17 @@ pub fn validate_record_formats(record: &serde_json::Value) -> Result<(), String>
 }
 
 /// Recursively assert that every `at://`-scheme string in `value` parses as a valid AT-URI.
+///
+/// Both AT-URI families count: the public repo form and the permissioned-space form
+/// (`at://…/space/…`). A space record naming another space record is ordinary — refusing it here
+/// would make the two protocols unable to reference each other.
 fn validate_at_uris(value: &serde_json::Value) -> Result<(), String> {
     match value {
         serde_json::Value::String(s) => {
-            if s.starts_with("at://") && repo_engine::AtUri::parse(s).is_err() {
+            if s.starts_with("at://")
+                && repo_engine::AtUri::parse(s).is_err()
+                && !crate::space_uri::is_space_at_uri(s)
+            {
                 // Echo a bounded prefix — an AT-URI may be up to 8 KiB, and the client already
                 // holds the full value it sent.
                 let shown: String = s.chars().take(96).collect();

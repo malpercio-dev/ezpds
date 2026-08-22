@@ -93,10 +93,26 @@ pub enum ErrorCode {
     /// lexicon's error name and the AT Protocol XRPC error format.
     #[serde(rename = "BlockNotFound")]
     BlockNotFound,
-    /// The named Atproto Spaces space is unknown to this server. Backs
-    /// `com.atproto.space.getSpaceCredential`; PascalCase to match the lexicon's error name.
+    /// The named space is unknown to this host, or has been deleted. Declared by every
+    /// `com.atproto.space.*` and `com.atproto.simplespace.*` method.
     #[serde(rename = "SpaceNotFound")]
     SpaceNotFound,
+    /// The named account holds no permissioned repo in the space.
+    ///
+    /// Deliberately also the answer when the caller may not read the named repo at all: whether
+    /// some other account holds a repo in a space is not a fact a caller without read access to
+    /// that space is entitled to learn, so "not yours" and "not there" are one reply.
+    #[serde(rename = "RepoNotFound")]
+    RepoNotFound,
+    /// No record exists at the requested path in a permissioned repo — either read
+    /// (`com.atproto.space.getRecord`) or as an `applyWrites` update/delete precondition.
+    #[serde(rename = "RecordNotFound")]
+    RecordNotFound,
+    /// A create targeted a path that already holds a record. Distinct from the generic
+    /// [`Conflict`](ErrorCode::Conflict), which reports a lost race rather than a stated
+    /// precondition the caller can fix by choosing another key.
+    #[serde(rename = "RecordAlreadyExists")]
+    RecordAlreadyExists,
     /// The space has been deleted by its authority — the durable deletion signal a syncer sees
     /// when it tries to renew a space credential (Spaces proposal, "Space deletion").
     #[serde(rename = "SpaceDeleted")]
@@ -169,6 +185,9 @@ impl ErrorCode {
             ErrorCode::HandleResolutionFailed => "HandleResolutionFailed",
             ErrorCode::BlockNotFound => "BlockNotFound",
             ErrorCode::SpaceNotFound => "SpaceNotFound",
+            ErrorCode::RepoNotFound => "RepoNotFound",
+            ErrorCode::RecordNotFound => "RecordNotFound",
+            ErrorCode::RecordAlreadyExists => "RecordAlreadyExists",
             ErrorCode::SpaceDeleted => "SpaceDeleted",
             ErrorCode::UserNotAuthorized => "UserNotAuthorized",
             ErrorCode::AppNotAuthorized => "AppNotAuthorized",
@@ -210,7 +229,12 @@ impl ErrorCode {
             ErrorCode::InvalidRequest => 400,
             ErrorCode::HandleResolutionFailed => 400,
             ErrorCode::BlockNotFound => 400,
+            // The reference raises all four as `InvalidRequestError` with a named `error`, which
+            // is HTTP 400 — clients dispatch on the name, not the status.
             ErrorCode::SpaceNotFound => 400,
+            ErrorCode::RepoNotFound => 400,
+            ErrorCode::RecordNotFound => 400,
+            ErrorCode::RecordAlreadyExists => 400,
             ErrorCode::SpaceDeleted => 400,
             ErrorCode::UserNotAuthorized => 403,
             ErrorCode::AppNotAuthorized => 403,
@@ -258,11 +282,6 @@ impl ApiError {
         }
     }
 
-    /// The error's code.
-    pub fn code(&self) -> &ErrorCode {
-        &self.code
-    }
-
     /// Re-code an error while keeping its message — for a seam whose caller speaks a more
     /// specific error vocabulary than the shared verifier that produced the failure.
     pub fn with_code(mut self, code: ErrorCode) -> Self {
@@ -286,6 +305,13 @@ impl ApiError {
     /// Returns the HTTP status code for this error as a `u16`.
     pub fn status_code(&self) -> u16 {
         self.code.status_code()
+    }
+
+    /// The error's code. Callers that distinguish two conditions sharing one status — the space
+    /// surface's named `RecordNotFound`/`RecordAlreadyExists` errors are both 400 — assert on
+    /// this rather than on [`Self::status_code`].
+    pub fn code(&self) -> &ErrorCode {
+        &self.code
     }
 }
 

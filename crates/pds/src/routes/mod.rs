@@ -100,6 +100,15 @@ pub mod revoke_app_password;
 pub mod service_proxy;
 pub mod sign_plc_operation;
 pub mod sovereign_session;
+pub mod space_apply_writes;
+pub mod space_create_record;
+pub mod space_delete_record;
+pub mod space_get_latest_commit;
+pub mod space_get_record;
+pub mod space_list_records;
+pub mod space_list_spaces;
+pub mod space_put_record;
+pub mod space_views;
 pub mod standard_signup;
 pub mod static_assets;
 pub mod submit_plc_operation;
@@ -130,3 +139,6 @@ mod didweb_migration_test;
 
 #[cfg(test)]
 mod agent_auth_test;
+
+#[cfg(test)]
+mod space_routes_test;

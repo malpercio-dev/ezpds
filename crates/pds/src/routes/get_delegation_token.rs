@@ -16,7 +16,7 @@ use crate::app::AppState;
 use crate::auth::extractors::AuthenticatedUser;
 use crate::auth::jwt::AuthScope;
 use crate::auth::oauth_scopes::{require_space, SpaceOp, SpaceRequest};
-use crate::auth::space::{mint_delegation_token, unix_now, SpaceRef};
+use crate::auth::space::{mint_delegation_token, unix_now};
 
 #[derive(Deserialize)]
 pub struct GetDelegationTokenQuery {
@@ -48,8 +48,7 @@ pub async fn get_delegation_token(
         ));
     }
 
-    let space = SpaceRef::parse(&params.space)
-        .map_err(|msg| ApiError::new(ErrorCode::InvalidRequest, msg))?;
+    let space = super::space_views::parse_space(&params.space)?;
 
     // `read` is all-or-nothing at the space boundary and is what confers getDelegationToken;
     // `read_self` does not. The declaration's collections are irrelevant to a read.
