@@ -1,0 +1,31 @@
+meta {
+  name: Simplespace Remove Member
+  type: http
+  seq: 153
+}
+
+post {
+  url: {{baseUrl}}/xrpc/com.atproto.simplespace.removeMember
+  body: json
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{accessToken}}
+}
+
+body:json {
+  {
+    "space": "at://{{did}}/space/org.example.bucket/main",
+    "did": "did:plc:memberaaaaaaaaaaaaaaaaaa"
+  }
+}
+
+docs {
+  Remove a DID from a simplespace space's member list. Takes effect at the next credential
+  mint (an already-issued credential runs to its ~2 h expiry). Idempotent: removing a
+  non-member is a 200.
+
+  Requires a "space:…?manage=update" grant; the caller must be the space's authority.
+  Errors: 400 SpaceNotFound, 400 NotSpaceOwner, 403 InsufficientScope.
+}

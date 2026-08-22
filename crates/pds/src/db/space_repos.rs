@@ -355,3 +355,25 @@ pub async fn list_spaces_for_account(
     .fetch_all(pool)
     .await
 }
+
+/// Delete one account's repo in a space outright — oplog, records, then the head (FK order).
+/// The space-host side of `deleteSpace`: the authority's own repo goes with its space. Takes a
+/// connection rather than a generic executor because it is three statements.
+pub async fn delete_repo(
+    conn: &mut sqlx::SqliteConnection,
+    space_uri: &str,
+    account_did: &str,
+) -> Result<(), sqlx::Error> {
+    for sql in [
+        "DELETE FROM space_repo_ops WHERE space_uri = ? AND account_did = ?",
+        "DELETE FROM space_records WHERE space_uri = ? AND account_did = ?",
+        "DELETE FROM space_repos WHERE space_uri = ? AND account_did = ?",
+    ] {
+        sqlx::query(sql)
+            .bind(space_uri)
+            .bind(account_did)
+            .execute(&mut *conn)
+            .await?;
+    }
+    Ok(())
+}

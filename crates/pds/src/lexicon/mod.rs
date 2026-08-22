@@ -150,6 +150,16 @@ static LEXICON_SOURCES: &[&str] = &[
     include_str!("../../lexicons/com/atproto/space/listRecords.json"),
     include_str!("../../lexicons/com/atproto/space/listSpaces.json"),
     include_str!("../../lexicons/com/atproto/space/putRecord.json"),
+    // The PDS-required simplespace management surface (`com.atproto.simplespace.*`), same
+    // branch. `checkUserAccess` is served by a managing app, never here, so it is not vendored.
+    include_str!("../../lexicons/com/atproto/simplespace/addMember.json"),
+    include_str!("../../lexicons/com/atproto/simplespace/createSpace.json"),
+    include_str!("../../lexicons/com/atproto/simplespace/defs.json"),
+    include_str!("../../lexicons/com/atproto/simplespace/deleteSpace.json"),
+    include_str!("../../lexicons/com/atproto/simplespace/getSpace.json"),
+    include_str!("../../lexicons/com/atproto/simplespace/listMembers.json"),
+    include_str!("../../lexicons/com/atproto/simplespace/removeMember.json"),
+    include_str!("../../lexicons/com/atproto/simplespace/updateSpace.json"),
 ];
 
 /// A procedure's declared input body: its encoding and (for JSON inputs) its schema.

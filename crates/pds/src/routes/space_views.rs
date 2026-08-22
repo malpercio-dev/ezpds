@@ -1,12 +1,14 @@
 // pattern: Imperative Shell
 
-//! Shared handler-free support for the `com.atproto.space.*` routes (routes may not import one
-//! another): space-ref parsing, the `validate`-flag record check, stored-block decoding, and the
-//! `{uri, cid, validationStatus}` shape every write route answers with.
+//! Shared handler-free support for the `com.atproto.space.*` and `com.atproto.simplespace.*`
+//! routes (routes may not import one another): space-ref parsing, the `validate`-flag record
+//! check, stored-block decoding, the `{uri, cid, validationStatus}` shape every write route
+//! answers with, and the simplespace config's lexicon ↔ column mapping.
 //!
 //! Authorization is deliberately *not* here — it lives in `auth/space.rs`, the one seam every
 //! space route enters through.
 
+use crate::db::spaces::SpaceRow;
 use crate::lexicon::RecordValidation;
 use crate::space_record_write::SpaceCommitOutcome;
 use crate::space_uri::SpaceRef;
@@ -89,4 +91,96 @@ fn decode_error(e: impl std::fmt::Display) -> ApiError {
 pub fn lex_bytes(bytes: &[u8]) -> serde_json::Value {
     use base64::Engine as _;
     serde_json::json!({ "$bytes": base64::engine::general_purpose::STANDARD.encode(bytes) })
+}
+
+// ── simplespace config ───────────────────────────────────────────────────────
+
+const PUBLIC_POLICY: &str = "com.atproto.simplespace.defs#publicPolicy";
+const MEMBER_LIST_POLICY: &str = "com.atproto.simplespace.defs#memberListPolicy";
+const MANAGING_APP_POLICY: &str = "com.atproto.simplespace.defs#managingAppPolicy";
+const OPEN_APP_ACCESS: &str = "com.atproto.simplespace.defs#open";
+const ALLOW_LIST_APP_ACCESS: &str = "com.atproto.simplespace.defs#allowList";
+
+/// The `$type` of a union member, with the optional `lex:` URI prefix a client may send.
+fn union_type(value: &serde_json::Value) -> &str {
+    value
+        .get("$type")
+        .and_then(serde_json::Value::as_str)
+        .map(|t| t.strip_prefix("lex:").unwrap_or(t))
+        .unwrap_or("")
+}
+
+/// Map a lexicon `policy` union to the `(policy, managing_app)` columns.
+///
+/// `policy` is an open union, and the spec makes a host reject any value it does not
+/// implement at create/update time rather than store what it cannot enforce. This host
+/// evaluates `public` and `member-list`; `managing-app` needs the outbound `checkUserAccess`
+/// call, which lands with the client-attestation work, so it is refused here — never stored
+/// and never silently downgraded.
+pub fn policy_from_lex(
+    value: &serde_json::Value,
+) -> Result<(&'static str, Option<String>), ApiError> {
+    match union_type(value) {
+        PUBLIC_POLICY => Ok(("public", None)),
+        MEMBER_LIST_POLICY => Ok(("member-list", None)),
+        MANAGING_APP_POLICY => Err(ApiError::new(
+            ErrorCode::UnsupportedPolicy,
+            "this host does not implement the managing-app policy",
+        )),
+        other => Err(ApiError::new(
+            ErrorCode::UnsupportedPolicy,
+            format!("unsupported policy: {other}"),
+        )),
+    }
+}
+
+/// Map a lexicon `appAccess` union to the `app_access` column. `allowList` needs client
+/// attestation verification, which this host does not yet do, so it is refused (a host must not
+/// store an app-access policy it cannot enforce).
+pub fn app_access_from_lex(value: &serde_json::Value) -> Result<&'static str, ApiError> {
+    match union_type(value) {
+        OPEN_APP_ACCESS => Ok("open"),
+        ALLOW_LIST_APP_ACCESS => Err(ApiError::new(
+            ErrorCode::UnsupportedAppAccess,
+            "this host does not implement allow-list app access",
+        )),
+        other => Err(ApiError::new(
+            ErrorCode::UnsupportedAppAccess,
+            format!("unsupported appAccess: {other}"),
+        )),
+    }
+}
+
+/// The `getSpace` body for a stored simplespace row.
+pub fn simplespace_view(row: &SpaceRow) -> serde_json::Value {
+    let policy = match row.policy.as_deref() {
+        Some("public") => serde_json::json!({ "$type": PUBLIC_POLICY }),
+        Some("managing-app") => serde_json::json!({
+            "$type": MANAGING_APP_POLICY,
+            "managingApp": row.managing_app.clone().unwrap_or_default(),
+        }),
+        _ => serde_json::json!({ "$type": MEMBER_LIST_POLICY }),
+    };
+    let app_access = match row.app_access.as_deref() {
+        Some("allowList") => serde_json::json!({ "$type": ALLOW_LIST_APP_ACCESS, "allowed": [] }),
+        _ => serde_json::json!({ "$type": OPEN_APP_ACCESS }),
+    };
+    serde_json::json!({ "uri": row.uri, "policy": policy, "appAccess": app_access })
+}
+
+/// Load the simplespace this host answers for at `space`, or `SpaceNotFound`: absent, deleted,
+/// or recorded only as a foreign authority's space (no config) all read the same — the
+/// reference's `getActiveSpaceConfig`.
+pub async fn load_active_simplespace(
+    db: &sqlx::SqlitePool,
+    space: &SpaceRef,
+) -> Result<SpaceRow, ApiError> {
+    crate::db::spaces::get_space(db, &space.uri)
+        .await
+        .map_err(|e| {
+            tracing::error!(error = %e, space = %space.uri, "failed to load space");
+            ApiError::new(ErrorCode::InternalError, "internal server error")
+        })?
+        .filter(|row| row.deleted_at.is_none() && row.policy.is_some())
+        .ok_or_else(|| ApiError::new(ErrorCode::SpaceNotFound, "space not found"))
 }
