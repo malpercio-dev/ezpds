@@ -247,15 +247,17 @@ fn build_encoding_key(
     Ok(jsonwebtoken::EncodingKey::from_ec_der(pkcs8_der.as_bytes()))
 }
 
-/// Load the per-account repo signing key for a promoted DID and build a [`CommitSigner`].
+/// Load and decrypt the per-account repo signing key for a promoted DID.
 ///
-/// Used by genesis creation and record writes to sign commits with the key published
-/// as the DID's `#atproto` verification method (so the signatures verify network-wide).
-pub async fn load_repo_signer(
+/// The raw private scalar, for the one caller that cannot go through [`CommitSigner`]: a space
+/// repo's deniable commit signs a context string rather than a commit block, and derives its MAC
+/// key from the same material (`crypto::sign_space_commit`). Stays wrapped so it is wiped on
+/// drop rather than left in the caller's stack frame.
+pub async fn load_repo_signing_key(
     pool: &sqlx::SqlitePool,
     did: &str,
     master_key: &[u8; 32],
-) -> Result<repo_engine::CommitSigner, ApiError> {
+) -> Result<zeroize::Zeroizing<[u8; 32]>, ApiError> {
     use crate::db::repo_keys::get_signing_key_by_did;
 
     let key = get_signing_key_by_did(pool, did)
@@ -274,6 +276,19 @@ pub async fn load_repo_signer(
             ApiError::new(ErrorCode::InternalError, "failed to decrypt signing key")
         })?;
 
+    Ok(private)
+}
+
+/// Load the per-account repo signing key for a promoted DID and build a [`CommitSigner`].
+///
+/// Used by genesis creation and record writes to sign commits with the key published
+/// as the DID's `#atproto` verification method (so the signatures verify network-wide).
+pub async fn load_repo_signer(
+    pool: &sqlx::SqlitePool,
+    did: &str,
+    master_key: &[u8; 32],
+) -> Result<repo_engine::CommitSigner, ApiError> {
+    let private = load_repo_signing_key(pool, did, master_key).await?;
     repo_engine::CommitSigner::from_bytes(&private).map_err(|e| {
         tracing::error!(error = %e, did = %did, "invalid repo signing key");
         ApiError::new(ErrorCode::InternalError, "invalid signing key")

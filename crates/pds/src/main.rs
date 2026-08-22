@@ -49,6 +49,7 @@ mod session_issuer;
 mod sovereign_session_nonce_sweep;
 mod space_jti_sweep;
 mod space_record_write;
+mod space_uri;
 mod state;
 mod sweep_status;
 mod telemetry;

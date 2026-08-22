@@ -1,0 +1,48 @@
+meta {
+  name: Space Apply Writes
+  type: http
+  seq: 143
+}
+
+post {
+  url: {{baseUrl}}/xrpc/com.atproto.space.applyWrites
+  body: json
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{accessToken}}
+}
+
+body:json {
+  {
+    "space": "at://did:plc:authorityaaaaaaaaaaaaaaa/space/org.example.bucket/main",
+    "repo": {{did}},
+    "writes": [
+      {
+        "$type": "com.atproto.space.applyWrites#create",
+        "collection": "org.example.note",
+        "rkey": "first",
+        "value": { "$type": "org.example.note", "text": "one" }
+      },
+      {
+        "$type": "com.atproto.space.applyWrites#delete",
+        "collection": "org.example.note",
+        "rkey": "stale"
+      }
+    ]
+  }
+}
+
+docs {
+  Batch transaction: the whole batch commits under one revision, or none of it does.
+  Max 200 writes.
+
+  Unlike the single-record routes, every op states a precondition and fails if it does not
+  hold: "#create" on an existing path returns 400 RecordAlreadyExists, and "#update" or
+  "#delete" naming a record that does not exist returns 400 RecordNotFound. (The idempotence
+  com.atproto.space.deleteRecord promises is that route's, not this one's.)
+
+  "results" is positional — one entry per write, in request order, tagged
+  #createResult / #updateResult / #deleteResult by the verb that was asked for.
+}

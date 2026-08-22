@@ -27,27 +27,33 @@
 //! Authentication and `space:` scope enforcement happen above this layer (the
 //! space auth seam); callers pass an already-authorized `(space, did)`.
 
-// Consumed by the space record CRUD routes, which land next; until then the
-// module is exercised by its own tests.
-#![allow(dead_code)]
-
 use crate::app::AppState;
+use crate::space_uri::SpaceRef;
 use common::{ApiError, ErrorCode};
 use crypto::{format_set_hash_element, LtHash};
 
 /// What one op does to its record path.
+///
+/// `Create`, `Update` and `Delete` each state a precondition on the path and fail when it does
+/// not hold — the reference's space store does the same, and the batch lexicon declares
+/// `RecordAlreadyExists`/`RecordNotFound` for exactly these. `Put` is the one action with no
+/// precondition, which is why `putRecord` (an upsert by definition) is its only caller. The
+/// idempotence `deleteRecord`'s lexicon promises is the *route's* — it checks for the record and
+/// skips the commit entirely — not this layer's.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SpaceWriteAction {
-    /// Fail with a conflict when the record already exists (`createRecord`).
+    /// Fail with `RecordAlreadyExists` when the record already exists (`createRecord`).
     Create,
-    /// Upsert (`putRecord`).
+    /// Upsert, with no precondition (`putRecord`).
     Put,
-    /// Remove the record; deleting an absent record is an idempotent no-op.
+    /// Fail with `RecordNotFound` when the record is absent (`applyWrites`' `#update`).
+    Update,
+    /// Remove the record, failing with `RecordNotFound` when it is absent.
     Delete,
 }
 
 /// One record mutation in a space commit. `value` is required for
-/// `Create`/`Put` and ignored for `Delete`.
+/// `Create`/`Put`/`Update` and ignored for `Delete`.
 pub struct SpaceWriteOp {
     pub action: SpaceWriteAction,
     pub collection: String,
@@ -62,33 +68,43 @@ pub struct SpaceWriteResult {
     pub rkey: String,
     /// The new record CID; `None` for a delete.
     pub cid: Option<String>,
-    /// The previous record CID; `None` for a create.
+    /// The previous record CID; `None` for a create. Read by the sync surface, which reports it
+    /// as an oplog entry's `prev`; the record routes label a write by the verb asked for.
+    #[allow(dead_code)]
     pub prev: Option<String>,
 }
 
 /// A committed space write: the repo's new head and per-op results.
 #[derive(Debug, Clone)]
 pub struct SpaceCommitOutcome {
-    /// The repo's rev after this commit (unchanged if every op was an
-    /// idempotent delete-of-absent no-op).
+    /// The repo's rev after this commit.
+    ///
+    /// `rev` and `hash` together are what `notifyWrite` carries on the wire — this is the seam
+    /// the space-host role's fan-out worker attaches to, so they are returned even though the
+    /// record routes themselves report neither.
+    #[allow(dead_code)]
     pub rev: String,
     /// sha256 of the repo's LtHash state — the commit `hash` the wire carries.
+    #[allow(dead_code)]
     pub hash: [u8; 32],
-    /// One entry per *effective* op (idempotent delete no-ops are omitted).
+    /// One entry per op, in request order.
     pub results: Vec<SpaceWriteResult>,
 }
 
 /// Apply a batch of record writes to one space repo as a single atomic commit.
 ///
-/// The repo is created on first write (fresh TID rev, empty LtHash state).
+/// The space row and the repo are both created on first write (fresh TID rev, empty LtHash
+/// state) — a repo host records a space the first time its user writes into one, so a member
+/// can join a foreign authority's space without this host having been told about it in advance.
 /// Returns [`ErrorCode::Conflict`] when the rev CAS loses to a concurrent
 /// commit — nothing lands, the client retries against the new head.
 pub async fn apply_space_writes(
     state: &AppState,
-    space_uri: &str,
+    space: &SpaceRef,
     did: &str,
     ops: &[SpaceWriteOp],
 ) -> Result<SpaceCommitOutcome, ApiError> {
+    let space_uri = space.uri.as_str();
     if ops.is_empty() {
         return Err(ApiError::new(ErrorCode::InvalidRequest, "no writes given"));
     }
@@ -101,7 +117,7 @@ pub async fn apply_space_writes(
         repo_engine::validate_record_path(&op.collection, &op.rkey)
             .map_err(|e| ApiError::new(ErrorCode::InvalidRequest, e.to_string()))?;
         match op.action {
-            SpaceWriteAction::Create | SpaceWriteAction::Put => {
+            SpaceWriteAction::Create | SpaceWriteAction::Put | SpaceWriteAction::Update => {
                 let value = op.value.as_ref().ok_or_else(|| {
                     ApiError::new(
                         ErrorCode::InvalidRequest,
@@ -140,22 +156,46 @@ pub async fn apply_space_writes(
         }
     }
 
-    // The space must exist and be alive. A deleted space refuses writes — its
-    // members' existing records stay put (spec deletion semantics), they just
-    // stop changing.
-    let space = crate::db::spaces::get_space(&mut *tx, space_uri)
+    // Record the space if this host has not seen it before. The reference does the same on
+    // every space write, and it is what makes a foreign authority's space usable: nothing else
+    // in the protocol tells a repo host that its user has joined one. The row carries no
+    // simplespace config — that belongs to the authority, and stays NULL unless this host is it.
+    //
+    // Divergence from the reference, which additionally *clears* `deleted_at` here: a tombstone
+    // is only ever written for a space this host is the authority for, and resurrecting one on a
+    // member's write would undo the deletion the operator performed. So a deleted space refuses
+    // writes instead — its members' existing records stay put (spec deletion semantics), they
+    // just stop changing.
+    crate::db::spaces::insert_space(
+        &mut *tx,
+        &crate::db::spaces::NewSpace {
+            uri: space_uri,
+            authority_did: &space.authority,
+            space_type: &space.space_type,
+            skey: &space.skey,
+            policy: None,
+            app_access: None,
+            managing_app: None,
+        },
+    )
+    .await
+    .map_err(|e| {
+        tracing::error!(error = %e, space = %space_uri, "failed to record space");
+        internal_error()
+    })?;
+    let deleted = crate::db::spaces::get_space(&mut *tx, space_uri)
         .await
         .map_err(|e| {
             tracing::error!(error = %e, space = %space_uri, "failed to load space");
             internal_error()
-        })?;
-    let Some(space) = space else {
+        })?
+        .is_none_or(|row| row.deleted_at.is_some());
+    if deleted {
         tx.rollback().await.ok();
-        return Err(ApiError::new(ErrorCode::NotFound, "space not found"));
-    };
-    if space.deleted_at.is_some() {
-        tx.rollback().await.ok();
-        return Err(ApiError::new(ErrorCode::NotFound, "space has been deleted"));
+        return Err(ApiError::new(
+            ErrorCode::SpaceNotFound,
+            "space has been deleted",
+        ));
     }
 
     // Load the repo head, or start a fresh one on first write.
@@ -242,12 +282,19 @@ pub async fn apply_space_writes(
         let prev_cid = existing.map(|r| r.cid);
 
         match op.action {
-            SpaceWriteAction::Create | SpaceWriteAction::Put => {
+            SpaceWriteAction::Create | SpaceWriteAction::Put | SpaceWriteAction::Update => {
                 if op.action == SpaceWriteAction::Create && prev_cid.is_some() {
                     tx.rollback().await.ok();
                     return Err(ApiError::new(
-                        ErrorCode::Conflict,
+                        ErrorCode::RecordAlreadyExists,
                         "record already exists; use putRecord to update",
+                    ));
+                }
+                if op.action == SpaceWriteAction::Update && prev_cid.is_none() {
+                    tx.rollback().await.ok();
+                    return Err(ApiError::new(
+                        ErrorCode::RecordNotFound,
+                        "record does not exist; use createRecord or putRecord to create it",
                     ));
                 }
                 let value = op.value.as_ref().expect("validated above");
@@ -303,7 +350,11 @@ pub async fn apply_space_writes(
             }
             SpaceWriteAction::Delete => {
                 let Some(prev) = prev_cid else {
-                    continue; // idempotent: deleting an absent record is a no-op
+                    tx.rollback().await.ok();
+                    return Err(ApiError::new(
+                        ErrorCode::RecordNotFound,
+                        "record does not exist",
+                    ));
                 };
                 lthash.remove(&format_set_hash_element(&op.collection, &op.rkey, &prev));
                 write_cost += crate::rate_limit::WRITE_COST_DELETE;
@@ -342,21 +393,6 @@ pub async fn apply_space_writes(
                 });
             }
         }
-    }
-
-    // Every op was an idempotent no-op: roll back the head advance — the
-    // existing head stands, and a repo is never brought into existence by a
-    // batch that wrote nothing.
-    if results.is_empty() {
-        tx.rollback().await.ok();
-        let Some(repo) = existing_repo else {
-            return Err(ApiError::new(ErrorCode::NotFound, "space repo not found"));
-        };
-        return Ok(SpaceCommitOutcome {
-            rev: repo.rev,
-            hash: lthash.digest(),
-            results,
-        });
     }
 
     // Charge the commit against the account's write budget (same costs as the
@@ -416,11 +452,15 @@ fn internal_error() -> ApiError {
 mod tests {
     use super::*;
     use crate::app::test_state;
-    use crate::db::spaces::NewSpace;
 
     const SPACE: &str = "at://did:plc:author/space/org.example.bucket/self";
     const DID: &str = "did:plc:spacewriter";
 
+    fn space() -> SpaceRef {
+        crate::space_uri::parse_space_ref(SPACE).expect("test space ref is well-formed")
+    }
+
+    /// Only the account: the space row is the write path's own responsibility.
     async fn seed(state: &crate::app::AppState) {
         sqlx::query(
             "INSERT INTO accounts (did, email, password_hash, created_at, updated_at) \
@@ -429,20 +469,6 @@ mod tests {
         .bind(DID)
         .bind(format!("{DID}@example.com"))
         .execute(&state.db)
-        .await
-        .unwrap();
-        crate::db::spaces::insert_space(
-            &state.db,
-            &NewSpace {
-                uri: SPACE,
-                authority_did: DID,
-                space_type: "org.example.bucket",
-                skey: "self",
-                policy: Some("member-list"),
-                app_access: Some("open"),
-                managing_app: None,
-            },
-        )
         .await
         .unwrap();
     }
@@ -468,7 +494,7 @@ mod tests {
 
         let first = apply_space_writes(
             &state,
-            SPACE,
+            &space(),
             DID,
             &[
                 put("org.example.note", "aaa", "one"),
@@ -483,7 +509,7 @@ mod tests {
         // Update one record, then delete the other, in one commit.
         let second = apply_space_writes(
             &state,
-            SPACE,
+            &space(),
             DID,
             &[
                 put("org.example.note", "aaa", "one revised"),
@@ -538,15 +564,21 @@ mod tests {
         assert!(ops[3].1.is_none() && ops[3].2.is_some(), "delete op");
     }
 
-    /// `Create` refuses an existing path; `Put` upserts it.
+    /// `Create` refuses an existing path; `Put` upserts it. The refusal is
+    /// `RecordAlreadyExists`, the name the batch lexicon declares — distinct
+    /// from the generic `Conflict` a lost CAS race reports.
     #[tokio::test]
     async fn create_conflicts_on_existing_record() {
         let state = test_state().await;
         seed(&state).await;
-        let first =
-            apply_space_writes(&state, SPACE, DID, &[put("org.example.note", "aaa", "one")])
-                .await
-                .unwrap();
+        let first = apply_space_writes(
+            &state,
+            &space(),
+            DID,
+            &[put("org.example.note", "aaa", "one")],
+        )
+        .await
+        .unwrap();
 
         let create = SpaceWriteOp {
             action: SpaceWriteAction::Create,
@@ -554,10 +586,10 @@ mod tests {
             rkey: "aaa".to_string(),
             value: Some(serde_json::json!({"text": "clobber"})),
         };
-        let err = apply_space_writes(&state, SPACE, DID, &[create])
+        let err = apply_space_writes(&state, &space(), DID, &[create])
             .await
             .unwrap_err();
-        assert_eq!(err.status_code(), 409);
+        assert_eq!(err.code(), &ErrorCode::RecordAlreadyExists);
 
         // The failed batch must not have advanced the head or left oplog rows.
         let repo = crate::db::space_repos::get_repo(&state.db, SPACE, DID)
@@ -577,59 +609,136 @@ mod tests {
         );
     }
 
-    /// Deleting an absent record is an idempotent no-op: the head stands and
-    /// no oplog entry is appended.
+    /// `Update` and `Delete` both state that the record is there, and both
+    /// answer `RecordNotFound` when it is not — the preconditions
+    /// `applyWrites`' lexicon declares. (`deleteRecord`'s promised idempotence
+    /// is the route's: it skips the commit rather than relaxing this.) A
+    /// failed precondition leaves the head exactly where it was.
     #[tokio::test]
-    async fn delete_of_absent_record_is_a_noop() {
+    async fn update_and_delete_require_an_existing_record() {
         let state = test_state().await;
         seed(&state).await;
-        let first = apply_space_writes(&state, SPACE, DID, &[put("org.example.note", "aaa", "x")])
-            .await
-            .unwrap();
-
-        let outcome = apply_space_writes(
+        let first = apply_space_writes(
             &state,
-            SPACE,
+            &space(),
             DID,
-            &[SpaceWriteOp {
+            &[put("org.example.note", "aaa", "x")],
+        )
+        .await
+        .unwrap();
+
+        for op in [
+            SpaceWriteOp {
                 action: SpaceWriteAction::Delete,
                 collection: "org.example.note".to_string(),
                 rkey: "missing".to_string(),
                 value: None,
+            },
+            SpaceWriteOp {
+                action: SpaceWriteAction::Update,
+                collection: "org.example.note".to_string(),
+                rkey: "missing".to_string(),
+                value: Some(serde_json::json!({"text": "revised"})),
+            },
+        ] {
+            let err = apply_space_writes(&state, &space(), DID, &[op])
+                .await
+                .unwrap_err();
+            assert_eq!(err.code(), &ErrorCode::RecordNotFound);
+        }
+
+        // `Update` on a record that *is* there supersedes it, carrying `prev`.
+        let second = apply_space_writes(
+            &state,
+            &space(),
+            DID,
+            &[SpaceWriteOp {
+                action: SpaceWriteAction::Update,
+                collection: "org.example.note".to_string(),
+                rkey: "aaa".to_string(),
+                value: Some(serde_json::json!({"text": "revised"})),
             }],
         )
         .await
         .unwrap();
-        assert_eq!(outcome.rev, first.rev);
-        assert!(outcome.results.is_empty());
+        assert_eq!(second.results[0].prev, first.results[0].cid);
+
+        let repo = crate::db::space_repos::get_repo(&state.db, SPACE, DID)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            repo.rev, second.rev,
+            "only the satisfied op advanced the head"
+        );
     }
 
-    /// The lifecycle gate: a deactivated account's space repos are read-only,
-    /// and a write into an unknown or deleted space is refused.
+    /// A first write into a space this host has never seen records it, so a
+    /// member can join a foreign authority's space with no prior setup — and
+    /// the row it writes claims no simplespace config, which belongs to the
+    /// authority.
+    #[tokio::test]
+    async fn first_write_records_an_unknown_space() {
+        let state = test_state().await;
+        seed(&state).await;
+        let unknown = crate::space_uri::parse_space_ref(
+            "at://did:plc:someoneelse/space/org.example.bucket/shared",
+        )
+        .unwrap();
+
+        apply_space_writes(
+            &state,
+            &unknown,
+            DID,
+            &[put("org.example.note", "aaa", "x")],
+        )
+        .await
+        .unwrap();
+
+        let row = crate::db::spaces::get_space(&state.db, &unknown.uri)
+            .await
+            .unwrap()
+            .expect("the write recorded the space");
+        assert_eq!(row.authority_did, "did:plc:someoneelse");
+        assert_eq!(row.space_type, "org.example.bucket");
+        assert_eq!(row.skey, "shared");
+        assert!(row.policy.is_none() && row.app_access.is_none());
+    }
+
+    /// The lifecycle gates: a deactivated account's space repos are read-only,
+    /// and a deleted space refuses writes rather than being resurrected by one.
     #[tokio::test]
     async fn lifecycle_gates_refuse_writes() {
         let state = test_state().await;
         seed(&state).await;
 
-        let err = apply_space_writes(
+        apply_space_writes(
             &state,
-            "at://did:plc:author/space/org.example.bucket/nosuch",
+            &space(),
             DID,
-            &[put("org.example.note", "aaa", "x")],
+            &[put("org.example.note", "seed", "x")],
         )
         .await
-        .unwrap_err();
-        assert_eq!(err.status_code(), 404);
-
+        .unwrap();
         sqlx::query("UPDATE spaces SET deleted_at = datetime('now') WHERE uri = ?")
             .bind(SPACE)
             .execute(&state.db)
             .await
             .unwrap();
-        let err = apply_space_writes(&state, SPACE, DID, &[put("org.example.note", "a", "x")])
+        let err = apply_space_writes(&state, &space(), DID, &[put("org.example.note", "a", "x")])
             .await
             .unwrap_err();
-        assert_eq!(err.status_code(), 404);
+        assert_eq!(err.code(), &ErrorCode::SpaceNotFound);
+        let still_deleted: Option<String> =
+            sqlx::query_scalar("SELECT deleted_at FROM spaces WHERE uri = ?")
+                .bind(SPACE)
+                .fetch_one(&state.db)
+                .await
+                .unwrap();
+        assert!(
+            still_deleted.is_some(),
+            "a member write must not undelete a space"
+        );
 
         sqlx::query("UPDATE spaces SET deleted_at = NULL WHERE uri = ?")
             .bind(SPACE)
@@ -641,7 +750,7 @@ mod tests {
             .execute(&state.db)
             .await
             .unwrap();
-        let err = apply_space_writes(&state, SPACE, DID, &[put("org.example.note", "a", "x")])
+        let err = apply_space_writes(&state, &space(), DID, &[put("org.example.note", "a", "x")])
             .await
             .unwrap_err();
         assert_eq!(err.status_code(), 403);

@@ -36,6 +36,7 @@ src/
   notifications.rs — sending side: pad + HPKE-seal one payload per registered device and enqueue; inert when `[notifications] relay` is unset — see module doc
   record_write.rs  — shared repo write flow + firehose commit emission + post-commit block GC (one reachability walk per commit) — see module doc
   space_record_write.rs — the single write choke point for permissioned space repos (V065, DB-backed, no MST): validate → CAS rev → LtHash fold → oplog append, all one transaction; blob refs are GC-derived and notification fan-out attaches to the returned rev+hash — see module doc
+  space_uri.rs     — space-ref syntax (`at://{authority}/space/{type}/{skey}`) and the wider space AT-URI family; deliberately separate from `repo_engine::AtUri`, whose callers resolve MST paths a space URI must never reach
   space_jti_sweep.rs — periodic `space_jti_replay` retention sweep; each row carries its own token's acceptance horizon (template: sovereign_session_nonce_sweep.rs)
   repo_rev.rs      — shared `read_repo_rev`, homed beside `record_write.rs` so the public sync endpoints share it without a route-to-route import
   time.rs          — shared epoch/RFC-3339 time helpers; the variants differ on return type + pre-epoch handling — pick by call-site contract (module doc)
@@ -155,6 +156,7 @@ Pure authentication logic and middleware. Submodules:
 | `oauth_response_mode.rs` | Functional Core | `ResponseMode` (`query` \| `fragment`): parse the OAuth `response_mode` and pick the redirect separator; shared by four route surfaces — see module doc |
 | `oauth_scopes.rs` | Functional Core | the granular ATProto OAuth scope grammar (proposal 0011, plus `space:` from the Spaces proposal 0016): parse, normalize, and canonicalize `resource[:positional][?param=value]` across the six resource types, and enforce it via the `require_*`/`allows_*` checks scoped routes call; `supported_scopes()` backs the discovery metadata. Ported for round-trip parity with `@atproto/oauth-scopes` — see module doc |
 | `permission_sets.rs` | Mixed (unavoidable) | resolves `include:<nsid>` scope references to Lexicon-published permission-set records and expands them into the grammar `oauth_scopes.rs` validates; owns the TTL'd `PermissionSetCache` and the shared `resolve_cached` helper `space_consent.rs` reuses. Does live DNS/HTTP, so not a pure core despite living in `auth/` — see module doc |
+| `space.rs` | Mixed (unavoidable) | the one authorization seam every `com.atproto.space.*` route enters through: authenticate, confirm the caller owns the repo it named, and match the operation against its `space:` grant. A read naming another account's repo answers `RepoNotFound`, not `Forbidden` — deliberate non-disclosure. Mixed because a grant naming no `collection` falls back to the space type declaration's, resolved over the network — see module doc |
 | `space_consent.rs` | Mixed (unavoidable) | the user-legible text `/oauth/authorize` shows for `space:` grants: the space type declaration's `name` (localized), a named authority's bidirectionally-verified handle, the collections a bare grant resolves to, and the both-wildcards warning. Reuses `permission_sets.rs`'s Lexicon resolution path and TTL-cache machinery; degrades to the raw token instead of failing the page — see module doc |
 | `password.rs` | Functional Core | `hash_password`, `verify_password` (argon2id) |
 | `rate_limit.rs` | Functional Core | sliding-window login-failure limiter + the generic `MultiWindowLimiter` used by the top-level `rate_limit.rs` middleware |
@@ -318,6 +320,15 @@ tests, so check it when changing an OAuth response shape — see its README.
 | `put_record.rs` | `POST /xrpc/com.atproto.repo.putRecord` |
 | `delete_record.rs` | `POST /xrpc/com.atproto.repo.deleteRecord` |
 | `describe_repo.rs` | `GET /xrpc/com.atproto.repo.describeRepo` |
+| `space_create_record.rs` | `POST /xrpc/com.atproto.space.createRecord` — create a record in the caller's own permissioned space repo |
+| `space_put_record.rs` | `POST /xrpc/com.atproto.space.putRecord` — upsert; reads the record's presence first so an app granted only `update` is not asked for `create` too |
+| `space_delete_record.rs` | `POST /xrpc/com.atproto.space.deleteRecord` — idempotent *here*, by skipping the commit for an absent record; the store keeps the strict precondition `applyWrites` needs |
+| `space_apply_writes.rs` | `POST /xrpc/com.atproto.space.applyWrites` — batch of ≤200 writes in one commit; every op states a precondition, so the batch lands whole or reports `RecordAlreadyExists`/`RecordNotFound` |
+| `space_list_spaces.rs` | `GET /xrpc/com.atproto.space.listSpaces` — spaces the caller has *written to* (never a membership list); the query's filters are what its `space:` grant is matched against, since it names no one space |
+| `space_get_record.rs` | `GET /xrpc/com.atproto.space.getRecord` |
+| `space_list_records.rs` | `GET /xrpc/com.atproto.space.listRecords` — `(collection, rkey)` keyset paging, values inlined unless `excludeValues` |
+| `space_get_latest_commit.rs` | `GET /xrpc/com.atproto.space.getLatestCommit` — mints a fresh deniable commit per serving (new `ikm`/`sig`/`mac` each time); never stored — see module doc |
+| `space_views.rs` | shared handler-free support for the space routes (routes may not import one another): space-ref parsing, the `validate`-flag record check, stored-block decoding, the write-result shape |
 | `service_proxy.rs` | `GET/POST /xrpc/{app.bsky,chat.bsky,com.atproto.moderation}.*` — dual-path proxy (namespace defaults / SSRF-guarded header targets); dispatch, munge routing, and the header-forwarding seam are in the module doc |
 | `get_preferences.rs` | `GET /xrpc/app.bsky.actor.getPreferences` — local read, registered ahead of the catch-all; app-password callers never see full-access-only types unless minted with the personal-details grant (ADR-0033) |
 | `put_preferences.rs` | `POST /xrpc/app.bsky.actor.putPreferences` — local scope-limited write; an ungranted app-password write preserves full-access-only entries |

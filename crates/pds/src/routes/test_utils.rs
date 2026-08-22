@@ -476,6 +476,29 @@ impl DpopProofKey {
     }
 }
 
+/// Mint a short-lived HS256 access JWT with an arbitrary granular `scope` claim — the shape of
+/// an OAuth token. Used by tests that exercise a `require_*` scope gate, which distinguishes the
+/// legacy `com.atproto.access` claim (blanket permission) from a granular grant string.
+pub(crate) fn scoped_access_jwt(secret: &[u8; 32], sub: &str, scope: &str) -> String {
+    use jsonwebtoken::{encode, Algorithm, EncodingKey, Header};
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    encode(
+        &Header::new(Algorithm::HS256),
+        &serde_json::json!({
+            "scope": scope,
+            "sub": sub,
+            "iat": now,
+            "exp": now + 7200_u64,
+        }),
+        &EncodingKey::from_secret(secret),
+    )
+    .unwrap()
+}
+
 /// Mint a short-lived HS256 access JWT carrying a `registration_id` claim — the shape of an
 /// agent-derived token from the jwt-bearer / claim-polling grants. Used by tests that exercise
 /// agent attribution (audit rows) and the agent-refusal gates. Callers must seed a matching
