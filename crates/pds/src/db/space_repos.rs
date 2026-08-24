@@ -121,7 +121,9 @@ where
     .await
 }
 
-/// Insert or replace the record block at a path.
+/// Insert or replace the record block at a path. `rev` is the commit rev that wrote it —
+/// the durable "changed since" fact `listBlobs?since` filters on (V066).
+#[allow(clippy::too_many_arguments)]
 pub async fn upsert_record<'e, E>(
     executor: E,
     space_uri: &str,
@@ -130,16 +132,17 @@ pub async fn upsert_record<'e, E>(
     rkey: &str,
     cid: &str,
     value: &[u8],
+    rev: &str,
 ) -> Result<(), sqlx::Error>
 where
     E: sqlx::Executor<'e, Database = Sqlite>,
 {
     sqlx::query(
         "INSERT INTO space_records \
-         (space_uri, account_did, collection, rkey, cid, value, created_at, updated_at) \
-         VALUES (?, ?, ?, ?, ?, ?, datetime('now'), datetime('now')) \
+         (space_uri, account_did, collection, rkey, cid, value, rev, created_at, updated_at) \
+         VALUES (?, ?, ?, ?, ?, ?, ?, datetime('now'), datetime('now')) \
          ON CONFLICT (space_uri, account_did, collection, rkey) \
-         DO UPDATE SET cid = excluded.cid, value = excluded.value, \
+         DO UPDATE SET cid = excluded.cid, value = excluded.value, rev = excluded.rev, \
                        updated_at = datetime('now')",
     )
     .bind(space_uri)
@@ -148,6 +151,7 @@ where
     .bind(rkey)
     .bind(cid)
     .bind(value)
+    .bind(rev)
     .execute(executor)
     .await?;
     Ok(())
@@ -354,6 +358,130 @@ pub async fn list_spaces_for_account(
     .bind(limit)
     .fetch_all(pool)
     .await
+}
+
+/// One oplog entry of a `listRepoOps` page. `idx` is the row's rowid — the tiebreak within a
+/// batch (ops of one commit share `rev` and were inserted in request order) and the second half
+/// of the page cursor. `value` is the record's *current* block, present only when this op is
+/// its latest write (the join below misses for deletes and superseded ops).
+#[derive(Debug, Clone, sqlx::FromRow)]
+pub struct SpaceRepoOpRow {
+    pub idx: i64,
+    pub rev: String,
+    pub collection: String,
+    pub rkey: String,
+    pub cid: Option<String>,
+    pub prev: Option<String>,
+    pub value: Option<Vec<u8>>,
+}
+
+/// One page of a repo's oplog, ordered `(rev, rowid)` — commit order, then request order
+/// within a batch.
+///
+/// Joining `space_records` on the op's *cid* as well as its path means only a record's current
+/// value comes back: an op a later write superseded joins to nothing, so its stale value is
+/// left off rather than served (the reference reader does exactly this). `since` keeps ops
+/// strictly after that rev; `after` is the previous page's last `(rev, rowid)`.
+pub async fn list_repo_ops(
+    pool: &SqlitePool,
+    space_uri: &str,
+    account_did: &str,
+    since: Option<&str>,
+    after: Option<(&str, i64)>,
+    exclude_values: bool,
+    limit: i64,
+) -> Result<Vec<SpaceRepoOpRow>, sqlx::Error> {
+    // `value` selected as a literal NULL when excluded, so both shapes decode into one struct
+    // and SQLite never reads the blob (the `list_repo_records` pattern).
+    let value_column = if exclude_values { "NULL" } else { "r.value" };
+    let sql = format!(
+        "SELECT o.rowid AS idx, o.rev, o.collection, o.rkey, o.cid, o.prev, \
+                {value_column} AS value \
+         FROM space_repo_ops o \
+         LEFT JOIN space_records r \
+           ON r.space_uri = o.space_uri AND r.account_did = o.account_did \
+          AND r.collection = o.collection AND r.rkey = o.rkey AND r.cid = o.cid \
+         WHERE o.space_uri = ? AND o.account_did = ? \
+           AND (? IS NULL OR o.rev > ?) \
+           AND (? IS NULL OR o.rev > ? OR (o.rev = ? AND o.rowid > ?)) \
+         ORDER BY o.rev, o.rowid LIMIT ?"
+    );
+    sqlx::query_as::<_, SpaceRepoOpRow>(&sql)
+        .bind(space_uri)
+        .bind(account_did)
+        .bind(since)
+        .bind(since)
+        .bind(after.map(|(rev, _)| rev))
+        .bind(after.map(|(rev, _)| rev))
+        .bind(after.map(|(rev, _)| rev))
+        .bind(after.map(|(_, idx)| idx))
+        .bind(limit)
+        .fetch_all(pool)
+        .await
+}
+
+/// Every record path and CID in one repo — the raw material for `getRepo`'s DRISL index. The
+/// route re-sorts into canonical DAG-CBOR key order (length-first), which SQL cannot express;
+/// unordered here, and unpaged because the index must be materialized whole anyway.
+pub async fn list_record_index(
+    pool: &SqlitePool,
+    space_uri: &str,
+    account_did: &str,
+) -> Result<Vec<(String, String, String)>, sqlx::Error> {
+    sqlx::query_as(
+        "SELECT collection, rkey, cid FROM space_records \
+         WHERE space_uri = ? AND account_did = ?",
+    )
+    .bind(space_uri)
+    .bind(account_did)
+    .fetch_all(pool)
+    .await
+}
+
+/// One page of a repo's stored record blocks, optionally only records written after `since` —
+/// the input for deriving a repo's blob references (`listBlobs`, `getBlob`'s membership check).
+/// PK-keyset paged like [`list_record_blocks_for_account`]; a page shorter than `limit` is the
+/// last. A pre-V066 row whose backfilled `rev` is NULL never matches a `since` filter, which is
+/// the safe direction only because the backfill leaves none behind.
+pub async fn list_record_blocks_for_repo(
+    pool: &SqlitePool,
+    space_uri: &str,
+    account_did: &str,
+    since: Option<&str>,
+    after: Option<(&str, &str)>,
+    limit: i64,
+) -> Result<Vec<(String, String, Vec<u8>)>, sqlx::Error> {
+    let (collection, rkey) = after.unwrap_or(("", ""));
+    sqlx::query_as(
+        "SELECT collection, rkey, value FROM space_records \
+         WHERE space_uri = ? AND account_did = ? \
+           AND (? IS NULL OR rev > ?) \
+           AND (collection, rkey) > (?, ?) \
+         ORDER BY collection, rkey LIMIT ?",
+    )
+    .bind(space_uri)
+    .bind(account_did)
+    .bind(since)
+    .bind(since)
+    .bind(collection)
+    .bind(rkey)
+    .bind(limit)
+    .fetch_all(pool)
+    .await
+}
+
+/// Prune oplog entries older than `max_age_secs` — the retention half of the spec's "a host may
+/// compact or drop the oplog". Returns the rows reclaimed. A syncer whose `since` predates the
+/// retained window gets a short page whose head commit hash won't match its own fold, which is
+/// its signal to heal via `getRepo`.
+pub async fn sweep_old_repo_ops(pool: &SqlitePool, max_age_secs: u64) -> Result<u64, sqlx::Error> {
+    let result = sqlx::query(
+        "DELETE FROM space_repo_ops WHERE created_at < datetime('now', '-' || ? || ' seconds')",
+    )
+    .bind(max_age_secs as i64)
+    .execute(pool)
+    .await?;
+    Ok(result.rows_affected())
 }
 
 /// Delete one account's repo in a space outright — oplog, records, then the head (FK order).

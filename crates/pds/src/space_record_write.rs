@@ -320,6 +320,7 @@ pub async fn apply_space_writes(
                     &op.rkey,
                     &cid,
                     &bytes,
+                    &new_rev,
                 )
                 .await
                 .map_err(|e| {

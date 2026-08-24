@@ -1,0 +1,37 @@
+meta {
+  name: Space List Repo Ops
+  type: http
+  seq: 155
+}
+
+get {
+  url: {{baseUrl}}/xrpc/com.atproto.space.listRepoOps?space=at://did:plc:authorityaaaaaaaaaaaaaaa/space/org.example.bucket/main&repo={{did}}&limit=100
+  body: none
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{accessToken}}
+}
+
+params:query {
+  space: at://did:plc:authorityaaaaaaaaaaaaaaa/space/org.example.bucket/main
+  repo: {{did}}
+  limit: 100
+  ~since:
+  ~cursor:
+  ~excludeValues: false
+}
+
+docs {
+  Page a permissioned repo's oplog — the primary incremental sync mechanism. Each entry is
+  {rev, collection, rkey, cid, prev}: cid null = delete, prev null = create, ops sharing a rev
+  belong to one atomic batch. The record's current value is inlined for creates/updates unless
+  "excludeValues=true" or a later op superseded it.
+
+  "since" returns ops strictly after that rev; the cursor continues a paginated response. A
+  response reaching the head of the oplog includes the current signed commit and no cursor —
+  the syncer compares the commit hash against its own running LtHash fold. The oplog is a
+  transport optimization with no history guarantee (compacted after a retention window, reset
+  on migration); a mismatched fold means heal via getRepo.
+}

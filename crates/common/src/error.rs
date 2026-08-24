@@ -108,6 +108,11 @@ pub enum ErrorCode {
     /// (`com.atproto.space.getRecord`) or as an `applyWrites` update/delete precondition.
     #[serde(rename = "RecordNotFound")]
     RecordNotFound,
+    /// `com.atproto.space.getBlob` named a blob no record in the space references, or one this
+    /// host does not hold. One reply for both, so an unreferenced blob's existence is never
+    /// disclosed (the reference's `isBlobInSpace` check does the same).
+    #[serde(rename = "BlobNotFound")]
+    BlobNotFound,
     /// A create targeted a path that already holds a record. Distinct from the generic
     /// [`Conflict`](ErrorCode::Conflict), which reports a lost race rather than a stated
     /// precondition the caller can fix by choosing another key.
@@ -199,6 +204,7 @@ impl ErrorCode {
             ErrorCode::SpaceNotFound => "SpaceNotFound",
             ErrorCode::RepoNotFound => "RepoNotFound",
             ErrorCode::RecordNotFound => "RecordNotFound",
+            ErrorCode::BlobNotFound => "BlobNotFound",
             ErrorCode::RecordAlreadyExists => "RecordAlreadyExists",
             ErrorCode::SpaceDeleted => "SpaceDeleted",
             ErrorCode::UserNotAuthorized => "UserNotAuthorized",
@@ -250,6 +256,7 @@ impl ErrorCode {
             ErrorCode::SpaceNotFound => 400,
             ErrorCode::RepoNotFound => 400,
             ErrorCode::RecordNotFound => 400,
+            ErrorCode::BlobNotFound => 400,
             ErrorCode::RecordAlreadyExists => 400,
             ErrorCode::SpaceDeleted => 400,
             ErrorCode::UserNotAuthorized => 403,

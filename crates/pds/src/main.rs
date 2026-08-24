@@ -48,6 +48,7 @@ mod routes;
 mod session_issuer;
 mod sovereign_session_nonce_sweep;
 mod space_jti_sweep;
+mod space_oplog_sweep;
 mod space_record_write;
 mod space_uri;
 mod state;
@@ -788,6 +789,15 @@ async fn run() -> anyhow::Result<()> {
     tracing::info!(
         interval_secs = space_jti_sweep::SWEEP_INTERVAL.as_secs(),
         "space jti retention sweep started"
+    );
+
+    // Spawn the permissioned-repo oplog compaction sweep. The oplog is droppable by spec;
+    // this bounds it to a backfill window, and a syncer further behind heals via getRepo.
+    let _space_oplog_sweep = space_oplog_sweep::spawn_space_oplog_sweep(state.clone());
+    tracing::info!(
+        interval_secs = space_oplog_sweep::SWEEP_INTERVAL.as_secs(),
+        retention_secs = space_oplog_sweep::OPLOG_RETENTION_SECS,
+        "space oplog compaction sweep started"
     );
 
     // Spawn the Iroh accept loop when the tunnel is enabled. Like the blob GC it is detached

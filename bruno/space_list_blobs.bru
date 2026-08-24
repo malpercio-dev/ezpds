@@ -1,0 +1,32 @@
+meta {
+  name: Space List Blobs
+  type: http
+  seq: 158
+}
+
+get {
+  url: {{baseUrl}}/xrpc/com.atproto.space.listBlobs?space=at://did:plc:authorityaaaaaaaaaaaaaaa/space/org.example.bucket/main&repo={{did}}&limit=500
+  body: none
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{accessToken}}
+}
+
+params:query {
+  space: at://did:plc:authorityaaaaaaaaaaaaaaa/space/org.example.bucket/main
+  repo: {{did}}
+  limit: 500
+  ~since:
+  ~cursor:
+}
+
+docs {
+  List the blob CIDs referenced by an account's records within one permissioned space —
+  ascending, deduplicated; the cursor is the last CID of a full page. "since" restricts to
+  blobs referenced by records written after that repo rev. This is how a syncer discovers what
+  to fetch via space.getBlob, and how migration enumerates the blobs a permissioned repo must
+  carry. Blobs behind permissioned records are deliberately never enumerated by the
+  unauthenticated com.atproto.sync.listBlobs.
+}
