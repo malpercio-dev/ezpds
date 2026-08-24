@@ -469,7 +469,7 @@ Modified existing endpoints:
 
 -   **GET /v1/export/repo:** supports chunked transfer encoding for cellular. Also used during desktop promotion.
 
--   **POST /v1/keys/shares:** called during mobile onboarding (Step 7), not just desktop setup.
+-   **Onboarding escrow deposit:** the genesis-ceremony Share 2 rides `POST /v1/dids`' client-share path, inside the promotion transaction — there is no `/v1/keys/shares` endpoint. Later replacement or opt-out is `PUT`/`DELETE /v1/recovery/escrow-share` (see [`recovery_escrow.rs`](../crates/pds/src/routes/recovery_escrow.rs)).
 
 **9. Edge Cases and Failure Modes**
 

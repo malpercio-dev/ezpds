@@ -88,7 +88,7 @@ The product launches mobile-first. The PDS is a full PDS before any desktop is i
 
 **v0.1**
 
-🧩 **atrium-api** — XRPC types, lexicon defs (auto-generated). **atrium-repo** — MST read/write, CAR export. **rsky-crypto** — P-256/K-256 commit signing.
+🧩 **atrium-api** — XRPC types, lexicon defs (auto-generated). **atrium-repo** — MST read/write, CAR export. **p256** — P-256 ECDSA commit signing (`crates/repo-engine/src/signer.rs`; rsky-crypto was evaluated but never adopted).
 
 ### Iroh Endpoint
 
@@ -100,7 +100,7 @@ The product launches mobile-first. The PDS is a full PDS before any desktop is i
 
 **v0.1**
 
-🔐 Signing keys in macOS Keychain (desktop) / Secure Enclave (phone). At account creation, root rotation key is split via 2-of-3 Shamir: Share 1 = iCloud Keychain, Share 2 = PDS escrow, Share 3 = user's choice (device-local or BIP-39 paper backup). Basic key management for v0.1. Full recovery UI in v1.0.
+🔐 Signing keys in macOS Keychain (desktop) / Secure Enclave (phone). At account creation, a fresh 32-byte recovery *seed* — not the device signing key, which a Secure-Enclave key can never be extracted to split — is split via 2-of-3 Shamir: Share 1 = iCloud Keychain, Share 2 = PDS escrow, Share 3 = user's choice (device-local or BIP-39 paper backup). The seed HKDF-derives a separate recovery rotation key installed at `rotationKeys[1]`; see [identity-and-key-custody.md](architecture/identity-and-key-custody.md) and [ADR-0027](architecture/decisions/0027-rotation-key-ordering.md). Basic key management for v0.1. Full recovery UI in v1.0.
 
 ### Recovery Share Manager
 
@@ -255,7 +255,7 @@ The product launches mobile-first. The PDS is a full PDS before any desktop is i
 
 ## Recovery Flow — Device Migration / Dead SSD (v1.0+)
 
-**New Mac** (Installs Tauri app) → **authenticates** → **2-of-3 Shares** (iCloud + PDS escrow) → **reconstructs** → **Rotation Key** (Shamir recombination) → **did:plc op** → **Key Rotation** (New signing key) → **syncs** → **Repo Snapshot** (Full repo restore)
+**New Mac** (Installs Tauri app) → **authenticates** → **2-of-3 Shares** (iCloud + PDS escrow) → **reconstructs** → **Recovery Seed** → **Recovery Rotation Key** (HKDF-derived from the seed, client-side) → **did:plc op** → **Key Rotation** (New signing key) → **syncs** → **Repo Snapshot** (Full repo restore)
 
 **Share sources (any 2 of 3):**
 - ① iCloud Keychain
@@ -430,7 +430,7 @@ Firehose emitter for native federation. Firehose proxy + commit buffer for v0.2+
 
 ### ✅ Spec Drift — v0.1+
 
-Repo Engine (atrium + rsky-crypto). 3-layer conformance: interop vectors → oracle → canary.
+Repo Engine (atrium + p256). 3-layer conformance: interop vectors → oracle → canary.
 
 ### ✅ PDS Redundancy — v1.0+
 
