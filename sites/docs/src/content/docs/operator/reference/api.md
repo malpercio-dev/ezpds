@@ -135,6 +135,13 @@ Every path registered by the server is listed here. For `/xrpc/` endpoints, use 
 | `/xrpc/com.atproto.server.resetPassword` | AT Protocol XRPC |
 | `/xrpc/com.atproto.server.revokeAppPassword` | AT Protocol XRPC |
 | `/xrpc/com.atproto.server.updateEmail` | AT Protocol XRPC |
+| `/xrpc/com.atproto.simplespace.addMember` | AT Protocol XRPC |
+| `/xrpc/com.atproto.simplespace.createSpace` | AT Protocol XRPC |
+| `/xrpc/com.atproto.simplespace.deleteSpace` | AT Protocol XRPC |
+| `/xrpc/com.atproto.simplespace.getSpace` | AT Protocol XRPC |
+| `/xrpc/com.atproto.simplespace.listMembers` | AT Protocol XRPC |
+| `/xrpc/com.atproto.simplespace.removeMember` | AT Protocol XRPC |
+| `/xrpc/com.atproto.simplespace.updateSpace` | AT Protocol XRPC |
 | `/xrpc/com.atproto.space.applyWrites` | AT Protocol XRPC |
 | `/xrpc/com.atproto.space.createRecord` | AT Protocol XRPC |
 | `/xrpc/com.atproto.space.deleteRecord` | AT Protocol XRPC |

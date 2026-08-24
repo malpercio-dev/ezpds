@@ -700,9 +700,15 @@ mod tests {
             .unwrap()
             .expect("the write recorded the space");
         assert_eq!(row.authority_did, "did:plc:someoneelse");
-        assert_eq!(row.space_type, "org.example.bucket");
-        assert_eq!(row.skey, "shared");
         assert!(row.policy.is_none() && row.app_access.is_none());
+        let (space_type, skey): (String, String) =
+            sqlx::query_as("SELECT space_type, skey FROM spaces WHERE uri = ?")
+                .bind(&unknown.uri)
+                .fetch_one(&state.db)
+                .await
+                .unwrap();
+        assert_eq!(space_type, "org.example.bucket");
+        assert_eq!(skey, "shared");
     }
 
     /// The lifecycle gates: a deactivated account's space repos are read-only,

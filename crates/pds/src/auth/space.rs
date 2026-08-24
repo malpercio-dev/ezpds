@@ -24,7 +24,10 @@
 //!   fallback, or `#atproto` only when the authority publishes no dedicated space key).
 //! * **The read seam** — [`authenticate_space_read`] accepts a covering OAuth grant on the
 //!   caller's *own* repo *or* a DPoP-bound space credential for any repo in the space, never a
-//!   bearer credential. The credential arm runs the full RFC 9449 per-request proof validation
+//!   bearer credential. [`authenticate_space_access`] is the same pair of arms for a method
+//!   that names a space but no repo (`simplespace.getSpace`), and
+//!   [`authenticate_space_owner`] is the OAuth-only arm every simplespace management method
+//!   takes: grant check, then "the caller *is* the authority" (`NotSpaceOwner`). The credential arm runs the full RFC 9449 per-request proof validation
 //!   (`auth/dpop.rs`'s `validate_dpop`: signature vs header `jwk`, thumbprint vs `cnf.jkt`,
 //!   `ath` = hash of the credential, `htm`/`htu`, `iat` recency) plus the per-host `jti` replay
 //!   check the proposal makes a MUST. `just space-auth-seam-check`
@@ -172,7 +175,82 @@ pub async fn authenticate_space_read(
         return Ok(SpaceReader::User(user));
     }
 
-    // Credential arm — proof of possession or nothing.
+    let credential =
+        authenticate_space_credential(state, headers, scheme, token, method, uri, space).await?;
+
+    // Repo availability: the owner may read their own deactivated repo, a syncer may not.
+    if !active_local_account_exists(&state.db, repo).await? {
+        return Err(repo_not_found(repo));
+    }
+
+    Ok(SpaceReader::Credential(credential))
+}
+
+/// Authenticate access to a space *itself* (no repo named — `simplespace.getSpace`).
+///
+/// The same two arms as [`authenticate_space_read`]: an account credential must carry a
+/// `read_self` grant for the space *and* belong to the space's authority (the reference's
+/// `assertSpaceScope` + `assertSpaceOwner` — a member hosted here still presents a space
+/// credential, like a member hosted anywhere else); a DPoP-bound space credential for the
+/// space is accepted with the full per-request proof validation.
+pub async fn authenticate_space_access(
+    state: &AppState,
+    headers: &HeaderMap,
+    method: &Method,
+    uri: &Uri,
+    space: &SpaceRef,
+) -> Result<SpaceReader, ApiError> {
+    let (scheme, token) = extract_access_token(headers)?;
+    if peek_jwt_typ(token).as_deref() != Some(SPACE_CREDENTIAL_TYP) {
+        let user =
+            authenticate_space_owner(state, headers, method, uri, space, SpaceOp::ReadSelf).await?;
+        return Ok(SpaceReader::User(user));
+    }
+    let credential =
+        authenticate_space_credential(state, headers, scheme, token, method, uri, space).await?;
+    Ok(SpaceReader::Credential(credential))
+}
+
+/// Authenticate a simplespace management call (or owner-only read): an account credential
+/// whose grant covers `op` on `space`, held by the space's authority.
+///
+/// Grant first, ownership second, as the reference orders them: an app without the `manage`
+/// grant learns `InsufficientScope` whether or not the space is its user's. Not the
+/// authority is `NotSpaceOwner` — a precondition failure, not an authentication one.
+pub async fn authenticate_space_owner(
+    state: &AppState,
+    headers: &HeaderMap,
+    method: &Method,
+    uri: &Uri,
+    space: &SpaceRef,
+    op: SpaceOp<'_>,
+) -> Result<AuthenticatedUser, ApiError> {
+    let user = authenticate_space_caller(state, headers, method, uri)?;
+    require_space_grant(state, &user, space, op).await?;
+    if user.did != space.authority {
+        return Err(ApiError::new(
+            ErrorCode::NotSpaceOwner,
+            "not the space owner",
+        ));
+    }
+    Ok(user)
+}
+
+/// The credential arm shared by the seams above: `Authorization: DPoP <credential>` plus a
+/// per-request proof, for `space`. Scheme must be `DPoP` with exactly one `DPoP` header (the
+/// scheme ↔ binding rule `extractors::authenticate_access` enforces for OAuth); the
+/// credential's `sub` must be `space`; the proof is validated in full (`validate_dpop`, with
+/// the credential as the bound token) and its `jti` spent per host in `space_jti_replay` for
+/// the proof acceptance window.
+async fn authenticate_space_credential(
+    state: &AppState,
+    headers: &HeaderMap,
+    scheme: AuthScheme,
+    token: &str,
+    method: &Method,
+    uri: &Uri,
+    space: &SpaceRef,
+) -> Result<VerifiedCredential, ApiError> {
     if scheme != AuthScheme::Dpop {
         return Err(ApiError::new(
             ErrorCode::InvalidToken,
@@ -234,13 +312,7 @@ pub async fn authenticate_space_read(
             "DPoP proof jti has already been used",
         ));
     }
-
-    // Repo availability: the owner may read their own deactivated repo, a syncer may not.
-    if !active_local_account_exists(&state.db, repo).await? {
-        return Err(repo_not_found(repo));
-    }
-
-    Ok(SpaceReader::Credential(credential))
+    Ok(credential)
 }
 
 /// The `RepoNotFound` a space read answers with, whether the repo is absent or merely not the
@@ -1391,12 +1463,9 @@ mod tests {
         let mut row = crate::db::spaces::SpaceRow {
             uri: SPACE.to_string(),
             authority_did: AUTHORITY.to_string(),
-            space_type: "org.example.bucket".to_string(),
-            skey: "self".to_string(),
             policy: Some("member-list".to_string()),
             app_access: Some("open".to_string()),
             managing_app: None,
-            created_at: "now".to_string(),
             deleted_at: None,
         };
         insert_space(

@@ -126,6 +126,18 @@ pub enum ErrorCode {
     /// The delegation token presented to `getSpaceCredential` failed verification.
     #[serde(rename = "InvalidDelegationToken")]
     InvalidDelegationToken,
+    /// A simplespace management call by an account that is not the space's authority.
+    #[serde(rename = "NotSpaceOwner")]
+    NotSpaceOwner,
+    /// `createSpace` named a space that already exists (and is not deleted).
+    #[serde(rename = "SpaceAlreadyExists")]
+    SpaceAlreadyExists,
+    /// The requested simplespace `policy` is not one this host implements (an open union).
+    #[serde(rename = "UnsupportedPolicy")]
+    UnsupportedPolicy,
+    /// The requested simplespace `appAccess` is not one this host implements (an open union).
+    #[serde(rename = "UnsupportedAppAccess")]
+    UnsupportedAppAccess,
     // Codes for endpoints/designs not yet shipped (tiers, did:web self-service, device
     // leases, Shamir recovery, etc.) are catalogued in docs/provisioning-api-spec.md's
     // status-code appendix; add them here as those designs actually land.
@@ -192,6 +204,10 @@ impl ErrorCode {
             ErrorCode::UserNotAuthorized => "UserNotAuthorized",
             ErrorCode::AppNotAuthorized => "AppNotAuthorized",
             ErrorCode::InvalidDelegationToken => "InvalidDelegationToken",
+            ErrorCode::NotSpaceOwner => "NotSpaceOwner",
+            ErrorCode::SpaceAlreadyExists => "SpaceAlreadyExists",
+            ErrorCode::UnsupportedPolicy => "UnsupportedPolicy",
+            ErrorCode::UnsupportedAppAccess => "UnsupportedAppAccess",
         }
     }
 
@@ -241,6 +257,13 @@ impl ErrorCode {
             // The delegation token is the request's authorization credential, so a bad one is an
             // authentication failure, like InvalidToken.
             ErrorCode::InvalidDelegationToken => 401,
+            // The reference raises the simplespace management errors as `InvalidRequestError`
+            // too — including NotSpaceOwner, which is an ownership precondition, not an auth
+            // failure (the caller is authenticated; the space is just not theirs).
+            ErrorCode::NotSpaceOwner => 400,
+            ErrorCode::SpaceAlreadyExists => 400,
+            ErrorCode::UnsupportedPolicy => 400,
+            ErrorCode::UnsupportedAppAccess => 400,
         }
     }
 }

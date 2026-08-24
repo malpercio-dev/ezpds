@@ -1,30 +1,24 @@
 // pattern: Imperative Shell
 
 //! Space rows (V065): every space this PDS interacts with, keyed by canonical
-//! space URI. `policy`/`app_access` are the simplespace config, meaningful only
-//! when a local account is the authority; lifecycle is derived (`deleted_at`
-//! set = deleted). The member and notify-registration tables from the same
-//! migration get their query functions with the surfaces that consume them
-//! (simplespace management, space-host notifications).
+//! space URI, plus the simplespace member list. `policy`/`app_access` are the
+//! simplespace config: non-NULL means a local account created the space through
+//! `createSpace` and this host answers for it; NULL means the row was recorded
+//! by a member's write and the config lives with a foreign authority (or the
+//! space was deleted — deletion clears the config, so the URI can be created
+//! again). Lifecycle is derived (`deleted_at` set = deleted). The
+//! notify-registration queries land with the space-host notification surface.
 
-// The management surface that creates spaces over HTTP lands with the
-// simplespace routes; until then these functions are exercised by the write
-// choke point's tests only.
-#![allow(dead_code)]
-
-use sqlx::Sqlite;
+use sqlx::{Sqlite, SqlitePool};
 
 /// One `spaces` row.
 #[derive(Debug, Clone, sqlx::FromRow)]
 pub struct SpaceRow {
     pub uri: String,
     pub authority_did: String,
-    pub space_type: String,
-    pub skey: String,
     pub policy: Option<String>,
     pub app_access: Option<String>,
     pub managing_app: Option<String>,
-    pub created_at: String,
     pub deleted_at: Option<String>,
 }
 
@@ -70,8 +64,7 @@ where
     E: sqlx::Executor<'e, Database = Sqlite>,
 {
     sqlx::query_as::<_, SpaceRow>(
-        "SELECT uri, authority_did, space_type, skey, policy, app_access, managing_app, \
-                created_at, deleted_at \
+        "SELECT uri, authority_did, policy, app_access, managing_app, deleted_at \
          FROM spaces WHERE uri = ?",
     )
     .bind(uri)
@@ -92,4 +85,153 @@ where
             .fetch_optional(executor)
             .await?;
     Ok(found.is_some())
+}
+
+/// Create a simplespace-managed space, or claim/revive the row at that URI when it carries no
+/// config (recorded by a member's write, or deleted). Returns `false` when an active
+/// simplespace already exists there — the caller's `SpaceAlreadyExists`.
+///
+/// Distinct from [`insert_space`], which records a foreign space on a member's write and must
+/// never touch an existing row: reviving a tombstone is only ever the authority's decision.
+pub async fn create_space<'e, E>(executor: E, space: &NewSpace<'_>) -> Result<bool, sqlx::Error>
+where
+    E: sqlx::Executor<'e, Database = Sqlite>,
+{
+    let result = sqlx::query(
+        "INSERT INTO spaces \
+         (uri, authority_did, space_type, skey, policy, app_access, managing_app, created_at) \
+         VALUES (?, ?, ?, ?, ?, ?, ?, datetime('now')) \
+         ON CONFLICT (uri) DO UPDATE SET \
+           policy = excluded.policy, app_access = excluded.app_access, \
+           managing_app = excluded.managing_app, created_at = excluded.created_at, \
+           deleted_at = NULL \
+         WHERE spaces.policy IS NULL",
+    )
+    .bind(space.uri)
+    .bind(space.authority_did)
+    .bind(space.space_type)
+    .bind(space.skey)
+    .bind(space.policy)
+    .bind(space.app_access)
+    .bind(space.managing_app)
+    .execute(executor)
+    .await?;
+    Ok(result.rows_affected() == 1)
+}
+
+/// Replace a space's simplespace config wholesale.
+pub async fn set_space_config<'e, E>(
+    executor: E,
+    uri: &str,
+    policy: &str,
+    app_access: &str,
+    managing_app: Option<&str>,
+) -> Result<(), sqlx::Error>
+where
+    E: sqlx::Executor<'e, Database = Sqlite>,
+{
+    sqlx::query("UPDATE spaces SET policy = ?, app_access = ?, managing_app = ? WHERE uri = ?")
+        .bind(policy)
+        .bind(app_access)
+        .bind(managing_app)
+        .bind(uri)
+        .execute(executor)
+        .await?;
+    Ok(())
+}
+
+/// Tombstone a space: set `deleted_at` and drop its simplespace config. The row stays so
+/// `getSpaceCredential` keeps answering `SpaceDeleted`; with no config left, `createSpace`
+/// may claim the URI again.
+pub async fn mark_space_deleted<'e, E>(executor: E, uri: &str) -> Result<(), sqlx::Error>
+where
+    E: sqlx::Executor<'e, Database = Sqlite>,
+{
+    sqlx::query(
+        "UPDATE spaces SET deleted_at = datetime('now'), \
+           policy = NULL, app_access = NULL, managing_app = NULL \
+         WHERE uri = ?",
+    )
+    .bind(uri)
+    .execute(executor)
+    .await?;
+    Ok(())
+}
+
+/// Add a DID to a space's member list (idempotent).
+pub async fn add_member<'e, E>(executor: E, uri: &str, member_did: &str) -> Result<(), sqlx::Error>
+where
+    E: sqlx::Executor<'e, Database = Sqlite>,
+{
+    sqlx::query(
+        "INSERT INTO space_members (space_uri, member_did, added_at) \
+         VALUES (?, ?, datetime('now')) ON CONFLICT DO NOTHING",
+    )
+    .bind(uri)
+    .bind(member_did)
+    .execute(executor)
+    .await?;
+    Ok(())
+}
+
+/// Remove a DID from a space's member list (idempotent).
+pub async fn remove_member<'e, E>(
+    executor: E,
+    uri: &str,
+    member_did: &str,
+) -> Result<(), sqlx::Error>
+where
+    E: sqlx::Executor<'e, Database = Sqlite>,
+{
+    sqlx::query("DELETE FROM space_members WHERE space_uri = ? AND member_did = ?")
+        .bind(uri)
+        .bind(member_did)
+        .execute(executor)
+        .await?;
+    Ok(())
+}
+
+/// Drop a space's whole member list (space deletion).
+pub async fn delete_members<'e, E>(executor: E, uri: &str) -> Result<(), sqlx::Error>
+where
+    E: sqlx::Executor<'e, Database = Sqlite>,
+{
+    sqlx::query("DELETE FROM space_members WHERE space_uri = ?")
+        .bind(uri)
+        .execute(executor)
+        .await?;
+    Ok(())
+}
+
+/// Drop every write-notification registration on a space (space deletion).
+pub async fn delete_notify_registrations<'e, E>(executor: E, uri: &str) -> Result<(), sqlx::Error>
+where
+    E: sqlx::Executor<'e, Database = Sqlite>,
+{
+    sqlx::query("DELETE FROM space_notify_registrations WHERE space_uri = ?")
+        .bind(uri)
+        .execute(executor)
+        .await?;
+    Ok(())
+}
+
+/// One page of a space's member list, by DID ascending, after `after` (the previous page's
+/// last DID) when given.
+pub async fn list_members(
+    pool: &SqlitePool,
+    uri: &str,
+    after: Option<&str>,
+    limit: i64,
+) -> Result<Vec<String>, sqlx::Error> {
+    sqlx::query_scalar(
+        "SELECT member_did FROM space_members \
+         WHERE space_uri = ? AND (? IS NULL OR member_did > ?) \
+         ORDER BY member_did ASC LIMIT ?",
+    )
+    .bind(uri)
+    .bind(after)
+    .bind(after)
+    .bind(limit)
+    .fetch_all(pool)
+    .await
 }
