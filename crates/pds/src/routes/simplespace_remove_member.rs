@@ -42,12 +42,17 @@ pub async fn simplespace_remove_member(
         SpaceOp::Manage(RepoAction::Update),
     )
     .await?;
-    super::space_views::load_active_simplespace(&state.db, &space).await?;
-    remove_member(&state.db, &space.uri, &input.did)
+    let internal = |e: sqlx::Error| {
+        tracing::error!(error = %e, space = %space.uri, "failed to remove member");
+        ApiError::new(ErrorCode::InternalError, "internal server error")
+    };
+    // Check and write in one transaction, so a member row can never land after a concurrent
+    // `deleteSpace` has already wiped the list.
+    let mut tx = state.db.begin().await.map_err(internal)?;
+    super::space_views::load_active_simplespace(&mut *tx, &space).await?;
+    remove_member(&mut *tx, &space.uri, &input.did)
         .await
-        .map_err(|e| {
-            tracing::error!(error = %e, space = %space.uri, "failed to remove member");
-            ApiError::new(ErrorCode::InternalError, "internal server error")
-        })?;
+        .map_err(internal)?;
+    tx.commit().await.map_err(internal)?;
     Ok((StatusCode::OK, axum::Json(serde_json::json!({}))))
 }

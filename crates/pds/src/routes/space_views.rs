@@ -171,10 +171,15 @@ pub fn simplespace_view(row: &SpaceRow) -> serde_json::Value {
 /// Load the simplespace this host answers for at `space`, or `SpaceNotFound`: absent, deleted,
 /// or recorded only as a foreign authority's space (no config) all read the same — the
 /// reference's `getActiveSpaceConfig`.
-pub async fn load_active_simplespace(
-    db: &sqlx::SqlitePool,
-    space: &SpaceRef,
-) -> Result<SpaceRow, ApiError> {
+///
+/// Generic over the executor so a mutating route can run it inside the same transaction as
+/// its write: checked-then-written outside one, a concurrent `deleteSpace` could land between
+/// the check and the write and be partially undone (a tombstone with config set can never be
+/// created again).
+pub async fn load_active_simplespace<'e, E>(db: E, space: &SpaceRef) -> Result<SpaceRow, ApiError>
+where
+    E: sqlx::Executor<'e, Database = sqlx::Sqlite>,
+{
     crate::db::spaces::get_space(db, &space.uri)
         .await
         .map_err(|e| {

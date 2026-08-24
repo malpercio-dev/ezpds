@@ -56,7 +56,15 @@ pub async fn simplespace_update_space(
         .map(super::space_views::app_access_from_lex)
         .transpose()?;
 
-    let row = super::space_views::load_active_simplespace(&state.db, &space).await?;
+    let internal = |e: sqlx::Error| {
+        tracing::error!(error = %e, space = %space.uri, "failed to update space");
+        ApiError::new(ErrorCode::InternalError, "internal server error")
+    };
+    // The active check and the write share a transaction so a concurrent `deleteSpace`
+    // (itself transactional) is ordered wholly before this — refusing the update — or after,
+    // never between; a config written onto a fresh tombstone could never be created again.
+    let mut tx = state.db.begin().await.map_err(internal)?;
+    let row = super::space_views::load_active_simplespace(&mut *tx, &space).await?;
     let (policy, managing_app) = match policy {
         Some((policy, managing_app)) => (policy.to_string(), managing_app),
         None => (
@@ -69,16 +77,14 @@ pub async fn simplespace_update_space(
         .unwrap_or_else(|| row.app_access.clone().unwrap_or_default());
 
     set_space_config(
-        &state.db,
+        &mut *tx,
         &space.uri,
         &policy,
         &app_access,
         managing_app.as_deref(),
     )
     .await
-    .map_err(|e| {
-        tracing::error!(error = %e, space = %space.uri, "failed to update space");
-        ApiError::new(ErrorCode::InternalError, "internal server error")
-    })?;
+    .map_err(internal)?;
+    tx.commit().await.map_err(internal)?;
     Ok((StatusCode::OK, axum::Json(serde_json::json!({}))))
 }
