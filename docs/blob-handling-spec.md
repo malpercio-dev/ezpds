@@ -183,11 +183,11 @@ v1.0 (production): `backend = "s3"` — R2 or MinIO. A migration tool copies exi
 
 ---
 
-## 4. XRPC Endpoints
+## 5. XRPC Endpoints
 
 The PDS must implement these standard ATProto endpoints:
 
-### 4.1 com.atproto.repo.uploadBlob
+### 5.1 com.atproto.repo.uploadBlob
 
 **Method:** POST
 **Auth:** Required (OAuth bearer token)
@@ -209,7 +209,7 @@ The PDS must implement these standard ATProto endpoints:
 4. Return blob reference.
 5. In desktop-enrolled mode: also forward blob to desktop via Iroh (can be async, before record creation).
 
-### 4.2 com.atproto.sync.getBlob
+### 5.2 com.atproto.sync.getBlob
 
 **Method:** GET
 **Params:** `did` (string), `cid` (string)
@@ -223,7 +223,7 @@ The PDS must implement these standard ATProto endpoints:
 
 **Security:** Must set Content Security Policy headers. Blobs are untrusted user content — serving them without CSP is a parsing vulnerability risk.
 
-### 4.3 com.atproto.sync.listBlobs
+### 5.3 com.atproto.sync.listBlobs
 
 **Method:** GET
 **Params:** `did` (string), `since` (string, optional — repo revision)
@@ -233,9 +233,9 @@ Lists all committed (permanent) blobs for an account, optionally since a given r
 
 ---
 
-## 5. Size Limits & Quotas
+## 6. Size Limits & Quotas
 
-### 5.1 Per-Blob Limits
+### 6.1 Per-Blob Limits
 
 ATProto doesn't mandate global limits, but the PDS should enforce sensible defaults:
 
@@ -247,7 +247,7 @@ ATProto doesn't mandate global limits, but the PDS should enforce sensible defau
 
 These limits apply at upload time. Lexicon-specific limits (e.g., Bluesky's 1 MB for images) are enforced at record creation time.
 
-### 5.2 Per-Account Storage Quotas
+### 6.2 Per-Account Storage Quotas
 
 Blob storage counts toward the account's total storage quota (defined in provisioning API §8):
 
@@ -259,7 +259,7 @@ Blob storage counts toward the account's total storage quota (defined in provisi
 
 When an account exceeds its quota, `uploadBlob` returns 413 (Payload Too Large) with a `STORAGE_EXCEEDED` error code.
 
-### 5.3 MIME Type Restrictions
+### 6.3 MIME Type Restrictions
 
 The PDS should accept a generous allowlist and reject known-dangerous types:
 
@@ -271,32 +271,46 @@ The PDS should sniff blob bytes to validate the declared MIME type and reject mi
 
 ---
 
-## 6. Garbage Collection
+## 7. Garbage Collection
 
-### 6.1 Temporary Blob Cleanup
+> **As-built (2026-08):** garbage collection is one reference-counted grace-clock
+> mechanism, not the two separate flows §7.1/§7.2 originally sketched. The shipped
+> model is below; the sweep is `crates/pds/src/blob_gc.rs` and the tunables are
+> `BlobsConfig` in `crates/common/src/config.rs`.
 
-Blobs uploaded but never referenced by a record are garbage-collected:
+### 7.1 Temporary Blob Cleanup
 
-- **Grace period:** 6 hours (ATProto spec recommends ≥1 hour; 6 hours gives apps plenty of time).
-- **Check frequency:** Every 30 minutes, a background job scans for temporary blobs past the grace period.
-- **Action:** Delete blob data and metadata row.
+Blob ownership is reference-counted per account: a blob is permanent while at
+least one of the account's records references its CID, and becomes temporary the
+moment it loses that last reference. A blob uploaded but never referenced by a
+record is temporary from the start.
 
-### 6.2 Dereferenced Blob Cleanup
+- **Grace period:** starts when a blob becomes (or is uploaded as) temporary.
+  Config field `temp_ttl_secs`, default 6 hours (ATProto recommends ≥1 hour).
+- **Check frequency:** a background sweep scans for expired grace clocks every
+  `gc_interval_secs`, default 30 minutes.
+- **Action:** delete the blob file and the account's ownership row once the grace
+  clock has expired.
 
-When a record is deleted, check if any other records in the same repo reference the blob's CID:
+### 7.2 Dereferenced Blob Cleanup
 
-- If no references remain → mark blob as `pending_gc`.
-- Run a second check after 24 hours (in case a new record references it).
-- If still unreferenced → delete.
+Deleting a record decrements the account's reference to each CID it held. A CID
+that loses its last reference starts the same `temp_ttl_secs` grace clock as a
+never-referenced upload — there is no separate `pending_gc` status and no second
+24-hour check. The grace window is itself the buffer against a new record
+re-referencing the blob before the sweep reclaims it; a re-reference within the
+window makes the blob permanent again. Because ownership is per account, two
+accounts that uploaded identical bytes each hold their own row, so reclaiming one
+account's blob never touches the other's copy.
 
-### 6.3 Account Deletion Cleanup
+### 7.3 Account Deletion Cleanup
 
 On account teardown (provisioning API §7), all blobs are deleted:
 
 - During grace period: blobs are retained (account is read-only).
 - After grace period: bulk-delete all blobs for the account.
 
-### 6.4 PDS Cache Eviction (Desktop-Enrolled)
+### 7.4 PDS Cache Eviction (Desktop-Enrolled)
 
 When the desktop is the authoritative blob store, the PDS's copy is a cache. Eviction strategy:
 
@@ -307,13 +321,13 @@ When the desktop is the authoritative blob store, the PDS's copy is a cache. Evi
 
 ---
 
-## 7. CDN Integration
+## 8. CDN Integration
 
-### 7.1 Why CDN
+### 8.1 Why CDN
 
 The ATProto spec recommends that AppViews mirror blobs to their own CDN rather than hitting `getBlob` directly. But for a desktop PDS that goes offline, having a PDS-side CDN cache prevents blob unavailability.
 
-### 7.2 Architecture
+### 8.2 Architecture
 
 For Pro and Business tiers, the PDS can optionally front blob serving with a CDN (Cloudflare R2 + Workers, or similar):
 
@@ -323,7 +337,7 @@ For Pro and Business tiers, the PDS can optionally front blob serving with a CDN
 
 The CDN caches public blob responses with appropriate cache headers. This reduces load on the PDS and ensures blobs remain available even during brief PDS restarts.
 
-### 7.3 Cache Headers
+### 8.3 Cache Headers
 
 `getBlob` responses should include:
 - `Cache-Control: public, max-age=31536000, immutable` — blobs are content-addressed, so they never change.
@@ -334,9 +348,9 @@ The `immutable` directive is safe because CIDs are content hashes — if the con
 
 ---
 
-## 8. Data Migration Implications
+## 9. Data Migration Implications
 
-### 8.1 Planned Device Swap
+### 9.1 Planned Device Swap
 
 During a planned swap (migration spec §3), the blob archive is included in the transfer bundle:
 
@@ -344,20 +358,20 @@ During a planned swap (migration spec §3), the blob archive is included in the 
 2. Bundle includes a blob manifest mapping CIDs → MIME types → sizes.
 3. New device imports blobs and verifies CIDs match.
 
-### 8.2 Unplanned Device Loss
+### 9.2 Unplanned Device Loss
 
 On the free tier, blobs not crawled by an AppView may be permanently lost (migration spec §4.3). The PDS's cache retention helps:
 
 - **Paid tiers:** PDS holds a full blob mirror. All blobs recoverable from PDS.
 - **Free tier:** PDS holds only recently-accessed blobs (cache eviction). Older blobs attempted via `getBlob` against known AppView CDNs. Blobs never crawled are lost.
 
-### 8.3 Proactive Crawl
+### 9.3 Proactive Crawl
 
 After every blob upload, the PDS should call `requestCrawl` to the configured AppView. This maximizes the chance that blobs are indexed before any loss event. Already noted in the migration spec (§4.3) but important to implement at the PDS level.
 
 ---
 
-## 9. Implementation Milestones
+## 10. Implementation Milestones
 
 ### v0.1 — Basic Blob Support (blocks mobile-only phase)
 
@@ -392,7 +406,7 @@ After every blob upload, the PDS should call `requestCrawl` to the configured Ap
 
 ---
 
-## 10. Design Decisions
+## 11. Design Decisions
 
 | Decision | Rationale | Alternatives Considered |
 |----------|-----------|------------------------|
