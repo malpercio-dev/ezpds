@@ -168,8 +168,9 @@ async fn list_repo_ops_paginates_with_cursor() {
     let (state, _kp) = setup().await;
     let token = access_jwt(&state.jwt_secret, DID);
 
+    let mut revs = Vec::new();
     for rkey in ["aaa", "bbb", "ccc"] {
-        write_one(&state, SpaceWriteAction::Create, rkey, rkey).await;
+        revs.push(write_one(&state, SpaceWriteAction::Create, rkey, rkey).await);
     }
 
     let response = crate::app::app(state.clone())
@@ -205,6 +206,24 @@ async fn list_repo_ops_paginates_with_cursor() {
         "the short page reaches the head"
     );
     assert!(second.get("cursor").is_none());
+
+    // The cursor takes precedence over `since` (per the lexicon): a `since` at the head, which
+    // on its own would exclude every op, must not shrink a cursor-driven page.
+    let head_rev = &revs[2];
+    let response = crate::app::app(state.clone())
+        .oneshot(get(
+            &format!(
+                "com.atproto.space.listRepoOps?space={SPACE}&repo={DID}&limit=2&cursor={cursor}&since={head_rev}"
+            ),
+            &token,
+        ))
+        .await
+        .unwrap();
+    let with_since = body_json(response).await;
+    assert_eq!(
+        with_since["ops"], second["ops"],
+        "a cursor-driven page ignores `since`"
+    );
 }
 
 /// An account holding no repo in the space answers RepoNotFound — not an empty oplog, which
@@ -319,6 +338,11 @@ async fn get_repo_car_verifies_end_to_end() {
     assert_eq!(
         response.headers()["content-type"],
         "application/vnd.ipld.car"
+    );
+    assert_eq!(
+        response.headers()["cache-control"],
+        "private",
+        "a permissioned repo export is never publicly cacheable"
     );
     let car = parse_car(&body_bytes(response).await);
 

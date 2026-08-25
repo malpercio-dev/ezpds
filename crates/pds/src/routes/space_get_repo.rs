@@ -72,6 +72,18 @@ pub async fn space_get_repo(
     // same canonical order.
     entries.sort_unstable_by(|(a, _), (b, _)| canonical_key_order(a, b));
 
+    // The index and the commit must describe the same head: a write landing between the head
+    // read and the index read would yield a 200 CAR whose index cannot fold to the commit's
+    // hash. The rev is monotonic, so an unchanged rev on a second read brackets the index read
+    // between two identical-head observations.
+    let head = super::space_views::load_repo(&state, &space.uri, &params.repo).await?;
+    if head.rev != repo.rev {
+        return Err(ApiError::new(
+            ErrorCode::Conflict,
+            "space repo was modified concurrently; retry against the current head",
+        ));
+    }
+
     let commit =
         super::space_views::sign_current_commit(&state, &space, &params.repo, &repo).await?;
     let commit_bytes = encode_commit_block(&commit);
@@ -233,7 +245,11 @@ fn stream_car(
 
     (
         StatusCode::OK,
-        [(header::CONTENT_TYPE, "application/vnd.ipld.car")],
+        [
+            (header::CONTENT_TYPE, "application/vnd.ipld.car"),
+            // Same posture as space.getBlob: permissioned bytes, never publicly cacheable.
+            (header::CACHE_CONTROL, "private"),
+        ],
         Body::from_stream(stream),
     )
         .into_response()

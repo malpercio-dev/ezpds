@@ -27,8 +27,8 @@ pub struct SpaceListRepoOpsParams {
     /// The caller's own sync position: only ops strictly after this rev.
     since: Option<String>,
     limit: Option<i64>,
-    /// Opaque continuation from a previous page; applied alongside `since` (it is always at
-    /// least as far along, so the conjunction is the cursor's position).
+    /// Opaque continuation from a previous page; takes precedence over `since` when both are
+    /// supplied (per the lexicon — the cursor is itself a position).
     cursor: Option<String>,
     #[serde(default, rename = "excludeValues")]
     exclude_values: bool,
@@ -63,12 +63,19 @@ pub async fn space_list_repo_ops(
     // The lexicon already rejects a `limit` outside [1, 1000]; this only applies the default.
     let limit = params.limit.unwrap_or(DEFAULT_LIMIT).clamp(1, MAX_LIMIT);
     let cursor = params.cursor.as_deref().map(parse_cursor).transpose()?;
+    // The lexicon gives the cursor precedence over `since` when both arrive — the cursor IS a
+    // position, so conjoining a later `since` would silently skip the ops between them.
+    let since = if cursor.is_some() {
+        None
+    } else {
+        params.since.as_deref()
+    };
 
     let rows = crate::db::space_repos::list_repo_ops(
         &state.db,
         &space.uri,
         &params.repo,
-        params.since.as_deref(),
+        since,
         cursor.as_ref().map(|(rev, idx)| (rev.as_str(), *idx)),
         params.exclude_values,
         limit,
