@@ -1,6 +1,6 @@
 # PDS Crate (Custos)
 
-Last verified: 2026-08-02
+Last verified: 2026-08-24
 
 ## Purpose
 
@@ -38,6 +38,7 @@ src/
   space_record_write.rs — the single write choke point for permissioned space repos (V065, DB-backed, no MST): validate → CAS rev → LtHash fold → oplog append, all one transaction; blob refs are GC-derived and notification fan-out attaches to the returned rev+hash — see module doc
   space_uri.rs     — space-ref syntax (`at://{authority}/space/{type}/{skey}`) and the wider space AT-URI family; deliberately separate from `repo_engine::AtUri`, whose callers resolve MST paths a space URI must never reach
   space_jti_sweep.rs — periodic `space_jti_replay` retention sweep; each row carries its own token's acceptance horizon (template: sovereign_session_nonce_sweep.rs)
+  space_oplog_sweep.rs — hourly `space_repo_ops` compaction sweep (7-day retention): the oplog is droppable by spec, and a syncer whose `since` predates the window heals via `getRepo` — see module doc
   repo_rev.rs      — shared `read_repo_rev`, homed beside `record_write.rs` so the public sync endpoints share it without a route-to-route import
   time.rs          — shared epoch/RFC-3339 time helpers; the variants differ on return type + pre-epoch handling — pick by call-site contract (module doc)
   account_delete.rs— shared permanent account-deletion transaction (FK-ordered child tables, blob-file reclamation, `#account` deleted frame), used by deleteAccount and the reaper — see module doc
@@ -329,8 +330,12 @@ tests, so check it when changing an OAuth response shape — see its README.
 | `space_list_spaces.rs` | `GET /xrpc/com.atproto.space.listSpaces` — spaces the caller has *written to* (never a membership list); the query's filters are what its `space:` grant is matched against, since it names no one space |
 | `space_get_record.rs` | `GET /xrpc/com.atproto.space.getRecord` |
 | `space_list_records.rs` | `GET /xrpc/com.atproto.space.listRecords` — `(collection, rkey)` keyset paging, values inlined unless `excludeValues` |
-| `space_get_latest_commit.rs` | `GET /xrpc/com.atproto.space.getLatestCommit` — mints a fresh deniable commit per serving (new `ikm`/`sig`/`mac` each time); never stored — see module doc |
-| `space_views.rs` | shared handler-free support for the space + simplespace routes (routes may not import one another): space-ref parsing, the `validate`-flag record check, stored-block decoding, the write-result shape, and the simplespace config's lexicon-union ↔ column mapping |
+| `space_get_latest_commit.rs` | `GET /xrpc/com.atproto.space.getLatestCommit` — mints a fresh deniable commit per serving (new `ikm`/`sig`/`mac` each time); never stored (`space_views::sign_current_commit`) |
+| `space_list_repo_ops.rs` | `GET /xrpc/com.atproto.space.listRepoOps` — page the oplog since a rev; only a record's *current* value is inlined (stale ops join to nothing); a short page reaches the head and carries the signed commit, a full page a `rev/idx` cursor — see module doc |
+| `space_get_repo.rs` | `GET /xrpc/com.atproto.space.getRepo` — streaming two-root CAR (signed commit, then DRISL index in canonical DAG-CBOR key order, record blocks in index order); `excludeValues` writes only the roots — see module doc |
+| `space_get_blob.rs` | `GET /xrpc/com.atproto.space.getBlob` — space-authed blob serving; a stored-but-unreferenced blob answers the same `BlobNotFound` as an unknown CID, and the response is `Cache-Control: private` (unlike the public route's immutable-public) — see module doc |
+| `space_list_blobs.rs` | `GET /xrpc/com.atproto.space.listBlobs` — blob CIDs referenced by a repo's records (derived by decoding stored blocks, like blob GC), `since` filtered on V066's per-record rev |
+| `space_views.rs` | shared handler-free support for the space + simplespace routes (routes may not import one another): space-ref parsing, the `validate`-flag record check, stored-block decoding, the write-result shape, repo-head load + per-serving commit signing (`load_repo`/`sign_current_commit`/`commit_json`), blob-reference derivation (`space_blob_cids`), and the simplespace config's lexicon-union ↔ column mapping |
 | `simplespace_create_space.rs` | `POST /xrpc/com.atproto.simplespace.createSpace` — a space anchored on the caller's own DID; `manage=create`; unimplemented open-union config values refused |
 | `simplespace_update_space.rs` | `POST /xrpc/com.atproto.simplespace.updateSpace` — `manage=update`, owner only |
 | `simplespace_delete_space.rs` | `POST /xrpc/com.atproto.simplespace.deleteSpace` — tombstone + cleanup, idempotent; `manage=delete`, owner only — see module doc |

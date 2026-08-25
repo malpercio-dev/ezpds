@@ -93,6 +93,131 @@ pub fn lex_bytes(bytes: &[u8]) -> serde_json::Value {
     serde_json::json!({ "$bytes": base64::engine::general_purpose::STANDARD.encode(bytes) })
 }
 
+// ── repo head + signed commit ────────────────────────────────────────────────
+
+/// Load the repo head, or the shared `RepoNotFound` when the account holds no repo in the
+/// space. That does not distinguish a member who has never written from a non-member: a repo
+/// host tracks writers, not membership.
+pub async fn load_repo(
+    state: &crate::app::AppState,
+    space_uri: &str,
+    did: &str,
+) -> Result<crate::db::space_repos::SpaceRepoRow, ApiError> {
+    crate::db::space_repos::get_repo(&state.db, space_uri, did)
+        .await
+        .map_err(|e| {
+            tracing::error!(error = %e, space = %space_uri, did = %did, "failed to load space repo");
+            ApiError::new(ErrorCode::InternalError, "failed to load space repo")
+        })?
+        .ok_or_else(|| crate::auth::space::repo_not_found(did))
+}
+
+/// Mint a signed commit over a repo's current state.
+///
+/// A commit is produced **per serving**, never stored: fresh `ikm`, a fresh signature over the
+/// `(space, author, rev, ikm)` context, and a fresh MAC binding the repo hash to that context.
+/// The signature deliberately does not cover the hash — that deniability is the whole point,
+/// and it is why this cannot be a cached artifact.
+pub async fn sign_current_commit(
+    state: &crate::app::AppState,
+    space: &SpaceRef,
+    did: &str,
+    repo: &crate::db::space_repos::SpaceRepoRow,
+) -> Result<crypto::SignedSpaceCommit, ApiError> {
+    let hash = crypto::LtHash::from_state(&repo.lthash_state)
+        .map_err(|e| {
+            tracing::error!(error = %e, space = %space.uri, did = %did, "stored LtHash state is malformed");
+            ApiError::new(ErrorCode::InternalError, "failed to read space commit")
+        })?
+        .digest();
+
+    let master_key: &[u8; 32] = state
+        .config
+        .signing_key_master_key
+        .as_ref()
+        .map(|s| &*s.0)
+        .ok_or_else(|| {
+            ApiError::new(
+                ErrorCode::ServiceUnavailable,
+                "signing key master key not configured",
+            )
+        })?;
+    let signing_key =
+        crate::auth::signing_key::load_repo_signing_key(&state.db, did, master_key).await?;
+
+    crypto::sign_space_commit(
+        &crypto::SpaceCommitCtx {
+            space: &space.uri,
+            author: did,
+            rev: &repo.rev,
+        },
+        hash,
+        &signing_key,
+    )
+    .map_err(|e| {
+        tracing::error!(error = %e, space = %space.uri, did = %did, "failed to sign space commit");
+        ApiError::new(ErrorCode::InternalError, "failed to sign space commit")
+    })
+}
+
+/// The lexicon `com.atproto.space.defs#signedCommit` JSON shape.
+pub fn commit_json(commit: &crypto::SignedSpaceCommit) -> serde_json::Value {
+    serde_json::json!({
+        "ver": commit.ver,
+        "hash": lex_bytes(&commit.hash),
+        "ikm": lex_bytes(&commit.ikm),
+        "sig": lex_bytes(&commit.sig),
+        "mac": lex_bytes(&commit.mac),
+        "rev": commit.rev,
+    })
+}
+
+// ── blob references ──────────────────────────────────────────────────────────
+
+/// The blob CIDs referenced by one repo's records — optionally only records written after
+/// `since` — derived by decoding the stored blocks (blob linkage is deliberately not a table;
+/// blob GC derives the same way). Sorted ascending, deduplicated: exactly the order
+/// `listBlobs` pages in.
+// ponytail: O(records in repo) per call — a derived-refs table if space repos outgrow this fleet.
+pub async fn space_blob_cids(
+    state: &crate::app::AppState,
+    space_uri: &str,
+    did: &str,
+    since: Option<&str>,
+) -> Result<std::collections::BTreeSet<String>, ApiError> {
+    const PAGE: i64 = 500;
+    let mut cids = std::collections::BTreeSet::new();
+    let mut after: Option<(String, String)> = None;
+    loop {
+        let page = crate::db::space_repos::list_record_blocks_for_repo(
+            &state.db,
+            space_uri,
+            did,
+            since,
+            after.as_ref().map(|(c, r)| (c.as_str(), r.as_str())),
+            PAGE,
+        )
+        .await
+        .map_err(|e| {
+            tracing::error!(error = %e, space = %space_uri, did = %did, "failed to page space records");
+            ApiError::new(ErrorCode::InternalError, "failed to read space records")
+        })?;
+        let last_page = (page.len() as i64) < PAGE;
+        for (collection, rkey, value) in page {
+            let ipld = repo_engine::decode_record_block(&value).map_err(decode_error)?;
+            cids.extend(
+                repo_engine::record_blob_cids(&ipld)
+                    .into_iter()
+                    .map(|cid| cid.to_string()),
+            );
+            after = Some((collection, rkey));
+        }
+        if last_page {
+            return Ok(cids);
+        }
+    }
+}
+
 // ── simplespace config ───────────────────────────────────────────────────────
 
 const PUBLIC_POLICY: &str = "com.atproto.simplespace.defs#publicPolicy";

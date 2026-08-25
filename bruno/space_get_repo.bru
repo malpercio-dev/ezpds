@@ -1,0 +1,33 @@
+meta {
+  name: Space Get Repo
+  type: http
+  seq: 156
+}
+
+get {
+  url: {{baseUrl}}/xrpc/com.atproto.space.getRepo?space=at://did:plc:authorityaaaaaaaaaaaaaaa/space/org.example.bucket/main&repo={{did}}
+  body: none
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{accessToken}}
+}
+
+params:query {
+  space: at://did:plc:authorityaaaaaaaaaaaaaaa/space/org.example.bucket/main
+  repo: {{did}}
+  ~excludeValues: false
+}
+
+docs {
+  Download a permissioned repo as a CAR file for full-state recovery. The CAR declares two
+  roots in order — the signed commit, then a DRISL (DAG-CBOR) index mapping
+  "{collection}/{rkey}" to record CID in canonical DAG-CBOR key order (length-first, then
+  bytewise) — followed by the record blocks in the index's order, so it verifies while
+  streaming. Blobs are not included (fetch via space.getBlob).
+
+  "excludeValues=true" writes only the two roots; the index still authenticates against the
+  commit (the set hash folds from index entries), so a syncer can diff it against a local copy
+  and fetch just the records it lacks.
+}

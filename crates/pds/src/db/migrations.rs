@@ -282,4 +282,8 @@ pub(super) static MIGRATIONS: &[Migration] = &[
         version: 65,
         sql: include_str!("migrations/V065__spaces.sql"),
     },
+    Migration {
+        version: 66,
+        sql: include_str!("migrations/V066__space_record_rev.sql"),
+    },
 ];

@@ -110,9 +110,13 @@ pub mod sovereign_session;
 pub mod space_apply_writes;
 pub mod space_create_record;
 pub mod space_delete_record;
+pub mod space_get_blob;
 pub mod space_get_latest_commit;
 pub mod space_get_record;
+pub mod space_get_repo;
+pub mod space_list_blobs;
 pub mod space_list_records;
+pub mod space_list_repo_ops;
 pub mod space_list_spaces;
 pub mod space_put_record;
 pub mod space_views;
@@ -149,6 +153,9 @@ mod agent_auth_test;
 
 #[cfg(test)]
 mod space_routes_test;
+
+#[cfg(test)]
+mod space_sync_routes_test;
 
 #[cfg(test)]
 mod simplespace_routes_test;

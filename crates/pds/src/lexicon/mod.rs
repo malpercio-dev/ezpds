@@ -145,9 +145,13 @@ static LEXICON_SOURCES: &[&str] = &[
     include_str!("../../lexicons/com/atproto/space/createRecord.json"),
     include_str!("../../lexicons/com/atproto/space/defs.json"),
     include_str!("../../lexicons/com/atproto/space/deleteRecord.json"),
+    include_str!("../../lexicons/com/atproto/space/getBlob.json"),
     include_str!("../../lexicons/com/atproto/space/getLatestCommit.json"),
     include_str!("../../lexicons/com/atproto/space/getRecord.json"),
+    include_str!("../../lexicons/com/atproto/space/getRepo.json"),
+    include_str!("../../lexicons/com/atproto/space/listBlobs.json"),
     include_str!("../../lexicons/com/atproto/space/listRecords.json"),
+    include_str!("../../lexicons/com/atproto/space/listRepoOps.json"),
     include_str!("../../lexicons/com/atproto/space/listSpaces.json"),
     include_str!("../../lexicons/com/atproto/space/putRecord.json"),
     // The PDS-required simplespace management surface (`com.atproto.simplespace.*`), same

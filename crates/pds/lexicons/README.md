@@ -38,8 +38,9 @@ layer, MM-398 for the response-output layer, MM-399 for the `validate`-flag reco
     those same documents also declare are *not* validation roots, so an unresolvable ref buried in
     one of them is never reached and is deliberately left un-vendored — the record-reachable closure
     is much smaller than the full `app.bsky` graph.
-  - **Atproto Spaces (`com.atproto.space.*`):** the record CRUD and read documents behind the
-    permissioned-data surface, plus the `defs` document their `getLatestCommit` output reaches,
+  - **Atproto Spaces (`com.atproto.space.*`):** the record CRUD, read, and sync documents behind
+    the permissioned-data surface (the sync group: `listRepoOps`, `getRepo`, `getBlob`,
+    `listBlobs`), plus the `defs` document the `getLatestCommit`/`listRepoOps` outputs reach,
     and the two token-flow documents behind `auth/space.rs` (`getDelegationToken`,
     `getSpaceCredential`; both use the `space-ref` string format `space_uri.rs` validates), and
     the PDS-required management surface `com.atproto.simplespace.*` (`createSpace`,

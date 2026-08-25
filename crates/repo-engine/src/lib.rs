@@ -23,9 +23,9 @@ pub use atrium_repo::mst::Tree;
 pub use atrium_repo::repo::{CommitBuilder, RepoBuilder, Repository};
 pub use atrium_repo::Cid;
 pub use car_export::{
-    build_blocks_car, build_car_from_cids, car_v1_block_frame, car_v1_header, collect_commit_diff,
-    collect_commit_diff_cids, collect_reachable_cids, export_commit_blocks_car,
-    export_record_proof_car, export_repo_car, CarExportError, CommitDiff,
+    build_blocks_car, build_car_from_cids, car_v1_block_frame, car_v1_header, car_v1_header_roots,
+    collect_commit_diff, collect_commit_diff_cids, collect_reachable_cids,
+    export_commit_blocks_car, export_record_proof_car, export_repo_car, CarExportError, CommitDiff,
 };
 pub use car_import::{import_repo_car, CarImportError, ImportedRepo};
 pub use data_model::{validate as validate_data_model, DataModelError};
@@ -38,11 +38,11 @@ pub use lexicon::{
     LexiconRecordError, LexiconSchemaError,
 };
 pub use records::{
-    apply_writes, count_records, decode_record_block, delete_record, encode_record_block,
-    generate_tid, get_record, get_record_cid, get_record_json, json_to_record_value,
-    list_collections, list_records_json, next_record_rev, put_record, put_record_json,
-    record_blob_cids, record_value_to_json, validate_collection, validate_record_path,
-    ListRecordsPage, ListedRecord, RecordError, WriteOp, WriteOutcome,
+    apply_writes, count_records, dag_cbor_block_cid, decode_record_block, delete_record,
+    encode_record_block, generate_tid, get_record, get_record_cid, get_record_json,
+    json_to_record_value, list_collections, list_records_json, next_record_rev, put_record,
+    put_record_json, record_blob_cids, record_value_to_json, validate_collection,
+    validate_record_path, ListRecordsPage, ListedRecord, RecordError, WriteOp, WriteOutcome,
 };
 pub use signer::{CommitSigner, CommitSignerError};
 

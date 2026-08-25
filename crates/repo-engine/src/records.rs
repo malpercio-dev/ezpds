@@ -98,15 +98,24 @@ pub fn next_record_rev(prev_rev: &str) -> Result<String, RecordError> {
 /// For MST-backed repos the block store does this implicitly on write; DB-backed stores
 /// (permissioned space repos) call it directly to persist the `(cid, bytes)` pair as a row.
 pub fn encode_record_block(value: &Ipld) -> Result<(Cid, Vec<u8>), RecordError> {
-    use sha2::Digest;
     let bytes = serde_ipld_dagcbor::to_vec(value)
         .map_err(|e| RecordError::InvalidRecord(format!("DAG-CBOR encode: {e}")))?;
+    let cid = dag_cbor_block_cid(&bytes)?;
+    Ok((cid, bytes))
+}
+
+/// Compute the CID of an already-encoded DAG-CBOR block (CIDv1, dag-cbor codec, SHA2-256).
+///
+/// For callers that produced the block bytes themselves — e.g. the Atproto Spaces two-root CAR,
+/// whose signed-commit and index blocks are hand-encoded in canonical key order.
+pub fn dag_cbor_block_cid(bytes: &[u8]) -> Result<Cid, RecordError> {
+    use sha2::Digest;
     let mh = atrium_repo::Multihash::wrap(
         atrium_repo::blockstore::SHA2_256,
-        sha2::Sha256::digest(&bytes).as_slice(),
+        sha2::Sha256::digest(bytes).as_slice(),
     )
     .map_err(|e| RecordError::Repo(format!("multihash wrap: {e}")))?;
-    Ok((Cid::new_v1(atrium_repo::blockstore::DAG_CBOR, mh), bytes))
+    Ok(Cid::new_v1(atrium_repo::blockstore::DAG_CBOR, mh))
 }
 
 /// Decode a stored DAG-CBOR record block back to its IPLD value.

@@ -129,9 +129,13 @@ use crate::routes::sovereign_session::create_sovereign_session;
 use crate::routes::space_apply_writes::space_apply_writes;
 use crate::routes::space_create_record::space_create_record;
 use crate::routes::space_delete_record::space_delete_record;
+use crate::routes::space_get_blob::space_get_blob;
 use crate::routes::space_get_latest_commit::space_get_latest_commit;
 use crate::routes::space_get_record::space_get_record;
+use crate::routes::space_get_repo::space_get_repo;
+use crate::routes::space_list_blobs::space_list_blobs;
 use crate::routes::space_list_records::space_list_records;
+use crate::routes::space_list_repo_ops::space_list_repo_ops;
 use crate::routes::space_list_spaces::space_list_spaces;
 use crate::routes::space_put_record::space_put_record;
 use crate::routes::standard_signup::{
@@ -496,10 +500,17 @@ pub fn app(state: AppState) -> Router {
             "/xrpc/com.atproto.space.getLatestCommit",
             get(space_get_latest_commit),
         )
+        .route("/xrpc/com.atproto.space.getBlob", get(space_get_blob))
         .route("/xrpc/com.atproto.space.getRecord", get(space_get_record))
+        .route("/xrpc/com.atproto.space.getRepo", get(space_get_repo))
+        .route("/xrpc/com.atproto.space.listBlobs", get(space_list_blobs))
         .route(
             "/xrpc/com.atproto.space.listRecords",
             get(space_list_records),
+        )
+        .route(
+            "/xrpc/com.atproto.space.listRepoOps",
+            get(space_list_repo_ops),
         )
         .route("/xrpc/com.atproto.space.listSpaces", get(space_list_spaces))
         .route("/xrpc/com.atproto.space.putRecord", post(space_put_record))
