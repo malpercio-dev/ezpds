@@ -66,9 +66,12 @@ screen and reproduce any state without a Mac/Xcode/simulator. Design + ACs:
 - Utilities (each file's header carries its rules):
   - `src/lib/appearance.ts` — System/Light/Dark override; Keychain is truth, localStorage mirror is pre-paint only
   - `src/lib/agent-scopes.ts` — plain-language OAuth scope descriptions; elevated flags + unknown-token honesty rule
+  - `src/lib/agent-display.ts` — agent status/event/type labels + `agentName`/`agentDetailLine`; carries the status-is-text+icon+position-never-colour-alone rule. The agents-surface peer of `agent-scopes.ts`
   - `src/lib/handle.ts` — handle assembly + validation shared by create (`HandleScreen`) and change-handle (`ChangeHandleScreen`); `composeHandle`/`isValidLabel` for the served-domain label path, `isValidHandle`/`normalizeHandle` for the custom-domain full-handle path
+  - `src/lib/did-web.ts` — did:web identity-document composition + validation shared by the did:web onboarding screens; `didWebFromDomain` (hostname → `did:web`, path/port rejected), `composeDidWebDocument`/`serializeDidWebDocument`, `didWebDocumentUrl`, and the `self`/`custos` hosting split. The did:web peer of `handle.ts`
   - `src/lib/deadline.ts` — 72h PLC recovery-window math (`getDeadline`/`getUrgency`/`formatCountdown`)
   - `src/lib/identity-status.ts` — identity panel state derivation; panel-vs-badge `safe` and the load-bearing did:web `isVerified` short-circuit
+  - `src/lib/did-doc-utils.ts` — DID-document accessors bridging PLC-directory format and W3C (`did`/`id`, `services` map vs `service` array, rotation-key shape); `extractPdsFromPlcDoc`/`extractHandle`/`truncateDid`/`didMethod`/`isDidWeb`/`isOldModelRecovery` and `normalizePlcDocToW3c`, which the DID-document screens render from
   - `src/lib/protection.ts` — shared Defend derivations; ordering-vs-`activeStrip` rule, worst-state-wins summary
   - `src/lib/alarm-landing.ts` — pure launch/foreground alarm-landing decision (`decideAlarmLanding`, `alarmKey`)
   - `src/lib/identity-cards.ts` — `loadIdentityCard(s)` local facts; `degraded`-flag semantics
@@ -79,6 +82,7 @@ screen and reproduce any state without a Mac/Xcode/simulator. Design + ACs:
   - `src/lib/consent-qr.ts` — pure `parseConsentQr`; ignores the QR's origin (the server re-verifies by `request_id`)
   - `src/lib/consent-route.ts` — which managed identity answers a consent request that arrived with no identity attached (Camera-app QR); unauthenticated-preview probe over the `request_id`, refuses to guess a `login_hint`-bound account rather than open the wrong one
   - `src/lib/claim-errors.ts` — shared RATE_LIMITED / SERVER_ERROR message formatting
+  - `src/lib/migration-errors.ts` — presentation-only migration-progress error detail (`describeBlobTransferDetail`/`describeBlobLoss`); pure string functions attributing a blob-transfer failure to the right side of the transfer, the tested-utility sibling of `claim-errors.ts`
 
 **Guarantees:** SSR is disabled globally (`ssr = false` in `src/routes/+layout.ts`) — the
 frontend is a static SPA loaded from disk by WKWebView, with build output in `dist/`
