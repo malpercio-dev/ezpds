@@ -40,7 +40,10 @@ layer, MM-398 for the response-output layer, MM-399 for the `validate`-flag reco
     is much smaller than the full `app.bsky` graph.
   - **Atproto Spaces (`com.atproto.space.*`):** the record CRUD, read, and sync documents behind
     the permissioned-data surface (the sync group: `listRepoOps`, `getRepo`, `getBlob`,
-    `listBlobs`), plus the `defs` document the `getLatestCommit`/`listRepoOps` outputs reach,
+    `listBlobs`), the space-host notification group (`listRepos`, `registerNotify`,
+    `unregisterNotify`, `notifyWrite` — but **not** `notifySpaceDeleted`, which this server only
+    ever *sends*, so like `checkUserAccess` it is not a validation root here), plus the `defs`
+    document the `getLatestCommit`/`listRepoOps` outputs reach,
     and the two token-flow documents behind `auth/space.rs` (`getDelegationToken`,
     `getSpaceCredential`; both use the `space-ref` string format `space_uri.rs` validates), and
     the PDS-required management surface `com.atproto.simplespace.*` (`createSpace`,

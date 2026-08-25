@@ -154,8 +154,12 @@ Every path registered by the server is listed here. For `/xrpc/` endpoints, use 
 | `/xrpc/com.atproto.space.listBlobs` | AT Protocol XRPC |
 | `/xrpc/com.atproto.space.listRecords` | AT Protocol XRPC |
 | `/xrpc/com.atproto.space.listRepoOps` | AT Protocol XRPC |
+| `/xrpc/com.atproto.space.listRepos` | AT Protocol XRPC |
 | `/xrpc/com.atproto.space.listSpaces` | AT Protocol XRPC |
+| `/xrpc/com.atproto.space.notifyWrite` | AT Protocol XRPC |
 | `/xrpc/com.atproto.space.putRecord` | AT Protocol XRPC |
+| `/xrpc/com.atproto.space.registerNotify` | AT Protocol XRPC |
+| `/xrpc/com.atproto.space.unregisterNotify` | AT Protocol XRPC |
 | `/xrpc/com.atproto.sync.getBlob` | AT Protocol XRPC |
 | `/xrpc/com.atproto.sync.getBlocks` | AT Protocol XRPC |
 | `/xrpc/com.atproto.sync.getLatestCommit` | AT Protocol XRPC |

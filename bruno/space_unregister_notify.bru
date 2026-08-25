@@ -1,0 +1,32 @@
+meta {
+  name: Space Unregister Notify
+  type: http
+  seq: 161
+}
+
+post {
+  url: {{baseUrl}}/xrpc/com.atproto.space.unregisterNotify
+  body: json
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{accessToken}}
+}
+
+body:json {
+  {
+    "space": "at://{{did}}/space/org.example.bucket/main",
+    "service": "did:web:syncer.example.com#atproto_space_syncer"
+  }
+}
+
+docs {
+  Withdraw a registerNotify subscription. Idempotent: succeeds whether or not a matching
+  registration existed, so a syncer tearing itself down need not know what it still holds.
+  Registrations also lapse on their own at the expiry registerNotify returned, so this is for
+  explicit withdrawal rather than cleanup.
+
+  Answered only by the space's authority (400 SpaceNotFound otherwise). Auth: a space
+  credential, or the authority's own session.
+}

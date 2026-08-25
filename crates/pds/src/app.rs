@@ -136,8 +136,12 @@ use crate::routes::space_get_repo::space_get_repo;
 use crate::routes::space_list_blobs::space_list_blobs;
 use crate::routes::space_list_records::space_list_records;
 use crate::routes::space_list_repo_ops::space_list_repo_ops;
+use crate::routes::space_list_repos::space_list_repos;
 use crate::routes::space_list_spaces::space_list_spaces;
+use crate::routes::space_notify_write::space_notify_write;
 use crate::routes::space_put_record::space_put_record;
+use crate::routes::space_register_notify::space_register_notify;
+use crate::routes::space_unregister_notify::space_unregister_notify;
 use crate::routes::standard_signup::{
     check_handle_availability, check_signup_queue, create_invite_code, create_invite_codes,
     get_account_invite_codes,
@@ -512,8 +516,22 @@ pub fn app(state: AppState) -> Router {
             "/xrpc/com.atproto.space.listRepoOps",
             get(space_list_repo_ops),
         )
+        .route("/xrpc/com.atproto.space.listRepos", get(space_list_repos))
         .route("/xrpc/com.atproto.space.listSpaces", get(space_list_spaces))
         .route("/xrpc/com.atproto.space.putRecord", post(space_put_record))
+        // The space-host notification surface: syncers subscribe here, repo hosts report here.
+        .route(
+            "/xrpc/com.atproto.space.notifyWrite",
+            post(space_notify_write),
+        )
+        .route(
+            "/xrpc/com.atproto.space.registerNotify",
+            post(space_register_notify),
+        )
+        .route(
+            "/xrpc/com.atproto.space.unregisterNotify",
+            post(space_unregister_notify),
+        )
         // The PDS-required simplespace management surface: spaces anchored on a local account's
         // own DID, managed by that account under `manage=` grants.
         .route(

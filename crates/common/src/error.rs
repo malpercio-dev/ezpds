@@ -143,6 +143,10 @@ pub enum ErrorCode {
     /// The requested simplespace `appAccess` is not one this host implements (an open union).
     #[serde(rename = "UnsupportedAppAccess")]
     UnsupportedAppAccess,
+    /// `registerNotify`'s subscriber identifier did not resolve to a DID document with a
+    /// matching service endpoint, so a registration for it could never deliver.
+    #[serde(rename = "ServiceNotResolvable")]
+    ServiceNotResolvable,
     // Codes for endpoints/designs not yet shipped (tiers, did:web self-service, device
     // leases, Shamir recovery, etc.) are catalogued in docs/provisioning-api-spec.md's
     // status-code appendix; add them here as those designs actually land.
@@ -214,6 +218,7 @@ impl ErrorCode {
             ErrorCode::SpaceAlreadyExists => "SpaceAlreadyExists",
             ErrorCode::UnsupportedPolicy => "UnsupportedPolicy",
             ErrorCode::UnsupportedAppAccess => "UnsupportedAppAccess",
+            ErrorCode::ServiceNotResolvable => "ServiceNotResolvable",
         }
     }
 
@@ -271,6 +276,7 @@ impl ErrorCode {
             ErrorCode::SpaceAlreadyExists => 400,
             ErrorCode::UnsupportedPolicy => 400,
             ErrorCode::UnsupportedAppAccess => 400,
+            ErrorCode::ServiceNotResolvable => 400,
         }
     }
 }

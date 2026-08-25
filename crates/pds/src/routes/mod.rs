@@ -117,8 +117,12 @@ pub mod space_get_repo;
 pub mod space_list_blobs;
 pub mod space_list_records;
 pub mod space_list_repo_ops;
+pub mod space_list_repos;
 pub mod space_list_spaces;
+pub mod space_notify_write;
 pub mod space_put_record;
+pub mod space_register_notify;
+pub mod space_unregister_notify;
 pub mod space_views;
 pub mod standard_signup;
 pub mod static_assets;
@@ -156,6 +160,9 @@ mod space_routes_test;
 
 #[cfg(test)]
 mod space_sync_routes_test;
+
+#[cfg(test)]
+mod space_notify_routes_test;
 
 #[cfg(test)]
 mod simplespace_routes_test;

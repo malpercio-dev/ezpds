@@ -1,6 +1,6 @@
 # PDS Crate (Custos)
 
-Last verified: 2026-08-24
+Last verified: 2026-08-25
 
 ## Purpose
 
@@ -35,8 +35,9 @@ src/
   notify_relay_client.rs — outbound iroh leg to the notification relay (`ezpds/notify/0`) + the fire-and-forget send worker; lazy cached connection, self-healing enrollment — see module doc
   notifications.rs — sending side: pad + HPKE-seal one payload per registered device and enqueue; inert when `[notifications] relay` is unset — see module doc
   record_write.rs  — shared repo write flow + firehose commit emission + post-commit block GC (one reachability walk per commit) — see module doc
-  space_record_write.rs — the single write choke point for permissioned space repos (V065, DB-backed, no MST): validate → CAS rev → LtHash fold → oplog append, all one transaction; blob refs are GC-derived and notification fan-out attaches to the returned rev+hash — see module doc
+  space_record_write.rs — the single write choke point for permissioned space repos (V065, DB-backed, no MST): validate → CAS rev → LtHash fold → oplog append → writer-set row, all one transaction; blob refs are GC-derived, and the notification fan-out is spawned from here post-commit so no write path can skip it — see module doc
   space_uri.rs     — space-ref syntax (`at://{authority}/space/{type}/{skey}`) and the wider space AT-URI family; deliberately separate from `repo_engine::AtUri`, whose callers resolve MST paths a space URI must never reach
+  space_notify.rs  — outbound Atproto Spaces write notifications: the repo-host → space-host report (with the authority auto-registration that creates the subscription) and the space-host → registered-syncer fan-out; detached, retrying, bounded — see module doc
   space_jti_sweep.rs — periodic `space_jti_replay` retention sweep; each row carries its own token's acceptance horizon (template: sovereign_session_nonce_sweep.rs)
   space_oplog_sweep.rs — hourly `space_repo_ops` compaction sweep (7-day retention): the oplog is droppable by spec, and a syncer whose `since` predates the window heals via `getRepo` — see module doc
   repo_rev.rs      — shared `read_repo_rev`, homed beside `record_write.rs` so the public sync endpoints share it without a route-to-route import
@@ -208,7 +209,8 @@ and async query functions; no business logic lives here.
 | `admin_audit.rs` | server-wide append-only admin-action audit log (V052); doctrine and function inventory in the module doc |
 | `admin_devices.rs` | admin-device model (V025): pairing codes, devices, anti-replay nonces — see module doc |
 | `sovereign_session_nonces.rs` | sovereign-session anti-replay store (V043); the sweep-retention rule is in the module doc |
-| `spaces.rs` | `spaces` rows (V065): every space this PDS interacts with, keyed by canonical URI, plus the `space_members` list — the `insert_space` (member write) vs `create_space` (simplespace create) distinction is in the module doc; the remaining notify queries land with the space-host surface |
+| `spaces.rs` | `spaces` rows (V065): every space this PDS interacts with, keyed by canonical URI, plus the `space_members` list — the `insert_space` (member write) vs `create_space` (simplespace create) distinction is in the module doc |
+| `space_notify.rs` | the space-host notification tables: `space_notify_registrations` (V065, one table for both roles — `repo_did = ''` is a whole-space subscription on a space host, a named repo is the auto-registration a repo host writes for itself) and `space_writers` (V067, the `listRepos` set). Expiry is enforced by the read query, not a sweep — see module doc |
 | `space_repos.rs` | permissioned repo store queries (V065): repo heads (rev + LtHash state), record blocks, oplog; the write transaction lives in `space_record_write.rs` — see module doc |
 | `space_jti.rs` | spaces-token jti replay store (V065): scope-discriminated insert-if-absent + the expiry sweep — see module doc |
 | `waitlist.rs` | public waitlist signup store (V057, no FKs — off the purge path) — see module doc |
@@ -334,11 +336,14 @@ tests, so check it when changing an OAuth response shape — see its README.
 | `space_list_repo_ops.rs` | `GET /xrpc/com.atproto.space.listRepoOps` — page the oplog since a rev; only a record's *current* value is inlined (stale ops join to nothing); a short page reaches the head and carries the signed commit, a full page a `rev/idx` cursor — see module doc |
 | `space_get_repo.rs` | `GET /xrpc/com.atproto.space.getRepo` — streaming two-root CAR (signed commit, then DRISL index in canonical DAG-CBOR key order, record blocks in index order); `excludeValues` writes only the roots — see module doc |
 | `space_get_blob.rs` | `GET /xrpc/com.atproto.space.getBlob` — space-authed blob serving; a stored-but-unreferenced blob answers the same `BlobNotFound` as an unknown CID, and the response is `Cache-Control: private` (unlike the public route's immutable-public) — see module doc |
+| `space_list_repos.rs` | `GET /xrpc/com.atproto.space.listRepos` — the space host's writer set (repos that have *written*, never a reader list) with each repo's last-reported `rev`/`hash`; a space whose authority is elsewhere reads as `SpaceNotFound` |
+| `space_register_notify.rs` / `space_unregister_notify.rs` | `POST /xrpc/com.atproto.space.{registerNotify,unregisterNotify}` — syncer subscriptions on the space host; the subscriber is a *service identifier* (DID + optional `#fragment`) resolved at registration (`ServiceNotResolvable`), re-registering renews the expiry, unregister is idempotent |
+| `space_notify_write.rs` | `POST /xrpc/com.atproto.space.notifyWrite` — inbound report from a foreign repo host. Deliberately *not* `require_service_auth` (that guard demands a local issuer); the key is resolved from the network and the issuer must be the repo or the space authority — see module doc |
 | `space_list_blobs.rs` | `GET /xrpc/com.atproto.space.listBlobs` — blob CIDs referenced by a repo's records (derived by decoding stored blocks, like blob GC), `since` filtered on V066's per-record rev |
 | `space_views.rs` | shared handler-free support for the space + simplespace routes (routes may not import one another): space-ref parsing, the `validate`-flag record check, stored-block decoding, the write-result shape, repo-head load + per-serving commit signing (`load_repo`/`sign_current_commit`/`commit_json`), blob-reference derivation (`space_blob_cids`), and the simplespace config's lexicon-union ↔ column mapping |
 | `simplespace_create_space.rs` | `POST /xrpc/com.atproto.simplespace.createSpace` — a space anchored on the caller's own DID; `manage=create`; unimplemented open-union config values refused |
 | `simplespace_update_space.rs` | `POST /xrpc/com.atproto.simplespace.updateSpace` — `manage=update`, owner only |
-| `simplespace_delete_space.rs` | `POST /xrpc/com.atproto.simplespace.deleteSpace` — tombstone + cleanup, idempotent; `manage=delete`, owner only — see module doc |
+| `simplespace_delete_space.rs` | `POST /xrpc/com.atproto.simplespace.deleteSpace` — tombstone + cleanup (members, registrations, writer set, the authority's own repo) then a best-effort `notifySpaceDeleted` fan-out, idempotent; `manage=delete`, owner only — see module doc |
 | `simplespace_get_space.rs` | `GET /xrpc/com.atproto.simplespace.getSpace` — the one simplespace method a space credential reaches; OAuth callers are owner-only |
 | `simplespace_add_member.rs` / `simplespace_remove_member.rs` | `POST /xrpc/com.atproto.simplespace.{addMember,removeMember}` — the member list behind the `member-list` policy; `manage=update`, owner only, idempotent |
 | `simplespace_list_members.rs` | `GET /xrpc/com.atproto.simplespace.listMembers` — OAuth `read_self`, owner only, DID-keyset paged |

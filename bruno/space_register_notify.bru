@@ -1,0 +1,37 @@
+meta {
+  name: Space Register Notify
+  type: http
+  seq: 160
+}
+
+post {
+  url: {{baseUrl}}/xrpc/com.atproto.space.registerNotify
+  body: json
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{accessToken}}
+}
+
+body:json {
+  {
+    "space": "at://{{did}}/space/org.example.bucket/main",
+    "service": "did:web:syncer.example.com#atproto_space_syncer"
+  }
+}
+
+docs {
+  Subscribe a service to write notifications for every repo in a space. The subscriber is named
+  by a service identifier — a DID with an optional "#fragment" naming the DID-document entry to
+  deliver to — rather than a URL, because notifyWrite is delivered with service auth addressed
+  to that identifier. The identifier is resolved at registration, so a typo is reported here
+  (400 ServiceNotResolvable) instead of producing a subscription that never delivers.
+
+  Returns "expiresAt": registrations lapse, and re-registering renews. Notification is
+  best-effort — a syncer that misses one heals from the commit hash on its next listRepoOps, or
+  from a listRepos sweep — so a delivery failure never unregisters the subscriber.
+
+  Answered only by the space's authority (400 SpaceNotFound otherwise). Auth: a space
+  credential, or the authority's own session.
+}
