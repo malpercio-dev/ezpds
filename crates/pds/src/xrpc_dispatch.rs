@@ -26,9 +26,10 @@ enum ProxyUpstream {
 }
 
 /// NSIDs that undergo read-after-write munging: the AppView response is buffered and merged
-/// with the requester's own unindexed records before returning. An explicit `atproto-proxy`
-/// header naming a target bypasses this path entirely (see `xrpc_handler`), since the munge
-/// assumes it's talking to the configured AppView.
+/// with the requester's own unindexed records before returning. An `atproto-proxy` header naming
+/// a target *other than* the configured AppView bypasses this path entirely (see `xrpc_handler`),
+/// since the munge assumes it's talking to that AppView — a header naming the configured AppView
+/// itself is dropped before this branch and keeps its munging.
 const READ_AFTER_WRITE_NSIDS: [&str; 6] = [
     "app.bsky.actor.getProfile",
     "app.bsky.actor.getProfiles",
@@ -53,6 +54,12 @@ const READ_AFTER_WRITE_NSIDS: [&str; 6] = [
 /// `atproto-proxy: did:web:video.bsky.app#bsky_video` — reach the video service rather than the
 /// AppView. An absent header keeps the default routing (AppView / chat); moderation still has
 /// no default of its own, so its header remains mandatory.
+///
+/// A header naming the namespace's own configured default (`[appview] did` / `[chat] did`) is
+/// *not* a retarget and is dropped before any of that: the request takes the unheadered path,
+/// which spares the hot path a DID-document fetch for a destination the operator already
+/// configured and keeps the read-after-write branch reachable for the official app, which sends
+/// the AppView's DID on every request.
 ///
 /// All three proxied namespaces are forwarded *on behalf of an authenticated user*, so the
 /// caller's session is validated locally (the `AuthenticatedUser` extractor) before anything
@@ -106,6 +113,20 @@ pub async fn xrpc_handler(
         .get("atproto-proxy")
         .and_then(|v| v.to_str().ok())
         .map(str::to_string);
+
+    // A header naming this namespace's *own* configured default is not a retarget, so it is
+    // dropped here and the request proceeds exactly as an unheadered one. The official app sends
+    // `atproto-proxy: did:web:api.bsky.app#bsky_appview` on every feed request, and treating that
+    // as a caller-chosen target cost two things: a live did:web fetch per request in front of the
+    // proxy call (a third party's latency and 504s in our critical path), and read-after-write
+    // munging, which the branch below skips whenever a header named a target. The reference PDS
+    // special-cases the configured AppView the same way, for the same reason. Moderation has no
+    // configured default to match against, so its header always survives.
+    let header_value = header_value.filter(|hv| match upstream {
+        ProxyUpstream::AppView => *hv != state.config.appview.did,
+        ProxyUpstream::Chat => *hv != state.config.chat.did,
+        ProxyUpstream::Moderation => true,
+    });
 
     if matches!(upstream, ProxyUpstream::Moderation) && header_value.is_none() {
         return ApiError::new(
