@@ -6,12 +6,20 @@
 //! `resolveIdentity`, `refreshIdentity`, and `resolveDid` all apply the same fallback chain:
 //! local `handles` table → DNS TXT (`_atproto.<handle>`) → HTTP `.well-known/atproto-did`.
 //!
-//! DID-document reads are cache-first: `resolve_did_document` consults the `did_documents` table
-//! before fetching from plc.directory / did:web. The cache has no TTL, so
-//! `resolve_did_document_force_refresh` is the only path that un-stales a row — it bypasses the
-//! cache, fetches the authoritative document, and rewrites the existing cache row in place
-//! (`db::dids::rewrite_did_document`, UPDATE-only). It backs `refreshIdentity` and the
-//! migration-`createAccount` verify retry.
+//! DID-document reads are cache-first over two tiers, consulted in this order:
+//!
+//!   1. The `did_documents` table — this server's own accounts and migrated-in ones. No TTL,
+//!      because we are the authority for those documents; `resolve_did_document_force_refresh`
+//!      is the only path that un-stales a row (`db::dids::rewrite_did_document`, UPDATE-only),
+//!      backing `refreshIdentity` and the migration-`createAccount` verify retry.
+//!   2. `AppState::did_document_cache` — every *remote* document, held on the reference PDS's
+//!      1h-stale / 24h-hard TTLs with stale-while-revalidate. Without it every proxied request,
+//!      service-auth verification, and Lexicon-authority lookup pays a live fetch of
+//!      plc.directory or a did:web endpoint, which puts a third party's latency (and its 504s)
+//!      directly in our request path.
+//!
+//! A document reaching neither tier is fetched from its authority and recorded in tier 2 unless
+//! it belongs to tier 1.
 //!
 //! The pure DID-document accessors at the bottom (`atproto_verification_key`, `service_endpoint`)
 //! also carry the Atproto Spaces resolution fallbacks: `space_verification_key`
@@ -21,10 +29,14 @@
 //! The `atproto-proxy` header target guard (SSRF validation + the DNS-pinning hardened client)
 //! lives in the sibling `proxy` module.
 
+use std::collections::HashMap;
 use std::net::IpAddr;
+use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use common::{ApiError, ErrorCode};
 use serde_json::Value;
+use tokio::sync::Mutex;
 
 use crate::app::AppState;
 
@@ -110,19 +122,155 @@ pub async fn resolve_handle_to_did(
     Ok(None)
 }
 
-/// Resolve a DID to its current DID document, preferring the local cache.
+// ── Remote DID-document cache ───────────────────────────────────────────────
+
+/// How long a resolved remote document is served with no re-resolution at all.
+const DID_CACHE_STALE_TTL: Duration = Duration::from_secs(60 * 60);
+
+/// How long a resolved remote document may still be served *while* being re-resolved in the
+/// background. Past this it is dropped and the next read blocks on the authority.
 ///
-/// Local cached documents are preferred. Unknown `did:plc` values are proxied to the configured PLC
-/// directory; unknown `did:web` values are resolved through the method's `did.json` URL. Returned
-/// documents must assert the requested DID in their `id` field.
+/// Both bounds match the reference PDS (`PDS_DID_CACHE_STALE_TTL` / `PDS_DID_CACHE_MAX_TTL`).
+/// The gap between them is the point of the cache: inside it, an authority that is slow or
+/// returning 504s costs a background task rather than a failed request.
+const DID_CACHE_MAX_TTL: Duration = Duration::from_secs(24 * 60 * 60);
+
+/// Distinct DIDs held before the map is pruned. A document is a few hundred bytes, so this is a
+/// bound on pathological growth rather than a tuned working-set size.
+const DID_CACHE_MAX_ENTRIES: usize = 10_000;
+
+pub struct CachedDidDocument {
+    doc: Value,
+    fetched_at: Instant,
+    /// Set while a background refresh for this DID is in flight, so a burst of requests arriving
+    /// against one stale entry spawns one refresh rather than one each.
+    refreshing: bool,
+}
+
+/// TTL cache of *remote* DID documents, held in [`AppState`] and shared across all requests.
+pub type DidDocumentCache = Arc<Mutex<HashMap<String, CachedDidDocument>>>;
+
+/// Create an empty [`DidDocumentCache`].
+pub fn new_did_document_cache() -> DidDocumentCache {
+    Arc::new(Mutex::new(HashMap::new()))
+}
+
+/// Decide what to do with a cache entry of a given age, latching `refreshing` when *this* caller
+/// is the one that should refresh it.
+///
+/// `None` means the entry is past [`DID_CACHE_MAX_TTL`] and must not be served at all.
+/// `Some(needs_refresh)` means serve it, re-resolving behind the response when `needs_refresh`.
+/// Split out from [`cached_did_document`] so the TTL policy is checkable without winding a
+/// monotonic clock backwards, which is not something `Instant` supports on a freshly booted host.
+fn cache_decision(age: Duration, refreshing: &mut bool) -> Option<bool> {
+    if age >= DID_CACHE_MAX_TTL {
+        return None;
+    }
+    if age < DID_CACHE_STALE_TTL {
+        return Some(false);
+    }
+    // Latch: of a burst arriving against one stale entry, only the first is asked to refresh.
+    Some(!std::mem::replace(refreshing, true))
+}
+
+/// Read `did` from the remote-document cache.
+///
+/// Returns `(document, needs_refresh)` while the entry is servable per [`cache_decision`]. An
+/// entry past the hard bound is dropped and reported as a miss, so the next read blocks on the
+/// authority rather than serving it.
+async fn cached_did_document(state: &AppState, did: &str) -> Option<(Value, bool)> {
+    let mut map = state.did_document_cache.lock().await;
+
+    let hit = match map.get_mut(did) {
+        Some(entry) => cache_decision(entry.fetched_at.elapsed(), &mut entry.refreshing)
+            .map(|needs_refresh| (entry.doc.clone(), needs_refresh)),
+        None => None,
+    };
+
+    // A miss here means either no entry or an expired one; removing unconditionally retires the
+    // latter without a second lookup, and is a no-op for the former.
+    if hit.is_none() {
+        map.remove(did);
+    }
+
+    hit
+}
+
+/// Record a freshly resolved remote document, replacing any existing entry (and clearing its
+/// in-flight refresh flag).
+async fn store_did_document(state: &AppState, did: &str, doc: &Value) {
+    let mut map = state.did_document_cache.lock().await;
+
+    // ponytail: prune-on-insert rather than LRU eviction — a cache this cheap to rebuild does not
+    // justify tracking recency. If dropping expired entries leaves the map still at the cap then
+    // every entry is live, and clearing beats growing without bound; swap in an LRU if the
+    // re-resolution churn ever shows up in latency.
+    if map.len() >= DID_CACHE_MAX_ENTRIES {
+        map.retain(|_, entry| entry.fetched_at.elapsed() < DID_CACHE_MAX_TTL);
+        if map.len() >= DID_CACHE_MAX_ENTRIES {
+            map.clear();
+        }
+    }
+
+    map.insert(
+        did.to_string(),
+        CachedDidDocument {
+            doc: doc.clone(),
+            fetched_at: Instant::now(),
+            refreshing: false,
+        },
+    );
+}
+
+/// Re-resolve `did` off the request path and replace its cache entry.
+///
+/// Fire-and-forget: the caller has already been handed the stale document, so a failure is a
+/// logged warning and nothing more — the entry keeps its old `fetched_at` and goes on being
+/// served (and re-attempted) until [`DID_CACHE_MAX_TTL`] retires it. That is deliberate: an
+/// authority that is down must not cost us a document we already hold.
+fn spawn_did_document_refresh(state: &AppState, did: &str) {
+    let state = state.clone();
+    let did = did.to_string();
+
+    tokio::spawn(async move {
+        match fetch_did_document(&state, &did).await {
+            // The replacement entry carries `refreshing: false`, so success clears the flag.
+            Ok(doc) => store_did_document(&state, &did, &doc).await,
+            Err(e) => {
+                tracing::warn!(did = %did, error = %e, "background DID-document refresh failed; continuing to serve the stale document");
+                if let Some(entry) = state.did_document_cache.lock().await.get_mut(&did) {
+                    entry.refreshing = false;
+                }
+            }
+        }
+    });
+}
+
+/// Fetch a DID document from its authority, consulting no cache.
+async fn fetch_did_document(state: &AppState, did: &str) -> Result<Value, ApiError> {
+    if did.starts_with("did:plc:") {
+        resolve_plc_did_document(state, did).await
+    } else if did.starts_with("did:web:") {
+        resolve_web_did_document(state, did).await
+    } else {
+        Err(ApiError::new(ErrorCode::DidNotFound, "DID not found"))
+    }
+}
+
+/// Resolve a DID to its current DID document, preferring the local caches.
+///
+/// Reads the `did_documents` table first, then the remote-document TTL cache; only a DID in
+/// neither reaches its authority — `did:plc` values through the configured PLC directory,
+/// `did:web` values through the method's `did.json` URL. Returned documents must assert the
+/// requested DID in their `id` field.
 pub async fn resolve_did_document(state: &AppState, did: &str) -> Result<Value, ApiError> {
     resolve_did_document_inner(state, did, false).await
 }
 
-/// Resolve a DID to its current DID document, **bypassing the local cache** and rewriting any
-/// existing cache row with the freshly-fetched document.
+/// Resolve a DID to its current DID document, **bypassing both caches** and rewriting whichever
+/// one holds the DID with the freshly-fetched document.
 ///
-/// The `did_documents` cache is a persistent store with no TTL: a DID whose PLC document was
+/// The `did_documents` table is a persistent store with no TTL: a DID whose PLC document was
 /// rewritten after this server cached it (e.g. an `#atproto` key rotation during an account's
 /// identity-migration leg) is otherwise served against the fossil key forever. This is the
 /// "force refresh" the reference PDS's `refreshIdentity` performs, and the retry the migration
@@ -130,6 +278,11 @@ pub async fn resolve_did_document(state: &AppState, did: &str) -> Result<Value, 
 /// back over the existing cache row (UPDATE-only — see [`crate::db::dids::rewrite_did_document`]),
 /// so a subsequent cache-first read (including this server's own `resolveDid`/`getSession`)
 /// reflects it.
+///
+/// A remote DID has no such row; for those the fresh document replaces the TTL-cache entry
+/// instead, which is what makes this the escape hatch for a rotation that lands inside
+/// [`DID_CACHE_STALE_TTL`] — the service-auth verifier takes it on a signature failure precisely
+/// so a stale cached key can never be the last word.
 pub async fn resolve_did_document_force_refresh(
     state: &AppState,
     did: &str,
@@ -150,23 +303,34 @@ async fn resolve_did_document_inner(
         if let Some(doc) = crate::db::dids::get_did_document(&state.db, did).await? {
             return validate_did_doc_id(doc, did, ErrorCode::InternalError);
         }
+        if let Some((doc, needs_refresh)) = cached_did_document(state, did).await {
+            if needs_refresh {
+                spawn_did_document_refresh(state, did);
+            }
+            return Ok(doc);
+        }
     }
 
-    let doc = if did.starts_with("did:plc:") {
-        resolve_plc_did_document(state, did).await?
-    } else if did.starts_with("did:web:") {
-        resolve_web_did_document(state, did).await?
-    } else {
-        return Err(ApiError::new(ErrorCode::DidNotFound, "DID not found"));
-    };
+    let doc = fetch_did_document(state, did).await?;
 
+    // Heal the `did_documents` row so subsequent cache-first reads reflect the fresh document.
+    // Best-effort: the authority already answered, so a cache-write failure must not fail the
+    // resolution. The UPDATE's row count also tells us which tier this DID belongs to.
+    let mut has_db_row = false;
     if force_refresh {
-        // Heal the cached row so subsequent cache-first reads reflect the fresh document.
-        // Best-effort: the authoritative source already answered, so a cache-write failure must
-        // not fail the resolution.
-        if let Err(e) = crate::db::dids::rewrite_did_document(&state.db, did, &doc).await {
-            tracing::warn!(did = %did, error = %e, "failed to rewrite cached DID document after force refresh (non-fatal)");
+        match crate::db::dids::rewrite_did_document(&state.db, did, &doc).await {
+            Ok(updated) => has_db_row = updated,
+            Err(e) => {
+                tracing::warn!(did = %did, error = %e, "failed to rewrite cached DID document after force refresh (non-fatal)");
+            }
         }
+    }
+
+    // Tier 2 holds remote documents only. A DID with a `did_documents` row is served from that
+    // row before this cache is consulted, so an entry for one would be dead weight — and would
+    // outlive a purged row, resurrecting a deleted account's document for the rest of the TTL.
+    if !has_db_row {
+        store_did_document(state, did, &doc).await;
     }
 
     Ok(doc)
@@ -642,5 +806,54 @@ mod tests {
         let preview = safe_body_preview(&"é".repeat(600));
         assert_eq!(preview.chars().count(), 500);
         assert!(preview.is_char_boundary(preview.len()));
+    }
+
+    #[test]
+    fn cache_decision_follows_the_reference_ttls() {
+        use super::{cache_decision, DID_CACHE_MAX_TTL, DID_CACHE_STALE_TTL};
+        use std::time::Duration;
+
+        let second = Duration::from_secs(1);
+        let mut refreshing = false;
+
+        // Under the stale bound: served untouched, nobody refreshes.
+        assert_eq!(cache_decision(Duration::ZERO, &mut refreshing), Some(false));
+        assert_eq!(
+            cache_decision(DID_CACHE_STALE_TTL - second, &mut refreshing),
+            Some(false)
+        );
+        assert!(!refreshing);
+
+        // Between the bounds: still served, and the *first* caller is the one told to refresh.
+        assert_eq!(
+            cache_decision(DID_CACHE_STALE_TTL, &mut refreshing),
+            Some(true)
+        );
+        assert!(refreshing);
+        assert_eq!(
+            cache_decision(DID_CACHE_MAX_TTL - second, &mut refreshing),
+            Some(false)
+        );
+
+        // Past the hard bound: not served at all, however recently a refresh was attempted.
+        assert_eq!(cache_decision(DID_CACHE_MAX_TTL, &mut refreshing), None);
+    }
+
+    #[tokio::test]
+    async fn remote_documents_round_trip_through_the_cache() {
+        use super::{cached_did_document, store_did_document};
+
+        let state = crate::state::test_state().await;
+        let did = "did:web:api.bsky.app";
+        let doc = serde_json::json!({ "id": did });
+
+        assert!(cached_did_document(&state, did).await.is_none());
+
+        store_did_document(&state, did, &doc).await;
+        assert_eq!(
+            cached_did_document(&state, did).await,
+            Some((doc, false)),
+            "a freshly stored document is served without asking for a refresh"
+        );
     }
 }

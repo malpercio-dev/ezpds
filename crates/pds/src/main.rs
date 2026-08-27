@@ -602,6 +602,7 @@ async fn run() -> anyhow::Result<()> {
         poll_tracker: auth::new_claim_poll_tracker(),
         permission_set_cache: auth::new_permission_set_cache(),
         space_type_cache: auth::new_space_type_cache(),
+        did_document_cache: identity::resolution::new_did_document_cache(),
         failed_login_attempts: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
         firehose,
         crawlers,

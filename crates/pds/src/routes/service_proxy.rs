@@ -496,6 +496,88 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn header_naming_the_configured_appview_takes_the_default_path() {
+        // The official app sends `atproto-proxy: did:web:api.bsky.app#bsky_appview` on every
+        // request. That names the destination the operator already configured, so it must not be
+        // handled as a caller-chosen retarget: no `did_documents` row is seeded for that DID, so
+        // a request that tried to resolve the header would go to the network instead of the mock.
+        // `getTimeline` is deliberately a read-after-write NSID — the munge branch is skipped for
+        // any request that resolved a header target, and this is the header that must not.
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/xrpc/app.bsky.feed.getTimeline"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(serde_json::json!({ "feed": [] })),
+            )
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let state = state_with_appview(&server.uri()).await;
+        let configured = state.config.appview.did.clone();
+        let auth = bearer(&state);
+
+        let response = app(state.clone())
+            .oneshot(
+                Request::builder()
+                    .uri("/xrpc/app.bsky.feed.getTimeline")
+                    .header("authorization", auth)
+                    .header("atproto-proxy", configured.as_str())
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let rendered = state.metrics.render().unwrap().unwrap();
+        assert!(
+            rendered.contains(r#"upstream="appview""#),
+            "a header naming the configured AppView must count as the default upstream:\n{rendered}"
+        );
+        assert!(
+            !rendered.contains(r#"upstream="header_target""#),
+            "...and must not be classed as a retarget:\n{rendered}"
+        );
+    }
+
+    #[tokio::test]
+    async fn header_naming_the_configured_chat_service_takes_the_default_path() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/xrpc/chat.bsky.convo.listConvos"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(serde_json::json!({ "convos": [] })),
+            )
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let state = state_with_chat(&server.uri()).await;
+        let configured = state.config.chat.did.clone();
+        let auth = bearer(&state);
+
+        let response = app(state.clone())
+            .oneshot(
+                Request::builder()
+                    .uri("/xrpc/chat.bsky.convo.listConvos")
+                    .header("authorization", auth)
+                    .header("atproto-proxy", configured.as_str())
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let rendered = state.metrics.render().unwrap().unwrap();
+        assert!(
+            rendered.contains(r#"upstream="chat""#),
+            "a header naming the configured chat service must count as the default upstream:\n{rendered}"
+        );
+    }
+
+    #[tokio::test]
     async fn mints_service_auth_jwt_instead_of_forwarding_session_token() {
         use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
 

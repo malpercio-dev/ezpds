@@ -76,6 +76,12 @@ pub struct AppState {
     /// authorize requests.
     pub permission_set_cache: PermissionSetCache,
     pub space_type_cache: SpaceTypeCache,
+    /// TTL cache of *remote* DID documents (1h stale / 24h hard, stale-while-revalidate),
+    /// consulted after the `did_documents` table and populated by every resolution that reaches
+    /// plc.directory or a did:web endpoint. Without it the `atproto-proxy` target lookup,
+    /// service-auth verification, and Lexicon-authority fetch each pay a live third-party
+    /// request every time. See [`crate::identity::resolution`]'s module doc for the two tiers.
+    pub did_document_cache: crate::identity::resolution::DidDocumentCache,
     /// In-memory sliding-window store for failed createSession attempts (rate limiting).
     /// Shared across all requests via Arc<Mutex<...>>.
     pub failed_login_attempts: FailedLoginStore,
@@ -272,6 +278,7 @@ pub async fn test_state_with_plc_url(plc_directory_url: String) -> AppState {
         poll_tracker: new_claim_poll_tracker(),
         permission_set_cache: new_permission_set_cache(),
         space_type_cache: new_space_type_cache(),
+        did_document_cache: crate::identity::resolution::new_did_document_cache(),
         failed_login_attempts: Arc::new(Mutex::new(HashMap::new())),
         firehose,
         crawlers: Arc::new({
