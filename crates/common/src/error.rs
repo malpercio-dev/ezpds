@@ -131,6 +131,10 @@ pub enum ErrorCode {
     /// The delegation token presented to `getSpaceCredential` failed verification.
     #[serde(rename = "InvalidDelegationToken")]
     InvalidDelegationToken,
+    /// The client attestation presented to `getSpaceCredential` failed verification — malformed,
+    /// unresolvable client, wrong signature, wrong audience, expired, or replayed.
+    #[serde(rename = "InvalidClientAttestation")]
+    InvalidClientAttestation,
     /// A simplespace management call by an account that is not the space's authority.
     #[serde(rename = "NotSpaceOwner")]
     NotSpaceOwner,
@@ -214,6 +218,7 @@ impl ErrorCode {
             ErrorCode::UserNotAuthorized => "UserNotAuthorized",
             ErrorCode::AppNotAuthorized => "AppNotAuthorized",
             ErrorCode::InvalidDelegationToken => "InvalidDelegationToken",
+            ErrorCode::InvalidClientAttestation => "InvalidClientAttestation",
             ErrorCode::NotSpaceOwner => "NotSpaceOwner",
             ErrorCode::SpaceAlreadyExists => "SpaceAlreadyExists",
             ErrorCode::UnsupportedPolicy => "UnsupportedPolicy",
@@ -269,6 +274,10 @@ impl ErrorCode {
             // The delegation token is the request's authorization credential, so a bad one is an
             // authentication failure, like InvalidToken.
             ErrorCode::InvalidDelegationToken => 401,
+            // 400, not 401: the delegation token is the request's authorization and its failure is
+            // a 401, but the attestation is a body parameter naming the app, and the reference
+            // answers a bad one as an invalid request.
+            ErrorCode::InvalidClientAttestation => 400,
             // The reference raises the simplespace management errors as `InvalidRequestError`
             // too — including NotSpaceOwner, which is an ownership precondition, not an auth
             // failure (the caller is authenticated; the space is just not theirs).

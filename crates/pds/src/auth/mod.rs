@@ -1,4 +1,5 @@
 pub mod agent_assertion;
+pub mod client_attestation;
 pub mod dpop;
 pub mod extractors;
 pub mod guards;

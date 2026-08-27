@@ -25,7 +25,6 @@
 //! (authorization codes) or rotation-guarded (refresh tokens), so a replayed assertion alone
 //! wins nothing.
 
-use jsonwebtoken::jwk::JwkSet;
 use jsonwebtoken::{Algorithm, DecodingKey, Validation};
 use serde::Deserialize;
 
@@ -141,71 +140,34 @@ async fn verify_private_key_jwt(
     Ok(())
 }
 
-/// Resolve the client's assertion-verification key from its metadata: the inline `jwks`
-/// first, else a policy-checked, cached fetch of `jwks_uri` via the SSRF-hardened client.
+/// Resolve the client's assertion-verification key from its metadata.
+///
+/// The inline-`jwks`/`jwks_uri` resolution — including the `jwks_uri` transport policy and the
+/// cached, SSRF-hardened fetch — is shared with Atproto Spaces client attestations; see
+/// [`crate::auth::jwks::client_verification_key`].
 async fn resolve_client_key(
     state: &AppState,
     metadata: &ClientMetadata,
     kid: Option<&str>,
 ) -> Result<DecodingKey, OAuthTokenError> {
-    if let Some(jwks) = &metadata.jwks {
-        let set: JwkSet = serde_json::from_value(jwks.clone())
-            .map_err(|_| invalid_client("client metadata jwks is not a valid JWK set"))?;
-        return select_key(&set, kid);
-    }
-    if let Some(url) = &metadata.jwks_uri {
-        let parsed = url::Url::parse(url)
-            .map_err(|_| invalid_client("client metadata jwks_uri is not a valid URL"))?;
-        // The URL comes from a client-authored document, so it gets exactly the transport
-        // policy client_id resolution uses: https, no credentials — with loopback as the one
-        // place plain http is acceptable. Holding `jwks_uri` to a stricter rule than the
-        // `client_id` it was fetched from would make a loopback development client
-        // (explicitly supported by the spec, and by `oauth_client_resolution`) unable to
-        // publish its keys by URL at all.
-        //
-        // The scheme check is not the SSRF control and never was: that is the hardened
-        // client's connect-time resolver, which refuses loopback and private addresses in
-        // production regardless of what this allows.
-        if !parsed.username().is_empty() || parsed.password().is_some() {
-            return Err(invalid_client(
-                "client metadata jwks_uri must carry no credentials",
-            ));
+    crate::auth::jwks::client_verification_key(
+        &state.oauth_client_jwks_cache,
+        metadata.jwks.as_ref(),
+        metadata.jwks_uri.as_deref(),
+        kid,
+    )
+    .await
+    .map_err(|e| {
+        if metadata.jwks.is_none() && metadata.jwks_uri.is_none() {
+            return invalid_client(
+                "client metadata declares private_key_jwt but provides neither jwks nor jwks_uri",
+            );
         }
-        if parsed.scheme() != "https" && !crate::auth::oauth_client_resolution::url_is_loopback(url)
-        {
-            return Err(invalid_client(
-                "client metadata jwks_uri must be an https URL",
-            ));
+        if let Some(uri) = &metadata.jwks_uri {
+            tracing::debug!(jwks_uri = uri, error = %e, "failed to resolve client jwks_uri");
         }
-        // Cached (own TTL + refetch cooldown from `[oauth]`, fetched via the SSRF-hardened
-        // client) rather than fetched on every token request — see `auth::jwks`'s module doc.
-        return state
-            .oauth_client_jwks_cache
-            .decoding_key(url, kid)
-            .await
-            .map_err(|e| {
-                tracing::error!(jwks_uri = url, error = %e, "failed to resolve client jwks_uri");
-                invalid_client(format!("failed to fetch client jwks_uri: {e}"))
-            })?
-            .ok_or_else(|| invalid_client("no matching key in the client's JWK set"));
-    }
-    Err(invalid_client(
-        "client metadata declares private_key_jwt but provides neither jwks nor jwks_uri",
-    ))
-}
-
-fn select_key(set: &JwkSet, kid: Option<&str>) -> Result<DecodingKey, OAuthTokenError> {
-    let jwk = match kid {
-        Some(kid) => set
-            .keys
-            .iter()
-            .find(|k| k.common.key_id.as_deref() == Some(kid)),
-        // No kid on the assertion: unambiguous only when the set holds exactly one key.
-        None if set.keys.len() == 1 => set.keys.first(),
-        None => None,
-    }
-    .ok_or_else(|| invalid_client("no matching key in the client's JWK set"))?;
-    DecodingKey::from_jwk(jwk).map_err(|_| invalid_client("client JWK is not a usable key"))
+        invalid_client(e)
+    })
 }
 
 #[cfg(test)]

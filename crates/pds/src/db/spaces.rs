@@ -18,8 +18,22 @@ pub struct SpaceRow {
     pub authority_did: String,
     pub policy: Option<String>,
     pub app_access: Option<String>,
+    /// JSON array of the `allowList` app-access policy's client IDs; meaningful only when
+    /// `app_access = 'allowList'`. Read through [`SpaceRow::allowed_client_ids`].
+    pub app_allowed: Option<String>,
     pub managing_app: Option<String>,
     pub deleted_at: Option<String>,
+}
+
+impl SpaceRow {
+    /// The `allowList` policy's client IDs. An absent or unparseable column reads as empty,
+    /// which refuses every app — the safe direction for a config this host cannot read.
+    pub fn allowed_client_ids(&self) -> Vec<String> {
+        self.app_allowed
+            .as_deref()
+            .and_then(|json| serde_json::from_str::<Vec<String>>(json).ok())
+            .unwrap_or_default()
+    }
 }
 
 /// A new space to insert.
@@ -30,6 +44,8 @@ pub struct NewSpace<'a> {
     pub skey: &'a str,
     pub policy: Option<&'a str>,
     pub app_access: Option<&'a str>,
+    /// JSON array of allow-listed client IDs (see [`SpaceRow::app_allowed`]).
+    pub app_allowed: Option<&'a str>,
     pub managing_app: Option<&'a str>,
 }
 
@@ -41,8 +57,9 @@ where
 {
     let result = sqlx::query(
         "INSERT INTO spaces \
-         (uri, authority_did, space_type, skey, policy, app_access, managing_app, created_at) \
-         VALUES (?, ?, ?, ?, ?, ?, ?, datetime('now')) \
+         (uri, authority_did, space_type, skey, policy, app_access, app_allowed, managing_app, \
+          created_at) \
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, datetime('now')) \
          ON CONFLICT DO NOTHING",
     )
     .bind(space.uri)
@@ -51,6 +68,7 @@ where
     .bind(space.skey)
     .bind(space.policy)
     .bind(space.app_access)
+    .bind(space.app_allowed)
     .bind(space.managing_app)
     .execute(executor)
     .await?;
@@ -64,7 +82,7 @@ where
     E: sqlx::Executor<'e, Database = Sqlite>,
 {
     sqlx::query_as::<_, SpaceRow>(
-        "SELECT uri, authority_did, policy, app_access, managing_app, deleted_at \
+        "SELECT uri, authority_did, policy, app_access, app_allowed, managing_app, deleted_at \
          FROM spaces WHERE uri = ?",
     )
     .bind(uri)
@@ -99,12 +117,13 @@ where
 {
     let result = sqlx::query(
         "INSERT INTO spaces \
-         (uri, authority_did, space_type, skey, policy, app_access, managing_app, created_at) \
-         VALUES (?, ?, ?, ?, ?, ?, ?, datetime('now')) \
+         (uri, authority_did, space_type, skey, policy, app_access, app_allowed, managing_app, \
+          created_at) \
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, datetime('now')) \
          ON CONFLICT (uri) DO UPDATE SET \
            policy = excluded.policy, app_access = excluded.app_access, \
-           managing_app = excluded.managing_app, created_at = excluded.created_at, \
-           deleted_at = NULL \
+           app_allowed = excluded.app_allowed, managing_app = excluded.managing_app, \
+           created_at = excluded.created_at, deleted_at = NULL \
          WHERE spaces.policy IS NULL",
     )
     .bind(space.uri)
@@ -113,6 +132,7 @@ where
     .bind(space.skey)
     .bind(space.policy)
     .bind(space.app_access)
+    .bind(space.app_allowed)
     .bind(space.managing_app)
     .execute(executor)
     .await?;
@@ -125,18 +145,23 @@ pub async fn set_space_config<'e, E>(
     uri: &str,
     policy: &str,
     app_access: &str,
+    app_allowed: Option<&str>,
     managing_app: Option<&str>,
 ) -> Result<(), sqlx::Error>
 where
     E: sqlx::Executor<'e, Database = Sqlite>,
 {
-    sqlx::query("UPDATE spaces SET policy = ?, app_access = ?, managing_app = ? WHERE uri = ?")
-        .bind(policy)
-        .bind(app_access)
-        .bind(managing_app)
-        .bind(uri)
-        .execute(executor)
-        .await?;
+    sqlx::query(
+        "UPDATE spaces SET policy = ?, app_access = ?, app_allowed = ?, managing_app = ? \
+         WHERE uri = ?",
+    )
+    .bind(policy)
+    .bind(app_access)
+    .bind(app_allowed)
+    .bind(managing_app)
+    .bind(uri)
+    .execute(executor)
+    .await?;
     Ok(())
 }
 
@@ -149,7 +174,7 @@ where
 {
     sqlx::query(
         "UPDATE spaces SET deleted_at = datetime('now'), \
-           policy = NULL, app_access = NULL, managing_app = NULL \
+           policy = NULL, app_access = NULL, app_allowed = NULL, managing_app = NULL \
          WHERE uri = ?",
     )
     .bind(uri)

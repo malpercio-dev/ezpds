@@ -259,20 +259,38 @@ fn union_type(value: &serde_json::Value) -> &str {
 /// Map a lexicon `policy` union to the `(policy, managing_app)` columns.
 ///
 /// `policy` is an open union, and the spec makes a host reject any value it does not
-/// implement at create/update time rather than store what it cannot enforce. This host
-/// evaluates `public` and `member-list`; `managing-app` needs the outbound `checkUserAccess`
-/// call, which lands with the client-attestation work, so it is refused here — never stored
-/// and never silently downgraded.
+/// implement at create/update time rather than store what it cannot enforce — so an
+/// unrecognized member is refused here, never stored and never silently downgraded.
+///
+/// `managingApp` is a service identifier: a DID with an optional service fragment
+/// (`did:web:example.com#forum`). Both halves are checked here — the DID against the canonical
+/// validator, and a fragment (when the `#` is present at all) for being non-empty. The
+/// reference checks only the `did:` prefix, which admits `did:` and `did:web:#`: values no
+/// resolution can ever turn into an endpoint, so a space configured with one would refuse every
+/// non-authority request forever. That is the same "never store a config this host cannot
+/// enforce" rule the open unions above follow, applied one level down.
+///
+/// Whether a *well-formed* identifier resolves to a reachable service stays a mint-time
+/// question, where an unreachable managing app denies rather than invalidating stored config.
 pub fn policy_from_lex(
     value: &serde_json::Value,
 ) -> Result<(&'static str, Option<String>), ApiError> {
     match union_type(value) {
         PUBLIC_POLICY => Ok(("public", None)),
         MEMBER_LIST_POLICY => Ok(("member-list", None)),
-        MANAGING_APP_POLICY => Err(ApiError::new(
-            ErrorCode::UnsupportedPolicy,
-            "this host does not implement the managing-app policy",
-        )),
+        MANAGING_APP_POLICY => {
+            let managing_app = value
+                .get("managingApp")
+                .and_then(serde_json::Value::as_str)
+                .filter(|app| is_service_identifier(app))
+                .ok_or_else(|| {
+                    ApiError::new(
+                        ErrorCode::UnsupportedPolicy,
+                        "managingApp must be a DID with an optional service fragment",
+                    )
+                })?;
+            Ok(("managing-app", Some(managing_app.to_string())))
+        }
         other => Err(ApiError::new(
             ErrorCode::UnsupportedPolicy,
             format!("unsupported policy: {other}"),
@@ -280,16 +298,54 @@ pub fn policy_from_lex(
     }
 }
 
-/// Map a lexicon `appAccess` union to the `app_access` column. `allowList` needs client
-/// attestation verification, which this host does not yet do, so it is refused (a host must not
-/// store an app-access policy it cannot enforce).
-pub fn app_access_from_lex(value: &serde_json::Value) -> Result<&'static str, ApiError> {
+/// A service identifier: a DID, optionally followed by `#` and a non-empty service fragment.
+///
+/// The DID half goes through `identity::did::is_valid_did`, the canonical validator the lexicon
+/// `did` string format already uses, rather than a second prefix check that would drift from it.
+fn is_service_identifier(value: &str) -> bool {
+    match value.split_once('#') {
+        Some((did, fragment)) => !fragment.is_empty() && crate::identity::did::is_valid_did(did),
+        None => crate::identity::did::is_valid_did(value),
+    }
+}
+
+/// Map a lexicon `appAccess` union to the `(app_access, app_allowed)` columns, the latter the
+/// JSON array of allow-listed client IDs (`None` for `open`).
+///
+/// An `allowList` with no entries is accepted and admits nothing: an authority may legitimately
+/// close a space to every app, and inventing an "empty means open" reading would turn the
+/// strictest config into the weakest one.
+pub fn app_access_from_lex(
+    value: &serde_json::Value,
+) -> Result<(&'static str, Option<String>), ApiError> {
     match union_type(value) {
-        OPEN_APP_ACCESS => Ok("open"),
-        ALLOW_LIST_APP_ACCESS => Err(ApiError::new(
-            ErrorCode::UnsupportedAppAccess,
-            "this host does not implement allow-list app access",
-        )),
+        OPEN_APP_ACCESS => Ok(("open", None)),
+        ALLOW_LIST_APP_ACCESS => {
+            let allowed: Vec<&str> = value
+                .get("allowed")
+                .and_then(serde_json::Value::as_array)
+                .ok_or_else(|| {
+                    ApiError::new(
+                        ErrorCode::UnsupportedAppAccess,
+                        "allowList appAccess requires an \"allowed\" array of client IDs",
+                    )
+                })?
+                .iter()
+                .map(|entry| {
+                    entry.as_str().ok_or_else(|| {
+                        ApiError::new(
+                            ErrorCode::UnsupportedAppAccess,
+                            "allowList entries must be client ID strings",
+                        )
+                    })
+                })
+                .collect::<Result<_, _>>()?;
+            let json = serde_json::to_string(&allowed).map_err(|e| {
+                tracing::error!(error = %e, "failed to encode allowList");
+                ApiError::new(ErrorCode::InternalError, "internal server error")
+            })?;
+            Ok(("allowList", Some(json)))
+        }
         other => Err(ApiError::new(
             ErrorCode::UnsupportedAppAccess,
             format!("unsupported appAccess: {other}"),
@@ -308,7 +364,10 @@ pub fn simplespace_view(row: &SpaceRow) -> serde_json::Value {
         _ => serde_json::json!({ "$type": MEMBER_LIST_POLICY }),
     };
     let app_access = match row.app_access.as_deref() {
-        Some("allowList") => serde_json::json!({ "$type": ALLOW_LIST_APP_ACCESS, "allowed": [] }),
+        Some("allowList") => serde_json::json!({
+            "$type": ALLOW_LIST_APP_ACCESS,
+            "allowed": row.allowed_client_ids(),
+        }),
         _ => serde_json::json!({ "$type": OPEN_APP_ACCESS }),
     };
     serde_json::json!({ "uri": row.uri, "policy": policy, "appAccess": app_access })

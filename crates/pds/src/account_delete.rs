@@ -730,6 +730,7 @@ mod tests {
                 skey: "self",
                 policy: Some("member-list"),
                 app_access: Some("open"),
+                app_allowed: None,
                 managing_app: None,
             },
         )

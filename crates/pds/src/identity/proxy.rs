@@ -17,10 +17,13 @@
 //! (`build_hardened_client`: redirects disabled + allowlist-enforcing DNS). Re-applying the
 //! allowlist to every address a name resolves to at connect time closes the
 //! redirect/re-resolution TOCTOU gap. One pooled client, stored in
-//! `AppState::hardened_http_client`, serves all four SSRF-guarded call sites without a fresh
-//! client (and TLS handshake) per request: `routes::service_proxy`'s header-target proxying,
-//! `identity::resolution`'s DID-document fetches, `auth::permission_sets`' Lexicon-authority
-//! fetch, and `labeler_watch`.
+//! `AppState::hardened_http_client`, serves every SSRF-guarded call site without a fresh client
+//! (and TLS handshake) per request — `routes::service_proxy`'s header-target proxying,
+//! `identity::resolution`'s did:web and handle well-known fetches, the Lexicon-authority fetch
+//! behind `auth::permission_sets`/`auth::space_consent`, `labeler_watch`, the OAuth-client JWKS
+//! cache, `auth::client_attestation`'s client-metadata resolution, and `auth::space`'s outbound
+//! managing-app check. `git grep hardened_http_client` is the current roster; the invariant is
+//! that a fetch whose target a caller can influence uses this client and no other.
 
 use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
@@ -112,8 +115,10 @@ impl reqwest::dns::Resolve for SsrfResolver {
 
 /// Build the shared HTTP client used for every fetch to a caller-influenced target — the
 /// `atproto-proxy` header target (`routes::service_proxy`), a did:web document
-/// (`identity::resolution`), a handle's HTTP well-known endpoint (`identity::well_known`), and a
-/// Lexicon-authority permission-set record (`auth::permission_sets`). Built once and stored in
+/// (`identity::resolution`), a handle's HTTP well-known endpoint (`identity::well_known`), a
+/// Lexicon-authority permission-set record (`auth::permission_sets`), an OAuth client's metadata
+/// document and JWKS (`auth::client_attestation`, `auth::jwks`), and a space's managing-app
+/// authorization check (`auth::space`). Built once and stored in
 /// [`AppState::hardened_http_client`], so all SSRF-guarded call sites share one connection pool +
 /// TLS context instead of constructing a fresh client (and handshaking anew) per request.
 ///

@@ -72,15 +72,22 @@ pub async fn simplespace_update_space(
             row.managing_app.clone(),
         ),
     };
-    let app_access = app_access
-        .map(str::to_string)
-        .unwrap_or_else(|| row.app_access.clone().unwrap_or_default());
+    // The allow list travels with its `appAccess` union: replacing the axis replaces both, and
+    // leaving it alone keeps whatever list the stored one carries.
+    let (app_access, app_allowed) = match app_access {
+        Some((app_access, app_allowed)) => (app_access.to_string(), app_allowed),
+        None => (
+            row.app_access.clone().unwrap_or_default(),
+            row.app_allowed.clone(),
+        ),
+    };
 
     set_space_config(
         &mut *tx,
         &space.uri,
         &policy,
         &app_access,
+        app_allowed.as_deref(),
         managing_app.as_deref(),
     )
     .await
