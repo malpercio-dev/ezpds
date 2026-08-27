@@ -152,8 +152,12 @@ static LEXICON_SOURCES: &[&str] = &[
     include_str!("../../lexicons/com/atproto/space/listBlobs.json"),
     include_str!("../../lexicons/com/atproto/space/listRecords.json"),
     include_str!("../../lexicons/com/atproto/space/listRepoOps.json"),
+    include_str!("../../lexicons/com/atproto/space/listRepos.json"),
     include_str!("../../lexicons/com/atproto/space/listSpaces.json"),
+    include_str!("../../lexicons/com/atproto/space/notifyWrite.json"),
     include_str!("../../lexicons/com/atproto/space/putRecord.json"),
+    include_str!("../../lexicons/com/atproto/space/registerNotify.json"),
+    include_str!("../../lexicons/com/atproto/space/unregisterNotify.json"),
     // The PDS-required simplespace management surface (`com.atproto.simplespace.*`), same
     // branch. `checkUserAccess` is served by a managing app, never here, so it is not vendored.
     include_str!("../../lexicons/com/atproto/simplespace/addMember.json"),

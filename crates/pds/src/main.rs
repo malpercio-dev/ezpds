@@ -48,6 +48,7 @@ mod routes;
 mod session_issuer;
 mod sovereign_session_nonce_sweep;
 mod space_jti_sweep;
+mod space_notify;
 mod space_oplog_sweep;
 mod space_record_write;
 mod space_uri;

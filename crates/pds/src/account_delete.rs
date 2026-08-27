@@ -106,6 +106,10 @@ const DELETE_BY_DID: &[&str] = &[
     "DELETE FROM space_repos WHERE account_did = ?",
     "DELETE FROM space_members WHERE member_did = ?",
     "DELETE FROM space_notify_registrations WHERE subscriber_did = ?",
+    // The account's rows in any locally-hosted space's writer set. No FK to `accounts` (most
+    // writers are foreign repos), so nothing removes these implicitly — and a purged account
+    // left in `listRepos` advertises a repo every reader then gets `RepoNotFound` for.
+    "DELETE FROM space_writers WHERE repo_did = ?",
 ];
 
 /// The account's ownership rows in the content-addressed repo block store.
@@ -707,7 +711,8 @@ mod tests {
     }
 
     /// Purge removes every space-table row the account owns or is party to — its repos (ops →
-    /// records → head, FK order), its memberships, and its notify registrations — while the
+    /// records → head, FK order), its memberships, its notify registrations, and its rows in any
+    /// locally-hosted space's writer set (`listRepos` must stop advertising it) — while the
     /// `spaces` row it is authority for survives as the tombstone that makes the space
     /// unanswerable (members' own records are theirs; the space simply stops answering).
     #[tokio::test]
@@ -791,6 +796,10 @@ mod tests {
                 did
             )
             .await,
+            0
+        );
+        assert_eq!(
+            row_count(&state.db, "space_writers", "repo_did", did).await,
             0
         );
         assert_eq!(

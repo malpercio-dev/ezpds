@@ -1,0 +1,39 @@
+meta {
+  name: Space Notify Write
+  type: http
+  seq: 162
+}
+
+post {
+  url: {{baseUrl}}/xrpc/com.atproto.space.notifyWrite
+  body: json
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{serviceAuthToken}}
+}
+
+body:json {
+  {
+    "space": "at://did:plc:authorityaaaaaaaaaaaaaaa/space/org.example.bucket/main",
+    "repo": "did:plc:memberaaaaaaaaaaaaaaaaaa",
+    "rev": "3kabcdefghij2",
+    "hash": { "$bytes": "BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwc=" }
+  }
+}
+
+docs {
+  A repo host telling a space host that one of its repos advanced, so the authority can maintain
+  the rev/hash listRepos reports. The space host then forwards the notification to every service
+  registered through registerNotify. Carries no record data — just the new rev and commit hash.
+
+  Authenticated with service auth (Authorization: Bearer <service-auth JWT>, lxm =
+  com.atproto.space.notifyWrite, aud = this server's DID). Unlike uploadBlob's service-auth
+  path, the issuer is deliberately NOT required to be a local account — a repo host is somewhere
+  else by definition. It must be either the repo whose head moved or the space's authority
+  forwarding; anyone else is 401.
+
+  Best-effort by lexicon (it declares no errors): a notification about a space this server is not
+  the authority for is accepted and dropped.
+}

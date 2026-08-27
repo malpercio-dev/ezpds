@@ -86,6 +86,27 @@ fn decode_error(e: impl std::fmt::Display) -> ApiError {
     ApiError::new(ErrorCode::InternalError, "failed to read space record")
 }
 
+/// Confirm this host is the space's authority — the precondition for every space-host method
+/// (`registerNotify`, `unregisterNotify`, `listRepos`).
+///
+/// A `spaces` row with no simplespace config is a space this host only keeps repos in; its
+/// authority is elsewhere and is the one to answer. That reads as `SpaceNotFound`, the same
+/// reply a space this host has never heard of gets — whether some other authority's space
+/// happens to have a repo here is not a fact this surface discloses.
+pub async fn require_local_authority(
+    state: &crate::app::AppState,
+    space: &SpaceRef,
+) -> Result<SpaceRow, ApiError> {
+    crate::db::spaces::get_space(&state.db, &space.uri)
+        .await
+        .map_err(|e| {
+            tracing::error!(error = %e, space = %space.uri, "failed to load space");
+            ApiError::new(ErrorCode::InternalError, "internal server error")
+        })?
+        .filter(|row| row.deleted_at.is_none() && row.policy.is_some())
+        .ok_or_else(|| ApiError::new(ErrorCode::SpaceNotFound, "space not found"))
+}
+
 /// Lex-JSON encoding of a byte string: `{"$bytes": "<base64>"}`, the JSON form the lexicon
 /// `bytes` type takes on the wire.
 pub fn lex_bytes(bytes: &[u8]) -> serde_json::Value {

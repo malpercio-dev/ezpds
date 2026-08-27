@@ -19,10 +19,14 @@
 //!   space records and unions their blob references with the public repo's
 //!   (`blob_gc::collect_referenced_blob_cids`), so a blob referenced from a
 //!   space record is pinned exactly like one referenced from the MST.
-//! * **Notification dispatch** — a successful commit returns the new `rev`
-//!   and set hash (what `notifyWrite` carries on the wire); the fan-out to
-//!   registered syncers is the space-host role's worker, which attaches to
-//!   this seam. The store's job ends at the durable commit.
+//! * **Notification dispatch** — the network fan-out is
+//!   `space_notify::fan_out_write`, spawned detached *after* the commit, so
+//!   the store's blocking job still ends at the durable commit. It is
+//!   triggered from here rather than from each record route because a write
+//!   path that forgot to notify would look correct and silently strand every
+//!   syncer. What stays inside the transaction is the writer-set row
+//!   `listRepos` answers — our own durable claim about our own repo, not a
+//!   network effect.
 //!
 //! Authentication and `space:` scope enforcement happen above this layer (the
 //! space auth seam); callers pass an already-authorized `(space, did)`.
@@ -433,14 +437,33 @@ pub async fn apply_space_writes(
         return Err(internal_error());
     }
 
+    // The writer set `listRepos` answers, kept durable with the commit rather than derived
+    // afterwards: for a space this host is the authority for, our own account's write is one of
+    // the facts the authority reports. The query no-ops for a space whose authority is
+    // elsewhere.
+    let hash = lthash.digest();
+    crate::db::space_notify::upsert_writer(&mut *tx, space_uri, did, &new_rev, &hash)
+        .await
+        .map_err(|e| {
+            tracing::error!(error = %e, space = %space_uri, did = %did, "failed to record space writer");
+            internal_error()
+        })?;
+
     tx.commit().await.map_err(|e| {
         tracing::error!(error = %e, space = %space_uri, did = %did, "failed to commit space write transaction");
         internal_error()
     })?;
 
+    // Best-effort, post-commit and non-blocking: tell the space host (or, when that is us, the
+    // registered syncers) that this repo advanced. Placed here rather than in each record route
+    // so no write path can be added that silently skips it.
+    drop(crate::space_notify::fan_out_write(
+        state, space, did, &new_rev, &hash,
+    ));
+
     Ok(SpaceCommitOutcome {
         rev: new_rev,
-        hash: lthash.digest(),
+        hash,
         results,
     })
 }

@@ -34,6 +34,7 @@ pub mod server_stats;
 pub mod sessions;
 pub mod sovereign_session_nonces;
 pub mod space_jti;
+pub mod space_notify;
 pub mod space_repos;
 pub mod spaces;
 pub mod transfers;
