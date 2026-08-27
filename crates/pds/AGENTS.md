@@ -103,10 +103,11 @@ it could not be asked. Details: the module doc in `src/relay_status.rs`.
 
 Reference-parity request rate limiting. The pure sliding-window algorithm lives in
 `auth/rate_limit.rs` (Functional Core); this module is the Imperative Shell owning the
-process-level limiters and the Axum middleware. Three families — global per-IP, per-endpoint
+process-level limiters and the Axum middleware. Four families — global per-IP, per-endpoint
 per-IP (guess-target endpoint pairs share one limiter instance so alternating endpoints can't
-double a guess budget), and per-account write points charged in `record_write::commit_repo_write`
-on the **authenticated** DID — all off when `[rate_limit] enabled = false`, all tunable via
+double a guess budget), per-account write points charged in `record_write::commit_repo_write`
+on the **authenticated** DID, and per-space-credential requests charged at the credential seam
+in `auth/space.rs` on the **verified** `cnf.jkt` — all off when `[rate_limit] enabled = false`, all tunable via
 `[rate_limit]` / `EZPDS_RATE_LIMIT_*` (a knob of `0` disables that limiter). The family
 rosters, exemptions, and `RateLimit-*` header behavior: the module doc.
 

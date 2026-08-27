@@ -38,6 +38,31 @@ describe('describeScope', () => {
     expect(describeScope('repo:*').elevated).toBe(false);
   });
 
+  it('describes space grants, mirroring the server defaults', () => {
+    // No params: your own spaces, full record access (the grammar's default action set).
+    expect(describeScope('space:org.example.bucket').summary).toBe(
+      'Read, create, edit, and delete records in your org.example.bucket private spaces'
+    );
+    // Explicit actions; read_self folds into read.
+    expect(describeScope('space:*?action=read&action=read_self').summary).toBe(
+      'Read records in your private spaces'
+    );
+    // Foreign authority and the anyone wildcard are said out loud.
+    expect(
+      describeScope('space:org.example.bucket?authority=did:plc:abc234567abc234567abc234').summary
+    ).toBe(
+      'Read, create, edit, and delete records in org.example.bucket private spaces run by did:plc:abc234567abc234567abc234'
+    );
+    expect(describeScope('space:*?authority=*&collection=*').summary).toBe(
+      'Read, create, edit, and delete records in private spaces run by anyone'
+    );
+    // manage verbs act on the spaces themselves and are called out separately.
+    expect(describeScope('space:org.example.bucket?manage=delete').summary).toBe(
+      'Read, create, edit, and delete records in your org.example.bucket private spaces — and delete those spaces themselves'
+    );
+    expect(describeScope('space:*').elevated).toBe(false);
+  });
+
   it('never hides an unknown token behind a vague label', () => {
     const desc = describeScope('mystery:thing?x=1');
     expect(desc.summary).toBe('mystery:thing?x=1');

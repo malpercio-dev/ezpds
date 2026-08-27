@@ -58,8 +58,14 @@ hosting matrix). For the hosted, sovereign-child sibling, see
   `atproto repo:*?action=create&action=update blob:*/*` — create/update posts and records,
   upload blobs, read. No deletes, no account or identity operations. The PDS operator controls
   this via `[agent_auth] granted_scopes`.
-- **Destructive tools are off by default.** `put_record`/`delete_record` are not even listed
-  unless you set `CUSTOS_MCP_ALLOW_DESTRUCTIVE=1` (and delete still needs a server-side grant).
+- **Destructive tools are off by default.** `put_record`/`delete_record` (and their space
+  siblings `space_put_record`/`space_delete_record`) are not even listed unless you set
+  `CUSTOS_MCP_ALLOW_DESTRUCTIVE=1` (and delete still needs a server-side grant).
+- **Atproto Spaces tools need a `space:` grant.** `list_spaces`, `space_get_record`,
+  `space_list_records`, and `space_create_record` drive the user's permissioned space repos;
+  the default profile grants no `space:` scope, so each reports a clean refusal naming what
+  the operator must add to `[agent_auth] granted_scopes` (for example
+  `space:*?authority=*&collection=*` — a bare `space:*` confers reads but no write target).
 - **Revocation wins.** If the registration is revoked on the server, the next exchange fails
   and the MCP server stays down until a human explicitly re-onboards it (`custos-mcp reset`).
 

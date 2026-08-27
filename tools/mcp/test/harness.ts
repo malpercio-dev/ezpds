@@ -129,6 +129,8 @@ export async function spawnPds(options: {
   dir: string;
   plcUrl: string;
   agentAuthEnabled: boolean;
+  /** Override [agent_auth] granted_scopes (comma-joined into the env var). */
+  grantedScopes?: string[];
 }): Promise<SpawnedPds> {
   const proxy = await startTlsProxy();
   const httpPort = await freePort();
@@ -153,6 +155,9 @@ export async function spawnPds(options: {
       EZPDS_SIGNING_KEY_MASTER_KEY: '00'.repeat(32),
       EZPDS_RATE_LIMIT_ENABLED: 'false',
       EZPDS_AGENT_AUTH_SERVICE_AUTH_ENABLED: options.agentAuthEnabled ? 'true' : 'false',
+      ...(options.grantedScopes
+        ? { EZPDS_AGENT_AUTH_GRANTED_SCOPES: options.grantedScopes.join(',') }
+        : {}),
     },
     stdio: ['ignore', 'pipe', 'pipe'],
   });

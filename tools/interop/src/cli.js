@@ -11,6 +11,7 @@ import { syncChecks } from './sync.js';
 import { networkChecks, relayHostStatus, appviewProfile } from './network.js';
 import { resolveTarget, followTarget, likeTargetPost, mentionTarget, cleanupInteractions } from './interact.js';
 import { performMigration, verifyMigration } from './migrate.js';
+import { spacesRoundTrip } from './spaces.js';
 import { runSuite } from './suite.js';
 import { loadState, statePaths } from './state.js';
 
@@ -33,6 +34,7 @@ Accounts (credentials persist in .state/state.json — gitignored)
 Checks
   verify-identity --name <n>       handle ↔ DID ↔ plc.directory agreement
   crud-test --name <n>             create/read/list/delete round-trip
+  spaces-test --name <n>           Atproto Spaces round-trip (simplespace + records + sync reads)
   firehose-test --name <n>         write a post, observe its #commit frame
   sync-test --name <n>             CAR export, latestCommit, repoStatus, listRepos
   network-check --name <n>         relay crawl status + AppView visibility
@@ -136,6 +138,9 @@ async function main() {
       break;
     case 'crud-test':
       print(await crudRoundTrip(requireName(v)));
+      break;
+    case 'spaces-test':
+      print(await spacesRoundTrip(requireName(v)));
       break;
     case 'firehose-test': {
       const result = await firehoseWriteCheck(requireName(v));

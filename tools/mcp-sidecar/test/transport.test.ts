@@ -37,7 +37,11 @@ test('AC2.1: the sidecar serves the shared tool surface over Streamable HTTP', a
       'create_post',
       'get_record',
       'list_records',
+      'list_spaces',
       'search_timeline',
+      'space_create_record',
+      'space_get_record',
+      'space_list_records',
       'whoami',
     ]);
   } finally {

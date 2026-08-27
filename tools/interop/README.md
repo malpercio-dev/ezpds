@@ -112,6 +112,16 @@ the configured `BASE_URL` — they do **not** yet read the per-account `pds`. Us
 `migrate verify --target-pds <url>` (which takes the destination explicitly) to
 confirm the migrated account on the new PDS.
 
+## Atproto Spaces alpha targets
+
+`spaces-test` drives the Custos space surface on whatever `EZPDS_BASE_URL` points at
+(staging by default). The other two alpha interop targets from the gap analysis — the
+alpha-tagged `@atproto` TS SDK as a client against Custos, and the bulletin sample app —
+ship on atproto's `permissioned-data` branch and move weekly, so they are exercised
+manually against a deployment rather than pinned as CLI scenarios; the Friday
+[alpha-watch routine](../../docs/operations/spaces-alpha-watch-routine.md) tracks the
+spec drift that would invalidate them.
+
 ## What the suite checks
 
 | Step | What it proves |
@@ -120,6 +130,7 @@ confirm the migrated account on the new PDS.
 | ensure account | provisioning flow: claim code → mobile account → PDS repo-signing key → client-signed did:plc genesis op → handle → session |
 | identity | `resolveHandle`, `/.well-known/atproto-did`, and the plc.directory DID doc all agree; PDS endpoint in the doc points at this deployment |
 | CRUD | createRecord → getRecord (CID match) → listRecords → deleteRecord |
+| spaces | Atproto Spaces round-trip on the account's own PDS: `simplespace.createSpace` → `space.createRecord` → getRecord/listRecords/listSpaces → `getLatestCommit`/`listRepoOps`/`getRepo` (non-empty CAR) → deleteRecord → `deleteSpace` (random skey per run; the space is torn down even on failure) |
 | firehose | a live `subscribeRepos` subscriber sees the `#commit` frame for a write, correct repo + op path |
 | sync | CAR export parses, root CID == `getLatestCommit`, `getRepoStatus` active, repo in `listRepos` |
 | network | relay (`bsky.network`) crawl status + AppView profile visibility — **informational** (staging may not be crawled); PDS→AppView service-proxy auth leg must pass |
@@ -127,8 +138,8 @@ confirm the migrated account on the new PDS.
 | lifecycle | ephemeral account created, verified, deactivated with `deleteAfter`; the server reaper purges it (~5 min) and broadcasts `#account` deleted |
 
 Individual steps are runnable standalone (`verify-identity`, `crud-test`,
-`firehose-test`, `sync-test`, `network-check`, `interact …`) — see
-`just interop help`.
+`spaces-test`, `firehose-test`, `sync-test`, `network-check`, `interact …`) —
+see `just interop help`.
 
 ## State & credentials
 
