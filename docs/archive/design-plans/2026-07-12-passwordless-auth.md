@@ -1,22 +1,22 @@
 # Passwordless Authentication for Custos + Obsign
 
-Status: **design exploration** — not yet scheduled into a wave. Captures the auth
-discussion of 2026-07-12 so it survives the session (capture-before-close). Follow-up
-tracked in [MM-312](https://linear.app/malpercio/issue/MM-312).
+Status: **shipped.** MM-312 (retire the account password in favor of device-key/passkey
+factors) is done. Captures the auth discussion of 2026-07-12 that led there
+(capture-before-close). Follow-up tracked in [MM-312](https://linear.app/malpercio/issue/MM-312).
 
 ## Problem
 
 Custos accounts carry an argon2id password, but in this architecture the password is
 already a second-class credential. The wallet authenticates via OAuth 2.1 + PKCE + DPoP
 and retains no password; the root of trust is the Secure-Enclave device key, which holds
-`rotationKeys[0]` on the DID ([ADR-0001](../architecture/decisions/0001-client-held-rotation-key-custody.md)).
+`rotationKeys[0]` on the DID ([ADR-0001](../../architecture/decisions/0001-client-held-rotation-key-custody.md)).
 The question explored here: can we drop the password entirely — forcing account creation
 through the wallet (already the de facto reality) — and what does that actually cost?
 
 The phase-0.1 review docs already point in this direction: "promote the device/biometric
-to a first-class session factor" ([gap analysis](../archive/2026-06-30-pds-phase-0.1-gap-and-competitive-analysis.md),
+to a first-class session factor" ([gap analysis](../2026-06-30-pds-phase-0.1-gap-and-competitive-analysis.md),
 citing cirrus's passwordless passkey auth; reiterated as passkey/WebAuthn session auth in
-the [review update](../archive/2026-07-01-pds-phase-0.1-review-update.md)). This exploration turns
+the [review update](../2026-07-01-pds-phase-0.1-review-update.md)). This exploration turns
 that note into a concrete shape.
 
 ## What the password actually gates today
@@ -49,7 +49,7 @@ mostly illusory here:
 
 - **The password never recovered the identity.** Identity recovery is the device key's
   2-of-3 Shamir split (iCloud Keychain / PDS escrow / user copy) plus the 72-hour PLC
-  override window ([identity-and-key-custody.md](../architecture/identity-and-key-custody.md)).
+  override window ([identity-and-key-custody.md](../../architecture/identity-and-key-custody.md)).
   The password only ever gated PDS *sessions*.
 - **Password reset is dead code in practice.** Outbound email is stubbed (MM-211):
   `requestPasswordReset` logs the token instead of sending it. A forgotten password is
@@ -85,7 +85,7 @@ deciding between them (or layering them) is the first open question below.
 
 "Send a push to launch the app for login requests" is the natural cross-device endgame,
 and it now has a foundation: the
-[E2E-encrypted notification relay](2026-07-10-notification-relay.md) (PR
+[E2E-encrypted notification relay](../../design-plans/2026-07-10-notification-relay.md) (PR
 [#207](https://github.com/malpercio-dev/ezpds/pull/207)) defines how a self-hosted Custos
 instance pushes to the official apps through a relay that is untrusted for everything
 except availability — HPKE-sealed payloads, per-device notification keys, opaque push

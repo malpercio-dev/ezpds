@@ -311,7 +311,7 @@ These bind both apps — the IA-level extension of the shared "practice what you
 4. **Emergencies interrupt; they are never destinations.** An active alarm restructures the surface — takeover, transformed home — rather than waiting behind navigation.
 5. **One door per depth tier.** A surface presents at most one "go deeper" affordance per tier (Use → Manage → Advanced). Two sibling doors at the same depth is the start of the next verb wall. The identity screen's "Move or rebuild" is the one deliberate exception, and it is granted for a reason no other verb can claim: leaving is the promise the product is *for*, and a promise buried one tier down is not a promise. Do not read it as licence for a third door.
 
-Full derivation, screen-by-screen mapping, and the rejected alternatives: [docs/design-plans/2026-07-24-wallet-information-architecture.md](docs/design-plans/2026-07-24-wallet-information-architecture.md).
+Full derivation, screen-by-screen mapping, and the rejected alternatives: [docs/archive/design-plans/2026-07-24-wallet-information-architecture.md](docs/archive/design-plans/2026-07-24-wallet-information-architecture.md).
 
 ## 6. Brand Mark & App Icon
 

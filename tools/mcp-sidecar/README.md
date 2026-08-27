@@ -12,7 +12,7 @@ models are both first-class (design plan §1 matrix):
 - **Hosted, sovereign child** → this sidecar. The agent is its own identity; the sidecar never
   holds a durable credential that could act as anyone.
 
-Design: [`docs/design-plans/2026-07-14-hosted-custos-mcp.md`](../../docs/design-plans/2026-07-14-hosted-custos-mcp.md)
+Design: [`docs/design-plans/2026-07-14-hosted-custos-mcp.md`](../../docs/archive/design-plans/2026-07-14-hosted-custos-mcp.md)
 §3–§5. Posture fixed by [ADR-0024](../../docs/architecture/decisions/0024-hosted-agent-credential-forwarding.md)
 (credential forwarding) and [ADR-0023](../../docs/architecture/decisions/0023-sovereign-child-agent-identities.md)
 (sovereign child identities).
@@ -120,7 +120,7 @@ deps installed in `tools/mcp` too (`just mcp-setup`); the node-only CI lane
 (`.github/workflows/mcp-check.yml`) runs the scaffold half only. Still fully offline.
 
 **Live** (`test/live/`) — the HV-2 driver for a deployed sidecar
-([`docs/test-plans/2026-07-15-MM-356.md`](../../docs/test-plans/2026-07-15-MM-356.md)):
+([`docs/test-plans/2026-07-15-MM-356.md`](../../docs/archive/test-plans/2026-07-15-MM-356.md)):
 `hv2-create-post.mjs` runs the whole pass against real deployments (ephemeral parent →
 mint child, genesis to the **real** plc.directory → forwarded token → `create_post`
 through the deployed sidecar → attribution + plc read-backs; usage in its header —

@@ -8,8 +8,8 @@ and the Add-identity situation question (§4, MM-468 — the `mode_select` step 
 describes the target, which the wallet has now reached for every row. The DESIGN.md §5
 amendment (§6, MM-469) has landed — root `DESIGN.md` now carries the navigation
 vocabulary, the panel-format status sibling, and the §1 sibling principles, so
-`/impeccable` runs inherit them. What remains of this plan is the Brass Console IA
-review (§8, MM-470).
+`/impeccable` runs inherit them. The Brass Console IA review (§8, MM-470) is also
+done. Every phase shipped; archived per `docs/archive/README.md`.
 
 Phase 3 added one rule §3 did not state. "Always dismissible" is not enough on its own:
 an alarm dismissed on launch would re-take the app on the very next foreground, which is

@@ -46,7 +46,7 @@ Decisions recorded in
 (sovereign child identities — keeps acts-as-you first-class and the self-host default) and
 [ADR-0024](../../docs/architecture/decisions/0024-hosted-agent-credential-forwarding.md)
 (the hosted tier forwards credentials, holds nothing durable). Full reasoning:
-[design plan §1](../../docs/design-plans/2026-07-14-hosted-custos-mcp.md) (the attribution ×
+[design plan §1](../../docs/archive/design-plans/2026-07-14-hosted-custos-mcp.md) (the attribution ×
 hosting matrix). For the hosted, sovereign-child sibling, see
 [`tools/mcp-sidecar/README.md`](../mcp-sidecar/README.md).
 

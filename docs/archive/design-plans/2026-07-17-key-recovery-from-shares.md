@@ -13,7 +13,7 @@ actionable). MM-405 blocks MM-312 (passwordless). Captures the
 recovery-ceremony discussion of 2026-07-17 (capture-before-close). Builds on
 [ADR-0001](../../architecture/decisions/0001-client-held-rotation-key-custody.md),
 [ADR-0002](../../architecture/decisions/0002-wallet-authorized-account-migration.md), and the
-[passwordless-auth exploration](../../design-plans/2026-07-12-passwordless-auth.md), which flagged the Shamir
+[passwordless-auth exploration](2026-07-12-passwordless-auth.md), which flagged the Shamir
 reconstruction ceremony as a **hard prerequisite** for removing the password.
 
 > **Correction (2026-07-24).** §4 step 1 and §5 step 1 below say Share 1 "appears

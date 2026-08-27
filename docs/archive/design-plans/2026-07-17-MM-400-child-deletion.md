@@ -135,5 +135,5 @@ token), 403 (parent not local).
 - `crates/pds/src/account_delete.rs` — two `DELETE_BY_DID` entries.
 - `crates/pds/src/routes/agent_child.rs` — `delete_child` + types + tests.
 - `crates/pds/src/app.rs` — route wiring.
-- `bruno/agent_child_delete.bru`; `docs/test-plans/2026-07-15-MM-356.md` lineage;
+- `bruno/agent_child_delete.bru`; `docs/archive/test-plans/2026-07-15-MM-356.md` lineage;
   `crates/pds/src/db/AGENTS.md`.
