@@ -179,6 +179,7 @@ pub async fn apply_space_writes(
             skey: &space.skey,
             policy: None,
             app_access: None,
+            app_allowed: None,
             managing_app: None,
         },
     )

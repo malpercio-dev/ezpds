@@ -50,7 +50,7 @@ pub async fn simplespace_create_space(
     require_space_grant(&state, &user, &space, SpaceOp::Manage(RepoAction::Create)).await?;
 
     let (policy, managing_app) = super::space_views::policy_from_lex(&input.policy)?;
-    let app_access = super::space_views::app_access_from_lex(&input.app_access)?;
+    let (app_access, app_allowed) = super::space_views::app_access_from_lex(&input.app_access)?;
 
     let created = create_space(
         &state.db,
@@ -61,6 +61,7 @@ pub async fn simplespace_create_space(
             skey: &space.skey,
             policy: Some(policy),
             app_access: Some(app_access),
+            app_allowed: app_allowed.as_deref(),
             managing_app: managing_app.as_deref(),
         },
     )

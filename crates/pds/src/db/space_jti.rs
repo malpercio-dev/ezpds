@@ -14,8 +14,6 @@ use sqlx::{Sqlite, SqlitePool};
 
 /// Which token surface a jti was spent on. A jti spent on one surface is
 /// independent of the same string on another (the table key is `(scope, jti)`).
-// `Attestation` is spent by client-attestation verification, which lands with that work.
-#[allow(dead_code)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SpaceJtiScope {
     /// `getSpaceCredential`'s single-use delegation tokens.

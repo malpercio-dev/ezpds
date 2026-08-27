@@ -144,7 +144,7 @@ async fn create_get_update_members_delete_round_trip() {
         .await
         .unwrap()
         .unwrap();
-    assert!(authorize_credential_request(&state.db, &row, BOB)
+    assert!(authorize_credential_request(&state, &row, BOB, None)
         .await
         .is_ok());
     let (status, _) = send(
@@ -158,7 +158,7 @@ async fn create_get_update_members_delete_round_trip() {
     .await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(
-        *authorize_credential_request(&state.db, &row, BOB)
+        *authorize_credential_request(&state, &row, BOB, None)
             .await
             .unwrap_err()
             .code(),
@@ -272,7 +272,7 @@ async fn create_get_update_members_delete_round_trip() {
         .unwrap()
         .unwrap();
     assert!(row.deleted_at.is_none());
-    assert!(authorize_credential_request(&state.db, &row, BOB)
+    assert!(authorize_credential_request(&state, &row, BOB, None)
         .await
         .is_ok());
     let _ = space;
@@ -289,26 +289,20 @@ async fn unimplemented_open_union_members_are_refused_and_never_stored() {
         (
             serde_json::json!({
                 "type": TYPE, "skey": "main",
-                "policy": { "$type": MANAGING_APP, "managingApp": "did:web:forum.example#forum" },
-                "appAccess": { "$type": OPEN },
-            }),
-            "UnsupportedPolicy",
-        ),
-        (
-            serde_json::json!({
-                "type": TYPE, "skey": "main",
                 "policy": { "$type": "com.example.futurePolicy" },
                 "appAccess": { "$type": OPEN },
             }),
             "UnsupportedPolicy",
         ),
+        // `managingApp` is a service identifier — a DID with an optional service fragment.
+        // A space whose decider cannot be addressed is a space that could never mint.
         (
             serde_json::json!({
                 "type": TYPE, "skey": "main",
-                "policy": { "$type": PUBLIC },
-                "appAccess": { "$type": ALLOW_LIST, "allowed": ["https://app.example/client"] },
+                "policy": { "$type": MANAGING_APP, "managingApp": "https://forum.example" },
+                "appAccess": { "$type": OPEN },
             }),
-            "UnsupportedAppAccess",
+            "UnsupportedPolicy",
         ),
         (
             serde_json::json!({
@@ -337,11 +331,11 @@ async fn unimplemented_open_union_members_are_refused_and_never_stored() {
     assert_eq!(status, StatusCode::OK);
     for (patch, error) in [
         (
-            serde_json::json!({ "policy": { "$type": MANAGING_APP, "managingApp": "did:web:x" } }),
+            serde_json::json!({ "policy": { "$type": "com.example.futurePolicy" } }),
             "UnsupportedPolicy",
         ),
         (
-            serde_json::json!({ "appAccess": { "$type": ALLOW_LIST, "allowed": [] } }),
+            serde_json::json!({ "appAccess": { "$type": "com.example.futureAccess" } }),
             "UnsupportedAppAccess",
         ),
     ] {
@@ -369,6 +363,89 @@ async fn unimplemented_open_union_members_are_refused_and_never_stored() {
     .await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
     assert_eq!(body["error"], "InvalidRequest", "{body}");
+}
+
+/// The two config members that need app identity — `managing-app` policy and `allowList` app
+/// access — round-trip through create, update, and `getSpace` with their payloads intact.
+///
+/// The allow list is the payload worth pinning: it is the only part of the config that is a
+/// list rather than a tag, so it is the part that can silently come back empty — and an empty
+/// allow list admits no app at all.
+#[tokio::test]
+async fn managing_app_and_allow_list_config_round_trips() {
+    let state = setup().await;
+    let alice = access_jwt(&state.jwt_secret, ALICE);
+    const APP: &str = "did:web:forum.example#forum";
+    const CLIENT: &str = "https://app.example.com/client-metadata.json";
+
+    let (status, body) = send(
+        &state,
+        post(
+            "createSpace",
+            &alice,
+            serde_json::json!({
+                "type": TYPE, "skey": "main",
+                "policy": { "$type": MANAGING_APP, "managingApp": APP },
+                "appAccess": { "$type": ALLOW_LIST, "allowed": [CLIENT] },
+            }),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+
+    let (status, body) = send(&state, get(&format!("getSpace?space={SPACE}"), &alice)).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["policy"]["$type"], MANAGING_APP);
+    assert_eq!(body["policy"]["managingApp"], APP);
+    assert_eq!(body["appAccess"]["$type"], ALLOW_LIST);
+    assert_eq!(body["appAccess"]["allowed"], serde_json::json!([CLIENT]));
+
+    // Replacing the `appAccess` axis replaces its list with it, and leaving the axis alone
+    // leaves the list alone.
+    let (status, _) = send(
+        &state,
+        post(
+            "updateSpace",
+            &alice,
+            serde_json::json!({
+                "space": SPACE,
+                "appAccess": { "$type": ALLOW_LIST, "allowed": [CLIENT, "https://b.example/c"] },
+            }),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let (status, _) = send(
+        &state,
+        post(
+            "updateSpace",
+            &alice,
+            serde_json::json!({ "space": SPACE, "policy": { "$type": PUBLIC } }),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let (_, body) = send(&state, get(&format!("getSpace?space={SPACE}"), &alice)).await;
+    assert_eq!(body["policy"]["$type"], PUBLIC);
+    assert_eq!(
+        body["appAccess"]["allowed"],
+        serde_json::json!([CLIENT, "https://b.example/c"]),
+        "a policy-only update must not disturb the allow list",
+    );
+
+    // Switching back to `open` drops the list; switching to `allowList` again starts fresh.
+    let (status, _) = send(
+        &state,
+        post(
+            "updateSpace",
+            &alice,
+            serde_json::json!({ "space": SPACE, "appAccess": { "$type": OPEN } }),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let (_, body) = send(&state, get(&format!("getSpace?space={SPACE}"), &alice)).await;
+    assert_eq!(body["appAccess"], serde_json::json!({ "$type": OPEN }));
 }
 
 /// Management needs the matching `manage=` verb on a granular grant, and the caller must be

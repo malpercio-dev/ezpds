@@ -3,8 +3,9 @@
 // Gathers: headers (delegation token in Authorization, DPoP proof), JSON body (space,
 //          clientAttestation), DB pool + master key
 // Processes: space-ref parse → space row (local authority, not deleted) → mint-time DPoP proof
-//            → delegation token verify + jti spend → issuance policy → load the authority's
-//            signer → mint the DPoP-bound credential
+//            → delegation token verify + jti spend → client attestation verify + jti spend
+//            → issuance policy (app perimeter, then user) → load the authority's signer
+//            → mint the DPoP-bound credential
 // Returns: JSON { credential } on success; ApiError on failure
 //
 // Implements: POST /xrpc/com.atproto.space.getSpaceCredential
@@ -15,10 +16,11 @@ use serde::{Deserialize, Serialize};
 use common::{ApiError, ErrorCode};
 
 use crate::app::AppState;
+use crate::auth::client_attestation::verify_client_attestation;
 use crate::auth::extract_bearer_token;
 use crate::auth::space::{
-    authorize_credential_request, mint_space_credential, mint_time_dpop_thumbprint, unix_now,
-    verify_delegation_token,
+    authorize_credential_request, mint_space_credential, mint_time_dpop_thumbprint, space_host_aud,
+    unix_now, verify_delegation_token,
 };
 use crate::lexicon::LexiconInput;
 
@@ -27,10 +29,9 @@ use crate::lexicon::LexiconInput;
 pub struct GetSpaceCredentialInput {
     /// The space to read (`space-ref`).
     space: String,
-    /// Client attestation JWT, required only when the space gates on app identity. Attestation
-    /// verification lands with the allow-list app-access work; until then a space that needs
-    /// one refuses to mint, and an unsolicited attestation is ignored.
-    #[allow(dead_code)]
+    /// Client attestation JWT, required only when the space gates on app identity. Verified
+    /// whenever present — an app that names itself is held to that name even where the space
+    /// would have admitted it anonymously.
     client_attestation: Option<String>,
 }
 
@@ -81,7 +82,17 @@ pub async fn get_space_credential(
     let delegation_token = extract_bearer_token(&headers)?;
     let delegation = verify_delegation_token(&state, delegation_token, &space, now).await?;
 
-    authorize_credential_request(&state.db, &row, &delegation.user_did).await?;
+    // After the delegation token, deliberately: verifying an attestation resolves a
+    // caller-named client_id over the network, and gating that behind a valid single-use grant
+    // keeps an unauthenticated caller from driving outbound fetches.
+    let client_id = match &input.client_attestation {
+        Some(attestation) => Some(
+            verify_client_attestation(&state, attestation, &space_host_aud(&space), now).await?,
+        ),
+        None => None,
+    };
+
+    authorize_credential_request(&state, &row, &delegation.user_did, client_id.as_deref()).await?;
 
     // Signed with the authority account's repo key — the key this server publishes as the
     // authority's `#atproto_space` (and `#atproto`).
@@ -131,6 +142,7 @@ mod tests {
 
     const AUTHORITY: &str = "did:plc:abc234567abc234567abc234";
     const ALICE: &str = "did:plc:alice";
+    const BOB: &str = "did:plc:bob";
     const SPACE: &str = "at://did:plc:abc234567abc234567abc234/space/org.example.bucket/self";
     const PATH: &str = "/xrpc/com.atproto.space.getSpaceCredential";
     const HTU: &str = "https://test.example.com/xrpc/com.atproto.space.getSpaceCredential";
@@ -154,6 +166,16 @@ mod tests {
     }
 
     async fn seed_space(state: &AppState, policy: &str) {
+        seed_configured_space(state, policy, None, "open", None).await;
+    }
+
+    async fn seed_configured_space(
+        state: &AppState,
+        policy: &str,
+        managing_app: Option<&str>,
+        app_access: &str,
+        app_allowed: Option<&str>,
+    ) {
         insert_space(
             &state.db,
             &NewSpace {
@@ -162,8 +184,9 @@ mod tests {
                 space_type: "org.example.bucket",
                 skey: "self",
                 policy: Some(policy),
-                app_access: Some("open"),
-                managing_app: None,
+                app_access: Some(app_access),
+                app_allowed,
+                managing_app,
             },
         )
         .await
@@ -182,6 +205,15 @@ mod tests {
     }
 
     fn request(delegation: &str, dpop: Option<&str>, space: &str) -> Request<Body> {
+        attested_request(delegation, dpop, space, None)
+    }
+
+    fn attested_request(
+        delegation: &str,
+        dpop: Option<&str>,
+        space: &str,
+        attestation: Option<&str>,
+    ) -> Request<Body> {
         let mut b = Request::builder()
             .method("POST")
             .uri(PATH)
@@ -190,10 +222,11 @@ mod tests {
         if let Some(p) = dpop {
             b = b.header("DPoP", p);
         }
-        b.body(Body::from(
-            serde_json::json!({ "space": space }).to_string(),
-        ))
-        .unwrap()
+        let mut body = serde_json::json!({ "space": space });
+        if let Some(attestation) = attestation {
+            body["clientAttestation"] = serde_json::Value::String(attestation.to_string());
+        }
+        b.body(Body::from(body.to_string())).unwrap()
     }
 
     fn segment(token: &str, i: usize) -> serde_json::Value {
@@ -342,6 +375,256 @@ mod tests {
             .unwrap();
         assert_eq!(response.status(), StatusCode::BAD_REQUEST);
         assert_eq!(body_json(response).await["error"], "SpaceDeleted");
+    }
+
+    // ── Client attestation + the app perimeter ───────────────────────────────
+
+    /// A P-256 client authentication key, its published JWK, and the attestations it signs.
+    struct ClientKey(p256::ecdsa::SigningKey);
+
+    impl ClientKey {
+        fn generate() -> Self {
+            Self(p256::ecdsa::SigningKey::random(&mut rand_core::OsRng))
+        }
+
+        fn jwk(&self, kid: &str) -> serde_json::Value {
+            let point = self.0.verifying_key().to_encoded_point(false);
+            serde_json::json!({
+                "kty": "EC",
+                "crv": "P-256",
+                "x": URL_SAFE_NO_PAD.encode(point.x().unwrap()),
+                "y": URL_SAFE_NO_PAD.encode(point.y().unwrap()),
+                "kid": kid,
+            })
+        }
+
+        /// A client attestation as the reference mints one: `typ
+        /// atproto-client-attestation+jwt`, `iss` = `sub` = client_id, `aud` = the space host.
+        fn attest(&self, client_id: &str, aud: &str, jti: &str, now: u64) -> String {
+            use p256::ecdsa::{signature::Signer, Signature};
+            let header = serde_json::json!({
+                "typ": "atproto-client-attestation+jwt",
+                "alg": "ES256",
+                "kid": "k1",
+            });
+            let payload = serde_json::json!({
+                "iss": client_id,
+                "sub": client_id,
+                "aud": aud,
+                "iat": now,
+                "exp": now + 60,
+                "jti": jti,
+            });
+            let hdr = URL_SAFE_NO_PAD.encode(serde_json::to_vec(&header).unwrap());
+            let pay = URL_SAFE_NO_PAD.encode(serde_json::to_vec(&payload).unwrap());
+            let input = format!("{hdr}.{pay}");
+            let sig: Signature = self.0.sign(input.as_bytes());
+            format!(
+                "{input}.{}",
+                URL_SAFE_NO_PAD.encode(sig.to_bytes().as_ref() as &[u8])
+            )
+        }
+    }
+
+    /// Serve a client-metadata document publishing `key` inline, and return its client_id.
+    ///
+    /// Plain http on the loopback is the spec's local-development exception, and the metadata
+    /// fetch goes through the SSRF-hardened client — which production builds with loopback
+    /// refused, so this branch is only reachable from a test's loopback-permitting client.
+    async fn serve_client_metadata(server: &wiremock::MockServer, key: &ClientKey) -> String {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, ResponseTemplate};
+
+        let client_id = format!("{}/client-metadata.json", server.uri());
+        Mock::given(method("GET"))
+            .and(path("/client-metadata.json"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "client_id": client_id,
+                "redirect_uris": ["https://app.example.com/callback"],
+                "token_endpoint_auth_method": "private_key_jwt",
+                "jwks": { "keys": [key.jwk("k1")] },
+            })))
+            .mount(server)
+            .await;
+        client_id
+    }
+
+    /// The `allowList` app-access perimeter, end to end: without a verified client attestation
+    /// the space's client_id list is an unenforceable claim, so this is the test that says the
+    /// perimeter is real.
+    #[tokio::test]
+    async fn an_allow_listed_space_mints_only_for_the_attested_client() {
+        let state = state_with_master_key().await;
+        seed_identity(&state, AUTHORITY).await;
+        let alice = seed_identity(&state, ALICE).await;
+
+        let key = ClientKey::generate();
+        let server = wiremock::MockServer::start().await;
+        let client_id = serve_client_metadata(&server, &key).await;
+        seed_configured_space(
+            &state,
+            "public",
+            None,
+            "allowList",
+            Some(&serde_json::json!([client_id]).to_string()),
+        )
+        .await;
+
+        let space = parse_space_ref(SPACE).unwrap();
+        let proof_key = DpopProofKey::generate();
+        let now = unix_now().unwrap();
+        let aud = format!("{AUTHORITY}#atproto_space_host");
+        let mint = |attestation: Option<String>| {
+            let state = state.clone();
+            let delegation = mint_delegation_token(|b| alice.sign(b), ALICE, &space, now);
+            let proof = proof_key.proof_no_ath("POST", HTU);
+            async move {
+                app(state)
+                    .oneshot(attested_request(
+                        &delegation,
+                        Some(&proof),
+                        SPACE,
+                        attestation.as_deref(),
+                    ))
+                    .await
+                    .unwrap()
+            }
+        };
+
+        // No attestation: the space cannot tell which app is asking, so it refuses on the app.
+        let response = mint(None).await;
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+        assert_eq!(body_json(response).await["error"], "AppNotAuthorized");
+
+        // An attestation the allow-listed client actually signed mints the credential.
+        let response = mint(Some(key.attest(&client_id, &aud, "att-1", now))).await;
+        assert_eq!(response.status(), StatusCode::OK);
+
+        // Attestations are single-use: the same `jti` again is refused (with a fresh delegation
+        // token, so this is the attestation's replay check and not the token's).
+        let response = mint(Some(key.attest(&client_id, &aud, "att-1", now))).await;
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        assert_eq!(
+            body_json(response).await["error"],
+            "InvalidClientAttestation"
+        );
+
+        // One minted for another authority's space host cannot be replayed here.
+        let elsewhere = key.attest(
+            &client_id,
+            "did:plc:elsewhere#atproto_space_host",
+            "att-2",
+            now,
+        );
+        let response = mint(Some(elsewhere)).await;
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        assert_eq!(
+            body_json(response).await["error"],
+            "InvalidClientAttestation"
+        );
+
+        // A JWT the client's published key did not sign is not that client, whatever it claims.
+        let imposter = ClientKey::generate();
+        let response = mint(Some(imposter.attest(&client_id, &aud, "att-3", now))).await;
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        assert_eq!(
+            body_json(response).await["error"],
+            "InvalidClientAttestation"
+        );
+    }
+
+    /// The `managing-app` policy hands the per-user decision to the app the config names, and
+    /// denies whenever it cannot get an answer — the one policy that defers its decision must
+    /// never become the one that skips it.
+    #[tokio::test]
+    async fn managing_app_policy_defers_to_the_app_and_fails_closed() {
+        use wiremock::matchers::{method, path, query_param};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let state = state_with_master_key().await;
+        seed_identity(&state, AUTHORITY).await;
+        let alice = seed_identity(&state, ALICE).await;
+        let bob = seed_identity(&state, BOB).await;
+
+        const APP: &str = "did:web:managing.example";
+        let server = MockServer::start().await;
+        let check = "/xrpc/com.atproto.simplespace.checkUserAccess";
+        // Service auth is what tells the app who is asking; a check reached without it would
+        // authorize anyone who found the URL.
+        Mock::given(method("GET"))
+            .and(path(check))
+            .and(query_param("space", SPACE))
+            .and(query_param("user", ALICE))
+            .and(wiremock::matchers::header_regex(
+                "authorization",
+                "^Bearer ",
+            ))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(serde_json::json!({ "authorized": true })),
+            )
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path(check))
+            .and(query_param("user", BOB))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(serde_json::json!({ "authorized": false })),
+            )
+            .mount(&server)
+            .await;
+        seed_did_document(
+            &state.db,
+            APP,
+            serde_json::json!({
+                "id": APP,
+                "service": [{
+                    "id": "#atproto_pds",
+                    "type": "AtprotoPersonalDataServer",
+                    "serviceEndpoint": server.uri(),
+                }],
+            }),
+        )
+        .await;
+        seed_configured_space(&state, "managing-app", Some(APP), "open", None).await;
+
+        let space = parse_space_ref(SPACE).unwrap();
+        let proof_key = DpopProofKey::generate();
+        let now = unix_now().unwrap();
+        let mint = |did: &'static str, signer: &repo_engine::CommitSigner| {
+            let state = state.clone();
+            let delegation = mint_delegation_token(|b| signer.sign(b), did, &space, now);
+            let proof = proof_key.proof_no_ath("POST", HTU);
+            async move {
+                app(state)
+                    .oneshot(request(&delegation, Some(&proof), SPACE))
+                    .await
+                    .unwrap()
+            }
+        };
+
+        let response = mint(ALICE, &alice).await;
+        assert_eq!(
+            response.status(),
+            StatusCode::OK,
+            "the app authorized alice"
+        );
+
+        let response = mint(BOB, &bob).await;
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+        assert_eq!(body_json(response).await["error"], "UserNotAuthorized");
+
+        // A managing app that publishes no endpoint for the named service cannot be asked, and
+        // an unaskable app denies rather than being skipped.
+        sqlx::query("UPDATE spaces SET managing_app = ? WHERE uri = ?")
+            .bind("did:web:managing.example#nosuch")
+            .bind(SPACE)
+            .execute(&state.db)
+            .await
+            .unwrap();
+        let response = mint(ALICE, &alice).await;
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+        assert_eq!(body_json(response).await["error"], "UserNotAuthorized");
     }
 
     #[tokio::test]
