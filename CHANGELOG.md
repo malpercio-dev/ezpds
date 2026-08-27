@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Changes are collected in `changelog.d/` during development and inserted here when
 `just set-version` prepares a release. There is intentionally no `Unreleased` section.
 
+## [0.14.0] - 2026-08-27
+
+### Added
+
+- Repo writes now verify the new commit's record count against a maintained per-repo count and abort loudly if a commit drops records it did not explicitly delete, so MST corruption like the 2026-08-27 data-loss incident can no longer persist silently.
+
+- Atproto Spaces space-host role: `com.atproto.space.listRepos` (the writer set, with each repo's last-reported rev and commit hash), `registerNotify`/`unregisterNotify` for syncer subscriptions with a seven-day renewable expiry, and inbound `notifyWrite` from foreign repo hosts. Every space write now fans out best-effort notifications — a repo host auto-registers the authority's `#atproto_space_host` and reports to it, a space host forwards to its registered syncers — and `simplespace.deleteSpace` sends `notifySpaceDeleted` before dropping the subscriptions.
+
+- Atproto Spaces: a space can now gate credentials on *which app* is asking, and on a per-user decision made elsewhere. `getSpaceCredential` verifies an optional client attestation — resolving the app's `client_id` to its published client-metadata document and JWKS over the SSRF-hardened client, and spending its `jti` single-use — so `appAccess: #allowList` is an enforced perimeter rather than an unverified claim; a space with `policy: managing-app` asks the app it names, over service auth, whether to authorize each user, and denies whenever that app answers no or cannot be reached. Both config members are consequently accepted by `createSpace`/`updateSpace` instead of refused, and `getSpace` reports the allow list back.
+
+- Atproto Spaces now follow their account's lifecycle, and can follow it to a new host. A suspension or takedown closes the whole permissioned-space surface — reads, writes, and delegation tokens alike — while self-service deactivation closes only ordinary writes, keeping the migration window open; a space host stops answering a syncer's credential the moment the space's authority stops being an active account, reporting `SpaceNotFound` rather than the durable `SpaceDeleted` signal. Migration gains its inbound leg: `POST /v1/space/import-repo` ingests the two-root CAR that `com.atproto.space.getRepo` exports, into a deactivated account, making the destination repo exactly the CAR's record set — so it hashes to the digest the source published and every syncer can converge on it. Enumerate what to move with `listSpaces` + `listBlobs`; blobs still travel by `uploadBlob`, and the new host's oplog starts fresh.
+
+- Atproto Spaces tooling and hardening: credential-authed space requests are now rate-limited per credential holder (keyed by the credential's bound DPoP key thumbprint, `rate_limit.space_credential_per_5min`, rejections visible as `rate_limit_rejections_total{limiter="space_credential"}`); the Custos MCP server grows an agent tool surface for spaces (`list_spaces`, `space_get_record`, `space_list_records`, `space_create_record`, plus destructive-gated put/delete) that the hosted sidecar re-exports; the wallet's consent screens describe `space:` grants in plain language instead of showing the raw token; and the interop CLI gains a `spaces-test` round-trip scenario. Operators can now also set the agent scope profile via `EZPDS_AGENT_AUTH_GRANTED_SCOPES` (comma-separated), as the docs already promised.
+
+- A token whose signature fails against a cached DID document now force-refreshes that document at most once per minute per DID, and the new `did_signature_refresh_total` metric reports how often that healing refresh runs, fails, or is held back — so a caller replaying a badly-signed token can no longer drive one plc.directory or did:web fetch per request.
+
+
 ## [0.13.0] - 2026-08-27
 
 ### Added
