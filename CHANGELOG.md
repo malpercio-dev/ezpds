@@ -7,6 +7,41 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Changes are collected in `changelog.d/` during development and inserted here when
 `just set-version` prepares a release. There is intentionally no `Unreleased` section.
 
+## [0.13.0] - 2026-08-27
+
+### Added
+
+- Notification registrations can opt into a metadata-minimizing ping mode (`ping: true` on the register routes): the relay then sends a content-free `content-available` background push — no sealed payload reaches the relay or Apple at all — and the app fetches events from its Custos on wake. Sealed alert pushes remain the default.
+
+- Groundwork for Spaces (permissioned data): the LtHash multiset hash and deniable commit sign/verify primitives land in the crypto crate, pinned to the reference golden vectors from the atproto `permissioned-data` branch. No server or app surface changes yet.
+
+- OAuth grants can now carry Atproto Spaces permissions: the `space:<spaceType>` scope grammar (with `authority`, `skey`, `collection`, `action`, and `manage` parameters) parses, normalizes, and enforces alongside the existing resource types, and permission sets may bundle `"resource": "space"` entries. Read access is all-or-nothing per space, record writes stay collection-constrained, and space management is a separate, default-empty capability. The space XRPC routes that consume these grants ship separately.
+
+- Groundwork for Spaces (permissioned data): the DB-backed permissioned repo store lands — schema for spaces, per-space repos (incremental LtHash state), records, the sync oplog, members, notify registrations, and jti replay protection, plus the single write choke point and blob GC that unions public and space references. No routes yet; the record CRUD and management surfaces follow.
+
+- Spaces (permissioned data): the PDS record surface goes live — `com.atproto.space.createRecord`, `putRecord`, `deleteRecord`, `applyWrites`, `listSpaces`, `getRecord`, `listRecords`, and `getLatestCommit`, all OAuth-authed against the caller's own permissioned repos and gated by their `space:` grant. Writing into a space this server has not seen records it, so joining another authority's space needs no prior setup, and `getLatestCommit` mints a fresh deniable commit per request rather than serving a stored one.
+
+- Atproto Spaces (permissioned data) auth: `com.atproto.space.getDelegationToken` mints single-use delegation tokens, and `com.atproto.space.getSpaceCredential` — Custos as a space authority — exchanges one plus a DPoP proof for a DPoP-bound space credential (`cnf.jkt`), honoring the `public` and `member-list` policies. Repo-host verification of those credentials, with full RFC 9449 per-request proof validation and per-host replay protection, lives behind the one new read-side auth seam the upcoming space read/sync routes use.
+
+- Atproto Spaces: the PDS-required `com.atproto.simplespace` management surface — `createSpace`, `updateSpace`, `deleteSpace`, `getSpace`, `addMember`, `removeMember`, `listMembers`. Spaces are anchored on the caller's own DID and managed under `space:…?manage=` grants; `getSpace` also accepts a DPoP-bound space credential, so a member hosted anywhere can read the space's configuration. `public` and `member-list` policies with `open` app access are implemented; `managing-app` and `allowList` are refused at create/update time (`UnsupportedPolicy` / `UnsupportedAppAccess`) rather than stored unenforced. Deleting a space tombstones it (so credential renewals answer `SpaceDeleted`), removes the authority's own repo, and leaves members' records in place, unreadable.
+
+- The OAuth consent screen now describes Atproto Spaces requests in plain language instead of raw scope strings: each `space:` grant is shown under the space type's declared name (localized to the browser's language when the declaration offers a translation), a named authority appears as its bidirectionally-verified handle, and the collections the app could write are spelled out. A request for every kind of space under any authority is called out with a prominent warning. The raw scope token stays visible on each row, and a declaration that can't be reached falls back to it rather than blocking the sign-in.
+
+- Atproto Spaces sync surface: `com.atproto.space.listRepoOps` (incremental oplog sync with head commits and an hourly compaction sweep bounding retention to seven days), `com.atproto.space.getRepo` (streaming two-root CAR export — signed commit plus canonical DRISL index), and space-authed `com.atproto.space.getBlob`/`listBlobs` for permissioned blob fetch and enumeration. All behind the space read seam (covering OAuth grant or DPoP-bound space credential).
+
+- DID documents now carry every verification method and service a PLC operation publishes — including the Atproto Spaces `#atproto_space` key and `#atproto_space_host` service — and `getRecommendedDidCredentials` recommends both; resolution falls back to `#atproto` / `#atproto_pds` when they are absent.
+
+
+### Fixed
+
+- Proxied Bluesky requests no longer depend on a live DID-document fetch. An `atproto-proxy` header naming the operator's own configured AppView or chat service (which the official Bluesky app sends on every request) is now recognised as the default rather than a caller-chosen retarget, so a slow or failing `did:web:api.bsky.app` no longer breaks feed loads — and those requests regain read-after-write merging, so your own new posts appear in your timeline immediately. Every other DID document resolved from plc.directory or a `did:web` endpoint is now cached for an hour and refreshed in the background for up to a day, matching the reference PDS.
+
+- Repo writes can no longer silently destroy records: a local patch to the atrium-repo
+  MST fixes an upstream bug (atrium-rs/atrium#343) where inserting a record whose key
+  hashes to a higher tree layer could discard every record sorting on one side of the
+  insertion point — whole collections vanished with no error and no firehose delete.
+
+
 ## [0.12.0] - 2026-08-19
 
 ### Added
