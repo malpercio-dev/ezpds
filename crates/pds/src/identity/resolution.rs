@@ -290,6 +290,68 @@ pub async fn resolve_did_document_force_refresh(
     resolve_did_document_inner(state, did, true).await
 }
 
+/// Force-refresh `did`'s document to heal a token whose signature failed against the cached
+/// verification key, at most once per DID per cool-down window.
+///
+/// The one seam every signature-mismatch retry goes through — the space-token verifier
+/// (`auth::space`) and the service-auth guard (`auth::service_auth`) both take this path, so the
+/// cool-down and the `did_signature_refresh` counter are derived once for both. Callers reach it
+/// only *after* a verification failed specifically on the signature: a fossil cached key is the
+/// only reason a refresh could help (see [`resolve_did_document_force_refresh`]).
+///
+/// The refresh deliberately bypasses the TTL-less `did_documents` cache, so without a bound a
+/// caller replaying one badly-signed token for a real DID buys an upstream plc.directory /
+/// did:web fetch per request. A **suppressed** refresh returns `InvalidToken`: the cached document
+/// was there and the signature did not verify against it, so that verdict stands. A refresh that
+/// was attempted and **failed** returns the resolution error unchanged — an unreachable PLC
+/// directory is not an invalid token, and each caller decides whether to surface or absorb it.
+///
+/// Deliberately *not* folded into [`resolve_did_document_force_refresh`] itself — `refreshIdentity`
+/// and `activateAccount` call that as an explicit operator/user action, and throttling a refresh
+/// someone asked for would break the healing they came for.
+pub async fn refresh_did_document_after_signature_mismatch(
+    state: &AppState,
+    did: &str,
+) -> Result<Value, ApiError> {
+    let outcome = |o: &'static str| {
+        state.metrics.did_signature_refresh.add(
+            1,
+            &[crate::metrics::label(
+                crate::metrics::names::LABEL_OUTCOME,
+                o,
+            )],
+        );
+    };
+
+    if !state.rate_limiter.allow_did_refresh(did) {
+        outcome("rate_limited");
+        tracing::debug!(
+            did = %did,
+            "signature-mismatch DID refresh suppressed by the per-DID cool-down"
+        );
+        return Err(ApiError::new(
+            ErrorCode::InvalidToken,
+            "token signature does not verify against the issuer's published key",
+        ));
+    }
+
+    tracing::info!(
+        did = %did,
+        "token signature failed against the cached DID document; \
+         force-refreshing the key and retrying once"
+    );
+    match resolve_did_document_force_refresh(state, did).await {
+        Ok(doc) => {
+            outcome("ok");
+            Ok(doc)
+        }
+        Err(e) => {
+            outcome("error");
+            Err(e)
+        }
+    }
+}
+
 async fn resolve_did_document_inner(
     state: &AppState,
     did: &str,
@@ -690,9 +752,51 @@ fn also_known_as_handles(did_doc: &Value) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::{
-        did_web_document_url, safe_body_preview, service_endpoint, space_host_endpoint,
-        space_verification_key,
+        did_web_document_url, refresh_did_document_after_signature_mismatch, safe_body_preview,
+        service_endpoint, space_host_endpoint, space_verification_key,
     };
+    use common::ErrorCode;
+
+    /// The cool-down admits one signature-mismatch refresh per DID per window, and denies the
+    /// next one *without* going upstream: the PLC directory here is an unroutable address, so a
+    /// refresh that actually fetched would spend the client timeout and report a PLC error. The
+    /// suppressed call must come back promptly as an `InvalidToken` signature verdict instead.
+    #[tokio::test]
+    async fn signature_mismatch_refresh_is_cooled_down_per_did() {
+        let mut state =
+            crate::app::test_state_with_plc_url("http://127.0.0.1:1/plc".to_string()).await;
+        state.rate_limiter = std::sync::Arc::new(crate::rate_limit::RateLimiterState::new(
+            &common::RateLimitConfig {
+                enabled: true,
+                ..common::RateLimitConfig::default()
+            },
+        ));
+
+        let did = "did:plc:aaaaaaaaaaaaaaaaaaaaaaaa";
+
+        // First attempt spends the allowance and really tries: the unreachable directory's error
+        // passes through unflattened, so a caller can still tell "PLC is down" from "bad token".
+        let attempted = refresh_did_document_after_signature_mismatch(&state, did)
+            .await
+            .expect_err("unreachable PLC directory must fail");
+        assert_ne!(*attempted.code(), ErrorCode::InvalidToken);
+
+        // Second attempt inside the window is suppressed — no fetch, and the signature-mismatch
+        // verdict stands.
+        let suppressed = refresh_did_document_after_signature_mismatch(&state, did)
+            .await
+            .expect_err("the cool-down must deny the second refresh");
+        assert_eq!(*suppressed.code(), ErrorCode::InvalidToken);
+
+        // The cool-down is per DID: a different issuer is unaffected.
+        let other = refresh_did_document_after_signature_mismatch(
+            &state,
+            "did:plc:bbbbbbbbbbbbbbbbbbbbbbbb",
+        )
+        .await
+        .expect_err("unreachable PLC directory must fail");
+        assert_ne!(*other.code(), ErrorCode::InvalidToken);
+    }
 
     fn doc(methods: &[(&str, &str)], services: &[(&str, &str)]) -> serde_json::Value {
         serde_json::json!({
