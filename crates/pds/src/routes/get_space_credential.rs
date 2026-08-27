@@ -401,6 +401,12 @@ mod tests {
         /// A client attestation as the reference mints one: `typ
         /// atproto-client-attestation+jwt`, `iss` = `sub` = client_id, `aud` = the space host.
         fn attest(&self, client_id: &str, aud: &str, jti: &str, now: u64) -> String {
+            self.attest_for(client_id, aud, jti, now, 60)
+        }
+
+        /// The same, with an explicit lifetime — for the over-long attestation the mint bound
+        /// has to refuse.
+        fn attest_for(&self, client_id: &str, aud: &str, jti: &str, now: u64, ttl: u64) -> String {
             use p256::ecdsa::{signature::Signer, Signature};
             let header = serde_json::json!({
                 "typ": "atproto-client-attestation+jwt",
@@ -412,7 +418,7 @@ mod tests {
                 "sub": client_id,
                 "aud": aud,
                 "iat": now,
-                "exp": now + 60,
+                "exp": now + ttl,
                 "jti": jti,
             });
             let hdr = URL_SAFE_NO_PAD.encode(serde_json::to_vec(&header).unwrap());
@@ -526,6 +532,19 @@ mod tests {
         // A JWT the client's published key did not sign is not that client, whatever it claims.
         let imposter = ClientKey::generate();
         let response = mint(Some(imposter.attest(&client_id, &aud, "att-3", now))).await;
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        assert_eq!(
+            body_json(response).await["error"],
+            "InvalidClientAttestation"
+        );
+
+        // An attestation whose lifetime outruns the replay row's retention horizon is refused
+        // outright. Retaining the `jti` for less than the token's own validity would make
+        // "single-use" expire with the row: once swept, the very same attestation replays for
+        // the rest of its life. The bound therefore falls on what is admitted, not on how long
+        // the row is kept.
+        let long_lived = key.attest_for(&client_id, &aud, "att-4", now, 60 * 60);
+        let response = mint(Some(long_lived)).await;
         assert_eq!(response.status(), StatusCode::BAD_REQUEST);
         assert_eq!(
             body_json(response).await["error"],

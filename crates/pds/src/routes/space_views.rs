@@ -263,9 +263,15 @@ fn union_type(value: &serde_json::Value) -> &str {
 /// unrecognized member is refused here, never stored and never silently downgraded.
 ///
 /// `managingApp` is a service identifier: a DID with an optional service fragment
-/// (`did:web:example.com#forum`). Only the `did:` prefix is checked, matching the reference —
-/// whether that DID resolves to a reachable service is a question for mint time, where an
-/// unresolvable managing app denies rather than invalidating the stored config.
+/// (`did:web:example.com#forum`). Both halves are checked here — the DID against the canonical
+/// validator, and a fragment (when the `#` is present at all) for being non-empty. The
+/// reference checks only the `did:` prefix, which admits `did:` and `did:web:#`: values no
+/// resolution can ever turn into an endpoint, so a space configured with one would refuse every
+/// non-authority request forever. That is the same "never store a config this host cannot
+/// enforce" rule the open unions above follow, applied one level down.
+///
+/// Whether a *well-formed* identifier resolves to a reachable service stays a mint-time
+/// question, where an unreachable managing app denies rather than invalidating stored config.
 pub fn policy_from_lex(
     value: &serde_json::Value,
 ) -> Result<(&'static str, Option<String>), ApiError> {
@@ -276,7 +282,7 @@ pub fn policy_from_lex(
             let managing_app = value
                 .get("managingApp")
                 .and_then(serde_json::Value::as_str)
-                .filter(|app| app.starts_with("did:"))
+                .filter(|app| is_service_identifier(app))
                 .ok_or_else(|| {
                     ApiError::new(
                         ErrorCode::UnsupportedPolicy,
@@ -289,6 +295,17 @@ pub fn policy_from_lex(
             ErrorCode::UnsupportedPolicy,
             format!("unsupported policy: {other}"),
         )),
+    }
+}
+
+/// A service identifier: a DID, optionally followed by `#` and a non-empty service fragment.
+///
+/// The DID half goes through `identity::did::is_valid_did`, the canonical validator the lexicon
+/// `did` string format already uses, rather than a second prefix check that would drift from it.
+fn is_service_identifier(value: &str) -> bool {
+    match value.split_once('#') {
+        Some((did, fragment)) => !fragment.is_empty() && crate::identity::did::is_valid_did(did),
+        None => crate::identity::did::is_valid_did(value),
     }
 }
 

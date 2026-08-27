@@ -38,9 +38,14 @@ pub const CLIENT_ATTESTATION_TYP: &str = "atproto-client-attestation+jwt";
 /// tolerance — the reference's zero-tolerance check is a known interop trap.
 const CLOCK_TOLERANCE_SECS: u64 = 30;
 
-/// Longest remaining lifetime accepted on an attestation — also the horizon its spent `jti` is
-/// retained for, so an attestation can never outlive its replay row. The proposal's attestations
-/// live ~60 s; this is the generous ceiling, not the expected value.
+/// Longest remaining lifetime accepted on an attestation. The proposal's attestations live
+/// ~60 s; this is the generous ceiling, not the expected value.
+///
+/// A *rejection* bound, not a clamp on the replay row's retention — those are not
+/// interchangeable. Clamping retention while still accepting the token would retire the `jti`
+/// row while the attestation it belongs to is still verifiable, and the next presentation of
+/// that same attestation would insert cleanly and be accepted: single-use in name only. The
+/// bound has to fall on what is admitted, exactly as `space::verify_delegation_token` does it.
 const MAX_TTL_SECS: u64 = 5 * 60;
 
 #[derive(Deserialize)]
@@ -126,11 +131,21 @@ pub async fn verify_client_attestation(
         .as_deref()
         .filter(|jti| !jti.is_empty())
         .ok_or_else(|| invalid("client attestation has no jti".into()))?;
-    let remaining = claims.exp.saturating_sub(now).min(MAX_TTL_SECS);
+    let remaining = claims.exp.saturating_sub(now);
+    if remaining > MAX_TTL_SECS {
+        return Err(invalid(
+            "client attestation lifetime is too long".to_string(),
+        ));
+    }
+    // Retained past the token's own `exp` by the leeway that admitted it: `decode` accepts an
+    // attestation up to `CLOCK_TOLERANCE_SECS` past expiry, so a row retired at `exp` would
+    // leave that trailing window replayable. The row must outlive every instant the token is
+    // still accepted — the horizon `space_jti_replay` is specified to hold.
+    let retain = remaining + CLOCK_TOLERANCE_SECS;
 
     // Spent only now: the signature decides whether this jti was ever the client's to spend, so
     // burning it earlier would let an unsigned forgery lock out the real attestation.
-    let fresh = insert_jti_if_absent(&state.db, SpaceJtiScope::Attestation, jti, remaining as i64)
+    let fresh = insert_jti_if_absent(&state.db, SpaceJtiScope::Attestation, jti, retain as i64)
         .await
         .map_err(|e| {
             tracing::error!(error = %e, "failed to record client attestation jti");

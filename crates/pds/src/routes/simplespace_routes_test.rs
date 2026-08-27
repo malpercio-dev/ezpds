@@ -295,11 +295,37 @@ async fn unimplemented_open_union_members_are_refused_and_never_stored() {
             "UnsupportedPolicy",
         ),
         // `managingApp` is a service identifier — a DID with an optional service fragment.
-        // A space whose decider cannot be addressed is a space that could never mint.
+        // A space whose decider cannot be addressed is a space that could never mint, so every
+        // shape that can never resolve is refused rather than stored: not a DID at all, a bare
+        // prefix, a DID with no method-specific id, and an empty fragment.
         (
             serde_json::json!({
                 "type": TYPE, "skey": "main",
                 "policy": { "$type": MANAGING_APP, "managingApp": "https://forum.example" },
+                "appAccess": { "$type": OPEN },
+            }),
+            "UnsupportedPolicy",
+        ),
+        (
+            serde_json::json!({
+                "type": TYPE, "skey": "main",
+                "policy": { "$type": MANAGING_APP, "managingApp": "did:" },
+                "appAccess": { "$type": OPEN },
+            }),
+            "UnsupportedPolicy",
+        ),
+        (
+            serde_json::json!({
+                "type": TYPE, "skey": "main",
+                "policy": { "$type": MANAGING_APP, "managingApp": "did:web:" },
+                "appAccess": { "$type": OPEN },
+            }),
+            "UnsupportedPolicy",
+        ),
+        (
+            serde_json::json!({
+                "type": TYPE, "skey": "main",
+                "policy": { "$type": MANAGING_APP, "managingApp": "did:web:forum.example#" },
                 "appAccess": { "$type": OPEN },
             }),
             "UnsupportedPolicy",
