@@ -127,7 +127,7 @@ The two are **siblings** — shared security rigor (practice-what-you-preach, WC
 - **Live status:** Linear is the source of truth. To see where the project stands, call `linear_wave_status` (team `MM`, `label_prefix: "Wave"`) — one call returns every wave with Done/In Progress/Backlog tallies and percent complete. Prefer this over manually scanning the backlog.
 - For exhaustive label/wave scans use `linear_list_issues` with the `label` filter and `limit=50+`. `linear_search_issues` is relevance-ranked full-text search (good for keyword lookups, NOT for "list every issue in Wave N").
 - **Static plan:** [`docs/v01-issue-plan.md`](docs/v01-issue-plan.md) is the original wave breakdown (does not track live Done/Backlog state — use Linear for that). [`docs/unified-milestone-map.md`](docs/unified-milestone-map.md) is the phase model (v0.1–v2.0+).
-- Wave labels: Wave 2 (Auth), Wave 3 (Key Sovereignty), Wave 4 (Repo + Blobs), Wave 5 (Federation), Wave 7 (Hardening), Wave 8 (auth.md). Tag new issues with their wave on creation.
+- Wave labels: Wave 2 (Auth), Wave 3 (Key Sovereignty), Wave 4 (Repo + Blobs), Wave 5 (Federation), Wave 7 (Hardening), Wave 8 (auth.md), Wave 9 (Obsign Anywhere), Wave 10 (Spaces). Tag new issues with their wave on creation.
 - **When creating a Linear issue, always set the project to `ezpds`** (team `MM` alone is not enough — the project field is frequently missed, and wave labels don't attach the issue to the project).
 - **Capture before close.** Surveys, audits, and tiered recommendation lists produced during a design/research session must land somewhere durable — the design doc in `docs/design-plans/` or Linear issues — before the session ends. Findings that live only in conversation are lost at the next `/clear`.
 
