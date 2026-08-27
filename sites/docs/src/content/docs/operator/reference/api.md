@@ -82,6 +82,7 @@ Every path registered by the server is listed here. For `/xrpc/` endpoints, use 
 | `/v1/repo-keys/rotation/complete` | Custos HTTP |
 | `/v1/repo-signing-key` | Custos HTTP |
 | `/v1/sessions/sovereign` | Custos HTTP |
+| `/v1/space/import-repo` | Custos HTTP |
 | `/v1/transfer/accept` | Custos HTTP |
 | `/v1/transfer/complete` | Custos HTTP |
 | `/v1/transfer/initiate` | Custos HTTP |

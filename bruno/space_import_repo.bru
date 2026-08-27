@@ -1,0 +1,54 @@
+meta {
+  name: Import Space Repo (Custos)
+  type: http
+  seq: 163
+}
+
+post {
+  url: {{baseUrl}}/v1/space/import-repo?space={{spaceUri}}
+  body: binary
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{accessJwt}}
+}
+
+params:query {
+  space: {{spaceUri}}
+}
+
+headers {
+  Content-Type: application/vnd.ipld.car
+}
+
+body:binary {
+  @file: {{spaceRepoCarFilePath}}
+}
+
+vars:pre-request {
+  baseUrl: http://localhost:8080
+  spaceUri: at://did:plc:authority/space/org.example.bucket/main
+  spaceRepoCarFilePath: ./space-repo.car
+}
+
+docs {
+  Ingest the two-root CAR exported by com.atproto.space.getRepo into the authenticated
+  account's repo in the named space — the permissioned-data leg of account migration.
+
+  Custos-native (/v1/*) rather than a com.atproto.space.* method: the Atproto Spaces alpha
+  lexicons define no import endpoint.
+
+  The account must be deactivated, as for com.atproto.repo.importRepo. The repo becomes
+  exactly the CAR's record set: records the CAR's index does not name are removed in the same
+  commit, so a return migration cannot leave a previous residency behind. Blobs are not
+  carried — enumerate them on the source with com.atproto.space.listBlobs and transfer them
+  with uploadBlob. If this host is to be the space's authority, recreate the simplespace
+  config and member list with createSpace/addMember.
+
+  The destination's oplog starts fresh: syncers holding a `since` from the old host fold to a
+  set hash that will not match the new head, which is their signal to heal with a full
+  getRepo.
+
+  Returns 200 { rev, records }.
+}

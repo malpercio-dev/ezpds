@@ -38,7 +38,8 @@ pub async fn space_create_record(
 ) -> Result<impl IntoResponse, ApiError> {
     let space = super::space_views::parse_space(&body.space)?;
     let user =
-        crate::auth::space::authenticate_space_write(&state, &headers, &method, &uri, &body.repo)?;
+        crate::auth::space::authenticate_space_write(&state, &headers, &method, &uri, &body.repo)
+            .await?;
     crate::auth::space::require_space_grant(
         &state,
         &user,
@@ -68,6 +69,7 @@ pub async fn space_create_record(
             rkey: rkey.clone(),
             value: Some(body.record),
         }],
+        crate::space_record_write::SpaceWriteAdmission::Active,
     )
     .await?;
 

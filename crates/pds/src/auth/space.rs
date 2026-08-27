@@ -52,7 +52,7 @@ use common::{ApiError, ErrorCode};
 use serde_json::Value;
 
 use crate::app::AppState;
-use crate::db::accounts::active_local_account_exists;
+use crate::db::accounts::{active_local_account_exists, AccountLifecycle};
 use crate::db::space_jti::{insert_jti_if_absent, SpaceJtiScope};
 use crate::db::spaces::{self, SpaceRow};
 use crate::identity::resolution::{
@@ -94,8 +94,10 @@ pub fn space_host_aud(space: &SpaceRef) -> String {
 /// Authenticate a caller of a space method that names no one repo (`listSpaces`).
 ///
 /// Runs the shared access-auth path, so the RFC 9449 scheme ↔ `cnf.jkt` binding rules are
-/// identical to every other authenticated route's.
-pub fn authenticate_space_caller(
+/// identical to every other authenticated route's, and then applies the account-lifecycle
+/// gate below. Every account-credential arm of every space and simplespace seam routes
+/// through here, so this is the one place the gate has to hold.
+pub async fn authenticate_space_caller(
     state: &AppState,
     headers: &HeaderMap,
     method: &Method,
@@ -108,7 +110,32 @@ pub fn authenticate_space_caller(
             "access token required",
         ));
     }
+
+    require_serviceable_caller(state, &user.did).await?;
     Ok(user)
+}
+
+/// The account-lifecycle gate every space call made on an account's own credential passes.
+///
+/// A valid token is not enough: an account that was removed or put into a moderation state
+/// (suspension/takedown) loses its space surface exactly as it loses the public one. A
+/// self-service-deactivated account is deliberately still admitted — that is the migration
+/// window, the same line `getPreferences`/`putPreferences` draw, and it is what lets a
+/// deactivated destination account import its space repos before `activateAccount`. Writes
+/// stay narrower than this: `space_record_write` refuses every non-active state inside its
+/// commit transaction, so deactivation remains read-only for ordinary writes.
+///
+/// Called from [`authenticate_space_caller`], and directly by `getDelegationToken` — the one
+/// space route that authenticates through the bare `AuthenticatedUser` extractor, because it
+/// names a space this server need not host.
+pub async fn require_serviceable_caller(state: &AppState, did: &str) -> Result<(), ApiError> {
+    match crate::db::accounts::account_lifecycle(&state.db, did).await? {
+        Some(AccountLifecycle::Active | AccountLifecycle::Deactivated) => Ok(()),
+        _ => {
+            tracing::warn!(did = %did, "space call: account missing or in a moderation state");
+            Err(ApiError::new(ErrorCode::InvalidToken, "account not found"))
+        }
+    }
 }
 
 /// Authenticate a space *write* and confirm the caller owns the repo it names.
@@ -116,14 +143,14 @@ pub fn authenticate_space_caller(
 /// Writes are OAuth-only by spec — a space credential is a read/sync capability the authority
 /// issues to syncers, never a licence to write into someone else's repo — so there is no second
 /// credential branch here, unlike [`authenticate_space_read`].
-pub fn authenticate_space_write(
+pub async fn authenticate_space_write(
     state: &AppState,
     headers: &HeaderMap,
     method: &Method,
     uri: &Uri,
     repo: &str,
 ) -> Result<AuthenticatedUser, ApiError> {
-    let user = authenticate_space_caller(state, headers, method, uri)?;
+    let user = authenticate_space_caller(state, headers, method, uri).await?;
     if user.did != repo {
         return Err(ApiError::new(
             ErrorCode::Forbidden,
@@ -173,7 +200,7 @@ pub async fn authenticate_space_read(
     let (scheme, token) = extract_access_token(headers)?;
 
     if peek_jwt_typ(token).as_deref() != Some(SPACE_CREDENTIAL_TYP) {
-        let user = authenticate_space_caller(state, headers, method, uri)?;
+        let user = authenticate_space_caller(state, headers, method, uri).await?;
         if user.did != repo {
             return Err(repo_not_found(repo));
         }
@@ -199,6 +226,14 @@ pub async fn authenticate_space_read(
 /// `assertSpaceScope` + `assertSpaceOwner` — a member hosted here still presents a space
 /// credential, like a member hosted anywhere else); a DPoP-bound space credential for the
 /// space is accepted with the full per-request proof validation.
+///
+/// This is the space-*host* seam — every route behind it answers only for a space anchored on
+/// a local account — so the credential arm additionally requires that authority to be an
+/// active account. A syncer holding a still-valid credential stops being served the moment the
+/// authority is deactivated, suspended, or taken down, exactly as public sync stops serving a
+/// non-active repo. The owner's own arm is one step wider (moderation states only, per
+/// [`authenticate_space_caller`]), so a deactivated authority can still manage its own spaces
+/// through the migration window.
 pub async fn authenticate_space_access(
     state: &AppState,
     headers: &HeaderMap,
@@ -214,7 +249,29 @@ pub async fn authenticate_space_access(
     }
     let credential =
         authenticate_space_credential(state, headers, scheme, token, method, uri, space).await?;
+    require_serviceable_authority(state, space).await?;
     Ok(SpaceReader::Credential(credential))
+}
+
+/// Refuse to act as space host for an authority that is no longer an active local account.
+///
+/// `SpaceNotFound` on purpose, never `SpaceDeleted`: the spec makes `SpaceDeleted` the durable
+/// signal that a syncer must drop its copy, and a suspension or a migration window is not that.
+/// Every other failure "means nothing", which is exactly the right thing for a state that can
+/// be reversed.
+pub async fn require_serviceable_authority(
+    state: &AppState,
+    space: &SpaceRef,
+) -> Result<(), ApiError> {
+    if active_local_account_exists(&state.db, &space.authority).await? {
+        return Ok(());
+    }
+    tracing::warn!(
+        space = %space.uri,
+        authority = %space.authority,
+        "space host: authority is not an active local account"
+    );
+    Err(ApiError::new(ErrorCode::SpaceNotFound, "space not found"))
 }
 
 /// Authenticate a simplespace management call (or owner-only read): an account credential
@@ -231,7 +288,7 @@ pub async fn authenticate_space_owner(
     space: &SpaceRef,
     op: SpaceOp<'_>,
 ) -> Result<AuthenticatedUser, ApiError> {
-    let user = authenticate_space_caller(state, headers, method, uri)?;
+    let user = authenticate_space_caller(state, headers, method, uri).await?;
     require_space_grant(state, &user, space, op).await?;
     if user.did != space.authority {
         return Err(ApiError::new(
@@ -1517,6 +1574,8 @@ mod tests {
     #[tokio::test]
     async fn seam_oauth_arm_reads_only_the_callers_own_repo_under_a_covering_grant() {
         let state = state_with_master_key().await;
+        // The seam gates on the caller's account lifecycle, so the caller needs an account row.
+        seed_account_with_repo(&state.db, ALICE).await;
         let path = "/xrpc/com.atproto.space.getRecord";
         // Alice's own space (authority = self).
         let own = parse_space_ref("at://did:plc:alice/space/org.example.bucket/self").unwrap();

@@ -48,6 +48,8 @@ pub async fn get_delegation_token(
         ));
     }
 
+    crate::auth::space::require_serviceable_caller(&state, &user.did).await?;
+
     let space = super::space_views::parse_space(&params.space)?;
 
     // `read` is all-or-nothing at the space boundary and is what confers getDelegationToken;

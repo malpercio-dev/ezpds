@@ -78,6 +78,24 @@ pub struct SpaceWriteResult {
     pub prev: Option<String>,
 }
 
+/// Which account states a space commit may land on, and whether it is charged.
+///
+/// The split exists because migration has to write into a repo the account cannot otherwise
+/// write to: `com.atproto.repo.importRepo` lands the public repo on a *deactivated* account,
+/// and the permissioned repos have to arrive through the same window or they cannot follow
+/// their account to a new host at all. Moderation states are refused either way — a takedown
+/// is not a migration.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SpaceWriteAdmission {
+    /// Ordinary writes: the account must be fully active, and the commit is charged against
+    /// its write budget.
+    Active,
+    /// The migration import leg: a self-service-deactivated account may land a commit, and no
+    /// write points are charged — an import is one bulk transfer of records the account
+    /// already owns, not new authorship.
+    Import,
+}
+
 /// A committed space write: the repo's new head and per-op results.
 #[derive(Debug, Clone)]
 pub struct SpaceCommitOutcome {
@@ -107,6 +125,7 @@ pub async fn apply_space_writes(
     space: &SpaceRef,
     did: &str,
     ops: &[SpaceWriteOp],
+    admission: SpaceWriteAdmission,
 ) -> Result<SpaceCommitOutcome, ApiError> {
     let space_uri = space.uri.as_str();
     if ops.is_empty() {
@@ -141,23 +160,28 @@ pub async fn apply_space_writes(
     })?;
 
     // A deactivated, suspended, or taken-down account is read-only, exactly as
-    // on the public write path. Checked *inside* the transaction: the public
+    // on the public write path — except on the import leg, which admits the
+    // deactivated state the migration window runs in (see
+    // [`SpaceWriteAdmission`]). Checked *inside* the transaction: the public
     // path folds this guard into its root CAS, but the space head's CAS is on
     // `space_repos`, not `accounts`, so a pre-transaction check would leave a
     // window for a concurrent deactivation to land between check and commit.
-    match crate::db::accounts::account_lifecycle(&mut *tx, did).await? {
-        Some(crate::db::accounts::AccountLifecycle::Active) => {}
-        Some(_) => {
-            tx.rollback().await.ok();
-            return Err(ApiError::new(
-                ErrorCode::Forbidden,
-                "account is deactivated",
-            ));
-        }
+    use crate::db::accounts::AccountLifecycle;
+    let admitted = match crate::db::accounts::account_lifecycle(&mut *tx, did).await? {
+        Some(AccountLifecycle::Active) => true,
+        Some(AccountLifecycle::Deactivated) => admission == SpaceWriteAdmission::Import,
+        Some(_) => false,
         None => {
             tx.rollback().await.ok();
             return Err(ApiError::new(ErrorCode::NotFound, "account not found"));
         }
+    };
+    if !admitted {
+        tx.rollback().await.ok();
+        return Err(ApiError::new(
+            ErrorCode::Forbidden,
+            "account is deactivated",
+        ));
     }
 
     // Record the space if this host has not seen it before. The reference does the same on
@@ -402,19 +426,23 @@ pub async fn apply_space_writes(
     }
 
     // Charge the commit against the account's write budget (same costs as the
-    // public path, keyed by the already-authenticated DID).
-    state
-        .rate_limiter
-        .check_write_points(did, write_cost)
-        .inspect_err(|_| {
-            state.metrics.rate_limit_rejections.add(
-                1,
-                &[crate::metrics::label(
-                    crate::metrics::names::LABEL_LIMITER,
-                    "account_writes",
-                )],
-            );
-        })?;
+    // public path, keyed by the already-authenticated DID). An import is not
+    // charged: it moves records the account already owns, and a repo large
+    // enough to be worth migrating would exhaust any sane budget on arrival.
+    if admission == SpaceWriteAdmission::Active {
+        state
+            .rate_limiter
+            .check_write_points(did, write_cost)
+            .inspect_err(|_| {
+                state.metrics.rate_limit_rejections.add(
+                    1,
+                    &[crate::metrics::label(
+                        crate::metrics::names::LABEL_LIMITER,
+                        "account_writes",
+                    )],
+                );
+            })?;
+    }
 
     // Finalize the folded LtHash state. The rev was already advanced (and
     // CAS-guarded) before the fold; inside the same transaction this update
@@ -525,6 +553,7 @@ mod tests {
                 put("org.example.note", "aaa", "one"),
                 put("org.example.note", "bbb", "two"),
             ],
+            SpaceWriteAdmission::Active,
         )
         .await
         .unwrap();
@@ -545,6 +574,7 @@ mod tests {
                     value: None,
                 },
             ],
+            SpaceWriteAdmission::Active,
         )
         .await
         .unwrap();
@@ -601,6 +631,7 @@ mod tests {
             &space(),
             DID,
             &[put("org.example.note", "aaa", "one")],
+            SpaceWriteAdmission::Active,
         )
         .await
         .unwrap();
@@ -611,9 +642,15 @@ mod tests {
             rkey: "aaa".to_string(),
             value: Some(serde_json::json!({"text": "clobber"})),
         };
-        let err = apply_space_writes(&state, &space(), DID, &[create])
-            .await
-            .unwrap_err();
+        let err = apply_space_writes(
+            &state,
+            &space(),
+            DID,
+            &[create],
+            SpaceWriteAdmission::Active,
+        )
+        .await
+        .unwrap_err();
         assert_eq!(err.code(), &ErrorCode::RecordAlreadyExists);
 
         // The failed batch must not have advanced the head or left oplog rows.
@@ -648,6 +685,7 @@ mod tests {
             &space(),
             DID,
             &[put("org.example.note", "aaa", "x")],
+            SpaceWriteAdmission::Active,
         )
         .await
         .unwrap();
@@ -666,7 +704,7 @@ mod tests {
                 value: Some(serde_json::json!({"text": "revised"})),
             },
         ] {
-            let err = apply_space_writes(&state, &space(), DID, &[op])
+            let err = apply_space_writes(&state, &space(), DID, &[op], SpaceWriteAdmission::Active)
                 .await
                 .unwrap_err();
             assert_eq!(err.code(), &ErrorCode::RecordNotFound);
@@ -683,6 +721,7 @@ mod tests {
                 rkey: "aaa".to_string(),
                 value: Some(serde_json::json!({"text": "revised"})),
             }],
+            SpaceWriteAdmission::Active,
         )
         .await
         .unwrap();
@@ -716,6 +755,7 @@ mod tests {
             &unknown,
             DID,
             &[put("org.example.note", "aaa", "x")],
+            SpaceWriteAdmission::Active,
         )
         .await
         .unwrap();
@@ -748,6 +788,7 @@ mod tests {
             &space(),
             DID,
             &[put("org.example.note", "seed", "x")],
+            SpaceWriteAdmission::Active,
         )
         .await
         .unwrap();
@@ -756,9 +797,15 @@ mod tests {
             .execute(&state.db)
             .await
             .unwrap();
-        let err = apply_space_writes(&state, &space(), DID, &[put("org.example.note", "a", "x")])
-            .await
-            .unwrap_err();
+        let err = apply_space_writes(
+            &state,
+            &space(),
+            DID,
+            &[put("org.example.note", "a", "x")],
+            SpaceWriteAdmission::Active,
+        )
+        .await
+        .unwrap_err();
         assert_eq!(err.code(), &ErrorCode::SpaceNotFound);
         let still_deleted: Option<String> =
             sqlx::query_scalar("SELECT deleted_at FROM spaces WHERE uri = ?")
@@ -781,9 +828,15 @@ mod tests {
             .execute(&state.db)
             .await
             .unwrap();
-        let err = apply_space_writes(&state, &space(), DID, &[put("org.example.note", "a", "x")])
-            .await
-            .unwrap_err();
+        let err = apply_space_writes(
+            &state,
+            &space(),
+            DID,
+            &[put("org.example.note", "a", "x")],
+            SpaceWriteAdmission::Active,
+        )
+        .await
+        .unwrap_err();
         assert_eq!(err.status_code(), 403);
     }
 }

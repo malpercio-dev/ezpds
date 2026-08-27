@@ -39,7 +39,8 @@ pub async fn space_put_record(
 ) -> Result<impl IntoResponse, ApiError> {
     let space = super::space_views::parse_space(&body.space)?;
     let user =
-        crate::auth::space::authenticate_space_write(&state, &headers, &method, &uri, &body.repo)?;
+        crate::auth::space::authenticate_space_write(&state, &headers, &method, &uri, &body.repo)
+            .await?;
 
     // Read before the scope check, unlike the reference, which reads inside the write
     // transaction. The gap only ever mis-picks `update` for a record concurrently deleted (or
@@ -95,6 +96,7 @@ pub async fn space_put_record(
             rkey: body.rkey.clone(),
             value: Some(body.record),
         }],
+        crate::space_record_write::SpaceWriteAdmission::Active,
     )
     .await?;
 

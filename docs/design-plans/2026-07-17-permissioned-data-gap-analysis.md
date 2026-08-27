@@ -355,6 +355,18 @@ account deletion cascades; migration enumeration of all (space, repo, blobs)
 — extends the `/v1/transfer/*` flows and `importRepo`; oplog reset semantics
 on migration.
 
+Two corrections from building it. **`/v1/transfer/*` is not the migration
+surface** — those routes are the planned *device* swap and move no repo data;
+the flows migration actually extends are `checkAccountStatus`, `importRepo`,
+and the account activate/deactivate pair. And **the alpha lexicons define no
+space import endpoint** (the 20 `com.atproto.space.*` schema files are
+export-only on the repo-read side), so a destination host has to offer its own;
+Custos serves `POST /v1/space/import-repo` on its `/v1/*` surface rather than
+squatting a namespace the spec may yet fill differently. Oplog reset needed no
+code: the new host's oplog simply starts empty, and a syncer reconnecting with
+a `since` from the old host folds to a set hash the new head does not match —
+already the signal to heal with a full `getRepo`.
+
 ### W8. Ops, tooling, product surface (follow-on)
 Rate limiting keyed by space credential; metrics; admin-companion moderation
 surface for hosted spaces (takedown/refuse-to-serve); Bruno collection;
