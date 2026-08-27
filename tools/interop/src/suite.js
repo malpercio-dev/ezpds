@@ -6,6 +6,7 @@ import { BASE_URL } from './config.js';
 import { describeServer, health, createAccount, scheduleEphemeralDeletion } from './account.js';
 import { verifyIdentity } from './identity.js';
 import { crudRoundTrip, deleteRecord } from './records.js';
+import { spacesRoundTrip } from './spaces.js';
 import { firehoseWriteCheck } from './firehose.js';
 import { syncChecks } from './sync.js';
 import { networkChecks } from './network.js';
@@ -58,6 +59,7 @@ export async function runSuite({ account = 'primary', interact = true, lifecycle
 
   await step(report, 'identity: handle/DID/plc.directory agreement', () => verifyIdentity(account));
   await step(report, 'repo: CRUD round-trip', () => crudRoundTrip(account));
+  await step(report, 'spaces: simplespace + records + sync reads round-trip', () => spacesRoundTrip(account));
   await step(report, 'firehose: write observed on subscribeRepos', async () => {
     const result = await firehoseWriteCheck(account);
     // Cleanup failure must not mask a successful observation — report it

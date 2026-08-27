@@ -120,6 +120,7 @@ confirm the migrated account on the new PDS.
 | ensure account | provisioning flow: claim code → mobile account → PDS repo-signing key → client-signed did:plc genesis op → handle → session |
 | identity | `resolveHandle`, `/.well-known/atproto-did`, and the plc.directory DID doc all agree; PDS endpoint in the doc points at this deployment |
 | CRUD | createRecord → getRecord (CID match) → listRecords → deleteRecord |
+| spaces | Atproto Spaces round-trip on the account's own PDS: `simplespace.createSpace` → `space.createRecord` → getRecord/listRecords/listSpaces → `getLatestCommit`/`listRepoOps`/`getRepo` (non-empty CAR) → deleteRecord → `deleteSpace` (random skey per run; the space is torn down even on failure) |
 | firehose | a live `subscribeRepos` subscriber sees the `#commit` frame for a write, correct repo + op path |
 | sync | CAR export parses, root CID == `getLatestCommit`, `getRepoStatus` active, repo in `listRepos` |
 | network | relay (`bsky.network`) crawl status + AppView profile visibility — **informational** (staging may not be crawled); PDS→AppView service-proxy auth leg must pass |
@@ -127,8 +128,8 @@ confirm the migrated account on the new PDS.
 | lifecycle | ephemeral account created, verified, deactivated with `deleteAfter`; the server reaper purges it (~5 min) and broadcasts `#account` deleted |
 
 Individual steps are runnable standalone (`verify-identity`, `crud-test`,
-`firehose-test`, `sync-test`, `network-check`, `interact …`) — see
-`just interop help`.
+`spaces-test`, `firehose-test`, `sync-test`, `network-check`, `interact …`) —
+see `just interop help`.
 
 ## State & credentials
 
