@@ -98,6 +98,16 @@ pub mod names {
     pub const LABELER_WATCH_CHANGES: &str = "labeler_watch_changes";
     /// Gauge: unix timestamp (seconds) of the last completed labeler-watch run.
     pub const LABELER_WATCH_LAST_RUN_TIMESTAMP: &str = "labeler_watch_last_run_timestamp";
+    /// Counter (`_total`): DID-document force-refreshes taken to heal a token signature
+    /// mismatch (a possibly-fossil cached verification key), by [`LABEL_OUTCOME`] — `ok` when
+    /// the refresh fetched, `error` when the authority could not be reached, `rate_limited`
+    /// when the per-DID cool-down suppressed the fetch.
+    ///
+    /// The `did_documents` cache has no TTL, so this path deliberately bypasses it; a caller
+    /// replaying a badly-signed token for one real DID would otherwise buy one upstream
+    /// plc.directory / did:web fetch per request. A sustained `rate_limited` rate is that
+    /// abuse being absorbed; a sustained `ok` rate means real keys are rotating.
+    pub const DID_SIGNATURE_REFRESH: &str = "did_signature_refresh";
     /// Counter (`_total`): requests rejected with 429, by [`LABEL_LIMITER`].
     pub const RATE_LIMIT_REJECTIONS: &str = "rate_limit_rejections";
     /// Counter (`_total`): HTTP requests served, by [`LABEL_ROUTE`] + [`LABEL_STATUS_CLASS`].
@@ -173,6 +183,7 @@ pub struct Metrics {
     pub firehose_gc_last_run_timestamp: Gauge<f64>,
     pub labeler_watch_changes: Counter<u64>,
     pub labeler_watch_last_run_timestamp: Gauge<f64>,
+    pub did_signature_refresh: Counter<u64>,
     pub rate_limit_rejections: Counter<u64>,
     pub http_requests: Counter<u64>,
     pub migration_imports: Counter<u64>,
@@ -253,6 +264,7 @@ impl Metrics {
             labeler_watch_last_run_timestamp: meter
                 .f64_gauge(names::LABELER_WATCH_LAST_RUN_TIMESTAMP)
                 .build(),
+            did_signature_refresh: meter.u64_counter(names::DID_SIGNATURE_REFRESH).build(),
             rate_limit_rejections: meter.u64_counter(names::RATE_LIMIT_REJECTIONS).build(),
             http_requests: meter.u64_counter(names::HTTP_REQUESTS).build(),
             migration_imports: meter.u64_counter(names::MIGRATION_IMPORTS).build(),

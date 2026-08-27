@@ -56,8 +56,9 @@ use crate::db::accounts::{active_local_account_exists, AccountLifecycle};
 use crate::db::space_jti::{insert_jti_if_absent, SpaceJtiScope};
 use crate::db::spaces::{self, SpaceRow};
 use crate::identity::resolution::{
-    atproto_verification_key, dedicated_space_verification_key, resolve_did_document,
-    resolve_did_document_force_refresh, service_endpoint, space_verification_key,
+    atproto_verification_key, dedicated_space_verification_key,
+    refresh_did_document_after_signature_mismatch, resolve_did_document, service_endpoint,
+    space_verification_key,
 };
 use crate::space_uri::SpaceRef;
 
@@ -920,13 +921,15 @@ pub fn mint_time_dpop_thumbprint(
 /// Resolve `iss`'s DID document, pick the verification key with `pick_key`, and verify `token`
 /// against it — force-refreshing the cached document and retrying once on a signature
 /// mismatch, the same fossil-key healing `service_auth::verify_service_auth_resolving_key`
-/// does (the `did_documents` cache has no TTL).
+/// does (the `did_documents` cache has no TTL) — through the one shared, cool-down-bounded
+/// `refresh_did_document_after_signature_mismatch` seam.
 ///
 /// A failure to resolve the issuer at all (`DidNotFound`, `DidDeactivated`,
 /// `PlcDirectoryError`, …) passes through with its own code and status — an unreachable PLC
 /// directory is not an invalid token. A failed *refresh* after a signature mismatch does not:
 /// the cached document was there and the signature did not verify against it, so that verdict
-/// stands. Verification failures are `InvalidToken`; callers re-code those alone.
+/// stands — as does a refresh the per-DID cool-down suppressed. Verification failures are
+/// `InvalidToken`; callers re-code those alone.
 async fn verify_did_jwt_resolving_key(
     state: &AppState,
     token: &str,
@@ -946,12 +949,7 @@ async fn verify_did_jwt_resolving_key(
     match verify(&cached) {
         Ok(jwt) => Ok(jwt),
         Err(ServiceAuthError::SignatureMismatch) => {
-            tracing::info!(
-                iss = %iss,
-                "space token signature failed against the cached DID document; \
-                 force-refreshing the key and retrying once"
-            );
-            match resolve_did_document_force_refresh(state, iss).await {
+            match refresh_did_document_after_signature_mismatch(state, iss).await {
                 Ok(fresh) => Ok(verify(&fresh)?),
                 Err(refresh_error) => {
                     tracing::debug!(

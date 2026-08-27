@@ -103,13 +103,16 @@ it could not be asked. Details: the module doc in `src/relay_status.rs`.
 
 Reference-parity request rate limiting. The pure sliding-window algorithm lives in
 `auth/rate_limit.rs` (Functional Core); this module is the Imperative Shell owning the
-process-level limiters and the Axum middleware. Four families — global per-IP, per-endpoint
+process-level limiters and the Axum middleware. Five families — global per-IP, per-endpoint
 per-IP (guess-target endpoint pairs share one limiter instance so alternating endpoints can't
 double a guess budget), per-account write points charged in `record_write::commit_repo_write`
-on the **authenticated** DID, and per-space-credential requests charged at the credential seam
-in `auth/space.rs` on the **verified** `cnf.jkt` — all off when `[rate_limit] enabled = false`, all tunable via
-`[rate_limit]` / `EZPDS_RATE_LIMIT_*` (a knob of `0` disables that limiter). The family
-rosters, exemptions, and `RateLimit-*` header behavior: the module doc.
+on the **authenticated** DID, per-space-credential requests charged at the credential seam
+in `auth/space.rs` on the **verified** `cnf.jkt`, and a per-DID cool-down on the
+signature-mismatch DID-document force-refresh (the one limiter guarding an *outbound* resource,
+charged in `identity::resolution::refresh_did_document_after_signature_mismatch`) — all off when
+`[rate_limit] enabled = false`; the first four are tunable via `[rate_limit]` /
+`EZPDS_RATE_LIMIT_*` (a knob of `0` disables that limiter), the cool-down is a fixed constant.
+The family rosters, exemptions, and `RateLimit-*` header behavior: the module doc.
 
 ### `identity/`
 
@@ -123,7 +126,7 @@ example `authority.rs` reads through `plc.rs` and `resolution.rs`, and `well_kno
 | File | Contents |
 |---|---|
 | `mod.rs` | `pub mod` declarations only — no shared code |
-| `resolution.rs` | shared handle/DID resolution chain, the cache-first DID-document reads (two tiers: the `did_documents` table holds this server's own/migrated accounts with no TTL, force-refreshed by `resolve_did_document_force_refresh`; `AppState::did_document_cache` holds every remote document on 1h-stale / 24h-hard TTLs with stale-while-revalidate), and the pure DID-document accessors including the Atproto Spaces fallbacks (`space_verification_key`, `space_host_endpoint`) — see module doc |
+| `resolution.rs` | shared handle/DID resolution chain, the cache-first DID-document reads (two tiers: the `did_documents` table holds this server's own/migrated accounts with no TTL, force-refreshed by `resolve_did_document_force_refresh`; `AppState::did_document_cache` holds every remote document on 1h-stale / 24h-hard TTLs with stale-while-revalidate), the cool-down-bounded `refresh_did_document_after_signature_mismatch` seam every token-signature-mismatch retry takes (`auth/space.rs` and `auth/service_auth.rs` both), and the pure DID-document accessors including the Atproto Spaces fallbacks (`space_verification_key`, `space_host_endpoint`) — see module doc |
 | `proxy.rs` | the `atproto-proxy` header target guard and the shared SSRF-hardened client (`AppState::hardened_http_client`). Security-critical — the module doc carries the full design (`SsrfResolver` connect-time DNS allowlist, TOCTOU closure, all four consumers); `just ssrf-client-check` guards the well-known-resolver wiring |
 | `did.rs` | general `did:` syntax validation (Functional Core): the canonical `is_valid_did`, re-exported by `auth/validation.rs` and called by `lexicon/formats.rs` for the `did` string format — see module doc |
 | `handle.rs` | handle validation: structural + domain policy + reserved infrastructure names — see module doc |
