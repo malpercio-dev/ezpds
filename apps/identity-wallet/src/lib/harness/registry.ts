@@ -1215,6 +1215,8 @@ export function buildRegistry(state: WalletState): Registry {
     // ── wallet-confirmed OAuth consent ───────────────────────────────────────
     // A user code starting with "PUSH" fakes a push-delivered prompt (matchRequired), so the
     // number-match UI is reachable in a browser; the matching number is always "42".
+    // A user code starting with "SPACE" previews a granular request carrying an Atproto
+    // Spaces grant, so the space-scope consent copy is reachable in a browser.
     preview_oauth_consent: (args): ConsentPreview => ({
       requestId: `poauth-${String(args.userCode ?? 'HARNESS')}`,
       clientId: 'https://app.example.com/client-metadata.json',
@@ -1222,7 +1224,13 @@ export function buildRegistry(state: WalletState): Registry {
       redirectUri: 'https://app.example.com/callback',
       origin: 'https://app.example.com',
       ip: '203.0.113.5',
-      requestedScope: ['atproto', 'transition:generic'],
+      requestedScope: String(args.userCode ?? '').startsWith('SPACE')
+        ? [
+            'atproto',
+            'repo:*?action=create&action=update',
+            'space:org.example.bucket?authority=self&collection=org.example.note',
+          ]
+        : ['atproto', 'transition:generic'],
       loginHint: null,
       matchRequired: String(args.userCode ?? '').startsWith('PUSH'),
     }),

@@ -49,6 +49,44 @@ function describeRepo(rest: string): string {
   return `${capitalize(verbs)} ${what}`;
 }
 
+/** `read_self` folds into `read`: the distinction is protocol plumbing, not a user decision. */
+const SPACE_ACTION_VERBS: Record<string, string> = {
+  read: 'read',
+  read_self: 'read',
+  create: 'create',
+  update: 'edit',
+  delete: 'delete',
+};
+
+/**
+ * Describe a `space:` grant (Atproto Spaces — permissioned, non-public data). Mirrors the
+ * server grammar's defaults: no `action` means read/create/edit/delete, no `authority` means
+ * the user's own spaces, `manage` verbs act on the spaces themselves and are called out
+ * separately.
+ */
+function describeSpace(rest: string): string {
+  const [target, query] = rest.split('?', 2);
+  const params = new URLSearchParams(query ?? '');
+  const actions = params.getAll('action');
+  const manage = params.getAll('manage');
+  const authority = params.get('authority') ?? 'self';
+  const verbs = actions.length
+    ? joinWords([...new Set(actions.map((a) => SPACE_ACTION_VERBS[a] ?? a))])
+    : 'read, create, edit, and delete';
+  const kind = target === '*' ? 'private spaces' : `${target} private spaces`;
+  const whose =
+    authority === 'self'
+      ? `your ${kind}`
+      : authority === '*'
+        ? `${kind} run by anyone`
+        : `${kind} run by ${authority}`;
+  let summary = `${capitalize(verbs)} records in ${whose}`;
+  if (manage.length) {
+    summary += ` — and ${joinWords(manage.map((m) => ACTION_VERBS[m] ?? m))} those spaces themselves`;
+  }
+  return summary;
+}
+
 function describeBlob(rest: string): string {
   if (rest === '*/*' || rest === '*') return 'Upload files (any type)';
   if (rest === 'image/*') return 'Upload images';
@@ -73,6 +111,9 @@ export function describeScope(token: string): ScopeDescription {
   }
   if (token.startsWith('blob:')) {
     return { summary: describeBlob(token.slice('blob:'.length)), token, elevated: false };
+  }
+  if (token.startsWith('space:')) {
+    return { summary: describeSpace(token.slice('space:'.length)), token, elevated: false };
   }
   if (token.startsWith('rpc:')) {
     return { summary: 'Call other services on your behalf', token, elevated: false };
