@@ -112,6 +112,16 @@ the configured `BASE_URL` — they do **not** yet read the per-account `pds`. Us
 `migrate verify --target-pds <url>` (which takes the destination explicitly) to
 confirm the migrated account on the new PDS.
 
+## Atproto Spaces alpha targets
+
+`spaces-test` drives the Custos space surface on whatever `EZPDS_BASE_URL` points at
+(staging by default). The other two alpha interop targets from the gap analysis — the
+alpha-tagged `@atproto` TS SDK as a client against Custos, and the bulletin sample app —
+ship on atproto's `permissioned-data` branch and move weekly, so they are exercised
+manually against a deployment rather than pinned as CLI scenarios; the Friday
+[alpha-watch routine](../../docs/operations/spaces-alpha-watch-routine.md) tracks the
+spec drift that would invalidate them.
+
 ## What the suite checks
 
 | Step | What it proves |
