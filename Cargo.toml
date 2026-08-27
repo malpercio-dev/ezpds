@@ -20,6 +20,9 @@ exclude = [
     # own warts (a `pub use` of a module holding only a `#[macro_export]` macro, which is
     # published at the crate root anyway) would fail `clippy -D warnings` on code we do not own.
     "apps/identity-wallet/swift-rs-patch",
+    # Same byte-minimal-fork discipline as swift-rs-patch: upstream source plus one fix to
+    # the MST `split_subtree` walk-up loop. See the [patch.crates-io] entry below.
+    "vendor/atrium-repo-patch",
 ]
 resolver = "2"
 
@@ -237,3 +240,12 @@ notify-relay = { path = "crates/notify-relay" }
 # Remove when swift-rs ships a fix upstream. Tracked in docs/ios-upstream-bugs.md (Bug 1).
 [patch.crates-io]
 swift-rs = { path = "apps/identity-wallet/swift-rs-patch" }
+
+# atrium-repo 0.1.8's MST `split_subtree` silently drops sibling subtrees when a
+# higher-layer insert splits a node and one side of the deepest split is empty —
+# whole collections vanish from a repo with no error and no firehose delete
+# (atrium-rs/atrium#343; destroyed 64 records from a production repo on 2026-08-27).
+# The local patch re-attaches the orphaned parent-level entries on both sides.
+# Guarded by crates/repo-engine/tests/mst_split_gate.rs, which fails against the
+# unpatched crate. Remove when upstream ships a fix.
+atrium-repo = { path = "vendor/atrium-repo-patch" }
