@@ -23,8 +23,11 @@ fn dummy_value() -> Cid {
 }
 
 /// Insert `keys` one at a time, asserting after every insert that the full key
-/// enumeration still matches the set inserted so far.
-async fn insert_and_verify(keys: &[&str]) {
+/// enumeration still matches the set inserted so far, and that the finished tree
+/// reaches `expected_final_depth` — pinning that the key set really does force the
+/// multi-level split these shapes exist to exercise (an edited key that hashes to a
+/// different layer would otherwise let the gate pass without covering the bug).
+async fn insert_and_verify(keys: &[&str], expected_final_depth: usize) {
     let mut tree = Tree::create(MemoryBlockStore::new()).await.unwrap();
     let mut expected = BTreeSet::new();
 
@@ -43,6 +46,12 @@ async fn insert_and_verify(keys: &[&str]) {
             "MST enumeration diverged after inserting {key}"
         );
     }
+
+    assert_eq!(
+        tree.depth(None).await.unwrap(),
+        Some(expected_final_depth),
+        "MST depth changed; these keys no longer exercise a multi-level split"
+    );
 }
 
 /// The key layers below (0/1/2, from the leading-zero-bitpair count of each key's
@@ -57,15 +66,18 @@ async fn insert_and_verify(keys: &[&str]) {
 /// production repo on 2026-08-27.
 #[tokio::test]
 async fn higher_layer_insert_keeps_right_siblings() {
-    insert_and_verify(&[
-        "com.example.rec/a0",  // layer 0
-        "com.example.rec/b1",  // layer 1
-        "com.example.rec/c2",  // layer 0
-        "com.example.rec/d1",  // layer 0
-        "com.example.rec/f9",  // layer 1
-        "com.example.rec/g0",  // layer 0
-        "com.example.rec/e74", // layer 2 — the splitting insert
-    ])
+    insert_and_verify(
+        &[
+            "com.example.rec/a0",  // layer 0
+            "com.example.rec/b1",  // layer 1
+            "com.example.rec/c2",  // layer 0
+            "com.example.rec/d1",  // layer 0
+            "com.example.rec/f9",  // layer 1
+            "com.example.rec/g0",  // layer 0
+            "com.example.rec/e74", // layer 2 — the splitting insert
+        ],
+        2,
+    )
     .await;
 }
 
@@ -74,13 +86,16 @@ async fn higher_layer_insert_keeps_right_siblings() {
 /// drops `a0` and `b1` — the parent-level entries left of the split.
 #[tokio::test]
 async fn higher_layer_insert_keeps_left_siblings() {
-    insert_and_verify(&[
-        "com.example.rec/a0", // layer 0
-        "com.example.rec/b1", // layer 1
-        "com.example.rec/c2", // layer 0
-        "com.example.rec/d1", // layer 0
-        "com.example.rec/b2", // layer 2 — the splitting insert
-    ])
+    insert_and_verify(
+        &[
+            "com.example.rec/a0", // layer 0
+            "com.example.rec/b1", // layer 1
+            "com.example.rec/c2", // layer 0
+            "com.example.rec/d1", // layer 0
+            "com.example.rec/b2", // layer 2 — the splitting insert
+        ],
+        2,
+    )
     .await;
 }
 
