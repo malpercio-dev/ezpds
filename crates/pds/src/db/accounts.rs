@@ -708,29 +708,54 @@ pub(crate) async fn current_repo_root(
 /// conflict. Single statement, so no transaction is opened here — generic over the executor so
 /// the caller can run it inside a transaction that also stages the firehose `#commit` row (see
 /// `record_write::commit_repo_write`), making the CAS and the event commit atomically.
+///
+/// `new_record_count` is the new head's verified MST key count, stored alongside the root as the
+/// write-path integrity witness (V068); `None` (a failed count walk) stores NULL so the check
+/// re-initializes on the next write instead of comparing against a stale value.
 pub(crate) async fn advance_repo_root_if_active<'e, E>(
     executor: E,
     did: &str,
     new_root: &str,
     new_rev: &str,
     expected_root: &str,
+    new_record_count: Option<i64>,
 ) -> Result<bool, sqlx::Error>
 where
     E: sqlx::Executor<'e, Database = Sqlite>,
 {
     let updated = sqlx::query(
-        "UPDATE accounts SET repo_root_cid = ?, repo_rev = ? \
+        "UPDATE accounts SET repo_root_cid = ?, repo_rev = ?, record_count = ? \
          WHERE did = ? AND repo_root_cid = ? AND deactivated_at IS NULL \
            AND suspended_at IS NULL AND taken_down_at IS NULL",
     )
     .bind(new_root)
     .bind(new_rev)
+    .bind(new_record_count)
     .bind(did)
     .bind(expected_root)
     .execute(executor)
     .await?;
 
     Ok(updated.rows_affected() == 1)
+}
+
+/// Fetch the account's maintained MST record count (V068), unfiltered by lifecycle status.
+///
+/// `None` means the count is unknown (pre-V068 account, fresh genesis, or a just-imported repo);
+/// the write-path integrity check skips its comparison and initializes the count on that write.
+pub(crate) async fn repo_record_count<'e, E>(
+    executor: E,
+    did: &str,
+) -> Result<Option<i64>, sqlx::Error>
+where
+    E: sqlx::Executor<'e, Database = Sqlite>,
+{
+    let row: Option<Option<i64>> =
+        sqlx::query_scalar("SELECT record_count FROM accounts WHERE did = ?")
+            .bind(did)
+            .fetch_optional(executor)
+            .await?;
+    Ok(row.flatten())
 }
 
 /// Swap the repo root/rev of a **deactivated** account after an `importRepo`, atomically with the
@@ -762,8 +787,11 @@ pub(crate) async fn swap_repo_root_for_deactivated<'e, E>(
 where
     E: sqlx::Executor<'e, Database = Sqlite>,
 {
+    // `record_count = NULL`: an imported repo's key count is unknown here, so the write-path
+    // integrity witness (V068) resets to "unknown" and re-initializes on the next record write
+    // rather than comparing against the pre-import repo's count.
     let updated = sqlx::query(
-        "UPDATE accounts SET repo_root_cid = ?, repo_rev = ? \
+        "UPDATE accounts SET repo_root_cid = ?, repo_rev = ?, record_count = NULL \
          WHERE did = ? AND repo_root_cid IS ? AND deactivated_at IS NOT NULL \
            AND suspended_at IS NULL AND taken_down_at IS NULL",
     )
@@ -1905,7 +1933,7 @@ mod tests {
         set_lifecycle_column(&db, "did:plc:cas_susp", "suspended_at").await;
 
         let swapped =
-            advance_repo_root_if_active(&db, "did:plc:cas_susp", "new-root", "rev-1", cid)
+            advance_repo_root_if_active(&db, "did:plc:cas_susp", "new-root", "rev-1", cid, None)
                 .await
                 .unwrap();
         assert!(
@@ -1921,9 +1949,10 @@ mod tests {
         insert_account_with_repo(&db, "did:plc:cas_td", cid).await;
         set_lifecycle_column(&db, "did:plc:cas_td", "taken_down_at").await;
 
-        let swapped = advance_repo_root_if_active(&db, "did:plc:cas_td", "new-root", "rev-1", cid)
-            .await
-            .unwrap();
+        let swapped =
+            advance_repo_root_if_active(&db, "did:plc:cas_td", "new-root", "rev-1", cid, None)
+                .await
+                .unwrap();
         assert!(
             !swapped,
             "the commit CAS must not advance the root for a taken-down account"

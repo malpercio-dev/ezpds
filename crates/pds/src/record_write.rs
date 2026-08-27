@@ -415,6 +415,11 @@ pub(crate) fn record_validation_error(e: crate::lexicon::ValidationError) -> Api
 /// together once staging is attempted (see [`crate::firehose`]'s module docs and
 /// `Firehose::stage_commit`).
 ///
+/// Before the CAS, the MST integrity check verifies the new head's actual key count against the
+/// maintained per-repo record count (V068) plus this commit's explicit op delta, aborting the
+/// write with a 500 when the tree lost keys no op deleted (see the inline comment for the full
+/// rationale).
+///
 /// Returns [`ErrorCode::Conflict`] when the CAS didn't land — the repo moved, or the account was
 /// deactivated, since the caller last read `expected_root` — mirroring
 /// `db::accounts::advance_repo_root_if_active`'s own contract; nothing is staged or emitted in
@@ -468,6 +473,72 @@ pub async fn commit_repo_write(
                 )],
             );
         })?;
+
+    // MST integrity check (defense in depth): the maintained per-repo record count (V068) is
+    // the independent witness the MST otherwise lacks — the PDS keeps no separate record index,
+    // so a commit that silently drops keys (the 2026-08-27 atrium-repo `split_subtree` data
+    // loss: one create netted −40 keys) leaves no surface that can disagree with the corrupted
+    // tree. The new head's actual key count must equal the stored count plus this commit's
+    // explicit delta; on a mismatch the write aborts here, before the CAS below, so the
+    // corrupted head never becomes the persisted root (its blocks are orphans the next
+    // successful write's GC reclaims). The count walk runs before the transaction because it
+    // reads the block store, which needs the single pooled connection the transaction would
+    // hold; the caller's per-DID write lock keeps the walk, the stored count, and the CAS
+    // mutually consistent. A stored count of NULL (pre-V068 account, fresh genesis, or a
+    // just-imported repo) skips the comparison and is initialized by this write's walk.
+    let expected_delta: i64 = ops
+        .iter()
+        .map(|op| match op.action {
+            // An op whose `prev` is `None` had no previous record, so it introduced its key.
+            // (`applyWrites` labels an upsert by its requested kind, so an `Update` that
+            // created its key is only visible through `prev`; emitted deletes always carry
+            // the removed record's CID as `prev` — no-op deletes never become ops.)
+            crate::firehose::OpAction::Create | crate::firehose::OpAction::Update => {
+                i64::from(op.prev.is_none())
+            }
+            crate::firehose::OpAction::Delete => -1,
+        })
+        .sum();
+    let stored_count = crate::db::accounts::repo_record_count(&state.db, did)
+        .await
+        .map_err(|e| {
+            tracing::error!(error = %e, did = %did, "failed to read maintained record count");
+            ApiError::new(ErrorCode::InternalError, "failed to write record")
+        })?;
+    // The new head's actual key count. A failed walk is `None`: the check is skipped and NULL is
+    // stored, so the next write re-initializes instead of comparing against a stale count.
+    let new_count = {
+        let store = SqliteBlockStore::new(state.db.clone(), did.to_string());
+        match Repository::open(store, new_root).await {
+            Ok(mut repo) => match repo_engine::count_records(&mut repo).await {
+                Ok(n) => i64::try_from(n).ok(),
+                Err(e) => {
+                    tracing::warn!(error = %e, did = %did, "failed to count records for the MST integrity check (non-fatal; count resets to unknown)");
+                    None
+                }
+            },
+            Err(e) => {
+                tracing::warn!(error = %e, did = %did, "failed to open new head for the MST integrity check (non-fatal; count resets to unknown)");
+                None
+            }
+        }
+    };
+    if let (Some(stored), Some(counted)) = (stored_count, new_count) {
+        if stored + expected_delta != counted {
+            tracing::error!(
+                did = %did,
+                stored_count = stored,
+                expected_delta,
+                counted,
+                new_root = %new_root,
+                "MST integrity violation: commit removed keys it did not explicitly delete; write aborted"
+            );
+            return Err(ApiError::new(
+                ErrorCode::InternalError,
+                "repository integrity check failed; write aborted",
+            ));
+        }
+    }
 
     // Summarize the ops for the agent audit trail before `ops` is moved into the firehose
     // staging below. Mechanical facts only — action counts, distinct collections, the new rev —
@@ -560,6 +631,7 @@ pub async fn commit_repo_write(
         &new_root_str,
         &new_rev,
         expected_root,
+        new_count,
     )
     .await
     .map_err(|e| {
@@ -781,6 +853,7 @@ mod tests {
             &repo.root().to_string(),
             repo.commit().rev().as_str(),
             &stale_root,
+            None,
         )
         .await
         .unwrap();
@@ -1013,5 +1086,171 @@ mod tests {
             .expect("record lookup must not error")
             .expect("record must be present at head");
         assert_eq!(value["text"], "revision 9");
+    }
+
+    async fn stored_record_count(db: &sqlx::SqlitePool, did: &str) -> Option<i64> {
+        sqlx::query_scalar::<_, Option<i64>>("SELECT record_count FROM accounts WHERE did = ?")
+            .bind(did)
+            .fetch_one(db)
+            .await
+            .unwrap()
+    }
+
+    fn delete_record_request(
+        did: &str,
+        collection: &str,
+        rkey: &str,
+        token: &str,
+    ) -> axum::http::Request<axum::body::Body> {
+        axum::http::Request::builder()
+            .method(axum::http::Method::POST)
+            .uri("/xrpc/com.atproto.repo.deleteRecord")
+            .header("Content-Type", "application/json")
+            .header("Authorization", format!("Bearer {token}"))
+            .body(axum::body::Body::from(
+                serde_json::json!({"repo": did, "collection": collection, "rkey": rkey})
+                    .to_string(),
+            ))
+            .unwrap()
+    }
+
+    /// The maintained record count (the MST integrity witness) starts unknown, is initialized by
+    /// the first write's key walk, and then tracks every explicit create/update/delete exactly.
+    #[tokio::test]
+    async fn record_count_initializes_and_tracks_writes() {
+        let state = state_with_master_key().await;
+        let did = "did:plc:recordcount";
+        seed_account_with_repo(&state.db, did).await;
+        let token = access_jwt(&state.jwt_secret, did);
+        let app = crate::app::app(state.clone());
+
+        assert_eq!(
+            stored_record_count(&state.db, did).await,
+            None,
+            "a fresh account's count is unknown until its first write"
+        );
+
+        for (rkey, expected) in [("one", 1), ("two", 2)] {
+            let response = app
+                .clone()
+                .oneshot(put_record_request(
+                    did,
+                    "app.bsky.feed.post",
+                    rkey,
+                    serde_json::json!({"record": {"text": rkey}}),
+                    Some(&token),
+                ))
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::OK);
+            assert_eq!(stored_record_count(&state.db, did).await, Some(expected));
+        }
+
+        // An update replaces a key without changing the count.
+        let response = app
+            .clone()
+            .oneshot(put_record_request(
+                did,
+                "app.bsky.feed.post",
+                "one",
+                serde_json::json!({"record": {"text": "one v2"}}),
+                Some(&token),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(stored_record_count(&state.db, did).await, Some(2));
+
+        // A delete decrements it.
+        let response = app
+            .clone()
+            .oneshot(delete_record_request(
+                did,
+                "app.bsky.feed.post",
+                "one",
+                &token,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(stored_record_count(&state.db, did).await, Some(1));
+    }
+
+    /// A commit whose actual key count disagrees with the maintained count plus the explicit op
+    /// delta must abort loudly, leaving the persisted root untouched — the incident shape (a tree
+    /// that silently lost keys the bookkeeping still counts) reduced to its deterministic core.
+    /// Resetting the count to NULL (unknown) heals: the next write re-initializes it.
+    #[tokio::test]
+    async fn count_mismatch_aborts_write_and_preserves_root() {
+        let state = state_with_master_key().await;
+        let did = "did:plc:recordcounttamper";
+        seed_account_with_repo(&state.db, did).await;
+        let token = access_jwt(&state.jwt_secret, did);
+        let app = crate::app::app(state.clone());
+
+        let response = app
+            .clone()
+            .oneshot(put_record_request(
+                did,
+                "app.bsky.feed.post",
+                "one",
+                serde_json::json!({"record": {"text": "one"}}),
+                Some(&token),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let root_before = repo_root(&state.db, did).await;
+
+        // Simulate the incident from the witness's side: the bookkeeping claims 40 more records
+        // than the tree holds, exactly what a key-dropping commit leaves behind.
+        sqlx::query("UPDATE accounts SET record_count = record_count + 40 WHERE did = ?")
+            .bind(did)
+            .execute(&state.db)
+            .await
+            .unwrap();
+
+        let response = app
+            .clone()
+            .oneshot(put_record_request(
+                did,
+                "app.bsky.feed.post",
+                "two",
+                serde_json::json!({"record": {"text": "two"}}),
+                Some(&token),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(
+            response.status(),
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "a count mismatch must fail the write loudly"
+        );
+        assert_eq!(
+            repo_root(&state.db, did).await,
+            root_before,
+            "an aborted write must not advance the persisted root"
+        );
+
+        // Operator remediation path: resetting the witness to unknown lets writes resume, and the
+        // first successful write re-initializes it from a fresh key walk.
+        sqlx::query("UPDATE accounts SET record_count = NULL WHERE did = ?")
+            .bind(did)
+            .execute(&state.db)
+            .await
+            .unwrap();
+        let response = app
+            .clone()
+            .oneshot(put_record_request(
+                did,
+                "app.bsky.feed.post",
+                "two",
+                serde_json::json!({"record": {"text": "two"}}),
+                Some(&token),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(stored_record_count(&state.db, did).await, Some(2));
     }
 }
