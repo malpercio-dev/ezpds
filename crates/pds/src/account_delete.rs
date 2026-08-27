@@ -746,6 +746,7 @@ mod tests {
                 rkey: "one".to_string(),
                 value: Some(serde_json::json!({"text": "purge me"})),
             }],
+            crate::space_record_write::SpaceWriteAdmission::Active,
         )
         .await
         .unwrap();

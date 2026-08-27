@@ -41,7 +41,7 @@ pub async fn simplespace_create_space(
     headers: HeaderMap,
     LexiconInput(input): LexiconInput<CreateSpaceInput>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
-    let user = authenticate_space_caller(&state, &headers, &method, &uri)?;
+    let user = authenticate_space_caller(&state, &headers, &method, &uri).await?;
     let skey = input.skey.unwrap_or_else(repo_engine::generate_tid);
     let space = super::space_views::parse_space(&format!(
         "at://{}/space/{}/{skey}",

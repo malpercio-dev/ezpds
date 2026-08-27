@@ -16,7 +16,9 @@ use crate::app::AppState;
 use crate::routes::test_utils::{
     access_jwt, body_json, seed_account_with_repo, state_with_master_key,
 };
-use crate::space_record_write::{apply_space_writes, SpaceWriteAction, SpaceWriteOp};
+use crate::space_record_write::{
+    apply_space_writes, SpaceWriteAction, SpaceWriteAdmission, SpaceWriteOp,
+};
 
 const DID: &str = "did:plc:spacesyncaaaaaaaaaaaaaaa";
 const SPACE: &str = "at://did:plc:authorityaaaaaaaaaaaaaaa/space/org.example.bucket/main";
@@ -54,6 +56,7 @@ async fn write_one(state: &AppState, action: SpaceWriteAction, rkey: &str, text:
             rkey: rkey.to_string(),
             value,
         }],
+        SpaceWriteAdmission::Active,
     )
     .await
     .unwrap()
@@ -516,6 +519,7 @@ async fn write_blob_record(state: &AppState, rkey: &str, blob_cid: &str) -> Stri
             rkey: rkey.to_string(),
             value: Some(blob_record(blob_cid)),
         }],
+        SpaceWriteAdmission::Active,
     )
     .await
     .unwrap()

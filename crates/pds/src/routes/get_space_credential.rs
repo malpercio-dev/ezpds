@@ -73,6 +73,10 @@ pub async fn get_space_credential(
             "this server is not the authority for this space",
         ));
     }
+    // Ordered after the tombstone check on purpose: `SpaceDeleted` is the spec's one durable
+    // renewal signal, so a deleted space must keep reporting it even once its authority stops
+    // being an active account.
+    crate::auth::space::require_serviceable_authority(&state, &space).await?;
 
     // Stateless checks first, so a malformed proof doesn't burn the single-use delegation token.
     let jkt = mint_time_dpop_thumbprint(&headers, &state)?;

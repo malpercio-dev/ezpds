@@ -133,6 +133,7 @@ use crate::routes::space_get_blob::space_get_blob;
 use crate::routes::space_get_latest_commit::space_get_latest_commit;
 use crate::routes::space_get_record::space_get_record;
 use crate::routes::space_get_repo::space_get_repo;
+use crate::routes::space_import_repo::space_import_repo;
 use crate::routes::space_list_blobs::space_list_blobs;
 use crate::routes::space_list_records::space_list_records;
 use crate::routes::space_list_repo_ops::space_list_repo_ops;
@@ -689,7 +690,11 @@ pub fn app(state: AppState) -> Router {
             "/v1/pds/keys",
             get(get_pds_signing_key).post(create_signing_key),
         )
-        .route("/v1/repo-signing-key", get(get_repo_signing_key));
+        .route("/v1/repo-signing-key", get(get_repo_signing_key))
+        // The inbound leg of permissioned-repo migration. A Custos-native `/v1/*` route
+        // rather than a `com.atproto.space.*` method: the alpha lexicons define no space
+        // import, so the namespace stays free for whatever the spec eventually names.
+        .route("/v1/space/import-repo", post(space_import_repo));
     let internal = apply_shared_layers(internal, &state);
 
     let router = public.merge(internal);

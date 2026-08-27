@@ -60,7 +60,8 @@ pub async fn space_apply_writes(
 ) -> Result<impl IntoResponse, ApiError> {
     let space = super::space_views::parse_space(&body.space)?;
     let user =
-        crate::auth::space::authenticate_space_write(&state, &headers, &method, &uri, &body.repo)?;
+        crate::auth::space::authenticate_space_write(&state, &headers, &method, &uri, &body.repo)
+            .await?;
     if body.writes.len() > MAX_WRITES {
         return Err(ApiError::new(
             ErrorCode::InvalidRequest,
@@ -132,8 +133,14 @@ pub async fn space_apply_writes(
         ));
     }
 
-    let outcome =
-        crate::space_record_write::apply_space_writes(&state, &space, &user.did, &ops).await?;
+    let outcome = crate::space_record_write::apply_space_writes(
+        &state,
+        &space,
+        &user.did,
+        &ops,
+        crate::space_record_write::SpaceWriteAdmission::Active,
+    )
+    .await?;
 
     // Results are positional and preserve request order: with every action carrying a
     // precondition, an op either lands or the whole batch fails, so the store returns exactly

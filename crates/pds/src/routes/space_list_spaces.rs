@@ -38,7 +38,8 @@ pub async fn space_list_spaces(
     headers: HeaderMap,
     LexiconParams(params): LexiconParams<SpaceListSpacesParams>,
 ) -> Result<impl IntoResponse, ApiError> {
-    let user = crate::auth::space::authenticate_space_caller(&state, &headers, &method, &uri)?;
+    let user =
+        crate::auth::space::authenticate_space_caller(&state, &headers, &method, &uri).await?;
 
     // There is no one space to check a grant against here, so the *filters* are the target: an
     // unfiltered listing needs a wildcard grant, and narrowing the query narrows what the grant

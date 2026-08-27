@@ -23,7 +23,9 @@ use crate::db::dids::seed_did_document;
 use crate::routes::test_utils::{
     access_jwt, body_json, seed_account_with_repo, state_with_master_key, DpopProofKey,
 };
-use crate::space_record_write::{apply_space_writes, SpaceWriteAction, SpaceWriteOp};
+use crate::space_record_write::{
+    apply_space_writes, SpaceWriteAction, SpaceWriteAdmission, SpaceWriteOp,
+};
 use crate::space_uri::parse_space_ref;
 
 const ALICE: &str = "did:plc:alicenotifyaaaaaaaaaaaa";
@@ -115,6 +117,7 @@ async fn write_one(state: &AppState, space_uri: &str, did: &str, rkey: &str) -> 
             rkey: rkey.to_string(),
             value: Some(serde_json::json!({ "text": rkey })),
         }],
+        SpaceWriteAdmission::Active,
     )
     .await
     .unwrap();

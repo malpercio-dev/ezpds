@@ -27,7 +27,9 @@ pub use car_export::{
     collect_commit_diff, collect_commit_diff_cids, collect_reachable_cids,
     export_commit_blocks_car, export_record_proof_car, export_repo_car, CarExportError, CommitDiff,
 };
-pub use car_import::{import_repo_car, CarImportError, ImportedRepo};
+pub use car_import::{
+    import_repo_car, import_space_car, CarImportError, ImportedRepo, SpaceCar, SpaceCarRecord,
+};
 pub use data_model::{validate as validate_data_model, DataModelError};
 pub use datetime::{
     is_valid as is_valid_datetime, validate as validate_datetime, AtprotoDatetimeError,

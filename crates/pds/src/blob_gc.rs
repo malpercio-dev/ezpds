@@ -888,6 +888,7 @@ mod tests {
                 rkey: "withblob".to_string(),
                 value: Some(blob_record(&referenced)),
             }],
+            crate::space_record_write::SpaceWriteAdmission::Active,
         )
         .await
         .unwrap();

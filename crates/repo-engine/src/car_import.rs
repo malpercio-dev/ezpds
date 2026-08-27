@@ -212,6 +212,105 @@ fn decode_varint(input: &[u8]) -> Option<(u64, &[u8])> {
     None
 }
 
+/// One record read out of a permissioned-space CAR, in the index's order.
+#[derive(Debug)]
+pub struct SpaceCarRecord {
+    /// The index's `{collection}/{rkey}` key, split on its single separator.
+    pub collection: String,
+    pub rkey: String,
+    /// The CID the index promised for this record. The block's bytes are verified against it.
+    pub cid: Cid,
+    /// The record block, canonical DAG-CBOR.
+    pub block: Vec<u8>,
+}
+
+/// A permissioned-space repo parsed out of the two-root CAR `com.atproto.space.getRepo` writes.
+#[derive(Debug)]
+pub struct SpaceCar {
+    /// The signed-commit root block, verbatim. Kept for the caller to inspect; a destination
+    /// host re-signs its own commit rather than adopting this one, since the commit is bound
+    /// to the source's `rev` and to a per-serving `ikm`.
+    pub commit: Vec<u8>,
+    /// Every record the index named, in index order.
+    pub records: Vec<SpaceCarRecord>,
+}
+
+/// Parse and validate the two-root CAR of an Atproto Spaces repo.
+///
+/// The mirror of `com.atproto.space.getRepo`'s export: roots are `[signed commit, DRISL index]`
+/// and the index maps `{collection}/{rkey}` to a record CID link. Validation is the same
+/// front-end `import_repo_car` uses (framing, CIDv1 + SHA2-256, every block hashes to its CID),
+/// so a record block that does not match the CID its index entry promised is rejected before
+/// the caller sees it. There is no MST here to walk, so reachability is exactly "the index
+/// names it and the CAR carries it".
+///
+/// Deliberately silent about the commit's signature: the commit is signed by the *source*
+/// host's key over the source's `rev`, and a destination re-signs from its own state. What
+/// authenticates an import is the account credential presented to the route, as for
+/// `com.atproto.repo.importRepo`.
+pub async fn import_space_car(car_bytes: &[u8]) -> Result<SpaceCar, CarImportError> {
+    validate_car(car_bytes)?;
+
+    let mut car = CarStore::open(Cursor::new(car_bytes))
+        .await
+        .map_err(|e| CarImportError::Car(e.to_string()))?;
+
+    let roots: Vec<Cid> = car.roots().collect();
+    if roots.len() != 2 {
+        return Err(CarImportError::RootCount(roots.len()));
+    }
+    let commit = read_block(&mut car, roots[0]).await?;
+    let index = read_block(&mut car, roots[1]).await?;
+
+    let ipld: Ipld = serde_ipld_dagcbor::from_slice(&index)
+        .map_err(|e| CarImportError::MalformedCommit(format!("index block is malformed: {e}")))?;
+    let Ipld::Map(entries) = ipld else {
+        return Err(CarImportError::MalformedCommit(
+            "index block is not a map".to_string(),
+        ));
+    };
+
+    // `Ipld::Map` is a BTreeMap, so iteration is lexicographic rather than the CAR's canonical
+    // (shortest-key-first) order. Order carries no meaning to an importer — the record set does
+    // — so it is not reconstructed here.
+    let mut records = Vec::with_capacity(entries.len());
+    for (path, link) in entries {
+        let Ipld::Link(cid) = link else {
+            return Err(CarImportError::MalformedCommit(format!(
+                "index entry {path} is not a CID link"
+            )));
+        };
+        let (collection, rkey) = path.split_once('/').ok_or_else(|| {
+            CarImportError::MalformedCommit(format!("index key {path} is not collection/rkey"))
+        })?;
+        if collection.is_empty() || rkey.is_empty() || rkey.contains('/') {
+            return Err(CarImportError::MalformedCommit(format!(
+                "index key {path} is not collection/rkey"
+            )));
+        }
+        let block = read_block(&mut car, cid).await?;
+        records.push(SpaceCarRecord {
+            collection: collection.to_string(),
+            rkey: rkey.to_string(),
+            cid,
+            block,
+        });
+    }
+
+    Ok(SpaceCar { commit, records })
+}
+
+/// Read one block the CAR must carry, naming the CID in the error when it does not.
+async fn read_block(
+    car: &mut CarStore<Cursor<&[u8]>>,
+    cid: Cid,
+) -> Result<Vec<u8>, CarImportError> {
+    use atrium_repo::blockstore::AsyncBlockStoreRead as _;
+    car.read_block(cid)
+        .await
+        .map_err(|e| CarImportError::Car(format!("CAR is missing block {cid}: {e}")))
+}
+
 /// Decode a commit block and return its `did`, checking the repo-format `version`.
 fn commit_did(bytes: &[u8]) -> Result<String, CarImportError> {
     let ipld: Ipld = serde_ipld_dagcbor::from_slice(bytes)
