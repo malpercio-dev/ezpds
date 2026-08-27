@@ -599,6 +599,14 @@ pub struct RateLimitConfig {
     /// cap on top of the global one. `0` disables.
     #[serde(default = "default_waitlist_per_5min")]
     pub waitlist_per_5min: u64,
+    /// Credential-authed space read/sync requests per space-credential holder per 5 minutes,
+    /// keyed by the credential's bound DPoP key thumbprint (`cnf.jkt`) — re-minting a credential
+    /// does not reset the budget, and the key works across IPs where the global cap cannot.
+    /// Default 3000 (in line with the global per-IP cap): these requests hit the per-serve
+    /// commit-signing path, so a single hot holder must not be able to monopolize it. `0`
+    /// disables.
+    #[serde(default = "default_space_credential_per_5min")]
+    pub space_credential_per_5min: u64,
     /// Repo-write points per account per hour (reference: 5000). `0` disables the hourly budget.
     #[serde(default = "default_write_points_hourly")]
     pub write_points_hourly: u64,
@@ -622,6 +630,7 @@ impl Default for RateLimitConfig {
             oauth_consent_create_per_5min: default_oauth_consent_create_per_5min(),
             oauth_consent_action_per_5min: default_oauth_consent_action_per_5min(),
             waitlist_per_5min: default_waitlist_per_5min(),
+            space_credential_per_5min: default_space_credential_per_5min(),
             write_points_hourly: default_write_points_hourly(),
             write_points_daily: default_write_points_daily(),
         }
@@ -674,6 +683,10 @@ fn default_oauth_consent_create_per_5min() -> u64 {
 
 fn default_oauth_consent_action_per_5min() -> u64 {
     30
+}
+
+fn default_space_credential_per_5min() -> u64 {
+    3000
 }
 
 fn default_write_points_hourly() -> u64 {
@@ -1673,6 +1686,10 @@ pub(crate) fn apply_env_overrides(
     }
     if let Some(v) = env.get("EZPDS_RATE_LIMIT_WAITLIST_PER_5MIN") {
         raw.rate_limit.waitlist_per_5min = parse_u64("EZPDS_RATE_LIMIT_WAITLIST_PER_5MIN", v)?;
+    }
+    if let Some(v) = env.get("EZPDS_RATE_LIMIT_SPACE_CREDENTIAL_PER_5MIN") {
+        raw.rate_limit.space_credential_per_5min =
+            parse_u64("EZPDS_RATE_LIMIT_SPACE_CREDENTIAL_PER_5MIN", v)?;
     }
     if let Some(v) = env.get("EZPDS_RATE_LIMIT_WRITE_POINTS_HOURLY") {
         raw.rate_limit.write_points_hourly = parse_u64("EZPDS_RATE_LIMIT_WRITE_POINTS_HOURLY", v)?;

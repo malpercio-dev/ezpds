@@ -298,6 +298,95 @@ async fn a_credential_stops_being_served_when_the_authority_is_not_active() {
     assert_eq!(body_json(response).await["error"], "SpaceNotFound");
 }
 
+/// Credential-authed requests draw from a per-holder budget keyed by the credential's *verified*
+/// `cnf.jkt` — so re-minting a fresh credential (new `jti`, same DPoP key) does not reset it,
+/// and only a fully authenticated request spends from it.
+#[tokio::test]
+async fn credential_requests_are_rate_limited_per_key_thumbprint() {
+    let mut state = state_with_master_key().await;
+    state.rate_limiter = std::sync::Arc::new(crate::rate_limit::RateLimiterState::new(
+        &common::RateLimitConfig {
+            space_credential_per_5min: 1,
+            ..common::RateLimitConfig::default()
+        },
+    ));
+    let kp = seed_account_with_repo(&state.db, DID).await;
+    let multibase = kp.key_id.0.strip_prefix("did:key:").unwrap().to_string();
+    seed_did_document(
+        &state.db,
+        DID,
+        serde_json::json!({
+            "id": DID,
+            "verificationMethod": [
+                { "id": format!("{DID}#atproto"), "type": "Multikey", "controller": DID, "publicKeyMultibase": multibase },
+                { "id": format!("{DID}#atproto_space"), "type": "Multikey", "controller": DID, "publicKeyMultibase": multibase },
+            ],
+        }),
+    )
+    .await;
+    let signer = repo_engine::CommitSigner::from_bytes(&kp.private_key_bytes).unwrap();
+    let own_space = format!("at://{DID}/space/org.example.bucket/main");
+    let owner = access_jwt(&state.jwt_secret, DID);
+    assert_eq!(
+        send(
+            &state,
+            post(
+                "com.atproto.simplespace.createSpace",
+                &owner,
+                serde_json::json!({
+                    "type": "org.example.bucket",
+                    "skey": "main",
+                    "policy": {"$type": "com.atproto.simplespace.defs#publicPolicy"},
+                    "appAccess": {"$type": "com.atproto.simplespace.defs#open"},
+                }),
+            ),
+        )
+        .await,
+        StatusCode::OK
+    );
+
+    let key = DpopProofKey::generate();
+    let path = "/xrpc/com.atproto.simplespace.getSpace";
+    let request = |credential: &str| {
+        Request::builder()
+            .method(http::Method::GET)
+            .uri(format!("{path}?space={own_space}"))
+            .header("Authorization", format!("DPoP {credential}"))
+            .header(
+                "DPoP",
+                key.proof(
+                    "GET",
+                    &format!("https://test.example.com{path}"),
+                    credential,
+                ),
+            )
+            .body(Body::empty())
+            .unwrap()
+    };
+    let mint = || {
+        mint_space_credential(
+            |b| signer.sign(b),
+            DID,
+            &parse_space_ref(&own_space).unwrap(),
+            &key.thumbprint(),
+            unix_now().unwrap(),
+        )
+    };
+
+    let credential = mint();
+    assert_eq!(send(&state, request(&credential)).await, StatusCode::OK);
+
+    // The budget is spent: a fresh proof — and even a freshly minted credential — still 429s,
+    // because the key is the credential's bound key thumbprint, not its jti.
+    let response = crate::app::app(state.clone())
+        .oneshot(request(&mint()))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
+    assert!(response.headers().contains_key("retry-after"));
+    assert_eq!(body_json(response).await["error"], "RateLimitExceeded");
+}
+
 // ── migration ────────────────────────────────────────────────────────────────
 
 /// Export a space repo from `source` and import it into `destination`, returning the import's

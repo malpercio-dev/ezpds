@@ -375,6 +375,23 @@ async fn authenticate_space_credential(
             "DPoP proof jti has already been used",
         ));
     }
+
+    // Charged last, on the *verified* key thumbprint, so unauthenticated garbage cannot drain a
+    // holder's budget — and after the replay check, so a replayed proof is an auth error, never
+    // a confusing 429.
+    state
+        .rate_limiter
+        .check_space_credential(&credential.jkt)
+        .inspect_err(|_| {
+            state.metrics.rate_limit_rejections.add(
+                1,
+                &[crate::metrics::label(
+                    crate::metrics::names::LABEL_LIMITER,
+                    "space_credential",
+                )],
+            );
+        })?;
+
     Ok(credential)
 }
 

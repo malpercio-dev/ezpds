@@ -25,6 +25,12 @@
 //!    points against the *authenticated* DID over an hourly and a daily window. Enforced in
 //!    [`crate::record_write::commit_repo_write`] where the verified DID is known (keying on an
 //!    unverified token subject would let anyone drain a victim's budget).
+//! 4. **Per-space-credential** — every credential-authed space request costs 1 point against the
+//!    credential's *verified* DPoP key thumbprint (`cnf.jkt`). Enforced at the credential seam in
+//!    `crate::auth::space` after the proof and replay checks pass, so garbage requests cannot
+//!    drain a holder's budget and re-minting a credential (fresh `jti`, same key) does not reset
+//!    it. Complements the global per-IP cap for the one caller class that legitimately works
+//!    across IPs: a syncer fleet holding one credential.
 //!
 //! All limiters are pure pass-throughs when `[rate_limit] enabled = false` (the test harness sets
 //! this so unit tests are never throttled).
@@ -82,6 +88,8 @@ pub struct RateLimiterState {
     /// requesting IP (`ip:<addr>`) and the `client_id` (`client:<id>`) keys — a single limiter with
     /// two independent keyspaces, so neither dimension can flood the pending-request table.
     oauth_consent_creation: Mutex<MultiWindowLimiter>,
+    /// Credential-authed space requests, keyed by the credential's verified `cnf.jkt`.
+    space_credential: Mutex<MultiWindowLimiter>,
 }
 
 impl RateLimiterState {
@@ -180,6 +188,10 @@ impl RateLimiterState {
                 window: FIVE_MIN,
                 max_points: cfg.oauth_consent_create_per_5min,
             }])),
+            space_credential: Mutex::new(MultiWindowLimiter::new([Window {
+                window: FIVE_MIN,
+                max_points: cfg.space_credential_per_5min,
+            }])),
         }
     }
 
@@ -206,6 +218,30 @@ impl RateLimiterState {
             }
         }
         Ok(())
+    }
+
+    /// Charge one credential-authed space request against the credential's bound DPoP key
+    /// thumbprint. Returns [`ErrorCode::RateLimited`] (429, with the standard `Retry-After` /
+    /// `RateLimit-*` headers) when the holder's budget is exhausted. Call only with a *verified*
+    /// `cnf.jkt` — keying on an unverified claim would let anyone drain a holder's budget. A
+    /// no-op when rate limiting is disabled.
+    pub fn check_space_credential(&self, jkt: &str) -> Result<(), ApiError> {
+        if !self.enabled {
+            return Ok(());
+        }
+        let decision = lock(&self.space_credential).check(jkt, 1, Instant::now());
+        if decision.allowed {
+            Ok(())
+        } else {
+            Err(ApiError::new(
+                ErrorCode::RateLimited,
+                "space credential rate limit exceeded; slow down and retry later",
+            )
+            .with_header("retry-after", decision.reset_after_secs.to_string())
+            .with_header("ratelimit-limit", decision.limit.to_string())
+            .with_header("ratelimit-remaining", decision.remaining.to_string())
+            .with_header("ratelimit-reset", decision.reset_after_secs.to_string()))
+        }
     }
 
     /// Charge `cost` write points to `did`'s repo-write budget. Returns
