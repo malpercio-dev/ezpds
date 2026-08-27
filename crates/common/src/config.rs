@@ -803,6 +803,9 @@ pub struct AgentAuthConfig {
     /// scope, or `transition:generic`) unless you intend agents to change account settings, rotate
     /// handles/PLC identity, or otherwise hold account-lifecycle control — that hands an agent the
     /// same reach as the account owner's own wallet.
+    ///
+    /// Env override: `EZPDS_AGENT_AUTH_GRANTED_SCOPES`, comma-separated (the `EZPDS_CRAWLERS`
+    /// convention; scope tokens never contain commas).
     #[serde(default = "default_agent_granted_scopes")]
     pub granted_scopes: Vec<String>,
     /// Scopes carried by a pre-claim (anonymous) assertion. Defaults to the same conservative
@@ -1807,6 +1810,14 @@ pub(crate) fn apply_env_overrides(
     if let Some(v) = env.get("EZPDS_AGENT_AUTH_AUTH_TIME_MAX_AGE_SECS") {
         raw.agent_auth.auth_time_max_age_secs =
             parse_u64("EZPDS_AGENT_AUTH_AUTH_TIME_MAX_AGE_SECS", v)?;
+    }
+    if let Some(v) = env.get("EZPDS_AGENT_AUTH_GRANTED_SCOPES") {
+        raw.agent_auth.granted_scopes = v
+            .split(',')
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(str::to_string)
+            .collect();
     }
     if let Some(v) = env.get("EZPDS_AGENT_AUTH_VERIFICATION_URI") {
         raw.agent_auth.verification_uri = Some(v.clone());

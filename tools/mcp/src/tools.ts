@@ -364,6 +364,142 @@ export function registerTools(server: McpServer, resolveSession: SessionResolver
     },
   );
 
+  // ── Atproto Spaces ─────────────────────────────────────────────────────────
+  // Permissioned space repos. Every space tool needs a `space:` grant in the
+  // agent's scopes (not part of the default profile), so out of the box each
+  // reports a clean InsufficientScope refusal naming what the operator must
+  // grant. `space` arguments are canonical space refs:
+  // at://{authority-did}/space/{type}/{skey}
+
+  server.registerTool(
+    'list_spaces',
+    {
+      description:
+        'List the permissioned spaces the user’s repository has written to (a repo host tracks ' +
+        'writers, not memberships), optionally filtered by space type or authority DID. ' +
+        'Requires a space: grant in the agent’s scopes.',
+      annotations: { readOnlyHint: true },
+      inputSchema: {
+        type: z.string().optional().describe('Filter to spaces of this type NSID'),
+        did: z.string().optional().describe('Filter to spaces under this authority DID'),
+        limit: z.number().int().min(1).max(100).optional().describe('Page size (default 50)'),
+        cursor: z.string().optional().describe('Cursor from a previous page'),
+      },
+    },
+    async (args, extra) => {
+      const session = resolveSession(extra);
+      try {
+        const token = await session.accessToken();
+        const spaces = await xrpc(session.pdsUrl, 'com.atproto.space.listSpaces', {
+          token,
+          params: { type: args.type, did: args.did, limit: args.limit, cursor: args.cursor },
+        });
+        return ok(spaces);
+      } catch (err) {
+        return relayError(err, session);
+      }
+    },
+  );
+
+  server.registerTool(
+    'space_get_record',
+    {
+      description:
+        'Read a single record from the user’s repo in a permissioned space, by space ref, ' +
+        'collection, and record key. Requires a space: grant in the agent’s scopes.',
+      annotations: { readOnlyHint: true },
+      inputSchema: {
+        space: z.string().describe('Canonical space ref, e.g. at://did:plc:…/space/org.example.bucket/main'),
+        collection: z.string().describe('Collection NSID'),
+        rkey: z.string().describe('Record key'),
+      },
+    },
+    async (args, extra) => {
+      const session = resolveSession(extra);
+      try {
+        const { token, did } = await requireDid(session);
+        const record = await xrpc(session.pdsUrl, 'com.atproto.space.getRecord', {
+          token,
+          params: { space: args.space, repo: did, collection: args.collection, rkey: args.rkey },
+        });
+        return ok(record);
+      } catch (err) {
+        return relayError(err, session);
+      }
+    },
+  );
+
+  server.registerTool(
+    'space_list_records',
+    {
+      description:
+        'List records in the user’s repo in a permissioned space, values inlined, paginated by ' +
+        'cursor. Requires a space: grant in the agent’s scopes.',
+      annotations: { readOnlyHint: true },
+      inputSchema: {
+        space: z.string().describe('Canonical space ref'),
+        collection: z.string().optional().describe('Filter to one collection NSID'),
+        limit: z.number().int().min(1).max(1000).optional().describe('Page size (default 50)'),
+        cursor: z.string().optional().describe('Cursor from a previous page'),
+      },
+    },
+    async (args, extra) => {
+      const session = resolveSession(extra);
+      try {
+        const { token, did } = await requireDid(session);
+        const records = await xrpc(session.pdsUrl, 'com.atproto.space.listRecords', {
+          token,
+          params: {
+            space: args.space,
+            repo: did,
+            collection: args.collection,
+            limit: args.limit,
+            cursor: args.cursor,
+          },
+        });
+        return ok(records);
+      } catch (err) {
+        return relayError(err, session);
+      }
+    },
+  );
+
+  server.registerTool(
+    'space_create_record',
+    {
+      description:
+        `Create a record in the user’s repo in a permissioned space. Requires a space: grant ` +
+        `covering create on the collection. ${ATTRIBUTION}`,
+      annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false },
+      inputSchema: {
+        space: z.string().describe('Canonical space ref'),
+        collection: z.string().describe('Collection NSID'),
+        record: z.record(z.string(), z.unknown()).describe('The full record value (JSON object)'),
+        rkey: z.string().optional().describe('Record key (a TID is generated when absent)'),
+      },
+    },
+    async (args, extra) => {
+      const session = resolveSession(extra);
+      try {
+        const { token, did } = await requireDid(session);
+        const created = await xrpc(session.pdsUrl, 'com.atproto.space.createRecord', {
+          method: 'POST',
+          token,
+          body: {
+            space: args.space,
+            repo: did,
+            collection: args.collection,
+            record: args.record,
+            ...(args.rkey ? { rkey: args.rkey } : {}),
+          },
+        });
+        return ok(created);
+      } catch (err) {
+        return relayError(err, session);
+      }
+    },
+  );
+
   if (!ALLOW_DESTRUCTIVE) return;
 
   server.registerTool(
@@ -389,6 +525,72 @@ export function registerTools(server: McpServer, resolveSession: SessionResolver
           body: { repo: did, collection: args.collection, rkey: args.rkey, record: args.record },
         });
         return ok(result);
+      } catch (err) {
+        return relayError(err, session);
+      }
+    },
+  );
+
+  server.registerTool(
+    'space_put_record',
+    {
+      description:
+        `Create or overwrite a record at a specific collection + rkey in the user’s repo in a ` +
+        `permissioned space. Destructive (enabled by CUSTOS_MCP_ALLOW_DESTRUCTIVE); requires a ` +
+        `space: grant covering the write. ${ATTRIBUTION}`,
+      annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: true },
+      inputSchema: {
+        space: z.string().describe('Canonical space ref'),
+        collection: z.string().describe('Collection NSID'),
+        rkey: z.string().describe('Record key to write'),
+        record: z.record(z.string(), z.unknown()).describe('The full record value (JSON object)'),
+      },
+    },
+    async (args, extra) => {
+      const session = resolveSession(extra);
+      try {
+        const { token, did } = await requireDid(session);
+        const result = await xrpc(session.pdsUrl, 'com.atproto.space.putRecord', {
+          method: 'POST',
+          token,
+          body: {
+            space: args.space,
+            repo: did,
+            collection: args.collection,
+            rkey: args.rkey,
+            record: args.record,
+          },
+        });
+        return ok(result);
+      } catch (err) {
+        return relayError(err, session);
+      }
+    },
+  );
+
+  server.registerTool(
+    'space_delete_record',
+    {
+      description:
+        `Delete a record from the user’s repo in a permissioned space. Destructive (enabled by ` +
+        `CUSTOS_MCP_ALLOW_DESTRUCTIVE); requires a space: grant covering delete. ${ATTRIBUTION}`,
+      annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: true },
+      inputSchema: {
+        space: z.string().describe('Canonical space ref'),
+        collection: z.string().describe('Collection NSID'),
+        rkey: z.string().describe('Record key to delete'),
+      },
+    },
+    async (args, extra) => {
+      const session = resolveSession(extra);
+      try {
+        const { token, did } = await requireDid(session);
+        const result = await xrpc(session.pdsUrl, 'com.atproto.space.deleteRecord', {
+          method: 'POST',
+          token,
+          body: { space: args.space, repo: did, collection: args.collection, rkey: args.rkey },
+        });
+        return ok(result ?? { deleted: true });
       } catch (err) {
         return relayError(err, session);
       }

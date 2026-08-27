@@ -66,14 +66,35 @@ async function connectClient(extra: Record<string, string> = {}): Promise<Client
 function toolJson(result: any): any {
   const content = result.content as { type: string; text: string }[];
   assert.ok(content?.[0]?.type === 'text', 'tool result has text content');
-  return JSON.parse(content[0]!.text);
+  try {
+    return JSON.parse(content[0]!.text);
+  } catch {
+    // A relayed error is plain text; surface it instead of a bare parse error.
+    throw new Error(`tool returned non-JSON content: ${content[0]!.text}`);
+  }
 }
 
 before(async () => {
   tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'custos-mcp-test-'));
   mcpStateDir = path.join(tmp, 'mcp-state');
   plc = await startMockPlc();
-  pds = await spawnPds({ dir: tmp, plcUrl: plc.url, agentAuthEnabled: true });
+  pds = await spawnPds({
+    dir: tmp,
+    plcUrl: plc.url,
+    agentAuthEnabled: true,
+    // The default profile plus a blanket space grant, so the space tools'
+    // happy path is exercised; the repo delete refusal (AC2.2) still holds.
+    // The explicit params matter: a bare `space:*` confers reads but never a
+    // write target (no type declaration to draw collections from), and
+    // authority defaults to `self`, which an unfiltered listSpaces (authority
+    // `*`) does not match.
+    grantedScopes: [
+      'atproto',
+      'repo:*?action=create&action=update',
+      'blob:*/*',
+      'space:*?authority=*&collection=*',
+    ],
+  });
   account = await provisionAccount(pds.baseUrl, path.join(tmp, 'interop-state'));
 });
 
@@ -124,11 +145,21 @@ test('onboarding ceremony, tool surface, and credential hygiene', async (t) => {
     'list_records',
     'search_timeline',
     'account_status',
+    'list_spaces',
+    'space_get_record',
+    'space_list_records',
+    'space_create_record',
   ]) {
     assert.ok(tools.includes(expected), `tool list includes ${expected}`);
   }
-  assert.ok(!tools.includes('delete_record'), 'delete_record not offered by default');
-  assert.ok(!tools.includes('put_record'), 'put_record not offered by default');
+  for (const destructive of [
+    'delete_record',
+    'put_record',
+    'space_put_record',
+    'space_delete_record',
+  ]) {
+    assert.ok(!tools.includes(destructive), `${destructive} not offered by default`);
+  }
 
   // The human confirms in the wallet (here: the claim/confirm endpoint directly).
   await confirmClaim(pds.baseUrl, account.accessJwt, waiting.userCode);
@@ -204,6 +235,67 @@ test('AC2.2: out-of-scope calls relay the 403 as a comprehensible error', async 
   assert.match(message, /InsufficientScope/, 'names the refusal');
   assert.match(message, /Granted scopes:/, 'reports the granted scopes');
   assert.doesNotMatch(message, /\n\s+at /, 'no stack trace');
+});
+
+test('spaces: the agent tool surface drives a permissioned space end-to-end', async (t) => {
+  // The space is the account's own simplespace, created by the owner (full
+  // session) the way the wallet would — the agent then reads and writes it
+  // under its space:* grant.
+  const spaceUri = `at://${account.did}/space/org.example.bucket/main`;
+  const createSpace = await fetch(`${pds.baseUrl}/xrpc/com.atproto.simplespace.createSpace`, {
+    method: 'POST',
+    headers: {
+      'content-type': 'application/json',
+      authorization: `Bearer ${account.accessJwt}`,
+    },
+    body: JSON.stringify({
+      type: 'org.example.bucket',
+      skey: 'main',
+      policy: { $type: 'com.atproto.simplespace.defs#publicPolicy' },
+      appAccess: { $type: 'com.atproto.simplespace.defs#open' },
+    }),
+  });
+  assert.ok(createSpace.ok, `createSpace failed: ${await createSpace.text()}`);
+
+  const client = await connectClient();
+  t.after(() => client.close());
+
+  const created = toolJson(
+    await client.callTool({
+      name: 'space_create_record',
+      arguments: {
+        space: spaceUri,
+        collection: 'org.example.note',
+        record: { text: 'custos-mcp space conformance note' },
+      },
+    }),
+  );
+  assert.ok(created.uri, 'space createRecord returned a uri');
+  assert.ok(created.cid, 'space createRecord returned a cid');
+
+  const rkey = created.uri.split('/').pop();
+  const fetched = toolJson(
+    await client.callTool({
+      name: 'space_get_record',
+      arguments: { space: spaceUri, collection: 'org.example.note', rkey },
+    }),
+  );
+  assert.equal(fetched.value.text, 'custos-mcp space conformance note');
+
+  const listed = toolJson(
+    await client.callTool({
+      name: 'space_list_records',
+      arguments: { space: spaceUri, collection: 'org.example.note' },
+    }),
+  );
+  // listRecords entries are keyed by collection + rkey (space records carry no per-record uri).
+  assert.ok(listed.records.some((record: any) => record.rkey === rkey && record.cid));
+
+  const spaces = toolJson(await client.callTool({ name: 'list_spaces', arguments: {} }));
+  assert.ok(
+    spaces.spaces.some((space: any) => space.uri === spaceUri),
+    `list_spaces reports the space (got ${JSON.stringify(spaces)})`,
+  );
 });
 
 test('AC3.2: revocation fails closed and never auto-re-registers', async (t) => {
