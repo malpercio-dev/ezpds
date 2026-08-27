@@ -20,13 +20,20 @@
 //! **not** unregister the subscriber — a syncer that is briefly down or mid-deploy would
 //! silently lose its subscription — so registrations lapse only at their own expiry.
 //!
-//! **Bounded.** One detached task per notification, delivering to at most
-//! [`MAX_SUBSCRIBERS`] subscribers in sequence. A busy space costs one task and one connection
-//! at a time, not a spawn storm per commit.
+//! **Bounded, twice.** One notification delivers to at most [`MAX_SUBSCRIBERS`] subscribers, in
+//! sequence — so a space with many syncers costs one connection at a time, not a spawn storm.
+//! And across the whole process at most [`MAX_CONCURRENT_FANOUTS`] notifications are in flight
+//! at once, because the per-notification cap alone bounds nothing under a *write burst*: tasks
+//! sleep between retries, and each one competes for the single SQLite connection every request
+//! handler also needs. (`crawler.rs`, the pattern this follows, gets that second bound for free
+//! from its 30-second per-crawler rate limit, which collapses a burst into one notification;
+//! a space's writes must each be reported, so there is nothing to collapse here.)
 
+use std::sync::OnceLock;
 use std::time::Duration;
 
 use serde_json::Value;
+use tokio::sync::Semaphore;
 
 use crate::app::AppState;
 use crate::auth::space::unix_now;
@@ -41,6 +48,25 @@ pub const REGISTRATION_TTL_SECS: i64 = 7 * 24 * 60 * 60;
 /// Most subscribers one notification fans out to. A cap rather than a page loop: past this many
 /// syncers a space's notification budget is better spent on `listRepos` sweeps than on delivery.
 const MAX_SUBSCRIBERS: i64 = 100;
+
+/// Notifications in flight at once, across every space this process serves. Small on purpose:
+/// the work behind a permit is mostly waiting (DNS, TLS, retry backoff), and what it holds
+/// between waits is the one SQLite connection the request handlers share.
+const MAX_CONCURRENT_FANOUTS: usize = 8;
+
+/// The permits behind [`MAX_CONCURRENT_FANOUTS`]. Process-global rather than an `AppState`
+/// field because the resource being rationed — this process's sockets and its single database
+/// connection — is process-global too, and nothing about the bound varies per request.
+///
+/// Tasks *wait* for a permit rather than shedding when none is free: a suspended task costs
+/// bytes, while dropping the notification costs a syncer its liveness until the next `listRepos`
+/// sweep. Waiting bounds the expensive half without losing the cheap half.
+// ponytail: unbounded wait queue — an mpsc-fed worker with a bounded channel if a write burst
+// ever outpaces delivery for long enough that queued tasks, not connections, are the problem.
+fn fanout_permits() -> &'static Semaphore {
+    static PERMITS: OnceLock<Semaphore> = OnceLock::new();
+    PERMITS.get_or_init(|| Semaphore::new(MAX_CONCURRENT_FANOUTS))
+}
 
 /// Send attempts per delivery (initial try plus retries), and the backoff base (doubling).
 const MAX_ATTEMPTS: u32 = 3;
@@ -80,6 +106,8 @@ pub fn fan_out_write(
         "hash": crate::routes::space_views::lex_bytes(hash),
     });
     tokio::spawn(async move {
+        let _permit = fanout_permits().acquire().await;
+
         // Whether this host is the space's authority: a `spaces` row with simplespace config.
         // Also picks the signer — as the authority we speak for the space, otherwise we speak
         // for the account whose repo advanced.
@@ -153,6 +181,7 @@ pub fn fan_out_space_deleted(state: &AppState, space: &SpaceRef, subscribers: Ve
     let signer_did = space.authority.clone();
     let body = serde_json::json!({ "space": space.uri });
     tokio::spawn(async move {
+        let _permit = fanout_permits().acquire().await;
         deliver_all(
             &state,
             subscribers,

@@ -7,8 +7,11 @@
 // auth seam and the store are all in the path — cross-route journeys live here because routes
 // may not import one another (the `space_routes_test.rs` convention).
 //
-// Delivery itself is never exercised: every subscriber seeded here resolves to a DID document
-// with no service endpoint, so the fan-out fails at resolution instead of dialling a socket.
+// Delivery itself is never exercised, and cannot be by accident: `seed_undeliverable` seeds a
+// DID document with no service endpoint at all, and the one seed that does carry an endpoint
+// points it at a `.invalid` host (RFC 2606 — guaranteed never to resolve). A test that starts
+// writing while a subscriber is registered therefore still leaves no packet, rather than
+// depending on a convention someone has to remember.
 
 use axum::body::Body;
 use axum::http::{self, Request, StatusCode};
@@ -375,8 +378,9 @@ fn dpop_post(
         .unwrap()
 }
 
-/// A syncer DID document with a service endpoint — resolvable, but pointed at a host that
-/// answers nothing.
+/// A syncer DID document that *does* carry a service endpoint, so `registerNotify`'s
+/// resolvability check passes — pointed at an RFC 2606 `.invalid` host, which by definition has
+/// no DNS answer, so a fan-out that reached delivery would still never leave the machine.
 async fn seed_syncer_document(state: &AppState, kp: &crypto::P256Keypair) {
     let multibase = kp.key_id.0.strip_prefix("did:key:").unwrap().to_string();
     seed_did_document(
@@ -388,7 +392,7 @@ async fn seed_syncer_document(state: &AppState, kp: &crypto::P256Keypair) {
                 { "id": format!("{SYNCER}#atproto"), "type": "Multikey", "controller": SYNCER, "publicKeyMultibase": multibase },
             ],
             "service": [
-                { "id": format!("{SYNCER}#atproto_space_syncer"), "type": "AtprotoSpaceService", "serviceEndpoint": "https://syncer.example.com" },
+                { "id": format!("{SYNCER}#atproto_space_syncer"), "type": "AtprotoSpaceService", "serviceEndpoint": "https://syncer.invalid" },
             ],
         }),
     )
