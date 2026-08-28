@@ -1,9 +1,14 @@
 # ADR-0014: Adopt `atrium-repo` for the repo engine's MST and block store
 
-- **Status:** Accepted
+- **Status:** Accepted — the "young crate" risk in Consequences below
+  materialized: `atrium-repo` 0.1.8's `split_subtree` silently drops records,
+  which the interop gate could not catch (it pins reference-vector root CIDs, not
+  random insert sequences). Mitigated by vendoring a fix — see
+  [ADR-0034](0034-vendored-atrium-repo-mst-patch.md); the adoption decision
+  itself stands.
 - **Date:** 2026-07-05 (backfilled; decided 2026-06-22)
 - **Deciders:** ezpds maintainers
-- **Related:** [ADR-0004](0004-pds-signed-repo-commits.md) · [ADR-0005](0005-functional-core-imperative-shell.md) · [design plan](../../archive/design-plans/2026-06-22-repo-engine-atrium-adoption.md) · `crates/repo-engine/`
+- **Related:** [ADR-0004](0004-pds-signed-repo-commits.md) · [ADR-0005](0005-functional-core-imperative-shell.md) · [ADR-0034](0034-vendored-atrium-repo-mst-patch.md) · [design plan](../../archive/design-plans/2026-06-22-repo-engine-atrium-adoption.md) · `crates/repo-engine/`
 
 ## Context
 

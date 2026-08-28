@@ -48,7 +48,7 @@ understand why the architecture is the way it is.
 | [0011](0011-sqlite-via-sqlx.md) | Accepted | SQLite (via sqlx) as the datastore |
 | [0012](0012-canonical-dag-cbor-for-plc-ops.md) | Accepted | Canonical DAG-CBOR encoding for did:plc operations |
 | [0013](0013-native-swiftui-shell-over-rust-core.md) | Deferred | Native SwiftUI shell over the Rust core (if/when we leave Tauri) |
-| [0014](0014-atrium-repo-for-repo-engine.md) | Accepted | Adopt `atrium-repo` for the repo engine's MST and block store |
+| [0014](0014-atrium-repo-for-repo-engine.md) | Accepted | Adopt `atrium-repo` for the repo engine's MST and block store (0.1.8 is since consumed as a vendored patch — see [0034](0034-vendored-atrium-repo-mst-patch.md)) |
 | [0015](0015-ci-on-github-actions.md) | Accepted | Host CI on GitHub Actions (leaving the tangled spindle) |
 | [0016](0016-dynamic-lexicon-permission-set-resolution.md) | Accepted | Dynamic Lexicon-based permission-set resolution, not a static scope table |
 | [0017](0017-multi-relay-admin-pairings.md) | Accepted | One global admin device key across N relays; pairings in a single versioned keychain document with a Rust-owned active pointer |
@@ -68,3 +68,4 @@ understand why the architecture is the way it is.
 | [0031](0031-user-facing-error-seam.md) | Accepted | The typed IPC error is the user-facing seam: frontend owns the sentence keyed by `code`, `message` fields are diagnostic unless declared server-quoted, and server attribution must be true |
 | [0032](0032-rotating-reusable-dpop-nonces.md) | Accepted | Token-endpoint DPoP nonces are rotating-window HMAC values (reusable ~1–3 min, derived from the persistent JWT secret), matching the reference provider instead of single-use consumed nonces |
 | [0033](0033-app-password-personal-details-grant.md) | Accepted | App passwords can carry an opt-in mint-time personal-details grant admitting their sessions to the full-access-only preferences (birth date) — a deliberate reference-PDS divergence so passwordless sovereign accounts can pass the official app's age checks |
+| [0034](0034-vendored-atrium-repo-mst-patch.md) | Accepted | Vendor `atrium-repo` 0.1.8 with a fix for its `split_subtree` data-loss bug ([atrium#343](https://github.com/atrium-rs/atrium/issues/343)), guarded by a gate test; patches [0014](0014-atrium-repo-for-repo-engine.md) |

@@ -3,7 +3,8 @@
 - **Status:** Accepted
 - **Date:** 2026-08-27
 - **Deciders:** malpercio
-- **Related:** [atrium-rs/atrium#343](https://github.com/atrium-rs/atrium/issues/343),
+- **Related:** [ADR-0014](0014-atrium-repo-for-repo-engine.md) (the adoption this
+  patches), [atrium-rs/atrium#343](https://github.com/atrium-rs/atrium/issues/343),
   `vendor/atrium-repo-patch/`, `crates/repo-engine/tests/mst_split_gate.rs`,
   [2026-08-27 MST data-loss incident](../../2026-08-27-mst-data-loss-incident.md)
 
