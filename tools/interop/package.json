@@ -11,7 +11,8 @@
     "interop": "./bin/interop"
   },
   "scripts": {
-    "interop": "node src/cli.js"
+    "interop": "node src/cli.js",
+    "test": "node --test test/*.test.js"
   },
   "dependencies": {
     "@atproto/crypto": "^0.5.1",

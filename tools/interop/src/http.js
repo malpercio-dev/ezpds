@@ -2,6 +2,7 @@
 // through here so pacing and 429 handling are enforced globally, not per-module.
 
 import { MIN_REQUEST_INTERVAL_MS, MAX_RATE_LIMIT_RETRIES } from './config.js';
+import { dpopProof } from './dpop.js';
 
 export class HttpError extends Error {
   constructor(status, body, url) {
@@ -34,13 +35,20 @@ export function sleep(ms) {
  * Perform a paced HTTP request, retrying on 429 per Retry-After.
  *
  * @param {string} url
- * @param {{method?: string, headers?: object, body?: any, token?: string, raw?: boolean}} options
+ * @param {{method?: string, headers?: object, body?: any, token?: string, raw?: boolean,
+ *          dpop?: {key: object, bind?: string}}} options
  *   `body` objects are JSON-encoded. With `raw: true` the Response is returned
  *   unconsumed (for CAR/blob downloads); otherwise JSON (or text) is parsed and
  *   non-2xx throws HttpError.
+ *
+ *   `dpop` attaches an RFC 9449 proof. With `bind` (a DPoP-bound space credential) the
+ *   request also switches to `Authorization: DPoP <bind>` and the proof carries `ath`;
+ *   without it the proof is the mint-time kind and `token` still supplies the Bearer
+ *   grant — the two shapes `getSpaceCredential` and the credential-authed reads want.
  */
 export async function request(url, options = {}) {
   const headers = { ...(options.headers ?? {}) };
+  const method = options.method ?? 'GET';
   if (options.token) headers['Authorization'] = `Bearer ${options.token}`;
 
   let body;
@@ -53,9 +61,16 @@ export async function request(url, options = {}) {
 
   for (let attempt = 0; ; attempt++) {
     await pace();
+    // Minted per attempt, not once: a proof's `iat` is good for 60s while a Retry-After
+    // wait can be 120s, and the space read seam spends each `jti` once per host — so a
+    // reused proof after a rate-limit retry would be rejected as stale *and* as a replay.
+    if (options.dpop) {
+      if (options.dpop.bind) headers['Authorization'] = `DPoP ${options.dpop.bind}`;
+      headers['DPoP'] = await dpopProof(options.dpop.key, { method, url, boundToken: options.dpop.bind });
+    }
     let res;
     try {
-      res = await fetch(url, { method: options.method ?? 'GET', headers, body });
+      res = await fetch(url, { method, headers, body });
     } catch (err) {
       // Undici's bare "fetch failed" hides the useful part (ECONNREFUSED,
       // proxy CONNECT denial, TLS failure) in err.cause.

@@ -5,6 +5,7 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { BASE_URL } from './config.js';
 
 const STATE_DIR = process.env.EZPDS_INTEROP_STATE_DIR
   ?? path.join(path.dirname(fileURLToPath(import.meta.url)), '..', '.state');
@@ -37,6 +38,15 @@ export function getAccount(state, name) {
     throw new Error(`no account named "${name}" in state${known.length ? ` (known: ${known.join(', ')})` : ' — run create-account first'}`);
   }
   return account;
+}
+
+/**
+ * The PDS an account lives on. Accounts provisioned by `create-account` are on the
+ * configured BASE_URL and carry no `host`; one adopted by `import-session` records the
+ * host it authenticated against, which is what lets a single run span two hosts.
+ */
+export function accountHost(account) {
+  return account.host ?? BASE_URL;
 }
 
 export function writeReport(report) {
