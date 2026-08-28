@@ -24,7 +24,7 @@ corpus.
 [`docs/test-plans/2026-07-15-MM-356.md`](../../test-plans/2026-07-15-MM-356.md).
 Design: [`docs/design-plans/2026-07-14-hosted-custos-mcp.md`](../../design-plans/2026-07-14-hosted-custos-mcp.md)
 §1 (attribution × hosting matrix), §5 (tier 3: self-hosted).
-[ADR-0023](../../architecture/decisions/0023-sovereign-child-agent-identities.md)
+[ADR-0023](../../../architecture/decisions/0023-sovereign-child-agent-identities.md)
 keeps acts-as-you first-class.
 
 **Codebase verified:** 2026-07-15.
@@ -46,8 +46,8 @@ hermetic conformance suite is the gate.
 **Files:**
 - Modify: `tools/mcp/README.md` — state that this stdio server is the self-hosted **acts-as-you** path and that it is a supported, encouraged mode
 - Modify: the design corpus cross-links (ensure the README points at
-  [ADR-0023](../../architecture/decisions/0023-sovereign-child-agent-identities.md) /
-  [ADR-0024](../../architecture/decisions/0024-hosted-agent-credential-forwarding.md)
+  [ADR-0023](../../../architecture/decisions/0023-sovereign-child-agent-identities.md) /
+  [ADR-0024](../../../architecture/decisions/0024-hosted-agent-credential-forwarding.md)
   and the design plan)
 
 **Implementation:**

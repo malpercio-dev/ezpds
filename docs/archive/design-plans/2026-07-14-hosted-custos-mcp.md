@@ -1,6 +1,6 @@
 # Design plan: a first-party *hosted* Custos MCP
 
-**Status: in progress — the credential-forwarding sidecar scaffold shipped in #288 (MM-369); the broader MM-356 hosted-tier work is still in flight (see `docs/implementation-plans/2026-07-15-MM-356/`). Stays here until that epic lands.**
+**Status: shipped.** MM-356 (hosted Custos MCP: agent-as-child-identity + credential-forwarding sidecar) is done — all four phases merged and the live staging leg verified. Archived per `docs/archive/README.md`.
 Written to durably record where a "hosted MCP alongside obsign.org" conversation landed. Verdict
 up front: the interesting product is **not** "the same stdio server, but we run it" — it's a
 reframing where the agent becomes its **own sovereign identity** (own handle, recovery key in the
@@ -176,14 +176,14 @@ Net of §1–§3: **agent = sovereign child identity; hosted tier = credential-f
 
 Two decisions here are architecturally load-bearing and are recorded as separate ADRs:
 
-- **[ADR-0023](../architecture/decisions/0023-sovereign-child-agent-identities.md) — Agents may be sovereign child identities (the hosted default).** The agent can have its
+- **[ADR-0023](../../architecture/decisions/0023-sovereign-child-agent-identities.md) — Agents may be sovereign child identities (the hosted default).** The agent can have its
   own DID/repo/handle; its recovery key is held in the user's Obsign wallet (same genesis/rotation
   machinery as the user's own identity); day-to-day signing is a delegated, revocable capability.
   This is the **default for the hosted path**; the *acts-as-you* delegate model (current auth.md
   service_auth flow) **remains first-class and is the default for self-hosting** — the ADR records
   when each applies (the §1 attribution × hosting matrix), not a replacement. Relates to ADR-0019,
   ADR-0001, ADR-0004.
-- **[ADR-0024](../architecture/decisions/0024-hosted-agent-credential-forwarding.md) — The hosted agent tier forwards credentials; it never holds durable user/agent
+- **[ADR-0024](../../architecture/decisions/0024-hosted-agent-credential-forwarding.md) — The hosted agent tier forwards credentials; it never holds durable user/agent
   secrets.** MCP remote auth = OAuth against Custos (the existing AS); the caller's token rides each
   request; the tier caches nothing durable. This is the security-posture commitment that keeps a
   hosted offering consistent with the product thesis. Relates to ADR-0019.
@@ -229,5 +229,5 @@ The other two legs of the triad for this first slice ([MM-366](https://linear.ap
   stdio non-regression ([MM-367](https://linear.app/malpercio/issue/MM-367)).
 
 The two ADRs written alongside:
-[ADR-0023](../architecture/decisions/0023-sovereign-child-agent-identities.md) and
-[ADR-0024](../architecture/decisions/0024-hosted-agent-credential-forwarding.md).
+[ADR-0023](../../architecture/decisions/0023-sovereign-child-agent-identities.md) and
+[ADR-0024](../../architecture/decisions/0024-hosted-agent-credential-forwarding.md).

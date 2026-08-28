@@ -1,5 +1,5 @@
 // HV-2 live driver: the staging/production half of MM-370's Definition of Done
-// (docs/test-plans/2026-07-15-MM-356.md → HV-2). Mirrors test/e2e-fixture.ts but
+// (docs/archive/test-plans/2026-07-15-MM-356.md → HV-2). Mirrors test/e2e-fixture.ts but
 // against real deployments. Provisions an ephemeral parent, mints a sovereign
 // child (genesis published to the REAL plc.directory), exchanges the child
 // capability, and drives create_post through the DEPLOYED sidecar as a real MCP

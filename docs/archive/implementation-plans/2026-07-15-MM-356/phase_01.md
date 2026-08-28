@@ -28,7 +28,7 @@ mint/list/revoke surface; the parent-owner gate reuses
 verifies **AC1** in [`docs/test-plans/2026-07-15-MM-356.md`](../../test-plans/2026-07-15-MM-356.md).
 Design: [`docs/design-plans/2026-07-14-hosted-custos-mcp.md`](../../design-plans/2026-07-14-hosted-custos-mcp.md)
 §1, §2, §8. Decisions fixed by
-[ADR-0023](../../architecture/decisions/0023-sovereign-child-agent-identities.md).
+[ADR-0023](../../../architecture/decisions/0023-sovereign-child-agent-identities.md).
 
 **Codebase verified:** 2026-07-15.
 

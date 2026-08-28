@@ -29,7 +29,7 @@ token cache, no DB (ADR-0024).
 [`docs/test-plans/2026-07-15-MM-356.md`](../../test-plans/2026-07-15-MM-356.md).
 Design: [`docs/design-plans/2026-07-14-hosted-custos-mcp.md`](../../design-plans/2026-07-14-hosted-custos-mcp.md)
 §3, §4, §5. Decision fixed by
-[ADR-0024](../../architecture/decisions/0024-hosted-agent-credential-forwarding.md).
+[ADR-0024](../../../architecture/decisions/0024-hosted-agent-credential-forwarding.md).
 
 **Codebase verified:** 2026-07-15.
 

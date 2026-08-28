@@ -3,7 +3,7 @@
 - **Status:** Accepted
 - **Date:** 2026-07-15
 - **Deciders:** ezpds maintainers
-- **Related:** [ADR-0001](0001-client-held-rotation-key-custody.md) · [ADR-0004](0004-pds-signed-repo-commits.md) · [ADR-0019](0019-authmd-agent-authentication.md) · [hosted Custos MCP plan](../../design-plans/2026-07-14-hosted-custos-mcp.md) · [MM-356](https://linear.app/malpercio/issue/MM-356) · [MM-365](https://linear.app/malpercio/issue/MM-365)
+- **Related:** [ADR-0001](0001-client-held-rotation-key-custody.md) · [ADR-0004](0004-pds-signed-repo-commits.md) · [ADR-0019](0019-authmd-agent-authentication.md) · [hosted Custos MCP plan](../../archive/design-plans/2026-07-14-hosted-custos-mcp.md) · [MM-356](https://linear.app/malpercio/issue/MM-356) · [MM-365](https://linear.app/malpercio/issue/MM-365)
 
 ## Context
 

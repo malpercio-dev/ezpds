@@ -24,7 +24,7 @@ transport, the `tools/mcp/test/harness.ts` hermetic PDS. Live pass runs against
 [`docs/test-plans/2026-07-15-MM-356.md`](../../test-plans/2026-07-15-MM-356.md).
 Design: [`docs/design-plans/2026-07-14-hosted-custos-mcp.md`](../../design-plans/2026-07-14-hosted-custos-mcp.md)
 §1 (attribution), §3 (forwarding). Attribution fixed by
-[ADR-0023](../../architecture/decisions/0023-sovereign-child-agent-identities.md).
+[ADR-0023](../../../architecture/decisions/0023-sovereign-child-agent-identities.md).
 
 **Codebase verified:** 2026-07-15.
 
