@@ -59,6 +59,10 @@ pub async fn run_space_oplog_sweep(state: &AppState) -> SweepStats {
         tracing::trace!("space oplog sweep pass complete (nothing to sweep)");
     }
 
+    state
+        .sweeps
+        .record_space_oplog_sweep(crate::sweep_status::SweepRun::now(swept));
+
     SweepStats { swept }
 }
 

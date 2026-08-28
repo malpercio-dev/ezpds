@@ -386,6 +386,15 @@ interop CLI scenarios against the reference alpha; MCP tools
    bookmarks/drafts/private-posts modality end-to-end on a single PDS. Gate
    behind a config flag (e.g. `EZPDS_SPACES_ENABLED`) until the protocol
    launches (target "later this year").
+   > **Decision (2026-08-27, MM-524):** the config gate was never built, and
+   > will not be — the space routes shipped always-on and are auth-gated per
+   > route like every other surface, so a switch would only add a knob whose
+   > off position breaks accounts that already hold space data. Discoverability
+   > is handled instead by the `spaces` entry in `describeServer`'s `custos`
+   > capability set, keyed to `signing_key_master_key` (the real precondition
+   > for the sync surface: per-serving commit signing needs the KEK-wrapped
+   > repo signing key, so `getLatestCommit`/`listRepoOps`/`getRepo` answer 503
+   > without one).
 3. **Phase 2 — shared spaces & sync:** oplog + `listRepoOps`, two-root CAR
    `getRepo`, notifications + auto-registration + expiry, writer set, space
    deletion. Validate against the alpha: the hosted sandbox PDS, the

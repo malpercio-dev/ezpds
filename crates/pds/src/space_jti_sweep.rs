@@ -56,5 +56,9 @@ pub async fn run_space_jti_sweep(state: &AppState) -> SweepStats {
         tracing::trace!("space jti sweep pass complete (nothing to sweep)");
     }
 
+    state
+        .sweeps
+        .record_space_jti_sweep(crate::sweep_status::SweepRun::now(swept));
+
     SweepStats { swept }
 }
