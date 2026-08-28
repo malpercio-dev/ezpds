@@ -386,6 +386,16 @@ interop CLI scenarios against the reference alpha; MCP tools
    bookmarks/drafts/private-posts modality end-to-end on a single PDS. Gate
    behind a config flag (e.g. `EZPDS_SPACES_ENABLED`) until the protocol
    launches (target "later this year").
+   > **Decision (2026-08-27, MM-524):** the gate shipped as `[spaces] enabled`
+   > / `EZPDS_SPACES_ENABLED`, default **off** until the protocol launches, as
+   > planned (it had shipped always-on in the interim). Disabled, the routes
+   > are simply not registered — an XRPC space method answers the catch-all's
+   > `MethodNotImplemented`, stored space data is untouched, and the space
+   > sweeps are not spawned. Discoverability is the `spaces` entry in
+   > `describeServer`'s `custos` capability set, keyed to `spaces.enabled`
+   > **and** `signing_key_master_key` (the precondition for the sync surface:
+   > per-serving commit signing needs the KEK-wrapped repo signing key, so
+   > `getLatestCommit`/`listRepoOps`/`getRepo` answer 503 without one).
 3. **Phase 2 — shared spaces & sync:** oplog + `listRepoOps`, two-root CAR
    `getRepo`, notifications + auto-registration + expiry, writer set, space
    deletion. Validate against the alpha: the hosted sandbox PDS, the

@@ -784,23 +784,32 @@ async fn run() -> anyhow::Result<()> {
         "sovereign-session nonce retention sweep started"
     );
 
-    // Spawn the spaces jti retention sweep. The (scope, jti) primary key enforces anti-replay;
-    // each row's expires_at carries its own token's acceptance horizon, so the sweep only
-    // bounds storage growth.
-    let _space_jti_sweep = space_jti_sweep::spawn_space_jti_sweep(state.clone());
-    tracing::info!(
-        interval_secs = space_jti_sweep::SWEEP_INTERVAL.as_secs(),
-        "space jti retention sweep started"
-    );
+    // Spawn the two space retention sweeps only while the spaces surface is enabled —
+    // disabled, no route can write the tables they reclaim, and their `null` rows in the
+    // health readout then read as "not configured", like the blob mirror's. Rows already
+    // stored keep their data; only reclamation pauses with the surface.
+    let _space_sweeps = if state.config.spaces.enabled {
+        // The jti retention sweep: the (scope, jti) primary key enforces anti-replay; each
+        // row's expires_at carries its own token's acceptance horizon, so the sweep only
+        // bounds storage growth.
+        let jti = space_jti_sweep::spawn_space_jti_sweep(state.clone());
+        tracing::info!(
+            interval_secs = space_jti_sweep::SWEEP_INTERVAL.as_secs(),
+            "space jti retention sweep started"
+        );
 
-    // Spawn the permissioned-repo oplog compaction sweep. The oplog is droppable by spec;
-    // this bounds it to a backfill window, and a syncer further behind heals via getRepo.
-    let _space_oplog_sweep = space_oplog_sweep::spawn_space_oplog_sweep(state.clone());
-    tracing::info!(
-        interval_secs = space_oplog_sweep::SWEEP_INTERVAL.as_secs(),
-        retention_secs = space_oplog_sweep::OPLOG_RETENTION_SECS,
-        "space oplog compaction sweep started"
-    );
+        // The permissioned-repo oplog compaction sweep. The oplog is droppable by spec;
+        // this bounds it to a backfill window, and a syncer further behind heals via getRepo.
+        let oplog = space_oplog_sweep::spawn_space_oplog_sweep(state.clone());
+        tracing::info!(
+            interval_secs = space_oplog_sweep::SWEEP_INTERVAL.as_secs(),
+            retention_secs = space_oplog_sweep::OPLOG_RETENTION_SECS,
+            "space oplog compaction sweep started"
+        );
+        Some((jti, oplog))
+    } else {
+        None
+    };
 
     // Spawn the Iroh accept loop when the tunnel is enabled. Like the blob GC it is detached
     // and runs for the life of the endpoint; closing the endpoint at shutdown ends the loop.

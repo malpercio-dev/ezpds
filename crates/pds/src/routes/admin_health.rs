@@ -126,6 +126,13 @@ struct SweepStates {
     account_reaper: Option<SweepState>,
     agent_claim_sweep: Option<SweepState>,
     admin_nonce_sweep: Option<SweepState>,
+    /// The spaces-token jti replay retention sweep's last completed pass (`swept` = expired
+    /// jti rows reclaimed). Staleness here means the replay store is growing unbounded;
+    /// `null` while `[spaces] enabled` is off, like an idle sweep.
+    space_jti_sweep: Option<SweepState>,
+    /// The permissioned-repo oplog compaction sweep's last completed pass (`swept` = ops
+    /// pruned past the 7-day retention window); `null` while `[spaces] enabled` is off.
+    space_oplog_sweep: Option<SweepState>,
     /// The labeler watcher's last completed poll pass (`swept` = label rows changed);
     /// `null` while labeler watching is off, like an idle sweep.
     labeler_watch: Option<SweepState>,
@@ -256,6 +263,8 @@ pub async fn admin_health(
             account_reaper: sweeps.account_reaper.map(SweepState::from),
             agent_claim_sweep: sweeps.agent_claim_sweep.map(SweepState::from),
             admin_nonce_sweep: sweeps.admin_nonce_sweep.map(SweepState::from),
+            space_jti_sweep: sweeps.space_jti_sweep.map(SweepState::from),
+            space_oplog_sweep: sweeps.space_oplog_sweep.map(SweepState::from),
             labeler_watch: sweeps.labeler_watch.map(SweepState::from),
         },
         notify_queue_depth: state.notify_sender.as_ref().map(|s| s.depth()),
@@ -340,6 +349,8 @@ mod tests {
         assert_eq!(json["sweeps"]["accountReaper"], serde_json::Value::Null);
         assert_eq!(json["sweeps"]["agentClaimSweep"], serde_json::Value::Null);
         assert_eq!(json["sweeps"]["adminNonceSweep"], serde_json::Value::Null);
+        assert_eq!(json["sweeps"]["spaceJtiSweep"], serde_json::Value::Null);
+        assert_eq!(json["sweeps"]["spaceOplogSweep"], serde_json::Value::Null);
         assert_eq!(json["sweeps"]["labelerWatch"], serde_json::Value::Null);
         // No relay configured in the test state — `null`, not `0`: an operator must be able to
         // tell an unconfigured feature from an idle one.

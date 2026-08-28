@@ -74,6 +74,9 @@ pub struct Config {
     pub recovery: RecoveryConfig,
     /// Public interest-signup waitlist (the `waitlist` capability). Off by default.
     pub waitlist: WaitlistConfig,
+    /// The Atproto Spaces alpha surface (the `spaces` capability). Off by default until
+    /// the protocol launches.
+    pub spaces: SpacesConfig,
     /// Operator companion-app admin-device knobs (the stale-nonce sweep interval
     /// and retention).
     pub admin_devices: AdminDevicesConfig,
@@ -434,6 +437,24 @@ fn default_release_delay_secs() -> u64 {
 pub struct WaitlistConfig {
     /// Enable the public waitlist signup endpoint (and advertise the `waitlist`
     /// capability). Default `false`.
+    #[serde(default)]
+    pub enabled: bool,
+}
+
+/// Atproto Spaces (permissioned data) configuration.
+///
+/// The spaces surface is a pre-launch alpha protocol: the upstream lexicons carry a
+/// breaking-changes warning until launch, so it is off by default. Enabling it registers
+/// the `com.atproto.space.*` and `com.atproto.simplespace.*` routes plus
+/// `/v1/space/import-repo`, starts the space retention sweeps, and — with a signing-key
+/// master key configured — advertises the `spaces` capability. Disabled, those XRPC
+/// methods answer the catch-all's `MethodNotImplemented`, exactly like a PDS that never
+/// implemented spaces; stored space data is untouched and blob GC still counts its
+/// references.
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct SpacesConfig {
+    /// Serve the Atproto Spaces surface (and advertise the `spaces` capability once a
+    /// signing-key master key is also configured). Default `false`.
     #[serde(default)]
     pub enabled: bool,
 }
@@ -1400,6 +1421,8 @@ pub(crate) struct RawConfig {
     #[serde(default)]
     pub(crate) waitlist: WaitlistConfig,
     #[serde(default)]
+    pub(crate) spaces: SpacesConfig,
+    #[serde(default)]
     pub(crate) admin_devices: AdminDevicesConfig,
     #[serde(default)]
     pub(crate) oauth: OAuthConfig,
@@ -1773,6 +1796,9 @@ pub(crate) fn apply_env_overrides(
     }
     if let Some(v) = env.get("EZPDS_WAITLIST_ENABLED") {
         raw.waitlist.enabled = parse_bool_env("EZPDS_WAITLIST_ENABLED", v)?;
+    }
+    if let Some(v) = env.get("EZPDS_SPACES_ENABLED") {
+        raw.spaces.enabled = parse_bool_env("EZPDS_SPACES_ENABLED", v)?;
     }
     // OAuth access-token lifetime. Overridable by env so the conformance suite can spawn a
     // PDS with a near-instant expiry and assert what a client sees when a token lapses.
@@ -2458,6 +2484,7 @@ pub(crate) fn validate_and_build(raw: RawConfig) -> Result<Config, ConfigError> 
         accounts: raw.accounts,
         recovery: raw.recovery,
         waitlist: raw.waitlist,
+        spaces: raw.spaces,
         admin_devices: raw.admin_devices,
         oauth: raw.oauth,
         agent_auth: raw.agent_auth,
@@ -3083,6 +3110,20 @@ mod tests {
         let config = validate_and_build(raw).unwrap();
         assert!(config.waitlist.enabled);
         assert_eq!(config.rate_limit.waitlist_per_5min, 10);
+    }
+
+    #[test]
+    fn spaces_default_to_disabled() {
+        let config = validate_and_build(minimal_raw()).unwrap();
+        assert!(!config.spaces.enabled);
+    }
+
+    #[test]
+    fn spaces_env_override_enables() {
+        let env = HashMap::from([("EZPDS_SPACES_ENABLED".to_string(), "true".to_string())]);
+        let raw = apply_env_overrides(minimal_raw(), &env).unwrap();
+        let config = validate_and_build(raw).unwrap();
+        assert!(config.spaces.enabled);
     }
 
     #[test]

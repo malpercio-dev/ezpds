@@ -221,6 +221,10 @@ pub async fn test_state_with_plc_url(plc_directory_url: String) -> AppState {
             accounts: common::AccountsConfig::default(),
             recovery: common::RecoveryConfig::default(),
             waitlist: common::WaitlistConfig::default(),
+            // Spaces on in the shared test config — most space tests exercise the route
+            // surface — while the production default stays off (pre-launch alpha). The
+            // gating tests opt back out by swapping the config on the returned state.
+            spaces: common::SpacesConfig { enabled: true },
             admin_devices: common::AdminDevicesConfig::default(),
             oauth: OAuthConfig::default(),
             agent_auth: common::AgentAuthConfig::default(),

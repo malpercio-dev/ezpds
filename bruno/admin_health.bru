@@ -49,11 +49,13 @@ docs {
     backfillWindowSeconds}`; `backfillWindowSeconds` is the age of the oldest
     retained event (`null` when the log is empty).
   - `sweeps` — `{blobGc, blobMirror, blobScrub, firehoseGc, accountReaper,
-    agentClaimSweep, adminNonceSweep, labelerWatch}`, each
+    agentClaimSweep, adminNonceSweep, spaceJtiSweep, spaceOplogSweep,
+    labelerWatch}`, each
     `{completedAt, swept, errors}` (unix seconds, items acted on, failures hit)
     or `null` until that sweep's first completed pass after boot. `blobMirror`
-    stays `null` while the mirror is not configured and `labelerWatch` while
-    labeler watching is off, both like an idle sweep; `blobMirror`'s `swept`
+    stays `null` while the mirror is not configured, `labelerWatch` while
+    labeler watching is off, and `spaceJtiSweep`/`spaceOplogSweep` while the
+    spaces surface is disabled, all like an idle sweep; `blobMirror`'s `swept`
     counts bucket objects synced (uploads + deletes), `blobScrub`'s counts
     unhealed integrity problems flagged that pass, and `labelerWatch`'s counts
     label rows changed.

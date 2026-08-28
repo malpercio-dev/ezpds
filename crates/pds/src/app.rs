@@ -257,6 +257,100 @@ fn apply_shared_layers(router: Router<AppState>, state: &AppState) -> Router<App
 /// provisioning** surface (`/v1/*`, including `/v1/admin/*`) gets no CORS layer at all, since it is
 /// only ever called same-origin by first-party native/mobile clients and operators. Both groups
 /// share the trace/metrics/rate-limit stack.
+/// The public half of the operator-gated Atproto Spaces surface, merged into the CORS'd
+/// public group only when `[spaces] enabled`. The `/v1/space/import-repo` inbound
+/// migration leg is gated alongside on the internal group in [`app`].
+fn space_routes() -> Router<AppState> {
+    Router::new()
+        // The space-credential mint pair: an OAuth session trades a delegation token for a
+        // DPoP-bound space credential.
+        .route(
+            "/xrpc/com.atproto.space.getDelegationToken",
+            get(get_delegation_token),
+        )
+        .route(
+            "/xrpc/com.atproto.space.getSpaceCredential",
+            post(get_space_credential),
+        )
+        // Atproto Spaces: the permissioned-data surface for a user's own space repos. Reads and
+        // writes are OAuth-authed here; the space-credential branch a syncer uses arrives with
+        // the credential mint.
+        .route(
+            "/xrpc/com.atproto.space.applyWrites",
+            post(space_apply_writes),
+        )
+        .route(
+            "/xrpc/com.atproto.space.createRecord",
+            post(space_create_record),
+        )
+        .route(
+            "/xrpc/com.atproto.space.deleteRecord",
+            post(space_delete_record),
+        )
+        .route(
+            "/xrpc/com.atproto.space.getLatestCommit",
+            get(space_get_latest_commit),
+        )
+        .route("/xrpc/com.atproto.space.getBlob", get(space_get_blob))
+        .route("/xrpc/com.atproto.space.getRecord", get(space_get_record))
+        .route("/xrpc/com.atproto.space.getRepo", get(space_get_repo))
+        .route("/xrpc/com.atproto.space.listBlobs", get(space_list_blobs))
+        .route(
+            "/xrpc/com.atproto.space.listRecords",
+            get(space_list_records),
+        )
+        .route(
+            "/xrpc/com.atproto.space.listRepoOps",
+            get(space_list_repo_ops),
+        )
+        .route("/xrpc/com.atproto.space.listRepos", get(space_list_repos))
+        .route("/xrpc/com.atproto.space.listSpaces", get(space_list_spaces))
+        .route("/xrpc/com.atproto.space.putRecord", post(space_put_record))
+        // The space-host notification surface: syncers subscribe here, repo hosts report here.
+        .route(
+            "/xrpc/com.atproto.space.notifyWrite",
+            post(space_notify_write),
+        )
+        .route(
+            "/xrpc/com.atproto.space.registerNotify",
+            post(space_register_notify),
+        )
+        .route(
+            "/xrpc/com.atproto.space.unregisterNotify",
+            post(space_unregister_notify),
+        )
+        // The PDS-required simplespace management surface: spaces anchored on a local account's
+        // own DID, managed by that account under `manage=` grants.
+        .route(
+            "/xrpc/com.atproto.simplespace.addMember",
+            post(simplespace_add_member),
+        )
+        .route(
+            "/xrpc/com.atproto.simplespace.createSpace",
+            post(simplespace_create_space),
+        )
+        .route(
+            "/xrpc/com.atproto.simplespace.deleteSpace",
+            post(simplespace_delete_space),
+        )
+        .route(
+            "/xrpc/com.atproto.simplespace.getSpace",
+            get(simplespace_get_space),
+        )
+        .route(
+            "/xrpc/com.atproto.simplespace.listMembers",
+            get(simplespace_list_members),
+        )
+        .route(
+            "/xrpc/com.atproto.simplespace.removeMember",
+            post(simplespace_remove_member),
+        )
+        .route(
+            "/xrpc/com.atproto.simplespace.updateSpace",
+            post(simplespace_update_space),
+        )
+}
+
 pub fn app(state: AppState) -> Router {
     let public = Router::new()
         .route("/", get(landing))
@@ -318,14 +412,6 @@ pub fn app(state: AppState) -> Router {
         .route(
             "/xrpc/com.atproto.server.getServiceAuth",
             get(get_service_auth),
-        )
-        .route(
-            "/xrpc/com.atproto.space.getDelegationToken",
-            get(get_delegation_token),
-        )
-        .route(
-            "/xrpc/com.atproto.space.getSpaceCredential",
-            post(get_space_credential),
         )
         .route(
             "/xrpc/com.atproto.server.refreshSession",
@@ -486,83 +572,6 @@ pub fn app(state: AppState) -> Router {
         .route("/xrpc/com.atproto.repo.putRecord", post(put_record))
         .route("/xrpc/com.atproto.repo.deleteRecord", post(delete_record))
         .route("/xrpc/com.atproto.repo.describeRepo", get(describe_repo))
-        // Atproto Spaces: the permissioned-data surface for a user's own space repos. Reads and
-        // writes are OAuth-authed here; the space-credential branch a syncer uses arrives with
-        // the credential mint.
-        .route(
-            "/xrpc/com.atproto.space.applyWrites",
-            post(space_apply_writes),
-        )
-        .route(
-            "/xrpc/com.atproto.space.createRecord",
-            post(space_create_record),
-        )
-        .route(
-            "/xrpc/com.atproto.space.deleteRecord",
-            post(space_delete_record),
-        )
-        .route(
-            "/xrpc/com.atproto.space.getLatestCommit",
-            get(space_get_latest_commit),
-        )
-        .route("/xrpc/com.atproto.space.getBlob", get(space_get_blob))
-        .route("/xrpc/com.atproto.space.getRecord", get(space_get_record))
-        .route("/xrpc/com.atproto.space.getRepo", get(space_get_repo))
-        .route("/xrpc/com.atproto.space.listBlobs", get(space_list_blobs))
-        .route(
-            "/xrpc/com.atproto.space.listRecords",
-            get(space_list_records),
-        )
-        .route(
-            "/xrpc/com.atproto.space.listRepoOps",
-            get(space_list_repo_ops),
-        )
-        .route("/xrpc/com.atproto.space.listRepos", get(space_list_repos))
-        .route("/xrpc/com.atproto.space.listSpaces", get(space_list_spaces))
-        .route("/xrpc/com.atproto.space.putRecord", post(space_put_record))
-        // The space-host notification surface: syncers subscribe here, repo hosts report here.
-        .route(
-            "/xrpc/com.atproto.space.notifyWrite",
-            post(space_notify_write),
-        )
-        .route(
-            "/xrpc/com.atproto.space.registerNotify",
-            post(space_register_notify),
-        )
-        .route(
-            "/xrpc/com.atproto.space.unregisterNotify",
-            post(space_unregister_notify),
-        )
-        // The PDS-required simplespace management surface: spaces anchored on a local account's
-        // own DID, managed by that account under `manage=` grants.
-        .route(
-            "/xrpc/com.atproto.simplespace.addMember",
-            post(simplespace_add_member),
-        )
-        .route(
-            "/xrpc/com.atproto.simplespace.createSpace",
-            post(simplespace_create_space),
-        )
-        .route(
-            "/xrpc/com.atproto.simplespace.deleteSpace",
-            post(simplespace_delete_space),
-        )
-        .route(
-            "/xrpc/com.atproto.simplespace.getSpace",
-            get(simplespace_get_space),
-        )
-        .route(
-            "/xrpc/com.atproto.simplespace.listMembers",
-            get(simplespace_list_members),
-        )
-        .route(
-            "/xrpc/com.atproto.simplespace.removeMember",
-            post(simplespace_remove_member),
-        )
-        .route(
-            "/xrpc/com.atproto.simplespace.updateSpace",
-            post(simplespace_update_space),
-        )
         // Stored locally for user data sovereignty rather than proxied to the AppView, so they
         // must be registered explicitly ahead of the `app.bsky.*` catch-all below.
         .route(
@@ -575,6 +584,16 @@ pub fn app(state: AppState) -> Router {
         )
         .route("/xrpc/{method}", get(xrpc_handler).post(xrpc_handler))
         .route("/static/{*path}", get(static_handler));
+    // Atproto Spaces is operator-gated (`[spaces] enabled` / `EZPDS_SPACES_ENABLED`, off by
+    // default while the protocol is pre-launch alpha). Not registering the routes at all is
+    // what makes a disabled deployment answer the `/xrpc/{method}` catch-all's
+    // `MethodNotImplemented` — the same response a PDS that never implemented spaces gives.
+    // Merged before the layer stack so the routes share it when enabled.
+    let public = if state.config.spaces.enabled {
+        public.merge(space_routes())
+    } else {
+        public
+    };
     // Permissive CORS wraps only the public surface, applied *after* the shared layers so it stays
     // the outermost layer (see `apply_shared_layers`). This is safe ONLY because authentication is
     // never cookie-based (all Bearer/DPoP/signed-request), so a permissive policy cannot be abused
@@ -690,11 +709,16 @@ pub fn app(state: AppState) -> Router {
             "/v1/pds/keys",
             get(get_pds_signing_key).post(create_signing_key),
         )
-        .route("/v1/repo-signing-key", get(get_repo_signing_key))
-        // The inbound leg of permissioned-repo migration. A Custos-native `/v1/*` route
-        // rather than a `com.atproto.space.*` method: the alpha lexicons define no space
-        // import, so the namespace stays free for whatever the spec eventually names.
-        .route("/v1/space/import-repo", post(space_import_repo));
+        .route("/v1/repo-signing-key", get(get_repo_signing_key));
+    // The inbound leg of permissioned-repo migration, gated with the rest of the spaces
+    // surface. A Custos-native `/v1/*` route rather than a `com.atproto.space.*` method:
+    // the alpha lexicons define no space import, so the namespace stays free for whatever
+    // the spec eventually names.
+    let internal = if state.config.spaces.enabled {
+        internal.route("/v1/space/import-repo", post(space_import_repo))
+    } else {
+        internal
+    };
     let internal = apply_shared_layers(internal, &state);
 
     let router = public.merge(internal);
@@ -720,6 +744,44 @@ mod tests {
     };
     use std::sync::Arc;
     use tower::ServiceExt;
+
+    #[tokio::test]
+    async fn disabled_spaces_answers_like_a_pds_without_spaces() {
+        let base = test_state().await;
+        let mut config = (*base.config).clone();
+        config.spaces.enabled = false;
+        let app = app(AppState {
+            config: Arc::new(config),
+            ..base
+        });
+
+        // An XRPC space method falls into the catch-all: the same MethodNotImplemented a
+        // PDS that never implemented spaces gives, not an auth error.
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/xrpc/com.atproto.space.listSpaces")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::NOT_IMPLEMENTED);
+
+        // The Custos-native import leg is plain 404 — `/v1/*` has no catch-all.
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/v1/space/import-repo")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    }
 
     #[tokio::test]
     async fn xrpc_get_unknown_method_returns_501() {
