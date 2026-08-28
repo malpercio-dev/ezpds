@@ -13,9 +13,14 @@
 //!
 //! Assertion checks follow RFC 7523 §3 with the atproto OAuth profile's narrowing: ES256
 //! only, `iss` = `sub` = `client_id`, `aud` = this AS's issuer (the token-endpoint URL is
-//! also accepted — both appear in the wild), `exp` required, and a 30-second clock tolerance
-//! (the reference implementation's zero-tolerance `iat` check is a documented interop trap —
-//! bluesky-social/atproto#4474). The verification key comes from the metadata's inline
+//! also accepted — both appear in the wild), and a 30-second clock tolerance (the reference
+//! implementation's zero-tolerance `iat` check is a documented interop trap —
+//! bluesky-social/atproto#4474). One deliberate divergence from the RFC's letter: `exp` is
+//! validated when present but not required. The reference provider requires only `jti` and
+//! bounds an assertion's life by `maxTokenAge` over `iat` (its own source notes the RFC 7523
+//! non-compliance), so real-world clients mint `iat`-only assertions — attie.ai's logins
+//! failed here for exactly that reason (2026-08-28). An assertion without `exp` must instead
+//! carry a fresh `iat`. The verification key comes from the metadata's inline
 //! `jwks` or its `jwks_uri`; the latter is a client-controlled URL, so it gets the same
 //! transport policy as `client_id` itself (https except loopback, no credentials) and is
 //! fetched with the SSRF-hardened client, which is the actual guard, and cached
@@ -39,11 +44,17 @@ pub(super) const CLIENT_ASSERTION_TYPE_JWT_BEARER: &str =
 /// 30 seconds covers real-world drift without meaningfully widening the replay window).
 const CLOCK_TOLERANCE_SECS: u64 = 30;
 
+/// Maximum age of an `exp`-less assertion, measured from its `iat` (the reference provider's
+/// `CLIENT_ASSERTION_MAX_AGE`). Applied on top of [`CLOCK_TOLERANCE_SECS`].
+const IAT_MAX_AGE_SECS: i64 = 60;
+
 #[derive(Debug, Deserialize)]
 struct ClientAssertionClaims {
     iss: String,
     sub: String,
     jti: Option<String>,
+    exp: Option<i64>,
+    iat: Option<i64>,
 }
 
 fn invalid_client(description: impl Into<String>) -> OAuthTokenError {
@@ -124,10 +135,26 @@ async fn verify_private_key_jwt(
     let mut validation = Validation::new(Algorithm::ES256);
     validation.leeway = CLOCK_TOLERANCE_SECS;
     validation.set_audience(&[issuer, token_url]);
-    validation.set_required_spec_claims(&["exp", "aud"]);
+    validation.set_required_spec_claims(&["aud"]);
 
     let data = jsonwebtoken::decode::<ClientAssertionClaims>(assertion, &key, &validation)
         .map_err(|e| invalid_client(format!("client_assertion rejected: {e}")))?;
+
+    // `exp`, when present, was enforced by the validation above. Without it the assertion
+    // would otherwise never lapse, so `iat` must bound its age instead.
+    if data.claims.exp.is_none() {
+        let iat = data
+            .claims
+            .iat
+            .ok_or_else(|| invalid_client("client_assertion must carry exp or iat"))?;
+        let now = crate::time::unix_now_secs();
+        if iat > now + CLOCK_TOLERANCE_SECS as i64 {
+            return Err(invalid_client("client_assertion iat is in the future"));
+        }
+        if now > iat + IAT_MAX_AGE_SECS + CLOCK_TOLERANCE_SECS as i64 {
+            return Err(invalid_client("client_assertion without exp is too old"));
+        }
+    }
 
     if data.claims.iss != client_id || data.claims.sub != client_id {
         return Err(invalid_client(
@@ -375,6 +402,68 @@ mod tests {
         )
         .await
         .expect("small clock skew must be tolerated");
+    }
+
+    /// The interop case that broke attie.ai: the reference provider never requires `exp`
+    /// (only `jti`, with a max age over `iat`), so real-world confidential clients mint
+    /// `iat`-only assertions. Those must authenticate while fresh.
+    #[tokio::test]
+    async fn assertion_without_exp_is_accepted_while_iat_is_fresh() {
+        let state = test_state().await;
+        let key = SigningKey::random(&mut OsRng);
+        seed_client(&state, confidential_metadata(&key)).await;
+
+        let mut claims = valid_claims(CLIENT_ID);
+        claims.as_object_mut().unwrap().remove("exp");
+        let assertion = sign_assertion(&key, "k1", claims);
+        authenticate_token_client(
+            &state,
+            CLIENT_ID,
+            Some(CLIENT_ASSERTION_TYPE_JWT_BEARER),
+            Some(&assertion),
+        )
+        .await
+        .expect("an exp-less assertion with a fresh iat must authenticate");
+    }
+
+    /// Without `exp` the `iat` bound is the only thing keeping the assertion from being
+    /// replayable forever, so a stale one — and one carrying neither claim — must be refused.
+    #[tokio::test]
+    async fn assertion_without_exp_needs_a_fresh_iat() {
+        let state = test_state().await;
+        let key = SigningKey::random(&mut OsRng);
+        seed_client(&state, confidential_metadata(&key)).await;
+
+        // Stale: iat beyond the 60s max age + 30s tolerance.
+        let mut claims = valid_claims(CLIENT_ID);
+        claims.as_object_mut().unwrap().remove("exp");
+        claims["iat"] = serde_json::json!(now_secs() - 120);
+        let assertion = sign_assertion(&key, "k1", claims);
+        let err = authenticate_token_client(
+            &state,
+            CLIENT_ID,
+            Some(CLIENT_ASSERTION_TYPE_JWT_BEARER),
+            Some(&assertion),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(err.error, "invalid_client");
+
+        // Neither exp nor iat: nothing bounds the assertion's life at all.
+        let mut claims = valid_claims(CLIENT_ID);
+        let obj = claims.as_object_mut().unwrap();
+        obj.remove("exp");
+        obj.remove("iat");
+        let assertion = sign_assertion(&key, "k1", claims);
+        let err = authenticate_token_client(
+            &state,
+            CLIENT_ID,
+            Some(CLIENT_ASSERTION_TYPE_JWT_BEARER),
+            Some(&assertion),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(err.error, "invalid_client");
     }
 
     /// The `jwks_uri` branch: a client that publishes its keys at a URL rather than inline.

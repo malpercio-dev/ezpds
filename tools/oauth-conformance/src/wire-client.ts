@@ -92,7 +92,7 @@ export async function clientAssertion(
   key: ClientKey,
   clientId: string,
   audience: string,
-  overrides: { iss?: string; sub?: string; exp?: number; jti?: string | null } = {},
+  overrides: { iss?: string; sub?: string; exp?: number | null; jti?: string | null } = {},
 ): Promise<string> {
   const now = Math.floor(Date.now() / 1000);
   const payload: Record<string, unknown> = {
@@ -100,8 +100,8 @@ export async function clientAssertion(
     sub: overrides.sub ?? clientId,
     aud: audience,
     iat: now,
-    exp: overrides.exp ?? now + 60,
   };
+  if (overrides.exp !== null) payload.exp = overrides.exp ?? now + 60;
   if (overrides.jti !== null) payload.jti = overrides.jti ?? crypto.randomUUID();
   return new SignJWT(payload)
     .setProtectedHeader({ alg: 'ES256', kid: key.publicJwk.kid })
