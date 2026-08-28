@@ -127,10 +127,11 @@ struct SweepStates {
     agent_claim_sweep: Option<SweepState>,
     admin_nonce_sweep: Option<SweepState>,
     /// The spaces-token jti replay retention sweep's last completed pass (`swept` = expired
-    /// jti rows reclaimed). Staleness here means the replay store is growing unbounded.
+    /// jti rows reclaimed). Staleness here means the replay store is growing unbounded;
+    /// `null` while `[spaces] enabled` is off, like an idle sweep.
     space_jti_sweep: Option<SweepState>,
     /// The permissioned-repo oplog compaction sweep's last completed pass (`swept` = ops
-    /// pruned past the 7-day retention window).
+    /// pruned past the 7-day retention window); `null` while `[spaces] enabled` is off.
     space_oplog_sweep: Option<SweepState>,
     /// The labeler watcher's last completed poll pass (`swept` = label rows changed);
     /// `null` while labeler watching is off, like an idle sweep.

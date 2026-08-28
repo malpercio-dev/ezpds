@@ -235,27 +235,31 @@ deletion). The protocol is **pre-launch alpha**: the upstream lexicons carry a
 breaking-changes warning until launch, so treat the surface as
 interop-for-implementers rather than a stability promise.
 
-The routes themselves are always registered — there is no spaces on/off switch,
-and a deployment that does not advertise the capability still accepts space
-writes from its own accounts. What the capability tells a foreign client or
-syncer is that the *whole* surface works here, sync included.
+While the surface is switched off, the space routes are not registered at all:
+an XRPC space method answers the same `MethodNotImplemented` a PDS that never
+implemented spaces gives, and any space data already stored stays on disk,
+untouched, until the surface is switched back on.
 
 Two operational knobs exist today: `rate_limit.space_credential_per_5min`
 (`EZPDS_RATE_LIMIT_SPACE_CREDENTIAL_PER_5MIN`) caps per-credential request
 volume, and the oplog is compacted on a fixed seven-day retention (a syncer
 further behind heals with a full `getRepo` — by spec, never a correctness
 problem). The two background sweeps behind that (jti replay retention, oplog
-compaction) report their last completed pass under `sweeps` in
-`GET /v1/admin/health`.
+compaction) run while spaces are enabled and report their last completed pass
+under `sweeps` in `GET /v1/admin/health` (`null` while spaces are off, like an
+idle sweep).
 
-**Controlled by:** `signing_key_master_key`. Space *writes* succeed without a
-master key, but every sync serving — `getLatestCommit`, `listRepoOps`,
-`getRepo` — mints a fresh signed commit from the account's repo signing key,
-which is stored encrypted under the master key; without
+**Controlled by:** `spaces.enabled` and `signing_key_master_key`, both
+required. The switch is off by default while the protocol is pre-launch alpha:
+enable it with `[spaces] enabled = true` (`EZPDS_SPACES_ENABLED`) to serve the
+routes. The master key is what makes an enabled surface *whole*: space writes
+succeed without one, but every sync serving — `getLatestCommit`,
+`listRepoOps`, `getRepo` — mints a fresh signed commit from the account's repo
+signing key, which is stored encrypted under the master key; without
 `EZPDS_SIGNING_KEY_MASTER_KEY` those routes answer `ServiceUnavailable` and a
 syncer cannot follow the repo. A deployment nobody can sync a space from does
-not advertise spaces: configure a master key (as any real deployment should)
-and the capability appears.
+not advertise spaces: with the switch on and a master key configured (as any
+real deployment should have), the capability appears.
 
 ### `waitlist`
 

@@ -18,7 +18,7 @@ src/
   main.rs          — startup: open pool, run migrations, bind server
   telemetry.rs     — OTel tracing-subscriber init (`init_subscriber`) + shutdown-flushing `OtelGuard`; `[telemetry]` config incl. `log_format = "json"` — see module doc
   metrics.rs       — OTel meter + Prometheus registry behind `GET /metrics`; `metrics::names` is the instrument source of truth (each constant documents what it measures and who records it) — see module doc
-  app.rs           — router construction (route table + shared middleware layers); re-exports `AppState`/`FailedLoginStore` (and the `#[cfg(test)]` constructors) from `state.rs` so existing `crate::app::AppState` imports stay unchanged
+  app.rs           — router construction (route table + shared middleware layers); re-exports `AppState`/`FailedLoginStore` (and the `#[cfg(test)]` constructors) from `state.rs` so existing `crate::app::AppState` imports stay unchanged. The Atproto Spaces surface (`space_routes()` + `/v1/space/import-repo`) registers only when `[spaces] enabled` — disabled, space methods answer the catch-all's `MethodNotImplemented`
   state.rs         — `AppState` definition + `FailedLoginStore`, plus the `#[cfg(test)]` `test_state`/`test_state_with_plc_url` constructors
   xrpc_dispatch.rs — catch-all XRPC proxy dispatcher (`xrpc_handler` at `/xrpc/{method}`): upstream resolution for the three proxied namespaces + the read-after-write branch — see module doc
   firehose/        — persistent subscribeRepos event pipeline (see section below)

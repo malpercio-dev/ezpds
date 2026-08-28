@@ -135,17 +135,16 @@ pub const CAPABILITIES: &[Capability] = &[
     },
     Capability {
         name: "spaces",
-        control: "signing_key_master_key",
+        control: "spaces.enabled signing_key_master_key",
         summary: "The Atproto Spaces alpha surface: permissioned space repos with DPoP-bound space credentials, oplog/CAR sync, and simplespace management.",
-        // The space routes themselves are always registered — there is no spaces on/off
-        // switch, by decision (the gap-analysis plan's provisional `EZPDS_SPACES_ENABLED`
-        // was never built; see docs/design-plans/2026-07-17-permissioned-data-gap-analysis.md
-        // §4 Phase 1). The master key is the real gate on the surface being *whole*: writes
+        // Two conditions, both required. `spaces.enabled` is the operator switch: off (the
+        // default while the protocol is pre-launch alpha), the routes are not registered at
+        // all. The master key is the gate on an enabled surface being *whole*: writes
         // succeed without one, but every sync serving (`getLatestCommit`/`listRepoOps`/
         // `getRepo`) mints a per-serving signed commit from the account's KEK-wrapped repo
         // signing key and answers 503 without it. A deployment no syncer can sync from does
         // not offer spaces.
-        enabled: |config| config.signing_key_master_key.is_some(),
+        enabled: |config| config.spaces.enabled && config.signing_key_master_key.is_some(),
     },
     Capability {
         name: "waitlist",
@@ -257,6 +256,17 @@ mod tests {
         assert!(advertised.contains(&"createCeremony"));
         assert!(advertised.contains(&"escrow"));
         assert!(advertised.contains(&"spaces"));
+    }
+
+    #[tokio::test]
+    async fn spaces_requires_the_config_switch_and_a_master_key() {
+        // The shared test config has spaces enabled; a master key alone is not enough
+        // with the switch off, and the switch alone is not enough without a master key
+        // (asserted by the withheld/offered pair above).
+        let mut config = with_master_key(base_config().await);
+        assert!(config.spaces.enabled);
+        config.spaces.enabled = false;
+        assert!(!advertised(&config).contains(&"spaces"));
     }
 
     #[tokio::test]

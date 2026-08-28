@@ -196,6 +196,9 @@ const proc = spawn(bin, [], {
     EZPDS_PLC_DIRECTORY_URL: plc.url,
     // Throwaway: encrypts per-account repo signing keys in the ephemeral DB.
     EZPDS_SIGNING_KEY_MASTER_KEY: '00'.repeat(32),
+    // The spaces surface is off by default (pre-launch alpha); serve it here so the
+    // harness can exercise it.
+    EZPDS_SPACES_ENABLED: 'true',
     EZPDS_RATE_LIMIT_ENABLED: 'false',
     EZPDS_AGENT_AUTH_SERVICE_AUTH_ENABLED: 'true',
     // Opt-in passthrough for the two blocks that reach the outside world. The env is an

@@ -153,6 +153,9 @@ export async function spawnPds(options: {
       EZPDS_PLC_DIRECTORY_URL: options.plcUrl,
       // Throwaway: encrypts per-account repo signing keys in the test DB.
       EZPDS_SIGNING_KEY_MASTER_KEY: '00'.repeat(32),
+      // The spaces surface is off by default (pre-launch alpha); the space tools'
+      // conformance tests need it served.
+      EZPDS_SPACES_ENABLED: 'true',
       EZPDS_RATE_LIMIT_ENABLED: 'false',
       EZPDS_AGENT_AUTH_SERVICE_AUTH_ENABLED: options.agentAuthEnabled ? 'true' : 'false',
       ...(options.grantedScopes
