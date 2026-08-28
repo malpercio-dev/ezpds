@@ -318,9 +318,11 @@ vendored at a pinned `permissioned-data` commit and re-diffed weekly by the
 
 **Deferred (tracked, not shipped):**
 
-- Admin-companion moderation surface for hosted spaces (takedown / refuse-to-serve).
-- Per-reader commit-signing benchmark and a zeroized signing-key cache — `space_views.rs`
-  decrypts the wrapped signing key on every sync call.
+- Admin-companion moderation surface for hosted spaces (MM-526): moderation is account-level
+  today, so there is no per-space takedown and no lever at all over a space this host stores
+  records for but is not the authority of.
+- Per-reader commit-signing benchmark, and a cache only if it earns one (MM-527) — every sync
+  call re-reads and unwraps the repo signing key, and the cost scales with syncers, not writes.
 
 ---
 

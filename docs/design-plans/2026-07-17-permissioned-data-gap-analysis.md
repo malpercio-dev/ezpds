@@ -374,14 +374,21 @@ interop CLI scenarios against the reference alpha; MCP tools
 (`tools/mcp`) for agent access to spaces; identity-wallet consent UX for
 `space:` scopes; NixOS/Railway config for any new env vars.
 
-Also deferred: a per-reader commit-signing benchmark, and a zeroized cache for
-the unwrapped signing key. `space_views::sign_current_commit` mints a fresh
-deniable commit per serving, which means decrypting the KEK-wrapped repo
-signing key on *every* sync call — fine at current volumes, but the cost is
-per-reader, so it scales with syncers rather than with writes. Benchmark
-before caching: a cache holds plaintext key material in memory and has to be
-zeroized on drop, which is only worth the handling risk if the measurement
-says so.
+Also deferred (MM-527): benchmark per-serving commit signing, then decide
+whether anything needs caching. `space_views::sign_current_commit` mints a
+fresh deniable commit per serving, so every sync call
+(`getLatestCommit`/`getRepo`/`listRepoOps`) reads the repo head, SELECTs the
+wrapped signing key, unwraps it, and signs. The unwrap is not the expensive
+step — it is 32 bytes. The DB round trip is the candidate bottleneck, and it
+costs more than its latency suggests, because the single-connection pool makes
+each sync call serialize against every other DB user. The cost is per-reader,
+scaling with syncers × poll frequency rather than with writes, so a quiet repo
+with many pollers is the worst case. Measure before caching, and note what a
+cache would actually change: `load_repo_signing_key` already returns
+`Zeroizing<[u8; 32]>`, so the question is not whether the key is zeroized but
+how long it stays resident — microseconds today, a TTL under a cache. If the
+DB read dominates, caching the head read may beat caching key material at
+all.
 
 ## 4. Suggested phasing
 
