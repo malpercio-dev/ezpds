@@ -162,7 +162,9 @@ pub async fn authenticate_space_write(
 }
 
 /// Who a space read was authenticated as.
-// The read routes today need only the verdict; the sync surface reads the arms.
+// The read routes need only the verdict, so nothing in production destructures the arms —
+// they exist so a test can assert *which* arm admitted a request, and which credential it
+// was bound to. Dropping the payloads would drop that assertion with them.
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub enum SpaceReader {
@@ -631,14 +633,10 @@ where
 
 /// A space credential whose signature and claims verified. Its DPoP binding is enforced by
 /// [`authenticate_space_read`], not here.
-// The sync surface reads these fields; the read routes today need only the verdict.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct VerifiedCredential {
     /// The space the credential reads (`sub`).
     pub space: SpaceRef,
-    /// The issuing authority (`iss`, equal to `space.authority`).
-    pub authority: String,
     /// The bound DPoP key's thumbprint (`cnf.jkt`).
     pub jkt: String,
 }
@@ -722,11 +720,7 @@ pub async fn verify_space_credential(
         .ok_or_else(|| invalid("space credential has no cnf.jkt binding"))?
         .to_string();
 
-    Ok(VerifiedCredential {
-        space,
-        authority: iss,
-        jkt,
-    })
+    Ok(VerifiedCredential { space, jkt })
 }
 
 // ── Credential issuance policy ───────────────────────────────────────────────
@@ -1294,7 +1288,7 @@ mod tests {
         .unwrap();
         match reader {
             SpaceReader::Credential(c) => {
-                assert_eq!(c.authority, AUTHORITY);
+                assert_eq!(c.space.authority, AUTHORITY);
                 assert_eq!(c.space.uri, SPACE);
                 assert_eq!(c.jkt, key.thumbprint());
             }
