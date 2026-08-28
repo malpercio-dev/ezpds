@@ -693,9 +693,9 @@ pub fn dedicated_space_verification_key(did_doc: &Value) -> Option<crypto::DidKe
 
 /// The endpoint a space authority is reached at as the space host: its `#atproto_space_host`
 /// service, falling back to `#atproto_pds` when the optional dedicated entry is absent
-/// (Atproto Spaces, proposal 0016). Consumed by the space-host routing that lands with the
-/// space write/notify surface; published ahead of it like `space_verification_key`.
-#[allow(dead_code)]
+/// (Atproto Spaces, proposal 0016). Consumed by the outbound write-notification fan-out
+/// (`space_notify::resolve_service_endpoint`), where the fallback is the interop path: neither
+/// the reference implementation nor the hosted alpha publishes an `#atproto_space_host` entry.
 pub fn space_host_endpoint(did_doc: &Value) -> Option<&str> {
     service_endpoint(did_doc, "atproto_space_host")
         .or_else(|| service_endpoint(did_doc, "atproto_pds"))
