@@ -11,6 +11,7 @@ pub mod admin_recovery_releases;
 pub mod admin_relay_status;
 pub mod admin_request_crawl;
 pub mod admin_revoke_credentials;
+pub mod admin_spaces;
 mod admin_subject_defs;
 pub mod admin_transfers;
 pub mod admin_waitlist;
@@ -161,6 +162,9 @@ mod space_lifecycle_test;
 
 #[cfg(test)]
 mod space_routes_test;
+
+#[cfg(test)]
+mod space_takedown_test;
 
 #[cfg(test)]
 mod space_sync_routes_test;

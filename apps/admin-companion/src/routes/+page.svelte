@@ -323,6 +323,7 @@
       <Button variant="secondary" onclick={() => openPinned('/transfers')}>Transfers</Button>
       <Button variant="secondary" onclick={() => openPinned('/devices')}>Devices</Button>
       <Button variant="secondary" onclick={() => openPinned('/moderation')}>Moderation</Button>
+      <Button variant="secondary" onclick={() => openPinned('/spaces')}>Spaces</Button>
       <Button variant="secondary" onclick={() => openPinned('/audit')}>Audit</Button>
       <Button variant="secondary" onclick={() => openPinned('/status')}>Status</Button>
       <Button variant="secondary" onclick={() => goto('/settings')}>Settings</Button>

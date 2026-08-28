@@ -34,6 +34,11 @@
 //!   (`scripts/space-auth-seam-check.sh`) confines `verify_space_credential` and
 //!   `validate_dpop` to this seam and `extractors.rs`, so no route grows its own credential
 //!   parsing.
+//! * **The operator cut** — [`require_space_servable`] refuses a space the operator took down
+//!   (V070), the per-space counterpart to [`require_serviceable_caller`]'s account-level one and
+//!   the only lever that reaches a space whose authority is a foreign server. Every seam above
+//!   applies it *after* authenticating, and the write choke point re-reads the same row inside
+//!   its commit transaction.
 //!
 //! * **Credential issuance policy** — [`authorize_credential_request`] is the two-perimeter gate
 //!   behind `getSpaceCredential`: the `appAccess` axis (`open`, or an `allowList` matched against
@@ -208,11 +213,14 @@ pub async fn authenticate_space_read(
             return Err(repo_not_found(repo));
         }
         require_space_grant(state, &user, space, SpaceOp::ReadSelf).await?;
+        require_space_servable(state, space).await?;
         return Ok(SpaceReader::User(user));
     }
 
     let credential =
         authenticate_space_credential(state, headers, scheme, token, method, uri, space).await?;
+
+    require_space_servable(state, space).await?;
 
     // Repo availability: the owner may read their own deactivated repo, a syncer may not.
     if !active_local_account_exists(&state.db, repo).await? {
@@ -253,7 +261,38 @@ pub async fn authenticate_space_access(
     let credential =
         authenticate_space_credential(state, headers, scheme, token, method, uri, space).await?;
     require_serviceable_authority(state, space).await?;
+    require_space_servable(state, space).await?;
     Ok(SpaceReader::Credential(credential))
+}
+
+/// Refuse to serve a space the operator has taken down (V070).
+///
+/// The per-space counterpart to [`require_serviceable_caller`]'s account-level cut, and the
+/// only lever that reaches a space whose *authority* is a foreign server: this host stores
+/// members' repos in such a space (`space_record_write` records the row on their first write),
+/// so it can be serving content it has no `deleteSpace` of its own to stop.
+///
+/// `SpaceNotFound`, never `SpaceDeleted`, for the same reason
+/// [`require_serviceable_authority`] answers that way: `SpaceDeleted` is the spec's durable
+/// "drop your copy" signal, and a takedown is reversible. It is also the reply an unknown
+/// space gets, so which spaces an operator refuses is not disclosed. Called *after*
+/// authentication at every seam, so it can never become an unauthenticated probe.
+///
+/// Writes are not checked here — `space_record_write`'s choke point reads the same row inside
+/// its commit transaction, where a concurrent takedown cannot land between check and commit.
+pub async fn require_space_servable(state: &AppState, space: &SpaceRef) -> Result<(), ApiError> {
+    let taken_down = spaces::get_space(&state.db, &space.uri)
+        .await
+        .map_err(|e| {
+            tracing::error!(error = %e, space = %space.uri, "failed to load space");
+            ApiError::new(ErrorCode::InternalError, "internal server error")
+        })?
+        .is_some_and(|row| row.takendown_at.is_some());
+    if !taken_down {
+        return Ok(());
+    }
+    tracing::warn!(space = %space.uri, "space host: space is taken down by the operator");
+    Err(ApiError::new(ErrorCode::SpaceNotFound, "space not found"))
 }
 
 /// Refuse to act as space host for an authority that is no longer an active local account.
@@ -299,6 +338,10 @@ pub async fn authenticate_space_owner(
             "not the space owner",
         ));
     }
+    // Last, so the owner of a taken-down space learns no more than a stranger does. Applies to
+    // `deleteSpace` too: the operator's refusal already stops the space being served, and a
+    // restore has to be able to put it back exactly as it was.
+    require_space_servable(state, space).await?;
     Ok(user)
 }
 
@@ -1656,6 +1699,7 @@ mod tests {
             app_allowed: None,
             managing_app: None,
             deleted_at: None,
+            takendown_at: None,
         };
         insert_space(
             &state.db,
@@ -1730,6 +1774,7 @@ mod tests {
             app_allowed: Some(serde_json::json!([ALLOWED]).to_string()),
             managing_app: None,
             deleted_at: None,
+            takendown_at: None,
         };
 
         async fn refusal(

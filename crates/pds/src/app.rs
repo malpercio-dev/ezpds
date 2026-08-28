@@ -24,6 +24,7 @@ use crate::routes::admin_recovery_releases::admin_recovery_releases;
 use crate::routes::admin_relay_status::relay_status;
 use crate::routes::admin_request_crawl::request_crawl;
 use crate::routes::admin_revoke_credentials::revoke_account_credentials;
+use crate::routes::admin_spaces::{list_hosted_spaces, set_space_takedown};
 use crate::routes::admin_transfers::{cancel_admin_transfer, list_admin_transfers};
 use crate::routes::admin_waitlist::admin_waitlist;
 use crate::routes::agent_child::{delete_child, list_children, mint_child, revoke_child};
@@ -684,6 +685,8 @@ pub fn app(state: AppState) -> Router {
             "/v1/admin/accounts/{id}/revoke-credentials",
             post(revoke_account_credentials),
         )
+        .route("/v1/admin/spaces", get(list_hosted_spaces))
+        .route("/v1/admin/spaces/takedown", post(set_space_takedown))
         .route("/v1/admin/transfers", get(list_admin_transfers))
         .route("/v1/admin/waitlist", get(admin_waitlist))
         .route(

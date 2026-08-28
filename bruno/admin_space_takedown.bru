@@ -1,0 +1,61 @@
+meta {
+  name: Admin Space Takedown
+  type: http
+  seq: 165
+}
+
+post {
+  url: {{baseUrl}}/v1/admin/spaces/takedown
+  body: json
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{adminToken}}
+}
+
+body:json {
+  {
+    "uri": "at://did:plc:example/space/com.example.space/3kabc",
+    "applied": true
+  }
+}
+
+docs {
+  # POST /v1/admin/spaces/takedown
+
+  Apply or clear the operator takedown on one Atproto Space — per-space moderation, the
+  granularity account takedown cannot reach, and the only action available at all for a
+  space whose authority is a foreign server (see `GET /v1/admin/spaces`).
+
+  While a takedown is applied, every space seam answers `SpaceNotFound` for the space:
+  reads, writes, `getSpaceCredential`, write-notification fan-out, and the member-facing
+  `com.atproto.space.listSpaces`, which omits it. `SpaceNotFound` and not `SpaceDeleted`
+  on purpose — `SpaceDeleted` is the spec's durable "drop your copy" signal to syncers,
+  and a takedown is reversible. It is also the reply an unknown space gets, so which
+  spaces an operator refuses is not disclosed.
+
+  Nothing is destroyed: the simplespace config, member list, notification registrations,
+  and every stored repo are left exactly as they were, so clearing the takedown returns
+  the space to its prior state. The URI also cannot be re-created around the takedown —
+  `createSpace` refuses to claim a taken-down row.
+
+  Admin-authed: the master token (shown here) **or** an active companion-app device's
+  signed request. The URI travels in the signed body, so a takedown signature is bound
+  to its space.
+
+  Body:
+  - `uri` — canonical space URI, `at://{authority}/space/{type}/{skey}`.
+  - `applied` — `true` applies the takedown, `false` clears it (the `takedown.applied`
+    shape `com.atproto.admin.updateSubjectStatus` uses for an account).
+
+  Response (the resulting state as the row holds it, not an echo of the request):
+  - `uri` — the space URI.
+  - `applied` — whether a takedown is now in force.
+  - `takendownAt` — when it started; omitted once cleared. Re-applying an existing
+    takedown keeps the original timestamp.
+
+  Idempotent in both directions. A URI this server stores nothing for is a 404 — it
+  cannot refuse to serve a space it does not have. Checked after auth, so there is no
+  space-presence oracle.
+}

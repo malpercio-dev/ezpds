@@ -280,6 +280,39 @@ async fn revoke_account_credentials(
     relay_client::revoke_account_credentials(&pairing_id, &did).await
 }
 
+/// Page the spaces the given pairing's relay stores — the ones it governs *and* the ones it
+/// only keeps members' repos in for a foreign authority. Id-addressed like `list_admin_devices`.
+#[tauri::command]
+async fn list_hosted_spaces(
+    pairing_id: String,
+    limit: Option<u32>,
+    cursor: Option<String>,
+    status: Option<String>,
+) -> Result<relay_client::HostedSpaceList, relay_client::RelayClientError> {
+    relay_client::list_hosted_spaces(
+        &pairing_id,
+        relay_client::ListHostedSpacesQuery {
+            limit,
+            cursor,
+            status,
+        },
+    )
+    .await
+}
+
+/// Apply or clear the operator takedown on one space on the given pairing's relay — the
+/// per-space moderation lever, and the only action available for a space governed elsewhere.
+/// Nothing stored is destroyed, so clearing it restores the space exactly. A destructive
+/// signing action: the UI runs the biometric gate before invoking this.
+#[tauri::command]
+async fn set_space_takedown(
+    pairing_id: String,
+    uri: String,
+    applied: bool,
+) -> Result<relay_client::SpaceTakedown, relay_client::RelayClientError> {
+    relay_client::set_space_takedown(&pairing_id, &uri, applied).await
+}
+
 #[tauri::command]
 async fn set_account_email(
     pairing_id: String,
@@ -354,6 +387,8 @@ pub fn run() {
             revoke_account_credentials,
             set_account_email,
             issue_reset_token,
+            list_hosted_spaces,
+            set_space_takedown,
             biometric_enabled,
             set_biometric_enabled,
             diagnostics::export_diagnostics

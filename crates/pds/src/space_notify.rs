@@ -110,9 +110,13 @@ pub fn fan_out_write(
 
         // Whether this host is the space's authority: a `spaces` row with simplespace config.
         // Also picks the signer — as the authority we speak for the space, otherwise we speak
-        // for the account whose repo advanced.
+        // for the account whose repo advanced. A deleted or operator-taken-down space fans out
+        // nothing: local writes are already refused, but `notifyWrite` forwards a *foreign* repo
+        // host's report, and a taken-down space must stop acting as space host entirely.
         let is_authority = match crate::db::spaces::get_space(&state.db, &space.uri).await {
-            Ok(Some(row)) if row.deleted_at.is_none() => row.policy.is_some(),
+            Ok(Some(row)) if row.deleted_at.is_none() && row.takendown_at.is_none() => {
+                row.policy.is_some()
+            }
             Ok(_) => return,
             Err(error) => {
                 tracing::debug!(%error, space = %space.uri, "space notify: failed to load space");
