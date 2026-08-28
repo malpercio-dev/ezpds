@@ -211,6 +211,11 @@ interop-setup:
 interop *args:
     tools/interop/bin/interop {{args}}
 
+# Unit-check the interop CLI's pure pieces (DPoP proof construction, CAR parsing).
+# Offline and fast; the live scenarios are the `interop` commands above.
+interop-test:
+    cd tools/interop && pnpm test
+
 # Install dependencies for the Custos MCP server (tools/mcp) — one-time setup.
 mcp-setup:
     cd tools/mcp && pnpm install

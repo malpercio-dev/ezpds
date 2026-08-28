@@ -3,7 +3,7 @@
 
 import { parseArgs } from 'node:util';
 import { BASE_URL, ALLOWED_TARGET } from './config.js';
-import { describeServer, health, createAccount, ensureSession, getSession, scheduleEphemeralDeletion, mintClaimCode } from './account.js';
+import { describeServer, health, createAccount, ensureSession, getSession, importSession, scheduleEphemeralDeletion, mintClaimCode } from './account.js';
 import { verifyIdentity } from './identity.js';
 import { createPost, crudRoundTrip, getRecord, listRecords, deleteRecord } from './records.js';
 import { watchFirehose, firehoseWriteCheck } from './firehose.js';
@@ -11,7 +11,7 @@ import { syncChecks } from './sync.js';
 import { networkChecks, relayHostStatus, appviewProfile } from './network.js';
 import { resolveTarget, followTarget, likeTargetPost, mentionTarget, cleanupInteractions } from './interact.js';
 import { performMigration, verifyMigration } from './migrate.js';
-import { spacesRoundTrip } from './spaces.js';
+import { spacesRoundTrip, crossHostRoundTrip, allowListRefusal } from './spaces.js';
 import { runSuite } from './suite.js';
 import { loadState, statePaths } from './state.js';
 
@@ -27,6 +27,8 @@ Server
 
 Accounts (credentials persist in .state/state.json — gitignored)
   create-account --name <n> [--ephemeral] [--handle h] [--claim-code c]
+  import-session --name <n> --host <url> --identifier <id> --password <pw>
+                                   adopt an existing account on ANY PDS (incl. foreign)
   whoami --name <n>                getSession for the account
   accounts                         list accounts in local state
   delete-ephemeral --name <n> [--after-minutes m]   deactivate + schedule reaper purge
@@ -35,6 +37,10 @@ Checks
   verify-identity --name <n>       handle ↔ DID ↔ plc.directory agreement
   crud-test --name <n>             create/read/list/delete round-trip
   spaces-test --name <n>           Atproto Spaces round-trip (simplespace + records + sync reads)
+  spaces-cross-host --member <n> [--authority <n>] [--space <uri>] [--space-host <url>]
+                                   delegation token → DPoP-bound credential → credential-authed
+                                   reads on the repo host AND the space host
+  spaces-allowlist --name <n>      an allowList space refuses an unattested credential request
   firehose-test --name <n>         write a post, observe its #commit frame
   sync-test --name <n>             CAR export, latestCommit, repoStatus, listRepos
   network-check --name <n>         relay crawl status + AppView visibility
@@ -72,6 +78,13 @@ function flags(args, extra = {}) {
       handle: { type: 'string' },
       'claim-code': { type: 'string' },
       'target-pds': { type: 'string' },
+      host: { type: 'string' },
+      identifier: { type: 'string' },
+      password: { type: 'string' },
+      member: { type: 'string' },
+      authority: { type: 'string' },
+      space: { type: 'string' },
+      'space-host': { type: 'string' },
       'invite-code': { type: 'string' },
       ephemeral: { type: 'boolean' },
       lifecycle: { type: 'boolean' },
@@ -120,13 +133,26 @@ async function main() {
       print({ did: account.did, handle: account.handle, kind: account.kind });
       break;
     }
+    case 'import-session': {
+      for (const flag of ['host', 'identifier', 'password']) {
+        if (!v[flag]) throw new Error(`--${flag} is required`);
+      }
+      const account = await importSession({
+        name: requireName(v),
+        host: v.host,
+        identifier: v.identifier,
+        password: v.password,
+      });
+      print({ did: account.did, handle: account.handle, host: account.host });
+      break;
+    }
     case 'whoami':
       print(await getSession(requireName(v)));
       break;
     case 'accounts': {
       const state = loadState();
-      print(Object.values(state.accounts).map(({ name, kind, did, handle, createdAt, scheduledDeletion }) =>
-        ({ name, kind, did, handle, createdAt, scheduledDeletion })));
+      print(Object.values(state.accounts).map(({ name, kind, host, did, handle, createdAt, scheduledDeletion }) =>
+        ({ name, kind, host: host ?? BASE_URL, did, handle, createdAt, scheduledDeletion })));
       console.error(`state file: ${statePaths().file}`);
       break;
     }
@@ -141,6 +167,18 @@ async function main() {
       break;
     case 'spaces-test':
       print(await spacesRoundTrip(requireName(v)));
+      break;
+    case 'spaces-cross-host':
+      if (!v.member) throw new Error('--member is required (the account whose PDS hosts the repo)');
+      print(await crossHostRoundTrip({
+        member: v.member,
+        authority: v.authority,
+        space: v.space,
+        spaceHost: v['space-host'],
+      }));
+      break;
+    case 'spaces-allowlist':
+      print(await allowListRefusal(requireName(v)));
       break;
     case 'firehose-test': {
       const result = await firehoseWriteCheck(requireName(v));
