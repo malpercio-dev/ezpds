@@ -277,6 +277,53 @@ Note: `app.bsky.*` calls are proxied to the appview, not implemented locally. Th
 
 ---
 
+### 2.5 Post-v0.1 subsystems (wave work)
+
+The four phases above track one axis — **where the repo lives and who signs it** (phone → desktop
+→ recovery → sovereign signing). Everything built since v0.1 closed has been on a second,
+orthogonal axis: **subsystems that widen what a Custos-hosted identity can do**, tracked in Linear
+as numbered waves (`Wave 8: auth.md`, `Wave 9: Obsign Anywhere`, `Wave 10: Spaces`). A wave is not
+a phase — it neither blocks nor is blocked by v0.2, and shipping one does not advance the
+lifecycle. They are recorded here so the map stops reading as if nothing landed after v0.1.
+
+Live wave status is Linear's, not this document's (`linear_wave_status`, team `MM`,
+`label_prefix: "Wave"`); the original breakdown is [v01-issue-plan.md](v01-issue-plan.md).
+
+#### Wave 10 — Atproto Spaces (permissioned data)
+
+**Goal:** an account can hold **permissioned** repos — records readable only by a space's members —
+alongside its public ATProto repo, and carry them to a new host on migration.
+
+**Lifecycle phase:** unchanged. Spaces ride the Mobile-Only PDS; nothing here waits on v0.2.
+
+**Gated off by default** — the whole surface registers only when `[spaces] enabled`
+(`EZPDS_SPACES_ENABLED`). Disabled, every space method answers `MethodNotImplemented`, so a 501 on
+a space route means the flag is unset rather than a defect.
+
+| Component | Description | Source |
+|-----------|-------------|--------|
+| Permissioned repo store | DB-backed repos (no MST): rev CAS, LtHash set-state fold, oplog | [gap analysis](design-plans/2026-07-17-permissioned-data-gap-analysis.md) |
+| Record CRUD (`com.atproto.space.*`) | `createRecord`, `putRecord`, `deleteRecord`, `applyWrites`, `getRecord`, `listRecords`, `listSpaces` | proposal 0016 |
+| Sync surface | `getLatestCommit`, `listRepoOps` oplog, two-root CAR `getRepo`, `getBlob`, `listBlobs` | proposal 0016 |
+| Space-host role | `listRepos` writer set, `registerNotify`/`unregisterNotify`, `notifyWrite` fan-out | proposal 0016 |
+| Delegation + space credentials | Single-use delegation token → DPoP-bound space credential (`cnf.jkt`), per-host `jti` replay | proposal 0016 |
+| `space:` OAuth scope | Sixth resource type in the granular scope grammar, with consent-page rendering | proposal 0016 |
+| Management surface (`simplespace.*`) | `createSpace`/`updateSpace`/`deleteSpace`/`getSpace`, member list | proposal 0016 |
+| Space repo migration | `space.getRepo` → `POST /v1/space/import-repo` (Custos-native; the alpha defines no import) | this repo |
+| Operator surface | Capability entry in `describeServer`, sweep health, operator docs | this repo |
+
+**Upstream risk:** the Spaces alpha is pre-1.0 and still promises breaking changes. The lexicons are
+vendored at a pinned `permissioned-data` commit and re-diffed weekly by the
+[spaces-alpha-watch routine](operations/spaces-alpha-watch-routine.md).
+
+**Deferred (tracked, not shipped):**
+
+- Admin-companion moderation surface for hosted spaces (takedown / refuse-to-serve).
+- Per-reader commit-signing benchmark and a zeroized signing-key cache — `space_views.rs`
+  decrypts the wrapped signing key on every sync call.
+
+---
+
 ## 3. Cross-Document Phase Mapping
 
 How each document's milestones map to the unified phases:
@@ -321,6 +368,13 @@ v1.0 Critical Path:
                 → Tier pricing → BYO PDS packaging
                 → S3 migration → CDN setup
                 → PostgreSQL option
+
+Wave 10 (Spaces) — off the phase critical path entirely; gated by [spaces] enabled:
+  v0.1 complete → Permissioned repo store (rev CAS + LtHash) → Record CRUD
+                                                             → Sync surface → Space-host fan-out
+                → space: scope grammar → Delegation token → DPoP space credential → Read auth seam
+                → simplespace management → Member-list policy
+                → Sync surface + import route → Space repo migration
 ```
 
 ---
@@ -344,6 +398,9 @@ Quick reference: which phase delivers which user-visible capability.
 | Choose subscription tier | v1.0 |
 | CDN-accelerated media serving | v1.0 |
 | Desktop signs its own commits | v2.0+ |
+| Hold permissioned records only a space's members can read | Wave 10 |
+| Carry permissioned repos to a new host on migration | Wave 10 |
+| Grant an app scoped access to one space | Wave 10 |
 
 ---
 

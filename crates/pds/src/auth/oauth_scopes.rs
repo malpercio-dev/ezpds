@@ -2200,6 +2200,65 @@ mod tests {
         assert_eq!(intersect_scope_tokens(&registered, &registered), registered);
     }
 
+    #[test]
+    fn intersect_clamps_space_tokens_to_the_exact_grant() {
+        // A `space:` grant differing only in its narrowest parameter is a *different* token.
+        // Clamping is string-exact, so none of these near-misses survive against the ceiling.
+        let ceiling = vec![
+            "atproto".to_string(),
+            "space:com.atmoboards.forum?collection=com.atmoboards.post&action=read".to_string(),
+        ];
+        for near_miss in [
+            // A second collection the ceiling never granted.
+            "space:com.atmoboards.forum?collection=com.atmoboards.post&collection=com.atmoboards.dm&action=read",
+            // A write verb on top of the granted read.
+            "space:com.atmoboards.forum?collection=com.atmoboards.post&action=read&action=create",
+            // The same actions against any authority rather than the granting account.
+            "space:com.atmoboards.forum?authority=*&collection=com.atmoboards.post&action=read",
+            // A different space type entirely.
+            "space:com.other.forum?collection=com.atmoboards.post&action=read",
+        ] {
+            let registered = vec!["atproto".to_string(), near_miss.to_string()];
+            assert_eq!(
+                intersect_scope_tokens(&registered, &ceiling),
+                vec!["atproto".to_string()],
+                "{near_miss} must not survive clamping against the ceiling"
+            );
+        }
+        // The ceiling's own grant, spelled identically, does survive.
+        assert_eq!(intersect_scope_tokens(&ceiling, &ceiling), ceiling);
+    }
+
+    #[test]
+    fn space_tokens_must_be_canonicalized_before_clamping() {
+        // `action=` order and defaulted params are free variation in the grammar but *not* at
+        // intersect time, which is string-exact. A config token spelled non-canonically would
+        // silently drop the capability — this is why `canonicalize_agent_scopes` runs at startup.
+        let registered = vec!["space:com.atmoboards.forum?action=read&action=create".to_string()];
+        let raw_config = vec!["space:com.atmoboards.forum?action=create&action=read".to_string()];
+        assert!(
+            intersect_scope_tokens(&registered, &raw_config).is_empty(),
+            "the same grant spelled out of order must not match by luck"
+        );
+        // Canonicalizing both sides makes the equivalent spellings meet.
+        let canon_registered = canonicalize_agent_scopes(&registered).unwrap();
+        let canon_config = canonicalize_agent_scopes(&raw_config).unwrap();
+        assert_eq!(canon_registered, canon_config);
+        assert_eq!(
+            intersect_scope_tokens(&canon_registered, &canon_config),
+            canon_registered
+        );
+        // `read_self` is implied by `read`, never widened into it: a grant that names only
+        // `read_self` stays clamped out of a `read` ceiling.
+        let read_self =
+            canonicalize_agent_scopes(&["space:com.atmoboards.forum?action=read_self".to_string()])
+                .unwrap();
+        let read =
+            canonicalize_agent_scopes(&["space:com.atmoboards.forum?action=read".to_string()])
+                .unwrap();
+        assert!(intersect_scope_tokens(&read_self, &read).is_empty());
+    }
+
     // ── idempotent normalization (parse→normalize→serialize round-trip) ────────
 
     #[test]

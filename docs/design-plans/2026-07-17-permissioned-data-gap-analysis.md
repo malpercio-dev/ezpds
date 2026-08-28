@@ -374,6 +374,15 @@ interop CLI scenarios against the reference alpha; MCP tools
 (`tools/mcp`) for agent access to spaces; identity-wallet consent UX for
 `space:` scopes; NixOS/Railway config for any new env vars.
 
+Also deferred: a per-reader commit-signing benchmark, and a zeroized cache for
+the unwrapped signing key. `space_views::sign_current_commit` mints a fresh
+deniable commit per serving, which means decrypting the KEK-wrapped repo
+signing key on *every* sync call — fine at current volumes, but the cost is
+per-reader, so it scales with syncers rather than with writes. Benchmark
+before caching: a cache holds plaintext key material in memory and has to be
+zeroized on drop, which is only worth the handling risk if the measurement
+says so.
+
 ## 4. Suggested phasing
 
 1. **Phase 0 — primitives (started with the alpha, vector-pinned):** W1

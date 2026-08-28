@@ -6,10 +6,6 @@
 //! that strings them together is `space_record_write.rs`, the one write choke
 //! point.
 
-// Consumed today by the write choke point and blob GC; the read/sync routes
-// that widen usage land with the record CRUD surface.
-#![allow(dead_code)]
-
 use sqlx::{Sqlite, SqlitePool};
 
 /// One `space_repos` row: the repo head.

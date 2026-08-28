@@ -72,8 +72,10 @@ pub struct SpaceWriteResult {
     pub rkey: String,
     /// The new record CID; `None` for a delete.
     pub cid: Option<String>,
-    /// The previous record CID; `None` for a create. Read by the sync surface, which reports it
-    /// as an oplog entry's `prev`; the record routes label a write by the verb asked for.
+    /// The previous record CID; `None` for a create. The sync surface reads this from the oplog
+    /// row this commit wrote, not from here, and the record routes label a write by the verb asked
+    /// for — so nothing in production reads the field. It stays because the tests below assert the
+    /// supersede chain through it (`Update` carries the CID it replaced).
     #[allow(dead_code)]
     pub prev: Option<String>,
 }
@@ -101,12 +103,13 @@ pub enum SpaceWriteAdmission {
 pub struct SpaceCommitOutcome {
     /// The repo's rev after this commit.
     ///
-    /// `rev` and `hash` together are what `notifyWrite` carries on the wire — this is the seam
-    /// the space-host role's fan-out worker attaches to, so they are returned even though the
-    /// record routes themselves report neither.
-    #[allow(dead_code)]
+    /// `rev` and `hash` together are what `notifyWrite` carries on the wire, but the fan-out is
+    /// spawned from inside this module off the local values, before this struct exists — so the
+    /// wire does not read them from here. `rev` is read by the import route's response; `hash`
+    /// only by tests.
     pub rev: String,
-    /// sha256 of the repo's LtHash state — the commit `hash` the wire carries.
+    /// sha256 of the repo's LtHash state — the commit `hash` the wire carries. Read only by the
+    /// tests below, which recompute the LtHash digest and check the commit agrees.
     #[allow(dead_code)]
     pub hash: [u8; 32],
     /// One entry per op, in request order.
