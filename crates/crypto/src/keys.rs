@@ -175,6 +175,67 @@ pub fn derive_recovery_keypair(seed: &[u8; 32]) -> Result<P256Keypair, CryptoErr
     ))
 }
 
+/// HKDF salt binding delegation-seed derivation to this protocol and version.
+const DELEGATION_SEED_HKDF_SALT: &[u8] = b"ezpds/delegation-seed/v1";
+/// HKDF `info` domain-separation string for the delegation seed.
+const DELEGATION_SEED_HKDF_INFO: &[u8] = b"ezpds delegation seed";
+
+/// HKDF salt binding child-seed derivation to this protocol and version.
+const CHILD_SEED_HKDF_SALT: &[u8] = b"ezpds/child-seed/v1";
+/// HKDF `info` domain-separation string. The child index is appended big-endian, so each index
+/// expands to an independent seed.
+const CHILD_SEED_HKDF_INFO: &[u8] = b"ezpds child account seed";
+
+/// Derive the delegation seed — the root of the child-account key subtree — from a recovery seed.
+///
+/// This is the one at-rest secret the wallet stores per identity to mint child accounts. It sits a
+/// full HKDF step below the recovery seed, so compromising it exposes the child subtree and never
+/// the recovery seed itself. Callers hold the recovery seed only transiently (share ceremony, or
+/// share-recovery verification) and persist just this output.
+///
+/// HKDF-SHA256, domain-separated by salt + `info`. No rejection sampling: the output is an opaque
+/// 32-byte seed, not a curve scalar — the scalar step stays in [`derive_recovery_keypair`], which
+/// this hierarchy reuses unchanged as its leaf. The published relative of this construction is
+/// SLIP-0010 nist256p1, which likewise wraps HMAC-SHA512/HKDF around a seed to grow a P-256 tree;
+/// this one is deliberately simpler (no chain codes, no public-key derivation) because only the
+/// holder of the delegation seed ever derives from it.
+///
+/// **Changing the salt, info string, or ordering here orphans every existing child identity** — the
+/// re-derived key would no longer match the one recorded in the child's `rotationKeys` at
+/// plc.directory, leaving the account unrecoverable. Pinned by a golden vector.
+pub fn derive_delegation_seed(recovery_seed: &[u8; 32]) -> Zeroizing<[u8; 32]> {
+    let hk = Hkdf::<Sha256>::new(Some(DELEGATION_SEED_HKDF_SALT), recovery_seed.as_slice());
+    let mut okm = Zeroizing::new([0u8; 32]);
+    // 32 bytes is far under HKDF-SHA256's 255*32 output ceiling, the only documented failure.
+    hk.expand(DELEGATION_SEED_HKDF_INFO, okm.as_mut())
+        .expect("hkdf expand of 32 bytes cannot fail");
+    okm
+}
+
+/// Derive the seed for child account `index` from a delegation seed.
+///
+/// Feed the result to [`derive_recovery_keypair`] to get the child's rotation keypair; that leaf
+/// step is frozen and shared with recovery keys, so the child key is a P-256 scalar derived by
+/// exactly the same already-pinned path.
+///
+/// HKDF-SHA256 with the index appended big-endian to `info`, so distinct indices yield unrelated
+/// seeds and the index space is walked without re-deriving anything. See
+/// [`derive_delegation_seed`] for the SLIP-0010 relationship.
+///
+/// **Changing the salt, info string, or index encoding here orphans every existing child identity.**
+/// Pinned by golden vectors.
+pub fn derive_child_seed(delegation_seed: &[u8; 32], index: u32) -> Zeroizing<[u8; 32]> {
+    let hk = Hkdf::<Sha256>::new(Some(CHILD_SEED_HKDF_SALT), delegation_seed.as_slice());
+    let mut info = Vec::with_capacity(CHILD_SEED_HKDF_INFO.len() + 4);
+    info.extend_from_slice(CHILD_SEED_HKDF_INFO);
+    info.extend_from_slice(&index.to_be_bytes());
+
+    let mut okm = Zeroizing::new([0u8; 32]);
+    hk.expand(&info, okm.as_mut())
+        .expect("hkdf expand of 32 bytes cannot fail");
+    okm
+}
+
 /// Encrypt an arbitrary-length secret using AES-256-GCM.
 ///
 /// The generic-length form of [`encrypt_private_key`], sharing the identical storage
@@ -532,6 +593,89 @@ mod tests {
         assert_eq!(
             kp.key_id.0, GOLDEN_RECOVERY_DID_KEY,
             "recovery-key derivation drifted; if the change is intentional, regenerate the golden"
+        );
+    }
+
+    // ── Delegation + child seed derivation ────────────────────────────────────
+
+    /// Golden vectors for the child-account key hierarchy. Pinning these catches any accidental
+    /// change to the HKDF salt/info/index scheme, which would silently derive *different* child
+    /// keys and orphan every child identity whose rotationKeys already carry the old ones.
+    ///
+    /// Rooted at [`GOLDEN_RECOVERY_SEED`] (0x00..=0x1f).
+    const GOLDEN_DELEGATION_SEED_HEX: &str =
+        "65bad4d783bf0a2371dcca6d6dd7a8256e6ac32bfb9fb4f809144bbc4dd9aa03";
+    const GOLDEN_CHILD_0_SEED_HEX: &str =
+        "c9d52b67be6c2fe97f83834cd5c4fb6e05434629db998fcff935447d8d61262a";
+    const GOLDEN_CHILD_1_SEED_HEX: &str =
+        "0a6453c99c9ebb123c9e9a713695582f197cbc2a77f8259ea4688c73a60f748d";
+    /// `derive_recovery_keypair(child_seed(0))` — the frozen leaf step applied to the child seed.
+    const GOLDEN_CHILD_0_DID_KEY: &str =
+        "did:key:zDnaevCpGTC8k2Lb4jTtsM24JDARvsZDBwRh7uUPZtKDRib4T";
+
+    fn hex(bytes: &[u8]) -> String {
+        bytes.iter().map(|b| format!("{b:02x}")).collect()
+    }
+
+    #[test]
+    fn derive_delegation_seed_matches_golden() {
+        let seed = derive_delegation_seed(&GOLDEN_RECOVERY_SEED);
+        assert_eq!(
+            hex(seed.as_slice()),
+            GOLDEN_DELEGATION_SEED_HEX,
+            "delegation-seed derivation drifted; changing it orphans every child identity"
+        );
+        // A full HKDF step below the recovery seed, never equal to it.
+        assert_ne!(*seed, GOLDEN_RECOVERY_SEED);
+    }
+
+    #[test]
+    fn derive_child_seed_matches_golden_and_is_index_distinct() {
+        let delegation = derive_delegation_seed(&GOLDEN_RECOVERY_SEED);
+        let c0 = derive_child_seed(&delegation, 0);
+        let c1 = derive_child_seed(&delegation, 1);
+        assert_eq!(
+            hex(c0.as_slice()),
+            GOLDEN_CHILD_0_SEED_HEX,
+            "child-seed derivation drifted; changing it orphans every child identity"
+        );
+        assert_eq!(hex(c1.as_slice()), GOLDEN_CHILD_1_SEED_HEX);
+        assert_ne!(*c0, *c1);
+        assert_ne!(*c0, *delegation);
+    }
+
+    #[test]
+    fn derive_child_seed_indices_are_all_distinct() {
+        let delegation = derive_delegation_seed(&GOLDEN_RECOVERY_SEED);
+        let seeds: std::collections::BTreeSet<[u8; 32]> = (0u32..64)
+            .map(|i| *derive_child_seed(&delegation, i))
+            .collect();
+        assert_eq!(seeds.len(), 64, "child seeds collided across indices");
+    }
+
+    #[test]
+    fn derive_child_seed_distinct_delegation_seeds_are_independent() {
+        let a = derive_child_seed(&[0x11_u8; 32], 0);
+        let b = derive_child_seed(&[0x22_u8; 32], 0);
+        assert_ne!(*a, *b);
+    }
+
+    #[test]
+    fn child_keypair_matches_golden() {
+        let delegation = derive_delegation_seed(&GOLDEN_RECOVERY_SEED);
+        let child = derive_child_seed(&delegation, 0);
+        let kp = derive_recovery_keypair(&child).unwrap();
+        assert_eq!(
+            kp.key_id.0, GOLDEN_CHILD_0_DID_KEY,
+            "child keypair drifted; changing it orphans every child identity"
+        );
+        // The leaf step is shared with recovery keys but the subtree is disjoint from the root.
+        assert_ne!(
+            kp.key_id.0,
+            derive_recovery_keypair(&GOLDEN_RECOVERY_SEED)
+                .unwrap()
+                .key_id
+                .0
         );
     }
 
