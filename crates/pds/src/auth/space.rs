@@ -27,7 +27,10 @@
 //!   bearer credential. [`authenticate_space_access`] is the same pair of arms for a method
 //!   that names a space but no repo (`simplespace.getSpace`), and
 //!   [`authenticate_space_owner`] is the OAuth-only arm every simplespace management method
-//!   takes: grant check, then "the caller *is* the authority" (`NotSpaceOwner`). The credential arm runs the full RFC 9449 per-request proof validation
+//!   *on an existing space* takes: grant check, then "the caller *is* the authority"
+//!   (`NotSpaceOwner`). `createSpace` is the exception — a space anchored on the caller's own
+//!   DID has no prior owner to check, so it takes [`authenticate_space_caller`] and the grant
+//!   check alone. The credential arm runs the full RFC 9449 per-request proof validation
 //!   (`auth/dpop.rs`'s `validate_dpop`: signature vs header `jwk`, thumbprint vs `cnf.jkt`,
 //!   `ath` = hash of the credential, `htm`/`htu`, `iat` recency) plus the per-host `jti` replay
 //!   check the proposal makes a MUST. `just space-auth-seam-check`
