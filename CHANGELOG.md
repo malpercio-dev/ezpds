@@ -7,6 +7,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Changes are collected in `changelog.d/` during development and inserted here when
 `just set-version` prepares a release. There is intentionally no `Unreleased` section.
 
+## [0.15.0] - 2026-08-29
+
+### Added
+
+- The Atproto Spaces surface is now operator-gated behind `[spaces] enabled` / `EZPDS_SPACES_ENABLED` (off by default while the protocol is pre-launch alpha; deployments already using spaces must set it). When enabled alongside a signing-key master key, `describeServer` advertises a new `spaces` capability so clients and syncers can discover the surface — without a master key, space writes succeed but the sync routes 503, so the capability is withheld. `GET /v1/admin/health` now also reports the space jti-replay and oplog-compaction sweeps' last completed pass.
+
+- Operators can now take down a single Atproto Space instead of the whole account that owns it — including a space governed by another server, where this host stores members' repos and has no other lever. A taken-down space answers `SpaceNotFound` to every read, write, credential renewal and listing while nothing stored is destroyed, so clearing the takedown restores it exactly. `GET /v1/admin/spaces` lists what the server stores (owned and foreign, with repo and record counts) and `POST /v1/admin/spaces/takedown` applies or clears the refusal; both are recorded in the admin audit log.
+
+
+### Changed
+
+- Documentation: corrected two Atproto Spaces source-doc annotations — the `auth/space.rs` seam doc now notes that `createSpace` authenticates as the caller (there is no prior owner to check), rather than implying every simplespace management method runs the owner check, and the `db/spaces.rs` header now attributes the `app_access`/`app_allowed` allowList columns to their V069 migration. No behavior change.
+
+- Update marketing site
+
+- Custos's outbound Atproto Spaces write notifications are now verified against a mock foreign space host: the exact `notifyWrite` / `notifySpaceDeleted` request bodies, the method-scoped service auth each carries, the retry-and-give-up ladder, and the `#atproto_space_host` → `#atproto_pds` endpoint fallback that every alpha-era host is actually reached through.
+
+- The vendored Atproto Spaces lexicons are now pinned to an exact upstream commit rather than the moving `permissioned-data` branch, so their byte-identity with `bluesky-social/atproto` is reproducibly auditable.
+
+
+### Fixed
+
+- Confidential OAuth clients whose `private_key_jwt` assertion carries `iat` but no `exp` — the shape the reference provider and real-world clients such as attie.ai mint — can now complete the token exchange; an `exp`-less assertion is bounded by a 60-second `iat` max age instead of being rejected.
+
+
 ## [0.14.0] - 2026-08-27
 
 ### Added
