@@ -26,6 +26,8 @@ import type {
   RevokedClaimCode,
   TransferList,
   CancelledTransfer,
+  HostedSpaceList,
+  SpaceTakedown,
   RevokedCredentials,
   RepairedEmail,
   IssuedResetToken,
@@ -70,6 +72,8 @@ export type CommandName =
   | 'list_audit'
   | 'list_transfers'
   | 'cancel_transfer'
+  | 'list_hosted_spaces'
+  | 'set_space_takedown'
   | 'revoke_account_credentials'
   | 'set_account_email'
   | 'issue_reset_token'
@@ -306,6 +310,29 @@ export function buildRegistry(state: AdminState): Registry {
       const revokedDeviceCredential = transfer!.status !== 'pending';
       relay.transfers = relay.transfers.filter((t) => t.id !== transferId);
       return { id: transferId, status: 'cancelled', revokedDeviceCredential };
+    },
+
+    list_hosted_spaces: (args): HostedSpaceList => {
+      const relay = requireRelay(state, String(args.pairingId ?? ''));
+      // Mirror the relay's one filter; no pagination — the seeded set fits one page.
+      const takendownOnly = args.status === 'takendown';
+      return {
+        spaces: takendownOnly
+          ? relay.spaces.filter((s) => s.takendownAt !== undefined)
+          : relay.spaces,
+      };
+    },
+
+    set_space_takedown: (args): SpaceTakedown => {
+      const relay = requireRelay(state, String(args.pairingId ?? ''));
+      const uri = String(args.uri ?? '');
+      const applied = args.applied === true;
+      const space = relay.spaces.find((s) => s.uri === uri);
+      if (!space) relayError({ code: 'RELAY_REJECTED', status: 404, message: 'space not found' });
+      // Re-applying keeps the original timestamp, as the relay does.
+      if (applied) space!.takendownAt ??= '2026-07-15 12:00:00';
+      else space!.takendownAt = undefined;
+      return { uri, applied: space!.takendownAt !== undefined, takendownAt: space!.takendownAt };
     },
 
     revoke_account_credentials: (args): RevokedCredentials => {

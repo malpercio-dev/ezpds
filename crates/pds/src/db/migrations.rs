@@ -298,4 +298,8 @@ pub(super) static MIGRATIONS: &[Migration] = &[
         version: 69,
         sql: include_str!("migrations/V069__space_app_allow_list.sql"),
     },
+    Migration {
+        version: 70,
+        sql: include_str!("migrations/V070__space_takedown.sql"),
+    },
 ];

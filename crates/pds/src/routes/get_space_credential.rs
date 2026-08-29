@@ -65,6 +65,11 @@ pub async fn get_space_credential(
             "this space has been deleted",
         ));
     }
+    // Ordered after the tombstone check for the same reason `require_serviceable_authority` is:
+    // `SpaceDeleted` is the one durable renewal signal, and a takedown is reversible, so it must
+    // not overwrite it. Refusing here stops a syncer renewing its way past a takedown — the read
+    // seam would refuse it anyway, but a 2 h credential should not outlive the operator's action.
+    crate::auth::space::require_space_servable(&state, &space).await?;
     // A row with no simplespace config is a space this PDS only hosts repos for; its authority
     // lives elsewhere and is the one to ask.
     if row.policy.is_none() {

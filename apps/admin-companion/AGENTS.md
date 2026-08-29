@@ -1,6 +1,6 @@
 # Admin Companion (operator console) Mobile App
 
-Last verified: 2026-07-10
+Last verified: 2026-08-28
 Last updated: 2026-07-26 (console renders the blob-integrity readouts: unowned blobs on Status, uploaded figures on Account detail, did:web hosting on the account row)
 
 ## Purpose
@@ -124,6 +124,15 @@ share sheet, and server-side self-revoke (Phase 8). Wired:
   a cancel signature is bound to its transfer; the relay never reports the transfer code, and
   `TransferList`/`TransferEntry`/`CancelledTransfer` are by-value copies of the wire shape
   pinned by a deserialization test),
+  `list_hosted_spaces`/`set_space_takedown` (per-space moderation for the Atproto Spaces surface:
+  a signed `GET /v1/admin/spaces` — bare path signed, paging + the `status=takendown` filter
+  appended to the URL only, like the account listing — returning every space the relay stores
+  something about, and a signed `POST /v1/admin/spaces/takedown` whose JSON body carries the
+  space URI, so a takedown signature is bound to its space. `localAuthority: false` marks a space
+  governed by *another* server that this relay only stores members' repos in — the case account
+  takedown cannot reach and `deleteSpace` is not the operator's to call. `HostedSpaceList`/
+  `HostedSpaceEntry`/`SpaceTakedown` are by-value copies of the wire shape pinned by a
+  deserialization test),
   `revoke_account_credentials` (the operator kill-switch for a compromised account: a signed
   `POST /v1/admin/accounts/{did}/revoke-credentials` — the DID rides in the *path*, so a sweep
   signature is bound to its account; the relay atomically revokes the account's sessions,
@@ -298,7 +307,19 @@ share sheet, and server-side self-revoke (Phase 8). Wired:
   Moderation composes for a compromised account). Pinned to a single pairing at entry like
   Devices (`?server=<pairingId>`, else active); pages via the relay cursor; a cancel reloads
   the list so it reports the relay's post-cancel truth. The transfer code never appears —
-  the relay does not return it. Reached from Home's Transfers button). The
+  the relay does not return it. Reached from Home's Transfers button),
+  **Spaces** (`src/routes/spaces/` — the permissioned-data inventory of ONE relay and the
+  per-space takedown. Every row states whether the space is governed by this server or another
+  one, in words: that is what decides whether the operator has any option besides takedown, since
+  a foreign authority's `deleteSpace` is not theirs to call. Expandable rows carry a fact sheet
+  (authority, first seen, repos/records stored, the owner's delete and the operator's takedown)
+  and the armed two-tap + biometric-gated **Take down / Restore this space**, the same friction
+  Moderation's account takedown carries — one armed action for the screen, since only the
+  expanded row can be armed and collapsing disarms it. A filter toggle narrows to the spaces
+  already refused. Takedown destroys nothing, so restore is a true inverse, and the confirm copy
+  says so. Pinned to a single pairing at entry like Devices; pages via the relay cursor; a write
+  reloads the list so it reports the relay's post-write truth. Reached from Home's Spaces button).
+  The
   error-state matrix (not-paired / clock-skew / revoked / unreachable / not-found) is rendered by the shared
   `ui/ErrorState.svelte` off `errors.ts`'s `classifyRelayError`. Server identity display (`src/lib/server-identity.ts`)
   pairs the operator nickname with the relay host in monospace everywhere, so staging and production

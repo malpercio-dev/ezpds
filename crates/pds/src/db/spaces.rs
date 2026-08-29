@@ -24,6 +24,10 @@ pub struct SpaceRow {
     pub app_allowed: Option<String>,
     pub managing_app: Option<String>,
     pub deleted_at: Option<String>,
+    /// When the operator took this space down (V070). Independent of `deleted_at`: the
+    /// owner's tombstone is durable and clears the config, this is a reversible refusal to
+    /// serve that leaves everything else in place.
+    pub takendown_at: Option<String>,
 }
 
 impl SpaceRow {
@@ -83,7 +87,8 @@ where
     E: sqlx::Executor<'e, Database = Sqlite>,
 {
     sqlx::query_as::<_, SpaceRow>(
-        "SELECT uri, authority_did, policy, app_access, app_allowed, managing_app, deleted_at \
+        "SELECT uri, authority_did, policy, app_access, app_allowed, managing_app, deleted_at, \
+                takendown_at \
          FROM spaces WHERE uri = ?",
     )
     .bind(uri)
@@ -108,7 +113,9 @@ where
 
 /// Create a simplespace-managed space, or claim/revive the row at that URI when it carries no
 /// config (recorded by a member's write, or deleted). Returns `false` when an active
-/// simplespace already exists there — the caller's `SpaceAlreadyExists`.
+/// simplespace already exists there — the caller's `SpaceAlreadyExists` — or when the
+/// operator has taken the URI down: the row is occupied by a refusal, and re-creating over
+/// it would let the owner undo the takedown by deleting and creating the same URI.
 ///
 /// Distinct from [`insert_space`], which records a foreign space on a member's write and must
 /// never touch an existing row: reviving a tombstone is only ever the authority's decision.
@@ -125,7 +132,7 @@ where
            policy = excluded.policy, app_access = excluded.app_access, \
            app_allowed = excluded.app_allowed, managing_app = excluded.managing_app, \
            created_at = excluded.created_at, deleted_at = NULL \
-         WHERE spaces.policy IS NULL",
+         WHERE spaces.policy IS NULL AND spaces.takendown_at IS NULL",
     )
     .bind(space.uri)
     .bind(space.authority_did)
@@ -257,6 +264,86 @@ pub async fn list_members(
     .bind(uri)
     .bind(after)
     .bind(after)
+    .bind(limit)
+    .fetch_all(pool)
+    .await
+}
+
+// ── Operator takedown (V070) ─────────────────────────────────────────────────
+
+/// Apply or clear the operator takedown on a space. A no-op for a URI with no row — the
+/// caller checks existence (it needs the row to report the resulting state anyway), so this
+/// stays a single statement that can join the audit write's transaction.
+///
+/// Deliberately only this column: unlike [`mark_space_deleted`], a takedown leaves the
+/// config, members, notify registrations, and every stored repo untouched, because it is
+/// reversible and a restore has to put the space back exactly as it was. Re-applying an
+/// existing takedown keeps the original timestamp, so the audit log and the listing agree on
+/// when the refusal started.
+pub async fn set_space_takedown<'e, E>(
+    executor: E,
+    uri: &str,
+    applied: bool,
+) -> Result<(), sqlx::Error>
+where
+    E: sqlx::Executor<'e, Database = Sqlite>,
+{
+    if applied {
+        sqlx::query(
+            "UPDATE spaces SET takendown_at = datetime('now') \
+             WHERE uri = ? AND takendown_at IS NULL",
+        )
+    } else {
+        sqlx::query("UPDATE spaces SET takendown_at = NULL WHERE uri = ?")
+    }
+    .bind(uri)
+    .execute(executor)
+    .await?;
+    Ok(())
+}
+
+/// One row of the operator space listing.
+#[derive(Debug, Clone, sqlx::FromRow)]
+pub struct HostedSpaceRow {
+    pub uri: String,
+    pub authority_did: String,
+    /// Non-NULL simplespace config: this host is the space's authority. NULL means the
+    /// authority is a foreign server and this host only stores members' repos — the case
+    /// with no owner-side lever, and the reason this listing exists.
+    pub policy: Option<String>,
+    pub created_at: String,
+    pub deleted_at: Option<String>,
+    pub takendown_at: Option<String>,
+    /// Repos this host stores in the space.
+    pub repo_count: i64,
+    /// Records across those repos — what the operator is actually serving.
+    pub record_count: i64,
+}
+
+/// One page of every space this host stores anything about, by URI ascending, after `after`
+/// (the previous page's last URI). `takendown_only` narrows to the operator's refusal list.
+///
+/// Both counts are prefix scans of a `WITHOUT ROWID` primary key (`space_repos` /
+/// `space_records` both lead with `space_uri`), so they cost a range walk per row rather
+/// than a table scan.
+pub async fn list_hosted_spaces(
+    pool: &SqlitePool,
+    after: Option<&str>,
+    takendown_only: bool,
+    limit: i64,
+) -> Result<Vec<HostedSpaceRow>, sqlx::Error> {
+    sqlx::query_as::<_, HostedSpaceRow>(
+        "SELECT s.uri, s.authority_did, s.policy, s.created_at, s.deleted_at, s.takendown_at, \
+                (SELECT COUNT(*) FROM space_repos r WHERE r.space_uri = s.uri) AS repo_count, \
+                (SELECT COUNT(*) FROM space_records c WHERE c.space_uri = s.uri) AS record_count \
+         FROM spaces s \
+         WHERE (? IS NULL OR s.uri > ?) \
+           AND (? = 0 OR s.takendown_at IS NOT NULL) \
+         ORDER BY s.uri ASC LIMIT ?",
+    )
+    .bind(after)
+    .bind(after)
+    .bind(i64::from(takendown_only))
     .bind(limit)
     .fetch_all(pool)
     .await

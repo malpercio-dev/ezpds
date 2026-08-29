@@ -55,6 +55,8 @@ Every path registered by the server is listed here. For `/xrpc/` endpoints, use 
 | `/v1/admin/recovery-releases` | Custos HTTP |
 | `/v1/admin/relay-status` | Custos HTTP |
 | `/v1/admin/request-crawl` | Custos HTTP |
+| `/v1/admin/spaces` | Custos HTTP |
+| `/v1/admin/spaces/takedown` | Custos HTTP |
 | `/v1/admin/transfers` | Custos HTTP |
 | `/v1/admin/transfers/{id}/cancel` | Custos HTTP |
 | `/v1/admin/waitlist` | Custos HTTP |

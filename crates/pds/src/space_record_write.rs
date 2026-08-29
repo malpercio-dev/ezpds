@@ -215,19 +215,26 @@ pub async fn apply_space_writes(
         tracing::error!(error = %e, space = %space_uri, "failed to record space");
         internal_error()
     })?;
-    let deleted = crate::db::spaces::get_space(&mut *tx, space_uri)
+    let row = crate::db::spaces::get_space(&mut *tx, space_uri)
         .await
         .map_err(|e| {
             tracing::error!(error = %e, space = %space_uri, "failed to load space");
             internal_error()
-        })?
-        .is_none_or(|row| row.deleted_at.is_some());
-    if deleted {
+        })?;
+    // Both refusals are read here rather than at the auth seam because the head CAS is on
+    // `space_repos`, not `spaces`: outside this transaction a concurrent deleteSpace or
+    // operator takedown could land between check and commit. `SpaceNotFound` for the
+    // takedown, never `SpaceDeleted` — see `auth::space::require_space_servable`.
+    if row.as_ref().is_none_or(|row| row.deleted_at.is_some()) {
         tx.rollback().await.ok();
         return Err(ApiError::new(
             ErrorCode::SpaceNotFound,
             "space has been deleted",
         ));
+    }
+    if row.is_some_and(|row| row.takendown_at.is_some()) {
+        tx.rollback().await.ok();
+        return Err(ApiError::new(ErrorCode::SpaceNotFound, "space not found"));
     }
 
     // Load the repo head, or start a fresh one on first write.

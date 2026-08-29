@@ -47,6 +47,10 @@ pub(crate) enum AdminAuditAction {
     ResetTokenIssued,
     /// An operator-level PDS signing key was created (`/v1/pds/keys`).
     SigningKeyCreated,
+    /// A hosted space was taken down (`POST /v1/admin/spaces/takedown`).
+    SpaceTakedown,
+    /// A hosted space's takedown was cleared.
+    SpaceRestore,
 }
 
 impl AdminAuditAction {
@@ -65,6 +69,8 @@ impl AdminAuditAction {
             AdminAuditAction::EmailUpdated => "email_updated",
             AdminAuditAction::ResetTokenIssued => "reset_token_issued",
             AdminAuditAction::SigningKeyCreated => "signing_key_created",
+            AdminAuditAction::SpaceTakedown => "space_takedown",
+            AdminAuditAction::SpaceRestore => "space_restore",
         }
     }
 
@@ -72,7 +78,7 @@ impl AdminAuditAction {
     /// route rejects it with a 400 (like the account listing's `status` filter) instead
     /// of silently returning an empty page.
     pub(crate) fn from_filter(value: &str) -> Option<Self> {
-        const ALL: [AdminAuditAction; 13] = [
+        const ALL: [AdminAuditAction; 15] = [
             AdminAuditAction::AccountTakedown,
             AdminAuditAction::AccountRestore,
             AdminAuditAction::CredentialsRevoked,
@@ -86,6 +92,8 @@ impl AdminAuditAction {
             AdminAuditAction::EmailUpdated,
             AdminAuditAction::ResetTokenIssued,
             AdminAuditAction::SigningKeyCreated,
+            AdminAuditAction::SpaceTakedown,
+            AdminAuditAction::SpaceRestore,
         ];
         ALL.into_iter().find(|action| action.as_str() == value)
     }

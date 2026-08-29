@@ -707,6 +707,106 @@ pub async fn list_audit(
     parse_success::<AuditPage>(response).await
 }
 
+// ── Hosted spaces (list / takedown) ──────────────────────────────────────────
+
+/// Optional filters for the hosted-space listing.
+#[derive(Debug, Default, Clone)]
+pub struct ListHostedSpacesQuery {
+    pub limit: Option<u32>,
+    /// The `cursor` from the previous page (the last space URI returned).
+    pub cursor: Option<String>,
+    /// `takendown` narrows to the spaces the operator has refused.
+    pub status: Option<String>,
+}
+
+/// Build the signed hosted-space listing (`GET /v1/admin/spaces?…`).
+///
+/// Like [`build_list_accounts_request`], the relay verifies the signature over
+/// `uri.path()` only, so the bare path is signed and the paging/filter params are
+/// appended after signing.
+pub fn build_list_hosted_spaces_request(
+    pairing: &Pairing,
+    query: &ListHostedSpacesQuery,
+    timestamp: i64,
+    nonce: &str,
+) -> Result<SignedRequest, RelayClientError> {
+    let mut req = build_signed_request(pairing, "GET", "/v1/admin/spaces", b"", timestamp, nonce)?;
+    let limit_str;
+    let mut params: Vec<(&str, &str)> = Vec::new();
+    if let Some(limit) = query.limit {
+        limit_str = limit.to_string();
+        params.push(("limit", &limit_str));
+    }
+    if let Some(cursor) = query.cursor.as_deref() {
+        params.push(("cursor", cursor));
+    }
+    if let Some(status) = query.status.as_deref() {
+        params.push(("status", status));
+    }
+    if !params.is_empty() {
+        req.url = append_query(&req.url, &params)?;
+    }
+    Ok(req)
+}
+
+/// Fetch a page of the spaces the relay stores — the ones it governs and the ones it only
+/// keeps members' repos in — via a signed `GET`. Id-addressed like [`list_devices`], so a
+/// concurrent active-pairing switch can never redirect which relay is asked (or signed for).
+pub async fn list_hosted_spaces(
+    pairing_id: &str,
+    query: ListHostedSpacesQuery,
+) -> Result<HostedSpaceList, RelayClientError> {
+    let pairing = resolve_pairing(pairing_id)?;
+    let signed = build_list_hosted_spaces_request(&pairing, &query, unix_now(), &fresh_nonce())?;
+    let response = send(signed).await?;
+    parse_success::<HostedSpaceList>(response).await
+}
+
+#[derive(Serialize)]
+struct SpaceTakedownBody<'a> {
+    uri: &'a str,
+    applied: bool,
+}
+
+/// Build the signed per-space takedown (`POST /v1/admin/spaces/takedown`).
+///
+/// The space URI travels in the signed *body*, so a takedown signature is bound to its
+/// space and can never be replayed against another.
+pub fn build_space_takedown_request(
+    pairing: &Pairing,
+    uri: &str,
+    applied: bool,
+    timestamp: i64,
+    nonce: &str,
+) -> Result<SignedRequest, RelayClientError> {
+    let body = serde_json::to_vec(&SpaceTakedownBody { uri, applied })
+        .expect("SpaceTakedownBody serializes");
+    build_signed_request(
+        pairing,
+        "POST",
+        "/v1/admin/spaces/takedown",
+        &body,
+        timestamp,
+        nonce,
+    )
+}
+
+/// Apply or clear the operator takedown on one space via a signed `POST` — per-space
+/// moderation, and the only lever available at all for a space governed by another server.
+/// Nothing stored is destroyed, so clearing the takedown restores the space exactly.
+/// Idempotent in both directions; a space the relay stores nothing for is a 404 (surfaced
+/// as `RELAY_REJECTED`). Id-addressed like [`list_devices`].
+pub async fn set_space_takedown(
+    pairing_id: &str,
+    uri: &str,
+    applied: bool,
+) -> Result<SpaceTakedown, RelayClientError> {
+    let pairing = resolve_pairing(pairing_id)?;
+    let signed = build_space_takedown_request(&pairing, uri, applied, unix_now(), &fresh_nonce())?;
+    let response = send(signed).await?;
+    parse_success::<SpaceTakedown>(response).await
+}
+
 // ── In-flight device transfers (list / cancel) ───────────────────────────────
 
 /// Build the signed in-flight transfer listing (`GET /v1/admin/transfers?cursor=…`).
@@ -1283,6 +1383,50 @@ pub struct AccountListEntry {
     /// "not hosted" apart from "broken". `None` on a relay predating the field — which
     /// must not read as `false`, the very answer the operator came here to trust.
     pub did_web_hosting: Option<bool>,
+}
+
+/// A page of the relay's hosted-space list — the response shape of `GET /v1/admin/spaces`
+/// (`ListSpacesResponse` in crates/pds/src/routes/admin_spaces.rs; shared by value like
+/// [`AccountList`], pinned by a deserialization test). `cursor` is omitted by the relay on
+/// the last page.
+#[derive(Debug, Clone, PartialEq, Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HostedSpaceList {
+    pub spaces: Vec<HostedSpaceEntry>,
+    pub cursor: Option<String>,
+}
+
+/// One space the relay stores something about.
+#[derive(Debug, Clone, PartialEq, Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HostedSpaceEntry {
+    /// Canonical space URI, `at://{authority}/space/{type}/{skey}`.
+    pub uri: String,
+    pub authority_did: String,
+    /// Whether the relay is the space's authority. `false` means the space is governed by
+    /// another server and the relay only stores members' repos in it — the case where
+    /// takedown is the operator's only available action.
+    pub local_authority: bool,
+    pub created_at: String,
+    /// The space *owner's* tombstone (`deleteSpace`), not the operator's; `None` when absent.
+    pub deleted_at: Option<String>,
+    /// When the operator took the space down; `None` means it is being served.
+    pub takendown_at: Option<String>,
+    /// Repos the relay stores in the space.
+    pub repo_count: i64,
+    /// Records across those repos — what is actually being served.
+    pub record_count: i64,
+}
+
+/// The resulting takedown state of one space — the response shape of
+/// `POST /v1/admin/spaces/takedown`. The relay restates the row rather than echoing the
+/// request, so the screen renders its answer verbatim.
+#[derive(Debug, Clone, PartialEq, Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SpaceTakedown {
+    pub uri: String,
+    pub applied: bool,
+    pub takendown_at: Option<String>,
 }
 
 /// One in-force label on an account, as observed by the relay from a watched labeler.
@@ -2630,6 +2774,70 @@ mod tests {
             header(&other, signing::ADMIN_SIGNATURE_HEADER),
             "a cancel signature must be bound to its transfer id"
         );
+    }
+
+    // Pins the relay's hosted-space wire shapes by value (`ListSpacesResponse` /
+    // `HostedSpaceEntry` / `SpaceTakedownResponse` in crates/pds/src/routes/admin_spaces.rs;
+    // the `pds` crate is binary-only, so the contract is shared by value, not import).
+    // `deletedAt`, `takendownAt`, and `cursor` are *omitted* by the relay when absent, not
+    // null — and `takendownAt`'s absence is what the screen reads as "being served".
+    #[test]
+    fn hosted_space_list_deserializes_the_relay_shape() {
+        let json = r#"{
+            "spaces": [
+                {
+                    "uri": "at://did:plc:abc123/space/org.example.bucket/main",
+                    "authorityDid": "did:plc:abc123",
+                    "localAuthority": true,
+                    "createdAt": "2026-07-10 12:00:00",
+                    "takendownAt": "2026-07-14 22:10:00",
+                    "repoCount": 3,
+                    "recordCount": 128
+                },
+                {
+                    "uri": "at://did:plc:def456/space/com.example.forum/general",
+                    "authorityDid": "did:plc:def456",
+                    "localAuthority": false,
+                    "createdAt": "2026-07-12 16:40:00",
+                    "repoCount": 1,
+                    "recordCount": 42
+                }
+            ],
+            "cursor": "at://did:plc:def456/space/com.example.forum/general"
+        }"#;
+        let page: HostedSpaceList = serde_json::from_str(json).expect("deserialize");
+        assert_eq!(page.spaces.len(), 2);
+        assert!(page.spaces[0].local_authority);
+        assert_eq!(
+            page.spaces[0].takendown_at.as_deref(),
+            Some("2026-07-14 22:10:00")
+        );
+        assert_eq!(page.spaces[0].record_count, 128);
+        // The foreign-authority row: no owner tombstone, not taken down, and the flag that
+        // tells the screen takedown is the operator's only lever here.
+        assert!(!page.spaces[1].local_authority);
+        assert_eq!(page.spaces[1].deleted_at, None);
+        assert_eq!(page.spaces[1].takendown_at, None);
+
+        // A final page omits the cursor.
+        let last: HostedSpaceList =
+            serde_json::from_str(r#"{"spaces": []}"#).expect("deserialize final page");
+        assert_eq!(last.cursor, None);
+
+        // The takedown response restates the row; a cleared takedown omits the timestamp.
+        let applied: SpaceTakedown = serde_json::from_str(
+            r#"{"uri": "at://did:plc:abc123/space/org.example.bucket/main",
+                 "applied": true, "takendownAt": "2026-07-15 12:00:00"}"#,
+        )
+        .expect("deserialize takedown");
+        assert!(applied.applied);
+        assert_eq!(applied.takendown_at.as_deref(), Some("2026-07-15 12:00:00"));
+        let cleared: SpaceTakedown = serde_json::from_str(
+            r#"{"uri": "at://did:plc:abc123/space/org.example.bucket/main", "applied": false}"#,
+        )
+        .expect("deserialize restore");
+        assert!(!cleared.applied);
+        assert_eq!(cleared.takendown_at, None);
     }
 
     // Pins the relay's in-flight transfer wire shapes by value (`TransferView` /

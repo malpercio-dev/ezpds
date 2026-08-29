@@ -670,6 +670,82 @@ export function cancelTransfer(
   return invoke<CancelledTransfer>('cancel_transfer', { pairingId, transferId });
 }
 
+/** One Atproto Space the relay stores something about. */
+export interface HostedSpaceEntry {
+  /** Canonical space URI, `at://{authority}/space/{type}/{skey}`. */
+  uri: string;
+  authorityDid: string;
+  /**
+   * Whether the relay is the space's authority. `false` means the space is governed by
+   * another server and the relay only stores members' repos in it — the case where takedown
+   * is the operator's only available action, since `deleteSpace` is not theirs to call.
+   */
+  localAuthority: boolean;
+  createdAt: string;
+  /** The space *owner's* tombstone, not the operator's; absent when the space is not deleted. */
+  deletedAt?: string;
+  /** When the operator took the space down; absent means the relay is serving it. */
+  takendownAt?: string;
+  /** Repos the relay stores in the space. */
+  repoCount: number;
+  /** Records across those repos — what is actually being served. */
+  recordCount: number;
+}
+
+/** One hosted-space page: URI-ordered entries plus the cursor for the next page. */
+export interface HostedSpaceList {
+  spaces: HostedSpaceEntry[];
+  /** Present when another page may exist; pass back to {@link listHostedSpaces}. */
+  cursor?: string;
+}
+
+/** The relay's resulting takedown state for one space — its answer, not an echo. */
+export interface SpaceTakedown {
+  uri: string;
+  applied: boolean;
+  /** When the takedown started; absent once cleared. */
+  takendownAt?: string;
+}
+
+/** Optional filters for {@link listHostedSpaces}. */
+export interface ListHostedSpacesFilters {
+  /** `takendown` narrows to the spaces the operator has refused. */
+  status?: string;
+}
+
+/**
+ * Page the spaces the given pairing's relay stores via a signed request — the ones it
+ * governs and the ones it only keeps members' repos in. Throws a {@link RelayClientError}.
+ */
+export function listHostedSpaces(
+  pairingId: string,
+  cursor?: string,
+  filters: ListHostedSpacesFilters = {},
+): Promise<HostedSpaceList> {
+  return invoke<HostedSpaceList>('list_hosted_spaces', {
+    pairingId,
+    limit: null,
+    cursor: cursor ?? null,
+    status: filters.status ?? null,
+  });
+}
+
+/**
+ * Apply or clear the operator takedown on one space on the given pairing's relay via a
+ * signed request. While applied the relay answers `SpaceNotFound` for the space on every
+ * surface — reads, writes, credential renewals, and the member-facing space listing — while
+ * nothing stored is destroyed, so clearing it restores the space exactly. Idempotent in both
+ * directions; a space the relay stores nothing for is `RELAY_REJECTED` with status 404. This
+ * signs — callers must run the biometric gate first.
+ */
+export function setSpaceTakedown(
+  pairingId: string,
+  uri: string,
+  applied: boolean,
+): Promise<SpaceTakedown> {
+  return invoke<SpaceTakedown>('set_space_takedown', { pairingId, uri, applied });
+}
+
 /**
  * The relay's post-sweep report — literal per-family counts of what
  * {@link revokeAccountCredentials} revoked, rendered verbatim by the screen.

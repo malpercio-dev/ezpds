@@ -19,6 +19,7 @@ import type {
   AuditEventEntry,
   ClaimCodeEntry,
   TransferEntry,
+  HostedSpaceEntry,
   ServerHealth,
 } from '$lib/ipc';
 
@@ -61,6 +62,12 @@ export interface FakeRelay {
   health: ServerHealth;
   /** Per-account takedown state, keyed by DID. */
   takedowns: Record<string, boolean>;
+  /**
+   * The Atproto Spaces this relay stores something about. Seeded with both kinds, because
+   * the difference is what the Spaces screen exists to show: one the relay governs, and one
+   * governed by a foreign server where takedown is the only lever.
+   */
+  spaces: HostedSpaceEntry[];
 }
 
 /** The full admin fake store. */
@@ -334,6 +341,27 @@ export function seedRelay(opts: {
     transfers: opts.degraded
       ? [makeTransfer(`${seed}:t1`, 'accepted')]
       : [makeTransfer(`${seed}:t1`, 'pending')],
+    spaces: [
+      {
+        uri: `at://${accounts[0]?.did ?? fakeAccountDid(`${seed}:acct0`)}/space/org.example.bucket/main`,
+        authorityDid: accounts[0]?.did ?? fakeAccountDid(`${seed}:acct0`),
+        localAuthority: true,
+        createdAt: '2026-07-10 08:00:00',
+        repoCount: 3,
+        recordCount: 128,
+        // A degraded relay has already been acted on, so the screen's restore path and
+        // the "refused" chip both have a scenario without an operator tap first.
+        takendownAt: opts.degraded ? '2026-07-14 22:10:00' : undefined,
+      },
+      {
+        uri: 'at://did:plc:foreignauthorityaaaaaaaa/space/com.atmoboards.forum/general',
+        authorityDid: 'did:plc:foreignauthorityaaaaaaaa',
+        localAuthority: false,
+        createdAt: '2026-07-12 16:40:00',
+        repoCount: 1,
+        recordCount: 42,
+      },
+    ],
     // Newest first, matching the relay: a mixed trail exercising every column the
     // screen renders — device attribution, subjects, detail facts, and a no-subject
     // server-wide action.

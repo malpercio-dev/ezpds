@@ -326,8 +326,10 @@ pub async fn list_repo_records(
 }
 
 /// One page of the spaces an account holds a repo in — spaces it has *written to*, which is
-/// what `listSpaces` reports (a repo host tracks writers, never a member list). Ordered by URI,
-/// deleted spaces omitted.
+/// what `listSpaces` reports (a repo host tracks writers, never a member list). Ordered by URI;
+/// deleted and operator-taken-down spaces are omitted, matching the `SpaceNotFound` every other
+/// seam answers for them — a listing that named a space no read can open would be a worse answer
+/// than leaving it out.
 pub async fn list_spaces_for_account(
     pool: &SqlitePool,
     account_did: &str,
@@ -338,7 +340,7 @@ pub async fn list_spaces_for_account(
 ) -> Result<Vec<String>, sqlx::Error> {
     sqlx::query_scalar(
         "SELECT s.uri FROM space_repos r JOIN spaces s ON s.uri = r.space_uri \
-         WHERE r.account_did = ? AND s.deleted_at IS NULL \
+         WHERE r.account_did = ? AND s.deleted_at IS NULL AND s.takendown_at IS NULL \
            AND (? IS NULL OR s.space_type = ?) \
            AND (? IS NULL OR s.authority_did = ?) \
            AND (? IS NULL OR s.uri > ?) \
