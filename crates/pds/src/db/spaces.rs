@@ -1,7 +1,8 @@
 // pattern: Imperative Shell
 
-//! Space rows (V065): every space this PDS interacts with, keyed by canonical
-//! space URI, plus the simplespace member list. `policy`/`app_access` are the
+//! Space rows (V065; the `app_access`/`app_allowed` allowList columns are V069):
+//! every space this PDS interacts with, keyed by canonical space URI, plus the
+//! simplespace member list. `policy`/`app_access` are the
 //! simplespace config: non-NULL means a local account created the space through
 //! `createSpace` and this host answers for it; NULL means the row was recorded
 //! by a member's write and the config lives with a foreign authority (or the
