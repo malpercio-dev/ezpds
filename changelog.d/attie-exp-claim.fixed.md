@@ -1,0 +1,1 @@
+Confidential OAuth clients whose `private_key_jwt` assertion carries `iat` but no `exp` — the shape the reference provider and real-world clients such as attie.ai mint — can now complete the token exchange; an `exp`-less assertion is bounded by a 60-second `iat` max age instead of being rejected.
