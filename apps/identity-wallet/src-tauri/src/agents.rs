@@ -21,7 +21,7 @@
 //!   seed, sign its genesis op, and confirm the claim with it, so the agent ends up with an
 //!   account of its own instead of a credential for this one.
 //!
-//! Four more manage the children that arm creates — the parent console. They address a child by
+//! Five more manage the children that arm creates — the parent console. They address a child by
 //! *its own DID*, not a registration id, since a child is an account first and a capability
 //! second; `did` stays the authenticating parent:
 //!
@@ -33,6 +33,10 @@
 //! - `remint_child_assertion(did, child_did) -> ChildAssertion` — `POST /agent/child/assertion`:
 //!   a fresh credential for a child that lay dormant past its assertion lifetime. Refused for a
 //!   revoked child, so renewal is never a way back up the ladder revocation walked down.
+//! - `reconcile_children(did) -> ChildReconciliation` — the recovery epilogue for children: after
+//!   a restore has put the delegation seed back, re-derive candidate keys by index and check each
+//!   against the child's plc.directory audit log, rebuilding the local child index from the
+//!   server's list. Short-circuits without plc traffic when the index already covers that list.
 //!
 //! Each resolves a refreshable per-DID full-access session via
 //! `SessionProvider::full_access_client` (like `app_passwords.rs`) and issues the
@@ -52,7 +56,8 @@
 //! only a genuine transport failure is NETWORK_ERROR (a `NeedsUnlock` is
 //! SESSION_LOCKED, every other verdict UNKNOWN) — so denial, expiry, and lock render
 //! as explicit states. The IPC types (`AgentSummary`, `AgentAuditEvent`,
-//! `AgentAuditPage`, `AgentClaimPreview`, `AgentClaimConfirmation`, `MintedChild`) serialize
+//! `AgentAuditPage`, `AgentClaimPreview`, `AgentClaimConfirmation`, `MintedChild`,
+//! `ChildReconciliation`) serialize
 //! camelCase and must match their `$lib/ipc` counterparts.
 
 use serde::{Deserialize, Serialize};
@@ -412,6 +417,152 @@ async fn list_children_impl(client: &OAuthClient) -> Result<Vec<ChildSummary>, A
         message: format!("failed to parse /agent/child response: {e}"),
     })?;
     Ok(body.children)
+}
+
+/// Extra derivation indices scanned past the number of children the server lists.
+///
+/// Indices are consumed one per *successful* mint and never reused, so the highest live child's
+/// index exceeds the list length only by however many siblings have since been purged. Scanning
+/// a fixed window past the end covers that gap without an unbounded search; a child whose index
+/// lies beyond it reports [`ChildKeyStatus::Unmatched`] — surfaced to the user, which is the
+/// honest answer for a key this device cannot derive.
+const CHILD_INDEX_SCAN_SLACK: u32 = 32;
+
+/// What the recovery check concluded about one child's rotation key.
+///
+/// The three verdicts are deliberately distinct. `Unmatched` is a custody finding — plc.directory
+/// was read and names no key this delegation seed derives — while `Unchecked` means the question
+/// could not be asked. Collapsing them would either cry wolf over a network blip or, worse, let a
+/// genuine mismatch hide inside one.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "status", rename_all = "camelCase")]
+pub enum ChildKeyStatus {
+    /// The key derived at `index` is live in the child's `rotationKeys`.
+    Matched { index: u32 },
+    /// The child's audit log was read and names no key this delegation seed derives.
+    Unmatched,
+    /// plc.directory could not be read or parsed. Custody is unknown, not disproven.
+    Unchecked { message: String },
+}
+
+/// One child's entry in a recovery reconciliation.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ChildKeyCheck {
+    pub did: String,
+    pub handle: String,
+    #[serde(flatten)]
+    pub status: ChildKeyStatus,
+}
+
+/// The result of re-deriving this identity's children against plc.directory after a recovery.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ChildReconciliation {
+    /// False when this device's index already covered the server's list, so nothing was
+    /// re-derived and no plc.directory request was made. `children` is then empty — an
+    /// absence of findings, never a claim that every child checked out.
+    pub rebuilt: bool,
+    pub children: Vec<ChildKeyCheck>,
+    /// The child index this device will mint at next.
+    pub next_index: u32,
+}
+
+/// Re-derive this identity's children from the delegation seed and check each against the
+/// authoritative plc.directory audit log — the recovery epilogue for child accounts.
+///
+/// The server's child list is the discovery mechanism (no BIP-44-style gap scan): it says which
+/// children exist, and derivation says which of them this device still holds the rotation key
+/// for. Verification reads the child's audit log rather than any cached DID document, the same
+/// trust posture `verify_recovery_shares` takes for the parent.
+///
+/// Short-circuits without touching plc.directory when the stored index already covers the list —
+/// the case on the device that minted them. `rebuilt` reports which of the two happened, so a
+/// caller can never read "nothing to do" as "everything verified".
+///
+/// A per-child failure is recorded, never propagated: one unreachable child must not suppress a
+/// genuine mismatch found on another.
+async fn reconcile_children_impl(
+    client: &OAuthClient,
+    pds_client: &PdsClient,
+    delegation_seed: &[u8; 32],
+    stored_index: u32,
+) -> Result<ChildReconciliation, AgentsError> {
+    let children = list_children_impl(client).await?;
+    let count = u32::try_from(children.len()).unwrap_or(u32::MAX);
+    if stored_index >= count {
+        return Ok(ChildReconciliation {
+            rebuilt: false,
+            children: Vec::new(),
+            next_index: stored_index,
+        });
+    }
+
+    // Derive the candidate window once — the same key is looked up by every child, and each
+    // derivation is an HKDF plus a P-256 scalar.
+    let mut candidates: std::collections::HashMap<String, u32> = std::collections::HashMap::new();
+    for index in 0..count.saturating_add(CHILD_INDEX_SCAN_SLACK) {
+        let child_seed = crypto::derive_child_seed(delegation_seed, index);
+        let keypair =
+            crypto::derive_recovery_keypair(&child_seed).map_err(|e| AgentsError::Unknown {
+                message: format!("child key derivation failed at index {index}: {e}"),
+            })?;
+        candidates.entry(keypair.key_id.0).or_insert(index);
+    }
+
+    let mut checks = Vec::with_capacity(children.len());
+    let mut highest_match: Option<u32> = None;
+    for child in children {
+        let status = match child_rotation_keys(pds_client, &child.did).await {
+            Ok(rotation_keys) => match rotation_keys.iter().find_map(|k| candidates.get(k)) {
+                Some(&index) => {
+                    highest_match = Some(highest_match.map_or(index, |h: u32| h.max(index)));
+                    ChildKeyStatus::Matched { index }
+                }
+                None => ChildKeyStatus::Unmatched,
+            },
+            Err(message) => ChildKeyStatus::Unchecked { message },
+        };
+        checks.push(ChildKeyCheck {
+            did: child.did,
+            handle: child.handle,
+            status,
+        });
+    }
+
+    // Never lower the counter. A stored index above every match means this device already minted
+    // past the children the server still lists (purged siblings), and rewinding it would re-derive
+    // a key some existing child already holds.
+    let next_index = highest_match
+        .map(|h| h.saturating_add(1))
+        .unwrap_or(stored_index)
+        .max(stored_index);
+
+    Ok(ChildReconciliation {
+        rebuilt: true,
+        children: checks,
+        next_index,
+    })
+}
+
+/// Read a child's current `rotationKeys` from its plc.directory audit log. The error is a
+/// caller-facing sentence fragment, since it lands in [`ChildKeyStatus::Unchecked`] rather than
+/// failing the reconciliation.
+async fn child_rotation_keys(
+    pds_client: &PdsClient,
+    child_did: &str,
+) -> Result<Vec<String>, String> {
+    let raw = pds_client
+        .fetch_audit_log(child_did)
+        .await
+        .map_err(|e| format!("plc.directory could not be read: {e}"))?;
+    let log = crypto::parse_audit_log(&raw).map_err(|e| format!("audit log is unreadable: {e}"))?;
+    // The strict reader, not `rotation_keys_from_audit_log`: it skips nullified entries and says
+    // so when a field is missing, where the lenient helper returns an empty list that would read
+    // here as a custody mismatch.
+    crate::handle_change::latest_full_state(&log)
+        .map(|state| state.rotation_keys)
+        .map_err(|e| format!("audit log is unreadable: {e}"))
 }
 
 async fn revoke_child_impl(client: &OAuthClient, child_did: &str) -> Result<(), AgentsError> {
@@ -866,6 +1017,55 @@ pub async fn delete_child(
 /// dormant past a full assertion lifetime and can no longer bootstrap. The response carries a
 /// live credential; the caller shows it once for the user to hand back to the agent and keeps
 /// no copy. A revoked child is refused ([`AgentsError::AccessDenied`]).
+/// Re-derive this identity's children after a recovery and rebuild the local child index.
+///
+/// The recovery epilogue for child accounts. Once the delegation seed is back in the Keychain —
+/// re-derived from the recovery seed during share verification — this asks the server which
+/// children exist and checks each one's live `rotationKeys` against the keys this seed derives,
+/// so a restored wallet can say which of its agents' accounts it still holds recovery authority
+/// for. The rebuilt index is what keeps the next mint from colliding with a child already out
+/// there.
+///
+/// Cheap and idempotent on a device that is not recovering: it short-circuits before any
+/// plc.directory traffic when the local index already covers the server's list, reporting
+/// `rebuilt: false` so the caller never mistakes that for a clean bill of health.
+#[tauri::command]
+pub async fn reconcile_children(
+    state: tauri::State<'_, crate::oauth::AppState>,
+    did: String,
+) -> Result<ChildReconciliation, AgentsError> {
+    let delegation_seed = IdentityStore
+        .load_delegation_seed(&did)
+        .map_err(|e| AgentsError::Unknown {
+            message: format!("delegation seed read failed: {e}"),
+        })?
+        .ok_or(AgentsError::NotProvisioned)?;
+    let stored_index = IdentityStore
+        .load_child_index(&did)
+        .map_err(|e| AgentsError::Unknown {
+            message: format!("child index read failed: {e}"),
+        })?;
+
+    let session = full_access_session(state.pds_client(), &did).await?;
+    let result = reconcile_children_impl(
+        &session.client,
+        state.pds_client(),
+        &delegation_seed,
+        stored_index,
+    )
+    .await?;
+
+    // Best-effort, matching the mint path: the reconciliation the user is about to read is worth
+    // showing even if the counter write fails, and the server list stays the authoritative record
+    // either way. The cost of a failure is a colliding index on the next mint, not a lost child.
+    if result.rebuilt && result.next_index != stored_index {
+        if let Err(e) = IdentityStore.store_child_index(&did, result.next_index) {
+            tracing::error!(did = %did, error = %e, "failed to rebuild the child index after recovery");
+        }
+    }
+    Ok(result)
+}
+
 #[tauri::command]
 pub async fn remint_child_assertion(
     state: tauri::State<'_, crate::oauth::AppState>,
@@ -1232,6 +1432,245 @@ mod tests {
         let b =
             build_child_genesis_op(&TEST_SEED, 2, &repo_key, "a.example.com", TEST_PDS).unwrap();
         assert_eq!(a.did, b.did);
+    }
+
+    // ── Recovery reconciliation ────────────────────────────────────────────────
+
+    /// The did:key this delegation seed derives at `index` — what a child minted at that index
+    /// carries as `rotationKeys[0]`.
+    fn child_key_at(index: u32) -> String {
+        let seed = crypto::derive_child_seed(&TEST_SEED, index);
+        crypto::derive_recovery_keypair(&seed).unwrap().key_id.0
+    }
+
+    /// A one-entry plc.directory audit log whose current state names `rotation_keys`.
+    fn audit_log(did: &str, rotation_keys: &[&str]) -> serde_json::Value {
+        serde_json::json!([{
+            "did": did,
+            "cid": "bafyreigenesis",
+            "createdAt": "2026-08-01T00:00:00.000Z",
+            "nullified": false,
+            "operation": {
+                "type": "plc_operation",
+                "rotationKeys": rotation_keys,
+                "verificationMethods": { "atproto": test_repo_key().0 },
+                "alsoKnownAs": [format!("at://{did}.example.com")],
+                "services": {
+                    "atproto_pds": { "type": "AtprotoPersonalDataServer", "endpoint": TEST_PDS },
+                },
+            },
+        }])
+    }
+
+    /// A server answering `GET /agent/child` with `children`, and each child's audit log at the
+    /// plc.directory path `PdsClient::new_for_test` will read.
+    fn reconcile_server(children: &[(&str, serde_json::Value)]) -> MockServer {
+        let server = MockServer::start();
+        let list: Vec<serde_json::Value> = children
+            .iter()
+            .enumerate()
+            .map(|(n, (did, _))| {
+                serde_json::json!({
+                    "registrationId": format!("reg-{n}"),
+                    "did": did,
+                    "handle": format!("child{n}.example.com"),
+                    "status": "claimed",
+                    "createdAt": "2026-08-01T00:00:00.000Z",
+                    "scopes": ["repo:write"],
+                })
+            })
+            .collect();
+        server.mock(|when, then| {
+            when.method(GET).path("/agent/child");
+            then.status(200)
+                .json_body(serde_json::json!({ "children": list }));
+        });
+        for (did, log) in children {
+            server.mock(|when, then| {
+                when.method(GET).path(format!("/{did}/log/audit"));
+                then.status(200).json_body(log.clone());
+            });
+        }
+        server
+    }
+
+    async fn reconcile(
+        server: &MockServer,
+        stored_index: u32,
+    ) -> Result<ChildReconciliation, AgentsError> {
+        reconcile_children_impl(
+            &bearer_client(server),
+            &PdsClient::new_for_test(server.base_url()),
+            &TEST_SEED,
+            stored_index,
+        )
+        .await
+    }
+
+    /// The recovery case: a restored device holds the delegation seed but no counter, and the
+    /// server's list is what says which children exist. Each one's index comes back from the
+    /// child's own audit log, and the counter is rebuilt past the highest of them.
+    #[tokio::test]
+    async fn reconcile_matches_each_child_to_its_index_and_rebuilds_the_counter() {
+        let server = reconcile_server(&[
+            (
+                "did:plc:childzero",
+                audit_log("did:plc:childzero", &[&child_key_at(0)]),
+            ),
+            (
+                "did:plc:childone",
+                audit_log("did:plc:childone", &[&child_key_at(1)]),
+            ),
+        ]);
+
+        let result = reconcile(&server, 0).await.unwrap();
+
+        assert!(result.rebuilt);
+        assert_eq!(
+            result.next_index, 2,
+            "the counter must clear the highest match"
+        );
+        let indices: Vec<Option<u32>> = result
+            .children
+            .iter()
+            .map(|c| match c.status {
+                ChildKeyStatus::Matched { index } => Some(index),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(indices, vec![Some(0), Some(1)]);
+    }
+
+    /// A child is matched by whichever index derives a key it actually lists, not by its position
+    /// in the server's list — mints are not guaranteed to survive in derivation order.
+    #[tokio::test]
+    async fn reconcile_matches_out_of_order_children() {
+        let server = reconcile_server(&[(
+            "did:plc:childfive",
+            audit_log(
+                "did:plc:childfive",
+                &["did:key:zSomeOtherKey", &child_key_at(5)],
+            ),
+        )]);
+
+        let result = reconcile(&server, 0).await.unwrap();
+
+        assert!(matches!(
+            result.children[0].status,
+            ChildKeyStatus::Matched { index: 5 }
+        ));
+        assert_eq!(result.next_index, 6);
+    }
+
+    /// A child whose live rotation keys name nothing this seed derives is a custody finding: the
+    /// wallet cannot recover that account. It is reported, never dropped from the list, and never
+    /// allowed to fail the children around it.
+    #[tokio::test]
+    async fn reconcile_surfaces_a_child_whose_key_does_not_derive_from_this_seed() {
+        let server = reconcile_server(&[
+            (
+                "did:plc:childzero",
+                audit_log("did:plc:childzero", &[&child_key_at(0)]),
+            ),
+            (
+                "did:plc:stranger",
+                audit_log("did:plc:stranger", &["did:key:zNotOurs"]),
+            ),
+        ]);
+
+        let result = reconcile(&server, 0).await.unwrap();
+
+        assert_eq!(result.children.len(), 2);
+        assert!(matches!(
+            result.children[0].status,
+            ChildKeyStatus::Matched { index: 0 }
+        ));
+        assert!(matches!(
+            result.children[1].status,
+            ChildKeyStatus::Unmatched
+        ));
+        assert_eq!(result.children[1].did, "did:plc:stranger");
+    }
+
+    /// An unreadable audit log is not a mismatch. Reporting it as one would accuse the user's
+    /// wallet of having lost a key over what is usually a network blip.
+    #[tokio::test]
+    async fn reconcile_reports_an_unreachable_child_as_unchecked_not_unmatched() {
+        let server = MockServer::start();
+        server.mock(|when, then| {
+            when.method(GET).path("/agent/child");
+            then.status(200).json_body(serde_json::json!({
+                "children": [{
+                    "registrationId": "reg-0",
+                    "did": "did:plc:childzero",
+                    "handle": "child0.example.com",
+                    "status": "claimed",
+                    "createdAt": "2026-08-01T00:00:00.000Z",
+                    "scopes": [],
+                }],
+            }));
+        });
+        server.mock(|when, then| {
+            when.method(GET).path("/did:plc:childzero/log/audit");
+            then.status(500);
+        });
+
+        let result = reconcile(&server, 0).await.unwrap();
+
+        assert!(matches!(
+            result.children[0].status,
+            ChildKeyStatus::Unchecked { .. }
+        ));
+        assert_eq!(
+            result.next_index, 0,
+            "a child that could not be checked must not advance the counter"
+        );
+    }
+
+    /// The minting device's case: its counter already covers the server's list, so there is
+    /// nothing to rebuild and no plc.directory request is made. `rebuilt: false` is what stops a
+    /// caller reading that silence as "every child verified".
+    #[tokio::test]
+    async fn reconcile_short_circuits_when_the_local_counter_already_covers_the_list() {
+        let server = reconcile_server(&[(
+            "did:plc:childzero",
+            audit_log("did:plc:childzero", &[&child_key_at(0)]),
+        )]);
+
+        let result = reconcile(&server, 1).await.unwrap();
+
+        assert!(!result.rebuilt);
+        assert!(result.children.is_empty());
+        assert_eq!(result.next_index, 1);
+    }
+
+    /// Purged siblings leave the counter ahead of every surviving child's index. Rewinding it
+    /// would re-derive a key a live child already holds, so the higher value wins.
+    #[tokio::test]
+    async fn reconcile_never_lowers_the_stored_counter() {
+        let server = reconcile_server(&[
+            (
+                "did:plc:childzero",
+                audit_log("did:plc:childzero", &[&child_key_at(0)]),
+            ),
+            (
+                "did:plc:childone",
+                audit_log("did:plc:childone", &[&child_key_at(1)]),
+            ),
+            (
+                "did:plc:childtwo",
+                audit_log("did:plc:childtwo", &[&child_key_at(2)]),
+            ),
+        ]);
+
+        // Two children exist at indices 0-2 but the counter says 9 — every index up to 8 was
+        // spent on children since purged.
+        let result = reconcile(&server, 2).await.unwrap();
+        assert_eq!(result.next_index, 3);
+
+        let result = reconcile(&server, 9).await.unwrap();
+        assert!(!result.rebuilt);
+        assert_eq!(result.next_index, 9);
     }
 
     fn mint_server(confirm_status: u16, confirm_body: serde_json::Value) -> MockServer {

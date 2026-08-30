@@ -59,6 +59,13 @@ export interface FakeChild {
    */
   deleteAfter?: string;
   /**
+   * What the recovery epilogue should conclude about this child, for driving the states a real
+   * reconciliation can reach. Absent means the derived key matches — the ordinary case. `lost`
+   * models a child whose public directory entry names a key this seed does not derive;
+   * `unreachable` models a directory read that failed, which is not the same claim.
+   */
+  recoveryKey?: 'lost' | 'unreachable';
+  /**
    * The child's own append-only trail. Kept here rather than on the parent's `agents` list
    * because that is what the server does: the child's registration is bound to the child's DID,
    * and the parent reads it through the `/v1/agents` parent arm, not by owning it.
@@ -193,11 +200,16 @@ export interface FakeIdentity {
    */
   agentAccountsProvisioned: boolean;
   /**
-   * The child accounts this identity has minted for agents. Each mint appends one, so
-   * `children.length` is the next child-key derivation index — the browser stand-in for the
-   * `{did}:child-index` Keychain slot.
+   * The child accounts this identity has minted for agents.
    */
   children: FakeChild[];
+  /**
+   * The browser stand-in for the `{did}:child-index` Keychain slot: the next derivation index
+   * this device will mint at. Normally it clears `children.length`, because each mint advances
+   * it. A *restored* device holds the delegation seed but no counter, so seeding this below
+   * `children.length` is what puts the recovery epilogue in play.
+   */
+  childIndex: number;
 }
 
 /** Transient state for the multi-step import (claim) flow. */
@@ -512,6 +524,7 @@ export function seedIdentity(
     recoveryKey?: boolean;
     deviceKeyUnusable?: boolean;
     agentAccountsProvisioned?: boolean;
+    childIndex?: number;
   }
 ): FakeIdentity {
   const pdsUrl = opts.pdsUrl ?? DEFAULT_PDS_URL;
@@ -542,6 +555,7 @@ export function seedIdentity(
     selfHeldKitInstalled: false,
     deviceKeyUnusable: opts.deviceKeyUnusable ?? false,
     agentAccountsProvisioned: opts.agentAccountsProvisioned ?? true,
+    childIndex: opts.childIndex ?? 0,
     children: [],
   };
 }

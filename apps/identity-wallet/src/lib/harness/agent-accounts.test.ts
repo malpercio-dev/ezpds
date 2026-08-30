@@ -6,6 +6,7 @@ import type {
   AgentClaimPreview,
   ChildAssertion,
   ChildDeletion,
+  ChildReconciliation,
   ChildSummary,
   CollectedShare,
   MintedChild,
@@ -219,5 +220,73 @@ describe('child lifecycle', () => {
         expect.objectContaining({ code: 'AGENT_NOT_FOUND' })
       );
     }
+  });
+});
+
+/**
+ * The recovery epilogue as My Agents drives it: a restored device gets a verdict per child, the
+ * device that minted them gets silence, and "we cannot derive this key" never blurs into "we
+ * could not ask".
+ */
+describe('recovery epilogue for children', () => {
+  it('reports nothing on the device that minted the children', () => {
+    const state = buildScenario('agent-children');
+    const registry = buildRegistry(state);
+    const did = state.identities[0].did;
+
+    const result = registry.reconcile_children({ did }) as ChildReconciliation;
+
+    expect(result.rebuilt).toBe(false);
+    expect(result.children).toEqual([]);
+  });
+
+  it('gives a restored device a verdict per child and rebuilds the counter', () => {
+    const state = buildScenario('agent-children-recovered');
+    const registry = buildRegistry(state);
+    const did = state.identities[0].did;
+
+    const result = registry.reconcile_children({ did }) as ChildReconciliation;
+
+    expect(result.rebuilt).toBe(true);
+    expect(result.children.map((c) => c.status)).toEqual(['matched', 'unmatched', 'unchecked']);
+    // Only a match proves an index is spent, so the counter clears the highest matched one.
+    expect(result.nextIndex).toBe(1);
+  });
+
+  it('keeps a key it cannot derive distinct from one it could not check', () => {
+    const state = buildScenario('agent-children-recovered');
+    const registry = buildRegistry(state);
+    const did = state.identities[0].did;
+
+    const result = registry.reconcile_children({ did }) as ChildReconciliation;
+    const unmatched = result.children.find((c) => c.status === 'unmatched');
+    const unchecked = result.children.find((c) => c.status === 'unchecked');
+
+    expect(unmatched?.handle).toBe('archivist.harness.pds.local');
+    expect(unchecked?.handle).toBe('courier.harness.pds.local');
+    // The unreadable one carries a reason; the unrecoverable one is a finding, not an error.
+    expect(unchecked && 'message' in unchecked).toBe(true);
+    expect(unmatched && 'message' in unmatched).toBe(false);
+  });
+
+  it('keeps reporting a child it still cannot derive, run after run', () => {
+    const state = buildScenario('agent-children-recovered');
+    const registry = buildRegistry(state);
+    const did = state.identities[0].did;
+
+    registry.reconcile_children({ did });
+    const again = registry.reconcile_children({ did }) as ChildReconciliation;
+
+    // Only a match advances the counter, so it can never clear a list holding a child this seed
+    // does not derive — and an unrecoverable account keeps saying so instead of being marked read.
+    expect(again.rebuilt).toBe(true);
+    expect(again.children.map((c) => c.status)).toEqual(['matched', 'unmatched', 'unchecked']);
+  });
+
+  it('refuses an identity with no delegation seed', () => {
+    const state = buildScenario('agent-accounts-unprovisioned');
+    const registry = buildRegistry(state);
+    const did = state.identities[0].did;
+    expect(() => registry.reconcile_children({ did })).toThrow();
   });
 });

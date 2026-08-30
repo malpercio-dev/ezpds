@@ -3,11 +3,13 @@
   import {
     listAgents,
     listChildren,
+    reconcileChildren,
     agentAccountsProvisioned,
     sovereignLogin,
     isCodedError,
     type AgentSummary,
     type ChildSummary,
+    type ChildKeyCheck,
     type AgentsError,
   } from '$lib/ipc';
   import {
@@ -56,6 +58,14 @@
   // to be reachable from exactly those states, since it needs no session at all.
   let provisioned = $state(true);
 
+  // The recovery epilogue's verdict on this identity's children, when it ran. A restored wallet
+  // holds the delegation seed again but no counter, so this is where it finds out which agent
+  // accounts it can still recover — and says so, rather than leaving the answer implicit.
+  let recovered = $state<ChildKeyCheck[]>([]);
+  let unrecoverable = $derived(recovered.filter((c) => c.status === 'unmatched'));
+  let uncheckable = $derived(recovered.filter((c) => c.status === 'unchecked'));
+  let relinked = $derived(recovered.filter((c) => c.status === 'matched'));
+
   // The selected agent or child, if any. Each detail sub-view's lifetime is this selection, so
   // its audit/lifecycle state is scoped to one subject by construction.
   let selected = $state<AgentSummary | null>(null);
@@ -96,6 +106,21 @@
     }
   }
 
+  // Re-derive the children against the public directory. Only ever reports something on a device
+  // that is behind the server's list — the recovery case — since the command short-circuits
+  // otherwise. Never blocks or fails the list: the accounts are real and manageable either way,
+  // and a check that could not run says so instead of pretending it did.
+  async function reconcile() {
+    recovered = [];
+    if (children.length === 0) return;
+    try {
+      const result = await reconcileChildren(did);
+      if (result.rebuilt) recovered = result.children;
+    } catch (e) {
+      console.warn('[MyAgentsScreen] child reconciliation did not run:', e);
+    }
+  }
+
   async function unlockAndReload() {
     try {
       await sovereignLogin(did);
@@ -104,6 +129,7 @@
       return;
     }
     await loadAgents();
+    await reconcile();
   }
 
   function markRevoked(registrationId: string) {
@@ -123,6 +149,7 @@
       return true; // Don't advertise setup we can't confirm is missing.
     });
     await loadAgents();
+    await reconcile();
   });
 </script>
 
@@ -173,6 +200,51 @@
         <Button onclick={onapprove}>Approve an agent</Button>
       </div>
     {:else}
+      <!-- The recovery epilogue's verdict, shown above the accounts it is about. Three separate
+           sentences on purpose: "we cannot recover this" and "we could not check this" are not
+           the same claim, and neither is carried by colour alone. -->
+      {#if unrecoverable.length > 0}
+        <div class="recovery recovery--warning" role="alert">
+          <p class="recovery-title">
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3 2 20h20L12 3z"/><path d="M12 10v4"/><path d="M12 17h.01"/></svg>
+            {unrecoverable.length === 1 ? 'One account' : `${unrecoverable.length} accounts`} can’t be
+            recovered from this device
+          </p>
+          <p class="recovery-detail">
+            {unrecoverable.map((c) => c.handle).join(', ')} — the public directory lists a recovery
+            key this wallet can’t reproduce. {unrecoverable.length === 1
+              ? 'The account still works and you can still revoke or delete it, but its recovery key lives somewhere else.'
+              : 'The accounts still work and you can still revoke or delete them, but their recovery keys live somewhere else.'}
+          </p>
+        </div>
+      {/if}
+      {#if uncheckable.length > 0}
+        <div class="recovery recovery--muted">
+          <p class="recovery-title">
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 8v5"/><path d="M12 16h.01"/></svg>
+            Couldn’t check {uncheckable.length === 1 ? 'one account' : `${uncheckable.length} accounts`}
+          </p>
+          <p class="recovery-detail">
+            {uncheckable.map((c) => c.handle).join(', ')} — the public directory couldn’t be
+            reached, so this isn’t a verdict either way. Try again when you’re back online.
+          </p>
+          <Button variant="secondary" onclick={reconcile}>Check again</Button>
+        </div>
+      {:else if relinked.length > 0 && unrecoverable.length === 0}
+        <div class="recovery recovery--safe">
+          <p class="recovery-title">
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m5 12 5 5L20 7"/></svg>
+            {relinked.length === 1 ? 'One account is' : `${relinked.length} accounts are`} back on this
+            device
+          </p>
+          <p class="recovery-detail">
+            {relinked.map((c) => c.handle).join(', ')} — your recovery seed still holds the recovery
+            {relinked.length === 1 ? 'key for it' : 'keys for them'}, so this device can recover
+            {relinked.length === 1 ? 'it' : 'them'} again.
+          </p>
+        </div>
+      {/if}
+
       {#if children.length > 0}
         <p class="section-label">Agents with their own account</p>
         <p class="lede">
@@ -484,6 +556,51 @@
     font-size: var(--text-body);
     color: var(--color-critical);
     margin: 0;
+  }
+
+  /* The recovery epilogue's report. Each state is carried by its own icon, word, and surface —
+     never by colour alone (DESIGN.md), so the three read apart in monochrome. */
+  .recovery {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: var(--space-xs);
+    border-radius: var(--radius-lg);
+    padding: var(--space-md);
+    margin-bottom: var(--space-lg);
+    text-align: left;
+  }
+  .recovery--warning {
+    background: var(--color-warning-surface);
+    color: var(--color-warning);
+  }
+  .recovery--safe {
+    background: var(--color-safe-surface);
+    color: var(--color-safe);
+  }
+  .recovery--muted {
+    background: var(--color-surface);
+    color: var(--color-text);
+  }
+  .recovery-title {
+    display: flex;
+    align-items: center;
+    gap: var(--space-xs);
+    font-size: var(--text-body);
+    font-weight: 600;
+    margin: 0;
+  }
+  .recovery-detail {
+    font-size: var(--text-label);
+    line-height: var(--leading-body);
+    margin: 0;
+    color: inherit;
+    opacity: 0.9;
+  }
+  .recovery :global(button) {
+    margin-top: var(--space-sm);
+    align-self: flex-start;
+    width: auto;
   }
 
   .loading {
