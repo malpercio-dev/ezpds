@@ -1023,7 +1023,12 @@ mod tests {
         assert_eq!(assertion.split('.').count(), 3, "assertion must be a JWT");
         assert_eq!(
             body["scopes"],
-            json!(["atproto", "repo:*?action=create&action=update", "blob:*/*"])
+            json!([
+                "atproto",
+                "repo:*?action=create&action=update",
+                "repo:*?action=delete",
+                "blob:*/*"
+            ])
         );
 
         // The identity was persisted ownerless (NULL did), active, with the assertion stored.

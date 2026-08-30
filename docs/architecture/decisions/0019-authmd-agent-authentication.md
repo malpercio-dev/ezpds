@@ -2,6 +2,7 @@
 
 - **Status:** Accepted
 - **Date:** 2026-07-07 (work landed 2026-07-02 → 2026-07-09; backfilled 2026-07-10)
+- **Amended:** 2026-08-30 ([MM-543](https://linear.app/malpercio/issue/MM-543) — repo delete joins the default scope profile; see Amendment below)
 - **Deciders:** ezpds maintainers
 - **Related:** [ADR-0016](0016-dynamic-lexicon-permission-set-resolution.md) · [Custos MCP plan](../../archive/design-plans/2026-07-07-custos-mcp-server.md) · [scope-enforcement plan](../../archive/design-plans/2026-07-07-agent-scope-enforcement.md) · [consent plan](../../archive/design-plans/2026-07-07-wallet-agent-consent-and-audit.md) · `crates/pds/assets/auth.md` · MM-169/170/171/173/176/177/242/245/247/248
 
@@ -40,7 +41,8 @@ We implement the auth.md convention as a first-class PDS surface:
   checker. Granted scopes are clamped by intersection with the operator's
   `[agent_auth] granted_scopes` profile at every mint; the default profile is
   write-to-own-repo (create/update, not delete) plus blob upload — never
-  `account:*`, `identity:*`, or `rpc:*`. Agent-derived tokens carry a
+  `account:*`, `identity:*`, or `rpc:*`. **(Amended by MM-543: delete joins the
+  default profile — see Amendment.)** Agent-derived tokens carry a
   `registration_id` claim, and sensitive routes refuse them
   (`require_not_agent`).
 
@@ -60,6 +62,34 @@ We implement the auth.md convention as a first-class PDS surface:
 - Claim polling state is an in-memory tracker — consistent with the
   single-process SQLite relay, but a constraint on any future multi-process
   deployment.
+
+## Amendment (2026-08-30, MM-543)
+
+**Repo `delete` joins the default scope profile**, as its own token:
+
+```
+atproto  repo:*?action=create&action=update  repo:*?action=delete  blob:*/*
+```
+
+Withholding delete did not contain an agent that already held `action=update`:
+overwriting a record's content is as irreversible as removing it, so the
+omission bought no real containment. What it did buy was a failure mode — an
+agent that published a mistaken post (an empty one and a truncated one, on
+2026-08-29) had no way to retract it, and every such slip escalated to the
+operator. Self-correction is the safer default.
+
+Delete is carried as a **separate token** rather than a third `action=` on the
+existing one. `intersect_scope_tokens` clamps by exact canonical string, so
+folding delete into `repo:*?action=create&action=update` would produce a token
+that no longer matches the `granted_scopes` stored on any live registration —
+silently withdrawing their create/update as well. As its own token it unions in
+(`allows_repo` matches any token), existing registrations are untouched, and
+they pick delete up when they re-register or re-claim.
+
+The MCP tool surface needed no change: `delete_record` already existed behind
+`CUSTOS_MCP_ALLOW_DESTRUCTIVE`, and the sidecar single-sources it. The two gates
+stay independent — the client-side one decides whether the tool is *listed*, the
+server-side grant decides whether the call *succeeds*.
 
 ## Alternatives considered
 

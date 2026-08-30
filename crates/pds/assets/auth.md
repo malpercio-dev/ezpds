@@ -136,7 +136,7 @@ The server verifies the ID-JAG's signature, `iss` (must be on the trust list),
     "registration_type": "identity_assertion",
     "identity_assertion": "<service-signed JWT>",
     "assertion_expires": "2026-01-01T00:00:00.000Z",
-    "scopes": ["atproto", "blob:*/*", "repo:*?action=create&action=update"]
+    "scopes": ["atproto", "blob:*/*", "repo:*?action=create&action=update", "repo:*?action=delete"]
   }
   ```
 
@@ -217,7 +217,7 @@ and nothing is reserved until they confirm.
   "registration_type": "anonymous",
   "identity_assertion": "<service-signed pre-claim assertion>",
   "assertion_expires": "2026-01-01T01:00:00.000Z",
-  "scopes": ["atproto", "repo:*?action=create&action=update", "blob:*/*"],
+  "scopes": ["atproto", "repo:*?action=create&action=update", "repo:*?action=delete", "blob:*/*"],
   "claim_token": "clm_…"
 }
 ```
@@ -291,7 +291,7 @@ polling faster than the `interval` answers `slow_down` (back off before retrying
   "access_token": "<Bearer token>",
   "token_type": "Bearer",
   "expires_in": 300,
-  "scope": "atproto blob:*/* repo:*?action=create&action=update",
+  "scope": "atproto blob:*/* repo:*?action=create&action=update repo:*?action=delete",
   "identity_assertion": "<service-signed identity_assertion>",
   "assertion_expires": "2026-01-01T01:00:00.000Z"
 }
@@ -347,14 +347,17 @@ grant_type=urn:ietf:params:oauth:grant-type:jwt-bearer
   "access_token": "<Bearer token>",
   "token_type": "Bearer",
   "expires_in": 300,
-  "scope": "atproto blob:*/* repo:*?action=create&action=update"
+  "scope": "atproto blob:*/* repo:*?action=create&action=update repo:*?action=delete"
 }
 ```
 
 The `scope` is a granular AT Protocol scope string — by default a conservative
-least-privilege profile (write to your own repo plus blob uploads; no account or
-identity management). Operators can widen or narrow it via configuration; the
-token grants exactly what the registration was clamped to, never more.
+least-privilege profile (create, edit, and delete records in your own repo, plus blob
+uploads; no account or identity management). Delete is included so an agent can retract
+a mistaken write of its own without an operator; it is carried as its own `repo:` token
+because registrations are clamped by exact token string. Operators can widen or narrow
+the profile via configuration; the token grants exactly what the registration was
+clamped to, never more.
 
 The agent identity must be **claimed** and the assertion `sub` (a DID) must match
 it; an unclaimed or unknown identity returns `invalid_grant`, a revoked identity

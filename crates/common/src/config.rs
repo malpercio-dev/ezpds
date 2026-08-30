@@ -815,8 +815,10 @@ pub struct AgentAuthConfig {
     #[serde(default = "default_agent_auth_time_max_age_secs")]
     pub auth_time_max_age_secs: u64,
     /// Scopes granted to a fully-registered agent identity. Defaults to a conservative granular
-    /// profile — write-to-own-repo plus blob uploads, with AppView reads reaching the agent through
-    /// the read-proxy (which any access-level token may use). See `default_agent_granted_scopes`.
+    /// profile — write-to-own-repo (including delete, so an agent can retract its own mistaken
+    /// write without operator cleanup) plus blob uploads, with AppView reads reaching the agent
+    /// through the read-proxy (which any access-level token may use). See
+    /// `default_agent_granted_scopes`.
     ///
     /// **Operator warning:** these are enforced through the same granular scope grammar as OAuth
     /// tokens (`auth/oauth_scopes.rs`), so an agent token can only do what these scopes permit. Do
@@ -940,16 +942,28 @@ fn default_agent_jwks_refetch_cooldown_secs() -> u64 {
 /// The conservative default scope profile for agent-derived credentials.
 ///
 /// A valid granular atproto scope set (per `auth/oauth_scopes.rs`): the required `atproto` base
-/// scope, write access to the account's own repo (create/update — deliberately not delete), and
-/// blob uploads. It grants **no** `account:*`, `identity:*`, `rpc:*`, or legacy full-access scope,
-/// so an agent token cannot change account settings, rotate the handle/PLC identity, manage app
-/// passwords, or mint service auth. AppView reads still work: the read-proxy admits any
-/// access-level token without requiring an `rpc:` grant. Operators override via
-/// `[agent_auth] granted_scopes` / `EZPDS_AGENT_AUTH_GRANTED_SCOPES`.
+/// scope, write access to the account's own repo (create/update/delete), and blob uploads. It
+/// grants **no** `account:*`, `identity:*`, `rpc:*`, or legacy full-access scope, so an agent
+/// token cannot change account settings, rotate the handle/PLC identity, manage app passwords, or
+/// mint service auth. AppView reads still work: the read-proxy admits any access-level token
+/// without requiring an `rpc:` grant. Operators override via `[agent_auth] granted_scopes` /
+/// `EZPDS_AGENT_AUTH_GRANTED_SCOPES`.
+///
+/// Delete is a **separate token** rather than a third `action=` on the create/update one. Scope
+/// clamping (`intersect_scope_tokens`) matches tokens by exact canonical string, so folding delete
+/// into the existing token would stop it matching the `granted_scopes` already stored on every
+/// live registration — silently withdrawing create/update too. As its own token it unions in
+/// (`allows_repo` is an any-token match) and leaves existing registrations untouched; they pick
+/// delete up when they re-register or re-claim.
+///
+/// Delete is granted because withholding it does not contain an agent that already holds
+/// `action=update` — overwriting a record's content is as irreversible as removing it — while
+/// costing the agent any way to retract its own mistaken write without operator intervention.
 fn default_agent_granted_scopes() -> Vec<String> {
     vec![
         "atproto".to_string(),
         "repo:*?action=create&action=update".to_string(),
+        "repo:*?action=delete".to_string(),
         "blob:*/*".to_string(),
     ]
 }
@@ -2810,9 +2824,16 @@ mod tests {
         assert_eq!(config.agent_auth.assertion_ttl_secs, 3600);
         assert_eq!(config.agent_auth.claim_token_ttl_secs, 600);
         // The default is a conservative granular profile, not the legacy full-access scope.
+        // Delete rides as its own token so folding it in cannot break the exact-string clamp
+        // against scopes already stored on live registrations.
         assert_eq!(
             config.agent_auth.granted_scopes,
-            vec!["atproto", "repo:*?action=create&action=update", "blob:*/*"]
+            vec![
+                "atproto",
+                "repo:*?action=create&action=update",
+                "repo:*?action=delete",
+                "blob:*/*"
+            ]
         );
         assert!(config.agent_auth.verification_uri.is_none());
     }

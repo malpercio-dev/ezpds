@@ -55,12 +55,16 @@ hosting matrix). For the hosted, sovereign-child sibling, see
 - **The agent acts as you.** Tools write to your real repository on whatever PDS you point
   this at. Point it at staging (or a local PDS) unless you mean it.
 - **Scopes are enforced server-side.** The default agent profile is
-  `atproto repo:*?action=create&action=update blob:*/*` — create/update posts and records,
-  upload blobs, read. No deletes, no account or identity operations. The PDS operator controls
-  this via `[agent_auth] granted_scopes`.
+  `atproto repo:*?action=create&action=update repo:*?action=delete blob:*/*` — create, edit,
+  and delete records in your repo, upload blobs, read. No account or identity operations. The
+  PDS operator controls this via `[agent_auth] granted_scopes`. Delete is granted so an agent
+  can retract its own mistaken write; it does not widen the blast radius, since `action=update`
+  already lets it overwrite a record irreversibly.
 - **Destructive tools are off by default.** `put_record`/`delete_record` (and their space
   siblings `space_put_record`/`space_delete_record`) are not even listed unless you set
-  `CUSTOS_MCP_ALLOW_DESTRUCTIVE=1` (and delete still needs a server-side grant).
+  `CUSTOS_MCP_ALLOW_DESTRUCTIVE=1`. The client-side gate and the server-side grant are
+  independent: a registration minted before delete joined the default profile still refuses
+  with 403 until it re-registers.
 - **Atproto Spaces tools need a `space:` grant.** `list_spaces`, `space_get_record`,
   `space_list_records`, and `space_create_record` drive the user's permissioned space repos;
   the default profile grants no `space:` scope, so each reports a clean refusal naming what
@@ -152,7 +156,7 @@ ceremony is required.
 | `get_record` / `list_records` | Read a repo by collection (defaults to the onboarded account) |
 | `search_timeline` | Timeline, or post search with `query` — proxied through the PDS to its AppView |
 | `account_status` | `checkAccountStatus`: activation, repo head, record/blob counts |
-| `put_record` / `delete_record` | Gated behind `CUSTOS_MCP_ALLOW_DESTRUCTIVE=1`; hidden otherwise |
+| `put_record` / `delete_record` | Gated behind `CUSTOS_MCP_ALLOW_DESTRUCTIVE=1`; hidden otherwise. `delete_record` is how an agent retracts its own mistaken write |
 
 Calls outside the granted scopes fail with the server's 403 relayed as a plain-language
 error naming the missing permission and the scopes the agent actually holds.

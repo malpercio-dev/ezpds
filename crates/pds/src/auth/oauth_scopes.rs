@@ -2143,6 +2143,43 @@ mod tests {
     }
 
     #[test]
+    fn default_agent_profile_permits_repo_delete_without_breaking_the_clamp() {
+        let default = common::AgentAuthConfig::default().granted_scopes;
+
+        // Startup canonicalizes the configured profile; a default that did not round-trip would
+        // fail every server boot, so pin it here instead.
+        assert_eq!(canonicalize_agent_scopes(&default).unwrap(), default);
+
+        // An agent can retract its own mistaken write, not only make one.
+        let scope = default.join(" ");
+        for action in [RepoAction::Create, RepoAction::Update, RepoAction::Delete] {
+            assert!(
+                allows_repo(&scope, "app.bsky.feed.post", action),
+                "default profile must permit {}",
+                action.as_str()
+            );
+        }
+
+        // Delete is a separate token precisely so the exact-string clamp still matches the
+        // create/update token stored on registrations that predate this grant: those keep their
+        // writes and simply do not pick up delete until they re-register.
+        let stored_before_delete = vec![
+            "atproto".to_string(),
+            "repo:*?action=create&action=update".to_string(),
+            "blob:*/*".to_string(),
+        ];
+        // (the intersection sorts its output)
+        assert_eq!(
+            intersect_scope_tokens(&stored_before_delete, &default),
+            vec![
+                "atproto".to_string(),
+                "blob:*/*".to_string(),
+                "repo:*?action=create&action=update".to_string(),
+            ],
+        );
+    }
+
+    #[test]
     fn canonicalize_agent_scopes_normalizes_and_rejects_bad_tokens() {
         // A reordered-but-valid token is rewritten to canonical form so it matches at intersect time.
         assert_eq!(
