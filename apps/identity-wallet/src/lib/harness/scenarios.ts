@@ -32,6 +32,7 @@ export type ScenarioName =
   | 'alert-multi'
   | 'migration-in-flight'
   | 'agent-connected'
+  | 'agent-accounts-unprovisioned'
   | 'app-password-minted'
   | 'device-key-unusable'
   | 'notifications-unverified'
