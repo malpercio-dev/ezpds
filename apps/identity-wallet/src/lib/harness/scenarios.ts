@@ -237,6 +237,22 @@ export const scenarios: Record<ScenarioName, () => WalletState> = {
     return state;
   },
 
+  // An identity created before agent accounts existed: no delegation seed, so My Agents
+  // offers "Enable agent accounts" and the child-mint path must refuse to start. Share 1
+  // is in iCloud and escrow releases instantly, so the provisioning ceremony is drivable
+  // end to end (enter the code, verify, provisioned).
+  'agent-accounts-unprovisioned': () => {
+    const state = emptyWalletState();
+    state.pdsUrl = DEFAULT_PDS_URL;
+    state.recovery.share1Present = true;
+    state.recovery.escrow.delaySecs = 0;
+    upsertIdentity(
+      state,
+      seedIdentity({ handle: 'alice.harness.pds.local', agentAccountsProvisioned: false })
+    );
+    return state;
+  },
+
   // Happy path A (escrow-assisted): Share 1 in iCloud, escrow releases the moment
   // the emailed code is entered (zero-delay server config).
   'recover-escrow': () => {

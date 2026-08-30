@@ -229,6 +229,7 @@ export type CommandName =
   | 'get_agent_audit'
   | 'preview_agent_claim'
   | 'confirm_agent_claim'
+  | 'agent_accounts_provisioned'
   | 'preview_oauth_consent'
   | 'preview_oauth_consent_by_request_id'
   | 'confirm_oauth_consent'
@@ -708,6 +709,11 @@ export function buildRegistry(state: WalletState): Registry {
       if (r.collected.length < 2) throw { code: 'SHARES_INCOMPLETE' };
       if (r.verifyOutcome === 'mismatch') throw { code: 'SHARES_DO_NOT_MATCH_IDENTITY' };
       const did = r.did ?? fakePlcDid('recovered');
+      // Verification is also the provisioning path: the real backend derives and persists
+      // the delegation seed here, which is what "Enable agent accounts" runs to backfill an
+      // identity created before the seed existed.
+      const provisioned = findIdentity(state, did);
+      if (provisioned) provisioned.agentAccountsProvisioned = true;
       return {
         did,
         handle: r.handle,
@@ -1165,6 +1171,8 @@ export function buildRegistry(state: WalletState): Registry {
     },
 
     // ── agents ───────────────────────────────────────────────────────────────
+    agent_accounts_provisioned: (args): boolean =>
+      findIdentity(state, didArg(args))?.agentAccountsProvisioned ?? false,
     list_agents: (): AgentSummary[] => state.identities.flatMap((i) => i.agents.map((a) => a.summary)),
     revoke_agent: (args) => {
       const registrationId = String(args.registrationId ?? '');

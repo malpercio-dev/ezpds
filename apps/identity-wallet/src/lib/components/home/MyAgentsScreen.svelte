@@ -1,6 +1,13 @@
 <script lang="ts">
   import { onMount } from 'svelte';
-  import { listAgents, sovereignLogin, isCodedError, type AgentSummary, type AgentsError } from '$lib/ipc';
+  import {
+    listAgents,
+    agentAccountsProvisioned,
+    sovereignLogin,
+    isCodedError,
+    type AgentSummary,
+    type AgentsError,
+  } from '$lib/ipc';
   import { AGENT_STATUS, AGENT_TYPE_LABELS, agentName } from '$lib/agent-display';
   import { formatTimestamp } from '$lib/datetime';
   import Button from '$lib/components/ui/Button.svelte';
@@ -15,11 +22,14 @@
     did,
     onback,
     onapprove,
+    onprovision,
   }: {
     did: string;
     onback: () => void;
     /** Navigate to the claim-approval screen (enter a code from an agent). */
     onapprove: () => void;
+    /** Navigate to "Enable agent accounts" — this identity holds no delegation seed. */
+    onprovision: () => void;
   } = $props();
 
   let agents = $state<AgentSummary[]>([]);
@@ -27,6 +37,11 @@
   // The list couldn't load because the identity's session needs a passwordless unlock.
   let locked = $state(false);
   let loadError = $state<string | null>(null);
+
+  // Whether this identity can give an agent an account of its own. Local Keychain read, so it
+  // resolves even when the agent list itself is locked or offline — the provisioning entry has
+  // to be reachable from exactly those states, since it needs no session at all.
+  let provisioned = $state(true);
 
   // The selected agent, if any. The detail sub-view lives in AgentDetailScreen; its lifetime is
   // this selection, so its audit/revoke state is scoped to one agent by construction.
@@ -81,7 +96,13 @@
     );
   }
 
-  onMount(loadAgents);
+  onMount(async () => {
+    provisioned = await agentAccountsProvisioned(did).catch((e) => {
+      console.warn('[MyAgentsScreen] provisioning probe failed:', e);
+      return true; // Don't advertise setup we can't confirm is missing.
+    });
+    await loadAgents();
+  });
 </script>
 
 {#if selected}
@@ -163,6 +184,18 @@
         <span class="add-body">
           <span class="add-t">Approve an agent</span>
           <span class="add-s">Enter the code an agent showed you</span>
+        </span>
+      </button>
+    {/if}
+
+    {#if !provisioned && !loading}
+      <button class="add-card" onclick={onprovision}>
+        <span class="add-plus" aria-hidden="true">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="10" width="16" height="10" rx="2"/><path d="M8 10V7a4 4 0 0 1 8 0v3"/></svg>
+        </span>
+        <span class="add-body">
+          <span class="add-t">Enable agent accounts</span>
+          <span class="add-s">Let an agent have its own account, not the keys to yours</span>
         </span>
       </button>
     {/if}

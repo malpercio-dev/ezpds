@@ -691,6 +691,25 @@ async fn perform_did_ceremony(
         }
     }
 
+    // Step 9: Provision the identity for child (agent) accounts by persisting the
+    // delegation seed derived from this ceremony's recovery seed. This is the only
+    // moment in the create flow where that seed exists and the DID is known, so it
+    // happens here rather than in `register_created_identity`.
+    //
+    // Non-fatal: the DID is already committed and the account is fully usable without
+    // it, and "Enable agent accounts" re-provisions from the user's shares at any time.
+    // Failing the ceremony here would instead strand the user on a DID that
+    // `DidAlreadyExists` refuses to re-create.
+    if let Err(e) = identity_store::IdentityStore
+        .store_delegation_seed(&create_did_resp.did, &shares.delegation_seed)
+    {
+        tracing::warn!(
+            did = %create_did_resp.did,
+            error = %e,
+            "delegation seed not persisted; identity is unprovisioned for agent accounts"
+        );
+    }
+
     Ok(DIDCeremonyResult {
         did: create_did_resp.did,
         share3: shares.share3.to_string(),
@@ -1819,6 +1838,7 @@ pub fn run() {
             agents::get_agent_audit,
             agents::preview_agent_claim,
             agents::confirm_agent_claim,
+            agents::agent_accounts_provisioned,
             oauth_consent::preview_oauth_consent,
             oauth_consent::preview_oauth_consent_by_request_id,
             oauth_consent::confirm_oauth_consent,

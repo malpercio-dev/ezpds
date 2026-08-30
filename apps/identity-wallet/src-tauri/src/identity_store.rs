@@ -94,6 +94,12 @@ pub enum IdentityStoreError {
     /// new enclave key and rotates it into `rotationKeys[0]`.
     #[error("device key is no longer usable on this device")]
     DeviceKeyUnusable,
+    /// A delegation seed is already stored for this DID and differs from the one being
+    /// written. Refused rather than overwritten: every child account's rotation key is
+    /// derived from this seed, so replacing it would orphan every child the DID owns.
+    /// Reached when shares from a superseded backup set are used to provision.
+    #[error("a different delegation seed is already stored for this identity")]
+    DelegationSeedConflict,
 }
 
 /// Versioned full-access Bearer session stored in a managed DID's `oauth-tokens` slot.
@@ -156,6 +162,17 @@ fn oauth_tokens_account(did: &str) -> String {
 /// disaster-recovery flow so the wallet can mint service-auth JWTs offline.
 fn recovery_signing_key_account(did: &str) -> String {
     format!("{did}:recovery-signing-key")
+}
+
+/// Returns the Keychain account name for a DID's delegation seed — the at-rest root
+/// from which every child (agent) account's rotation key is HD-derived.
+fn delegation_seed_account(did: &str) -> String {
+    format!("{did}:delegation-seed")
+}
+
+/// Returns the Keychain account name for a DID's next child-account index.
+fn child_index_account(did: &str) -> String {
+    format!("{did}:child-index")
 }
 
 // ── IdentityStore ──────────────────────────────────────────────────────────────
@@ -357,6 +374,8 @@ impl IdentityStore {
             plc_log_account(did),
             oauth_tokens_account(did),
             recovery_signing_key_account(did),
+            delegation_seed_account(did),
+            child_index_account(did),
             crate::blob_backup::backup_enabled_account(did),
             crate::repo_backup::backup_enabled_account(did),
             crate::self_held_kit::self_held_kit_account(did),
@@ -629,6 +648,111 @@ impl IdentityStore {
                 message: e.to_string(),
             }),
         }
+    }
+
+    /// Persist the DID's delegation seed — the at-rest root from which every child
+    /// (agent) account's rotation key is HD-derived — with a read-back verify.
+    ///
+    /// **Write-once.** A seed already stored under a *different* value is never
+    /// overwritten (`DelegationSeedConflict`); rewriting it would orphan every child
+    /// account already minted under the old one, since a child's rotation key is a pure
+    /// function of this seed plus its index and nothing but this seed can re-derive it.
+    /// Re-writing the identical value is a no-op, which is what makes provisioning
+    /// idempotent across repeated share verifications. Note that the seed deliberately
+    /// does NOT follow the account's recovery seed through a re-key or a recovery
+    /// epilogue: those install a *new* recovery seed, and re-deriving from it would be
+    /// exactly the orphaning this guard exists to prevent.
+    ///
+    /// Unlike [`Self::store_recovery_signing_key`] this does not require the DID to be
+    /// registered: the create ceremony's only chance to write it is inside
+    /// `perform_did_ceremony`, one command before `register_created_identity` runs.
+    pub fn store_delegation_seed(
+        &self,
+        did: &str,
+        seed: &[u8; 32],
+    ) -> Result<(), IdentityStoreError> {
+        if let Some(existing) = self.load_delegation_seed(did)? {
+            return if existing.as_slice() == seed.as_slice() {
+                Ok(())
+            } else {
+                Err(IdentityStoreError::DelegationSeedConflict)
+            };
+        }
+        let account = delegation_seed_account(did);
+        crate::keychain::store_item(&account, seed).map_err(|e| {
+            IdentityStoreError::KeychainError {
+                message: e.to_string(),
+            }
+        })?;
+        // Read-back verify: a child minted against a seed that never reached the
+        // Keychain would be unrecoverable on the next launch.
+        let read_back =
+            zeroize::Zeroizing::new(crate::keychain::get_item(&account).map_err(|e| {
+                IdentityStoreError::KeychainError {
+                    message: format!("read-back verify failed: {e}"),
+                }
+            })?);
+        if read_back.as_slice() != seed.as_slice() {
+            return Err(IdentityStoreError::KeychainError {
+                message: "read-back verify mismatch for delegation seed".to_string(),
+            });
+        }
+        Ok(())
+    }
+
+    /// Load the DID's delegation seed, if the identity has been provisioned for child
+    /// (agent) accounts.
+    pub fn load_delegation_seed(
+        &self,
+        did: &str,
+    ) -> Result<Option<zeroize::Zeroizing<[u8; 32]>>, IdentityStoreError> {
+        match crate::keychain::get_item(&delegation_seed_account(did)) {
+            Ok(bytes) => {
+                let bytes = zeroize::Zeroizing::new(bytes);
+                let seed: [u8; 32] = bytes.as_slice().try_into().map_err(|_| {
+                    IdentityStoreError::SerializationError {
+                        message: format!("delegation seed has {} bytes, expected 32", bytes.len()),
+                    }
+                })?;
+                Ok(Some(zeroize::Zeroizing::new(seed)))
+            }
+            Err(e) if crate::keychain::is_not_found(&e) => Ok(None),
+            Err(e) => Err(IdentityStoreError::KeychainError {
+                message: e.to_string(),
+            }),
+        }
+    }
+
+    /// Whether the DID is provisioned for child (agent) accounts.
+    pub fn is_delegation_provisioned(&self, did: &str) -> Result<bool, IdentityStoreError> {
+        Ok(self.load_delegation_seed(did)?.is_some())
+    }
+
+    /// The DID's next child-account index, or 0 when none has been minted.
+    ///
+    /// A local optimization only — the PDS child list is authoritative — so an absent
+    /// or malformed slot reads as 0 rather than failing.
+    pub fn load_child_index(&self, did: &str) -> Result<u32, IdentityStoreError> {
+        match crate::keychain::get_item(&child_index_account(did)) {
+            Ok(bytes) => Ok(bytes
+                .as_slice()
+                .try_into()
+                .map(u32::from_be_bytes)
+                .unwrap_or(0)),
+            Err(e) if crate::keychain::is_not_found(&e) => Ok(0),
+            Err(e) => Err(IdentityStoreError::KeychainError {
+                message: e.to_string(),
+            }),
+        }
+    }
+
+    /// Record the DID's next child-account index.
+    pub fn store_child_index(&self, did: &str, index: u32) -> Result<(), IdentityStoreError> {
+        crate::keychain::store_item(&child_index_account(did), &index.to_be_bytes()).map_err(|e| {
+            IdentityStoreError::KeychainError {
+                message: e.to_string(),
+            }
+        })
     }
 
     /// Persist a full-access session in the selected DID's namespaced Keychain slot.
@@ -1733,5 +1857,82 @@ mod tests {
             key_before.multibase, key_after.multibase,
             "device key should differ after remove + re-add"
         );
+    }
+
+    // ── Delegation seed + child index (agent child accounts) ───────────────────
+
+    #[test]
+    fn delegation_seed_round_trips_and_reports_provisioned() {
+        crate::keychain::clear_for_test();
+        clear_managed_dids();
+        let store = IdentityStore;
+        let did = "did:plc:delegation";
+
+        assert!(!store.is_delegation_provisioned(did).unwrap());
+        assert!(store.load_delegation_seed(did).unwrap().is_none());
+
+        let seed = [0x5a_u8; 32];
+        store.store_delegation_seed(did, &seed).unwrap();
+
+        assert!(store.is_delegation_provisioned(did).unwrap());
+        assert_eq!(
+            store.load_delegation_seed(did).unwrap().unwrap().as_slice(),
+            seed
+        );
+    }
+
+    #[test]
+    fn delegation_seed_is_write_once() {
+        crate::keychain::clear_for_test();
+        clear_managed_dids();
+        let store = IdentityStore;
+        let did = "did:plc:writeonce";
+
+        store.store_delegation_seed(did, &[0x11_u8; 32]).unwrap();
+        // Re-writing the same value is the idempotent case repeated provisioning hits.
+        store.store_delegation_seed(did, &[0x11_u8; 32]).unwrap();
+        // A different value would orphan every child derived from the stored one.
+        assert!(matches!(
+            store.store_delegation_seed(did, &[0x22_u8; 32]),
+            Err(IdentityStoreError::DelegationSeedConflict)
+        ));
+        assert_eq!(
+            store.load_delegation_seed(did).unwrap().unwrap().as_slice(),
+            [0x11_u8; 32]
+        );
+    }
+
+    #[test]
+    fn child_index_defaults_to_zero_and_round_trips() {
+        crate::keychain::clear_for_test();
+        clear_managed_dids();
+        let store = IdentityStore;
+        let did = "did:plc:childindex";
+
+        assert_eq!(store.load_child_index(did).unwrap(), 0);
+        store.store_child_index(did, 7).unwrap();
+        assert_eq!(store.load_child_index(did).unwrap(), 7);
+    }
+
+    #[test]
+    fn remove_identity_deletes_delegation_seed_and_child_index() {
+        crate::keychain::clear_for_test();
+        clear_managed_dids();
+        let store = IdentityStore;
+        let did = "did:plc:delegationremoval";
+
+        store.add_identity(did).unwrap();
+        clear_per_did_entries(did);
+        store.store_delegation_seed(did, &[0x33_u8; 32]).unwrap();
+        store.store_child_index(did, 3).unwrap();
+
+        store.remove_identity(did).unwrap();
+
+        // Both slots are gone — proven by the write-once guard accepting a *different*
+        // seed on re-add, which it could not do if the old one had survived.
+        store.add_identity(did).unwrap();
+        assert!(!store.is_delegation_provisioned(did).unwrap());
+        assert_eq!(store.load_child_index(did).unwrap(), 0);
+        store.store_delegation_seed(did, &[0x44_u8; 32]).unwrap();
     }
 }

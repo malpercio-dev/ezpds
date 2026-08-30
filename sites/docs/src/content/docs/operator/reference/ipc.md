@@ -14,6 +14,7 @@ Source: `apps/identity-wallet/src/lib/ipc/`
 | Command | Kind |
 | --- | --- |
 | `add_recovery_share` | App command |
+| `agent_accounts_provisioned` | App command |
 | `arm_identity_leg` | App command |
 | `authenticate_migration_source` | App command |
 | `authenticate_source_pds` | App command |
