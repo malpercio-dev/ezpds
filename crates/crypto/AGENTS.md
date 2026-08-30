@@ -81,6 +81,16 @@ pub fn derive_recovery_keypair(seed: &[u8; 32]) -> Result<P256Keypair, CryptoErr
 - The derived key's did:key sits in `rotationKeys` (recovery slot); it signs low-S like every other signer in the crate
 - Errors: `CryptoError::KeyGeneration` only if HKDF fails or the counter space is exhausted (practically impossible)
 
+**`derive_delegation_seed` / `derive_child_seed`**
+```rust
+pub fn derive_delegation_seed(recovery_seed: &[u8; 32]) -> Zeroizing<[u8; 32]>
+pub fn derive_child_seed(delegation_seed: &[u8; 32], index: u32) -> Zeroizing<[u8; 32]>
+```
+- The child-account key hierarchy: the recovery seed derives one at-rest `delegation_seed` (the wallet's per-identity secret for minting child accounts), which derives a seed per child index.
+- HKDF-SHA256, salts `ezpds/delegation-seed/v1` / `ezpds/child-seed/v1`, child index appended big-endian to `info`. Single expand, no rejection sampling — the outputs are opaque seeds, not curve scalars.
+- `derive_recovery_keypair(derive_child_seed(..))` is the leaf step, so the child's rotation key comes off the already-pinned scalar path.
+- Infallible (32 bytes is far under HKDF's output ceiling); one-way, so a leaked delegation seed exposes only the child subtree.
+
 **`split_secret`**
 ```rust
 pub fn split_secret(&[u8; 32]) -> Result<[ShamirShare; 3], CryptoError>
@@ -523,13 +533,14 @@ pub fn verify_space_commit(
 - `combine_shares` requires exactly 2 shares with distinct indices in [1, 3]; returns `CryptoError::SecretReconstruction` otherwise
 - **Share envelope v2 is self-describing and checksummed.** A `ShareEnvelope` carries its own version, `set_id`, index, and a 4-byte SHA-256 checksum, so a corrupted share fails at `from_bytes`/`decode_share*` (distinct `ShareVersion`/`ShareChecksum`/`ShareFormat` errors) before it can reach `combine_envelopes`, and `combine_envelopes` refuses shares whose `set_id` differs (cross-generation shares never reconstruct a silently-wrong seed). **Fields are private** and construction routes only through validated paths, so an in-hand envelope's invariants cannot be forged (a caller cannot set a bad version or mutate the payload); `combine_envelopes` also re-checks the version. The GF(2^8) split/combine core is shared with `split_secret`/`combine_shares` and unchanged. The Share-3 mnemonic and the base32 form encode the identical 42 bytes; the mnemonic uses a fixed 256-word list (one word per byte) whose length/uniqueness **and exact ordered mapping (SHA-256 golden digest)** are test-pinned — never reorder or replace an entry, as that invalidates every previously written human share. Encoded share strings (base32 + mnemonic) are returned in `Zeroizing<String>`, matching the crate's rule that share material never lands in non-zeroizing storage.
 - **`derive_recovery_keypair` is deterministic and pinned.** The HKDF salt (`ezpds/recovery-seed/v1`) + `info` domain string + rejection-sampling counter scheme is fixed by a golden test; changing any of it produces a different recovery key and orphans accounts whose `rotationKeys` already carry the old one. The `ShareEnvelope` `set_id` and this derivation are independent.
+- **The child-key hierarchy is pinned end to end.** `derive_delegation_seed` → `derive_child_seed(i)` → `derive_recovery_keypair` is fixed by golden vectors on all three stages (seed hex plus the child's did:key); changing a salt, `info` string, or the big-endian index encoding derives different child keys and orphans every child identity whose `rotationKeys` already carry the old one.
 - GF(2^8) arithmetic uses the AES irreducible polynomial (0x11b); secret bytes are always the first argument to `gf_mul` (non-branching position)
 - **did:plc tombstone op is `{type, prev, sig}` only, in canonical DAG-CBOR key order.** The tombstone structs carry no maps (unlike genesis/rotation ops), so they need no `CanonicalMap`; canonical ordering comes from serde field declaration order — unsigned is `prev`(4) before `type`(4) (`prev` < `type` bytewise), signed leads with `sig`(3). `prev` is a required non-null CID string (typed `String`, never CBOR null). Pinned by `tombstone_cbor_key_order_is_canonical`; `build_tombstone_round_trips` proves builder↔verifier byte-identity via the CID.
 - **did:plc op CBOR is canonical DAG-CBOR for any number of map entries.** The op structs wrap `services` / `verificationMethods` in an internal `CanonicalMap` that serializes keys length-first (DAG-CBOR order) instead of `BTreeMap`/`ciborium`'s bytewise order — bytewise would emit a non-canonical op for keys of differing length (e.g. `atproto_pds` + `atproto_labeler`) that plc.directory rejects. Cross-checked against `@ipld/dag-cbor` by the `golden_*` tests (genesis op bytes + derived DID, proving byte-identity transitively via the hash) and `rotation_op_with_multiple_services_encodes_canonically` (multi-service CID). Public APIs still take/return plain `BTreeMap<String, _>`; the canonical ordering is internal to the op encoder.
 
 ## Key Files
 - `src/lib.rs` - Re-exports public API
-- `src/keys.rs` - P-256 key generation, AES-256-GCM encrypt/decrypt
+- `src/keys.rs` - P-256 key generation, AES-256-GCM encrypt/decrypt, recovery + child-account key derivation
 - `src/plc.rs` - did:plc genesis operation builder and verifier
 - `src/sovereign_session.rs` - canonical sovereign-session signed-envelope encoder and protocol constants
 - `src/oauth_consent.rs` - canonical wallet-confirmed OAuth-consent approval/denial signed-envelope encoder, `granted_scope_hash`, and protocol constants
