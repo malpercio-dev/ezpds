@@ -8,6 +8,7 @@ use std::{path::PathBuf, sync::Arc};
 mod account_delete;
 mod account_reaper;
 mod admin_nonce_sweep;
+mod agent_child_core;
 mod agent_claim_sweep;
 mod app;
 mod auth;

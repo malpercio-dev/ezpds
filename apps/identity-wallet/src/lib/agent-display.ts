@@ -16,6 +16,7 @@ export const AGENT_EVENT_LABELS: Record<AgentAuditEvent['eventType'], string> = 
   repo_write: 'Wrote to your repository',
   blob_upload: 'Uploaded a file',
   revoked: 'Access revoked',
+  assertion_reminted: 'You renewed its credential',
 };
 
 export const AGENT_TYPE_LABELS: Record<AgentSummary['registrationType'], string> = {

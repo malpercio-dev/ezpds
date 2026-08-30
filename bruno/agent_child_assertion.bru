@@ -1,0 +1,30 @@
+meta {
+  name: Re-mint Sovereign Child Agent Assertion
+  type: http
+  seq: 166
+}
+
+post {
+  url: {{baseUrl}}/agent/child/assertion
+  body: json
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{sessionToken}}
+}
+
+body:json {
+  {
+    "did": "{{childDid}}"
+  }
+}
+
+docs {
+  Renews an active child's identity_assertion — the short-lived credential it exchanges at the
+  token endpoint. The child's DID, repo, and wallet-held rotation key are untouched.
+
+  Parent-owner authority only: an agent-derived token is refused (403), a child belonging to
+  another account is a uniform 404, and a revoked child is refused (403) rather than renewed.
+  The granted scopes are re-clamped to the operator's current [agent_auth] granted_scopes.
+}
