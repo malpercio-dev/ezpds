@@ -148,7 +148,7 @@ ceremony is required.
 | Tool | What it does |
 |---|---|
 | `whoami` | Onboarding status, DID/handle, granted scopes; pending claim code if any |
-| `create_post` | `app.bsky.feed.post` via `createRecord` — text, reply refs, optional image via `uploadBlob` (only from `CUSTOS_MCP_IMAGE_DIR`) |
+| `create_post` | `app.bsky.feed.post` via `createRecord` — text, reply refs, optional image via `uploadBlob` (only from `CUSTOS_MCP_IMAGE_DIR`). URLs, `#hashtags`, and `@mentions` in the text become rich-text facets automatically; pass `facets` to override |
 | `get_record` / `list_records` | Read a repo by collection (defaults to the onboarded account) |
 | `search_timeline` | Timeline, or post search with `query` — proxied through the PDS to its AppView |
 | `account_status` | `checkAccountStatus`: activation, repo head, record/blob counts |
