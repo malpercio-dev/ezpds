@@ -3,8 +3,17 @@
 //! The `urn:ietf:params:oauth:grant-type:jwt-bearer` grant (RFC 7523 / auth.md Step 5): verify a
 //! service-signed agent `identity_assertion` (self-signed under this server's OAuth key) and mint
 //! a short-lived plain **Bearer** access token — no DPoP proof (the assertion is already
-//! key-bound upstream) and no refresh token (the agent re-exchanges the assertion until it
-//! expires).
+//! key-bound upstream) and no refresh token: the assertion itself is the durable credential.
+//!
+//! **Every successful exchange renews the assertion.** The response carries a freshly minted
+//! `identity_assertion` (+ `assertion_expires`), scoped to the row's stored grant clamped to the
+//! operator's *current* `[agent_auth] granted_scopes` and living
+//! `[agent_auth] claimed_assertion_ttl_secs` from now, and the stored row is updated to match. An
+//! agent that persists the returned assertion therefore keeps a sliding window: only a binding
+//! dormant past a full claimed-assertion lifetime ever needs a new claim ceremony. The widened
+//! exposure of a long-lived, self-renewing assertion is bounded by revocation, not expiry — a
+//! revoked identity is refused at its next exchange below, exactly like a stolen OAuth refresh
+//! token.
 //!
 //! The registration must be `claimed` with a DID matching the assertion `sub`: unclaimed/absent
 //! → `invalid_grant`, `revoked` → `access_denied`, and a `resource` naming anything but this
@@ -34,13 +43,17 @@ use crate::routes::oauth_errors::OAuthTokenError;
 
 /// Successful jwt-bearer response body. Unlike [`super::TokenResponse`], it carries no
 /// `refresh_token`: the agent re-exchanges its `identity_assertion` (RFC 7523 §2.1) instead of
-/// rotating a refresh token, and the issued token is a plain Bearer (no DPoP binding).
+/// rotating a refresh token, and the issued token is a plain Bearer (no DPoP binding). The
+/// `identity_assertion` + `assertion_expires` pair is the sliding renewal (field names match the
+/// claim-polling response), which the agent should persist in place of the one it presented.
 #[derive(Debug, Serialize)]
 struct JwtBearerTokenResponse {
     access_token: String,
     token_type: &'static str,
     expires_in: u64,
     scope: String,
+    identity_assertion: String,
+    assertion_expires: String,
 }
 
 /// Claims read out of a service-signed `identity_assertion` (minted by `POST /agent/identity`).
@@ -59,7 +72,8 @@ struct AgentAssertionClaims {
 /// Exchanges a service-signed agent `identity_assertion` for a short-lived Bearer access token
 /// (auth.md spec Step 5 / RFC 7523). No DPoP proof is required — the assertion is already
 /// key-bound by the registration ceremony that minted it — and no refresh token is issued: the
-/// agent re-exchanges the same assertion until it expires.
+/// response instead carries a renewed `identity_assertion` for the agent to persist and
+/// re-exchange (see the module doc).
 pub(super) async fn handle_jwt_bearer(state: &AppState, form: TokenRequestForm) -> Response {
     // Prune stale nonces and expired tokens on every request, matching the other grant handlers.
     cleanup_expired_state(state).await;
@@ -95,10 +109,13 @@ pub(super) async fn handle_jwt_bearer(state: &AppState, form: TokenRequestForm) 
     // trusted, so both → `invalid_grant`. Also require the stored
     // DID to match the assertion's `sub`, so the state lookup and the token subject resolve to the
     // same identity even if the issuance path ever drifts.
-    match get_agent_identity(&state.db, &claims.registration_id).await {
+    let identity = match get_agent_identity(&state.db, &claims.registration_id).await {
         Ok(Some(identity))
             if identity.status == AgentIdentityStatus::Claimed
-                && identity.did.as_deref() == Some(claims.sub.as_str()) => {}
+                && identity.did.as_deref() == Some(claims.sub.as_str()) =>
+        {
+            identity
+        }
         Ok(Some(identity)) if identity.status == AgentIdentityStatus::Revoked => {
             return OAuthTokenError::new("access_denied", "the agent identity has been revoked")
                 .into_response();
@@ -111,7 +128,31 @@ pub(super) async fn handle_jwt_bearer(state: &AppState, form: TokenRequestForm) 
             tracing::error!(error = %e, "failed to load agent identity for jwt-bearer exchange");
             return OAuthTokenError::new("server_error", "database error").into_response();
         }
-    }
+    };
+
+    // Sliding renewal: re-mint the assertion for the response, clamping the row's stored grant to
+    // the operator's *current* `granted_scopes` (matching the re-mint paths in `agent_identity.rs`
+    // and `agent_child.rs`, so narrowing the config narrows every renewal without re-registration).
+    // The access token below still carries the *presented* assertion's scope verbatim.
+    let renewed_scopes = crate::auth::oauth_scopes::intersect_scope_tokens(
+        &serde_json::from_str::<Vec<String>>(&identity.scopes).unwrap_or_default(),
+        &state.config.agent_auth.granted_scopes,
+    );
+    let renewed = match crate::auth::agent_assertion::mint_identity_assertion(
+        &state.oauth_signing_keypair,
+        &state.config.public_url,
+        state.config.agent_auth.claimed_assertion_ttl_secs,
+        &claims.sub,
+        &claims.registration_id,
+        identity.registration_type.as_str(),
+        &renewed_scopes,
+    ) {
+        Ok(minted) => minted,
+        Err(_) => {
+            return OAuthTokenError::new("server_error", "assertion renewal failed")
+                .into_response();
+        }
+    };
 
     // Issue a sender-unconstrained Bearer access token carrying the assertion's granted scope and
     // its `registration_id` (marking the token agent-derived for guard/audit purposes).
@@ -128,18 +169,41 @@ pub(super) async fn handle_jwt_bearer(state: &AppState, form: TokenRequestForm) 
         Err(e) => return e.into_response(),
     };
 
-    if let Err(e) = crate::auth::agent_assertion::record_agent_audit(
-        &state.db,
-        &claims.registration_id,
-        Some(&claims.sub),
-        crate::db::agent_audit::AgentAuditEventType::TokenExchanged,
-        serde_json::json!({ "grant": "jwt_bearer", "scope": claims.scope }),
-    )
-    .await
-    {
-        // Fail closed: a credential issuance the audit trail cannot account for must not leave
-        // the building. The token above was never returned to the caller.
-        tracing::error!(error = %e, registration_id = %claims.registration_id, "failed to record token-exchange audit event");
+    // The stored assertion update and the exchange's audit row commit together, and both fail
+    // closed: a credential issuance (or renewal) the audit trail cannot account for must not
+    // leave the building. The tokens above were never returned to the caller. Every read (and
+    // both pure mints) ran before `begin()` — the single-connection pool cannot serve a
+    // `&SqlitePool` read while a transaction holds the connection.
+    let audit_result = async {
+        let mut tx = state.db.begin().await?;
+        crate::db::agent_auth::set_agent_identity_assertion(
+            &mut *tx,
+            &claims.registration_id,
+            &renewed.jwt,
+            &renewed.expires_sqlite,
+        )
+        .await?;
+        let detail = serde_json::json!({
+            "grant": "jwt_bearer",
+            "scope": claims.scope,
+            "assertion_renewed": true,
+        })
+        .to_string();
+        crate::db::agent_audit::insert_agent_audit_event(
+            &mut *tx,
+            &uuid::Uuid::new_v4().to_string(),
+            &claims.registration_id,
+            Some(&claims.sub),
+            crate::db::agent_audit::AgentAuditEventType::TokenExchanged,
+            Some(&detail),
+        )
+        .await?;
+        tx.commit().await?;
+        Ok::<(), Box<dyn std::error::Error + Send + Sync>>(())
+    }
+    .await;
+    if let Err(e) = audit_result {
+        tracing::error!(error = %e, registration_id = %claims.registration_id, "failed to persist jwt-bearer renewal + audit event");
         return OAuthTokenError::new("server_error", "database error").into_response();
     }
 
@@ -158,6 +222,8 @@ pub(super) async fn handle_jwt_bearer(state: &AppState, form: TokenRequestForm) 
             token_type: "Bearer",
             expires_in: super::AGENT_ACCESS_TOKEN_TTL_SECS,
             scope: claims.scope,
+            identity_assertion: renewed.jwt,
+            assertion_expires: renewed.expires_rfc3339,
         }),
     )
         .into_response()
@@ -214,6 +280,25 @@ mod tests {
 
     /// Seed an account + an agent identity row with the given registration id and status.
     async fn seed_agent_identity(state: &AppState, registration_id: &str, did: &str, status: &str) {
+        seed_agent_identity_with_scopes(
+            state,
+            registration_id,
+            did,
+            status,
+            r#"["com.atproto.access"]"#,
+        )
+        .await;
+    }
+
+    /// [`seed_agent_identity`] with an explicit stored-scopes JSON array (the grant the sliding
+    /// renewal re-clamps).
+    async fn seed_agent_identity_with_scopes(
+        state: &AppState,
+        registration_id: &str,
+        did: &str,
+        status: &str,
+        scopes_json: &str,
+    ) {
         sqlx::query(
             "INSERT INTO accounts (did, email, password_hash, created_at, updated_at) \
              VALUES (?, ?, 'hash', datetime('now'), datetime('now'))",
@@ -228,11 +313,12 @@ mod tests {
              (id, did, registration_type, issuer, subject, email, scopes, identity_assertion, \
               assertion_expires_at, status, created_at, updated_at) \
              VALUES (?, ?, 'identity_assertion', NULL, NULL, 'agent@example.com', \
-                     '[\"com.atproto.access\"]', NULL, datetime('now', '+1 hour'), ?, \
+                     ?, NULL, datetime('now', '+1 hour'), ?, \
                      datetime('now'), datetime('now'))",
         )
         .bind(registration_id)
         .bind(did)
+        .bind(scopes_json)
         .bind(status)
         .execute(&state.db)
         .await
@@ -282,6 +368,14 @@ mod tests {
         assert!(
             json.get("refresh_token").is_none(),
             "jwt-bearer issues no refresh token"
+        );
+        assert!(
+            json["identity_assertion"].is_string(),
+            "every exchange must return a renewed identity_assertion"
+        );
+        assert!(
+            json["assertion_expires"].is_string(),
+            "the renewed assertion must carry its expiry"
         );
 
         let at = json["access_token"].as_str().unwrap();
@@ -366,6 +460,106 @@ mod tests {
             .unwrap();
         assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
         assert_eq!(json_body(resp).await["error"], "invalid_grant");
+    }
+
+    /// The sliding renewal: the returned `identity_assertion` is freshly minted with the claimed
+    /// TTL, persisted on the row, and itself exchangeable — so an agent that persists it never
+    /// needs a new claim ceremony while it keeps acting.
+    #[tokio::test]
+    async fn jwt_bearer_renewed_assertion_persists_and_round_trips() {
+        let state = test_state().await;
+        let did = "did:plc:agentrenewal000000000";
+        // Stored scopes matching the default granted profile, so the clamp keeps them all.
+        seed_agent_identity_with_scopes(
+            &state,
+            "reg_renewal",
+            did,
+            "claimed",
+            r#"["atproto","repo:*?action=create&action=update","blob:*/*"]"#,
+        )
+        .await;
+        let assertion = mint_assertion(&state, did, "reg_renewal", "atproto", now_secs() + 600);
+
+        let resp = app(state.clone())
+            .oneshot(post_token(&format!(
+                "grant_type={JWT_BEARER}&assertion={assertion}"
+            )))
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let json = json_body(resp).await;
+        let renewed = json["identity_assertion"].as_str().unwrap().to_string();
+
+        // The renewal is persisted as the row's stored assertion.
+        let stored: (Option<String>,) =
+            sqlx::query_as("SELECT identity_assertion FROM agent_identities WHERE id = ?")
+                .bind("reg_renewal")
+                .fetch_one(&state.db)
+                .await
+                .unwrap();
+        assert_eq!(stored.0.as_deref(), Some(renewed.as_str()));
+
+        // The renewed assertion outlives the pre-claim TTL (claimed TTL is 30 days by default)
+        // and carries the stored grant clamped to the operator's current config, sorted/deduped.
+        let payload_b64 = renewed.split('.').nth(1).unwrap();
+        let payload: serde_json::Value =
+            serde_json::from_slice(&URL_SAFE_NO_PAD.decode(payload_b64).unwrap()).unwrap();
+        assert!(
+            payload["exp"].as_i64().unwrap() > now_secs() + 3600,
+            "a renewed assertion must outlive the pre-claim TTL"
+        );
+        assert_eq!(
+            payload["scope"], "atproto blob:*/* repo:*?action=create&action=update",
+            "the renewal carries the stored grant, canonically ordered"
+        );
+
+        // The renewal itself exchanges — the sliding window closes the loop.
+        let resp = app(state)
+            .oneshot(post_token(&format!(
+                "grant_type={JWT_BEARER}&assertion={renewed}"
+            )))
+            .await
+            .unwrap();
+        assert_eq!(
+            resp.status(),
+            StatusCode::OK,
+            "a renewed assertion must be exchangeable in turn"
+        );
+    }
+
+    /// Narrowing `[agent_auth] granted_scopes` narrows every renewal: a stored scope the operator
+    /// no longer grants is dropped from the re-minted assertion without re-registration.
+    #[tokio::test]
+    async fn jwt_bearer_renewal_clamps_to_current_granted_scopes() {
+        let state = test_state().await;
+        let did = "did:plc:agentrenewclamp000000";
+        // "account:email" is stored but absent from the default granted profile.
+        seed_agent_identity_with_scopes(
+            &state,
+            "reg_renew_clamp",
+            did,
+            "claimed",
+            r#"["atproto","account:email"]"#,
+        )
+        .await;
+        let assertion = mint_assertion(&state, did, "reg_renew_clamp", "atproto", now_secs() + 600);
+
+        let resp = app(state)
+            .oneshot(post_token(&format!(
+                "grant_type={JWT_BEARER}&assertion={assertion}"
+            )))
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let json = json_body(resp).await;
+        let renewed = json["identity_assertion"].as_str().unwrap().to_string();
+        let payload_b64 = renewed.split('.').nth(1).unwrap();
+        let payload: serde_json::Value =
+            serde_json::from_slice(&URL_SAFE_NO_PAD.decode(payload_b64).unwrap()).unwrap();
+        assert_eq!(
+            payload["scope"], "atproto",
+            "a scope the operator no longer grants must not survive renewal"
+        );
     }
 
     #[tokio::test]

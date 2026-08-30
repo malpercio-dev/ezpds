@@ -455,7 +455,7 @@ async fn existing_identity_assertion(
             let minted = mint_identity_assertion(
                 &state.oauth_signing_keypair,
                 &state.config.public_url,
-                state.config.agent_auth.assertion_ttl_secs,
+                state.config.agent_auth.claimed_assertion_ttl_secs,
                 did,
                 &existing.id,
                 RegistrationType::IdentityAssertion.as_str(),

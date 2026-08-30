@@ -801,9 +801,18 @@ pub struct AgentAuthConfig {
     /// means every `identity_assertion` request is refused with `issuer_not_enabled`.
     #[serde(default)]
     pub trusted_issuers: Vec<TrustedIssuer>,
-    /// Lifetime, in seconds, of a minted service `identity_assertion`. Default 3600 (1 hour).
+    /// Lifetime, in seconds, of a service `identity_assertion` minted before any human has
+    /// confirmed the binding (the anonymous pre-claim assertion). Default 3600 (1 hour).
     #[serde(default = "default_agent_assertion_ttl_secs")]
     pub assertion_ttl_secs: u64,
+    /// Lifetime, in seconds, of a service `identity_assertion` minted for a *confirmed* binding —
+    /// the claim-ceremony confirm, the re-mint for an already-claimed `(iss, sub)`, sovereign-child
+    /// capabilities, and the renewal returned by every successful jwt-bearer exchange. Long by
+    /// design (default 2592000, 30 days): the human already confirmed the binding once, and
+    /// revocation — not expiry — is the kill switch (a revoked identity is refused at its next
+    /// exchange regardless of the assertion's remaining lifetime).
+    #[serde(default = "default_agent_claimed_assertion_ttl_secs")]
+    pub claimed_assertion_ttl_secs: u64,
     /// Lifetime, in seconds, of a claim token returned for a pending claim ceremony. Default 600.
     #[serde(default = "default_agent_claim_token_ttl_secs")]
     pub claim_token_ttl_secs: u64,
@@ -865,6 +874,7 @@ impl Default for AgentAuthConfig {
             anonymous_enabled: false,
             trusted_issuers: Vec::new(),
             assertion_ttl_secs: default_agent_assertion_ttl_secs(),
+            claimed_assertion_ttl_secs: default_agent_claimed_assertion_ttl_secs(),
             claim_token_ttl_secs: default_agent_claim_token_ttl_secs(),
             user_code_ttl_secs: default_agent_user_code_ttl_secs(),
             auth_time_max_age_secs: default_agent_auth_time_max_age_secs(),
@@ -911,6 +921,10 @@ pub struct TrustedIssuer {
 
 fn default_agent_assertion_ttl_secs() -> u64 {
     60 * 60 // 1 hour
+}
+
+fn default_agent_claimed_assertion_ttl_secs() -> u64 {
+    30 * 24 * 60 * 60 // 30 days
 }
 
 fn default_agent_claim_token_ttl_secs() -> u64 {
@@ -1825,6 +1839,10 @@ pub(crate) fn apply_env_overrides(
     }
     if let Some(v) = env.get("EZPDS_AGENT_AUTH_ASSERTION_TTL_SECS") {
         raw.agent_auth.assertion_ttl_secs = parse_u64("EZPDS_AGENT_AUTH_ASSERTION_TTL_SECS", v)?;
+    }
+    if let Some(v) = env.get("EZPDS_AGENT_AUTH_CLAIMED_ASSERTION_TTL_SECS") {
+        raw.agent_auth.claimed_assertion_ttl_secs =
+            parse_u64("EZPDS_AGENT_AUTH_CLAIMED_ASSERTION_TTL_SECS", v)?;
     }
     if let Some(v) = env.get("EZPDS_AGENT_AUTH_CLAIM_TOKEN_TTL_SECS") {
         raw.agent_auth.claim_token_ttl_secs =

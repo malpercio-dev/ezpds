@@ -140,8 +140,9 @@ If the code expires unconfirmed, restart the server for a fresh one.
 
 Credentials are cached per-PDS-host under the state dir, `0600`, and never appear in logs or
 tool responses. Access tokens are short-lived and re-minted from the identity assertion
-transparently; when the assertion itself expires (server default: 1 hour), a new claim
-ceremony is required.
+transparently, and every exchange also returns a renewed assertion the client persists (a
+sliding window — server default: 30 days for a claimed binding). A new claim ceremony is only
+needed after the agent has been completely inactive for a full assertion lifetime.
 
 ## Tools
 
