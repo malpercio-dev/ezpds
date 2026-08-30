@@ -1839,6 +1839,7 @@ pub fn run() {
             agents::preview_agent_claim,
             agents::confirm_agent_claim,
             agents::agent_accounts_provisioned,
+            agents::mint_child_from_claim,
             oauth_consent::preview_oauth_consent,
             oauth_consent::preview_oauth_consent_by_request_id,
             oauth_consent::confirm_oauth_consent,

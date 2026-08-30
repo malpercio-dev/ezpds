@@ -39,6 +39,17 @@ function hashToken(seed: string): string {
   return h.toString(36).padStart(7, '0').slice(0, 12);
 }
 
+/**
+ * A child account this identity has minted for an agent — its own DID and handle, under this
+ * identity's rotation authority. Enough to drive the mint: the handle set is what a taken-handle
+ * rejection is checked against, and the length is the next derivation index.
+ */
+export interface FakeChild {
+  registrationId: string;
+  did: string;
+  handle: string;
+}
+
 /** One agent bound to an identity, plus its append-only audit trail. */
 export interface FakeAgent {
   summary: AgentSummary;
@@ -152,6 +163,12 @@ export interface FakeIdentity {
    * unprovisioned case; seed one with `agentAccountsProvisioned: false`.
    */
   agentAccountsProvisioned: boolean;
+  /**
+   * The child accounts this identity has minted for agents. Each mint appends one, so
+   * `children.length` is the next child-key derivation index — the browser stand-in for the
+   * `{did}:child-index` Keychain slot.
+   */
+  children: FakeChild[];
 }
 
 /** Transient state for the multi-step import (claim) flow. */
@@ -496,6 +513,7 @@ export function seedIdentity(
     selfHeldKitInstalled: false,
     deviceKeyUnusable: opts.deviceKeyUnusable ?? false,
     agentAccountsProvisioned: opts.agentAccountsProvisioned ?? true,
+    children: [],
   };
 }
 
