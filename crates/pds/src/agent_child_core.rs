@@ -1,8 +1,10 @@
 // pattern: Imperative Shell
 //
 // The verify → provision → publish → finalize core behind sovereign child accounts. Route modules
-// may not import one another, so the mint lives here and the parent-owned `POST /agent/child` route
-// is one caller among others; every caller owns its own authentication and response shape.
+// may not import one another, so the mint lives here and its two callers — the parent-owned
+// `POST /agent/child` and the cooperative arm of `POST /agent/identity/claim/confirm` — share it;
+// every caller owns its own authentication and response shape. They differ only in how the child's
+// registration row comes into being, which `ChildRegistration` names.
 //
 // The sequence is resumable rather than atomic, because publishing the genesis operation to
 // plc.directory is a network call that cannot join a SQLite transaction: `prepare_child` commits
@@ -18,11 +20,42 @@ use crate::app::AppState;
 use crate::auth::agent_assertion::{mint_identity_assertion, scopes_to_json};
 use crate::auth::password::hash_password;
 use crate::db::agent_auth::{
-    insert_agent_identity, AgentIdentityStatus, InsertAgentIdentityOutcome, NewAgentIdentity,
-    RegistrationType,
+    complete_agent_claim_attempt, convert_identity_to_child, insert_agent_identity,
+    AgentIdentityStatus, InsertAgentIdentityOutcome, NewAgentIdentity, RegistrationType,
 };
 use crate::db::is_unique_violation;
 use crate::db::repo_keys::{get_reserved_repo_key_by_id, insert_did_signing_key, RepoSigningKey};
+
+/// How the child's agent-registration row comes into being — the one thing that differs between
+/// this core's callers.
+///
+/// `POST /agent/child` opens a fresh registration. The cooperative claim arm instead *converts* the
+/// anonymous registration the agent is already polling, so the agent collects a child-subject
+/// credential through the claim-grant poll it was already running. The claim attempt is consumed in
+/// the same transaction as that conversion: everything that can reject a mint (handle validation,
+/// genesis verification, the reserved-key check, plc publication) happens strictly before it, so a
+/// rejected mint leaves the registration claimable.
+#[derive(Debug, Clone, Copy)]
+pub(crate) enum ChildRegistration<'a> {
+    New,
+    FromClaim {
+        registration_id: &'a str,
+        claim_attempt_id: &'a str,
+        /// The account owner who confirmed — attributed on the claim-confirmed audit event.
+        confirmed_by: &'a str,
+    },
+}
+
+impl ChildRegistration<'_> {
+    fn registration_id(&self) -> String {
+        match self {
+            ChildRegistration::New => format!("reg_{}", Uuid::new_v4().simple()),
+            ChildRegistration::FromClaim {
+                registration_id, ..
+            } => (*registration_id).to_string(),
+        }
+    }
+}
 
 /// A provisioned sovereign child: its identity, and the capability its parent hands the agent.
 pub(crate) struct MintedChild {
@@ -46,6 +79,7 @@ pub(crate) async fn mint_child_account(
     parent_did: &str,
     handle: &str,
     plc_op: &serde_json::Value,
+    registration: ChildRegistration<'_>,
 ) -> Result<MintedChild, ApiError> {
     crate::identity::handle::validate_handle(
         handle,
@@ -112,7 +146,7 @@ pub(crate) async fn mint_child_account(
         .ok_or_else(|| ApiError::new(ErrorCode::InternalError, "failed to build child repo"))?;
     let did_document = crate::identity::genesis::build_did_document(&verified)?;
 
-    let registration_id = format!("reg_{}", Uuid::new_v4().simple());
+    let registration_id = registration.registration_id();
     let scopes = state.config.agent_auth.granted_scopes.clone();
     let scopes_json = scopes_to_json(&scopes);
     let assertion = mint_identity_assertion(
@@ -162,7 +196,7 @@ pub(crate) async fn mint_child_account(
             )
         })?;
     }
-    finalize_child(state, &prepared).await?;
+    finalize_child(state, &prepared, registration).await?;
 
     Ok(MintedChild {
         registration_id: prepared.registration_id,
@@ -418,7 +452,11 @@ async fn publish_child_genesis(
     Ok(())
 }
 
-async fn finalize_child(state: &AppState, prepared: &PreparedChild) -> Result<(), ApiError> {
+async fn finalize_child(
+    state: &AppState,
+    prepared: &PreparedChild,
+    registration: ChildRegistration<'_>,
+) -> Result<(), ApiError> {
     if prepared.finalized {
         return Ok(());
     }
@@ -428,38 +466,91 @@ async fn finalize_child(state: &AppState, prepared: &PreparedChild) -> Result<()
         .begin()
         .await
         .map_err(|_| ApiError::new(ErrorCode::InternalError, "failed to finalize child"))?;
-    let inserted = insert_agent_identity(
-        &mut *tx,
-        &NewAgentIdentity {
-            id: &prepared.registration_id,
-            did: Some(&prepared.child_did),
-            parent_did: Some(&prepared.parent_did),
-            registration_type: RegistrationType::Child,
-            issuer: None,
-            subject: Some(&prepared.child_did),
-            email: None,
-            scopes: &prepared.scopes,
-            identity_assertion: Some(&prepared.assertion),
-            assertion_expires_at: &prepared.assertion_expires,
-            pre_claim_scopes: None,
-            claim_token: None,
-            claim_token_expires_at: None,
-        },
-    )
-    .await?;
-    if inserted != InsertAgentIdentityOutcome::Created {
-        return Err(ApiError::new(
-            ErrorCode::InternalError,
-            "failed to create child capability",
-        ));
+    match registration {
+        ChildRegistration::New => {
+            let inserted = insert_agent_identity(
+                &mut *tx,
+                &NewAgentIdentity {
+                    id: &prepared.registration_id,
+                    did: Some(&prepared.child_did),
+                    parent_did: Some(&prepared.parent_did),
+                    registration_type: RegistrationType::Child,
+                    issuer: None,
+                    subject: Some(&prepared.child_did),
+                    email: None,
+                    scopes: &prepared.scopes,
+                    identity_assertion: Some(&prepared.assertion),
+                    assertion_expires_at: &prepared.assertion_expires,
+                    pre_claim_scopes: None,
+                    claim_token: None,
+                    claim_token_expires_at: None,
+                    handle_hint: None,
+                },
+            )
+            .await?;
+            if inserted != InsertAgentIdentityOutcome::Created {
+                return Err(ApiError::new(
+                    ErrorCode::InternalError,
+                    "failed to create child capability",
+                ));
+            }
+            // A child is provisioned and authorized in one parent-approved operation.
+            crate::db::agent_auth::set_agent_identity_status(
+                &mut *tx,
+                &prepared.registration_id,
+                AgentIdentityStatus::Claimed,
+            )
+            .await?;
+        }
+        ChildRegistration::FromClaim {
+            claim_attempt_id,
+            confirmed_by,
+            ..
+        } => {
+            // This is the claim-consuming write. Each half carries its own guard, so a lost race
+            // against a concurrent confirm rolls the whole mint back rather than double-claiming.
+            if !complete_agent_claim_attempt(&mut *tx, claim_attempt_id).await? {
+                return Err(ApiError::new(
+                    ErrorCode::InvalidClaim,
+                    "this claim attempt is no longer pending",
+                ));
+            }
+            if !convert_identity_to_child(
+                &mut *tx,
+                &prepared.registration_id,
+                &prepared.child_did,
+                &prepared.parent_did,
+                &prepared.scopes,
+                &prepared.assertion,
+                &prepared.assertion_expires,
+            )
+            .await?
+            {
+                return Err(ApiError::new(
+                    ErrorCode::InvalidClaim,
+                    "this registration is no longer active",
+                ));
+            }
+            // The human gate anchors the audit trail, so it commits with the claim itself.
+            crate::db::agent_audit::insert_agent_audit_event(
+                &mut *tx,
+                &Uuid::new_v4().to_string(),
+                &prepared.registration_id,
+                Some(confirmed_by),
+                crate::db::agent_audit::AgentAuditEventType::ClaimConfirmed,
+                Some(
+                    &serde_json::json!({
+                        "claim_attempt_id": claim_attempt_id,
+                        "child_did": prepared.child_did,
+                        "scopes": serde_json::from_str::<serde_json::Value>(&prepared.scopes)
+                            .unwrap_or(serde_json::Value::Null),
+                    })
+                    .to_string(),
+                ),
+            )
+            .await?;
+        }
     }
-    // A child is provisioned and authorized in one parent-approved operation.
-    crate::db::agent_auth::set_agent_identity_status(
-        &mut *tx,
-        &prepared.registration_id,
-        AgentIdentityStatus::Claimed,
-    )
-    .await?;
     let pending = emit_guard
         .stage_commit(
             &mut tx,

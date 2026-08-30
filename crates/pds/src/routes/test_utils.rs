@@ -714,3 +714,40 @@ pub fn sign_p256(keypair: &crypto::P256Keypair, message: &[u8]) -> String {
     let sig: Signature = sk.sign(message);
     URL_SAFE_NO_PAD.encode(sig.normalize_s().unwrap_or(sig).to_bytes())
 }
+
+/// Reserve an unbound repo signing key encrypted under [`test_master_key`], the way
+/// `com.atproto.server.reserveSigningKey` does. A child mint's genesis op must name a key that is
+/// already reserved here, so every child-minting test starts with one.
+pub(crate) async fn reserve_repo_key(db: &sqlx::SqlitePool) -> crypto::P256Keypair {
+    let key = crypto::generate_p256_keypair().unwrap();
+    let encrypted =
+        crypto::encrypt_private_key(&key.private_key_bytes, &test_master_key()).unwrap();
+    crate::db::repo_keys::insert_reserved_repo_key(
+        db,
+        None,
+        &crate::db::repo_keys::RepoSigningKey {
+            key_id: key.key_id.to_string(),
+            public_key: key.public_key.clone(),
+            private_key_encrypted: encrypted,
+        },
+    )
+    .await
+    .unwrap();
+    key
+}
+
+/// A wallet-signed did:plc genesis op for a child account: a throwaway rotation key in
+/// `rotationKeys[0]` (the slot the server requires to have signed the op) and `signing_key` as the
+/// `atproto` verification method.
+pub(crate) fn child_genesis_op(handle: &str, pds: &str, signing_key: &str) -> serde_json::Value {
+    let rotation = crypto::generate_p256_keypair().unwrap();
+    let op = crypto::build_did_plc_genesis_op(
+        &rotation.key_id,
+        &crypto::DidKeyUri(signing_key.to_string()),
+        &rotation.private_key_bytes,
+        handle,
+        pds,
+    )
+    .unwrap();
+    serde_json::from_str(&op.signed_op_json).unwrap()
+}

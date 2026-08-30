@@ -177,6 +177,7 @@ mod tests {
                 pre_claim_scopes: None,
                 claim_token: None,
                 claim_token_expires_at: None,
+                handle_hint: None,
             },
         )
         .await

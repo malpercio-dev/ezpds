@@ -24,7 +24,9 @@
 //!   pre-claim assertion carrying the operator's `[agent_auth] pre_claim_scopes`, and return it
 //!   alongside a `claim_token` for an optional later claim ceremony. The identity stays
 //!   `active` (unclaimed), so its assertion cannot yet be exchanged at the token endpoint (the
-//!   jwt-bearer grant requires a `claimed` identity with a bound DID).
+//!   jwt-bearer grant requires a `claimed` identity with a bound DID). An optional `handle_hint`
+//!   records the handle the agent would like if the confirming user chooses to mint it an account
+//!   of its own; the approval screen reads it back from `POST /v1/agents/claim-preview`.
 //!
 //! Claim-lifecycle interpretation (auth.md leaves the exact transitions to the ceremony):
 //! `active` = registered, awaiting the user's claim confirmation; `claimed` = confirmed and
@@ -84,6 +86,9 @@ pub struct AgentIdentityRequest {
     pub assertion: Option<String>,
     // service_auth
     pub login_hint: Option<String>,
+    /// anonymous: the handle the agent would like if the confirming user chooses to mint it a
+    /// child account of its own. Advisory — see `handle_anonymous`.
+    pub handle_hint: Option<String>,
 }
 
 /// Success body for an `identity_assertion` that needed no confirmation.
@@ -127,7 +132,7 @@ pub async fn post_agent_identity(
     let result = match req.typ.as_deref() {
         Some("identity_assertion") => handle_identity_assertion(&state, &req).await,
         Some("service_auth") => handle_service_auth(&state, &req).await,
-        Some("anonymous") => handle_anonymous(&state).await,
+        Some("anonymous") => handle_anonymous(&state, &req).await,
         Some(other) => Err(AgentAuthError::new(
             StatusCode::BAD_REQUEST,
             "invalid_request",
@@ -149,7 +154,10 @@ pub async fn post_agent_identity(
 /// assertion carrying `pre_claim_scopes` and returns it plus a `claim_token` for an optional later
 /// claim ceremony. The identity persists with a NULL `did` (V038) and `active` status until a claim
 /// binds an account.
-async fn handle_anonymous(state: &AppState) -> Result<Response, AgentAuthError> {
+async fn handle_anonymous(
+    state: &AppState,
+    req: &AgentIdentityRequest,
+) -> Result<Response, AgentAuthError> {
     if !state.config.agent_auth.anonymous_enabled {
         return Err(AgentAuthError::new(
             StatusCode::BAD_REQUEST,
@@ -157,6 +165,26 @@ async fn handle_anonymous(state: &AppState) -> Result<Response, AgentAuthError> 
             "anonymous agent registration is not enabled on this server",
         ));
     }
+
+    // A `handle_hint` is a *proposal* the claim-approval screen shows the user, who edits or
+    // discards it before signing the child's genesis op — so it is checked for handle shape only,
+    // not against this server's domains or the handle table. Deferring those to the mint keeps an
+    // agent that registers before discovering the server's domains from being turned away, while
+    // still refusing to store something the wallet would render as a handle but isn't one.
+    let handle_hint = match req
+        .handle_hint
+        .as_deref()
+        .map(str::trim)
+        .filter(|h| !h.is_empty())
+    {
+        Some(hint) => {
+            crate::identity::handle::validate_handle_structure(hint).map_err(|message| {
+                AgentAuthError::new(StatusCode::BAD_REQUEST, "invalid_request", message)
+            })?;
+            Some(hint.to_string())
+        }
+        None => None,
+    };
 
     let registration_id = new_registration_id();
     let claim_token = new_claim_token();
@@ -193,6 +221,7 @@ async fn handle_anonymous(state: &AppState) -> Result<Response, AgentAuthError> 
             pre_claim_scopes: Some(&scopes_json),
             claim_token: Some(&claim_token),
             claim_token_expires_at: Some(&to_sqlite_datetime(&claim_expiry)),
+            handle_hint: handle_hint.as_deref(),
         },
     )
     .await?;
@@ -211,6 +240,7 @@ async fn handle_anonymous(state: &AppState) -> Result<Response, AgentAuthError> 
         serde_json::json!({
             "registration_type": RegistrationType::Anonymous.as_str(),
             "scopes": pre_claim_scopes,
+            "handle_hint": handle_hint,
         }),
     )
     .await?;
@@ -289,6 +319,7 @@ async fn handle_service_auth(
             pre_claim_scopes: None,
             claim_token: Some(&claim_token),
             claim_token_expires_at: Some(&to_sqlite_datetime(&claim_expiry)),
+            handle_hint: None,
         },
     )
     .await?;
@@ -572,6 +603,7 @@ async fn new_identity_assertion(
             pre_claim_scopes: None,
             claim_token: Some(&claim_token),
             claim_token_expires_at: Some(&to_sqlite_datetime(&claim_expiry)),
+            handle_hint: None,
         },
     )
     .await?;

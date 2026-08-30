@@ -24,6 +24,14 @@
 //!   `identity_assertion` (owner DID, current `granted_scopes`), and flipping
 //!   `active → claimed` so the assertion exchanges at the token endpoint.
 //!
+//! Confirm has a second, cooperative arm. An ownerless `anonymous` registration may instead be
+//! confirmed with a `child` block — the handle the user settled on plus a wallet-signed genesis op
+//! — which provisions the agent an account of its own (own `did:plc`, repo, handle) under the
+//! confirming account's ownership and converts that same registration row into a `child` one. The
+//! mint is `agent_child_core`, shared with `POST /agent/child`; it consumes the claim attempt in
+//! its own final transaction, so a rejected mint leaves the `user_code` usable. Nothing changes for
+//! the agent: its claim-grant poll returns the same shape, subject to the child.
+//!
 //! Ceremony errors use the auth.md-style `{error, error_description}` body. The machine-pollable
 //! claim grant (`urn:workos:agent-auth:grant-type:claim`) that lets a `service_auth`/`anonymous`
 //! agent auto-collect the minted credential lives at the token endpoint
@@ -41,6 +49,7 @@ use axum::{
 use chrono::{Duration, SecondsFormat, Utc};
 use serde::{Deserialize, Serialize};
 
+use crate::agent_child_core::{mint_child_account, ChildRegistration};
 use crate::app::AppState;
 use crate::auth::agent_assertion::{
     mint_identity_assertion, new_claim_attempt_id, parse_sqlite_datetime, record_agent_audit,
@@ -246,13 +255,38 @@ pub struct ClaimConfirmRequest {
     /// Optional cross-check: when present, must name the registration this `user_code` belongs to.
     #[serde(default)]
     pub registration_id: Option<String>,
+    /// The cooperative arm: instead of binding the agent to the confirming account, mint it an
+    /// account of its own under that account's ownership.
+    #[serde(default)]
+    pub child: Option<ClaimConfirmChild>,
+}
+
+/// The wallet's half of the cooperative mint: the handle the user settled on, and the genesis
+/// operation it signed with the child's derived rotation key.
+#[derive(Debug, Deserialize)]
+pub struct ClaimConfirmChild {
+    pub handle: Option<String>,
+    #[serde(rename = "plcOp")]
+    pub plc_op: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Serialize)]
 struct ClaimConfirmResponse {
     registration_id: String,
     status: &'static str,
+    /// The account that confirmed — identical on both arms. On the child arm the *registration* now
+    /// names the child instead; that DID is in `child.did`.
     did: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    child: Option<ConfirmedChild>,
+}
+
+#[derive(Debug, Serialize)]
+struct ConfirmedChild {
+    did: String,
+    handle: String,
+    #[serde(rename = "didDocument")]
+    did_document: serde_json::Value,
 }
 
 /// `POST /agent/identity/claim/confirm` — the account owner confirms a claim (full-access authed).
@@ -392,6 +426,11 @@ async fn confirm(
         None => Some(caller_did.as_str()),
     };
 
+    if let Some(child) = req.child.as_ref() {
+        return confirm_with_child(state, &caller_did, &identity, &attempt.id, bind_did, child)
+            .await;
+    }
+
     // The post-claim assertion carries the operator's current full granted-scope profile. Normalize
     // it into a deterministic, deduplicated set so this mint matches the `identity_assertion` mint
     // path byte-for-byte: `intersect_scope_tokens(xs, xs)` is the crate's canonicalizer — it returns
@@ -470,9 +509,102 @@ async fn confirm(
             registration_id: identity.id,
             status: "claimed",
             did: caller_did,
+            child: None,
         }),
     )
         .into_response())
+}
+
+/// The cooperative arm of the ceremony: rather than handing the agent a credential to act *as* the
+/// confirming user, provision it an account of its own — own `did:plc`, repo, and handle — whose
+/// rotation authority the user's wallet holds.
+///
+/// Only an ownerless `anonymous` registration qualifies. A `service_auth` / `identity_assertion`
+/// registration was bound to its account before the user ever saw a code, so "act for me" is the
+/// grant it asked for; re-pointing it at a new DID mid-ceremony would silently answer a different
+/// question than the one on the approval screen.
+///
+/// The mint (shared with `POST /agent/child` via `agent_child_core`) consumes the claim attempt in
+/// its own final transaction, so everything that can reject — handle validation, genesis
+/// verification, the reserved-signing-key check, publication to plc.directory — happens strictly
+/// before the attempt is spent and leaves the registration claimable for a corrected retry.
+async fn confirm_with_child(
+    state: &AppState,
+    caller_did: &str,
+    identity: &crate::db::agent_auth::AgentIdentityRow,
+    claim_attempt_id: &str,
+    bind_did: Option<&str>,
+    child: &ClaimConfirmChild,
+) -> Result<Response, AgentAuthError> {
+    if bind_did.is_none() {
+        return Err(AgentAuthError::new(
+            StatusCode::BAD_REQUEST,
+            "invalid_request",
+            "a child account can only be minted for an ownerless anonymous registration",
+        ));
+    }
+    let handle = child
+        .handle
+        .as_deref()
+        .map(str::trim)
+        .filter(|h| !h.is_empty())
+        .ok_or_else(|| {
+            AgentAuthError::new(
+                StatusCode::BAD_REQUEST,
+                "invalid_request",
+                "missing required field: child.handle",
+            )
+        })?;
+    let plc_op = child.plc_op.as_ref().ok_or_else(|| {
+        AgentAuthError::new(
+            StatusCode::BAD_REQUEST,
+            "invalid_request",
+            "missing required field: child.plcOp",
+        )
+    })?;
+
+    let minted = mint_child_account(
+        state,
+        caller_did,
+        handle,
+        plc_op,
+        ChildRegistration::FromClaim {
+            registration_id: &identity.id,
+            claim_attempt_id,
+            confirmed_by: caller_did,
+        },
+    )
+    .await
+    .map_err(child_mint_error)?;
+
+    Ok((
+        StatusCode::OK,
+        Json(ClaimConfirmResponse {
+            registration_id: minted.registration_id,
+            status: "claimed",
+            did: caller_did.to_string(),
+            child: Some(ConfirmedChild {
+                did: minted.did,
+                handle: handle.to_string(),
+                did_document: minted.did_document,
+            }),
+        }),
+    )
+        .into_response())
+}
+
+/// Re-shape a mint failure into the ceremony's `{error, error_description}` envelope. A client
+/// error keeps its status and its (already caller-facing) message so the wallet can say what to
+/// fix — a taken handle, an unreserved signing key, a genesis op that doesn't verify. Anything
+/// 5xx collapses to the opaque `server_error`, as everywhere else on this surface.
+fn child_mint_error(err: common::ApiError) -> AgentAuthError {
+    let status =
+        StatusCode::from_u16(err.status_code()).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
+    if status.is_client_error() {
+        AgentAuthError::new(status, "invalid_request", err.message())
+    } else {
+        AgentAuthError::server_error()
+    }
 }
 
 #[cfg(test)]

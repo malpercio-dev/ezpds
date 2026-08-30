@@ -358,6 +358,12 @@ impl ApiError {
     pub fn code(&self) -> &ErrorCode {
         &self.code
     }
+
+    /// The error's caller-facing message. For a seam that re-encodes this error in another wire
+    /// dialect and wants to carry the explanation across rather than flatten it to a status.
+    pub fn message(&self) -> &str {
+        &self.message
+    }
 }
 
 /// Wraps `ApiError` in the `{ "error": ... }` envelope for serialization.

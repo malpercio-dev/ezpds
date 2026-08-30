@@ -158,6 +158,9 @@ export async function spawnPds(options: {
       EZPDS_SPACES_ENABLED: 'true',
       EZPDS_RATE_LIMIT_ENABLED: 'false',
       EZPDS_AGENT_AUTH_SERVICE_AUTH_ENABLED: options.agentAuthEnabled ? 'true' : 'false',
+      // The MCP server itself only uses service_auth; anonymous is on so the suite can also
+      // drive the cooperative child-mint arm of the claim ceremony, which starts there.
+      EZPDS_AGENT_AUTH_ANONYMOUS_ENABLED: options.agentAuthEnabled ? 'true' : 'false',
       ...(options.grantedScopes
         ? { EZPDS_AGENT_AUTH_GRANTED_SCOPES: options.grantedScopes.join(',') }
         : {}),

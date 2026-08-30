@@ -307,6 +307,10 @@ pub struct ClaimPreviewResponse {
     /// canonicalized exactly as the confirm endpoint will store it.
     scopes: Vec<String>,
     user_code_expires_at: String,
+    /// The handle an `anonymous` agent proposed for a child account of its own (V071). Present
+    /// only when the agent asked; the screen offers it as an editable default, never a commitment.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    handle_hint: Option<String>,
 }
 
 /// What would the caller be approving? The wallet's claim-approval screen shows the agent's
@@ -364,5 +368,6 @@ pub async fn claim_preview(
         subject: identity.subject,
         scopes,
         user_code_expires_at: rfc3339(&attempt.user_code_expires_at),
+        handle_hint: identity.handle_hint,
     }))
 }

@@ -55,7 +55,8 @@ docs {
 
   ## anonymous
 
-  Body: `{ "type": "anonymous" }`. Registers an ownerless pre-claim identity (no user identity yet;
+  Body: `{ "type": "anonymous" }`, optionally with `"handle_hint": "scribe.example.com"`.
+  Registers an ownerless pre-claim identity (no user identity yet;
   `agent_identities.did` is NULL until a claim binds one). Returns 200 with a pre-claim
   `identity_assertion` carrying the operator's `pre_claim_scopes` plus a `claim_token` for an
   optional later claim ceremony:
@@ -74,6 +75,14 @@ docs {
   Requires `[agent_auth] anonymous_enabled = true`. The identity stays unclaimed, so the pre-claim
   assertion cannot yet be exchanged at the token endpoint (the jwt-bearer grant requires a claimed
   identity).
+
+  `handle_hint` is the handle the agent proposes for an account **of its own**, should the
+  confirming user take the cooperative arm of the ceremony (`POST /agent/identity/claim/confirm`
+  with a `child` block). It is stored and surfaced in `POST /v1/agents/claim-preview` as
+  `handleHint` — the approval screen shows it as an editable suggestion. Checked for handle shape
+  only (a malformed hint is `400 invalid_request`); the domain and availability checks belong to
+  the mint at confirm time, since the user may change it. Advertised as
+  `agent_auth.child_provisioning` in the AS metadata.
 
   ## Errors (OAuth-style `{ "error", "error_description" }` body)
 
