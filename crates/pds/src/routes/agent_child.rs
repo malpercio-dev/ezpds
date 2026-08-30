@@ -212,9 +212,10 @@ pub async fn revoke_child(
 /// POST /agent/child/assertion
 ///
 /// Renew a live child's `identity_assertion` — the short-lived credential it exchanges at the token
-/// endpoint. Assertions expire (`[agent_auth] assertion_ttl_secs`) while the child identity does
-/// not, so without this a child would be stranded the moment its first assertion lapsed; nothing
-/// about the child's DID, repo, or rotation key changes here.
+/// endpoint. Assertions expire (`[agent_auth] claimed_assertion_ttl_secs`) while the child
+/// identity does not, so without this a child dormant past a full assertion lifetime would be
+/// stranded (an *active* child renews automatically at every jwt-bearer exchange); nothing about
+/// the child's DID, repo, or rotation key changes here.
 ///
 /// Only the parent can renew: the owner guard refuses agent-derived credentials, so a child can
 /// never extend its own capability or a sibling's, and an unknown or foreign child DID is the same
@@ -251,7 +252,7 @@ pub async fn remint_child_assertion(
     let minted = mint_identity_assertion(
         &state.oauth_signing_keypair,
         &state.config.public_url,
-        state.config.agent_auth.assertion_ttl_secs,
+        state.config.agent_auth.claimed_assertion_ttl_secs,
         &request.did,
         &child.id,
         RegistrationType::Child.as_str(),

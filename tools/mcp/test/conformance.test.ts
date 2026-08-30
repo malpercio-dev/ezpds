@@ -219,6 +219,26 @@ test('onboarding ceremony, tool surface, and credential hygiene', async (t) => {
   assert.equal(typeof status.activated, 'boolean');
 });
 
+test('jwt-bearer exchange returns a renewed identity_assertion (sliding window)', async () => {
+  // Pin the renewal on the wire: every successful exchange must hand back a fresh
+  // assertion so a sporadic agent never needs a second claim ceremony.
+  const creds = JSON.parse(fs.readFileSync(credsFile(), 'utf8'));
+  const res = await fetch(`${pds.baseUrl}/oauth/token`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/x-www-form-urlencoded' },
+    body: new URLSearchParams({
+      grant_type: 'urn:ietf:params:oauth:grant-type:jwt-bearer',
+      assertion: creds.assertion,
+    }),
+  });
+  assert.equal(res.status, 200);
+  const body: any = await res.json();
+  assert.equal(typeof body.identity_assertion, 'string', 'exchange returns a renewed assertion');
+  assert.notEqual(body.identity_assertion, creds.assertion, 'the renewal is freshly minted');
+  assert.equal(typeof body.assertion_expires, 'string', 'the renewal carries its expiry');
+  assert.ok(new Date(body.assertion_expires).getTime() > Date.now(), 'the renewal is unexpired');
+});
+
 test('AC2.2: out-of-scope calls relay the 403 as a comprehensible error', async (t) => {
   // Same cached credentials, destructive tools enabled: delete needs the repo
   // delete action, which this fixture's narrowed profile withholds (the shipped

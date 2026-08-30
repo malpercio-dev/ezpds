@@ -205,12 +205,15 @@ export async function pollClaim(
 /**
  * Exchange the identity assertion for a fresh access token (RFC 7523
  * JWT-bearer grant). The token inherits the assertion's scopes verbatim.
+ * The server also returns a renewed identity assertion with each exchange
+ * (a sliding window) — persist it so the session only expires after a full
+ * assertion lifetime of total inactivity.
  */
 export async function exchangeAssertion(
   tokenEndpoint: string,
   assertion: string,
   resource: string,
-): Promise<{ accessToken: string; expiresIn: number; scope: string }> {
+): Promise<{ accessToken: string; expiresIn: number; scope: string; assertion?: string }> {
   try {
     const token = await request(tokenEndpoint, {
       method: 'POST',
@@ -224,6 +227,7 @@ export async function exchangeAssertion(
       accessToken: token.access_token,
       expiresIn: token.expires_in,
       scope: token.scope ?? '',
+      assertion: typeof token.identity_assertion === 'string' ? token.identity_assertion : undefined,
     };
   } catch (err) {
     if (err instanceof HttpError) {
@@ -406,6 +410,9 @@ export class AgentSession {
       this.creds.accessToken = token.accessToken;
       this.creds.accessTokenExpiresAt = now + token.expiresIn;
       this.creds.scopes = token.scope ? token.scope.split(' ') : this.creds.scopes;
+      // Sliding renewal: the exchange returns a fresh assertion; persisting it
+      // keeps the session alive without a new claim ceremony.
+      if (token.assertion) this.creds.assertion = token.assertion;
       saveCredentials(this.creds);
       return token.accessToken;
     } catch (err) {
