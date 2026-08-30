@@ -82,10 +82,18 @@ at the agent-registration surface:
     "identity_types_supported": ["anonymous", "identity_assertion", "service_auth"],
     "identity_assertion": {
       "assertion_types_supported": ["urn:ietf:params:oauth:token-type:id-jag"]
-    }
+    },
+    "events_supported": [
+      "https://schemas.workos.com/events/agent/auth/identity/assertion/revoked"
+    ],
+    "child_provisioning": true
   }
 }
 ```
+
+`events_supported` lists the SET event types the `events_endpoint` accepts (§7);
+`child_provisioning` advertises that a claim ceremony can mint the agent an account
+of its own (§3.5).
 
 > **The full auth.md surface is live here.** This metadata declares the whole
 > auth.md surface, and on this deployment every part of it is implemented: the
