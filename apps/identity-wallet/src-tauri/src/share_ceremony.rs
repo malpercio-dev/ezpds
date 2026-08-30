@@ -9,7 +9,9 @@
 //! self-held kit stages the same split but deposits nothing (Shares 2 AND 3 go to the
 //! user — see `self_held_kit.rs`). [`CeremonyShareSet`] carries the recovery key's
 //! did:key, the three base32 envelope strings, and the Share 3 word phrase — all share
-//! material in `Zeroizing`.
+//! material in `Zeroizing`. It also carries the delegation seed derived from the same
+//! recovery seed (the root of every child/agent account's rotation key); the caller
+//! persists it once the ceremony yields a DID to namespace it under.
 //!
 //! Retry resilience lives here too: [`load_or_create`] persists the generated set in a
 //! Keychain staging slot before its ceremony's first state-creating call, so a retry
@@ -117,6 +119,13 @@ pub struct CeremonyShareSet {
     pub share3: Zeroizing<String>,
     /// Share 3 rendered as the BIP-39-style word phrase (identical 42 bytes).
     pub share3_words: Zeroizing<String>,
+    /// The delegation seed derived from this set's recovery seed — the at-rest root of
+    /// every child (agent) account's rotation key. Carried out of the ceremony rather
+    /// than persisted here because the create flow has no DID to namespace it under
+    /// until `POST /v1/dids` returns; the caller persists it via
+    /// `IdentityStore::store_delegation_seed` once it does. One-way from the recovery
+    /// seed (HKDF), so it is strictly less sensitive than the shares beside it.
+    pub delegation_seed: Zeroizing<[u8; 32]>,
 }
 
 /// The staging slot's JSON payload. The seed is deliberately absent — it is
@@ -204,6 +213,7 @@ fn load_or_create_in_account(
 
     let envelopes = crypto::split_secret_into_envelopes(&seed, set_id)?;
     let recovery = crypto::derive_recovery_keypair(&seed)?;
+    let delegation_seed = crypto::derive_delegation_seed(&seed);
 
     let share1 = envelopes[0].encode_share();
     let share2 = envelopes[1].encode_share();
@@ -234,6 +244,7 @@ fn load_or_create_in_account(
         share2_words,
         share3,
         share3_words,
+        delegation_seed,
     })
 }
 
@@ -335,6 +346,10 @@ fn load_staged(
         share2_words: env2.encode_share_words(),
         share3: env3.encode_share(),
         share3_words: env3.encode_share_words(),
+        // Same one-way derivation as the fresh path — a retry that reloads the staged
+        // set must reach the identical delegation seed, or a child minted on a prior
+        // attempt would be orphaned by the one that finishes.
+        delegation_seed: crypto::derive_delegation_seed(&seed),
     }))
 }
 
@@ -412,6 +427,27 @@ mod tests {
         let seed = crypto::combine_envelopes(&env1, &env3).unwrap();
         let derived = crypto::derive_recovery_keypair(&seed).unwrap();
         assert_eq!(derived.key_id.0, set.recovery_key_id);
+    }
+
+    #[test]
+    fn delegation_seed_derives_from_the_sets_recovery_seed_and_survives_a_retry() {
+        keychain::clear_for_test();
+        let first = load_or_create(HANDLE, PDS).unwrap();
+
+        // It is exactly the HKDF of the seed the user's own shares reconstruct — the
+        // property that lets "Enable agent accounts" re-derive it years later.
+        let env1 = crypto::ShareEnvelope::decode_share(&first.share1).unwrap();
+        let env3 = crypto::ShareEnvelope::decode_share(&first.share3).unwrap();
+        let seed = crypto::combine_envelopes(&env1, &env3).unwrap();
+        assert_eq!(
+            *first.delegation_seed,
+            *crypto::derive_delegation_seed(&seed)
+        );
+
+        // A retry reloads from staging and must reach the identical seed, or a child
+        // minted on a prior attempt would be orphaned by the attempt that finishes.
+        let second = load_or_create(HANDLE, PDS).unwrap();
+        assert_eq!(*first.delegation_seed, *second.delegation_seed);
     }
 
     #[test]

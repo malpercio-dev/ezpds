@@ -94,11 +94,12 @@
 //! * `recovery-share-1` — the deprecated app-global Share 1 slot, read only by the
 //!   launch migration and the recovery auto-load fallback.
 //!
-//! Per-DID accounts follow `"{did}:suffix"` with ten suffixes: `device-key`,
+//! Per-DID accounts follow `"{did}:suffix"` with twelve suffixes: `device-key`,
 //! `device-key-pub`, `device-key-app-label`, `did-doc`, `plc-log`, `oauth-tokens`,
-//! `recovery-signing-key` (all `identity_store`; the last written by
-//! `disaster_recovery`), `blob-backup-enabled` (`blob_backup`), `repo-backup-enabled`
-//! (`repo_backup`), and `self-held-kit` (`self_held_kit`). Three more per-DID slots
+//! `recovery-signing-key`, `delegation-seed`, `child-index` (all `identity_store`;
+//! `recovery-signing-key` written by `disaster_recovery`, `delegation-seed` by the
+//! create ceremony and by share verification), `blob-backup-enabled` (`blob_backup`),
+//! `repo-backup-enabled` (`repo_backup`), and `self-held-kit` (`self_held_kit`). Three more per-DID slots
 //! use a prefix form: `recovery-share-1:{did}` (`rekey::recovery_share1_account` —
 //! the only account family [`syncs_to_icloud`] admits to the synchronizable store) and
 //! the staging pair `rekey-staging:{did}` / `self-held-kit-staging:{did}`

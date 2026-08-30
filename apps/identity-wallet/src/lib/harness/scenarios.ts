@@ -32,6 +32,7 @@ export type ScenarioName =
   | 'alert-multi'
   | 'migration-in-flight'
   | 'agent-connected'
+  | 'agent-accounts-unprovisioned'
   | 'app-password-minted'
   | 'device-key-unusable'
   | 'notifications-unverified'
@@ -234,6 +235,22 @@ export const scenarios: Record<ScenarioName, () => WalletState> = {
     const identity = seedIdentity({ handle: 'alice.harness.pds.local' });
     identity.agents = [seedAgent(identity.did, identity.did)];
     upsertIdentity(state, identity);
+    return state;
+  },
+
+  // An identity created before agent accounts existed: no delegation seed, so My Agents
+  // offers "Enable agent accounts" and the child-mint path must refuse to start. Share 1
+  // is in iCloud and escrow releases instantly, so the provisioning ceremony is drivable
+  // end to end (enter the code, verify, provisioned).
+  'agent-accounts-unprovisioned': () => {
+    const state = emptyWalletState();
+    state.pdsUrl = DEFAULT_PDS_URL;
+    state.recovery.share1Present = true;
+    state.recovery.escrow.delaySecs = 0;
+    upsertIdentity(
+      state,
+      seedIdentity({ handle: 'alice.harness.pds.local', agentAccountsProvisioned: false })
+    );
     return state;
   },
 

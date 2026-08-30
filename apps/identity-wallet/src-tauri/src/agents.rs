@@ -1,7 +1,7 @@
 // pattern: Mixed (Functional Core error mapping; Imperative Shell commands)
 
 //! Agent consent + audit — the wallet side of the auth.md claim ceremony and the
-//! "My agents" surface. Five per-identity Tauri IPC commands, each taking a `did`:
+//! "My agents" surface. Six per-identity Tauri IPC commands, each taking a `did`:
 //!
 //! - `preview_agent_claim(did, user_code) -> AgentClaimPreview` — `POST /v1/agents/claim-preview`:
 //!   what approving this code would grant, shown before the biometric gate.
@@ -13,6 +13,9 @@
 //! - `revoke_agent(did, registration_id)` — turn an agent off (idempotent on the server).
 //! - `get_agent_audit(did, registration_id, cursor?) -> AgentAuditPage` — page the
 //!   agent's append-only audit trail.
+//! - `agent_accounts_provisioned(did) -> bool` — whether the identity holds a delegation
+//!   seed, and so can mint an agent an account of its own. The one command here that
+//!   touches no network: it reads the Keychain slot the share ceremony writes.
 //!
 //! Each resolves a refreshable per-DID full-access session via
 //! `SessionProvider::full_access_client` (like `app_passwords.rs`) and issues the
@@ -355,6 +358,26 @@ async fn confirm_agent_claim_impl(
 }
 
 // ── Tauri commands ──────────────────────────────────────────────────────────────
+
+/// Whether this identity is provisioned to give an agent an account of its own.
+///
+/// True once the delegation seed — the root every child account's rotation key derives
+/// from — is in the Keychain: written by the create ceremony for identities made since,
+/// and by "Enable agent accounts" (share verification) for any made before. The frontend
+/// gates the child-mint path on this, routing an unprovisioned identity to provisioning
+/// rather than letting a mint start with no key to sign the child's genesis op.
+///
+/// Local-only, so a Keychain failure reads as "unprovisioned": the honest answer for a
+/// gate, and the route it sends the user down re-checks rather than trusting it.
+#[tauri::command]
+pub fn agent_accounts_provisioned(did: String) -> bool {
+    IdentityStore
+        .is_delegation_provisioned(&did)
+        .unwrap_or_else(|e| {
+            tracing::warn!(did = %did, error = %e, "delegation-seed probe failed; reporting unprovisioned");
+            false
+        })
+}
 
 /// List the agent identities bound to this identity's account.
 #[tauri::command]

@@ -144,6 +144,14 @@ export interface FakeIdentity {
    * browser that has no enclave to empty.
    */
   deviceKeyUnusable: boolean;
+  /**
+   * Whether this identity holds a delegation seed — the `{did}:delegation-seed` Keychain slot
+   * the create ceremony writes and "Enable agent accounts" backfills. Drives
+   * `agent_accounts_provisioned`, so an unprovisioned identity can be driven through the
+   * provisioning gate in the browser. Identities created before the seed existed are the
+   * unprovisioned case; seed one with `agentAccountsProvisioned: false`.
+   */
+  agentAccountsProvisioned: boolean;
 }
 
 /** Transient state for the multi-step import (claim) flow. */
@@ -457,6 +465,7 @@ export function seedIdentity(
     deviceKeyIsRoot?: boolean;
     recoveryKey?: boolean;
     deviceKeyUnusable?: boolean;
+    agentAccountsProvisioned?: boolean;
   }
 ): FakeIdentity {
   const pdsUrl = opts.pdsUrl ?? DEFAULT_PDS_URL;
@@ -486,6 +495,7 @@ export function seedIdentity(
     selfHeldKitStagedRecoveryKey: null,
     selfHeldKitInstalled: false,
     deviceKeyUnusable: opts.deviceKeyUnusable ?? false,
+    agentAccountsProvisioned: opts.agentAccountsProvisioned ?? true,
   };
 }
 

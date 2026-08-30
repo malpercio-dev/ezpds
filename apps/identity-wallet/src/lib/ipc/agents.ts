@@ -113,3 +113,15 @@ export const confirmAgentClaim = (
   did: string,
   userCode: string
 ): Promise<AgentClaimConfirmation> => invoke('confirm_agent_claim', { did, userCode });
+
+/**
+ * Whether this identity can give an agent an account of its own.
+ *
+ * True once the delegation seed — the root every child account's rotation key derives from —
+ * is in the Keychain: written by the create ceremony for identities made since, and by
+ * "Enable agent accounts" (share verification) for any made before. Gate the child-mint path
+ * on this and route an unprovisioned identity to provisioning; never start a mint without it,
+ * since there would be no key to sign the child's genesis op with.
+ */
+export const agentAccountsProvisioned = (did: string): Promise<boolean> =>
+  invoke('agent_accounts_provisioned', { did });

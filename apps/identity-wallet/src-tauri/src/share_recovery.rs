@@ -742,6 +742,22 @@ pub(crate) async fn verify_impl(
         return Err(ShareRecoveryError::SharesDoNotMatchIdentity);
     }
 
+    // Provision the identity for child (agent) accounts. Verification is the one point
+    // in this flow where the account's ORIGINAL recovery seed is in memory alongside a
+    // DID whose rotation keys have just been confirmed to match it — the epilogue below
+    // replaces that seed, so deriving anywhere later would yield a different delegation
+    // seed and orphan every child already minted. Doubles as the "Enable agent accounts"
+    // provisioning path for an identity created before the delegation seed existed.
+    //
+    // Never fatal. A `DelegationSeedConflict` means these shares reconstruct a
+    // superseded seed (a re-key installed a newer set); the stored delegation seed wins
+    // because it is the one the DID's existing children were minted against, and
+    // recovery's job is to give the user their identity back either way.
+    let delegation_seed = crypto::derive_delegation_seed(&seed);
+    if let Err(e) = IdentityStore.store_delegation_seed(&did, &delegation_seed) {
+        tracing::warn!(did = %did, error = %e, "delegation seed not persisted during share verification");
+    }
+
     let mut guard = slot.lock().await;
     let session = guard
         .as_mut()
@@ -1513,6 +1529,90 @@ mod tests {
             verify_impl(&pds, &slot2).await,
             Err(ShareRecoveryError::SharesDoNotMatchIdentity)
         ));
+    }
+
+    #[tokio::test]
+    async fn verify_persists_the_delegation_seed_derived_from_the_recovered_seed() {
+        crate::keychain::clear_for_test();
+        let (set_a, recovery_key) = make_split(0x7777_0001);
+
+        let plc = MockServer::start();
+        plc.mock(|when, then| {
+            when.method(httpmock::Method::GET)
+                .path(format!("/{DID}/log/audit"));
+            then.status(200).body(audit_log_json(
+                &["did:key:zOldDevice", recovery_key.as_str(), "did:key:zPds"],
+                "https://pds.example.com",
+                "bafyprev1",
+            ));
+        });
+        let pds = PdsClient::new_for_test(plc.base_url());
+
+        assert!(!IdentityStore.is_delegation_provisioned(DID).unwrap());
+
+        let slot = fresh_slot(DID, None);
+        push_share(&slot, &set_a[0]).await;
+        push_share(&slot, &set_a[2]).await;
+        verify_impl(&pds, &slot).await.unwrap();
+
+        // Provisioning is a pure function of the shares the user just supplied.
+        let seed = crypto::combine_envelopes(&set_a[0], &set_a[2]).unwrap();
+        assert_eq!(
+            IdentityStore
+                .load_delegation_seed(DID)
+                .unwrap()
+                .unwrap()
+                .as_slice(),
+            crypto::derive_delegation_seed(&seed).as_slice()
+        );
+
+        // Re-verifying the same shares is idempotent, not a conflict.
+        let slot2 = fresh_slot(DID, None);
+        push_share(&slot2, &set_a[0]).await;
+        push_share(&slot2, &set_a[1]).await;
+        verify_impl(&pds, &slot2).await.unwrap();
+    }
+
+    /// A re-key installs a new recovery seed. Verifying against the *newer* share set
+    /// must leave the stored delegation seed alone — it is the root the DID's existing
+    /// children were minted from — and must still hand the user their identity back.
+    #[tokio::test]
+    async fn verify_keeps_the_stored_delegation_seed_when_shares_are_from_a_newer_set() {
+        crate::keychain::clear_for_test();
+        let (set_a, recovery_key) = make_split(0x7777_0002);
+
+        let plc = MockServer::start();
+        plc.mock(|when, then| {
+            when.method(httpmock::Method::GET)
+                .path(format!("/{DID}/log/audit"));
+            then.status(200).body(audit_log_json(
+                &["did:key:zOldDevice", recovery_key.as_str(), "did:key:zPds"],
+                "https://pds.example.com",
+                "bafyprev1",
+            ));
+        });
+        let pds = PdsClient::new_for_test(plc.base_url());
+
+        let incumbent = [0xab_u8; 32];
+        IdentityStore
+            .store_delegation_seed(DID, &incumbent)
+            .unwrap();
+
+        let slot = fresh_slot(DID, None);
+        push_share(&slot, &set_a[0]).await;
+        push_share(&slot, &set_a[2]).await;
+        verify_impl(&pds, &slot)
+            .await
+            .expect("recovery is never blocked by the conflict");
+
+        assert_eq!(
+            IdentityStore
+                .load_delegation_seed(DID)
+                .unwrap()
+                .unwrap()
+                .as_slice(),
+            incumbent
+        );
     }
 
     #[tokio::test]
