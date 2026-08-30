@@ -14,7 +14,7 @@ use uuid::Uuid;
 
 use common::{ApiError, ErrorCode};
 
-use crate::agent_child_core::mint_child_account;
+use crate::agent_child_core::{mint_child_account, ChildRegistration};
 use crate::app::AppState;
 use crate::auth::agent_assertion::{mint_identity_assertion, parse_sqlite_datetime};
 use crate::auth::guards::{authenticate_account_owner, OwnerAuthError};
@@ -138,7 +138,14 @@ pub async fn mint_child(
             "parent account is not local",
         ));
     }
-    let minted = mint_child_account(&state, &parent_did, &request.handle, &request.plc_op).await?;
+    let minted = mint_child_account(
+        &state,
+        &parent_did,
+        &request.handle,
+        &request.plc_op,
+        ChildRegistration::New,
+    )
+    .await?;
     Ok(Json(MintChildResponse {
         registration_id: minted.registration_id,
         did: minted.did,
@@ -407,11 +414,10 @@ mod tests {
 
     use super::*;
     use crate::app::app;
-    use crate::db::repo_keys::RepoSigningKey;
     use crate::firehose::FirehoseEvent;
     use crate::routes::test_utils::{
-        access_jwt, agent_jwt, cnf_bound_access_jwt, seed_account_with_repo, test_master_key,
-        DpopProofKey,
+        access_jwt, agent_jwt, child_genesis_op as genesis, cnf_bound_access_jwt,
+        reserve_repo_key as reserve, seed_account_with_repo, test_master_key, DpopProofKey,
     };
 
     /// Callers must keep the returned `MockServer` alive for the whole test. `MockServer::start`
@@ -459,37 +465,6 @@ mod tests {
             .header("authorization", format!("Bearer {token}"))
             .body(Body::empty())
             .unwrap()
-    }
-
-    async fn reserve(db: &sqlx::SqlitePool) -> crypto::P256Keypair {
-        let key = crypto::generate_p256_keypair().unwrap();
-        let encrypted =
-            crypto::encrypt_private_key(&key.private_key_bytes, &test_master_key()).unwrap();
-        crate::db::repo_keys::insert_reserved_repo_key(
-            db,
-            None,
-            &RepoSigningKey {
-                key_id: key.key_id.to_string(),
-                public_key: key.public_key.clone(),
-                private_key_encrypted: encrypted,
-            },
-        )
-        .await
-        .unwrap();
-        key
-    }
-
-    fn genesis(handle: &str, pds: &str, signing_key: &str) -> serde_json::Value {
-        let rotation = crypto::generate_p256_keypair().unwrap();
-        let op = crypto::build_did_plc_genesis_op(
-            &rotation.key_id,
-            &crypto::DidKeyUri(signing_key.to_string()),
-            &rotation.private_key_bytes,
-            handle,
-            pds,
-        )
-        .unwrap();
-        serde_json::from_str(&op.signed_op_json).unwrap()
     }
 
     /// A `state_with_plc()` whose child-deletion grace window is overridden — `0` makes the next

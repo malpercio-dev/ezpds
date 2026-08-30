@@ -298,6 +298,131 @@ test('spaces: the agent tool surface drives a permissioned space end-to-end', as
   );
 });
 
+/**
+ * The cooperative arm of the claim ceremony (auth.md §3.5): an anonymous agent proposes a handle,
+ * the human confirms with a wallet-signed genesis op, and the agent's *unchanged* claim poll hands
+ * back a credential for an account of its own. Driven over raw HTTP rather than through the MCP
+ * client because the MCP server only speaks `service_auth` — this pins the protocol the wallet and
+ * a child-aware agent will speak.
+ */
+test('cooperative mint: handle_hint → claim as child → the agent writes as itself', async () => {
+  const { newKeypair, buildGenesisOp } = await import('ezpds-interop/src/crypto.js');
+  const handle = `scribe-${Math.random().toString(36).slice(2, 8)}.localhost`;
+
+  const registered: any = await (
+    await fetch(`${pds.baseUrl}/agent/identity`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ type: 'anonymous', handle_hint: handle }),
+    })
+  ).json();
+  assert.equal(registered.registration_type, 'anonymous');
+  const claimToken = registered.claim_token;
+
+  const started: any = await (
+    await fetch(`${pds.baseUrl}/agent/identity/claim`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ claim_token: claimToken }),
+    })
+  ).json();
+  const userCode = started.claim_attempt.user_code;
+
+  // The approval screen sees the agent's proposal before the human decides.
+  const preview: any = await (
+    await fetch(`${pds.baseUrl}/v1/agents/claim-preview`, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        authorization: `Bearer ${account.accessJwt}`,
+      },
+      body: JSON.stringify({ userCode }),
+    })
+  ).json();
+  assert.equal(preview.handleHint, handle, 'claim-preview surfaces the proposed handle');
+
+  // The wallet's half: reserve the repo signing key, then sign the child's genesis op with a
+  // rotation key it holds. `buildGenesisOp` also fills a middle recovery slot the server does not
+  // inspect for children — only rotationKeys[0] (the signer) and the atproto key matter here.
+  const reserved: any = await (
+    await fetch(`${pds.baseUrl}/xrpc/com.atproto.server.reserveSigningKey`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({}),
+    })
+  ).json();
+  const rotationKey = await newKeypair();
+  const spare = await newKeypair();
+  const { signedOp } = await buildGenesisOp({
+    rotationKeyId: rotationKey.keyId,
+    recoveryKeyId: spare.keyId,
+    repoSigningKeyId: reserved.signingKey,
+    rotationKeypair: rotationKey.keypair,
+    handle,
+    pdsUrl: pds.baseUrl,
+  });
+
+  const confirmRes = await fetch(`${pds.baseUrl}/agent/identity/claim/confirm`, {
+    method: 'POST',
+    headers: {
+      'content-type': 'application/json',
+      authorization: `Bearer ${account.accessJwt}`,
+    },
+    body: JSON.stringify({ user_code: userCode, child: { handle, plcOp: signedOp } }),
+  });
+  const confirmed: any = await confirmRes.json();
+  assert.ok(confirmRes.ok, `child confirm failed: ${JSON.stringify(confirmed)}`);
+  assert.equal(confirmed.did, account.did, '`did` still names the confirming account');
+  const childDid: string = confirmed.child.did;
+  assert.match(childDid, /^did:plc:/);
+  assert.equal(confirmed.child.handle, handle);
+  assert.notEqual(childDid, account.did, 'the agent got its own DID, not the user\'s');
+
+  // The agent polls exactly as it would have — and collects a child-subject credential.
+  const granted: any = await (
+    await fetch(`${pds.baseUrl}/oauth/token`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({
+        grant_type: 'urn:workos:agent-auth:grant-type:claim',
+        claim_token: claimToken,
+      }),
+    })
+  ).json();
+  assert.ok(granted.access_token, `claim poll did not grant: ${JSON.stringify(granted)}`);
+  const sub = (token: string) =>
+    JSON.parse(Buffer.from(token.split('.')[1]!, 'base64url').toString()).sub;
+  assert.equal(sub(granted.access_token), childDid, 'access token is subject to the child');
+  assert.equal(sub(granted.identity_assertion), childDid, 'assertion is subject to the child');
+
+  // And a record written with it lands in the child's repo, under the child's handle.
+  const writeRes = await fetch(`${pds.baseUrl}/xrpc/com.atproto.repo.createRecord`, {
+    method: 'POST',
+    headers: {
+      'content-type': 'application/json',
+      authorization: `Bearer ${granted.access_token}`,
+    },
+    body: JSON.stringify({
+      repo: childDid,
+      collection: 'app.bsky.feed.post',
+      record: { $type: 'app.bsky.feed.post', text: 'posted as myself', createdAt: new Date().toISOString() },
+    }),
+  });
+  const written: any = await writeRes.json();
+  assert.ok(writeRes.ok, `child write failed: ${JSON.stringify(written)}`);
+  assert.ok(written.uri.startsWith(`at://${childDid}/app.bsky.feed.post/`), written.uri);
+
+  const rkey = written.uri.split('/').pop();
+  const readBack: any = await (
+    await fetch(
+      `${pds.baseUrl}/xrpc/com.atproto.repo.getRecord?repo=${encodeURIComponent(handle)}` +
+        `&collection=app.bsky.feed.post&rkey=${rkey}`,
+    )
+  ).json();
+  assert.equal(readBack.value.text, 'posted as myself');
+  assert.equal(readBack.uri, written.uri);
+});
+
 test('AC3.2: revocation fails closed and never auto-re-registers', async (t) => {
   // Revoke server-side. There is no operator HTTP surface for this yet
   // (that lands with the wallet /v1/agents API), so flip the row the way the

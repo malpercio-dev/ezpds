@@ -86,6 +86,11 @@ struct AgentAuthMetadata {
     identity_types_supported: Vec<String>,
     identity_assertion: IdentityAssertionMetadata,
     events_supported: Vec<String>,
+    /// This server can end a claim ceremony by minting the agent an account of its own (a
+    /// `child` registration) instead of binding it to the confirming user's account. Advertised
+    /// statically, like `identity_types_supported`: whether any given ceremony takes that arm is
+    /// the confirming human's choice, not a server capability that comes and goes.
+    child_provisioning: bool,
 }
 
 #[derive(Serialize)]
@@ -147,6 +152,7 @@ pub async fn oauth_server_metadata(State(state): State<AppState>) -> impl IntoRe
                 ],
             },
             events_supported: vec![crate::auth::issuer_trust::REVOKED_EVENT_TYPE.to_string()],
+            child_provisioning: true,
         },
     })
 }

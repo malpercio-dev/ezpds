@@ -302,4 +302,8 @@ pub(super) static MIGRATIONS: &[Migration] = &[
         version: 70,
         sql: include_str!("migrations/V070__space_takedown.sql"),
     },
+    Migration {
+        version: 71,
+        sql: include_str!("migrations/V071__agent_handle_hint.sql"),
+    },
 ];

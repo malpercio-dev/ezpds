@@ -38,6 +38,31 @@ docs {
   mints the post-claim `identity_assertion`, and flips the identity `active → claimed` so its
   assertion can be exchanged at `POST /oauth/token` (jwt-bearer grant).
 
+  ## Cooperative arm: minting the agent an account of its own
+
+  An **ownerless `anonymous`** registration can instead be confirmed with a `child` block, giving
+  the agent its own account — own `did:plc`, repo, and handle — under the confirming account's
+  cryptographic ownership, rather than a credential to act as that account:
+
+  ```json
+  {
+    "user_code": "{{userCode}}",
+    "child": { "handle": "scribe.example.com", "plcOp": { "…wallet-signed genesis op…": "" } }
+  }
+  ```
+
+  The genesis op must be signed by its own `rotationKeys[0]` and name an `atproto` verification
+  method already reserved via `com.atproto.server.reserveSigningKey` — the same contract as
+  `POST /agent/child`, whose mint core this shares. The registration is converted **in place**
+  (`did` → the child DID, type → `child`, `parent_did` → the confirmer), so the agent's existing
+  claim-grant poll returns a credential subject to the child with no agent-side change. A
+  pre-bound `service_auth`/`identity_assertion` registration is refused here: it asked to act
+  *for* an account before the user ever saw a code.
+
+  Everything that can reject a mint — handle validation, genesis verification, the reserved-key
+  check, publication to plc.directory — happens before the claim attempt is consumed, so a
+  rejected mint leaves the `user_code` usable for a corrected retry.
+
   ## Response (200)
 
   ```json
@@ -48,11 +73,29 @@ docs {
   }
   ```
 
+  `did` is the confirming account on both arms. The child arm adds a `child` block:
+
+  ```json
+  {
+    "registration_id": "reg_...",
+    "status": "claimed",
+    "did": "did:plc:<confirming account>",
+    "child": {
+      "did": "did:plc:<the agent's own account>",
+      "handle": "scribe.example.com",
+      "didDocument": { "…": "" }
+    }
+  }
+  ```
+
   ## Errors
 
   - 401 invalid_token: missing/invalid credential, or a token below full access (e.g. an app password)
   - 403 access_denied: agent-derived token, a revoked identity, or a code bound to another account
-  - 400 invalid_request: missing `user_code`, or `registration_id` doesn't match the code
+  - 400 invalid_request: missing `user_code`, `registration_id` doesn't match the code, a `child`
+    block on a pre-bound registration, or a child mint the server refused (bad handle, unverifiable
+    genesis op, unreserved signing key — the description says which)
+  - 409 invalid_request: the child's handle or DID is already taken
   - 400 invalid_user_code: unknown code
   - 400 claim_expired: the user code has expired
   - 400 claimed_or_in_flight: the code/registration has already been claimed
