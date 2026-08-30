@@ -188,11 +188,15 @@ test('onboarding ceremony, tool surface, and credential hygiene', async (t) => {
   assert.ok(!whoamiText.includes(creds.accessToken), 'access token not in whoami output');
   assert.ok(!whoamiText.includes(creds.assertion), 'assertion not in whoami output');
 
-  // AC2.1 — create_post produces a record visible via getRecord.
+  // AC2.1 — create_post produces a record visible via getRecord. The text
+  // carries a URL: the stored record must carry the matching link facet, or the
+  // post renders as dead plain text (detection itself is unit-tested in
+  // test/facets.test.ts; this pins that the tool actually attaches the result).
+  const postText = 'custos-mcp conformance post https://obsign.org';
   const post = toolJson(
     await client.callTool({
       name: 'create_post',
-      arguments: { text: 'custos-mcp conformance post' },
+      arguments: { text: postText },
     }),
   );
   assert.ok(post.uri?.startsWith(`at://${account.did}/app.bsky.feed.post/`));
@@ -205,7 +209,16 @@ test('onboarding ceremony, tool surface, and credential hygiene', async (t) => {
       arguments: { collection: 'app.bsky.feed.post', rkey },
     }),
   );
-  assert.equal(fetched.value.text, 'custos-mcp conformance post');
+  assert.equal(fetched.value.text, postText);
+  assert.deepEqual(fetched.value.facets, [
+    {
+      index: {
+        byteStart: postText.indexOf('https://'),
+        byteEnd: Buffer.byteLength(postText, 'utf8'),
+      },
+      features: [{ $type: 'app.bsky.richtext.facet#link', uri: 'https://obsign.org' }],
+    },
+  ]);
 
   const listed = toolJson(
     await client.callTool({

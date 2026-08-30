@@ -15,6 +15,7 @@ import type { AuthInfo } from '@modelcontextprotocol/sdk/server/auth/types.js';
 import { xrpc, HttpError } from './http.ts';
 import { RevokedError, SessionExpiredError, type SessionState } from './auth.ts';
 import { ALLOW_DESTRUCTIVE, imageDir } from './config.ts';
+import { detectFacets, detectMentions, sortFacets, type Facet } from './facets.ts';
 
 /**
  * The slice of a session the tool surface actually consumes. `AgentSession`
@@ -137,6 +138,49 @@ async function requireDid(session: SessionLike): Promise<{ token: string; did: s
 
 const replyRef = z.object({ uri: z.string(), cid: z.string() });
 
+/**
+ * Distinct handles resolved for one post. Mentions are the only facet kind
+ * needing the network, and post text is caller-supplied: without a ceiling a
+ * 3000-character post of @handles becomes hundreds of paced round trips.
+ */
+const MAX_MENTION_LOOKUPS = 25;
+
+/**
+ * Rich-text facets for post text: links and hashtags detected locally, plus a
+ * mention facet for every @handle the PDS resolves to a DID.
+ *
+ * A handle that will not resolve stays plain text rather than failing the
+ * post — the mention is cosmetic, the post is not.
+ */
+async function richTextFacets(session: SessionLike, text: string): Promise<Facet[]> {
+  const facets = detectFacets(text);
+  const mentions = detectMentions(text);
+
+  const dids = new Map<string, string>();
+  const handles = [...new Set(mentions.map((mention) => mention.handle))];
+  for (const handle of handles.slice(0, MAX_MENTION_LOOKUPS)) {
+    try {
+      const resolved = await xrpc(session.pdsUrl, 'com.atproto.identity.resolveHandle', {
+        params: { handle },
+      });
+      if (typeof resolved.did === 'string') dids.set(handle, resolved.did);
+    } catch {
+      // Unresolvable handle: leave the text as written.
+    }
+  }
+
+  for (const mention of mentions) {
+    const did = dids.get(mention.handle);
+    if (did) {
+      facets.push({
+        index: mention.index,
+        features: [{ $type: 'app.bsky.richtext.facet#mention', did }],
+      });
+    }
+  }
+  return sortFacets(facets);
+}
+
 export function registerTools(server: McpServer, resolveSession: SessionResolver): void {
   server.registerTool(
     'whoami',
@@ -176,7 +220,9 @@ export function registerTools(server: McpServer, resolveSession: SessionResolver
     {
       description:
         `Publish an app.bsky.feed.post to the user’s repository — text, optional reply ` +
-        `references, optional attached image (uploaded as a blob). ${ATTRIBUTION}`,
+        `references, optional attached image (uploaded as a blob). URLs, #hashtags, and ` +
+        `@mentions in the text are turned into rich-text facets automatically, so they ` +
+        `render as links rather than plain text. ${ATTRIBUTION}`,
       annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false },
       inputSchema: {
         text: z.string().max(3000).describe('Post text'),
@@ -193,6 +239,14 @@ export function registerTools(server: McpServer, resolveSession: SessionResolver
           ),
         image_alt: z.string().optional().describe('Alt text for the attached image'),
         langs: z.array(z.string()).optional().describe('BCP-47 language tags'),
+        facets: z
+          .array(z.record(z.string(), z.unknown()))
+          .optional()
+          .describe(
+            'Explicit app.bsky.richtext.facet entries, replacing automatic detection. ' +
+              'Only needed when the link text differs from the URL, or to suppress ' +
+              'detection entirely (pass an empty array). Offsets are UTF-8 byte offsets.',
+          ),
       },
     },
     async (args, extra) => {
@@ -222,6 +276,8 @@ export function registerTools(server: McpServer, resolveSession: SessionResolver
           text: args.text,
           createdAt: new Date().toISOString(),
         };
+        const facets = args.facets ?? (await richTextFacets(session, args.text));
+        if (facets.length) record.facets = facets;
         if (args.reply) record.reply = args.reply;
         if (args.langs) record.langs = args.langs;
         if (embed) record.embed = embed;
