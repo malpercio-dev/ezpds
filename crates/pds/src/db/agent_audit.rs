@@ -29,6 +29,8 @@ pub(crate) enum AgentAuditEventType {
     BlobUpload,
     /// The identity was revoked by the account owner.
     Revoked,
+    /// A sovereign child's `identity_assertion` was renewed by its parent.
+    AssertionReminted,
 }
 
 impl AgentAuditEventType {
@@ -42,6 +44,7 @@ impl AgentAuditEventType {
             AgentAuditEventType::RepoWrite => "repo_write",
             AgentAuditEventType::BlobUpload => "blob_upload",
             AgentAuditEventType::Revoked => "revoked",
+            AgentAuditEventType::AssertionReminted => "assertion_reminted",
         }
     }
 }

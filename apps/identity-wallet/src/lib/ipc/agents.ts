@@ -32,7 +32,8 @@ export type AgentAuditEvent = {
     | 'token_exchanged'
     | 'repo_write'
     | 'blob_upload'
-    | 'revoked';
+    | 'revoked'
+    | 'assertion_reminted';
   did?: string;
   detail?: Record<string, unknown>;
   createdAt: string;
