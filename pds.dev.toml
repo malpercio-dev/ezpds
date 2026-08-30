@@ -110,9 +110,12 @@ urls = []
 # jwks_cache_ttl_secs = 3600        # how long a fetched issuer JWKS (jwks_url) is reused
 # jwks_refetch_cooldown_secs = 30   # min interval between JWKS fetch attempts per URL (0 disables);
 #   # bounds how often unauthenticated requests naming a bogus kid can force an outbound fetch
-# granted_scopes = ["atproto", "repo:*?action=create&action=update", "blob:*/*"]
+# granted_scopes = ["atproto", "repo:*?action=create&action=update", "repo:*?action=delete", "blob:*/*"]
 #   # conservative granular default; do NOT add account:*/identity:*/transition:generic unless you
 #   # intend agents to hold account-lifecycle control (see AgentAuthConfig docs)
+#   # delete is its own token, not a third action= on the create/update one: the clamp matches
+#   # tokens by exact string, so merging them would stop matching the scopes already stored on
+#   # live registrations and withdraw their writes
 # verification_uri = "https://example.com/agent/claim"  # defaults to {public_url}/agent/claim
 #
 # identity_assertion issuer trust list — an ID-JAG whose `iss` is not listed is refused with

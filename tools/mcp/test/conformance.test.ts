@@ -82,8 +82,10 @@ before(async () => {
     dir: tmp,
     plcUrl: plc.url,
     agentAuthEnabled: true,
-    // The default profile plus a blanket space grant, so the space tools'
-    // happy path is exercised; the repo delete refusal (AC2.2) still holds.
+    // A DELIBERATELY NARROWED profile: the shipped default also carries
+    // `repo:*?action=delete`, which this fixture omits so AC2.2 can still
+    // exercise the InsufficientScope relay against a real refusal. Plus a
+    // blanket space grant, so the space tools' happy path is exercised.
     // The explicit params matter: a bare `space:*` confers reads but never a
     // write target (no type declaration to draw collections from), and
     // authority defaults to `self`, which an unfiltered listSpaces (authority
@@ -218,8 +220,10 @@ test('onboarding ceremony, tool surface, and credential hygiene', async (t) => {
 });
 
 test('AC2.2: out-of-scope calls relay the 403 as a comprehensible error', async (t) => {
-  // Same cached credentials, destructive tools enabled: delete needs the
-  // repo delete action, which the default agent profile does not grant.
+  // Same cached credentials, destructive tools enabled: delete needs the repo
+  // delete action, which this fixture's narrowed profile withholds (the shipped
+  // default grants it). This asserts the refusal is comprehensible when an
+  // operator narrows scopes — not that delete is unavailable out of the box.
   const client = await connectClient({ CUSTOS_MCP_ALLOW_DESTRUCTIVE: '1' });
   t.after(() => client.close());
 
