@@ -72,7 +72,6 @@ where
 
 /// List a parent's recorded child deletions, newest-first. Survives the children's purge, so it is
 /// the parent's durable "which children did I retire, and when" audit view.
-#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) async fn list_child_deletions_of_parent(
     db: &sqlx::SqlitePool,
     parent_did: &str,

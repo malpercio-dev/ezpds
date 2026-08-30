@@ -1,7 +1,15 @@
 import { describe, it, expect } from 'vitest';
 import { buildRegistry } from './registry';
 import { buildScenario } from './scenarios';
-import type { AgentClaimPreview, CollectedShare, MintedChild } from '$lib/ipc';
+import { HARNESS_AGENT_SCOPES } from './state';
+import type {
+  AgentClaimPreview,
+  ChildAssertion,
+  ChildDeletion,
+  ChildSummary,
+  CollectedShare,
+  MintedChild,
+} from '$lib/ipc';
 
 /**
  * The delegation-seed gate as the screens see it: an identity created before agent
@@ -116,5 +124,100 @@ describe('cooperative child mint', () => {
       registry.mint_child_from_claim({ did, userCode: 'CHILD1', handle: 'scribe.harness.pds.local' })
     ).toThrow(expect.objectContaining({ code: 'NOT_PROVISIONED' }));
     expect(state.identities[0].children).toEqual([]);
+  });
+});
+
+/**
+ * The parent console — what My Agents and the child detail screen drive. The states these cover
+ * are the ones a screen cannot distinguish on its own: deleting revokes as a side effect, so
+ * `status` alone never separates a retired child from a merely revoked one.
+ */
+describe('child lifecycle', () => {
+  const setup = () => {
+    const state = buildScenario('agent-children');
+    return { state, registry: buildRegistry(state), did: state.identities[0].did };
+  };
+
+  it('lists a parent’s children with scopes and every lifecycle state', () => {
+    const { registry, did } = setup();
+    const children = registry.list_children({ did }) as ChildSummary[];
+
+    expect(children.map((c) => c.handle)).toEqual([
+      'scribe.harness.pds.local',
+      'archivist.harness.pds.local',
+      'retired.harness.pds.local',
+    ]);
+    // AC4.1: the detail screen renders the grant, so the list has to carry it.
+    expect(children[0].scopes).toEqual(HARNESS_AGENT_SCOPES);
+    expect(children[0].deleteAfter).toBeUndefined();
+    // The retired child is `revoked` like the middle one — only the purge date tells them apart.
+    expect(children[1].status).toBe('revoked');
+    expect(children[2].status).toBe('revoked');
+    expect(children[2].deleteAfter).toBeTruthy();
+  });
+
+  it('does not list another identity’s children', () => {
+    const { registry } = setup();
+    expect(registry.list_children({ did: 'did:plc:nobody' })).toEqual([]);
+  });
+
+  it('revoke flips the child to revoked without scheduling a purge', () => {
+    const { state, registry, did } = setup();
+    const childDid = state.identities[0].children[0].did;
+
+    registry.revoke_child({ did, childDid });
+
+    const child = (registry.list_children({ did }) as ChildSummary[])[0];
+    expect(child.status).toBe('revoked');
+    // AC4.2 vs AC4.3: revoking keeps the account. Nothing is scheduled for removal.
+    expect(child.deleteAfter).toBeUndefined();
+  });
+
+  it('delete revokes and schedules the purge in one call', () => {
+    const { state, registry, did } = setup();
+    const childDid = state.identities[0].children[0].did;
+
+    const scheduled = registry.delete_child({ did, childDid }) as ChildDeletion;
+    expect(scheduled.status).toBe('deletion_scheduled');
+    expect(Date.parse(scheduled.deleteAfter)).toBeGreaterThan(Date.now());
+
+    const child = (registry.list_children({ did }) as ChildSummary[])[0];
+    // Delete implies revoke on the server; a screen that modelled them as independent would look
+    // right against a fake that did too, and be wrong in production.
+    expect(child.status).toBe('revoked');
+    expect(child.deleteAfter).toBe(scheduled.deleteAfter);
+  });
+
+  it('renews a live child’s credential', () => {
+    const { state, registry, did } = setup();
+    const childDid = state.identities[0].children[0].did;
+
+    const renewed = registry.remint_child_assertion({ did, childDid }) as ChildAssertion;
+    expect(renewed.did).toBe(childDid);
+    expect(renewed.identityAssertion).toBeTruthy();
+    expect(Date.parse(renewed.assertionExpires)).toBeGreaterThan(Date.now());
+  });
+
+  it('refuses to renew a revoked child', () => {
+    const { state, registry, did } = setup();
+    // Revocation is one-way: renewal must never be a way back up the custody ladder.
+    const childDid = state.identities[0].children[1].did;
+
+    expect(() => registry.remint_child_assertion({ did, childDid })).toThrow(
+      expect.objectContaining({ code: 'ACCESS_DENIED' })
+    );
+  });
+
+  it('answers a uniform not-found for a child belonging to someone else', () => {
+    const { state, registry } = setup();
+    const childDid = state.identities[0].children[0].did;
+
+    // Right child, wrong parent — the real routes reach children only via the parent, and never
+    // confirm that a foreign child exists.
+    for (const call of ['revoke_child', 'delete_child', 'remint_child_assertion'] as const) {
+      expect(() => registry[call]({ did: 'did:plc:nobody', childDid })).toThrow(
+        expect.objectContaining({ code: 'AGENT_NOT_FOUND' })
+      );
+    }
   });
 });

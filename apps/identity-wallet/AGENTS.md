@@ -66,7 +66,7 @@ screen and reproduce any state without a Mac/Xcode/simulator. Design + ACs:
 - Utilities (each file's header carries its rules):
   - `src/lib/appearance.ts` — System/Light/Dark override; Keychain is truth, localStorage mirror is pre-paint only
   - `src/lib/agent-scopes.ts` — plain-language OAuth scope descriptions; elevated flags + unknown-token honesty rule
-  - `src/lib/agent-display.ts` — agent status/event/type labels + `agentName`/`agentDetailLine`; carries the status-is-text+icon+position-never-colour-alone rule. The agents-surface peer of `agent-scopes.ts`
+  - `src/lib/agent-display.ts` — agent status/event/type labels + `agentName`/`agentDetailLine`, and the separate child-state vocabulary (`childState`/`CHILD_STATUS`, where a scheduled purge outranks the revocation it implies); carries the status-is-text+icon+position-never-colour-alone rule. The agents-surface peer of `agent-scopes.ts`
   - `src/lib/handle.ts` — handle assembly + validation shared by create (`HandleScreen`) and change-handle (`ChangeHandleScreen`); `composeHandle`/`isValidLabel` for the served-domain label path, `isValidHandle`/`normalizeHandle` for the custom-domain full-handle path
   - `src/lib/did-web.ts` — did:web identity-document composition + validation shared by the did:web onboarding screens; `didWebFromDomain` (hostname → `did:web`, path/port rejected), `composeDidWebDocument`/`serializeDidWebDocument`, `didWebDocumentUrl`, and the `self`/`custos` hosting split. The did:web peer of `handle.ts`
   - `src/lib/deadline.ts` — 72h PLC recovery-window math (`getDeadline`/`getUrgency`/`formatCountdown`)
@@ -142,7 +142,7 @@ allowlist lives in its module's doc — `claim.rs` (the 4-point claim verificati
 | `identity_removal.rs` | permanent removal: `deleteAccount` → (did:plc) tombstone → wipe-last, resumable via the pending-removals marker; password-vs-signed-proof resolution and the local-only forget hatch in the module doc |
 | `recovery.rs` | the recovery override: fork-point counter-op signed by the device key, inside plc.directory's 72-hour window — see module doc |
 | `plc_monitor.rs` | background + foreground PLC sweeps over did:plc identities only (omission is not a verdict) and the fold-based sweep history behind the Protection surface — set rule, degradation contract, and fold rules in the module doc |
-| `agents.rs` | agent consent + audit: the 5 per-identity "My agents" + claim-ceremony commands over a self-healing per-DID session — see module doc |
+| `agents.rs` | agent consent + audit plus the sovereign-child parent console: the per-identity "My agents" claim-ceremony and child-lifecycle commands over a self-healing per-DID session — see module doc |
 | `oauth_consent.rs` | wallet-confirmed OAuth consent client (preview by code / by QR `request_id`, device-key-signed approve); envelope contents and Phase C match-code rules in the module doc |
 | `app_passwords.rs` | app-password mint/list/revoke over a per-DID full-access session (the "sign the Bluesky app into a passwordless account" surface) — see module doc |
 | `blob_backup.rs` | user-held media backup: CID-verified incremental iCloud mirror + per-blob-degrading restore; also feeds the migration blob drain (`mirror_fallback_blob`) and the background sweep — see module doc |

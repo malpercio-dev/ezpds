@@ -21,6 +21,19 @@
 //!   seed, sign its genesis op, and confirm the claim with it, so the agent ends up with an
 //!   account of its own instead of a credential for this one.
 //!
+//! Four more manage the children that arm creates — the parent console. They address a child by
+//! *its own DID*, not a registration id, since a child is an account first and a capability
+//! second; `did` stays the authenticating parent:
+//!
+//! - `list_children(did) -> Vec<ChildSummary>` — `GET /agent/child`.
+//! - `revoke_child(did, child_did)` — `POST /agent/child/revoke`: kill the capability, keep the
+//!   account (the ADR-0023 custody ladder's lower rung).
+//! - `delete_child(did, child_did) -> ChildDeletion` — `POST /agent/child/delete`: the higher
+//!   rung, retiring the hosting itself; returns the purge deadline to show the user.
+//! - `remint_child_assertion(did, child_did) -> ChildAssertion` — `POST /agent/child/assertion`:
+//!   a fresh credential for a child that lay dormant past its assertion lifetime. Refused for a
+//!   revoked child, so renewal is never a way back up the ladder revocation walked down.
+//!
 //! Each resolves a refreshable per-DID full-access session via
 //! `SessionProvider::full_access_client` (like `app_passwords.rs`) and issues the
 //! request through `session.client` (an `OAuthClient`), so an expired session
@@ -142,6 +155,55 @@ struct ChildConfirmResponse {
     #[serde(alias = "registration_id")]
     registration_id: String,
     child: Option<ConfirmedChildBody>,
+}
+
+/// One sovereign child under this account (`GET /agent/child` entry).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ChildSummary {
+    pub registration_id: String,
+    /// The child's own `did:plc` — how every lifecycle command addresses it.
+    pub did: String,
+    pub handle: String,
+    /// `claimed` (live), `active` (mid-provisioning), or `revoked`.
+    pub status: String,
+    pub created_at: String,
+    pub scopes: Vec<String>,
+    /// Set only once deletion is scheduled: the instant after which the server purges the child
+    /// permanently. Deletion revokes as a side effect, so `status` alone cannot distinguish a
+    /// retired child from a merely revoked one — this is what tells them apart.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub delete_after: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ListChildrenResponse {
+    children: Vec<ChildSummary>,
+}
+
+/// Result of scheduling a child's deletion (`POST /agent/child/delete`).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ChildDeletion {
+    pub did: String,
+    pub status: String,
+    /// The instant after which the child is purged permanently — the date the wallet shows so
+    /// the user knows how long the decision stays reversible on the server side.
+    pub delete_after: String,
+}
+
+/// A freshly renewed child credential (`POST /agent/child/assertion`).
+///
+/// `identity_assertion` is a live credential for the child account, so the screen showing it
+/// treats it like the app-password reveal: shown once, offered for copy, never persisted.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ChildAssertion {
+    pub did: String,
+    pub registration_id: String,
+    pub identity_assertion: String,
+    pub assertion_expires: String,
+    pub scopes: Vec<String>,
 }
 
 /// Result of a confirmed claim (`POST /agent/identity/claim/confirm`).
@@ -320,6 +382,88 @@ async fn revoke_agent_impl(client: &OAuthClient, registration_id: &str) -> Resul
             message: format!("revoke returned {other}"),
         }),
     }
+}
+
+/// Shared status mapping for the four child routes. They are deliberately uniform: an unknown or
+/// foreign child DID is the same 404 as one belonging to another parent, so none of them is an
+/// existence oracle. 403 is the assertion route's "child is not active" refusal — revocation is a
+/// one-way rung on the custody ladder, and the frontend says so rather than offering a retry.
+fn child_route_error(status: u16, path: &str) -> AgentsError {
+    match status {
+        401 => AgentsError::NotAuthenticated,
+        403 => AgentsError::AccessDenied,
+        404 => AgentsError::AgentNotFound,
+        429 => AgentsError::RateLimited,
+        other => AgentsError::Unknown {
+            message: format!("{path} returned {other}"),
+        },
+    }
+}
+
+async fn list_children_impl(client: &OAuthClient) -> Result<Vec<ChildSummary>, AgentsError> {
+    let resp = client.get("/agent/child").await.map_err(oauth_err)?;
+    if resp.status().as_u16() != 200 {
+        return Err(child_route_error(
+            resp.status().as_u16(),
+            "GET /agent/child",
+        ));
+    }
+    let body: ListChildrenResponse = resp.json().await.map_err(|e| AgentsError::Unknown {
+        message: format!("failed to parse /agent/child response: {e}"),
+    })?;
+    Ok(body.children)
+}
+
+async fn revoke_child_impl(client: &OAuthClient, child_did: &str) -> Result<(), AgentsError> {
+    let resp = client
+        .post(
+            "/agent/child/revoke",
+            &serde_json::json!({ "did": child_did }),
+        )
+        .await
+        .map_err(oauth_err)?;
+    match resp.status().as_u16() {
+        200 => Ok(()),
+        other => Err(child_route_error(other, "child revoke")),
+    }
+}
+
+async fn delete_child_impl(
+    client: &OAuthClient,
+    child_did: &str,
+) -> Result<ChildDeletion, AgentsError> {
+    let resp = client
+        .post(
+            "/agent/child/delete",
+            &serde_json::json!({ "did": child_did }),
+        )
+        .await
+        .map_err(oauth_err)?;
+    if resp.status().as_u16() != 200 {
+        return Err(child_route_error(resp.status().as_u16(), "child delete"));
+    }
+    resp.json().await.map_err(|e| AgentsError::Unknown {
+        message: format!("failed to parse child delete response: {e}"),
+    })
+}
+
+async fn remint_child_assertion_impl(
+    client: &OAuthClient,
+    child_did: &str,
+) -> Result<ChildAssertion, AgentsError> {
+    let resp = client
+        .post(
+            "/agent/child/assertion",
+            &serde_json::json!({ "did": child_did }),
+        )
+        .await
+        .map_err(oauth_err)?;
+    if resp.status().as_u16() != 200 {
+        return Err(child_route_error(resp.status().as_u16(), "child assertion"));
+    }
+    resp.json().await.map_err(|e| AgentsError::Unknown {
+        message: format!("failed to parse child assertion response: {e}"),
+    })
 }
 
 async fn get_agent_audit_impl(
@@ -671,6 +815,67 @@ pub async fn mint_child_from_claim(
     Ok(minted)
 }
 
+/// List the sovereign child accounts this identity has minted for agents.
+///
+/// Separate from [`list_agents`] on purpose: a child is an account of its own, not a capability
+/// on this one, so it never appears on `GET /v1/agents` (that lists registrations bound to the
+/// caller's DID, and a child's is bound to the child's). Its *audit trail* still reads through
+/// `get_agent_audit` — the `/v1/agents` routes accept the parent as owner of a child's
+/// registration precisely because the child's own tokens never pass the owner guard.
+#[tauri::command]
+pub async fn list_children(
+    state: tauri::State<'_, crate::oauth::AppState>,
+    did: String,
+) -> Result<Vec<ChildSummary>, AgentsError> {
+    let session = full_access_session(state.pds_client(), &did).await?;
+    list_children_impl(&session.client).await
+}
+
+/// Revoke a child's delegated capability, keeping its account, repo, and DID intact.
+///
+/// The lower rung of the custody ladder: the agent stops getting credentials, but the identity
+/// the user gave it still exists and its history is still readable. Idempotent on the server.
+#[tauri::command]
+pub async fn revoke_child(
+    state: tauri::State<'_, crate::oauth::AppState>,
+    did: String,
+    child_did: String,
+) -> Result<(), AgentsError> {
+    let session = full_access_session(state.pds_client(), &did).await?;
+    revoke_child_impl(&session.client, &child_did).await
+}
+
+/// Retire a child's hosting: revoke it, deactivate it now, and schedule the permanent purge.
+///
+/// The returned `delete_after` is the whole point of surfacing this to the user — until it
+/// passes, the child's data is deactivated rather than gone. The did:plc identity is untouched
+/// either way; this server holds no rotation key for it.
+#[tauri::command]
+pub async fn delete_child(
+    state: tauri::State<'_, crate::oauth::AppState>,
+    did: String,
+    child_did: String,
+) -> Result<ChildDeletion, AgentsError> {
+    let session = full_access_session(state.pds_client(), &did).await?;
+    delete_child_impl(&session.client, &child_did).await
+}
+
+/// Renew a live child's identity assertion — its credential for the token endpoint.
+///
+/// An *active* child renews automatically at every token exchange, so this is for one that lay
+/// dormant past a full assertion lifetime and can no longer bootstrap. The response carries a
+/// live credential; the caller shows it once for the user to hand back to the agent and keeps
+/// no copy. A revoked child is refused ([`AgentsError::AccessDenied`]).
+#[tauri::command]
+pub async fn remint_child_assertion(
+    state: tauri::State<'_, crate::oauth::AppState>,
+    did: String,
+    child_did: String,
+) -> Result<ChildAssertion, AgentsError> {
+    let session = full_access_session(state.pds_client(), &did).await?;
+    remint_child_assertion_impl(&session.client, &child_did).await
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -729,6 +934,148 @@ mod tests {
             agents[0].last_used_at.as_deref(),
             Some("2026-01-02T00:00:00.000Z")
         );
+    }
+
+    #[tokio::test]
+    async fn list_children_parses_scopes_and_purge_date() {
+        let server = MockServer::start();
+        server.mock(|when, then| {
+            when.method(GET)
+                .path("/agent/child")
+                .header_exists("authorization");
+            then.status(200).json_body(serde_json::json!({
+                "children": [
+                    {
+                        "registrationId": "reg_live",
+                        "did": "did:plc:childlive",
+                        "handle": "scribe.example.com",
+                        "status": "claimed",
+                        "createdAt": "2026-01-01T00:00:00.000Z",
+                        "scopes": ["repo:write"]
+                    },
+                    {
+                        "registrationId": "reg_gone",
+                        "did": "did:plc:childgone",
+                        "handle": "old.example.com",
+                        "status": "revoked",
+                        "createdAt": "2026-01-01T00:00:00.000Z",
+                        "scopes": [],
+                        "deleteAfter": "2026-02-01T00:00:00Z"
+                    }
+                ]
+            }));
+        });
+
+        let children = list_children_impl(&bearer_client(&server)).await.unwrap();
+        assert_eq!(children.len(), 2);
+        assert_eq!(children[0].scopes, vec!["repo:write"]);
+        // A live child carries no purge date; only a scheduled deletion does. Without this the
+        // wallet could not tell a revoked child from one counting down to permanent removal.
+        assert!(children[0].delete_after.is_none());
+        assert_eq!(
+            children[1].delete_after.as_deref(),
+            Some("2026-02-01T00:00:00Z")
+        );
+    }
+
+    #[tokio::test]
+    async fn delete_child_returns_the_purge_deadline() {
+        let server = MockServer::start();
+        server.mock(|when, then| {
+            when.method(POST)
+                .path("/agent/child/delete")
+                .json_body(serde_json::json!({ "did": "did:plc:childgone" }));
+            then.status(200).json_body(serde_json::json!({
+                "did": "did:plc:childgone",
+                "status": "deletion_scheduled",
+                "deleteAfter": "2026-02-01T00:00:00Z"
+            }));
+        });
+
+        let scheduled = delete_child_impl(&bearer_client(&server), "did:plc:childgone")
+            .await
+            .unwrap();
+        assert_eq!(scheduled.status, "deletion_scheduled");
+        assert_eq!(scheduled.delete_after, "2026-02-01T00:00:00Z");
+    }
+
+    #[tokio::test]
+    async fn reminting_a_revoked_child_is_access_denied_not_a_retryable_error() {
+        // The server refuses renewal for a revoked child with 403. Surfacing that as a distinct
+        // state matters: revocation is one-way, so the screen must say so rather than invite a
+        // retry that can never succeed.
+        let server = MockServer::start();
+        server.mock(|when, then| {
+            when.method(POST).path("/agent/child/assertion");
+            then.status(403)
+                .json_body(serde_json::json!({ "error": "Forbidden" }));
+        });
+
+        let err = remint_child_assertion_impl(&bearer_client(&server), "did:plc:childgone")
+            .await
+            .unwrap_err();
+        assert!(matches!(err, AgentsError::AccessDenied), "got {err:?}");
+    }
+
+    #[tokio::test]
+    async fn remint_child_assertion_parses_the_renewed_credential() {
+        let server = MockServer::start();
+        server.mock(|when, then| {
+            when.method(POST)
+                .path("/agent/child/assertion")
+                .json_body(serde_json::json!({ "did": "did:plc:childlive" }));
+            then.status(200).json_body(serde_json::json!({
+                "did": "did:plc:childlive",
+                "registrationId": "reg_live",
+                "identityAssertion": "header.payload.sig",
+                "assertionExpires": "2026-01-02T00:00:00.000Z",
+                "scopes": ["repo:write"]
+            }));
+        });
+
+        let renewed = remint_child_assertion_impl(&bearer_client(&server), "did:plc:childlive")
+            .await
+            .unwrap();
+        assert_eq!(renewed.identity_assertion, "header.payload.sig");
+        assert_eq!(renewed.scopes, vec!["repo:write"]);
+    }
+
+    #[tokio::test]
+    async fn an_unknown_child_is_not_found_on_every_lifecycle_route() {
+        // Uniform 404 across the three mutating routes — a foreign child DID answers the same as
+        // a nonexistent one, so none of them is an existence oracle for another account.
+        let server = MockServer::start();
+        for path in [
+            "/agent/child/revoke",
+            "/agent/child/delete",
+            "/agent/child/assertion",
+        ] {
+            server.mock(|when, then| {
+                when.method(POST).path(path);
+                then.status(404)
+                    .json_body(serde_json::json!({ "error": "NotFound" }));
+            });
+        }
+        let client = bearer_client(&server);
+
+        assert!(matches!(
+            revoke_child_impl(&client, "did:plc:nope")
+                .await
+                .unwrap_err(),
+            AgentsError::AgentNotFound
+        ));
+        assert!(matches!(
+            delete_child_impl(&client, "did:plc:nope")
+                .await
+                .unwrap_err(),
+            AgentsError::AgentNotFound
+        ));
+        assert!(matches!(
+            remint_child_assertion_impl(&client, "did:plc:nope")
+                .await
+                .unwrap_err(),
+            AgentsError::AgentNotFound
+        ));
     }
 
     #[tokio::test]

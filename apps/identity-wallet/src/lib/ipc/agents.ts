@@ -68,6 +68,50 @@ export type MintedChild = {
   handle: string;
 };
 
+/**
+ * One sovereign child account under this identity (`GET /agent/child` entry).
+ *
+ * Addressed by `did` — its own — rather than a registration id, because a child is an account
+ * first and a capability second. Its audit trail still reads through {@link getAgentAudit} with
+ * `registrationId`: the `/v1/agents` routes accept the parent as owner of a child's registration.
+ */
+export type ChildSummary = {
+  registrationId: string;
+  /** The child's own `did:plc`. Every lifecycle command takes this as `childDid`. */
+  did: string;
+  handle: string;
+  /** `claimed` = live, `active` = mid-provisioning, `revoked` = capability turned off. */
+  status: 'active' | 'claimed' | 'revoked';
+  createdAt: string;
+  scopes: string[];
+  /**
+   * Set only once deletion is scheduled: when the server purges the child permanently. Deleting
+   * revokes as a side effect, so `status` alone cannot tell a retired child from a merely revoked
+   * one — this field is what distinguishes them, and it must lead the UI when present.
+   */
+  deleteAfter?: string;
+};
+
+/** Result of scheduling a child's deletion. */
+export type ChildDeletion = {
+  did: string;
+  status: string;
+  /** When the child is purged for good — until then it is deactivated, not gone. */
+  deleteAfter: string;
+};
+
+/**
+ * A renewed child credential. `identityAssertion` is live and secret: show it once for the user
+ * to hand back to the agent, offer a copy, and keep no copy of it in wallet state.
+ */
+export type ChildAssertion = {
+  did: string;
+  registrationId: string;
+  identityAssertion: string;
+  assertionExpires: string;
+  scopes: string[];
+};
+
 /** Result of a confirmed claim ceremony. */
 export type AgentClaimConfirmation = {
   registrationId: string;
@@ -159,3 +203,39 @@ export const mintChildFromClaim = (
  */
 export const agentAccountsProvisioned = (did: string): Promise<boolean> =>
   invoke('agent_accounts_provisioned', { did });
+
+// ── Child lifecycle (the parent console under My Agents) ─────────────────────
+//
+// `did` is always the authenticating parent; `childDid` names the child being acted on.
+
+/** List the sovereign child accounts this identity has minted for agents. */
+export const listChildren = (did: string): Promise<ChildSummary[]> =>
+  invoke('list_children', { did });
+
+/**
+ * Turn a child's delegated capability off, keeping its account, repo, and DID.
+ *
+ * The lower rung of the custody ladder — the identity the user gave the agent survives, and its
+ * history stays readable. Gate it behind `authenticateBiometric()` like {@link revokeAgent}.
+ */
+export const revokeChild = (did: string, childDid: string): Promise<void> =>
+  invoke('revoke_child', { did, childDid });
+
+/**
+ * Retire a child's hosting: revoke it, deactivate it now, schedule the permanent purge.
+ *
+ * Show the returned `deleteAfter` — until it passes the data is deactivated rather than gone.
+ * The child's did:plc is untouched; this server holds no rotation key for it.
+ */
+export const deleteChild = (did: string, childDid: string): Promise<ChildDeletion> =>
+  invoke('delete_child', { did, childDid });
+
+/**
+ * Renew a live child's identity assertion — its credential for the token endpoint.
+ *
+ * An active child renews itself at every token exchange, so this is for one that lay dormant past
+ * a full assertion lifetime and can no longer bootstrap. A revoked child is `ACCESS_DENIED`:
+ * renewal is never a way back up the ladder revocation walked down.
+ */
+export const remintChildAssertion = (did: string, childDid: string): Promise<ChildAssertion> =>
+  invoke('remint_child_assertion', { did, childDid });
