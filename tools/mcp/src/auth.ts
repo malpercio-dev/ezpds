@@ -230,9 +230,24 @@ export async function exchangeAssertion(
       assertion: typeof token.identity_assertion === 'string' ? token.identity_assertion : undefined,
     };
   } catch (err) {
-    if (err instanceof HttpError) {
-      if (err.errorCode === 'access_denied') throw new RevokedError();
-      if (err.errorCode === 'invalid_grant') throw new SessionExpiredError();
+    if (err instanceof HttpError && err.errorCode === 'access_denied') {
+      throw new RevokedError();
+    }
+    if (err instanceof HttpError && err.errorCode === 'invalid_grant') {
+      // The RFC 7523 code is coarse on purpose; the description names the cause.
+      // Expired (assertion TTL lapsed), unknown registration, and unclaimed are all
+      // recoverable — restart onboarding. Anything else ("is invalid", subject
+      // mismatch) is a forged/replayed/foreign assertion: re-registering on a loop
+      // would be the wrong response, so fail loudly with the server's reason.
+      const cause = err.errorDescription ?? '';
+      if (cause.includes('is invalid') || cause.includes('does not match')) {
+        throw new Error(
+          `The PDS rejected the identity_assertion as invalid (${cause}). This is not an ` +
+            'expiry: do not re-register in a loop — verify the credentials file belongs to ' +
+            'this PDS and has not been tampered with.',
+        );
+      }
+      throw new SessionExpiredError();
     }
     throw err;
   }

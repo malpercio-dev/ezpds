@@ -15,9 +15,13 @@
 //! revoked identity is refused at its next exchange below, exactly like a stolen OAuth refresh
 //! token.
 //!
-//! The registration must be `claimed` with a DID matching the assertion `sub`: unclaimed/absent
-//! → `invalid_grant`, `revoked` → `access_denied`, and a `resource` naming anything but this
-//! server's origin → `invalid_target`.
+//! The registration must be `claimed` with a DID matching the assertion `sub`. Both the
+//! assertion verifier and this state gate name their specific cause in `error_description`
+//! (expired / invalid / unclaimed / unknown registration / subject mismatch) so an autonomous
+//! agent can self-diagnose: expired and unclaimed are the recoverable paths (re-register, or
+//! complete the ceremony), revoked is terminal (`access_denied`), and a resource naming anything
+//! but this server's origin → `invalid_target`. The RFC 7523 §3.1 error *codes* stay coarse —
+//! the description is the machine-readable signal.
 //!
 //! The issued token carries the assertion's granular `scope` verbatim — no widening is possible,
 //! because the grant accepts no requested `scope` — **and** its `registration_id` claim, which
@@ -109,6 +113,12 @@ pub(super) async fn handle_jwt_bearer(state: &AppState, form: TokenRequestForm) 
     // trusted, so both → `invalid_grant`. Also require the stored
     // DID to match the assertion's `sub`, so the state lookup and the token subject resolve to the
     // same identity even if the issuance path ever drifts.
+    //
+    // Every `invalid_grant` here names its specific cause in `error_description`: an autonomous
+    // agent deciding what to do next must be able to tell "my assertion lapsed — re-register" from
+    // "this registration never existed / was never claimed" (both recoverable) from a forged or
+    // replayed assertion (not recoverable). The RFC 7523 code stays coarse; the description is the
+    // machine-readable signal.
     let identity = match get_agent_identity(&state.db, &claims.registration_id).await {
         Ok(Some(identity))
             if identity.status == AgentIdentityStatus::Claimed
@@ -120,9 +130,34 @@ pub(super) async fn handle_jwt_bearer(state: &AppState, form: TokenRequestForm) 
             return OAuthTokenError::new("access_denied", "the agent identity has been revoked")
                 .into_response();
         }
-        Ok(_) => {
-            return OAuthTokenError::new("invalid_grant", "the agent identity is not claimed")
-                .into_response();
+        Ok(Some(identity)) if identity.status == AgentIdentityStatus::Claimed => {
+            // Claimed but the stored DID differs from the assertion `sub`: the two identity
+            // graphs have drifted. Never mint a token across that seam.
+            tracing::warn!(
+                registration_id = %claims.registration_id,
+                assertion_sub = %claims.sub,
+                stored_did = ?identity.did,
+                "jwt-bearer exchange: assertion subject does not match the registered identity"
+            );
+            return OAuthTokenError::new(
+                "invalid_grant",
+                "identity_assertion subject does not match the registered identity",
+            )
+            .into_response();
+        }
+        Ok(Some(_)) => {
+            return OAuthTokenError::new(
+                "invalid_grant",
+                "agent identity has not been claimed yet; complete the claim ceremony first",
+            )
+            .into_response();
+        }
+        Ok(None) => {
+            return OAuthTokenError::new(
+                "invalid_grant",
+                "unknown agent registration; re-register to obtain a new identity_assertion",
+            )
+            .into_response();
         }
         Err(e) => {
             tracing::error!(error = %e, "failed to load agent identity for jwt-bearer exchange");
@@ -231,8 +266,12 @@ pub(super) async fn handle_jwt_bearer(state: &AppState, form: TokenRequestForm) 
 
 /// Verify a service-signed `identity_assertion`: ES256 signature under this server's own OAuth key
 /// (the assertion is self-signed), plus `iss`/`aud` == this server's origin and an unexpired `exp`.
-/// Any failure — bad signature, wrong issuer/audience, expired, or a malformed/foreign token —
-/// maps to `invalid_grant` (RFC 7523 §3.1).
+/// Both failure classes map to `invalid_grant` (RFC 7523 §3.1), but the `error_description`
+/// separates an expired assertion (the routine, recoverable case — the agent should re-register)
+/// from a signature/issuer/shape failure (forged, replayed, or foreign — never retry the same
+/// credential): a sporadic agent whose assertion TTL lapsed must be able to self-diagnose from
+/// the description alone instead of inferring expiry from a message shared with every other
+/// rejection.
 fn verify_agent_assertion(
     assertion: &str,
     state: &AppState,
@@ -252,7 +291,17 @@ fn verify_agent_assertion(
         .map(|data| data.claims)
         .map_err(|e| {
             tracing::debug!(error = %e, error_kind = ?e.kind(), "agent identity_assertion verification failed");
-            OAuthTokenError::new("invalid_grant", "assertion is invalid, expired, or not for this server")
+            if e.kind() == &jsonwebtoken::errors::ErrorKind::ExpiredSignature {
+                OAuthTokenError::new(
+                    "invalid_grant",
+                    "identity_assertion has expired; re-register to obtain a new one",
+                )
+            } else {
+                OAuthTokenError::new(
+                    "invalid_grant",
+                    "identity_assertion is invalid or not for this server",
+                )
+            }
         })
 }
 
@@ -435,7 +484,17 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
-        assert_eq!(json_body(resp).await["error"], "invalid_grant");
+        let json = json_body(resp).await;
+        assert_eq!(json["error"], "invalid_grant");
+        // A tampered assertion is not an expired one: the description must say invalid, so the
+        // agent does not loop on re-registration for what is actually a forgery or replay.
+        assert!(
+            json["error_description"]
+                .as_str()
+                .unwrap()
+                .contains("is invalid"),
+            "tampered assertion must be described as invalid, got: {json}"
+        );
     }
 
     #[tokio::test]
@@ -459,7 +518,90 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
-        assert_eq!(json_body(resp).await["error"], "invalid_grant");
+        let json = json_body(resp).await;
+        assert_eq!(json["error"], "invalid_grant");
+        // The whole point of the split: an expired assertion is the routine, recoverable case,
+        // and the description must say so — an agent acting sporadically hits this in every
+        // action window and must be able to tell "re-register" from "revoked, stop".
+        assert!(
+            json["error_description"]
+                .as_str()
+                .unwrap()
+                .contains("has expired"),
+            "expired assertion must be described as expired, got: {json}"
+        );
+    }
+
+    /// A `claimed` row whose stored DID differs from the assertion `sub` gets its own
+    /// description — the recoverable expiry/unclaimed paths must never absorb it.
+    #[tokio::test]
+    async fn jwt_bearer_subject_mismatch_names_the_mismatch() {
+        let state = test_state().await;
+        // The row is claimed, but for a different DID than the assertion names.
+        seed_agent_identity(
+            &state,
+            "reg_mismatch",
+            "did:plc:agentbearer5555555555",
+            "claimed",
+        )
+        .await;
+        let assertion = mint_assertion(
+            &state,
+            "did:plc:agentbearer6666666666",
+            "reg_mismatch",
+            "com.atproto.access",
+            now_secs() + 600,
+        );
+
+        let resp = app(state)
+            .oneshot(post_token(&format!(
+                "grant_type={JWT_BEARER}&assertion={assertion}"
+            )))
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+        let json = json_body(resp).await;
+        assert_eq!(json["error"], "invalid_grant");
+        assert!(
+            json["error_description"]
+                .as_str()
+                .unwrap()
+                .contains("does not match"),
+            "subject mismatch must be described as a mismatch, got: {json}"
+        );
+    }
+
+    /// An unclaimed (`active`) registration is not an unknown one: the description points the
+    /// agent at the claim ceremony, not at re-registration.
+    #[tokio::test]
+    async fn jwt_bearer_unclaimed_registration_names_the_ceremony() {
+        let state = test_state().await;
+        let did = "did:plc:agentbearer7777777777";
+        seed_agent_identity(&state, "reg_unclaimed", did, "active").await;
+        let assertion = mint_assertion(
+            &state,
+            did,
+            "reg_unclaimed",
+            "com.atproto.access",
+            now_secs() + 600,
+        );
+
+        let resp = app(state)
+            .oneshot(post_token(&format!(
+                "grant_type={JWT_BEARER}&assertion={assertion}"
+            )))
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+        let json = json_body(resp).await;
+        assert_eq!(json["error"], "invalid_grant");
+        assert!(
+            json["error_description"]
+                .as_str()
+                .unwrap()
+                .contains("claimed"),
+            "unclaimed registration must be described as unclaimed, got: {json}"
+        );
     }
 
     /// The sliding renewal: the returned `identity_assertion` is freshly minted with the claimed
