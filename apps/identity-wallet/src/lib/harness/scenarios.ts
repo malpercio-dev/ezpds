@@ -9,6 +9,7 @@
 import {
   DEFAULT_PDS_URL,
   emptyWalletState,
+  fakePlcDid,
   seedAgent,
   seedAlert,
   seedAppPassword,
@@ -33,6 +34,7 @@ export type ScenarioName =
   | 'migration-in-flight'
   | 'agent-connected'
   | 'agent-accounts-unprovisioned'
+  | 'agent-child-mint'
   | 'app-password-minted'
   | 'device-key-unusable'
   | 'notifications-unverified'
@@ -234,6 +236,27 @@ export const scenarios: Record<ScenarioName, () => WalletState> = {
     state.pdsUrl = DEFAULT_PDS_URL;
     const identity = seedIdentity({ handle: 'alice.harness.pds.local' });
     identity.agents = [seedAgent(identity.did, identity.did)];
+    upsertIdentity(state, identity);
+    return state;
+  },
+
+  // The cooperative mint, ready to drive: a provisioned identity, plus one child already
+  // holding `scribe.harness.pds.local`. Approve an agent with a code starting with "CHILD"
+  // (e.g. CHILD1) — the preview comes back anonymous with that same handle proposed, so
+  // accepting the agent's proposal reproduces the taken-handle rejection and any other handle
+  // mints. Deliberately the agent's *own* proposal that collides: the wallet must never treat
+  // the hint as settled.
+  'agent-child-mint': () => {
+    const state = emptyWalletState();
+    state.pdsUrl = DEFAULT_PDS_URL;
+    const identity = seedIdentity({ handle: 'alice.harness.pds.local' });
+    identity.children = [
+      {
+        registrationId: 'reg-CHILD0',
+        did: fakePlcDid(`${identity.did}:child:0`),
+        handle: 'scribe.harness.pds.local',
+      },
+    ];
     upsertIdentity(state, identity);
     return state;
   },

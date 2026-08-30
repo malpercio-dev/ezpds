@@ -1143,6 +1143,7 @@
       did={selectedDid ?? ''}
       onback={() => goTo('my_agents')}
       ondone={() => goTo('my_agents')}
+      onprovision={() => goTo('enable_agent_accounts')}
     />
 
   {:else if step === 'oauth_consent_approval'}

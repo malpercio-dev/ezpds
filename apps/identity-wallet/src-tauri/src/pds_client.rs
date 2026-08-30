@@ -1555,21 +1555,30 @@ impl PdsClient {
             })
     }
 
-    /// Reserve a signing key for a DID on the PDS (auth: none, idempotent).
+    /// Reserve a signing key on the PDS (auth: none, idempotent per DID).
     ///
-    /// Calls `POST {pds_url}/xrpc/com.atproto.server.reserveSigningKey` with body `{"did": did}`.
-    /// Returns the `signingKey` field from the response (a did:key string).
+    /// Calls `POST {pds_url}/xrpc/com.atproto.server.reserveSigningKey` with body `{"did": did}`,
+    /// or an empty body when `did` is `None`. Returns the `signingKey` field from the response (a
+    /// did:key string).
+    ///
+    /// `None` is the *anonymous* reservation, for a key that has to exist before the DID it will
+    /// belong to does: the child-account mint has to name a repo-signing key inside the genesis op
+    /// whose hash becomes the child's DID. Anonymous reservations are rate-limited per IP and are
+    /// not idempotent — each call yields a fresh key.
     pub async fn reserve_signing_key(
         &self,
         pds_url: &str,
-        did: &str,
+        did: Option<&str>,
     ) -> Result<String, PdsClientError> {
         let url = format!(
             "{}/xrpc/com.atproto.server.reserveSigningKey",
             pds_url.trim_end_matches('/')
         );
 
-        let body = serde_json::json!({ "did": did });
+        let body = match did {
+            Some(did) => serde_json::json!({ "did": did }),
+            None => serde_json::json!({}),
+        };
         let resp = self
             .client
             .post(&url)
@@ -4089,7 +4098,7 @@ mod tests {
 
         let client = PdsClient::new();
         let result = client
-            .reserve_signing_key(&mock_server.base_url(), "did:plc:test123")
+            .reserve_signing_key(&mock_server.base_url(), Some("did:plc:test123"))
             .await;
 
         assert!(result.is_ok());
@@ -4109,7 +4118,7 @@ mod tests {
 
         let client = PdsClient::new();
         let result = client
-            .reserve_signing_key(&mock_server.base_url(), "invalid")
+            .reserve_signing_key(&mock_server.base_url(), Some("invalid"))
             .await;
 
         assert!(result.is_err());

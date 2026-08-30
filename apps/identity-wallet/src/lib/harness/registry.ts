@@ -43,6 +43,7 @@ import type {
   AgentAuditPage,
   AgentClaimPreview,
   AgentClaimConfirmation,
+  MintedChild,
   ConsentPreview,
   ConsentDecision,
   AppPasswordCreated,
@@ -230,6 +231,7 @@ export type CommandName =
   | 'preview_agent_claim'
   | 'confirm_agent_claim'
   | 'agent_accounts_provisioned'
+  | 'mint_child_from_claim'
   | 'preview_oauth_consent'
   | 'preview_oauth_consent_by_request_id'
   | 'confirm_oauth_consent'
@@ -1190,14 +1192,58 @@ export function buildRegistry(state: WalletState): Registry {
       }
       return { events: [] };
     },
-    preview_agent_claim: (args): AgentClaimPreview => ({
-      registrationId: `reg-${String(args.userCode ?? 'HARNESS')}`,
-      registrationType: 'service_auth',
-      issuer: 'did:web:agent.example',
-      subject: state.identities[0]?.did,
-      scopes: ['repo:write', 'blob:upload'],
-      userCodeExpiresAt: isoInHours(1),
-    }),
+    // A user code starting with "CHILD" previews an *anonymous* registration carrying a proposed
+    // handle — the only registration kind the server will mint a child for, and so the only way to
+    // reach the own-account fork in a browser.
+    preview_agent_claim: (args): AgentClaimPreview => {
+      const userCode = String(args.userCode ?? 'HARNESS');
+      if (userCode.startsWith('CHILD')) {
+        return {
+          registrationId: `reg-${userCode}`,
+          registrationType: 'anonymous',
+          scopes: ['repo:write', 'blob:upload'],
+          userCodeExpiresAt: isoInHours(1),
+          handleHint: 'scribe.harness.pds.local',
+        };
+      }
+      return {
+        registrationId: `reg-${userCode}`,
+        registrationType: 'service_auth',
+        issuer: 'did:web:agent.example',
+        subject: state.identities[0]?.did,
+        scopes: ['repo:write', 'blob:upload'],
+        userCodeExpiresAt: isoInHours(1),
+      };
+    },
+    // The cooperative arm. The real command reserves a signing key, derives the child's rotation
+    // key at the next index, signs its genesis op and confirms the claim with it; the fake keeps
+    // the two properties the screens depend on — an unprovisioned identity cannot mint, and a
+    // handle already in use is refused *without* consuming the claim, so the user corrects and
+    // retries rather than restarting the ceremony.
+    mint_child_from_claim: (args): MintedChild => {
+      const did = didArg(args);
+      const identity = findIdentity(state, did) ?? state.identities[0];
+      if (!identity) throw { code: 'IDENTITY_NOT_FOUND' };
+      if (!identity.agentAccountsProvisioned) throw { code: 'NOT_PROVISIONED' };
+
+      const handle = String(args.handle ?? '').trim().toLowerCase();
+      const taken =
+        state.identities.some((i) => i.handle === handle) ||
+        state.identities.some((i) => i.children.some((c) => c.handle === handle));
+      if (taken) {
+        throw { code: 'HANDLE_REJECTED', message: 'Handle is already taken on this server.' };
+      }
+
+      // The child DID stands in for the genesis-op hash: derived from the parent and the index, so
+      // successive mints yield distinct children exactly as distinct derivation indices do.
+      const child = {
+        registrationId: `reg-${String(args.userCode ?? 'HARNESS')}`,
+        did: fakePlcDid(`${identity.did}:child:${identity.children.length}`),
+        handle,
+      };
+      identity.children.push(child);
+      return child;
+    },
     confirm_agent_claim: (args): AgentClaimConfirmation => {
       const registrationId = `reg-${String(args.userCode ?? 'HARNESS')}`;
       const identity = state.identities[0];

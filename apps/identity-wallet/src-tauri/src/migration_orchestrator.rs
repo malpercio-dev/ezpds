@@ -564,7 +564,7 @@ async fn create_destination_account_impl(
     // 1. Reserve signing key at destination
     tracing::debug!(did = %did, dest_url = %dest_pds_url, "reserving signing key at destination");
     let _reserved_key = pds_client
-        .reserve_signing_key(dest_pds_url, did)
+        .reserve_signing_key(dest_pds_url, Some(did))
         .await
         .map_err(|e| {
             tracing::error!(did = %did, error = %e, "reserveSigningKey failed");

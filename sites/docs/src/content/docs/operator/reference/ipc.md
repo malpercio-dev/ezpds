@@ -72,6 +72,7 @@ Source: `apps/identity-wallet/src/lib/ipc/`
 | `list_app_passwords` | App command |
 | `list_identities` | App command |
 | `list_pending_removals` | App command |
+| `mint_child_from_claim` | App command |
 | `perform_did_ceremony` | App command |
 | `plugin:auth-session|start` | Tauri plugin |
 | `plugin:sharesheet|share_text` | Tauri plugin |

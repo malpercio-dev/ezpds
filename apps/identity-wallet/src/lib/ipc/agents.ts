@@ -53,6 +53,19 @@ export type AgentClaimPreview = {
   subject?: string;
   scopes: string[];
   userCodeExpiresAt: string;
+  /**
+   * The handle an `anonymous` agent proposed for an account of its own. Present only when it
+   * asked; offer it as an editable default, never a commitment.
+   */
+  handleHint?: string;
+};
+
+/** A child account just minted for an agent — its own identity, under this account's authority. */
+export type MintedChild = {
+  registrationId: string;
+  /** The child's own `did:plc`, which is the hash of the genesis op this wallet signed. */
+  did: string;
+  handle: string;
 };
 
 /** Result of a confirmed claim ceremony. */
@@ -77,6 +90,11 @@ export type AgentsError =
   | { code: 'ACCESS_DENIED' }
   | { code: 'AGENT_NOT_FOUND' }
   | { code: 'RATE_LIMITED' }
+  // No delegation seed — route to "Enable agent accounts" instead of retrying.
+  | { code: 'NOT_PROVISIONED' }
+  // The proposed child handle (or the op built around it) was refused. Recoverable: the claim
+  // attempt is not spent, so the user can correct the handle and submit again.
+  | { code: 'HANDLE_REJECTED'; message: string }
   // The identity is locked — run sovereignLogin(did) and retry.
   | { code: 'SESSION_LOCKED'; reason: UnlockReason }
   | { code: 'NETWORK_ERROR'; message: string }
@@ -113,6 +131,22 @@ export const confirmAgentClaim = (
   did: string,
   userCode: string
 ): Promise<AgentClaimConfirmation> => invoke('confirm_agent_claim', { did, userCode });
+
+/**
+ * Confirm a claim ceremony the cooperative way: mint the agent an account of its own — its own
+ * DID, repo, and handle — under this account's rotation authority, instead of handing it a
+ * credential for this account.
+ *
+ * Only offered for an `anonymous` registration on a provisioned identity; gate it behind
+ * `authenticateBiometric()` exactly like {@link confirmAgentClaim}, since it is the same
+ * authorization boundary. A `HANDLE_REJECTED` failure is recoverable — the claim attempt is not
+ * spent, so re-submit with a corrected handle rather than restarting the ceremony.
+ */
+export const mintChildFromClaim = (
+  did: string,
+  userCode: string,
+  handle: string
+): Promise<MintedChild> => invoke('mint_child_from_claim', { did, userCode, handle });
 
 /**
  * Whether this identity can give an agent an account of its own.

@@ -1,7 +1,7 @@
 // pattern: Mixed (Functional Core error mapping; Imperative Shell commands)
 
 //! Agent consent + audit — the wallet side of the auth.md claim ceremony and the
-//! "My agents" surface. Six per-identity Tauri IPC commands, each taking a `did`:
+//! "My agents" surface. Seven per-identity Tauri IPC commands, each taking a `did`:
 //!
 //! - `preview_agent_claim(did, user_code) -> AgentClaimPreview` — `POST /v1/agents/claim-preview`:
 //!   what approving this code would grant, shown before the biometric gate.
@@ -16,6 +16,10 @@
 //! - `agent_accounts_provisioned(did) -> bool` — whether the identity holds a delegation
 //!   seed, and so can mint an agent an account of its own. The one command here that
 //!   touches no network: it reads the Keychain slot the share ceremony writes.
+//! - `mint_child_from_claim(did, user_code, handle) -> MintedChild` — the cooperative arm of
+//!   the same gate: reserve a repo key, derive the child's rotation key off the delegation
+//!   seed, sign its genesis op, and confirm the claim with it, so the agent ends up with an
+//!   account of its own instead of a credential for this one.
 //!
 //! Each resolves a refreshable per-DID full-access session via
 //! `SessionProvider::full_access_client` (like `app_passwords.rs`) and issues the
@@ -27,15 +31,15 @@
 //! `&OAuthClient`, tested against httpmock.
 //!
 //! `AgentsError` (NOT_AUTHENTICATED, CODE_NOT_FOUND, CODE_EXPIRED, ALREADY_CLAIMED,
-//! ACCESS_DENIED, AGENT_NOT_FOUND, RATE_LIMITED, SESSION_LOCKED, NETWORK_ERROR,
-//! UNKNOWN) serializes as `{ code: "SCREAMING_SNAKE_CASE" }`; the TypeScript union in
+//! ACCESS_DENIED, AGENT_NOT_FOUND, RATE_LIMITED, NOT_PROVISIONED, HANDLE_REJECTED,
+//! SESSION_LOCKED, NETWORK_ERROR, UNKNOWN) serializes as `{ code: "SCREAMING_SNAKE_CASE" }`; the TypeScript union in
 //! `$lib/ipc` must match exactly, and `SESSION_LOCKED` carries
 //! `reason: UnlockReason`. The ceremony's `{error}` codes map onto it in
 //! `map_ceremony_error`; a session-lifecycle failure maps via `map_session_error` —
 //! only a genuine transport failure is NETWORK_ERROR (a `NeedsUnlock` is
 //! SESSION_LOCKED, every other verdict UNKNOWN) — so denial, expiry, and lock render
 //! as explicit states. The IPC types (`AgentSummary`, `AgentAuditEvent`,
-//! `AgentAuditPage`, `AgentClaimPreview`, `AgentClaimConfirmation`) serialize
+//! `AgentAuditPage`, `AgentClaimPreview`, `AgentClaimConfirmation`, `MintedChild`) serialize
 //! camelCase and must match their `$lib/ipc` counterparts.
 
 use serde::{Deserialize, Serialize};
@@ -107,6 +111,37 @@ pub struct AgentClaimPreview {
     pub subject: Option<String>,
     pub scopes: Vec<String>,
     pub user_code_expires_at: String,
+    /// The handle an `anonymous` agent proposed for an account of its own. Present only when it
+    /// asked; the approval screen offers it as an editable default, never a commitment.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub handle_hint: Option<String>,
+}
+
+/// A child account minted by [`mint_child_from_claim`] — the agent's own identity, under this
+/// account's rotation authority. The agent collects its credential through the claim-grant poll it
+/// was already running, so nothing here is secret; it is what the wallet shows the user.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MintedChild {
+    pub registration_id: String,
+    /// The child's own `did:plc` — the hash of the genesis op the wallet just signed.
+    pub did: String,
+    pub handle: String,
+}
+
+/// The child block on a successful confirm-with-child response.
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ConfirmedChildBody {
+    did: String,
+    handle: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct ChildConfirmResponse {
+    #[serde(alias = "registration_id")]
+    registration_id: String,
+    child: Option<ConfirmedChildBody>,
 }
 
 /// Result of a confirmed claim (`POST /agent/identity/claim/confirm`).
@@ -159,6 +194,16 @@ pub enum AgentsError {
     /// dead-end where an expired global session token surfaced as a bogus connection error.
     #[error("identity is locked and needs a passwordless unlock")]
     SessionLocked { reason: UnlockReason },
+    /// This identity holds no delegation seed, so there is no key to sign a child's genesis
+    /// operation with. The frontend gates on `agent_accounts_provisioned` first; reaching this
+    /// means the seed vanished between the gate and the mint.
+    #[error("this identity is not provisioned for agent accounts")]
+    NotProvisioned,
+    /// The server refused the proposed child handle or the genesis operation built around it.
+    /// Recoverable by construction: the mint rejects strictly before the claim attempt is spent,
+    /// so the registration stays claimable and a corrected handle can be submitted.
+    #[error("handle rejected: {message}")]
+    HandleRejected { message: String },
     /// Transport-level failure reaching the PDS.
     #[error("network error: {message}")]
     NetworkError { message: String },
@@ -171,6 +216,8 @@ pub enum AgentsError {
 #[derive(Debug, Deserialize)]
 struct CeremonyErrorBody {
     error: String,
+    #[serde(default)]
+    error_description: Option<String>,
 }
 
 /// Map a confirm/preview ceremony error code to the typed variant the frontend renders.
@@ -357,6 +404,143 @@ async fn confirm_agent_claim_impl(
     }
 }
 
+/// Build and sign the child's did:plc genesis operation — the functional core of the mint.
+///
+/// `rotationKeys = [derived child key, PDS repo key]`, signed by `rotationKeys[0]`, which is what
+/// the server pins as the signer and what keeps the child's recovery authority on this device. The
+/// parent's device key is deliberately absent: naming it would publish a parent↔child link in the
+/// child's public PLC audit log.
+///
+/// The returned op carries the child's DID, since a did:plc *is* the hash of its genesis op — the
+/// caller cross-checks the server's answer against it.
+fn build_child_genesis_op(
+    delegation_seed: &[u8; 32],
+    index: u32,
+    repo_key_id: &crypto::DidKeyUri,
+    handle: &str,
+    pds_url: &str,
+) -> Result<crypto::PlcGenesisOp, AgentsError> {
+    let child_seed = crypto::derive_child_seed(delegation_seed, index);
+    let child_key =
+        crypto::derive_recovery_keypair(&child_seed).map_err(|e| AgentsError::Unknown {
+            message: format!("child key derivation failed: {e}"),
+        })?;
+    let rotation_keys = [child_key.key_id.clone(), repo_key_id.clone()];
+    crypto::build_did_plc_genesis_op_multi_rotation_with_external_signer(
+        &rotation_keys,
+        repo_key_id,
+        handle,
+        pds_url,
+        crate::disaster_recovery::recovery_sign_closure(child_key.private_key_bytes.clone()),
+    )
+    .map_err(|e| AgentsError::Unknown {
+        message: format!("genesis op signing failed: {e}"),
+    })
+}
+
+/// Mint the agent an account of its own, then confirm the claim with it.
+///
+/// The order matters and is not rearrangeable. The child's `did:plc` *is* the hash of the genesis
+/// operation, so every key the operation names has to exist first: the repo-signing key is reserved
+/// anonymously from the PDS (there is no DID yet to reserve it against), and the rotation key is
+/// derived locally at `index` off the delegation seed.
+///
+/// Everything that can reject — handle validation, genesis verification, the reserved-key check,
+/// plc.directory publication — happens on the server strictly before the claim attempt is spent,
+/// so a [`AgentsError::HandleRejected`] leaves the registration claimable and the caller may retry
+/// with a corrected handle. The index is therefore advanced by the caller only on success.
+#[allow(clippy::too_many_arguments)]
+async fn mint_child_from_claim_impl(
+    client: &OAuthClient,
+    pds_client: &PdsClient,
+    pds_url: &str,
+    delegation_seed: &[u8; 32],
+    index: u32,
+    user_code: &str,
+    handle: &str,
+) -> Result<MintedChild, AgentsError> {
+    let repo_key = pds_client
+        .reserve_signing_key(pds_url, None)
+        .await
+        .map_err(|e| AgentsError::NetworkError {
+            message: format!("could not reserve a signing key: {e}"),
+        })?;
+
+    let genesis = build_child_genesis_op(
+        delegation_seed,
+        index,
+        &crypto::DidKeyUri(repo_key),
+        handle,
+        pds_url,
+    )?;
+    let plc_op: Value =
+        serde_json::from_str(&genesis.signed_op_json).map_err(|e| AgentsError::Unknown {
+            message: format!("genesis op is not valid JSON: {e}"),
+        })?;
+
+    let resp = client
+        .post(
+            "/agent/identity/claim/confirm",
+            &serde_json::json!({
+                "user_code": user_code,
+                "child": { "handle": handle, "plcOp": plc_op },
+            }),
+        )
+        .await
+        .map_err(oauth_err)?;
+
+    let status = resp.status();
+    if !status.is_success() {
+        return Err(map_child_confirm_error(status.as_u16(), resp).await);
+    }
+    let body: ChildConfirmResponse = resp.json().await.map_err(|e| AgentsError::Unknown {
+        message: format!("failed to parse confirm response: {e}"),
+    })?;
+    let child = body.child.ok_or_else(|| AgentsError::Unknown {
+        message: "confirm succeeded without a child block".to_string(),
+    })?;
+    // A did:plc is the hash of its genesis op, so the wallet already knows what the server had to
+    // arrive at. A different DID means the account the user was shown is not the one whose keys
+    // this device holds — never reported as a success.
+    if child.did != genesis.did {
+        return Err(AgentsError::Unknown {
+            message: "the server minted a different DID than the wallet signed".to_string(),
+        });
+    }
+    Ok(MintedChild {
+        registration_id: body.registration_id,
+        did: child.did,
+        handle: child.handle,
+    })
+}
+
+/// Map a failed confirm-with-child into the agents surface.
+///
+/// The child arm widens what `invalid_request` means: on the plain arm it can only be a bad code,
+/// but here it is also every mint rejection the server describes in words — a taken or malformed
+/// handle, an unreserved signing key, a genesis op that does not verify. Those are recoverable and
+/// the description is caller-facing, so they surface as [`AgentsError::HandleRejected`] rather than
+/// being flattened into "code not found".
+async fn map_child_confirm_error(status: u16, resp: reqwest::Response) -> AgentsError {
+    if status == 401 {
+        return AgentsError::NotAuthenticated;
+    }
+    if status == 429 {
+        return AgentsError::RateLimited;
+    }
+    match resp.json::<CeremonyErrorBody>().await {
+        Ok(body) if body.error == "invalid_request" => AgentsError::HandleRejected {
+            message: body
+                .error_description
+                .unwrap_or_else(|| "the server refused this handle".to_string()),
+        },
+        Ok(body) => map_ceremony_error(&body.error),
+        Err(_) => AgentsError::Unknown {
+            message: format!("confirm returned {status}"),
+        },
+    }
+}
+
 // ── Tauri commands ──────────────────────────────────────────────────────────────
 
 /// Whether this identity is provisioned to give an agent an account of its own.
@@ -434,6 +618,57 @@ pub async fn confirm_agent_claim(
 ) -> Result<AgentClaimConfirmation, AgentsError> {
     let session = full_access_session(state.pds_client(), &did).await?;
     confirm_agent_claim_impl(&session.client, &user_code).await
+}
+
+/// Confirm a claim ceremony the *cooperative* way: instead of handing the agent a credential for
+/// this account, mint it an account of its own under this account's rotation authority.
+///
+/// Only an ownerless `anonymous` registration qualifies — the server refuses the rest, since a
+/// registration already bound to an account asked for "act for me" and re-pointing it mid-ceremony
+/// would answer a different question than the one on the approval screen. Like
+/// [`confirm_agent_claim`], the frontend gates this behind the biometric prompt.
+///
+/// The child's rotation key is derived at the identity's next unused index, and the index advances
+/// only after the server confirms the mint — so a rejected handle costs nothing and the retry
+/// re-derives the same key rather than burning an index per attempt.
+#[tauri::command]
+pub async fn mint_child_from_claim(
+    state: tauri::State<'_, crate::oauth::AppState>,
+    did: String,
+    user_code: String,
+    handle: String,
+) -> Result<MintedChild, AgentsError> {
+    let delegation_seed = IdentityStore
+        .load_delegation_seed(&did)
+        .map_err(|e| AgentsError::Unknown {
+            message: format!("delegation seed read failed: {e}"),
+        })?
+        .ok_or(AgentsError::NotProvisioned)?;
+    let index = IdentityStore
+        .load_child_index(&did)
+        .map_err(|e| AgentsError::Unknown {
+            message: format!("child index read failed: {e}"),
+        })?;
+
+    let session = full_access_session(state.pds_client(), &did).await?;
+    let minted = mint_child_from_claim_impl(
+        &session.client,
+        state.pds_client(),
+        &session.pds_url,
+        &delegation_seed,
+        index,
+        &user_code,
+        handle.trim(),
+    )
+    .await?;
+
+    // Best-effort: the child exists on the server either way, and the PDS child list is the
+    // authoritative index record (recovery rebuilds the counter from it). A failure here costs a
+    // collision on the next mint, not this one — so it is logged, never surfaced as a mint failure.
+    if let Err(e) = IdentityStore.store_child_index(&did, index.saturating_add(1)) {
+        tracing::error!(did = %did, error = %e, "failed to advance the child index after a mint");
+    }
+    Ok(minted)
 }
 
 #[cfg(test)]
@@ -585,6 +820,158 @@ mod tests {
             .unwrap();
         assert_eq!(confirmation.registration_id, "reg_1");
         assert_eq!(confirmation.status, "claimed");
+    }
+
+    // ── cooperative child mint ───────────────────────────────────────────────
+
+    const TEST_SEED: [u8; 32] = [0x5a; 32];
+    const TEST_PDS: &str = "https://pds.example.com";
+
+    fn test_repo_key() -> crypto::DidKeyUri {
+        crypto::generate_p256_keypair().unwrap().key_id
+    }
+
+    /// The genesis op the wallet signs is the whole custody claim: `rotationKeys[0]` must be the
+    /// key derived from *this* identity's delegation seed (the server pins it as the signer), and
+    /// the parent's device key must be absent — naming it would publish a parent↔child link.
+    #[test]
+    fn child_genesis_is_signed_by_the_derived_child_key() {
+        let repo_key = test_repo_key();
+        let genesis =
+            build_child_genesis_op(&TEST_SEED, 0, &repo_key, "scribe.example.com", TEST_PDS)
+                .unwrap();
+
+        let expected = crypto::derive_recovery_keypair(&crypto::derive_child_seed(&TEST_SEED, 0))
+            .unwrap()
+            .key_id;
+        let verified = crypto::verify_genesis_op(&genesis.signed_op_json, &expected)
+            .expect("the op must verify under the derived child key");
+        assert_eq!(verified.did, genesis.did);
+        assert_eq!(
+            verified.rotation_keys,
+            vec![expected.0.clone(), repo_key.0.clone()],
+            "child rotation keys are exactly [derived child key, PDS repo key]"
+        );
+        assert_eq!(
+            verified.verification_methods.get("atproto"),
+            Some(&repo_key.0)
+        );
+    }
+
+    /// Distinct indices must yield distinct children — the whole point of the counter.
+    #[test]
+    fn each_index_derives_a_distinct_child() {
+        let repo_key = test_repo_key();
+        let dids: Vec<String> = (0..3)
+            .map(|i| {
+                build_child_genesis_op(&TEST_SEED, i, &repo_key, "scribe.example.com", TEST_PDS)
+                    .unwrap()
+                    .did
+            })
+            .collect();
+        assert_eq!(
+            dids.iter().collect::<std::collections::HashSet<_>>().len(),
+            3,
+            "three indices must mint three different DIDs"
+        );
+    }
+
+    /// Re-deriving at the same index reproduces the same child — a rejected handle costs no index.
+    #[test]
+    fn the_same_index_re_derives_the_same_child_key() {
+        let repo_key = test_repo_key();
+        let a =
+            build_child_genesis_op(&TEST_SEED, 2, &repo_key, "a.example.com", TEST_PDS).unwrap();
+        let b =
+            build_child_genesis_op(&TEST_SEED, 2, &repo_key, "a.example.com", TEST_PDS).unwrap();
+        assert_eq!(a.did, b.did);
+    }
+
+    fn mint_server(confirm_status: u16, confirm_body: serde_json::Value) -> MockServer {
+        let server = MockServer::start();
+        server.mock(|when, then| {
+            when.method(POST)
+                .path("/xrpc/com.atproto.server.reserveSigningKey");
+            then.status(200)
+                .json_body(serde_json::json!({ "signingKey": test_repo_key().0 }));
+        });
+        server.mock(|when, then| {
+            when.method(POST).path("/agent/identity/claim/confirm");
+            then.status(confirm_status).json_body(confirm_body);
+        });
+        server
+    }
+
+    async fn mint(server: &MockServer) -> Result<MintedChild, AgentsError> {
+        mint_child_from_claim_impl(
+            &bearer_client(server),
+            &PdsClient::new(),
+            &server.base_url(),
+            &TEST_SEED,
+            0,
+            "4QX9TX",
+            "scribe.example.com",
+        )
+        .await
+    }
+
+    /// A DID the wallet did not compute means the account the user was shown is not the one whose
+    /// keys this device holds. Never reported as a success, however well-formed the response is.
+    #[tokio::test]
+    async fn mint_refuses_a_child_did_the_wallet_did_not_sign() {
+        let server = mint_server(
+            200,
+            serde_json::json!({
+                "registration_id": "reg_child",
+                "status": "claimed",
+                "did": "did:plc:parent",
+                "child": {
+                    "did": "did:plc:somethingelseentirely",
+                    "handle": "scribe.example.com",
+                    "didDocument": {},
+                },
+            }),
+        );
+        assert!(matches!(
+            mint(&server).await.unwrap_err(),
+            AgentsError::Unknown { .. }
+        ));
+    }
+
+    /// A taken handle is recoverable, not terminal: the server rejects before spending the claim
+    /// attempt, so the wallet must surface the reason for a corrected retry rather than flattening
+    /// it into "code not found" the way the plain confirm arm does with `invalid_request`.
+    #[tokio::test]
+    async fn mint_surfaces_a_taken_handle_as_a_recoverable_rejection() {
+        let server = mint_server(
+            400,
+            serde_json::json!({
+                "error": "invalid_request",
+                "error_description": "handle is already taken",
+            }),
+        );
+        match mint(&server).await.unwrap_err() {
+            AgentsError::HandleRejected { message } => {
+                assert_eq!(message, "handle is already taken");
+            }
+            other => panic!("expected HandleRejected, got {other:?}"),
+        }
+    }
+
+    /// Everything that is *not* a mint rejection keeps its plain-arm meaning.
+    #[tokio::test]
+    async fn mint_keeps_the_ceremony_error_vocabulary_for_non_handle_failures() {
+        let server = mint_server(
+            400,
+            serde_json::json!({
+                "error": "claim_expired",
+                "error_description": "this claim attempt has expired",
+            }),
+        );
+        assert!(matches!(
+            mint(&server).await.unwrap_err(),
+            AgentsError::CodeExpired
+        ));
     }
 
     #[test]

@@ -1,7 +1,10 @@
 <script lang="ts">
+  import { onMount } from 'svelte';
   import {
     previewAgentClaim,
     confirmAgentClaim,
+    mintChildFromClaim,
+    agentAccountsProvisioned,
     isCodedError,
     type AgentClaimPreview,
     type AgentsError,
@@ -12,19 +15,40 @@
   import TextField from '$lib/components/ui/TextField.svelte';
   import Spinner from '$lib/components/ui/Spinner.svelte';
   import ScreenHeader from '$lib/components/ui/ScreenHeader.svelte';
+  import NavRow from '$lib/components/ui/NavRow.svelte';
 
   let {
     did,
     onback,
     ondone,
+    onprovision,
   }: {
     did: string;
     onback: () => void;
     /** Called after a confirmed claim, with the bound registration id. */
     ondone: (registrationId: string) => void;
+    /**
+     * Navigate to "Enable agent accounts". Taken when the user picks the own-account door on an
+     * identity that holds no delegation seed — there would be no key to sign the child's genesis
+     * operation with, so the mint is never attempted.
+     */
+    onprovision: () => void;
   } = $props();
 
-  type Phase = 'enter' | 'loading' | 'review' | 'approving' | 'approved';
+  // Two branches share this screen. `choose` is the fork an anonymous registration reaches (the
+  // only kind the server will mint a child for); `review` is the account-access branch, which a
+  // bound registration lands on directly, unchanged. `handle` is the own-account branch's one
+  // decision: what the agent's account will be called.
+  type Phase =
+    | 'enter'
+    | 'loading'
+    | 'choose'
+    | 'review'
+    | 'handle'
+    | 'approving'
+    | 'approved'
+    | 'minting'
+    | 'minted';
 
   let phase = $state<Phase>('enter');
   let code = $state('');
@@ -32,6 +56,16 @@
   let preview = $state<AgentClaimPreview | null>(null);
   /** Terminal ceremony failures get their own explicit block, never a silent return. */
   let ceremonyError = $state<{ title: string; body: string } | null>(null);
+
+  /** The handle the agent's own account will carry — the agent's proposal, until the user edits it. */
+  let childHandle = $state('');
+  let childHandleError = $state<string | undefined>(undefined);
+  /** The minted child, for the confirmation panel. */
+  let minted = $state<{ handle: string; did: string } | null>(null);
+
+  // Whether this identity holds a delegation seed. Probed on mount rather than at the fork, so
+  // the door can say up front that it needs setting up instead of failing after the choice.
+  let provisioned = $state(false);
 
   let scopeDescriptions = $derived(preview ? describeScopes(preview.scopes) : []);
 
@@ -85,7 +119,8 @@
     try {
       preview = await previewAgentClaim(did, trimmed);
       code = trimmed;
-      phase = 'review';
+      childHandle = preview.handleHint ?? '';
+      phase = preview.registrationType === 'anonymous' ? 'choose' : 'review';
     } catch (e) {
       phase = 'enter';
       const c = errorCode(e);
@@ -129,15 +164,85 @@
     }
   }
 
+  /** The own-account door. Unprovisioned identities are routed to setup, never into a mint. */
+  function chooseOwnAccount() {
+    ceremonyError = null;
+    if (!provisioned) {
+      onprovision();
+      return;
+    }
+    childHandleError = undefined;
+    phase = 'handle';
+  }
+
+  async function mint() {
+    const handle = childHandle.trim().toLowerCase();
+    if (!handle) {
+      childHandleError = 'Give the agent’s account a handle.';
+      return;
+    }
+    childHandleError = undefined;
+    ceremonyError = null;
+    phase = 'minting';
+    try {
+      // Same authorization boundary as approving account access: the prompt precedes every
+      // network call, so cancelling means no account was created.
+      await authenticateBiometric('Create an account for this agent');
+    } catch {
+      phase = 'handle';
+      return;
+    }
+    try {
+      const child = await mintChildFromClaim(did, code, handle);
+      minted = { handle: child.handle, did: child.did };
+      phase = 'minted';
+      setTimeout(() => ondone(child.registrationId), 1600);
+    } catch (e) {
+      phase = 'handle';
+      const c = errorCode(e);
+      if (c === 'HANDLE_REJECTED') {
+        // The claim attempt is untouched, so this is a correction, not a restart. The server's
+        // description says what to fix — a taken handle, a domain it doesn't host — so it is
+        // shown verbatim on the field rather than replaced with a guess.
+        const rejection = e as Extract<AgentsError, { code: 'HANDLE_REJECTED' }>;
+        childHandleError =
+          rejection.message || 'Your server would not accept that handle. Try another.';
+        return;
+      }
+      if (c === 'NOT_PROVISIONED') {
+        provisioned = false;
+        phase = 'choose';
+        ceremonyError = {
+          title: 'Agent accounts are not set up yet',
+          body: 'This identity needs its recovery shares checked once before it can give an agent an account. Nothing was created.',
+        };
+        return;
+      }
+      const terminal = ceremonyFailure(c);
+      ceremonyError = terminal ?? {
+        title: 'The account was not created',
+        body: 'Your server could not finish creating the agent’s account. Nothing was created — you can try again.',
+      };
+    }
+  }
+
   function deny() {
     // An explicit decision, not a silent back-swipe: denial simply never confirms the code,
     // and the pending request expires on the server.
     ceremonyError = null;
     preview = null;
     code = '';
+    childHandle = '';
     phase = 'enter';
     onback();
   }
+
+  onMount(async () => {
+    provisioned = await agentAccountsProvisioned(did).catch((e) => {
+      console.warn('[AgentClaimApprovalScreen] provisioning probe failed:', e);
+      return false; // A gate we cannot confirm reads as closed; the setup route re-checks.
+    });
+  });
 </script>
 
 <div class="screen">
@@ -180,6 +285,111 @@
           {#if phase === 'loading'}<Spinner size={18} /> Checking…{:else}Review request{/if}
         </Button>
       </div>
+    </div>
+  {:else if phase === 'choose'}
+    {#if preview}
+      <div class="body">
+        <div class="req-card">
+          <p class="req-kicker">Connection request</p>
+          <p class="req-type">{REGISTRATION_TYPE_LABELS[preview.registrationType] ?? preview.registrationType}</p>
+        </div>
+
+        <p class="lede">
+          This agent registered on its own, so you can decide what it gets: a key to your identity,
+          or an identity of its own that you hold the keys to.
+        </p>
+
+        <p class="section-label" id="door-list-label">Choose one</p>
+        <div class="doors" role="group" aria-labelledby="door-list-label">
+          <NavRow
+            title="Let it act as me"
+            subtitle="It posts and reads as this identity, within the permissions on the next screen."
+            onclick={() => (phase = 'review')}
+          />
+          <NavRow
+            title="Give it an account of its own"
+            subtitle={provisioned
+              ? 'Its own handle and its own record, with the keys derived from your recovery seed.'
+              : 'Needs setting up first — check two of your recovery shares, then come back.'}
+            onclick={chooseOwnAccount}
+          />
+        </div>
+
+        {#if ceremonyError}
+          <div class="halt" role="alert">
+            <span class="halt-ic" aria-hidden="true">
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M7.86 2h8.28L22 7.86v8.28L16.14 22H7.86L2 16.14V7.86z"/><path d="M12 8v4"/><path d="M12 16h.01"/></svg>
+            </span>
+            <span class="halt-body">
+              <span class="halt-t">{ceremonyError.title}</span>
+              <span class="halt-s">{ceremonyError.body}</span>
+            </span>
+          </div>
+        {/if}
+
+        <div class="actions">
+          <Button variant="secondary" onclick={deny}>Deny</Button>
+        </div>
+      </div>
+    {/if}
+  {:else if phase === 'handle' || phase === 'minting'}
+    <div class="body">
+      <p class="lede">
+        The agent gets its own account on your server — its own handle and its own record, separate
+        from yours. Its recovery key is derived from your recovery seed, so this identity stays in
+        control of it and no one else can take it over.
+      </p>
+
+      <label class="field-label" for="child-handle">Handle for the agent’s account</label>
+      <TextField
+        id="child-handle"
+        bind:value={childHandle}
+        mono
+        autocapitalize="none"
+        autocomplete="off"
+        spellcheck="false"
+        placeholder="e.g. scribe.example.com"
+        error={childHandleError}
+        disabled={phase === 'minting'}
+      />
+      <p class="fine">
+        {#if preview?.handleHint}
+          The agent proposed this handle. Change it to anything your server accepts — it is your
+          decision, not its.
+        {:else}
+          Pick a handle your server accepts. You can change it later.
+        {/if}
+      </p>
+
+      {#if ceremonyError}
+        <div class="halt" role="alert">
+          <span class="halt-ic" aria-hidden="true">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M7.86 2h8.28L22 7.86v8.28L16.14 22H7.86L2 16.14V7.86z"/><path d="M12 8v4"/><path d="M12 16h.01"/></svg>
+          </span>
+          <span class="halt-body">
+            <span class="halt-t">{ceremonyError.title}</span>
+            <span class="halt-s">{ceremonyError.body}</span>
+          </span>
+        </div>
+      {/if}
+
+      <div class="actions">
+        <Button onclick={mint} disabled={phase === 'minting'}>
+          {#if phase === 'minting'}<Spinner size={18} /> Creating the account…{:else}Create with biometrics{/if}
+        </Button>
+        <Button variant="secondary" onclick={() => (phase = 'choose')} disabled={phase === 'minting'}>
+          Back
+        </Button>
+      </div>
+    </div>
+  {:else if phase === 'minted'}
+    <div class="done" role="status">
+      <span class="done-seal" aria-hidden="true">
+        <svg width="34" height="34" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><path d="m9 12 2 2 4-4"/></svg>
+      </span>
+      <p class="done-t">Account created</p>
+      <p class="done-s">The agent now holds <span class="mono">{minted?.handle}</span>, and you hold its keys.</p>
+      <p class="done-did mono">{minted?.did}</p>
     </div>
   {:else if phase === 'review' || phase === 'approving'}
     {#if preview}
@@ -453,5 +663,18 @@
     color: var(--color-muted);
     margin: 0;
     max-width: 30ch;
+  }
+  .done-did {
+    font-size: var(--text-data);
+    color: var(--color-muted);
+    margin: var(--space-2xs) 0 0;
+    overflow-wrap: anywhere;
+    max-width: 34ch;
+  }
+
+  .doors {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-sm);
   }
 </style>
