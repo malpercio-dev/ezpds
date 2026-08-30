@@ -24,7 +24,7 @@ use crate::db::agent_auth::{
     get_child_of_parent, list_children_of_parent, revoke_agent_identity,
     set_agent_identity_assertion, AgentIdentityStatus, RegistrationType,
 };
-use crate::db::agent_child_deletions::upsert_child_deletion;
+use crate::db::agent_child_deletions::{list_child_deletions_of_parent, upsert_child_deletion};
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -53,6 +53,13 @@ pub struct ChildView {
     handle: String,
     status: &'static str,
     created_at: String,
+    /// The child's granted scopes — what the parent consented to when it minted the account.
+    scopes: Vec<String>,
+    /// Present only for a child whose deletion is scheduled: the instant after which the reaper
+    /// purges it permanently. Deletion revokes as a side effect, so without this a retired child
+    /// and a merely revoked one would be indistinguishable in the list.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    delete_after: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -172,6 +179,13 @@ pub async fn list_children(
         .await
         .map_err(owner_error)?;
     let rows = list_children_of_parent(&state.db, &parent).await?;
+    // One tombstone sweep for the whole list rather than a lookup per child.
+    let scheduled: std::collections::HashMap<String, String> =
+        list_child_deletions_of_parent(&state.db, &parent)
+            .await?
+            .into_iter()
+            .map(|row| (row.child_did, row.delete_after))
+            .collect();
     let mut children = Vec::with_capacity(rows.len());
     for row in rows {
         let did = row.did.unwrap_or_default();
@@ -180,10 +194,12 @@ pub async fn list_children(
             .unwrap_or_default();
         children.push(ChildView {
             registration_id: row.id,
+            delete_after: scheduled.get(&did).cloned(),
             did,
             handle,
             status: row.status.as_str(),
             created_at: row.created_at,
+            scopes: serde_json::from_str(&row.scopes).unwrap_or_default(),
         });
     }
     Ok(Json(ChildListResponse { children }))
@@ -565,6 +581,12 @@ mod tests {
         assert_eq!(
             listed["children"][0]["registrationId"],
             minted["registrationId"]
+        );
+        // The wallet's child detail renders the grant, so the list has to carry it.
+        assert_eq!(listed["children"][0]["scopes"], minted["scopes"]);
+        assert!(
+            listed["children"][0]["deleteAfter"].is_null(),
+            "a live child carries no purge date"
         );
 
         let response = app(state.clone())
@@ -994,6 +1016,23 @@ mod tests {
         assert_eq!(tombstones.len(), 1);
         assert_eq!(tombstones[0].child_did, child);
         assert_eq!(tombstones[0].handle, handle);
+
+        // Deletion revokes as a side effect, so `status` alone cannot tell a retired child from a
+        // merely revoked one — the list has to carry the purge date for the wallet to say which.
+        let response = app(state.clone())
+            .oneshot(get_request("/agent/child", &token))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let listed: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(listed["children"][0]["status"], "revoked");
+        assert_eq!(
+            listed["children"][0]["deleteAfter"],
+            scheduled["deleteAfter"]
+        );
 
         // Deactivation announces the repo is no longer served, ahead of the physical purge.
         let FirehoseEvent::Account(event) = rx.try_recv().unwrap() else {

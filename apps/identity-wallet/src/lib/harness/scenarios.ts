@@ -15,6 +15,7 @@ import {
   seedAppPassword,
   seedIdentity,
   upsertIdentity,
+  HARNESS_AGENT_SCOPES,
   type WalletState,
 } from './state';
 
@@ -35,6 +36,7 @@ export type ScenarioName =
   | 'agent-connected'
   | 'agent-accounts-unprovisioned'
   | 'agent-child-mint'
+  | 'agent-children'
   | 'app-password-minted'
   | 'device-key-unusable'
   | 'notifications-unverified'
@@ -255,6 +257,67 @@ export const scenarios: Record<ScenarioName, () => WalletState> = {
         registrationId: 'reg-CHILD0',
         did: fakePlcDid(`${identity.did}:child:0`),
         handle: 'scribe.harness.pds.local',
+        status: 'claimed',
+        createdAt: '2026-07-15T12:00:00.000Z',
+        scopes: [...HARNESS_AGENT_SCOPES],
+        audit: [],
+      },
+    ];
+    upsertIdentity(state, identity);
+    return state;
+  },
+
+  // The parent console with every child state on screen at once: one live (renew / revoke /
+  // delete all reachable), one already revoked (renewal must refuse — revocation is one-way),
+  // and one counting down to permanent removal. The live child carries an audit trail read
+  // through the /v1/agents parent arm, so the detail screen's activity record is populated.
+  'agent-children': () => {
+    const state = emptyWalletState();
+    state.pdsUrl = DEFAULT_PDS_URL;
+    const identity = seedIdentity({ handle: 'alice.harness.pds.local' });
+    const now = '2026-07-15T12:00:00.000Z';
+    const childDid = (i: number) => fakePlcDid(`${identity.did}:child:${i}`);
+    identity.children = [
+      {
+        registrationId: 'reg-CHILD0',
+        did: childDid(0),
+        handle: 'scribe.harness.pds.local',
+        status: 'claimed',
+        createdAt: now,
+        scopes: [...HARNESS_AGENT_SCOPES],
+        audit: [
+          { id: 'ev-child0-1', eventType: 'claim_confirmed', did: childDid(0), createdAt: now },
+          { id: 'ev-child0-2', eventType: 'token_exchanged', createdAt: now, detail: { grant: 'claim' } },
+          {
+            id: 'ev-child0-3',
+            eventType: 'repo_write',
+            did: childDid(0),
+            createdAt: now,
+            detail: { creates: 2, collections: ['app.bsky.feed.post'] },
+          },
+        ],
+      },
+      {
+        registrationId: 'reg-CHILD1',
+        did: childDid(1),
+        handle: 'archivist.harness.pds.local',
+        status: 'revoked',
+        createdAt: now,
+        scopes: ['atproto', 'repo:*?action=create&action=update'],
+        audit: [
+          { id: 'ev-child1-1', eventType: 'claim_confirmed', did: childDid(1), createdAt: now },
+          { id: 'ev-child1-2', eventType: 'revoked', did: identity.did, createdAt: now },
+        ],
+      },
+      {
+        registrationId: 'reg-CHILD2',
+        did: childDid(2),
+        handle: 'retired.harness.pds.local',
+        status: 'revoked',
+        createdAt: now,
+        scopes: [],
+        deleteAfter: isoInDays(7),
+        audit: [{ id: 'ev-child2-1', eventType: 'revoked', did: identity.did, createdAt: now }],
       },
     ];
     upsertIdentity(state, identity);
@@ -494,4 +557,12 @@ function alertScenario(hoursAgo: number): WalletState {
 
 function isoHoursAgo(hours: number): string {
   return new Date(Date.now() - hours * 3600_000).toISOString();
+}
+
+/**
+ * A future ISO timestamp, off the live clock. Pinning a purge deadline to a literal would land
+ * it in the past and render the child as already-removed rather than counting down.
+ */
+function isoInDays(days: number): string {
+  return new Date(Date.now() + days * 86_400_000).toISOString();
 }

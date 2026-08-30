@@ -48,7 +48,36 @@ export interface FakeChild {
   registrationId: string;
   did: string;
   handle: string;
+  /** `claimed` = live, `active` = mid-provisioning, `revoked` = credential turned off. */
+  status: 'active' | 'claimed' | 'revoked';
+  createdAt: string;
+  scopes: string[];
+  /**
+   * Set once deletion is scheduled. Deleting revokes as a side effect, so this is the only thing
+   * separating a retired child from a merely revoked one — the same asymmetry the real list route
+   * resolves by joining the deletion tombstone.
+   */
+  deleteAfter?: string;
+  /**
+   * The child's own append-only trail. Kept here rather than on the parent's `agents` list
+   * because that is what the server does: the child's registration is bound to the child's DID,
+   * and the parent reads it through the `/v1/agents` parent arm, not by owning it.
+   */
+  audit: AgentAuditEvent[];
 }
+
+/**
+ * The agent grant a default-configured Custos issues (`[agent_auth] granted_scopes`). Real scope
+ * tokens, not placeholders: `describeScopes` parses the atproto scope grammar, so an invented
+ * token like `blob:upload` renders as literal nonsense ("Upload upload files") and the harness
+ * stops being a faithful preview of the permissions screen.
+ */
+export const HARNESS_AGENT_SCOPES = [
+  'atproto',
+  'repo:*?action=create&action=update',
+  'repo:*?action=delete',
+  'blob:*/*',
+];
 
 /** One agent bound to an identity, plus its append-only audit trail. */
 export interface FakeAgent {
@@ -576,7 +605,7 @@ export function seedAgent(seed: string, did: string): FakeAgent {
       registrationType: 'service_auth',
       issuer: `did:web:agent-${hashToken(seed)}.example`,
       subject: did,
-      scopes: ['repo:write', 'blob:upload'],
+      scopes: [...HARNESS_AGENT_SCOPES],
       status: 'claimed',
       createdAt: now,
       updatedAt: now,

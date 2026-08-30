@@ -44,6 +44,9 @@ import type {
   AgentClaimPreview,
   AgentClaimConfirmation,
   MintedChild,
+  ChildSummary,
+  ChildDeletion,
+  ChildAssertion,
   ConsentPreview,
   ConsentDecision,
   AppPasswordCreated,
@@ -78,8 +81,10 @@ import {
   makeDidDoc,
   seedIdentity,
   upsertIdentity,
+  HARNESS_AGENT_SCOPES,
   type WalletState,
   type FakeIdentity,
+  type FakeChild,
 } from './state';
 
 /** A fake command handler. `args` is the object the frontend passed to `invoke`. */
@@ -232,6 +237,10 @@ export type CommandName =
   | 'confirm_agent_claim'
   | 'agent_accounts_provisioned'
   | 'mint_child_from_claim'
+  | 'list_children'
+  | 'revoke_child'
+  | 'delete_child'
+  | 'remint_child_assertion'
   | 'preview_oauth_consent'
   | 'preview_oauth_consent_by_request_id'
   | 'confirm_oauth_consent'
@@ -267,6 +276,31 @@ export type Registry = Record<CommandName, Handler>;
 /** Read `did` from an args object (the common single-arg case). */
 function didArg(args: Record<string, unknown>): string {
   return String(args.did ?? '');
+}
+
+/** When a harness-minted child was created — the same pinned instant `seedAgent` uses. */
+const HARNESS_CHILD_CREATED_AT = '2026-07-15T12:00:00.000Z';
+/** The harness's stand-in for the server's `accounts.child_deletion_grace_secs`. */
+const HARNESS_CHILD_GRACE_HOURS = 24 * 7;
+
+/**
+ * Find the child named by `childDid` under the parent `did` and apply `mutate` to it.
+ *
+ * Scoped to the parent on purpose: the real routes reach children only through
+ * `get_child_of_parent`, and answer a uniform `AGENT_NOT_FOUND` for a child that is unknown *or*
+ * belongs to someone else. A fake that searched every identity would let a screen pass here and
+ * 404 in production.
+ */
+function mutateChild(
+  state: WalletState,
+  args: Record<string, unknown>,
+  mutate: (child: FakeChild) => void
+): FakeChild {
+  const identity = findIdentity(state, didArg(args));
+  const child = identity?.children.find((c) => c.did === String(args.childDid ?? ''));
+  if (!child) throw { code: 'AGENT_NOT_FOUND' };
+  mutate(child);
+  return child;
 }
 
 /** Whether the device key sits at rotationKeys[0]. */
@@ -1184,11 +1218,15 @@ export function buildRegistry(state: WalletState): Registry {
       }
       return null;
     },
+    // Children are searched too: a child's registration is bound to the child's DID, so the
+    // parent reads its trail through the /v1/agents *parent arm* rather than owning the row.
     get_agent_audit: (args): AgentAuditPage => {
       const registrationId = String(args.registrationId ?? '');
       for (const identity of state.identities) {
         const agent = identity.agents.find((a) => a.summary.registrationId === registrationId);
         if (agent) return { events: agent.audit };
+        const child = identity.children.find((c) => c.registrationId === registrationId);
+        if (child) return { events: child.audit };
       }
       return { events: [] };
     },
@@ -1201,7 +1239,7 @@ export function buildRegistry(state: WalletState): Registry {
         return {
           registrationId: `reg-${userCode}`,
           registrationType: 'anonymous',
-          scopes: ['repo:write', 'blob:upload'],
+          scopes: [...HARNESS_AGENT_SCOPES],
           userCodeExpiresAt: isoInHours(1),
           handleHint: 'scribe.harness.pds.local',
         };
@@ -1211,7 +1249,7 @@ export function buildRegistry(state: WalletState): Registry {
         registrationType: 'service_auth',
         issuer: 'did:web:agent.example',
         subject: state.identities[0]?.did,
-        scopes: ['repo:write', 'blob:upload'],
+        scopes: [...HARNESS_AGENT_SCOPES],
         userCodeExpiresAt: isoInHours(1),
       };
     },
@@ -1236,13 +1274,74 @@ export function buildRegistry(state: WalletState): Registry {
 
       // The child DID stands in for the genesis-op hash: derived from the parent and the index, so
       // successive mints yield distinct children exactly as distinct derivation indices do.
-      const child = {
+      const child: FakeChild = {
         registrationId: `reg-${String(args.userCode ?? 'HARNESS')}`,
         did: fakePlcDid(`${identity.did}:child:${identity.children.length}`),
         handle,
+        status: 'claimed',
+        createdAt: HARNESS_CHILD_CREATED_AT,
+        scopes: [...HARNESS_AGENT_SCOPES],
+        audit: [
+          {
+            id: `ev-${identity.children.length}-claim`,
+            eventType: 'claim_confirmed',
+            createdAt: HARNESS_CHILD_CREATED_AT,
+          },
+        ],
       };
       identity.children.push(child);
-      return child;
+      return { registrationId: child.registrationId, did: child.did, handle: child.handle };
+    },
+
+    // ── child lifecycle (the parent console) ─────────────────────────────────
+    // Children are per-identity here, unlike `list_agents`, which flattens every identity's
+    // agents. That mirrors the server: a child is listed by its parent, never globally.
+    // Projected field by field, not spread: `FakeChild` also carries the child's audit trail,
+    // and a fake that handed a screen data the real route never returns is how a screen comes to
+    // depend on it.
+    list_children: (args): ChildSummary[] =>
+      (findIdentity(state, didArg(args))?.children ?? []).map((c) => ({
+        registrationId: c.registrationId,
+        did: c.did,
+        handle: c.handle,
+        status: c.status,
+        createdAt: c.createdAt,
+        scopes: [...c.scopes],
+        ...(c.deleteAfter ? { deleteAfter: c.deleteAfter } : {}),
+      })),
+    revoke_child: (args) => {
+      mutateChild(state, args, (child) => {
+        child.status = 'revoked';
+      });
+      return null;
+    },
+    delete_child: (args): ChildDeletion => {
+      const child = mutateChild(state, args, (c) => {
+        // Delete implies revoke on the server, so the fake must not model them as independent —
+        // a screen that assumed otherwise would look right here and be wrong in production.
+        c.status = 'revoked';
+        c.deleteAfter = isoInHours(HARNESS_CHILD_GRACE_HOURS);
+      });
+      return {
+        did: child.did,
+        status: 'deletion_scheduled',
+        deleteAfter: child.deleteAfter as string,
+      };
+    },
+    remint_child_assertion: (args): ChildAssertion => {
+      const child = mutateChild(state, args, () => {});
+      // Renewal is refused for anything not live — revocation is a one-way rung on the custody
+      // ladder, and the real route answers 403 (ACCESS_DENIED), never a retryable error.
+      if (child.status !== 'claimed') {
+        throw { code: 'ACCESS_DENIED' };
+      }
+      return {
+        did: child.did,
+        registrationId: child.registrationId,
+        identityAssertion: `harness.${child.registrationId}.assertion`,
+        assertionExpires: isoInHours(24),
+        scopes: child.scopes,
+      };
     },
     confirm_agent_claim: (args): AgentClaimConfirmation => {
       const registrationId = `reg-${String(args.userCode ?? 'HARNESS')}`;
@@ -1255,7 +1354,7 @@ export function buildRegistry(state: WalletState): Registry {
             registrationType: 'service_auth',
             issuer: 'did:web:agent.example',
             subject: identity.did,
-            scopes: ['repo:write', 'blob:upload'],
+            scopes: [...HARNESS_AGENT_SCOPES],
             status: 'claimed',
             createdAt: now,
             updatedAt: now,
