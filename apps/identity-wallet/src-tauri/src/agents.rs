@@ -52,8 +52,7 @@
 //! only a genuine transport failure is NETWORK_ERROR (a `NeedsUnlock` is
 //! SESSION_LOCKED, every other verdict UNKNOWN) — so denial, expiry, and lock render
 //! as explicit states. The IPC types (`AgentSummary`, `AgentAuditEvent`,
-//! `AgentAuditPage`, `AgentClaimPreview`, `AgentClaimConfirmation`, `MintedChild`,
-//! `ChildSummary`, `ChildDeletion`, `ChildAssertion`) serialize
+//! `AgentAuditPage`, `AgentClaimPreview`, `AgentClaimConfirmation`, `MintedChild`) serialize
 //! camelCase and must match their `$lib/ipc` counterparts.
 
 use serde::{Deserialize, Serialize};
