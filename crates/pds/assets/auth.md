@@ -144,7 +144,7 @@ The server verifies the ID-JAG's signature, `iss` (must be on the trust list),
     "registration_type": "identity_assertion",
     "identity_assertion": "<service-signed JWT>",
     "assertion_expires": "2026-01-01T00:00:00.000Z",
-    "scopes": ["atproto", "blob:*/*", "repo:*?action=create&action=update", "repo:*?action=delete"]
+    "scopes": ["atproto", "blob:*/*", "repo:*?action=create&action=update", "repo:*?action=delete", "rpc:*?aud=did:web:api.bsky.app"]
   }
   ```
 
@@ -225,7 +225,7 @@ and nothing is reserved until they confirm.
   "registration_type": "anonymous",
   "identity_assertion": "<service-signed pre-claim assertion>",
   "assertion_expires": "2026-01-01T01:00:00.000Z",
-  "scopes": ["atproto", "repo:*?action=create&action=update", "repo:*?action=delete", "blob:*/*"],
+  "scopes": ["atproto", "repo:*?action=create&action=update", "repo:*?action=delete", "blob:*/*", "rpc:*?aud=did:web:api.bsky.app"],
   "claim_token": "clm_…"
 }
 ```
@@ -299,7 +299,7 @@ polling faster than the `interval` answers `slow_down` (back off before retrying
   "access_token": "<Bearer token>",
   "token_type": "Bearer",
   "expires_in": 300,
-  "scope": "atproto blob:*/* repo:*?action=create&action=update repo:*?action=delete",
+  "scope": "atproto blob:*/* repo:*?action=create&action=update repo:*?action=delete rpc:*?aud=did:web:api.bsky.app",
   "identity_assertion": "<service-signed identity_assertion>",
   "assertion_expires": "2026-01-01T01:00:00.000Z"
 }
@@ -355,7 +355,7 @@ grant_type=urn:ietf:params:oauth:grant-type:jwt-bearer
   "access_token": "<Bearer token>",
   "token_type": "Bearer",
   "expires_in": 300,
-  "scope": "atproto blob:*/* repo:*?action=create&action=update repo:*?action=delete"
+  "scope": "atproto blob:*/* repo:*?action=create&action=update repo:*?action=delete rpc:*?aud=did:web:api.bsky.app"
 }
 ```
 

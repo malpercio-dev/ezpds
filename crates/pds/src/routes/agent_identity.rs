@@ -1027,7 +1027,8 @@ mod tests {
                 "atproto",
                 "repo:*?action=create&action=update",
                 "repo:*?action=delete",
-                "blob:*/*"
+                "blob:*/*",
+                "rpc:*?aud=did:web:api.bsky.app"
             ])
         );
 

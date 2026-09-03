@@ -2180,6 +2180,43 @@ mod tests {
     }
 
     #[test]
+    fn default_agent_profile_reads_the_appview_but_no_other_audience() {
+        let scope = common::AgentAuthConfig::default().granted_scopes.join(" ");
+        let appview = common::AppViewConfig::default().did;
+
+        // The proxy checks the raw `atproto-proxy`/configured audience, fragment included, while
+        // the default token carries the bare DID — so this pins the fragment-insensitive match.
+        assert!(
+            appview.contains('#'),
+            "fixture should carry a service fragment"
+        );
+        for lxm in [
+            "app.bsky.feed.getPosts",
+            "app.bsky.feed.getAuthorFeed",
+            "app.bsky.notification.listNotifications",
+        ] {
+            assert!(
+                allows_rpc(&scope, lxm, &appview),
+                "default profile must permit proxying {lxm} to the AppView"
+            );
+        }
+
+        // The grant is audience-bound: the proxy signs service auth with the *user's* repo key,
+        // so a caller-named third party must not be reachable under the default profile.
+        assert!(!allows_rpc(
+            &scope,
+            "app.bsky.feed.getPosts",
+            "did:web:evil.example#bsky_appview"
+        ));
+        // Chat is a separate service DID and stays out of the default profile.
+        assert!(!allows_rpc(
+            &scope,
+            "chat.bsky.convo.listConvos",
+            &common::ChatConfig::default().did
+        ));
+    }
+
+    #[test]
     fn canonicalize_agent_scopes_normalizes_and_rejects_bad_tokens() {
         // A reordered-but-valid token is rewritten to canonical form so it matches at intersect time.
         assert_eq!(
