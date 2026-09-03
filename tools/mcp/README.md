@@ -55,11 +55,15 @@ hosting matrix). For the hosted, sovereign-child sibling, see
 - **The agent acts as you.** Tools write to your real repository on whatever PDS you point
   this at. Point it at staging (or a local PDS) unless you mean it.
 - **Scopes are enforced server-side.** The default agent profile is
-  `atproto repo:*?action=create&action=update repo:*?action=delete blob:*/*` — create, edit,
-  and delete records in your repo, upload blobs, read. No account or identity operations. The
-  PDS operator controls this via `[agent_auth] granted_scopes`. Delete is granted so an agent
-  can retract its own mistaken write; it does not widen the blast radius, since `action=update`
-  already lets it overwrite a record irreversibly.
+  `atproto repo:*?action=create&action=update repo:*?action=delete blob:*/*
+  rpc:*?aud=did:web:api.bsky.app` — create, edit, and delete records in your repo, upload
+  blobs, and read the AppView through the PDS proxy (feeds, post engagement, notifications).
+  No account or identity operations. The PDS operator controls this via
+  `[agent_auth] granted_scopes`. Delete is granted so an agent can retract its own mistaken
+  write; it does not widen the blast radius, since `action=update` already lets it overwrite a
+  record irreversibly. The `rpc:` grant is bound to the AppView audience — an operator running
+  a non-default AppView must restate it with their own `aud`, and chat/DM access
+  (`transition:chat.bsky`) is deliberately not in the profile.
 - **Destructive tools are off by default.** `put_record`/`delete_record` (and their space
   siblings `space_put_record`/`space_delete_record`) are not even listed unless you set
   `CUSTOS_MCP_ALLOW_DESTRUCTIVE=1`. The client-side gate and the server-side grant are

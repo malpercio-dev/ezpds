@@ -825,9 +825,14 @@ pub struct AgentAuthConfig {
     pub auth_time_max_age_secs: u64,
     /// Scopes granted to a fully-registered agent identity. Defaults to a conservative granular
     /// profile — write-to-own-repo (including delete, so an agent can retract its own mistaken
-    /// write without operator cleanup) plus blob uploads, with AppView reads reaching the agent
-    /// through the read-proxy (which any access-level token may use). See
+    /// write without operator cleanup), blob uploads, and AppView reads (`rpc:*?aud=<appview>`),
+    /// so an agent can read the engagement its own posts earned and its own notifications. See
     /// `default_agent_granted_scopes`.
+    ///
+    /// **Repointing the AppView:** the default `rpc:` token names the default AppView audience
+    /// literally, since a serde default cannot read `appview.did`. An operator who sets a
+    /// different `appview.did` must restate `granted_scopes` with their own audience, or agent
+    /// proxy reads fail closed with `InsufficientScope`.
     ///
     /// **Operator warning:** these are enforced through the same granular scope grammar as OAuth
     /// tokens (`auth/oauth_scopes.rs`), so an agent token can only do what these scopes permit. Do
@@ -979,6 +984,13 @@ fn default_agent_granted_scopes() -> Vec<String> {
         "repo:*?action=create&action=update".to_string(),
         "repo:*?action=delete".to_string(),
         "blob:*/*".to_string(),
+        // Reads through the AppView proxy: engagement counts on the agent's own posts, and its
+        // notifications. `aud` names the *default* AppView's bare DID because a serde default
+        // cannot see `appview.did`; `aud_matches` compares audiences fragment-insensitively, so
+        // this matches the configured `did:web:api.bsky.app#bsky_appview`. Deliberately not
+        // `aud=*`: the proxy mints a service-auth JWT signed by the user's own repo key for
+        // whatever audience the `atproto-proxy` header names.
+        "rpc:*?aud=did:web:api.bsky.app".to_string(),
     ]
 }
 
@@ -2850,7 +2862,8 @@ mod tests {
                 "atproto",
                 "repo:*?action=create&action=update",
                 "repo:*?action=delete",
-                "blob:*/*"
+                "blob:*/*",
+                "rpc:*?aud=did:web:api.bsky.app"
             ]
         );
         assert!(config.agent_auth.verification_uri.is_none());
