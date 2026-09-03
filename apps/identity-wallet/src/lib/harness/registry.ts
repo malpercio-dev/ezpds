@@ -47,6 +47,8 @@ import type {
   ChildSummary,
   ChildDeletion,
   ChildAssertion,
+  ChildReconciliation,
+  ChildKeyCheck,
   ConsentPreview,
   ConsentDecision,
   AppPasswordCreated,
@@ -241,6 +243,7 @@ export type CommandName =
   | 'revoke_child'
   | 'delete_child'
   | 'remint_child_assertion'
+  | 'reconcile_children'
   | 'preview_oauth_consent'
   | 'preview_oauth_consent_by_request_id'
   | 'confirm_oauth_consent'
@@ -1290,6 +1293,9 @@ export function buildRegistry(state: WalletState): Registry {
         ],
       };
       identity.children.push(child);
+      // The real command advances the index only after the server confirms, so a rejected handle
+      // costs nothing — the two mutations belong together here for the same reason.
+      identity.childIndex = Math.max(identity.childIndex, identity.children.length);
       return { registrationId: child.registrationId, did: child.did, handle: child.handle };
     },
 
@@ -1327,6 +1333,34 @@ export function buildRegistry(state: WalletState): Registry {
         status: 'deletion_scheduled',
         deleteAfter: child.deleteAfter as string,
       };
+    },
+    // The recovery epilogue. The real command re-derives a key per index and checks each against
+    // the child's plc.directory audit log; the fake keeps the two properties the screen depends
+    // on — it reports nothing at all when the local counter already covers the server's list (so
+    // the ordinary device never sees a banner), and it distinguishes a key that does not derive
+    // from one the directory could not be asked about.
+    reconcile_children: (args): ChildReconciliation => {
+      const identity = findIdentity(state, didArg(args));
+      if (!identity) throw { code: 'IDENTITY_NOT_FOUND' };
+      if (!identity.agentAccountsProvisioned) throw { code: 'NOT_PROVISIONED' };
+      if (identity.childIndex >= identity.children.length) {
+        return { rebuilt: false, children: [], nextIndex: identity.childIndex };
+      }
+
+      const children: ChildKeyCheck[] = identity.children.map((child, index) => {
+        const base = { did: child.did, handle: child.handle };
+        if (child.recoveryKey === 'lost') return { ...base, status: 'unmatched' };
+        if (child.recoveryKey === 'unreachable') {
+          return { ...base, status: 'unchecked', message: 'plc.directory could not be read' };
+        }
+        return { ...base, status: 'matched', index };
+      });
+      const nextIndex = children.reduce(
+        (highest, check) => (check.status === 'matched' ? Math.max(highest, check.index + 1) : highest),
+        identity.childIndex
+      );
+      identity.childIndex = nextIndex;
+      return { rebuilt: true, children, nextIndex };
     },
     remint_child_assertion: (args): ChildAssertion => {
       const child = mutateChild(state, args, () => {});

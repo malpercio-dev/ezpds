@@ -84,6 +84,7 @@ Source: `apps/identity-wallet/src/lib/ipc/`
 | `preview_agent_claim` | App command |
 | `preview_oauth_consent` | App command |
 | `preview_oauth_consent_by_request_id` | App command |
+| `reconcile_children` | App command |
 | `recover_identity` | App command |
 | `recovery_transfer_repo` | App command |
 | `refresh_did_doc` | App command |

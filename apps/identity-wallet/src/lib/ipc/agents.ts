@@ -239,3 +239,47 @@ export const deleteChild = (did: string, childDid: string): Promise<ChildDeletio
  */
 export const remintChildAssertion = (did: string, childDid: string): Promise<ChildAssertion> =>
   invoke('remint_child_assertion', { did, childDid });
+
+// ── Recovery epilogue for children ──────────────────────────────────────────
+
+/**
+ * What the recovery check concluded about one child's rotation key.
+ *
+ * `unmatched` and `unchecked` are deliberately different answers and must read differently to
+ * the user: the first is a custody finding — the public directory was read and names no key this
+ * wallet derives — while the second means the question could not be asked at all. Rendering a
+ * network blip as a lost key would be a false alarm about the one thing this screen exists to
+ * report honestly.
+ */
+export type ChildKeyStatus =
+  | { status: 'matched'; index: number }
+  | { status: 'unmatched' }
+  | { status: 'unchecked'; message: string };
+
+/** One child's entry in a recovery reconciliation. */
+export type ChildKeyCheck = { did: string; handle: string } & ChildKeyStatus;
+
+/** The result of re-deriving this identity's children against the public directory. */
+export type ChildReconciliation = {
+  /**
+   * False when this device's counter already covered the server's list, so nothing was
+   * re-derived and nothing was checked. `children` is then empty — an absence of findings, never
+   * a clean bill of health, so never render it as one.
+   */
+  rebuilt: boolean;
+  children: ChildKeyCheck[];
+  /** The child index this device will mint at next. */
+  nextIndex: number;
+};
+
+/**
+ * Re-derive this identity's agent accounts after a recovery and rebuild the local child counter.
+ *
+ * The recovery epilogue for children: once a restore has put the delegation seed back, this asks
+ * the server which children exist and checks each one's live rotation keys against the keys that
+ * seed derives — so a restored wallet can say which of its agents' accounts it still holds
+ * recovery authority for. Cheap and idempotent otherwise: on a device that is not recovering it
+ * short-circuits before touching the public directory and returns `rebuilt: false`.
+ */
+export const reconcileChildren = (did: string): Promise<ChildReconciliation> =>
+  invoke('reconcile_children', { did });

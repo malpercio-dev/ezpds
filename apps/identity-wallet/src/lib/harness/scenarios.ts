@@ -37,6 +37,7 @@ export type ScenarioName =
   | 'agent-accounts-unprovisioned'
   | 'agent-child-mint'
   | 'agent-children'
+  | 'agent-children-recovered'
   | 'app-password-minted'
   | 'device-key-unusable'
   | 'notifications-unverified'
@@ -263,6 +264,7 @@ export const scenarios: Record<ScenarioName, () => WalletState> = {
         audit: [],
       },
     ];
+    identity.childIndex = identity.children.length;
     upsertIdentity(state, identity);
     return state;
   },
@@ -320,6 +322,58 @@ export const scenarios: Record<ScenarioName, () => WalletState> = {
         audit: [{ id: 'ev-child2-1', eventType: 'revoked', did: identity.did, createdAt: now }],
       },
     ];
+    // This is the device that minted them, so its counter already clears the list and the
+    // recovery epilogue has nothing to report.
+    identity.childIndex = identity.children.length;
+    upsertIdentity(state, identity);
+    return state;
+  },
+
+  // A restored device meeting its children again: the delegation seed came back with the
+  // recovery seed, but the child counter did not, so the recovery epilogue runs against the
+  // server's list. One child re-derives, one names a rotation key this seed cannot reproduce
+  // (unrecoverable, the finding that must never be silent), and one cannot be checked at all
+  // because plc.directory refused — a different sentence, not a softer one.
+  'agent-children-recovered': () => {
+    const state = emptyWalletState();
+    state.pdsUrl = DEFAULT_PDS_URL;
+    const identity = seedIdentity({ handle: 'alice.harness.pds.local' });
+    const now = '2026-07-15T12:00:00.000Z';
+    const childDid = (i: number) => fakePlcDid(`${identity.did}:child:${i}`);
+    identity.children = [
+      {
+        registrationId: 'reg-CHILD0',
+        did: childDid(0),
+        handle: 'scribe.harness.pds.local',
+        status: 'claimed',
+        createdAt: now,
+        scopes: [...HARNESS_AGENT_SCOPES],
+        audit: [{ id: 'ev-r0', eventType: 'claim_confirmed', did: childDid(0), createdAt: now }],
+      },
+      {
+        registrationId: 'reg-CHILD1',
+        did: childDid(1),
+        handle: 'archivist.harness.pds.local',
+        status: 'claimed',
+        createdAt: now,
+        scopes: [...HARNESS_AGENT_SCOPES],
+        recoveryKey: 'lost',
+        audit: [{ id: 'ev-r1', eventType: 'claim_confirmed', did: childDid(1), createdAt: now }],
+      },
+      {
+        registrationId: 'reg-CHILD2',
+        did: childDid(2),
+        handle: 'courier.harness.pds.local',
+        status: 'claimed',
+        createdAt: now,
+        scopes: [...HARNESS_AGENT_SCOPES],
+        recoveryKey: 'unreachable',
+        audit: [{ id: 'ev-r2', eventType: 'claim_confirmed', did: childDid(2), createdAt: now }],
+      },
+    ];
+    // The counter a restore does not bring back: behind the list, which is what puts the
+    // epilogue in play.
+    identity.childIndex = 0;
     upsertIdentity(state, identity);
     return state;
   },

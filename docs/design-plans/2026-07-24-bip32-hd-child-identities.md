@@ -1,6 +1,15 @@
 # Exploration: BIP-32-style hierarchical derivation for parent/child identities and agents
 
-**Status: exploration / assessment — no commitment.** Written to durably capture a research
+**Status: superseded — shipped.** The recommended shape below was built as designed. The
+design that implemented it is
+[2026-08-29-agent-child-accounts.md](2026-08-29-agent-child-accounts.md), and the decisions it
+raised — the standing delegation seed, the seed-rotation fan-out, the omitted Secure-Enclave key,
+and grandchildren — are recorded in
+[ADR-0037](../architecture/decisions/0037-hd-derived-child-custody.md), which amends
+[ADR-0023](../architecture/decisions/0023-sovereign-child-agent-identities.md). This document is
+kept for the reasoning that got there, not as a live plan; where the two disagree, the ADR wins.
+
+**Original status: exploration / assessment — no commitment.** Written to durably capture a research
 session on applying BIP-32-style hierarchical deterministic (HD) key derivation to the
 parent/child identity model of ADR-0023. Verdict up front: **the valuable idea is not
 BIP-32's key tree — it is a hierarchy of *seeds*.** Derive each child identity's 32-byte

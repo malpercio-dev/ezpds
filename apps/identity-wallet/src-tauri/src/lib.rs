@@ -1844,6 +1844,7 @@ pub fn run() {
             agents::revoke_child,
             agents::delete_child,
             agents::remint_child_assertion,
+            agents::reconcile_children,
             oauth_consent::preview_oauth_consent,
             oauth_consent::preview_oauth_consent_by_request_id,
             oauth_consent::confirm_oauth_consent,
