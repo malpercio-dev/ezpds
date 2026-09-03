@@ -157,10 +157,15 @@ needed after the agent has been completely inactive for a full assertion lifetim
 | `get_record` / `list_records` | Read a repo by collection (defaults to the onboarded account) |
 | `search_timeline` | Timeline, or post search with `query` — proxied through the PDS to its AppView |
 | `account_status` | `checkAccountStatus`: activation, repo head, record/blob counts |
+| `list_spaces` | Atproto Spaces: list the permissioned spaces the account's repo has written to, filterable by space type or authority DID (needs a `space:` grant) |
+| `space_get_record` / `space_list_records` | Read the account's records inside a permissioned space, addressed by a canonical space ref (needs a `space:` grant) |
+| `space_create_record` | Create a record in the account's repo inside a permissioned space (needs a `space:` grant covering create) |
 | `put_record` / `delete_record` | Gated behind `CUSTOS_MCP_ALLOW_DESTRUCTIVE=1`; hidden otherwise. `delete_record` is how an agent retracts its own mistaken write |
+| `space_put_record` / `space_delete_record` | Space siblings of `put_record`/`delete_record`, gated behind the same `CUSTOS_MCP_ALLOW_DESTRUCTIVE=1` (each also needs a `space:` grant covering the write) |
 
 Calls outside the granted scopes fail with the server's 403 relayed as a plain-language
-error naming the missing permission and the scopes the agent actually holds.
+error naming the missing permission and the scopes the agent actually holds. The `space:`
+grant the Spaces tools need is not in the default profile — see the Spaces ground rule above.
 
 ## Revocation
 
