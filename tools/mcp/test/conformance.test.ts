@@ -189,6 +189,9 @@ test('onboarding ceremony, tool surface, and credential hygiene', async (t) => {
   const whoamiText = JSON.stringify(ready);
   assert.ok(!whoamiText.includes(creds.accessToken), 'access token not in whoami output');
   assert.ok(!whoamiText.includes(creds.assertion), 'assertion not in whoami output');
+  // The PDS base URL stays out of the report: hosted deployments configure it
+  // as an internal hostname, which clients must never be handed.
+  assert.equal(ready.pds_url, undefined, 'PDS base URL not in whoami output');
 
   // AC2.1 — create_post produces a record visible via getRecord. The text
   // carries a URL: the stored record must carry the matching link facet, or the
