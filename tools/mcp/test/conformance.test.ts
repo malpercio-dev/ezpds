@@ -147,6 +147,7 @@ test('onboarding ceremony, tool surface, and credential hygiene', async (t) => {
     'list_records',
     'search_timeline',
     'account_status',
+    'upload_blob',
     'list_spaces',
     'space_get_record',
     'space_list_records',
@@ -272,6 +273,52 @@ test('AC2.2: out-of-scope calls relay the 403 as a comprehensible error', async 
   assert.match(message, /InsufficientScope/, 'names the refusal');
   assert.match(message, /Granted scopes:/, 'reports the granted scopes');
   assert.doesNotMatch(message, /\n\s+at /, 'no stack trace');
+});
+
+test('upload_blob returns a blob ref and stays inside the configured directory', async (t) => {
+  // 1x1 PNG. Content does not matter to the PDS; the blob ref shape does.
+  const imgDir = fs.mkdtempSync(path.join(tmp, 'blobs-'));
+  fs.writeFileSync(
+    path.join(imgDir, 'pixel.png'),
+    Buffer.from(
+      'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==',
+      'base64',
+    ),
+  );
+  // A file the tool must refuse to read: outside the configured directory.
+  const secret = path.join(tmp, 'outside-the-jail.png');
+  fs.writeFileSync(secret, 'not yours');
+
+  const client = await connectClient({ CUSTOS_MCP_IMAGE_DIR: imgDir });
+  t.after(() => client.close());
+
+  const uploaded = toolJson(
+    await client.callTool({ name: 'upload_blob', arguments: { path: 'pixel.png' } }),
+  );
+  assert.equal(uploaded.blob?.$type, 'blob');
+  assert.equal(uploaded.blob.mimeType, 'image/png');
+  assert.ok(uploaded.blob.ref?.$link, 'blob ref carries a CID link');
+  assert.ok(uploaded.blob.size > 0, 'blob size is reported');
+
+  // The confinement is the point of the CUSTOS_MCP_IMAGE_DIR gate: a path that
+  // escapes it must be refused, not read.
+  const escaped = await client.callTool({
+    name: 'upload_blob',
+    arguments: { path: path.relative(imgDir, secret) },
+  });
+  assert.equal(escaped.isError, true);
+  assert.match((escaped.content as { text: string }[])[0]!.text, /must be inside|does not exist/);
+
+  // Without the directory configured at all, uploads are off rather than
+  // defaulting to some readable path.
+  const unconfigured = await connectClient();
+  t.after(() => unconfigured.close());
+  const disabled = await unconfigured.callTool({
+    name: 'upload_blob',
+    arguments: { path: 'pixel.png' },
+  });
+  assert.equal(disabled.isError, true);
+  assert.match((disabled.content as { text: string }[])[0]!.text, /uploads are disabled/);
 });
 
 test('spaces: the agent tool surface drives a permissioned space end-to-end', async (t) => {
