@@ -234,6 +234,72 @@ test('onboarding ceremony, tool surface, and credential hygiene', async (t) => {
   assert.equal(typeof status.activated, 'boolean');
 });
 
+test('create_post writes an embed through verbatim, and refuses two embeds at once', async (t) => {
+  const client = await connectClient();
+  t.after(() => client.close());
+
+  // A quote post needs a uri+cid pair, which is exactly what create_post and
+  // get_record hand back — so quoting is reachable with the tools on offer.
+  const quoted = toolJson(
+    await client.callTool({ name: 'create_post', arguments: { text: 'the post being quoted' } }),
+  );
+
+  const embed = {
+    $type: 'app.bsky.embed.record',
+    record: { uri: quoted.uri, cid: quoted.cid },
+  };
+  const quoting = toolJson(
+    await client.callTool({
+      name: 'create_post',
+      arguments: { text: 'quoting the post above', embed },
+    }),
+  );
+  const stored = toolJson(
+    await client.callTool({
+      name: 'get_record',
+      arguments: { collection: 'app.bsky.feed.post', rkey: quoting.uri.split('/').pop() },
+    }),
+  );
+  // Verbatim: the point of a passthrough is that the tool adds no interpretation
+  // of its own between what the caller wrote and what the PDS stored.
+  assert.deepEqual(stored.value.embed, embed);
+
+  // An external link card is the other shape callers reach for, and it must not
+  // need a blob to be publishable.
+  const card = {
+    $type: 'app.bsky.embed.external',
+    external: {
+      uri: 'https://obsign.org',
+      title: 'Obsign',
+      description: 'sovereign identity',
+    },
+  };
+  const carded = toolJson(
+    await client.callTool({
+      name: 'create_post',
+      arguments: { text: 'with a link card', embed: card },
+    }),
+  );
+  assert.deepEqual(
+    toolJson(
+      await client.callTool({
+        name: 'get_record',
+        arguments: { collection: 'app.bsky.feed.post', rkey: carded.uri.split('/').pop() },
+      }),
+    ).value.embed,
+    card,
+  );
+
+  // image_path builds an embed of its own; silently dropping one of the two
+  // would publish a post the caller did not ask for.
+  const both = await client.callTool({
+    name: 'create_post',
+    arguments: { text: 'two embeds', embed: card, image_path: 'anything.png' },
+  });
+  assert.equal(both.isError, true);
+  assert.match((both.content as { text: string }[])[0]!.text, /not both/);
+});
+
 test('update_bluesky_profile merges into app.bsky.actor.profile instead of clobbering it', async (t) => {
   const client = await connectClient();
   t.after(() => client.close());
