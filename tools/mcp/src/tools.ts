@@ -153,6 +153,29 @@ async function uploadBlob(
   });
 }
 
+/**
+ * Resolve a record field that takes a blob from whichever form the caller used:
+ * a file under CUSTOS_MCP_IMAGE_DIR (uploaded here) or a ref already returned
+ * by upload_blob. Returns undefined when the caller named neither, which the
+ * callers read as "leave this field alone".
+ *
+ * The both-at-once check lives here rather than at each call site so a second
+ * blob-bearing field cannot be added without it.
+ */
+async function resolveBlobField(
+  session: SessionLike,
+  token: string,
+  field: string,
+  filePath: string | undefined,
+  blobRef: unknown,
+): Promise<unknown> {
+  if (filePath !== undefined && blobRef !== undefined) {
+    throw new Error(`pass either ${field}_path or ${field}_blob, not both`);
+  }
+  if (filePath !== undefined) return (await uploadBlob(session, token, filePath)).blob;
+  return blobRef;
+}
+
 async function requireDid(session: SessionLike): Promise<{ token: string; did: string }> {
   const token = await session.accessToken();
   const did = session.did();
@@ -161,6 +184,14 @@ async function requireDid(session: SessionLike): Promise<{ token: string; did: s
 }
 
 const replyRef = z.object({ uri: z.string(), cid: z.string() });
+
+/**
+ * The single self-keyed record holding an account's Bluesky profile. Other
+ * atproto apps keep their own profile records under their own lexicons, which
+ * is why the tool is named for Bluesky rather than for profiles in general.
+ */
+const BSKY_PROFILE_COLLECTION = 'app.bsky.actor.profile';
+const BSKY_PROFILE_RKEY = 'self';
 
 /**
  * Distinct handles resolved for one post. Mentions are the only facet kind
@@ -341,6 +372,137 @@ export function registerTools(server: McpServer, resolveSession: SessionResolver
         const token = await session.accessToken();
         const uploaded = await uploadBlob(session, token, args.path, args.mime_type);
         return ok(uploaded);
+      } catch (err) {
+        return relayError(err, session);
+      }
+    },
+  );
+
+  server.registerTool(
+    'update_bluesky_profile',
+    {
+      description:
+        `Update the account’s Bluesky profile record (app.bsky.actor.profile) — display name, ` +
+        `description, avatar, and banner. This is the Bluesky app’s profile lexicon; other ` +
+        `atproto apps keep their profiles under their own. Read-modify-write: fields you leave ` +
+        `out keep their current value, so this cannot clobber the parts of the profile you did ` +
+        `not name. Pass an empty string to clear display_name or description. Set an image ` +
+        `either by path (uploaded for you) or by a ref from upload_blob. The write is guarded ` +
+        `against the CID just read, so a profile edited elsewhere mid-call fails loudly ` +
+        `(409 InvalidSwap) rather than silently overwriting — re-read and retry. ${ATTRIBUTION}`,
+      annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true },
+      inputSchema: {
+        display_name: z
+          .string()
+          .max(640)
+          .optional()
+          .describe('New display name; empty string clears it'),
+        description: z
+          .string()
+          .max(2560)
+          .optional()
+          .describe('New profile description (bio); empty string clears it'),
+        avatar_path: z
+          .string()
+          .optional()
+          .describe(
+            'Avatar image to upload, as a path inside the CUSTOS_MCP_IMAGE_DIR directory. ' +
+              'Use avatar_blob instead if you already uploaded it',
+          ),
+        avatar_blob: z
+          .record(z.string(), z.unknown())
+          .optional()
+          .describe('Avatar as a blob ref from upload_blob, instead of avatar_path'),
+        banner_path: z
+          .string()
+          .optional()
+          .describe('Banner image to upload, same directory rule as avatar_path'),
+        banner_blob: z
+          .record(z.string(), z.unknown())
+          .optional()
+          .describe('Banner as a blob ref from upload_blob, instead of banner_path'),
+      },
+    },
+    async (args, extra) => {
+      const session = resolveSession(extra);
+      try {
+        const { token, did } = await requireDid(session);
+        const named = [
+          args.display_name,
+          args.description,
+          args.avatar_path,
+          args.avatar_blob,
+          args.banner_path,
+          args.banner_blob,
+        ].some((value) => value !== undefined);
+        if (!named) {
+          return fail(
+            'nothing to update — pass at least one of display_name, description, ' +
+              'avatar_path/avatar_blob, banner_path/banner_blob',
+          );
+        }
+
+        // Read first so unnamed fields survive, and so the write can be pinned
+        // to what was read. An account with no profile yet is the normal
+        // first-run case, not an error: swapRecord stays null, which the PDS
+        // reads as "the record must still be absent" and closes the race where
+        // a profile appears between this read and the write below.
+        let existing: Record<string, unknown> = {};
+        let swapRecord: string | null = null;
+        try {
+          const current = await xrpc(session.pdsUrl, 'com.atproto.repo.getRecord', {
+            params: { repo: did, collection: BSKY_PROFILE_COLLECTION, rkey: BSKY_PROFILE_RKEY },
+          });
+          if (current.value && typeof current.value === 'object') {
+            existing = current.value as Record<string, unknown>;
+          }
+          if (typeof current.cid === 'string') swapRecord = current.cid;
+        } catch (err) {
+          const absent =
+            err instanceof HttpError &&
+            (err.errorCode === 'NotFound' || err.errorCode === 'RecordNotFound');
+          if (!absent) throw err;
+        }
+
+        const record: Record<string, unknown> = { ...existing, $type: BSKY_PROFILE_COLLECTION };
+        if (args.display_name !== undefined) {
+          if (args.display_name === '') delete record.displayName;
+          else record.displayName = args.display_name;
+        }
+        if (args.description !== undefined) {
+          if (args.description === '') delete record.description;
+          else record.description = args.description;
+        }
+        const avatar = await resolveBlobField(
+          session,
+          token,
+          'avatar',
+          args.avatar_path,
+          args.avatar_blob,
+        );
+        if (avatar !== undefined) record.avatar = avatar;
+        const banner = await resolveBlobField(
+          session,
+          token,
+          'banner',
+          args.banner_path,
+          args.banner_blob,
+        );
+        if (banner !== undefined) record.banner = banner;
+        if (!record.createdAt) record.createdAt = new Date().toISOString();
+
+        const result = await xrpc(session.pdsUrl, 'com.atproto.repo.putRecord', {
+          method: 'POST',
+          token,
+          body: {
+            repo: did,
+            collection: BSKY_PROFILE_COLLECTION,
+            rkey: BSKY_PROFILE_RKEY,
+            record,
+            swapRecord,
+          },
+        });
+        return ok({ ...result, profile: record });
       } catch (err) {
         return relayError(err, session);
       }
