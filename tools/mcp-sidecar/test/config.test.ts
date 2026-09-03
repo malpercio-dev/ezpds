@@ -32,17 +32,20 @@ test('AC2.7: public origin defaults to the PDS origin for local single-host runs
     MCP_SIDECAR_PDS_ORIGIN: 'http://127.0.0.1:8080',
   } as NodeJS.ProcessEnv);
   assert.equal(config.publicOrigin, 'http://127.0.0.1:8080');
-  assert.equal(config.authServerOrigin, 'http://127.0.0.1:8080', 'AS defaults to the PDS origin locally');
 });
 
-test('AC2.7: the public authorization-server origin is distinct from the private PDS origin', () => {
+test('the authorization-server origin is not configurable — it comes from the PDS', () => {
+  // A hand-set copy of the PDS's issuer is what dead-ended OAuth discovery once
+  // the PDS moved hosts; `server.ts` reads it from the PDS's RFC 8414 metadata.
   const config = loadConfig({
     MCP_SIDECAR_PDS_ORIGIN: 'http://pds.railway.internal:8080',
     MCP_SIDECAR_PUBLIC_ORIGIN: 'https://mcp.obsign.org',
-    MCP_SIDECAR_AUTH_SERVER_ORIGIN: 'https://obsign.org',
+    MCP_SIDECAR_AUTH_SERVER_ORIGIN: 'https://stale.example.com',
   } as NodeJS.ProcessEnv);
-  assert.equal(config.authServerOrigin, 'https://obsign.org');
-  assert.notEqual(config.authServerOrigin, config.pdsOrigin, 'never the private forwarding address');
+  assert.ok(
+    !Object.values(config).includes('https://stale.example.com'),
+    'a leftover MCP_SIDECAR_AUTH_SERVER_ORIGIN cannot reach the advertised metadata',
+  );
 });
 
 test('AC2.7: a malformed PDS origin is rejected', () => {
@@ -68,14 +71,6 @@ test('AC2.7: a scheme-less origin fails loudly at startup, not on the first forw
         MCP_SIDECAR_PUBLIC_ORIGIN: 'mcp.obsign.org:443',
       } as NodeJS.ProcessEnv),
     /MCP_SIDECAR_PUBLIC_ORIGIN must be an http:\/\/ or https:\/\/ URL/,
-  );
-  assert.throws(
-    () =>
-      loadConfig({
-        MCP_SIDECAR_PDS_ORIGIN: 'http://pds.railway.internal:8080',
-        MCP_SIDECAR_AUTH_SERVER_ORIGIN: 'obsign.org:443',
-      } as NodeJS.ProcessEnv),
-    /MCP_SIDECAR_AUTH_SERVER_ORIGIN must be an http:\/\/ or https:\/\/ URL/,
   );
   // A scheme-less value with NO port doesn't even parse as a URL — also refused.
   assert.throws(

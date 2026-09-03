@@ -65,14 +65,29 @@ export function authFromRequest(authorization: string | undefined): AuthInfo | u
   return { token, clientId: callerSubject(token), scopes };
 }
 
-/** The MCP-spec protected-resource metadata pointing at Custos as the AS. */
-function protectedResourceMetadata(config: SidecarConfig): Record<string, unknown> {
-  return {
-    resource: config.publicOrigin,
-    // The client must reach the PUBLIC Custos URL, never the private forwarding
-    // origin (which is unroutable from outside the Railway network).
-    authorization_servers: [config.authServerOrigin],
-  };
+// Bound on the AS-metadata lookup: a hung PDS must not pin the discovery request.
+const ISSUER_FETCH_TIMEOUT_MS = 5_000;
+
+/**
+ * Read the PUBLIC authorization-server origin from the PDS's own RFC 8414
+ * metadata, reached over the private forwarding origin.
+ *
+ * The PDS publishes `issuer` as its public URL, so the value a client must
+ * complete OAuth against is already single-sourced there — a second hand-set
+ * copy in the sidecar's environment is what silently dead-ended discovery when
+ * the PDS moved hosts. Deriving it means the two cannot drift.
+ */
+async function fetchIssuer(pdsOrigin: string): Promise<string> {
+  const url = `${pdsOrigin}/.well-known/oauth-authorization-server`;
+  const res = await fetch(url, { signal: AbortSignal.timeout(ISSUER_FETCH_TIMEOUT_MS) });
+  if (!res.ok) {
+    throw new Error(`PDS authorization-server metadata returned HTTP ${res.status}`);
+  }
+  const { issuer } = (await res.json()) as { issuer?: unknown };
+  if (typeof issuer !== 'string' || !issuer.trim()) {
+    throw new Error('PDS authorization-server metadata has no `issuer`');
+  }
+  return issuer.trim().replace(/\/+$/, '');
 }
 
 // MCP JSON-RPC messages are tiny; a generous ceiling still stops an
@@ -144,6 +159,11 @@ export function createSidecar(config: SidecarConfig): {
   // limit. All transports share the one registry.
   const transports = new Map<string, { transport: StreamableHTTPServerTransport; lastActivity: number }>();
 
+  // The PDS's public issuer, looked up once on the first discovery request and
+  // held for the process lifetime. It only changes when the PDS itself moves
+  // hosts, which is a redeploy of both services.
+  let cachedIssuer: string | undefined;
+
   function sweepIdleTransports(now: number): void {
     for (const [id, entry] of transports) {
       if (now - entry.lastActivity > TRANSPORT_IDLE_MS) {
@@ -190,7 +210,23 @@ export function createSidecar(config: SidecarConfig): {
     const url = new URL(req.url ?? '/', config.publicOrigin);
 
     if (req.method === 'GET' && url.pathname === '/.well-known/oauth-protected-resource') {
-      sendJson(res, 200, protectedResourceMetadata(config));
+      let issuer: string;
+      try {
+        issuer = cachedIssuer ?? (cachedIssuer = await fetchIssuer(config.pdsOrigin));
+      } catch (err) {
+        // 503 is retryable and visible. Falling back to a guessed origin would
+        // hand the client an authorization server that isn't one, and its
+        // discovery would dead-end with nothing saying why.
+        log(`authorization-server discovery failed: ${redactError(err)}`);
+        sendJson(res, 503, { error: 'authorization server metadata unavailable; retry shortly' });
+        return;
+      }
+      sendJson(res, 200, {
+        resource: config.publicOrigin,
+        // Always the PDS's public issuer, never the private forwarding origin
+        // (which is unroutable from outside the Railway network).
+        authorization_servers: [issuer],
+      });
       return;
     }
     if (req.method === 'GET' && (url.pathname === '/' || url.pathname === '/healthz')) {

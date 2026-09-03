@@ -376,16 +376,18 @@ wiring than the Root-Directory trick:
 - **Wait for CI** — optional, same reasoning as the static sites: `just ci-pds` does not run the
   sidecar's Node suite, so waiting adds no real safety; harmless if you'd rather gate uniformly.
 - **Environment:** `MCP_SIDECAR_PDS_ORIGIN` = the PDS's private address
-  (`http://<pds-service>.railway.internal:<port>`), `MCP_SIDECAR_PUBLIC_ORIGIN` =
-  `https://mcp.obsign.org` (the OAuth resource identifier), and
-  `MCP_SIDECAR_AUTH_SERVER_ORIGIN` = `https://obsign.org` (the **public** Custos
-  authorization server advertised to clients — never the private forwarding
-  address, which is unreachable from outside the Railway network).
+  (`http://<pds-service>.railway.internal:<port>`) and `MCP_SIDECAR_PUBLIC_ORIGIN` =
+  `https://mcp.obsign.org` (the OAuth resource identifier).
   `MCP_SIDECAR_PDS_ORIGIN` is **required** — the sidecar parse-fails loudly rather
-  than defaulting to a public URL. All three origins must carry an explicit
+  than defaulting to a public URL. Both origins must carry an explicit
   `http://`/`https://` scheme: a bare `pds.railway.internal:8080` technically
   *parses* as a URL (the host becomes the scheme), so the sidecar refuses it at
   startup rather than failing illegibly on the first forwarded call.
+  The **public authorization server** advertised to clients is not configured here —
+  the sidecar reads the PDS's own RFC 8414 `issuer` over the private origin. A
+  separate `MCP_SIDECAR_AUTH_SERVER_ORIGIN` used to hold a copy of it and went
+  stale at the `pds.obsign.org` migration, dead-ending OAuth discovery (MM-536);
+  **delete that variable** from the service if it is still set — it is now ignored.
   **No volume, no secret.** Railway injects `PORT`.
 
 ### Domain: `mcp.obsign.org`
