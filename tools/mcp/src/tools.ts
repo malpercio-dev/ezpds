@@ -275,9 +275,10 @@ export function registerTools(server: McpServer, resolveSession: SessionResolver
     {
       description:
         `Publish an app.bsky.feed.post to the user’s repository — text, optional reply ` +
-        `references, optional attached image (uploaded as a blob). URLs, #hashtags, and ` +
-        `@mentions in the text are turned into rich-text facets automatically, so they ` +
-        `render as links rather than plain text. ${ATTRIBUTION}`,
+        `references, optional attached image (uploaded as a blob), optional embed ` +
+        `(quote post, external link card). URLs, #hashtags, and @mentions in the text are ` +
+        `turned into rich-text facets automatically, so they render as links rather than ` +
+        `plain text. ${ATTRIBUTION}`,
       annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false },
       inputSchema: {
         text: z.string().max(3000).describe('Post text'),
@@ -293,6 +294,16 @@ export function registerTools(server: McpServer, resolveSession: SessionResolver
               'configured by CUSTOS_MCP_IMAGE_DIR (attachments are disabled without it)',
           ),
         image_alt: z.string().optional().describe('Alt text for the attached image'),
+        embed: z
+          .record(z.string(), z.unknown())
+          .optional()
+          .describe(
+            'An app.bsky.embed.* value, written to the record as given. Quote post: ' +
+              '{"$type":"app.bsky.embed.record","record":{"uri":…,"cid":…}} — get_record and ' +
+              'search_timeline return both fields. Link card: {"$type":"app.bsky.embed.external",' +
+              '"external":{"uri":…,"title":…,"description":…}}, with an optional "thumb" blob ' +
+              'ref from upload_blob. Mutually exclusive with image_path.',
+          ),
         langs: z.array(z.string()).optional().describe('BCP-47 language tags'),
         facets: z
           .array(z.record(z.string(), z.unknown()))
@@ -309,8 +320,9 @@ export function registerTools(server: McpServer, resolveSession: SessionResolver
       try {
         const { token, did } = await requireDid(session);
 
-        let embed: Record<string, unknown> | undefined;
+        let embed = args.embed;
         if (args.image_path) {
+          if (embed) throw new Error('pass either image_path or embed, not both');
           const uploaded = await uploadBlob(session, token, args.image_path);
           embed = {
             $type: 'app.bsky.embed.images',
