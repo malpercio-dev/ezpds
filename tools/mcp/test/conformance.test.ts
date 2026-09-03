@@ -148,6 +148,7 @@ test('onboarding ceremony, tool surface, and credential hygiene', async (t) => {
     'search_timeline',
     'account_status',
     'upload_blob',
+    'update_bluesky_profile',
     'list_spaces',
     'space_get_record',
     'space_list_records',
@@ -231,6 +232,55 @@ test('onboarding ceremony, tool surface, and credential hygiene', async (t) => {
 
   const status = toolJson(await client.callTool({ name: 'account_status', arguments: {} }));
   assert.equal(typeof status.activated, 'boolean');
+});
+
+test('update_bluesky_profile merges into app.bsky.actor.profile instead of clobbering it', async (t) => {
+  const client = await connectClient();
+  t.after(() => client.close());
+
+  async function profile(): Promise<any> {
+    return toolJson(
+      await client.callTool({
+        name: 'get_record',
+        arguments: { collection: 'app.bsky.actor.profile', rkey: 'self' },
+      }),
+    ).value;
+  }
+
+  // First write: no profile record exists yet, so this creates one.
+  toolJson(
+    await client.callTool({
+      name: 'update_bluesky_profile',
+      arguments: { display_name: 'Conformance Agent', description: 'first bio' },
+    }),
+  );
+  let value = await profile();
+  assert.equal(value.displayName, 'Conformance Agent');
+  assert.equal(value.description, 'first bio');
+
+  // The property that makes this a tool rather than a raw putRecord: naming one
+  // field must not drop the others. A clobbering implementation passes every
+  // other assertion here and fails only this one.
+  toolJson(
+    await client.callTool({
+      name: 'update_bluesky_profile',
+      arguments: { description: 'second bio' },
+    }),
+  );
+  value = await profile();
+  assert.equal(value.description, 'second bio');
+  assert.equal(value.displayName, 'Conformance Agent', 'unnamed fields survive the update');
+
+  // Empty string is the clear, distinct from omission.
+  toolJson(await client.callTool({ name: 'update_bluesky_profile', arguments: { description: '' } }));
+  value = await profile();
+  assert.equal(value.description, undefined, 'empty string clears the field');
+  assert.equal(value.displayName, 'Conformance Agent');
+
+  // A call naming nothing is a caller mistake, not an empty write.
+  const empty = await client.callTool({ name: 'update_bluesky_profile', arguments: {} });
+  assert.equal(empty.isError, true);
+  assert.match((empty.content as { text: string }[])[0]!.text, /nothing to update/);
 });
 
 test('jwt-bearer exchange returns a renewed identity_assertion (sliding window)', async () => {
@@ -319,6 +369,50 @@ test('upload_blob returns a blob ref and stays inside the configured directory',
   });
   assert.equal(disabled.isError, true);
   assert.match((disabled.content as { text: string }[])[0]!.text, /uploads are disabled/);
+});
+
+test('update_bluesky_profile takes an image by path or by an upload_blob ref', async (t) => {
+  const imgDir = fs.mkdtempSync(path.join(tmp, 'profile-images-'));
+  fs.writeFileSync(
+    path.join(imgDir, 'avatar.png'),
+    Buffer.from(
+      'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==',
+      'base64',
+    ),
+  );
+  const client = await connectClient({ CUSTOS_MCP_IMAGE_DIR: imgDir });
+  t.after(() => client.close());
+
+  // By path: the tool uploads the file itself, so setting an avatar is one call.
+  const byPath = toolJson(
+    await client.callTool({
+      name: 'update_bluesky_profile',
+      arguments: { avatar_path: 'avatar.png' },
+    }),
+  );
+  assert.equal(byPath.profile.avatar?.$type, 'blob');
+  assert.ok(byPath.profile.avatar.ref?.$link, 'the stored avatar carries a CID link');
+
+  // By ref: the pairing with upload_blob, for a blob the caller already has.
+  const uploaded = toolJson(
+    await client.callTool({ name: 'upload_blob', arguments: { path: 'avatar.png' } }),
+  );
+  const byRef = toolJson(
+    await client.callTool({
+      name: 'update_bluesky_profile',
+      arguments: { banner_blob: uploaded.blob },
+    }),
+  );
+  assert.deepEqual(byRef.profile.banner, uploaded.blob, 'the ref is stored as given');
+  assert.equal(byRef.profile.avatar?.$type, 'blob', 'the avatar set earlier survived');
+
+  // Both forms for one field is a caller mistake, not a silent precedence rule.
+  const both = await client.callTool({
+    name: 'update_bluesky_profile',
+    arguments: { avatar_path: 'avatar.png', avatar_blob: uploaded.blob },
+  });
+  assert.equal(both.isError, true);
+  assert.match((both.content as { text: string }[])[0]!.text, /not both/);
 });
 
 test('spaces: the agent tool surface drives a permissioned space end-to-end', async (t) => {
