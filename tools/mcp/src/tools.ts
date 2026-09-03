@@ -288,7 +288,10 @@ export function registerTools(server: McpServer, resolveSession: SessionResolver
     async (extra) => {
       const session = resolveSession(extra);
       const status = session.status();
-      const report: Record<string, unknown> = { pds_url: session.pdsUrl, ...status };
+      // The PDS base URL is deliberately absent: the stdio caller configured it
+      // themselves, and for the hosted sidecar it is an internal deployment
+      // hostname the client has no business seeing.
+      const report: Record<string, unknown> = { ...status };
       if (status.state === 'onboarding') {
         report.action_needed =
           `Ask the account owner to confirm claim code ${status.userCode} at ` +
