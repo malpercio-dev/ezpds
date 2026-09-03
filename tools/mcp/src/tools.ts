@@ -87,16 +87,16 @@ function relayError(err: unknown, session: SessionLike): ToolResult {
 }
 
 /**
- * Confine image reads to the operator-configured directory. Without this, a
+ * Confine file reads to the operator-configured directory. Without this, a
  * tool call influenced by untrusted content could publish any file the
  * process can read. Realpaths on both sides so symlinks cannot escape.
  */
-function resolveImagePath(userPath: string): string {
+function resolveUploadPath(userPath: string): string {
   const configured = imageDir();
   if (!configured) {
     throw new Error(
-      'image attachments are disabled: set CUSTOS_MCP_IMAGE_DIR to the one directory ' +
-        'images may be read from',
+      'blob uploads are disabled: set CUSTOS_MCP_IMAGE_DIR to the one directory ' +
+        'files may be read from',
     );
   }
   const base = fs.realpathSync(path.resolve(configured));
@@ -104,16 +104,16 @@ function resolveImagePath(userPath: string): string {
   try {
     resolved = fs.realpathSync(path.resolve(base, userPath));
   } catch {
-    throw new Error(`image_path does not exist under ${base}`);
+    throw new Error(`path does not exist under ${base}`);
   }
   if (resolved !== base && !resolved.startsWith(base + path.sep)) {
-    throw new Error(`image_path must be inside ${base}`);
+    throw new Error(`path must be inside ${base}`);
   }
   return resolved;
 }
 
-/** MIME type for uploaded post images, by file extension. */
-function imageMime(filePath: string): string {
+/** MIME type by file extension, for an upload that does not declare one. */
+function mimeFromExtension(filePath: string): string {
   const mime: Record<string, string> = {
     '.png': 'image/png',
     '.jpg': 'image/jpeg',
@@ -124,9 +124,33 @@ function imageMime(filePath: string): string {
   const ext = path.extname(filePath).toLowerCase();
   const type = mime[ext];
   if (!type) {
-    throw new Error(`unsupported image type "${ext}" — use png, jpg, gif, or webp`);
+    throw new Error(
+      `cannot infer a MIME type for "${ext}" — use a png, jpg, gif, or webp file, or ` +
+        `upload it with upload_blob's mime_type argument`,
+    );
   }
   return type;
+}
+
+/**
+ * Upload one confined file as a blob. The single upload path: create_post's
+ * image attachment and the standalone upload_blob tool both run through it, so
+ * the confinement check and MIME handling cannot drift apart.
+ */
+async function uploadBlob(
+  session: SessionLike,
+  token: string,
+  userPath: string,
+  mimeType?: string,
+): Promise<any> {
+  const filePath = resolveUploadPath(userPath);
+  const bytes = fs.readFileSync(filePath);
+  return xrpc(session.pdsUrl, 'com.atproto.repo.uploadBlob', {
+    method: 'POST',
+    token,
+    headers: { 'Content-Type': mimeType ?? mimeFromExtension(filePath) },
+    body: new Uint8Array(bytes),
+  });
 }
 
 async function requireDid(session: SessionLike): Promise<{ token: string; did: string }> {
@@ -256,15 +280,7 @@ export function registerTools(server: McpServer, resolveSession: SessionResolver
 
         let embed: Record<string, unknown> | undefined;
         if (args.image_path) {
-          const imagePath = resolveImagePath(args.image_path);
-          const mimeType = imageMime(imagePath);
-          const bytes = fs.readFileSync(imagePath);
-          const uploaded = await xrpc(session.pdsUrl, 'com.atproto.repo.uploadBlob', {
-            method: 'POST',
-            token,
-            headers: { 'Content-Type': mimeType },
-            body: new Uint8Array(bytes),
-          });
+          const uploaded = await uploadBlob(session, token, args.image_path);
           embed = {
             $type: 'app.bsky.embed.images',
             images: [{ image: uploaded.blob, alt: args.image_alt ?? '' }],
@@ -288,6 +304,43 @@ export function registerTools(server: McpServer, resolveSession: SessionResolver
           body: { repo: did, collection: 'app.bsky.feed.post', record },
         });
         return ok(created);
+      } catch (err) {
+        return relayError(err, session);
+      }
+    },
+  );
+
+  server.registerTool(
+    'upload_blob',
+    {
+      description:
+        `Upload a file to the user’s repository as a blob and return its blob ref, for use ` +
+        `as an avatar, banner, or any other record field that takes a blob (create_post ` +
+        `attaches post images on its own — it does not need this). The file is read from ` +
+        `the directory configured by CUSTOS_MCP_IMAGE_DIR; uploads are disabled without it. ` +
+        `A blob no record references is temporary and eventually garbage-collected, so write ` +
+        `the record that carries the returned ref rather than uploading speculatively. ` +
+        `${ATTRIBUTION}`,
+      annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true },
+      inputSchema: {
+        path: z
+          .string()
+          .describe('File to upload, as a path inside the CUSTOS_MCP_IMAGE_DIR directory'),
+        mime_type: z
+          .string()
+          .optional()
+          .describe(
+            'Content type to upload as. Inferred from the extension for png/jpg/gif/webp; ' +
+              'required for anything else',
+          ),
+      },
+    },
+    async (args, extra) => {
+      const session = resolveSession(extra);
+      try {
+        const token = await session.accessToken();
+        const uploaded = await uploadBlob(session, token, args.path, args.mime_type);
+        return ok(uploaded);
       } catch (err) {
         return relayError(err, session);
       }
