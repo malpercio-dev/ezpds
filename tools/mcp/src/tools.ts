@@ -186,6 +186,44 @@ async function requireDid(session: SessionLike): Promise<{ token: string; did: s
 const replyRef = z.object({ uri: z.string(), cid: z.string() });
 
 /**
+ * Extended grapheme clusters, the unit atproto counts text in — one family
+ * emoji is one grapheme however many bytes and code points it takes.
+ */
+const GRAPHEMES = new Intl.Segmenter(undefined, { granularity: 'grapheme' });
+
+export function graphemeCount(text: string): number {
+  return [...GRAPHEMES.segment(text)].length;
+}
+
+/**
+ * Text bounded the way an atproto lexicon bounds it: a `maxLength` in UTF-8
+ * bytes and a `maxGraphemes` in extended grapheme clusters. JavaScript's
+ * `String.length` counts UTF-16 code units, which is neither — so a bare
+ * `.max()` accepts text the PDS then refuses with a raw InvalidRequest, after
+ * the tool already reported the arguments as valid. The `.max()` survives as
+ * the advertised JSON-Schema ceiling (a byte limit always bounds characters
+ * too); the refinements below are the limits actually enforced.
+ */
+export function lexiconText(maxBytes: number, maxGraphemes: number) {
+  return z
+    .string()
+    .max(maxBytes)
+    .refine(
+      (text) => Buffer.byteLength(text, 'utf8') <= maxBytes,
+      (text) => ({
+        message: `too long: ${Buffer.byteLength(text, 'utf8')} UTF-8 bytes, limit is ${maxBytes}`,
+      }),
+    )
+    .refine(
+      (text) => graphemeCount(text) <= maxGraphemes,
+      (text) => ({
+        message: `too long: ${graphemeCount(text)} graphemes, limit is ${maxGraphemes}`,
+      }),
+    );
+}
+
+
+/**
  * The single self-keyed record holding an account's Bluesky profile. Other
  * atproto apps keep their own profile records under their own lexicons, which
  * is why the tool is named for Bluesky rather than for profiles in general.
@@ -281,7 +319,10 @@ export function registerTools(server: McpServer, resolveSession: SessionResolver
         `plain text. ${ATTRIBUTION}`,
       annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false },
       inputSchema: {
-        text: z.string().max(3000).describe('Post text'),
+        text: lexiconText(3000, 300).describe(
+          'Post text: at most 300 graphemes (and 3000 UTF-8 bytes) — the app.bsky.feed.post ' +
+            'limit. Longer text is rejected here rather than by the PDS',
+        ),
         reply: z
           .object({ root: replyRef, parent: replyRef })
           .optional()
@@ -404,16 +445,12 @@ export function registerTools(server: McpServer, resolveSession: SessionResolver
         `(409 InvalidSwap) rather than silently overwriting — re-read and retry. ${ATTRIBUTION}`,
       annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true },
       inputSchema: {
-        display_name: z
-          .string()
-          .max(640)
+        display_name: lexiconText(640, 64)
           .optional()
-          .describe('New display name; empty string clears it'),
-        description: z
-          .string()
-          .max(2560)
+          .describe('New display name, at most 64 graphemes; empty string clears it'),
+        description: lexiconText(2560, 256)
           .optional()
-          .describe('New profile description (bio); empty string clears it'),
+          .describe('New profile description (bio), at most 256 graphemes; empty string clears it'),
         avatar_path: z
           .string()
           .optional()

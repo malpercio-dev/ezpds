@@ -33,7 +33,7 @@ if (openssl.status !== 0) {
 // Test files are listed explicitly rather than passing `testDir`: Node 22 (the
 // pinned runtime here and in CI) treats a path argument to --test as a module
 // to load, so a directory fails with MODULE_NOT_FOUND. Newer Node discovers it.
-const testFiles = ['facets.test.ts', 'conformance.test.ts'].map((file) =>
+const testFiles = ['facets.test.ts', 'limits.test.ts', 'conformance.test.ts'].map((file) =>
   path.join(testDir, file),
 );
 
