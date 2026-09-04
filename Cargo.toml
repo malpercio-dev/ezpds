@@ -5,6 +5,7 @@ members = [
     "crates/repo-engine",
     "crates/crypto",
     "crates/common",
+    "crates/ios-device-key",
     "apps/identity-wallet/src-tauri",
     "apps/admin-companion/src-tauri",
 ]
@@ -231,6 +232,8 @@ common = { path = "crates/common" }
 crypto = { path = "crates/crypto" }
 repo-engine = { path = "crates/repo-engine" }
 notify-relay = { path = "crates/notify-relay" }
+# The device key both iOS apps hold; each supplies its own Keychain and account names.
+ios-device-key = { path = "crates/ios-device-key" }
 
 # ── Local patches ─────────────────────────────────────────────────────────────
 #

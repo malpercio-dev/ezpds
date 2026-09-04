@@ -20,6 +20,7 @@ on:
       - "apps/identity-wallet/**"
       - "apps/admin-companion/vendor/tauri-plugin-sharesheet/**"
       - "crates/crypto/**"
+      - "crates/ios-device-key/**"
       - "Cargo.toml"
       - "Cargo.lock"
       # The build/upload delegate to `just ios-*`, so a recipe change can break the lane.

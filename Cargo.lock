@@ -15,9 +15,8 @@ dependencies = [
  "base64 0.21.7",
  "chrono",
  "crypto",
+ "ios-device-key",
  "log",
- "multibase",
- "p256",
  "reqwest",
  "security-framework",
  "serde",
@@ -3299,6 +3298,7 @@ dependencies = [
  "hickory-resolver",
  "http",
  "httpmock",
+ "ios-device-key",
  "ipld-core",
  "log",
  "multibase",
@@ -3414,6 +3414,19 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "879f10e63c20629ecabbb64a8010319738c66a5cd0c29b02d63d272b03751d01"
 dependencies = [
  "generic-array",
+]
+
+[[package]]
+name = "ios-device-key"
+version = "0.16.2"
+dependencies = [
+ "crypto",
+ "multibase",
+ "p256",
+ "security-framework",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
 ]
 
 [[package]]

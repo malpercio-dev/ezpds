@@ -117,7 +117,7 @@ allowlist lives in its module's doc — `claim.rs` (the 4-point claim verificati
 | `lib.rs` | crate root and app wiring: the cross-cutting IPC commands (account creation, both DID ceremonies, PDS config/capabilities, IdentityStore reads, appearance) plus `run()`'s startup sequence — see module doc |
 | `main.rs` | desktop entry point (calls `lib::run()`) |
 | `keychain.rs` | the two Keychain stores (device-local + iCloud-synchronizable, allowlist-gated), protection classes, the access-group entitlement invariant, and the **canonical account inventory** — the module doc is the authority on every account name |
-| `device_key.rs` | the global P-256 device key, software-or-Secure-Enclave by `#[cfg]`; `get_or_create` idempotent, `sign` low-S-normalized r\|\|s — see module doc |
+| `device_key.rs` | the global P-256 device key: this app's Keychain and account names bound to the shared `crates/ios-device-key` implementation (software-or-Secure-Enclave by `#[cfg]`; `get_or_create` idempotent, `sign` low-S-normalized r\|\|s) — see both module docs |
 | `identity_store.rs` | multi-identity Keychain lifecycle (`managed-dids` index + per-DID entries), lazy per-DID device keys with the Secure-Enclave liveness probe, the shared `SovereignTokenRecord` session record; removal semantics and the Share 1 exception in the module doc |
 | `share_ceremony.rs` | client-side 2-of-3 share generation + the three fail-closed staging slots (create / re-key / self-held kit); staging contract and load-bearing teardown order in the module doc |
 | `share_recovery.rs` | the "Recover existing identity" ceremony (9 IPC commands) and its resumable rotation epilogue — see module doc |

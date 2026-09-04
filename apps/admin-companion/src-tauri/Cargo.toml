@@ -21,10 +21,11 @@ log = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
-# Device-key crypto (software path uses the crypto crate; both paths use p256 + multibase).
+# The device key both iOS apps hold (Secure Enclave / software P-256). This app supplies its
+# own Keychain and account names; see crates/ios-device-key.
+ios-device-key = { workspace = true }
+# Signature verification in relay_client's round-trip tests.
 crypto = { workspace = true }
-p256 = { workspace = true }
-multibase = { workspace = true }
 tracing = { workspace = true }
 # Request-envelope signing: SHA-256 body hash + base64url-no-pad signature
 # encoding, byte-for-byte matching the relay's `admin_request_sign_string` contract.
