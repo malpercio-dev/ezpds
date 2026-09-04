@@ -965,3 +965,16 @@ pub(crate) async fn setup_account_with_repo() -> (AppState, String) {
     seed_account_with_repo(&state.db, &did).await;
     (state, did)
 }
+
+/// [`state_with_master_key`] with `public_url` overridden and invite codes not required — the
+/// migration-mode `createAccount` fixture both did:plc and did:web outbound-migration tests use.
+pub(crate) async fn state_with_master_key_and_url(public_url: &str) -> AppState {
+    let base = state_with_master_key().await;
+    let mut config = (*base.config).clone();
+    config.public_url = public_url.to_string();
+    config.invite_code_required = false;
+    AppState {
+        config: Arc::new(config),
+        ..base
+    }
+}

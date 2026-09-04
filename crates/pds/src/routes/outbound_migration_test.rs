@@ -7,37 +7,21 @@
 // second server's `createAccount`, or the source-side data-transfer legs (`getRepo`/`listBlobs`/
 // `getBlob`) feeding a real `importRepo`/`uploadBlob` on a destination.
 
-use std::sync::Arc;
-
 use axum::{
     body::Body,
     http::{Request, StatusCode},
 };
 use tower::ServiceExt;
 
-use crate::app::{app, AppState};
-use crate::routes::test_utils::{access_jwt, body_json, seed_account_with_repo, seed_did_document};
+use crate::app::app;
+use crate::routes::test_utils::{
+    access_jwt, body_json, seed_account_with_repo, seed_did_document, state_with_master_key_and_url,
+};
 
 const MIGRATING_DID: &str = "did:plc:outboundmigrant2222222";
 const HANDLE: &str = "alice.migrated.example";
 const SOURCE_URL: &str = "https://source.example.com";
 const DEST_URL: &str = "https://dest.example.com";
-
-/// `state_with_master_key()`-equivalent, but with `public_url` overridden so its
-/// `resolve_server_did()` differs from a same-defaults sibling state — required to model two
-/// independent PDS instances (source and destination) rather than one server talking to itself.
-async fn state_with_master_key_and_url(public_url: &str) -> AppState {
-    let base = crate::routes::test_utils::state_with_master_key().await;
-    let mut config = (*base.config).clone();
-    config.public_url = public_url.to_string();
-    // Migration-mode createAccount has no invite code to present (matches every other
-    // migration-mode test in create_account_xrpc.rs).
-    config.invite_code_required = false;
-    AppState {
-        config: Arc::new(config),
-        ..base
-    }
-}
 
 fn bearer(method: &str, uri: String, token: Option<&str>, body: Body) -> Request<Body> {
     let mut b = Request::builder().method(method).uri(uri);

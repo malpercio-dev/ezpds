@@ -30,36 +30,21 @@
 //     branches on `account_exists`, not the DID method) and is unit-tested in `resolve_identity.rs`
 //     against `did:plc`. The `did:web` force-refresh network fetch + rewrite remains production-only.
 
-use std::sync::Arc;
-
 use axum::{
     body::Body,
     http::{Request, StatusCode},
 };
 use tower::ServiceExt;
 
-use crate::app::{app, AppState};
-use crate::routes::test_utils::{access_jwt, body_json, seed_account_with_repo, seed_did_document};
+use crate::app::app;
+use crate::routes::test_utils::{
+    access_jwt, body_json, seed_account_with_repo, seed_did_document, state_with_master_key_and_url,
+};
 
 const MIGRATING_DID: &str = "did:web:malpercio.dev";
 const HANDLE: &str = "malpercio.dev";
 const OLD_PDS_URL: &str = "https://old.example.com";
 const CUSTOS_URL: &str = "https://custos.example.com";
-
-/// `state_with_master_key()` with `public_url` overridden so its `resolve_server_did()` differs
-/// from a same-defaults sibling — modeling two independent PDS instances (the operator's old PDS
-/// and Custos) rather than one server talking to itself. Invite codes off (every migration-mode
-/// test does the same).
-async fn state_with_master_key_and_url(public_url: &str) -> AppState {
-    let base = crate::routes::test_utils::state_with_master_key().await;
-    let mut config = (*base.config).clone();
-    config.public_url = public_url.to_string();
-    config.invite_code_required = false;
-    AppState {
-        config: Arc::new(config),
-        ..base
-    }
-}
 
 fn bearer(method: &str, uri: String, token: Option<&str>, body: Body) -> Request<Body> {
     let mut b = Request::builder().method(method).uri(uri);
