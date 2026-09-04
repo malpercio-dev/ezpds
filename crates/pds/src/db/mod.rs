@@ -234,15 +234,14 @@ mod tests {
     /// Tests that URL parse errors surface as DbError::InvalidUrl, not DbError::Pool.
     #[tokio::test]
     async fn open_pool_invalid_url_returns_correct_error() {
-        // sqlx's URL parser is lenient for sqlite: scheme. Use a genuinely invalid URL.
-        // Most common invalid case: wrong scheme like "postgres:" instead of "sqlite:"
-        // For this test, we verify any error from open_pool can occur and surface correctly.
-        // The important thing is that if from_str() fails, it becomes DbError::InvalidUrl.
-        // Since sqlx accepts most strings as relative paths, we don't force a parse error.
-        // Instead, this test documents the behavior: open_pool succeeds for most inputs
-        // and fails at first query if the path is invalid.
-        let result = open_pool("sqlite::memory:").await;
-        assert!(result.is_ok(), "in-memory database should always succeed");
+        // sqlx accepts most strings as relative filenames, so a bare bad path won't fail to
+        // parse. An unrecognized `mode` query value does: `SqliteConnectOptions::from_str`
+        // rejects it before any connection is attempted.
+        let result = open_pool("sqlite:test.db?mode=bogus").await;
+        assert!(
+            matches!(result, Err(DbError::InvalidUrl(_))),
+            "expected DbError::InvalidUrl, got {result:?}"
+        );
     }
 
     /// Verify that successful migrations return Ok and bootstrap the schema_migrations table.
