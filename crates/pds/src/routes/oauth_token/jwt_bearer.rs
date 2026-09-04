@@ -314,7 +314,7 @@ mod tests {
     use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
     use tower::ServiceExt;
 
-    use super::super::test_support::{json_body, mint_assertion, now_secs, post_token};
+    use super::super::test_support::{json_body, mint_assertion, post_token};
     use crate::app::{app, test_state, AppState};
 
     const JWT_BEARER: &str = "urn:ietf:params:oauth:grant-type:jwt-bearer";
@@ -384,7 +384,7 @@ mod tests {
             did,
             "reg_bearer",
             "com.atproto.access",
-            now_secs() + 600,
+            crate::time::unix_now_secs() + 600,
         );
 
         let body = format!("grant_type={JWT_BEARER}&assertion={assertion}");
@@ -474,7 +474,7 @@ mod tests {
             did,
             "reg_badsig",
             "com.atproto.access",
-            now_secs() + 600,
+            crate::time::unix_now_secs() + 600,
         ));
 
         let resp = app(state)
@@ -508,7 +508,7 @@ mod tests {
             did,
             "reg_expired",
             "com.atproto.access",
-            now_secs() - 60,
+            crate::time::unix_now_secs() - 60,
         );
 
         let resp = app(state)
@@ -550,7 +550,7 @@ mod tests {
             "did:plc:agentbearer6666666666",
             "reg_mismatch",
             "com.atproto.access",
-            now_secs() + 600,
+            crate::time::unix_now_secs() + 600,
         );
 
         let resp = app(state)
@@ -583,7 +583,7 @@ mod tests {
             did,
             "reg_unclaimed",
             "com.atproto.access",
-            now_secs() + 600,
+            crate::time::unix_now_secs() + 600,
         );
 
         let resp = app(state)
@@ -620,7 +620,13 @@ mod tests {
             r#"["atproto","repo:*?action=create&action=update","blob:*/*"]"#,
         )
         .await;
-        let assertion = mint_assertion(&state, did, "reg_renewal", "atproto", now_secs() + 600);
+        let assertion = mint_assertion(
+            &state,
+            did,
+            "reg_renewal",
+            "atproto",
+            crate::time::unix_now_secs() + 600,
+        );
 
         let resp = app(state.clone())
             .oneshot(post_token(&format!(
@@ -647,7 +653,7 @@ mod tests {
         let payload: serde_json::Value =
             serde_json::from_slice(&URL_SAFE_NO_PAD.decode(payload_b64).unwrap()).unwrap();
         assert!(
-            payload["exp"].as_i64().unwrap() > now_secs() + 3600,
+            payload["exp"].as_i64().unwrap() > crate::time::unix_now_secs() + 3600,
             "a renewed assertion must outlive the pre-claim TTL"
         );
         assert_eq!(
@@ -684,7 +690,13 @@ mod tests {
             r#"["atproto","account:email"]"#,
         )
         .await;
-        let assertion = mint_assertion(&state, did, "reg_renew_clamp", "atproto", now_secs() + 600);
+        let assertion = mint_assertion(
+            &state,
+            did,
+            "reg_renew_clamp",
+            "atproto",
+            crate::time::unix_now_secs() + 600,
+        );
 
         let resp = app(state)
             .oneshot(post_token(&format!(
@@ -714,7 +726,7 @@ mod tests {
             did,
             "reg_missing",
             "com.atproto.access",
-            now_secs() + 600,
+            crate::time::unix_now_secs() + 600,
         );
 
         let resp = app(state)
@@ -737,7 +749,7 @@ mod tests {
             did,
             "reg_revoked",
             "com.atproto.access",
-            now_secs() + 600,
+            crate::time::unix_now_secs() + 600,
         );
 
         let resp = app(state)
@@ -763,7 +775,7 @@ mod tests {
             registration_id,
             // The conservative default agent profile: repo writes + blobs, no account/identity.
             "atproto repo:*?action=create&action=update blob:*/*",
-            now_secs() + 600,
+            crate::time::unix_now_secs() + 600,
         );
         let resp = app(state.clone())
             .oneshot(post_token(&format!(
@@ -839,7 +851,7 @@ mod tests {
             did,
             "reg_claim_present",
             "atproto repo:*?action=create&action=update",
-            now_secs() + 600,
+            crate::time::unix_now_secs() + 600,
         );
 
         let resp = app(state)
@@ -872,7 +884,7 @@ mod tests {
             did,
             "reg_resource",
             "com.atproto.access",
-            now_secs() + 600,
+            crate::time::unix_now_secs() + 600,
         );
         let body = format!(
             "grant_type={JWT_BEARER}&assertion={assertion}&resource=https%3A%2F%2Fother.example.com%2F"
@@ -893,7 +905,7 @@ mod tests {
             did,
             "reg_okres",
             "com.atproto.access",
-            now_secs() + 600,
+            crate::time::unix_now_secs() + 600,
         );
         // The server's own origin is a valid resource; a trailing slash is tolerated.
         let body = format!(
@@ -917,7 +929,7 @@ mod tests {
             did,
             "reg_active",
             "com.atproto.access",
-            now_secs() + 600,
+            crate::time::unix_now_secs() + 600,
         );
 
         let resp = app(state)
@@ -951,7 +963,7 @@ mod tests {
             "did:plc:someoneelse00000000",
             "reg_mismatch",
             "com.atproto.access",
-            now_secs() + 600,
+            crate::time::unix_now_secs() + 600,
         );
 
         let resp = app(state)

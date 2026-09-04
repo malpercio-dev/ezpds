@@ -153,64 +153,12 @@ mod tests {
         http::{Request, StatusCode},
     };
     use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
-    use p256::ecdsa::{signature::Signer, Signature, SigningKey};
-    use rand_core::OsRng;
-    use sha2::{Digest, Sha256};
     use tower::ServiceExt;
-    use uuid::Uuid;
 
     use crate::app::{app, test_state, AppState};
     use crate::auth::token::generate_token;
     use crate::db::oauth::register_oauth_client;
-
-    // ── DPoP proof test helpers (mirrors oauth_token/mod.rs's test harness) ───────
-
-    fn now_secs() -> i64 {
-        crate::time::unix_now_secs()
-    }
-
-    fn dpop_key_to_jwk(key: &SigningKey) -> serde_json::Value {
-        let vk = key.verifying_key();
-        let point = vk.to_encoded_point(false);
-        let x = URL_SAFE_NO_PAD.encode(point.x().unwrap());
-        let y = URL_SAFE_NO_PAD.encode(point.y().unwrap());
-        serde_json::json!({ "kty": "EC", "crv": "P-256", "x": x, "y": y })
-    }
-
-    fn dpop_thumbprint(key: &SigningKey) -> String {
-        let jwk = dpop_key_to_jwk(key);
-        // RFC 7638 requires lexicographic key order (crv, kty, x, y for EC). Do not reorder.
-        let canonical = serde_json::to_string(&serde_json::json!({
-            "crv": jwk["crv"],
-            "kty": jwk["kty"],
-            "x": jwk["x"],
-            "y": jwk["y"],
-        }))
-        .unwrap();
-        let hash = Sha256::digest(canonical.as_bytes());
-        URL_SAFE_NO_PAD.encode(hash)
-    }
-
-    fn make_dpop_proof(
-        key: &SigningKey,
-        htm: &str,
-        htu: &str,
-        nonce: Option<&str>,
-        iat: i64,
-    ) -> String {
-        let jwk = dpop_key_to_jwk(key);
-        let header = serde_json::json!({ "typ": "dpop+jwt", "alg": "ES256", "jwk": jwk });
-        let mut payload = serde_json::json!({ "htm": htm, "htu": htu, "iat": iat, "jti": Uuid::new_v4().to_string() });
-        if let Some(n) = nonce {
-            payload["nonce"] = serde_json::Value::String(n.to_string());
-        }
-        let hdr = URL_SAFE_NO_PAD.encode(serde_json::to_string(&header).unwrap().as_bytes());
-        let pay = URL_SAFE_NO_PAD.encode(serde_json::to_string(&payload).unwrap().as_bytes());
-        let sig_input = format!("{hdr}.{pay}");
-        let sig: Signature = key.sign(sig_input.as_bytes());
-        let sig_b64 = URL_SAFE_NO_PAD.encode(sig.to_bytes().as_ref() as &[u8]);
-        format!("{hdr}.{pay}.{sig_b64}")
-    }
+    use crate::routes::test_utils;
 
     const REVOKE_HTU: &str = "https://test.example.com/oauth/revoke";
     const TEST_CLIENT: &str = "https://app.example.com/client-metadata.json";
@@ -326,8 +274,8 @@ mod tests {
     #[tokio::test]
     async fn dpop_without_nonce_returns_use_dpop_nonce_with_header() {
         let state = test_state().await;
-        let key = SigningKey::random(&mut OsRng);
-        let dpop = make_dpop_proof(&key, "POST", REVOKE_HTU, None, now_secs());
+        let key = test_utils::DpopProofKey::generate();
+        let dpop = key.proof_with("POST", REVOKE_HTU, None, None);
 
         let resp = app(state)
             .oneshot(post_revoke_with_dpop("token=sometoken", &dpop))
@@ -346,15 +294,8 @@ mod tests {
     async fn dpop_for_wrong_htu_returns_invalid_dpop_proof() {
         // A proof minted for the token endpoint must not be replayable at /oauth/revoke.
         let state = test_state().await;
-        let key = SigningKey::random(&mut OsRng);
-        let nonce = state.dpop_nonces.issue();
-        let dpop = make_dpop_proof(
-            &key,
-            "POST",
-            "https://test.example.com/oauth/token",
-            Some(&nonce),
-            now_secs(),
-        );
+        let key = test_utils::DpopProofKey::generate();
+        let dpop = test_utils::token_proof(&state, &key);
 
         let resp = app(state)
             .oneshot(post_revoke_with_dpop("token=sometoken", &dpop))
@@ -369,13 +310,13 @@ mod tests {
     #[tokio::test]
     async fn revokes_bound_refresh_token() {
         let state = test_state().await;
-        let key = SigningKey::random(&mut OsRng);
-        let jkt = dpop_thumbprint(&key);
+        let key = test_utils::DpopProofKey::generate();
+        let jkt = key.thumbprint();
         let plaintext = seed_refresh_token(&state, &jkt).await;
         assert!(refresh_token_exists(&state, &plaintext).await);
 
         let nonce = state.dpop_nonces.issue();
-        let dpop = make_dpop_proof(&key, "POST", REVOKE_HTU, Some(&nonce), now_secs());
+        let dpop = key.proof_with("POST", REVOKE_HTU, Some(&nonce), None);
 
         let resp = app(state.clone())
             .oneshot(post_revoke_with_dpop(
@@ -399,13 +340,13 @@ mod tests {
     #[tokio::test]
     async fn revocation_is_idempotent() {
         let state = test_state().await;
-        let key = SigningKey::random(&mut OsRng);
-        let jkt = dpop_thumbprint(&key);
+        let key = test_utils::DpopProofKey::generate();
+        let jkt = key.thumbprint();
         let plaintext = seed_refresh_token(&state, &jkt).await;
 
         // First revocation deletes the token.
         let nonce1 = state.dpop_nonces.issue();
-        let dpop1 = make_dpop_proof(&key, "POST", REVOKE_HTU, Some(&nonce1), now_secs());
+        let dpop1 = key.proof_with("POST", REVOKE_HTU, Some(&nonce1), None);
         let resp1 = app(state.clone())
             .oneshot(post_revoke_with_dpop(&format!("token={plaintext}"), &dpop1))
             .await
@@ -414,7 +355,7 @@ mod tests {
 
         // Second revocation of the now-unknown token still returns 200 (RFC 7009 §2.2).
         let nonce2 = state.dpop_nonces.issue();
-        let dpop2 = make_dpop_proof(&key, "POST", REVOKE_HTU, Some(&nonce2), now_secs());
+        let dpop2 = key.proof_with("POST", REVOKE_HTU, Some(&nonce2), None);
         let resp2 = app(state)
             .oneshot(post_revoke_with_dpop(&format!("token={plaintext}"), &dpop2))
             .await
@@ -429,9 +370,9 @@ mod tests {
     #[tokio::test]
     async fn unknown_token_returns_200() {
         let state = test_state().await;
-        let key = SigningKey::random(&mut OsRng);
+        let key = test_utils::DpopProofKey::generate();
         let nonce = state.dpop_nonces.issue();
-        let dpop = make_dpop_proof(&key, "POST", REVOKE_HTU, Some(&nonce), now_secs());
+        let dpop = key.proof_with("POST", REVOKE_HTU, Some(&nonce), None);
 
         // A well-formed base64url token that was never issued — non-disclosure means 200.
         // Encoded from readable bytes at runtime so no opaque high-entropy literal (which a
@@ -451,9 +392,9 @@ mod tests {
     async fn non_base64url_token_is_noop_200() {
         // An access-token JWT (carries dots) can't be a refresh-token hash — accepted as a no-op.
         let state = test_state().await;
-        let key = SigningKey::random(&mut OsRng);
+        let key = test_utils::DpopProofKey::generate();
         let nonce = state.dpop_nonces.issue();
-        let dpop = make_dpop_proof(&key, "POST", REVOKE_HTU, Some(&nonce), now_secs());
+        let dpop = key.proof_with("POST", REVOKE_HTU, Some(&nonce), None);
 
         let resp = app(state)
             .oneshot(post_revoke_with_dpop(
@@ -470,13 +411,13 @@ mod tests {
         // A caller who holds a valid DPoP key but not the one the token is bound to gets a
         // non-disclosing 200, yet the token must survive.
         let state = test_state().await;
-        let bound_key = SigningKey::random(&mut OsRng);
-        let jkt = dpop_thumbprint(&bound_key);
+        let bound_key = test_utils::DpopProofKey::generate();
+        let jkt = bound_key.thumbprint();
         let plaintext = seed_refresh_token(&state, &jkt).await;
 
-        let attacker_key = SigningKey::random(&mut OsRng);
+        let attacker_key = test_utils::DpopProofKey::generate();
         let nonce = state.dpop_nonces.issue();
-        let dpop = make_dpop_proof(&attacker_key, "POST", REVOKE_HTU, Some(&nonce), now_secs());
+        let dpop = attacker_key.proof_with("POST", REVOKE_HTU, Some(&nonce), None);
 
         let resp = app(state.clone())
             .oneshot(post_revoke_with_dpop(&format!("token={plaintext}"), &dpop))
@@ -497,12 +438,12 @@ mod tests {
     async fn mismatched_client_id_does_not_revoke() {
         // Right key, wrong client_id → the token is left intact.
         let state = test_state().await;
-        let key = SigningKey::random(&mut OsRng);
-        let jkt = dpop_thumbprint(&key);
+        let key = test_utils::DpopProofKey::generate();
+        let jkt = key.thumbprint();
         let plaintext = seed_refresh_token(&state, &jkt).await;
 
         let nonce = state.dpop_nonces.issue();
-        let dpop = make_dpop_proof(&key, "POST", REVOKE_HTU, Some(&nonce), now_secs());
+        let dpop = key.proof_with("POST", REVOKE_HTU, Some(&nonce), None);
 
         let resp = app(state.clone())
             .oneshot(post_revoke_with_dpop(

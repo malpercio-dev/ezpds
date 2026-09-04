@@ -270,60 +270,9 @@ pub async fn post_token(
 #[cfg(test)]
 pub(crate) mod test_support {
     use axum::{body::Body, http::Request};
-    use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
-    use p256::ecdsa::{signature::Signer, Signature, SigningKey};
-    use sha2::{Digest, Sha256};
     use uuid::Uuid;
 
     use crate::app::AppState;
-
-    pub(crate) fn now_secs() -> i64 {
-        crate::time::unix_now_secs()
-    }
-
-    pub(crate) fn dpop_key_to_jwk(key: &SigningKey) -> serde_json::Value {
-        let vk = key.verifying_key();
-        let point = vk.to_encoded_point(false);
-        let x = URL_SAFE_NO_PAD.encode(point.x().unwrap());
-        let y = URL_SAFE_NO_PAD.encode(point.y().unwrap());
-        serde_json::json!({ "kty": "EC", "crv": "P-256", "x": x, "y": y })
-    }
-
-    pub(crate) fn dpop_thumbprint(key: &SigningKey) -> String {
-        let jwk = dpop_key_to_jwk(key);
-        // RFC 7638 requires keys to be in lexicographic order (crv, kty, x, y for EC keys).
-        // Do NOT reorder these keys, or the thumbprint will differ silently.
-        let canonical = serde_json::to_string(&serde_json::json!({
-            "crv": jwk["crv"],
-            "kty": jwk["kty"],
-            "x": jwk["x"],
-            "y": jwk["y"],
-        }))
-        .unwrap();
-        let hash = Sha256::digest(canonical.as_bytes());
-        URL_SAFE_NO_PAD.encode(hash)
-    }
-
-    pub(crate) fn make_dpop_proof(
-        key: &SigningKey,
-        htm: &str,
-        htu: &str,
-        nonce: Option<&str>,
-        iat: i64,
-    ) -> String {
-        let jwk = dpop_key_to_jwk(key);
-        let header = serde_json::json!({ "typ": "dpop+jwt", "alg": "ES256", "jwk": jwk });
-        let mut payload = serde_json::json!({ "htm": htm, "htu": htu, "iat": iat, "jti": Uuid::new_v4().to_string() });
-        if let Some(n) = nonce {
-            payload["nonce"] = serde_json::Value::String(n.to_string());
-        }
-        let hdr = URL_SAFE_NO_PAD.encode(serde_json::to_string(&header).unwrap().as_bytes());
-        let pay = URL_SAFE_NO_PAD.encode(serde_json::to_string(&payload).unwrap().as_bytes());
-        let sig_input = format!("{hdr}.{pay}");
-        let sig: Signature = key.sign(sig_input.as_bytes());
-        let sig_b64 = URL_SAFE_NO_PAD.encode(sig.to_bytes().as_ref() as &[u8]);
-        format!("{hdr}.{pay}.{sig_b64}")
-    }
 
     pub(crate) fn post_token(body: &str) -> Request<Body> {
         Request::builder()
@@ -364,7 +313,7 @@ pub(crate) mod test_support {
             "iss": origin,
             "sub": did,
             "aud": origin,
-            "iat": now_secs(),
+            "iat": crate::time::unix_now_secs(),
             "exp": exp,
             "jti": Uuid::new_v4().to_string(),
             "scope": scope,

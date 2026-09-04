@@ -203,10 +203,10 @@ mod tests {
     use p256::ecdsa::{signature::Signer, Signature, SigningKey};
     use rand_core::OsRng;
 
-    use super::super::test_support::{dpop_key_to_jwk, now_secs};
     use super::*;
     use crate::app::{test_state, AppState};
     use crate::db::oauth::upsert_oauth_client;
+    use crate::routes::test_utils::ec_jwk;
 
     const CLIENT_ID: &str = "https://app.example.com/client-metadata.json";
 
@@ -217,7 +217,7 @@ mod tests {
     }
 
     fn jwk_with_kid(key: &SigningKey, kid: &str) -> serde_json::Value {
-        let mut jwk = dpop_key_to_jwk(key);
+        let mut jwk = ec_jwk(key);
         jwk["kid"] = serde_json::Value::String(kid.to_string());
         jwk
     }
@@ -246,8 +246,8 @@ mod tests {
             "iss": iss_sub,
             "sub": iss_sub,
             "aud": "https://test.example.com",
-            "iat": now_secs(),
-            "exp": now_secs() + 60,
+            "iat": crate::time::unix_now_secs(),
+            "exp": crate::time::unix_now_secs() + 60,
             "jti": "assertion-jti-1",
         })
     }
@@ -377,7 +377,7 @@ mod tests {
 
         // Expired well beyond the 30s tolerance: rejected.
         let mut claims = valid_claims(CLIENT_ID);
-        claims["exp"] = serde_json::json!(now_secs() - 120);
+        claims["exp"] = serde_json::json!(crate::time::unix_now_secs() - 120);
         let assertion = sign_assertion(&key, "k1", claims);
         let err = authenticate_token_client(
             &state,
@@ -392,7 +392,7 @@ mod tests {
         // Expired 10s ago: inside the 30s clock tolerance, accepted (interop with clients
         // whose clocks drift — the reference's zero-tolerance check is a known trap).
         let mut claims = valid_claims(CLIENT_ID);
-        claims["exp"] = serde_json::json!(now_secs() - 10);
+        claims["exp"] = serde_json::json!(crate::time::unix_now_secs() - 10);
         let assertion = sign_assertion(&key, "k1", claims);
         authenticate_token_client(
             &state,
@@ -437,7 +437,7 @@ mod tests {
         // Stale: iat beyond the 60s max age + 30s tolerance.
         let mut claims = valid_claims(CLIENT_ID);
         claims.as_object_mut().unwrap().remove("exp");
-        claims["iat"] = serde_json::json!(now_secs() - 120);
+        claims["iat"] = serde_json::json!(crate::time::unix_now_secs() - 120);
         let assertion = sign_assertion(&key, "k1", claims);
         let err = authenticate_token_client(
             &state,

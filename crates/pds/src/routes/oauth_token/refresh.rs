@@ -225,16 +225,13 @@ pub(super) async fn handle_refresh_token(
 mod tests {
     use axum::http::StatusCode;
     use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
-    use p256::ecdsa::SigningKey;
-    use rand_core::OsRng;
     use tower::ServiceExt;
 
-    use super::super::test_support::{
-        dpop_thumbprint, json_body, make_dpop_proof, now_secs, post_token_with_dpop,
-    };
+    use super::super::test_support::{json_body, post_token_with_dpop};
     use crate::app::{app, test_state, AppState};
     use crate::auth::token::generate_token;
     use crate::db::oauth::{register_oauth_client, store_initial_oauth_refresh_token};
+    use crate::routes::test_utils;
 
     /// Seed the DB with a client + account + fresh refresh token bound to `jkt`.
     ///
@@ -346,18 +343,11 @@ mod tests {
     #[tokio::test]
     async fn refresh_token_legacy_scope_is_coerced_to_atproto() {
         let state = test_state().await;
-        let key = SigningKey::random(&mut OsRng);
-        let jkt = dpop_thumbprint(&key);
+        let key = test_utils::DpopProofKey::generate();
+        let jkt = key.thumbprint();
 
         let plaintext = seed_legacy_refresh_token(&state, &jkt).await;
-        let nonce = state.dpop_nonces.issue();
-        let dpop = make_dpop_proof(
-            &key,
-            "POST",
-            "https://test.example.com/oauth/token",
-            Some(&nonce),
-            now_secs(),
-        );
+        let dpop = test_utils::token_proof(&state, &key);
 
         let body = format!(
             "grant_type=refresh_token\
@@ -389,18 +379,11 @@ mod tests {
     #[tokio::test]
     async fn refresh_token_happy_path_returns_200_with_new_tokens() {
         let state = test_state().await;
-        let key = SigningKey::random(&mut OsRng);
-        let jkt = dpop_thumbprint(&key);
+        let key = test_utils::DpopProofKey::generate();
+        let jkt = key.thumbprint();
 
         let plaintext = seed_refresh_token(&state, &jkt).await;
-        let nonce = state.dpop_nonces.issue();
-        let dpop = make_dpop_proof(
-            &key,
-            "POST",
-            "https://test.example.com/oauth/token",
-            Some(&nonce),
-            now_secs(),
-        );
+        let dpop = test_utils::token_proof(&state, &key);
 
         let body = format!(
             "grant_type=refresh_token\
@@ -477,8 +460,8 @@ mod tests {
     #[tokio::test]
     async fn refresh_token_second_use_within_grace_succeeds() {
         let state = test_state().await;
-        let key = SigningKey::random(&mut OsRng);
-        let jkt = dpop_thumbprint(&key);
+        let key = test_utils::DpopProofKey::generate();
+        let jkt = key.thumbprint();
 
         let plaintext = seed_refresh_token(&state, &jkt).await;
         let body = format!(
@@ -488,14 +471,7 @@ mod tests {
         );
 
         // First use: succeeds. Clone state so the second request shares the same DB.
-        let nonce1 = state.dpop_nonces.issue();
-        let dpop1 = make_dpop_proof(
-            &key,
-            "POST",
-            "https://test.example.com/oauth/token",
-            Some(&nonce1),
-            now_secs(),
-        );
+        let dpop1 = test_utils::token_proof(&state, &key);
         let first_resp = app(state.clone())
             .oneshot(post_token_with_dpop(&body, &dpop1))
             .await
@@ -509,14 +485,7 @@ mod tests {
 
         // Second use of the same original token, seconds later: still inside the grace
         // window, so it must succeed and mint its own distinct token pair.
-        let nonce2 = state.dpop_nonces.issue();
-        let dpop2 = make_dpop_proof(
-            &key,
-            "POST",
-            "https://test.example.com/oauth/token",
-            Some(&nonce2),
-            now_secs(),
-        );
+        let dpop2 = test_utils::token_proof(&state, &key);
         let resp2 = app(state)
             .oneshot(post_token_with_dpop(&body, &dpop2))
             .await
@@ -540,8 +509,8 @@ mod tests {
     #[tokio::test]
     async fn refresh_token_stale_reuse_revokes_session_family() {
         let state = test_state().await;
-        let key = SigningKey::random(&mut OsRng);
-        let jkt = dpop_thumbprint(&key);
+        let key = test_utils::DpopProofKey::generate();
+        let jkt = key.thumbprint();
 
         let plaintext = seed_refresh_token(&state, &jkt).await;
 
@@ -551,14 +520,7 @@ mod tests {
              &refresh_token={plaintext}\
              &client_id=https%3A%2F%2Fapp.example.com%2Fclient-metadata.json"
         );
-        let nonce1 = state.dpop_nonces.issue();
-        let dpop1 = make_dpop_proof(
-            &key,
-            "POST",
-            "https://test.example.com/oauth/token",
-            Some(&nonce1),
-            now_secs(),
-        );
+        let dpop1 = test_utils::token_proof(&state, &key);
         let first_resp = app(state.clone())
             .oneshot(post_token_with_dpop(&body, &dpop1))
             .await
@@ -580,14 +542,7 @@ mod tests {
         .unwrap();
 
         // Replaying the superseded token now must fail AND revoke the successor too.
-        let nonce2 = state.dpop_nonces.issue();
-        let dpop2 = make_dpop_proof(
-            &key,
-            "POST",
-            "https://test.example.com/oauth/token",
-            Some(&nonce2),
-            now_secs(),
-        );
+        let dpop2 = test_utils::token_proof(&state, &key);
         let resp2 = app(state.clone())
             .oneshot(post_token_with_dpop(&body, &dpop2))
             .await
@@ -602,14 +557,7 @@ mod tests {
              &refresh_token={successor}\
              &client_id=https%3A%2F%2Fapp.example.com%2Fclient-metadata.json"
         );
-        let nonce3 = state.dpop_nonces.issue();
-        let dpop3 = make_dpop_proof(
-            &key,
-            "POST",
-            "https://test.example.com/oauth/token",
-            Some(&nonce3),
-            now_secs(),
-        );
+        let dpop3 = test_utils::token_proof(&state, &key);
         let resp3 = app(state)
             .oneshot(post_token_with_dpop(&successor_body, &dpop3))
             .await
@@ -628,8 +576,8 @@ mod tests {
     #[tokio::test]
     async fn refresh_rotation_carries_absolute_expiry_forward() {
         let state = test_state().await;
-        let key = SigningKey::random(&mut OsRng);
-        let jkt = dpop_thumbprint(&key);
+        let key = test_utils::DpopProofKey::generate();
+        let jkt = key.thumbprint();
 
         let plaintext = seed_refresh_token(&state, &jkt).await;
         let original_expiry: (String,) =
@@ -643,14 +591,7 @@ mod tests {
              &refresh_token={plaintext}\
              &client_id=https%3A%2F%2Fapp.example.com%2Fclient-metadata.json"
         );
-        let nonce = state.dpop_nonces.issue();
-        let dpop = make_dpop_proof(
-            &key,
-            "POST",
-            "https://test.example.com/oauth/token",
-            Some(&nonce),
-            now_secs(),
-        );
+        let dpop = test_utils::token_proof(&state, &key);
         let resp = app(state.clone())
             .oneshot(post_token_with_dpop(&body, &dpop))
             .await
@@ -672,18 +613,11 @@ mod tests {
     #[tokio::test]
     async fn refresh_token_expired_returns_invalid_grant() {
         let state = test_state().await;
-        let key = SigningKey::random(&mut OsRng);
-        let jkt = dpop_thumbprint(&key);
+        let key = test_utils::DpopProofKey::generate();
+        let jkt = key.thumbprint();
 
         let plaintext = seed_expired_refresh_token(&state, &jkt).await;
-        let nonce = state.dpop_nonces.issue();
-        let dpop = make_dpop_proof(
-            &key,
-            "POST",
-            "https://test.example.com/oauth/token",
-            Some(&nonce),
-            now_secs(),
-        );
+        let dpop = test_utils::token_proof(&state, &key);
 
         let body = format!(
             "grant_type=refresh_token\
@@ -707,22 +641,15 @@ mod tests {
     #[tokio::test]
     async fn refresh_token_jkt_mismatch_returns_invalid_grant() {
         let state = test_state().await;
-        let stored_key = SigningKey::random(&mut OsRng);
-        let stored_jkt = dpop_thumbprint(&stored_key);
+        let stored_key = test_utils::DpopProofKey::generate();
+        let stored_jkt = stored_key.thumbprint();
 
         // Seed token bound to stored_key's thumbprint.
         let plaintext = seed_refresh_token(&state, &stored_jkt).await;
 
         // Build proof with a DIFFERENT key — thumbprint will not match stored_jkt.
-        let different_key = SigningKey::random(&mut OsRng);
-        let nonce = state.dpop_nonces.issue();
-        let dpop = make_dpop_proof(
-            &different_key,
-            "POST",
-            "https://test.example.com/oauth/token",
-            Some(&nonce),
-            now_secs(),
-        );
+        let different_key = test_utils::DpopProofKey::generate();
+        let dpop = test_utils::token_proof(&state, &different_key);
 
         let body = format!(
             "grant_type=refresh_token\
@@ -749,18 +676,11 @@ mod tests {
     async fn refresh_token_not_consumed_on_client_id_mismatch() {
         // Verifies that the refresh token is NOT deleted when client_id validation fails.
         let state = test_state().await;
-        let key = SigningKey::random(&mut OsRng);
-        let jkt = dpop_thumbprint(&key);
+        let key = test_utils::DpopProofKey::generate();
+        let jkt = key.thumbprint();
         let plaintext = seed_refresh_token(&state, &jkt).await;
 
-        let nonce = state.dpop_nonces.issue();
-        let dpop = make_dpop_proof(
-            &key,
-            "POST",
-            "https://test.example.com/oauth/token",
-            Some(&nonce),
-            now_secs(),
-        );
+        let dpop = test_utils::token_proof(&state, &key);
 
         // Attempt 1: wrong client_id — must fail.
         let bad_body = format!(
@@ -777,14 +697,7 @@ mod tests {
         assert_eq!(bad_json["error"], "invalid_grant");
 
         // Attempt 2: correct client_id — must succeed (token was not consumed above).
-        let nonce2 = state.dpop_nonces.issue();
-        let dpop2 = make_dpop_proof(
-            &key,
-            "POST",
-            "https://test.example.com/oauth/token",
-            Some(&nonce2),
-            now_secs(),
-        );
+        let dpop2 = test_utils::token_proof(&state, &key);
         let good_body = format!(
             "grant_type=refresh_token\
              &refresh_token={plaintext}\
@@ -808,7 +721,7 @@ mod tests {
         // Tokens issued before DPoP binding enforcement may have jkt = NULL.
         // These must be rejected rather than silently accepting any DPoP key.
         let state = test_state().await;
-        let key = SigningKey::random(&mut OsRng);
+        let key = test_utils::DpopProofKey::generate();
 
         // Seed client and account (FK constraints required by oauth_tokens).
         register_oauth_client(
@@ -841,14 +754,7 @@ mod tests {
         .await
         .unwrap();
 
-        let nonce = state.dpop_nonces.issue();
-        let dpop = make_dpop_proof(
-            &key,
-            "POST",
-            "https://test.example.com/oauth/token",
-            Some(&nonce),
-            now_secs(),
-        );
+        let dpop = test_utils::token_proof(&state, &key);
         let body = format!(
             "grant_type=refresh_token\
              &refresh_token={}\
@@ -871,18 +777,11 @@ mod tests {
     #[tokio::test]
     async fn refresh_token_client_id_mismatch_returns_invalid_grant() {
         let state = test_state().await;
-        let key = SigningKey::random(&mut OsRng);
-        let jkt = dpop_thumbprint(&key);
+        let key = test_utils::DpopProofKey::generate();
+        let jkt = key.thumbprint();
 
         let plaintext = seed_refresh_token(&state, &jkt).await;
-        let nonce = state.dpop_nonces.issue();
-        let dpop = make_dpop_proof(
-            &key,
-            "POST",
-            "https://test.example.com/oauth/token",
-            Some(&nonce),
-            now_secs(),
-        );
+        let dpop = test_utils::token_proof(&state, &key);
 
         // Wrong client_id — does not match stored "https://app.example.com/client-metadata.json".
         let body = format!(

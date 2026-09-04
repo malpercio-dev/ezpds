@@ -262,7 +262,7 @@ mod tests {
     use axum::http::StatusCode;
     use tower::ServiceExt;
 
-    use super::super::test_support::{json_body, mint_assertion, now_secs, post_token};
+    use super::super::test_support::{json_body, mint_assertion, post_token};
     use crate::app::{app, test_state, AppState};
 
     const CLAIM_GRANT: &str = "urn:workos:agent-auth:grant-type:claim";
@@ -509,7 +509,7 @@ mod tests {
             did,
             "reg_claimed",
             "repo:* blob:*/*",
-            now_secs() + 600,
+            crate::time::unix_now_secs() + 600,
         );
         seed_claimable_identity(
             &state,

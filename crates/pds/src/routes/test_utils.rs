@@ -406,6 +406,21 @@ pub(crate) fn cnf_bound_access_jwt(secret: &[u8; 32], sub: &str, jkt: &str) -> S
     .unwrap()
 }
 
+/// The public half of a P-256 signing key as a minimal EC JWK (the form embedded in a DPoP proof
+/// header, and in a `private_key_jwt` client assertion's registered `jwks`). Free function (not a
+/// `DpopProofKey` method) so callers holding a raw `SigningKey` outside that wrapper — the
+/// client-assertion tests, which need to tag the JWK with a `kid` — can build one too.
+pub(crate) fn ec_jwk(signing_key: &p256::ecdsa::SigningKey) -> serde_json::Value {
+    use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
+    let point = signing_key.verifying_key().to_encoded_point(false);
+    serde_json::json!({
+        "kty": "EC",
+        "crv": "P-256",
+        "x": URL_SAFE_NO_PAD.encode(point.x().unwrap()),
+        "y": URL_SAFE_NO_PAD.encode(point.y().unwrap()),
+    })
+}
+
 /// A P-256 DPoP proof-of-possession key for tests, plus proof construction. Mirrors the DPoP
 /// machinery a real OAuth client holds: the key's RFC 7638 thumbprint goes in the access token's
 /// `cnf.jkt` (via [`cnf_bound_access_jwt`]), and [`DpopProofKey::proof`] builds the per-request
@@ -423,15 +438,8 @@ impl DpopProofKey {
     }
 
     /// The public key as a minimal EC JWK (the form embedded in a DPoP proof header).
-    fn jwk(&self) -> serde_json::Value {
-        use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
-        let point = self.signing_key.verifying_key().to_encoded_point(false);
-        serde_json::json!({
-            "kty": "EC",
-            "crv": "P-256",
-            "x": URL_SAFE_NO_PAD.encode(point.x().unwrap()),
-            "y": URL_SAFE_NO_PAD.encode(point.y().unwrap()),
-        })
+    pub(crate) fn jwk(&self) -> serde_json::Value {
+        ec_jwk(&self.signing_key)
     }
 
     /// The RFC 7638 thumbprint of this key — the value that goes in the token's `cnf.jkt`.
@@ -443,21 +451,53 @@ impl DpopProofKey {
     /// HTTP method and URL, with `iat = now`. `htu` must be the full request URL
     /// (`{public_url}{path}`), matching how the extractor reconstructs the expected value.
     pub(crate) fn proof(&self, htm: &str, htu: &str, access_token: &str) -> String {
-        self.proof_with(htm, htu, Some(access_token))
+        self.proof_full(htm, htu, Some(access_token), None, None)
     }
 
     /// A proof with no `ath` — the mint-time shape a `getSpaceCredential` (or PAR) request
     /// carries, where there is no bound token yet.
     pub(crate) fn proof_no_ath(&self, htm: &str, htu: &str) -> String {
-        self.proof_with(htm, htu, None)
+        self.proof_full(htm, htu, None, None, None)
     }
 
-    fn proof_with(&self, htm: &str, htu: &str, access_token: Option<&str>) -> String {
+    /// A proof with no `ath` but an explicit `nonce` and/or `iat` override — the knobs the OAuth
+    /// token/revoke endpoint tests need to exercise DPoP-Nonce binding and stale-`iat` rejection.
+    /// `iat` defaults to now when `None`.
+    pub(crate) fn proof_with(
+        &self,
+        htm: &str,
+        htu: &str,
+        nonce: Option<&str>,
+        iat: Option<i64>,
+    ) -> String {
+        self.proof_full(htm, htu, None, nonce, iat)
+    }
+
+    /// Like [`DpopProofKey::proof`], but with an explicit `iat` override — a resource-endpoint
+    /// proof bound to `access_token` for tests that also need to exercise staleness rejection.
+    pub(crate) fn proof_at(&self, htm: &str, htu: &str, access_token: &str, iat: i64) -> String {
+        self.proof_full(htm, htu, Some(access_token), None, Some(iat))
+    }
+
+    /// The raw signing key, for callers that need to hand-build a proof this API doesn't shape
+    /// (e.g. a malformed `typ` or `jti`) while still sharing the same keypair.
+    pub(crate) fn signing_key(&self) -> &p256::ecdsa::SigningKey {
+        &self.signing_key
+    }
+
+    fn proof_full(
+        &self,
+        htm: &str,
+        htu: &str,
+        access_token: Option<&str>,
+        nonce: Option<&str>,
+        iat: Option<i64>,
+    ) -> String {
         use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
         use p256::ecdsa::{signature::Signer, Signature};
         use sha2::{Digest, Sha256};
 
-        let now = crate::time::unix_now_secs();
+        let now = iat.unwrap_or_else(crate::time::unix_now_secs);
         let header = serde_json::json!({ "typ": "dpop+jwt", "alg": "ES256", "jwk": self.jwk() });
         let mut payload = serde_json::json!({
             "htm": htm,
@@ -465,6 +505,9 @@ impl DpopProofKey {
             "iat": now,
             "jti": uuid::Uuid::new_v4().to_string(),
         });
+        if let Some(n) = nonce {
+            payload["nonce"] = serde_json::Value::String(n.to_string());
+        }
         if let Some(token) = access_token {
             payload["ath"] =
                 serde_json::Value::String(URL_SAFE_NO_PAD.encode(Sha256::digest(token.as_bytes())));
@@ -476,6 +519,19 @@ impl DpopProofKey {
         let sig_b64 = URL_SAFE_NO_PAD.encode(sig.to_bytes());
         format!("{hdr_b64}.{pay_b64}.{sig_b64}")
     }
+}
+
+/// Issue a fresh DPoP nonce from `state` and mint a proof for it, bound to the OAuth token
+/// endpoint's fixed test URL — the "issue nonce → mint token-endpoint proof" pair every
+/// token-grant test performs before calling `POST /oauth/token`.
+pub(crate) fn token_proof(state: &AppState, key: &DpopProofKey) -> String {
+    let nonce = state.dpop_nonces.issue();
+    key.proof_with(
+        "POST",
+        "https://test.example.com/oauth/token",
+        Some(&nonce),
+        None,
+    )
 }
 
 /// Mint a short-lived HS256 access JWT with an arbitrary granular `scope` claim — the shape of

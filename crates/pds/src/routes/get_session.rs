@@ -99,65 +99,7 @@ mod tests {
     use tower::ServiceExt;
 
     use crate::app::{app, test_state};
-
-    // ── DPoP test helpers ─────────────────────────────────────────────────────
-
-    /// Compute the base64url-encoded SHA-256 hash of an access token (ath claim value).
-    fn ath_of(token: &str) -> String {
-        use base64::engine::general_purpose::URL_SAFE_NO_PAD;
-        use base64::Engine;
-        use sha2::{Digest, Sha256};
-        URL_SAFE_NO_PAD.encode(Sha256::digest(token.as_bytes()))
-    }
-
-    /// Compute the JWK thumbprint for a P-256 signing key.
-    fn thumbprint_of(key: &p256::ecdsa::SigningKey) -> String {
-        use base64::engine::general_purpose::URL_SAFE_NO_PAD;
-        use base64::Engine;
-        use sha2::{Digest, Sha256};
-        let vk = key.verifying_key();
-        let pt = vk.to_encoded_point(false);
-        let x = URL_SAFE_NO_PAD.encode(pt.x().unwrap());
-        let y = URL_SAFE_NO_PAD.encode(pt.y().unwrap());
-        let jwk_canon = format!(r#"{{"crv":"P-256","kty":"EC","x":"{x}","y":"{y}"}}"#);
-        URL_SAFE_NO_PAD.encode(Sha256::digest(jwk_canon.as_bytes()))
-    }
-
-    /// Build a minimal DPoP proof JWT for the given key, method, URL, and access token.
-    fn make_dpop_proof(
-        key: &p256::ecdsa::SigningKey,
-        htm: &str,
-        htu: &str,
-        access_token: &str,
-    ) -> String {
-        use base64::engine::general_purpose::URL_SAFE_NO_PAD;
-        use base64::Engine;
-        use p256::ecdsa::signature::Signer;
-
-        let vk = key.verifying_key();
-        let pt = vk.to_encoded_point(false);
-        let x = URL_SAFE_NO_PAD.encode(pt.x().unwrap());
-        let y = URL_SAFE_NO_PAD.encode(pt.y().unwrap());
-        let jwk = serde_json::json!({ "kty": "EC", "crv": "P-256", "x": x, "y": y });
-
-        let now = crate::time::unix_now_secs() as u64;
-
-        let header = serde_json::json!({ "typ": "dpop+jwt", "alg": "ES256", "jwk": jwk });
-        let payload = serde_json::json!({
-            "htm": htm,
-            "htu": htu,
-            "iat": now,
-            "jti": uuid::Uuid::new_v4().to_string(),
-            "ath": ath_of(access_token),
-        });
-
-        let hdr = URL_SAFE_NO_PAD.encode(serde_json::to_string(&header).unwrap().as_bytes());
-        let pay = URL_SAFE_NO_PAD.encode(serde_json::to_string(&payload).unwrap().as_bytes());
-        let signing_input = format!("{hdr}.{pay}");
-        let sig: p256::ecdsa::Signature = key.sign(signing_input.as_bytes());
-        let sig_b64 = URL_SAFE_NO_PAD.encode(sig.to_bytes().as_ref() as &[u8]);
-        format!("{hdr}.{pay}.{sig_b64}")
-    }
+    use crate::routes::test_utils;
 
     // ── Helpers ───────────────────────────────────────────────────────────────
 
@@ -620,8 +562,8 @@ mod tests {
         )
         .await;
 
-        let dpop_key = p256::ecdsa::SigningKey::random(&mut rand_core::OsRng);
-        let jkt = thumbprint_of(&dpop_key);
+        let dpop_key = test_utils::DpopProofKey::generate();
+        let jkt = dpop_key.thumbprint();
 
         let now = crate::time::unix_now_secs() as u64;
         let token = {
@@ -642,7 +584,7 @@ mod tests {
 
         let public_url = &state.config.public_url;
         let htu = format!("{public_url}/xrpc/com.atproto.server.getSession");
-        let proof = make_dpop_proof(&dpop_key, "GET", &htu, &token);
+        let proof = dpop_key.proof("GET", &htu, &token);
 
         let response = app(state)
             .oneshot(
@@ -668,8 +610,8 @@ mod tests {
         // rejected — RFC 9449 §7.1: cnf.jkt requires a DPoP proof to prevent downgrade.
         let state = test_state().await;
 
-        let dpop_key = p256::ecdsa::SigningKey::random(&mut rand_core::OsRng);
-        let jkt = thumbprint_of(&dpop_key);
+        let dpop_key = test_utils::DpopProofKey::generate();
+        let jkt = dpop_key.thumbprint();
 
         let now = crate::time::unix_now_secs() as u64;
         let token = {
@@ -714,8 +656,8 @@ mod tests {
         )
         .await;
 
-        let dpop_key = p256::ecdsa::SigningKey::random(&mut rand_core::OsRng);
-        let jkt = thumbprint_of(&dpop_key);
+        let dpop_key = test_utils::DpopProofKey::generate();
+        let jkt = dpop_key.thumbprint();
 
         let now = crate::time::unix_now_secs() as u64;
         let token = {
@@ -736,7 +678,7 @@ mod tests {
 
         let public_url = &state.config.public_url;
         let htu = format!("{public_url}/xrpc/com.atproto.server.getSession");
-        let proof = make_dpop_proof(&dpop_key, "GET", &htu, &token);
+        let proof = dpop_key.proof("GET", &htu, &token);
 
         let response = app(state)
             .oneshot(
