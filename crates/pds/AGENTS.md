@@ -260,6 +260,7 @@ tests, so check it when changing an OAuth response shape — see its README.
 | `notification_views.rs` | shared handler-free support for both notification surfaces (routes may not import one another): enabled-check, registration validators, `sender-keys` shape |
 | `oauth_templates.rs` | pure HTML rendering helpers (Functional Core, no handler) |
 | `oauth_errors.rs` | shared `OAuthTokenError` — the RFC 6749 §5.2 responder used by `oauth_token/` and `oauth_revoke.rs` (Functional Core, no handler) |
+| `oauth_dpop.rs` | shared handler-free support for `oauth_token/`'s grant handlers and `oauth_revoke.rs` (routes may not import one another): `token_endpoint_dpop` — the RFC 9449 multiple-header check, proof extraction, and `validate_dpop_for_token_endpoint` dispatch against the caller's own URL |
 | `static_assets.rs` | `GET /static/*path` — embedded brand fonts and future web-UI assets |
 | `landing.rs` | `GET /` — the instance landing page (embedded `assets/landing.html`): config facts, a `_health` status chip, joiner/developer pointers |
 | `create_session.rs` | `POST /xrpc/com.atproto.server.createSession` — password auth with app-password fallback — see module doc |
