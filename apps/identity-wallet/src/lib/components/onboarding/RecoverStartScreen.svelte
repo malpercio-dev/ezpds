@@ -88,13 +88,13 @@
   </Button>
 
   {#if target}
-    <div class="preview">
+    <div class="preview u-card">
       {#if target.handle}
-        <div class="row"><span class="k">Handle</span><span class="v">@{target.handle}</span></div>
+        <div class="row"><span class="k u-label-muted">Handle</span><span class="v">@{target.handle}</span></div>
       {/if}
-      <div class="row"><span class="k">DID</span><span class="v mono">{displayDid}</span></div>
+      <div class="row"><span class="k u-label-muted">DID</span><span class="v mono">{displayDid}</span></div>
       <div class="row">
-        <span class="k">Share 1 · Keychain</span>
+        <span class="k u-label-muted">Share 1 · Keychain</span>
         <span class="v" class:ok={target.share1Loaded}>
           {target.share1Loaded
             ? '✓ Found on this device'
@@ -119,27 +119,12 @@
 </OnboardingShell>
 
 <style>
-  .preview {
-    width: 100%;
-    background: var(--color-surface);
-    border: 1px solid var(--color-line);
-    border-radius: var(--radius-lg);
-    padding: var(--space-md);
-    display: flex;
-    flex-direction: column;
-    gap: var(--space-sm);
-    text-align: left;
-  }
   .row {
     display: flex;
     flex-direction: column;
     gap: var(--space-3xs);
   }
-  .k {
-    font-size: var(--text-label);
-    font-weight: var(--weight-semibold);
-    color: var(--color-muted);
-  }
+
   .v {
     font-size: var(--text-body);
     color: var(--color-ink);

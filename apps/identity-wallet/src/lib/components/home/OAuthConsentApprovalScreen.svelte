@@ -363,12 +363,12 @@
   }
 </script>
 
-<div class="screen" class:hidden={scanning}>
+<div class="screen u-screen-lg" class:hidden={scanning}>
   <ScreenHeader title="Sign in to an app" {onback} />
 
   {#if phase === 'enter' || phase === 'loading'}
     <div class="body">
-      <p class="lede">
+      <p class="lede u-body-copy">
         An app is asking to sign in as you. Scan the QR on its sign-in page, or enter the
         short code it shows — either way you see what it's asking for before anything happens.
       </p>
@@ -390,7 +390,7 @@
 
       <div class="divider" aria-hidden="true"><span>or enter the code</span></div>
 
-      <label class="field-label" for="consent-code">Code from the sign-in page</label>
+      <label class="field-label u-label-muted" for="consent-code">Code from the sign-in page</label>
       <TextField
         id="consent-code"
         bind:value={code}
@@ -476,7 +476,7 @@
                can't complete. Type-the-number (GitHub style) beats pick-from-three: there is
                nothing to guess-tap. -->
           <div class="match" class:match--error={!!matchError}>
-            <label class="field-label" for="match-number">
+            <label class="field-label u-label-muted" for="match-number">
               Enter the number shown on the sign-in screen
             </label>
             <p class="match-why">
@@ -576,14 +576,6 @@
 {/if}
 
 <style>
-  .screen {
-    display: flex;
-    flex-direction: column;
-    height: 100%;
-    padding: var(--space-lg) var(--space-md) var(--space-xl);
-    gap: var(--space-lg);
-    overflow-y: auto;
-  }
   .screen.hidden {
     display: none;
   }
@@ -738,19 +730,6 @@
     display: flex;
     flex-direction: column;
     gap: var(--space-md);
-  }
-
-  .lede {
-    font-size: var(--text-body);
-    color: var(--color-muted);
-    line-height: 1.5;
-    margin: 0;
-  }
-
-  .field-label {
-    font-size: var(--text-label);
-    font-weight: var(--weight-semibold);
-    color: var(--color-muted);
   }
 
   .req-card {

@@ -199,7 +199,7 @@
   }
 </script>
 
-<div class="screen">
+<div class="screen u-screen">
   <ScreenHeader title="Settings" {onback} />
 
   <section class="group" aria-labelledby="appearance-title">
@@ -456,15 +456,6 @@
 </div>
 
 <style>
-  .screen {
-    display: flex;
-    flex-direction: column;
-    height: 100%;
-    padding: var(--space-lg) var(--space-md) var(--space-xl);
-    gap: var(--space-md);
-    overflow-y: auto;
-  }
-
   /* One parchment group, flat at rest — depth is a tonal step and a hairline. */
   .group {
     background: var(--color-surface);

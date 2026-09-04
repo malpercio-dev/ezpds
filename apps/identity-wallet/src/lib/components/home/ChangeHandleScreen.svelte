@@ -237,7 +237,7 @@
 </script>
 
 {#if phase.kind === 'success'}
-  <div class="screen success">
+  <div class="screen success u-screen">
     <SealEmblem>
       <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" /><path d="m9 11.5 2 2 4-4" /></svg>
     </SealEmblem>
@@ -250,7 +250,7 @@
     <Button onclick={ondone}>Done</Button>
   </div>
 {:else}
-  <div class="screen">
+  <div class="screen u-screen">
     <ScreenHeader title="Change handle" onback={onback} backLabel="Back to identity" />
 
     {#if currentHandle}
@@ -364,7 +364,7 @@
         />
 
         {#if phase.domains.length > 1}
-          <label class="domain-label" for="domain-select">Domain</label>
+          <label class="domain-label u-block-label" for="domain-select">Domain</label>
           <select id="domain-select" class="domain-select" bind:value={selectedDomain}>
             {#each phase.domains as domain}
               <option value={domain}>.{normalizeDomain(domain)}</option>
@@ -385,14 +385,6 @@
 {/if}
 
 <style>
-  .screen {
-    display: flex;
-    flex-direction: column;
-    height: 100%;
-    padding: var(--space-lg) var(--space-md) var(--space-xl);
-    gap: var(--space-md);
-    overflow-y: auto;
-  }
   .current {
     font-size: var(--text-label);
     color: var(--color-muted);
@@ -421,12 +413,7 @@
     color: var(--color-muted);
     margin: 0;
   }
-  .domain-label {
-    font-size: var(--text-label);
-    font-weight: var(--weight-semibold);
-    color: var(--color-muted);
-    margin: 0;
-  }
+
   .domain-select {
     width: 100%;
     padding: var(--space-md);

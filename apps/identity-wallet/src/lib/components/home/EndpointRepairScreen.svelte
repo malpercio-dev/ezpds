@@ -75,18 +75,18 @@
 </script>
 
 {#if phase.kind === 'success'}
-  <div class="screen success">
+  <div class="screen success u-screen">
     <SealEmblem>
       <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" /><path d="m9 11.5 2 2 4-4" /></svg>
     </SealEmblem>
     <h1 class="s-title">Endpoint repaired</h1>
     {#if phase.result.opCid === null}
-      <p class="s-body">
+      <p class="s-body u-body-copy">
         Your identity already pointed at
         <span class="endpoint">{phase.result.newEndpoint}</span> — nothing needed signing.
       </p>
     {:else}
-      <p class="s-body">
+      <p class="s-body u-body-copy">
         Your identity now points at
         <span class="endpoint">{phase.result.newEndpoint}</span>.
         Apps may take a few minutes to notice the change.
@@ -95,10 +95,10 @@
     <Button onclick={ondone}>Done</Button>
   </div>
 {:else}
-  <div class="screen">
+  <div class="screen u-screen">
     <ScreenHeader title="Repair hosting endpoint" onback={onback} backLabel="Back to identity" />
 
-    <p class="explain">
+    <p class="explain u-body-copy">
       If your hosting server moved to a new address, your identity record still points at
       the old one, so apps can’t find your account. This signs an update with your device
       key pointing it at the new address — nothing else about your identity changes.
@@ -137,20 +137,6 @@
 {/if}
 
 <style>
-  .screen {
-    display: flex;
-    flex-direction: column;
-    height: 100%;
-    padding: var(--space-lg) var(--space-md) var(--space-xl);
-    gap: var(--space-md);
-    overflow-y: auto;
-  }
-  .explain {
-    font-size: var(--text-body);
-    color: var(--color-muted);
-    margin: 0;
-    line-height: 1.5;
-  }
   .current {
     font-size: var(--text-label);
     color: var(--color-muted);
@@ -187,11 +173,5 @@
   .s-title {
     font-size: var(--text-title);
     margin: 0;
-  }
-  .s-body {
-    font-size: var(--text-body);
-    color: var(--color-muted);
-    margin: 0;
-    line-height: 1.5;
   }
 </style>

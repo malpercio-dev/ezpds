@@ -27,7 +27,7 @@
   } = $props();
 </script>
 
-<div class="screen">
+<div class="screen u-screen-lg">
   <ScreenHeader title="Manage identity" onback={onback} backLabel="Back to identity" />
 
   <section class="zone">
@@ -79,14 +79,6 @@
 </div>
 
 <style>
-  .screen {
-    display: flex;
-    flex-direction: column;
-    height: 100%;
-    padding: var(--space-lg) var(--space-md) var(--space-xl);
-    gap: var(--space-lg);
-    overflow-y: auto;
-  }
   .zone {
     display: flex;
     flex-direction: column;

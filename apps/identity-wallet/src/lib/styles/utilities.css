@@ -1,0 +1,104 @@
+/*
+ * Utility layer — single-purpose classes absorbing declaration blocks that were
+ * copy-pasted, byte-identical, across many screen components' local <style> blocks
+ * (scroll container padding, error text, muted labels, notice panels, …). Compose
+ * these with a component-local class when the element also needs component-specific
+ * rules (e.g. `class="screen success"` still carries its own `.success` selector).
+ * Imported once, after base.css, in the root layout.
+ */
+
+/* The standard screen scroll container: full-height column, edge padding, internal
+   scroll. Two gap variants cover the two sizes screens actually use. */
+.u-screen,
+.u-screen-lg {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  overflow-y: auto;
+  padding: var(--space-lg) var(--space-md) var(--space-xl);
+}
+.u-screen {
+  gap: var(--space-md);
+}
+.u-screen-lg {
+  gap: var(--space-lg);
+}
+
+/* Critical-tinted panel framing a blocking notice, centered text + action. */
+.u-notice {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--space-md);
+  background: var(--color-critical-surface);
+  border-radius: var(--radius-lg);
+  padding: var(--space-lg);
+  text-align: center;
+}
+
+/* Inline error sentence under a field or action. */
+.u-error-text {
+  color: var(--color-critical);
+  font-size: var(--text-label);
+  line-height: 1.4;
+  margin: 0;
+}
+
+/* Muted, semibold block heading (no field association — a `<p>`/`<span>` label). */
+.u-block-label {
+  color: var(--color-muted);
+  font-size: var(--text-label);
+  font-weight: var(--weight-semibold);
+  margin: 0;
+}
+
+/* Muted, semibold inline label — a form field's `<label>`, or a key in a key/value row. */
+.u-label-muted {
+  color: var(--color-muted);
+  font-size: var(--text-label);
+  font-weight: var(--weight-semibold);
+}
+
+/* Soft-ink supporting sentence under a hero title (`.hero-sub`, `.intro`). */
+.u-body-soft {
+  color: var(--color-ink-soft);
+  font-size: var(--text-body);
+  line-height: var(--leading-body);
+  margin: 0;
+}
+
+/* Muted body-size explainer paragraph (`.lede`, `.explain`). */
+.u-body-copy {
+  color: var(--color-muted);
+  font-size: var(--text-body);
+  line-height: 1.5;
+  margin: 0;
+}
+
+/* Vertical stack, small gap — the common wrapper for a block of rows/actions. */
+.u-stack-sm {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-sm);
+}
+
+/* Bordered summary/preview card: key/value rows in a surface panel. */
+.u-card {
+  width: 100%;
+  background: var(--color-surface);
+  border: 1px solid var(--color-line);
+  border-radius: var(--radius-lg);
+  padding: var(--space-md);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-sm);
+  text-align: left;
+}
+
+/* Monospace DID/id display, wrapping at any character. */
+.u-id-mono {
+  font-family: var(--font-mono);
+  font-size: var(--text-data);
+  color: var(--color-ink-soft);
+  word-break: break-all;
+}

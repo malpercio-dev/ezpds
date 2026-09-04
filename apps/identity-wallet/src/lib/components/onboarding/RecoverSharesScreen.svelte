@@ -111,7 +111,7 @@
         class:has-error={error !== null}
       ></textarea>
       {#if error}
-        <p class="error" role="alert">{error}</p>
+        <p class="error u-error-text" role="alert">{error}</p>
       {/if}
       <Button variant="secondary" disabled={adding || !manualShare.trim()} onclick={addManual}>
         {adding ? 'Checking…' : 'Add share'}
@@ -211,11 +211,5 @@
   }
   textarea.has-error {
     border-color: var(--color-critical);
-  }
-  .error {
-    font-size: var(--text-label);
-    color: var(--color-critical);
-    margin: 0;
-    line-height: 1.4;
   }
 </style>

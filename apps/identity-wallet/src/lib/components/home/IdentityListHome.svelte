@@ -266,7 +266,7 @@
 </script>
 
 {#if loading}
-  <div class="screen">
+  <div class="screen u-screen-lg">
     <ScreenHeader title="Identities" size="home" />
     <div class="cards" aria-hidden="true">
       {#each [0, 1] as i (i)}
@@ -275,7 +275,7 @@
     </div>
   </div>
 {:else}
-  <div class="screen">
+  <div class="screen u-screen-lg">
     <ScreenHeader title="Identities" size="home">
       {#snippet actions()}
         <button class="icon-btn" onclick={loadData} aria-label="Refresh">
@@ -290,7 +290,7 @@
     </ScreenHeader>
 
     {#if loadError}
-      <div class="notice">
+      <div class="notice u-notice">
         <p class="notice-text">{loadError}</p>
         <Button variant="secondary" onclick={loadData}>Try again</Button>
       </div>
@@ -471,15 +471,6 @@
 {/if}
 
 <style>
-  .screen {
-    display: flex;
-    flex-direction: column;
-    height: 100%;
-    padding: var(--space-lg) var(--space-md) var(--space-xl);
-    gap: var(--space-lg);
-    overflow-y: auto;
-  }
-
   .icon-btn {
     display: inline-flex;
     align-items: center;
@@ -954,20 +945,10 @@
     margin: 0;
     max-width: 32ch;
   }
-  .notice {
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    gap: var(--space-md);
-    background: var(--color-critical-surface);
-    border-radius: var(--radius-lg);
-    padding: var(--space-lg);
-    text-align: center;
-  }
+
   .notice-text {
     font-size: var(--text-body);
     color: var(--color-critical);
     margin: 0;
   }
-
 </style>

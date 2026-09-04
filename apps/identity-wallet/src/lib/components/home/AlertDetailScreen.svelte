@@ -31,7 +31,7 @@
   const countdown = useCountdown(60_000);
 </script>
 
-<div class="screen">
+<div class="screen u-screen">
   <button class="back" onclick={onback}>
     <ChevronLeftIcon />
     {backLabel}
@@ -39,7 +39,7 @@
 
   <div class="hero">
     <h1 class="hero-title">Someone changed your identity</h1>
-    <p class="hero-sub">
+    <p class="hero-sub u-body-soft">
       {changes.length === 1
         ? 'A key you didn’t authorize was added.'
         : `${changes.length} unauthorized changes were detected.`}
@@ -48,8 +48,8 @@
   </div>
 
   <div class="identity">
-    <span class="id-label">Affected identity</span>
-    <span class="id-did">{truncateDid(did)}</span>
+    <span class="id-label u-label-muted">Affected identity</span>
+    <span class="id-did u-id-mono">{truncateDid(did)}</span>
   </div>
 
   <div class="cards">
@@ -60,15 +60,15 @@
         <UrgencyBadge {urgency} {deadline} now={countdown.now} />
 
         <div class="field">
-          <span class="k">Signing key</span>
+          <span class="k u-label-muted">Signing key</span>
           <span class="v mono">{change.signingKey ?? 'Unknown key'}</span>
         </div>
         <div class="field">
-          <span class="k">Detected</span>
+          <span class="k u-label-muted">Detected</span>
           <span class="v">{formatTimestamp(change.createdAt)}</span>
         </div>
         <div class="field">
-          <span class="k">Recovery deadline</span>
+          <span class="k u-label-muted">Recovery deadline</span>
           <span class="v">{formatTimestamp(deadline)}</span>
         </div>
 
@@ -81,15 +81,6 @@
 </div>
 
 <style>
-  .screen {
-    display: flex;
-    flex-direction: column;
-    height: 100%;
-    padding: var(--space-lg) var(--space-md) var(--space-xl);
-    gap: var(--space-md);
-    overflow-y: auto;
-  }
-
   .back {
     align-self: flex-start;
     display: inline-flex;
@@ -114,28 +105,11 @@
     color: var(--color-ink);
     margin: 0 0 var(--space-sm);
   }
-  .hero-sub {
-    font-size: var(--text-body);
-    line-height: var(--leading-body);
-    color: var(--color-ink-soft);
-    margin: 0;
-  }
 
   .identity {
     display: flex;
     flex-direction: column;
     gap: var(--space-xs);
-  }
-  .id-label {
-    font-size: var(--text-label);
-    font-weight: var(--weight-semibold);
-    color: var(--color-muted);
-  }
-  .id-did {
-    font-family: var(--font-mono);
-    font-size: var(--text-data);
-    color: var(--color-ink-soft);
-    word-break: break-all;
   }
 
   .cards {
@@ -158,11 +132,7 @@
     flex-direction: column;
     gap: var(--space-2xs);
   }
-  .k {
-    font-size: var(--text-label);
-    font-weight: var(--weight-semibold);
-    color: var(--color-muted);
-  }
+
   .v {
     font-size: var(--text-body);
     color: var(--color-ink);

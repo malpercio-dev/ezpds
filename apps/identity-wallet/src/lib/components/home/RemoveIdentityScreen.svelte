@@ -409,17 +409,17 @@
 
   <div class="content">
     <div class="identity">
-      <span class="id-label">Identity</span>
+      <span class="id-label u-label-muted">Identity</span>
       {#if handle}
         <span class="id-handle">{handle}</span>
       {/if}
-      <span class="id-did">{truncateDid(did)}</span>
+      <span class="id-did u-id-mono">{truncateDid(did)}</span>
     </div>
 
     {#if phase === 'warn'}
       <div class="hero">
         <h1 class="hero-title">Permanently remove this identity</h1>
-        <p class="hero-sub">This cannot be undone. Removing this identity will:</p>
+        <p class="hero-sub u-body-soft">This cannot be undone. Removing this identity will:</p>
       </div>
       <ul class="consequences">
         <li><strong>Delete your account</strong> and all its data on your server.</li>
@@ -452,7 +452,7 @@
     {:else if phase === 'confirm'}
       <div class="hero">
         <h1 class="hero-title">Confirm removal</h1>
-        <p class="hero-sub">
+        <p class="hero-sub u-body-soft">
           {#if requiresPassword}
             Enter the code we emailed you and your account password, then hold to remove.
           {:else}
@@ -460,8 +460,8 @@
           {/if}
         </p>
       </div>
-      <div class="form">
-        <label class="field-label" for="removal-code">Confirmation code</label>
+      <div class="form u-stack-sm">
+        <label class="field-label u-label-muted" for="removal-code">Confirmation code</label>
         <TextField
           id="removal-code"
           bind:value={code}
@@ -471,7 +471,7 @@
           placeholder="Code from your email"
         />
         {#if requiresPassword}
-          <label class="field-label" for="removal-password">Account password</label>
+          <label class="field-label u-label-muted" for="removal-password">Account password</label>
           <TextField
             id="removal-password"
             type="password"
@@ -488,7 +488,7 @@
     {:else if phase === 'tombstone_retry'}
       <div class="hero">
         <h1 class="hero-title">Almost done</h1>
-        <p class="hero-sub">
+        <p class="hero-sub u-body-soft">
           {#if isDidWeb}
             Your account was deleted, but erasing this identity's keys from this device didn't
             finish. Retry to complete removal.
@@ -501,7 +501,7 @@
     {:else if phase === 'web_epilogue'}
       <div class="hero">
         <h1 class="hero-title">One step is yours</h1>
-        <p class="hero-sub">
+        <p class="hero-sub u-body-soft">
           Your account is deleted and this identity's keys are erased from this device. The
           identity itself keeps resolving for as long as its document stays published.
         </p>
@@ -529,7 +529,7 @@
         <h1 class="hero-title">
           {alsoTombstone ? 'Retire and remove this identity' : 'Remove from this device only'}
         </h1>
-        <p class="hero-sub">
+        <p class="hero-sub u-body-soft">
           Use this if this identity's account no longer exists on its server — for example it was
           already deleted, or you migrated it elsewhere.
         </p>
@@ -588,7 +588,7 @@
 
     {#if error}
       <div class="error-box" role="alert">
-        <p class="error-text">{error}</p>
+        <p class="error-text u-error-text">{error}</p>
       </div>
     {/if}
   </div>
@@ -710,21 +710,11 @@
     flex-direction: column;
     gap: var(--space-xs);
   }
-  .id-label {
-    font-size: var(--text-label);
-    font-weight: var(--weight-semibold);
-    color: var(--color-muted);
-  }
+
   .id-handle {
     font-size: var(--text-body);
     font-weight: var(--weight-semibold);
     color: var(--color-ink);
-    word-break: break-all;
-  }
-  .id-did {
-    font-family: var(--font-mono);
-    font-size: var(--text-data);
-    color: var(--color-ink-soft);
     word-break: break-all;
   }
 
@@ -735,12 +725,6 @@
     line-height: 1.15;
     color: var(--color-ink);
     margin: 0 0 var(--space-sm);
-  }
-  .hero-sub {
-    font-size: var(--text-body);
-    line-height: var(--leading-body);
-    color: var(--color-ink-soft);
-    margin: 0;
   }
 
   .consequences {
@@ -771,17 +755,6 @@
     word-break: break-all;
   }
 
-  .form {
-    display: flex;
-    flex-direction: column;
-    gap: var(--space-sm);
-  }
-  .field-label {
-    font-size: var(--text-label);
-    font-weight: var(--weight-semibold);
-    color: var(--color-muted);
-  }
-
   .loading {
     display: flex;
     flex-direction: column;
@@ -800,12 +773,6 @@
     background: var(--color-critical-surface);
     border-radius: var(--radius-md);
     padding: 12px var(--space-md);
-  }
-  .error-text {
-    font-size: var(--text-label);
-    color: var(--color-critical);
-    margin: 0;
-    line-height: 1.4;
   }
 
   .actions {

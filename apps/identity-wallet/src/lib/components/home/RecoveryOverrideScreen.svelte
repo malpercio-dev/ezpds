@@ -159,15 +159,15 @@
   <div class="content">
     <div class="hero">
       <h1 class="hero-title">Reclaim your identity</h1>
-      <p class="hero-sub">
+      <p class="hero-sub u-body-soft">
         Review what this does, then confirm with your device key. This reverses the change you didn’t
         authorize.
       </p>
     </div>
 
     <div class="identity">
-      <span class="id-label">Identity</span>
-      <span class="id-did">{truncateDid(did)}</span>
+      <span class="id-label u-label-muted">Identity</span>
+      <span class="id-did u-id-mono">{truncateDid(did)}</span>
       <span class="id-deadline">Window closes {formatTimestamp(deadline)}</span>
     </div>
 
@@ -177,8 +177,8 @@
         <p class="loading-text">Building recovery operation…</p>
       </div>
     {:else if signedOp}
-      <div class="block">
-        <p class="block-label">This override will</p>
+      <div class="block u-stack-sm">
+        <p class="block-label u-block-label">This override will</p>
         {#if signedOp.diff.removedKeys.length === 0 && signedOp.diff.addedKeys.length === 0 && signedOp.diff.changedServices.length === 0}
           <p class="no-changes">No key or service changes to apply.</p>
         {:else}
@@ -208,7 +208,7 @@
 
     {#if error}
       <div class="error-box" role="alert">
-        <p class="error-text">{error}</p>
+        <p class="error-text u-error-text">{error}</p>
         {#if errorDetail}
           <p class="error-detail">{errorDetail}</p>
         {/if}
@@ -299,29 +299,13 @@
     color: var(--color-ink);
     margin: 0 0 var(--space-sm);
   }
-  .hero-sub {
-    font-size: var(--text-body);
-    line-height: var(--leading-body);
-    color: var(--color-ink-soft);
-    margin: 0;
-  }
 
   .identity {
     display: flex;
     flex-direction: column;
     gap: var(--space-xs);
   }
-  .id-label {
-    font-size: var(--text-label);
-    font-weight: var(--weight-semibold);
-    color: var(--color-muted);
-  }
-  .id-did {
-    font-family: var(--font-mono);
-    font-size: var(--text-data);
-    color: var(--color-ink-soft);
-    word-break: break-all;
-  }
+
   .id-deadline {
     font-size: var(--text-label);
     color: var(--color-muted);
@@ -340,17 +324,6 @@
     margin: 0;
   }
 
-  .block {
-    display: flex;
-    flex-direction: column;
-    gap: var(--space-sm);
-  }
-  .block-label {
-    font-size: var(--text-label);
-    font-weight: var(--weight-semibold);
-    color: var(--color-muted);
-    margin: 0;
-  }
   .no-changes {
     font-size: var(--text-body);
     color: var(--color-muted);
@@ -371,12 +344,7 @@
     border-radius: var(--radius-md);
     padding: 12px var(--space-md);
   }
-  .error-text {
-    font-size: var(--text-label);
-    color: var(--color-critical);
-    margin: 0;
-    line-height: 1.4;
-  }
+
   /* The carried diagnostic, subordinate to the sentence: data register, never the headline. */
   .error-detail {
     font-family: var(--font-mono);

@@ -216,7 +216,7 @@
   });
 </script>
 
-<div class="screen">
+<div class="screen u-screen-lg">
   <ScreenHeader
     title="Protection"
     {onback}
@@ -259,7 +259,7 @@
     />
 
     {#if rows.length > 0}
-      <section class="zone">
+      <section class="zone u-stack-sm">
         <h2 class="zone-label">Identities</h2>
         <div class="rows">
           {#each rows as row (row.did)}
@@ -302,7 +302,7 @@
       </section>
     {/if}
 
-    <section class="zone">
+    <section class="zone u-stack-sm">
       <h2 class="zone-label">Monitor history</h2>
       <p class="zone-note">
         {describeInterval(history?.intervalSecs ?? null)}. Each pass compares every identity's
@@ -351,15 +351,6 @@
 </div>
 
 <style>
-  .screen {
-    display: flex;
-    flex-direction: column;
-    height: 100%;
-    padding: var(--space-lg) var(--space-md) var(--space-xl);
-    gap: var(--space-lg);
-    overflow-y: auto;
-  }
-
   .icon-btn {
     display: inline-flex;
     align-items: center;
@@ -394,11 +385,6 @@
     }
   }
 
-  .zone {
-    display: flex;
-    flex-direction: column;
-    gap: var(--space-sm);
-  }
   .zone-label {
     font-size: var(--text-label);
     font-weight: var(--weight-semibold);

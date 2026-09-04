@@ -168,7 +168,7 @@
     onchanged={markChildChanged}
   />
 {:else}
-  <div class="screen">
+  <div class="screen u-screen">
     <ScreenHeader title="My agents" {onback} />
 
     {#if loading}
@@ -178,12 +178,12 @@
         {/each}
       </div>
     {:else if locked}
-      <div class="notice" role="alert">
+      <div class="notice u-notice" role="alert">
         <p class="notice-text">This identity is locked. Unlock it to see and manage your agents.</p>
         <Button onclick={unlockAndReload}>Unlock identity</Button>
       </div>
     {:else if loadError}
-      <div class="notice" role="alert">
+      <div class="notice u-notice" role="alert">
         <p class="notice-text">{loadError}</p>
         <Button variant="secondary" onclick={loadAgents}>Try again</Button>
       </div>
@@ -247,7 +247,7 @@
 
       {#if children.length > 0}
         <p class="section-label">Agents with their own account</p>
-        <p class="lede">
+        <p class="lede u-body-copy">
           These agents act as themselves, not as you. You signed each account into existence, so
           you can revoke or delete it — but nothing it posts is attributed to you.
         </p>
@@ -284,7 +284,7 @@
 
       {#if agents.length > 0}
         {#if children.length > 0}<p class="section-label">Agents acting for you</p>{/if}
-        <p class="lede">
+        <p class="lede u-body-copy">
           Agents you have approved to act on your behalf. Tap one to see its permissions and its
           full activity record.
         </p>
@@ -343,15 +343,6 @@
 {/if}
 
 <style>
-  .screen {
-    display: flex;
-    flex-direction: column;
-    height: 100%;
-    padding: var(--space-lg) var(--space-md) var(--space-xl);
-    gap: var(--space-md);
-    overflow-y: auto;
-  }
-
   .truncate {
     white-space: nowrap;
     overflow: hidden;
@@ -363,13 +354,6 @@
     font-weight: var(--weight-semibold);
     color: var(--color-muted);
     margin: var(--space-xs) 0 calc(-1 * var(--space-2xs));
-  }
-
-  .lede {
-    font-size: var(--text-body);
-    color: var(--color-muted);
-    line-height: 1.5;
-    margin: 0;
   }
 
   .cards {
@@ -542,16 +526,6 @@
     line-height: 1.5;
   }
 
-  .notice {
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    gap: var(--space-md);
-    background: var(--color-critical-surface);
-    border-radius: var(--radius-lg);
-    padding: var(--space-lg);
-    text-align: center;
-  }
   .notice-text {
     font-size: var(--text-body);
     color: var(--color-critical);

@@ -99,13 +99,13 @@
         </svg>
       </SealEmblem>
     {/snippet}
-    <div class="preview">
+    <div class="preview u-card">
       {#if verified.handle}
-        <div class="row"><span class="k">Handle</span><span class="v">@{verified.handle}</span></div>
+        <div class="row"><span class="k u-label-muted">Handle</span><span class="v">@{verified.handle}</span></div>
       {/if}
-      <div class="row"><span class="k">DID</span><span class="v mono">{displayDid}</span></div>
+      <div class="row"><span class="k u-label-muted">DID</span><span class="v mono">{displayDid}</span></div>
       <div class="row">
-        <span class="k">What happens next</span>
+        <span class="k u-label-muted">What happens next</span>
         <span class="v small">
           A new device key is created here and signed into your identity, replacing the lost
           device's key. Your old backup shares are then retired and replaced with a fresh set.
@@ -113,7 +113,7 @@
       </div>
     </div>
     {#if error}
-      <p class="error" role="alert">{error}</p>
+      <p class="error u-error-text" role="alert">{error}</p>
     {/if}
     <Button disabled={anchoring} onclick={anchor}>
       {anchoring ? 'Recovering…' : 'Recover this identity'}
@@ -123,7 +123,7 @@
 {:else}
   <OnboardingShell title="Verification failed" subtitle="Nothing was signed or changed.">
     {#if error}
-      <p class="error" role="alert">{error}</p>
+      <p class="error u-error-text" role="alert">{error}</p>
     {/if}
     <Button onclick={verify}>Try again</Button>
     <Button variant="secondary" onclick={onback}>Back to shares</Button>
@@ -131,27 +131,12 @@
 {/if}
 
 <style>
-  .preview {
-    width: 100%;
-    background: var(--color-surface);
-    border: 1px solid var(--color-line);
-    border-radius: var(--radius-lg);
-    padding: var(--space-md);
-    display: flex;
-    flex-direction: column;
-    gap: var(--space-sm);
-    text-align: left;
-  }
   .row {
     display: flex;
     flex-direction: column;
     gap: var(--space-3xs);
   }
-  .k {
-    font-size: var(--text-label);
-    font-weight: var(--weight-semibold);
-    color: var(--color-muted);
-  }
+
   .v {
     font-size: var(--text-body);
     color: var(--color-ink);
@@ -165,11 +150,5 @@
     font-size: var(--text-label);
     color: var(--color-muted);
     line-height: 1.5;
-  }
-  .error {
-    font-size: var(--text-label);
-    color: var(--color-critical);
-    margin: 0;
-    line-height: 1.4;
   }
 </style>
