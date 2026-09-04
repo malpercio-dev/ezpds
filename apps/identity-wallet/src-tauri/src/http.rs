@@ -8,7 +8,7 @@
 //! The base URL is runtime-configured: the user sets it on first launch
 //! (`PdsConfigScreen`), it persists to the Keychain, and later launches restore it via
 //! `AppState::set_custos_client`. The compile-time default
-//! (`#[cfg(debug_assertions)]`: `http://localhost:8080` debug, `https://obsign.org`
+//! (`#[cfg(debug_assertions)]`: `http://localhost:8080` debug, `https://pds.obsign.org`
 //! release) is only the pre-filled value in that configuration UI, and the fallback when
 //! nothing was ever configured.
 //!
@@ -25,7 +25,7 @@ use crate::oauth::OAuthError;
 #[cfg(debug_assertions)]
 const CUSTOS_BASE_URL: &str = "http://localhost:8080";
 #[cfg(not(debug_assertions))]
-const CUSTOS_BASE_URL: &str = "https://obsign.org";
+const CUSTOS_BASE_URL: &str = "https://pds.obsign.org";
 
 /// Returns the compile-time default PDS base URL.
 ///

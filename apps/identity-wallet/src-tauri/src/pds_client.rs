@@ -2334,7 +2334,10 @@ mod tests {
     /// app's OAuth identity must not vary with the configured server.
     #[test]
     fn client_id_is_canonical_for_public_custos() {
-        assert_eq!(client_id_for_pds("https://obsign.org"), CANONICAL_CLIENT_ID);
+        assert_eq!(
+            client_id_for_pds("https://pds.obsign.org"),
+            CANONICAL_CLIENT_ID
+        );
         assert_eq!(
             client_id_for_pds("https://ezpds-staging.up.railway.app/"),
             CANONICAL_CLIENT_ID
