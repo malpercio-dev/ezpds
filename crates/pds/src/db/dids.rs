@@ -6,9 +6,12 @@
 //! Cache: `get_did_document` / `did_document_exists` (lookup / cheap existence probe).
 //! `rewrite_did_document` is an UPDATE-only heal of an existing cache row with a freshly
 //! resolved doc — it never inserts, because the cache has no TTL and a foreign row would
-//! then be stale forever; it backs the force-refresh path. `fetch_also_known_as` renders a
-//! DID's handles as `at://<handle>` for the document's `alsoKnownAs` array, and
-//! `update_also_known_as` writes that field back into the stored document.
+//! then be stale forever; it backs the force-refresh path. `upsert_did_document` is the
+//! INSERT-or-UPDATE write path for a document that may not be cached yet (account
+//! creation/migration, signing-key rotation, a submitted PLC operation, a handle swap's PLC
+//! cache refresh). `fetch_also_known_as` renders a DID's handles as `at://<handle>` for the
+//! document's `alsoKnownAs` array, and `update_also_known_as` writes that field back into the
+//! stored document.
 //!
 //! did:web hosting (over `accounts.did_web_hosting_enabled_at`): `serve_hosted_did_document`
 //! is the gated `.well-known/did.json` serve — account exists, opted in, active lifecycle,
@@ -16,7 +19,7 @@
 //! the opt-in toggle and probe.
 
 use common::{ApiError, ErrorCode};
-use sqlx::SqlitePool;
+use sqlx::{Sqlite, SqlitePool};
 
 /// Look up a locally cached DID document by DID string.
 ///
@@ -114,6 +117,44 @@ pub async fn rewrite_did_document(
     })?;
 
     Ok(result.rows_affected() > 0)
+}
+
+/// Upsert the locally-cached DID document for `did`: insert a fresh row, or refresh an existing
+/// one in place. Unlike [`rewrite_did_document`] (UPDATE-only, heals a row this server already
+/// caches), this is the write path for a document a route has just authored or freshly resolved
+/// and may be caching for the first time — account creation/migration, a repo signing-key
+/// rotation, a submitted PLC operation, and a handle swap's PLC cache refresh all need the
+/// INSERT branch for a DID with no prior row. Generic over the executor so a caller already
+/// inside a transaction (account creation, handle swap) can run it without a second connection
+/// acquisition.
+pub async fn upsert_did_document<'e, E>(
+    executor: E,
+    did: &str,
+    document: &serde_json::Value,
+) -> Result<(), ApiError>
+where
+    E: sqlx::Executor<'e, Database = Sqlite>,
+{
+    let doc_str = serde_json::to_string(document).map_err(|e| {
+        tracing::error!(did = %did, error = %e, "failed to serialize DID document for cache upsert");
+        ApiError::new(ErrorCode::InternalError, "failed to serialize DID document")
+    })?;
+
+    sqlx::query(
+        "INSERT INTO did_documents (did, document, created_at, updated_at) \
+         VALUES (?, ?, datetime('now'), datetime('now')) \
+         ON CONFLICT(did) DO UPDATE SET document = excluded.document, updated_at = datetime('now')",
+    )
+    .bind(did)
+    .bind(&doc_str)
+    .execute(executor)
+    .await
+    .map_err(|e| {
+        tracing::error!(did = %did, error = %e, "DB error upserting cached DID document");
+        ApiError::new(ErrorCode::InternalError, "failed to store DID document")
+    })?;
+
+    Ok(())
 }
 
 /// Fetch the DID document to serve for a Custos-hosted `did:web` account, gated on the opt-in.

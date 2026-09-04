@@ -19,10 +19,10 @@ use super::{
 };
 use crate::app::AppState;
 use crate::auth::token::generate_token;
-use crate::auth::{validate_dpop_for_token_endpoint, DpopTokenEndpointError};
 use crate::db::oauth::{
     delete_authorization_code, get_authorization_code, store_initial_oauth_refresh_token,
 };
+use crate::routes::oauth_dpop::token_endpoint_dpop;
 use crate::routes::oauth_errors::OAuthTokenError;
 
 /// Verify the PKCE S256 code challenge.
@@ -100,49 +100,14 @@ pub(super) async fn handle_authorization_code(
         }
     }
 
-    // Reject multiple DPoP headers (RFC 9449 §11.1).
-    if headers.get_all("DPoP").iter().count() > 1 {
-        return OAuthTokenError::new(
-            "invalid_dpop_proof",
-            "multiple DPoP headers are not permitted",
-        )
-        .into_response();
-    }
-
-    // Validate DPoP proof.
-    let dpop_token = match headers.get("DPoP").and_then(|v| v.to_str().ok()) {
-        Some(t) => t.to_string(),
-        None => {
-            return OAuthTokenError::new("invalid_dpop_proof", "DPoP header required")
-                .into_response();
-        }
-    };
-
     let token_url = format!(
         "{}/oauth/token",
         state.config.public_url.trim_end_matches('/')
     );
-
-    let jkt =
-        match validate_dpop_for_token_endpoint(&dpop_token, "POST", &token_url, &state.dpop_nonces)
-        {
-            Ok(jkt) => jkt,
-            Err(DpopTokenEndpointError::MissingHeader) => {
-                return OAuthTokenError::new("invalid_dpop_proof", "DPoP header required")
-                    .into_response();
-            }
-            Err(DpopTokenEndpointError::InvalidProof(msg)) => {
-                return OAuthTokenError::new("invalid_dpop_proof", msg).into_response();
-            }
-            Err(DpopTokenEndpointError::UseNonce(fresh_nonce)) => {
-                return OAuthTokenError::with_nonce(
-                    "use_dpop_nonce",
-                    "DPoP nonce required",
-                    fresh_nonce,
-                )
-                .into_response();
-            }
-        };
+    let jkt = match token_endpoint_dpop(state, headers, &token_url) {
+        Ok(jkt) => jkt,
+        Err(e) => return e.into_response(),
+    };
 
     // Hash the presented code for DB lookup.
     let code_hash = match URL_SAFE_NO_PAD.decode(code) {

@@ -40,7 +40,7 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::app::AppState;
-use crate::auth::guards::{authenticate_account_owner, OwnerAuthError};
+use crate::auth::guards::authenticate_owner;
 use crate::auth::token::{generate_token, hash_bearer_token};
 use crate::db::accounts::{account_email, resolve_identifier};
 use crate::db::recovery_audit::{insert_recovery_audit_event, RecoveryAuditEventType};
@@ -340,19 +340,7 @@ pub async fn recovery_release_cancel(
     uri: Uri,
     headers: HeaderMap,
 ) -> Result<Json<CancelResponse>, ApiError> {
-    let did = authenticate_account_owner(&headers, &method, &uri, &state)
-        .await
-        .map_err(|err| match err {
-            OwnerAuthError::Unauthenticated(e) => e,
-            OwnerAuthError::AgentDerived => ApiError::new(
-                ErrorCode::InsufficientScope,
-                "this operation is not available to agent-derived credentials",
-            ),
-            OwnerAuthError::NotFullAccess => ApiError::new(
-                ErrorCode::InvalidToken,
-                "a session or full-access token is required",
-            ),
-        })?;
+    let did = authenticate_owner(&headers, &method, &uri, &state).await?;
 
     let mut tx = state.db.begin().await.map_err(map_db_err)?;
     let cancelled = clear_release(&mut *tx, &did).await.map_err(map_db_err)?;

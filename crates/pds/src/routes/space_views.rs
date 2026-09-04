@@ -3,11 +3,14 @@
 //! Shared handler-free support for the `com.atproto.space.*` and `com.atproto.simplespace.*`
 //! routes (routes may not import one another): space-ref parsing, the `validate`-flag record
 //! check, stored-block decoding, the `{uri, cid, validationStatus}` shape every write route
-//! answers with, and the simplespace config's lexicon ↔ column mapping.
+//! answers with, the simplespace config's lexicon ↔ column mapping, and the
+//! `addMember`/`removeMember` write body.
 //!
 //! Authorization is deliberately *not* here — it lives in `auth/space.rs`, the one seam every
-//! space route enters through.
+//! space route enters through; `write_membership` is called only after the route has already
+//! authenticated the space owner.
 
+use crate::app::AppState;
 use crate::db::spaces::SpaceRow;
 use crate::lexicon::RecordValidation;
 use crate::space_record_write::SpaceCommitOutcome;
@@ -393,4 +396,45 @@ where
         })?
         .filter(|row| row.deleted_at.is_none() && row.policy.is_some())
         .ok_or_else(|| ApiError::new(ErrorCode::SpaceNotFound, "space not found"))
+}
+
+/// Which `com.atproto.simplespace.{addMember,removeMember}` operation [`write_membership`]
+/// performs.
+pub enum MembershipAction {
+    Add,
+    Remove,
+}
+
+/// Shared write body for `simplespace.addMember` / `simplespace.removeMember`, called after the
+/// route has already authenticated the space owner (see the module doc). Loads the active
+/// simplespace and adds or removes `did` from its member list inside one transaction, so a
+/// member row can never land after a concurrent `deleteSpace` has already wiped the list. Both
+/// operations are idempotent (`ON CONFLICT DO NOTHING` / a no-op DELETE).
+pub async fn write_membership(
+    state: &AppState,
+    space: &SpaceRef,
+    did: &str,
+    action: MembershipAction,
+) -> Result<(), ApiError> {
+    let verb = match action {
+        MembershipAction::Add => "add",
+        MembershipAction::Remove => "remove",
+    };
+    let internal = |e: sqlx::Error| {
+        tracing::error!(error = %e, space = %space.uri, "failed to {verb} member");
+        ApiError::new(ErrorCode::InternalError, "internal server error")
+    };
+
+    let mut tx = state.db.begin().await.map_err(internal)?;
+    load_active_simplespace(&mut *tx, space).await?;
+    match action {
+        MembershipAction::Add => crate::db::spaces::add_member(&mut *tx, &space.uri, did)
+            .await
+            .map_err(internal)?,
+        MembershipAction::Remove => crate::db::spaces::remove_member(&mut *tx, &space.uri, did)
+            .await
+            .map_err(internal)?,
+    }
+    tx.commit().await.map_err(internal)?;
+    Ok(())
 }

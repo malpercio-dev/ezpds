@@ -34,7 +34,7 @@ use crate::app::AppState;
 use crate::auth::extractors::AuthenticatedUser;
 use crate::auth::jwt::AuthScope;
 use crate::auth::oauth_scopes;
-use crate::db::dids::{fetch_also_known_as, update_also_known_as};
+use crate::db::dids::{fetch_also_known_as, update_also_known_as, upsert_did_document};
 use crate::db::repo_keys::get_signing_key_by_did;
 use crate::identity::plc::{build_did_document_from_op, fetch_current_plc_state};
 use crate::lexicon::LexiconInput;
@@ -202,17 +202,7 @@ pub async fn update_handle_handler(
             // leave plc.directory ahead of a reverted local handle). A stale/missing cache row is
             // reconciled by the next re-resolve, matching the non-fatal posture in
             // submit_plc_operation.rs.
-            if let Err(e) = sqlx::query(
-                "INSERT INTO did_documents (did, document, created_at, updated_at) \
-                 VALUES (?, ?, datetime('now'), datetime('now')) \
-                 ON CONFLICT(did) DO UPDATE SET \
-                    document = excluded.document, updated_at = datetime('now')",
-            )
-            .bind(did)
-            .bind(plc_update.did_document.to_string())
-            .execute(&mut *tx)
-            .await
-            {
+            if let Err(e) = upsert_did_document(&mut *tx, did, &plc_update.did_document).await {
                 tracing::warn!(error = %e, did = %did, "failed to cache submitted handle PLC operation (non-fatal)");
             }
         }

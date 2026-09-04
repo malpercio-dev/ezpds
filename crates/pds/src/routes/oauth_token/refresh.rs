@@ -21,11 +21,11 @@ use super::{
 };
 use crate::app::AppState;
 use crate::auth::token::generate_token;
-use crate::auth::{validate_dpop_for_token_endpoint, DpopTokenEndpointError};
 use crate::db::oauth::{
     delete_oauth_refresh_session, get_oauth_refresh_token, store_rotated_oauth_refresh_token,
     supersede_oauth_refresh_token,
 };
+use crate::routes::oauth_dpop::token_endpoint_dpop;
 use crate::routes::oauth_errors::OAuthTokenError;
 
 pub(super) async fn handle_refresh_token(
@@ -64,49 +64,14 @@ pub(super) async fn handle_refresh_token(
     {
         return e.into_response();
     }
-    // Reject multiple DPoP headers (RFC 9449 §11.1).
-    if headers.get_all("DPoP").iter().count() > 1 {
-        return OAuthTokenError::new(
-            "invalid_dpop_proof",
-            "multiple DPoP headers are not permitted",
-        )
-        .into_response();
-    }
-
-    // Validate DPoP proof — must be present, structurally valid, and carry a valid server nonce.
-    let dpop_token = match headers.get("DPoP").and_then(|v| v.to_str().ok()) {
-        Some(t) => t.to_string(),
-        None => {
-            return OAuthTokenError::new("invalid_dpop_proof", "DPoP header required")
-                .into_response();
-        }
-    };
-
     let token_url = format!(
         "{}/oauth/token",
         state.config.public_url.trim_end_matches('/')
     );
-
-    let jkt =
-        match validate_dpop_for_token_endpoint(&dpop_token, "POST", &token_url, &state.dpop_nonces)
-        {
-            Ok(jkt) => jkt,
-            Err(DpopTokenEndpointError::MissingHeader) => {
-                return OAuthTokenError::new("invalid_dpop_proof", "DPoP header required")
-                    .into_response();
-            }
-            Err(DpopTokenEndpointError::InvalidProof(msg)) => {
-                return OAuthTokenError::new("invalid_dpop_proof", msg).into_response();
-            }
-            Err(DpopTokenEndpointError::UseNonce(fresh_nonce)) => {
-                return OAuthTokenError::with_nonce(
-                    "use_dpop_nonce",
-                    "DPoP nonce required",
-                    fresh_nonce,
-                )
-                .into_response();
-            }
-        };
+    let jkt = match token_endpoint_dpop(state, headers, &token_url) {
+        Ok(jkt) => jkt,
+        Err(e) => return e.into_response(),
+    };
 
     // Hash the presented refresh token for DB lookup.
     let token_hash = match URL_SAFE_NO_PAD.decode(refresh_token_plaintext.as_str()) {

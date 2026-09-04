@@ -34,36 +34,13 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::app::AppState;
-use crate::auth::guards::{authenticate_account_owner, OwnerAuthError};
+use crate::auth::guards::authenticate_owner;
 use crate::db::recovery_audit::{insert_recovery_audit_event, RecoveryAuditEventType};
 use crate::db::recovery_escrow::{
     delete_escrow_share, escrow_share_exists, insert_escrow_share, null_legacy_recovery_share,
     replace_escrow_share,
 };
 use common::{ApiError, ErrorCode};
-
-/// Authenticate the account owner and map the neutral rejection into this surface's vocabulary.
-/// Mirrors `agents.rs`'s wrapper (routes may not import one another).
-async fn authenticate_owner(
-    headers: &HeaderMap,
-    method: &Method,
-    uri: &Uri,
-    state: &AppState,
-) -> Result<String, ApiError> {
-    authenticate_account_owner(headers, method, uri, state)
-        .await
-        .map_err(|err| match err {
-            OwnerAuthError::Unauthenticated(e) => e,
-            OwnerAuthError::AgentDerived => ApiError::new(
-                ErrorCode::InsufficientScope,
-                "this operation is not available to agent-derived credentials",
-            ),
-            OwnerAuthError::NotFullAccess => ApiError::new(
-                ErrorCode::InvalidToken,
-                "a session or full-access token is required",
-            ),
-        })
-}
 
 /// The escrow slot always holds Share 2 — the index reserved for Custos in the 2-of-3 split.
 const ESCROW_SHARE_INDEX: u8 = 2;

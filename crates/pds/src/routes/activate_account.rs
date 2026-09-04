@@ -458,16 +458,9 @@ mod tests {
                 "serviceEndpoint": "https://old.example.com",
             }],
         });
-        sqlx::query(
-            "INSERT INTO did_documents (did, document, created_at, updated_at) \
-             VALUES (?, ?, datetime('now'), datetime('now')) \
-             ON CONFLICT(did) DO UPDATE SET document = excluded.document",
-        )
-        .bind(did)
-        .bind(stale_doc.to_string())
-        .execute(&state.db)
-        .await
-        .unwrap();
+        crate::db::dids::upsert_did_document(&state.db, did, &stale_doc)
+            .await
+            .unwrap();
 
         let token = access_jwt(&state.jwt_secret, did);
         let db = state.db.clone();

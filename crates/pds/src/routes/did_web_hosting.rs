@@ -25,34 +25,11 @@ use axum::{
 use serde::{Deserialize, Serialize};
 
 use crate::app::AppState;
-use crate::auth::guards::{authenticate_account_owner, OwnerAuthError};
+use crate::auth::guards::authenticate_owner;
 use crate::db::dids::{
     did_document_exists, did_web_hosting_enabled, rewrite_did_document, set_did_web_hosting,
 };
 use common::{ApiError, ErrorCode};
-
-/// Authenticate the account owner and map the neutral rejection into this surface's vocabulary.
-/// Mirrors `agents.rs`'s wrapper (routes may not import one another).
-async fn authenticate_owner(
-    headers: &HeaderMap,
-    method: &Method,
-    uri: &Uri,
-    state: &AppState,
-) -> Result<String, ApiError> {
-    authenticate_account_owner(headers, method, uri, state)
-        .await
-        .map_err(|err| match err {
-            OwnerAuthError::Unauthenticated(e) => e,
-            OwnerAuthError::AgentDerived => ApiError::new(
-                ErrorCode::InsufficientScope,
-                "this operation is not available to agent-derived credentials",
-            ),
-            OwnerAuthError::NotFullAccess => ApiError::new(
-                ErrorCode::InvalidToken,
-                "a session or full-access token is required",
-            ),
-        })
-}
 
 /// Reject a non-`did:web` caller: managed hosting and direct document edits are only for
 /// user-owned-domain `did:web` identities. A `did:plc` account repoints through PLC operations.

@@ -15,7 +15,9 @@
 //! exactly as on the extractor/repo-write paths (callers thread the request method/URI in for
 //! DPoP `htm`/`htu` validation). Agent-derived and app-password tokens are refused. Failures
 //! return a vocab-neutral `OwnerAuthError` that `/v1/agents/*` maps to XRPC `ApiError`s and the
-//! claim-confirm gate maps to auth.md errors.
+//! claim-confirm gate maps to auth.md errors. `authenticate_owner` is that XRPC-vocabulary
+//! mapping, shared by every account-owner surface that wants it (`agents.rs`,
+//! `repo_key_rotation.rs`, `did_web_hosting.rs`, `recovery_escrow.rs`, `recovery_release.rs`).
 
 use axum::{
     http::{HeaderMap, Method, StatusCode, Uri},
@@ -631,6 +633,31 @@ pub async fn authenticate_account_owner(
         return Err(OwnerAuthError::NotFullAccess);
     }
     Ok(user.did)
+}
+
+/// [`authenticate_account_owner`], with its neutral [`OwnerAuthError`] mapped into the XRPC
+/// `ApiError` vocabulary. The account-owner surfaces (`/v1/agents`, `/v1/repo-keys/*`,
+/// `/v1/did-web/*`, `/v1/recovery/*`) all want this exact mapping, so it lives here rather than
+/// being re-derived per route.
+pub async fn authenticate_owner(
+    headers: &HeaderMap,
+    method: &Method,
+    uri: &Uri,
+    state: &AppState,
+) -> Result<String, ApiError> {
+    authenticate_account_owner(headers, method, uri, state)
+        .await
+        .map_err(|err| match err {
+            OwnerAuthError::Unauthenticated(e) => e,
+            OwnerAuthError::AgentDerived => ApiError::new(
+                ErrorCode::InsufficientScope,
+                "this operation is not available to agent-derived credentials",
+            ),
+            OwnerAuthError::NotFullAccess => ApiError::new(
+                ErrorCode::InvalidToken,
+                "a session or full-access token is required",
+            ),
+        })
 }
 
 #[cfg(test)]

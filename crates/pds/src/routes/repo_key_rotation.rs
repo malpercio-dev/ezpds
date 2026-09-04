@@ -43,7 +43,8 @@ use axum::{
 use serde::{Deserialize, Serialize};
 
 use crate::app::AppState;
-use crate::auth::guards::{authenticate_account_owner, OwnerAuthError};
+use crate::auth::guards::authenticate_owner;
+use crate::db::dids::upsert_did_document;
 use crate::db::repo_keys::{
     get_signing_key_by_did, get_staged_signing_key, promote_staged_signing_key, stage_rotation_key,
     RepoSigningKey,
@@ -59,29 +60,6 @@ const ATPROTO_VERIFICATION_METHOD_ID: &str = "atproto";
 fn key_query_error(e: sqlx::Error) -> ApiError {
     tracing::error!(error = %e, "signing-key query failed during rotation");
     ApiError::new(ErrorCode::InternalError, "failed to access signing keys")
-}
-
-/// Authenticate the account owner and map the neutral rejection into this surface's
-/// vocabulary. Mirrors `did_web_hosting.rs`'s wrapper (routes may not import one another).
-async fn authenticate_owner(
-    headers: &HeaderMap,
-    method: &Method,
-    uri: &Uri,
-    state: &AppState,
-) -> Result<String, ApiError> {
-    authenticate_account_owner(headers, method, uri, state)
-        .await
-        .map_err(|err| match err {
-            OwnerAuthError::Unauthenticated(e) => e,
-            OwnerAuthError::AgentDerived => ApiError::new(
-                ErrorCode::InsufficientScope,
-                "this operation is not available to agent-derived credentials",
-            ),
-            OwnerAuthError::NotFullAccess => ApiError::new(
-                ErrorCode::InvalidToken,
-                "a session or full-access token is required",
-            ),
-        })
 }
 
 // ── POST /v1/repo-keys/rotation ───────────────────────────────────────────────
@@ -303,7 +281,7 @@ pub async fn complete_repo_key_rotation(
             &verified.services,
         ) {
             Ok(doc) => {
-                if let Err(e) = upsert_cached_did_document(&state.db, &did, &doc).await {
+                if let Err(e) = upsert_did_document(&state.db, &did, &doc).await {
                     tracing::warn!(error = %e, did = %did, "failed to refresh cached DID document after rotation (non-fatal)");
                 }
             }
@@ -346,25 +324,6 @@ pub async fn complete_repo_key_rotation(
     Ok(Json(CompleteRotationResponse {
         signing_key: staged.key_id,
     }))
-}
-
-/// Upsert the locally-cached DID document for `did`. Mirrors `submitPlcOperation`'s
-/// cache refresh (routes may not import one another).
-async fn upsert_cached_did_document(
-    db: &sqlx::SqlitePool,
-    did: &str,
-    document: &serde_json::Value,
-) -> Result<(), sqlx::Error> {
-    sqlx::query(
-        "INSERT INTO did_documents (did, document, created_at, updated_at) \
-         VALUES (?, ?, datetime('now'), datetime('now')) \
-         ON CONFLICT(did) DO UPDATE SET document = excluded.document, updated_at = datetime('now')",
-    )
-    .bind(did)
-    .bind(document.to_string())
-    .execute(db)
-    .await?;
-    Ok(())
 }
 
 // ── Tests ────────────────────────────────────────────────────────────────────
