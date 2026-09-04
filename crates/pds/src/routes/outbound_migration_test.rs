@@ -15,21 +15,14 @@ use tower::ServiceExt;
 
 use crate::app::app;
 use crate::routes::test_utils::{
-    access_jwt, body_json, seed_account_with_repo, seed_did_document, state_with_master_key_and_url,
+    access_jwt, bearer_request as bearer, body_json, seed_account_with_repo, seed_did_document,
+    state_with_master_key_and_url,
 };
 
 const MIGRATING_DID: &str = "did:plc:outboundmigrant2222222";
 const HANDLE: &str = "alice.migrated.example";
 const SOURCE_URL: &str = "https://source.example.com";
 const DEST_URL: &str = "https://dest.example.com";
-
-fn bearer(method: &str, uri: String, token: Option<&str>, body: Body) -> Request<Body> {
-    let mut b = Request::builder().method(method).uri(uri);
-    if let Some(t) = token {
-        b = b.header("Authorization", format!("Bearer {t}"));
-    }
-    b.body(body).unwrap()
-}
 
 /// Like [`bearer`], but with a JSON `Content-Type` — required by handlers whose body is a
 /// `Json<T>` extractor (axum rejects a JSON body with no/wrong content type as 415).

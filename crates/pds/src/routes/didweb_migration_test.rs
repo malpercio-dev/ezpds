@@ -38,21 +38,14 @@ use tower::ServiceExt;
 
 use crate::app::app;
 use crate::routes::test_utils::{
-    access_jwt, body_json, seed_account_with_repo, seed_did_document, state_with_master_key_and_url,
+    access_jwt, bearer_request as bearer, body_json, seed_account_with_repo, seed_did_document,
+    state_with_master_key_and_url,
 };
 
 const MIGRATING_DID: &str = "did:web:malpercio.dev";
 const HANDLE: &str = "malpercio.dev";
 const OLD_PDS_URL: &str = "https://old.example.com";
 const CUSTOS_URL: &str = "https://custos.example.com";
-
-fn bearer(method: &str, uri: String, token: Option<&str>, body: Body) -> Request<Body> {
-    let mut b = Request::builder().method(method).uri(uri);
-    if let Some(t) = token {
-        b = b.header("Authorization", format!("Bearer {t}"));
-    }
-    b.body(body).unwrap()
-}
 
 fn bearer_json(
     method: &str,

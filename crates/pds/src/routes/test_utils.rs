@@ -1085,3 +1085,18 @@ pub(crate) async fn put_fixed_record(
     );
     app.clone().oneshot(request).await.unwrap().status()
 }
+
+/// Build a request with an optional `Bearer` header — the two-independent-servers migration
+/// tests' request builder (source/destination or old-PDS/Custos, driven through the real router).
+pub(crate) fn bearer_request(
+    method: &str,
+    uri: String,
+    token: Option<&str>,
+    body: axum::body::Body,
+) -> axum::http::Request<axum::body::Body> {
+    let mut b = axum::http::Request::builder().method(method).uri(uri);
+    if let Some(t) = token {
+        b = b.header("Authorization", format!("Bearer {t}"));
+    }
+    b.body(body).unwrap()
+}
