@@ -27,6 +27,16 @@ declare module 'ezpds-interop/src/account.js' {
   }>;
 }
 
+declare module 'ezpds-interop/src/hermetic-pds.js' {
+  export function pdsBinary(repoRoot: string, explicit?: string): string;
+  export function freePort(): Promise<number>;
+  export function startMockPlc(): Promise<{ url: string; close: () => void }>;
+  export function startTlsProxy(
+    tls: { key: Buffer; cert: Buffer },
+    opts?: { port?: number; upstreamPort?: number },
+  ): Promise<{ port: number; setUpstreamPort: (port: number) => void; close: () => void }>;
+}
+
 declare module 'ezpds-interop/src/crypto.js' {
   /** An `@atproto/crypto` P256Keypair; only its `sign` is used here. */
   export interface Keypair {

@@ -29,12 +29,15 @@
  */
 import { execFileSync, spawn } from 'node:child_process';
 import * as fs from 'node:fs';
-import * as http from 'node:http';
-import * as https from 'node:https';
-import * as net from 'node:net';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import {
+  pdsBinary as locatePdsBinary,
+  freePort,
+  startMockPlc,
+  startTlsProxy as startSharedTlsProxy,
+} from '../tools/interop/src/hermetic-pds.js';
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 
@@ -43,18 +46,14 @@ const ADMIN_TOKEN = process.env.EZPDS_HARNESS_ADMIN_TOKEN ?? 'harness-admin-toke
 const BASE_URL = `https://localhost:${TLS_PORT}`;
 
 function pdsBinary() {
-  const explicit = process.env.EZPDS_HARNESS_PDS_BIN;
-  const candidates = explicit
-    ? [explicit]
-    : [path.join(repoRoot, 'target', 'debug', 'pds'), path.join(repoRoot, 'target', 'release', 'pds')];
-  for (const candidate of candidates) {
-    if (fs.existsSync(candidate)) return candidate;
+  try {
+    return locatePdsBinary(repoRoot, process.env.EZPDS_HARNESS_PDS_BIN);
+  } catch (err) {
+    console.error(
+      `\n[harness-pds] ${err.message}\n` + 'Build it first: `cargo build -p pds`, or set EZPDS_HARNESS_PDS_BIN.\n'
+    );
+    process.exit(1);
   }
-  console.error(
-    `\n[harness-pds] no pds binary found (looked at:\n  ${candidates.join('\n  ')}\n).\n` +
-      'Build it first: `cargo build -p pds`, or set EZPDS_HARNESS_PDS_BIN.\n'
-  );
-  process.exit(1);
 }
 
 /** Generate a throwaway self-signed cert for localhost via openssl. */
@@ -76,62 +75,19 @@ function generateCert(dir) {
   return { key: fs.readFileSync(keyPath), cert: fs.readFileSync(certPath) };
 }
 
-/** An OS-assigned free port. */
-function freePort() {
-  return new Promise((resolve, reject) => {
-    const server = net.createServer();
-    server.listen(0, '127.0.0.1', () => {
-      const { port } = server.address();
-      server.close((err) => (err ? reject(err) : resolve(port)));
-    });
-  });
-}
-
-/** A stub plc.directory that accepts every op — never touch the real one from the harness. */
-function startMockPlc() {
-  return new Promise((resolve) => {
-    const server = http.createServer((_req, res) => {
-      res.writeHead(200, { 'content-type': 'application/json' });
-      res.end('{}');
-    });
-    server.listen(0, '127.0.0.1', () => {
-      const { port } = server.address();
-      resolve({ url: `http://127.0.0.1:${port}`, close: () => server.close() });
-    });
-  });
-}
-
-/** TLS-terminating loopback proxy in front of a plain-http upstream (the pds). */
-function startTlsProxy(tls, upstreamPort) {
-  return new Promise((resolve, reject) => {
-    const server = https.createServer(tls, (req, res) => {
-      const upstream = http.request(
-        { host: '127.0.0.1', port: upstreamPort, path: req.url, method: req.method, headers: req.headers },
-        (upstreamRes) => {
-          res.writeHead(upstreamRes.statusCode ?? 502, upstreamRes.headers);
-          upstreamRes.pipe(res);
-        }
+/** TLS-terminating loopback proxy in front of a plain-http upstream (the pds), on the fixed harness port. */
+async function startTlsProxy(tls, upstreamPort) {
+  try {
+    return await startSharedTlsProxy(tls, { port: TLS_PORT, upstreamPort });
+  } catch (err) {
+    if (err.message.includes('already in use')) {
+      throw new Error(
+        `harness TLS port ${TLS_PORT} is already in use — stop the process holding it, ` +
+          `or set EZPDS_HARNESS_PDS_PORT to a free port.`
       );
-      upstream.on('error', (err) => {
-        res.writeHead(502, { 'content-type': 'text/plain' });
-        res.end(`proxy error: ${err.message}`);
-      });
-      req.pipe(upstream);
-    });
-    server.on('error', (err) => {
-      if (err.code === 'EADDRINUSE') {
-        reject(
-          new Error(
-            `harness TLS port ${TLS_PORT} is already in use — stop the process holding it, ` +
-              `or set EZPDS_HARNESS_PDS_PORT to a free port.`
-          )
-        );
-      } else {
-        reject(err);
-      }
-    });
-    server.listen(TLS_PORT, '127.0.0.1', () => resolve({ close: () => server.close() }));
-  });
+    }
+    throw err;
+  }
 }
 
 async function waitHealthy(httpPort, deadlineMs) {

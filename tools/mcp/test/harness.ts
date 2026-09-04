@@ -10,31 +10,21 @@
 
 import { spawn, type ChildProcess } from 'node:child_process';
 import * as fs from 'node:fs';
-import * as http from 'node:http';
-import * as https from 'node:https';
-import * as net from 'node:net';
 import * as path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import {
+  pdsBinary as locatePdsBinary,
+  freePort,
+  startMockPlc,
+  startTlsProxy,
+} from 'ezpds-interop/src/hermetic-pds.js';
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
 
 export const ADMIN_TOKEN = 'mcp-conformance-admin-token';
 
 function pdsBinary(): string {
-  const explicit = process.env.CUSTOS_MCP_TEST_PDS_BIN;
-  const candidates = explicit
-    ? [explicit]
-    : [
-        path.join(repoRoot, 'target', 'debug', 'pds'),
-        path.join(repoRoot, 'target', 'release', 'pds'),
-      ];
-  for (const candidate of candidates) {
-    if (fs.existsSync(candidate)) return candidate;
-  }
-  throw new Error(
-    `no pds binary found (looked at ${candidates.join(', ')}). ` +
-      'Run `cargo build -p pds` first, or point CUSTOS_MCP_TEST_PDS_BIN at one.',
-  );
+  return locatePdsBinary(repoRoot, process.env.CUSTOS_MCP_TEST_PDS_BIN);
 }
 
 function tlsMaterial(): { key: Buffer; cert: Buffer } {
@@ -48,69 +38,7 @@ function tlsMaterial(): { key: Buffer; cert: Buffer } {
   };
 }
 
-/** An OS-assigned free port (bind on 0, read, release) — no collision guessing. */
-function freePort(): Promise<number> {
-  return new Promise((resolve, reject) => {
-    const server = net.createServer();
-    server.listen(0, '127.0.0.1', () => {
-      const port = (server.address() as { port: number }).port;
-      server.close((err) => (err ? reject(err) : resolve(port)));
-    });
-  });
-}
-
-/** A stub plc.directory that accepts every genesis op. Never touch the real one from tests. */
-export function startMockPlc(): Promise<{ url: string; close: () => void }> {
-  return new Promise((resolve) => {
-    const server = http.createServer((_req, res) => {
-      res.writeHead(200, { 'content-type': 'application/json' });
-      res.end('{}');
-    });
-    server.listen(0, '127.0.0.1', () => {
-      const address = server.address() as { port: number };
-      resolve({ url: `http://127.0.0.1:${address.port}`, close: () => server.close() });
-    });
-  });
-}
-
-/** TLS-terminating loopback proxy in front of a plain-http upstream. */
-function startTlsProxy(): Promise<{
-  port: number;
-  setUpstreamPort: (port: number) => void;
-  close: () => void;
-}> {
-  let upstreamPort = 0;
-  return new Promise((resolve) => {
-    const server = https.createServer(tlsMaterial(), (req, res) => {
-      const upstream = http.request(
-        {
-          host: '127.0.0.1',
-          port: upstreamPort,
-          path: req.url,
-          method: req.method,
-          headers: req.headers,
-        },
-        (upstreamRes) => {
-          res.writeHead(upstreamRes.statusCode ?? 502, upstreamRes.headers);
-          upstreamRes.pipe(res);
-        },
-      );
-      upstream.on('error', (err) => {
-        res.writeHead(502, { 'content-type': 'text/plain' });
-        res.end(`proxy error: ${err.message}`);
-      });
-      req.pipe(upstream);
-    });
-    server.listen(0, '127.0.0.1', () => {
-      const address = server.address() as { port: number };
-      resolve({
-        port: address.port,
-        setUpstreamPort: (port) => (upstreamPort = port),
-        close: () => server.close(),
-      });
-    });
-  });
-}
+export { startMockPlc };
 
 export interface SpawnedPds {
   /** The https origin clients use — also the PDS's configured public_url. */
@@ -132,7 +60,7 @@ export async function spawnPds(options: {
   /** Override [agent_auth] granted_scopes (comma-joined into the env var). */
   grantedScopes?: string[];
 }): Promise<SpawnedPds> {
-  const proxy = await startTlsProxy();
+  const proxy = await startTlsProxy(tlsMaterial());
   const httpPort = await freePort();
   proxy.setUpstreamPort(httpPort);
   const baseUrl = `https://127.0.0.1:${proxy.port}`;
