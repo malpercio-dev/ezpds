@@ -1,9 +1,9 @@
 # Atproto Spaces (proposal 0016, née Permissioned Data) — Custos Gap Analysis
 
-**Date:** 2026-07-17 · **Revised:** 2026-08-20 (official alpha release)
+**Date:** 2026-07-17 · **Revised:** 2026-08-20 (official alpha release) · 2026-09-04 (weekly watch)
 **Status:** Research / gap analysis — updated for the alpha; implementation green-lit for Phase 0
 **Sources:**
-- [0016 proposal](https://github.com/bluesky-social/proposals/tree/main/0016-permissioned-data) (canonical; kept in sync with the reference implementation as of the alpha)
+- [0016 proposal](https://github.com/bluesky-social/proposals/tree/main/0016-permissioned-data) (canonical; kept in sync with the reference implementation as of the alpha; last diffed against commit `35a2d37`)
 - [The Atproto Spaces Alpha is Live](https://atproto.com/blog/atproto-spaces-alpha) (2026-08-20 announcement)
 - Reference implementation: `permissioned-data` branch of bluesky-social/atproto — lexicons under `lexicons/com/atproto/{space,simplespace}/`, protocol library in `packages/space/` (LtHash, deniable commits, DPoP, sync — **with golden test vectors**)
 - [Permissioned Data Diary 7: Off the Record](https://dholms.leaflet.pub/3mqtqvjidqs2p) (2026-07-17 — repo structure, signing, sync rationale); earlier diaries: [Diary 2: Buckets](https://dholms.leaflet.pub/3mfrsbcn2gk2a), [Diary 4: The Big Picture](https://dholms.leaflet.pub/3mhj6bcqats2o)
@@ -30,13 +30,17 @@ these ways, each folded into the sections below:
 1. **Space credentials are DPoP-bound, not bearer** (the big one). A
    credential carries `cnf.jkt`; `getSpaceCredential` requires a DPoP proof
    (no `ath` on that proof — the delegation token is a grant, not an access
-   token) and every credential-authed request to a repo host presents
+   token; the delegation token itself rides `Authorization: Bearer`,
+   alongside the `DPoP:` proof header, on that request) and every
+   credential-authed request to a repo host presents
    `Authorization: DPoP <credential>` plus a per-request proof that hosts MUST
-   validate per RFC 9449 (signature vs. header `jwk`, thumbprint vs.
-   `cnf.jkt`, `ath` = hash of the credential, `htm`/`htu`, `iat` recency,
-   `jti` unseen). Rationale: a bearer credential would let any repo host
-   replay it against every other host in the space. Syncers should mint a
-   fresh keypair per credential and discard it on expiry.
+   validate per RFC 9449 (`typ`/`alg` header fields, signature vs. header
+   `jwk`, thumbprint vs. `cnf.jkt`, `ath` = hash of the credential, `htm`/`htu`
+   — `htu` is the plain request URL, no `lxm` claim — `iat` recency, `jti`
+   unseen; no DPoP server-provided nonces anywhere in the flow). Rationale: a
+   bearer credential would let any repo host replay it against every other
+   host in the space. Syncers should mint a fresh keypair per credential and
+   discard it on expiry.
 2. **MAC construction pinned**: `mac = HMAC-SHA256(HKDF-Expand(ikm, ctx, 32),
    hash)` — the *expand step only* of RFC 5869 (§2.3), with `ikm` used
    directly as the PRK and `ctx` as `info`. No extract step.
@@ -67,6 +71,37 @@ these ways, each folded into the sections below:
    `ae05cb6d…701c63e7` — plus full test suites for commits, credentials,
    DPoP, and sync. The July "no vectors" risk is resolved.
 
+### 2026-09-04 weekly watch (proposals repo, commits `54c9cf5`…`35a2d37`)
+
+Prose-clarification pass, no lexicon/endpoint/vector movement (re-verified
+against `permissioned-data` @ `7cefacc`: same 20 `com.atproto.space.*` + 9
+`com.atproto.simplespace.*` schema files, same golden LtHash digests). Four
+deltas worth folding in:
+
+1. **DID-doc entries error on malformed data instead of falling back.** If
+   `#atproto_space` is present but malformed/invalid, a host MUST return an
+   error rather than silently falling back to `#atproto`; same for
+   `#atproto_space_host` vs. `#atproto_pds`. Fallback is only for an *absent*
+   entry, not a broken one. The `#atproto_space_host` service entry also now
+   has a pinned type, `AtprotoSpaceHost`.
+2. **`collections` in a space type declaration may not be a wildcard `*`**
+   (the `name` field's old 1–64 length cap was also dropped — cosmetic).
+   Doesn't change Custos's plan: the doc already modeled `collection`
+   resolution as dynamic, like permission sets.
+3. **Client attestation is now explicitly optional in the base protocol**
+   text, not just inferable from "some spaces don't require one" — no change
+   to Custos's plan, which already treated it as conditional.
+4. **`getSpaceCredential` wire format spelled out for the first time**: the
+   delegation token travels as `Authorization: Bearer <delegation token>`
+   alongside a `DPoP: <proof>` header (the proof still carries no `ath` — the
+   delegation token is a grant, not an access token); the proof's `htu` is
+   the plain request URL (scheme + host + path, no query/fragment) rather
+   than an `lxm` claim; DPoP server-provided nonces are **not** used anywhere
+   in the flow; and host-side proof validation must additionally check the
+   proof's `typ` (`dpop+jwt`) and `alg` header fields alongside the checklist
+   already in item 1 above. This affects the wire contract MM-510 mints
+   against and the space-credential row in the auth-model table below.
+
 ## 1. What the proposal specifies
 
 A second data protocol beside public broadcast, for data with an access
@@ -90,10 +125,12 @@ format, sync mechanism, addressing, and resolution path.
   notifications). A PDS is both for accounts/spaces anchored on it.
 - **Space authority DID** resolves via two optional DID-doc entries:
   verification method `#atproto_space` (falls back to `#atproto`) and service
-  `#atproto_space_host` (falls back to `#atproto_pds`).
+  `#atproto_space_host` (typed `AtprotoSpaceHost`; falls back to
+  `#atproto_pds`). Fallback applies only when an entry is *absent* — a
+  present-but-malformed/invalid entry MUST error, never silently fall back.
 - **Space type declarations**: a new Lexicon shape, `"type": "space"`, with
   `key`, `name` (+ localized), `collections` (default collection set for
-  scopes/consent).
+  scopes/consent; MUST NOT contain a wildcard `*`).
 
 ### Repo format (no MST)
 
@@ -134,7 +171,8 @@ format, sync mechanism, addressing, and resolution path.
   assertion aimed at the space host.
 - **Space credential** — minted by the space authority
   (`com.atproto.space.getSpaceCredential`) in exchange for a delegation token
-  + a DPoP proof (+ attestation if required). `typ:
+  presented as `Authorization: Bearer <delegation token>` + a `DPoP:` proof
+  header (+ attestation if required). `typ:
   atproto-space-credential+jwt`, `kid` `#atproto_space` or `#atproto`,
   `iss` = authority DID, `sub` = space URI, **no `aud`**, ~2 h, multi-use
   across every repo host in the space. Verifiable offline against the
@@ -299,16 +337,23 @@ rides `subscribeRepos`.
   gates, `manage` verbs. Mirror the existing grammar's test discipline.
 - Dynamic `collection` default = space-type declaration's `collections` —
   reuse the permission-set resolution path (same dynamic-update semantics).
+  The declaration's `collections` field itself is validated non-wildcard at
+  the space-type-registry layer (reject a `*` entry the same way
+  `createSpace`/`updateSpace` reject an unimplemented open-union value).
 - Permission sets: accept `"resource": "space"` entries; enforce no-wildcard
   `spaceType` inside sets + namespace-authority rules.
-- Token issuance/verification: delegation tokens (mint, single-use, 60 s),
-  space credentials (mint as authority — copying the mint-time DPoP proof's
-  key thumbprint into `cnf.jkt`; verify as repo host against
-  `#atproto_space`→`#atproto` fallback **plus** full RFC 9449 proof validation
-  incl. `ath` and per-host `jti` replay tracking), client attestations
-  (resolve client metadata JWKS — SSRF-hardened client mandatory). As a
-  *syncer/client* (e.g. tooling), mint an ephemeral P-256 keypair per
-  credential.
+- Token issuance/verification: delegation tokens (mint, single-use, 60 s,
+  presented to `getSpaceCredential` as `Authorization: Bearer` alongside the
+  `DPoP:` proof header), space credentials (mint as authority — copying the
+  mint-time DPoP proof's key thumbprint into `cnf.jkt`; verify as repo host
+  against `#atproto_space`→`#atproto` fallback for an *absent* entry only — a
+  present-but-malformed key or `#atproto_space_host` service entry errors
+  rather than falling back — **plus** full RFC 9449 proof validation incl.
+  `typ`/`alg`, `ath`, and per-host `jti` replay tracking; no DPoP nonces),
+  client attestations (resolve client metadata JWKS — SSRF-hardened client
+  mandatory; optional per space, so the mint path must tolerate its absence
+  cleanly). As a *syncer/client* (e.g. tooling), mint an ephemeral P-256
+  keypair per credential.
 - **New auth seam.** Read/sync methods accept OAuth *or* a DPoP-bound space
   credential — both proof-of-possession, never bearer. That dual acceptance
   must be one function (e.g. `auth::space::authenticate_space_read`) with a
@@ -347,7 +392,9 @@ others).
 ### W6. Identity
 Emit/accept `#atproto_space` + `#atproto_space_host` in DID docs (PLC ops via
 the wallet-signed rotation surface; did:web hosting), resolution with
-fallbacks, and surface them in `getRecommendedDidCredentials`.
+fallbacks — an absent entry falls back (`#atproto`/`#atproto_pds`), but a
+present, malformed/invalid one MUST error rather than fall back — and surface
+them in `getRecommendedDidCredentials`.
 
 ### W7. Lifecycle & migration
 Deactivation/suspension/takedown checks on every space read/write path;
