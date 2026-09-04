@@ -166,7 +166,7 @@ pub(crate) fn mint_identity_assertion(
 ) -> Result<MintedAssertion, AgentAuthError> {
     let issued = Utc::now();
     let expires = issued + Duration::seconds(ttl_secs as i64);
-    let base = public_url.trim_end_matches('/').to_string();
+    let base = public_url.to_string();
 
     let claims = ServiceAssertionClaims {
         iss: base.clone(),
@@ -201,7 +201,7 @@ pub(crate) fn verification_uri(agent_auth: &AgentAuthConfig, public_url: &str) -
     agent_auth
         .verification_uri
         .clone()
-        .unwrap_or_else(|| format!("{}/agent/claim", public_url.trim_end_matches('/')))
+        .unwrap_or_else(|| format!("{public_url}/agent/claim"))
 }
 
 /// The `claim` block an agent shows the user to route them through a confirmation ceremony.

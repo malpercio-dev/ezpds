@@ -84,10 +84,7 @@ async fn resolve_par_dpop_jkt(
         .into_response());
     }
 
-    let par_url = format!(
-        "{}/oauth/par",
-        state.config.public_url.trim_end_matches('/')
-    );
+    let par_url = format!("{}/oauth/par", state.config.issuer());
     let proven_jkt = match headers.get("DPoP").and_then(|v| v.to_str().ok()) {
         Some(proof) => {
             match crate::auth::validate_dpop_for_par(proof, "POST", &par_url) {

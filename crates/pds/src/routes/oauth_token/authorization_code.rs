@@ -100,10 +100,7 @@ pub(super) async fn handle_authorization_code(
         }
     }
 
-    let token_url = format!(
-        "{}/oauth/token",
-        state.config.public_url.trim_end_matches('/')
-    );
+    let token_url = format!("{}/oauth/token", state.config.issuer());
     let jkt = match token_endpoint_dpop(state, headers, &token_url) {
         Ok(jkt) => jkt,
         Err(e) => return e.into_response(),

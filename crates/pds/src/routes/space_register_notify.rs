@@ -62,12 +62,6 @@ pub async fn space_register_notify(
 
     Ok((
         StatusCode::OK,
-        axum::Json(serde_json::json!({ "expiresAt": rfc3339(&expires_at) })),
+        axum::Json(serde_json::json!({ "expiresAt": crate::time::to_rfc3339_utc(&expires_at) })),
     ))
-}
-
-/// SQLite's `datetime()` yields `YYYY-MM-DD HH:MM:SS`; the lexicon's `datetime` format wants
-/// RFC 3339. The stored value is always UTC, so the conversion is textual.
-fn rfc3339(sqlite_datetime: &str) -> String {
-    format!("{}Z", sqlite_datetime.replacen(' ', "T", 1))
 }

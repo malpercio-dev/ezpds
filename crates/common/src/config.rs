@@ -118,6 +118,12 @@ pub struct Config {
 }
 
 impl Config {
+    /// The instance's public URL with any trailing slash stripped — the OAuth `issuer` value
+    /// and the base every endpoint URL this server advertises about itself is built from.
+    pub fn issuer(&self) -> &str {
+        self.public_url.trim_end_matches('/')
+    }
+
     /// The bare hostname of the instance's public URL (scheme and path stripped).
     pub fn public_host(&self) -> &str {
         self.public_url

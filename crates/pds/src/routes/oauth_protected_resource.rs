@@ -33,7 +33,7 @@ struct OAuthProtectedResourceMetadata {
 }
 
 pub async fn oauth_protected_resource_metadata(State(state): State<AppState>) -> impl IntoResponse {
-    let base = state.config.public_url.trim_end_matches('/');
+    let base = state.config.issuer();
     Json(OAuthProtectedResourceMetadata {
         resource: base.to_string(),
         resource_name: state.config.service_name.clone(),

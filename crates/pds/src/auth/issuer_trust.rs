@@ -82,7 +82,7 @@ pub async fn verify_trusted_jwt<T: DeserializeOwned>(
     let expected_aud = issuer
         .audience
         .clone()
-        .unwrap_or_else(|| public_url.trim_end_matches('/').to_string());
+        .unwrap_or_else(|| public_url.to_string());
 
     let mut validation = Validation::new(alg);
     validation.set_issuer(&[&issuer.issuer]);

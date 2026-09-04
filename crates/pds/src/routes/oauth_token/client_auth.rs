@@ -130,7 +130,7 @@ async fn verify_private_key_jwt(
 
     let key = resolve_client_key(state, metadata, header.kid.as_deref()).await?;
 
-    let issuer = state.config.public_url.trim_end_matches('/').to_string();
+    let issuer = state.config.issuer().to_string();
     let token_url = format!("{issuer}/oauth/token");
     let mut validation = Validation::new(Algorithm::ES256);
     validation.leeway = CLOCK_TOLERANCE_SECS;

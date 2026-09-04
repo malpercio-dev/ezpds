@@ -438,11 +438,8 @@ mod tests {
     /// `secret`. Defined locally so this route module stays free of cross-route imports.
     fn access_jwt(secret: &[u8; 32], sub: &str) -> String {
         use jsonwebtoken::{encode, Algorithm, EncodingKey, Header};
-        use std::time::{SystemTime, UNIX_EPOCH};
-        let now = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_secs();
+
+        let now = crate::time::unix_now_secs() as u64;
         encode(
             &Header::new(Algorithm::HS256),
             &serde_json::json!({

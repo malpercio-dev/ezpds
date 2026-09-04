@@ -99,7 +99,7 @@ struct IdentityAssertionMetadata {
 }
 
 pub async fn oauth_server_metadata(State(state): State<AppState>) -> impl IntoResponse {
-    let base = state.config.public_url.trim_end_matches('/');
+    let base = state.config.issuer();
     Json(OAuthServerMetadata {
         issuer: base.to_string(),
         authorization_endpoint: format!("{base}/oauth/authorize"),
