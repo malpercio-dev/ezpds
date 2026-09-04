@@ -39,7 +39,6 @@ const INVITE_CODE_EXPIRES_IN_HOURS: u32 = 24;
 #[serde(rename_all = "camelCase")]
 pub struct CreateInviteCodeRequest {
     use_count: u32,
-    #[allow(dead_code)]
     for_account: Option<String>,
 }
 
@@ -106,10 +105,6 @@ pub struct InviteCodeUse {
 #[serde(rename_all = "camelCase")]
 pub struct CheckHandleAvailabilityParams {
     handle: String,
-    #[allow(dead_code)]
-    email: Option<String>,
-    #[allow(dead_code)]
-    birth_date: Option<String>,
 }
 
 #[derive(Serialize)]
