@@ -9,7 +9,7 @@
 //! one-hour hashed token envelope inside its audit transaction — only for accounts that
 //! already have a password; a passwordless account is refused.
 
-use common::{ApiError, ErrorCode};
+use common::{ApiError, ApiResultExt, ErrorCode};
 use sqlx::{Sqlite, Transaction};
 
 pub(crate) struct ResetTokenRow {
@@ -37,10 +37,10 @@ pub(crate) async fn insert_reset_token(
     .bind(did)
     .execute(db)
     .await
-    .map_err(|e| {
-        tracing::error!(error = %e, "failed to insert password reset token");
-        ApiError::new(ErrorCode::InternalError, "failed to create reset token")
-    })?;
+    .or_internal_as(
+        "failed to insert password reset token",
+        "failed to create reset token",
+    )?;
     Ok(())
 }
 
@@ -61,10 +61,10 @@ pub(crate) async fn get_reset_token(
     .bind(token_hash)
     .fetch_optional(&mut **tx)
     .await
-    .map_err(|e| {
-        tracing::error!(error = %e, "failed to look up password reset token");
-        ApiError::new(ErrorCode::InternalError, "failed to look up reset token")
-    })?;
+    .or_internal_as(
+        "failed to look up password reset token",
+        "failed to look up reset token",
+    )?;
 
     Ok(row.map(|(did, used_at, is_expired)| ResetTokenRow {
         did,
@@ -90,19 +90,18 @@ pub(crate) async fn mark_reset_token_used(
     .bind(token_hash)
     .execute(&mut **tx)
     .await
-    .map_err(|e| {
-        tracing::error!(error = %e, "failed to mark reset token as used");
-        ApiError::new(ErrorCode::InternalError, "failed to consume reset token")
-    })?;
+    .or_internal_as(
+        "failed to mark reset token as used",
+        "failed to consume reset token",
+    )?;
 
     if result.rows_affected() == 0 {
-        tracing::error!(
-            "mark_reset_token_used affected 0 rows — token disappeared inside transaction"
-        );
-        return Err(ApiError::new(
-            ErrorCode::InternalError,
-            "failed to consume reset token",
-        ));
+        return Err({
+            tracing::error!(
+                "mark_reset_token_used affected 0 rows — token disappeared inside transaction"
+            );
+            ApiError::new(ErrorCode::InternalError, "failed to consume reset token")
+        });
     }
     Ok(())
 }
@@ -131,14 +130,11 @@ pub(crate) async fn update_password_hash(
     })?;
 
     if result.rows_affected() == 0 {
-        tracing::error!(
-            did = %did,
-            "update_password_hash affected 0 rows — account disappeared inside transaction"
-        );
-        return Err(ApiError::new(
-            ErrorCode::InternalError,
-            "failed to update password",
-        ));
+        return Err({
+            tracing::error!(
+            did = %did, "update_password_hash affected 0 rows — account disappeared inside transaction");
+            ApiError::new(ErrorCode::InternalError, "failed to update password")
+        });
     }
     Ok(())
 }

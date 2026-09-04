@@ -92,9 +92,7 @@ where
         tracing::error!(
             registration_id = %registration_id,
             event_type = %event_type.as_str(),
-            error = %e,
-            "DB error inserting agent audit event"
-        );
+            error = %e, "DB error inserting agent audit event");
         ApiError::new(ErrorCode::InternalError, "failed to record audit event")
     })?;
     Ok(())
@@ -109,23 +107,24 @@ pub(crate) async fn list_agent_audit_events(
     limit: i64,
 ) -> Result<Vec<AgentAuditEventRow>, ApiError> {
     type AuditSqlRow = (i64, String, Option<String>, String, Option<String>, String);
-    let rows: Vec<AuditSqlRow> =
-        sqlx::query_as(
-            "SELECT rowid, id, did, event_type, detail, created_at \
+    let rows: Vec<AuditSqlRow> = sqlx::query_as(
+        "SELECT rowid, id, did, event_type, detail, created_at \
              FROM agent_audit_events \
              WHERE registration_id = ? AND (? IS NULL OR rowid < ?) \
              ORDER BY rowid DESC LIMIT ?",
-        )
-        .bind(registration_id)
-        .bind(before_seq)
-        .bind(before_seq)
-        .bind(limit)
-        .fetch_all(db)
-        .await
-        .map_err(|e| {
+    )
+    .bind(registration_id)
+    .bind(before_seq)
+    .bind(before_seq)
+    .bind(limit)
+    .fetch_all(db)
+    .await
+    .map_err(|e| {
+        {
             tracing::error!(registration_id = %registration_id, error = %e, "DB error listing agent audit events");
             ApiError::new(ErrorCode::InternalError, "failed to list audit events")
-        })?;
+        }
+    })?;
 
     Ok(rows
         .into_iter()

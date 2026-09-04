@@ -97,8 +97,10 @@ pub async fn deactivate_account_handler(
                     ApiError::new(ErrorCode::InternalError, "failed to deactivate account")
                 })?;
             tx.commit().await.map_err(|e| {
-                tracing::error!(error = %e, did = %user.did, "failed to commit deactivate transaction");
-                ApiError::new(ErrorCode::InternalError, "failed to deactivate account")
+                {
+                    tracing::error!(error = %e, did = %user.did, "failed to commit deactivate transaction");
+                    ApiError::new(ErrorCode::InternalError, "failed to deactivate account")
+                }
             })?;
             pending.finish();
             tracing::info!(

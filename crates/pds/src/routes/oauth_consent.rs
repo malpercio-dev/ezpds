@@ -37,7 +37,7 @@ use axum::{
     http::StatusCode,
     response::{IntoResponse, Json, Response},
 };
-use common::{ApiError, ErrorCode, SOVEREIGN_TIMESTAMP_WINDOW_SECS};
+use common::{ApiError, ApiResultExt, ErrorCode, SOVEREIGN_TIMESTAMP_WINDOW_SECS};
 use serde::{Deserialize, Serialize};
 
 use crate::app::AppState;
@@ -401,10 +401,10 @@ pub async fn post_authorization_approve(
 
     // 7. Terminate the request and audit it in one transaction. The guarded UPDATE is the single-use
     //    point: a replayed envelope lands on an already-terminal row and wins nothing.
-    let mut tx = state.db.begin().await.map_err(|e| {
-        tracing::error!(error = %e, "failed to begin consent approval transaction");
-        ApiError::new(ErrorCode::InternalError, "failed to record decision")
-    })?;
+    let mut tx = state.db.begin().await.or_internal_as(
+        "failed to begin consent approval transaction",
+        "failed to record decision",
+    )?;
     let won = if approve {
         approve_pending_authorization(&mut *tx, &request.request_id, &request.did, &stored_scope)
             .await?
@@ -438,10 +438,10 @@ pub async fn post_authorization_approve(
         Some(&detail),
     )
     .await?;
-    tx.commit().await.map_err(|e| {
-        tracing::error!(error = %e, "failed to commit consent approval transaction");
-        ApiError::new(ErrorCode::InternalError, "failed to record decision")
-    })?;
+    tx.commit().await.or_internal_as(
+        "failed to commit consent approval transaction",
+        "failed to record decision",
+    )?;
 
     tracing::info!(
         account_did = %request.did,

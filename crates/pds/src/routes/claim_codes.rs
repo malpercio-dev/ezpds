@@ -24,7 +24,7 @@ use axum::{
 };
 use serde::{Deserialize, Serialize};
 
-use common::{ApiError, ErrorCode};
+use common::{ApiError, ApiResultExt, ErrorCode};
 
 use crate::app::AppState;
 use crate::auth::guards::{require_admin, require_admin_json};
@@ -113,9 +113,9 @@ async fn claim_codes_inner(
                 continue;
             }
             Err(e) => {
-                tracing::error!(error = %e, "failed to insert claim codes");
-                return Err(ApiError::new(
-                    ErrorCode::InternalError,
+                return Err(ApiError::internal_as(
+                    e,
+                    "failed to insert claim codes",
                     "failed to store claim codes",
                 ));
             }
@@ -224,10 +224,7 @@ pub async fn list_claim_code_inventory(
 
     let rows = list_claim_codes(&state.db, cursor, params.limit)
         .await
-        .map_err(|e| {
-            tracing::error!(error = %e, "failed to list claim codes");
-            ApiError::new(ErrorCode::InternalError, "failed to list claim codes")
-        })?;
+        .or_internal("failed to list claim codes")?;
 
     // A short page means the history is exhausted; a full page may have more.
     let cursor = (rows.len() == params.limit as usize)
@@ -291,10 +288,7 @@ async fn revoke_inner(
 ) -> Result<Json<RevokeClaimCodeResponse>, ApiError> {
     let outcome = revoke_claim_code(&state.db, &payload.code)
         .await
-        .map_err(|e| {
-            tracing::error!(error = %e, "failed to revoke claim code");
-            ApiError::new(ErrorCode::InternalError, "failed to revoke claim code")
-        })?;
+        .or_internal("failed to revoke claim code")?;
 
     match outcome {
         RevokeClaimCodeOutcome::Revoked | RevokeClaimCodeOutcome::AlreadyRevoked => {

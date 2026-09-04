@@ -79,14 +79,16 @@ pub fn parse_raw_query(query: &str) -> Result<RawParams, ApiError> {
 /// query/procedure at all, which is a 500 (a wiring defect, not a client error).
 pub fn validate_params_map(nsid: &str, raw: &RawParams) -> Result<Value, ApiError> {
     let Some(params) = registry().params(nsid) else {
-        tracing::error!(
-            nsid,
-            "no vendored lexicon params are registered for procedure"
-        );
-        return Err(ApiError::new(
-            ErrorCode::InternalError,
-            "server lexicon configuration error",
-        ));
+        return Err({
+            tracing::error!(
+                nsid,
+                "no vendored lexicon params are registered for procedure"
+            );
+            ApiError::new(
+                ErrorCode::InternalError,
+                "server lexicon configuration error",
+            )
+        });
     };
 
     let mut map = serde_json::Map::new();

@@ -6,7 +6,7 @@
 //! transaction (createSession, account genesis, migration) and stays in its route handler
 //! alongside the paired refresh-token write.
 
-use common::{ApiError, ErrorCode};
+use common::{ApiError, ApiResultExt};
 
 /// Insert a bearer-authenticated provisioning session (no device, one-year TTL). The session's
 /// opaque token is stored as its SHA-256 hash.
@@ -25,10 +25,10 @@ pub async fn insert_provisioning_session(
     .bind(token_hash)
     .execute(db)
     .await
-    .map_err(|e| {
-        tracing::error!(error = %e, "failed to insert provisioning session");
-        ApiError::new(ErrorCode::InternalError, "failed to create session")
-    })?;
+    .or_internal_as(
+        "failed to insert provisioning session",
+        "failed to create session",
+    )?;
 
     Ok(())
 }

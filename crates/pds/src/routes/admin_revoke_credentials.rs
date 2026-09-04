@@ -71,8 +71,11 @@ pub async fn revoke_account_credentials(
     }
 
     let map_err = |e: sqlx::Error| {
-        tracing::error!(error = %e, "DB error revoking account credentials");
-        ApiError::new(ErrorCode::InternalError, "failed to revoke credentials")
+        ApiError::internal_as(
+            e,
+            "DB error revoking account credentials",
+            "failed to revoke credentials",
+        )
     };
 
     // One transaction so a partially-swept account can never be observed. Delete order

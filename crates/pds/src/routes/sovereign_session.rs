@@ -21,7 +21,7 @@
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use axum::{extract::State, http::StatusCode, response::Json};
-use common::{ApiError, ErrorCode, SOVEREIGN_TIMESTAMP_WINDOW_SECS};
+use common::{ApiError, ApiResultExt, ErrorCode, SOVEREIGN_TIMESTAMP_WINDOW_SECS};
 use serde::{Deserialize, Serialize};
 
 use crate::app::AppState;
@@ -66,13 +66,10 @@ fn rejected(reason: &'static str, did: &str, signing_key: &str) -> ApiError {
 fn unix_timestamp() -> Result<i64, ApiError> {
     let seconds = SystemTime::now()
         .duration_since(UNIX_EPOCH)
-        .map_err(|e| {
-            tracing::error!(error = %e, "system clock is before Unix epoch");
-            ApiError::new(
-                ErrorCode::InternalError,
-                "failed to verify request timestamp",
-            )
-        })?
+        .or_internal_as(
+            "system clock is before Unix epoch",
+            "failed to verify request timestamp",
+        )?
         .as_secs();
     i64::try_from(seconds).map_err(|_| {
         ApiError::new(
@@ -180,15 +177,13 @@ pub async fn create_sovereign_session(
     if !insert_nonce_if_absent(&mut *tx, &request.did, &request.nonce)
         .await
         .map_err(|e| {
-            tracing::error!(error = %e, account_did = %request.did, "failed to consume sovereign nonce");
-            ApiError::new(ErrorCode::InternalError, "failed to create session")
+            {
+                tracing::error!(error = %e, account_did = %request.did, "failed to consume sovereign nonce");
+                ApiError::new(ErrorCode::InternalError, "failed to create session")
+            }
         })?
     {
-        return Err(rejected(
-            "nonce_replay",
-            &request.did,
-            &request.signing_key,
-        ));
+        return Err(rejected("nonce_replay", &request.did, &request.signing_key));
     }
     let issued =
         issue_session_in_transaction(&mut tx, &state, &request.did, &SessionKind::FullAccess)

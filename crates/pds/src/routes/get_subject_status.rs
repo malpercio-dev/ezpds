@@ -66,8 +66,11 @@ pub async fn get_subject_status(
     let row = get_repo_status(&state.db, &params.did)
         .await
         .map_err(|e| {
-            tracing::error!(error = %e, did = %params.did, "failed to query subject status");
-            ApiError::new(ErrorCode::InternalError, "failed to get subject status").into_response()
+            {
+                tracing::error!(error = %e, did = %params.did, "failed to query subject status");
+                ApiError::new(ErrorCode::InternalError, "failed to get subject status")
+            }
+            .into_response()
         })?
         .ok_or_else(|| {
             ApiError::new(ErrorCode::NotFound, "subject account not found").into_response()

@@ -65,8 +65,10 @@ pub async fn sync_get_record(
     let car_bytes = export_record_proof_car(&mut block_store, root_cid, &mst_key)
         .await
         .map_err(|e| {
-            tracing::error!(error = %e, did = %did, key = %mst_key, "failed to export record proof CAR");
-            ApiError::new(ErrorCode::InternalError, "failed to get record")
+            {
+                tracing::error!(error = %e, did = %did, key = %mst_key, "failed to export record proof CAR");
+                ApiError::new(ErrorCode::InternalError, "failed to get record")
+            }
         })?;
 
     Ok((

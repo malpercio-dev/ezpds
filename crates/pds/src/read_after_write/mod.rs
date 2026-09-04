@@ -85,8 +85,9 @@ fn passthrough_response(
         Ok(resp) => resp,
         Err(err) => {
             tracing::error!(error = %err, nsid, context, "failed to build proxy response");
-            ApiError::new(ErrorCode::InternalError, "response build failed").into_response()
+            ApiError::new(ErrorCode::InternalError, "response build failed")
         }
+        .into_response(),
     }
 }
 
@@ -367,9 +368,11 @@ pub(crate) async fn pipethrough_munged(
             bytes
         }
         Err(err) => {
-            tracing::error!(error = %err, nsid, "failed to read upstream response body");
-            return ApiError::new(ErrorCode::InternalError, "failed to read upstream response")
-                .into_response();
+            return {
+                tracing::error!(error = %err, nsid, "failed to read upstream response body");
+                ApiError::new(ErrorCode::InternalError, "failed to read upstream response")
+            }
+            .into_response();
         }
     };
 
@@ -520,8 +523,9 @@ pub(crate) async fn pipethrough_munged(
         Ok(resp) => resp,
         Err(err) => {
             tracing::error!(error = %err, nsid, "failed to build munged proxy response");
-            ApiError::new(ErrorCode::InternalError, "response build failed").into_response()
+            ApiError::new(ErrorCode::InternalError, "response build failed")
         }
+        .into_response(),
     }
 }
 

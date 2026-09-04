@@ -38,7 +38,7 @@ use crate::db::dids::{fetch_also_known_as, update_also_known_as, upsert_did_docu
 use crate::db::repo_keys::get_signing_key_by_did;
 use crate::identity::plc::{build_did_document_from_op, fetch_current_plc_state};
 use crate::lexicon::LexiconInput;
-use common::{ApiError, ErrorCode};
+use common::{ApiError, ApiResultExt, ErrorCode};
 
 struct CustodiedPlcUpdate {
     signed_operation: String,
@@ -161,10 +161,10 @@ pub async fn update_handle_handler(
     // can never both resolve the handle locally — the concurrent-claimant safety property is
     // preserved without holding the connection across the network POST above.
     {
-        let mut tx = state.db.begin().await.map_err(|e| {
-            tracing::error!(error = %e, "failed to begin transaction for handle swap");
-            ApiError::new(ErrorCode::InternalError, "failed to update handles")
-        })?;
+        let mut tx = state.db.begin().await.or_internal_as(
+            "failed to begin transaction for handle swap",
+            "failed to update handles",
+        )?;
 
         let rows_deleted = sqlx::query("DELETE FROM handles WHERE did = ?")
             .bind(did)
@@ -187,13 +187,13 @@ pub async fn update_handle_handler(
                     // Race: another request inserted this handle between our check and insert.
                     return ApiError::new(ErrorCode::HandleTaken, "handle was taken concurrently");
                 }
-                tracing::error!(
+                {
+                    tracing::error!(
                     error = %e,
                     handle = %payload.handle,
-                    did = %did,
-                    "failed to insert handle"
-                );
-                ApiError::new(ErrorCode::InternalError, "failed to update handles")
+                    did = %did, "failed to insert handle");
+                    ApiError::new(ErrorCode::InternalError, "failed to update handles")
+                }
             })?;
 
         if let Some(plc_update) = &plc_update {
@@ -207,10 +207,10 @@ pub async fn update_handle_handler(
             }
         }
 
-        tx.commit().await.map_err(|e| {
-            tracing::error!(error = %e, "failed to commit handle swap transaction");
-            ApiError::new(ErrorCode::InternalError, "failed to update handles")
-        })?;
+        tx.commit().await.or_internal_as(
+            "failed to commit handle swap transaction",
+            "failed to update handles",
+        )?;
     }
 
     if plc_update.is_none() {

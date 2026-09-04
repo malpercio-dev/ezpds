@@ -65,8 +65,10 @@ pub async fn get_preferences_handler(
 
     let mut preferences: Vec<Value> = match get_preferences(&state.db, &user.did).await? {
         Some(blob) => serde_json::from_str(&blob).map_err(|e| {
-            tracing::error!(did = %user.did, error = %e, "stored preferences blob is not valid JSON");
-            ApiError::new(ErrorCode::InternalError, "stored preferences are corrupt")
+            {
+                tracing::error!(did = %user.did, error = %e, "stored preferences blob is not valid JSON");
+                ApiError::new(ErrorCode::InternalError, "stored preferences are corrupt")
+            }
         })?,
         None => Vec::new(),
     };

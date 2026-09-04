@@ -148,12 +148,17 @@ pub async fn put_preferences_handler(
         match get_preferences(&mut *tx, &user.did).await? {
             Some(blob) => serde_json::from_str::<Vec<Value>>(&blob)
                 .map_err(|e| {
-                    tracing::error!(did = %user.did, error = %e, "stored preferences blob is not valid JSON");
-                    ApiError::new(ErrorCode::InternalError, "stored preferences are corrupt")
+                    {
+                        tracing::error!(did = %user.did, error = %e, "stored preferences blob is not valid JSON");
+                        ApiError::new(ErrorCode::InternalError, "stored preferences are corrupt")
+                    }
                 })?
                 .into_iter()
                 .filter(|pref| {
-                    let ty = pref.as_object().and_then(|obj| obj.get("$type")).and_then(Value::as_str);
+                    let ty = pref
+                        .as_object()
+                        .and_then(|obj| obj.get("$type"))
+                        .and_then(Value::as_str);
                     ty.is_some_and(is_full_access_only_pref)
                 })
                 .collect(),
@@ -170,8 +175,10 @@ pub async fn put_preferences_handler(
     put_preferences(&mut *tx, &user.did, &blob).await?;
 
     tx.commit().await.map_err(|e| {
-        tracing::error!(did = %user.did, error = %e, "putPreferences: failed to commit transaction");
-        ApiError::new(ErrorCode::InternalError, "failed to store preferences")
+        {
+            tracing::error!(did = %user.did, error = %e, "putPreferences: failed to commit transaction");
+            ApiError::new(ErrorCode::InternalError, "failed to store preferences")
+        }
     })?;
 
     Ok(StatusCode::OK)

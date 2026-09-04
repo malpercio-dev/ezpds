@@ -10,7 +10,7 @@
 use axum::{extract::State, http::StatusCode};
 use serde::Deserialize;
 
-use common::{ApiError, ErrorCode};
+use common::{ApiError, ApiResultExt, ErrorCode};
 
 use crate::app::AppState;
 use crate::auth::password::hash_password;
@@ -38,10 +38,10 @@ pub async fn reset_password(
 
     // The lookup and the two writes (mark used + update password) must be atomic.
     // The transaction is the correctness guarantee; don't rely on pool configuration.
-    let mut tx = state.db.begin().await.map_err(|e| {
-        tracing::error!(error = %e, "failed to begin reset_password transaction");
-        ApiError::new(ErrorCode::InternalError, "failed to reset password")
-    })?;
+    let mut tx = state.db.begin().await.or_internal_as(
+        "failed to begin reset_password transaction",
+        "failed to reset password",
+    )?;
 
     // Expiry is evaluated in the same query as the lookup, not a separate check.
     let row = get_reset_token(&mut tx, &token_hash)
@@ -70,10 +70,10 @@ pub async fn reset_password(
     mark_reset_token_used(&mut tx, &token_hash).await?;
     update_password_hash(&mut tx, &row.did, &new_hash).await?;
 
-    tx.commit().await.map_err(|e| {
-        tracing::error!(error = %e, "failed to commit reset_password transaction");
-        ApiError::new(ErrorCode::InternalError, "failed to reset password")
-    })?;
+    tx.commit().await.or_internal_as(
+        "failed to commit reset_password transaction",
+        "failed to reset password",
+    )?;
 
     Ok(StatusCode::OK)
 }

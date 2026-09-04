@@ -58,8 +58,10 @@ pub async fn delete_session(
 
     // --- Atomically revoke: delete all refresh tokens + the session row ---
     let mut tx = state.db.begin().await.map_err(|e| {
-        tracing::error!(error = %e, session_id = %session_id, "failed to begin revocation transaction");
-        ApiError::new(ErrorCode::InternalError, "internal error")
+        {
+            tracing::error!(error = %e, session_id = %session_id, "failed to begin revocation transaction");
+            ApiError::new(ErrorCode::InternalError, "internal error")
+        }
     })?;
 
     sqlx::query("DELETE FROM refresh_tokens WHERE session_id = ?")
@@ -67,8 +69,10 @@ pub async fn delete_session(
         .execute(&mut *tx)
         .await
         .map_err(|e| {
-            tracing::error!(error = %e, session_id = %session_id, "failed to delete refresh tokens");
-            ApiError::new(ErrorCode::InternalError, "internal error")
+            {
+                tracing::error!(error = %e, session_id = %session_id, "failed to delete refresh tokens");
+                ApiError::new(ErrorCode::InternalError, "internal error")
+            }
         })?;
 
     let deleted = sqlx::query("DELETE FROM sessions WHERE id = ?")
@@ -90,8 +94,10 @@ pub async fn delete_session(
     }
 
     tx.commit().await.map_err(|e| {
-        tracing::error!(error = %e, session_id = %session_id, "failed to commit revocation transaction");
-        ApiError::new(ErrorCode::InternalError, "internal error")
+        {
+            tracing::error!(error = %e, session_id = %session_id, "failed to commit revocation transaction");
+            ApiError::new(ErrorCode::InternalError, "internal error")
+        }
     })?;
 
     tracing::info!(session_id = %session_id, jti = %jti, "session revoked via deleteSession");

@@ -7,7 +7,7 @@
 // hard rules). Terminal transitions are guarded single-statement UPDATEs whose `rows_affected`
 // reports whether this caller won the race, so the request is single-use even under concurrency.
 
-use common::{ApiError, ErrorCode};
+use common::{ApiError, ApiResultExt, ErrorCode};
 use sqlx::Sqlite;
 
 /// A pending consent request as read back for the status poll, wallet preview, and approval
@@ -135,13 +135,10 @@ where
     .bind(format!("{:+} seconds", new.ttl_secs))
     .execute(executor)
     .await
-    .map_err(|e| {
-        tracing::error!(error = %e, "DB error inserting pending OAuth authorization");
-        ApiError::new(
-            ErrorCode::InternalError,
-            "failed to create authorization request",
-        )
-    })?;
+    .or_internal_as(
+        "DB error inserting pending OAuth authorization",
+        "failed to create authorization request",
+    )?;
     Ok(())
 }
 
@@ -162,13 +159,10 @@ where
     .bind(format!("-{grace_secs}"))
     .execute(executor)
     .await
-    .map_err(|e| {
-        tracing::error!(error = %e, "DB error cleaning up expired pending OAuth authorizations");
-        ApiError::new(
-            ErrorCode::InternalError,
-            "failed to clean up authorization requests",
-        )
-    })?;
+    .or_internal_as(
+        "DB error cleaning up expired pending OAuth authorizations",
+        "failed to clean up authorization requests",
+    )?;
     Ok(())
 }
 
@@ -183,13 +177,10 @@ pub async fn get_pending_by_request_id(
     .bind(request_id)
     .fetch_optional(pool)
     .await
-    .map_err(|e| {
-        tracing::error!(error = %e, "DB error fetching pending OAuth authorization by request_id");
-        ApiError::new(
-            ErrorCode::InternalError,
-            "failed to look up authorization request",
-        )
-    })?;
+    .or_internal_as(
+        "DB error fetching pending OAuth authorization by request_id",
+        "failed to look up authorization request",
+    )?;
     Ok(row.as_ref().map(map_row))
 }
 
@@ -204,13 +195,10 @@ pub async fn get_pending_by_user_code(
     .bind(user_code)
     .fetch_optional(pool)
     .await
-    .map_err(|e| {
-        tracing::error!(error = %e, "DB error fetching pending OAuth authorization by user_code");
-        ApiError::new(
-            ErrorCode::InternalError,
-            "failed to look up authorization request",
-        )
-    })?;
+    .or_internal_as(
+        "DB error fetching pending OAuth authorization by user_code",
+        "failed to look up authorization request",
+    )?;
     Ok(row.as_ref().map(map_row))
 }
 
@@ -235,13 +223,10 @@ where
     .bind(request_id)
     .execute(executor)
     .await
-    .map_err(|e| {
-        tracing::error!(error = %e, "DB error recording push dispatch for pending OAuth authorization");
-        ApiError::new(
-            ErrorCode::InternalError,
-            "failed to record push dispatch",
-        )
-    })?;
+    .or_internal_as(
+        "DB error recording push dispatch for pending OAuth authorization",
+        "failed to record push dispatch",
+    )?;
     Ok(result.rows_affected() == 1)
 }
 
@@ -268,13 +253,10 @@ where
     .bind(request_id)
     .execute(executor)
     .await
-    .map_err(|e| {
-        tracing::error!(error = %e, "DB error approving pending OAuth authorization");
-        ApiError::new(
-            ErrorCode::InternalError,
-            "failed to approve authorization request",
-        )
-    })?;
+    .or_internal_as(
+        "DB error approving pending OAuth authorization",
+        "failed to approve authorization request",
+    )?;
     Ok(result.rows_affected() == 1)
 }
 
@@ -298,13 +280,10 @@ where
     .bind(request_id)
     .execute(executor)
     .await
-    .map_err(|e| {
-        tracing::error!(error = %e, "DB error denying pending OAuth authorization");
-        ApiError::new(
-            ErrorCode::InternalError,
-            "failed to deny authorization request",
-        )
-    })?;
+    .or_internal_as(
+        "DB error denying pending OAuth authorization",
+        "failed to deny authorization request",
+    )?;
     Ok(result.rows_affected() == 1)
 }
 
@@ -332,13 +311,10 @@ where
     .bind(request_id)
     .fetch_optional(executor)
     .await
-    .map_err(|e| {
-        tracing::error!(error = %e, "DB error completing pending OAuth authorization");
-        ApiError::new(
-            ErrorCode::InternalError,
-            "failed to complete authorization request",
-        )
-    })?;
+    .or_internal_as(
+        "DB error completing pending OAuth authorization",
+        "failed to complete authorization request",
+    )?;
     use sqlx::Row;
     Ok(row.map(|r| CompletedAuthorization {
         client_id: r.get("client_id"),
@@ -414,9 +390,7 @@ where
         tracing::error!(
             request_id = %request_id,
             event_type = %event_type.as_str(),
-            error = %e,
-            "DB error inserting OAuth consent audit event"
-        );
+            error = %e, "DB error inserting OAuth consent audit event");
         ApiError::new(ErrorCode::InternalError, "failed to record audit event")
     })?;
     Ok(())

@@ -50,8 +50,11 @@ pub async fn revoke_app_password(
     }
 
     let map_err = |e: sqlx::Error| {
-        tracing::error!(error = %e, "DB error revoking app password");
-        ApiError::new(ErrorCode::InternalError, "failed to revoke app password")
+        ApiError::internal_as(
+            e,
+            "DB error revoking app password",
+            "failed to revoke app password",
+        )
     };
 
     // Delete the app password and every session it opened, atomically. The refresh tokens must

@@ -30,7 +30,7 @@
 use axum::{extract::State, http::HeaderMap, response::Json};
 use serde::{Deserialize, Serialize};
 
-use common::{ApiError, ErrorCode};
+use common::{ApiError, ApiResultExt, ErrorCode};
 
 use crate::app::AppState;
 use crate::auth::password::{hash_password, resolve_password};
@@ -176,10 +176,10 @@ async fn create_account_new(
         })?;
     let repo_key = get_reserved_repo_key_by_id(&state.db, atproto_key_id)
         .await
-        .map_err(|e| {
-            tracing::error!(error = %e, "failed to load reserved signing key");
-            ApiError::new(ErrorCode::InternalError, "failed to load signing key")
-        })?
+        .or_internal_as(
+            "failed to load reserved signing key",
+            "failed to load signing key",
+        )?
         .ok_or_else(|| {
             ApiError::new(
                 ErrorCode::InvalidClaim,
@@ -207,14 +207,14 @@ async fn create_account_new(
             )
         })?;
     let genesis_private = crypto::decrypt_private_key(&repo_key.private_key_encrypted, master_key)
-        .map_err(|e| {
-            tracing::error!(error = %e, "failed to decrypt reserved signing key for genesis");
-            ApiError::new(ErrorCode::InternalError, "failed to prepare genesis repo")
-        })?;
-    let genesis_signer = repo_engine::CommitSigner::from_bytes(&genesis_private).map_err(|e| {
-        tracing::error!(error = %e, "invalid reserved signing key for genesis");
-        ApiError::new(ErrorCode::InternalError, "failed to prepare genesis repo")
-    })?;
+        .or_internal_as(
+            "failed to decrypt reserved signing key for genesis",
+            "failed to prepare genesis repo",
+        )?;
+    let genesis_signer = repo_engine::CommitSigner::from_bytes(&genesis_private).or_internal_as(
+        "invalid reserved signing key for genesis",
+        "failed to prepare genesis repo",
+    )?;
     let (genesis_root, genesis_rev, genesis_blocks) =
         repo_engine::build_genesis_repo(&did, &genesis_signer)
             .await
@@ -496,10 +496,10 @@ async fn create_account_migration(
     // can sign commits once the repo is imported.
     let repo_key = get_reserved_repo_key_by_did(&state.db, did)
         .await
-        .map_err(|e| {
-            tracing::error!(error = %e, "failed to load reserved signing key");
-            ApiError::new(ErrorCode::InternalError, "failed to load signing key")
-        })?
+        .or_internal_as(
+            "failed to load reserved signing key",
+            "failed to load signing key",
+        )?
         .ok_or_else(|| {
             ApiError::new(
                 ErrorCode::InvalidClaim,
@@ -615,19 +615,19 @@ async fn ensure_email_and_handle_free(
     email: &str,
     handle: &str,
 ) -> Result<(), ApiError> {
-    if email_taken(&state.db, email).await.map_err(|e| {
-        tracing::error!(error = %e, "failed to check email uniqueness");
-        ApiError::new(ErrorCode::InternalError, "failed to create account")
-    })? {
+    if email_taken(&state.db, email).await.or_internal_as(
+        "failed to check email uniqueness",
+        "failed to create account",
+    )? {
         return Err(ApiError::new(
             ErrorCode::AccountExists,
             "an account with this email already exists",
         ));
     }
-    if handle_taken(&state.db, handle).await.map_err(|e| {
-        tracing::error!(error = %e, "failed to check handle uniqueness");
-        ApiError::new(ErrorCode::InternalError, "failed to create account")
-    })? {
+    if handle_taken(&state.db, handle).await.or_internal_as(
+        "failed to check handle uniqueness",
+        "failed to create account",
+    )? {
         return Err(ApiError::new(
             ErrorCode::HandleTaken,
             "this handle is already claimed",
@@ -690,10 +690,7 @@ async fn redeem_invite_code(
     .bind(code)
     .execute(&mut **tx)
     .await
-    .map_err(|e| {
-        tracing::error!(error = %e, "failed to redeem invite code");
-        ApiError::new(ErrorCode::InternalError, "failed to redeem invite code")
-    })?;
+    .or_internal("failed to redeem invite code")?;
     if result.rows_affected() == 0 {
         return Err(ApiError::new(
             ErrorCode::InvalidRequest,

@@ -7,7 +7,7 @@
 //! validation) are a Functional Core; `post_to_plc_directory` is the one Imperative Shell
 //! function here (an outbound HTTP call), kept alongside its callers.
 
-use common::{ApiError, ErrorCode};
+use common::{ApiError, ApiResultExt, ErrorCode};
 
 use super::resolution::bounded_body_preview;
 
@@ -33,10 +33,10 @@ pub fn verify_and_validate_genesis_op(
     let rotation_key = crypto::DidKeyUri(rotation_key_public.to_string());
 
     // Serialize the submitted signed op to a JSON string for crypto verification.
-    let signed_op_str = serde_json::to_string(signed_creation_op).map_err(|e| {
-        tracing::error!(error = %e, "failed to serialize signedCreationOp");
-        ApiError::new(ErrorCode::InternalError, "failed to process signed op")
-    })?;
+    let signed_op_str = serde_json::to_string(signed_creation_op).or_internal_as(
+        "failed to serialize signedCreationOp",
+        "failed to process signed op",
+    )?;
 
     // Verify the ECDSA signature and derive the DID.
     let verified = crypto::verify_genesis_op(&signed_op_str, &rotation_key).map_err(|e| {

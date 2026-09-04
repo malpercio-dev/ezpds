@@ -388,6 +388,55 @@ pub struct ApiErrorParts {
 }
 
 #[cfg(feature = "axum")]
+impl ApiError {
+    /// Log `err` at ERROR level under `context`, then build the matching
+    /// `ErrorCode::InternalError`, using `context` as the public-facing message too. Covers
+    /// the common "log the DB/IO failure, answer 500 with the same wording" call site.
+    pub fn internal(err: impl std::fmt::Display, context: &'static str) -> Self {
+        Self::internal_as(err, context, context)
+    }
+
+    /// Like [`Self::internal`], but the log context and the caller-facing `message` differ.
+    pub fn internal_as(
+        err: impl std::fmt::Display,
+        context: &'static str,
+        message: impl Into<String>,
+    ) -> Self {
+        tracing::error!(error = %err, "{}", context);
+        Self::new(ErrorCode::InternalError, message)
+    }
+}
+
+/// Extends `Result<T, E>` with a `.map_err` shorthand for the "log the failure, answer 500"
+/// call site, so it reads as one line at the `?` instead of a `.map_err(|e| { .. })` closure.
+#[cfg(feature = "axum")]
+pub trait ApiResultExt<T> {
+    /// `.map_err(|e| ApiError::internal(e, context))`.
+    fn or_internal(self, context: &'static str) -> Result<T, ApiError>;
+    /// `.map_err(|e| ApiError::internal_as(e, context, message))`.
+    fn or_internal_as(
+        self,
+        context: &'static str,
+        message: impl Into<String>,
+    ) -> Result<T, ApiError>;
+}
+
+#[cfg(feature = "axum")]
+impl<T, E: std::fmt::Display> ApiResultExt<T> for Result<T, E> {
+    fn or_internal(self, context: &'static str) -> Result<T, ApiError> {
+        self.map_err(|e| ApiError::internal(e, context))
+    }
+
+    fn or_internal_as(
+        self,
+        context: &'static str,
+        message: impl Into<String>,
+    ) -> Result<T, ApiError> {
+        self.map_err(|e| ApiError::internal_as(e, context, message))
+    }
+}
+
+#[cfg(feature = "axum")]
 mod axum_integration {
     use super::*;
     use axum::{

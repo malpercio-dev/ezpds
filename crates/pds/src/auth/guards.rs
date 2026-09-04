@@ -27,7 +27,7 @@ use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
 use crypto::{verify_p256_signature, DidKeyUri};
 use subtle::ConstantTimeEq;
 
-use common::{ApiError, ErrorCode, ADMIN_TIMESTAMP_WINDOW_SECS};
+use common::{ApiError, ApiResultExt, ErrorCode, ADMIN_TIMESTAMP_WINDOW_SECS};
 
 use crate::app::AppState;
 use crate::time::unix_now_secs;
@@ -283,10 +283,7 @@ async fn verify_admin_device_request(
     // be cut off server-side without the phone; all other failures are a generic 401.
     let device = get_device(db, device_id)
         .await
-        .map_err(|e| {
-            tracing::error!(error = %e, "failed to look up admin device");
-            ApiError::new(ErrorCode::InternalError, "admin auth failed")
-        })?
+        .or_internal_as("failed to look up admin device", "admin auth failed")?
         .ok_or_else(invalid_admin_signature)?;
     if !device.is_active {
         return Err(ApiError::new(ErrorCode::Forbidden, "admin device revoked"));
@@ -317,10 +314,7 @@ async fn verify_admin_device_request(
     // IGNORE makes the seen-once check atomic, so concurrent replays cannot both win.
     let fresh = insert_nonce_if_absent(db, nonce, device_id)
         .await
-        .map_err(|e| {
-            tracing::error!(error = %e, "failed to record admin nonce");
-            ApiError::new(ErrorCode::InternalError, "admin auth failed")
-        })?;
+        .or_internal_as("failed to record admin nonce", "admin auth failed")?;
     if !fresh {
         return Err(invalid_admin_signature());
     }
@@ -445,10 +439,7 @@ pub async fn require_pending_session(
     .bind(&token_hash)
     .fetch_optional(db)
     .await
-    .map_err(|e| {
-        tracing::error!(error = %e, "failed to query pending session");
-        ApiError::new(ErrorCode::InternalError, "session lookup failed")
-    })?;
+    .or_internal_as("failed to query pending session", "session lookup failed")?;
 
     let (account_id, device_id) = row.ok_or_else(|| {
         ApiError::new(ErrorCode::Unauthorized, "invalid or expired session token")
@@ -506,10 +497,7 @@ pub async fn require_device_token(
             .bind(&token_hash)
             .fetch_optional(db)
             .await
-            .map_err(|e| {
-                tracing::error!(error = %e, "failed to query device token");
-                ApiError::new(ErrorCode::InternalError, "device lookup failed")
-            })?;
+            .or_internal_as("failed to query device token", "device lookup failed")?;
 
     if found.is_some() {
         return Ok(());
@@ -518,10 +506,10 @@ pub async fn require_device_token(
     let transfer_device_found =
         crate::db::transfers::transfer_device_token_exists(db, device_id, &token_hash)
             .await
-            .map_err(|e| {
-                tracing::error!(error = %e, "failed to query transfer device token");
-                ApiError::new(ErrorCode::InternalError, "device lookup failed")
-            })?;
+            .or_internal_as(
+                "failed to query transfer device token",
+                "device lookup failed",
+            )?;
 
     if !transfer_device_found {
         tracing::debug!(device_id = %device_id, "no device matched id+token_hash");
@@ -576,10 +564,7 @@ pub async fn require_session(
     .bind(&token_hash)
     .fetch_optional(db)
     .await
-    .map_err(|e| {
-        tracing::error!(error = %e, "failed to query session");
-        ApiError::new(ErrorCode::InternalError, "session lookup failed")
-    })?;
+    .or_internal_as("failed to query session", "session lookup failed")?;
 
     let (did,) = row.ok_or_else(|| {
         tracing::debug!("no unexpired session row found for token hash");

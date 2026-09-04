@@ -53,21 +53,24 @@ pub async fn space_get_repo(
 
     // The index has to precede the blocks it describes, so paths are collected up front; only
     // the record blocks themselves stream lazily.
-    let mut entries = crate::db::space_repos::list_record_index(&state.db, &space.uri, &params.repo)
-        .await
-        .map_err(|e| {
-            tracing::error!(error = %e, space = %space.uri, "failed to read space record index");
-            ApiError::new(ErrorCode::InternalError, "failed to export space repo")
-        })?
-        .into_iter()
-        .map(|(collection, rkey, cid)| {
-            let cid = Cid::try_from(cid.as_str()).map_err(|e| {
-                tracing::error!(error = %e, space = %space.uri, cid = %cid, "stored record cid is malformed");
-                ApiError::new(ErrorCode::InternalError, "failed to export space repo")
-            })?;
-            Ok((format!("{collection}/{rkey}"), cid))
-        })
-        .collect::<Result<Vec<_>, ApiError>>()?;
+    let mut entries =
+        crate::db::space_repos::list_record_index(&state.db, &space.uri, &params.repo)
+            .await
+            .map_err(|e| {
+                {
+                    tracing::error!(error = %e, space = %space.uri, "failed to read space record index");
+                    ApiError::new(ErrorCode::InternalError, "failed to export space repo")
+                }
+            })?
+            .into_iter()
+            .map(|(collection, rkey, cid)| {
+                let cid = Cid::try_from(cid.as_str()).map_err(|e| {
+                    tracing::error!(error = %e, space = %space.uri, cid = %cid, "stored record cid is malformed");
+                    ApiError::new(ErrorCode::InternalError, "failed to export space repo")
+                })?;
+                Ok((format!("{collection}/{rkey}"), cid))
+            })
+            .collect::<Result<Vec<_>, ApiError>>()?;
     // A consumer walks the index as the cbor encoder ordered its keys, so blocks follow the
     // same canonical order.
     entries.sort_unstable_by(|(a, _), (b, _)| canonical_key_order(a, b));
@@ -94,11 +97,10 @@ pub async fn space_get_repo(
     ) {
         (Ok(c), Ok(i)) => (c, i),
         (Err(e), _) | (_, Err(e)) => {
-            tracing::error!(error = %e, space = %space.uri, "failed to hash space CAR root block");
-            return Err(ApiError::new(
-                ErrorCode::InternalError,
-                "failed to export space repo",
-            ));
+            return Err({
+                tracing::error!(error = %e, space = %space.uri, "failed to hash space CAR root block");
+                ApiError::new(ErrorCode::InternalError, "failed to export space repo")
+            });
         }
     };
 

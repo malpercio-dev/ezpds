@@ -56,7 +56,7 @@
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use axum::http::{HeaderMap, Method, Uri};
-use common::{ApiError, ErrorCode};
+use common::{ApiError, ApiResultExt, ErrorCode};
 use serde_json::Value;
 
 use crate::app::AppState;
@@ -414,10 +414,7 @@ async fn authenticate_space_credential(
         (2 * DPOP_MAX_AGE_SECS) as i64,
     )
     .await
-    .map_err(|e| {
-        tracing::error!(error = %e, "failed to record DPoP proof jti");
-        ApiError::new(ErrorCode::InternalError, "internal server error")
-    })?;
+    .or_internal_as("failed to record DPoP proof jti", "internal server error")?;
     if !fresh {
         return Err(ApiError::new(
             ErrorCode::InvalidToken,
@@ -634,10 +631,10 @@ pub async fn verify_delegation_token(
 
     let fresh = insert_jti_if_absent(&state.db, SpaceJtiScope::Delegation, jti, remaining as i64)
         .await
-        .map_err(|e| {
-            tracing::error!(error = %e, "failed to record delegation token jti");
-            ApiError::new(ErrorCode::InternalError, "internal server error")
-        })?;
+        .or_internal_as(
+            "failed to record delegation token jti",
+            "internal server error",
+        )?;
     if !fresh {
         return Err(invalid("delegation token has already been used"));
     }

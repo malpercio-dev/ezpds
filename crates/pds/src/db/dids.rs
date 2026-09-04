@@ -18,7 +18,7 @@
 //! document present, else `None` — with `set_did_web_hosting` / `did_web_hosting_enabled` as
 //! the opt-in toggle and probe.
 
-use common::{ApiError, ErrorCode};
+use common::{ApiError, ApiResultExt, ErrorCode};
 use sqlx::{Sqlite, SqlitePool};
 
 /// Look up a locally cached DID document by DID string.
@@ -43,8 +43,10 @@ pub async fn get_did_document(
         Some((doc_str,)) => {
             let doc = serde_json::from_str(&doc_str).map_err(|e| {
                 let preview = &doc_str[..doc_str.len().min(500)];
-                tracing::error!(did = %did, error = %e, raw = %preview, "malformed DID document in DB");
-                ApiError::new(ErrorCode::InternalError, "malformed DID document")
+                {
+                    tracing::error!(did = %did, error = %e, raw = %preview, "malformed DID document in DB");
+                    ApiError::new(ErrorCode::InternalError, "malformed DID document")
+                }
             })?;
             Ok(Some(doc))
         }
@@ -76,10 +78,10 @@ pub async fn fetch_also_known_as(db: &SqlitePool, did: &str) -> Result<Vec<Strin
         .bind(did)
         .fetch_all(db)
         .await
-        .map_err(|e| {
-            tracing::error!(error = %e, "failed to fetch handles for alsoKnownAs update");
-            ApiError::new(ErrorCode::InternalError, "failed to update DID document")
-        })?;
+        .or_internal_as(
+            "failed to fetch handles for alsoKnownAs update",
+            "failed to update DID document",
+        )?;
 
     Ok(handles
         .into_iter()
@@ -100,8 +102,10 @@ pub async fn rewrite_did_document(
     document: &serde_json::Value,
 ) -> Result<bool, ApiError> {
     let doc_str = serde_json::to_string(document).map_err(|e| {
-        tracing::error!(did = %did, error = %e, "failed to serialize DID document for cache rewrite");
-        ApiError::new(ErrorCode::InternalError, "failed to serialize DID document")
+        {
+            tracing::error!(did = %did, error = %e, "failed to serialize DID document for cache rewrite");
+            ApiError::new(ErrorCode::InternalError, "failed to serialize DID document")
+        }
     })?;
 
     let result = sqlx::query(
@@ -196,8 +200,10 @@ pub async fn serve_hosted_did_document(
         Some((doc_str,)) => {
             let doc = serde_json::from_str(&doc_str).map_err(|e| {
                 let preview = &doc_str[..doc_str.len().min(500)];
-                tracing::error!(did = %did, error = %e, raw = %preview, "malformed hosted DID document in DB");
-                ApiError::new(ErrorCode::InternalError, "malformed DID document")
+                {
+                    tracing::error!(did = %did, error = %e, raw = %preview, "malformed hosted DID document in DB");
+                    ApiError::new(ErrorCode::InternalError, "malformed DID document")
+                }
             })?;
             Ok(Some(doc))
         }
@@ -265,10 +271,7 @@ pub async fn update_also_known_as(
     let mut doc = doc;
     doc["alsoKnownAs"] = serde_json::json!(also_known_as);
 
-    let doc_str = serde_json::to_string(&doc).map_err(|e| {
-        tracing::error!(error = %e, "failed to serialize DID document");
-        ApiError::new(ErrorCode::InternalError, "failed to serialize DID document")
-    })?;
+    let doc_str = serde_json::to_string(&doc).or_internal("failed to serialize DID document")?;
 
     sqlx::query(
         "UPDATE did_documents SET document = ?, updated_at = datetime('now') WHERE did = ?",

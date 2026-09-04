@@ -65,9 +65,7 @@ pub async fn get_blob(
             tracing::error!(
                 error = %e,
                 cid = %params.cid,
-                path = %blob.storage_path,
-                "failed to read blob from filesystem"
-            );
+                path = %blob.storage_path, "failed to read blob from filesystem");
             ApiError::new(ErrorCode::InternalError, "failed to read blob")
         })?;
 

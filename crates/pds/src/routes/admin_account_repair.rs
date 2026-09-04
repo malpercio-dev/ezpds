@@ -58,8 +58,10 @@ pub struct ResetTokenResponse {
 }
 
 fn db_error(error: sqlx::Error, operation: &'static str) -> ApiError {
-    tracing::error!(%error, operation, "DB error repairing account");
-    ApiError::new(ErrorCode::InternalError, "failed to repair account")
+    {
+        tracing::error!(%error, operation, "DB error repairing account");
+        ApiError::new(ErrorCode::InternalError, "failed to repair account")
+    }
 }
 
 pub async fn set_account_email(

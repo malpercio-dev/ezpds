@@ -14,7 +14,7 @@
 
 use std::collections::BTreeMap;
 
-use common::{ApiError, ErrorCode};
+use common::{ApiError, ApiResultExt, ErrorCode};
 use serde::Deserialize;
 
 /// Reject a DID whose method is not `did:plc`.
@@ -105,10 +105,10 @@ pub async fn fetch_current_plc_state(
         )
     })?;
 
-    let entries = crypto::parse_audit_log(&body).map_err(|e| {
-        tracing::error!(error = %e, "failed to parse plc.directory audit log");
-        ApiError::new(ErrorCode::InternalError, "failed to parse PLC audit log")
-    })?;
+    let entries = crypto::parse_audit_log(&body).or_internal_as(
+        "failed to parse plc.directory audit log",
+        "failed to parse PLC audit log",
+    )?;
 
     // The current state is the newest operation that plc.directory has not nullified.
     let head = entries.iter().rev().find(|e| !e.nullified).ok_or_else(|| {
@@ -118,13 +118,10 @@ pub async fn fetch_current_plc_state(
         )
     })?;
 
-    let fields: PlcOpFields = serde_json::from_value(head.operation.clone()).map_err(|e| {
-        tracing::error!(error = %e, "PLC audit-log operation is not a recognised plc_operation");
-        ApiError::new(
-            ErrorCode::InternalError,
-            "unexpected PLC operation shape in audit log",
-        )
-    })?;
+    let fields: PlcOpFields = serde_json::from_value(head.operation.clone()).or_internal_as(
+        "PLC audit-log operation is not a recognised plc_operation",
+        "unexpected PLC operation shape in audit log",
+    )?;
 
     Ok(CurrentPlcState {
         cid: head.cid.clone(),

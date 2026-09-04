@@ -73,9 +73,7 @@ where
         tracing::error!(
             did = %did,
             event_type = %event_type.as_str(),
-            error = %e,
-            "DB error inserting recovery audit event"
-        );
+            error = %e, "DB error inserting recovery audit event");
         ApiError::new(ErrorCode::InternalError, "failed to record audit event")
     })?;
     Ok(())

@@ -12,7 +12,7 @@ use axum::{
 };
 use serde::{Deserialize, Serialize};
 
-use common::{ApiError, ErrorCode};
+use common::{ApiError, ApiResultExt, ErrorCode};
 
 use crate::app::AppState;
 use crate::auth::guards::{require_admin_json, AdminActor};
@@ -85,18 +85,13 @@ async fn create_signing_key_inner(
         })?;
 
     // --- Generate P-256 keypair ---
-    let keypair = crypto::generate_p256_keypair().map_err(|e| {
-        tracing::error!(error = %e, "failed to generate P-256 keypair");
-        ApiError::new(ErrorCode::InternalError, "key generation failed")
-    })?;
+    let keypair = crypto::generate_p256_keypair()
+        .or_internal_as("failed to generate P-256 keypair", "key generation failed")?;
 
     // --- Encrypt private key with AES-256-GCM ---
     // private_key_bytes is Zeroizing<[u8; 32]>; deref coercion to &[u8; 32] applies.
     let private_key_encrypted = crypto::encrypt_private_key(&keypair.private_key_bytes, master_key)
-        .map_err(|e| {
-            tracing::error!(error = %e, "failed to encrypt private key");
-            ApiError::new(ErrorCode::InternalError, "key encryption failed")
-        })?;
+        .or_internal_as("failed to encrypt private key", "key encryption failed")?;
 
     // --- Persist to relay_signing_keys ---
     // created_at uses SQLite's datetime('now') to produce ISO 8601 UTC without a chrono dep.

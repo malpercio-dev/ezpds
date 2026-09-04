@@ -143,8 +143,11 @@ pub async fn update_subject_status(
     // the transaction, per `Firehose::lock_emit`'s lock/connection-ordering contract.
     let emit_guard = state.firehose.lock_emit().await;
     let mut tx = state.db.begin().await.map_err(|e| {
-        tracing::error!(error = %e, did = %did, "failed to open updateSubjectStatus transaction");
-        ApiError::new(ErrorCode::InternalError, "failed to update account status").into_response()
+        {
+            tracing::error!(error = %e, did = %did, "failed to open updateSubjectStatus transaction");
+            ApiError::new(ErrorCode::InternalError, "failed to update account status")
+        }
+        .into_response()
     })?;
 
     let applied = takedown.applied;
@@ -160,8 +163,10 @@ pub async fn update_subject_status(
         }
         TakedownStateChange::Unchanged(lifecycle) => {
             tx.commit().await.map_err(|e| {
-                tracing::error!(error = %e, did = %did, "failed to commit updateSubjectStatus (no-op) transaction");
-                ApiError::new(ErrorCode::InternalError, "failed to update account status").into_response()
+                {
+                    tracing::error!(error = %e, did = %did, "failed to commit updateSubjectStatus (no-op) transaction");
+                    ApiError::new(ErrorCode::InternalError, "failed to update account status")
+                }.into_response()
             })?;
             tracing::debug!(
                 did = %did,
@@ -178,8 +183,11 @@ pub async fn update_subject_status(
                 .stage_account(&mut tx, did.clone(), active, status)
                 .await
                 .map_err(|e| {
-                    tracing::error!(error = %e, did = %did, "failed to stage #account takedown event");
-                    ApiError::new(ErrorCode::InternalError, "failed to update account status").into_response()
+                    {
+                        tracing::error!(error = %e, did = %did, "failed to stage #account takedown event");
+                        ApiError::new(ErrorCode::InternalError, "failed to update account status")
+                    }
+                    .into_response()
                 })?;
             // Audit the transition atomically with it. Only real transitions are recorded —
             // the Unchanged arm above is a no-op the operator didn't change anything with.
@@ -203,8 +211,11 @@ pub async fn update_subject_status(
             .await
             .map_err(IntoResponse::into_response)?;
             tx.commit().await.map_err(|e| {
-                tracing::error!(error = %e, did = %did, "failed to commit updateSubjectStatus transaction");
-                ApiError::new(ErrorCode::InternalError, "failed to update account status").into_response()
+                {
+                    tracing::error!(error = %e, did = %did, "failed to commit updateSubjectStatus transaction");
+                    ApiError::new(ErrorCode::InternalError, "failed to update account status")
+                }
+                .into_response()
             })?;
             pending.finish();
             tracing::info!(

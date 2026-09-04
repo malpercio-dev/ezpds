@@ -16,7 +16,7 @@ use axum::{extract::State, http::StatusCode, response::Json};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use common::{ApiError, ErrorCode};
+use common::{ApiError, ApiResultExt, ErrorCode};
 
 use crate::app::AppState;
 use crate::auth::token::generate_token;
@@ -75,10 +75,10 @@ pub async fn create_mobile_account(
     // --- Email uniqueness: fast-path rejection before INSERT ---
     if crate::uniqueness::email_taken(&state.db, &email)
         .await
-        .map_err(|e| {
-            tracing::error!(error = %e, "failed to check email uniqueness");
-            ApiError::new(ErrorCode::InternalError, "failed to create account")
-        })?
+        .or_internal_as(
+            "failed to check email uniqueness",
+            "failed to create account",
+        )?
     {
         return Err(ApiError::new(
             ErrorCode::AccountExists,
@@ -89,10 +89,10 @@ pub async fn create_mobile_account(
     // --- Handle uniqueness: fast-path rejection before INSERT ---
     if crate::uniqueness::handle_taken(&state.db, &payload.handle)
         .await
-        .map_err(|e| {
-            tracing::error!(error = %e, "failed to check handle uniqueness");
-            ApiError::new(ErrorCode::InternalError, "failed to create account")
-        })?
+        .or_internal_as(
+            "failed to check handle uniqueness",
+            "failed to create account",
+        )?
     {
         return Err(ApiError::new(
             ErrorCode::HandleTaken,

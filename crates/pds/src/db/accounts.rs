@@ -34,7 +34,7 @@
 //! subqueries. The flagged-account predicates (`FLAGGED_SQL`, `count_accounts_admin_flagged`)
 //! live beside it here; the label rows are `db/account_labels.rs`'s.
 
-use common::{ApiError, ErrorCode};
+use common::{ApiError, ApiResultExt, ErrorCode};
 use sqlx::Sqlite;
 
 /// Whether `did` names a locally-hosted account in an active lifecycle — not deactivated,
@@ -92,10 +92,7 @@ pub(crate) async fn account_email(
         .bind(did)
         .fetch_optional(db)
         .await
-        .map_err(|e| {
-            tracing::error!(error = %e, "failed to look up account email");
-            ApiError::new(ErrorCode::InternalError, "database error")
-        })
+        .or_internal_as("failed to look up account email", "database error")
 }
 
 /// Whether a fully-provisioned account row exists for `did` (unfiltered by lifecycle). Used by the
@@ -105,10 +102,7 @@ pub(crate) async fn account_exists(db: &sqlx::SqlitePool, did: &str) -> Result<b
         .bind(did)
         .fetch_one(db)
         .await
-        .map_err(|e| {
-            tracing::error!(error = %e, "failed to check accounts existence");
-            ApiError::new(ErrorCode::InternalError, "database error")
-        })?;
+        .or_internal_as("failed to check accounts existence", "database error")?;
 
     Ok(exists)
 }
@@ -215,13 +209,10 @@ pub(crate) async fn update_account_email(
         Ok(r) if r.rows_affected() == 1 => Ok(EmailUpdateOutcome::Updated),
         Ok(_) => Ok(EmailUpdateOutcome::NotFound),
         Err(e) if crate::db::is_unique_violation(&e) => Ok(EmailUpdateOutcome::Taken),
-        Err(e) => {
+        Err(e) => Err({
             tracing::error!(did = %did, error = %e, "failed to update account email");
-            Err(ApiError::new(
-                ErrorCode::InternalError,
-                "failed to update email",
-            ))
-        }
+            ApiError::new(ErrorCode::InternalError, "failed to update email")
+        }),
     }
 }
 
@@ -400,10 +391,10 @@ pub async fn accounts_due_for_deletion(db: &sqlx::SqlitePool) -> Result<Vec<Stri
     )
     .fetch_all(db)
     .await
-    .map_err(|e| {
-        tracing::error!(error = %e, "DB error listing accounts due for deletion");
-        ApiError::new(ErrorCode::InternalError, "failed to list accounts")
-    })?;
+    .or_internal_as(
+        "DB error listing accounts due for deletion",
+        "failed to list accounts",
+    )?;
     Ok(rows.into_iter().map(|(did,)| did).collect())
 }
 
@@ -434,10 +425,10 @@ pub async fn account_password_hash(
             .bind(did)
             .fetch_optional(db)
             .await
-            .map_err(|e| {
-                tracing::error!(error = %e, "DB error fetching account password hash");
-                ApiError::new(ErrorCode::InternalError, "failed to look up account")
-            })?;
+            .or_internal_as(
+                "DB error fetching account password hash",
+                "failed to look up account",
+            )?;
     Ok(row.map(|(hash,)| hash))
 }
 
@@ -1216,8 +1207,10 @@ pub(crate) async fn resolve_by_email(
     .map_err(|e| {
         // Logging the email domain aids ops triage without exposing the full address in logs.
         let domain = email.split('@').nth(1).unwrap_or("<unknown>");
-        tracing::error!(error = %e, email_domain = %domain, "DB error resolving email");
-        ApiError::new(ErrorCode::InternalError, "failed to resolve identifier")
+        {
+            tracing::error!(error = %e, email_domain = %domain, "DB error resolving email");
+            ApiError::new(ErrorCode::InternalError, "failed to resolve identifier")
+        }
     })?;
 
     Ok(row.map(|(did, password_hash, handle)| AccountRow {

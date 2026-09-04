@@ -29,7 +29,7 @@ use axum::http::{HeaderMap, Method, Uri};
 use axum::Json;
 use serde::{Deserialize, Serialize};
 
-use common::{ApiError, ErrorCode};
+use common::{ApiError, ApiResultExt, ErrorCode};
 
 use crate::app::AppState;
 use crate::auth::guards::require_admin;
@@ -160,10 +160,7 @@ pub async fn list_accounts(
 
     let rows = crate::db::accounts::list_accounts_admin(&state.db, cursor, limit, status, q)
         .await
-        .map_err(|e| {
-            tracing::error!(error = %e, "failed to list accounts");
-            ApiError::new(ErrorCode::InternalError, "failed to list accounts")
-        })?;
+        .or_internal("failed to list accounts")?;
 
     // A full page means more rows may follow — surface the last row's (flagged, did)
     // position as the next cursor.
@@ -176,19 +173,16 @@ pub async fn list_accounts(
 
     let flagged_total = crate::db::accounts::count_accounts_admin_flagged(&state.db, status, q)
         .await
-        .map_err(|e| {
-            tracing::error!(error = %e, "failed to count flagged accounts");
-            ApiError::new(ErrorCode::InternalError, "failed to list accounts")
-        })?;
+        .or_internal_as(
+            "failed to count flagged accounts",
+            "failed to list accounts",
+        )?;
 
     // One query for the whole page's flags (empty map when nothing is flagged).
     let page_dids: Vec<String> = rows.iter().map(|r| r.did.clone()).collect();
     let mut flags_by_did = crate::db::account_labels::labels_for_dids(&state.db, &page_dids)
         .await
-        .map_err(|e| {
-            tracing::error!(error = %e, "failed to load account labels");
-            ApiError::new(ErrorCode::InternalError, "failed to list accounts")
-        })?;
+        .or_internal_as("failed to load account labels", "failed to list accounts")?;
 
     // Quota is u64 in config; clamp into i64 for the JSON number (1 GiB default is far below
     // i64::MAX, and an operator would not set a quota anywhere near it).

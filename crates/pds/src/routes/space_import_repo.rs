@@ -179,8 +179,10 @@ pub async fn space_import_repo(
     let existing = crate::db::space_repos::list_record_index(&state.db, &space.uri, &did)
         .await
         .map_err(|e| {
-            tracing::error!(error = %e, space = %space.uri, did = %did, "failed to read space record index");
-            ApiError::new(ErrorCode::InternalError, "failed to import space repo")
+            {
+                tracing::error!(error = %e, space = %space.uri, did = %did, "failed to read space record index");
+                ApiError::new(ErrorCode::InternalError, "failed to import space repo")
+            }
         })?;
     let imported: std::collections::HashSet<(&str, &str)> = car
         .records

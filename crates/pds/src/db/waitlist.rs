@@ -9,7 +9,7 @@
 //! table has no foreign keys — signups predate accounts — so it stays off the
 //! account-purge path.
 
-use common::{ApiError, ErrorCode};
+use common::ApiError;
 use sqlx::{Row, SqlitePool};
 
 use super::is_unique_violation;
@@ -39,13 +39,11 @@ pub(crate) async fn insert_signup(
     match result {
         Ok(_) => Ok(InsertSignupOutcome::Created),
         Err(e) if is_unique_violation(&e) => Ok(InsertSignupOutcome::AlreadySignedUp),
-        Err(e) => {
-            tracing::error!(error = %e, "DB error inserting waitlist signup");
-            Err(ApiError::new(
-                ErrorCode::InternalError,
-                "failed to record signup",
-            ))
-        }
+        Err(e) => Err(ApiError::internal_as(
+            e,
+            "DB error inserting waitlist signup",
+            "failed to record signup",
+        )),
     }
 }
 

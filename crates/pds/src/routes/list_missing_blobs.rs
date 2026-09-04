@@ -177,12 +177,16 @@ async fn collect_repo_blob_refs(
         let row = crate::db::blocks::get_block(&state.db, &cid_str)
             .await
             .map_err(|e| {
-                tracing::error!(error = %e, did = %did, cid = %cid_str, "failed to read block");
-                ApiError::new(ErrorCode::InternalError, "failed to list missing blobs")
+                {
+                    tracing::error!(error = %e, did = %did, cid = %cid_str, "failed to read block");
+                    ApiError::new(ErrorCode::InternalError, "failed to list missing blobs")
+                }
             })?
             .ok_or_else(|| {
-                tracing::error!(did = %did, cid = %cid_str, key = %key, "MST entry references missing block");
-                ApiError::new(ErrorCode::InternalError, "repo integrity error")
+                {
+                    tracing::error!(did = %did, cid = %cid_str, key = %key, "MST entry references missing block");
+                    ApiError::new(ErrorCode::InternalError, "repo integrity error")
+                }
             })?;
 
         let ipld: Ipld = serde_ipld_dagcbor::from_slice(&row.bytes).map_err(|e| {

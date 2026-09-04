@@ -13,7 +13,7 @@ use axum::{extract::State, http::HeaderMap, http::StatusCode, response::Json};
 use serde::Serialize;
 use uuid::Uuid;
 
-use common::{ApiError, ErrorCode};
+use common::{ApiError, ApiResultExt, ErrorCode};
 
 use crate::app::AppState;
 use crate::auth::extract_bearer_token;
@@ -84,33 +84,33 @@ pub async fn refresh_session(
     // --- Replay detection: next_jti being set means this token was already rotated ---
     if next_jti.is_some() {
         // Revoke the entire session atomically.
-        let mut tx = state.db.begin().await.map_err(|e| {
-            tracing::error!(error = %e, "failed to begin revocation transaction");
-            ApiError::new(ErrorCode::InternalError, "internal error")
-        })?;
+        let mut tx = state
+            .db
+            .begin()
+            .await
+            .or_internal_as("failed to begin revocation transaction", "internal error")?;
 
         sqlx::query("DELETE FROM refresh_tokens WHERE session_id = ?")
             .bind(&session_id)
             .execute(&mut *tx)
             .await
-            .map_err(|e| {
-                tracing::error!(error = %e, "failed to delete refresh tokens during revocation");
-                ApiError::new(ErrorCode::InternalError, "internal error")
-            })?;
+            .or_internal_as(
+                "failed to delete refresh tokens during revocation",
+                "internal error",
+            )?;
 
         sqlx::query("DELETE FROM sessions WHERE id = ?")
             .bind(&session_id)
             .execute(&mut *tx)
             .await
-            .map_err(|e| {
-                tracing::error!(error = %e, "failed to delete session during revocation");
-                ApiError::new(ErrorCode::InternalError, "internal error")
-            })?;
+            .or_internal_as(
+                "failed to delete session during revocation",
+                "internal error",
+            )?;
 
-        tx.commit().await.map_err(|e| {
-            tracing::error!(error = %e, "failed to commit revocation transaction");
-            ApiError::new(ErrorCode::InternalError, "internal error")
-        })?;
+        tx.commit()
+            .await
+            .or_internal_as("failed to commit revocation transaction", "internal error")?;
 
         tracing::warn!(
             did = %did,
@@ -127,10 +127,7 @@ pub async fn refresh_session(
     // --- Issue new tokens ---
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
-        .map_err(|e| {
-            tracing::error!(error = %e, "system clock is before Unix epoch");
-            ApiError::new(ErrorCode::InternalError, "failed to issue token")
-        })?
+        .or_internal_as("system clock is before Unix epoch", "failed to issue token")?
         .as_secs();
 
     let aud = state

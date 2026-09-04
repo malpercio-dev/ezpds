@@ -18,7 +18,7 @@
 use axum::{extract::State, response::Json};
 use serde::{Deserialize, Serialize};
 
-use common::{ApiError, ErrorCode};
+use common::{ApiError, ApiResultExt, ErrorCode};
 
 use crate::app::AppState;
 use crate::auth::extractors::AuthenticatedUser;
@@ -146,14 +146,12 @@ pub async fn sign_plc_operation(
     };
 
     let private_key = crypto::decrypt_private_key(&signing_key.private_key_encrypted, master_key)
-        .map_err(|e| {
-        tracing::error!(error = %e, "failed to decrypt signing key");
-        ApiError::new(ErrorCode::InternalError, "failed to prepare signing key")
-    })?;
-    let signer = repo_engine::CommitSigner::from_bytes(&private_key).map_err(|e| {
-        tracing::error!(error = %e, "invalid signing key bytes");
-        ApiError::new(ErrorCode::InternalError, "failed to prepare signing key")
-    })?;
+        .or_internal_as(
+        "failed to decrypt signing key",
+        "failed to prepare signing key",
+    )?;
+    let signer = repo_engine::CommitSigner::from_bytes(&private_key)
+        .or_internal_as("invalid signing key bytes", "failed to prepare signing key")?;
 
     // Redeem the token now that every fallible precondition has passed — the last step before
     // signing. Atomic, so it still can't be spent twice even under concurrent requests. A racing
@@ -173,19 +171,16 @@ pub async fn sign_plc_operation(
         services,
         |bytes| Ok(signer.sign(bytes)),
     )
-    .map_err(|e| {
-        tracing::error!(error = %e, "failed to build PLC rotation operation");
-        ApiError::new(ErrorCode::InternalError, "failed to sign PLC operation")
-    })?;
+    .or_internal_as(
+        "failed to build PLC rotation operation",
+        "failed to sign PLC operation",
+    )?;
 
-    let operation: serde_json::Value =
-        serde_json::from_str(&signed.signed_op_json).map_err(|e| {
-            tracing::error!(error = %e, "signed PLC op is not valid JSON");
-            ApiError::new(
-                ErrorCode::InternalError,
-                "failed to serialize signed operation",
-            )
-        })?;
+    let operation: serde_json::Value = serde_json::from_str(&signed.signed_op_json)
+        .or_internal_as(
+            "signed PLC op is not valid JSON",
+            "failed to serialize signed operation",
+        )?;
 
     Ok(Json(SignPlcOperationResponse { operation }))
 }

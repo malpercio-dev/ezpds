@@ -21,7 +21,7 @@ use axum::http::{HeaderMap, Method, Uri};
 use axum::Json;
 use serde::Serialize;
 
-use common::{ApiError, ErrorCode};
+use common::{ApiError, ApiResultExt};
 
 use crate::app::AppState;
 use crate::auth::guards::require_admin;
@@ -59,13 +59,9 @@ pub async fn admin_recovery_releases(
     // Auth first so an unauthenticated caller cannot enumerate in-flight releases.
     require_admin(method.as_str(), uri.path(), &headers, &body, &state).await?;
 
-    let releases = list_pending_releases(&state.db).await.map_err(|e| {
-        tracing::error!(error = %e, "failed to list pending recovery releases");
-        ApiError::new(
-            ErrorCode::InternalError,
-            "failed to list pending recovery releases",
-        )
-    })?;
+    let releases = list_pending_releases(&state.db)
+        .await
+        .or_internal("failed to list pending recovery releases")?;
 
     Ok(Json(RecoveryReleasesResponse {
         releases: releases

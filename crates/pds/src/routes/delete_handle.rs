@@ -83,9 +83,7 @@ pub async fn delete_handle_handler(
             tracing::error!(
                 error = %e,
                 handle = %handle,
-                did = %session.did,
-                "failed to delete handle row after DNS deletion; manual DB cleanup required"
-            );
+                did = %session.did, "failed to delete handle row after DNS deletion; manual DB cleanup required");
             ApiError::new(ErrorCode::InternalError, "failed to delete handle")
         })?;
 

@@ -9,7 +9,7 @@
 
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use common::{ApiError, ErrorCode};
+use common::{ApiError, ApiResultExt};
 
 /// Current Unix time in seconds, erroring on a pre-epoch system clock.
 ///
@@ -19,10 +19,7 @@ pub(crate) fn unix_now() -> Result<u64, ApiError> {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_secs())
-        .map_err(|e| {
-            tracing::error!(error = %e, "system clock is before Unix epoch");
-            ApiError::new(ErrorCode::InternalError, "system clock error")
-        })
+        .or_internal_as("system clock is before Unix epoch", "system clock error")
 }
 
 /// Current Unix time in seconds, clamping a pre-epoch clock to 0 rather than erroring.

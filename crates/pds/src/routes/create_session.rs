@@ -118,11 +118,11 @@ pub async fn create_session(
             match main_result {
                 VerifyResult::Ok => (row, SessionKind::FullAccess),
                 VerifyResult::CorruptHash => {
-                    tracing::error!(
-                        identifier = %payload.identifier,
-                        "stored password_hash is not a valid PHC string; possible DB corruption"
-                    );
-                    return Err(ApiError::new(ErrorCode::InternalError, "internal error"));
+                    return Err({
+                        tracing::error!(
+                        identifier = %payload.identifier, "stored password_hash is not a valid PHC string; possible DB corruption");
+                        ApiError::new(ErrorCode::InternalError, "internal error")
+                    });
                 }
                 VerifyResult::WrongPassword => {
                     match match_app_password(&state.db, &row.did, &payload.password).await? {

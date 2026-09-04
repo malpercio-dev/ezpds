@@ -195,11 +195,11 @@ pub async fn delete_account_handler(
                 VerifyResult::Ok => {}
                 VerifyResult::WrongPassword => return Err(invalid_credentials()),
                 VerifyResult::CorruptHash => {
-                    tracing::error!(
-                        did = %payload.did,
-                        "stored password_hash is not a valid PHC string; possible DB corruption"
-                    );
-                    return Err(ApiError::new(ErrorCode::InternalError, "internal error"));
+                    return Err({
+                        tracing::error!(
+                        did = %payload.did, "stored password_hash is not a valid PHC string; possible DB corruption");
+                        ApiError::new(ErrorCode::InternalError, "internal error")
+                    });
                 }
             },
         },
@@ -219,8 +219,10 @@ pub async fn delete_account_handler(
         if !insert_nonce_if_absent(&state.db, &payload.did, &proof.nonce)
             .await
             .map_err(|e| {
-                tracing::error!(error = %e, did = %payload.did, "failed to consume account deletion nonce");
-                ApiError::new(ErrorCode::InternalError, "failed to delete account")
+                {
+                    tracing::error!(error = %e, did = %payload.did, "failed to consume account deletion nonce");
+                    ApiError::new(ErrorCode::InternalError, "failed to delete account")
+                }
             })?
         {
             tracing::warn!(
