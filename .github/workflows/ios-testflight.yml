@@ -39,8 +39,10 @@ on:
       # wallet's bundle id, so the console's project compiles none of this.
       - "ios/**"
       - "scripts/ios/**"
-      # The shared runner preamble (toolchain, cache, tauri-cli pin, brew shim).
+      # The shared runner preamble (toolchain, cache, tauri-cli pin, brew shim), and the
+      # pnpm+Node composite it delegates to.
       - ".github/actions/ios-setup/**"
+      - ".github/actions/setup-pnpm/**"
       - "rust-toolchain.toml"
       - ".github/workflows/ios-testflight.yml"
       # The shared build/sign/upload body this caller delegates to.

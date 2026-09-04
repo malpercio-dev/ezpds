@@ -64,6 +64,8 @@ path_deps() {
 #   scripts/ios/**              — the shared iOS toolchain/patch scripts
 #   .github/actions/ios-setup/**— the shared runner-preamble composite action all three
 #                                 lanes use (toolchain, cache, tauri-cli pin, brew shim)
+#   .github/actions/setup-pnpm/**— the pnpm+Node composite ios-setup delegates to (and
+#                                 ios-pr-check.yml's own `frontend` job uses directly)
 #   rust-toolchain.toml         — pins the toolchain + iOS targets
 INFRA=(
   "Cargo.toml"
@@ -73,6 +75,7 @@ INFRA=(
   "just/ios.just"
   "scripts/ios/**"
   ".github/actions/ios-setup/**"
+  ".github/actions/setup-pnpm/**"
   "rust-toolchain.toml"
 )
 
