@@ -260,7 +260,7 @@ mod tests {
     use tower::ServiceExt;
 
     use crate::app::app;
-    use crate::routes::test_utils::{seed_account_with_repo, state_with_master_key};
+    use crate::routes::test_utils::{body_json, seed_account_with_repo, state_with_master_key};
 
     const TEST_DID: &str = "did:plc:tester";
 
@@ -293,13 +293,6 @@ mod tests {
             .header("Authorization", format!("Bearer {token}"))
             .body(Body::empty())
             .unwrap()
-    }
-
-    async fn body_json(response: axum::response::Response) -> serde_json::Value {
-        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
-            .await
-            .unwrap();
-        serde_json::from_slice(&bytes).unwrap()
     }
 
     /// Decode a JWT's header and claims (signature segment ignored).

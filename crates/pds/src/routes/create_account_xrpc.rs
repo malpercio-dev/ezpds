@@ -683,7 +683,7 @@ mod tests {
     };
 
     use crate::app::{app, test_state_with_plc_url, AppState};
-    use crate::routes::test_utils::{seed_did_document, test_master_key};
+    use crate::routes::test_utils::{body_json, seed_did_document, test_master_key};
 
     const CREATE_ACCOUNT_URI: &str = "/xrpc/com.atproto.server.createAccount";
 
@@ -702,13 +702,6 @@ mod tests {
             config: Arc::new(config),
             ..base
         }
-    }
-
-    async fn body_json(response: axum::response::Response) -> serde_json::Value {
-        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
-            .await
-            .unwrap();
-        serde_json::from_slice(&bytes).unwrap()
     }
 
     fn post(body: serde_json::Value, bearer: Option<&str>) -> Request<Body> {

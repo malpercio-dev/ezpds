@@ -181,7 +181,7 @@ mod tests {
 
     use crate::app::{app, test_state};
     use crate::auth::rate_limit::RATE_LIMIT_MAX_FAILURES;
-    use crate::routes::test_utils::state_with_master_key;
+    use crate::routes::test_utils::{body_json, state_with_master_key};
 
     fn post_req(body: serde_json::Value) -> Request<Body> {
         post_req_from(body, None)
@@ -199,13 +199,6 @@ mod tests {
             req.extensions_mut().insert(ConnectInfo(addr));
         }
         req
-    }
-
-    async fn body_json(resp: axum::response::Response) -> serde_json::Value {
-        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
-            .await
-            .unwrap();
-        serde_json::from_slice(&bytes).unwrap()
     }
 
     #[tokio::test]

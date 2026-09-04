@@ -201,7 +201,7 @@ mod tests {
 
     use crate::app::{app, AppState};
     use crate::routes::test_utils::{
-        access_jwt, seed_account_with_signing_key, state_with_master_key,
+        access_jwt, body_json, seed_account_with_signing_key, state_with_master_key,
     };
 
     /// A `state_with_master_key` whose plc.directory points at `plc_uri`.
@@ -256,13 +256,6 @@ mod tests {
             .await
             .unwrap();
         token.plaintext
-    }
-
-    async fn body_json(response: axum::response::Response) -> serde_json::Value {
-        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
-            .await
-            .unwrap();
-        serde_json::from_slice(&bytes).unwrap()
     }
 
     fn post_req(jwt: Option<&str>, body: serde_json::Value) -> Request<Body> {

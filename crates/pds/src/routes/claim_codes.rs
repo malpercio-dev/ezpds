@@ -386,7 +386,7 @@ mod tests {
     use tower::ServiceExt;
 
     use crate::app::{app, test_state};
-    use crate::routes::test_utils::test_state_with_admin_token;
+    use crate::routes::test_utils::{body_json, test_state_with_admin_token};
 
     // ── Helpers ──────────────────────────────────────────────────────────────
 
@@ -862,13 +862,6 @@ mod tests {
             builder = builder.header("Authorization", format!("Bearer {token}"));
         }
         builder.body(Body::empty()).unwrap()
-    }
-
-    async fn body_json(response: axum::response::Response) -> serde_json::Value {
-        let body = axum::body::to_bytes(response.into_body(), 65536)
-            .await
-            .unwrap();
-        serde_json::from_slice(&body).unwrap()
     }
 
     #[tokio::test]

@@ -102,14 +102,7 @@ mod tests {
     use tower::ServiceExt;
 
     use crate::app::{app, test_state};
-    use crate::routes::test_utils::{access_jwt, seed_account_with_signing_key};
-
-    async fn body_json(response: axum::response::Response) -> serde_json::Value {
-        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
-            .await
-            .unwrap();
-        serde_json::from_slice(&bytes).unwrap()
-    }
+    use crate::routes::test_utils::{access_jwt, body_json, seed_account_with_signing_key};
 
     fn get_req(jwt: Option<&str>) -> Request<Body> {
         let mut builder = Request::builder()

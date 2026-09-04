@@ -195,7 +195,7 @@ mod tests {
     use tower::ServiceExt;
 
     use crate::app::{app, test_state};
-    use crate::routes::test_utils::insert_account_with_email as insert_account;
+    use crate::routes::test_utils::{body_json, insert_account_with_email as insert_account};
 
     /// Issue a valid HS256 access JWT for a DID using the test state's fixed secret.
     fn access_jwt(secret: &[u8; 32], sub: &str) -> String {
@@ -237,13 +237,6 @@ mod tests {
             .header("Authorization", format!("Bearer {token}"))
             .body(Body::empty())
             .unwrap()
-    }
-
-    async fn body_json(response: axum::response::Response) -> serde_json::Value {
-        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
-            .await
-            .unwrap();
-        serde_json::from_slice(&bytes).unwrap()
     }
 
     #[tokio::test]
