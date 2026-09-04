@@ -5,8 +5,9 @@
 //! may not import from one another (crate hard rule), so everything both need lives here:
 //!
 //!   * service-signed `identity_assertion` minting;
-//!   * the claim-block / verification-URI builders and the SQLite-`datetime()` timestamp helpers
-//!     (`to_sqlite_datetime` / `parse_sqlite_datetime`);
+//!   * the claim-block / verification-URI builders, `start_claim_attempt` (the one way a ceremony
+//!     is opened), and the SQLite-`datetime()` timestamp helpers (`to_sqlite_datetime` /
+//!     `parse_sqlite_datetime`);
 //!   * `AgentAuthError`, the auth.md / OAuth-style `{error, error_description}` response type
 //!     (distinct from the crate's XRPC `ApiError` envelope);
 //!   * `record_agent_audit` — append one V040 agent audit event; shared by the registration and
@@ -220,6 +221,60 @@ pub(crate) fn claim_block(
 /// A fresh `cla_`-prefixed claim-attempt id.
 pub(crate) fn new_claim_attempt_id() -> String {
     format!("cla_{}", Uuid::new_v4().simple())
+}
+
+/// The freshly opened claim attempt, as the caller needs it to build its own response — the
+/// registration flows put `user_code`/`expires` into a [`claim_block`], the claim endpoint into
+/// its own `claim_attempt` block.
+pub(crate) struct StartedClaim {
+    pub(crate) attempt_id: String,
+    pub(crate) user_code: String,
+    pub(crate) expires: DateTime<Utc>,
+}
+
+/// Open a fresh claim attempt against `registration_id`: mint the `user_code`, insert the
+/// `agent_claim_attempts` row, and append the `ClaimInitiated` audit event.
+///
+/// Every ceremony start goes through here — the registration endpoint's two flows, the
+/// re-challenge of an unconfirmed registration, and the claim endpoint's fresh-attempt branch —
+/// so the code's TTL and the audit trail can't drift apart between them.
+pub(crate) async fn start_claim_attempt(
+    db: &sqlx::SqlitePool,
+    agent_auth: &AgentAuthConfig,
+    registration_id: &str,
+    did: Option<&str>,
+    email: Option<&str>,
+) -> Result<StartedClaim, ApiError> {
+    let attempt_id = new_claim_attempt_id();
+    let user_code = crate::code_gen::generate_code();
+    let expires = Utc::now() + Duration::seconds(agent_auth.user_code_ttl_secs as i64);
+
+    crate::db::agent_auth::insert_agent_claim_attempt(
+        db,
+        &crate::db::agent_auth::NewAgentClaimAttempt {
+            id: &attempt_id,
+            identity_id: registration_id,
+            user_code: &user_code,
+            user_code_expires_at: &to_sqlite_datetime(&expires),
+            email,
+        },
+    )
+    .await?;
+
+    record_agent_audit(
+        db,
+        registration_id,
+        did,
+        crate::db::agent_audit::AgentAuditEventType::ClaimInitiated,
+        json!({ "claim_attempt_id": attempt_id }),
+    )
+    .await?;
+
+    Ok(StartedClaim {
+        attempt_id,
+        user_code,
+        expires,
+    })
 }
 
 /// Serialize a scope list to the JSON array string stored in `agent_identities.scopes`.
