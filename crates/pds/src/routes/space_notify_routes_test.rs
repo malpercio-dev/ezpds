@@ -15,13 +15,13 @@
 
 use axum::body::Body;
 use axum::http::{self, Request, StatusCode};
-use tower::ServiceExt;
 
-use crate::app::{app, AppState};
+use crate::app::AppState;
 use crate::auth::space::{mint_space_credential, unix_now};
 use crate::db::dids::seed_did_document;
+use crate::routes::space_test_support::{send, xrpc_get as get, xrpc_post as post};
 use crate::routes::test_utils::{
-    access_jwt, body_json, seed_account_with_repo, state_with_master_key, DpopProofKey,
+    access_jwt, seed_account_with_repo, state_with_master_key, DpopProofKey,
 };
 use crate::space_record_write::{
     apply_space_writes, SpaceWriteAction, SpaceWriteAdmission, SpaceWriteOp,
@@ -76,31 +76,6 @@ async fn seed_undeliverable(state: &AppState, did: &str, kp: &crypto::P256Keypai
         }),
     )
     .await;
-}
-
-fn post(method: &str, token: &str, body: serde_json::Value) -> Request<Body> {
-    Request::builder()
-        .method(http::Method::POST)
-        .uri(format!("/xrpc/{method}"))
-        .header("Content-Type", "application/json")
-        .header("Authorization", format!("Bearer {token}"))
-        .body(Body::from(body.to_string()))
-        .unwrap()
-}
-
-fn get(method_and_query: &str, token: &str) -> Request<Body> {
-    Request::builder()
-        .method(http::Method::GET)
-        .uri(format!("/xrpc/{method_and_query}"))
-        .header("Authorization", format!("Bearer {token}"))
-        .body(Body::empty())
-        .unwrap()
-}
-
-async fn send(state: &AppState, request: Request<Body>) -> (StatusCode, serde_json::Value) {
-    let response = app(state.clone()).oneshot(request).await.unwrap();
-    let status = response.status();
-    (status, body_json(response).await)
 }
 
 /// One committed write into `space` by `did`, awaiting the notification task it spawns so the

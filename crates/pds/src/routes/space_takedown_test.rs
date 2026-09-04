@@ -15,8 +15,9 @@ use axum::http::{self, Request, StatusCode};
 use tower::ServiceExt;
 
 use crate::app::{app, AppState};
+use crate::routes::space_test_support::{path_get as get, path_post as post, send};
 use crate::routes::test_utils::{
-    access_jwt, body_json, scoped_access_jwt, seed_account_with_repo, state_with_master_key,
+    access_jwt, scoped_access_jwt, seed_account_with_repo, state_with_master_key,
 };
 
 const ADMIN: &str = "test-admin-token";
@@ -40,30 +41,6 @@ async fn setup() -> AppState {
     };
     seed_account_with_repo(&state.db, DID).await;
     state
-}
-
-fn post(path: &str, token: &str, body: serde_json::Value) -> Request<Body> {
-    Request::builder()
-        .method(http::Method::POST)
-        .uri(path)
-        .header("Content-Type", "application/json")
-        .header("Authorization", format!("Bearer {token}"))
-        .body(Body::from(body.to_string()))
-        .unwrap()
-}
-
-fn get(path: &str, token: &str) -> Request<Body> {
-    Request::builder()
-        .method(http::Method::GET)
-        .uri(path)
-        .header("Authorization", format!("Bearer {token}"))
-        .body(Body::empty())
-        .unwrap()
-}
-
-async fn send(state: &AppState, request: Request<Body>) -> (StatusCode, serde_json::Value) {
-    let response = app(state.clone()).oneshot(request).await.unwrap();
-    (response.status(), body_json(response).await)
 }
 
 fn create_record(token: &str, rkey: &str) -> Request<Body> {

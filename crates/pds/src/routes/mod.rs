@@ -150,6 +150,9 @@ mod preference_scope;
 pub(crate) mod test_utils;
 
 #[cfg(test)]
+mod space_test_support;
+
+#[cfg(test)]
 mod outbound_migration_test;
 
 #[cfg(test)]
