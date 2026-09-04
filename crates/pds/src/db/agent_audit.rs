@@ -145,19 +145,8 @@ pub(crate) async fn list_agent_audit_events(
 mod tests {
     use super::*;
     use crate::app::test_state;
+    use crate::db::accounts::insert_bare_account as seed_account;
     use crate::db::agent_auth::{self, NewAgentIdentity, RegistrationType};
-
-    async fn seed_account(db: &sqlx::SqlitePool, did: &str) {
-        sqlx::query(
-            "INSERT INTO accounts (did, email, password_hash, created_at, updated_at) \
-             VALUES (?, ?, NULL, datetime('now'), datetime('now'))",
-        )
-        .bind(did)
-        .bind(format!("{did}@example.com"))
-        .execute(db)
-        .await
-        .expect("seed account");
-    }
 
     async fn seed_identity(db: &sqlx::SqlitePool, id: &str) {
         agent_auth::insert_agent_identity(

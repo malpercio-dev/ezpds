@@ -83,19 +83,8 @@ mod tests {
     use tower::ServiceExt;
 
     use crate::app::app;
+    use crate::db::accounts::insert_bare_account as seed_account;
     use crate::routes::test_utils::test_state_with_admin_token;
-
-    async fn seed_account(db: &sqlx::SqlitePool, did: &str) {
-        sqlx::query(
-            "INSERT INTO accounts (did, email, password_hash, created_at, updated_at) \
-             VALUES (?, ?, NULL, datetime('now'), datetime('now'))",
-        )
-        .bind(did)
-        .bind(format!("{did}@example.com"))
-        .execute(db)
-        .await
-        .unwrap();
-    }
 
     async fn get(router: axum::Router, token: Option<&str>) -> (StatusCode, serde_json::Value) {
         let mut builder = Request::builder().uri("/v1/admin/recovery-releases");

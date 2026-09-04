@@ -439,6 +439,7 @@ async fn notify(state: &AppState, did: &str, kind: &str) {
 mod tests {
     use super::*;
     use crate::app::{app, test_state, AppState};
+    use crate::db::accounts::insert_bare_account as seed_account;
     use crate::email::{EmailError, EmailMessage, EmailSender};
     use crate::routes::test_utils::test_master_key;
     use axum::body::Body;
@@ -486,18 +487,6 @@ mod tests {
             ..base
         };
         Harness { state, emails }
-    }
-
-    async fn seed_account(db: &sqlx::SqlitePool, did: &str) {
-        sqlx::query(
-            "INSERT INTO accounts (did, email, password_hash, created_at, updated_at) \
-             VALUES (?, ?, NULL, datetime('now'), datetime('now'))",
-        )
-        .bind(did)
-        .bind(format!("{did}@example.com"))
-        .execute(db)
-        .await
-        .expect("seed account");
     }
 
     /// The Share 2 envelope (index 2) for a set, both wrapped (for storage) and as its base32

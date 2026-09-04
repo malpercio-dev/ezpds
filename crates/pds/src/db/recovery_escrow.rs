@@ -252,18 +252,7 @@ pub(crate) async fn list_pending_releases(
 mod tests {
     use super::*;
     use crate::app::test_state;
-
-    async fn seed_account(db: &sqlx::SqlitePool, did: &str) {
-        sqlx::query(
-            "INSERT INTO accounts (did, email, password_hash, created_at, updated_at) \
-             VALUES (?, ?, NULL, datetime('now'), datetime('now'))",
-        )
-        .bind(did)
-        .bind(format!("{did}@example.com"))
-        .execute(db)
-        .await
-        .expect("seed account");
-    }
+    use crate::db::accounts::insert_bare_account as seed_account;
 
     async fn stored_row(db: &sqlx::SqlitePool, did: &str) -> Option<(String, Option<String>)> {
         sqlx::query_as("SELECT share_encrypted, rotated_at FROM recovery_escrow WHERE did = ?")
