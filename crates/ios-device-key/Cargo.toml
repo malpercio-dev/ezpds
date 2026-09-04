@@ -1,0 +1,26 @@
+[package]
+name = "ios-device-key"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+license.workspace = true
+
+[dependencies]
+serde = { workspace = true }
+thiserror = { workspace = true }
+# Software path: the same P-256 generation the workspace's functional core owns.
+crypto = { workspace = true }
+# Both paths: signature parsing and low-S normalization.
+p256 = { workspace = true }
+# did:key derivation from the compressed point.
+multibase = { workspace = true }
+
+# Secure Enclave key generation and lookup. Apple-only, so the dependency is target-gated:
+# without it the crate would not build on the Linux PDS gate, where the software path and the
+# whole test battery below still compile and run.
+[target.'cfg(target_vendor = "apple")'.dependencies]
+security-framework = { workspace = true, features = ["OSX_10_12"] }
+
+[dev-dependencies]
+# The tests assert the IPC error/JSON shape both apps' TypeScript unions mirror.
+serde_json = { workspace = true }

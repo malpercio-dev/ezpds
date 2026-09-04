@@ -3417,6 +3417,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "ios-device-key"
+version = "0.16.2"
+dependencies = [
+ "crypto",
+ "multibase",
+ "p256",
+ "security-framework",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+]
+
+[[package]]
 name = "ipconfig"
 version = "0.3.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
