@@ -36,6 +36,9 @@ reqwest = { workspace = true, features = ["form"] }
 # (nonce challenge vs. genuine error) — `reqwest::Response: From<http::Response<T>>`.
 http = { workspace = true }
 security-framework = { version = "3", features = ["OSX_10_12"] }
+# The device key both iOS apps hold (Secure Enclave / software P-256). This app supplies its
+# own Keychain and account names; see crates/ios-device-key.
+ios-device-key = { workspace = true }
 thiserror = { workspace = true }
 crypto = { workspace = true }
 p256 = { workspace = true }
