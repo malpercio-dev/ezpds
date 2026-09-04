@@ -40,7 +40,7 @@ pub async fn list_records(
     // The lexicon's `repo` format is `at-identifier` (DID or handle), but this route resolves
     // only DIDs directly — a stricter, deliberate restriction the lexicon layer doesn't cover, so
     // it stays a handler-level check rather than being subsumed by `LexiconParams`.
-    if !crate::auth::validation::is_valid_did(did) {
+    if !crate::identity::did::is_valid_did(did) {
         return Err(ApiError::new(ErrorCode::InvalidClaim, "invalid DID format"));
     }
 

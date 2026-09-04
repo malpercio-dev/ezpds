@@ -111,7 +111,7 @@ pub fn verify_access_token(token: &str, state: &AppState) -> Result<AccessTokenC
 /// Build a `DecodingKey` for this server's own ES256 OAuth signing key from its public JWK.
 ///
 /// Shared by every verifier of a token this server signed with that key — the AT+JWT access-token
-/// verifier below and the agent `identity_assertion` verifier in `routes/oauth_token.rs` — so the
+/// verifier below and the agent `identity_assertion` verifier in `routes/oauth_token/jwt_bearer.rs` — so the
 /// JWK-parsing/error-handling shape lives in one place and can't drift between the two.
 pub(crate) fn oauth_es256_decoding_key(state: &AppState) -> Result<DecodingKey, ApiError> {
     let invalid = || ApiError::new(ErrorCode::InvalidToken, "invalid token");

@@ -1309,8 +1309,8 @@ mod tests {
              &scope=atproto\
              &response_type=code\
              &identifier={}&password={}",
-            crate::routes::oauth_templates::encode_param(identifier),
-            crate::routes::oauth_templates::encode_param(password),
+            urlencoding::encode(identifier),
+            urlencoding::encode(password),
         )
     }
 
@@ -1381,8 +1381,8 @@ mod tests {
         .unwrap();
         format!(
             "/oauth/authorize?client_id={}&request_uri={}",
-            crate::routes::oauth_templates::encode_param(CLIENT_ID),
-            crate::routes::oauth_templates::encode_param(&request_uri),
+            urlencoding::encode(CLIENT_ID),
+            urlencoding::encode(&request_uri),
         )
     }
 
@@ -2182,7 +2182,7 @@ mod tests {
                 Request::builder()
                     .uri(format!(
                         "/oauth/authorize?client_id={}&redirect_uri=https%3A%2F%2Fapp.example.com%2Fcallback&code_challenge=abc&code_challenge_method=S256&state=s&response_type=code&scope=atproto",
-                        crate::routes::oauth_templates::encode_param(CLIENT_ID)
+                        urlencoding::encode(CLIENT_ID)
                     ))
                     .body(Body::empty())
                     .unwrap(),
@@ -2357,12 +2357,7 @@ mod tests {
     fn include_scope_form(scope: &str, granted: &[&str]) -> String {
         let granted_params: String = granted
             .iter()
-            .map(|g| {
-                format!(
-                    "&granted_scope={}",
-                    crate::routes::oauth_templates::encode_param(g)
-                )
-            })
+            .map(|g| format!("&granted_scope={}", urlencoding::encode(g)))
             .collect();
         format!(
             "action=approve\
@@ -2374,9 +2369,9 @@ mod tests {
              &scope={}\
              &response_type=code\
              &identifier={}&password={}{}",
-            crate::routes::oauth_templates::encode_param(scope),
-            crate::routes::oauth_templates::encode_param(TEST_HANDLE),
-            crate::routes::oauth_templates::encode_param(TEST_PASSWORD),
+            urlencoding::encode(scope),
+            urlencoding::encode(TEST_HANDLE),
+            urlencoding::encode(TEST_PASSWORD),
             granted_params,
         )
     }

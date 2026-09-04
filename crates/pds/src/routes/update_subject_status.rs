@@ -31,9 +31,9 @@ use common::{ApiError, ErrorCode};
 
 use crate::app::AppState;
 use crate::auth::guards::require_admin_json;
-use crate::auth::validation::is_valid_did;
 use crate::db::accounts::{set_account_takedown, TakedownStateChange};
 use crate::db::admin_audit::{record_admin_audit_event, AdminAuditAction};
+use crate::identity::did::is_valid_did;
 use crate::routes::admin_subject_defs::{RepoRefView, StatusAttrView};
 
 /// `subject` is a lexicon union (`com.atproto.admin.defs#repoRef` | `com.atproto.repo.strongRef`

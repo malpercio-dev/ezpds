@@ -2,6 +2,7 @@
 
 pub mod account_delete;
 pub mod error;
+mod hex;
 pub mod hpke;
 pub mod keys;
 mod mnemonic;

@@ -12,6 +12,7 @@ use axum::{extract::State, response::Html};
 use common::Config;
 
 use crate::app::AppState;
+use crate::routes::oauth_templates::html_escape;
 
 const LANDING_TEMPLATE: &str = include_str!("../../assets/landing.html");
 
@@ -52,15 +53,6 @@ fn render_landing(config: &Config) -> String {
         .replace("{{domains}}", &html_escape(&domains))
         .replace("{{signup}}", signup)
         .replace("{{contact_row}}", &contact_row)
-}
-
-/// HTML-escape a string for safe embedding in HTML content or attribute values.
-fn html_escape(s: &str) -> String {
-    s.replace('&', "&amp;")
-        .replace('<', "&lt;")
-        .replace('>', "&gt;")
-        .replace('"', "&quot;")
-        .replace('\'', "&#39;")
 }
 
 #[cfg(test)]

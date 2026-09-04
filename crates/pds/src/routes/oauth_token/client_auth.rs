@@ -58,7 +58,7 @@ struct ClientAssertionClaims {
 }
 
 fn invalid_client(description: impl Into<String>) -> OAuthTokenError {
-    OAuthTokenError::new_owned("invalid_client", description.into())
+    OAuthTokenError::new("invalid_client", description.into())
 }
 
 /// Enforce the client's registered `token_endpoint_auth_method` for a token request.

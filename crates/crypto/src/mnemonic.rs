@@ -125,11 +125,7 @@ mod tests {
             hasher.update(w.as_bytes());
             hasher.update(b"\n");
         }
-        let hex: String = hasher
-            .finalize()
-            .iter()
-            .map(|b| format!("{b:02x}"))
-            .collect();
+        let hex: String = crate::hex::to_hex(&hasher.finalize());
         assert_eq!(
             hex, WORDLIST_GOLDEN_DIGEST,
             "the mnemonic word→byte mapping changed; this breaks every existing paper share"

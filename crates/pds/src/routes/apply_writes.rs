@@ -108,7 +108,7 @@ pub async fn apply_writes(
     let did = crate::record_write::resolve_repo_did(&state, &body.repo).await?;
     let did = did.as_str();
 
-    if !crate::auth::validation::is_valid_did(did) {
+    if !crate::identity::did::is_valid_did(did) {
         return Err(ApiError::new(ErrorCode::InvalidClaim, "invalid DID format"));
     }
 

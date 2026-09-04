@@ -31,6 +31,7 @@ use crate::db::oauth::{
     cleanup_expired_par_requests, get_oauth_client, store_par_request, upsert_oauth_client,
     ClientMetadata, StoredPARParams,
 };
+use crate::routes::oauth_errors::OAuthTokenError;
 
 // ── Request / response types ──────────────────────────────────────────────────
 
@@ -61,39 +62,6 @@ pub struct PARResponse {
     pub expires_in: u32,
 }
 
-/// OAuth 2.0 error response (RFC 6749 §5.2 / RFC 9126 §2.3).
-struct PARError {
-    error: &'static str,
-    error_description: String,
-}
-
-impl PARError {
-    fn new(error: &'static str, error_description: impl Into<String>) -> Self {
-        Self {
-            error,
-            error_description: error_description.into(),
-        }
-    }
-}
-
-impl IntoResponse for PARError {
-    fn into_response(self) -> Response {
-        let status = if self.error == "server_error" {
-            StatusCode::INTERNAL_SERVER_ERROR
-        } else {
-            StatusCode::BAD_REQUEST
-        };
-        (
-            status,
-            Json(serde_json::json!({
-                "error": self.error,
-                "error_description": self.error_description,
-            })),
-        )
-            .into_response()
-    }
-}
-
 // ── Handler ───────────────────────────────────────────────────────────────────
 
 /// Resolve the DPoP key this pushed request is bound to, from a proof header, an explicit
@@ -109,7 +77,7 @@ async fn resolve_par_dpop_jkt(
     declared_jkt: Option<&str>,
 ) -> Result<Option<String>, Response> {
     if headers.get_all("DPoP").iter().count() > 1 {
-        return Err(PARError::new(
+        return Err(OAuthTokenError::new(
             "invalid_dpop_proof",
             "multiple DPoP headers are not permitted",
         )
@@ -125,13 +93,14 @@ async fn resolve_par_dpop_jkt(
             match crate::auth::validate_dpop_for_par(proof, "POST", &par_url) {
                 Ok(jkt) => Some(jkt),
                 Err(crate::auth::DpopTokenEndpointError::InvalidProof(msg)) => {
-                    return Err(PARError::new("invalid_dpop_proof", msg).into_response());
+                    return Err(OAuthTokenError::new("invalid_dpop_proof", msg).into_response());
                 }
                 // `validate_dpop_for_par` never asks for a nonce and never reports a missing
                 // header (one was present to get here).
                 Err(_) => {
                     return Err(
-                        PARError::new("invalid_dpop_proof", "DPoP proof invalid").into_response()
+                        OAuthTokenError::new("invalid_dpop_proof", "DPoP proof invalid")
+                            .into_response(),
                     );
                 }
             }
@@ -141,7 +110,7 @@ async fn resolve_par_dpop_jkt(
 
     let declared_jkt = declared_jkt.filter(|s| !s.is_empty());
     match (proven_jkt, declared_jkt) {
-        (Some(proven), Some(declared)) if proven != declared => Err(PARError::new(
+        (Some(proven), Some(declared)) if proven != declared => Err(OAuthTokenError::new(
             "invalid_request",
             "dpop_jkt does not match the DPoP proof's key",
         )
@@ -165,20 +134,24 @@ pub async fn post_par(
 ) -> Response {
     let client_id = match form.client_id.as_deref().filter(|s| !s.is_empty()) {
         Some(id) => id.to_string(),
-        None => return PARError::new("invalid_request", "client_id is required").into_response(),
+        None => {
+            return OAuthTokenError::new("invalid_request", "client_id is required").into_response()
+        }
     };
 
     let redirect_uri = match form.redirect_uri.as_deref().filter(|s| !s.is_empty()) {
         Some(u) => u.to_string(),
         None => {
-            return PARError::new("invalid_request", "redirect_uri is required").into_response()
+            return OAuthTokenError::new("invalid_request", "redirect_uri is required")
+                .into_response()
         }
     };
 
     let code_challenge = match form.code_challenge.as_deref().filter(|s| !s.is_empty()) {
         Some(c) => c.to_string(),
         None => {
-            return PARError::new("invalid_request", "code_challenge is required").into_response()
+            return OAuthTokenError::new("invalid_request", "code_challenge is required")
+                .into_response()
         }
     };
 
@@ -189,7 +162,7 @@ pub async fn post_par(
     {
         Some(m) => m.to_string(),
         None => {
-            return PARError::new("invalid_request", "code_challenge_method is required")
+            return OAuthTokenError::new("invalid_request", "code_challenge_method is required")
                 .into_response()
         }
     };
@@ -208,7 +181,8 @@ pub async fn post_par(
     let response_type = match form.response_type.as_deref().filter(|s| !s.is_empty()) {
         Some(r) => r.to_string(),
         None => {
-            return PARError::new("invalid_request", "response_type is required").into_response()
+            return OAuthTokenError::new("invalid_request", "response_type is required")
+                .into_response()
         }
     };
 
@@ -218,7 +192,7 @@ pub async fn post_par(
         form.response_mode.as_deref(),
     ) {
         Ok(m) => m,
-        Err(desc) => return PARError::new("invalid_request", desc).into_response(),
+        Err(desc) => return OAuthTokenError::new("invalid_request", desc).into_response(),
     };
 
     // Validate & canonically normalize the requested granular scopes; a malformed
@@ -230,7 +204,7 @@ pub async fn post_par(
         .unwrap_or("atproto");
     let scope = match crate::auth::oauth_scopes::normalize_scope_request(requested_scope) {
         Ok(s) => s,
-        Err(desc) => return PARError::new("invalid_scope", desc).into_response(),
+        Err(desc) => return OAuthTokenError::new("invalid_scope", desc).into_response(),
     };
 
     // Look up the client: registered/cached rows first; on a miss, a URL-shaped
@@ -241,7 +215,7 @@ pub async fn post_par(
         Ok(row) => row,
         Err(e) => {
             tracing::error!(error = %e, "db error looking up OAuth client in PAR");
-            return PARError::new("server_error", "database error").into_response();
+            return OAuthTokenError::new("server_error", "database error").into_response();
         }
     };
     let (client_metadata_json, freshly_fetched) = match known_client {
@@ -256,12 +230,13 @@ pub async fn post_par(
                 Ok(json) => (json, true),
                 Err(e) => {
                     tracing::info!(client_id = %client_id, error = %e, "URL client_id resolution failed in PAR");
-                    return PARError::new("invalid_client", e.to_string()).into_response();
+                    return OAuthTokenError::new("invalid_client", e.to_string()).into_response();
                 }
             }
         }
         None => {
-            return PARError::new("invalid_client", "client_id is not registered").into_response()
+            return OAuthTokenError::new("invalid_client", "client_id is not registered")
+                .into_response()
         }
     };
 
@@ -273,12 +248,13 @@ pub async fn post_par(
                 error = %e,
                 "failed to parse stored client metadata in PAR"
             );
-            return PARError::new("server_error", "client metadata is malformed").into_response();
+            return OAuthTokenError::new("server_error", "client metadata is malformed")
+                .into_response();
         }
     };
 
     if !metadata.redirect_uris.contains(&redirect_uri) {
-        return PARError::new(
+        return OAuthTokenError::new(
             "invalid_request",
             "redirect_uri does not match registered URIs",
         )
@@ -289,11 +265,11 @@ pub async fn post_par(
         &client_id,
         &redirect_uri,
     ) {
-        return PARError::new("invalid_redirect_uri", desc).into_response();
+        return OAuthTokenError::new("invalid_redirect_uri", desc).into_response();
     }
 
     if response_type != "code" {
-        return PARError::new(
+        return OAuthTokenError::new(
             "unsupported_response_type",
             "only response_type=code is supported",
         )
@@ -301,7 +277,7 @@ pub async fn post_par(
     }
 
     if code_challenge_method != "S256" {
-        return PARError::new("invalid_request", "code_challenge_method must be S256")
+        return OAuthTokenError::new("invalid_request", "code_challenge_method must be S256")
             .into_response();
     }
 
@@ -330,7 +306,7 @@ pub async fn post_par(
         Ok(j) => j,
         Err(e) => {
             tracing::error!(client_id = %client_id, error = %e, "failed to serialize PAR params to JSON");
-            return PARError::new("server_error", "failed to serialize request parameters")
+            return OAuthTokenError::new("server_error", "failed to serialize request parameters")
                 .into_response();
         }
     };
@@ -341,7 +317,7 @@ pub async fn post_par(
     if freshly_fetched {
         if let Err(e) = upsert_oauth_client(&state.db, &client_id, &client_metadata_json).await {
             tracing::error!(error = %e, client_id = %client_id, "failed to cache resolved OAuth client metadata");
-            return PARError::new("server_error", "database error").into_response();
+            return OAuthTokenError::new("server_error", "database error").into_response();
         }
     }
 
@@ -351,7 +327,7 @@ pub async fn post_par(
 
     if let Err(e) = store_par_request(&state.db, &request_uri, &client_id, &params_json).await {
         tracing::error!(error = %e, "failed to store PAR request");
-        return PARError::new("server_error", "failed to store authorization request")
+        return OAuthTokenError::new("server_error", "failed to store authorization request")
             .into_response();
     }
 

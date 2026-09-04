@@ -152,11 +152,11 @@ fn unix_now_secs() -> u64 {
 
 /// Error from DPoP validation at the token endpoint.
 ///
-/// Converted to `OAuthTokenError` by the handler in `routes/oauth_token.rs`.
+/// Converted to `OAuthTokenError` by the handler in `routes/oauth_token/`.
 pub enum DpopTokenEndpointError {
     /// `DPoP:` header is absent.
     ///
-    /// Never constructed in practice — the handler in `routes/oauth_token.rs` pre-checks for a
+    /// Never constructed in practice — the handler in `routes/oauth_token/` pre-checks for a
     /// missing `DPoP:` header and returns an error directly, so this function is only called when
     /// the header is present. Retained for API completeness so callers can match exhaustively.
     #[allow(dead_code)]

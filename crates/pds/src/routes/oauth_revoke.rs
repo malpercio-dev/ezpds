@@ -48,19 +48,14 @@ use crate::routes::oauth_errors::OAuthTokenError;
 
 /// Flat form body for `POST /oauth/revoke` (application/x-www-form-urlencoded, RFC 7009 §2.1).
 ///
-/// `token` is the only required parameter. `token_type_hint` is accepted but not acted on:
-/// this server has one revocable token store (refresh tokens), and an access-token value can
-/// never collide with a stored refresh-token hash, so trying the refresh store unconditionally
-/// is both correct and constant-work. `client_id` is the public client's identifier; when
-/// present it must match the token's owning client for the revocation to take effect.
+/// `token` is the only required parameter. `client_id` is the public client's identifier;
+/// when present it must match the token's owning client for the revocation to take effect.
+/// The RFC 7009 §2.1 `token_type_hint` parameter is accepted (serde ignores unknown form
+/// fields) and intentionally ignored: this server has one revocable token store (refresh
+/// tokens), so trying it unconditionally is both correct and constant-work.
 #[derive(Debug, Deserialize)]
 pub struct RevokeRequestForm {
     pub token: Option<String>,
-    // Accepted for RFC 7009 conformance but intentionally not read: the hint is advisory and a
-    // server "MUST extend its search" across its token types anyway (§2.1), and this server has a
-    // single revocable store, so honouring the hint could only wrongly skip a valid token.
-    #[allow(dead_code)]
-    pub token_type_hint: Option<String>,
     pub client_id: Option<String>,
 }
 
@@ -171,7 +166,7 @@ mod tests {
     use crate::auth::token::generate_token;
     use crate::db::oauth::register_oauth_client;
 
-    // ── DPoP proof test helpers (mirrors oauth_token.rs's test harness) ───────────
+    // ── DPoP proof test helpers (mirrors oauth_token/mod.rs's test harness) ───────
 
     fn now_secs() -> i64 {
         std::time::SystemTime::now()

@@ -1,7 +1,7 @@
 // pattern: Imperative Shell
 //
 // End-to-end integration tests for the auth.md agent-authentication flows. The per-route modules
-// (`agent_identity.rs`, `agent_claim.rs`, `oauth_token.rs`, `oauth_revoke.rs`, the two discovery
+// (`agent_identity.rs`, `agent_claim.rs`, `oauth_token/`, `oauth_revoke.rs`, the two discovery
 // endpoints) already unit-test each handler in isolation. This module instead drives the *whole
 // journey* across endpoints through the real HTTP router — discovery → register → claim initiate →
 // poll → confirm → token exchange → revoke — so a contract drift between two handlers (e.g. a

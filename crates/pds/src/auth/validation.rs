@@ -15,13 +15,6 @@ use common::{ApiError, ErrorCode};
 
 use crate::app::FailedLoginStore;
 
-/// Returns `true` if `did` satisfies ATProto's general DID syntax profile.
-///
-/// DID-method-specific validation remains layered on top when the DID is resolved.
-pub fn is_valid_did(did: &str) -> bool {
-    crate::identity::did::is_valid_did(did)
-}
-
 /// Maximum allowed length for a device public key string.
 ///
 /// A P-256 uncompressed public key in base64 is ~88 chars; 512 is generous

@@ -3,8 +3,8 @@
 // The shared OAuth 2.0 error response type for the token-issuing and token-revocation
 // endpoints. Pure: given an error code, description, and optional DPoP nonce it builds an
 // Axum response; no I/O, no database, no AppState. Lives here (rather than in either
-// handler) so `oauth_token.rs` and `oauth_revoke.rs` share one responder without a
-// route→route import — the same pattern as `oauth_templates.rs`.
+// handler) so `oauth_token/`, `oauth_revoke.rs`, and `oauth_par.rs` share one responder
+// without a route→route import — the same pattern as `oauth_templates.rs`.
 
 use axum::{
     http::StatusCode,
@@ -25,20 +25,16 @@ pub(super) struct OAuthTokenError {
 }
 
 impl OAuthTokenError {
-    pub(super) fn new(error: &'static str, error_description: &'static str) -> Self {
+    /// `error_description` takes either a fixed `&'static str` or a `String` built at
+    /// runtime (e.g. naming the offending value) — descriptions stay mechanical facts,
+    /// never secrets.
+    pub(super) fn new(
+        error: &'static str,
+        error_description: impl Into<std::borrow::Cow<'static, str>>,
+    ) -> Self {
         Self {
             error,
-            error_description: std::borrow::Cow::Borrowed(error_description),
-            dpop_nonce: None,
-        }
-    }
-
-    /// Like [`OAuthTokenError::new`] but for descriptions built at runtime (e.g. naming the
-    /// offending value). Same wire shape; descriptions stay mechanical facts, never secrets.
-    pub(super) fn new_owned(error: &'static str, error_description: String) -> Self {
-        Self {
-            error,
-            error_description: std::borrow::Cow::Owned(error_description),
+            error_description: error_description.into(),
             dpop_nonce: None,
         }
     }

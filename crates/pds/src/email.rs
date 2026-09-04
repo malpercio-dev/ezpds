@@ -372,10 +372,11 @@ mod tests {
     }
 
     #[test]
-    fn build_email_sender_selects_log_by_default() {
+    fn build_email_sender_constructs_log_without_panicking() {
+        // `EmailSender` is a plain trait object with no `kind()`/downcast accessor, so this
+        // cannot assert *which* sender was built — only that the default (log) config
+        // constructs successfully.
         let sender = build_email_sender(&EmailConfig::default()).unwrap();
-        // A Log sender delivers without a transport; just confirm construction succeeds and the
-        // returned object is usable.
         let _ = sender;
     }
 
@@ -399,9 +400,10 @@ mod tests {
     }
 
     #[test]
-    fn build_email_sender_selects_http_for_mailtrap() {
+    fn build_email_sender_constructs_http_without_panicking() {
+        // Same caveat as the log case above: no accessor exists to assert this actually
+        // returned an `HttpEmailSender` rather than any other variant.
         let config = mailtrap_config("https://send.api.mailtrap.io/api/send");
-        // Construction succeeds and yields a usable `dyn EmailSender`.
         let sender = build_email_sender(&config).unwrap();
         let _ = sender;
     }
