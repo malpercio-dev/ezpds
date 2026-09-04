@@ -18,11 +18,11 @@
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.29.0",
+    "ezpds-interop": "file:../interop",
     "zod": "^3.25.0"
   },
   "devDependencies": {
     "@types/node": "^22.15.0",
-    "ezpds-interop": "file:../interop",
     "typescript": "^5.8.0"
   }
 }
