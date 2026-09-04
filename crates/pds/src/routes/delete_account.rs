@@ -430,14 +430,12 @@ mod tests {
         use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
         use p256::ecdsa::{signature::Signer as _, Signature as P256Signature, SigningKey};
         use serde_json::{json, Value};
-        use wiremock::{
-            matchers::{method, path},
-            Mock, MockServer, ResponseTemplate,
-        };
+        use wiremock::MockServer;
 
         use super::super::NONCE_BYTES;
         use super::*;
         use crate::app::test_state_with_plc_url;
+        use crate::routes::test_utils::mount_owner_audit_log as mount_audit_log;
 
         /// A DID whose rotation set the mock plc.directory answers for.
         const DID: &str = "did:plc:aaaaaaaaaaaaaaaaaaaaaaaa";
@@ -476,28 +474,6 @@ mod tests {
             .execute(db)
             .await
             .unwrap();
-        }
-
-        async fn mount_audit_log(server: &MockServer, did: &str, rotation_keys: &[&str]) {
-            let log = json!([{
-                "did": did,
-                "cid": "bafy-current-head",
-                "createdAt": "2026-07-27T00:00:00Z",
-                "nullified": false,
-                "operation": {
-                    "type": "plc_operation",
-                    "prev": null,
-                    "rotationKeys": rotation_keys,
-                    "verificationMethods": {},
-                    "alsoKnownAs": ["at://owner.example.com"],
-                    "services": {}
-                }
-            }]);
-            Mock::given(method("GET"))
-                .and(path(format!("/{did}/log/audit")))
-                .respond_with(ResponseTemplate::new(200).set_body_json(log))
-                .mount(server)
-                .await;
         }
 
         /// Build a request body carrying a deletion proof. `envelope_did` is the DID the signed

@@ -883,3 +883,36 @@ pub(crate) async fn insert_account_with_email(db: &sqlx::SqlitePool, did: &str, 
     .await
     .unwrap();
 }
+
+/// Mount a `GET /{did}/log/audit` PLC audit-log response on a mock plc.directory server: a
+/// single current entry naming `rotation_keys`, with empty `verificationMethods`/`services` and
+/// a fixed `owner.example.com` `alsoKnownAs` — the shape an ownership-binding test needs to
+/// resolve rotation-key authority without caring about the rest of the DID document.
+pub(crate) async fn mount_owner_audit_log(
+    server: &wiremock::MockServer,
+    did: &str,
+    rotation_keys: &[&str],
+) {
+    use wiremock::matchers::{method, path};
+    use wiremock::{Mock, ResponseTemplate};
+
+    let log = serde_json::json!([{
+        "did": did,
+        "cid": "bafy-current-head",
+        "createdAt": "2026-07-13T00:00:00Z",
+        "nullified": false,
+        "operation": {
+            "type": "plc_operation",
+            "prev": null,
+            "rotationKeys": rotation_keys,
+            "verificationMethods": {},
+            "alsoKnownAs": ["at://owner.example.com"],
+            "services": {}
+        }
+    }]);
+    Mock::given(method("GET"))
+        .and(path(format!("/{did}/log/audit")))
+        .respond_with(ResponseTemplate::new(200).set_body_json(log))
+        .mount(server)
+        .await;
+}
