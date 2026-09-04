@@ -613,15 +613,11 @@ mod tests {
     const GOLDEN_CHILD_0_DID_KEY: &str =
         "did:key:zDnaevCpGTC8k2Lb4jTtsM24JDARvsZDBwRh7uUPZtKDRib4T";
 
-    fn hex(bytes: &[u8]) -> String {
-        bytes.iter().map(|b| format!("{b:02x}")).collect()
-    }
-
     #[test]
     fn derive_delegation_seed_matches_golden() {
         let seed = derive_delegation_seed(&GOLDEN_RECOVERY_SEED);
         assert_eq!(
-            hex(seed.as_slice()),
+            crate::hex::to_hex(seed.as_slice()),
             GOLDEN_DELEGATION_SEED_HEX,
             "delegation-seed derivation drifted; changing it orphans every child identity"
         );
@@ -635,11 +631,11 @@ mod tests {
         let c0 = derive_child_seed(&delegation, 0);
         let c1 = derive_child_seed(&delegation, 1);
         assert_eq!(
-            hex(c0.as_slice()),
+            crate::hex::to_hex(c0.as_slice()),
             GOLDEN_CHILD_0_SEED_HEX,
             "child-seed derivation drifted; changing it orphans every child identity"
         );
-        assert_eq!(hex(c1.as_slice()), GOLDEN_CHILD_1_SEED_HEX);
+        assert_eq!(crate::hex::to_hex(c1.as_slice()), GOLDEN_CHILD_1_SEED_HEX);
         assert_ne!(*c0, *c1);
         assert_ne!(*c0, *delegation);
     }

@@ -251,10 +251,6 @@ mod tests {
     const CID_A: &str = "bafyreidefdycgbfy3oglcb6ism3eqhyp5llsrpzxjsuac2gsy4mtrtx244";
     const CID_B: &str = "bafyreidpw4cbv6gr4ukh33z23pvvrpr3wi4gnpmi4doamlsl3sa4rgri2a";
 
-    fn hex(bytes: &[u8]) -> String {
-        bytes.iter().map(|b| format!("{b:02x}")).collect()
-    }
-
     // ── LtHash ──────────────────────────────────────────────────────────────
 
     #[test]
@@ -345,7 +341,7 @@ mod tests {
     fn golden_empty_digest() {
         // Reference vector: sha256 of the zero state.
         assert_eq!(
-            hex(&LtHash::new().digest()),
+            crate::hex::to_hex(&LtHash::new().digest()),
             "e5a00aa9991ac8a5ee3109844d84a55583bd20572ad3ffcd42792f3c36b183ad"
         );
     }
@@ -359,7 +355,7 @@ mod tests {
         h.add("one");
         h.add("two");
         assert_eq!(
-            hex(&h.digest()),
+            crate::hex::to_hex(&h.digest()),
             "ae05cb6d224379d9710c290c8529945c5b0e0fde9ead30b9699057ce701c63e7"
         );
     }
