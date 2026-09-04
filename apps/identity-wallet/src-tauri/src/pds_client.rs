@@ -383,6 +383,38 @@ async fn classify_xrpc_response(context: &str, resp: reqwest::Response) -> PdsCl
     classify_xrpc_error(status.as_u16(), retry_after, &body)
 }
 
+/// The shared tail of an XRPC call once a response has been received: classify a non-2xx
+/// status into the matching [`PdsClientError`] variant via [`classify_xrpc_response`], or hand
+/// back the still-unread response on success. `op` is the same call-site name passed through to
+/// `classify_xrpc_response` (used only for the log line, not the returned error).
+///
+/// This is the one piece truly common to every XRPC call in this file — callers that also need
+/// the JSON body should prefer [`xrpc_json`]; callers with something extra around this branch
+/// (a special-cased status code, a raw-bytes/text body, a custom timeout) call this directly.
+async fn xrpc_ok(op: &str, resp: reqwest::Response) -> Result<reqwest::Response, PdsClientError> {
+    if resp.status().is_success() {
+        Ok(resp)
+    } else {
+        Err(classify_xrpc_response(op, resp).await)
+    }
+}
+
+/// [`xrpc_ok`], then decode a JSON success body. A malformed body maps to
+/// [`PdsClientError::InvalidResponse`] — the variant most JSON-returning call sites in this file
+/// use; the handful that report [`PdsClientError::NetworkError`] on a parse failure instead call
+/// [`xrpc_ok`] directly and parse inline, to keep that pre-existing distinction intact.
+async fn xrpc_json<T: serde::de::DeserializeOwned>(
+    op: &str,
+    resp: reqwest::Response,
+) -> Result<T, PdsClientError> {
+    let resp = xrpc_ok(op, resp).await?;
+    resp.json::<T>()
+        .await
+        .map_err(|e| PdsClientError::InvalidResponse {
+            message: format!("failed to parse {op} response: {e}"),
+        })
+}
+
 /// Record a redacted transport-failure breadcrumb for the user-exportable diagnostics log.
 ///
 /// This is the transport-side companion to [`classify_xrpc_response`]. A connect/DNS/TLS/timeout
@@ -865,25 +897,15 @@ impl PdsClient {
             }
         })?;
 
-        match response.status() {
-            s if s == 404 => return Err(PdsClientError::DidNotFound),
-            // Status-classified like the other plc.directory reads: a throttle or outage
-            // verdict is preserved for callers instead of flattening to a transport error.
-            s if !s.is_success() => {
-                return Err(classify_xrpc_response("discover_pds", response).await);
-            }
-            _ => {}
+        if response.status().as_u16() == 404 {
+            return Err(PdsClientError::DidNotFound);
         }
 
-        // Parse W3C DID Document and convert to PlcDidDocument.
-        // rotation_keys will be empty — callers that need them must fetch the audit log.
-        let w3c_doc: W3cDidDocument =
-            response
-                .json()
-                .await
-                .map_err(|e| PdsClientError::InvalidResponse {
-                    message: format!("failed to parse DID document: {}", e),
-                })?;
+        // Parse W3C DID Document and convert to PlcDidDocument. Status-classified like the
+        // other plc.directory reads: a throttle or outage verdict is preserved for callers
+        // instead of flattening to a transport error. rotation_keys will be empty —
+        // callers that need them must fetch the audit log.
+        let w3c_doc: W3cDidDocument = xrpc_json("discover_pds", response).await?;
         let doc = w3c_doc.into_plc_doc();
 
         // Extract the atproto_pds service
@@ -1310,15 +1332,12 @@ impl PdsClient {
             }
         })?;
 
-        match resp.status() {
-            s if s == 404 => return Err(PdsClientError::DidNotFound),
-            // A non-2xx is plc.directory's verdict (429 throttle, 5xx outage), not a
-            // connectivity problem — classify by status so callers can say which it was.
-            s if !s.is_success() => {
-                return Err(classify_xrpc_response("fetch_audit_log", resp).await);
-            }
-            _ => {}
+        if resp.status().as_u16() == 404 {
+            return Err(PdsClientError::DidNotFound);
         }
+        // A non-2xx is plc.directory's verdict (429 throttle, 5xx outage), not a
+        // connectivity problem — classify by status so callers can say which it was.
+        let resp = xrpc_ok("fetch_audit_log", resp).await?;
 
         resp.text().await.map_err(|e| {
             note_transport_failure("fetch_audit_log", Some(&url), &e);
@@ -1347,15 +1366,12 @@ impl PdsClient {
             }
         })?;
 
-        match resp.status() {
-            s if s == 404 => return Err(PdsClientError::DidNotFound),
-            // Same status-classification as `fetch_audit_log`: a 429/5xx from plc.directory
-            // must not read as "check your connection".
-            s if !s.is_success() => {
-                return Err(classify_xrpc_response("fetch_plc_data_document", resp).await);
-            }
-            _ => {}
+        if resp.status().as_u16() == 404 {
+            return Err(PdsClientError::DidNotFound);
         }
+        // Same status-classification as `fetch_audit_log`: a 429/5xx from plc.directory
+        // must not read as "check your connection".
+        let resp = xrpc_ok("fetch_plc_data_document", resp).await?;
 
         resp.json().await.map_err(|e| {
             note_transport_failure("fetch_plc_data_document", Some(&url), &e);
@@ -1434,9 +1450,7 @@ impl PdsClient {
                 }
             })?;
 
-        if !resp.status().is_success() {
-            return Err(classify_xrpc_response("getRepo", resp).await);
-        }
+        let resp = xrpc_ok("getRepo", resp).await?;
 
         resp.bytes().await.map(|b| b.to_vec()).map_err(|e| {
             note_transport_failure("getRepo", Some(&url), &e);
@@ -1494,9 +1508,7 @@ impl PdsClient {
                 }
             })?;
 
-        if !resp.status().is_success() {
-            return Err(classify_xrpc_response("getBlob", resp).await);
-        }
+        let resp = xrpc_ok("getBlob", resp).await?;
 
         // Capture the header before the body read consumes the response.
         let content_type = resp
@@ -1544,15 +1556,7 @@ impl PdsClient {
             }
         })?;
 
-        if !resp.status().is_success() {
-            return Err(classify_xrpc_response("listBlobs", resp).await);
-        }
-
-        resp.json::<ListedBlobs>()
-            .await
-            .map_err(|e| PdsClientError::InvalidResponse {
-                message: format!("failed to parse listBlobs response: {}", e),
-            })
+        xrpc_json("listBlobs", resp).await
     }
 
     /// Reserve a signing key on the PDS (auth: none, idempotent per DID).
@@ -1592,9 +1596,7 @@ impl PdsClient {
                 }
             })?;
 
-        if !resp.status().is_success() {
-            return Err(classify_xrpc_response("reserveSigningKey", resp).await);
-        }
+        let resp = xrpc_ok("reserveSigningKey", resp).await?;
 
         #[derive(Deserialize)]
         struct ReserveSigningKeyResponse {
@@ -1665,11 +1667,7 @@ impl PdsClient {
                 }
             })?;
 
-        if resp.status().is_success() {
-            Ok(())
-        } else {
-            Err(classify_xrpc_response("deleteAccount", resp).await)
-        }
+        xrpc_ok("deleteAccount", resp).await.map(|_| ())
     }
 }
 
@@ -1838,11 +1836,9 @@ pub async fn request_plc_operation_signature(
             message: format!("request_plc_operation_signature failed: {}", e),
         })?;
 
-    if resp.status().is_success() {
-        Ok(())
-    } else {
-        Err(classify_xrpc_response("requestPlcOperationSignature", resp).await)
-    }
+    xrpc_ok("requestPlcOperationSignature", resp)
+        .await
+        .map(|_| ())
 }
 
 /// Sign a PLC operation with credentials from the PDS.
@@ -1857,9 +1853,7 @@ pub async fn sign_plc_operation(
             message: format!("sign_plc_operation failed: {}", e),
         })?;
 
-    if !resp.status().is_success() {
-        return Err(classify_xrpc_response("signPlcOperation", resp).await);
-    }
+    let resp = xrpc_ok("signPlcOperation", resp).await?;
 
     resp.json::<SignPlcOperationResponse>()
         .await
@@ -1879,9 +1873,7 @@ pub async fn get_recommended_did_credentials(
             message: format!("get_recommended_did_credentials failed: {}", e),
         })?;
 
-    if !resp.status().is_success() {
-        return Err(classify_xrpc_response("getRecommendedDidCredentials", resp).await);
-    }
+    let resp = xrpc_ok("getRecommendedDidCredentials", resp).await?;
 
     resp.json::<RecommendedCredentials>()
         .await
@@ -1957,15 +1949,7 @@ pub async fn create_app_password(
             message: format!("create_app_password failed: {}", e),
         })?;
 
-    if !resp.status().is_success() {
-        return Err(classify_xrpc_response("createAppPassword", resp).await);
-    }
-
-    resp.json::<AppPasswordCreated>()
-        .await
-        .map_err(|e| PdsClientError::InvalidResponse {
-            message: format!("failed to parse create_app_password response: {}", e),
-        })
+    xrpc_json("createAppPassword", resp).await
 }
 
 /// List the account's app passwords (names, creation times, privilege — never secrets).
@@ -1981,16 +1965,9 @@ pub async fn list_app_passwords(
             message: format!("list_app_passwords failed: {}", e),
         })?;
 
-    if !resp.status().is_success() {
-        return Err(classify_xrpc_response("listAppPasswords", resp).await);
-    }
-
-    resp.json::<ListAppPasswordsResponse>()
+    xrpc_json::<ListAppPasswordsResponse>("listAppPasswords", resp)
         .await
         .map(|body| body.passwords)
-        .map_err(|e| PdsClientError::InvalidResponse {
-            message: format!("failed to parse list_app_passwords response: {}", e),
-        })
 }
 
 /// Revoke a named app password (and, server-side, its sessions/refresh tokens atomically).
@@ -2010,11 +1987,7 @@ pub async fn revoke_app_password(
             message: format!("revoke_app_password failed: {}", e),
         })?;
 
-    if resp.status().is_success() {
-        Ok(())
-    } else {
-        Err(classify_xrpc_response("revokeAppPassword", resp).await)
-    }
+    xrpc_ok("revokeAppPassword", resp).await.map(|_| ())
 }
 
 // ============================================================================
@@ -2044,9 +2017,7 @@ pub async fn get_service_auth(
             message: format!("get_service_auth failed: {}", e),
         })?;
 
-    if !resp.status().is_success() {
-        return Err(classify_xrpc_response("getServiceAuth", resp).await);
-    }
+    let resp = xrpc_ok("getServiceAuth", resp).await?;
 
     resp.json::<ServiceAuthToken>()
         .await
@@ -2071,14 +2042,10 @@ pub async fn create_account_migration(
             message: format!("create_account_migration failed: {}", e),
         })?;
 
-    let status = resp.status();
-    if status.as_u16() == 409 {
+    if resp.status().as_u16() == 409 {
         return Err(PdsClientError::DidAlreadyExists);
     }
-
-    if !status.is_success() {
-        return Err(classify_xrpc_response("createAccount", resp).await);
-    }
+    let resp = xrpc_ok("createAccount", resp).await?;
 
     resp.json::<CreateAccountResponse>()
         .await
@@ -2106,11 +2073,7 @@ pub async fn import_repo(
             message: format!("import_repo failed: {}", e),
         })?;
 
-    if resp.status().is_success() {
-        Ok(())
-    } else {
-        Err(classify_xrpc_response("importRepo", resp).await)
-    }
+    xrpc_ok("importRepo", resp).await.map(|_| ())
 }
 
 /// Upload a blob to the destination PDS.
@@ -2129,9 +2092,7 @@ pub async fn upload_blob(
             message: format!("upload_blob failed: {}", e),
         })?;
 
-    if !resp.status().is_success() {
-        return Err(classify_xrpc_response("uploadBlob", resp).await);
-    }
+    let resp = xrpc_ok("uploadBlob", resp).await?;
 
     resp.json::<UploadBlobResponse>()
         .await
@@ -2163,9 +2124,7 @@ pub async fn list_missing_blobs(
             message: format!("list_missing_blobs failed: {}", e),
         })?;
 
-    if !resp.status().is_success() {
-        return Err(classify_xrpc_response("listMissingBlobs", resp).await);
-    }
+    let resp = xrpc_ok("listMissingBlobs", resp).await?;
 
     resp.json::<MissingBlobs>()
         .await
@@ -2188,9 +2147,7 @@ pub async fn get_preferences(
             message: format!("get_preferences failed: {}", e),
         })?;
 
-    if !resp.status().is_success() {
-        return Err(classify_xrpc_response("getPreferences", resp).await);
-    }
+    let resp = xrpc_ok("getPreferences", resp).await?;
 
     resp.json::<serde_json::Value>()
         .await
@@ -2214,11 +2171,7 @@ pub async fn put_preferences(
             message: format!("put_preferences failed: {}", e),
         })?;
 
-    if resp.status().is_success() {
-        Ok(())
-    } else {
-        Err(classify_xrpc_response("putPreferences", resp).await)
-    }
+    xrpc_ok("putPreferences", resp).await.map(|_| ())
 }
 
 /// Check the account status on the destination PDS.
@@ -2234,9 +2187,7 @@ pub async fn check_account_status(
             message: format!("check_account_status failed: {}", e),
         })?;
 
-    if !resp.status().is_success() {
-        return Err(classify_xrpc_response("checkAccountStatus", resp).await);
-    }
+    let resp = xrpc_ok("checkAccountStatus", resp).await?;
 
     resp.json::<AccountStatus>()
         .await
@@ -2263,11 +2214,7 @@ pub async fn activate_account(
             message: format!("activate_account failed: {}", e),
         })?;
 
-    if resp.status().is_success() {
-        Ok(())
-    } else {
-        Err(classify_xrpc_response("activateAccount", resp).await)
-    }
+    xrpc_ok("activateAccount", resp).await.map(|_| ())
 }
 
 /// Deactivate the account on the destination PDS.
@@ -2289,11 +2236,7 @@ pub async fn deactivate_account(
             message: format!("deactivate_account failed: {}", e),
         })?;
 
-    if resp.status().is_success() {
-        Ok(())
-    } else {
-        Err(classify_xrpc_response("deactivateAccount", resp).await)
-    }
+    xrpc_ok("deactivateAccount", resp).await.map(|_| ())
 }
 
 /// Request permanent deletion of the authenticated account: mints and emails a single-use code.
@@ -2312,11 +2255,7 @@ pub async fn request_account_delete(
             message: format!("request_account_delete failed: {}", e),
         })?;
 
-    if resp.status().is_success() {
-        Ok(())
-    } else {
-        Err(classify_xrpc_response("requestAccountDelete", resp).await)
-    }
+    xrpc_ok("requestAccountDelete", resp).await.map(|_| ())
 }
 
 #[cfg(test)]
@@ -2417,6 +2356,58 @@ mod tests {
             parse_xrpc_error_envelope("  <html>502 Bad Gateway</html>  "),
             (None, "<html>502 Bad Gateway</html>".to_string())
         );
+    }
+
+    /// `xrpc_json` is the shared tail every migrated call site now routes through: a non-2xx
+    /// response classifies through `classify_xrpc_response` (here, RateLimited with the
+    /// pacing hint), and a malformed body on an otherwise-successful response maps to
+    /// `InvalidResponse` rather than panicking or silently defaulting.
+    #[tokio::test]
+    async fn xrpc_json_classifies_non_2xx_and_flags_malformed_body() {
+        let mock_server = MockServer::start();
+        mock_server.mock(|when, then| {
+            when.method(httpmock::Method::GET).path("/rate-limited");
+            then.status(429).header("Retry-After", "5").body("{}");
+        });
+        mock_server.mock(|when, then| {
+            when.method(httpmock::Method::GET).path("/garbage");
+            then.status(200).body("not json");
+        });
+
+        let client = reqwest::Client::new();
+
+        let resp = client
+            .get(format!("{}/rate-limited", mock_server.base_url()))
+            .send()
+            .await
+            .unwrap();
+        match xrpc_json::<serde_json::Value>("test", resp)
+            .await
+            .unwrap_err()
+        {
+            PdsClientError::RateLimited { retry_after, .. } => {
+                assert_eq!(retry_after.as_deref(), Some("5"));
+            }
+            other => panic!("expected RateLimited, got {other:?}"),
+        }
+
+        let resp = client
+            .get(format!("{}/garbage", mock_server.base_url()))
+            .send()
+            .await
+            .unwrap();
+        match xrpc_json::<serde_json::Value>("test", resp)
+            .await
+            .unwrap_err()
+        {
+            PdsClientError::InvalidResponse { message } => {
+                assert!(
+                    message.contains("failed to parse test response"),
+                    "got: {message}"
+                );
+            }
+            other => panic!("expected InvalidResponse, got {other:?}"),
+        }
     }
 
     /// A plc.directory 429 on the audit-log read classifies as RateLimited (with the pacing
