@@ -38,7 +38,7 @@ use uuid::Uuid;
 
 use crate::app::AppState;
 use crate::auth::agent_assertion::parse_sqlite_datetime;
-use crate::auth::guards::{authenticate_account_owner, OwnerAuthError};
+use crate::auth::guards::authenticate_owner;
 use crate::auth::oauth_scopes::intersect_scope_tokens;
 use crate::db::agent_audit::{
     insert_agent_audit_event, list_agent_audit_events, AgentAuditEventType,
@@ -112,34 +112,6 @@ pub struct AuditQuery {
 }
 
 // ── Shared auth + ownership ─────────────────────────────────────────────────────
-
-/// Authenticate the account owner: a wallet session token first, then a full-access OAuth/XRPC
-/// access token. Agent-derived tokens (`registration_id` claim) and non-full-access scopes
-/// (app passwords) are refused. Returns the caller's DID.
-///
-/// The credential logic is `auth::guards::authenticate_account_owner`, shared with the claim
-/// ceremony's confirm gate (`agent_claim.rs` — routes may not import one another); this wrapper
-/// maps its neutral rejection into this surface's XRPC vocabulary.
-async fn authenticate_owner(
-    headers: &HeaderMap,
-    method: &Method,
-    uri: &Uri,
-    state: &AppState,
-) -> Result<String, ApiError> {
-    authenticate_account_owner(headers, method, uri, state)
-        .await
-        .map_err(|err| match err {
-            OwnerAuthError::Unauthenticated(e) => e,
-            OwnerAuthError::AgentDerived => ApiError::new(
-                ErrorCode::InsufficientScope,
-                "this operation is not available to agent-derived credentials",
-            ),
-            OwnerAuthError::NotFullAccess => ApiError::new(
-                ErrorCode::InvalidToken,
-                "a session or full-access token is required",
-            ),
-        })
-}
 
 /// Load a registration and require `did` to own it — as the account it acts as, or as the
 /// parent of a sovereign child (the parent provisions, revokes, and audits its children; the
