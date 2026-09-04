@@ -246,10 +246,10 @@
   });
 </script>
 
-<div class="screen">
+<div class="screen u-screen">
   <ScreenHeader title="App passwords" {onback} backLabel="Back to identity" />
 
-  <p class="lede">
+  <p class="lede u-body-copy">
     Sign in to the official Bluesky app — and other apps that ask for a password — without
     ever exposing your keys. Each app password is a separate, revocable credential.
   </p>
@@ -291,14 +291,14 @@
       {/each}
     </div>
   {:else if locked}
-    <div class="notice notice--locked">
+    <div class="notice notice--locked u-notice">
       <p class="notice-text notice-text--ink">
         This identity is locked. Unlock it to manage app passwords.
       </p>
       <Button onclick={unlockAndReload}>Unlock</Button>
     </div>
   {:else if loadError}
-    <div class="notice" role="alert">
+    <div class="notice u-notice" role="alert">
       <p class="notice-text">{loadError}</p>
       <Button variant="secondary" onclick={load}>Try again</Button>
     </div>
@@ -370,7 +370,7 @@
 
     <p class="section-label">Active app passwords</p>
     {#if passwords.length === 0}
-      <p class="empty">
+      <p class="empty u-body-copy">
         None yet. Create one above, then sign in to the Bluesky app with your handle and
         that password.
       </p>
@@ -416,7 +416,7 @@
                   be undone.
                 </p>
                 {#if revokeError}<p class="confirm-error" role="alert">{revokeError}</p>{/if}
-                <div class="confirm-actions">
+                <div class="confirm-actions u-stack-sm">
                   <Button onclick={() => doRevoke(entry.name)} disabled={revoking}>
                     {#if revoking}<Spinner size={16} /> Revoking…{:else}Revoke with biometrics{/if}
                   </Button>
@@ -441,26 +441,10 @@
 </div>
 
 <style>
-  .screen {
-    display: flex;
-    flex-direction: column;
-    height: 100%;
-    padding: var(--space-lg) var(--space-md) var(--space-xl);
-    gap: var(--space-md);
-    overflow-y: auto;
-  }
-
   .truncate {
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
-  }
-
-  .lede {
-    font-size: var(--text-body);
-    color: var(--color-muted);
-    line-height: 1.5;
-    margin: 0;
   }
 
   /* What the credential can and cannot do — text + icon, never color alone. */
@@ -602,13 +586,6 @@
     margin: var(--space-xs) 0 0;
   }
 
-  .empty {
-    font-size: var(--text-body);
-    color: var(--color-muted);
-    line-height: 1.5;
-    margin: 0;
-  }
-
   .cards {
     display: flex;
     flex-direction: column;
@@ -697,22 +674,7 @@
     color: var(--color-critical);
     margin: 0;
   }
-  .confirm-actions {
-    display: flex;
-    flex-direction: column;
-    gap: var(--space-sm);
-  }
 
-  .notice {
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    gap: var(--space-md);
-    background: var(--color-critical-surface);
-    border-radius: var(--radius-lg);
-    padding: var(--space-lg);
-    text-align: center;
-  }
   .notice--locked {
     background: var(--color-surface);
     border: 1px solid var(--color-line);

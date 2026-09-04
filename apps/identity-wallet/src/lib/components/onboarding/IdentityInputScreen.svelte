@@ -87,12 +87,12 @@
   </Button>
 
   {#if resolved}
-    <div class="preview">
-      <div class="row"><span class="k">Handle</span><span class="v">@{resolved.handle}</span></div>
-      <div class="row"><span class="k">DID</span><span class="v mono">{displayDid}</span></div>
-      <div class="row"><span class="k">PDS</span><span class="v">{resolved.pdsUrl}</span></div>
+    <div class="preview u-card">
+      <div class="row"><span class="k u-label-muted">Handle</span><span class="v">@{resolved.handle}</span></div>
+      <div class="row"><span class="k u-label-muted">DID</span><span class="v mono">{displayDid}</span></div>
+      <div class="row"><span class="k u-label-muted">PDS</span><span class="v">{resolved.pdsUrl}</span></div>
       <div class="row">
-        <span class="k">Rotation key</span>
+        <span class="k u-label-muted">Rotation key</span>
         <span class="v" class:ok={resolved.deviceKeyIsRoot}>
           {resolved.deviceKeyIsRoot ? 'Your device is the root key' : 'Device key is not the root key'}
         </span>
@@ -105,27 +105,12 @@
 </OnboardingShell>
 
 <style>
-  .preview {
-    width: 100%;
-    background: var(--color-surface);
-    border: 1px solid var(--color-line);
-    border-radius: var(--radius-lg);
-    padding: var(--space-md);
-    display: flex;
-    flex-direction: column;
-    gap: var(--space-sm);
-    text-align: left;
-  }
   .row {
     display: flex;
     flex-direction: column;
     gap: var(--space-3xs);
   }
-  .k {
-    font-size: var(--text-label);
-    font-weight: var(--weight-semibold);
-    color: var(--color-muted);
-  }
+
   .v {
     font-size: var(--text-body);
     color: var(--color-ink);

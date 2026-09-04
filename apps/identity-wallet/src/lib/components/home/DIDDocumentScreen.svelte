@@ -59,7 +59,7 @@
   }
 </script>
 
-<div class="screen">
+<div class="screen u-screen">
   <ScreenHeader title="DID document" onback={onback} backLabel="Back to manage identity" />
 
   {#if isWebDid}
@@ -82,13 +82,13 @@
   {/if}
 
   <div class="section">
-    <p class="label">Identifier</p>
+    <p class="label u-block-label">Identifier</p>
     <p class="mono">{didDoc.id ?? '—'}</p>
   </div>
 
   {#if alsoKnownAs.length > 0}
     <div class="section">
-      <p class="label">Also known as</p>
+      <p class="label u-block-label">Also known as</p>
       {#each alsoKnownAs as alias}
         <p class="mono">{alias}</p>
       {/each}
@@ -97,7 +97,7 @@
 
   {#if verificationMethods.length > 0}
     <div class="section">
-      <p class="label">Verification keys</p>
+      <p class="label u-block-label">Verification keys</p>
       {#each verificationMethods as method}
         <div class="card">
           <p class="card-type">{method.type ?? 'Unknown'}</p>
@@ -120,7 +120,7 @@
 
   {#if services.length > 0}
     <div class="section">
-      <p class="label">Services</p>
+      <p class="label u-block-label">Services</p>
       {#each services as svc}
         <div class="card">
           <p class="card-type">{svc.type ?? 'Unknown'}</p>
@@ -140,14 +140,6 @@
 </div>
 
 <style>
-  .screen {
-    display: flex;
-    flex-direction: column;
-    height: 100%;
-    padding: var(--space-lg) var(--space-md) var(--space-xl);
-    gap: var(--space-md);
-    overflow-y: auto;
-  }
   /* did:web explainer — informational, not an alarm: aubergine "reveal the machinery" tone,
      paired with an icon + text (never color alone) per the design brief. */
   .didweb {
@@ -204,12 +196,7 @@
     flex-direction: column;
     gap: var(--space-sm);
   }
-  .label {
-    font-size: var(--text-label);
-    font-weight: var(--weight-semibold);
-    color: var(--color-muted);
-    margin: 0;
-  }
+
   .mono {
     font-family: var(--font-mono);
     font-size: var(--text-data);

@@ -164,7 +164,7 @@
   });
 </script>
 
-<div class="screen">
+<div class="screen u-screen-lg">
   <ScreenHeader
     title={handle ? '@' + handle : truncateDid(did)}
     onback={onback}
@@ -274,15 +274,6 @@
 </div>
 
 <style>
-  .screen {
-    display: flex;
-    flex-direction: column;
-    height: 100%;
-    padding: var(--space-lg) var(--space-md) var(--space-xl);
-    gap: var(--space-lg);
-    overflow-y: auto;
-  }
-
   .note {
     background: var(--color-surface);
     border: 1px solid var(--color-line);

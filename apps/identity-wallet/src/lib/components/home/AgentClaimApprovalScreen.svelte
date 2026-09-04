@@ -245,17 +245,17 @@
   });
 </script>
 
-<div class="screen">
+<div class="screen u-screen-lg">
   <ScreenHeader title="Approve an agent" {onback} />
 
   {#if phase === 'enter' || phase === 'loading'}
     <div class="body">
-      <p class="lede">
+      <p class="lede u-body-copy">
         An app or agent asking to act on your behalf will show you a short code. Enter it here to
         see exactly what it is asking for — nothing is granted until you approve.
       </p>
 
-      <label class="field-label" for="agent-code">Code from the agent</label>
+      <label class="field-label u-label-muted" for="agent-code">Code from the agent</label>
       <TextField
         id="agent-code"
         bind:value={code}
@@ -294,13 +294,13 @@
           <p class="req-type">{REGISTRATION_TYPE_LABELS[preview.registrationType] ?? preview.registrationType}</p>
         </div>
 
-        <p class="lede">
+        <p class="lede u-body-copy">
           This agent registered on its own, so you can decide what it gets: a key to your identity,
           or an identity of its own that you hold the keys to.
         </p>
 
         <p class="section-label" id="door-list-label">Choose one</p>
-        <div class="doors" role="group" aria-labelledby="door-list-label">
+        <div class="doors u-stack-sm" role="group" aria-labelledby="door-list-label">
           <NavRow
             title="Let it act as me"
             subtitle="It posts and reads as this identity, within the permissions on the next screen."
@@ -334,13 +334,13 @@
     {/if}
   {:else if phase === 'handle' || phase === 'minting'}
     <div class="body">
-      <p class="lede">
+      <p class="lede u-body-copy">
         The agent gets its own account on your server — its own handle and its own record, separate
         from yours. Its recovery key is derived from your recovery seed, so this identity stays in
         control of it and no one else can take it over.
       </p>
 
-      <label class="field-label" for="child-handle">Handle for the agent’s account</label>
+      <label class="field-label u-label-muted" for="child-handle">Handle for the agent’s account</label>
       <TextField
         id="child-handle"
         bind:value={childHandle}
@@ -460,32 +460,10 @@
 </div>
 
 <style>
-  .screen {
-    display: flex;
-    flex-direction: column;
-    height: 100%;
-    padding: var(--space-lg) var(--space-md) var(--space-xl);
-    gap: var(--space-lg);
-    overflow-y: auto;
-  }
-
   .body {
     display: flex;
     flex-direction: column;
     gap: var(--space-md);
-  }
-
-  .lede {
-    font-size: var(--text-body);
-    color: var(--color-muted);
-    line-height: 1.5;
-    margin: 0;
-  }
-
-  .field-label {
-    font-size: var(--text-label);
-    font-weight: var(--weight-semibold);
-    color: var(--color-muted);
   }
 
   .req-card {
@@ -670,11 +648,5 @@
     margin: var(--space-2xs) 0 0;
     overflow-wrap: anywhere;
     max-width: 34ch;
-  }
-
-  .doors {
-    display: flex;
-    flex-direction: column;
-    gap: var(--space-sm);
   }
 </style>

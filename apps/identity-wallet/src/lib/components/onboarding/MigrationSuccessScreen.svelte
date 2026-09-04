@@ -49,39 +49,24 @@
     </SealEmblem>
   {/snippet}
 
-  <div class="summary">
-    <div class="row"><span class="k">DID</span><span class="v mono">{didId}</span></div>
+  <div class="summary u-card">
+    <div class="row"><span class="k u-label-muted">DID</span><span class="v mono">{didId}</span></div>
     {#if handle}
-      <div class="row"><span class="k">Handle</span><span class="v">@{handle}</span></div>
+      <div class="row"><span class="k u-label-muted">Handle</span><span class="v">@{handle}</span></div>
     {/if}
-    <div class="row"><span class="k">New PDS</span><span class="v mono">{pdsEndpoint}</span></div>
+    <div class="row"><span class="k u-label-muted">New PDS</span><span class="v mono">{pdsEndpoint}</span></div>
   </div>
 
   <Button onclick={ondone}>Done</Button>
 </OnboardingShell>
 
 <style>
-  .summary {
-    width: 100%;
-    background: var(--color-surface);
-    border: 1px solid var(--color-line);
-    border-radius: var(--radius-lg);
-    padding: var(--space-md);
-    display: flex;
-    flex-direction: column;
-    gap: var(--space-sm);
-    text-align: left;
-  }
   .row {
     display: flex;
     flex-direction: column;
     gap: var(--space-3xs);
   }
-  .k {
-    font-size: var(--text-label);
-    font-weight: var(--weight-semibold);
-    color: var(--color-muted);
-  }
+
   .v {
     font-size: var(--text-body);
     color: var(--color-ink);

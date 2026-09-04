@@ -104,14 +104,14 @@
 <div class="screen">
   <ScreenHeader title="Add a recovery key" {onback} backLabel="Back to identity" />
 
-  <p class="intro">
+  <p class="intro u-body-soft">
     This identity has no recovery key yet. Adding one gives you a way back in if you lose this
     device. Your device key stays firmly in control, and nothing is removed.
   </p>
 
   <div class="identity">
-    <span class="id-label">Identity</span>
-    <span class="id-did">{truncateDid(did)}</span>
+    <span class="id-label u-label-muted">Identity</span>
+    <span class="id-did u-id-mono">{truncateDid(did)}</span>
   </div>
 
   {#if phase.kind === 'loading'}
@@ -128,8 +128,8 @@
       <p class="hint">Publishing the change and saving your share…</p>
     </div>
   {:else if phase.kind === 'ready'}
-    <div class="block">
-      <p class="block-label">This will</p>
+    <div class="block u-stack-sm">
+      <p class="block-label u-block-label">This will</p>
       {#each phase.preview.diff.addedKeys as key (key)}
         <DiffRow variant="restore" title="Add your new recovery key" value={key} />
       {/each}
@@ -139,8 +139,8 @@
     <!-- The honest headline of this flow: the shares are the user's, and the server neither
          receives nor can release one. Said before the ceremony, not after, so the person who
          has to keep two shares safe knows that before agreeing to it. -->
-    <div class="block">
-      <p class="block-label">Where your shares go</p>
+    <div class="block u-stack-sm">
+      <p class="block-label u-block-label">Where your shares go</p>
       <ul class="shares">
         <li><strong>Share 1</strong> — your Keychain, set to sync to your other Apple devices</li>
         <li><strong>Shares 2 and 3</strong> — yours to save, in the next step</li>
@@ -158,7 +158,7 @@
 
     {#if phase.error}
       <div class="error-box" role="alert">
-        <p class="error-text">{phase.error}</p>
+        <p class="error-text u-error-text">{phase.error}</p>
       </div>
     {/if}
 
@@ -179,28 +179,10 @@
     overflow-y: auto;
   }
 
-  .intro {
-    font-size: var(--text-body);
-    line-height: var(--leading-body);
-    color: var(--color-ink-soft);
-    margin: 0;
-  }
-
   .identity {
     display: flex;
     flex-direction: column;
     gap: var(--space-2xs);
-  }
-  .id-label {
-    font-size: var(--text-label);
-    font-weight: var(--weight-semibold);
-    color: var(--color-muted);
-  }
-  .id-did {
-    font-family: var(--font-mono);
-    font-size: var(--text-data);
-    color: var(--color-ink-soft);
-    word-break: break-all;
   }
 
   .center {
@@ -222,17 +204,6 @@
     margin: 0;
   }
 
-  .block {
-    display: flex;
-    flex-direction: column;
-    gap: var(--space-sm);
-  }
-  .block-label {
-    font-size: var(--text-label);
-    font-weight: var(--weight-semibold);
-    color: var(--color-muted);
-    margin: 0;
-  }
   .reassure {
     font-size: var(--text-label);
     color: var(--color-ink-soft);
@@ -263,12 +234,6 @@
     background: var(--color-critical-surface);
     border-radius: var(--radius-md);
     padding: 12px var(--space-md);
-  }
-  .error-text {
-    font-size: var(--text-label);
-    color: var(--color-critical);
-    margin: 0;
-    line-height: 1.4;
   }
 
   .actions {

@@ -194,7 +194,7 @@
   onMount(loadMoreAudit);
 </script>
 
-<div class="screen">
+<div class="screen u-screen">
   <ScreenHeader title={child.handle} {onback} backLabel="Back to agent list" truncate />
 
   <div class="status status--{state_}">
@@ -215,7 +215,7 @@
     </span>
   </div>
 
-  <p class="lede">
+  <p class="lede u-body-copy">
     This agent has an account of its own — its own handle, DID, and repository — signed into
     existence by your recovery key. Nothing it does touches your account.
   </p>
@@ -266,7 +266,7 @@
     Everything this account has done, newest first. Entries cannot be edited or deleted.
   </p>
   {#if auditError}
-    <div class="notice" role="alert">
+    <div class="notice u-notice" role="alert">
       <p class="notice-text">{auditError}</p>
       <Button variant="secondary" onclick={loadMoreAudit}>Try again</Button>
     </div>
@@ -369,22 +369,6 @@
 </div>
 
 <style>
-  .screen {
-    display: flex;
-    flex-direction: column;
-    height: 100%;
-    padding: var(--space-lg) var(--space-md) var(--space-xl);
-    gap: var(--space-md);
-    overflow-y: auto;
-  }
-
-  .lede {
-    font-size: var(--text-body);
-    color: var(--color-muted);
-    line-height: 1.5;
-    margin: 0;
-  }
-
   .status {
     display: flex;
     align-items: center;
@@ -659,16 +643,6 @@
     margin: 0;
   }
 
-  .notice {
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    gap: var(--space-md);
-    background: var(--color-critical-surface);
-    border-radius: var(--radius-lg);
-    padding: var(--space-lg);
-    text-align: center;
-  }
   .notice-text {
     font-size: var(--text-body);
     color: var(--color-critical);

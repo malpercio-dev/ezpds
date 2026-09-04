@@ -175,7 +175,7 @@
 
   {#if failure}
     <div class="error-box" role="alert">
-      <p class="error-text">{failure}</p>
+      <p class="error-text u-error-text">{failure}</p>
       {#if escrowFailed}
         <p class="error-detail">
           You can retry, or continue without server escrow — then only your iCloud share and your
@@ -282,12 +282,7 @@
     border-radius: var(--radius-md);
     padding: var(--space-sm) var(--space-md);
   }
-  .error-text {
-    font-size: var(--text-label);
-    color: var(--color-critical);
-    margin: 0;
-    line-height: 1.4;
-  }
+
   .error-detail {
     font-size: var(--text-label);
     color: var(--color-critical-soft);
