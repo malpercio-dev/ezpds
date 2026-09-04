@@ -514,10 +514,7 @@ pub fn validate_dpop(
     }
 
     // Validate ath (RFC 9449 §4.3): binds the proof to a specific token.
-    let expected_ath = {
-        let hash = Sha256::digest(bound_token_str.as_bytes());
-        URL_SAFE_NO_PAD.encode(hash)
-    };
+    let expected_ath = access_token_hash(bound_token_str);
     match dpop_claims.ath.as_deref() {
         None | Some("") => {
             return Err(ApiError::new(
@@ -599,6 +596,11 @@ pub fn dpop_alg_from_str(alg: &str) -> Option<Algorithm> {
         "ES256" => Some(Algorithm::ES256),
         _ => None,
     }
+}
+
+/// RFC 9449 §4.3 `ath`: `base64url(SHA-256(ASCII(access_token)))`.
+fn access_token_hash(access_token: &str) -> String {
+    URL_SAFE_NO_PAD.encode(Sha256::digest(access_token.as_bytes()))
 }
 
 /// Compute the RFC 7638 JWK thumbprint: SHA-256 of the canonical JSON member set,
@@ -727,5 +729,56 @@ mod tests {
         assert!(nonce
             .chars()
             .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_'));
+    }
+
+    // ── RFC 9449 normative vectors ────────────────────────────────────────────
+    //
+    // The RFC's example client key (Figures 2, 8, 11, 13) and its RFC 7638 thumbprint. The
+    // proofs are dated 2019, so only the signature-verifying prologue can run them; the
+    // ±60s `iat` freshness check lives in each validator's tail.
+
+    const RFC9449_JKT: &str = "0ZcOCORZNYy-DWpqq30jZyJGHTN0d2HglBV3uiguA4I";
+
+    #[test]
+    fn ec_jwk_thumbprint_matches_rfc9449_figure8() {
+        let jwk = serde_json::json!({
+            "kty": "EC",
+            "crv": "P-256",
+            "x": "l8tFrhx-34tV3hRICRDY9zCkDlpBhF42UQUfWVAWBFs",
+            "y": "9VE4jf_Ok_o64zbTTlcuNJajHmt6v9TDVrU0CdvGRDA",
+        });
+        assert_eq!(jwk_thumbprint(&jwk).unwrap(), RFC9449_JKT);
+    }
+
+    #[test]
+    fn rfc9449_figure2_token_request_proof_passes_prologue() {
+        let proof = "eyJ0eXAiOiJkcG9wK2p3dCIsImFsZyI6IkVTMjU2IiwiandrIjp7Imt0eSI6IkVDIiwieCI6Imw4dEZyaHgtMzR0VjNoUklDUkRZOXpDa0RscEJoRjQyVVFVZldWQVdCRnMiLCJ5IjoiOVZFNGpmX09rX282NHpiVFRsY3VOSmFqSG10NnY5VERWclUwQ2R2R1JEQSIsImNydiI6IlAtMjU2In19.eyJqdGkiOiItQndDM0VTYzZhY2MybFRjIiwiaHRtIjoiUE9TVCIsImh0dSI6Imh0dHBzOi8vc2VydmVyLmV4YW1wbGUuY29tL3Rva2VuIiwiaWF0IjoxNTYyMjYyNjE2fQ.2-GxA6T8lP4vfrg8v-FdWP0A0zdrj8igiMLvqRMUvwnQg4PtFLbdLXiOSsX0x7NVY-FNyJK70nfbV37xRZT3Lg";
+        let verified = verify_dpop_proof_prologue(proof)
+            .map_err(DPopProofError::token_endpoint_message)
+            .expect("RFC 9449 Figure 2 proof must verify");
+        assert_eq!(verified.claims.jti, "-BwC3ESc6acc2lTc");
+        assert_eq!(verified.claims.htm, "POST");
+        assert_eq!(verified.claims.htu, "https://server.example.com/token");
+        assert_eq!(verified.claims.iat, 1562262616);
+        assert_eq!(verified.claims.nonce, None);
+        assert_eq!(verified.claims.ath, None);
+        assert_eq!(jwk_thumbprint(&verified.header.jwk).unwrap(), RFC9449_JKT);
+    }
+
+    #[test]
+    fn rfc9449_figure13_resource_proof_ath_matches_access_token() {
+        let proof = "eyJ0eXAiOiJkcG9wK2p3dCIsImFsZyI6IkVTMjU2IiwiandrIjp7Imt0eSI6IkVDIiwieCI6Imw4dEZyaHgtMzR0VjNoUklDUkRZOXpDa0RscEJoRjQyVVFVZldWQVdCRnMiLCJ5IjoiOVZFNGpmX09rX282NHpiVFRsY3VOSmFqSG10NnY5VERWclUwQ2R2R1JEQSIsImNydiI6IlAtMjU2In19.eyJqdGkiOiJlMWozVl9iS2ljOC1MQUVCIiwiaHRtIjoiR0VUIiwiaHR1IjoiaHR0cHM6Ly9yZXNvdXJjZS5leGFtcGxlLm9yZy9wcm90ZWN0ZWRyZXNvdXJjZSIsImlhdCI6MTU2MjI2MjYxOCwiYXRoIjoiZlVIeU8ycjJaM0RaNTNFc05yV0JiMHhXWG9hTnk1OUlpS0NBcWtzbVFFbyJ9.2oW9RP35yRqzhrtNP86L-Ey71EOptxRimPPToA1plemAgR6pxHF8y6-yqyVnmcw6Fy1dqd-jfxSYoMxhAJpLjA";
+        let verified = verify_dpop_proof_prologue(proof)
+            .map_err(DPopProofError::token_endpoint_message)
+            .expect("RFC 9449 Figure 13 proof must verify");
+        let ath = access_token_hash("Kz~8mXK1EalYznwH-LC-1fBAo.4Ljp~zsPE_NeO.gxU");
+        assert_eq!(ath, "fUHyO2r2Z3DZ53EsNrWBb0xWXoaNy59IiKCAqksmQEo");
+        assert_eq!(verified.claims.ath.as_deref(), Some(ath.as_str()));
+        assert_eq!(verified.claims.htm, "GET");
+        assert_eq!(
+            verified.claims.htu,
+            "https://resource.example.org/protectedresource"
+        );
+        assert_eq!(jwk_thumbprint(&verified.header.jwk).unwrap(), RFC9449_JKT);
     }
 }
