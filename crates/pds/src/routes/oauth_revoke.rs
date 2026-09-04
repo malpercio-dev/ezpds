@@ -307,25 +307,9 @@ mod tests {
             !refresh_token_exists(&state, &plaintext).await,
             "the refresh token row must be gone after revocation"
         );
-    }
 
-    #[tokio::test]
-    async fn revocation_is_idempotent() {
-        let state = test_state().await;
-        let key = test_utils::DpopProofKey::generate();
-        let jkt = key.thumbprint();
-        let plaintext = seed_refresh_token(&state, &jkt).await;
-
-        // First revocation deletes the token.
-        let nonce1 = state.dpop_nonces.issue();
-        let dpop1 = key.proof_with("POST", REVOKE_HTU, Some(&nonce1), None);
-        let resp1 = app(state.clone())
-            .oneshot(post_revoke_with_dpop(&format!("token={plaintext}"), &dpop1))
-            .await
-            .unwrap();
-        assert_eq!(resp1.status(), StatusCode::OK);
-
-        // Second revocation of the now-unknown token still returns 200 (RFC 7009 §2.2).
+        // Revoking the now-unknown token again must still return 200 (RFC 7009 §2.2
+        // non-disclosure) rather than surfacing that it was already gone.
         let nonce2 = state.dpop_nonces.issue();
         let dpop2 = key.proof_with("POST", REVOKE_HTU, Some(&nonce2), None);
         let resp2 = app(state)

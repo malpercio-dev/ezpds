@@ -267,50 +267,93 @@ mod tests {
 
     const CLAIM_GRANT: &str = "urn:workos:agent-auth:grant-type:claim";
 
-    /// Seed an agent identity carrying a `claim_token` — the state the claim-polling grant reads.
-    /// `did` is `Some` for a claimed/owned registration (an `accounts` row is inserted for the FK)
-    /// or `None` for an ownerless anonymous one. `claim_token_expires_at`/`identity_assertion` are
-    /// passed straight through so a test can seed a lapsed token or the stored post-claim assertion.
-    #[allow(clippy::too_many_arguments)]
-    async fn seed_claimable_identity(
-        state: &AppState,
-        registration_id: &str,
-        did: Option<&str>,
-        status: &str,
-        claim_token: &str,
-        claim_token_expires_sql: &str,
-        scopes_json: &str,
-        identity_assertion: Option<&str>,
-    ) {
-        if let Some(did) = did {
-            sqlx::query(
-                "INSERT INTO accounts (did, email, password_hash, created_at, updated_at) \
-                 VALUES (?, ?, 'hash', datetime('now'), datetime('now'))",
-            )
-            .bind(did)
-            .bind(format!("{registration_id}@example.com"))
+    /// Builder for an agent identity carrying a `claim_token` — the state the claim-polling grant
+    /// reads. Defaults to the shape most tests want (anonymous, `active`, a live claim-token
+    /// window, the default granted scope, no stored assertion); call the setters for the one or
+    /// two fields a given test varies.
+    struct ClaimableIdentity<'a> {
+        registration_id: &'a str,
+        claim_token: &'a str,
+        did: Option<&'a str>,
+        status: &'a str,
+        claim_token_expires_sql: &'a str,
+        scopes_json: &'a str,
+        identity_assertion: Option<&'a str>,
+    }
+
+    impl<'a> ClaimableIdentity<'a> {
+        fn new(registration_id: &'a str, claim_token: &'a str) -> Self {
+            Self {
+                registration_id,
+                claim_token,
+                did: None,
+                status: "active",
+                claim_token_expires_sql: "datetime('now', '+1 hour')",
+                scopes_json: r#"["repo:*"]"#,
+                identity_assertion: None,
+            }
+        }
+
+        /// A claimed/owned registration — inserts the `accounts` row the FK requires.
+        fn did(mut self, did: &'a str) -> Self {
+            self.did = Some(did);
+            self
+        }
+
+        fn status(mut self, status: &'a str) -> Self {
+            self.status = status;
+            self
+        }
+
+        /// SQLite datetime expression for `claim_token_expires_at` (e.g. `"datetime('now',
+        /// '-1 minute')"` for an already-lapsed window).
+        fn claim_token_expires_sql(mut self, sql: &'a str) -> Self {
+            self.claim_token_expires_sql = sql;
+            self
+        }
+
+        fn scopes_json(mut self, scopes_json: &'a str) -> Self {
+            self.scopes_json = scopes_json;
+            self
+        }
+
+        fn identity_assertion(mut self, assertion: &'a str) -> Self {
+            self.identity_assertion = Some(assertion);
+            self
+        }
+
+        async fn seed(self, state: &AppState) {
+            if let Some(did) = self.did {
+                sqlx::query(
+                    "INSERT INTO accounts (did, email, password_hash, created_at, updated_at) \
+                     VALUES (?, ?, 'hash', datetime('now'), datetime('now'))",
+                )
+                .bind(did)
+                .bind(format!("{}@example.com", self.registration_id))
+                .execute(&state.db)
+                .await
+                .unwrap();
+            }
+            sqlx::query(&format!(
+                "INSERT INTO agent_identities \
+                 (id, did, registration_type, issuer, subject, email, scopes, identity_assertion, \
+                  assertion_expires_at, claim_token, claim_token_expires_at, status, created_at, \
+                  updated_at) \
+                 VALUES (?, ?, 'anonymous', NULL, NULL, 'agent@example.com', ?, ?, \
+                         datetime('now', '+1 hour'), ?, {}, ?, \
+                         datetime('now'), datetime('now'))",
+                self.claim_token_expires_sql
+            ))
+            .bind(self.registration_id)
+            .bind(self.did)
+            .bind(self.scopes_json)
+            .bind(self.identity_assertion)
+            .bind(self.claim_token)
+            .bind(self.status)
             .execute(&state.db)
             .await
             .unwrap();
         }
-        sqlx::query(&format!(
-            "INSERT INTO agent_identities \
-             (id, did, registration_type, issuer, subject, email, scopes, identity_assertion, \
-              assertion_expires_at, claim_token, claim_token_expires_at, status, created_at, \
-              updated_at) \
-             VALUES (?, ?, 'anonymous', NULL, NULL, 'agent@example.com', ?, ?, \
-                     datetime('now', '+1 hour'), ?, {claim_token_expires_sql}, ?, \
-                     datetime('now'), datetime('now'))"
-        ))
-        .bind(registration_id)
-        .bind(did)
-        .bind(scopes_json)
-        .bind(identity_assertion)
-        .bind(claim_token)
-        .bind(status)
-        .execute(&state.db)
-        .await
-        .unwrap();
     }
 
     /// Seed a claim-ceremony attempt (`user_code`) for an identity. `expires_sql` is a SQLite
@@ -357,147 +400,80 @@ mod tests {
         assert_eq!(json_body(resp).await["error"], "invalid_grant");
     }
 
+    /// `seed identity with status/expiry X → poll → assert one error code`, parametrised over
+    /// every non-success outcome the state machine reports.
     #[tokio::test]
-    async fn claim_polling_active_with_pending_attempt_returns_authorization_pending() {
-        let state = test_state().await;
-        seed_claimable_identity(
-            &state,
-            "reg_pending",
-            None,
-            "active",
-            "clm_pending",
-            "datetime('now', '+1 hour')",
-            r#"["repo:*"]"#,
-            None,
-        )
-        .await;
-        seed_claim_attempt(
-            &state,
-            "cla_pending",
-            "reg_pending",
-            "123456",
-            "datetime('now', '+10 minutes')",
-        )
-        .await;
+    async fn claim_polling_error_cases() {
+        struct Case<'a> {
+            name: &'a str,
+            identity: ClaimableIdentity<'a>,
+            /// A live claim-ceremony `user_code` attempt to seed alongside the identity, if any
+            /// — `(id, code, expires_sql)`.
+            attempt: Option<(&'a str, &'a str, &'a str)>,
+            expected_error: &'a str,
+        }
 
-        let resp = app(state)
-            .oneshot(post_token(&format!(
-                "grant_type={CLAIM_GRANT}&claim_token=clm_pending"
-            )))
-            .await
-            .unwrap();
-        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
-        assert_eq!(json_body(resp).await["error"], "authorization_pending");
-    }
+        let cases = [
+            Case {
+                name: "active_with_pending_attempt",
+                identity: ClaimableIdentity::new("reg_pending", "clm_pending"),
+                attempt: Some(("cla_pending", "123456", "datetime('now', '+10 minutes')")),
+                expected_error: "authorization_pending",
+            },
+            Case {
+                // The agent has a claim_token but hasn't started the ceremony yet — nothing to
+                // expire.
+                name: "active_without_attempt",
+                identity: ClaimableIdentity::new("reg_nostart", "clm_nostart"),
+                attempt: None,
+                expected_error: "authorization_pending",
+            },
+            Case {
+                name: "expired_claim_token",
+                identity: ClaimableIdentity::new("reg_ctexpired", "clm_ctexpired")
+                    .claim_token_expires_sql("datetime('now', '-1 minute')"),
+                attempt: None,
+                expected_error: "expired_token",
+            },
+            Case {
+                // The claim_token is still live, but the latest user_code attempt lapsed.
+                name: "expired_user_code",
+                identity: ClaimableIdentity::new("reg_ucexpired", "clm_ucexpired"),
+                attempt: Some(("cla_ucexpired", "654321", "datetime('now', '-1 minute')")),
+                expected_error: "expired_token",
+            },
+            Case {
+                name: "revoked",
+                identity: ClaimableIdentity::new("reg_revoked", "clm_revoked").status("revoked"),
+                attempt: None,
+                expected_error: "access_denied",
+            },
+        ];
 
-    #[tokio::test]
-    async fn claim_polling_active_without_attempt_returns_authorization_pending() {
-        // The agent has a claim_token but hasn't started the ceremony yet — nothing to expire.
-        let state = test_state().await;
-        seed_claimable_identity(
-            &state,
-            "reg_nostart",
-            None,
-            "active",
-            "clm_nostart",
-            "datetime('now', '+1 hour')",
-            r#"["repo:*"]"#,
-            None,
-        )
-        .await;
+        for case in cases {
+            let state = test_state().await;
+            let claim_token = case.identity.claim_token.to_string();
+            let registration_id = case.identity.registration_id.to_string();
+            case.identity.seed(&state).await;
+            if let Some((attempt_id, user_code, expires_sql)) = case.attempt {
+                seed_claim_attempt(&state, attempt_id, &registration_id, user_code, expires_sql)
+                    .await;
+            }
 
-        let resp = app(state)
-            .oneshot(post_token(&format!(
-                "grant_type={CLAIM_GRANT}&claim_token=clm_nostart"
-            )))
-            .await
-            .unwrap();
-        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
-        assert_eq!(json_body(resp).await["error"], "authorization_pending");
-    }
-
-    #[tokio::test]
-    async fn claim_polling_expired_claim_token_returns_expired_token() {
-        let state = test_state().await;
-        seed_claimable_identity(
-            &state,
-            "reg_ctexpired",
-            None,
-            "active",
-            "clm_ctexpired",
-            "datetime('now', '-1 minute')",
-            r#"["repo:*"]"#,
-            None,
-        )
-        .await;
-
-        let resp = app(state)
-            .oneshot(post_token(&format!(
-                "grant_type={CLAIM_GRANT}&claim_token=clm_ctexpired"
-            )))
-            .await
-            .unwrap();
-        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
-        assert_eq!(json_body(resp).await["error"], "expired_token");
-    }
-
-    #[tokio::test]
-    async fn claim_polling_expired_user_code_returns_expired_token() {
-        // The claim_token is still live, but the latest user_code attempt lapsed.
-        let state = test_state().await;
-        seed_claimable_identity(
-            &state,
-            "reg_ucexpired",
-            None,
-            "active",
-            "clm_ucexpired",
-            "datetime('now', '+1 hour')",
-            r#"["repo:*"]"#,
-            None,
-        )
-        .await;
-        seed_claim_attempt(
-            &state,
-            "cla_ucexpired",
-            "reg_ucexpired",
-            "654321",
-            "datetime('now', '-1 minute')",
-        )
-        .await;
-
-        let resp = app(state)
-            .oneshot(post_token(&format!(
-                "grant_type={CLAIM_GRANT}&claim_token=clm_ucexpired"
-            )))
-            .await
-            .unwrap();
-        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
-        assert_eq!(json_body(resp).await["error"], "expired_token");
-    }
-
-    #[tokio::test]
-    async fn claim_polling_revoked_returns_access_denied() {
-        let state = test_state().await;
-        seed_claimable_identity(
-            &state,
-            "reg_revoked",
-            None,
-            "revoked",
-            "clm_revoked",
-            "datetime('now', '+1 hour')",
-            r#"["repo:*"]"#,
-            None,
-        )
-        .await;
-
-        let resp = app(state)
-            .oneshot(post_token(&format!(
-                "grant_type={CLAIM_GRANT}&claim_token=clm_revoked"
-            )))
-            .await
-            .unwrap();
-        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
-        assert_eq!(json_body(resp).await["error"], "access_denied");
+            let resp = app(state)
+                .oneshot(post_token(&format!(
+                    "grant_type={CLAIM_GRANT}&claim_token={claim_token}"
+                )))
+                .await
+                .unwrap();
+            assert_eq!(resp.status(), StatusCode::BAD_REQUEST, "case {}", case.name);
+            assert_eq!(
+                json_body(resp).await["error"],
+                case.expected_error,
+                "case {}",
+                case.name
+            );
+        }
     }
 
     #[tokio::test]
@@ -511,17 +487,13 @@ mod tests {
             "repo:* blob:*/*",
             crate::time::unix_now_secs() + 600,
         );
-        seed_claimable_identity(
-            &state,
-            "reg_claimed",
-            Some(did),
-            "claimed",
-            "clm_claimed",
-            "datetime('now', '+1 hour')",
-            r#"["repo:*","blob:*/*"]"#,
-            Some(&assertion),
-        )
-        .await;
+        ClaimableIdentity::new("reg_claimed", "clm_claimed")
+            .did(did)
+            .status("claimed")
+            .scopes_json(r#"["repo:*","blob:*/*"]"#)
+            .identity_assertion(&assertion)
+            .seed(&state)
+            .await;
 
         let resp = app(state)
             .oneshot(post_token(&format!(
@@ -563,17 +535,9 @@ mod tests {
     #[tokio::test]
     async fn claim_polling_faster_than_interval_returns_slow_down() {
         let state = test_state().await;
-        seed_claimable_identity(
-            &state,
-            "reg_fast",
-            None,
-            "active",
-            "clm_fast",
-            "datetime('now', '+1 hour')",
-            r#"["repo:*"]"#,
-            None,
-        )
-        .await;
+        ClaimableIdentity::new("reg_fast", "clm_fast")
+            .seed(&state)
+            .await;
         let body = format!("grant_type={CLAIM_GRANT}&claim_token=clm_fast");
 
         // First poll is accepted (still pending) and records the poll mark on the shared tracker.

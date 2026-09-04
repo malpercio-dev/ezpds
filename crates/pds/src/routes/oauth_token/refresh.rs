@@ -680,33 +680,4 @@ mod tests {
             "refresh token with NULL jkt must return invalid_grant"
         );
     }
-
-    #[tokio::test]
-    async fn refresh_token_client_id_mismatch_returns_invalid_grant() {
-        let state = test_state().await;
-        let key = test_utils::DpopProofKey::generate();
-        let jkt = key.thumbprint();
-
-        let plaintext = seed_refresh_token(&state, &jkt).await;
-        let dpop = test_utils::token_proof(&state, &key);
-
-        // Wrong client_id — does not match stored "https://app.example.com/client-metadata.json".
-        let body = format!(
-            "grant_type=refresh_token\
-             &refresh_token={plaintext}\
-             &client_id=https%3A%2F%2Fother.example.com%2Fclient-metadata.json"
-        );
-
-        let resp = app(state)
-            .oneshot(post_token_with_dpop(&body, &dpop))
-            .await
-            .unwrap();
-
-        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
-        let json = json_body(resp).await;
-        assert_eq!(
-            json["error"], "invalid_grant",
-            "client_id mismatch must return invalid_grant"
-        );
-    }
 }

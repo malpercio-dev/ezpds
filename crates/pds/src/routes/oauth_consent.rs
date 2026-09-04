@@ -984,149 +984,103 @@ mod tests {
         assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
     }
 
-    // The regression the binding check exists for: an atproto client forwards the handle the user
-    // typed, not a DID, so a handle-shaped hint must bind the account it denotes rather than fail a
-    // string comparison against the DID.
-    #[tokio::test]
-    async fn login_hint_handle_binds_the_approving_account() {
-        let plc = MockServer::start().await;
-        let state = setup(&plc).await;
-        let key = p256_key();
-        mount_audit_log(&plc, &[&key.did]).await;
-        let request_id = "poauth_hint_handle";
-        seed_pending(&state, request_id, Some("owner.example.com")).await;
-
-        let resp = post_json(
-            state.clone(),
-            "/oauth/authorize/approve",
-            approval_body(
-                &state,
-                &key,
-                request_id,
-                "approve",
-                REQUESTED_SCOPE,
-                crate::time::unix_now_secs(),
-                7,
-            ),
-        )
-        .await;
-        assert_eq!(resp.status(), StatusCode::OK);
+    /// One `login_hint` binding case: the hint the client forwards, the account's asserted
+    /// `alsoKnownAs` (`None` uses the default `at://owner.example.com`), whether the account's
+    /// `handles` row is deleted before the approval (simulating an asserted-but-unresolvable
+    /// handle), and the expected approval outcome.
+    struct LoginHintCase {
+        name: &'static str,
+        hint: &'static str,
+        aka: Option<&'static str>,
+        delete_handle: bool,
+        expected_status: StatusCode,
     }
 
-    // Clients forward what the user typed verbatim, so the hint is normalized before it is bound.
     #[tokio::test]
-    async fn login_hint_handle_binds_case_insensitively_and_ignores_decoration() {
-        let plc = MockServer::start().await;
-        let state = setup(&plc).await;
-        let key = p256_key();
-        mount_audit_log(&plc, &[&key.did]).await;
-        let request_id = "poauth_hint_decorated";
-        seed_pending(&state, request_id, Some("@Owner.Example.com")).await;
+    async fn login_hint_handle_binding_cases() {
+        let cases = [
+            // The regression the binding check exists for: an atproto client forwards the handle
+            // the user typed, not a DID, so a handle-shaped hint must bind the account it
+            // denotes rather than fail a string comparison against the DID.
+            LoginHintCase {
+                name: "binds_the_approving_account",
+                hint: "owner.example.com",
+                aka: None,
+                delete_handle: false,
+                expected_status: StatusCode::OK,
+            },
+            // Clients forward what the user typed verbatim, so the hint is normalized before it
+            // is bound.
+            LoginHintCase {
+                name: "binds_case_insensitively_and_ignores_decoration",
+                hint: "@Owner.Example.com",
+                aka: None,
+                delete_handle: false,
+                expected_status: StatusCode::OK,
+            },
+            // Normalization has to reach both sides. `alsoKnownAs` is hand-authored — a did:web's
+            // document especially — so the account's asserted handle can carry any case, and
+            // normalizing only the hint would leave a legitimate binding silently refused.
+            LoginHintCase {
+                name: "binds_a_mixed_case_asserted_handle",
+                hint: "owner.example.com",
+                aka: Some("at://Owner.Example.com"),
+                delete_handle: false,
+                expected_status: StatusCode::OK,
+            },
+            // Assertion alone must not bind: `alsoKnownAs` is writable by whoever controls the
+            // DID, so the handle must also resolve back to it. Here the account still claims the
+            // handle but the resolution chain no longer answers with this DID.
+            LoginHintCase {
+                name: "asserted_but_unresolvable_is_rejected",
+                hint: "owner.example.com",
+                aka: None,
+                delete_handle: true,
+                expected_status: StatusCode::UNAUTHORIZED,
+            },
+            // A handle the account never claimed is rejected even if it resolves elsewhere.
+            LoginHintCase {
+                name: "not_asserted_is_rejected",
+                hint: "stranger.example.com",
+                aka: None,
+                delete_handle: false,
+                expected_status: StatusCode::UNAUTHORIZED,
+            },
+        ];
 
-        let resp = post_json(
-            state.clone(),
-            "/oauth/authorize/approve",
-            approval_body(
-                &state,
-                &key,
-                request_id,
-                "approve",
-                REQUESTED_SCOPE,
-                crate::time::unix_now_secs(),
-                8,
-            ),
-        )
-        .await;
-        assert_eq!(resp.status(), StatusCode::OK);
-    }
+        for (nonce_fill, case) in cases.into_iter().enumerate() {
+            let plc = MockServer::start().await;
+            let state = setup(&plc).await;
+            let key = p256_key();
+            match case.aka {
+                Some(aka) => mount_audit_log_with_aka(&plc, &[&key.did], aka).await,
+                None => mount_audit_log(&plc, &[&key.did]).await,
+            }
+            if case.delete_handle {
+                sqlx::query("DELETE FROM handles WHERE handle = 'owner.example.com'")
+                    .execute(&state.db)
+                    .await
+                    .unwrap();
+            }
+            let request_id = format!("poauth_hint_{}", case.name);
+            seed_pending(&state, &request_id, Some(case.hint)).await;
 
-    // Normalization has to reach both sides. `alsoKnownAs` is hand-authored — a did:web's document
-    // especially — so the account's asserted handle can carry any case, and normalizing only the
-    // hint would leave a legitimate binding silently refused.
-    #[tokio::test]
-    async fn login_hint_binds_a_mixed_case_asserted_handle() {
-        let plc = MockServer::start().await;
-        let state = setup(&plc).await;
-        let key = p256_key();
-        mount_audit_log_with_aka(&plc, &[&key.did], "at://Owner.Example.com").await;
-        let request_id = "poauth_hint_mixed_aka";
-        seed_pending(&state, request_id, Some("owner.example.com")).await;
-
-        let resp = post_json(
-            state.clone(),
-            "/oauth/authorize/approve",
-            approval_body(
-                &state,
-                &key,
-                request_id,
-                "approve",
-                REQUESTED_SCOPE,
-                crate::time::unix_now_secs(),
-                11,
-            ),
-        )
-        .await;
-        assert_eq!(resp.status(), StatusCode::OK);
-    }
-
-    // Assertion alone must not bind: `alsoKnownAs` is writable by whoever controls the DID, so the
-    // handle must also resolve back to it. Here the account still claims the handle but the
-    // resolution chain no longer answers with this DID.
-    #[tokio::test]
-    async fn login_hint_handle_asserted_but_unresolvable_is_rejected() {
-        let plc = MockServer::start().await;
-        let state = setup(&plc).await;
-        let key = p256_key();
-        mount_audit_log(&plc, &[&key.did]).await;
-        sqlx::query("DELETE FROM handles WHERE handle = 'owner.example.com'")
-            .execute(&state.db)
-            .await
-            .unwrap();
-        let request_id = "poauth_hint_unresolvable";
-        seed_pending(&state, request_id, Some("owner.example.com")).await;
-
-        let resp = post_json(
-            state.clone(),
-            "/oauth/authorize/approve",
-            approval_body(
-                &state,
-                &key,
-                request_id,
-                "approve",
-                REQUESTED_SCOPE,
-                crate::time::unix_now_secs(),
-                9,
-            ),
-        )
-        .await;
-        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
-    }
-
-    // A handle the account never claimed is rejected even if it resolves elsewhere.
-    #[tokio::test]
-    async fn login_hint_handle_not_asserted_is_rejected() {
-        let plc = MockServer::start().await;
-        let state = setup(&plc).await;
-        let key = p256_key();
-        mount_audit_log(&plc, &[&key.did]).await;
-        let request_id = "poauth_hint_stranger";
-        seed_pending(&state, request_id, Some("stranger.example.com")).await;
-
-        let resp = post_json(
-            state.clone(),
-            "/oauth/authorize/approve",
-            approval_body(
-                &state,
-                &key,
-                request_id,
-                "approve",
-                REQUESTED_SCOPE,
-                crate::time::unix_now_secs(),
-                10,
-            ),
-        )
-        .await;
-        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+            let resp = post_json(
+                state.clone(),
+                "/oauth/authorize/approve",
+                approval_body(
+                    &state,
+                    &key,
+                    &request_id,
+                    "approve",
+                    REQUESTED_SCOPE,
+                    crate::time::unix_now_secs(),
+                    nonce_fill as u8,
+                ),
+            )
+            .await;
+            assert_eq!(resp.status(), case.expected_status, "case {}", case.name);
+        }
     }
 
     // Status polling faster than the minimum interval is throttled (the slow_down discipline).
