@@ -37,7 +37,7 @@ use crate::auth::OAuthSigningKey;
 
 /// Minimum seconds an agent must wait between claim-status polls — the auth.md claim block's
 /// advertised `interval`. Read by both the claim-block emitter (`routes/agent_claim.rs`, which
-/// advertises it) and the claim-polling grant's `slow_down` gate (`routes/oauth_token.rs`, which
+/// advertises it) and the claim-polling grant's `slow_down` gate (`routes/oauth_token/claim_polling.rs`, which
 /// enforces it) so the advertised and enforced values can never drift apart.
 pub(crate) const POLL_INTERVAL_SECS: u64 = 5;
 
