@@ -402,32 +402,11 @@ mod tests {
     };
 
     use crate::app::{app, test_state, AppState};
-    use crate::identity::dns::{DnsError, TxtResolver};
     use crate::identity::well_known::{WellKnownError, WellKnownResolver};
-    use crate::routes::test_utils::{seed_account_with_signing_key, state_with_master_key};
-
-    // ── Test doubles ──────────────────────────────────────────────────────────
-
-    struct FixedTxtResolver {
-        records: Vec<String>,
-    }
-
-    impl TxtResolver for FixedTxtResolver {
-        fn txt_lookup<'a>(
-            &'a self,
-            _name: &'a str,
-        ) -> Pin<Box<dyn Future<Output = Result<Vec<String>, DnsError>> + Send + 'a>> {
-            let records = self.records.clone();
-            Box::pin(async move { Ok(records) })
-        }
-    }
-
-    fn state_with_txt(state: AppState, records: Vec<String>) -> AppState {
-        AppState {
-            txt_resolver: Some(Arc::new(FixedTxtResolver { records })),
-            ..state
-        }
-    }
+    use crate::routes::test_utils::{
+        seed_account_with_signing_key, state_with_master_key,
+        state_with_txt_records as state_with_txt,
+    };
 
     struct FixedWellKnownResolver {
         did: Option<String>,
