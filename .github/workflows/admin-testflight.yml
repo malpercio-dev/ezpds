@@ -21,6 +21,7 @@ on:
     paths:
       - "apps/admin-companion/**"
       - "crates/crypto/**"
+      - "crates/ios-device-key/**"
       # The [patch.crates-io] swift-rs fork is workspace-wide: it compiles this
       # app's plugin Swift too, even though it lives under identity-wallet.
       - "apps/identity-wallet/swift-rs-patch/**"

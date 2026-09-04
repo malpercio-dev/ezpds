@@ -27,6 +27,7 @@ on:
       - "apps/identity-wallet/**"
       - "apps/admin-companion/**"
       - "crates/crypto/**"
+      - "crates/ios-device-key/**"
       - "Cargo.toml"
       - "Cargo.lock"
       - "justfile"

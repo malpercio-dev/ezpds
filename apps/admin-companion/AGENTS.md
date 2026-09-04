@@ -60,7 +60,8 @@ byte-for-byte the Rust `signing.rs`) with a real WebCrypto P-256 key, and the re
 Phases 6–8 complete: device key + token layer + Brass Console primitives (Phase 6), the
 pairing + request-signing client (Phase 7), and the operator screens, biometric gate,
 share sheet, and server-side self-revoke (Phase 8). Wired:
-- **Device admin key** — `src-tauri/src/device_key.rs` (`#[cfg]` dispatch: Secure
+- **Device admin key** — `src-tauri/src/device_key.rs`, which pins this app's account
+  names onto the shared `crates/ios-device-key` implementation (`#[cfg]` dispatch: Secure
   Enclave on a real device, software P-256 on macOS/simulator), backed by
   `src-tauri/src/keychain.rs` (service `"ezpds-admin-companion"`).
 - **Canonical signing envelopes** — `src-tauri/src/signing.rs` (Functional Core): the
@@ -341,9 +342,9 @@ share sheet, and server-side self-revoke (Phase 8). Wired:
 
 ### Rust backend (`src-tauri/`)
 - `device_key::get_or_create() -> Result<DevicePublicKey, DeviceKeyError>` — idempotent;
-  returns `{ multibase, keyId }` (camelCase for IPC). Same crypto as identity-wallet's
-  module; here the key is the device's **admin credential** (signs requests), not a
-  did:plc rotation key.
+  returns `{ multibase, keyId }` (camelCase for IPC). One implementation with the identity
+  wallet (`crates/ios-device-key`); here the key is the device's **admin credential**
+  (signs requests), not a did:plc rotation key.
 - `device_key::sign(data) -> Result<Vec<u8>, DeviceKeyError>` — raw 64-byte (r‖s),
   **low-S normalized** P-256 signature (the relay's verifier rejects high-S).
 - `DeviceKeyError` / `RelayClientError` serialize as `{ code: "SCREAMING_SNAKE_CASE", … }`.

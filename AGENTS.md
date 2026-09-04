@@ -72,6 +72,7 @@ Release flow: `just set-version X.Y.Z` (PR) → merge → `just release` (cuts/p
 - `crates/repo-engine/` - ATProto repo engine
 - `crates/crypto/` - Cryptographic operations (P-256 key generation, did:key derivation, AES-256-GCM encryption, did:plc genesis ops and verification)
 - `crates/common/` - Shared types and utilities
+- `crates/ios-device-key/` - The per-device P-256 key both Tauri apps hold (Secure Enclave on a real device, software key everywhere else), over a Keychain the calling app supplies. Each app pins its own account names and Keychain impl; see its AGENTS.md
 - `ios/` - Shared iOS Swift sources belonging to neither app's Rust crate: the wallet's **Notification Service Extension** (`ios/NotificationService/`, CryptoKit — unseals encrypted push payloads on arrival, rendering the explicit unverified notice for anything it cannot authenticate) and its logic-test bundle, which cross-checks `crates/crypto`'s golden HPKE vectors against CryptoKit. Compiled by the shared XcodeGen template (`scripts/ios/project.yml`), gated there to the wallet's bundle id — an app extension is a separate bundle needing its own App ID + provisioning profile + signing secret. See its AGENTS.md and [docs/ios-cicd.md](docs/ios-cicd.md) → "Push notifications: three artifacts"
 - `nix/` - Nix deployment (module.nix: NixOS module for OCI container)
 - `sites/marketing/` - Static marketing site for Obsign + Custos (zero-build HTML/CSS; design derivation documented in its README)
