@@ -75,15 +75,12 @@ fn rebuild_response(
 /// Splits the token on `.`, base64url-decodes the payload segment, and parses it as JSON.
 /// Returns `None` on any failure (malformed token, missing exp, unparseable JSON, etc.).
 fn jwt_exp_claim(token: &str) -> Option<u64> {
-    use base64::engine::general_purpose::URL_SAFE_NO_PAD;
-    use base64::Engine;
-
     let parts: Vec<&str> = token.split('.').collect();
     if parts.len() < 2 {
         return None;
     }
 
-    let payload_bytes = URL_SAFE_NO_PAD.decode(parts[1]).ok()?;
+    let payload_bytes = crate::base64url::b64url_decode(parts[1]).ok()?;
     let payload: serde_json::Value = serde_json::from_slice(&payload_bytes).ok()?;
     payload.get("exp")?.as_u64()
 }
@@ -760,10 +757,9 @@ mod tests {
 
     /// Create a Bearer-mode test JWT with a specific exp claim.
     fn make_bearer_jwt(exp: u64) -> String {
-        use base64::engine::general_purpose::URL_SAFE_NO_PAD;
-        use base64::Engine;
-        let header = URL_SAFE_NO_PAD.encode(r#"{"alg":"ES256"}"#);
-        let payload = URL_SAFE_NO_PAD.encode(format!(r#"{{"exp":{}}}"#, exp).as_bytes());
+        use crate::base64url::b64url_encode;
+        let header = b64url_encode(r#"{"alg":"ES256"}"#);
+        let payload = b64url_encode(format!(r#"{{"exp":{}}}"#, exp).as_bytes());
         // Dummy signature; jwt_exp_claim never verifies it
         let sig = "dummy_signature";
         format!("{}.{}.{}", header, payload, sig)
@@ -792,15 +788,13 @@ mod tests {
     /// Decode a DPoP proof JWT from the request's DPoP header and return the payload.
     /// Returns None if the header is absent or malformed.
     fn decode_dpop_payload(req: &HttpMockRequest) -> Option<serde_json::Value> {
-        use base64::engine::general_purpose::URL_SAFE_NO_PAD;
-        use base64::Engine;
         let val = req
             .headers_vec()
             .iter()
             .find(|(k, _)| k.eq_ignore_ascii_case("dpop"))
             .map(|(_, v)| v.as_str())?;
         let parts: Vec<&str> = val.split('.').collect();
-        let payload_bytes = URL_SAFE_NO_PAD.decode(parts.get(1)?).ok()?;
+        let payload_bytes = crate::base64url::b64url_decode(parts.get(1)?).ok()?;
         serde_json::from_slice(&payload_bytes).ok()
     }
 

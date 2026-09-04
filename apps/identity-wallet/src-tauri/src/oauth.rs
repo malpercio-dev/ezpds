@@ -36,7 +36,7 @@
 //! server can `jkt`-bind tokens to it). [`OAuthError`] serializes as
 //! `{ code: "SCREAMING_SNAKE_CASE" }`; its TypeScript union must match.
 
-use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
+use crate::base64url::b64url_encode;
 use p256::ecdsa::{signature::Signer, Signature, SigningKey};
 use sha2::{Digest, Sha256};
 use std::sync::{Mutex, OnceLock};
@@ -211,8 +211,8 @@ impl DPoPKeypair {
     pub fn public_jwk(&self) -> serde_json::Value {
         let verifying_key = self.signing_key.verifying_key();
         let point = verifying_key.to_encoded_point(false); // false = uncompressed: 04 || x || y
-        let x = URL_SAFE_NO_PAD.encode(point.x().expect("P-256 uncompressed point has x"));
-        let y = URL_SAFE_NO_PAD.encode(point.y().expect("P-256 uncompressed point has y"));
+        let x = b64url_encode(point.x().expect("P-256 uncompressed point has x"));
+        let y = b64url_encode(point.y().expect("P-256 uncompressed point has y"));
         serde_json::json!({
             "kty": "EC",
             "crv": "P-256",
@@ -240,7 +240,7 @@ impl DPoPKeypair {
         let canonical_json = serde_json::to_string(&canonical)
             .expect("canonical JWK serialization is infallible for known types");
         let hash = Sha256::digest(canonical_json.as_bytes());
-        URL_SAFE_NO_PAD.encode(hash)
+        b64url_encode(hash)
     }
 
     /// Build a DPoP proof JWT for the given HTTP method, URL, and optional claims.
@@ -267,8 +267,8 @@ impl DPoPKeypair {
             "alg": "ES256",
             "jwk": jwk,
         });
-        let header_b64 = URL_SAFE_NO_PAD
-            .encode(serde_json::to_vec(&header).map_err(|_| OAuthError::DpopProofFailed)?);
+        let header_b64 =
+            b64url_encode(serde_json::to_vec(&header).map_err(|_| OAuthError::DpopProofFailed)?);
 
         // Claims JSON.
         let iat = SystemTime::now()
@@ -290,8 +290,8 @@ impl DPoPKeypair {
             claims["ath"] = serde_json::Value::String(a.to_string());
         }
 
-        let claims_b64 = URL_SAFE_NO_PAD
-            .encode(serde_json::to_vec(&claims).map_err(|_| OAuthError::DpopProofFailed)?);
+        let claims_b64 =
+            b64url_encode(serde_json::to_vec(&claims).map_err(|_| OAuthError::DpopProofFailed)?);
 
         // Sign `header_b64.claims_b64` bytes with P-256/SHA-256.
         let signing_input = format!("{header_b64}.{claims_b64}");
@@ -300,7 +300,7 @@ impl DPoPKeypair {
         // the custos's DPoP validator does not require it — low-S is harmless and keeps
         // key usage consistent with ATProto expectations).
         let signature = signature.normalize_s().unwrap_or(signature);
-        let sig_b64 = URL_SAFE_NO_PAD.encode(signature.to_bytes().as_slice());
+        let sig_b64 = b64url_encode(signature.to_bytes().as_slice());
 
         Ok(format!("{signing_input}.{sig_b64}"))
     }
@@ -308,7 +308,7 @@ impl DPoPKeypair {
     /// Compute `base64url(SHA-256(access_token))` — the `ath` claim for resource requests.
     pub fn compute_ath(access_token: &str) -> String {
         let hash = Sha256::digest(access_token.as_bytes());
-        URL_SAFE_NO_PAD.encode(hash)
+        b64url_encode(hash)
     }
 }
 
@@ -329,11 +329,11 @@ pub struct OAuthSession {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
+    use crate::base64url::b64url_decode;
     use p256::ecdsa::signature::Verifier;
 
     fn decode_jwt_part(b64: &str) -> serde_json::Value {
-        let bytes = URL_SAFE_NO_PAD.decode(b64).expect("valid base64url");
+        let bytes = b64url_decode(b64).expect("valid base64url");
         serde_json::from_slice(&bytes).expect("valid JSON")
     }
 
@@ -456,12 +456,8 @@ mod tests {
 
         // Reconstruct verifying key from the embedded JWK.
         let header = decode_jwt_part(header_b64);
-        let x_bytes = URL_SAFE_NO_PAD
-            .decode(header["jwk"]["x"].as_str().unwrap())
-            .unwrap();
-        let y_bytes = URL_SAFE_NO_PAD
-            .decode(header["jwk"]["y"].as_str().unwrap())
-            .unwrap();
+        let x_bytes = b64url_decode(header["jwk"]["x"].as_str().unwrap()).unwrap();
+        let y_bytes = b64url_decode(header["jwk"]["y"].as_str().unwrap()).unwrap();
         // Build uncompressed point: 0x04 || x || y
         let mut point_bytes = vec![0x04u8];
         point_bytes.extend_from_slice(&x_bytes);
@@ -472,9 +468,7 @@ mod tests {
             .expect("valid verifying key from JWK");
 
         // Decode the signature.
-        let sig_bytes = URL_SAFE_NO_PAD
-            .decode(sig_b64)
-            .expect("valid base64url sig");
+        let sig_bytes = b64url_decode(sig_b64).expect("valid base64url sig");
         let signature = p256::ecdsa::Signature::from_bytes(sig_bytes.as_slice().into())
             .expect("valid R||S signature bytes");
 
@@ -492,7 +486,7 @@ mod tests {
         let expected = {
             use sha2::{Digest, Sha256};
             let hash = Sha256::digest(b"test_access_token");
-            URL_SAFE_NO_PAD.encode(hash)
+            b64url_encode(hash)
         };
         assert_eq!(ath, expected);
     }
