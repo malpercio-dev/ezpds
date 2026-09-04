@@ -93,12 +93,7 @@ pub(crate) async fn count_signups(db: &SqlitePool) -> Result<i64, sqlx::Error> {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    async fn test_pool() -> SqlitePool {
-        let db = crate::db::open_pool("sqlite::memory:").await.unwrap();
-        crate::db::run_migrations(&db).await.unwrap();
-        db
-    }
+    use crate::db::test_pool;
 
     #[tokio::test]
     async fn insert_is_idempotent_per_email() {

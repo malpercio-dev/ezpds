@@ -819,13 +819,7 @@ fn into_claim_attempt_row(row: ClaimAttemptSqlRow) -> AgentClaimAttemptRow {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::db::{open_pool, run_migrations};
-
-    async fn test_pool() -> sqlx::SqlitePool {
-        let pool = open_pool("sqlite::memory:").await.unwrap();
-        run_migrations(&pool).await.unwrap();
-        pool
-    }
+    use crate::db::test_pool;
 
     async fn insert_account(pool: &sqlx::SqlitePool, did: &str) {
         sqlx::query(

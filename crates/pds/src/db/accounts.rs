@@ -1283,32 +1283,29 @@ pub(crate) async fn resolve_identifier(
     }
 }
 
+/// Insert a minimal active account row — enough to satisfy a foreign key or exercise
+/// account-adjacent queries where the account's own fields aren't asserted. Re-exported from
+/// `routes::test_utils` for route test call sites; other modules' tests reach it directly.
+#[cfg(test)]
+pub(crate) async fn insert_bare_account(db: &sqlx::SqlitePool, did: &str) {
+    sqlx::query(
+        "INSERT INTO accounts (did, email, password_hash, created_at, updated_at) \
+         VALUES (?, ?, NULL, datetime('now'), datetime('now'))",
+    )
+    .bind(did)
+    .bind(format!("{did}@example.com"))
+    .execute(db)
+    .await
+    .unwrap();
+}
+
 // ── Tests ────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
 mod tests {
+    use super::insert_bare_account as insert_account;
     use super::*;
-    use crate::db::{open_pool, run_migrations};
-
-    /// Create an in-memory SQLite pool with all migrations applied.
-    async fn test_pool() -> sqlx::SqlitePool {
-        let db = open_pool("sqlite::memory:").await.expect("test pool");
-        run_migrations(&db).await.expect("migrations");
-        db
-    }
-
-    /// Insert a minimal active account row.
-    async fn insert_account(db: &sqlx::SqlitePool, did: &str) {
-        sqlx::query(
-            "INSERT INTO accounts (did, email, password_hash, created_at, updated_at) \
-             VALUES (?, ?, NULL, datetime('now'), datetime('now'))",
-        )
-        .bind(did)
-        .bind(format!("{did}@example.com"))
-        .execute(db)
-        .await
-        .unwrap();
-    }
+    use crate::db::test_pool;
 
     /// Insert an active account row that also has a `repo_root_cid`.
     async fn insert_account_with_repo(db: &sqlx::SqlitePool, did: &str, cid: &str) {

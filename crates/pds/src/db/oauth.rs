@@ -601,13 +601,7 @@ pub async fn cleanup_expired_refresh_tokens(pool: &SqlitePool) -> Result<(), sql
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::db::{is_unique_violation, open_pool, run_migrations};
-
-    async fn test_pool() -> SqlitePool {
-        let pool = open_pool("sqlite::memory:").await.unwrap();
-        run_migrations(&pool).await.unwrap();
-        pool
-    }
+    use crate::db::{is_unique_violation, test_pool};
 
     #[tokio::test]
     async fn consume_par_request_returns_row_and_deletes_it() {

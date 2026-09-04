@@ -241,6 +241,21 @@ where
     Ok(None)
 }
 
+// ── Shared test fixtures ────────────────────────────────────────────────────
+//
+// Used by `db` submodule tests and by other modules' tests that need a bare database without a
+// full `AppState` (`test_state()` in `app.rs` is the fixture for that). Route tests reach this
+// via `routes::test_utils`, which re-exports it.
+
+/// Open a fresh in-memory pool and run migrations. Each call is independent — no files created
+/// on disk.
+#[cfg(test)]
+pub(crate) async fn test_pool() -> SqlitePool {
+    let pool = open_pool("sqlite::memory:").await.unwrap();
+    run_migrations(&pool).await.unwrap();
+    pool
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
