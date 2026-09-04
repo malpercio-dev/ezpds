@@ -45,7 +45,7 @@ pub async fn delete_record(
     let collection = &body.collection;
     let rkey = &body.rkey;
 
-    if !crate::auth::validation::is_valid_did(did) {
+    if !crate::identity::did::is_valid_did(did) {
         return Err(ApiError::new(ErrorCode::InvalidClaim, "invalid DID format"));
     }
 

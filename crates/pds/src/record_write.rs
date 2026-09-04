@@ -196,7 +196,7 @@ pub async fn write_record(
     validate: Option<bool>,
 ) -> Result<(repo_engine::Cid, Option<crate::lexicon::RecordValidation>), ApiError> {
     // Validate DID format.
-    if !crate::auth::validation::is_valid_did(did) {
+    if !crate::identity::did::is_valid_did(did) {
         return Err(ApiError::new(ErrorCode::InvalidClaim, "invalid DID format"));
     }
 

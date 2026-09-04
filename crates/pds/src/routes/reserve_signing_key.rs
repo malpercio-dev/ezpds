@@ -101,7 +101,7 @@ pub async fn reserve_signing_key(
 }
 
 fn validate_did(did: &str) -> Result<(), ApiError> {
-    if crate::auth::validation::is_valid_did(did) {
+    if crate::identity::did::is_valid_did(did) {
         return Ok(());
     }
 
