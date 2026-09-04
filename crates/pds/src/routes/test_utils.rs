@@ -978,3 +978,49 @@ pub(crate) async fn state_with_master_key_and_url(public_url: &str) -> AppState 
         ..base
     }
 }
+
+/// `test_state()` with the given agent-auth config swapped in (every flow is off by default) —
+/// the fixture the auth.md agent-flow route tests use to turn on just the flow under test.
+pub(crate) async fn state_with_agent_auth(agent_auth: common::AgentAuthConfig) -> AppState {
+    let base = test_state().await;
+    let mut config = (*base.config).clone();
+    config.agent_auth = agent_auth;
+    AppState {
+        config: Arc::new(config),
+        ..base
+    }
+}
+
+/// POST `body` as JSON to `uri` against a fresh `app(state)` router, with an optional `Bearer`
+/// token, and return `(status, parsed_json_body)` (`Value::Null` if the body doesn't parse) —
+/// the auth.md agent-flow route tests' one-shot request/response helper.
+pub(crate) async fn post_json_with_bearer(
+    state: AppState,
+    uri: &str,
+    body: serde_json::Value,
+    token: Option<&str>,
+) -> (axum::http::StatusCode, serde_json::Value) {
+    use tower::ServiceExt;
+
+    let mut builder = axum::http::Request::builder()
+        .method(axum::http::Method::POST)
+        .uri(uri)
+        .header("content-type", "application/json");
+    if let Some(t) = token {
+        builder = builder.header("Authorization", format!("Bearer {t}"));
+    }
+    let response = crate::app::app(state)
+        .oneshot(
+            builder
+                .body(axum::body::Body::from(body.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let status = response.status();
+    let bytes = axum::body::to_bytes(response.into_body(), 1 << 20)
+        .await
+        .unwrap();
+    let json = serde_json::from_slice(&bytes).unwrap_or(serde_json::Value::Null);
+    (status, json)
+}

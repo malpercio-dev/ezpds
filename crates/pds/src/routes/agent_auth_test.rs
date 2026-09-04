@@ -30,22 +30,12 @@ use serde_json::{json, Value};
 use tower::ServiceExt;
 
 use crate::app::{app, test_state, AppState};
-use crate::routes::test_utils::insert_account_with_email as insert_account;
+use crate::routes::test_utils::{
+    insert_account_with_email as insert_account, post_json_with_bearer as post_json,
+    state_with_agent_auth as state_with,
+};
 
 const PUBLIC_URL: &str = "https://test.example.com";
-
-// ── state helpers ────────────────────────────────────────────────────────────
-
-/// `test_state()` with the agent-auth config swapped in (every flow is off by default).
-async fn state_with(agent_auth: AgentAuthConfig) -> AppState {
-    let base = test_state().await;
-    let mut config = (*base.config).clone();
-    config.agent_auth = agent_auth;
-    AppState {
-        config: Arc::new(config),
-        ..base
-    }
-}
 
 /// A full-access HS256 access token for `did` — the credential the account owner presents to
 /// confirm a claim (mirrors the shape `auth/extractors.rs` accepts).
@@ -172,22 +162,6 @@ async fn get_json(state: AppState, uri: &str) -> (StatusCode, Value) {
         Request::builder().uri(uri).body(Body::empty()).unwrap(),
     )
     .await
-}
-
-async fn post_json(
-    state: AppState,
-    uri: &str,
-    body: Value,
-    token: Option<&str>,
-) -> (StatusCode, Value) {
-    let mut builder = Request::builder()
-        .method("POST")
-        .uri(uri)
-        .header("content-type", "application/json");
-    if let Some(t) = token {
-        builder = builder.header("Authorization", format!("Bearer {t}"));
-    }
-    send(state, builder.body(Body::from(body.to_string())).unwrap()).await
 }
 
 async fn post_form(state: AppState, uri: &str, body: &str) -> (StatusCode, Value) {

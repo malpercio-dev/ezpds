@@ -593,7 +593,6 @@ fn child_mint_error(err: common::ApiError) -> AgentAuthError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::Arc;
 
     use axum::body::Body;
     use axum::http::Request;
@@ -601,20 +600,13 @@ mod tests {
     use serde_json::{json, Value};
     use tower::ServiceExt;
 
-    use crate::app::{app, test_state, AppState};
-    use crate::routes::test_utils::insert_account_with_email as insert_account;
+    use crate::app::{app, AppState};
+    use crate::routes::test_utils::{
+        insert_account_with_email as insert_account, post_json_with_bearer as post_json,
+        state_with_agent_auth as state_with,
+    };
 
     // ── harness ──────────────────────────────────────────────────────────────
-
-    async fn state_with(agent_auth: AgentAuthConfig) -> AppState {
-        let base = test_state().await;
-        let mut config = (*base.config).clone();
-        config.agent_auth = agent_auth;
-        AppState {
-            config: Arc::new(config),
-            ..base
-        }
-    }
 
     /// Mint a full-access HS256 access token for `did` (the shape the extractor accepts, mirroring
     /// `auth::mod` test helpers). `scope` selects full access vs app-pass.
@@ -639,31 +631,6 @@ mod tests {
             &jsonwebtoken::EncodingKey::from_secret(&state.jwt_secret),
         )
         .unwrap()
-    }
-
-    async fn post_json(
-        state: AppState,
-        uri: &str,
-        body: Value,
-        token: Option<&str>,
-    ) -> (StatusCode, Value) {
-        let mut builder = Request::builder()
-            .method("POST")
-            .uri(uri)
-            .header("content-type", "application/json");
-        if let Some(t) = token {
-            builder = builder.header("Authorization", format!("Bearer {t}"));
-        }
-        let response = app(state)
-            .oneshot(builder.body(Body::from(body.to_string())).unwrap())
-            .await
-            .unwrap();
-        let status = response.status();
-        let bytes = axum::body::to_bytes(response.into_body(), 1 << 20)
-            .await
-            .unwrap();
-        let json = serde_json::from_slice(&bytes).unwrap_or(Value::Null);
-        (status, json)
     }
 
     async fn register(state: AppState, body: Value) -> Value {

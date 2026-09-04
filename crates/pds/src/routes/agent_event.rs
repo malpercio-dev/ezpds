@@ -281,7 +281,6 @@ impl IntoResponse for SetError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::Arc;
 
     use axum::body::Body;
     use axum::http::Request;
@@ -294,8 +293,10 @@ mod tests {
     use serde_json::json;
     use tower::ServiceExt;
 
-    use crate::app::{app, test_state, AppState};
-    use crate::routes::test_utils::insert_account_with_email as insert_account;
+    use crate::app::{app, AppState};
+    use crate::routes::test_utils::{
+        insert_account_with_email as insert_account, state_with_agent_auth as state_with,
+    };
 
     const PUBLIC_URL: &str = "https://test.example.com";
     const ISSUER: &str = "https://trusted.example";
@@ -381,16 +382,6 @@ mod tests {
             public_key_pem: Some(pub_pem),
             jwks_url: None,
             algorithm: "ES256".to_string(),
-        }
-    }
-
-    async fn state_with(agent_auth: AgentAuthConfig) -> AppState {
-        let base = test_state().await;
-        let mut config = (*base.config).clone();
-        config.agent_auth = agent_auth;
-        AppState {
-            config: Arc::new(config),
-            ..base
         }
     }
 

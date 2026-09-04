@@ -677,8 +677,10 @@ mod tests {
     use serde_json::json;
     use tower::ServiceExt;
 
-    use crate::app::{app, test_state, AppState};
-    use crate::routes::test_utils::insert_account_with_email as insert_account;
+    use crate::app::{app, AppState};
+    use crate::routes::test_utils::{
+        insert_account_with_email as insert_account, state_with_agent_auth as state_with,
+    };
 
     const PUBLIC_URL: &str = "https://test.example.com";
 
@@ -862,16 +864,6 @@ mod tests {
     }
 
     // ── state + request helpers ──────────────────────────────────────────
-
-    async fn state_with(agent_auth: AgentAuthConfig) -> AppState {
-        let base = test_state().await;
-        let mut config = (*base.config).clone();
-        config.agent_auth = agent_auth;
-        AppState {
-            config: Arc::new(config),
-            ..base
-        }
-    }
 
     async fn post(state: AppState, body: serde_json::Value) -> (StatusCode, serde_json::Value) {
         let response = app(state)
