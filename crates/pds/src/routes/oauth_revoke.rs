@@ -76,10 +76,7 @@ pub async fn post_revoke(
 
     // The `htu` is this endpoint's own URL so a proof minted for the token endpoint can't be
     // replayed here.
-    let revoke_url = format!(
-        "{}/oauth/revoke",
-        state.config.public_url.trim_end_matches('/')
-    );
+    let revoke_url = format!("{}/oauth/revoke", state.config.issuer());
     let jkt = match token_endpoint_dpop(&state, &headers, &revoke_url) {
         Ok(jkt) => jkt,
         Err(e) => return e.into_response(),
@@ -169,10 +166,7 @@ mod tests {
     // ── DPoP proof test helpers (mirrors oauth_token/mod.rs's test harness) ───────
 
     fn now_secs() -> i64 {
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_secs() as i64
+        crate::time::unix_now_secs()
     }
 
     fn dpop_key_to_jwk(key: &SigningKey) -> serde_json::Value {

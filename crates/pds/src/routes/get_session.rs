@@ -140,10 +140,7 @@ mod tests {
         let y = URL_SAFE_NO_PAD.encode(pt.y().unwrap());
         let jwk = serde_json::json!({ "kty": "EC", "crv": "P-256", "x": x, "y": y });
 
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_secs();
+        let now = crate::time::unix_now_secs() as u64;
 
         let header = serde_json::json!({ "typ": "dpop+jwt", "alg": "ES256", "jwk": jwk });
         let payload = serde_json::json!({
@@ -171,12 +168,8 @@ mod tests {
 
     fn scoped_access_jwt(secret: &[u8; 32], sub: &str, scope: &str) -> String {
         use jsonwebtoken::{encode, Algorithm, EncodingKey, Header};
-        use std::time::{SystemTime, UNIX_EPOCH};
 
-        let now = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_secs();
+        let now = crate::time::unix_now_secs() as u64;
         encode(
             &Header::new(Algorithm::HS256),
             &serde_json::json!({
@@ -210,12 +203,8 @@ mod tests {
     /// Issue a refresh-scope JWT (should be rejected by getSession).
     fn refresh_jwt(secret: &[u8; 32], sub: &str) -> String {
         use jsonwebtoken::{encode, Algorithm, EncodingKey, Header};
-        use std::time::{SystemTime, UNIX_EPOCH};
 
-        let now = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_secs();
+        let now = crate::time::unix_now_secs() as u64;
         encode(
             &Header::new(Algorithm::HS256),
             &serde_json::json!({
@@ -504,11 +493,8 @@ mod tests {
         .await;
 
         use jsonwebtoken::{encode, Algorithm, EncodingKey, Header};
-        use std::time::{SystemTime, UNIX_EPOCH};
-        let now = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_secs();
+
+        let now = crate::time::unix_now_secs() as u64;
 
         for scope in ["com.atproto.appPass", "com.atproto.appPassPrivileged"] {
             let token = encode(
@@ -637,10 +623,7 @@ mod tests {
         let dpop_key = p256::ecdsa::SigningKey::random(&mut rand_core::OsRng);
         let jkt = thumbprint_of(&dpop_key);
 
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_secs();
+        let now = crate::time::unix_now_secs() as u64;
         let token = {
             use jsonwebtoken::{encode, Algorithm, EncodingKey, Header};
             encode(
@@ -688,10 +671,7 @@ mod tests {
         let dpop_key = p256::ecdsa::SigningKey::random(&mut rand_core::OsRng);
         let jkt = thumbprint_of(&dpop_key);
 
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_secs();
+        let now = crate::time::unix_now_secs() as u64;
         let token = {
             use jsonwebtoken::{encode, Algorithm, EncodingKey, Header};
             encode(
@@ -737,10 +717,7 @@ mod tests {
         let dpop_key = p256::ecdsa::SigningKey::random(&mut rand_core::OsRng);
         let jkt = thumbprint_of(&dpop_key);
 
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_secs();
+        let now = crate::time::unix_now_secs() as u64;
         let token = {
             use jsonwebtoken::{encode, Algorithm, EncodingKey, Header};
             encode(

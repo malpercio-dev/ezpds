@@ -183,7 +183,7 @@ pub fn authenticate_access(
             dpop_token,
             method,
             uri,
-            &state.config.public_url,
+            state.config.issuer(),
             claims.cnf.as_ref().and_then(|c| c.jkt.as_deref()),
             token_str,
         )?;

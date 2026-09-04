@@ -53,8 +53,6 @@
 //! core with service auth; the scheme ↔ `cnf.jkt` binding on the credential arm mirrors the one
 //! `extractors::authenticate_access` enforces for OAuth.
 
-use std::time::{SystemTime, UNIX_EPOCH};
-
 use axum::http::{HeaderMap, Method, Uri};
 use common::{ApiError, ApiResultExt, ErrorCode};
 use serde_json::Value;
@@ -401,7 +399,7 @@ async fn authenticate_space_credential(
         proof,
         method,
         uri,
-        &state.config.public_url,
+        state.config.issuer(),
         Some(&credential.jkt),
         token,
     )?;
@@ -945,11 +943,7 @@ pub fn mint_time_dpop_thumbprint(
             "getSpaceCredential requires a DPoP proof header",
         )
     })?;
-    let htu = format!(
-        "{}{}",
-        state.config.public_url.trim_end_matches('/'),
-        GET_SPACE_CREDENTIAL_PATH
-    );
+    let htu = format!("{}{}", state.config.issuer(), GET_SPACE_CREDENTIAL_PATH);
     validate_dpop_for_par(proof, "POST", &htu).map_err(|e| e.into_api_error())
 }
 
@@ -1033,13 +1027,7 @@ fn single_dpop_header(headers: &HeaderMap) -> Result<Option<&str>, ApiError> {
     Ok(headers.get("DPoP").and_then(|v| v.to_str().ok()))
 }
 
-/// Current Unix time in seconds.
-pub fn unix_now() -> Result<u64, ApiError> {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .map_err(|_| ApiError::new(ErrorCode::InternalError, "system clock error"))
-}
+pub(crate) use crate::time::unix_now;
 
 #[cfg(test)]
 mod tests {

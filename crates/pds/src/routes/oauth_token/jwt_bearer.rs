@@ -93,7 +93,7 @@ pub(super) async fn handle_jwt_bearer(state: &AppState, form: TokenRequestForm) 
     // RFC 8707: `resource` pins the token to a protected resource. ezpds is the sole resource it
     // serves (issuer == resource == public origin), so any other value is an unknown target.
     if let Some(resource) = form.resource.as_deref().filter(|r| !r.is_empty()) {
-        let origin = state.config.public_url.trim_end_matches('/');
+        let origin = state.config.issuer();
         if resource.trim_end_matches('/') != origin {
             return OAuthTokenError::new("invalid_target", "resource must be this server's origin")
                 .into_response();
@@ -175,7 +175,7 @@ pub(super) async fn handle_jwt_bearer(state: &AppState, form: TokenRequestForm) 
     );
     let renewed = match crate::auth::agent_assertion::mint_identity_assertion(
         &state.oauth_signing_keypair,
-        &state.config.public_url,
+        state.config.issuer(),
         state.config.agent_auth.claimed_assertion_ttl_secs,
         &claims.sub,
         &claims.registration_id,
@@ -280,7 +280,7 @@ fn verify_agent_assertion(
     let decoding_key = crate::auth::jwt::oauth_es256_decoding_key(state)
         .map_err(|_| OAuthTokenError::new("server_error", "assertion verification unavailable"))?;
 
-    let origin = state.config.public_url.trim_end_matches('/');
+    let origin = state.config.issuer();
     let mut validation = jsonwebtoken::Validation::new(jsonwebtoken::Algorithm::ES256);
     validation.set_issuer(&[origin]);
     validation.set_audience(&[origin]);

@@ -6,8 +6,6 @@
 //
 // Implements: GET /xrpc/com.atproto.server.getServiceAuth
 
-use std::time::{SystemTime, UNIX_EPOCH};
-
 use axum::{extract::State, response::Json};
 use serde::{Deserialize, Serialize};
 
@@ -126,10 +124,7 @@ pub async fn get_service_auth(
     // multiple fragments, so a single `split_once` cleanly yields the base DID.
     let aud_claim = aud.split_once('#').map_or(aud, |(did, _)| did);
 
-    let now = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .map_err(|_| ApiError::new(ErrorCode::InternalError, "system clock error"))?;
+    let now = crate::time::unix_now()?;
 
     // An empty `lxm` is treated as absent (method-unrestricted) rather than a token bound to the
     // empty method, which no service would honour.
@@ -276,11 +271,8 @@ mod tests {
 
     fn scoped_access_jwt(secret: &[u8; 32], sub: &str, scope: &str) -> String {
         use jsonwebtoken::{encode, Algorithm, EncodingKey, Header};
-        use std::time::{SystemTime, UNIX_EPOCH};
-        let now = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_secs();
+
+        let now = crate::time::unix_now_secs() as u64;
         encode(
             &Header::new(Algorithm::HS256),
             &serde_json::json!({
@@ -320,11 +312,7 @@ mod tests {
     }
 
     fn now() -> u64 {
-        use std::time::{SystemTime, UNIX_EPOCH};
-        SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_secs()
+        crate::time::unix_now_secs() as u64
     }
 
     #[tokio::test]

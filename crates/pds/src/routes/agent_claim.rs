@@ -240,7 +240,7 @@ async fn initiate(
         claim_attempt: ClaimAttemptBlock {
             user_code,
             expires_in,
-            verification_uri: verification_uri(&state.config.agent_auth, &state.config.public_url),
+            verification_uri: verification_uri(&state.config.agent_auth, state.config.issuer()),
             interval: POLL_INTERVAL_SECS,
         },
     };
@@ -441,7 +441,7 @@ async fn confirm(
     let scopes = intersect_scope_tokens(granted, granted);
     let minted = mint_identity_assertion(
         &state.oauth_signing_keypair,
-        &state.config.public_url,
+        state.config.issuer(),
         state.config.agent_auth.claimed_assertion_ttl_secs,
         &caller_did,
         &identity.id,

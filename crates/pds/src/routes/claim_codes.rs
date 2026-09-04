@@ -733,7 +733,6 @@ mod tests {
             ADMIN_SIGNATURE_HEADER, ADMIN_TIMESTAMP_HEADER,
         };
         use crate::db::admin_devices::{insert_device, NewAdminDevice};
-        use std::time::{SystemTime, UNIX_EPOCH};
 
         // A state with NO master token: proves the device path is independent of it.
         let state = test_state().await;
@@ -753,10 +752,7 @@ mod tests {
 
         let body = r#"{"count":2,"expiresInHours":24}"#;
         let path = "/v1/accounts/claim-codes";
-        let ts = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_secs() as i64;
+        let ts = crate::time::unix_now_secs();
         let nonce = "e2e-nonce-1";
         let sign_string = admin_request_sign_string("POST", path, ts, nonce, body.as_bytes());
         let signature = crate::routes::test_utils::sign_p256(&keypair, sign_string.as_bytes());
@@ -788,7 +784,6 @@ mod tests {
             ADMIN_SIGNATURE_HEADER, ADMIN_TIMESTAMP_HEADER,
         };
         use crate::db::admin_devices::{insert_device, NewAdminDevice};
-        use std::time::{SystemTime, UNIX_EPOCH};
 
         let state = test_state().await;
         let keypair = crypto::generate_p256_keypair().unwrap();
@@ -806,10 +801,7 @@ mod tests {
         .unwrap();
 
         let path = "/v1/accounts/claim-codes";
-        let ts = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_secs() as i64;
+        let ts = crate::time::unix_now_secs();
         let nonce = "e2e-nonce-2";
         // Sign over count:1 but send count:9 — the body hash will not match.
         let sign_string = admin_request_sign_string("POST", path, ts, nonce, br#"{"count":1}"#);
@@ -995,7 +987,6 @@ mod tests {
             ADMIN_SIGNATURE_HEADER, ADMIN_TIMESTAMP_HEADER,
         };
         use crate::db::admin_devices::{insert_device, NewAdminDevice};
-        use std::time::{SystemTime, UNIX_EPOCH};
 
         let state = test_state().await;
         seed_code(&state.db, "WAITIN", "-1 minutes", "+24 hours", false, false).await;
@@ -1015,10 +1006,7 @@ mod tests {
 
         // A GET signs the empty body; the query string is not part of the signed path.
         let path = "/v1/accounts/claim-codes";
-        let ts = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_secs() as i64;
+        let ts = crate::time::unix_now_secs();
         let nonce = "inventory-nonce-1";
         let sign_string = admin_request_sign_string("GET", path, ts, nonce, b"");
         let signature = crate::routes::test_utils::sign_p256(&keypair, sign_string.as_bytes());
@@ -1147,7 +1135,6 @@ mod tests {
             ADMIN_SIGNATURE_HEADER, ADMIN_TIMESTAMP_HEADER,
         };
         use crate::db::admin_devices::{insert_device, NewAdminDevice};
-        use std::time::{SystemTime, UNIX_EPOCH};
 
         let state = test_state().await;
         seed_code(&state.db, "LIVE01", "-1 minutes", "+24 hours", false, false).await;
@@ -1167,10 +1154,7 @@ mod tests {
 
         let body = r#"{"code":"LIVE01"}"#;
         let path = "/v1/accounts/claim-codes/revoke";
-        let ts = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_secs() as i64;
+        let ts = crate::time::unix_now_secs();
         let nonce = "revoke-nonce-1";
         let sign_string = admin_request_sign_string("POST", path, ts, nonce, body.as_bytes());
         let signature = crate::routes::test_utils::sign_p256(&keypair, sign_string.as_bytes());
@@ -1202,7 +1186,6 @@ mod tests {
             ADMIN_SIGNATURE_HEADER, ADMIN_TIMESTAMP_HEADER,
         };
         use crate::db::admin_devices::{insert_device, NewAdminDevice};
-        use std::time::{SystemTime, UNIX_EPOCH};
 
         let state = test_state().await;
         let keypair = crypto::generate_p256_keypair().unwrap();
@@ -1221,10 +1204,7 @@ mod tests {
 
         let body = r#"{"count":1}"#;
         let path = "/v1/accounts/claim-codes";
-        let ts = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_secs() as i64;
+        let ts = crate::time::unix_now_secs();
         let nonce = "ct-order-nonce";
         let sign_string = admin_request_sign_string("POST", path, ts, nonce, body.as_bytes());
         let signature = crate::routes::test_utils::sign_p256(&keypair, sign_string.as_bytes());

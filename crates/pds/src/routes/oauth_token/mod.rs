@@ -278,10 +278,7 @@ pub(crate) mod test_support {
     use crate::app::AppState;
 
     pub(crate) fn now_secs() -> i64 {
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_secs() as i64
+        crate::time::unix_now_secs()
     }
 
     pub(crate) fn dpop_key_to_jwk(key: &SigningKey) -> serde_json::Value {

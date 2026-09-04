@@ -322,10 +322,7 @@ mod tests {
     fn issue_test_jwt_with_scope(state: &AppState, did: &str, scope: &str) -> String {
         use jsonwebtoken::{encode, Algorithm, EncodingKey, Header};
 
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_secs();
+        let now = crate::time::unix_now_secs() as u64;
         encode(
             &Header::new(Algorithm::HS256),
             &serde_json::json!({
@@ -401,10 +398,7 @@ mod tests {
     fn service_auth_token(kp: &crypto::P256Keypair, iss: &str, aud: &str, lxm: &str) -> String {
         let key = *kp.private_key_bytes;
         let signer = repo_engine::CommitSigner::from_bytes(&key).unwrap();
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_secs();
+        let now = crate::time::unix_now_secs() as u64;
         crate::auth::jwt::mint_service_auth_jwt(
             |b| signer.sign(b),
             iss,

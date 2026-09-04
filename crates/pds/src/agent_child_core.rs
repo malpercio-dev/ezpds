@@ -151,7 +151,7 @@ pub(crate) async fn mint_child_account(
     let scopes_json = scopes_to_json(&scopes);
     let assertion = mint_identity_assertion(
         &state.oauth_signing_keypair,
-        &state.config.public_url,
+        state.config.issuer(),
         state.config.agent_auth.claimed_assertion_ttl_secs,
         &child_did,
         &registration_id,

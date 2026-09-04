@@ -197,7 +197,7 @@ async fn handle_anonymous(
     // name yet. It carries the pre-claim scope set and is marked `anonymous` in its claims.
     let minted = mint_identity_assertion(
         &state.oauth_signing_keypair,
-        &state.config.public_url,
+        state.config.issuer(),
         state.config.agent_auth.assertion_ttl_secs,
         &registration_id,
         &registration_id,
@@ -366,7 +366,7 @@ async fn handle_service_auth(
 
     let claim = claim_block(
         &user_code,
-        &verification_uri(&state.config.agent_auth, &state.config.public_url),
+        &verification_uri(&state.config.agent_auth, state.config.issuer()),
         &user_code_expiry,
     );
     Ok(ok_json(&ServiceAuthResponse {
@@ -437,7 +437,7 @@ async fn handle_identity_assertion(
     let claims: IdJagClaims = verify_trusted_jwt(
         &state.jwks_cache,
         issuer_cfg,
-        &state.config.public_url,
+        state.config.issuer(),
         assertion,
         &["exp", "aud", "iss"],
     )
@@ -485,7 +485,7 @@ async fn existing_identity_assertion(
                 .ok_or_else(AgentAuthError::server_error)?;
             let minted = mint_identity_assertion(
                 &state.oauth_signing_keypair,
-                &state.config.public_url,
+                state.config.issuer(),
                 state.config.agent_auth.claimed_assertion_ttl_secs,
                 did,
                 &existing.id,
@@ -539,7 +539,7 @@ async fn existing_identity_assertion(
             .await?;
             let claim = claim_block(
                 &user_code,
-                &verification_uri(&state.config.agent_auth, &state.config.public_url),
+                &verification_uri(&state.config.agent_auth, state.config.issuer()),
                 &user_code_expiry,
             );
             Err(AgentAuthError::interaction_required(claim, claim_token))
@@ -654,7 +654,7 @@ async fn new_identity_assertion(
 
     let claim = claim_block(
         &user_code,
-        &verification_uri(&state.config.agent_auth, &state.config.public_url),
+        &verification_uri(&state.config.agent_auth, state.config.issuer()),
         &user_code_expiry,
     );
     Err(AgentAuthError::interaction_required(claim, claim_token))

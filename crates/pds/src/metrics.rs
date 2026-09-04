@@ -295,7 +295,7 @@ pub fn label(key: &'static str, value: impl Into<opentelemetry::Value>) -> KeyVa
 
 /// Current unix time in seconds, for the `*_last_run_timestamp` gauges.
 pub fn unix_now() -> f64 {
-    chrono::Utc::now().timestamp() as f64
+    crate::time::unix_now_secs() as f64
 }
 
 /// RAII guard for the `firehose_subscribers` gauge: `+1` on construction, `−1` on drop.
