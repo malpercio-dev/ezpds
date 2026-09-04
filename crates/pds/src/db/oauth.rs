@@ -50,9 +50,11 @@ pub struct ClientMetadata {
 /// Returns `sqlx::Error` on failure. Callers should use `crate::db::is_unique_violation`
 /// to detect duplicate `client_id` conflicts.
 ///
-/// Unwired: no handler registers clients dynamically (RFC 7591).
-#[allow(dead_code)]
-pub async fn register_oauth_client(
+/// No handler registers clients dynamically (RFC 7591) — production rows come from
+/// `upsert_oauth_client` on a URL-`client_id` cache miss. This direct insert seeds fixture
+/// clients for route tests across the crate.
+#[cfg(test)]
+pub(crate) async fn register_oauth_client(
     pool: &SqlitePool,
     client_id: &str,
     client_metadata: &str,
