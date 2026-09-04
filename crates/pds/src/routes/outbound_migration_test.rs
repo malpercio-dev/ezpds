@@ -15,8 +15,8 @@ use tower::ServiceExt;
 
 use crate::app::app;
 use crate::routes::test_utils::{
-    access_jwt, bearer_request as bearer, body_json, seed_account_with_repo, seed_did_document,
-    state_with_master_key_and_url,
+    access_jwt, bearer_request as bearer, body_bytes, body_json, seed_account_with_repo,
+    seed_did_document, state_with_master_key_and_url,
 };
 
 const MIGRATING_DID: &str = "did:plc:outboundmigrant2222222";
@@ -40,13 +40,6 @@ fn bearer_json(
         b = b.header("Authorization", format!("Bearer {t}"));
     }
     b.body(Body::from(body.to_string())).unwrap()
-}
-
-async fn body_bytes(response: axum::response::Response) -> Vec<u8> {
-    axum::body::to_bytes(response.into_body(), usize::MAX)
-        .await
-        .unwrap()
-        .to_vec()
 }
 
 /// Seed the destination's `did_documents` cache with a document whose `#atproto` verification

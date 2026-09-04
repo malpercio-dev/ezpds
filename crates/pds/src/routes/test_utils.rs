@@ -1100,3 +1100,12 @@ pub(crate) fn bearer_request(
     }
     b.body(body).unwrap()
 }
+
+/// Buffer a response body to its raw bytes, with no size cap — for tests that need the exact
+/// wire content (a CAR export) rather than a JSON-parsed body.
+pub(crate) async fn body_bytes(response: axum::response::Response) -> Vec<u8> {
+    axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap()
+        .to_vec()
+}
