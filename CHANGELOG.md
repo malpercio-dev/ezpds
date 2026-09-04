@@ -7,6 +7,55 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Changes are collected in `changelog.d/` during development and inserted here when
 `just set-version` prepares a release. There is intentionally no `Unreleased` section.
 
+## [0.16.0] - 2026-09-03
+
+### Added
+
+- Groundwork for agent child accounts: the crypto layer can now derive an account's delegation seed and per-child account seeds from its recovery seed, so a child's rotation key needs no new stored secret. Nothing uses these yet — no change to existing accounts or keys.
+
+- An account owner can now renew a sovereign child agent's expired credential without re-provisioning it: `POST /agent/child/assertion` issues a fresh identity assertion for an active child, re-clamped to the operator's current agent scopes and recorded on the child's audit trail. Revoked children, agent-derived callers, and other accounts' children are refused.
+
+- An agent that registers anonymously can now be given an account of its own instead of a credential to act as you. It proposes a handle (`handle_hint`), the claim-approval screen shows that proposal, and confirming with a signed genesis op mints the agent its own DID, repo, and handle under your cryptographic ownership — the agent's existing claim poll simply returns a credential subject to the new account, with no change on its side. Servers advertise the capability as `agent_auth.child_provisioning`, and the served `auth.md` documents the flow.
+
+- The wallet can now hold the delegation seed that lets an identity give an agent an account of its own: new identities get it during the recovery-share ceremony, and any identity created earlier can enable it from My Agents by entering two of its recovery shares. Nothing is rotated or published — the shares are checked against the public record, and only the device changes.
+
+- When an agent registers on its own, the approval screen now offers a second answer: instead of letting it act as you, you can give it an account of its own — its own handle and its own record, with a recovery key derived from your seed so the account stays yours. The agent can propose a handle; you decide it. If your server turns the handle down, nothing is spent and you can simply pick another.
+
+- The wallet's My Agents screen now lists the agent accounts you have minted alongside the agents acting on your behalf, and opens each one on a detail screen showing its handle, DID, permissions, and full activity record. From there you can renew a dormant agent's credential, revoke it while keeping its account and history, or delete the account outright — which takes it offline immediately and shows the date its data is permanently removed.
+
+- Restoring your wallet on a new device now brings your agents' accounts back with it. My Agents re-derives each account's recovery key from your recovery seed and checks it against the public directory, so the wallet can tell you plainly which agent accounts it can still recover — and names any it cannot, rather than leaving you to find out during an emergency. An account it simply could not reach is reported as unchecked, never as lost.
+
+- `create_post` on the Custos MCP server takes an `embed`, so an agent can publish quote posts and external link cards. Previously the only embed it could produce was an image attachment from `image_path`, which left quoting another post — and posting a link with a preview card — out of reach entirely. The value is written to the record as given (`app.bsky.embed.record` for a quote, `app.bsky.embed.external` for a card), so anything the lexicon accepts is reachable; `upload_blob` supplies a ref for a card's thumbnail. Passing both `embed` and `image_path` is refused rather than silently dropping one.
+
+- The Custos MCP server exposes an `upload_blob` tool: upload a file and get its blob ref back, for setting an avatar or banner or filling any other record field that takes a blob. Until now blob upload only happened inside `create_post`'s image attachment, so anything else meant calling `com.atproto.repo.uploadBlob` on the PDS by hand. Files are read from the same confined `CUSTOS_MCP_IMAGE_DIR` directory `create_post` uses — with it unset, uploads stay disabled.
+
+- Agents connected over MCP can now update the account's Bluesky profile — display name, description, avatar, and banner — with a single `update_bluesky_profile` call, instead of needing the operator to unlock the raw record-write tools. It reads the current profile first and changes only the fields named, so nothing you did not mention is lost, and a profile edited somewhere else mid-call makes the write fail rather than quietly overwrite it. An avatar or banner can be given as a file to upload or as a ref from an upload you already did.
+
+- Agent identities can now read the AppView through the PDS proxy: the default `[agent_auth] granted_scopes` profile gains `rpc:*?aud=did:web:api.bsky.app`, so an agent can see the likes, reposts, and replies its own posts earned and read its own notifications instead of getting `InsufficientScope`. The grant is bound to the AppView audience rather than `aud=*` — the proxy signs service auth with the account holder's own repo key — and existing registrations pick it up when they re-register or re-claim. The wallet now names the service an `rpc:` grant reaches ("Call the Bluesky app service on your behalf") instead of describing every one of them as "other services".
+
+
+### Changed
+
+- Agents can now delete records in the account they were claimed against: the default `[agent_auth] granted_scopes` profile adds `repo:*?action=delete`, so an agent that publishes a mistaken post can retract it instead of escalating to the operator. This does not widen what an agent can destroy — the profile already granted `action=update`, which overwrites a record just as irreversibly. Agent registrations created before this release keep their existing scopes and pick delete up when they re-register or are re-claimed.
+
+- Agent identity assertions for confirmed bindings no longer strand sporadic agents behind a fresh claim ceremony: every successful jwt-bearer exchange now returns a renewed `identity_assertion` (a sliding window the Custos MCP client persists automatically), and assertions minted for claimed bindings — claim confirmations, re-mints, and sovereign-child capabilities — live `[agent_auth] claimed_assertion_ttl_secs` (default 30 days) instead of the 1-hour pre-claim TTL. Revocation remains the kill switch: a revoked identity is refused at its next exchange regardless of the assertion's remaining lifetime.
+
+
+### Fixed
+
+- The served `auth.md` skill's discovery example now shows the `agent_auth.events_supported` and `agent_auth.child_provisioning` fields the server already advertises at `/.well-known/oauth-authorization-server`, so an agent reading the skill top to bottom sees the same metadata shape it will fetch.
+
+- Connecting an MCP client to the hosted Custos server no longer dead-ends during sign-in. The server told clients to authorize against an address that had stopped serving Custos, so the standard OAuth discovery walk stopped with nothing to go on. It now reports the authorization server the PDS itself publishes, so the two can no longer disagree — and if it cannot read that, it says so and asks the client to retry rather than sending it somewhere wrong.
+
+- The Custos MCP `whoami` tool no longer reports the PDS base URL. On the hosted sidecar that field carried the deployment's internal hostname (`http://ezpds.railway.internal:8080`) straight back to the client; a stdio caller configures the URL itself, so the field told nobody anything they did not already know.
+
+- The Custos MCP tools now check text against the limits atproto actually enforces, before writing. `create_post` advertised a 3000-character ceiling while `app.bsky.feed.post` caps text at 300 graphemes (and 3000 UTF-8 bytes), so a long post was accepted by the tool and then refused by the PDS with a raw `InvalidRequest`; the same mismatch applied to `update_bluesky_profile`'s display name and description. Over-long text is now rejected with a message naming the limit and how far past it you are, counting grapheme clusters and UTF-8 bytes rather than JavaScript characters.
+
+- Posts published through the Custos MCP `create_post` tool now carry rich-text facets: URLs, `#hashtags`, and `@mentions` in the post text render as links instead of dead plain text, and linked URLs get their social card. Detection covers fully-qualified `http(s)://` URLs (bare domains are left alone so filenames and prose are not turned into links); a `facets` argument overrides it when the link text differs from the URL.
+
+- Failed agent token exchanges now say why: an expired identity assertion, an unclaimed or unknown registration, and a subject/DID mismatch each get their own `error_description` on the jwt-bearer grant (revocation stays the distinct `access_denied`), and the Custos MCP client routes on them — a lapsed assertion still triggers the re-onboarding path, but a rejected-as-invalid assertion now fails loudly instead of looking like a session expiry, so a sporadic agent can tell "re-register" from "revoked, stop" without operator archaeology.
+
+
 ## [0.15.0] - 2026-08-29
 
 ### Added
