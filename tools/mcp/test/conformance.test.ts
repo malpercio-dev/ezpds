@@ -428,7 +428,7 @@ test('upload_blob returns a blob ref and stays inside the configured directory',
   assert.equal(escaped.isError, true);
   assert.match((escaped.content as { text: string }[])[0]!.text, /must be inside|does not exist/);
 
-  // Without the directory configured at all, uploads are off rather than
+  // Without the directory configured at all, path uploads are off rather than
   // defaulting to some readable path.
   const unconfigured = await connectClient();
   t.after(() => unconfigured.close());
@@ -438,6 +438,70 @@ test('upload_blob returns a blob ref and stays inside the configured directory',
   });
   assert.equal(disabled.isError, true);
   assert.match((disabled.content as { text: string }[])[0]!.text, /uploads are disabled/);
+});
+
+test('upload_blob takes inline base64 — the remote-client path, no directory needed', async (t) => {
+  // No CUSTOS_MCP_IMAGE_DIR at all: inline data must not depend on it.
+  const client = await connectClient();
+  t.after(() => client.close());
+
+  const pngBytes = Buffer.from(
+    'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==',
+    'base64',
+  );
+
+  // Data URL: the mime type travels with the bytes.
+  const fromUrl = toolJson(
+    await client.callTool({
+      name: 'upload_blob',
+      arguments: { data: `data:image/png;base64,${pngBytes.toString('base64')}` },
+    }),
+  );
+  assert.equal(fromUrl.blob?.$type, 'blob');
+  assert.equal(fromUrl.blob.mimeType, 'image/png');
+  assert.equal(fromUrl.blob.size, pngBytes.length, 'the decoded bytes were uploaded');
+
+  // Bare base64: the mime type arrives as its own argument.
+  const fromBare = toolJson(
+    await client.callTool({
+      name: 'upload_blob',
+      arguments: { data: pngBytes.toString('base64'), mime_type: 'image/png' },
+    }),
+  );
+  assert.equal(fromBare.blob?.mimeType, 'image/png');
+  assert.equal(fromBare.blob?.size, pngBytes.length);
+
+  const errText = async (args: Record<string, unknown>): Promise<string> => {
+    const res = await client.callTool({ name: 'upload_blob', arguments: args });
+    assert.equal(res.isError, true, JSON.stringify(args));
+    return (res.content as { text: string }[])[0]!.text;
+  };
+
+  // Caller mistakes are named, not silently resolved.
+  assert.match(await errText({ data: '%%not-base64%%' }), /not (valid )?base64|neither a data URL/);
+  assert.match(
+    await errText({ data: pngBytes.toString('base64') }),
+    /no content type/,
+  );
+  assert.match(
+    await errText({
+      data: `data:image/png;base64,${pngBytes.toString('base64')}`,
+      mime_type: 'image/jpeg',
+    }),
+    /declares image\/png but mime_type argument says image\/jpeg/,
+  );
+  assert.match(await errText({}), /nothing to upload/);
+  assert.match(
+    await errText({ data: `data:image/png;base64,${pngBytes.toString('base64')}`, path: 'x.png' }),
+    /pass either data or path, not both/,
+  );
+
+  // The size ceiling is enforced on decoded bytes, before anything reaches the PDS.
+  const tooBig = Buffer.alloc(5 * 1024 * 1024 + 1, 7);
+  assert.match(
+    await errText({ data: `data:application/octet-stream;base64,${tooBig.toString('base64')}` }),
+    new RegExp(`inline upload is ${tooBig.length} bytes`),
+  );
 });
 
 test('update_bluesky_profile takes an image by path or by an upload_blob ref', async (t) => {

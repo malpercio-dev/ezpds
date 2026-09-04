@@ -93,7 +93,8 @@ test('the request body is bounded (oversized payloads are refused with 413)', as
   const res = await fetch(`${sidecar.url}/mcp`, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
-    body: 'x'.repeat(1024 * 1024 + 1024), // just over the 1 MiB ceiling
+    // Just over the 8 MiB ceiling (sized for a maximum inline upload_blob).
+    body: 'x'.repeat(8 * 1024 * 1024 + 1024),
   });
   assert.equal(res.status, 413);
 });

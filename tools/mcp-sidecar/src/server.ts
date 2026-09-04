@@ -90,9 +90,13 @@ async function fetchIssuer(pdsOrigin: string): Promise<string> {
   return issuer.trim().replace(/\/+$/, '');
 }
 
-// MCP JSON-RPC messages are tiny; a generous ceiling still stops an
-// unauthenticated client from streaming an unbounded body into memory.
-const MAX_BODY_BYTES = 1024 * 1024;
+// Request-body ceiling. Sized for the largest inline upload_blob payload the
+// tool accepts — 5 MiB of blob bytes base64-encoded (~6.7 MB), plus the
+// JSON-RPC envelope and margin — so a legitimate maximum-size inline upload
+// is never refused by the transport before the tool's own (better-worded)
+// size check can run. Still bounded, so an unauthenticated client cannot
+// stream an unbounded body into memory.
+const MAX_BODY_BYTES = 8 * 1024 * 1024;
 
 // Bounds on the live-transport map: a hard cap plus idle expiry, so an
 // abandoned MCP session cannot pin memory indefinitely.

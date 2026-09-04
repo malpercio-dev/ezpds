@@ -57,7 +57,7 @@ Configuration is environment variables only:
 | `PORT` | no | Listen port (Railway injects it; default 8080). |
 | `MCP_SIDECAR_PATH` | no | MCP endpoint path (default `/mcp`). |
 | `CUSTOS_MCP_ALLOW_DESTRUCTIVE` | no | Same gate as the stdio server: `1` lists `put_record`/`delete_record`. |
-| `CUSTOS_MCP_IMAGE_DIR` | no | Same gate as the stdio server: the one directory `create_post`, `upload_blob`, and `update_bluesky_profile` may read files from. |
+| `CUSTOS_MCP_IMAGE_DIR` | no | Same gate as the stdio server: the one directory `create_post`, `upload_blob` (by `path`), and `update_bluesky_profile` may read files from. Inline `data` uploads bypass it — that is the remote-client path. |
 
 Endpoints:
 

@@ -102,7 +102,7 @@ variables only:
 | `CUSTOS_MCP_EMAIL` | first run | Your account email on that PDS (`login_hint` for registration) |
 | `CUSTOS_MCP_AGENT_NAME` | no | Display name for the registration (default "Custos MCP") |
 | `CUSTOS_MCP_ALLOW_DESTRUCTIVE` | no | `1` lists `put_record`/`delete_record` |
-| `CUSTOS_MCP_IMAGE_DIR` | no | The one directory `create_post`, `upload_blob`, and `update_bluesky_profile` may read files from; unset = uploads disabled |
+| `CUSTOS_MCP_IMAGE_DIR` | no | The one directory `create_post`, `upload_blob` (by `path`), and `update_bluesky_profile` may read files from; unset = path-based uploads disabled (inline `data` uploads still work) |
 | `CUSTOS_MCP_STATE_DIR` | no | Credential-cache dir (default: OS state dir, e.g. `~/.local/state/custos-mcp`) |
 | `CUSTOS_MCP_PACE_MS` | no | Min gap between HTTP requests (default 150) |
 
@@ -158,7 +158,7 @@ needed after the agent has been completely inactive for a full assertion lifetim
 |---|---|
 | `whoami` | Onboarding status, DID/handle, granted scopes; pending claim code if any |
 | `create_post` | `app.bsky.feed.post` via `createRecord` — text, reply refs, optional image via `uploadBlob` (only from `CUSTOS_MCP_IMAGE_DIR`). URLs, `#hashtags`, and `@mentions` in the text become rich-text facets automatically; pass `facets` to override. `embed` takes an `app.bsky.embed.*` value verbatim — quote posts (`app.bsky.embed.record`, from a uri+cid `get_record` or `search_timeline` returned) and external link cards (`app.bsky.embed.external`); mutually exclusive with `image_path` |
-| `upload_blob` | Upload a file from `CUSTOS_MCP_IMAGE_DIR` as a blob and return its ref, for avatars, banners, or any other record field that takes a blob. MIME inferred from the extension for png/jpg/gif/webp; pass `mime_type` for anything else. A blob no record references is eventually garbage-collected |
+| `upload_blob` | Upload a blob and return its ref, for avatars, banners, or any other record field that takes a blob. Pass bytes inline as base64 (`data`: a data URL like `data:image/png;base64,…`, or bare base64 plus `mime_type`) — the remote-client path, works without `CUSTOS_MCP_IMAGE_DIR`, capped at 5 MiB decoded; or a `path` inside `CUSTOS_MCP_IMAGE_DIR` (MIME inferred from the extension for png/jpg/gif/webp). A blob no record references is eventually garbage-collected |
 | `update_bluesky_profile` | Update the Bluesky profile record `app.bsky.actor.profile` — display name, description, avatar, banner. Read-modify-write, so omitted fields keep their value and an empty string clears one; guarded with `swapRecord` against the CID just read, so a concurrent edit fails with `InvalidSwap` rather than overwriting. Set an image either by path (uploaded for you, from `CUSTOS_MCP_IMAGE_DIR`) or by a blob ref from `upload_blob` |
 | `get_record` / `list_records` | Read a repo by collection (defaults to the onboarded account) |
 | `search_timeline` | Timeline, or post search with `query` — proxied through the PDS to its AppView |
