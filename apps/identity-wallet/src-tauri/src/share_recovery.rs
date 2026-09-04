@@ -55,7 +55,7 @@ use rand_core::{OsRng, RngCore};
 use serde::{Deserialize, Serialize};
 use zeroize::Zeroizing;
 
-use crate::handle_change::{latest_full_state, CurrentHandleState};
+use crate::handle_change::CurrentHandleState;
 use crate::identity_store::{IdentityStore, IdentityStoreError, PerDidSignError};
 use crate::keychain;
 use crate::oauth::AppState;
@@ -900,14 +900,10 @@ async fn fetch_current_state(
     pds: &PdsClient,
     did: &str,
 ) -> Result<CurrentHandleState, ShareRecoveryError> {
-    let audit_json = pds.fetch_audit_log(did).await.map_err(map_pds_error)?;
-    let audit =
-        crypto::parse_audit_log(&audit_json).map_err(|e| ShareRecoveryError::InvalidAuditLog {
-            message: e.to_string(),
-        })?;
-    latest_full_state(&audit).map_err(|e| ShareRecoveryError::InvalidAuditLog {
-        message: e.to_string(),
+    crate::handle_change::fetch_current_state(pds, did, map_pds_error, |message| {
+        ShareRecoveryError::InvalidAuditLog { message }
     })
+    .await
 }
 
 /// Refresh the per-identity caches with the PLC *data* document (never the W3C form,

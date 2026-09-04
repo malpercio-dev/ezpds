@@ -55,7 +55,7 @@ use std::collections::BTreeMap;
 use serde::Serialize;
 
 use crate::claim::OpDiff;
-use crate::handle_change::{latest_full_state, CurrentHandleState};
+use crate::handle_change::CurrentHandleState;
 use crate::identity_store::{IdentityStore, PerDidSignError};
 use crate::pds_client::{PdsClient, PdsClientError};
 use crate::session_provider::{SessionError, SessionProvider, UnlockReason};
@@ -416,17 +416,13 @@ async fn fetch_current_state(
     pds_client: &PdsClient,
     did: &str,
 ) -> Result<CurrentHandleState, RekeyError> {
-    let log_json = pds_client
-        .fetch_audit_log(did)
-        .await
-        .map_err(|e| map_plc_fetch_error("failed to fetch audit log", e))?;
-    let audit_log =
-        crypto::parse_audit_log(&log_json).map_err(|e| RekeyError::InvalidAuditLog {
-            message: format!("failed to parse audit log: {e}"),
-        })?;
-    latest_full_state(&audit_log).map_err(|e| RekeyError::InvalidAuditLog {
-        message: e.to_string(),
-    })
+    crate::handle_change::fetch_current_state(
+        pds_client,
+        did,
+        |e| map_plc_fetch_error("failed to fetch audit log", e),
+        |message| RekeyError::InvalidAuditLog { message },
+    )
+    .await
 }
 
 /// The proposed rotation keys for a re-key: recovery inserted at [1], device kept at [0].
