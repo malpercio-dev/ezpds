@@ -13,9 +13,9 @@ use tower::ServiceExt;
 use crate::app::{app, AppState};
 use crate::auth::space::{authorize_credential_request, mint_space_credential, unix_now};
 use crate::db::dids::seed_did_document;
+use crate::routes::space_test_support::{send, xrpc_get, xrpc_post};
 use crate::routes::test_utils::{
-    access_jwt, body_json, scoped_access_jwt, seed_account_with_repo, state_with_master_key,
-    DpopProofKey,
+    access_jwt, scoped_access_jwt, seed_account_with_repo, state_with_master_key, DpopProofKey,
 };
 use crate::space_uri::parse_space_ref;
 
@@ -39,22 +39,14 @@ async fn setup() -> AppState {
 }
 
 fn post(method: &str, token: &str, body: serde_json::Value) -> Request<Body> {
-    Request::builder()
-        .method(http::Method::POST)
-        .uri(format!("/xrpc/com.atproto.simplespace.{method}"))
-        .header("Content-Type", "application/json")
-        .header("Authorization", format!("Bearer {token}"))
-        .body(Body::from(body.to_string()))
-        .unwrap()
+    xrpc_post(&format!("com.atproto.simplespace.{method}"), token, body)
 }
 
 fn get(method_and_query: &str, token: &str) -> Request<Body> {
-    Request::builder()
-        .method(http::Method::GET)
-        .uri(format!("/xrpc/com.atproto.simplespace.{method_and_query}"))
-        .header("Authorization", format!("Bearer {token}"))
-        .body(Body::empty())
-        .unwrap()
+    xrpc_get(
+        &format!("com.atproto.simplespace.{method_and_query}"),
+        token,
+    )
 }
 
 fn create_body(policy: &str, app_access: &str) -> serde_json::Value {
@@ -64,12 +56,6 @@ fn create_body(policy: &str, app_access: &str) -> serde_json::Value {
         "policy": { "$type": policy },
         "appAccess": { "$type": app_access },
     })
-}
-
-async fn send(state: &AppState, request: Request<Body>) -> (StatusCode, serde_json::Value) {
-    let response = app(state.clone()).oneshot(request).await.unwrap();
-    let status = response.status();
-    (status, body_json(response).await)
 }
 
 /// The journey a client takes: create, describe, reconfigure, manage members (and see the

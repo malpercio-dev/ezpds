@@ -18,6 +18,7 @@ use axum::http::{self, Request, StatusCode};
 use tower::ServiceExt;
 
 use crate::app::AppState;
+use crate::routes::space_test_support::{space_record_body, xrpc_get as get, xrpc_post as post};
 use crate::routes::test_utils::{
     access_jwt, app_pass_jwt, body_json, scoped_access_jwt, seed_account_with_repo,
     state_with_master_key,
@@ -39,33 +40,8 @@ async fn setup() -> AppState {
     state
 }
 
-fn post(uri: &str, token: &str, body: serde_json::Value) -> Request<Body> {
-    Request::builder()
-        .method(http::Method::POST)
-        .uri(format!("/xrpc/{uri}"))
-        .header("Content-Type", "application/json")
-        .header("Authorization", format!("Bearer {token}"))
-        .body(Body::from(body.to_string()))
-        .unwrap()
-}
-
-fn get(uri: &str, token: &str) -> Request<Body> {
-    Request::builder()
-        .method(http::Method::GET)
-        .uri(format!("/xrpc/{uri}"))
-        .header("Authorization", format!("Bearer {token}"))
-        .body(Body::empty())
-        .unwrap()
-}
-
 fn create_body(rkey: &str, text: &str) -> serde_json::Value {
-    serde_json::json!({
-        "space": SPACE,
-        "repo": DID,
-        "collection": COLLECTION,
-        "rkey": rkey,
-        "record": {"text": text},
-    })
+    space_record_body(SPACE, DID, COLLECTION, rkey, text)
 }
 
 /// The journey a client actually takes: create a record, read it back, see it in the listing,

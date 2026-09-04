@@ -8,11 +8,11 @@
 // Fixtures write through `space_record_write::apply_space_writes` directly — the same choke
 // point the write routes call — because what is under test is the *read* side.
 
-use axum::body::Body;
-use axum::http::{self, Request, StatusCode};
+use axum::http::StatusCode;
 use tower::ServiceExt;
 
 use crate::app::AppState;
+use crate::routes::space_test_support::xrpc_get as get;
 use crate::routes::test_utils::{
     access_jwt, body_json, seed_account_with_repo, state_with_master_key,
 };
@@ -28,15 +28,6 @@ async fn setup() -> (AppState, crypto::P256Keypair) {
     let state = state_with_master_key().await;
     let kp = seed_account_with_repo(&state.db, DID).await;
     (state, kp)
-}
-
-fn get(uri: &str, token: &str) -> Request<Body> {
-    Request::builder()
-        .method(http::Method::GET)
-        .uri(format!("/xrpc/{uri}"))
-        .header("Authorization", format!("Bearer {token}"))
-        .body(Body::empty())
-        .unwrap()
 }
 
 fn space_ref() -> crate::space_uri::SpaceRef {
