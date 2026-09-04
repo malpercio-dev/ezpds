@@ -22,7 +22,7 @@ use axum::{
     http::{Request, StatusCode},
 };
 use chrono::Utc;
-use common::{AgentAuthConfig, TrustedIssuer};
+use common::AgentAuthConfig;
 use jsonwebtoken::{Algorithm, EncodingKey, Header};
 use p256::pkcs8::{spki::EncodePublicKey, EncodePrivateKey};
 use rand_core::OsRng;
@@ -32,7 +32,7 @@ use tower::ServiceExt;
 use crate::app::{app, test_state, AppState};
 use crate::routes::test_utils::{
     insert_account_with_email as insert_account, post_json_with_bearer as post_json,
-    state_with_agent_auth as state_with,
+    state_with_agent_auth as state_with, trusted_issuer as trusted,
 };
 
 const PUBLIC_URL: &str = "https://test.example.com";
@@ -98,16 +98,6 @@ fn make_jag(priv_pem: &str, iss: &str, sub: &str, email: &str, iat: i64, exp: i6
     };
     let key = EncodingKey::from_ec_pem(priv_pem.as_bytes()).unwrap();
     jsonwebtoken::encode(&Header::new(Algorithm::ES256), &claims, &key).unwrap()
-}
-
-fn trusted(issuer: &str, public_key_pem: String) -> TrustedIssuer {
-    TrustedIssuer {
-        issuer: issuer.to_string(),
-        audience: None,
-        public_key_pem: Some(public_key_pem),
-        jwks_url: None,
-        algorithm: "ES256".to_string(),
-    }
 }
 
 /// Sign a provider Security Event Token carrying the revocation event for `sub`. `aud` is this

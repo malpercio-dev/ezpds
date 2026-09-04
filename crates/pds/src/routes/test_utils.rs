@@ -1024,3 +1024,41 @@ pub(crate) async fn post_json_with_bearer(
     let json = serde_json::from_slice(&bytes).unwrap_or(serde_json::Value::Null);
     (status, json)
 }
+
+/// A fresh ES256 (P-256) keypair as (PKCS#8 private PEM, SPKI public PEM) — the shape a trusted
+/// agent-auth issuer's static key configuration takes.
+pub(crate) fn es256_keys() -> (String, String) {
+    use base64::{engine::general_purpose::STANDARD, Engine as _};
+    use p256::pkcs8::{spki::EncodePublicKey, EncodePrivateKey};
+
+    fn der_to_pem(label: &str, der: &[u8]) -> String {
+        let b64 = STANDARD.encode(der);
+        let mut body = String::new();
+        for chunk in b64.as_bytes().chunks(64) {
+            body.push_str(std::str::from_utf8(chunk).unwrap());
+            body.push('\n');
+        }
+        format!("-----BEGIN {label}-----\n{body}-----END {label}-----\n")
+    }
+
+    let sk = p256::SecretKey::random(&mut rand_core::OsRng);
+    let priv_pem = der_to_pem("PRIVATE KEY", sk.to_pkcs8_der().unwrap().as_bytes());
+    let pub_pem = der_to_pem(
+        "PUBLIC KEY",
+        sk.public_key().to_public_key_der().unwrap().as_bytes(),
+    );
+    (priv_pem, pub_pem)
+}
+
+/// A static-key `TrustedIssuer` entry for `issuer`, carrying `public_key_pem` as its ES256
+/// verification key (no `jwks_url`) — the agent-auth trust-config fixture for tests that don't
+/// exercise the dynamic-JWKS path.
+pub(crate) fn trusted_issuer(issuer: &str, public_key_pem: String) -> common::TrustedIssuer {
+    common::TrustedIssuer {
+        issuer: issuer.to_string(),
+        audience: None,
+        public_key_pem: Some(public_key_pem),
+        jwks_url: None,
+        algorithm: "ES256".to_string(),
+    }
+}
