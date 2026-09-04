@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Changes are collected in `changelog.d/` during development and inserted here when
 `just set-version` prepares a release. There is intentionally no `Unreleased` section.
 
+## [0.16.1] - 2026-09-03
+
+### Added
+
+- DPoP proof verification is now pinned against the RFC 9449 normative vectors (Figure 8 JWK thumbprint, Figure 2 token-request proof, Figure 13 resource proof with `ath`), so a canonicalization or hashing regression in the ES256 `cnf.jkt` path fails a known-answer test instead of only a length check.
+
+- The Custos MCP `upload_blob` tool now takes the blob inline as base64 (`data` argument, either a `data:` URL or bare base64 alongside `mime_type`), so a remote client over the hosted sidecar can upload an avatar, banner, or thumbnail without a shared filesystem — previously the tool read only from the sidecar's own `CUSTOS_MCP_IMAGE_DIR` volume, which a remote agent cannot write to. Reading by `path` remains for stdio callers that do share the server's filesystem; passing both is refused, and inline uploads are capped at 5 MiB decoded (the sidecar's request-body ceiling rises to match).
+
+
+### Fixed
+
+- The wallet now defaults to `https://pds.obsign.org` instead of the retired `obsign.org` apex, which has answered 404 for every PDS call since the 2026-07-24 hostname migration. A fresh install no longer pre-fills a server it cannot reach, and an install that saved the apex before that date is rewritten to the serving host on launch rather than staying wedged.
+
+- The wallet now writes did:web documents with bare `#device`, `#atproto`, and `#atproto_pds` ids instead of DID-qualified ones. Some third-party resolvers only match the bare form, so a wallet-composed identity could resolve on Custos yet fail to load elsewhere. Custos accepts both forms.
+
+
 ## [0.16.0] - 2026-09-03
 
 ### Added
