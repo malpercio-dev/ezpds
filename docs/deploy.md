@@ -312,7 +312,7 @@ service's settings:
 
 ### Domain: `docs.obsign.org`
 
-`obsign.org` + `*.obsign.org` are already Railway custom domains on the **PDS**
+`pds.obsign.org` + `*.obsign.org` are already Railway custom domains on the **PDS**
 service (DNS at Cloudflare), and the wildcard means `docs.obsign.org` currently
 resolves to the PDS. To route it to the docs service instead:
 
