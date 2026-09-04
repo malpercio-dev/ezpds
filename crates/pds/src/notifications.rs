@@ -1,9 +1,10 @@
 // pattern: Imperative Shell
 
-//! The sending side of the notification relay: `notify_device(state, did, payload)` turns a
-//! notification into one HPKE-sealed, length-quantized payload *per registered device* and
-//! hands each to the relay worker. Inert when `[notifications] relay` is unset
-//! (`AppState.notify_sender` is `None`), down to never minting key material.
+//! The sending side of the notification relay: `notify_device(state, did, payload)` and
+//! `notify_admin_devices` turn a notification into one HPKE-sealed, length-quantized payload
+//! *per registered device* and hand each to the relay worker. Inert when
+//! `[notifications] relay` is unset (`AppState.notify_sender` is `None`), down to never
+//! minting key material.
 //!
 //! Three properties this module is responsible for, in the order they matter:
 //!
@@ -101,6 +102,32 @@ pub async fn notify_device(state: &AppState, did: &str, payload: NotificationPay
         }
     })
     .await
+}
+
+/// Notify every *active* admin-companion device — the operator alert channel.
+///
+/// The registration and key-pinning halves ship here; the operator *triggers* that call this
+/// (labeler flags, health alerts) land with admin-companion adoption, so nothing in-tree
+/// invokes it yet. Kept rather than deferred because the admin registration route it serves
+/// is already live — a stored registration nothing can ever send to would be the odder state.
+#[allow(dead_code)]
+pub async fn notify_admin_devices(state: &AppState, payload: NotificationPayload) {
+    let Some(sender) = state.notify_sender.as_ref() else {
+        return;
+    };
+    let registrations = match store::list_active_admin_registrations(&state.db).await {
+        Ok(rows) => rows,
+        Err(e) => {
+            tracing::warn!(error = %e, "failed to load admin notification registrations");
+            return;
+        }
+    };
+    fan_out(state, sender, registrations, payload, |device_id| {
+        RegistrationOwner::AdminDevice {
+            admin_device_id: device_id,
+        }
+    })
+    .await;
 }
 
 /// Seal-and-enqueue one payload per registration, returning how many jobs were enqueued.
@@ -537,6 +564,7 @@ mod tests {
             NotificationPayload::new("agent_claim_pending", "t", "b"),
         )
         .await;
+        notify_admin_devices(&state, NotificationPayload::new("ops_alert", "t", "b")).await;
 
         let keys: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM notification_sender_keys")
             .fetch_one(&state.db)

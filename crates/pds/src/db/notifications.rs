@@ -292,14 +292,12 @@ pub async fn upsert_admin_registration(
     Ok(())
 }
 
-/// Every *active* admin device's registration.
+/// Every *active* admin device's registration — the fan-out set for `notify_admin_devices`.
 ///
-/// The join against `admin_devices` is what would make revocation authoritative for pushes
-/// too: a revoked device stops receiving operational alerts the instant its tombstone is
-/// stamped, without waiting for the cleanup delete to run. No route sends an operator alert
-/// yet, so the only current caller is `admin_notifications.rs`'s own registration tests.
-#[cfg(test)]
-pub(crate) async fn list_active_admin_registrations(
+/// The join against `admin_devices` is what makes revocation authoritative for pushes too: a
+/// revoked device stops receiving operational alerts the instant its tombstone is stamped,
+/// without waiting for the cleanup delete to run.
+pub async fn list_active_admin_registrations(
     pool: &SqlitePool,
 ) -> Result<Vec<RegistrationRow>, sqlx::Error> {
     let rows: Vec<(String, String, Option<String>, bool)> = sqlx::query_as(
