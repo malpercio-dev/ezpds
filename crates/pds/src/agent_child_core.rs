@@ -611,7 +611,10 @@ async fn finalize_child(
     // handle until some unrelated event forces a resolution.
     if let Err(error) = state
         .firehose
-        .emit_identity(prepared.child_did.clone(), Some(prepared.child_handle.clone()))
+        .emit_identity(
+            prepared.child_did.clone(),
+            Some(prepared.child_handle.clone()),
+        )
         .await
     {
         tracing::warn!(%error, did = %prepared.child_did, "failed to emit child identity event");
