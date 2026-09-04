@@ -24,7 +24,7 @@ fn state_param(state: &str) -> String {
     if state.is_empty() {
         String::new()
     } else {
-        format!("&state={}", encode_param(state))
+        format!("&state={}", urlencoding::encode(state))
     }
 }
 
@@ -56,10 +56,10 @@ pub(super) fn error_redirect(
         "{}{}error={}&error_description={}{}&iss={}",
         redirect_uri,
         mode.separator(redirect_uri),
-        encode_param(error),
-        encode_param(description),
+        urlencoding::encode(error),
+        urlencoding::encode(description),
         state_param(state),
-        encode_param(issuer),
+        urlencoding::encode(issuer),
     );
     Redirect::to(&url)
 }
@@ -104,9 +104,9 @@ pub(super) fn build_code_redirect(
         "{}{}code={}{}&iss={}",
         redirect_uri,
         mode.separator(redirect_uri),
-        encode_param(code),
+        urlencoding::encode(code),
         state_param(state),
-        encode_param(issuer),
+        urlencoding::encode(issuer),
     );
     Redirect::to(&url)
 }
@@ -386,11 +386,11 @@ fn render_space_row(token: &str, display: &SpaceDisplay) -> String {
 fn wallet_handoff_uri(request_id: &str, origin: Option<&str>) -> String {
     let mut uri = format!(
         "{WALLET_HANDOFF_SCHEME}:/consent?request_id={}",
-        encode_param(request_id)
+        urlencoding::encode(request_id)
     );
     if let Some(origin) = origin {
         uri.push_str("&origin=");
-        uri.push_str(&encode_param(origin));
+        uri.push_str(&urlencoding::encode(origin));
     }
     uri
 }
@@ -503,20 +503,6 @@ const WALLET_POLL_SCRIPT: &str = r#"    <script>
 "#;
 
 // ── Pure helpers ──────────────────────────────────────────────────────────────
-
-/// Percent-encode a string for safe inclusion as a URL query parameter value.
-pub(super) fn encode_param(s: &str) -> String {
-    let mut out = String::with_capacity(s.len());
-    for b in s.bytes() {
-        match b {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
-                out.push(b as char)
-            }
-            _ => out.push_str(&format!("%{b:02X}")),
-        }
-    }
-    out
-}
 
 /// Render `data` as an inline, self-contained SVG QR code, or `None` if it does not fit in a QR
 /// (the caller then falls back to the typed code, never breaking the page). Dark modules are drawn
