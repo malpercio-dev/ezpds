@@ -35,6 +35,7 @@ use common::{ApiError, ErrorCode};
 use crate::app::AppState;
 use crate::auth::password::{hash_password, resolve_password};
 use crate::auth::service_auth::verify_service_auth_resolving_key;
+use crate::db::dids::upsert_did_document;
 use crate::db::is_unique_violation;
 use crate::db::repo_keys::{
     get_reserved_repo_key_by_did, get_reserved_repo_key_by_id, insert_did_signing_key,
@@ -297,11 +298,6 @@ async fn promote_new_account(
     state: &AppState,
     p: NewAccountPromotion<'_>,
 ) -> Result<IssuedSession, ApiError> {
-    let did_document_str = serde_json::to_string(p.did_document).map_err(|e| {
-        tracing::error!(error = %e, "failed to serialize DID document");
-        ApiError::new(ErrorCode::InternalError, "failed to serialize DID document")
-    })?;
-
     // Acquire the firehose lock *before* opening the transaction — see the lock/connection
     // ordering rule in `firehose/mod.rs`'s module doc for why that order matters on the
     // single-connection pool.
@@ -337,7 +333,7 @@ async fn promote_new_account(
         }
     })?;
 
-    insert_did_document(&mut tx, p.did, &did_document_str).await?;
+    upsert_did_document(&mut *tx, p.did, p.did_document).await?;
     insert_handle(&mut tx, p.handle, p.did).await?;
 
     insert_did_signing_key(&mut *tx, p.did, p.repo_key)
@@ -514,10 +510,6 @@ async fn create_account_migration(
     ensure_email_and_handle_free(state, &email, &payload.handle).await?;
     precheck_invite_code(state, payload.invite_code.as_deref()).await?;
 
-    let did_document_str = serde_json::to_string(&did_document).map_err(|e| {
-        tracing::error!(error = %e, "failed to serialize resolved DID document");
-        ApiError::new(ErrorCode::InternalError, "failed to store DID document")
-    })?;
     // A migration account may carry no password (OAuth-only); store NULL then.
     let password_hash = match payload.password.as_deref().filter(|p| !p.is_empty()) {
         Some(p) => Some(hash_password(p)?),
@@ -554,7 +546,7 @@ async fn create_account_migration(
         }
     })?;
 
-    insert_did_document(&mut tx, did, &did_document_str).await?;
+    upsert_did_document(&mut *tx, did, &did_document).await?;
     insert_handle(&mut tx, &payload.handle, did).await?;
     insert_did_signing_key(&mut *tx, did, &repo_key)
         .await
@@ -579,28 +571,11 @@ async fn create_account_migration(
 }
 
 // ── Shared helpers ───────────────────────────────────────────────────────────
-
-async fn insert_did_document(
-    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
-    did: &str,
-    document: &str,
-) -> Result<(), ApiError> {
-    // Upsert: in migration mode the DID document is already cached locally by the resolver, so a
-    // plain INSERT would conflict on the `did` primary key. New-account mode has no prior row, so
-    // the ON CONFLICT branch simply never fires.
-    sqlx::query(
-        "INSERT INTO did_documents (did, document, created_at, updated_at) \
-         VALUES (?, ?, datetime('now'), datetime('now')) \
-         ON CONFLICT(did) DO UPDATE SET document = excluded.document, updated_at = datetime('now')",
-    )
-    .bind(did)
-    .bind(document)
-    .execute(&mut **tx)
-    .await
-    .inspect_err(|e| tracing::error!(error = %e, "failed to insert did_document"))
-    .map_err(|_| ApiError::new(ErrorCode::InternalError, "failed to store DID document"))?;
-    Ok(())
-}
+//
+// `upsert_did_document` (`db::dids`) is called with `&mut *tx`: in migration mode the DID
+// document is already cached locally by the resolver, so a plain INSERT would conflict on the
+// `did` primary key — the UPDATE branch is what fires there. New-account mode has no prior row,
+// so the INSERT branch fires and the UPDATE branch never does.
 
 async fn insert_handle(
     tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
