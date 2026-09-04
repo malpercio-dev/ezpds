@@ -525,6 +525,68 @@ mod tests {
         minted["did"].as_str().unwrap().to_string()
     }
 
+    /// Minting a child emits an `#identity` firehose frame carrying the child's handle, so relays
+    /// and AppViews learn the new DID's handle binding immediately — without it, every app shows
+    /// the child as an invalid handle until an unrelated event forces a resolution (MM-551).
+    #[tokio::test]
+    async fn minting_a_child_emits_an_identity_frame_with_the_handle() {
+        let (state, _plc) = state_with_plc().await;
+        let parent = "did:plc:parentchildowner111111";
+        seed_account_with_repo(&state.db, parent).await;
+        let repo_key = reserve(&state.db).await;
+        let handle = "identity-frame.example.com";
+        let op = genesis(handle, &state.config.public_url, &repo_key.key_id.0);
+        let token = access_jwt(&[0x42; 32], parent);
+
+        // Subscribe before the request so the broadcast frame is delivered to this receiver.
+        // Hold a clone of the firehose so it is not dropped when the oneshot router is dropped
+        // (otherwise the channel closes and `try_recv` below would report `Closed`).
+        let firehose = state.firehose.clone();
+        let mut rx = firehose.subscribe();
+        let frontier = firehose.current_seq();
+
+        let app = crate::app::app(state);
+        let response = app
+            .oneshot(request(
+                "/agent/child",
+                Some(&token),
+                serde_json::json!({"handle": handle, "plcOp": op}),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let minted: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        let child = minted["did"].as_str().unwrap();
+
+        // The #account frame is emitted first, then the #identity frame with the handle. Drain
+        // until the identity frame rather than assuming broadcast order, but require both to
+        // have arrived — a mint that skips the identity emission fails this drain.
+        let mut saw_account = false;
+        let identity = tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            loop {
+                let event = rx.recv().await.expect("receiver not closed");
+                match event {
+                    crate::firehose::FirehoseEvent::Account(_) => saw_account = true,
+                    crate::firehose::FirehoseEvent::Identity(identity) => break identity,
+                    _ => {}
+                }
+            }
+        })
+        .await
+        .expect("identity frame was emitted");
+        assert!(saw_account, "the account frame precedes the identity frame");
+        assert_eq!(identity.did, child);
+        assert_eq!(identity.handle.as_deref(), Some(handle));
+        assert!(
+            identity.seq > frontier,
+            "identity is sequenced after the pre-mint frontier"
+        );
+        drop(firehose);
+    }
+
     #[tokio::test]
     async fn local_parent_mints_lists_and_revokes_sovereign_child() {
         let (state, _plc) = state_with_plc().await;

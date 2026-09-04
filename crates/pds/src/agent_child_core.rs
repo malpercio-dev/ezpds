@@ -210,6 +210,7 @@ pub(crate) async fn mint_child_account(
 
 struct PreparedChild {
     child_did: String,
+    child_handle: String,
     parent_did: String,
     registration_id: String,
     scopes: String,
@@ -304,6 +305,7 @@ async fn prepare_child(
                 })?;
         return Ok(PreparedChild {
             child_did: child_did.to_string(),
+            child_handle: stored_handle,
             parent_did: stored_parent,
             registration_id: stored_registration,
             scopes: stored_scopes,
@@ -412,6 +414,7 @@ async fn prepare_child(
     })?;
     Ok(PreparedChild {
         child_did: child_did.to_string(),
+        child_handle: handle.to_string(),
         parent_did: parent_did.to_string(),
         registration_id: registration_id.to_string(),
         scopes: scopes.to_string(),
@@ -601,6 +604,17 @@ async fn finalize_child(
         .await
     {
         tracing::warn!(%error, did = %prepared.child_did, "failed to emit child account event");
+    }
+    // Announce the child's handle binding the same way createHandle does. Without this frame a
+    // relay never learns the new DID's handle: the PLC genesis op lands, but nothing upstream
+    // re-resolves a DID it has no reason to look at, so every app shows the child as an invalid
+    // handle until some unrelated event forces a resolution.
+    if let Err(error) = state
+        .firehose
+        .emit_identity(prepared.child_did.clone(), Some(prepared.child_handle.clone()))
+        .await
+    {
+        tracing::warn!(%error, did = %prepared.child_did, "failed to emit child identity event");
     }
     state.crawlers.notify();
     Ok(())
