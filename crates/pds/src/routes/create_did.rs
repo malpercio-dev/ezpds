@@ -45,7 +45,7 @@ use crate::auth::password::resolve_password;
 use crate::auth::token::generate_token;
 use crate::db::is_unique_violation;
 use crate::identity::resolution::fragment_id_matches;
-use common::{ApiError, ErrorCode};
+use common::{ApiError, ApiResultExt, ErrorCode};
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -107,10 +107,7 @@ pub async fn create_did_handler(
     // repo commits with the matching private key.
     let repo_key = crate::db::repo_keys::get_pending_repo_key(&state.db, &session.account_id)
         .await
-        .map_err(|e| {
-            tracing::error!(error = %e, "failed to load pending repo signing key");
-            ApiError::new(ErrorCode::InternalError, "failed to load signing key")
-        })?
+        .or_internal_as("failed to load pending repo signing key", "failed to load signing key")?
         .ok_or_else(|| {
             ApiError::new(
                 ErrorCode::InvalidClaim,
@@ -273,14 +270,14 @@ pub async fn create_did_handler(
             )
         })?;
     let genesis_private = crypto::decrypt_private_key(&repo_key.private_key_encrypted, master_key)
-        .map_err(|e| {
-            tracing::error!(error = %e, "failed to decrypt repo signing key for genesis");
-            ApiError::new(ErrorCode::InternalError, "failed to prepare genesis repo")
-        })?;
-    let genesis_signer = repo_engine::CommitSigner::from_bytes(&genesis_private).map_err(|e| {
-        tracing::error!(error = %e, "invalid repo signing key for genesis");
-        ApiError::new(ErrorCode::InternalError, "failed to prepare genesis repo")
-    })?;
+        .or_internal_as(
+            "failed to decrypt repo signing key for genesis",
+            "failed to prepare genesis repo",
+        )?;
+    let genesis_signer = repo_engine::CommitSigner::from_bytes(&genesis_private).or_internal_as(
+        "invalid repo signing key for genesis",
+        "failed to prepare genesis repo",
+    )?;
     let (genesis_root, genesis_rev, genesis_blocks) =
         repo_engine::build_genesis_repo(&did, &genesis_signer)
             .await
@@ -341,10 +338,10 @@ pub async fn create_did_handler(
             // does — the shared SecretFamily ciphertext format, so rewrap-master-key
             // covers this row like every other wrapped column.
             let wrapped = crypto::encrypt_secret_bytes(envelope.to_bytes().as_slice(), master_key)
-                .map_err(|e| {
-                    tracing::error!(error = %e, "failed to wrap escrow share for promotion");
-                    ApiError::new(ErrorCode::InternalError, "failed to protect escrow share")
-                })?;
+                .or_internal_as(
+                    "failed to wrap escrow share for promotion",
+                    "failed to protect escrow share",
+                )?;
             EscrowDeposit::ClientShare {
                 wrapped_envelope: wrapped,
                 set_id: envelope.set_id(),
@@ -511,10 +508,7 @@ async fn load_pending_account(
     .bind(account_id)
     .fetch_optional(db)
     .await
-    .map_err(|e| {
-        tracing::error!(error = %e, "failed to query pending account");
-        ApiError::new(ErrorCode::InternalError, "failed to load account")
-    })?
+    .or_internal_as("failed to query pending account", "failed to load account")?
     .ok_or_else(|| ApiError::new(ErrorCode::Unauthorized, "account not found"))
 }
 
@@ -537,15 +531,15 @@ async fn pre_store_did(
 ) -> Result<bool, ApiError> {
     if let Some(pre_stored_did) = &pending.pending_did {
         if did != pre_stored_did {
-            tracing::error!(
+            return Err({
+                tracing::error!(
                 derived_did = %did,
-                stored_did = %pre_stored_did,
-                "retry path: derived DID does not match pre-stored DID; inputs may have changed"
-            );
-            return Err(ApiError::new(
-                ErrorCode::InternalError,
-                "DID mismatch: derived DID does not match pre-stored value",
-            ));
+                stored_did = %pre_stored_did, "retry path: derived DID does not match pre-stored DID; inputs may have changed");
+                ApiError::new(
+                    ErrorCode::InternalError,
+                    "DID mismatch: derived DID does not match pre-stored value",
+                )
+            });
         }
         let plc_registered = pending.pending_plc_registered_at.is_some();
         tracing::info!(
@@ -561,17 +555,16 @@ async fn pre_store_did(
         .bind(account_id)
         .execute(db)
         .await
-        .map_err(|e| {
-            tracing::error!(error = %e, "failed to pre-store pending DID");
-            ApiError::new(ErrorCode::InternalError, "failed to store pending DID")
-        })?;
+        .or_internal_as(
+            "failed to pre-store pending DID",
+            "failed to store pending DID",
+        )?;
 
     if result.rows_affected() == 0 {
-        tracing::error!(account_id = %account_id, "pending account row vanished during DID pre-store");
-        return Err(ApiError::new(
-            ErrorCode::InternalError,
-            "account no longer exists",
-        ));
+        return Err({
+            tracing::error!(account_id = %account_id, "pending account row vanished during DID pre-store");
+            ApiError::new(ErrorCode::InternalError, "account no longer exists")
+        });
     }
     Ok(false)
 }
@@ -589,20 +582,16 @@ async fn mark_plc_registered(db: &sqlx::SqlitePool, account_id: &str) -> Result<
     .bind(account_id)
     .execute(db)
     .await
-    .map_err(|e| {
-        tracing::error!(error = %e, "failed to mark PLC registration confirmed");
-        ApiError::new(
-            ErrorCode::InternalError,
-            "failed to record PLC registration",
-        )
-    })?;
+    .or_internal_as(
+        "failed to mark PLC registration confirmed",
+        "failed to record PLC registration",
+    )?;
 
     if result.rows_affected() == 0 {
-        tracing::error!(account_id = %account_id, "pending account row vanished before PLC registration mark");
-        return Err(ApiError::new(
-            ErrorCode::InternalError,
-            "account no longer exists",
-        ));
+        return Err({
+            tracing::error!(account_id = %account_id, "pending account row vanished before PLC registration mark");
+            ApiError::new(ErrorCode::InternalError, "account no longer exists")
+        });
     }
     Ok(())
 }
@@ -648,10 +637,8 @@ async fn promote_account(
     genesis_car: Vec<u8>,
     genesis_sync_car: Vec<u8>,
 ) -> Result<(), ApiError> {
-    let did_document_str = serde_json::to_string(did_document).map_err(|e| {
-        tracing::error!(error = %e, "failed to serialize DID document");
-        ApiError::new(ErrorCode::InternalError, "failed to serialize DID document")
-    })?;
+    let did_document_str =
+        serde_json::to_string(did_document).or_internal("failed to serialize DID document")?;
     let session_id = uuid::Uuid::new_v4().to_string();
 
     // Acquired *before* opening the transaction below — see `Firehose::lock_emit`'s docs and

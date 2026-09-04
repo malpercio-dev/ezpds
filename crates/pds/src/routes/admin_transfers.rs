@@ -26,7 +26,7 @@ use axum::http::{HeaderMap, Method, Uri};
 use axum::Json;
 use serde::{Deserialize, Serialize};
 
-use common::{ApiError, ErrorCode};
+use common::{ApiError, ApiResultExt, ErrorCode};
 
 use crate::app::AppState;
 use crate::auth::guards::require_admin;
@@ -117,10 +117,10 @@ pub async fn list_admin_transfers(
 
     let rows = list_inflight_transfers(&state.db, cursor, params.limit)
         .await
-        .map_err(|e| {
-            tracing::error!(error = %e, "failed to list in-flight transfers");
-            ApiError::new(ErrorCode::InternalError, "failed to list transfers")
-        })?;
+        .or_internal_as(
+            "failed to list in-flight transfers",
+            "failed to list transfers",
+        )?;
 
     // A short page means the in-flight set is exhausted; a full page may have more.
     let cursor = (rows.len() == params.limit as usize)
@@ -179,10 +179,7 @@ pub async fn cancel_admin_transfer(
 
     let outcome = cancel_transfer(&state.db, &transfer_id)
         .await
-        .map_err(|e| {
-            tracing::error!(error = %e, "failed to cancel transfer");
-            ApiError::new(ErrorCode::InternalError, "failed to cancel transfer")
-        })?;
+        .or_internal("failed to cancel transfer")?;
 
     match outcome {
         CancelOutcome::Cancelled {

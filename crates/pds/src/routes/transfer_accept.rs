@@ -12,7 +12,7 @@ use axum::{extract::State, http::StatusCode, response::Json};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use common::{ApiError, ErrorCode};
+use common::{ApiError, ApiResultExt, ErrorCode};
 
 use crate::app::AppState;
 use crate::auth::token::generate_token;
@@ -85,10 +85,7 @@ pub async fn transfer_accept(
         &device_token.hash,
     )
     .await
-    .map_err(|e| {
-        tracing::error!(error = %e, "failed to accept transfer");
-        ApiError::new(ErrorCode::InternalError, "failed to accept transfer")
-    })?;
+    .or_internal("failed to accept transfer")?;
 
     match outcome {
         AcceptOutcome::Accepted { transfer_id } => Ok((

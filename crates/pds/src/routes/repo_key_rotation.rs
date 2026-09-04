@@ -50,7 +50,7 @@ use crate::db::repo_keys::{
     RepoSigningKey,
 };
 use crate::identity::plc::{build_did_document_from_op, ensure_did_plc, fetch_current_plc_state};
-use common::{ApiError, ErrorCode};
+use common::{ApiError, ApiResultExt, ErrorCode};
 
 /// The atproto verification-method id a repo signing key is installed under.
 const ATPROTO_VERIFICATION_METHOD_ID: &str = "atproto";
@@ -58,8 +58,11 @@ const ATPROTO_VERIFICATION_METHOD_ID: &str = "atproto";
 /// Map a signing-key query failure to the uniform 500 (`db/repo_keys.rs` returns bare
 /// `sqlx::Error`, matching its sibling queries).
 fn key_query_error(e: sqlx::Error) -> ApiError {
-    tracing::error!(error = %e, "signing-key query failed during rotation");
-    ApiError::new(ErrorCode::InternalError, "failed to access signing keys")
+    ApiError::internal_as(
+        e,
+        "signing-key query failed during rotation",
+        "failed to access signing keys",
+    )
 }
 
 // ── POST /v1/repo-keys/rotation ───────────────────────────────────────────────
@@ -108,15 +111,15 @@ pub async fn begin_repo_key_rotation(
 
     // Always mint fresh, replacing any previously staged key: in a compromise scenario a
     // key staged before this rotation began must be assumed known to the attacker.
-    let kp = crypto::generate_p256_keypair().map_err(|e| {
-        tracing::error!(error = %e, "failed to generate rotation signing key");
-        ApiError::new(ErrorCode::InternalError, "failed to generate signing key")
-    })?;
+    let kp = crypto::generate_p256_keypair().or_internal_as(
+        "failed to generate rotation signing key",
+        "failed to generate signing key",
+    )?;
     let private_key_encrypted = crypto::encrypt_private_key(&kp.private_key_bytes, master_key)
-        .map_err(|e| {
-            tracing::error!(error = %e, "failed to encrypt rotation signing key");
-            ApiError::new(ErrorCode::InternalError, "failed to encrypt signing key")
-        })?;
+        .or_internal_as(
+            "failed to encrypt rotation signing key",
+            "failed to encrypt signing key",
+        )?;
     let staged = RepoSigningKey {
         key_id: kp.key_id.to_string(),
         public_key: kp.public_key.clone(),
@@ -301,11 +304,13 @@ pub async fn complete_repo_key_rotation(
                 .await
                 .map_err(key_query_error)?;
             if active.as_ref().map(|k| k.key_id.as_str()) != Some(staged.key_id.as_str()) {
-                tracing::error!(did = %did, key_id = %staged.key_id, "rotation cutover failed: staged key vanished before promotion");
-                return Err(ApiError::new(
-                    ErrorCode::InternalError,
-                    "failed to promote the staged signing key",
-                ));
+                return Err({
+                    tracing::error!(did = %did, key_id = %staged.key_id, "rotation cutover failed: staged key vanished before promotion");
+                    ApiError::new(
+                        ErrorCode::InternalError,
+                        "failed to promote the staged signing key",
+                    )
+                });
             }
         }
     }

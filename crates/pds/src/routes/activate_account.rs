@@ -75,8 +75,10 @@ pub async fn activate_account_handler(
         // Already active: idempotent no-op. Don't re-emit a status-quo `#account` event.
         AccountStateChange::Unchanged => {
             tx.commit().await.map_err(|e| {
-                tracing::error!(error = %e, did = %user.did, "failed to commit activate (no-op) transaction");
-                ApiError::new(ErrorCode::InternalError, "failed to activate account")
+                {
+                    tracing::error!(error = %e, did = %user.did, "failed to commit activate (no-op) transaction");
+                    ApiError::new(ErrorCode::InternalError, "failed to activate account")
+                }
             })?;
             tracing::debug!(did = %user.did, "activateAccount: already active; no event emitted");
         }
@@ -88,25 +90,33 @@ pub async fn activate_account_handler(
                 .stage_account(&mut tx, user.did.clone(), true, None)
                 .await
                 .map_err(|e| {
-                    tracing::error!(error = %e, did = %user.did, "failed to stage #account activation event");
-                    ApiError::new(ErrorCode::InternalError, "failed to activate account")
+                    {
+                        tracing::error!(error = %e, did = %user.did, "failed to stage #account activation event");
+                        ApiError::new(ErrorCode::InternalError, "failed to activate account")
+                    }
                 })?;
             match sync {
                 Some(sync_input) => {
                     let pending = account.stage_sync(&mut tx, sync_input).await.map_err(|e| {
-                        tracing::error!(error = %e, did = %user.did, "failed to stage #sync activation event");
-                        ApiError::new(ErrorCode::InternalError, "failed to activate account")
+                        {
+                            tracing::error!(error = %e, did = %user.did, "failed to stage #sync activation event");
+                            ApiError::new(ErrorCode::InternalError, "failed to activate account")
+                        }
                     })?;
                     tx.commit().await.map_err(|e| {
-                        tracing::error!(error = %e, did = %user.did, "failed to commit activate transaction");
-                        ApiError::new(ErrorCode::InternalError, "failed to activate account")
+                        {
+                            tracing::error!(error = %e, did = %user.did, "failed to commit activate transaction");
+                            ApiError::new(ErrorCode::InternalError, "failed to activate account")
+                        }
                     })?;
                     pending.finish();
                 }
                 None => {
                     tx.commit().await.map_err(|e| {
-                        tracing::error!(error = %e, did = %user.did, "failed to commit activate transaction");
-                        ApiError::new(ErrorCode::InternalError, "failed to activate account")
+                        {
+                            tracing::error!(error = %e, did = %user.did, "failed to commit activate transaction");
+                            ApiError::new(ErrorCode::InternalError, "failed to activate account")
+                        }
                     })?;
                     account.finish();
                 }

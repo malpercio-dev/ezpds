@@ -11,7 +11,7 @@
 //! unrevoked, classifying the result as
 //! `RevokeClaimCodeOutcome::{Revoked, AlreadyRevoked, Redeemed, NotFound}`.
 
-use common::{ApiError, ErrorCode};
+use common::{ApiError, ApiResultExt};
 use sqlx::SqlitePool;
 
 use crate::code_gen::generate_code;
@@ -28,10 +28,7 @@ pub async fn claim_code_valid(db: &SqlitePool, code: &str) -> Result<bool, ApiEr
     .bind(code)
     .fetch_one(db)
     .await
-    .map_err(|e| {
-        tracing::error!(error = %e, "failed to validate invite code");
-        ApiError::new(ErrorCode::InternalError, "failed to validate invite code")
-    })?;
+    .or_internal("failed to validate invite code")?;
 
     Ok(valid)
 }

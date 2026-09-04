@@ -1,6 +1,6 @@
 // pattern: Functional Core
 
-use common::{ApiError, ErrorCode};
+use common::{ApiError, ApiResultExt, ErrorCode};
 use jsonwebtoken::{decode, encode, Algorithm, DecodingKey, EncodingKey, Header, Validation};
 use serde::{Deserialize, Serialize};
 
@@ -622,21 +622,19 @@ pub(crate) fn issue_access_jwt(
     personal_details: bool,
 ) -> Result<String, ApiError> {
     if scope != SCOPE_ACCESS && scope != app_pass_scope(false) && scope != app_pass_scope(true) {
-        tracing::error!(
-            scope,
-            "attempted to issue an access JWT with a non-access scope"
-        );
-        return Err(ApiError::new(
-            ErrorCode::InternalError,
-            "failed to issue token",
-        ));
+        return Err({
+            tracing::error!(
+                scope,
+                "attempted to issue an access JWT with a non-access scope"
+            );
+            ApiError::new(ErrorCode::InternalError, "failed to issue token")
+        });
     }
     if personal_details && scope == SCOPE_ACCESS {
-        tracing::error!("attempted to issue a full-access JWT with the personal-details claim");
-        return Err(ApiError::new(
-            ErrorCode::InternalError,
-            "failed to issue token",
-        ));
+        return Err({
+            tracing::error!("attempted to issue a full-access JWT with the personal-details claim");
+            ApiError::new(ErrorCode::InternalError, "failed to issue token")
+        });
     }
 
     encode(
@@ -651,10 +649,7 @@ pub(crate) fn issue_access_jwt(
         },
         &EncodingKey::from_secret(secret),
     )
-    .map_err(|e| {
-        tracing::error!(error = %e, "failed to sign access JWT");
-        ApiError::new(ErrorCode::InternalError, "failed to issue token")
-    })
+    .or_internal_as("failed to sign access JWT", "failed to issue token")
 }
 
 /// Sign an HS256 refresh JWT (scope: com.atproto.refresh) with a 90-day lifetime.
@@ -677,10 +672,7 @@ pub(crate) fn issue_refresh_jwt(
         },
         &EncodingKey::from_secret(secret),
     )
-    .map_err(|e| {
-        tracing::error!(error = %e, "failed to sign refresh JWT");
-        ApiError::new(ErrorCode::InternalError, "failed to issue token")
-    })
+    .or_internal_as("failed to sign refresh JWT", "failed to issue token")
 }
 
 #[cfg(test)]

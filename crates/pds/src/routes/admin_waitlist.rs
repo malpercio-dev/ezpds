@@ -19,7 +19,7 @@ use axum::http::{HeaderMap, Method, Uri};
 use axum::Json;
 use serde::{Deserialize, Serialize};
 
-use common::{ApiError, ErrorCode};
+use common::{ApiError, ApiResultExt, ErrorCode};
 
 use crate::app::AppState;
 use crate::auth::guards::require_admin;
@@ -73,14 +73,16 @@ pub async fn admin_waitlist(
     };
     let limit = params.limit.unwrap_or(DEFAULT_LIMIT).clamp(1, MAX_LIMIT);
 
-    let rows = list_signups(&state.db, before, limit).await.map_err(|e| {
-        tracing::error!(error = %e, "DB error listing waitlist signups");
-        ApiError::new(ErrorCode::InternalError, "failed to list waitlist")
-    })?;
-    let total = count_signups(&state.db).await.map_err(|e| {
-        tracing::error!(error = %e, "DB error counting waitlist signups");
-        ApiError::new(ErrorCode::InternalError, "failed to list waitlist")
-    })?;
+    let rows = list_signups(&state.db, before, limit)
+        .await
+        .or_internal_as(
+            "DB error listing waitlist signups",
+            "failed to list waitlist",
+        )?;
+    let total = count_signups(&state.db).await.or_internal_as(
+        "DB error counting waitlist signups",
+        "failed to list waitlist",
+    )?;
 
     // A next cursor only on a full page — the admin_audit convention.
     let cursor = (rows.len() as i64 == limit)

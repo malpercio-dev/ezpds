@@ -15,7 +15,7 @@ use crate::db::spaces::SpaceRow;
 use crate::lexicon::RecordValidation;
 use crate::space_record_write::SpaceCommitOutcome;
 use crate::space_uri::SpaceRef;
-use common::{ApiError, ErrorCode};
+use common::{ApiError, ApiResultExt, ErrorCode};
 
 /// Parse the `space` a request named.
 ///
@@ -85,8 +85,11 @@ pub fn decode_value(bytes: &[u8]) -> Result<serde_json::Value, ApiError> {
 }
 
 fn decode_error(e: impl std::fmt::Display) -> ApiError {
-    tracing::error!(error = %e, "stored space record block is undecodable");
-    ApiError::new(ErrorCode::InternalError, "failed to read space record")
+    ApiError::internal_as(
+        e,
+        "stored space record block is undecodable",
+        "failed to read space record",
+    )
 }
 
 /// Confirm this host is the space's authority — the precondition for every space-host method
@@ -130,8 +133,10 @@ pub async fn load_repo(
     crate::db::space_repos::get_repo(&state.db, space_uri, did)
         .await
         .map_err(|e| {
-            tracing::error!(error = %e, space = %space_uri, did = %did, "failed to load space repo");
-            ApiError::new(ErrorCode::InternalError, "failed to load space repo")
+            {
+                tracing::error!(error = %e, space = %space_uri, did = %did, "failed to load space repo");
+                ApiError::new(ErrorCode::InternalError, "failed to load space repo")
+            }
         })?
         .ok_or_else(|| crate::auth::space::repo_not_found(did))
 }
@@ -150,8 +155,10 @@ pub async fn sign_current_commit(
 ) -> Result<crypto::SignedSpaceCommit, ApiError> {
     let hash = crypto::LtHash::from_state(&repo.lthash_state)
         .map_err(|e| {
-            tracing::error!(error = %e, space = %space.uri, did = %did, "stored LtHash state is malformed");
-            ApiError::new(ErrorCode::InternalError, "failed to read space commit")
+            {
+                tracing::error!(error = %e, space = %space.uri, did = %did, "stored LtHash state is malformed");
+                ApiError::new(ErrorCode::InternalError, "failed to read space commit")
+            }
         })?
         .digest();
 
@@ -223,8 +230,10 @@ pub async fn space_blob_cids(
         )
         .await
         .map_err(|e| {
-            tracing::error!(error = %e, space = %space_uri, did = %did, "failed to page space records");
-            ApiError::new(ErrorCode::InternalError, "failed to read space records")
+            {
+                tracing::error!(error = %e, space = %space_uri, did = %did, "failed to page space records");
+                ApiError::new(ErrorCode::InternalError, "failed to read space records")
+            }
         })?;
         let last_page = (page.len() as i64) < PAGE;
         for (collection, rkey, value) in page {
@@ -343,10 +352,8 @@ pub fn app_access_from_lex(
                     })
                 })
                 .collect::<Result<_, _>>()?;
-            let json = serde_json::to_string(&allowed).map_err(|e| {
-                tracing::error!(error = %e, "failed to encode allowList");
-                ApiError::new(ErrorCode::InternalError, "internal server error")
-            })?;
+            let json = serde_json::to_string(&allowed)
+                .or_internal_as("failed to encode allowList", "internal server error")?;
             Ok(("allowList", Some(json)))
         }
         other => Err(ApiError::new(

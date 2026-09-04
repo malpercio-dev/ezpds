@@ -314,12 +314,14 @@ pub async fn check_handle_availability(
         &state.config.available_user_domains,
         &state.config.reserved_handles,
     )
-        .is_ok()
+    .is_ok()
         && !crate::uniqueness::handle_taken(&state.db, &params.handle)
             .await
             .map_err(|e| {
-                tracing::error!(error = %e, handle = %params.handle, "failed to check handle availability");
-                ApiError::new(ErrorCode::InternalError, "failed to check handle availability")
+                {
+                    tracing::error!(error = %e, handle = %params.handle, "failed to check handle availability");
+                    ApiError::new(ErrorCode::InternalError, "failed to check handle availability")
+                }
             })?;
 
     let result = if available {
@@ -379,10 +381,11 @@ fn account_bound_invites_unsupported() -> ApiError {
 
 fn map_mint_error(error: MintClaimCodesError) -> ApiError {
     match error {
-        MintClaimCodesError::Store(e) => {
-            tracing::error!(error = %e, "failed to insert invite claim codes");
-            ApiError::new(ErrorCode::InternalError, "failed to store invite codes")
-        }
+        MintClaimCodesError::Store(e) => ApiError::internal_as(
+            e,
+            "failed to insert invite claim codes",
+            "failed to store invite codes",
+        ),
         MintClaimCodesError::Exhausted => {
             tracing::error!("failed to generate unique invite codes after retries");
             ApiError::new(

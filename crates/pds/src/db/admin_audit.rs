@@ -15,7 +15,7 @@
 //! action must not land unattributed. `list_admin_audit_events` pages on the rowid cursor,
 //! newest first, with optional exact-match action/actor/subject filters.
 
-use common::{ApiError, ErrorCode};
+use common::{ApiError, ApiResultExt, ErrorCode};
 use sqlx::Sqlite;
 
 /// What an admin did, recorded at every mutating admin route once the actor is known.
@@ -171,9 +171,7 @@ where
             tracing::error!(
                 actor = %actor,
                 action = %action.as_str(),
-                error = %e,
-                "DB error inserting admin audit event"
-            );
+                error = %e, "DB error inserting admin audit event");
             ApiError::new(ErrorCode::InternalError, "failed to record audit event")
         })
 }
@@ -216,10 +214,10 @@ pub(crate) async fn list_admin_audit_events(
     .bind(limit)
     .fetch_all(db)
     .await
-    .map_err(|e| {
-        tracing::error!(error = %e, "DB error listing admin audit events");
-        ApiError::new(ErrorCode::InternalError, "failed to list audit events")
-    })?;
+    .or_internal_as(
+        "DB error listing admin audit events",
+        "failed to list audit events",
+    )?;
 
     Ok(rows
         .into_iter()

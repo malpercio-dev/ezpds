@@ -11,7 +11,7 @@
 use axum::{extract::State, http::HeaderMap, http::StatusCode, response::Json};
 use serde::{Deserialize, Serialize};
 
-use common::{ApiError, ErrorCode};
+use common::{ApiError, ApiResultExt, ErrorCode};
 
 use crate::app::AppState;
 use crate::auth::extract_bearer_token;
@@ -49,10 +49,7 @@ pub async fn transfer_complete(
 
     let outcome = complete_transfer_row(&state.db, &payload.transfer_id, &token_hash)
         .await
-        .map_err(|e| {
-            tracing::error!(error = %e, "failed to complete transfer");
-            ApiError::new(ErrorCode::InternalError, "failed to complete transfer")
-        })?;
+        .or_internal("failed to complete transfer")?;
 
     match outcome {
         CompleteOutcome::Completed { transfer_id } => Ok((

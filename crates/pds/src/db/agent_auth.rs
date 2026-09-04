@@ -6,7 +6,7 @@
 
 #![allow(dead_code)]
 
-use common::{ApiError, ErrorCode};
+use common::{ApiError, ApiResultExt, ErrorCode};
 use sqlx::Sqlite;
 
 use super::is_unique_violation;
@@ -251,13 +251,10 @@ where
     match result {
         Ok(_) => Ok(InsertAgentIdentityOutcome::Created),
         Err(e) if is_unique_violation(&e) => Ok(InsertAgentIdentityOutcome::Duplicate),
-        Err(e) => {
+        Err(e) => Err({
             tracing::error!(identity_id = %identity.id, error = %e, "DB error inserting agent identity");
-            Err(ApiError::new(
-                ErrorCode::InternalError,
-                "failed to create agent identity",
-            ))
-        }
+            ApiError::new(ErrorCode::InternalError, "failed to create agent identity")
+        }),
     }
 }
 
@@ -283,10 +280,10 @@ pub(crate) async fn list_children_of_parent(
     .bind(parent_did)
     .fetch_all(db)
     .await
-    .map_err(|e| {
-        tracing::error!(error = %e, "DB error listing child identities");
-        ApiError::new(ErrorCode::InternalError, "failed to list child identities")
-    })?;
+    .or_internal_as(
+        "DB error listing child identities",
+        "failed to list child identities",
+    )?;
     Ok(rows.into_iter().map(into_identity_row).collect())
 }
 
@@ -306,10 +303,10 @@ pub(crate) async fn get_child_of_parent(
     .bind(parent_did)
     .fetch_optional(db)
     .await
-    .map_err(|e| {
-        tracing::error!(error = %e, "DB error fetching child identity");
-        ApiError::new(ErrorCode::InternalError, "failed to load child identity")
-    })?;
+    .or_internal_as(
+        "DB error fetching child identity",
+        "failed to load child identity",
+    )?;
     Ok(row.map(into_identity_row))
 }
 
@@ -340,10 +337,7 @@ pub(crate) async fn get_agent_identity_by_issuer_subject(
     .bind(subject)
     .fetch_optional(db)
     .await
-    .map_err(|e| {
-        tracing::error!(error = %e, "DB error fetching agent identity by issuer/subject");
-        ApiError::new(ErrorCode::InternalError, "failed to load agent identity")
-    })?;
+    .or_internal_as("DB error fetching agent identity by issuer/subject", "failed to load agent identity")?;
     Ok(row.map(into_identity_row))
 }
 
@@ -369,13 +363,15 @@ async fn fetch_identity_by(
     };
 
     let row = sqlx::query_as::<_, IdentitySqlRow>(sql)
-    .bind(value)
-    .fetch_optional(db)
-    .await
-    .map_err(|e| {
-        tracing::error!(lookup_column = %column, error = %e, "DB error fetching agent identity");
-        ApiError::new(ErrorCode::InternalError, "failed to load agent identity")
-    })?;
+        .bind(value)
+        .fetch_optional(db)
+        .await
+        .map_err(|e| {
+            {
+                tracing::error!(lookup_column = %column, error = %e, "DB error fetching agent identity");
+                ApiError::new(ErrorCode::InternalError, "failed to load agent identity")
+            }
+        })?;
 
     Ok(row.map(into_identity_row))
 }
@@ -448,10 +444,10 @@ pub(crate) async fn list_agent_identities_for_did(
     .bind(did)
     .fetch_all(db)
     .await
-    .map_err(|e| {
-        tracing::error!(error = %e, "DB error listing agent identities");
-        ApiError::new(ErrorCode::InternalError, "failed to list agent identities")
-    })?;
+    .or_internal_as(
+        "DB error listing agent identities",
+        "failed to list agent identities",
+    )?;
 
     Ok(rows
         .into_iter()
@@ -523,8 +519,10 @@ where
     .execute(executor)
     .await
     .map_err(|e| {
-        tracing::error!(identity_id = %id, error = %e, "DB error updating agent identity assertion");
-        ApiError::new(ErrorCode::InternalError, "failed to update agent identity")
+        {
+            tracing::error!(identity_id = %id, error = %e, "DB error updating agent identity assertion");
+            ApiError::new(ErrorCode::InternalError, "failed to update agent identity")
+        }
     })?;
     Ok(result.rows_affected() == 1)
 }
@@ -626,8 +624,10 @@ where
     .execute(executor)
     .await
     .map_err(|e| {
-        tracing::error!(identity_id = %id, error = %e, "DB error converting agent identity to child");
-        ApiError::new(ErrorCode::InternalError, "failed to convert agent identity")
+        {
+            tracing::error!(identity_id = %id, error = %e, "DB error converting agent identity to child");
+            ApiError::new(ErrorCode::InternalError, "failed to convert agent identity")
+        }
     })?;
     Ok(result.rows_affected() == 1)
 }
@@ -654,10 +654,7 @@ where
     .await
     .map_err(|e| {
         tracing::error!(attempt_id = %attempt.id, identity_id = %attempt.identity_id, error = %e, "DB error inserting agent claim attempt");
-        ApiError::new(
-            ErrorCode::InternalError,
-            "failed to create agent claim attempt",
-        )
+        ApiError::new(ErrorCode::InternalError, "failed to create agent claim attempt")
     })?;
     Ok(())
 }
@@ -676,10 +673,10 @@ pub(crate) async fn get_agent_claim_attempt_by_user_code(
     .bind(user_code)
     .fetch_optional(db)
     .await
-    .map_err(|e| {
-        tracing::error!(error = %e, "DB error fetching agent claim attempt by user code");
-        ApiError::new(ErrorCode::InternalError, "failed to load claim attempt")
-    })?;
+    .or_internal_as(
+        "DB error fetching agent claim attempt by user code",
+        "failed to load claim attempt",
+    )?;
     Ok(row.map(into_claim_attempt_row))
 }
 
@@ -750,13 +747,10 @@ where
     )
     .fetch_all(executor)
     .await
-    .map_err(|e| {
-        tracing::error!(error = %e, "DB error listing expired claim attempts");
-        ApiError::new(
-            ErrorCode::InternalError,
-            "failed to list expired claim attempts",
-        )
-    })?;
+    .or_internal_as(
+        "DB error listing expired claim attempts",
+        "failed to list expired claim attempts",
+    )?;
     Ok(rows
         .into_iter()
         .map(|(attempt_id, identity_id, did)| ExpiredClaimAttempt {
@@ -778,10 +772,10 @@ where
     )
     .execute(executor)
     .await
-    .map_err(|e| {
-        tracing::error!(error = %e, "DB error expiring agent claim attempts");
-        ApiError::new(ErrorCode::InternalError, "failed to expire claim attempts")
-    })?;
+    .or_internal_as(
+        "DB error expiring agent claim attempts",
+        "failed to expire claim attempts",
+    )?;
     Ok(result.rows_affected())
 }
 

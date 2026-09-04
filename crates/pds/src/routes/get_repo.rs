@@ -83,8 +83,10 @@ pub async fn get_repo(
             let mut cids: Vec<Cid> = Vec::with_capacity(cid_strs.len() + 1);
             for s in &cid_strs {
                 cids.push(Cid::try_from(s.as_str()).map_err(|e| {
-                    tracing::error!(error = %e, did = %did, cid = %s, "invalid block CID in database");
-                    ApiError::new(ErrorCode::InternalError, "failed to get repo")
+                    {
+                        tracing::error!(error = %e, did = %did, cid = %s, "invalid block CID in database");
+                        ApiError::new(ErrorCode::InternalError, "failed to get repo")
+                    }
                 })?);
             }
             if !cids.contains(&root_cid) {

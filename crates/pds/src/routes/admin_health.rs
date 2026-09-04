@@ -30,7 +30,7 @@ use axum::http::{HeaderMap, Method, Uri};
 use axum::Json;
 use serde::Serialize;
 
-use common::{ApiError, ErrorCode};
+use common::{ApiError, ApiResultExt};
 
 use crate::app::AppState;
 use crate::auth::guards::require_admin;
@@ -191,23 +191,15 @@ pub async fn admin_health(
 
     let stats = crate::db::server_stats::server_stats(&state.db)
         .await
-        .map_err(|e| {
-            tracing::error!(error = %e, "failed to gather server stats");
-            ApiError::new(ErrorCode::InternalError, "failed to gather server stats")
-        })?;
+        .or_internal("failed to gather server stats")?;
 
     // Oldest retained event → backfill window. An unparseable timestamp would be a writer
     // bug (the writer emits one fixed format); degrade to `null` rather than failing the
     // whole readout over one field.
     let backfill_window_seconds = match crate::db::firehose_seq::oldest_sequenced_at(&state.db)
         .await
-        .map_err(|e| {
-            tracing::error!(error = %e, "failed to read oldest firehose event");
-            ApiError::new(
-                ErrorCode::InternalError,
-                "failed to read oldest firehose event",
-            )
-        })? {
+        .or_internal("failed to read oldest firehose event")?
+    {
         Some(oldest) => match chrono::DateTime::parse_from_rfc3339(&oldest) {
             Ok(ts) => Some(
                 (chrono::Utc::now() - ts.with_timezone(&chrono::Utc))
@@ -224,10 +216,10 @@ pub async fn admin_health(
 
     let flagged = crate::db::account_labels::count_flagged_accounts(&state.db)
         .await
-        .map_err(|e| {
-            tracing::error!(error = %e, "failed to count flagged accounts");
-            ApiError::new(ErrorCode::InternalError, "failed to gather server stats")
-        })?;
+        .or_internal_as(
+            "failed to count flagged accounts",
+            "failed to gather server stats",
+        )?;
 
     let sweeps = state.sweeps.snapshot();
 

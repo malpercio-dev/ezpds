@@ -90,11 +90,11 @@ pub async fn create_provisioning_session(
                     ));
                 }
                 VerifyResult::CorruptHash => {
-                    tracing::error!(
-                        email = %payload.email,
-                        "stored password_hash is not a valid PHC string; possible DB corruption"
-                    );
-                    return Err(ApiError::new(ErrorCode::InternalError, "internal error"));
+                    return Err({
+                        tracing::error!(
+                        email = %payload.email, "stored password_hash is not a valid PHC string; possible DB corruption");
+                        ApiError::new(ErrorCode::InternalError, "internal error")
+                    });
                 }
             }
             row

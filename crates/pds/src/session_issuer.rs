@@ -11,7 +11,7 @@
 
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use common::{ApiError, ErrorCode};
+use common::{ApiError, ApiResultExt, ErrorCode};
 use uuid::Uuid;
 
 use crate::app::AppState;
@@ -135,10 +135,7 @@ pub async fn issue_session_in_transaction(
 
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
-        .map_err(|e| {
-            tracing::error!(error = %e, "system clock is before Unix epoch");
-            ApiError::new(ErrorCode::InternalError, "failed to issue token")
-        })?
+        .or_internal_as("system clock is before Unix epoch", "failed to issue token")?
         .as_secs();
     let aud = state
         .config

@@ -40,7 +40,7 @@ use crate::db::recovery_escrow::{
     delete_escrow_share, escrow_share_exists, insert_escrow_share, null_legacy_recovery_share,
     replace_escrow_share,
 };
-use common::{ApiError, ErrorCode};
+use common::{ApiError, ApiResultExt, ErrorCode};
 
 /// The escrow slot always holds Share 2 — the index reserved for Custos in the 2-of-3 split.
 const ESCROW_SHARE_INDEX: u8 = 2;
@@ -92,10 +92,10 @@ pub async fn put_escrow_share(
             )
         })?;
     let wrapped = crypto::encrypt_secret_bytes(envelope.to_bytes().as_slice(), master_key)
-        .map_err(|e| {
-            tracing::error!(error = %e, "failed to wrap escrow share");
-            ApiError::new(ErrorCode::InternalError, "failed to store escrow share")
-        })?;
+        .or_internal_as(
+            "failed to wrap escrow share",
+            "failed to store escrow share",
+        )?;
 
     let map_err = |e: sqlx::Error| {
         tracing::error!(did = %did, error = %e, "DB error storing escrow share");

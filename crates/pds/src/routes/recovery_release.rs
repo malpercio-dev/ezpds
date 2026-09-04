@@ -382,8 +382,11 @@ fn require_master_key(state: &AppState) -> Result<[u8; 32], ApiError> {
 }
 
 fn map_db_err(e: sqlx::Error) -> ApiError {
-    tracing::error!(error = %e, "DB error in recovery release flow");
-    ApiError::new(ErrorCode::InternalError, "recovery release failed")
+    ApiError::internal_as(
+        e,
+        "DB error in recovery release flow",
+        "recovery release failed",
+    )
 }
 
 /// Best-effort notification to the account email on release request / actual release. A delivery

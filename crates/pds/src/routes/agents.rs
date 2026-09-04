@@ -32,7 +32,7 @@
 use axum::extract::{Path, Query, State};
 use axum::http::{HeaderMap, Method, Uri};
 use axum::Json;
-use common::{ApiError, ErrorCode};
+use common::{ApiError, ApiResultExt, ErrorCode};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
@@ -180,10 +180,10 @@ pub async fn revoke_agent(
 
     // The status flip and its audit row commit atomically; the `status != 'revoked'` guard in
     // `revoke_agent_identity` makes a repeat revoke an idempotent 200 with no duplicate event.
-    let mut tx = state.db.begin().await.map_err(|e| {
-        tracing::error!(error = %e, "failed to open transaction for agent revocation");
-        ApiError::new(ErrorCode::InternalError, "failed to revoke agent")
-    })?;
+    let mut tx = state.db.begin().await.or_internal_as(
+        "failed to open transaction for agent revocation",
+        "failed to revoke agent",
+    )?;
     let transitioned = revoke_agent_identity(&mut *tx, &registration_id).await?;
     if transitioned {
         insert_agent_audit_event(
@@ -196,10 +196,10 @@ pub async fn revoke_agent(
         )
         .await?;
     }
-    tx.commit().await.map_err(|e| {
-        tracing::error!(error = %e, "failed to commit agent revocation");
-        ApiError::new(ErrorCode::InternalError, "failed to revoke agent")
-    })?;
+    tx.commit().await.or_internal_as(
+        "failed to commit agent revocation",
+        "failed to revoke agent",
+    )?;
 
     Ok(Json(RevokeAgentResponse {
         registration_id,

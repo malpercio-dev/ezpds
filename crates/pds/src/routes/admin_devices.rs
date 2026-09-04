@@ -28,7 +28,7 @@ use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
 use rand_core::{OsRng, RngCore};
 use serde::{Deserialize, Serialize};
 
-use common::{ApiError, ErrorCode};
+use common::{ApiError, ApiResultExt, ErrorCode};
 
 use crate::app::AppState;
 use crate::auth::guards;
@@ -121,9 +121,9 @@ pub async fn mint_pairing_code(
                 continue;
             }
             Err(e) => {
-                tracing::error!(error = %e, "failed to insert pairing code");
-                return Err(ApiError::new(
-                    ErrorCode::InternalError,
+                return Err(ApiError::internal_as(
+                    e,
+                    "failed to insert pairing code",
                     "failed to store pairing code",
                 ));
             }
@@ -210,10 +210,7 @@ pub async fn register_admin_device(
     // check failed. Internal/DB errors keep their own distinct 500s below.
     let code_row = get_pairing_code(&state.db, &payload.pairing_code)
         .await
-        .map_err(|e| {
-            tracing::error!(error = %e, "failed to look up pairing code");
-            ApiError::new(ErrorCode::InternalError, "pairing lookup failed")
-        })?;
+        .or_internal_as("failed to look up pairing code", "pairing lookup failed")?;
     if !code_row.as_ref().is_some_and(|c| c.is_pending()) {
         return Err(guards::invalid_registration_credentials());
     }
@@ -232,17 +229,14 @@ pub async fn register_admin_device(
     // authoritative single-use gate: a lost race (concurrent claim or just-expired)
     // returns false here and rejects.
     let device_id = uuid::Uuid::new_v4().to_string();
-    let mut tx = state.db.begin().await.map_err(|e| {
-        tracing::error!(error = %e, "failed to begin device registration transaction");
-        ApiError::new(ErrorCode::InternalError, "registration failed")
-    })?;
+    let mut tx = state.db.begin().await.or_internal_as(
+        "failed to begin device registration transaction",
+        "registration failed",
+    )?;
 
     let consumed = consume_pairing_code(&mut *tx, &payload.pairing_code)
         .await
-        .map_err(|e| {
-            tracing::error!(error = %e, "failed to consume pairing code");
-            ApiError::new(ErrorCode::InternalError, "registration failed")
-        })?;
+        .or_internal_as("failed to consume pairing code", "registration failed")?;
     if !consumed {
         return Err(guards::invalid_registration_credentials());
     }
@@ -257,10 +251,7 @@ pub async fn register_admin_device(
         },
     )
     .await
-    .map_err(|e| {
-        tracing::error!(error = %e, "failed to insert admin device");
-        ApiError::new(ErrorCode::InternalError, "registration failed")
-    })?;
+    .or_internal_as("failed to insert admin device", "registration failed")?;
 
     // Audit the enrollment atomically with it. The acting credential here is the consumed
     // pairing code (minted by the master token), not an existing admin identity — recorded
@@ -280,15 +271,15 @@ pub async fn register_admin_device(
         Some(&audit_detail),
     )
     .await
-    .map_err(|e| {
-        tracing::error!(error = %e, "failed to audit admin device registration");
-        ApiError::new(ErrorCode::InternalError, "registration failed")
-    })?;
+    .or_internal_as(
+        "failed to audit admin device registration",
+        "registration failed",
+    )?;
 
-    tx.commit().await.map_err(|e| {
-        tracing::error!(error = %e, "failed to commit device registration");
-        ApiError::new(ErrorCode::InternalError, "registration failed")
-    })?;
+    tx.commit().await.or_internal_as(
+        "failed to commit device registration",
+        "registration failed",
+    )?;
 
     Ok(Json(RegisterDeviceResponse { device_id }))
 }
@@ -362,10 +353,9 @@ pub async fn list_admin_devices(
         .await
         .map_err(IntoResponse::into_response)?;
 
-    let devices = list_devices(&state.db).await.map_err(|e| {
-        tracing::error!(error = %e, "failed to list admin devices");
-        ApiError::new(ErrorCode::InternalError, "failed to list admin devices").into_response()
-    })?;
+    let devices = list_devices(&state.db)
+        .await
+        .map_err(|e| ApiError::internal(e, "failed to list admin devices").into_response())?;
 
     Ok(Json(ListDevicesResponse {
         devices: devices.into_iter().map(AdminDeviceView::from).collect(),
@@ -440,8 +430,11 @@ pub async fn revoke_admin_device(
     // Reading after the update returns the authoritative post-revoke state and lets an
     // unknown id surface as a 404 rather than a silently-successful no-op.
     let transitioned = revoke_device(&state.db, &id).await.map_err(|e| {
-        tracing::error!(error = %e, device_id = %id, "failed to revoke admin device");
-        ApiError::new(ErrorCode::InternalError, "failed to revoke admin device").into_response()
+        {
+            tracing::error!(error = %e, device_id = %id, "failed to revoke admin device");
+            ApiError::new(ErrorCode::InternalError, "failed to revoke admin device")
+        }
+        .into_response()
     })?;
     // Audit only a real transition — an idempotent repeat changed nothing. Recording who
     // revoked which device is the point of this trail: with several paired devices, a
@@ -468,8 +461,11 @@ pub async fn revoke_admin_device(
     let device = get_device(&state.db, &id)
         .await
         .map_err(|e| {
-            tracing::error!(error = %e, device_id = %id, "failed to load admin device after revoke");
-            ApiError::new(ErrorCode::InternalError, "failed to revoke admin device").into_response()
+            {
+                tracing::error!(error = %e, device_id = %id, "failed to load admin device after revoke");
+                ApiError::new(ErrorCode::InternalError, "failed to revoke admin device")
+            }
+            .into_response()
         })?
         .ok_or_else(|| {
             ApiError::new(ErrorCode::NotFound, "admin device not found").into_response()

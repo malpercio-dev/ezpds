@@ -286,8 +286,9 @@ pub async fn proxy_xrpc(
         Ok(resp) => resp,
         Err(err) => {
             tracing::error!(error = %err, nsid, "failed to build proxy response");
-            ApiError::new(ErrorCode::InternalError, "proxy response build failed").into_response()
+            ApiError::new(ErrorCode::InternalError, "proxy response build failed")
         }
+        .into_response(),
     }
 }
 

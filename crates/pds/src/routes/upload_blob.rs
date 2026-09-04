@@ -24,7 +24,7 @@ use axum::{
 };
 use serde::Serialize;
 
-use common::{ApiError, ErrorCode};
+use common::{ApiError, ApiResultExt, ErrorCode};
 
 use crate::app::AppState;
 use crate::auth::extractors::AuthenticatedUser;
@@ -145,10 +145,10 @@ pub async fn upload_blob(
     let quota = state.config.blobs.max_storage_per_account as i64;
     let used = blobs::account_storage_bytes(&state.db, did)
         .await
-        .map_err(|e| {
-            tracing::error!(error = %e, "failed to check account storage");
-            ApiError::new(ErrorCode::InternalError, "failed to check storage quota")
-        })?;
+        .or_internal_as(
+            "failed to check account storage",
+            "failed to check storage quota",
+        )?;
     if used + bytes.len() as i64 > quota {
         return Err(ApiError::new(
             ErrorCode::PayloadTooLarge,
@@ -163,10 +163,7 @@ pub async fn upload_blob(
     // 5. Store blob on filesystem (CID computation + write); persist the resolved MIME type.
     let stored = blob_store::store_blob(&state.config.data_dir, &bytes, &mime_type)
         .await
-        .map_err(|e| {
-            tracing::error!(error = %e, "failed to store blob on filesystem");
-            ApiError::new(ErrorCode::InternalError, "failed to store blob")
-        })?;
+        .or_internal_as("failed to store blob on filesystem", "failed to store blob")?;
 
     // 6. Compute temp_until = now + the configured grace TTL. Until a repo record
     //    references this blob, it is a garbage-collection candidate after this instant.

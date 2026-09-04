@@ -62,9 +62,7 @@ where
         tracing::error!(
             child_did = %child_did,
             parent_did = %parent_did,
-            error = %e,
-            "DB error recording child deletion"
-        );
+            error = %e, "DB error recording child deletion");
         ApiError::new(ErrorCode::InternalError, "failed to record child deletion")
     })?;
     Ok(())

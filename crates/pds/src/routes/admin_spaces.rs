@@ -29,7 +29,7 @@ use axum::http::{HeaderMap, Method, Uri};
 use axum::Json;
 use serde::{Deserialize, Serialize};
 
-use common::{ApiError, ErrorCode};
+use common::{ApiError, ApiResultExt, ErrorCode};
 
 use crate::app::AppState;
 use crate::auth::guards::require_admin;
@@ -115,10 +115,7 @@ pub async fn list_hosted_spaces(
         limit,
     )
     .await
-    .map_err(|e| {
-        tracing::error!(error = %e, "DB error listing hosted spaces");
-        ApiError::new(ErrorCode::InternalError, "failed to list spaces")
-    })?;
+    .or_internal_as("DB error listing hosted spaces", "failed to list spaces")?;
 
     let cursor = (rows.len() as i64 == limit).then(|| rows[rows.len() - 1].uri.clone());
     Ok(Json(ListSpacesResponse {

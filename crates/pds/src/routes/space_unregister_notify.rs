@@ -40,8 +40,10 @@ pub async fn space_unregister_notify(
     crate::db::space_notify::delete_registration(&state.db, &space.uri, &input.service)
         .await
         .map_err(|e| {
-            tracing::error!(error = %e, space = %space.uri, "failed to unregister notify subscriber");
-            ApiError::new(ErrorCode::InternalError, "internal server error")
+            {
+                tracing::error!(error = %e, space = %space.uri, "failed to unregister notify subscriber");
+                ApiError::new(ErrorCode::InternalError, "internal server error")
+            }
         })?;
 
     Ok((StatusCode::OK, axum::Json(serde_json::json!({}))))

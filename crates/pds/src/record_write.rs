@@ -104,8 +104,10 @@ where
         let current = repo_engine::get_record_cid(repo, mst_key)
             .await
             .map_err(|e| {
-                tracing::error!(error = %e, key = %mst_key, "failed to read record CID for swap check");
-                ApiError::new(ErrorCode::InternalError, "failed to evaluate swapRecord")
+                {
+                    tracing::error!(error = %e, key = %mst_key, "failed to read record CID for swap check");
+                    ApiError::new(ErrorCode::InternalError, "failed to evaluate swapRecord")
+                }
             })?
             .map(|c| c.to_string());
         match expected_record {
@@ -288,8 +290,10 @@ pub async fn write_record(
     let prev_cid = repo_engine::get_record_cid(&mut repo, mst_key)
         .await
         .map_err(|e| {
-            tracing::error!(error = %e, did = %did, key = %mst_key, "failed to check record existence");
-            ApiError::new(ErrorCode::InternalError, "failed to write record")
+            {
+                tracing::error!(error = %e, did = %did, key = %mst_key, "failed to check record existence");
+                ApiError::new(ErrorCode::InternalError, "failed to write record")
+            }
         })?;
     let existed = prev_cid.is_some();
     let action = if create_only || !existed {
@@ -399,13 +403,11 @@ pub(crate) fn record_validation_error(e: crate::lexicon::ValidationError) -> Api
         crate::lexicon::ValidationError::Invalid(message) => {
             ApiError::new(ErrorCode::InvalidRequest, message)
         }
-        crate::lexicon::ValidationError::Lexicon(message) => {
-            tracing::error!(error = %message, "vendored lexicon set is inconsistent");
-            ApiError::new(
-                ErrorCode::InternalError,
-                "server lexicon configuration error",
-            )
-        }
+        crate::lexicon::ValidationError::Lexicon(message) => ApiError::internal_as(
+            message,
+            "vendored lexicon set is inconsistent",
+            "server lexicon configuration error",
+        ),
     }
 }
 
@@ -525,18 +527,18 @@ pub async fn commit_repo_write(
     };
     if let (Some(stored), Some(counted)) = (stored_count, new_count) {
         if stored + expected_delta != counted {
-            tracing::error!(
+            return Err({
+                tracing::error!(
                 did = %did,
                 stored_count = stored,
                 expected_delta,
                 counted,
-                new_root = %new_root,
-                "MST integrity violation: commit removed keys it did not explicitly delete; write aborted"
-            );
-            return Err(ApiError::new(
-                ErrorCode::InternalError,
-                "repository integrity check failed; write aborted",
-            ));
+                new_root = %new_root, "MST integrity violation: commit removed keys it did not explicitly delete; write aborted");
+                ApiError::new(
+                    ErrorCode::InternalError,
+                    "repository integrity check failed; write aborted",
+                )
+            });
         }
     }
 
@@ -684,11 +686,10 @@ pub async fn commit_repo_write(
                     // must not land without a corresponding durable firehose row, so a failure to
                     // stage that row fails the whole write rather than dropping the event
                     // best-effort.
-                    tracing::error!(error = %e, did = %did, "failed to stage firehose commit event");
-                    return Err(ApiError::new(
-                        ErrorCode::InternalError,
-                        "failed to write record",
-                    ));
+                    return Err({
+                        tracing::error!(error = %e, did = %did, "failed to stage firehose commit event");
+                        ApiError::new(ErrorCode::InternalError, "failed to write record")
+                    });
                 }
             }
         }

@@ -13,7 +13,7 @@
 use axum::{extract::State, http::HeaderMap, response::Json};
 use serde::Serialize;
 
-use common::{ApiError, ErrorCode};
+use common::{ApiError, ApiResultExt, ErrorCode};
 
 use crate::app::AppState;
 use crate::auth::guards::require_pending_session;
@@ -37,10 +37,10 @@ pub async fn get_repo_signing_key(
     // published, or op verification at /v1/dids would reject the mismatch.
     if let Some(existing) = get_pending_repo_key(&state.db, &session.account_id)
         .await
-        .map_err(|e| {
-            tracing::error!(error = %e, "failed to read pending repo signing key");
-            ApiError::new(ErrorCode::InternalError, "failed to read signing key")
-        })?
+        .or_internal_as(
+            "failed to read pending repo signing key",
+            "failed to read signing key",
+        )?
     {
         return Ok(Json(RepoSigningKeyResponse {
             key_id: existing.key_id,
@@ -61,15 +61,15 @@ pub async fn get_repo_signing_key(
             )
         })?;
 
-    let keypair = crypto::generate_p256_keypair().map_err(|e| {
-        tracing::error!(error = %e, "failed to generate repo signing key");
-        ApiError::new(ErrorCode::InternalError, "key generation failed")
-    })?;
+    let keypair = crypto::generate_p256_keypair().or_internal_as(
+        "failed to generate repo signing key",
+        "key generation failed",
+    )?;
     let private_key_encrypted = crypto::encrypt_private_key(&keypair.private_key_bytes, master_key)
-        .map_err(|e| {
-            tracing::error!(error = %e, "failed to encrypt repo signing key");
-            ApiError::new(ErrorCode::InternalError, "key encryption failed")
-        })?;
+        .or_internal_as(
+            "failed to encrypt repo signing key",
+            "key encryption failed",
+        )?;
 
     let key = RepoSigningKey {
         key_id: keypair.key_id.to_string(),
@@ -78,10 +78,10 @@ pub async fn get_repo_signing_key(
     };
     set_pending_repo_key(&state.db, &session.account_id, &key)
         .await
-        .map_err(|e| {
-            tracing::error!(error = %e, "failed to store repo signing key");
-            ApiError::new(ErrorCode::InternalError, "failed to store signing key")
-        })?;
+        .or_internal_as(
+            "failed to store repo signing key",
+            "failed to store signing key",
+        )?;
 
     Ok(Json(RepoSigningKeyResponse {
         key_id: key.key_id,

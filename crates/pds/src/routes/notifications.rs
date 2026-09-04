@@ -49,7 +49,7 @@ use crate::routes::notification_views::{
     require_notifications_enabled, sender_keys_response, validate_registration_fields,
     SenderKeysResponse,
 };
-use common::{ApiError, ErrorCode};
+use common::{ApiError, ApiResultExt, ErrorCode};
 
 // ── POST /v1/notifications/register ───────────────────────────────────────────
 
@@ -108,10 +108,10 @@ pub async fn register_notifications(
         payload.ping,
     )
     .await
-    .map_err(|e| {
-        tracing::error!(error = %e, "failed to store a notification registration");
-        ApiError::new(ErrorCode::InternalError, "failed to store the registration")
-    })?;
+    .or_internal_as(
+        "failed to store a notification registration",
+        "failed to store the registration",
+    )?;
 
     if let Some(sender) = state.notify_sender.as_ref() {
         sender.send(NotifyJob::RegisterHandle {
@@ -165,13 +165,10 @@ pub async fn unregister_notifications(
 
     let existed = store::delete_registration(&state.db, &user.did, &device_uuid)
         .await
-        .map_err(|e| {
-            tracing::error!(error = %e, "failed to delete a notification registration");
-            ApiError::new(
-                ErrorCode::InternalError,
-                "failed to delete the registration",
-            )
-        })?;
+        .or_internal_as(
+            "failed to delete a notification registration",
+            "failed to delete the registration",
+        )?;
 
     if let (Some(handle), Some(sender)) = (handle, state.notify_sender.as_ref()) {
         sender.send(NotifyJob::DropHandle { handle });

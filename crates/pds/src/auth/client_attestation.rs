@@ -23,7 +23,7 @@
 use jsonwebtoken::{Algorithm, Validation};
 use serde::Deserialize;
 
-use common::{ApiError, ErrorCode};
+use common::{ApiError, ApiResultExt, ErrorCode};
 
 use crate::app::AppState;
 use crate::db::oauth::ClientMetadata;
@@ -147,10 +147,10 @@ pub async fn verify_client_attestation(
     // burning it earlier would let an unsigned forgery lock out the real attestation.
     let fresh = insert_jti_if_absent(&state.db, SpaceJtiScope::Attestation, jti, retain as i64)
         .await
-        .map_err(|e| {
-            tracing::error!(error = %e, "failed to record client attestation jti");
-            ApiError::new(ErrorCode::InternalError, "internal server error")
-        })?;
+        .or_internal_as(
+            "failed to record client attestation jti",
+            "internal server error",
+        )?;
     if !fresh {
         return Err(invalid("client attestation has already been used".into()));
     }
