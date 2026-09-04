@@ -362,7 +362,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn error_response_content_type_is_json() {
+    async fn error_response_has_error_and_error_description_fields() {
         let resp = app(test_state().await)
             .oneshot(post_token("grant_type=bad"))
             .await
@@ -374,14 +374,6 @@ mod tests {
             .to_str()
             .unwrap();
         assert!(ct.contains("application/json"));
-    }
-
-    #[tokio::test]
-    async fn error_response_has_error_and_error_description_fields() {
-        let resp = app(test_state().await)
-            .oneshot(post_token("grant_type=bad"))
-            .await
-            .unwrap();
         let json = json_body(resp).await;
         assert!(json["error"].is_string());
         assert!(json["error_description"].is_string());

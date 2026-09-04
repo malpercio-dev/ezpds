@@ -92,22 +92,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn accessible_without_auth_headers() {
-        // Lock in that this public discovery endpoint requires no credentials.
-        // A future global auth middleware must not inadvertently protect this route.
-        let response = app(test_state().await)
-            .oneshot(
-                Request::builder()
-                    .uri("/oauth/jwks")
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(response.status(), StatusCode::OK);
-    }
-
-    #[tokio::test]
     async fn has_cache_control_header() {
         let response = app(test_state().await)
             .oneshot(
@@ -125,43 +109,23 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn response_has_exactly_one_key() {
-        // Locks in the single-key contract; key rotation changes must update this test explicitly.
+    async fn response_key_matches_expected_shape() {
+        // Locks in the single-key contract (key rotation changes must update this test
+        // explicitly) and the key's EC P-256 sig/ES256 shape in one whole-object assertion.
         let json = jwks_json().await;
         let keys = json["keys"].as_array().expect("keys must be an array");
         assert_eq!(keys.len(), 1);
-    }
-
-    #[tokio::test]
-    async fn key_is_ec_p256() {
-        let json = jwks_json().await;
-        let key = &json["keys"][0];
+        let key = &keys[0];
         assert_eq!(key["kty"], "EC");
         assert_eq!(key["crv"], "P-256");
-    }
-
-    #[tokio::test]
-    async fn key_has_x_and_y_coordinates() {
-        let json = jwks_json().await;
-        let key = &json["keys"][0];
         assert!(key["x"].is_string(), "key must have base64url x coordinate");
         assert!(key["y"].is_string(), "key must have base64url y coordinate");
-    }
-
-    #[tokio::test]
-    async fn key_has_use_sig_and_alg_es256() {
-        let json = jwks_json().await;
-        let key = &json["keys"][0];
         assert_eq!(key["use"], "sig");
         assert_eq!(key["alg"], "ES256");
-    }
-
-    #[tokio::test]
-    async fn key_does_not_expose_private_scalar() {
-        // Security: the JWKS endpoint must never leak the private key `d` field.
-        let json = jwks_json().await;
+        // Security: the JWKS endpoint must never leak the private key `d` field — kept as its
+        // own explicit assertion even though it's part of the same object.
         assert!(
-            json["keys"][0]["d"].is_null(),
+            key["d"].is_null(),
             "JWKS must not contain private key scalar `d`"
         );
     }
