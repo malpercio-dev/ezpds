@@ -132,15 +132,9 @@ mod tests {
     use tower::ServiceExt;
 
     use crate::routes::test_utils::{
-        access_jwt, body_json, seed_account_with_repo, state_with_master_key,
+        access_jwt, body_json, seed_account_with_repo, setup_account_with_repo,
+        state_with_master_key,
     };
-
-    async fn setup_account_with_repo() -> (AppState, String) {
-        let state = state_with_master_key().await;
-        let did = "did:plc:syncgetblockstest".to_string();
-        seed_account_with_repo(&state.db, &did).await;
-        (state, did)
-    }
 
     /// PUT a record at `rkey` via the repo.putRecord endpoint; returns the record's block CID.
     async fn put_record(app: &axum::Router, token: &str, did: &str, rkey: &str) -> StatusCode {

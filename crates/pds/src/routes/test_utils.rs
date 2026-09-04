@@ -955,3 +955,13 @@ pub(crate) fn get_request_with_bearer(
     }
     builder.body(axum::body::Body::empty()).unwrap()
 }
+
+/// [`state_with_master_key`] plus a promoted account with a genesis repo (via
+/// [`seed_account_with_repo`]), for the many repo read/write route tests that just need "an
+/// account with a repo" and don't care which DID names it.
+pub(crate) async fn setup_account_with_repo() -> (AppState, String) {
+    let state = state_with_master_key().await;
+    let did = "did:plc:repotestaccount0000".to_string();
+    seed_account_with_repo(&state.db, &did).await;
+    (state, did)
+}

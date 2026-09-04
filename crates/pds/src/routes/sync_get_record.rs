@@ -86,14 +86,7 @@ mod tests {
     use axum::http::{self, Request};
     use tower::ServiceExt;
 
-    use crate::routes::test_utils::{access_jwt, seed_account_with_repo, state_with_master_key};
-
-    async fn setup_account_with_repo() -> (AppState, String) {
-        let state = state_with_master_key().await;
-        let did = "did:plc:syncgetrecordtest".to_string();
-        seed_account_with_repo(&state.db, &did).await;
-        (state, did)
-    }
+    use crate::routes::test_utils::{access_jwt, setup_account_with_repo};
 
     /// PUT a record at `rkey` via the repo.putRecord endpoint.
     async fn put_record(app: &axum::Router, token: &str, did: &str, rkey: &str) -> StatusCode {

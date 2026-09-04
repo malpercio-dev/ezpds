@@ -110,16 +110,9 @@ mod tests {
     use tower::ServiceExt;
 
     use crate::routes::test_utils::{
-        access_jwt, cnf_bound_access_jwt, seed_account_with_repo, state_with_master_key,
+        access_jwt, cnf_bound_access_jwt, setup_account_with_repo, state_with_master_key,
         DpopProofKey,
     };
-
-    async fn setup_account_with_repo() -> (AppState, String) {
-        let state = state_with_master_key().await;
-        let did = "did:plc:createrecordtest".to_string();
-        seed_account_with_repo(&state.db, &did).await;
-        (state, did)
-    }
 
     #[tokio::test]
     async fn create_record_without_auth_returns_401() {
