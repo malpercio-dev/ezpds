@@ -27,16 +27,11 @@ pub struct SweepStats {
 }
 
 /// Spawn the periodic sweep. The first pass runs one full interval after startup.
+///
+/// A late pass must not be followed by a burst of catch-up passes, hence `skip_missed_ticks`.
 pub fn spawn_space_jti_sweep(state: AppState) -> JoinHandle<()> {
-    tokio::spawn(async move {
-        let mut ticker = tokio::time::interval(SWEEP_INTERVAL);
-        // A late pass must not be followed by a burst of catch-up passes.
-        ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-        ticker.tick().await;
-        loop {
-            ticker.tick().await;
-            run_space_jti_sweep(&state).await;
-        }
+    crate::sweep::spawn_sweep(SWEEP_INTERVAL, true, state, |state| async move {
+        run_space_jti_sweep(&state).await;
     })
 }
 

@@ -31,13 +31,8 @@ pub struct SweepStats {
 /// Spawn the periodic claim-attempt expiry sweep. The first tick is consumed without sweeping so
 /// the server does not run it mid-boot; the first pass runs one `interval` after startup.
 pub fn spawn_agent_claim_sweep(state: AppState, interval: Duration) -> JoinHandle<()> {
-    tokio::spawn(async move {
-        let mut ticker = tokio::time::interval(interval);
-        ticker.tick().await;
-        loop {
-            ticker.tick().await;
-            run_agent_claim_sweep(&state).await;
-        }
+    crate::sweep::spawn_sweep(interval, false, state, |state| async move {
+        run_agent_claim_sweep(&state).await;
     })
 }
 
