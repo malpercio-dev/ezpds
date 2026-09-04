@@ -112,7 +112,8 @@ function resolveUploadPath(userPath: string): string {
   return resolved;
 }
 
-/** MIME type by file extension, for an upload that does not declare one. */
+/**
+ * MIME type by file extension, for an upload that does not declare one. */
 function mimeFromExtension(filePath: string): string {
   const mime: Record<string, string> = {
     '.png': 'image/png',
@@ -133,23 +134,104 @@ function mimeFromExtension(filePath: string): string {
 }
 
 /**
- * Upload one confined file as a blob. The single upload path: create_post's
- * image attachment and the standalone upload_blob tool both run through it, so
- * the confinement check and MIME handling cannot drift apart.
+ * Ceiling for inline (`data`) uploads, decoded. Generous for every avatar,
+ * banner, and link-card thumbnail; anything larger belongs on a filesystem the
+ * server can read (`path`) rather than inside a JSON-RPC request. The sidecar's
+ * HTTP body limit is sized to this plus protocol overhead.
+ */
+const MAX_INLINE_BLOB_BYTES = 5 * 1024 * 1024;
+
+/** Base64 alphabet, url- and unpadded variants included. */
+const BASE64_RE = /^[A-Za-z0-9+/\-_]*={0,2}$/;
+
+/**
+ * Decode the `data` argument of upload_blob: a full data URL
+ * (`data:image/png;base64,…`, the shape every environment can produce with a
+ * one-liner) or bare base64 paired with the `mime_type` argument. Returns the
+ * bytes and the content type they must be uploaded as.
+ *
+ * A data URL's embedded type wins over `mime_type` — it travels with the bytes
+ * and describes exactly them; a mismatch between the two is a caller typo worth
+ * naming rather than silently resolving either way.
+ */
+function decodeInlineData(
+  data: string,
+  mimeType: string | undefined,
+): { bytes: Uint8Array; contentType: string } {
+  let declaredType: string | undefined;
+  let payload = data;
+  if (data.startsWith('data:')) {
+    const match = /^data:([^;,]+)?(?:;[^;,]*)*?(;base64)?,/.exec(data);
+    if (!match) {
+      throw new Error(
+        'malformed data URL — expected data:<mime>;base64,<payload> ' +
+          '(the comma after the parameters is missing)',
+      );
+    }
+    declaredType = match[1];
+    if (!match[2]) {
+      throw new Error(
+        'only base64 data URLs are supported — add ";base64" before the comma ' +
+          '(percent-encoded payloads are not)',
+      );
+    }
+    payload = data.slice(match[0].length);
+    if (mimeType !== undefined && declaredType !== undefined && declaredType !== mimeType) {
+      throw new Error(
+        `data URL declares ${declaredType} but mime_type argument says ${mimeType} — pick one`,
+      );
+    }
+  }
+  // Base64 validity is checked before the content type so the more fundamental
+  // error wins: garbage bytes with no type named report as garbage bytes.
+  const normalized = payload.replace(/\s+/g, '');
+  if (!BASE64_RE.test(normalized)) {
+    throw new Error('data is not valid base64');
+  }
+  const contentType = declaredType ?? mimeType;
+  if (!contentType) {
+    throw new Error(
+      'no content type: use a data URL (data:image/png;base64,…) or pass mime_type',
+    );
+  }
+  const bytes = Buffer.from(normalized, 'base64');
+  if (bytes.length === 0) {
+    throw new Error('data decodes to zero bytes — nothing to upload');
+  }
+  if (bytes.length > MAX_INLINE_BLOB_BYTES) {
+    throw new Error(
+      `inline upload is ${bytes.length} bytes; the ceiling is ${MAX_INLINE_BLOB_BYTES} ` +
+        `(5 MiB) decoded — larger files need a path the server can read`,
+    );
+  }
+  return { bytes, contentType };
+}
+
+/**
+ * Upload one blob: bytes already in hand (`data`, decoded here) or one confined
+ * file (`path`). The single upload path: create_post's image attachment and the
+ * standalone upload_blob tool both run through it, so the confinement check,
+ * size ceiling, and MIME handling cannot drift apart.
  */
 async function uploadBlob(
   session: SessionLike,
   token: string,
-  userPath: string,
-  mimeType?: string,
+  source: { path: string; mimeType?: string } | { data: string; mimeType?: string },
 ): Promise<any> {
-  const filePath = resolveUploadPath(userPath);
-  const bytes = fs.readFileSync(filePath);
+  let body: Uint8Array;
+  let contentType: string;
+  if ('data' in source) {
+    ({ bytes: body, contentType } = decodeInlineData(source.data, source.mimeType));
+  } else {
+    const filePath = resolveUploadPath(source.path);
+    body = new Uint8Array(fs.readFileSync(filePath));
+    contentType = source.mimeType ?? mimeFromExtension(filePath);
+  }
   return xrpc(session.pdsUrl, 'com.atproto.repo.uploadBlob', {
     method: 'POST',
     token,
-    headers: { 'Content-Type': mimeType ?? mimeFromExtension(filePath) },
-    body: new Uint8Array(bytes),
+    headers: { 'Content-Type': contentType },
+    body,
   });
 }
 
@@ -172,7 +254,9 @@ async function resolveBlobField(
   if (filePath !== undefined && blobRef !== undefined) {
     throw new Error(`pass either ${field}_path or ${field}_blob, not both`);
   }
-  if (filePath !== undefined) return (await uploadBlob(session, token, filePath)).blob;
+  if (filePath !== undefined) {
+    return (await uploadBlob(session, token, { path: filePath })).blob;
+  }
   return blobRef;
 }
 
@@ -367,7 +451,7 @@ export function registerTools(server: McpServer, resolveSession: SessionResolver
         let embed = args.embed;
         if (args.image_path) {
           if (embed) throw new Error('pass either image_path or embed, not both');
-          const uploaded = await uploadBlob(session, token, args.image_path);
+          const uploaded = await uploadBlob(session, token, { path: args.image_path });
           embed = {
             $type: 'app.bsky.embed.images',
             images: [{ image: uploaded.blob, alt: args.image_alt ?? '' }],
@@ -401,24 +485,40 @@ export function registerTools(server: McpServer, resolveSession: SessionResolver
     'upload_blob',
     {
       description:
-        `Upload a file to the user’s repository as a blob and return its blob ref, for use ` +
-        `as an avatar, banner, or any other record field that takes a blob (create_post ` +
-        `attaches post images on its own — it does not need this). The file is read from ` +
-        `the directory configured by CUSTOS_MCP_IMAGE_DIR; uploads are disabled without it. ` +
-        `A blob no record references is temporary and eventually garbage-collected, so write ` +
-        `the record that carries the returned ref rather than uploading speculatively. ` +
-        `${ATTRIBUTION}`,
+        `Upload a blob to the user’s repository and return its blob ref, for use as an ` +
+        `avatar, banner, or any other record field that takes a blob (create_post attaches ` +
+        `post images on its own — it does not need this). Pass the bytes inline as base64 ` +
+        `(\`data\`: a data URL like data:image/png;base64,…, or bare base64 plus \`mime_type\`) ` +
+        `— this is how a remote client uploads, and it needs no server-side directory. Or ` +
+        `pass \`path\`: a file inside the directory configured by CUSTOS_MCP_IMAGE_DIR, for ` +
+        `callers sharing the server’s filesystem; path uploads are disabled without it. ` +
+        `Inline uploads are capped at 5 MiB decoded. A blob no record references is temporary ` +
+        `and eventually garbage-collected, so write the record that carries the returned ref ` +
+        `rather than uploading speculatively. ${ATTRIBUTION}`,
       annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true },
       inputSchema: {
+        data: z
+          .string()
+          .optional()
+          .describe(
+            'Blob bytes inline as base64: either a data URL (data:image/png;base64,…) or ' +
+              'bare base64 paired with mime_type. The remote-client path — no shared ' +
+              'filesystem needed. At most 5 MiB decoded',
+          ),
         path: z
           .string()
-          .describe('File to upload, as a path inside the CUSTOS_MCP_IMAGE_DIR directory'),
+          .optional()
+          .describe(
+            'File to upload, as a path inside the CUSTOS_MCP_IMAGE_DIR directory ' +
+              '(for callers sharing the server’s filesystem). Mutually exclusive with data',
+          ),
         mime_type: z
           .string()
           .optional()
           .describe(
-            'Content type to upload as. Inferred from the extension for png/jpg/gif/webp; ' +
-              'required for anything else',
+            'Content type to upload as. Required for bare base64 without a data URL; ' +
+              'inferred from the extension for png/jpg/gif/webp files; a data URL’s own ' +
+              'type must agree with it',
           ),
       },
     },
@@ -426,7 +526,16 @@ export function registerTools(server: McpServer, resolveSession: SessionResolver
       const session = resolveSession(extra);
       try {
         const token = await session.accessToken();
-        const uploaded = await uploadBlob(session, token, args.path, args.mime_type);
+        if (args.data !== undefined && args.path !== undefined) {
+          throw new Error('pass either data or path, not both');
+        }
+        if (args.data === undefined && args.path === undefined) {
+          throw new Error('nothing to upload — pass data (base64, the remote path) or path');
+        }
+        const uploaded = await uploadBlob(session, token, {
+          ...(args.data !== undefined ? { data: args.data } : { path: args.path! }),
+          ...(args.mime_type !== undefined ? { mimeType: args.mime_type } : {}),
+        });
         return ok(uploaded);
       } catch (err) {
         return relayError(err, session);
