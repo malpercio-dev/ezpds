@@ -54,6 +54,7 @@ mod space_oplog_sweep;
 mod space_record_write;
 mod space_uri;
 mod state;
+mod sweep;
 mod sweep_status;
 mod telemetry;
 mod time;

@@ -36,13 +36,8 @@ pub fn spawn_admin_nonce_sweep(
     interval: Duration,
     max_age_secs: i64,
 ) -> JoinHandle<()> {
-    tokio::spawn(async move {
-        let mut ticker = tokio::time::interval(interval);
-        ticker.tick().await;
-        loop {
-            ticker.tick().await;
-            run_admin_nonce_sweep(&state, max_age_secs).await;
-        }
+    crate::sweep::spawn_sweep(interval, false, state, move |state| async move {
+        run_admin_nonce_sweep(&state, max_age_secs).await;
     })
 }
 
