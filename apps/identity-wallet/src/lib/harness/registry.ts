@@ -58,9 +58,7 @@ import type {
   BlobRestoreReport,
   RepoBackupStatus,
   RepoBackupRunReport,
-  RepoExport,
   RegistrationOutcome,
-  SenderKeyPinning,
   NotificationDiagnostics,
   RegisterHandleResult,
   CreateAccountResult,
@@ -141,10 +139,8 @@ export type CommandName =
   | 'get_pds_url'
   | 'save_pds_url'
   | 'get_pds_capabilities'
-  // oauth.ts
-  | 'prepare_oauth_flow'
+  // auth-session plugin (registered for the retired OAuth create-flow login; no live caller)
   | 'plugin:auth-session|start'
-  | 'complete_oauth_flow'
   // appearance.ts
   | 'get_appearance_preference'
   | 'set_appearance_preference'
@@ -175,7 +171,6 @@ export type CommandName =
   // share-recovery.ts
   | 'start_share_recovery'
   | 'add_recovery_share'
-  | 'remove_recovery_share'
   | 'initiate_escrow_release'
   | 'request_escrow_release'
   | 'verify_recovery_shares'
@@ -230,7 +225,6 @@ export type CommandName =
   | 'submit_self_held_kit_cmd'
   | 'confirm_self_held_kit_cmd'
   | 'self_held_kit_in_progress_cmd'
-  | 'self_held_kit_escrow_offer_cmd'
   // agents.ts
   | 'list_agents'
   | 'revoke_agent'
@@ -264,10 +258,8 @@ export type CommandName =
   | 'get_repo_backup_status'
   | 'set_repo_backup_enabled'
   | 'run_repo_backup'
-  | 'export_repo_backup'
   // notifications.ts
   | 'register_for_notifications'
-  | 'refresh_notification_sender_keys'
   | 'get_notification_diagnostics'
   | 'clear_notification_failures'
   // biometric plugin (driven by $lib/biometric — resolves = allow the gate)
@@ -456,14 +448,11 @@ export function buildRegistry(state: WalletState): Registry {
     // reference PDS would (no `custos` extension at all → no capabilities).
     get_pds_capabilities: () => state.pdsCapabilities,
 
-    // ── oauth (create-flow login; faked in every mode) ───────────────────────
-    prepare_oauth_flow: () => ({
-      authUrl: 'https://harness.pds.local/oauth/authorize?request_uri=harness',
-      callbackScheme: 'org.obsign.identitywallet',
-    }),
+    // The auth-session plugin's `start()` command — registered for the retired OAuth
+    // create-flow login (no live caller); the stub is kept so the plugin itself, still
+    // registered in `run()`, has a harness handler if anything invokes it directly.
     'plugin:auth-session|start': () =>
       'org.obsign.identitywallet:/oauth/callback?code=harness-code&state=harness-state',
-    complete_oauth_flow: () => null,
 
     // ── appearance ───────────────────────────────────────────────────────────
     get_appearance_preference: () => state.appearance,
@@ -707,11 +696,6 @@ export function buildRegistry(state: WalletState): Registry {
       const collected = { setId: RECOVERY_SET_ID, index: 3 };
       r.collected.push(collected);
       return collected;
-    },
-    remove_recovery_share: (args): CollectedShare[] => {
-      const r = state.recovery;
-      r.collected = r.collected.filter((s) => s.index !== Number(args.index));
-      return [...r.collected];
     },
     initiate_escrow_release: () => {
       state.recovery.escrow.initiated = true;
@@ -1202,13 +1186,6 @@ export function buildRegistry(state: WalletState): Registry {
       const identity = findIdentity(state, didArg(args));
       return Boolean(identity?.selfHeldKitStagedRecoveryKey);
     },
-    self_held_kit_escrow_offer_cmd: (args): boolean => {
-      const identity = findIdentity(state, didArg(args));
-      return Boolean(
-        identity?.selfHeldKitInstalled && state.pdsCapabilities.capabilities.includes('escrow')
-      );
-    },
-
     // ── agents ───────────────────────────────────────────────────────────────
     agent_accounts_provisioned: (args): boolean =>
       findIdentity(state, didArg(args))?.agentAccountsProvisioned ?? false,
@@ -1561,27 +1538,6 @@ export function buildRegistry(state: WalletState): Registry {
         lastBackupAt: backup.lastBackupAt,
       };
     },
-    export_repo_backup: (args): RepoExport => {
-      const identity = findIdentity(state, didArg(args));
-      if (!identity) throw { code: 'IDENTITY_NOT_FOUND', message: 'identity not found' };
-      const backup = identity.repoBackup;
-      if (backup.mirroredRev === null) {
-        throw {
-          code: 'STORAGE_ERROR',
-          message: 'no repo snapshot has been backed up for this identity yet',
-        };
-      }
-      return {
-        rootCid: backup.rootCid,
-        rev: backup.rev,
-        sizeBytes: backup.sizeBytes,
-        lastBackupAt: backup.lastBackupAt,
-        // A stand-in for the base64 CAR bytes — the harness never imports it, only proves
-        // the export surface returns validated metadata + a payload.
-        carBase64: btoa(`fake-car:${backup.rootCid}`),
-      };
-    },
-
     // ── push notifications ───────────────────────────────────────────────────
     // The fake models the two states a browser can genuinely be in. With no `apnsToken` (the
     // default — a browser has no APNs) registration reports `AWAITING_APNS_TOKEN` exactly as a
@@ -1623,23 +1579,6 @@ export function buildRegistry(state: WalletState): Registry {
         deviceUuid: notifications.deviceUuid,
         notificationKeyId: notifications.notificationKeyId,
       };
-    },
-    refresh_notification_sender_keys: (args): SenderKeyPinning => {
-      const identity = findIdentity(state, didArg(args));
-      if (!identity) throw { code: 'IDENTITY_NOT_FOUND', message: 'identity not found' };
-      const host = identity.pdsUrl;
-
-      if (!state.notifications.relaySupported) {
-        // A 501 leaves whatever was pinned exactly as it was — switching the feature off is
-        // not a revocation.
-        return { host, pinned: false, keys: state.notifications.pinnedHosts[host] ?? [] };
-      }
-      // Wholesale replacement, the property that makes a revoked key stop being trusted.
-      const keys = [
-        { kid: 1, publicKey: 'did:key:zDnaeharnesssenderkey00000000000000000000001' },
-      ];
-      state.notifications.pinnedHosts[host] = keys;
-      return { host, pinned: true, keys };
     },
     get_notification_diagnostics: (): NotificationDiagnostics => ({
       deviceUuid: state.notifications.deviceUuid,

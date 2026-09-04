@@ -111,13 +111,3 @@ export const confirmSelfHeldKit = (did: string): Promise<void> =>
  */
 export const selfHeldKitInProgress = (did: string): Promise<boolean> =>
   invoke('self_held_kit_in_progress_cmd', { did });
-
-/**
- * The upsell **seam**: should this identity be offered escrow-assisted recovery, once?
- *
- * True only when the identity carries a self-held kit *and* its current host advertises
- * `escrow` — i.e. the user has since moved to a server that can hold a share for them. Never
- * true right after a kit completes, so this is a hook for a real later upgrade, not a nag.
- */
-export const selfHeldKitEscrowOffer = (did: string): Promise<boolean> =>
-  invoke('self_held_kit_escrow_offer_cmd', { did });

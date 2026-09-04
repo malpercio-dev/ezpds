@@ -44,7 +44,6 @@ export type ScenarioName =
   | 'rekey-eligible'
   | 'rekey-mixed'
   | 'self-held-kit'
-  | 'self-held-kit-escrow-host'
   | 'recover-escrow'
   | 'recover-sovereign'
   | 'recover-wrong-set'
@@ -544,25 +543,6 @@ export const scenarios: Record<ScenarioName, () => WalletState> = {
       'did:key:zharnessForeignPdsKey',
       'did:key:zharnessForeignLegacyKey',
     ];
-    upsertIdentity(state, identity);
-    return state;
-  },
-
-  /**
-   * The same identity after the kit, now hosted somewhere that DOES advertise escrow — the
-   * upsell seam's only true state. `self_held_kit_escrow_offer_cmd` answers true here and
-   * false everywhere else, and "Add a recovery key" is withheld (there is nothing to add).
-   */
-  'self-held-kit-escrow-host': () => {
-    const state = emptyWalletState();
-    state.pdsUrl = DEFAULT_PDS_URL;
-    state.pdsCapabilities = {
-      version: '0.8.5',
-      reached: true,
-      capabilities: ['createCeremony', 'escrow', 'sovereignSessions'],
-    };
-    const identity = seedIdentity({ handle: 'alice.harness.pds.local', recoveryKey: true });
-    identity.selfHeldKitInstalled = true;
     upsertIdentity(state, identity);
     return state;
   },

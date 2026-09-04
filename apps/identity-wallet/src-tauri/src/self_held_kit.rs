@@ -7,7 +7,7 @@
 //! the 72h override, user-held backups) but not the recovery *seed* — the
 //! client-generated 2-of-3 split is fused, in `rekey.rs`, to an escrow deposit a
 //! non-Custos host has no route for. This flow is that ceremony minus the escrow.
-//! Five Tauri IPC commands:
+//! Four Tauri IPC commands:
 //!
 //! - `build_self_held_kit(did)` — generate a NEW recovery seed client-side, derive its
 //!   recovery key, split 2-of-3 (v2 envelopes), staged in the per-DID
@@ -22,10 +22,8 @@
 //! - `confirm_self_held_kit(did)` — teardown gate mirroring `confirm_rekey`: Share 1
 //!   must be verifiably durable before the staging slot — the last local home of
 //!   Shares 2 and 3 — is destroyed.
-//! - `self_held_kit_in_progress_cmd(did)`; `self_held_kit_escrow_offer_cmd(did)` — the
-//!   escrow-upsell SEAM: true only when the marker is present AND the identity's
-//!   *current* host advertises `escrow`, so it is never true right after a kit
-//!   completes.
+//! - `self_held_kit_in_progress_cmd(did)` — whether a kit is mid-flight (a staging slot
+//!   exists) for this DID.
 //!
 //! Share custody: Share 1 → the Keychain; Shares 2 AND 3 → the user. With no escrow
 //! there is no third party, and the user's two shares are the whole threshold — the
@@ -406,16 +404,18 @@ async fn require_no_escrow_capability(
     Ok(())
 }
 
-/// Record that this identity now carries a self-held kit. Best-effort: the marker only powers
-/// the optional later escrow offer, so failing to write it must never fail a completed kit.
+/// Record that this identity now carries a self-held kit. Best-effort — nothing must fail a
+/// completed kit over a marker write.
 fn mark_installed(did: &str) {
     if let Err(e) = crate::keychain::store_item(&self_held_kit_account(did), b"true") {
         tracing::warn!(error = %e, "failed to record the self-held kit marker");
     }
 }
 
-/// Whether this identity carries a self-held kit.
-pub(crate) fn is_installed(did: &str) -> bool {
+/// Whether this identity carries a self-held kit. Test-only: its one production reader (the
+/// escrow-upsell seam) was retired, so this now just proves the marker round-trips.
+#[cfg(test)]
+fn is_installed(did: &str) -> bool {
     matches!(crate::keychain::get_item(&self_held_kit_account(did)), Ok(v) if v == b"true")
 }
 
@@ -674,31 +674,6 @@ pub fn confirm_self_held_kit_cmd(did: String) -> Result<(), SelfHeldKitError> {
 #[tauri::command]
 pub fn self_held_kit_in_progress_cmd(did: String) -> bool {
     crate::share_ceremony::self_held_kit_staging_exists(&did)
-}
-
-/// Tauri command: the upsell **seam** — should this identity be offered escrow-assisted
-/// recovery, once?
-///
-/// True only when the identity carries a self-held kit *and* its current host advertises
-/// `escrow` — i.e. the user has since moved to a server that can hold a share for them. It is
-/// deliberately never true right after a kit completes (that host advertised no escrow, which
-/// is why the kit exists), so this is a hook for a real later upgrade, not a nag.
-#[tauri::command]
-pub async fn self_held_kit_escrow_offer_cmd(
-    state: tauri::State<'_, crate::oauth::AppState>,
-    did: String,
-) -> Result<bool, SelfHeldKitError> {
-    if !is_installed(&did) {
-        return Ok(false);
-    }
-    let current = fetch_current_state(state.pds_client(), &did).await?;
-    let pds_url = pds_endpoint(&current);
-    if pds_url.is_empty() {
-        return Ok(false);
-    }
-    Ok(crate::pds_capabilities::probe(state.pds_client(), &pds_url)
-        .await
-        .escrow())
 }
 
 // ── Tests ────────────────────────────────────────────────────────────────────

@@ -5,9 +5,9 @@
  * hermetic local PDS through the `/__pds/*` dev-server proxy, using the real WebCrypto
  * device key for the account's device public key. Everything NOT returned here falls
  * through to the fake — deliberately, for the heavy-logic commands the honest boundary
- * keeps faked even in proxy mode: the DID ceremony (`perform_did_ceremony`), the OAuth
- * completion (`prepare/complete_oauth_flow`), migration transfer legs, and the agent
- * surfaces (which need a real post-ceremony session that the faked ceremony never mints).
+ * keeps faked even in proxy mode: the DID ceremony (`perform_did_ceremony`), migration
+ * transfer legs, and the agent surfaces (which need a real post-ceremony session that the
+ * faked ceremony never mints).
  * See the runbook in apps/identity-wallet/AGENTS.md.
  */
 import type { Handler } from '../registry';

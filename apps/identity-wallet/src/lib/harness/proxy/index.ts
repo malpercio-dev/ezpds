@@ -7,11 +7,10 @@
  * vite dev-server proxy at `/__pds/*` with a real WebCrypto P-256 device key. Every
  * command NOT overridden here falls through to the in-memory fake — by the honest
  * boundary these stay faked even in proxy mode (heavy Rust logic with no thin-HTTP
- * form): the DID ceremonies (`perform_did_ceremony`, `*_did_web_ceremony`), OAuth
- * completion (`prepare/complete_oauth_flow`), the migration transfer legs
- * (`transfer_repo`/`transfer_blobs`/…, `finalize_migration`), recovery/claim PLC ops,
- * and the agent surfaces (which need a real post-ceremony session the faked ceremony
- * never mints).
+ * form): the DID ceremonies (`perform_did_ceremony`, `*_did_web_ceremony`), the
+ * migration transfer legs (`transfer_repo`/`transfer_blobs`/…, `finalize_migration`),
+ * recovery/claim PLC ops, and the agent surfaces (which need a real post-ceremony
+ * session the faked ceremony never mints).
  */
 import type { Handler } from '../registry';
 import type { WalletState } from '../state';
