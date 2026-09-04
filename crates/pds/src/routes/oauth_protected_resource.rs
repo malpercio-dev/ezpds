@@ -49,15 +49,14 @@ pub async fn oauth_protected_resource_metadata(State(state): State<AppState>) ->
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
-
     use axum::{
         body::Body,
         http::{Request, StatusCode},
     };
     use tower::ServiceExt;
 
-    use crate::app::{app, test_state, AppState};
+    use crate::app::{app, test_state};
+    use crate::routes::test_utils;
 
     async fn metadata_json() -> serde_json::Value {
         let response = app(test_state().await)
@@ -175,13 +174,7 @@ mod tests {
     async fn resource_name_reflects_configured_service_name() {
         // Prove the field is sourced from config, not hardcoded: a custom service_name
         // flows through to the advertised resource_name.
-        let base = test_state().await;
-        let mut config = (*base.config).clone();
-        config.service_name = "Custos Relay".to_string();
-        let state = AppState {
-            config: Arc::new(config),
-            ..base
-        };
+        let state = test_utils::state_with(|c| c.service_name = "Custos Relay".to_string()).await;
 
         let response = app(state)
             .oneshot(
@@ -203,13 +196,8 @@ mod tests {
 
     #[tokio::test]
     async fn trailing_slash_in_public_url_does_not_affect_resource_origin() {
-        let base = test_state().await;
-        let mut config = (*base.config).clone();
-        config.public_url = "https://pds.example.com/".to_string();
-        let state = AppState {
-            config: Arc::new(config),
-            ..base
-        };
+        let state =
+            test_utils::state_with(|c| c.public_url = "https://pds.example.com/".to_string()).await;
 
         let response = app(state)
             .oneshot(

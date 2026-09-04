@@ -1225,10 +1225,6 @@ pub async fn post_authorization(
 
 #[cfg(test)]
 mod tests {
-    use argon2::{
-        password_hash::{rand_core::OsRng, SaltString},
-        Argon2, PasswordHasher,
-    };
     use axum::{
         body::Body,
         http::{Request, StatusCode},
@@ -1239,6 +1235,7 @@ mod tests {
     use crate::app::{app, test_state};
     use crate::auth::token::hash_bearer_token;
     use crate::db::oauth::register_oauth_client;
+    use crate::routes::test_utils;
 
     const CLIENT_ID: &str = "https://app.example.com/client-metadata.json";
     const REDIRECT_URI: &str = "https://app.example.com/callback";
@@ -1274,27 +1271,14 @@ mod tests {
     /// password hash, plus an associated handle for identifier-based login tests.
     async fn state_with_client_and_account_with_password(password: &str) -> crate::app::AppState {
         let state = state_with_client().await;
-        let salt = SaltString::generate(&mut OsRng);
-        let password_hash = Argon2::default()
-            .hash_password(password.as_bytes(), &salt)
-            .unwrap()
-            .to_string();
-        sqlx::query(
-            "INSERT INTO accounts (did, email, password_hash, created_at, updated_at) \
-             VALUES (?, ?, ?, datetime('now'), datetime('now'))",
+        test_utils::insert_account_with_password(
+            &state.db,
+            DID,
+            TEST_HANDLE,
+            "test@example.com",
+            password,
         )
-        .bind(DID)
-        .bind("test@example.com")
-        .bind(&password_hash)
-        .execute(&state.db)
-        .await
-        .unwrap();
-        sqlx::query("INSERT INTO handles (handle, did, created_at) VALUES (?, ?, datetime('now'))")
-            .bind(TEST_HANDLE)
-            .bind(DID)
-            .execute(&state.db)
-            .await
-            .unwrap();
+        .await;
         state
     }
 
@@ -1317,21 +1301,7 @@ mod tests {
     /// Test state with a mobile-provisioned account: handle is set but password_hash is NULL.
     async fn state_with_client_and_mobile_account() -> crate::app::AppState {
         let state = state_with_client().await;
-        sqlx::query(
-            "INSERT INTO accounts (did, email, password_hash, created_at, updated_at) \
-             VALUES (?, ?, NULL, datetime('now'), datetime('now'))",
-        )
-        .bind(DID)
-        .bind("test@example.com")
-        .execute(&state.db)
-        .await
-        .unwrap();
-        sqlx::query("INSERT INTO handles (handle, did, created_at) VALUES (?, ?, datetime('now'))")
-            .bind(TEST_HANDLE)
-            .bind(DID)
-            .execute(&state.db)
-            .await
-            .unwrap();
+        test_utils::seed_handle(&state.db, TEST_HANDLE, DID).await;
         state
     }
 
@@ -2278,30 +2248,13 @@ mod tests {
 
     // ── include: permission-set expansion ─────
 
-    use std::future::Future;
-    use std::pin::Pin;
     use wiremock::matchers::{method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
-    use crate::identity::dns::{DnsError, TxtResolver};
-    use crate::routes::test_utils::seed_did_document;
+    use crate::routes::test_utils::{seed_did_document, FixedTxtResolver};
 
     const AUTHORITY_DID: &str = "did:plc:authoritydidxxxxxxxxxxxxx";
     const AUTHORITY_NSID: &str = "app.bsky.authFull";
-
-    struct FixedTxtResolver {
-        records: Vec<String>,
-    }
-
-    impl TxtResolver for FixedTxtResolver {
-        fn txt_lookup<'a>(
-            &'a self,
-            _name: &'a str,
-        ) -> Pin<Box<dyn Future<Output = Result<Vec<String>, DnsError>> + Send + 'a>> {
-            let records = self.records.clone();
-            Box::pin(async move { Ok(records) })
-        }
-    }
 
     /// A test state with a registered client + password account, plus DNS/DID-document
     /// resolution wired up for `AUTHORITY_NSID` to a mock PDS serving `schema`.

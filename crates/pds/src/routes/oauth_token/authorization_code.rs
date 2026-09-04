@@ -279,14 +279,12 @@ mod tests {
         .await
         .unwrap();
 
-        sqlx::query(
-            "INSERT INTO accounts (did, email, password_hash, created_at, updated_at) \
-             VALUES ('did:plc:testaccount000000000000', 'test@example.com', NULL, \
-             datetime('now'), datetime('now'))",
+        test_utils::seed_handle(
+            &state.db,
+            "authcode.test.example.com",
+            "did:plc:testaccount000000000000",
         )
-        .execute(&state.db)
-        .await
-        .unwrap();
+        .await;
 
         store_authorization_code(
             &state.db,
@@ -781,14 +779,12 @@ mod tests {
         )
         .await
         .unwrap();
-        sqlx::query(
-            "INSERT INTO accounts (did, email, password_hash, created_at, updated_at) \
-             VALUES ('did:plc:testaccount000000000000', 'test@example.com', NULL, \
-             datetime('now'), datetime('now'))",
+        test_utils::seed_handle(
+            &state.db,
+            "authcode-plain.test.example.com",
+            "did:plc:testaccount000000000000",
         )
-        .execute(&state.db)
-        .await
-        .unwrap();
+        .await;
 
         // Seed an auth code with code_challenge_method = "plain" directly.
         let verifier = "dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk";

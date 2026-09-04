@@ -228,112 +228,42 @@ mod tests {
     use tower::ServiceExt;
 
     use super::super::test_support::{json_body, post_token_with_dpop};
-    use crate::app::{app, test_state, AppState};
-    use crate::auth::token::generate_token;
-    use crate::db::oauth::{register_oauth_client, store_initial_oauth_refresh_token};
-    use crate::routes::test_utils;
+    use crate::app::{app, test_state};
+    use crate::routes::test_utils::{self, seed_refresh_row};
 
-    /// Seed the DB with a client + account + fresh refresh token bound to `jkt`.
-    ///
-    /// Returns the base64url plaintext of the seeded refresh token.
-    async fn seed_refresh_token(state: &AppState, jkt: &str) -> String {
-        register_oauth_client(
-            &state.db,
-            "https://app.example.com/client-metadata.json",
-            r#"{"redirect_uris":["https://app.example.com/callback"]}"#,
-        )
-        .await
-        .unwrap();
-        sqlx::query(
-            "INSERT INTO accounts (did, email, password_hash, created_at, updated_at) \
-             VALUES ('did:plc:testaccount000000000000', 'test@example.com', NULL, \
-             datetime('now'), datetime('now'))",
-        )
-        .execute(&state.db)
-        .await
-        .unwrap();
-
-        let token = generate_token();
-        store_initial_oauth_refresh_token(
-            &state.db,
-            &token.hash,
-            "https://app.example.com/client-metadata.json",
-            "did:plc:testaccount000000000000",
+    /// Seed a fresh refresh token bound to `jkt`, carrying the granted granular scope
+    /// (`atproto transition:generic`) and the default +24h session expiry.
+    async fn seed_refresh_token(state: &crate::app::AppState, jkt: &str) -> String {
+        seed_refresh_row(
+            state,
+            Some(jkt),
             "atproto transition:generic",
-            jkt,
+            "datetime('now', '+24 hours')",
         )
         .await
-        .unwrap();
-        token.plaintext
     }
 
-    /// Seed the DB with an already-expired refresh token (bypasses store_initial_oauth_refresh_token's +24h).
-    ///
-    /// Returns the base64url plaintext.
-    async fn seed_expired_refresh_token(state: &AppState, jkt: &str) -> String {
-        register_oauth_client(
-            &state.db,
-            "https://app.example.com/client-metadata.json",
-            r#"{"redirect_uris":["https://app.example.com/callback"]}"#,
+    /// Seed an already-expired refresh token (bypasses the default +24h expiry).
+    async fn seed_expired_refresh_token(state: &crate::app::AppState, jkt: &str) -> String {
+        seed_refresh_row(
+            state,
+            Some(jkt),
+            "com.atproto.refresh",
+            "datetime('now', '-1 seconds')",
         )
         .await
-        .unwrap();
-        sqlx::query(
-            "INSERT INTO accounts (did, email, password_hash, created_at, updated_at) \
-             VALUES ('did:plc:testaccount000000000000', 'test@example.com', NULL, \
-             datetime('now'), datetime('now'))",
-        )
-        .execute(&state.db)
-        .await
-        .unwrap();
-
-        let token = generate_token();
-        sqlx::query(
-            "INSERT INTO oauth_tokens (id, client_id, did, scope, jkt, expires_at, created_at) \
-             VALUES (?, ?, ?, 'com.atproto.refresh', ?, datetime('now', '-1 seconds'), datetime('now'))",
-        )
-        .bind(&token.hash)
-        .bind("https://app.example.com/client-metadata.json")
-        .bind("did:plc:testaccount000000000000")
-        .bind(jkt)
-        .execute(&state.db)
-        .await
-        .unwrap();
-        token.plaintext
     }
 
     /// Seed a valid refresh token holding the legacy fixed `com.atproto.refresh`
     /// scope (as written before granular scopes were persisted).
-    async fn seed_legacy_refresh_token(state: &AppState, jkt: &str) -> String {
-        register_oauth_client(
-            &state.db,
-            "https://app.example.com/client-metadata.json",
-            r#"{"redirect_uris":["https://app.example.com/callback"]}"#,
+    async fn seed_legacy_refresh_token(state: &crate::app::AppState, jkt: &str) -> String {
+        seed_refresh_row(
+            state,
+            Some(jkt),
+            "com.atproto.refresh",
+            "datetime('now', '+24 hours')",
         )
         .await
-        .unwrap();
-        sqlx::query(
-            "INSERT INTO accounts (did, email, password_hash, created_at, updated_at) \
-             VALUES ('did:plc:testaccount000000000000', 'test@example.com', NULL, \
-             datetime('now'), datetime('now'))",
-        )
-        .execute(&state.db)
-        .await
-        .unwrap();
-
-        let token = generate_token();
-        sqlx::query(
-            "INSERT INTO oauth_tokens (id, client_id, did, scope, jkt, expires_at, created_at) \
-             VALUES (?, ?, ?, 'com.atproto.refresh', ?, datetime('now', '+24 hours'), datetime('now'))",
-        )
-        .bind(&token.hash)
-        .bind("https://app.example.com/client-metadata.json")
-        .bind("did:plc:testaccount000000000000")
-        .bind(jkt)
-        .execute(&state.db)
-        .await
-        .unwrap();
-        token.plaintext
     }
 
     /// A legacy refresh row (scope `com.atproto.refresh`, written before granular
@@ -723,43 +653,20 @@ mod tests {
         let state = test_state().await;
         let key = test_utils::DpopProofKey::generate();
 
-        // Seed client and account (FK constraints required by oauth_tokens).
-        register_oauth_client(
-            &state.db,
-            "https://app.example.com/client-metadata.json",
-            r#"{"redirect_uris":["https://app.example.com/callback"]}"#,
+        // jkt = NULL simulates a pre-V012 row, predating DPoP binding enforcement.
+        let plaintext = seed_refresh_row(
+            &state,
+            None,
+            "com.atproto.refresh",
+            "datetime('now', '+24 hours')",
         )
-        .await
-        .unwrap();
-        sqlx::query(
-            "INSERT INTO accounts (did, email, password_hash, created_at, updated_at) \
-             VALUES ('did:plc:testaccount000000000000', 'test@example.com', NULL, \
-             datetime('now'), datetime('now'))",
-        )
-        .execute(&state.db)
-        .await
-        .unwrap();
-
-        // Insert a refresh token with jkt = NULL directly (bypasses store_initial_oauth_refresh_token
-        // which always sets jkt, simulating a pre-V012 row).
-        let token = generate_token();
-        sqlx::query(
-            "INSERT INTO oauth_tokens (id, client_id, did, scope, jkt, expires_at, created_at) \
-             VALUES (?, ?, ?, 'com.atproto.refresh', NULL, datetime('now', '+24 hours'), datetime('now'))",
-        )
-        .bind(&token.hash)
-        .bind("https://app.example.com/client-metadata.json")
-        .bind("did:plc:testaccount000000000000")
-        .execute(&state.db)
-        .await
-        .unwrap();
+        .await;
 
         let dpop = test_utils::token_proof(&state, &key);
         let body = format!(
             "grant_type=refresh_token\
-             &refresh_token={}\
-             &client_id=https%3A%2F%2Fapp.example.com%2Fclient-metadata.json",
-            token.plaintext
+             &refresh_token={plaintext}\
+             &client_id=https%3A%2F%2Fapp.example.com%2Fclient-metadata.json"
         );
 
         let resp = app(state)

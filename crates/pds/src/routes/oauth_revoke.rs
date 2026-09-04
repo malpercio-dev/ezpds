@@ -156,44 +156,16 @@ mod tests {
     use tower::ServiceExt;
 
     use crate::app::{app, test_state, AppState};
-    use crate::auth::token::generate_token;
-    use crate::db::oauth::register_oauth_client;
     use crate::routes::test_utils;
 
     const REVOKE_HTU: &str = "https://test.example.com/oauth/revoke";
     const TEST_CLIENT: &str = "https://app.example.com/client-metadata.json";
-    const TEST_DID: &str = "did:plc:testaccount000000000000";
 
-    /// Seed a client + account + a refresh token bound to `jkt`. Returns the token plaintext.
+    /// Seed a refresh token bound to `jkt` for the group's fixed test client/DID (see
+    /// [`test_utils::seed_refresh_row`]). Returns the token plaintext.
     async fn seed_refresh_token(state: &AppState, jkt: &str) -> String {
-        register_oauth_client(
-            &state.db,
-            TEST_CLIENT,
-            r#"{"redirect_uris":["https://app.example.com/callback"]}"#,
-        )
-        .await
-        .unwrap();
-        sqlx::query(
-            "INSERT INTO accounts (did, email, password_hash, created_at, updated_at) \
-             VALUES (?, 'test@example.com', NULL, datetime('now'), datetime('now'))",
-        )
-        .bind(TEST_DID)
-        .execute(&state.db)
-        .await
-        .unwrap();
-
-        let token = generate_token();
-        crate::db::oauth::store_initial_oauth_refresh_token(
-            &state.db,
-            &token.hash,
-            TEST_CLIENT,
-            TEST_DID,
-            "atproto",
-            jkt,
-        )
-        .await
-        .unwrap();
-        token.plaintext
+        test_utils::seed_refresh_row(state, Some(jkt), "atproto", "datetime('now', '+24 hours')")
+            .await
     }
 
     async fn refresh_token_exists(state: &AppState, plaintext: &str) -> bool {

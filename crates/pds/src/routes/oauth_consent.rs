@@ -582,6 +582,7 @@ mod tests {
     use crate::app::{app, test_state_with_plc_url, AppState};
     use crate::db::oauth::register_oauth_client;
     use crate::db::pending_oauth_authorizations::NewPendingOAuthAuthorization;
+    use crate::routes::test_utils;
 
     const CLIENT_ID: &str = "https://app.example.com/client-metadata.json";
     const CLIENT_METADATA: &str =
@@ -615,21 +616,7 @@ mod tests {
         register_oauth_client(&state.db, CLIENT_ID, CLIENT_METADATA)
             .await
             .unwrap();
-        sqlx::query(
-            "INSERT INTO accounts (did, email, password_hash, created_at, updated_at) \
-             VALUES (?, 'owner@example.com', NULL, datetime('now'), datetime('now'))",
-        )
-        .bind(DID)
-        .execute(&state.db)
-        .await
-        .unwrap();
-        sqlx::query(
-            "INSERT INTO handles (handle, did, created_at) VALUES ('owner.example.com', ?, datetime('now'))",
-        )
-        .bind(DID)
-        .execute(&state.db)
-        .await
-        .unwrap();
+        test_utils::seed_handle(&state.db, "owner.example.com", DID).await;
         state
     }
 
@@ -682,10 +669,6 @@ mod tests {
             .respond_with(ResponseTemplate::new(200).set_body_json(log))
             .mount(plc)
             .await;
-    }
-
-    fn now() -> i64 {
-        crate::time::unix_now_secs()
     }
 
     fn approval_body(
@@ -782,7 +765,7 @@ mod tests {
                 request_id,
                 "approve",
                 REQUESTED_SCOPE,
-                now(),
+                crate::time::unix_now_secs(),
                 1,
             ),
         )
@@ -852,7 +835,7 @@ mod tests {
             request_id,
             "approve",
             REQUESTED_SCOPE,
-            now(),
+            crate::time::unix_now_secs(),
             2,
         );
 
@@ -875,7 +858,15 @@ mod tests {
         seed_pending(&state, request_id, None).await;
 
         // Sign over the base scope, then tamper the submitted grantedScope to a wider set.
-        let mut body = approval_body(&state, &key, request_id, "approve", "atproto", now(), 3);
+        let mut body = approval_body(
+            &state,
+            &key,
+            request_id,
+            "approve",
+            "atproto",
+            crate::time::unix_now_secs(),
+            3,
+        );
         body["grantedScope"] = json!(REQUESTED_SCOPE);
         let resp = post_json(state.clone(), "/oauth/authorize/approve", body).await;
         assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
@@ -895,7 +886,15 @@ mod tests {
         let resp = post_json(
             state.clone(),
             "/oauth/authorize/approve",
-            approval_body(&state, &key, request_id, "deny", "", now(), 4),
+            approval_body(
+                &state,
+                &key,
+                request_id,
+                "deny",
+                "",
+                crate::time::unix_now_secs(),
+                4,
+            ),
         )
         .await;
         assert_eq!(resp.status(), StatusCode::OK);
@@ -950,7 +949,7 @@ mod tests {
                 request_id,
                 "approve",
                 REQUESTED_SCOPE,
-                now(),
+                crate::time::unix_now_secs(),
                 5,
             ),
         )
@@ -977,7 +976,7 @@ mod tests {
                 request_id,
                 "approve",
                 REQUESTED_SCOPE,
-                now(),
+                crate::time::unix_now_secs(),
                 6,
             ),
         )
@@ -1006,7 +1005,7 @@ mod tests {
                 request_id,
                 "approve",
                 REQUESTED_SCOPE,
-                now(),
+                crate::time::unix_now_secs(),
                 7,
             ),
         )
@@ -1033,7 +1032,7 @@ mod tests {
                 request_id,
                 "approve",
                 REQUESTED_SCOPE,
-                now(),
+                crate::time::unix_now_secs(),
                 8,
             ),
         )
@@ -1062,7 +1061,7 @@ mod tests {
                 request_id,
                 "approve",
                 REQUESTED_SCOPE,
-                now(),
+                crate::time::unix_now_secs(),
                 11,
             ),
         )
@@ -1095,7 +1094,7 @@ mod tests {
                 request_id,
                 "approve",
                 REQUESTED_SCOPE,
-                now(),
+                crate::time::unix_now_secs(),
                 9,
             ),
         )
@@ -1122,7 +1121,7 @@ mod tests {
                 request_id,
                 "approve",
                 REQUESTED_SCOPE,
-                now(),
+                crate::time::unix_now_secs(),
                 10,
             ),
         )
@@ -1196,7 +1195,7 @@ mod tests {
                 request_id,
                 "approve",
                 REQUESTED_SCOPE,
-                now(),
+                crate::time::unix_now_secs(),
                 7,
             ),
         )
@@ -1249,7 +1248,7 @@ mod tests {
                 request_id,
                 "approve",
                 REQUESTED_SCOPE,
-                now(),
+                crate::time::unix_now_secs(),
                 31,
             ),
         )
@@ -1263,7 +1262,7 @@ mod tests {
             request_id,
             "approve",
             REQUESTED_SCOPE,
-            now(),
+            crate::time::unix_now_secs(),
             32,
         );
         wrong["matchCode"] = json!("24");
@@ -1289,7 +1288,7 @@ mod tests {
             request_id,
             "approve",
             REQUESTED_SCOPE,
-            now(),
+            crate::time::unix_now_secs(),
             33,
         );
         right["matchCode"] = json!("42");
@@ -1320,7 +1319,15 @@ mod tests {
         let resp = post_json(
             state.clone(),
             "/oauth/authorize/approve",
-            approval_body(&state, &key, request_id, "deny", "", now(), 34),
+            approval_body(
+                &state,
+                &key,
+                request_id,
+                "deny",
+                "",
+                crate::time::unix_now_secs(),
+                34,
+            ),
         )
         .await;
         assert_eq!(resp.status(), StatusCode::OK);
@@ -1366,14 +1373,7 @@ mod tests {
         register_oauth_client(&state.db, CLIENT_ID, CLIENT_METADATA)
             .await
             .unwrap();
-        sqlx::query(
-            "INSERT INTO accounts (did, email, password_hash, created_at, updated_at) \
-             VALUES (?, 'owner@example.com', NULL, datetime('now'), datetime('now'))",
-        )
-        .bind(DID)
-        .execute(&state.db)
-        .await
-        .unwrap();
+        test_utils::seed_handle(&state.db, "owner.example.com", DID).await;
 
         let request_id = "poauth_fragment_mode";
         let new = crate::db::pending_oauth_authorizations::NewPendingOAuthAuthorization {

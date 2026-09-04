@@ -59,6 +59,25 @@ impl crate::identity::dns::DnsProvider for AlwaysErrDns {
     }
 }
 
+/// `TxtResolver` that returns a fixed set of TXT records for every lookup, regardless of the
+/// queried name — for tests that need `did=...`-style handle-verification TXT records without a
+/// real DNS round trip.
+pub(crate) struct FixedTxtResolver {
+    pub(crate) records: Vec<String>,
+}
+
+impl crate::identity::dns::TxtResolver for FixedTxtResolver {
+    fn txt_lookup<'a>(
+        &'a self,
+        _name: &'a str,
+    ) -> Pin<
+        Box<dyn Future<Output = Result<Vec<String>, crate::identity::dns::DnsError>> + Send + 'a>,
+    > {
+        let records = self.records.clone();
+        Box::pin(async move { Ok(records) })
+    }
+}
+
 /// `test_state()` with an `AlwaysOkDns` provider wired in.
 pub async fn state_with_ok_dns() -> AppState {
     let base = test_state().await;
@@ -101,6 +120,19 @@ pub async fn state_with_failing_email() -> AppState {
     let base = test_state().await;
     AppState {
         email: Arc::new(AlwaysErrEmail),
+        ..base
+    }
+}
+
+/// `test_state()` with `mutate` applied to a clone of the config. Collapses the repeated
+/// `let base = test_state().await; let mut config = (*base.config).clone(); config.x = …;
+/// AppState { config: Arc::new(config), ..base }` dance into `state_with(|c| c.x = …).await`.
+pub async fn state_with(mutate: impl FnOnce(&mut common::Config)) -> AppState {
+    let base = test_state().await;
+    let mut config = (*base.config).clone();
+    mutate(&mut config);
+    AppState {
+        config: Arc::new(config),
         ..base
     }
 }
@@ -315,6 +347,48 @@ pub async fn seed_handle(db: &sqlx::SqlitePool, handle: &str, did: &str) {
 /// Insert a DID document row directly into `did_documents`. Lives in `db::dids` (not here) so
 /// non-route test code can depend on it too; re-exported for existing route test call sites.
 pub(crate) use crate::db::dids::seed_did_document;
+
+/// Register a fixed test client, seed an account for it, and insert an `oauth_tokens` refresh
+/// row bound to `jkt` (`None` for the pre-V012 legacy shape with no DPoP binding) carrying
+/// `scope`, expiring at `expires_sql` — a SQLite datetime expression such as
+/// `"datetime('now', '+24 hours')"` or `"datetime('now', '-1 seconds')"` for an already-expired
+/// row (a SQL fragment, not a bindable value, so it's interpolated rather than bound). Returns
+/// the base64url plaintext of the seeded refresh token. Client id, DID, and handle are fixed
+/// literals shared by every `oauth_token`/`oauth_revoke` test that needs a refresh-token fixture;
+/// callers that need a distinct account should seed one directly instead.
+pub(crate) async fn seed_refresh_row(
+    state: &AppState,
+    jkt: Option<&str>,
+    scope: &str,
+    expires_sql: &str,
+) -> String {
+    const CLIENT_ID: &str = "https://app.example.com/client-metadata.json";
+    const DID: &str = "did:plc:testaccount000000000000";
+
+    crate::db::oauth::register_oauth_client(
+        &state.db,
+        CLIENT_ID,
+        r#"{"redirect_uris":["https://app.example.com/callback"]}"#,
+    )
+    .await
+    .unwrap();
+    seed_handle(&state.db, "refresh.test.example.com", DID).await;
+
+    let token = crate::auth::token::generate_token();
+    sqlx::query(&format!(
+        "INSERT INTO oauth_tokens (id, client_id, did, scope, jkt, expires_at, created_at) \
+         VALUES (?, ?, ?, ?, ?, {expires_sql}, datetime('now'))"
+    ))
+    .bind(&token.hash)
+    .bind(CLIENT_ID)
+    .bind(DID)
+    .bind(scope)
+    .bind(jkt)
+    .execute(&state.db)
+    .await
+    .unwrap();
+    token.plaintext
+}
 
 /// Seed a device row with a fresh device token. Returns `(device_id, plaintext_token)`.
 ///

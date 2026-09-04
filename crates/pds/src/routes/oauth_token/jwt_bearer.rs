@@ -316,6 +316,7 @@ mod tests {
 
     use super::super::test_support::{json_body, mint_assertion, post_token};
     use crate::app::{app, test_state, AppState};
+    use crate::routes::test_utils;
 
     const JWT_BEARER: &str = "urn:ietf:params:oauth:grant-type:jwt-bearer";
 
@@ -348,15 +349,12 @@ mod tests {
         status: &str,
         scopes_json: &str,
     ) {
-        sqlx::query(
-            "INSERT INTO accounts (did, email, password_hash, created_at, updated_at) \
-             VALUES (?, ?, 'hash', datetime('now'), datetime('now'))",
+        test_utils::seed_handle(
+            &state.db,
+            &format!("{registration_id}.test.example.com"),
+            did,
         )
-        .bind(did)
-        .bind(format!("{registration_id}@example.com"))
-        .execute(&state.db)
-        .await
-        .unwrap();
+        .await;
         sqlx::query(
             "INSERT INTO agent_identities \
              (id, did, registration_type, issuer, subject, email, scopes, identity_assertion, \
