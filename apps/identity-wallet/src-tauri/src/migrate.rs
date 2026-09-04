@@ -196,25 +196,24 @@ pub async fn build_did_web_migration_document_cmd(
             if name != ATPROTO_VERIFICATION_METHOD_ID {
                 if let Some(key) = value.as_str() {
                     methods.push(serde_json::json!({
-                        "id": format!("{did}#{name}"), "type": "Multikey", "controller": did,
+                        "id": format!("#{name}"), "type": "Multikey", "controller": did,
                         "publicKeyMultibase": multibase(key)
                     }));
                 }
             }
         }
     }
-    methods.retain(|method| {
-        method.get("id").and_then(serde_json::Value::as_str) != Some(&format!("{did}#device"))
-    });
-    methods.push(serde_json::json!({"id": format!("{did}#device"), "type": "Multikey", "controller": did, "publicKeyMultibase": multibase(&device.key_id)}));
-    methods.push(serde_json::json!({"id": format!("{did}#atproto"), "type": "Multikey", "controller": did, "publicKeyMultibase": multibase(&repo_key)}));
+    methods
+        .retain(|method| method.get("id").and_then(serde_json::Value::as_str) != Some("#device"));
+    methods.push(serde_json::json!({"id": "#device", "type": "Multikey", "controller": did, "publicKeyMultibase": multibase(&device.key_id)}));
+    methods.push(serde_json::json!({"id": "#atproto", "type": "Multikey", "controller": did, "publicKeyMultibase": multibase(&repo_key)}));
     let document = serde_json::json!({
         "@context": ["https://www.w3.org/ns/did/v1"],
         "id": did,
         // Domain migration must never let destination recommendations change the user's handle.
         "alsoKnownAs": current.also_known_as,
         "verificationMethod": methods,
-        "service": [{"id": format!("{did}#atproto_pds"), "type": "AtprotoPersonalDataServer", "serviceEndpoint": pds_endpoint}],
+        "service": [{"id": "#atproto_pds", "type": "AtprotoPersonalDataServer", "serviceEndpoint": pds_endpoint}],
     });
     let document_text = format!(
         "{}\n",
@@ -224,8 +223,8 @@ pub async fn build_did_web_migration_document_cmd(
     );
     Ok(DidWebMigrationDocument {
         document_text,
-        device_key: format!("{did}#device"),
-        repo_key: format!("{did}#atproto"),
+        device_key: "#device".to_string(),
+        repo_key: "#atproto".to_string(),
         pds_endpoint,
     })
 }

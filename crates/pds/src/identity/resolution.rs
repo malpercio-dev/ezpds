@@ -737,6 +737,14 @@ pub fn service_endpoint<'a>(did_doc: &'a Value, fragment: &str) -> Option<&'a st
         .as_str()
 }
 
+/// Whether a verification-method or service `id` names `#{fragment}` of `did` — either the
+/// bare `#fragment` form the reference stack emits or the DID-qualified `did#fragment` form.
+/// Exact on both, so a foreign DID's `#fragment` never matches (unlike `service_endpoint`'s
+/// suffix match, which reads a document already trusted as `did`'s own).
+pub fn fragment_id_matches(id: &str, did: &str, fragment: &str) -> bool {
+    id.strip_prefix(did).unwrap_or(id) == format!("#{fragment}")
+}
+
 fn also_known_as_handles(did_doc: &Value) -> Vec<String> {
     did_doc
         .get("alsoKnownAs")
@@ -752,8 +760,8 @@ fn also_known_as_handles(did_doc: &Value) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::{
-        did_web_document_url, refresh_did_document_after_signature_mismatch, safe_body_preview,
-        service_endpoint, space_host_endpoint, space_verification_key,
+        did_web_document_url, fragment_id_matches, refresh_did_document_after_signature_mismatch,
+        safe_body_preview, service_endpoint, space_host_endpoint, space_verification_key,
     };
     use common::ErrorCode;
 
@@ -848,6 +856,28 @@ mod tests {
             space_host_endpoint(&only_space),
             Some("https://space.example.com")
         );
+    }
+
+    #[test]
+    fn fragment_id_matches_bare_and_qualified_but_not_foreign() {
+        let did = "did:web:alice.example";
+        assert!(fragment_id_matches("#device", did, "device"));
+        assert!(fragment_id_matches(
+            "did:web:alice.example#device",
+            did,
+            "device"
+        ));
+        assert!(!fragment_id_matches(
+            "did:web:bob.example#device",
+            did,
+            "device"
+        ));
+        assert!(!fragment_id_matches("#atproto", did, "device"));
+        assert!(!fragment_id_matches(
+            "did:web:alice.example#device",
+            did,
+            "atproto"
+        ));
     }
 
     fn doc_with_only_space() -> serde_json::Value {

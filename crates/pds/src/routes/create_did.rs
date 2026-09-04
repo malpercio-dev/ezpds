@@ -44,6 +44,7 @@ use crate::auth::guards::require_pending_session;
 use crate::auth::password::resolve_password;
 use crate::auth::token::generate_token;
 use crate::db::is_unique_violation;
+use crate::identity::resolution::fragment_id_matches;
 use common::{ApiError, ErrorCode};
 
 #[derive(Deserialize)]
@@ -430,9 +431,11 @@ fn validate_did_web_document(
         .and_then(serde_json::Value::as_array)
         .ok_or_else(|| ApiError::new(ErrorCode::InvalidClaim, "verificationMethod is required"))?;
     let has_key = |fragment: &str, multibase: &str| {
-        let id = format!("{did}#{fragment}");
         methods.iter().any(|method| {
-            method.get("id").and_then(serde_json::Value::as_str) == Some(&id)
+            method
+                .get("id")
+                .and_then(serde_json::Value::as_str)
+                .is_some_and(|id| fragment_id_matches(id, did, fragment))
                 && method.get("type").and_then(serde_json::Value::as_str) == Some("Multikey")
                 && method.get("controller").and_then(serde_json::Value::as_str) == Some(did)
                 && method
@@ -455,13 +458,15 @@ fn validate_did_web_document(
     }
 
     let expected_endpoint = pds_url.trim_end_matches('/');
-    let expected_service = format!("{did}#atproto_pds");
     let has_service = document
         .get("service")
         .and_then(serde_json::Value::as_array)
         .is_some_and(|services| {
             services.iter().any(|service| {
-                service.get("id").and_then(serde_json::Value::as_str) == Some(&expected_service)
+                service
+                    .get("id")
+                    .and_then(serde_json::Value::as_str)
+                    .is_some_and(|id| fragment_id_matches(id, did, "atproto_pds"))
                     && service.get("type").and_then(serde_json::Value::as_str)
                         == Some("AtprotoPersonalDataServer")
                     && service
@@ -885,6 +890,29 @@ mod tests {
         assert_eq!(
             validate_did_web_document(
                 &document,
+                "alice.example.com",
+                "did:key:zdevice",
+                "did:key:zrepo",
+                "https://pds.example.com/",
+            )
+            .unwrap(),
+            did
+        );
+
+        // The wallet composes bare-fragment ids (the reference stack's shape, and the only one
+        // every third-party resolver matches); a hand-authored DID-qualified id stays accepted.
+        let bare = serde_json::json!({
+            "id": did,
+            "alsoKnownAs": ["at://alice.example.com"],
+            "verificationMethod": [
+                {"id": "#device", "type": "Multikey", "controller": did, "publicKeyMultibase": "zdevice"},
+                {"id": "#atproto", "type": "Multikey", "controller": did, "publicKeyMultibase": "zrepo"}
+            ],
+            "service": [{"id": "#atproto_pds", "type": "AtprotoPersonalDataServer", "serviceEndpoint": "https://pds.example.com"}]
+        });
+        assert_eq!(
+            validate_did_web_document(
+                &bare,
                 "alice.example.com",
                 "did:key:zdevice",
                 "did:key:zrepo",

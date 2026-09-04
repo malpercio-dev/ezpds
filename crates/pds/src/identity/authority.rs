@@ -18,7 +18,7 @@ use serde_json::Value;
 use crate::app::AppState;
 
 use super::plc::fetch_current_plc_state;
-use super::resolution::resolve_web_did_document;
+use super::resolution::{fragment_id_matches, resolve_web_did_document};
 
 /// The set of `did:key:` URIs currently authorized to sign a sovereign proof for an account, the
 /// handles that same authority state asserts, plus a short description of where it was read from
@@ -154,7 +154,8 @@ async fn web_authority(state: &AppState, did: &str) -> Result<AuthoritySet, Auth
 }
 
 /// Extract the document's `#device` key as a `did:key:` URI, matching `create_did.rs`'s predicate
-/// (`type == "Multikey"`, `controller == did`, exact `{did}#device` id). The difference in shape:
+/// (`type == "Multikey"`, `controller == did`, id naming `#device` bare or DID-qualified). The
+/// difference in shape:
 /// `create_did.rs` *verifies* a known key by comparing `publicKeyMultibase`, whereas this
 /// *discovers* it, so it extracts that field instead — rendered as `did:key:{multibase}`, since the
 /// verification method carries bare multibase while a PLC rotation set stores `did:key:` URIs.
@@ -162,13 +163,15 @@ async fn web_authority(state: &AppState, did: &str) -> Result<AuthoritySet, Auth
 /// More than one `#device`-shaped entry is malformed (duplicate `id` values already violate DID
 /// Core) and fails closed rather than picking one by array order.
 fn device_verification_key(document: &Value, did: &str) -> Result<String, AuthorityError> {
-    let expected_id = format!("{did}#device");
     let methods = document
         .get("verificationMethod")
         .and_then(Value::as_array)
         .ok_or(AuthorityError::Unauthorized("no_verification_methods"))?;
     let mut matches = methods.iter().filter(|method| {
-        method.get("id").and_then(Value::as_str) == Some(&expected_id)
+        method
+            .get("id")
+            .and_then(Value::as_str)
+            .is_some_and(|id| fragment_id_matches(id, did, "device"))
             && method.get("type").and_then(Value::as_str) == Some("Multikey")
             && method.get("controller").and_then(Value::as_str) == Some(did)
     });
@@ -223,6 +226,17 @@ mod tests {
     #[test]
     fn device_method_is_rendered_as_a_did_key_uri() {
         let doc = document(json!([device_method("zDevice")]));
+        assert_eq!(key(&doc).ok().as_deref(), Some("did:key:zDevice"));
+    }
+
+    #[test]
+    fn a_bare_fragment_device_id_is_authority_too() {
+        let doc = document(json!([{
+            "id": "#device",
+            "type": "Multikey",
+            "controller": WEB_DID,
+            "publicKeyMultibase": "zDevice"
+        }]));
         assert_eq!(key(&doc).ok().as_deref(), Some("did:key:zDevice"));
     }
 
