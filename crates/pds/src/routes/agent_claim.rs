@@ -46,23 +46,21 @@ use axum::{
     response::{IntoResponse, Response},
     Json,
 };
-use chrono::{Duration, SecondsFormat, Utc};
+use chrono::{SecondsFormat, Utc};
 use serde::{Deserialize, Serialize};
 
 use crate::agent_child_core::{mint_child_account, ChildRegistration};
 use crate::app::AppState;
 use crate::auth::agent_assertion::{
-    mint_identity_assertion, new_claim_attempt_id, parse_sqlite_datetime, record_agent_audit,
-    scopes_to_json, to_sqlite_datetime, verification_uri, AgentAuthError, POLL_INTERVAL_SECS,
+    mint_identity_assertion, parse_sqlite_datetime, scopes_to_json, start_claim_attempt,
+    to_sqlite_datetime, verification_uri, AgentAuthError, POLL_INTERVAL_SECS,
 };
 use crate::auth::guards::{authenticate_account_owner, OwnerAuthError};
 use crate::auth::oauth_scopes::intersect_scope_tokens;
-use crate::code_gen::generate_code;
 use crate::db::agent_auth::{
     claim_agent_identity, complete_agent_claim_attempt, get_agent_claim_attempt_by_user_code,
-    get_agent_identity, get_agent_identity_by_claim_token, insert_agent_claim_attempt,
-    latest_agent_claim_attempt_for_identity, AgentIdentityStatus, ClaimAttemptStatus,
-    NewAgentClaimAttempt,
+    get_agent_identity, get_agent_identity_by_claim_token, latest_agent_claim_attempt_for_identity,
+    AgentIdentityStatus, ClaimAttemptStatus,
 };
 
 // ── POST /agent/identity/claim (initiate) ─────────────────────────────────────
@@ -177,27 +175,12 @@ async fn initiate(
                 parse_sqlite_datetime(&attempt.user_code_expires_at),
             ),
             _ => {
-                let attempt_id = new_claim_attempt_id();
-                let user_code = generate_code();
-                let expiry = Utc::now()
-                    + Duration::seconds(state.config.agent_auth.user_code_ttl_secs as i64);
-                insert_agent_claim_attempt(
+                let started = start_claim_attempt(
                     &state.db,
-                    &NewAgentClaimAttempt {
-                        id: &attempt_id,
-                        identity_id: &identity.id,
-                        user_code: &user_code,
-                        user_code_expires_at: &to_sqlite_datetime(&expiry),
-                        email: req.email.as_deref().or(identity.email.as_deref()),
-                    },
-                )
-                .await?;
-                record_agent_audit(
-                    &state.db,
+                    &state.config.agent_auth,
                     &identity.id,
                     identity.did.as_deref(),
-                    crate::db::agent_audit::AgentAuditEventType::ClaimInitiated,
-                    serde_json::json!({ "claim_attempt_id": attempt_id }),
+                    req.email.as_deref().or(identity.email.as_deref()),
                 )
                 .await?;
 
@@ -222,12 +205,12 @@ async fn initiate(
                         // The app deep-links straight to the confirm screen; the user_code is
                         // deliberately absent — it is the credential the human types, and a
                         // notification payload is not where it belongs.
-                        .with_data(serde_json::json!({ "claimAttemptId": attempt_id })),
+                        .with_data(serde_json::json!({ "claimAttemptId": started.attempt_id })),
                     )
                     .await;
                 }
 
-                (attempt_id, user_code, expiry)
+                (started.attempt_id, started.user_code, started.expires)
             }
         };
 

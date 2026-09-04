@@ -43,6 +43,7 @@ src/
   repo_rev.rs      — shared `read_repo_rev`, homed beside `record_write.rs` so the public sync endpoints share it without a route-to-route import
   time.rs          — shared epoch/RFC-3339 time helpers; the variants differ on return type + pre-epoch handling — pick by call-site contract (module doc)
   account_delete.rs— shared permanent account-deletion transaction (FK-ordered child tables, blob-file reclamation, `#account` deleted frame), used by deleteAccount and the reaper — see module doc
+  account_genesis.rs— the steps the two account-genesis transactions (`create_did.rs`, `create_account_xrpc.rs`) share: the `accounts` row, the genesis blocks + staged `#commit`/`#sync`, and the post-commit announce. Deliberately not one merged promotion — the module doc says what differs around it
   account_reaper.rs— periodic sweep permanently deleting deactivated accounts past `deleteAfter` (template: firehose_gc.rs)
   agent_claim_sweep.rs— periodic sweep flipping lapsed agent claim attempts to `expired` (template: account_reaper.rs) — see module doc
   agent_child_core.rs— the verify → provision → publish → finalize core behind sovereign child accounts, shared by every route that provisions one; resumable rather than atomic, because the plc.directory publish can't join a SQLite transaction — see module doc

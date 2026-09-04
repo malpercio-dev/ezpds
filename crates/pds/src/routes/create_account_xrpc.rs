@@ -32,6 +32,9 @@ use serde::{Deserialize, Serialize};
 
 use common::{ApiError, ApiResultExt, ErrorCode};
 
+use crate::account_genesis::{
+    announce_active_account, insert_account_row, stage_genesis_repo, GenesisRepo, NewAccountRow,
+};
 use crate::app::AppState;
 use crate::auth::password::{hash_password, resolve_password};
 use crate::auth::service_auth::verify_service_auth_resolving_key;
@@ -312,26 +315,18 @@ async fn promote_new_account(
     // Redeem the invite code first: a bad code rolls the whole transaction back before any work.
     redeem_invite_code(&mut tx, state, p.invite_code).await?;
 
-    sqlx::query(
-        "INSERT INTO accounts \
-         (did, email, password_hash, repo_root_cid, repo_rev, created_at, updated_at) \
-         VALUES (?, ?, ?, ?, ?, datetime('now'), datetime('now'))",
+    insert_account_row(
+        &mut tx,
+        &NewAccountRow {
+            did: p.did,
+            email: p.email,
+            password_hash: p.password_hash,
+            repo_root_cid: p.genesis_root,
+            repo_rev: p.genesis_rev,
+        },
+        "account already exists",
     )
-    .bind(p.did)
-    .bind(p.email)
-    .bind(p.password_hash)
-    .bind(p.genesis_root)
-    .bind(p.genesis_rev)
-    .execute(&mut *tx)
-    .await
-    .map_err(|e| {
-        tracing::error!(error = %e, "failed to insert account");
-        if is_unique_violation(&e) {
-            ApiError::new(ErrorCode::DidAlreadyExists, "account already exists")
-        } else {
-            ApiError::new(ErrorCode::InternalError, "failed to create account")
-        }
-    })?;
+    .await?;
 
     upsert_did_document(&mut *tx, p.did, p.did_document).await?;
     insert_handle(&mut tx, p.handle, p.did).await?;
@@ -341,49 +336,19 @@ async fn promote_new_account(
         .inspect_err(|e| tracing::error!(error = %e, "failed to insert repo signing key"))
         .map_err(|_| ApiError::new(ErrorCode::InternalError, "failed to store signing key"))?;
 
-    for (cid, bytes) in p.genesis_blocks {
-        let cid = cid.to_string();
-        crate::db::blocks::put_block_with_rev(
-            &mut tx,
-            &cid,
-            p.did,
-            bytes.as_slice(),
-            Some(p.genesis_rev),
-        )
-        .await
-        .inspect_err(|e| tracing::error!(error = %e, "failed to insert genesis block"))
-        .map_err(|_| ApiError::new(ErrorCode::InternalError, "failed to store genesis repo"))?;
-    }
-
-    // Stage the genesis `#commit` and a chained Sync v1.1 `#sync` head assertion in this same
-    // transaction, so a fresh host self-announces to the relay atomically with the repo it describes.
-    let pending_commit = emit_guard
-        .stage_commit(
-            &mut tx,
-            crate::firehose::CommitInput {
-                repo: p.did.to_string(),
-                commit: p.genesis_root.to_string(),
-                rev: p.genesis_rev.to_string(),
-                since: None,
-                prev_data: None,
-                ops: Vec::new(),
-                blocks: p.genesis_car,
-            },
-        )
-        .await
-        .inspect_err(|e| tracing::error!(error = %e, did = %p.did, "failed to stage genesis firehose commit event"))
-        .map_err(|_| ApiError::new(ErrorCode::InternalError, "failed to sequence genesis repo"))?
-        .stage_sync(
-            &mut tx,
-            crate::firehose::SyncInput {
-                did: p.did.to_string(),
-                rev: p.genesis_rev.to_string(),
-                blocks: p.genesis_sync_car,
-            },
-        )
-        .await
-        .inspect_err(|e| tracing::error!(error = %e, did = %p.did, "failed to stage genesis firehose sync event"))
-        .map_err(|_| ApiError::new(ErrorCode::InternalError, "failed to sequence genesis repo"))?;
+    let pending_commit = stage_genesis_repo(
+        &mut tx,
+        emit_guard,
+        GenesisRepo {
+            did: p.did,
+            root: p.genesis_root,
+            rev: p.genesis_rev,
+            blocks: p.genesis_blocks,
+            car: p.genesis_car,
+            sync_car: p.genesis_sync_car,
+        },
+    )
+    .await?;
 
     let session =
         issue_session_in_transaction(&mut tx, state, p.did, &SessionKind::FullAccess).await?;
@@ -393,16 +358,7 @@ async fn promote_new_account(
         .inspect_err(|e| tracing::error!(error = %e, "failed to commit createAccount transaction"))
         .map_err(|_| ApiError::new(ErrorCode::InternalError, "failed to commit transaction"))?;
 
-    pending_commit.finish();
-
-    if let Err(e) = state
-        .firehose
-        .emit_account(p.did.to_string(), true, None)
-        .await
-    {
-        tracing::warn!(error = %e, did = %p.did, "failed to sequence #account firehose event after account creation (non-fatal)");
-    }
-    state.crawlers.notify();
+    announce_active_account(state, pending_commit, p.did).await;
 
     Ok(session)
 }

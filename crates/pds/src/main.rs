@@ -6,6 +6,7 @@ use reqwest::Client;
 use std::{path::PathBuf, sync::Arc};
 
 mod account_delete;
+mod account_genesis;
 mod account_reaper;
 mod admin_nonce_sweep;
 mod agent_child_core;

@@ -31,7 +31,7 @@ use crate::auth::guards::{require_admin, require_admin_json};
 use crate::code_gen::generate_code;
 use crate::db::admin_audit::{record_admin_audit_event, AdminAuditAction};
 use crate::db::claim_codes::{list_claim_codes, revoke_claim_code, RevokeClaimCodeOutcome};
-use crate::db::is_unique_violation;
+use crate::db::insert_with_retry_on_collision;
 
 const MAX_COUNT: u32 = 10;
 const MAX_LIST_LIMIT: u32 = 200;
@@ -102,30 +102,34 @@ async fn claim_codes_inner(
     }
 
     // --- Generate unique codes and insert in a single transaction ---
-    // Attempt up to 3 times total (2 retries) on the rare event of a uniqueness
-    // conflict with an existing DB row (probability ≈ existing_codes / 36^6 per code).
-    for attempt in 0..3_usize {
-        let codes = generate_unique_codes(payload.count as usize);
-        match insert_claim_codes(&state.db, actor, &codes, payload.expires_in_hours).await {
-            Ok(()) => return Ok(Json(ClaimCodesResponse { codes })),
-            Err(e) if is_unique_violation(&e) => {
-                tracing::warn!(attempt, "claim code uniqueness conflict; retrying");
-                continue;
-            }
-            Err(e) => {
-                return Err(ApiError::internal_as(
-                    e,
-                    "failed to insert claim codes",
-                    "failed to store claim codes",
-                ));
-            }
+    // A conflict with an existing DB row has probability ≈ existing_codes / 36^6 per code.
+    let db = &state.db;
+    let count = payload.count as usize;
+    let expires_in_hours = payload.expires_in_hours;
+    let codes = insert_with_retry_on_collision("claim code", || {
+        let codes = generate_unique_codes(count);
+        async move {
+            insert_claim_codes(db, actor, &codes, expires_in_hours)
+                .await
+                .map(|()| codes)
         }
-    }
+    })
+    .await
+    .map_err(|e| {
+        ApiError::internal_as(
+            e,
+            "failed to insert claim codes",
+            "failed to store claim codes",
+        )
+    })?
+    .ok_or_else(|| {
+        ApiError::new(
+            ErrorCode::InternalError,
+            "failed to generate unique claim codes after retries",
+        )
+    })?;
 
-    Err(ApiError::new(
-        ErrorCode::InternalError,
-        "failed to generate unique claim codes after retries",
-    ))
+    Ok(Json(ClaimCodesResponse { codes }))
 }
 
 // ── Inventory: list + revoke ──────────────────────────────────────────────────

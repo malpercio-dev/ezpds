@@ -210,6 +210,37 @@ pub fn unique_violation_column<'a>(e: &'a sqlx::Error, table: &str) -> Option<&'
     None
 }
 
+/// Insert a freshly generated value, regenerating and retrying on a UNIQUE-constraint
+/// collision. `Ok(None)` means every attempt collided — the caller decides what a run of bad
+/// luck that long means for its endpoint.
+///
+/// The cap is deliberately small: every generator reaching here draws from a keyspace where a
+/// conflict is astronomically unlikely, so the loop absorbs a freak collision rather than
+/// papering over a generator that is too narrow. `generated` names the value in the warning.
+pub async fn insert_with_retry_on_collision<T, F, Fut>(
+    generated: &'static str,
+    mut insert: F,
+) -> Result<Option<T>, sqlx::Error>
+where
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = Result<T, sqlx::Error>>,
+{
+    for attempt in 0..3_usize {
+        match insert().await {
+            Ok(value) => return Ok(Some(value)),
+            Err(e) if is_unique_violation(&e) => {
+                tracing::warn!(
+                    attempt,
+                    generated,
+                    "collision on a generated value; retrying"
+                );
+            }
+            Err(e) => return Err(e),
+        }
+    }
+    Ok(None)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

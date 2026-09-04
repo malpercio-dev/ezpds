@@ -40,7 +40,7 @@ use crate::db::admin_devices::{
     consume_pairing_code, get_device, get_pairing_code, insert_device, insert_pairing_code,
     list_devices, revoke_device, AdminDeviceRow, NewAdminDevice,
 };
-use crate::db::is_unique_violation;
+use crate::db::insert_with_retry_on_collision;
 use crate::time::to_rfc3339_utc;
 
 /// Default pairing-code lifetime: long enough to scan a QR, short enough that an
@@ -91,49 +91,52 @@ pub async fn mint_pairing_code(
         ));
     }
 
-    // Retry on the rare event of a uniqueness collision with an existing code.
-    for attempt in 0..3_usize {
+    let db = &state.db;
+    let ttl_minutes = payload.expires_in_minutes;
+    let minted = insert_with_retry_on_collision("pairing code", || {
         let code = generate_pairing_code();
-        match insert_pairing_code(&state.db, &code, payload.expires_in_minutes).await {
-            Ok(expires_at) => {
-                // Audit the mint — but never the code itself (it is a live enrollment
-                // bearer secret; the expiry is the useful mechanical fact).
-                let detail = serde_json::json!({
-                    "expiresInMinutes": payload.expires_in_minutes,
-                })
-                .to_string();
-                record_admin_audit_event(
-                    &state.db,
-                    AdminActor::MasterToken.as_log_str().as_ref(),
-                    AdminAuditAction::PairingCodeMinted,
-                    None,
-                    "ok",
-                    Some(&detail),
-                )
-                .await?;
-                return Ok(Json(PairingCodeResponse {
-                    pairing_code: code,
-                    expires_at: to_rfc3339_utc(&expires_at),
-                }));
-            }
-            Err(e) if is_unique_violation(&e) => {
-                tracing::warn!(attempt, "pairing code collision; retrying");
-                continue;
-            }
-            Err(e) => {
-                return Err(ApiError::internal_as(
-                    e,
-                    "failed to insert pairing code",
-                    "failed to store pairing code",
-                ));
-            }
+        async move {
+            insert_pairing_code(db, &code, ttl_minutes)
+                .await
+                .map(|expires_at| (code, expires_at))
         }
-    }
+    })
+    .await
+    .map_err(|e| {
+        ApiError::internal_as(
+            e,
+            "failed to insert pairing code",
+            "failed to store pairing code",
+        )
+    })?;
 
-    Err(ApiError::new(
-        ErrorCode::InternalError,
-        "failed to generate a unique pairing code after retries",
-    ))
+    let Some((code, expires_at)) = minted else {
+        return Err(ApiError::new(
+            ErrorCode::InternalError,
+            "failed to generate a unique pairing code after retries",
+        ));
+    };
+
+    // Audit the mint — but never the code itself (it is a live enrollment
+    // bearer secret; the expiry is the useful mechanical fact).
+    let detail = serde_json::json!({
+        "expiresInMinutes": payload.expires_in_minutes,
+    })
+    .to_string();
+    record_admin_audit_event(
+        &state.db,
+        AdminActor::MasterToken.as_log_str().as_ref(),
+        AdminAuditAction::PairingCodeMinted,
+        None,
+        "ok",
+        Some(&detail),
+    )
+    .await?;
+
+    Ok(Json(PairingCodeResponse {
+        pairing_code: code,
+        expires_at: to_rfc3339_utc(&expires_at),
+    }))
 }
 
 /// A 128-bit random pairing code, base64url-no-pad (22 chars). Strong enough to be
