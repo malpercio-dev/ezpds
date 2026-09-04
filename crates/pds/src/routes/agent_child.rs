@@ -527,7 +527,7 @@ mod tests {
 
     /// Minting a child emits an `#identity` firehose frame carrying the child's handle, so relays
     /// and AppViews learn the new DID's handle binding immediately — without it, every app shows
-    /// the child as an invalid handle until an unrelated event forces a resolution (MM-551).
+    /// the child as an invalid handle until an unrelated event forces a resolution.
     #[tokio::test]
     async fn minting_a_child_emits_an_identity_frame_with_the_handle() {
         let (state, _plc) = state_with_plc().await;
