@@ -10,8 +10,7 @@ import type { SelfHeldKitPreview, SelfHeldKitResult } from '$lib/ipc';
  *    claimed tail shifted down intact (AC1);
  *  - the ceremony hands the user BOTH Shares 2 and 3, and the staging slot survives until an
  *    explicit confirmation (AC2);
- *  - the flow steps aside on an escrow-capable host, leaving `rekey.rs`'s path untouched (AC4);
- *  - the upsell seam is silent until the identity actually lands on an escrow host.
+ *  - the flow steps aside on an escrow-capable host, leaving `rekey.rs`'s path untouched (AC4).
  */
 describe('wallet harness self-held Shamir kit (MM-456)', () => {
   it('installs the recovery key at [1] and shifts the claimed tail down intact (AC1)', () => {
@@ -104,30 +103,6 @@ describe('wallet harness self-held Shamir kit (MM-456)', () => {
 
     expect(() => registry.build_self_held_kit_cmd({ did })).toThrow(
       expect.objectContaining({ code: 'WALLET_NOT_AUTHORIZED' })
-    );
-  });
-
-  it('keeps the escrow upsell silent until the identity is actually on an escrow host', () => {
-    // Right after a kit completes, the host by definition offers no escrow — offering the
-    // upgrade here would be a nag with nothing behind it.
-    const fresh = scenarios['self-held-kit']();
-    const freshRegistry = buildRegistry(fresh);
-    const freshDid = fresh.identities[0].did;
-    freshRegistry.build_self_held_kit_cmd({ did: freshDid });
-    freshRegistry.submit_self_held_kit_cmd({ did: freshDid });
-    expect(freshRegistry.self_held_kit_escrow_offer_cmd({ did: freshDid })).toBe(false);
-
-    // Only once the identity is hosted somewhere that advertises escrow does the seam open.
-    const moved = scenarios['self-held-kit-escrow-host']();
-    const movedRegistry = buildRegistry(moved);
-    expect(movedRegistry.self_held_kit_escrow_offer_cmd({ did: moved.identities[0].did })).toBe(
-      true
-    );
-
-    // And an identity that never had a kit is never offered it, escrow host or not.
-    moved.identities[0].selfHeldKitInstalled = false;
-    expect(movedRegistry.self_held_kit_escrow_offer_cmd({ did: moved.identities[0].did })).toBe(
-      false
     );
   });
 });

@@ -45,16 +45,6 @@ export type RepoBackupRunReport = {
   lastBackupAt: string;
 };
 
-/** The validated, re-exported snapshot handed to a caller to import. */
-export type RepoExport = {
-  rootCid: string;
-  rev: string;
-  sizeBytes: number;
-  lastBackupAt: string | null;
-  /** The full CARv1 snapshot, base64 (standard alphabet) encoded. */
-  carBase64: string;
-};
-
 /**
  * Error returned by the repo-backup commands.
  * Matches `RepoBackupError` in `repo_backup.rs`
@@ -101,12 +91,3 @@ export const setRepoBackupEnabled = (did: string, enabled: boolean): Promise<Rep
  */
 export const runRepoBackup = (did: string): Promise<RepoBackupRunReport> =>
   invoke('run_repo_backup', { did });
-
-/**
- * Read + re-validate the stored snapshot and return its bytes (base64) + metadata for
- * a caller to import. Reads local disk only — no session, no network. (A repo import
- * requires a *deactivated* account, so there is no "push my repo back to my live PDS"
- * button; a restore flows through the existing import/migration machinery.)
- */
-export const exportRepoBackup = (did: string): Promise<RepoExport> =>
-  invoke('export_repo_backup', { did });

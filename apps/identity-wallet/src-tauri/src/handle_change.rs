@@ -50,7 +50,10 @@
 //! Pure helpers: `guard_handle_change`, `latest_full_state` (full current state incl.
 //! verificationMethods + services maps), `compute_new_also_known_as` (new
 //! `at://{handle}` primary, prior `at://` handles dropped, non-handle aliases
-//! preserved), `classify_update_handle_error`. `HandleChangeError`
+//! preserved), `classify_update_handle_error`. `fetch_current_state` (fetch → parse →
+//! `latest_full_state`, generic over the caller's error type) is `pub(crate)` because
+//! `rekey.rs`, `self_held_kit.rs`, and `share_recovery.rs` share it rather than each
+//! re-rolling the same three-step read of the audit log. `HandleChangeError`
 //! (WALLET_NOT_AUTHORIZED, SESSION_LOCKED, RATE_LIMITED, HANDLE_NOT_AVAILABLE,
 //! INVALID_HANDLE, UPDATE_HANDLE_FAILED, GUARD_REJECTED, INVALID_AUDIT_LOG,
 //! SIGNING_FAILED, PLC_DIRECTORY_ERROR, SERVER_ERROR, NETWORK_ERROR,
@@ -326,6 +329,24 @@ pub(crate) fn latest_full_state(
         also_known_as,
         services,
     })
+}
+
+/// Fetch the DID's current full state from the authoritative plc.directory audit log:
+/// fetch → parse → [`latest_full_state`]. Generic over the caller's error type so each of
+/// `rekey.rs`, `self_held_kit.rs`, and `share_recovery.rs` can keep mapping failures to its
+/// own `*Error::InvalidAuditLog { message }` variant — `fetch_err` maps a transport/PLC
+/// failure (the caller's own rate-limit/XRPC/unauthorized classification), `invalid_audit_log`
+/// wraps a parse or shape failure.
+pub(crate) async fn fetch_current_state<E>(
+    pds_client: &PdsClient,
+    did: &str,
+    fetch_err: impl FnOnce(PdsClientError) -> E,
+    invalid_audit_log: impl Fn(String) -> E,
+) -> Result<CurrentHandleState, E> {
+    let log_json = pds_client.fetch_audit_log(did).await.map_err(fetch_err)?;
+    let audit_log = crypto::parse_audit_log(&log_json)
+        .map_err(|e| invalid_audit_log(format!("failed to parse audit log: {e}")))?;
+    latest_full_state(&audit_log).map_err(|e| invalid_audit_log(e.to_string()))
 }
 
 /// Parse a required string-array field, rejecting a missing field, a non-array value,

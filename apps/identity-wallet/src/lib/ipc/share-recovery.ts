@@ -111,10 +111,6 @@ export const startShareRecovery = (identifier: string): Promise<RecoveryTarget> 
 export const addRecoveryShare = (share: string): Promise<CollectedShare> =>
   invoke('add_recovery_share', { share });
 
-/** Drop a collected share (user correction). Returns the remaining collection. */
-export const removeRecoveryShare = (index: number): Promise<CollectedShare[]> =>
-  invoke('remove_recovery_share', { index });
-
 /**
  * Ask the account's PDS to email an escrow-release code. Always succeeds for any
  * identifier (the server never reveals whether an account exists).

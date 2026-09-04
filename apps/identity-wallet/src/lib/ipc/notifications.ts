@@ -5,16 +5,15 @@ import type { UnlockReason } from './identity';
 //
 // The wallet registers a per-device P-256 key with each identity's Custos, which seals every
 // push payload to it; a Notification Service Extension decrypts on arrival. Nothing here
-// decrypts — these wrappers cover the two calls that keep the arrangement working: registering
-// the device, and re-pinning the instance's sender keys.
+// decrypts — these wrappers cover the calls that keep the arrangement working.
 //
-// Re-pinning is the load-bearing one. A sender key the operator revokes stops being trusted on
-// this device at its next contact with that Custos and not before, so `refreshNotificationSenderKeys`
-// belongs on every successful contact — it is a security property with a cadence, not a cache
-// refresh.
+// Registration is also the re-pin: a sender key the operator revokes stops being trusted on this
+// device at its next contact with that Custos and not before, so the Rust command re-pins on
+// every successful `registerForNotifications` call (each onboarding completion + once per app
+// open per identity) — a security property with a cadence, not a cache refresh.
 //
-// Neither call is biometric-gated: no identity material is signed or exposed, and a prompt on
-// the onboarding completion path would be a demand the user cannot connect to anything they did.
+// Not biometric-gated: no identity material is signed or exposed, and a prompt on the onboarding
+// completion path would be a demand the user cannot connect to anything they did.
 
 /** What a registration attempt actually did. */
 export type RegistrationStatus =
@@ -46,20 +45,6 @@ export type SenderKey = {
   kid: number;
   /** The P-256 `did:key` to verify the seal against. */
   publicKey: string;
-};
-
-/** The outcome of a re-pin. */
-export type SenderKeyPinning = {
-  /** The hosting server whose set was fetched (normalized). */
-  host: string;
-  /**
-   * True when the server answered and the stored set was replaced wholesale — which is how a
-   * revoked key stops being trusted. False when the host serves no notification routes, in which
-   * case the stored set was left exactly as it was.
-   */
-  pinned: boolean;
-  /** The set now pinned for this host. */
-  keys: SenderKey[];
 };
 
 /**
@@ -136,17 +121,6 @@ export type NotificationsError =
  */
 export async function registerForNotifications(did: string): Promise<RegistrationOutcome> {
   return invoke<RegistrationOutcome>('register_for_notifications', { did });
-}
-
-/**
- * Re-fetch and re-pin the identity's host's sender-key set.
- *
- * Call on every successful contact with a Custos. That cadence is the design's
- * compromise-window property: until a device re-pins, a compromised sender key plus a colluding
- * relay can forge notification content for it.
- */
-export async function refreshNotificationSenderKeys(did: string): Promise<SenderKeyPinning> {
-  return invoke<SenderKeyPinning>('refresh_notification_sender_keys', { did });
 }
 
 /** What this device holds. Read-only, no network, no identity needed. */

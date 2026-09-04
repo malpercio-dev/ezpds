@@ -7,7 +7,7 @@
 //! (`importRepo` / the migration `transfer_repo` leg consume exactly these bytes), so the
 //! file is the export.
 //!
-//! Four Tauri IPC commands + one `pub(crate)` helper:
+//! Three Tauri IPC commands + one `pub(crate)` helper:
 //!
 //! - `get_repo_backup_status(did)` — location + opt-in flag + snapshot size/rev
 //! - `set_repo_backup_enabled(did, bool)` — the explicit opt-in toggle (per-DID Keychain flag
@@ -16,9 +16,6 @@
 //!   validate → atomic temp-file+rename write of `repo/{sanitized-did}.car` + its manifest
 //!   `repo/{sanitized-did}.json` (`rootCid, rev, sizeBytes, lastBackupAt`). Idempotent: an
 //!   unchanged `rev` short-circuits the CAR rewrite and only advances the timestamp
-//! - `export_repo_backup(did)` — read + re-validate the stored CAR, hand out the bytes
-//!   (base64) + metadata. Deliberately no "push to my live PDS" button: `importRepo` needs a
-//!   *deactivated* account, so restore flows through the migration machinery
 //! - `mirror_repo_car` — fail-closed re-validating mirror read, the repo twin of
 //!   `blob_backup::mirror_fallback_blob`; consumed by `migration_orchestrator::transfer_repo`
 //!   (source-`getRepo`-failure fallback) and `disaster_recovery::recovery_transfer_repo`
@@ -46,8 +43,6 @@ use std::io::Cursor;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock};
 
-use base64::engine::general_purpose::STANDARD as BASE64;
-use base64::Engine;
 use cid::{Cid, Version};
 use ipld_core::ipld::Ipld;
 use serde::{Deserialize, Serialize};
@@ -219,20 +214,6 @@ pub struct RepoBackupRunReport {
     /// (the idempotent no-op re-backup); the manifest timestamp still advances.
     pub updated: bool,
     pub last_backup_at: String,
-}
-
-/// The validated, re-exported snapshot handed to a caller for import (diagnostics, a future
-/// disaster-recovery flow, or an "export my repo to a file" affordance). The CAR is base64 so it
-/// crosses the IPC boundary as a compact string rather than a multi-MB JSON number array.
-#[derive(Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct RepoExport {
-    pub root_cid: String,
-    pub rev: String,
-    pub size_bytes: u64,
-    pub last_backup_at: Option<String>,
-    /// The full CARv1 snapshot, base64 (standard alphabet) encoded.
-    pub car_base64: String,
 }
 
 // ── CAR validation (Functional Core) ─────────────────────────────────────────
@@ -669,37 +650,6 @@ pub(crate) async fn run_backup_core(
     })
 }
 
-/// Read the stored CAR, **re-validate** it, and return its bytes (base64) + manifest metadata for a
-/// caller to import. Re-validation guarantees a caller never imports a snapshot that rotted on disk.
-async fn export_core(root: &Path, did: &str) -> Result<RepoExport, RepoBackupError> {
-    let lock = repo_lock(did);
-    let _guard = lock.lock().await;
-
-    let manifest =
-        load_manifest(root, did)
-            .await?
-            .ok_or_else(|| RepoBackupError::StorageError {
-                message: "no repo snapshot has been backed up for this identity yet".to_string(),
-            })?;
-    let bytes = match tokio::fs::read(car_path(root, did)).await {
-        Ok(bytes) => bytes,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-            return Err(RepoBackupError::StorageError {
-                message: "the repo snapshot file is missing — run a backup again".to_string(),
-            })
-        }
-        Err(e) => return Err(storage_error("failed to read repo snapshot", e)),
-    };
-    let validated = validate_repo_car(&bytes, did)?;
-    Ok(RepoExport {
-        root_cid: validated.root_cid,
-        rev: validated.rev,
-        size_bytes: bytes.len() as u64,
-        last_backup_at: manifest.last_backup_at,
-        car_base64: BASE64.encode(&bytes),
-    })
-}
-
 /// Migration-transfer fallback: read the DID's snapshot from the local mirror when the source PDS
 /// can't serve `getRepo`, but only if it is trustworthy. The CAR must be locally readable and must
 /// re-validate against `did` (single root, signed commit bound to the DID, intact MST, every block
@@ -807,17 +757,6 @@ pub async fn run_repo_backup(
     did: String,
 ) -> Result<RepoBackupRunReport, RepoBackupError> {
     run_backup_for_did(&app, &did).await
-}
-
-/// Tauri command: read + re-validate the stored snapshot and return its bytes (base64) + metadata
-/// for a caller to import. Reads local disk only — no session, no network.
-#[tauri::command]
-pub async fn export_repo_backup(
-    app: tauri::AppHandle,
-    did: String,
-) -> Result<RepoExport, RepoBackupError> {
-    let (root, _location) = resolve_backup_root(&app).ok_or(RepoBackupError::BackupUnavailable)?;
-    export_core(&root, &did).await
 }
 
 // ── Tests ────────────────────────────────────────────────────────────────────
@@ -1233,33 +1172,7 @@ mod tests {
         assert_eq!(manifest.root_cid, good_root);
     }
 
-    // ── Export + mirror fallback ──────────────────────────────────────────────
-
-    #[tokio::test]
-    async fn export_returns_revalidated_bytes_and_metadata() {
-        let did = "did:plc:export";
-        let (car, root, rev) = valid_empty_repo(did, "3lkkkkkkk2az");
-        let server = MockServer::start_async().await;
-        mock_get_repo(&server, &car);
-        let dir = tempfile::tempdir().unwrap();
-        let client = PdsClient::new();
-        run_backup_core(&client, dir.path(), did, &server.base_url())
-            .await
-            .unwrap();
-
-        let export = export_core(dir.path(), did).await.unwrap();
-        assert_eq!(export.root_cid, root);
-        assert_eq!(export.rev, rev);
-        assert_eq!(export.size_bytes, car.len() as u64);
-        assert_eq!(BASE64.decode(export.car_base64).unwrap(), car);
-    }
-
-    #[tokio::test]
-    async fn export_without_a_backup_is_a_storage_error() {
-        let dir = tempfile::tempdir().unwrap();
-        let err = export_core(dir.path(), "did:plc:none").await.unwrap_err();
-        assert!(matches!(err, RepoBackupError::StorageError { .. }));
-    }
+    // ── Mirror fallback ────────────────────────────────────────────────────────
 
     #[tokio::test]
     async fn mirror_repo_car_returns_a_valid_snapshot_and_none_otherwise() {

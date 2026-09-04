@@ -10,7 +10,6 @@
 //!   cadence (each onboarding flow's completion + once per app open per identity,
 //!   fire-and-forget in `+page.svelte`'s `syncNotifications`) is a security property: until a
 //!   device re-pins, a compromised sender key plus a colluding relay can forge content for it
-//! - `refresh_notification_sender_keys(did)` — GET `/v1/notifications/sender-keys`, the re-pin
 //! - `get_notification_diagnostics()` — a no-network, no-identity read of what the device holds
 //! - `clear_notification_failures()` — acknowledge the extension's breadcrumbs
 //!
@@ -795,22 +794,10 @@ pub(crate) async fn re_register_every_identity(apns_topic: &str, pds_client: &Pd
     }
 }
 
-/// Tauri command: re-fetch and re-pin the identity's host's sender-key set.
-///
-/// The frontend calls this on every successful contact with a Custos. That cadence is the
-/// design's compromise-window property, not housekeeping: a sender key the operator revokes
-/// stops being trusted on this device at the next contact, and nothing shorter than that is
-/// available without a channel the relay could interfere with.
-#[tauri::command]
-pub async fn refresh_notification_sender_keys(
-    state: tauri::State<'_, crate::oauth::AppState>,
-    did: String,
-) -> Result<SenderKeyPinning, NotificationsError> {
-    let session = full_access_session(state.pds_client(), &did).await?;
-    pin_sender_keys(&session.client, &session.pds_url).await
-}
-
-/// Fetch and store one host's set. Shared by the re-pin command and the registration path.
+/// Fetch and store one host's set. The re-pin cadence lives on `register_identity`, which calls
+/// this on every successful contact — a sender key the operator revokes stops being trusted on
+/// this device at its next contact, which is what makes the cadence a security property rather
+/// than housekeeping.
 async fn pin_sender_keys(
     client: &OAuthClient,
     pds_url: &str,

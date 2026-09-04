@@ -11,7 +11,6 @@
  * helper kept here, in `./errors`, because it is used to narrow the errors these commands reject with.
  */
 export * from './account';
-export * from './oauth';
 export * from './appearance';
 export * from './diagnostics';
 export * from './claim';

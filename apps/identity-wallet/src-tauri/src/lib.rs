@@ -35,6 +35,7 @@ pub mod agents;
 #[cfg(target_os = "ios")]
 pub mod apns;
 pub mod app_passwords;
+pub mod base64url;
 pub mod bg_backup;
 pub mod blob_backup;
 pub mod claim;
@@ -1846,8 +1847,6 @@ pub fn run() {
             get_appearance_preference,
             set_appearance_preference,
             diagnostics::export_diagnostics,
-            oauth::prepare_oauth_flow,
-            oauth::complete_oauth_flow,
             claim::resolve_identity,
             claim::authenticate_source_pds,
             claim::request_claim_verification,
@@ -1878,11 +1877,9 @@ pub fn run() {
             repo_backup::get_repo_backup_status,
             repo_backup::set_repo_backup_enabled,
             repo_backup::run_repo_backup,
-            repo_backup::export_repo_backup,
             bg_backup::get_background_backup_settings,
             bg_backup::set_background_backup_settings,
             notifications::register_for_notifications,
-            notifications::refresh_notification_sender_keys,
             notifications::get_notification_diagnostics,
             notifications::clear_notification_failures,
             notification_routes::take_pending_notification_route,
@@ -1899,7 +1896,6 @@ pub fn run() {
             self_held_kit::submit_self_held_kit_cmd,
             self_held_kit::confirm_self_held_kit_cmd,
             self_held_kit::self_held_kit_in_progress_cmd,
-            self_held_kit::self_held_kit_escrow_offer_cmd,
             recovery::submit_recovery_override_cmd,
             identity_removal::get_identity_removal_route,
             identity_removal::request_identity_removal,
@@ -1936,7 +1932,6 @@ pub fn run() {
             endpoint_repair::repair_hosting_endpoint,
             share_recovery::start_share_recovery,
             share_recovery::add_recovery_share,
-            share_recovery::remove_recovery_share,
             share_recovery::initiate_escrow_release,
             share_recovery::request_escrow_release,
             share_recovery::verify_recovery_shares,

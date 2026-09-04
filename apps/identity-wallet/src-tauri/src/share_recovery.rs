@@ -1,6 +1,6 @@
 // pattern: Imperative Shell
 
-//! The "Recover existing identity" ceremony (10 Tauri IPC commands) — the consuming
+//! The "Recover existing identity" ceremony (9 Tauri IPC commands) — the consuming
 //! inverse of `share_ceremony.rs`. Two shares of the 2-of-3 split reconstruct the
 //! recovery seed; the seed re-derives the recovery rotation key (`rotationKeys[1]` in
 //! the `[device, recovery, PDS]` layout); that key signs a PLC rotation op installing a
@@ -16,9 +16,9 @@
 //! Command spine: `start_share_recovery` (resolve handle/did:plc via plc.directory,
 //! then auto-load Share 1 — synchronizable per-DID slot, then device-local per-DID,
 //! then the legacy global slot, each tier validated independently so a damaged higher
-//! tier cannot shadow a good lower one) → `add_recovery_share`/`remove_recovery_share`
-//! (base32 or word-phrase entry; `SHARE_CHECKSUM`, `SHARE_SET_MISMATCH` — carrying
-//! both set_ids — and `DUPLICATE_SHARE` are distinct, pre-combine errors) →
+//! tier cannot shadow a good lower one) → `add_recovery_share` (base32 or word-phrase
+//! entry; `SHARE_CHECKSUM`, `SHARE_SET_MISMATCH` — carrying both set_ids — and
+//! `DUPLICATE_SHARE` are distinct, pre-combine errors) →
 //! `verify_recovery_shares` (combine → derive → compare against the **authoritative
 //! plc.directory audit log**, never a cached DID document — the PLC-native shape is
 //! the only one carrying `rotationKeys` — so `SHARES_DO_NOT_MATCH_IDENTITY` surfaces
@@ -55,7 +55,7 @@ use rand_core::{OsRng, RngCore};
 use serde::{Deserialize, Serialize};
 use zeroize::Zeroizing;
 
-use crate::handle_change::{latest_full_state, CurrentHandleState};
+use crate::handle_change::CurrentHandleState;
 use crate::identity_store::{IdentityStore, IdentityStoreError, PerDidSignError};
 use crate::keychain;
 use crate::oauth::AppState;
@@ -500,28 +500,6 @@ pub(crate) async fn add_share_impl(
     Ok(collected)
 }
 
-/// Drop a collected share (user correction), e.g. after pasting the wrong phrase.
-#[tauri::command]
-pub async fn remove_recovery_share(
-    state: tauri::State<'_, AppState>,
-    index: u8,
-) -> Result<Vec<CollectedShare>, ShareRecoveryError> {
-    let mut guard = state.share_recovery_state.lock().await;
-    let session = guard
-        .as_mut()
-        .ok_or(ShareRecoveryError::NoRecoverySession)?;
-    session.shares.retain(|s| s.index != index);
-    session.verified = None;
-    Ok(session
-        .shares
-        .iter()
-        .map(|s| CollectedShare {
-            set_id: s.set_id,
-            index: s.index,
-        })
-        .collect())
-}
-
 // ── Escrow release (assisted path) ───────────────────────────────────────────
 
 /// Ask the account's PDS to email a release OTP. Always succeeds server-side for any
@@ -922,14 +900,10 @@ async fn fetch_current_state(
     pds: &PdsClient,
     did: &str,
 ) -> Result<CurrentHandleState, ShareRecoveryError> {
-    let audit_json = pds.fetch_audit_log(did).await.map_err(map_pds_error)?;
-    let audit =
-        crypto::parse_audit_log(&audit_json).map_err(|e| ShareRecoveryError::InvalidAuditLog {
-            message: e.to_string(),
-        })?;
-    latest_full_state(&audit).map_err(|e| ShareRecoveryError::InvalidAuditLog {
-        message: e.to_string(),
+    crate::handle_change::fetch_current_state(pds, did, map_pds_error, |message| {
+        ShareRecoveryError::InvalidAuditLog { message }
     })
+    .await
 }
 
 /// Refresh the per-identity caches with the PLC *data* document (never the W3C form,

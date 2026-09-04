@@ -178,11 +178,8 @@ export interface FakeIdentity {
    * `build_self_held_kit`, survives `submit`, cleared by `confirm`.
    */
   selfHeldKitStagedRecoveryKey: string | null;
-  /**
-   * Whether this identity carries a completed self-held kit — the durable
-   * `{did}:self-held-kit` marker. Drives `self_held_kit_escrow_offer_cmd`, the upsell seam
-   * that lights up only if the identity later lands on an escrow-capable host.
-   */
+  /** Whether this identity carries a completed self-held kit — the durable
+   *  `{did}:self-held-kit` marker, mirroring the Keychain slot. */
   selfHeldKitInstalled: boolean;
   /**
    * Models a device restored from an encrypted backup: the device-key metadata came back,
