@@ -675,10 +675,10 @@ mod tests {
     use p256::pkcs8::EncodePrivateKey;
     use rand_core::OsRng;
     use serde_json::json;
-    use sqlx::SqlitePool;
     use tower::ServiceExt;
 
     use crate::app::{app, test_state, AppState};
+    use crate::routes::test_utils::insert_account_with_email as insert_account;
 
     const PUBLIC_URL: &str = "https://test.example.com";
 
@@ -871,18 +871,6 @@ mod tests {
             config: Arc::new(config),
             ..base
         }
-    }
-
-    async fn insert_account(db: &SqlitePool, did: &str, email: &str) {
-        sqlx::query(
-            "INSERT INTO accounts (did, email, password_hash, created_at, updated_at) \
-             VALUES (?, ?, 'hash', datetime('now'), datetime('now'))",
-        )
-        .bind(did)
-        .bind(email)
-        .execute(db)
-        .await
-        .unwrap();
     }
 
     async fn post(state: AppState, body: serde_json::Value) -> (StatusCode, serde_json::Value) {

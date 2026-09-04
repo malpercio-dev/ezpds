@@ -407,20 +407,8 @@ impl AsyncBlockStoreWrite for SqliteBlockStore {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::db::accounts::insert_bare_account as insert_test_account;
     use crate::db::test_pool;
-
-    /// Insert a test account (required for the FK on block_owners.account_did).
-    async fn insert_test_account(pool: &SqlitePool, did: &str) {
-        sqlx::query(
-            "INSERT INTO accounts (did, email, password_hash, created_at, updated_at)
-             VALUES (?, ?, 'hash', datetime('now'), datetime('now'))",
-        )
-        .bind(did)
-        .bind(format!("{did}@example.com"))
-        .execute(pool)
-        .await
-        .unwrap();
-    }
 
     async fn owner_exists(pool: &SqlitePool, did: &str, cid: &str) -> bool {
         sqlx::query_scalar(

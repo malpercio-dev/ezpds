@@ -859,3 +859,27 @@ pub(crate) fn child_genesis_op(handle: &str, pds: &str, signing_key: &str) -> se
     .unwrap();
     serde_json::from_str(&op.signed_op_json).unwrap()
 }
+
+// ── Additional shared fixtures (append-only — see AGENTS.md route ownership) ───────────────
+//
+// Consolidated out of per-route test-module copies. New shared fixtures belong in this block,
+// appended at the end; the code above is owned by a parallel cleanup and must not be reordered.
+
+/// Insert a minimal active account row. Lives in `db::accounts` (not here) so non-route test
+/// code can depend on it too; re-exported for existing route test call sites.
+pub(crate) use crate::db::accounts::insert_bare_account;
+
+/// Insert an active account row with a caller-supplied email and `password_hash` NULL — the
+/// fixture for tests that exercise an email-adjacent flow (confirmation, subject status, agent
+/// auth) without minting a real password hash or handle row.
+pub(crate) async fn insert_account_with_email(db: &sqlx::SqlitePool, did: &str, email: &str) {
+    sqlx::query(
+        "INSERT INTO accounts (did, email, password_hash, created_at, updated_at) \
+         VALUES (?, ?, NULL, datetime('now'), datetime('now'))",
+    )
+    .bind(did)
+    .bind(email)
+    .execute(db)
+    .await
+    .unwrap();
+}

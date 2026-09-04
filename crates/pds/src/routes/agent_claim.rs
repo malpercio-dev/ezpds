@@ -599,10 +599,10 @@ mod tests {
     use axum::http::Request;
     use common::AgentAuthConfig;
     use serde_json::{json, Value};
-    use sqlx::SqlitePool;
     use tower::ServiceExt;
 
     use crate::app::{app, test_state, AppState};
+    use crate::routes::test_utils::insert_account_with_email as insert_account;
 
     // ── harness ──────────────────────────────────────────────────────────────
 
@@ -614,18 +614,6 @@ mod tests {
             config: Arc::new(config),
             ..base
         }
-    }
-
-    async fn insert_account(db: &SqlitePool, did: &str, email: &str) {
-        sqlx::query(
-            "INSERT INTO accounts (did, email, password_hash, created_at, updated_at) \
-             VALUES (?, ?, 'hash', datetime('now'), datetime('now'))",
-        )
-        .bind(did)
-        .bind(email)
-        .execute(db)
-        .await
-        .unwrap();
     }
 
     /// Mint a full-access HS256 access token for `did` (the shape the extractor accepts, mirroring

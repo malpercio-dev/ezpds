@@ -522,19 +522,13 @@ pub async fn list_all_blobs(pool: &SqlitePool) -> Result<Vec<PhysicalBlob>, sqlx
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::db::accounts::insert_bare_account;
     use crate::db::test_pool;
 
-    /// Insert a test account (required for the FK on blob_owners.account_did).
+    /// Insert a test account (required for the FK on blob_owners.account_did), returning its DID
+    /// for callers that want it back rather than re-stating the literal.
     async fn insert_account(pool: &SqlitePool, did: &str) -> String {
-        sqlx::query(
-            "INSERT INTO accounts (did, email, password_hash, created_at, updated_at)
-             VALUES (?, ?, 'hash', datetime('now'), datetime('now'))",
-        )
-        .bind(did)
-        .bind(format!("{did}@example.com"))
-        .execute(pool)
-        .await
-        .unwrap();
+        insert_bare_account(pool, did).await;
         did.to_string()
     }
 

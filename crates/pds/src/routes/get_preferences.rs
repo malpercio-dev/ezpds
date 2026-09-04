@@ -97,6 +97,7 @@ mod tests {
     use tower::ServiceExt;
 
     use crate::app::{app, test_state};
+    use crate::routes::test_utils::insert_account_with_email as insert_account;
 
     /// Issue a valid HS256 access JWT for a DID using the test state's fixed secret.
     fn access_jwt(secret: &[u8; 32], sub: &str) -> String {
@@ -141,18 +142,6 @@ mod tests {
             .header("Authorization", format!("Bearer {token}"))
             .body(Body::empty())
             .unwrap()
-    }
-
-    async fn insert_account(db: &sqlx::SqlitePool, did: &str, email: &str) {
-        sqlx::query(
-            "INSERT INTO accounts (did, email, password_hash, created_at, updated_at) \
-             VALUES (?, ?, NULL, datetime('now'), datetime('now'))",
-        )
-        .bind(did)
-        .bind(email)
-        .execute(db)
-        .await
-        .unwrap();
     }
 
     async fn insert_preferences(db: &sqlx::SqlitePool, did: &str, blob: &str) {

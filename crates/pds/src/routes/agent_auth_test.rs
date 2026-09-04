@@ -30,6 +30,7 @@ use serde_json::{json, Value};
 use tower::ServiceExt;
 
 use crate::app::{app, test_state, AppState};
+use crate::routes::test_utils::insert_account_with_email as insert_account;
 
 const PUBLIC_URL: &str = "https://test.example.com";
 
@@ -44,18 +45,6 @@ async fn state_with(agent_auth: AgentAuthConfig) -> AppState {
         config: Arc::new(config),
         ..base
     }
-}
-
-async fn insert_account(db: &sqlx::SqlitePool, did: &str, email: &str) {
-    sqlx::query(
-        "INSERT INTO accounts (did, email, password_hash, created_at, updated_at) \
-         VALUES (?, ?, 'hash', datetime('now'), datetime('now'))",
-    )
-    .bind(did)
-    .bind(email)
-    .execute(db)
-    .await
-    .unwrap();
 }
 
 /// A full-access HS256 access token for `did` — the credential the account owner presents to

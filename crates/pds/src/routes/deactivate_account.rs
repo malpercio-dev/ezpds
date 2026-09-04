@@ -126,19 +126,9 @@ mod tests {
 
     use crate::app::{app, test_state};
     use crate::firehose::FirehoseEvent;
-    use crate::routes::test_utils::{access_jwt, body_json};
-
-    async fn insert_account(db: &sqlx::SqlitePool, did: &str, email: &str) {
-        sqlx::query(
-            "INSERT INTO accounts (did, email, password_hash, created_at, updated_at) \
-             VALUES (?, ?, NULL, datetime('now'), datetime('now'))",
-        )
-        .bind(did)
-        .bind(email)
-        .execute(db)
-        .await
-        .unwrap();
-    }
+    use crate::routes::test_utils::{
+        access_jwt, body_json, insert_account_with_email as insert_account,
+    };
 
     fn scoped_jwt(secret: &[u8; 32], sub: &str, scope: &str) -> String {
         use jsonwebtoken::{encode, Algorithm, EncodingKey, Header};

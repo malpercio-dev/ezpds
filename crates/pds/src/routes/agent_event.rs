@@ -295,6 +295,7 @@ mod tests {
     use tower::ServiceExt;
 
     use crate::app::{app, test_state, AppState};
+    use crate::routes::test_utils::insert_account_with_email as insert_account;
 
     const PUBLIC_URL: &str = "https://test.example.com";
     const ISSUER: &str = "https://trusted.example";
@@ -391,18 +392,6 @@ mod tests {
             config: Arc::new(config),
             ..base
         }
-    }
-
-    async fn insert_account(db: &sqlx::SqlitePool, did: &str, email: &str) {
-        sqlx::query(
-            "INSERT INTO accounts (did, email, password_hash, created_at, updated_at) \
-             VALUES (?, ?, 'hash', datetime('now'), datetime('now'))",
-        )
-        .bind(did)
-        .bind(email)
-        .execute(db)
-        .await
-        .unwrap();
     }
 
     /// Seed a confirmed (`claimed`) `identity_assertion` registration for `(ISSUER, subject)`.

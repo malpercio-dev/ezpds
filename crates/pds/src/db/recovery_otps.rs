@@ -66,19 +66,8 @@ pub async fn consume_recovery_otp(
 mod tests {
     use super::*;
     use crate::auth::token::generate_token;
+    use crate::db::accounts::insert_bare_account as insert_account;
     use crate::db::test_pool;
-
-    async fn insert_account(pool: &sqlx::SqlitePool, did: &str) {
-        sqlx::query(
-            "INSERT INTO accounts (did, email, password_hash, created_at, updated_at) \
-             VALUES (?, ?, NULL, datetime('now'), datetime('now'))",
-        )
-        .bind(did)
-        .bind(format!("{did}@example.com"))
-        .execute(pool)
-        .await
-        .unwrap();
-    }
 
     #[tokio::test]
     async fn valid_otp_consumes_once() {

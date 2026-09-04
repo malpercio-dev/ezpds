@@ -98,19 +98,9 @@ mod tests {
     use tower::ServiceExt;
 
     use crate::app::app;
-    use crate::routes::test_utils::{body_json, test_state_with_admin_token};
-
-    async fn insert_account(db: &sqlx::SqlitePool, did: &str, email: &str) {
-        sqlx::query(
-            "INSERT INTO accounts (did, email, password_hash, created_at, updated_at) \
-             VALUES (?, ?, NULL, datetime('now'), datetime('now'))",
-        )
-        .bind(did)
-        .bind(email)
-        .execute(db)
-        .await
-        .unwrap();
-    }
+    use crate::routes::test_utils::{
+        body_json, insert_account_with_email as insert_account, test_state_with_admin_token,
+    };
 
     fn request(did: &str, bearer: Option<&str>) -> Request<Body> {
         let mut builder = Request::builder().method("GET").uri(format!(

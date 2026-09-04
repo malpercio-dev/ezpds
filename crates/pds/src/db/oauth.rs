@@ -858,14 +858,7 @@ mod tests {
 
     /// Insert an account row needed to satisfy oauth_tokens FK.
     async fn insert_test_account(pool: &SqlitePool) {
-        sqlx::query(
-            "INSERT INTO accounts (did, email, password_hash, created_at, updated_at) \
-             VALUES ('did:plc:testaccount000000000000', 'test@example.com', NULL, \
-             datetime('now'), datetime('now'))",
-        )
-        .execute(pool)
-        .await
-        .unwrap();
+        crate::db::accounts::insert_bare_account(pool, "did:plc:testaccount000000000000").await;
     }
 
     #[tokio::test]
