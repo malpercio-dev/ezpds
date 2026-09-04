@@ -1062,3 +1062,26 @@ pub(crate) fn trusted_issuer(issuer: &str, public_key_pem: String) -> common::Tr
         algorithm: "ES256".to_string(),
     }
 }
+
+/// PUT a fixed text record at `rkey` in `app.bsky.feed.post` via the real `putRecord` handler,
+/// returning just the response status — the sync route tests' "plant a record" fixture, which
+/// don't care about its content, only that it exists.
+pub(crate) async fn put_fixed_record(
+    app: &axum::Router,
+    token: &str,
+    did: &str,
+    rkey: &str,
+) -> axum::http::StatusCode {
+    use tower::ServiceExt;
+
+    let request = put_record_request(
+        did,
+        "app.bsky.feed.post",
+        rkey,
+        serde_json::json!({
+            "record": { "text": "hello", "createdAt": "2026-06-26T00:00:00Z" }
+        }),
+        Some(token),
+    );
+    app.clone().oneshot(request).await.unwrap().status()
+}
