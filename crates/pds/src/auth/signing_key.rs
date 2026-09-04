@@ -11,13 +11,7 @@ use uuid::Uuid;
 ///
 /// `encoding_key` is derived from the P-256 private key in PKCS#8 DER format, as required by
 /// `jsonwebtoken`. `key_id` is a UUID that appears as the `kid` header in issued access tokens.
-///
-/// # Dead Code Lint
-///
-/// Axum's `State<AppState>` extractor is opaque to Rust's dead code analyzer — fields read
-/// through `State<AppState>` appear unused even though they are accessed by every handler.
 #[derive(Clone)]
-#[allow(dead_code)]
 pub struct OAuthSigningKey {
     /// UUID identifier embedded in JWT `kid` header.
     pub key_id: String,
