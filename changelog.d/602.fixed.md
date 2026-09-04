@@ -1,0 +1,1 @@
+The wallet now writes did:web documents with bare `#device`, `#atproto`, and `#atproto_pds` ids instead of DID-qualified ones. Some third-party resolvers only match the bare form, so a wallet-composed identity could resolve on Custos yet fail to load elsewhere. Custos accepts both forms.

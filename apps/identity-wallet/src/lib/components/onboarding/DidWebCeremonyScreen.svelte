@@ -47,9 +47,9 @@
   {#if busy && !document}<Spinner label="Preparing keys…" />{/if}
   {#if document}
     <div class="diffs">
-      <DiffRow variant="restore" title="Device key" value={`${document.id}#device`} />
-      <DiffRow variant="modify" title="Repository signing key" value={`${document.id}#atproto`} />
-      <DiffRow variant="modify" title="Hosting service" value={`${document.id}#atproto_pds`} />
+      <DiffRow variant="restore" title="Device key" value="#device" />
+      <DiffRow variant="modify" title="Repository signing key" value="#atproto" />
+      <DiffRow variant="modify" title="Hosting service" value="#atproto_pds" />
       <DiffRow variant="restore" title="Domain identity" value={String(document.id)} />
     </div>
     <code>{rendered}</code>
