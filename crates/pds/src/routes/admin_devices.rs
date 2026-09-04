@@ -490,7 +490,9 @@ mod tests {
 
     use crate::app::{app, test_state};
     use crate::auth::guards::device_registration_sign_string;
-    use crate::routes::test_utils::{body_json, test_state_with_admin_token};
+    use crate::routes::test_utils::{
+        body_json, get_request_with_bearer as get, test_state_with_admin_token,
+    };
 
     // ── Helpers ──────────────────────────────────────────────────────────────
 
@@ -892,14 +894,6 @@ mod tests {
 
     fn unix_now() -> i64 {
         crate::time::unix_now_secs()
-    }
-
-    fn get(uri: &str, bearer: Option<&str>) -> Request<Body> {
-        let mut builder = Request::builder().method("GET").uri(uri);
-        if let Some(token) = bearer {
-            builder = builder.header("Authorization", format!("Bearer {token}"));
-        }
-        builder.body(Body::empty()).unwrap()
     }
 
     /// Insert an active admin device directly, returning its id and signing keypair.

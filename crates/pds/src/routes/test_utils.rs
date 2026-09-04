@@ -941,3 +941,17 @@ pub(crate) fn state_with_txt_records(state: AppState, records: Vec<String>) -> A
         ..state
     }
 }
+
+/// Build a bare GET request to `uri`, with an optional `Bearer` auth header.
+pub(crate) fn get_request_with_bearer(
+    uri: &str,
+    token: Option<&str>,
+) -> axum::http::Request<axum::body::Body> {
+    let mut builder = axum::http::Request::builder()
+        .method(axum::http::Method::GET)
+        .uri(uri);
+    if let Some(token) = token {
+        builder = builder.header("Authorization", format!("Bearer {token}"));
+    }
+    builder.body(axum::body::Body::empty()).unwrap()
+}
