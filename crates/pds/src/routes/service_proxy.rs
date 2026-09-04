@@ -361,7 +361,7 @@ mod tests {
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
     use crate::app::{app, test_state, AppState};
-    use crate::routes::test_utils::test_master_key;
+    use crate::routes::test_utils::{access_jwt, test_master_key};
 
     /// The account DID baked into every proxied request's bearer token (see [`bearer`]). The
     /// proxy mints the service-auth JWT for whichever DID the inbound session authenticates as,
@@ -432,25 +432,6 @@ mod tests {
             config: Arc::new(config),
             ..base
         }
-    }
-
-    /// Mint a short-lived HS256 access JWT (`com.atproto.access` scope) for `sub`, signed with
-    /// `secret`. Defined locally so this route module stays free of cross-route imports.
-    fn access_jwt(secret: &[u8; 32], sub: &str) -> String {
-        use jsonwebtoken::{encode, Algorithm, EncodingKey, Header};
-
-        let now = crate::time::unix_now_secs() as u64;
-        encode(
-            &Header::new(Algorithm::HS256),
-            &serde_json::json!({
-                "scope": "com.atproto.access",
-                "sub": sub,
-                "iat": now,
-                "exp": now + 7200_u64,
-            }),
-            &EncodingKey::from_secret(secret),
-        )
-        .unwrap()
     }
 
     /// A valid `Bearer` access token (`com.atproto.access` scope) for the given state's signing

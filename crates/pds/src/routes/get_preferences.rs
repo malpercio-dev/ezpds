@@ -97,43 +97,10 @@ mod tests {
     use tower::ServiceExt;
 
     use crate::app::{app, test_state};
-    use crate::routes::test_utils::{body_json, insert_account_with_email as insert_account};
-
-    /// Issue a valid HS256 access JWT for a DID using the test state's fixed secret.
-    fn access_jwt(secret: &[u8; 32], sub: &str) -> String {
-        use jsonwebtoken::{encode, Algorithm, EncodingKey, Header};
-
-        let now = crate::time::unix_now_secs() as u64;
-        encode(
-            &Header::new(Algorithm::HS256),
-            &serde_json::json!({
-                "scope": "com.atproto.access",
-                "sub": sub,
-                "iat": now,
-                "exp": now + 7200_u64,
-            }),
-            &EncodingKey::from_secret(secret),
-        )
-        .unwrap()
-    }
-
-    /// Issue a scoped HS256 JWT (used to exercise wrong-scope rejection paths).
-    fn scoped_jwt(secret: &[u8; 32], sub: &str, scope: &str) -> String {
-        use jsonwebtoken::{encode, Algorithm, EncodingKey, Header};
-
-        let now = crate::time::unix_now_secs() as u64;
-        encode(
-            &Header::new(Algorithm::HS256),
-            &serde_json::json!({
-                "scope": scope,
-                "sub": sub,
-                "iat": now,
-                "exp": now + 7200_u64,
-            }),
-            &EncodingKey::from_secret(secret),
-        )
-        .unwrap()
-    }
+    use crate::routes::test_utils::{
+        access_jwt, body_json, insert_account_with_email as insert_account,
+        scoped_access_jwt as scoped_jwt,
+    };
 
     fn get_preferences_request(token: &str) -> Request<Body> {
         Request::builder()

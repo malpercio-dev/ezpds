@@ -128,19 +128,8 @@ mod tests {
     use crate::firehose::FirehoseEvent;
     use crate::routes::test_utils::{
         access_jwt, body_json, insert_account_with_email as insert_account,
+        scoped_access_jwt as scoped_jwt,
     };
-
-    fn scoped_jwt(secret: &[u8; 32], sub: &str, scope: &str) -> String {
-        use jsonwebtoken::{encode, Algorithm, EncodingKey, Header};
-
-        let now = crate::time::unix_now_secs() as u64;
-        encode(
-            &Header::new(Algorithm::HS256),
-            &serde_json::json!({ "scope": scope, "sub": sub, "iat": now, "exp": now + 7200_u64 }),
-            &EncodingKey::from_secret(secret),
-        )
-        .unwrap()
-    }
 
     fn deactivate_request(token: &str, body: Body) -> Request<Body> {
         Request::builder()
