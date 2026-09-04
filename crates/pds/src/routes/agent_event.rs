@@ -122,7 +122,7 @@ async fn process_set(state: &AppState, headers: &HeaderMap, body: &Bytes) -> Res
     let claims: SetClaims = verify_trusted_jwt(
         &state.jwks_cache,
         issuer_cfg,
-        &state.config.public_url,
+        state.config.issuer(),
         token,
         &["iss", "aud"],
     )

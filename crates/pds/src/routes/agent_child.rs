@@ -267,7 +267,7 @@ pub async fn remint_child_assertion(
     );
     let minted = mint_identity_assertion(
         &state.oauth_signing_keypair,
-        &state.config.public_url,
+        state.config.issuer(),
         state.config.agent_auth.claimed_assertion_ttl_secs,
         &request.did,
         &child.id,

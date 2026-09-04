@@ -144,10 +144,7 @@ impl DpopNonceRotator {
 /// issuance and validation; the token endpoint's freshness check rejects such requests
 /// on its own `ClockError` path anyway.
 fn unix_now_secs() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0)
+    crate::time::unix_now_secs().max(0) as u64
 }
 
 /// Error from DPoP validation at the token endpoint.
@@ -560,8 +557,9 @@ pub fn validate_dpop(
 
     // Validate `htu` (HTTP URI — scheme + host + path, no query string per RFC 9449 §4.3).
     // Axum receives path-form URIs behind a reverse proxy, so we reconstruct the
-    // canonical URL from the configured public_url rather than the raw request URI.
-    let expected_htu = format!("{}{}", public_url.trim_end_matches('/'), uri.path());
+    // canonical URL from the configured public_url (already trimmed — see `Config::issuer`)
+    // rather than the raw request URI.
+    let expected_htu = format!("{public_url}{}", uri.path());
     if dpop_claims.htu != expected_htu {
         tracing::debug!(
             proof_htu = %dpop_claims.htu,

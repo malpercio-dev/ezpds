@@ -888,11 +888,7 @@ mod tests {
     };
 
     fn unix_now() -> i64 {
-        use std::time::{SystemTime, UNIX_EPOCH};
-        SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_secs() as i64
+        crate::time::unix_now_secs()
     }
 
     fn get(uri: &str, bearer: Option<&str>) -> Request<Body> {

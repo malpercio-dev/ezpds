@@ -362,7 +362,7 @@ pub async fn get_authorization(
 ) -> Response {
     // RFC 9207 issuer identifier, emitted as `iss` on every authorization response.
     // Trailing slash trimmed to match the AS-metadata `issuer` value exactly.
-    let issuer = state.config.public_url.trim_end_matches('/').to_string();
+    let issuer = state.config.issuer().to_string();
     let params = match resolve_authorize_params(&state, raw).await {
         Ok(p) => p,
         Err(ResolveError::Client(msg)) => {
@@ -792,7 +792,7 @@ pub async fn post_authorization(
 ) -> Response {
     // RFC 9207 issuer identifier, emitted as `iss` on every authorization response.
     // Trailing slash trimmed to match the AS-metadata `issuer` value exactly.
-    let issuer = state.config.public_url.trim_end_matches('/').to_string();
+    let issuer = state.config.issuer().to_string();
     // Validate client and redirect_uri first — deny/approve both redirect there,
     // so we must confirm it is safe before using it as a redirect target.
     let metadata =

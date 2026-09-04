@@ -471,7 +471,7 @@ pub async fn post_authorization_complete(
     State(state): State<AppState>,
     Form(form): Form<CompleteForm>,
 ) -> Response {
-    let issuer = state.config.public_url.trim_end_matches('/').to_string();
+    let issuer = state.config.issuer().to_string();
 
     // The guarded transition, authorization-code insert, and completion audit share one transaction:
     // a failed code insert rolls the `approved → completed` transition back, so the request stays

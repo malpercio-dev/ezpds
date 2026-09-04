@@ -369,11 +369,8 @@ pub async fn seed_device(db: &sqlx::SqlitePool) -> (String, String) {
 /// signed with `secret`. Used by the repo record-write/read route tests.
 pub(crate) fn access_jwt(secret: &[u8; 32], sub: &str) -> String {
     use jsonwebtoken::{encode, Algorithm, EncodingKey, Header};
-    use std::time::{SystemTime, UNIX_EPOCH};
-    let now = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap()
-        .as_secs();
+
+    let now = crate::time::unix_now_secs() as u64;
     encode(
         &Header::new(Algorithm::HS256),
         &serde_json::json!({
@@ -393,11 +390,8 @@ pub(crate) fn access_jwt(secret: &[u8; 32], sub: &str) -> String {
 /// presented as `DPoP` with a matching proof it is accepted. Used by the repo-write route tests.
 pub(crate) fn cnf_bound_access_jwt(secret: &[u8; 32], sub: &str, jkt: &str) -> String {
     use jsonwebtoken::{encode, Algorithm, EncodingKey, Header};
-    use std::time::{SystemTime, UNIX_EPOCH};
-    let now = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap()
-        .as_secs();
+
+    let now = crate::time::unix_now_secs() as u64;
     encode(
         &Header::new(Algorithm::HS256),
         &serde_json::json!({
@@ -462,12 +456,8 @@ impl DpopProofKey {
         use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
         use p256::ecdsa::{signature::Signer, Signature};
         use sha2::{Digest, Sha256};
-        use std::time::{SystemTime, UNIX_EPOCH};
 
-        let now = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_secs() as i64;
+        let now = crate::time::unix_now_secs();
         let header = serde_json::json!({ "typ": "dpop+jwt", "alg": "ES256", "jwk": self.jwk() });
         let mut payload = serde_json::json!({
             "htm": htm,
@@ -493,11 +483,8 @@ impl DpopProofKey {
 /// legacy `com.atproto.access` claim (blanket permission) from a granular grant string.
 pub(crate) fn scoped_access_jwt(secret: &[u8; 32], sub: &str, scope: &str) -> String {
     use jsonwebtoken::{encode, Algorithm, EncodingKey, Header};
-    use std::time::{SystemTime, UNIX_EPOCH};
-    let now = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap()
-        .as_secs();
+
+    let now = crate::time::unix_now_secs() as u64;
     encode(
         &Header::new(Algorithm::HS256),
         &serde_json::json!({
@@ -522,11 +509,8 @@ pub(crate) fn agent_jwt(
     registration_id: &str,
 ) -> String {
     use jsonwebtoken::{encode, Algorithm, EncodingKey, Header};
-    use std::time::{SystemTime, UNIX_EPOCH};
-    let now = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap()
-        .as_secs();
+
+    let now = crate::time::unix_now_secs() as u64;
     encode(
         &Header::new(Algorithm::HS256),
         &serde_json::json!({
@@ -546,11 +530,8 @@ pub(crate) fn agent_jwt(
 /// the app-password scope gates.
 pub(crate) fn app_pass_jwt(secret: &[u8; 32], sub: &str, privileged: bool) -> String {
     use jsonwebtoken::{encode, Algorithm, EncodingKey, Header};
-    use std::time::{SystemTime, UNIX_EPOCH};
-    let now = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap()
-        .as_secs();
+
+    let now = crate::time::unix_now_secs() as u64;
     let scope = if privileged {
         "com.atproto.appPassPrivileged"
     } else {
@@ -619,11 +600,8 @@ pub async fn seed_personal_details_app_password(
 #[allow(dead_code)]
 pub(crate) fn personal_details_app_pass_jwt(secret: &[u8; 32], sub: &str) -> String {
     use jsonwebtoken::{encode, Algorithm, EncodingKey, Header};
-    use std::time::{SystemTime, UNIX_EPOCH};
-    let now = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap()
-        .as_secs();
+
+    let now = crate::time::unix_now_secs() as u64;
     encode(
         &Header::new(Algorithm::HS256),
         &serde_json::json!({

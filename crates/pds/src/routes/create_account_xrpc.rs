@@ -1165,10 +1165,7 @@ mod tests {
     ) -> String {
         let key = *kp.private_key_bytes;
         let signer = repo_engine::CommitSigner::from_bytes(&key).expect("signer");
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_secs();
+        let now = crate::time::unix_now_secs() as u64;
         crate::auth::jwt::mint_service_auth_jwt(|b| signer.sign(b), iss, aud, lxm, now, now + 300)
     }
 

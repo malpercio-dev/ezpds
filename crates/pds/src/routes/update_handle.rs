@@ -1150,7 +1150,6 @@ mod tests {
     #[tokio::test]
     async fn wrong_scope_token_returns_401() {
         use jsonwebtoken::{encode, Algorithm, EncodingKey, Header};
-        use std::time::{SystemTime, UNIX_EPOCH};
 
         let state = test_state().await;
         let db = state.db.clone();
@@ -1158,10 +1157,7 @@ mod tests {
         let new_handle = format!("bob.{}", state.config.available_user_domains[0]);
         let ts = insert_account_and_session(&db, &old_handle).await;
 
-        let now = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_secs();
+        let now = crate::time::unix_now_secs() as u64;
         let refresh_jwt = encode(
             &Header::new(Algorithm::HS256),
             &serde_json::json!({

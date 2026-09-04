@@ -81,10 +81,7 @@ mod tests {
     }
 
     fn now_secs() -> u64 {
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_secs()
+        crate::time::unix_now_secs() as u64
     }
 
     /// Mint a valid HS256 JWT using the given secret.
