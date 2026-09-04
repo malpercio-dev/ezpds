@@ -10,9 +10,8 @@ use serde::Deserialize;
 use crate::app::AppState;
 use crate::auth::oauth_scopes::{RepoAction, SpaceOp};
 use crate::auth::space::authenticate_space_owner;
-use crate::db::spaces::remove_member;
 use crate::lexicon::LexiconInput;
-use common::{ApiError, ErrorCode};
+use common::ApiError;
 
 #[derive(Deserialize)]
 pub struct RemoveMemberInput {
@@ -42,17 +41,12 @@ pub async fn simplespace_remove_member(
         SpaceOp::Manage(RepoAction::Update),
     )
     .await?;
-    let internal = |e: sqlx::Error| {
-        tracing::error!(error = %e, space = %space.uri, "failed to remove member");
-        ApiError::new(ErrorCode::InternalError, "internal server error")
-    };
-    // Check and write in one transaction, so a member row can never land after a concurrent
-    // `deleteSpace` has already wiped the list.
-    let mut tx = state.db.begin().await.map_err(internal)?;
-    super::space_views::load_active_simplespace(&mut *tx, &space).await?;
-    remove_member(&mut *tx, &space.uri, &input.did)
-        .await
-        .map_err(internal)?;
-    tx.commit().await.map_err(internal)?;
+    super::space_views::write_membership(
+        &state,
+        &space,
+        &input.did,
+        super::space_views::MembershipAction::Remove,
+    )
+    .await?;
     Ok((StatusCode::OK, axum::Json(serde_json::json!({}))))
 }
