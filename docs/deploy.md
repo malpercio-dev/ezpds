@@ -12,7 +12,7 @@ Five Railway services in one project. Each has its own section below.
 
 | Service | Source | Public surface | State |
 |---|---|---|---|
-| **PDS** (Custos) | repo-root `Dockerfile` | `obsign.org`, `pds.obsign.org`, `*.obsign.org` | `/data` volume, Litestream-replicated |
+| **PDS** (Custos) | repo-root `Dockerfile` | `pds.obsign.org`, `*.obsign.org` (not the apex — see [Domain: `obsign.org` (apex)](#domain-obsignorg-apex)) | `/data` volume, Litestream-replicated |
 | **Marketing site** | `sites/marketing/` | `obsign.org` apex content | none (static) |
 | **Docs site** | `sites/docs/` | `docs.obsign.org` | none (static) |
 | **MCP sidecar** | `tools/mcp-sidecar/` | `mcp.obsign.org` | none — forwards credentials, holds nothing ([ADR-0024](architecture/decisions/0024-hosted-agent-credential-forwarding.md)) |
@@ -108,7 +108,7 @@ CI/CD lives on **GitHub**. Deploys use **Railway's native GitHub integration** �
 | Environment | Railway watches | Deploys when |
 |-------------|-----------------|--------------|
 | **staging** (`ezpds-staging.up.railway.app`, serverless sleep) | `main` branch | a PR merges to `main` (after CI passes) |
-| **production** (`obsign.org` custom domain, kept warm) | `production` branch | the `production` branch is advanced to a `v*` tag (after CI passes) |
+| **production** (`pds.obsign.org` custom domain, kept warm) | `production` branch | the `production` branch is advanced to a `v*` tag (after CI passes) |
 
 Each environment has its own secrets (distinct master key, admin token, user-domain list) and its own `/data` volume, set in the Railway dashboard. Merging to `main` deploys **staging only** — production never moves on a `main` merge.
 

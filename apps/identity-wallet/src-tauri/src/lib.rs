@@ -1014,13 +1014,33 @@ async fn get_available_user_domains(
     Ok(server_info.available_user_domains)
 }
 
+/// Rewrite the retired `obsign.org` apex to the host that actually serves the PDS.
+///
+/// The apex stopped answering XRPC at the 2026-07-24 `pds.obsign.org` migration — it 404s every
+/// path — but an install configured before that date still holds it in the Keychain, and nothing
+/// corrects it: the URL is read once at launch into a `OnceLock`, and the only screen that can
+/// rewrite it sits behind "create new identity". Rewriting on read rather than writing back keeps
+/// this idempotent and failure-free; a later deliberate save replaces the stored value normally.
+fn migrate_retired_apex(url: String) -> String {
+    if url.trim_end_matches('/') == "https://obsign.org" {
+        return "https://pds.obsign.org".to_string();
+    }
+    url
+}
+
+/// The configured PDS base URL as every reader should see it — the stored value past
+/// [`migrate_retired_apex`]. `None` when the wallet was never configured.
+fn configured_pds_url() -> Option<String> {
+    keychain::load_pds_url().map(migrate_retired_apex)
+}
+
 /// Return the saved PDS base URL, or `None` if not yet configured.
 ///
 /// The frontend calls this on mount to decide whether to show the PDS
 /// configuration screen.
 #[tauri::command]
 fn get_pds_url() -> Option<String> {
-    keychain::load_pds_url()
+    configured_pds_url()
 }
 
 /// The three values the in-app appearance setting can take. `"system"` means
@@ -1748,7 +1768,7 @@ pub fn run() {
     builder
         .setup(|app| {
             // Restore PDS URL from Keychain if previously configured.
-            if let Some(url) = keychain::load_pds_url() {
+            if let Some(url) = configured_pds_url() {
                 app.state::<oauth::AppState>().set_custos_client(url);
             }
 
@@ -2787,6 +2807,27 @@ mod tests {
         );
 
         let _ = store.remove_identity(did);
+    }
+
+    /// The retired apex is rewritten to the serving host; every other configured URL —
+    /// including a self-hosted Custos and the localhost default — passes through untouched.
+    #[test]
+    fn retired_apex_is_rewritten_and_nothing_else_is() {
+        assert_eq!(
+            migrate_retired_apex("https://obsign.org".to_string()),
+            "https://pds.obsign.org"
+        );
+        assert_eq!(
+            migrate_retired_apex("https://obsign.org/".to_string()),
+            "https://pds.obsign.org"
+        );
+        for untouched in [
+            "https://pds.obsign.org",
+            "https://custos.example.com",
+            "http://localhost:8080",
+        ] {
+            assert_eq!(migrate_retired_apex(untouched.to_string()), untouched);
+        }
     }
 
     #[test]
