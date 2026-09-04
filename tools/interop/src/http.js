@@ -12,16 +12,42 @@ export class HttpError extends Error {
     this.body = body;
     this.url = url;
   }
+
+  /**
+   * The error code from a JSON error body. Handles both envelopes the PDS uses: the flat
+   * OAuth/agent shape `{error: "code", error_description}` and the XRPC shape
+   * `{error: {code: "Code", message}}`.
+   * @returns {string | null}
+   */
+  get errorCode() {
+    if (typeof this.body !== 'object' || this.body === null) return null;
+    const err = this.body.error;
+    if (typeof err === 'string') return err;
+    if (typeof err === 'object' && err !== null && typeof err.code === 'string') return err.code;
+    return null;
+  }
+
+  /**
+   * The human-readable description from a JSON error body, if present.
+   * @returns {string | null}
+   */
+  get errorDescription() {
+    if (typeof this.body !== 'object' || this.body === null) return null;
+    if (typeof this.body.error_description === 'string') return this.body.error_description;
+    const err = this.body.error;
+    if (typeof err === 'object' && err !== null && typeof err.message === 'string') return err.message;
+    return null;
+  }
 }
 
 let lastRequestAt = 0;
 
-async function pace() {
+async function pace(intervalMs) {
   // Reserve the next slot synchronously (before any await) so concurrent
   // callers each get a distinct scheduled time instead of computing the same
   // wait from a stale timestamp and firing back-to-back.
   const now = Date.now();
-  const next = Math.max(lastRequestAt + MIN_REQUEST_INTERVAL_MS, now);
+  const next = Math.max(lastRequestAt + intervalMs, now);
   lastRequestAt = next;
   const wait = next - now;
   if (wait > 0) await sleep(wait);
@@ -36,8 +62,10 @@ export function sleep(ms) {
  *
  * @param {string} url
  * @param {{method?: string, headers?: object, body?: any, token?: string, raw?: boolean,
- *          dpop?: {key: object, bind?: string}}} options
- *   `body` objects are JSON-encoded. With `raw: true` the Response is returned
+ *          dpop?: {key: object, bind?: string}, minIntervalMs?: number, maxRetries?: number}} options
+ *   `body` objects are JSON-encoded; a `URLSearchParams` body is form-encoded instead
+ *   (`application/x-www-form-urlencoded`, e.g. an OAuth token-endpoint request); string
+ *   and `Uint8Array` bodies pass through as-is. With `raw: true` the Response is returned
  *   unconsumed (for CAR/blob downloads); otherwise JSON (or text) is parsed and
  *   non-2xx throws HttpError.
  *
@@ -45,22 +73,34 @@ export function sleep(ms) {
  *   request also switches to `Authorization: DPoP <bind>` and the proof carries `ath`;
  *   without it the proof is the mint-time kind and `token` still supplies the Bearer
  *   grant — the two shapes `getSpaceCredential` and the credential-authed reads want.
+ *
+ *   `minIntervalMs`/`maxRetries` override this module's own pacing defaults for callers
+ *   (e.g. tools/mcp) that configure their own — every request still funnels through the
+ *   one `lastRequestAt` clock, so pacing stays global within the process either way.
  */
 export async function request(url, options = {}) {
   const headers = { ...(options.headers ?? {}) };
   const method = options.method ?? 'GET';
+  const minIntervalMs = options.minIntervalMs ?? MIN_REQUEST_INTERVAL_MS;
+  const maxRetries = options.maxRetries ?? MAX_RATE_LIMIT_RETRIES;
   if (options.token) headers['Authorization'] = `Bearer ${options.token}`;
 
   let body;
   if (options.body !== undefined) {
-    headers['Content-Type'] ??= 'application/json';
-    body = typeof options.body === 'string' || options.body instanceof Uint8Array
-      ? options.body
-      : JSON.stringify(options.body);
+    if (options.body instanceof URLSearchParams) {
+      headers['Content-Type'] ??= 'application/x-www-form-urlencoded';
+      body = options.body.toString();
+    } else if (typeof options.body === 'string' || options.body instanceof Uint8Array) {
+      headers['Content-Type'] ??= 'application/json';
+      body = options.body;
+    } else {
+      headers['Content-Type'] ??= 'application/json';
+      body = JSON.stringify(options.body);
+    }
   }
 
   for (let attempt = 0; ; attempt++) {
-    await pace();
+    await pace(minIntervalMs);
     // Minted per attempt, not once: a proof's `iat` is good for 60s while a Retry-After
     // wait can be 120s, and the space read seam spends each `jti` once per host — so a
     // reused proof after a rate-limit retry would be rejected as stale *and* as a replay.
@@ -78,7 +118,7 @@ export async function request(url, options = {}) {
       throw new Error(`${err.message} for ${new URL(url).host}${cause ? ` (${cause})` : ''}`, { cause: err });
     }
 
-    if (res.status === 429 && attempt < MAX_RATE_LIMIT_RETRIES) {
+    if (res.status === 429 && attempt < maxRetries) {
       const retryAfter = Number(res.headers.get('retry-after')) || 2 ** attempt * 2;
       const delay = Math.min(retryAfter, 120) * 1000;
       process.stderr.write(`  rate-limited by ${new URL(url).host}; waiting ${delay / 1000}s\n`);
