@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Changes are collected in `changelog.d/` during development and inserted here when
 `just set-version` prepares a release. There is intentionally no `Unreleased` section.
 
+## [0.16.2] - 2026-09-04
+
+### Fixed
+
+- Minting an agent child account now emits an `#identity` firehose frame alongside the `#account` frame, so relays and AppViews learn the child's handle binding immediately — previously the frame was never emitted and every app showed a freshly minted child as an invalid handle until an unrelated event forced a re-resolution.
+
+
 ## [0.16.1] - 2026-09-03
 
 ### Added
