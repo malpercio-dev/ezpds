@@ -217,8 +217,30 @@ pub fn unique_violation_column<'a>(e: &'a sqlx::Error, table: &str) -> Option<&'
 /// The cap is deliberately small: every generator reaching here draws from a keyspace where a
 /// conflict is astronomically unlikely, so the loop absorbs a freak collision rather than
 /// papering over a generator that is too narrow. `generated` names the value in the warning.
+///
+/// Retries on any UNIQUE violation. When an insert can also violate a *different* column that
+/// is a terminal conflict rather than bad luck on the generated value (`create_account`'s
+/// claim-code insert also touches `pending_accounts.email`/`.handle`), use
+/// [`insert_with_retry_if`] instead and classify the error yourself.
 pub async fn insert_with_retry_on_collision<T, F, Fut>(
     generated: &'static str,
+    insert: F,
+) -> Result<Option<T>, sqlx::Error>
+where
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = Result<T, sqlx::Error>>,
+{
+    insert_with_retry_if(generated, is_unique_violation, insert).await
+}
+
+/// [`insert_with_retry_on_collision`], generalized with a caller-supplied `should_retry`
+/// predicate for inserts where not every UNIQUE violation means "regenerate and try again" —
+/// some are a terminal conflict on a different column in the same statement. The predicate
+/// still has to check `is_unique_violation` itself; a non-violation error (e.g. a dropped
+/// connection) must not be classified as retryable by accident.
+pub async fn insert_with_retry_if<T, F, Fut>(
+    generated: &'static str,
+    should_retry: impl Fn(&sqlx::Error) -> bool,
     mut insert: F,
 ) -> Result<Option<T>, sqlx::Error>
 where
@@ -228,7 +250,7 @@ where
     for attempt in 0..3_usize {
         match insert().await {
             Ok(value) => return Ok(Some(value)),
-            Err(e) if is_unique_violation(&e) => {
+            Err(e) if should_retry(&e) => {
                 tracing::warn!(
                     attempt,
                     generated,
