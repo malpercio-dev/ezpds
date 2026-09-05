@@ -42,12 +42,12 @@
     font: inherit;
     font-weight: var(--weight-medium);
     text-decoration: underline;
-    text-underline-offset: 2px;
+    text-underline-offset: var(--space-3xs);
     cursor: pointer;
   }
   .advanced-link:focus-visible {
-    outline: 2px solid var(--color-accent);
-    outline-offset: 2px;
+    outline: var(--space-3xs) solid var(--color-accent);
+    outline-offset: var(--space-3xs);
     border-radius: var(--radius-sm);
   }
   .advanced-note {

@@ -16,7 +16,7 @@
 <style>
   .grid { display: grid; grid-template-columns: 1fr 1fr; gap: var(--space-sm); width: 100%; text-align: left; }
   button { display: grid; align-content: start; gap: var(--space-xs); min-height: 9rem; padding: var(--space-md); border: 1px solid var(--color-line); border-radius: var(--radius-lg); background: var(--color-surface); color: var(--color-ink); font: inherit; cursor: pointer; }
-  button:focus-visible { outline: 2px solid var(--color-accent); outline-offset: 2px; }
+  button:focus-visible { outline: var(--space-3xs) solid var(--color-accent); outline-offset: var(--space-3xs); }
   button span, .truth { font-size: var(--text-label); line-height: var(--leading-body); }
   .truth { margin: 0; padding: var(--space-sm); border-radius: var(--radius-md); background: var(--color-info-surface); color: var(--color-ink); text-align: left; }
 </style>

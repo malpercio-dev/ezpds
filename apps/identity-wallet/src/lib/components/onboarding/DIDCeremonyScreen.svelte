@@ -154,8 +154,8 @@
 
   .sealbtn {
     position: relative;
-    width: 150px;
-    height: 150px;
+    width: 150px; /* px-ok: one-time ceremony hero-glyph ring, not a reusable size */
+    height: 150px; /* px-ok: one-time ceremony hero-glyph ring, not a reusable size */
     border: none;
     background: none;
     cursor: pointer;
@@ -172,20 +172,20 @@
   .sealbtn::after {
     content: '';
     position: absolute;
-    width: 150px;
-    height: 150px;
+    width: 150px; /* px-ok: one-time ceremony hero-glyph ring, not a reusable size */
+    height: 150px; /* px-ok: one-time ceremony hero-glyph ring, not a reusable size */
     border-radius: var(--radius-full);
-    border: 2px solid var(--color-primary);
+    border: 2px solid var(--color-primary); /* px-ok: ceremony emphasis ring, deliberately thicker than a hairline */
     opacity: 0;
   }
 
   .wax {
     position: relative;
-    width: 132px;
-    height: 132px;
+    width: 132px; /* px-ok: one-time ceremony hero-glyph, not a reusable size */
+    height: 132px; /* px-ok: one-time ceremony hero-glyph, not a reusable size */
     border-radius: var(--radius-full);
     background: var(--color-surface-sunk);
-    box-shadow: inset 0 0 0 2px var(--color-seal-ring);
+    box-shadow: inset 0 0 0 2px var(--color-seal-ring); /* px-ok: decorative seal-ring shadow spread, not a spacing value */
     display: flex;
     align-items: center;
     justify-content: center;
@@ -205,7 +205,7 @@
     position: relative;
     z-index: 1;
     font-family: var(--font-display);
-    font-size: 54px;
+    font-size: 54px; /* px-ok: ceremony display glyph, outside the modular type scale */
     line-height: 1;
     color: var(--color-seal-glyph);
     transition: color 0.4s ease;
@@ -215,8 +215,8 @@
     /* Emboss on the gold fill — a material effect on the wax itself,
        appearance-invariant by design, so it stays literal (see SealEmblem). */
     box-shadow:
-      inset 0 0 0 2px oklch(0.99 0.05 80 / 0.4),
-      inset 0 -4px 10px oklch(0.2 0.05 60 / 0.25);
+      inset 0 0 0 2px oklch(0.99 0.05 80 / 0.4), /* px-ok: decorative seal-ring shadow spread, not a spacing value */
+      inset 0 -4px 10px oklch(0.2 0.05 60 / 0.25); /* px-ok: decorative seal-ring shadow offset/blur, not a spacing value */
     animation: stamp 0.5s var(--ease-standard);
   }
   .stage.sealed .ml {

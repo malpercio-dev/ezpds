@@ -34,11 +34,11 @@
     gap: var(--space-sm);
     align-items: flex-start;
     border-radius: var(--radius-md);
-    padding: var(--space-sm) 12px;
+    padding: var(--space-sm) var(--space-md);
   }
   .diff-ic {
-    width: 28px;
-    height: 28px;
+    width: var(--size-icon-md);
+    height: var(--size-icon-md);
     border-radius: var(--radius-full);
     background: var(--color-bg);
     display: flex;

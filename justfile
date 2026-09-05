@@ -121,6 +121,14 @@ font-check:
 cap-check:
     scripts/capability-check.sh
 
+# Verify the two mobile apps' "never hardcode px" design-token rule stays true: every
+# gap/padding/margin/radius/font-size/dimension in apps/*/src CSS must come from a
+# --space-*/--radius-*/--text-*/--size-* token, not a bare `Npx` literal. Narrow allowlist
+# (0/0.5/1px hairlines, media/container breakpoints, a per-line `px-ok:` escape hatch) —
+# see scripts/px-token-check.sh for the full rationale.
+px-check:
+    scripts/px-token-check.sh
+
 # Fail if Rust source carries a Linear ticket / AC reference in a comment (AGENTS.md hard
 # rule — traceability belongs in docs/, not `.rs`). #227 swept these out; #266 put sixteen
 # back a day later. This is the forcing function so that regression can't recur silently.
@@ -291,7 +299,7 @@ oauth-conformance-test:
 # Adding a check here covers `just ci` (macOS/full) and `just ci-pds` (Linux) at once —
 # the old design re-stated all twelve checks in each, so a gate added to one and
 # forgotten in the other was a silent gap.
-checks: fmt-check lock-check bruno-check docs-check changelog-check changelog-test font-check cap-check capability-docs-check ticket-ref-check adr-ref-check plan-status-check workspace-dep-check runbook-parity-check auth-seam-check space-auth-seam-check ssrf-client-check gc-guard-check ios-paths-check swift-rs-check ios-template-check bundle-identity-check
+checks: fmt-check lock-check bruno-check docs-check changelog-check changelog-test font-check cap-check px-check capability-docs-check ticket-ref-check adr-ref-check plan-status-check workspace-dep-check runbook-parity-check auth-seam-check space-auth-seam-check ssrf-client-check gc-guard-check ios-paths-check swift-rs-check ios-template-check bundle-identity-check
 
 # Run the full CI pipeline locally (all crates; use on macOS where the iOS app builds)
 ci: checks clippy test audit deny

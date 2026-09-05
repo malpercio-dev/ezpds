@@ -359,12 +359,12 @@
   .cards {
     display: flex;
     flex-direction: column;
-    gap: 12px;
+    gap: var(--space-md);
   }
   .card {
     display: flex;
     align-items: center;
-    gap: 14px;
+    gap: var(--space-md);
     background: var(--color-bg);
     border: 1px solid var(--color-line);
     border-radius: var(--radius-xl);
@@ -397,14 +397,14 @@
   .badges {
     display: flex;
     flex-wrap: wrap;
-    gap: 6px;
-    margin-top: 5px;
+    gap: var(--space-sm);
+    margin-top: var(--space-xs);
   }
   .badge {
     display: inline-flex;
     align-items: center;
-    gap: 5px;
-    padding: 3px 9px;
+    gap: var(--space-xs);
+    padding: var(--space-2xs) var(--space-sm);
     border-radius: var(--radius-full);
     font-size: var(--text-label);
     font-weight: var(--weight-semibold);
@@ -451,9 +451,9 @@
   .add-card {
     display: flex;
     align-items: center;
-    gap: 13px;
+    gap: var(--space-md);
     background: transparent;
-    border: 1.5px dashed var(--color-line);
+    border: 1.5px dashed var(--color-line); /* px-ok: small badge hairline, deliberately thicker than 1px */
     border-radius: var(--radius-xl);
     padding: var(--space-md);
     width: 100%;
@@ -465,8 +465,8 @@
     background: var(--color-seal-tint);
   }
   .add-plus {
-    width: 42px;
-    height: 42px;
+    width: var(--size-icon-2xl);
+    height: var(--size-icon-2xl);
     border-radius: var(--radius-full);
     background: var(--color-surface);
     color: var(--color-primary-deep);
@@ -497,8 +497,8 @@
     padding: var(--space-xl) var(--space-md);
   }
   .empty-seal {
-    width: 64px;
-    height: 64px;
+    width: var(--size-avatar-md);
+    height: var(--size-avatar-md);
     border-radius: var(--radius-full);
     background: var(--color-seal-pale);
     color: var(--color-primary-deep);
@@ -569,6 +569,6 @@
   .loading {
     display: flex;
     flex-direction: column;
-    gap: 12px;
+    gap: var(--space-md);
   }
 </style>

@@ -7,7 +7,7 @@
 <style>
   .spinner {
     display: inline-block;
-    border: 3px solid var(--color-surface-sunk);
+    border: 3px solid var(--color-surface-sunk); /* px-ok: spinner ring thickness, deliberately thicker than a hairline */
     border-top-color: var(--color-primary);
     border-radius: var(--radius-full);
     animation: spin 0.8s linear infinite;

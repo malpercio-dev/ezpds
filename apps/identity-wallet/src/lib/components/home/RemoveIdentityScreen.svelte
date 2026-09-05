@@ -753,7 +753,7 @@
   .error-box {
     background: var(--color-critical-surface);
     border-radius: var(--radius-md);
-    padding: 12px var(--space-md);
+    padding: var(--space-md) var(--space-md);
   }
 
   .actions {
@@ -768,7 +768,7 @@
   .hold {
     position: relative;
     width: 100%;
-    height: 54px;
+    height: var(--size-button-lg);
     border-radius: var(--radius-md);
     border: none;
     cursor: pointer;
@@ -835,7 +835,7 @@
     background: var(--color-surface);
     border: 1px solid var(--color-line);
     border-radius: var(--radius-md);
-    padding: 10px var(--space-md);
+    padding: var(--space-sm) var(--space-md);
     font-family: var(--font-sans);
     font-size: var(--text-label);
     font-weight: var(--weight-medium);
@@ -856,8 +856,8 @@
   }
   .advanced-check input[type='checkbox'] {
     margin-top: var(--space-3xs);
-    width: 20px;
-    height: 20px;
+    width: var(--size-icon-xs);
+    height: var(--size-icon-xs);
     flex-shrink: 0;
     accent-color: var(--color-critical-solid);
     cursor: pointer;
