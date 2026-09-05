@@ -281,7 +281,7 @@
         </p>
 
         {#if customValid && customServedDomain}
-          <p class="status" role="status">
+          <p class="status u-status-text" role="status">
             <span class="handle">{normalizedCustom}</span> is on this server’s own domain —
             use the server domain option below instead; no DNS record is needed.
           </p>
@@ -339,13 +339,13 @@
     {:else if phase.kind === 'loading'}
       <div class="center"><Spinner size={28} label="Loading available handle domains" /></div>
     {:else if phase.kind === 'load_error'}
-      <p class="status">Couldn’t reach the hosting server to load handle domains.</p>
+      <p class="status u-status-text">Couldn’t reach the hosting server to load handle domains.</p>
       <Button onclick={loadDomains}>Try again</Button>
       <button type="button" class="mode-toggle" onclick={() => (mode = 'custom')}>
         Use a domain you own instead
       </button>
     {:else if phase.kind === 'no_domains'}
-      <p class="status">This identity’s hosting server has no handle domains configured.</p>
+      <p class="status u-status-text">This identity’s hosting server has no handle domains configured.</p>
       <button type="button" class="mode-toggle" onclick={() => (mode = 'custom')}>
         Use a domain you own instead
       </button>
@@ -401,12 +401,6 @@
     align-items: center;
     gap: var(--space-sm);
     padding: var(--space-xl) 0;
-  }
-  .status {
-    font-size: var(--text-body);
-    color: var(--color-muted);
-    text-align: center;
-    margin: 0;
   }
   .hint {
     font-size: var(--text-label);

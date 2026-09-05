@@ -47,7 +47,7 @@
     </p>
   </div>
 
-  <div class="identity">
+  <div class="identity u-stack-xs">
     <span class="id-label u-label-muted">Affected identity</span>
     <span class="id-did u-id-mono">{truncateDid(did)}</span>
   </div>
@@ -59,15 +59,15 @@
       <div class="card">
         <UrgencyBadge {urgency} {deadline} now={countdown.now} />
 
-        <div class="field">
+        <div class="field u-stack-2xs">
           <span class="k u-label-muted">Signing key</span>
           <span class="v mono">{change.signingKey ?? 'Unknown key'}</span>
         </div>
-        <div class="field">
+        <div class="field u-stack-2xs">
           <span class="k u-label-muted">Detected</span>
           <span class="v">{formatTimestamp(change.createdAt)}</span>
         </div>
-        <div class="field">
+        <div class="field u-stack-2xs">
           <span class="k u-label-muted">Recovery deadline</span>
           <span class="v">{formatTimestamp(deadline)}</span>
         </div>
@@ -106,12 +106,6 @@
     margin: 0 0 var(--space-sm);
   }
 
-  .identity {
-    display: flex;
-    flex-direction: column;
-    gap: var(--space-xs);
-  }
-
   .cards {
     display: flex;
     flex-direction: column;
@@ -125,12 +119,6 @@
     display: flex;
     flex-direction: column;
     gap: var(--space-md);
-  }
-
-  .field {
-    display: flex;
-    flex-direction: column;
-    gap: var(--space-2xs);
   }
 
   .v {

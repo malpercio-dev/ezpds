@@ -408,7 +408,7 @@
           <span class="halt-ic" aria-hidden="true">
             <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M7.86 2h8.28L22 7.86v8.28L16.14 22H7.86L2 16.14V7.86z"/><path d="M12 8v4"/><path d="M12 16h.01"/></svg>
           </span>
-          <span class="halt-body">
+          <span class="halt-body u-stack-2xs">
             <span class="halt-t">{ceremonyError.title}</span>
             <span class="halt-s">{ceremonyError.body}</span>
           </span>
@@ -438,7 +438,7 @@
         </div>
 
         <p class="section-label" id="grant-list-label">Choose what this app may do</p>
-        <ul class="grants" aria-labelledby="grant-list-label">
+        <ul class="grants u-list-reset" aria-labelledby="grant-list-label">
           <li class="grant grant--base">
             <span class="grant-ic" aria-hidden="true">
               <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="m5 12 5 5L20 7"/></svg>
@@ -465,7 +465,7 @@
             </li>
           {/each}
         </ul>
-        <p class="fine">
+        <p class="fine u-fine">
           Uncheck anything you don’t want to grant — the app will only be able to do what’s left
           checked. You can revoke this app’s access later from the app itself.
         </p>
@@ -479,7 +479,7 @@
             <label class="field-label u-label-muted" for="match-number">
               Enter the number shown on the sign-in screen
             </label>
-            <p class="match-why">
+            <p class="match-why u-fine">
               This proves you can see the screen that asked to sign in. If you didn’t start this
               sign-in and see no number anywhere, deny the request.
             </p>
@@ -503,7 +503,7 @@
             <span class="halt-ic" aria-hidden="true">
               <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M7.86 2h8.28L22 7.86v8.28L16.14 22H7.86L2 16.14V7.86z"/><path d="M12 8v4"/><path d="M12 16h.01"/></svg>
             </span>
-            <span class="halt-body">
+            <span class="halt-body u-stack-2xs">
               <span class="halt-t">{ceremonyError.title}</span>
               <span class="halt-s">{ceremonyError.body}</span>
             </span>
@@ -784,14 +784,6 @@
     margin: var(--space-xs) 0 0;
   }
 
-  .grants {
-    list-style: none;
-    display: flex;
-    flex-direction: column;
-    gap: var(--space-sm);
-    margin: 0;
-    padding: 0;
-  }
   .grant {
     display: flex;
     align-items: flex-start;
@@ -846,13 +838,6 @@
     overflow-wrap: anywhere;
   }
 
-  .fine {
-    font-size: var(--text-label);
-    color: var(--color-muted);
-    line-height: 1.5;
-    margin: 0;
-  }
-
   /* Number-match block: framed like a checkpoint, not colored as an alarm — it is a normal,
      expected step for push-delivered prompts (status never by color alone; the words carry it). */
   .match {
@@ -867,12 +852,6 @@
   .match--error {
     border-color: var(--color-critical);
   }
-  .match-why {
-    font-size: var(--text-label);
-    color: var(--color-muted);
-    line-height: 1.5;
-    margin: 0;
-  }
 
   .halt {
     display: flex;
@@ -886,11 +865,6 @@
     color: var(--color-critical);
     flex-shrink: 0;
     margin-top: var(--space-3xs);
-  }
-  .halt-body {
-    display: flex;
-    flex-direction: column;
-    gap: var(--space-2xs);
   }
   .halt-t {
     font-size: var(--text-body);

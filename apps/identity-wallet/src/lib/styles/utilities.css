@@ -102,3 +102,62 @@
   color: var(--color-ink-soft);
   word-break: break-all;
 }
+
+/* Critical inline notice sentence (an error/status line under a review panel). */
+.u-notice-text {
+  color: var(--color-critical);
+  font-size: var(--text-body);
+  margin: 0;
+}
+
+/* Muted fine-print caption (`.fine`, `.reveal-sub`, `.zone-note`) — smaller and more
+   relaxed than `.u-body-copy`. */
+.u-fine {
+  color: var(--color-muted);
+  font-size: var(--text-label);
+  line-height: 1.5;
+  margin: 0;
+}
+
+/* Ink, semibold row/section title (`.priv-t`, `.leg-label`, `NavRow`'s own title). */
+.u-title-strong {
+  color: var(--color-ink);
+  font-size: var(--text-body);
+  font-weight: var(--weight-semibold);
+}
+
+/* Muted, centered status sentence (a loading/progress caption). */
+.u-status-text {
+  color: var(--color-muted);
+  font-size: var(--text-body);
+  text-align: center;
+  margin: 0;
+}
+
+/* Plain `<ul>`/`<ol>` reset into a vertical stack — the common wrapper for a list of
+   grant/checklist rows. */
+.u-list-reset {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-sm);
+}
+
+/* Vertical stacks at the three smaller gap sizes — the tight siblings of `.u-stack-sm`. */
+.u-stack-xs {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-xs);
+}
+.u-stack-2xs {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2xs);
+}
+.u-stack-3xs {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3xs);
+}

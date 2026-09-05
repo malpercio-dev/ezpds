@@ -145,7 +145,7 @@
     <div class="pending-box">
       <p class="pending-label u-block-label">Share available after</p>
       <p class="pending-time">{availableAt ?? 'the configured waiting period'}</p>
-      <p class="pending-note">
+      <p class="pending-note u-fine">
         The server has notified your account email. Anyone still signed in to your account can
         cancel this release — if that happens, you'll see it here. You can close the app and come
         back; the wait continues on the server.
@@ -162,7 +162,7 @@
     title="Release no longer available"
     subtitle="The server declined to hand over the share. The release was cancelled from a signed-in device, or it expired."
   >
-    <p class="cancel-note">
+    <p class="cancel-note u-fine">
       If you cancelled it yourself, nothing more to do. If you didn't, someone with access to your
       account stopped it — your other backup shares still work, and no share was disclosed.
     </p>
@@ -189,12 +189,5 @@
     font-size: var(--text-data);
     color: var(--color-ink);
     margin: 0;
-  }
-  .pending-note,
-  .cancel-note {
-    font-size: var(--text-label);
-    color: var(--color-muted);
-    margin: 0;
-    line-height: 1.5;
   }
 </style>

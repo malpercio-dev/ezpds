@@ -179,12 +179,12 @@
       </div>
     {:else if locked}
       <div class="notice u-notice" role="alert">
-        <p class="notice-text">This identity is locked. Unlock it to see and manage your agents.</p>
+        <p class="notice-text u-notice-text">This identity is locked. Unlock it to see and manage your agents.</p>
         <Button onclick={unlockAndReload}>Unlock identity</Button>
       </div>
     {:else if loadError}
       <div class="notice u-notice" role="alert">
-        <p class="notice-text">{loadError}</p>
+        <p class="notice-text u-notice-text">{loadError}</p>
         <Button variant="secondary" onclick={loadAgents}>Try again</Button>
       </div>
     {:else if agents.length === 0 && children.length === 0}
@@ -322,7 +322,7 @@
           <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg>
         </span>
         <span class="add-body">
-          <span class="add-t">Approve an agent</span>
+          <span class="add-t u-title-strong">Approve an agent</span>
           <span class="add-s">Enter the code an agent showed you</span>
         </span>
       </button>
@@ -334,7 +334,7 @@
           <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="10" width="16" height="10" rx="2"/><path d="M8 10V7a4 4 0 0 1 8 0v3"/></svg>
         </span>
         <span class="add-body">
-          <span class="add-t">Enable agent accounts</span>
+          <span class="add-t u-title-strong">Enable agent accounts</span>
           <span class="add-s">Let an agent have its own account, not the keys to yours</span>
         </span>
       </button>
@@ -480,11 +480,6 @@
     flex-direction: column;
     gap: 1px;
   }
-  .add-t {
-    font-size: var(--text-body);
-    font-weight: var(--weight-semibold);
-    color: var(--color-ink);
-  }
   .add-s {
     font-size: var(--text-label);
     color: var(--color-muted);
@@ -524,12 +519,6 @@
     margin: 0 0 var(--space-sm);
     max-width: 34ch;
     line-height: 1.5;
-  }
-
-  .notice-text {
-    font-size: var(--text-body);
-    color: var(--color-critical);
-    margin: 0;
   }
 
   /* The recovery epilogue's report. Each state is carried by its own icon, word, and surface —

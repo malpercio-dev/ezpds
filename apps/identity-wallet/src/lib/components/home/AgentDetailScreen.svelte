@@ -114,7 +114,7 @@
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>
       {/if}
     </span>
-    <span class="status-body">
+    <span class="status-body u-stack-3xs">
       <span class="status-t">{currentStatus.label}</span>
       <span class="status-s">{currentStatus.hint}</span>
     </span>
@@ -129,7 +129,7 @@
   </dl>
 
   <p class="section-label">Permissions</p>
-  <ul class="grants">
+  <ul class="grants u-list-reset">
     {#each describeScopes(agent.scopes) as scope (scope.token)}
       <li class="grant" class:grant--elevated={scope.elevated}>
         {#if scope.elevated}
@@ -151,7 +151,7 @@
   <p class="section-sub">Everything this agent has done, newest first. Entries cannot be edited or deleted.</p>
   {#if auditError}
     <div class="notice u-notice" role="alert">
-      <p class="notice-text">{auditError}</p>
+      <p class="notice-text u-notice-text">{auditError}</p>
       <Button variant="secondary" onclick={loadMoreAudit}>Try again</Button>
     </div>
   {:else if auditEvents.length === 0 && !auditLoading}
@@ -235,11 +235,6 @@
   .status--revoked .status-s {
     color: var(--color-muted);
   }
-  .status-body {
-    display: flex;
-    flex-direction: column;
-    gap: var(--space-3xs);
-  }
   .status-t {
     font-size: var(--text-title);
     font-weight: var(--weight-semibold);
@@ -288,14 +283,6 @@
     line-height: 1.45;
   }
 
-  .grants {
-    list-style: none;
-    display: flex;
-    flex-direction: column;
-    gap: var(--space-sm);
-    margin: 0;
-    padding: 0;
-  }
   .grant {
     display: flex;
     flex-direction: column;
@@ -406,9 +393,4 @@
     margin: 0;
   }
 
-  .notice-text {
-    font-size: var(--text-body);
-    color: var(--color-critical);
-    margin: 0;
-  }
 </style>

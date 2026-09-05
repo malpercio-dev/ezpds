@@ -46,7 +46,7 @@
     </div>
   </div>
 
-  <section class="zone">
+  <section class="zone u-stack-xs">
     {#if onrecoverykit}
       <NavRow
         title="Add a recovery key"
@@ -138,9 +138,4 @@
     margin: 0;
   }
 
-  .zone {
-    display: flex;
-    flex-direction: column;
-    gap: var(--space-xs);
-  }
 </style>

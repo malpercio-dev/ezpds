@@ -136,7 +136,7 @@
       hygiene. Your device key is untouched and stays in control.
     </p>
 
-    <div class="identity">
+    <div class="identity u-stack-2xs">
       <span class="id-label u-label-muted">Identity</span>
       <span class="id-did u-id-mono">{truncateDid(did)}</span>
     </div>
@@ -147,7 +147,7 @@
         <p class="hint">Requesting a fresh key and sealing the change…</p>
       </div>
     {:else if phase.kind === 'load_error'}
-      <p class="status" role="alert">{phase.error}</p>
+      <p class="status u-notice-text" role="alert">{phase.error}</p>
       <Button onclick={build}>Try again</Button>
     {:else if phase.kind === 'working'}
       <div class="center">
@@ -215,12 +215,6 @@
     max-width: 34ch;
   }
 
-  .identity {
-    display: flex;
-    flex-direction: column;
-    gap: var(--space-2xs);
-  }
-
   .center {
     display: flex;
     flex-direction: column;
@@ -233,11 +227,6 @@
     color: var(--color-muted);
     margin: 0;
     text-align: center;
-  }
-  .status {
-    font-size: var(--text-body);
-    color: var(--color-critical);
-    margin: 0;
   }
 
   .sealed {

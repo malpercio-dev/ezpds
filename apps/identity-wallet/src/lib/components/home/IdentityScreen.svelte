@@ -221,7 +221,7 @@
     </div>
   {/if}
 
-  <section class="zone">
+  <section class="zone u-stack-xs">
     <h2 class="zone-label">Use</h2>
     <NavRow title="Sign in to an app" subtitle="Approve a sign-in with a code or QR" onclick={onsignin}>
       {#snippet icon()}
@@ -244,7 +244,7 @@
     </NavRow>
   </section>
 
-  <section class="zone">
+  <section class="zone u-stack-xs">
     <!-- Two doors sit at this depth by explicit design decision: a credible exit is the
          product's central promise, so it gets its own visible entry rather than being
          filed as maintenance. -->
@@ -297,11 +297,6 @@
     border-radius: var(--radius-sm);
   }
 
-  .zone {
-    display: flex;
-    flex-direction: column;
-    gap: var(--space-xs);
-  }
   .zone-label {
     font-size: var(--text-label);
     font-weight: var(--weight-semibold);

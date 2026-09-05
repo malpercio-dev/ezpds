@@ -90,10 +90,10 @@
   {#if target}
     <div class="preview u-card">
       {#if target.handle}
-        <div class="row"><span class="k u-label-muted">Handle</span><span class="v">@{target.handle}</span></div>
+        <div class="row u-stack-3xs"><span class="k u-label-muted">Handle</span><span class="v">@{target.handle}</span></div>
       {/if}
-      <div class="row"><span class="k u-label-muted">DID</span><span class="v mono">{displayDid}</span></div>
-      <div class="row">
+      <div class="row u-stack-3xs"><span class="k u-label-muted">DID</span><span class="v mono">{displayDid}</span></div>
+      <div class="row u-stack-3xs">
         <span class="k u-label-muted">Share 1 · Keychain</span>
         <span class="v" class:ok={target.share1Loaded}>
           {target.share1Loaded
@@ -119,11 +119,6 @@
 </OnboardingShell>
 
 <style>
-  .row {
-    display: flex;
-    flex-direction: column;
-    gap: var(--space-3xs);
-  }
 
   .v {
     font-size: var(--text-body);

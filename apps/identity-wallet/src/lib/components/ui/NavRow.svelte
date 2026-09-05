@@ -32,7 +32,7 @@
     <span class="ic" aria-hidden="true">{@render icon()}</span>
   {/if}
   <span class="body">
-    <span class="title">{title}</span>
+    <span class="title u-title-strong">{title}</span>
     {#if subtitle}<span class="subtitle">{subtitle}</span>{/if}
   </span>
   <svg class="chev" width="9" height="16" viewBox="0 0 11 18" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m2 1 7 8-7 8" /></svg>
@@ -75,11 +75,6 @@
     gap: 2px;
     min-width: 0;
     flex: 1;
-  }
-  .title {
-    font-size: var(--text-body);
-    font-weight: var(--weight-semibold);
-    color: var(--color-ink);
   }
   .subtitle {
     font-size: var(--text-label);

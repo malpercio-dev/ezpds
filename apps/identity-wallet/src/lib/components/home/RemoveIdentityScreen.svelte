@@ -408,7 +408,7 @@
   </div>
 
   <div class="content">
-    <div class="identity">
+    <div class="identity u-stack-xs">
       <span class="id-label u-label-muted">Identity</span>
       {#if handle}
         <span class="id-handle">{handle}</span>
@@ -429,13 +429,13 @@
         <li><strong>Erase its keys</strong> from this device.</li>
       </ul>
       {#if isDidWeb}
-        <p class="note">
+        <p class="note u-fine">
           This identity lives at your own domain, so there is nothing to retire on the network.
           It keeps working until you take its document down — we'll show you what to remove
           once the account is deleted.
         </p>
       {/if}
-      <p class="note">
+      <p class="note u-fine">
         We'll email a confirmation code to the account address.
         {#if routeLoaded && requiresPassword}
           You'll enter that code and your account password to confirm.
@@ -447,7 +447,7 @@
     {:else if phase === 'requesting'}
       <div class="loading">
         <Spinner size={32} label="Sending confirmation code" />
-        <p class="loading-text">Sending a confirmation code to your email…</p>
+        <p class="loading-text u-status-text">Sending a confirmation code to your email…</p>
       </div>
     {:else if phase === 'confirm'}
       <div class="hero">
@@ -483,7 +483,7 @@
     {:else if phase === 'working'}
       <div class="loading">
         <Spinner size={32} label="Removing identity" />
-        <p class="loading-text">{workingMessage}</p>
+        <p class="loading-text u-status-text">{workingMessage}</p>
       </div>
     {:else if phase === 'tombstone_retry'}
       <div class="hero">
@@ -520,7 +520,7 @@
           stopped it being served, and there is nothing left for you to do.
         </li>
       </ul>
-      <p class="note">
+      <p class="note u-fine">
         The wallet can't do this part for you — it never had control of the domain. Until the
         document is gone, anyone can still resolve this DID to its last published state.
       </p>
@@ -547,7 +547,7 @@
           </li>
         {/if}
       </ul>
-      <p class="note danger-note">
+      <p class="note danger-note u-fine">
         {#if alsoTombstone}
           Tombstoning is permanent and network-wide. Only continue if you are certain you want to
           destroy this identity everywhere — it cannot be undone.
@@ -558,7 +558,7 @@
       </p>
 
       {#if isDidWeb}
-        <p class="note">
+        <p class="note u-fine">
           There is no network-wide retirement the wallet can perform for a domain
           identity: it is retired by taking its document
           {#if didWebDocUrl}
@@ -573,8 +573,8 @@
         {#if showAdvanced}
           <label class="advanced-check">
             <input type="checkbox" bind:checked={alsoTombstone} />
-            <span class="check-body">
-              <span class="check-title">Also retire this identity on the network</span>
+            <span class="check-body u-stack-xs">
+              <span class="check-title u-title-strong">Also retire this identity on the network</span>
               <span class="check-desc">
                 Sign and publish a did:plc tombstone so the identity is permanently retired
                 everywhere, not just on this device. Requires this device to still hold one of the
@@ -705,12 +705,6 @@
     gap: var(--space-md);
   }
 
-  .identity {
-    display: flex;
-    flex-direction: column;
-    gap: var(--space-xs);
-  }
-
   .id-handle {
     font-size: var(--text-body);
     font-weight: var(--weight-semibold);
@@ -740,13 +734,6 @@
     color: var(--color-ink-soft);
   }
 
-  .note {
-    font-size: var(--text-label);
-    color: var(--color-muted);
-    line-height: 1.5;
-    margin: 0;
-  }
-
   /* Literal machine strings inline in prose — a DID method, a document URL, an HTTP status.
      Wraps anywhere because a did:web document URL is long and must never widen the screen. */
   .mono {
@@ -761,12 +748,6 @@
     align-items: center;
     gap: var(--space-md);
     padding: var(--space-xl) 0;
-  }
-  .loading-text {
-    font-size: var(--text-body);
-    color: var(--color-muted);
-    margin: 0;
-    text-align: center;
   }
 
   .error-box {
@@ -880,16 +861,6 @@
     flex-shrink: 0;
     accent-color: var(--color-critical-solid);
     cursor: pointer;
-  }
-  .check-body {
-    display: flex;
-    flex-direction: column;
-    gap: var(--space-xs);
-  }
-  .check-title {
-    font-size: var(--text-body);
-    font-weight: var(--weight-semibold);
-    color: var(--color-ink);
   }
   .check-desc {
     font-size: var(--text-label);
