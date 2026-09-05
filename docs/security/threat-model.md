@@ -204,9 +204,11 @@ allowlists, with `core:default` and `withGlobalTauri` both refused. Full spec:
   `routes/oauth_par.rs`'s `resolve_client_metadata` call passes
   `state.http_client`, not `state.hardened_http_client` — a caller-influenced
   URL fetched without the SSRF allowlist. `auth::client_attestation`'s
-  equivalent call already uses the hardened client. Tracked by a sibling PR
-  (`sec/client-metadata-ssrf`); `just ssrf-client-check` does not yet cover
-  this call site.
+  equivalent call already uses the hardened client. Fixed by
+  [#638](https://github.com/malpercio-dev/ezpds/pull/638), which also refuses
+  an IP-literal `client_id` at a private address before any fetch and extends
+  `just ssrf-client-check` to every `resolve_client_metadata` call site; once
+  it merges this row moves under SSRF in Threats and mitigations.
 - **`unsafe` FFI without `// SAFETY:` comments.** `apps/identity-wallet/src-tauri/src/apns.rs`
   (APNs delegate registration) and the vendored `apple.rs` in
   `apps/identity-wallet/vendor/tauri-plugin-auth-session/src/` both carry
