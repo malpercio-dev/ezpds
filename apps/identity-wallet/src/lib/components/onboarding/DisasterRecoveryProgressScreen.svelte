@@ -259,12 +259,12 @@
     </p>
   </div>
 
-  <ul class="checklist">
+  <ul class="checklist u-list-reset">
     {#each LEGS as leg (leg.id)}
       <li class="leg leg--{legStates[leg.id]}">
         <span class="leg-glyph" aria-hidden="true">{statusGlyph(legStates[leg.id])}</span>
         <span class="leg-body">
-          <span class="leg-label">{leg.label}</span>
+          <span class="leg-label u-title-strong">{leg.label}</span>
           <span class="leg-status">{statusWord(legStates[leg.id])}</span>
         </span>
       </li>
@@ -337,14 +337,6 @@
     max-width: 32ch;
   }
 
-  .checklist {
-    list-style: none;
-    margin: 0;
-    padding: 0;
-    display: flex;
-    flex-direction: column;
-    gap: var(--space-sm);
-  }
   .leg {
     display: flex;
     align-items: flex-start;
@@ -376,11 +368,6 @@
     flex-direction: column;
     gap: 1px;
     min-width: 0;
-  }
-  .leg-label {
-    font-size: var(--text-body);
-    font-weight: var(--weight-semibold);
-    color: var(--color-ink);
   }
   .leg-status {
     font-size: var(--text-label);

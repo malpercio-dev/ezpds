@@ -304,7 +304,7 @@
 
     <section class="zone u-stack-sm">
       <h2 class="zone-label">Monitor history</h2>
-      <p class="zone-note">
+      <p class="zone-note u-fine">
         {describeInterval(history?.intervalSecs ?? null)}. Each pass compares every identity's
         public record against the copy this wallet holds, and raises the alarm if anything
         changed without your key.
@@ -390,12 +390,6 @@
     font-weight: var(--weight-semibold);
     color: var(--color-muted);
     letter-spacing: 0.01em;
-    margin: 0;
-  }
-  .zone-note {
-    font-size: var(--text-label);
-    color: var(--color-muted);
-    line-height: 1.5;
     margin: 0;
   }
 

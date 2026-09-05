@@ -88,10 +88,10 @@
 
   {#if resolved}
     <div class="preview u-card">
-      <div class="row"><span class="k u-label-muted">Handle</span><span class="v">@{resolved.handle}</span></div>
-      <div class="row"><span class="k u-label-muted">DID</span><span class="v mono">{displayDid}</span></div>
-      <div class="row"><span class="k u-label-muted">PDS</span><span class="v">{resolved.pdsUrl}</span></div>
-      <div class="row">
+      <div class="row u-stack-3xs"><span class="k u-label-muted">Handle</span><span class="v">@{resolved.handle}</span></div>
+      <div class="row u-stack-3xs"><span class="k u-label-muted">DID</span><span class="v mono">{displayDid}</span></div>
+      <div class="row u-stack-3xs"><span class="k u-label-muted">PDS</span><span class="v">{resolved.pdsUrl}</span></div>
+      <div class="row u-stack-3xs">
         <span class="k u-label-muted">Rotation key</span>
         <span class="v" class:ok={resolved.deviceKeyIsRoot}>
           {resolved.deviceKeyIsRoot ? 'Your device is the root key' : 'Device key is not the root key'}
@@ -105,11 +105,6 @@
 </OnboardingShell>
 
 <style>
-  .row {
-    display: flex;
-    flex-direction: column;
-    gap: var(--space-3xs);
-  }
 
   .v {
     font-size: var(--text-body);

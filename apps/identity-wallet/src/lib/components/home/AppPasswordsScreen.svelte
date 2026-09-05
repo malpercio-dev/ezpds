@@ -292,21 +292,21 @@
     </div>
   {:else if locked}
     <div class="notice notice--locked u-notice">
-      <p class="notice-text notice-text--ink">
+      <p class="notice-text notice-text--ink u-notice-text">
         This identity is locked. Unlock it to manage app passwords.
       </p>
       <Button onclick={unlockAndReload}>Unlock</Button>
     </div>
   {:else if loadError}
     <div class="notice u-notice" role="alert">
-      <p class="notice-text">{loadError}</p>
+      <p class="notice-text u-notice-text">{loadError}</p>
       <Button variant="secondary" onclick={load}>Try again</Button>
     </div>
   {:else}
     {#if created}
       <div class="reveal" role="status">
         <p class="reveal-title">“{created.name}” is ready</p>
-        <p class="reveal-sub">
+        <p class="reveal-sub u-fine">
           Use your handle and this password in the Bluesky app’s sign-in screen. This is the
           only time it will be shown — the wallet doesn’t keep a copy.
         </p>
@@ -343,7 +343,7 @@
         <label class="priv">
           <input type="checkbox" bind:checked={privileged} />
           <span class="priv-body">
-            <span class="priv-t">Allow direct messages</span>
+            <span class="priv-t u-title-strong">Allow direct messages</span>
             <span class="priv-s">
               Lets the app read and send your Bluesky DMs. Leave off unless you need chat.
             </span>
@@ -353,7 +353,7 @@
           <label class="priv">
             <input type="checkbox" bind:checked={personalDetails} />
             <span class="priv-body">
-              <span class="priv-t">Allow personal details</span>
+              <span class="priv-t u-title-strong">Allow personal details</span>
               <span class="priv-s">
                 Lets the app read and set the personal details stored with your account —
                 today that's the birth date the official Bluesky app's age verification
@@ -501,11 +501,6 @@
     flex-direction: column;
     gap: 2px;
   }
-  .priv-t {
-    font-size: var(--text-body);
-    font-weight: var(--weight-semibold);
-    color: var(--color-ink);
-  }
   .priv-s {
     font-size: var(--text-label);
     color: var(--color-muted);
@@ -527,12 +522,6 @@
     font-weight: var(--weight-semibold);
     color: var(--color-ink);
     overflow-wrap: anywhere;
-    margin: 0;
-  }
-  .reveal-sub {
-    font-size: var(--text-label);
-    color: var(--color-muted);
-    line-height: 1.5;
     margin: 0;
   }
   .reveal-row {
@@ -678,11 +667,6 @@
   .notice--locked {
     background: var(--color-surface);
     border: 1px solid var(--color-line);
-  }
-  .notice-text {
-    font-size: var(--text-body);
-    color: var(--color-critical);
-    margin: 0;
   }
   .notice-text--ink {
     color: var(--color-ink);

@@ -327,12 +327,12 @@
     </div>
   {:else if loadError}
     <div class="notice u-notice" role="alert">
-      <p class="notice-text">{loadError}</p>
+      <p class="notice-text u-notice-text">{loadError}</p>
       <Button variant="secondary" onclick={load}>Try again</Button>
     </div>
   {:else if status && status.location === null}
     <div class="notice notice--muted u-notice">
-      <p class="notice-text notice-text--ink">
+      <p class="notice-text notice-text--ink u-notice-text">
         iCloud Drive isn’t available on this device. Turn it on in Settings → your name →
         iCloud → iCloud Drive, then come back here.
       </p>
@@ -341,16 +341,16 @@
   {:else if status}
     <div class="status-card">
       <div class="stat-row">
-        <span class="stat">
+        <span class="stat u-stack-3xs">
           <span class="stat-n">{status.backedUpCount}</span>
           <span class="stat-l">items backed up</span>
         </span>
-        <span class="stat">
+        <span class="stat u-stack-3xs">
           <span class="stat-n">{formatBytes(status.backedUpBytes)}</span>
           <span class="stat-l">of iCloud storage</span>
         </span>
       </div>
-      <p class="status-meta">
+      <p class="status-meta u-fine">
         {#if status.location === 'icloud'}
           Stored in your iCloud Drive — visible in the Files app under “Obsign”.
         {:else}
@@ -490,16 +490,16 @@
     {#if repoStatus}
       <div class="status-card">
         <div class="stat-row">
-          <span class="stat">
+          <span class="stat u-stack-3xs">
             <span class="stat-n">{repoStatus.rev ? formatBytes(repoStatus.sizeBytes) : '—'}</span>
             <span class="stat-l">snapshot size</span>
           </span>
-          <span class="stat">
+          <span class="stat u-stack-3xs">
             <span class="stat-n">{repoStatus.rev ? 'Backed up' : 'Not yet'}</span>
             <span class="stat-l">of your posts</span>
           </span>
         </div>
-        <p class="status-meta">
+        <p class="status-meta u-fine">
           {#if repoStatus.location === 'icloud'}
             Stored in your iCloud Drive — visible in the Files app under “Obsign”.
           {:else}
@@ -587,11 +587,6 @@
     display: flex;
     gap: var(--space-lg);
   }
-  .stat {
-    display: flex;
-    flex-direction: column;
-    gap: var(--space-3xs);
-  }
   .stat-n {
     font-size: var(--text-title);
     font-weight: var(--weight-semibold);
@@ -601,12 +596,6 @@
   .stat-l {
     font-size: var(--text-label);
     color: var(--color-muted);
-  }
-  .status-meta {
-    font-size: var(--text-label);
-    color: var(--color-muted);
-    line-height: 1.5;
-    margin: 0;
   }
 
   .report {
@@ -700,11 +689,6 @@
   .notice--muted {
     background: var(--color-surface);
     border: 1px solid var(--color-line);
-  }
-  .notice-text {
-    font-size: var(--text-body);
-    color: var(--color-critical);
-    margin: 0;
   }
   .notice-text--ink {
     color: var(--color-ink);

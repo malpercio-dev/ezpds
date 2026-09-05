@@ -165,7 +165,7 @@
       </p>
     </div>
 
-    <div class="identity">
+    <div class="identity u-stack-xs">
       <span class="id-label u-label-muted">Identity</span>
       <span class="id-did u-id-mono">{truncateDid(did)}</span>
       <span class="id-deadline">Window closes {formatTimestamp(deadline)}</span>
@@ -298,12 +298,6 @@
     line-height: 1.15;
     color: var(--color-ink);
     margin: 0 0 var(--space-sm);
-  }
-
-  .identity {
-    display: flex;
-    flex-direction: column;
-    gap: var(--space-xs);
   }
 
   .id-deadline {

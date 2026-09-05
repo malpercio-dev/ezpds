@@ -204,13 +204,13 @@
       {#if submitting}
         <div class="working">
           <Spinner size={44} label="Signing in" />
-          <p class="status">Opening a session on {pending.request.pdsUrl}…</p>
+          <p class="status u-status-text">Opening a session on {pending.request.pdsUrl}…</p>
         </div>
       {:else}
         <h2>{needsTwoFactor ? 'Enter your two-factor code' : 'Unlock this identity'}</h2>
         <span class="pds-chip">{pending.request.pdsUrl}</span>
 
-        <p class="why">
+        <p class="why u-fine">
           {#if needsTwoFactor}
             {pending.request.pdsUrl} emailed a one-time code to the address on
             <strong>{identifier}</strong>. Enter it to finish signing in.
@@ -308,12 +308,6 @@
     color: var(--color-ink);
     margin: 0;
   }
-  .why {
-    font-size: var(--text-label);
-    line-height: 1.5;
-    color: var(--color-muted);
-    margin: 0;
-  }
   .pds-chip {
     font-family: var(--font-mono);
     font-size: var(--text-data);
@@ -331,11 +325,5 @@
     align-items: center;
     gap: var(--space-lg);
     padding: var(--space-xl) var(--space-md);
-  }
-  .status {
-    font-size: var(--text-body);
-    color: var(--color-muted);
-    margin: 0;
-    text-align: center;
   }
 </style>

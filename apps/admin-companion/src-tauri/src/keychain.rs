@@ -92,11 +92,14 @@ pub fn delete_item(account: &str) -> Result<(), KeychainError> {
     delete_generic_password(SERVICE, account).map_err(KeychainError::Security)
 }
 
+/// `errSecItemNotFound` — the Security framework's "no such item" status.
+const ERR_SEC_ITEM_NOT_FOUND: i32 = -25300;
+
 /// Returns true if the error is errSecItemNotFound (OS status -25300).
 /// Use this to distinguish "item does not exist" from transient OS errors.
 pub fn is_not_found(err: &KeychainError) -> bool {
     match err {
-        KeychainError::Security(e) => e.code() == -25300,
+        KeychainError::Security(e) => e.code() == ERR_SEC_ITEM_NOT_FOUND,
         KeychainError::InvalidUtf8 => false,
         KeychainError::CorruptPairingDoc(_) => false,
         #[cfg(test)]

@@ -273,7 +273,7 @@
           <span class="halt-ic" aria-hidden="true">
             <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M7.86 2h8.28L22 7.86v8.28L16.14 22H7.86L2 16.14V7.86z"/><path d="M12 8v4"/><path d="M12 16h.01"/></svg>
           </span>
-          <span class="halt-body">
+          <span class="halt-body u-stack-2xs">
             <span class="halt-t">{ceremonyError.title}</span>
             <span class="halt-s">{ceremonyError.body}</span>
           </span>
@@ -320,7 +320,7 @@
             <span class="halt-ic" aria-hidden="true">
               <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M7.86 2h8.28L22 7.86v8.28L16.14 22H7.86L2 16.14V7.86z"/><path d="M12 8v4"/><path d="M12 16h.01"/></svg>
             </span>
-            <span class="halt-body">
+            <span class="halt-body u-stack-2xs">
               <span class="halt-t">{ceremonyError.title}</span>
               <span class="halt-s">{ceremonyError.body}</span>
             </span>
@@ -352,7 +352,7 @@
         error={childHandleError}
         disabled={phase === 'minting'}
       />
-      <p class="fine">
+      <p class="fine u-fine">
         {#if preview?.handleHint}
           The agent proposed this handle. Change it to anything your server accepts — it is your
           decision, not its.
@@ -366,7 +366,7 @@
           <span class="halt-ic" aria-hidden="true">
             <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M7.86 2h8.28L22 7.86v8.28L16.14 22H7.86L2 16.14V7.86z"/><path d="M12 8v4"/><path d="M12 16h.01"/></svg>
           </span>
-          <span class="halt-body">
+          <span class="halt-body u-stack-2xs">
             <span class="halt-t">{ceremonyError.title}</span>
             <span class="halt-s">{ceremonyError.body}</span>
           </span>
@@ -406,7 +406,7 @@
         </div>
 
         <p class="section-label" id="grant-list-label">If you approve, this agent can</p>
-        <ul class="grants" aria-labelledby="grant-list-label">
+        <ul class="grants u-list-reset" aria-labelledby="grant-list-label">
           {#each scopeDescriptions as scope (scope.token)}
             <li class="grant" class:grant--elevated={scope.elevated}>
               <span class="grant-ic" aria-hidden="true">
@@ -423,7 +423,7 @@
             </li>
           {/each}
         </ul>
-        <p class="fine">
+        <p class="fine u-fine">
           Every action it takes is recorded in an audit trail you can review, and you can revoke
           its access at any time from My agents.
         </p>
@@ -433,7 +433,7 @@
             <span class="halt-ic" aria-hidden="true">
               <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M7.86 2h8.28L22 7.86v8.28L16.14 22H7.86L2 16.14V7.86z"/><path d="M12 8v4"/><path d="M12 16h.01"/></svg>
             </span>
-            <span class="halt-body">
+            <span class="halt-body u-stack-2xs">
               <span class="halt-t">{ceremonyError.title}</span>
               <span class="halt-s">{ceremonyError.body}</span>
             </span>
@@ -515,14 +515,6 @@
     margin: var(--space-xs) 0 0;
   }
 
-  .grants {
-    list-style: none;
-    display: flex;
-    flex-direction: column;
-    gap: var(--space-sm);
-    margin: 0;
-    padding: 0;
-  }
   .grant {
     display: flex;
     align-items: flex-start;
@@ -566,13 +558,6 @@
     overflow-wrap: anywhere;
   }
 
-  .fine {
-    font-size: var(--text-label);
-    color: var(--color-muted);
-    line-height: 1.5;
-    margin: 0;
-  }
-
   .halt {
     display: flex;
     align-items: flex-start;
@@ -585,11 +570,6 @@
     color: var(--color-critical);
     flex-shrink: 0;
     margin-top: 1px;
-  }
-  .halt-body {
-    display: flex;
-    flex-direction: column;
-    gap: var(--space-2xs);
   }
   .halt-t {
     font-size: var(--text-body);

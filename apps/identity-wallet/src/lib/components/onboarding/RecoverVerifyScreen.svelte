@@ -101,10 +101,10 @@
     {/snippet}
     <div class="preview u-card">
       {#if verified.handle}
-        <div class="row"><span class="k u-label-muted">Handle</span><span class="v">@{verified.handle}</span></div>
+        <div class="row u-stack-3xs"><span class="k u-label-muted">Handle</span><span class="v">@{verified.handle}</span></div>
       {/if}
-      <div class="row"><span class="k u-label-muted">DID</span><span class="v mono">{displayDid}</span></div>
-      <div class="row">
+      <div class="row u-stack-3xs"><span class="k u-label-muted">DID</span><span class="v mono">{displayDid}</span></div>
+      <div class="row u-stack-3xs">
         <span class="k u-label-muted">What happens next</span>
         <span class="v small">
           A new device key is created here and signed into your identity, replacing the lost
@@ -131,11 +131,6 @@
 {/if}
 
 <style>
-  .row {
-    display: flex;
-    flex-direction: column;
-    gap: var(--space-3xs);
-  }
 
   .v {
     font-size: var(--text-body);

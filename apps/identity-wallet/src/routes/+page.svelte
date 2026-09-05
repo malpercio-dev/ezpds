@@ -68,7 +68,7 @@
   import PdsAuthScreen from '$lib/components/onboarding/PdsAuthScreen.svelte';
   import EmailVerificationScreen from '$lib/components/onboarding/EmailVerificationScreen.svelte';
   import ReviewOperationScreen from '$lib/components/onboarding/ReviewOperationScreen.svelte';
-  import ClaimSuccessScreen from '$lib/components/onboarding/ClaimSuccessScreen.svelte';
+  import SuccessScreen from '$lib/components/onboarding/SuccessScreen.svelte';
   import RecoverStartScreen from '$lib/components/onboarding/RecoverStartScreen.svelte';
   import RecoverSharesScreen from '$lib/components/onboarding/RecoverSharesScreen.svelte';
   import RecoverEscrowScreen from '$lib/components/onboarding/RecoverEscrowScreen.svelte';
@@ -80,7 +80,6 @@
   import MigrationSourceAuthScreen from '$lib/components/onboarding/MigrationSourceAuthScreen.svelte';
   import MigrationProgressScreen from '$lib/components/onboarding/MigrationProgressScreen.svelte';
   import MigrationReviewScreen from '$lib/components/onboarding/MigrationReviewScreen.svelte';
-  import MigrationSuccessScreen from '$lib/components/onboarding/MigrationSuccessScreen.svelte';
   import IdentityScreen from '$lib/components/home/IdentityScreen.svelte';
   import MoveOrRebuildScreen from '$lib/components/home/MoveOrRebuildScreen.svelte';
   import ManageIdentityScreen from '$lib/components/home/ManageIdentityScreen.svelte';
@@ -946,8 +945,10 @@
       oncancel={() => goTo('identity_input')}
     />
   {:else if step === 'claim_success'}
-    <ClaimSuccessScreen
-      claimResult={claimResult!}
+    <SuccessScreen
+      result={claimResult!}
+      title="Identity claimed"
+      subtitle="This device now holds the deciding key — you're in control of this identity."
       ondone={() => goTo('home')}
     />
   {:else if step === 'pds_config'}
@@ -1441,8 +1442,11 @@
     {/if}
 
   {:else if step === 'migration_success'}
-    <MigrationSuccessScreen
+    <SuccessScreen
       result={migrationResult!}
+      title="Migration complete"
+      subtitle="Your identity now lives on its new server. Your identifier hasn't changed."
+      pdsLabel="New PDS"
       destPdsLabel={migrationDestPds}
       ondone={() => goTo('home')}
     />

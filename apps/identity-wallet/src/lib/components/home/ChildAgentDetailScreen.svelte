@@ -209,7 +209,7 @@
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>
       {/if}
     </span>
-    <span class="status-body">
+    <span class="status-body u-stack-3xs">
       <span class="status-t">{vocabulary.label}</span>
       <span class="status-s">{vocabulary.hint}</span>
     </span>
@@ -242,7 +242,7 @@
   {#if child.scopes.length === 0}
     <p class="empty-trail">No permissions were granted to this account.</p>
   {:else}
-    <ul class="grants">
+    <ul class="grants u-list-reset">
       {#each describeScopes(child.scopes) as scope (scope.token)}
         <li class="grant" class:grant--elevated={scope.elevated}>
           {#if scope.elevated}
@@ -267,7 +267,7 @@
   </p>
   {#if auditError}
     <div class="notice u-notice" role="alert">
-      <p class="notice-text">{auditError}</p>
+      <p class="notice-text u-notice-text">{auditError}</p>
       <Button variant="secondary" onclick={loadMoreAudit}>Try again</Button>
     </div>
   {:else if auditEvents.length === 0 && !auditLoading}
@@ -295,7 +295,7 @@
   {#if renewed}
     <div class="reveal" role="status">
       <p class="reveal-title">New credential ready</p>
-      <p class="reveal-sub">
+      <p class="reveal-sub u-fine">
         Give this to the agent so it can sign in again. It works until
         {formatTimestamp(renewed.assertionExpires)} and is shown only once — the wallet keeps no
         copy. Treat it like a password.
@@ -410,11 +410,6 @@
   .status--revoked .status-s {
     color: var(--color-muted);
   }
-  .status-body {
-    display: flex;
-    flex-direction: column;
-    gap: var(--space-3xs);
-  }
   .status-t {
     font-size: var(--text-title);
     font-weight: var(--weight-semibold);
@@ -470,14 +465,6 @@
     line-height: 1.45;
   }
 
-  .grants {
-    list-style: none;
-    display: flex;
-    flex-direction: column;
-    gap: var(--space-sm);
-    margin: 0;
-    padding: 0;
-  }
   .grant {
     display: flex;
     flex-direction: column;
@@ -584,12 +571,6 @@
     color: var(--color-ink);
     margin: 0;
   }
-  .reveal-sub {
-    font-size: var(--text-label);
-    color: var(--color-muted);
-    line-height: 1.5;
-    margin: 0;
-  }
   .reveal-row {
     display: flex;
     align-items: center;
@@ -643,9 +624,4 @@
     margin: 0;
   }
 
-  .notice-text {
-    font-size: var(--text-body);
-    color: var(--color-critical);
-    margin: 0;
-  }
 </style>

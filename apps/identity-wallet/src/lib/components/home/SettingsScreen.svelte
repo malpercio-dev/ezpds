@@ -203,7 +203,7 @@
   <ScreenHeader title="Settings" {onback} />
 
   <section class="group" aria-labelledby="appearance-title">
-    <div class="group-head">
+    <div class="group-head u-stack-2xs">
       <h2 class="group-title" id="appearance-title">Appearance</h2>
       <p class="group-sub">System follows your iPhone’s appearance setting.</p>
     </div>
@@ -264,7 +264,7 @@
   </section>
 
   <section class="group" aria-labelledby="media-backup-title">
-    <div class="group-head">
+    <div class="group-head u-stack-2xs">
       <h2 class="group-title" id="media-backup-title">Media backup</h2>
       <p class="group-sub">
         For identities with media backup turned on, keep the iCloud copy up to date in the
@@ -319,7 +319,7 @@
   </section>
 
   <section class="group" aria-labelledby="notifications-title">
-    <div class="group-head">
+    <div class="group-head u-stack-2xs">
       <h2 class="group-title" id="notifications-title">Notifications</h2>
       <p class="group-sub">
         Notifications from your server arrive sealed and are opened on this iPhone. When one
@@ -419,7 +419,7 @@
   </section>
 
   <section class="group" aria-labelledby="diagnostics-title">
-    <div class="group-head">
+    <div class="group-head u-stack-2xs">
       <h2 class="group-title" id="diagnostics-title">Diagnostics</h2>
       <p class="group-sub">
         Share a log of this session’s network errors when troubleshooting. It lists operation
@@ -465,11 +465,6 @@
     display: flex;
     flex-direction: column;
     gap: var(--space-md);
-  }
-  .group-head {
-    display: flex;
-    flex-direction: column;
-    gap: var(--space-2xs);
   }
   .group-title {
     font-family: var(--font-sans);
