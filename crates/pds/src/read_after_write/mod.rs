@@ -316,7 +316,7 @@ pub(crate) async fn pipethrough_munged(
         did,
         // The munge path always hits the admin-configured AppView, never a caller-controlled
         // header target, so it uses the plain client — not the SSRF-hardened one.
-        false,
+        crate::routes::service_proxy::Upstream::Configured,
         req,
     )
     .await

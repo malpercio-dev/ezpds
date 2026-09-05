@@ -81,7 +81,7 @@ pub async fn xrpc_handler(
     use crate::auth::jwt::AuthScope;
     use crate::auth::oauth_scopes;
     use crate::identity::proxy::resolve_atproto_proxy_target;
-    use crate::routes::service_proxy::proxy_xrpc;
+    use crate::routes::service_proxy::{proxy_xrpc, Upstream};
 
     let upstream = if method.starts_with("app.bsky.") {
         Some(ProxyUpstream::AppView)
@@ -199,52 +199,46 @@ pub async fn xrpc_handler(
         return response;
     }
 
-    let (url, proxy_did, caller_controlled_target, upstream_label): (
-        String,
-        String,
-        bool,
-        &'static str,
-    ) = match header_target {
-        // Always caller-controlled, so the request routes through the redirect-disabled,
-        // SSRF-resolving hardened client. `moderation` keeps its own label (it always resolves
-        // this way); an `app.bsky.*`/`chat.bsky.*` request that used a header to override its
-        // namespace's default gets the bounded `header_target` label instead of the raw
-        // destination, per the metrics cardinality rule.
-        Some(target) => {
-            let label = if matches!(upstream, ProxyUpstream::Moderation) {
-                "moderation"
-            } else {
-                "header_target"
-            };
-            (target.url, target.header_value, true, label)
-        }
-        None => match upstream {
-            ProxyUpstream::AppView => (
-                state.config.appview.url.clone(),
-                state.config.appview.did.clone(),
-                false,
-                "appview",
-            ),
-            ProxyUpstream::Chat => (
-                state.config.chat.url.clone(),
-                state.config.chat.did.clone(),
-                false,
-                "chat",
-            ),
-            ProxyUpstream::Moderation => unreachable!("moderation always resolves a header target"),
-        },
-    };
+    let (url, proxy_did, target, upstream_label): (String, String, Upstream, &'static str) =
+        match header_target {
+            // Always caller-controlled, so the request routes through the redirect-disabled,
+            // SSRF-resolving hardened client. `moderation` keeps its own label (it always
+            // resolves this way); an `app.bsky.*`/`chat.bsky.*` request that used a header to
+            // override its namespace's default gets the bounded `header_target` label instead
+            // of the raw destination, per the metrics cardinality rule.
+            Some(target) => {
+                let label = if matches!(upstream, ProxyUpstream::Moderation) {
+                    "moderation"
+                } else {
+                    "header_target"
+                };
+                (
+                    target.url,
+                    target.header_value,
+                    Upstream::CallerResolved,
+                    label,
+                )
+            }
+            None => match upstream {
+                ProxyUpstream::AppView => (
+                    state.config.appview.url.clone(),
+                    state.config.appview.did.clone(),
+                    Upstream::Configured,
+                    "appview",
+                ),
+                ProxyUpstream::Chat => (
+                    state.config.chat.url.clone(),
+                    state.config.chat.did.clone(),
+                    Upstream::Configured,
+                    "chat",
+                ),
+                ProxyUpstream::Moderation => {
+                    unreachable!("moderation always resolves a header target")
+                }
+            },
+        };
 
-    let response = proxy_xrpc(
-        &state,
-        &url,
-        &proxy_did,
-        &method,
-        &user.did,
-        caller_controlled_target,
-        req,
-    )
-    .await;
+    let response = proxy_xrpc(&state, &url, &proxy_did, &method, &user.did, target, req).await;
     count_proxy_request(&state, upstream_label, response.status().as_u16());
     response
 }
