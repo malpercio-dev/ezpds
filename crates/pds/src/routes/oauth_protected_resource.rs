@@ -49,15 +49,14 @@ pub async fn oauth_protected_resource_metadata(State(state): State<AppState>) ->
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
-
     use axum::{
         body::Body,
         http::{Request, StatusCode},
     };
     use tower::ServiceExt;
 
-    use crate::app::{app, test_state, AppState};
+    use crate::app::{app, test_state};
+    use crate::routes::test_utils;
 
     async fn metadata_json() -> serde_json::Value {
         let response = app(test_state().await)
@@ -95,93 +94,36 @@ mod tests {
         );
     }
 
+    /// Every field the handler emits, in one whole-document assertion (test_state() sets
+    /// service_name = "custos", the default). `scopes_supported` is asserted against
+    /// `auth::oauth_scopes::supported_scopes()`, the same source the handler reads — mirrored in
+    /// `oauth_server_metadata.rs`'s equivalent test, both discovery documents advertising the
+    /// same supported scope surface — rather than a second hand-typed copy of the list.
     #[tokio::test]
-    async fn accessible_without_auth_headers() {
-        // Lock in that the discovery endpoint requires no credentials.
-        // A future global auth middleware must not inadvertently protect this route.
-        let response = app(test_state().await)
-            .oneshot(
-                Request::builder()
-                    .uri("/.well-known/oauth-protected-resource")
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(response.status(), StatusCode::OK);
-    }
-
-    #[tokio::test]
-    async fn resource_matches_public_url() {
+    async fn metadata_document_matches_expected_shape() {
         let json = metadata_json().await;
-        assert_eq!(json["resource"], "https://test.example.com");
-    }
-
-    #[tokio::test]
-    async fn authorization_server_points_to_same_origin() {
-        let json = metadata_json().await;
+        let scopes_supported: Vec<String> = crate::auth::oauth_scopes::supported_scopes()
+            .into_iter()
+            .map(String::from)
+            .collect();
         assert_eq!(
-            json["authorization_servers"],
-            serde_json::json!(["https://test.example.com"])
+            json,
+            serde_json::json!({
+                "resource": "https://test.example.com",
+                "resource_name": "custos",
+                "authorization_servers": ["https://test.example.com"],
+                "scopes_supported": scopes_supported,
+                "bearer_methods_supported": ["header"],
+                "resource_documentation": "https://atproto.com",
+            })
         );
-    }
-
-    #[tokio::test]
-    async fn scopes_supported_reflects_the_full_granular_scope_grammar() {
-        // Mirrors oauth_server_metadata.rs's contract —
-        // both discovery documents advertise the same supported scope surface.
-        let json = metadata_json().await;
-        assert_eq!(
-            json["scopes_supported"],
-            serde_json::json!([
-                "atproto",
-                "transition:email",
-                "transition:generic",
-                "transition:chat.bsky",
-                "repo:*",
-                "rpc:*",
-                "blob:*/*",
-                "account:*",
-                "identity:*",
-                "space:*",
-                "include:*"
-            ])
-        );
-    }
-
-    #[tokio::test]
-    async fn bearer_methods_supported_is_header() {
-        let json = metadata_json().await;
-        assert_eq!(
-            json["bearer_methods_supported"],
-            serde_json::json!(["header"])
-        );
-    }
-
-    #[tokio::test]
-    async fn resource_documentation_points_to_atproto_docs() {
-        let json = metadata_json().await;
-        assert_eq!(json["resource_documentation"], "https://atproto.com");
-    }
-
-    #[tokio::test]
-    async fn resource_name_defaults_to_configured_service_name() {
-        // test_state() sets service_name = "custos" (the default).
-        let json = metadata_json().await;
-        assert_eq!(json["resource_name"], "custos");
     }
 
     #[tokio::test]
     async fn resource_name_reflects_configured_service_name() {
         // Prove the field is sourced from config, not hardcoded: a custom service_name
         // flows through to the advertised resource_name.
-        let base = test_state().await;
-        let mut config = (*base.config).clone();
-        config.service_name = "Custos Relay".to_string();
-        let state = AppState {
-            config: Arc::new(config),
-            ..base
-        };
+        let state = test_utils::state_with(|c| c.service_name = "Custos Relay".to_string()).await;
 
         let response = app(state)
             .oneshot(
@@ -203,13 +145,8 @@ mod tests {
 
     #[tokio::test]
     async fn trailing_slash_in_public_url_does_not_affect_resource_origin() {
-        let base = test_state().await;
-        let mut config = (*base.config).clone();
-        config.public_url = "https://pds.example.com/".to_string();
-        let state = AppState {
-            config: Arc::new(config),
-            ..base
-        };
+        let state =
+            test_utils::state_with(|c| c.public_url = "https://pds.example.com/".to_string()).await;
 
         let response = app(state)
             .oneshot(

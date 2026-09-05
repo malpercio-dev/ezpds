@@ -1225,10 +1225,6 @@ pub async fn post_authorization(
 
 #[cfg(test)]
 mod tests {
-    use argon2::{
-        password_hash::{rand_core::OsRng, SaltString},
-        Argon2, PasswordHasher,
-    };
     use axum::{
         body::Body,
         http::{Request, StatusCode},
@@ -1239,6 +1235,7 @@ mod tests {
     use crate::app::{app, test_state};
     use crate::auth::token::hash_bearer_token;
     use crate::db::oauth::register_oauth_client;
+    use crate::routes::test_utils;
 
     const CLIENT_ID: &str = "https://app.example.com/client-metadata.json";
     const REDIRECT_URI: &str = "https://app.example.com/callback";
@@ -1274,27 +1271,14 @@ mod tests {
     /// password hash, plus an associated handle for identifier-based login tests.
     async fn state_with_client_and_account_with_password(password: &str) -> crate::app::AppState {
         let state = state_with_client().await;
-        let salt = SaltString::generate(&mut OsRng);
-        let password_hash = Argon2::default()
-            .hash_password(password.as_bytes(), &salt)
-            .unwrap()
-            .to_string();
-        sqlx::query(
-            "INSERT INTO accounts (did, email, password_hash, created_at, updated_at) \
-             VALUES (?, ?, ?, datetime('now'), datetime('now'))",
+        test_utils::insert_account_with_password(
+            &state.db,
+            DID,
+            TEST_HANDLE,
+            "test@example.com",
+            password,
         )
-        .bind(DID)
-        .bind("test@example.com")
-        .bind(&password_hash)
-        .execute(&state.db)
-        .await
-        .unwrap();
-        sqlx::query("INSERT INTO handles (handle, did, created_at) VALUES (?, ?, datetime('now'))")
-            .bind(TEST_HANDLE)
-            .bind(DID)
-            .execute(&state.db)
-            .await
-            .unwrap();
+        .await;
         state
     }
 
@@ -1317,21 +1301,7 @@ mod tests {
     /// Test state with a mobile-provisioned account: handle is set but password_hash is NULL.
     async fn state_with_client_and_mobile_account() -> crate::app::AppState {
         let state = state_with_client().await;
-        sqlx::query(
-            "INSERT INTO accounts (did, email, password_hash, created_at, updated_at) \
-             VALUES (?, ?, NULL, datetime('now'), datetime('now'))",
-        )
-        .bind(DID)
-        .bind("test@example.com")
-        .execute(&state.db)
-        .await
-        .unwrap();
-        sqlx::query("INSERT INTO handles (handle, did, created_at) VALUES (?, ?, datetime('now'))")
-            .bind(TEST_HANDLE)
-            .bind(DID)
-            .execute(&state.db)
-            .await
-            .unwrap();
+        test_utils::seed_handle(&state.db, TEST_HANDLE, DID).await;
         state
     }
 
@@ -1752,14 +1722,7 @@ mod tests {
         assert_eq!(resp.status(), StatusCode::SEE_OTHER);
 
         let location = resp.headers().get("location").unwrap().to_str().unwrap();
-        let plaintext = location
-            .split("code=")
-            .nth(1)
-            .unwrap()
-            .split('&')
-            .next()
-            .unwrap();
-        let code_hash = hash_bearer_token(plaintext).unwrap();
+        let code_hash = hash_bearer_token(code_from_location(location)).unwrap();
 
         let row: Option<(String,)> =
             sqlx::query_as("SELECT code FROM oauth_authorization_codes WHERE code = ?")
@@ -2015,57 +1978,13 @@ mod tests {
 
     // ── PAR (Pushed Authorization Request) flow ───────────────────────────────
 
-    async fn store_test_par_request(state: &crate::app::AppState, request_uri: &str) {
-        use crate::db::oauth::store_par_request;
-        store_par_request(
-            &state.db,
-            request_uri,
-            CLIENT_ID,
-            r#"{"redirect_uri":"https://app.example.com/callback","code_challenge":"testchallenge","code_challenge_method":"S256","state":"teststate","response_type":"code","scope":"atproto","login_hint":null}"#,
-        )
-        .await
-        .unwrap();
-    }
-
-    async fn store_test_par_request_with_login_hint(
-        state: &crate::app::AppState,
-        request_uri: &str,
-        login_hint: &str,
-    ) {
-        use crate::db::oauth::store_par_request;
-        let params = format!(
-            r#"{{"redirect_uri":"https://app.example.com/callback","code_challenge":"testchallenge","code_challenge_method":"S256","state":"teststate","response_type":"code","scope":"atproto","login_hint":"{}"}}"#,
-            login_hint
-        );
-        store_par_request(&state.db, request_uri, CLIENT_ID, &params)
-            .await
-            .unwrap();
-    }
-
     #[tokio::test]
     async fn get_authorization_with_valid_request_uri_renders_consent_page() {
         let state = state_with_client().await;
-        let request_uri = "urn:ietf:params:oauth:request_uri:test-par-token-abc";
-        store_test_par_request(&state, request_uri).await;
-
-        let response = app(state)
-            .oneshot(
-                Request::builder()
-                    .uri(format!(
-                        "/oauth/authorize?client_id={}&request_uri={}",
-                        CLIENT_ID, request_uri
-                    ))
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
+        let response = get_authorize_via_par(state, par_params()).await;
 
         assert_eq!(response.status(), StatusCode::OK);
-        let body = axum::body::to_bytes(response.into_body(), 32768)
-            .await
-            .unwrap();
-        let html = std::str::from_utf8(&body).unwrap();
+        let html = body_string(response).await;
         assert!(
             html.contains("Test App"),
             "consent page should show the registered client name"
@@ -2076,24 +1995,17 @@ mod tests {
     async fn get_authorization_with_invalid_request_uri_returns_error_page() {
         let state = state_with_client().await;
 
-        let response = app(state)
-            .oneshot(
-                Request::builder()
-                    .uri(format!(
-                        "/oauth/authorize?client_id={}&request_uri=urn:ietf:params:oauth:request_uri:nonexistent",
-                        CLIENT_ID
-                    ))
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
+        let response = get_authorize(
+            state,
+            &format!(
+                "/oauth/authorize?client_id={}&request_uri=urn:ietf:params:oauth:request_uri:nonexistent",
+                CLIENT_ID
+            ),
+        )
+        .await;
 
         assert_eq!(response.status(), StatusCode::BAD_REQUEST);
-        let body = axum::body::to_bytes(response.into_body(), 32768)
-            .await
-            .unwrap();
-        let html = std::str::from_utf8(&body).unwrap();
+        let html = body_string(response).await;
         assert!(
             html.contains("This sign-in request didn&#39;t work"),
             "invalid request_uri should render an error page"
@@ -2112,29 +2024,22 @@ mod tests {
         )
         .bind("urn:ietf:params:oauth:request_uri:formerly-valid-expired")
         .bind(CLIENT_ID)
-        .bind(r#"{"redirect_uri":"https://app.example.com/callback","code_challenge":"c","code_challenge_method":"S256","state":"s","response_type":"code","scope":"atproto","login_hint":null}"#)
+        .bind(par_params().to_string())
         .execute(&state.db)
         .await
         .unwrap();
 
-        let response = app(state)
-            .oneshot(
-                Request::builder()
-                    .uri(format!(
-                        "/oauth/authorize?client_id={}&request_uri=urn:ietf:params:oauth:request_uri:formerly-valid-expired",
-                        CLIENT_ID
-                    ))
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
+        let response = get_authorize(
+            state,
+            &format!(
+                "/oauth/authorize?client_id={}&request_uri=urn:ietf:params:oauth:request_uri:formerly-valid-expired",
+                CLIENT_ID
+            ),
+        )
+        .await;
 
         assert_eq!(response.status(), StatusCode::BAD_REQUEST);
-        let body = axum::body::to_bytes(response.into_body(), 32768)
-            .await
-            .unwrap();
-        let html = std::str::from_utf8(&body).unwrap();
+        let html = body_string(response).await;
         assert!(
             html.contains("This sign-in request didn&#39;t work"),
             "expired request_uri should render an error page"
@@ -2144,27 +2049,12 @@ mod tests {
     #[tokio::test]
     async fn get_authorization_with_par_forwards_login_hint_to_consent_page() {
         let state = state_with_client().await;
-        let request_uri = "urn:ietf:params:oauth:request_uri:test-par-login-hint";
-        store_test_par_request_with_login_hint(&state, request_uri, "alice.example.com").await;
-
-        let response = app(state)
-            .oneshot(
-                Request::builder()
-                    .uri(format!(
-                        "/oauth/authorize?client_id={}&request_uri={}",
-                        CLIENT_ID, request_uri
-                    ))
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
+        let mut params = par_params();
+        params["login_hint"] = "alice.example.com".into();
+        let response = get_authorize_via_par(state, params).await;
 
         assert_eq!(response.status(), StatusCode::OK);
-        let body = axum::body::to_bytes(response.into_body(), 32768)
-            .await
-            .unwrap();
-        let html = std::str::from_utf8(&body).unwrap();
+        let html = body_string(response).await;
         assert!(
             html.contains("alice.example.com"),
             "login_hint from PAR should pre-populate the identifier field on the consent page"
@@ -2177,24 +2067,17 @@ mod tests {
         // authorization request with inline parameters must be refused at flow start,
         // with no consent page and no pending wallet request created.
         let state = state_with_client().await;
-        let response = app(state.clone())
-            .oneshot(
-                Request::builder()
-                    .uri(format!(
-                        "/oauth/authorize?client_id={}&redirect_uri=https%3A%2F%2Fapp.example.com%2Fcallback&code_challenge=abc&code_challenge_method=S256&state=s&response_type=code&scope=atproto",
-                        urlencoding::encode(CLIENT_ID)
-                    ))
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
+        let response = get_authorize(
+            state.clone(),
+            &format!(
+                "/oauth/authorize?client_id={}&redirect_uri=https%3A%2F%2Fapp.example.com%2Fcallback&code_challenge=abc&code_challenge_method=S256&state=s&response_type=code&scope=atproto",
+                urlencoding::encode(CLIENT_ID)
+            ),
+        )
+        .await;
 
         assert_eq!(response.status(), StatusCode::BAD_REQUEST);
-        let body = axum::body::to_bytes(response.into_body(), 32768)
-            .await
-            .unwrap();
-        let html = std::str::from_utf8(&body).unwrap();
+        let html = body_string(response).await;
         assert!(
             html.contains("This sign-in request didn&#39;t work"),
             "a non-PAR request must get the no-redirect error page"
@@ -2217,21 +2100,14 @@ mod tests {
         let state = state_with_client().await;
         let params = par_params();
         let url = authorize_url_via_par(&state, &params).await;
-        let response = app(state.clone())
-            .oneshot(
-                Request::builder()
-                    .uri(format!("{url}&request=eyJhbGciOiJub25lIn0.e30."))
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
+        let response = get_authorize(
+            state.clone(),
+            &format!("{url}&request=eyJhbGciOiJub25lIn0.e30."),
+        )
+        .await;
 
         assert_eq!(response.status(), StatusCode::BAD_REQUEST);
-        let body = axum::body::to_bytes(response.into_body(), 32768)
-            .await
-            .unwrap();
-        let html = std::str::from_utf8(&body).unwrap();
+        let html = body_string(response).await;
         assert!(
             html.contains("This sign-in request didn&#39;t work"),
             "a JAR request must get the no-redirect error page"
@@ -2249,27 +2125,17 @@ mod tests {
     #[tokio::test]
     async fn get_authorization_with_mismatched_client_id_returns_error_page() {
         let state = state_with_client().await;
-        let request_uri = "urn:ietf:params:oauth:request_uri:test-par-mismatch";
-        store_test_par_request(&state, request_uri).await;
+        let url = authorize_url_via_par(&state, &par_params()).await;
+        let request_uri = url.split("request_uri=").nth(1).unwrap();
 
-        let response = app(state)
-            .oneshot(
-                Request::builder()
-                    .uri(format!(
-                        "/oauth/authorize?client_id=https://other.example.com/client&request_uri={}",
-                        request_uri
-                    ))
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
+        let response = get_authorize(
+            state,
+            &format!("/oauth/authorize?client_id=https://other.example.com/client&request_uri={request_uri}"),
+        )
+        .await;
 
         assert_eq!(response.status(), StatusCode::BAD_REQUEST);
-        let body = axum::body::to_bytes(response.into_body(), 32768)
-            .await
-            .unwrap();
-        let html = std::str::from_utf8(&body).unwrap();
+        let html = body_string(response).await;
         assert!(
             html.contains("This sign-in request didn&#39;t work"),
             "mismatched client_id should render an error page"
@@ -2278,30 +2144,13 @@ mod tests {
 
     // ── include: permission-set expansion ─────
 
-    use std::future::Future;
-    use std::pin::Pin;
     use wiremock::matchers::{method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
-    use crate::identity::dns::{DnsError, TxtResolver};
-    use crate::routes::test_utils::seed_did_document;
+    use crate::routes::test_utils::{seed_did_document, FixedTxtResolver};
 
     const AUTHORITY_DID: &str = "did:plc:authoritydidxxxxxxxxxxxxx";
     const AUTHORITY_NSID: &str = "app.bsky.authFull";
-
-    struct FixedTxtResolver {
-        records: Vec<String>,
-    }
-
-    impl TxtResolver for FixedTxtResolver {
-        fn txt_lookup<'a>(
-            &'a self,
-            _name: &'a str,
-        ) -> Pin<Box<dyn Future<Output = Result<Vec<String>, DnsError>> + Send + 'a>> {
-            let records = self.records.clone();
-            Box::pin(async move { Ok(records) })
-        }
-    }
 
     /// A test state with a registered client + password account, plus DNS/DID-document
     /// resolution wired up for `AUTHORITY_NSID` to a mock PDS serving `schema`.
@@ -2377,7 +2226,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn ac4_1_include_scope_stores_expanded_scope_on_authorization_code() {
+    async fn include_scope_stores_expanded_scope_on_authorization_code() {
         let (state, _server) = state_with_include_authority(serde_json::json!([
             { "type": "permission", "resource": "identity", "attr": "handle" }
         ]))
@@ -2390,22 +2239,9 @@ mod tests {
         let location = resp.headers().get("location").unwrap().to_str().unwrap();
         assert!(!location.contains("error="), "unexpected error: {location}");
 
-        let plaintext = location
-            .split("code=")
-            .nth(1)
-            .unwrap()
-            .split('&')
-            .next()
-            .unwrap();
-        let code_hash = hash_bearer_token(plaintext).unwrap();
-        let row: (String,) =
-            sqlx::query_as("SELECT scope FROM oauth_authorization_codes WHERE code = ?")
-                .bind(&code_hash)
-                .fetch_one(&db)
-                .await
-                .unwrap();
         assert_eq!(
-            row.0, "atproto identity:handle",
+            stored_scope_for(&db, location).await,
+            "atproto identity:handle",
             "stored scope must be the expanded granular set, not the raw include: token"
         );
     }
@@ -2429,25 +2265,14 @@ mod tests {
         let location = resp.headers().get("location").unwrap().to_str().unwrap();
         assert!(!location.contains("error="), "unexpected error: {location}");
 
-        let plaintext = location
-            .split("code=")
-            .nth(1)
-            .unwrap()
-            .split('&')
-            .next()
-            .unwrap();
-        let code_hash = hash_bearer_token(plaintext).unwrap();
-        let row: (String,) =
-            sqlx::query_as("SELECT scope FROM oauth_authorization_codes WHERE code = ?")
-                .bind(&code_hash)
-                .fetch_one(&db)
-                .await
-                .unwrap();
-        assert_eq!(row.0, "atproto transition:generic");
+        assert_eq!(
+            stored_scope_for(&db, location).await,
+            "atproto transition:generic"
+        );
     }
 
     #[tokio::test]
-    async fn ac4_2_unresolvable_include_scope_redirects_invalid_scope() {
+    async fn unresolvable_include_scope_redirects_invalid_scope() {
         // No txt_resolver configured at all — the include: reference cannot resolve.
         let state = state_with_client_and_account_with_password(TEST_PASSWORD).await;
         let scope = "atproto include:app.bsky.authFull".to_string();
@@ -2458,7 +2283,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn ac4_3_get_consent_page_shows_expanded_permissions_for_include_scope() {
+    async fn get_consent_page_shows_expanded_permissions_for_include_scope() {
         let (state, _server) = state_with_include_authority(serde_json::json!([
             { "type": "permission", "resource": "identity", "attr": "handle" }
         ]))
@@ -2497,15 +2322,19 @@ mod tests {
 
     // ── Consent UI grouping + per-scope opt-out ──
 
-    async fn stored_scope_for(db: &sqlx::SqlitePool, location: &str) -> String {
-        let plaintext = location
+    /// Extract the plaintext authorization code from a `Location` redirect's `code=` query param.
+    fn code_from_location(location: &str) -> &str {
+        location
             .split("code=")
             .nth(1)
             .unwrap()
             .split('&')
             .next()
-            .unwrap();
-        let code_hash = hash_bearer_token(plaintext).unwrap();
+            .unwrap()
+    }
+
+    async fn stored_scope_for(db: &sqlx::SqlitePool, location: &str) -> String {
+        let code_hash = hash_bearer_token(code_from_location(location)).unwrap();
         let row: (String,) =
             sqlx::query_as("SELECT scope FROM oauth_authorization_codes WHERE code = ?")
                 .bind(&code_hash)
@@ -2516,7 +2345,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn ac5_1_consent_page_groups_permissions_by_resource_type() {
+    async fn consent_page_groups_permissions_by_resource_type() {
         let state = state_with_client().await;
         let mut params = par_params();
         params["scope"] = "atproto repo:app.bsky.feed.post identity:handle".into();
@@ -2543,7 +2372,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn ac5_2_unchecking_a_permission_excludes_it_from_the_granted_scope() {
+    async fn unchecking_a_permission_excludes_it_from_the_granted_scope() {
         let state = state_with_client_and_account_with_password(TEST_PASSWORD).await;
         let db = state.db.clone();
         // Only identity:handle is submitted as granted — repo:app.bsky.feed.post was unchecked.
@@ -2563,7 +2392,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn ac5_3_atproto_cannot_be_unchecked() {
+    async fn atproto_cannot_be_unchecked() {
         let state = state_with_client_and_account_with_password(TEST_PASSWORD).await;
         let db = state.db.clone();
         // No granted_scope submitted at all — everything unchecked. atproto must still grant.
@@ -2709,21 +2538,5 @@ mod tests {
             html.contains("com.example.app:"),
             "the rejection must name the required reverse-FQDN scheme"
         );
-    }
-
-    #[tokio::test]
-    async fn ac7_1_legacy_scope_without_include_is_unaffected() {
-        // No txt_resolver configured — if legacy scopes triggered any resolution attempt,
-        // this would fail. It must succeed exactly as it does without this feature.
-        let state = state_with_client_and_account_with_password(TEST_PASSWORD).await;
-        let resp = post_authorize(
-            state,
-            &approve_form_with_credentials(TEST_HANDLE, TEST_PASSWORD),
-        )
-        .await;
-        assert_eq!(resp.status(), StatusCode::SEE_OTHER);
-        let location = resp.headers().get("location").unwrap().to_str().unwrap();
-        assert!(location.contains("code="));
-        assert!(!location.contains("error="));
     }
 }

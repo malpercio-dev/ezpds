@@ -314,8 +314,9 @@ mod tests {
     use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
     use tower::ServiceExt;
 
-    use super::super::test_support::{json_body, mint_assertion, now_secs, post_token};
+    use super::super::test_support::{json_body, mint_assertion, post_token};
     use crate::app::{app, test_state, AppState};
+    use crate::routes::test_utils;
 
     const JWT_BEARER: &str = "urn:ietf:params:oauth:grant-type:jwt-bearer";
 
@@ -348,15 +349,12 @@ mod tests {
         status: &str,
         scopes_json: &str,
     ) {
-        sqlx::query(
-            "INSERT INTO accounts (did, email, password_hash, created_at, updated_at) \
-             VALUES (?, ?, 'hash', datetime('now'), datetime('now'))",
+        test_utils::seed_handle(
+            &state.db,
+            &format!("{registration_id}.test.example.com"),
+            did,
         )
-        .bind(did)
-        .bind(format!("{registration_id}@example.com"))
-        .execute(&state.db)
-        .await
-        .unwrap();
+        .await;
         sqlx::query(
             "INSERT INTO agent_identities \
              (id, did, registration_type, issuer, subject, email, scopes, identity_assertion, \
@@ -384,7 +382,7 @@ mod tests {
             did,
             "reg_bearer",
             "com.atproto.access",
-            now_secs() + 600,
+            crate::time::unix_now_secs() + 600,
         );
 
         let body = format!("grant_type={JWT_BEARER}&assertion={assertion}");
@@ -464,144 +462,124 @@ mod tests {
         assert_eq!(json_body(resp).await["error"], "invalid_request");
     }
 
-    #[tokio::test]
-    async fn jwt_bearer_bad_signature_returns_invalid_grant() {
-        let state = test_state().await;
-        let did = "did:plc:agentbearer1111111111";
-        seed_agent_identity(&state, "reg_badsig", did, "claimed").await;
-        let assertion = tamper_signature(&mint_assertion(
-            &state,
-            did,
-            "reg_badsig",
-            "com.atproto.access",
-            now_secs() + 600,
-        ));
-
-        let resp = app(state)
-            .oneshot(post_token(&format!(
-                "grant_type={JWT_BEARER}&assertion={assertion}"
-            )))
-            .await
-            .unwrap();
-        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
-        let json = json_body(resp).await;
-        assert_eq!(json["error"], "invalid_grant");
-        // A tampered assertion is not an expired one: the description must say invalid, so the
-        // agent does not loop on re-registration for what is actually a forgery or replay.
-        assert!(
-            json["error_description"]
-                .as_str()
-                .unwrap()
-                .contains("is invalid"),
-            "tampered assertion must be described as invalid, got: {json}"
-        );
+    /// `seed status → mint assertion → post → assert (error_code, description substring)`,
+    /// parametrised over the ways a jwt-bearer exchange fails: a tampered signature, an expired
+    /// assertion, a DID that doesn't match the claimed registration, an unclaimed (`active`)
+    /// registration, and a revoked one (which the RFC 7523 code alone distinguishes — no
+    /// description substring needed).
+    struct BadGrantCase {
+        reg_id: &'static str,
+        /// The DID `seed_agent_identity` claims the registration under.
+        seed_did: &'static str,
+        identity_status: &'static str,
+        /// The `sub` the assertion is minted for — differs from `seed_did` for the mismatch case.
+        assertion_sub: &'static str,
+        exp_offset_secs: i64,
+        tamper_signature: bool,
+        expected_error: &'static str,
+        expected_description_substring: Option<&'static str>,
     }
 
     #[tokio::test]
-    async fn jwt_bearer_expired_assertion_returns_invalid_grant() {
-        let state = test_state().await;
-        let did = "did:plc:agentbearer2222222222";
-        seed_agent_identity(&state, "reg_expired", did, "claimed").await;
-        // exp in the past.
-        let assertion = mint_assertion(
-            &state,
-            did,
-            "reg_expired",
-            "com.atproto.access",
-            now_secs() - 60,
-        );
+    async fn jwt_bearer_bad_grant_cases() {
+        let cases = [
+            BadGrantCase {
+                reg_id: "reg_badsig",
+                seed_did: "did:plc:agentbearer1111111111",
+                identity_status: "claimed",
+                assertion_sub: "did:plc:agentbearer1111111111",
+                exp_offset_secs: 600,
+                tamper_signature: true,
+                expected_error: "invalid_grant",
+                // A tampered assertion is not an expired one: the description must say invalid,
+                // so the agent does not loop on re-registration for what is actually a forgery.
+                expected_description_substring: Some("is invalid"),
+            },
+            BadGrantCase {
+                reg_id: "reg_expired",
+                seed_did: "did:plc:agentbearer2222222222",
+                identity_status: "claimed",
+                assertion_sub: "did:plc:agentbearer2222222222",
+                exp_offset_secs: -60,
+                tamper_signature: false,
+                expected_error: "invalid_grant",
+                // The routine, recoverable case: an agent acting sporadically hits this in every
+                // action window and must be able to tell "re-register" from "revoked, stop".
+                expected_description_substring: Some("has expired"),
+            },
+            BadGrantCase {
+                reg_id: "reg_mismatch",
+                seed_did: "did:plc:agentbearer5555555555",
+                identity_status: "claimed",
+                assertion_sub: "did:plc:agentbearer6666666666",
+                exp_offset_secs: 600,
+                tamper_signature: false,
+                expected_error: "invalid_grant",
+                // Its own description — the recoverable expiry/unclaimed paths must never absorb it.
+                expected_description_substring: Some("does not match"),
+            },
+            BadGrantCase {
+                reg_id: "reg_unclaimed",
+                seed_did: "did:plc:agentbearer7777777777",
+                identity_status: "active",
+                assertion_sub: "did:plc:agentbearer7777777777",
+                exp_offset_secs: 600,
+                tamper_signature: false,
+                expected_error: "invalid_grant",
+                // Not an unknown registration: points the agent at the claim ceremony.
+                expected_description_substring: Some("claimed"),
+            },
+            BadGrantCase {
+                reg_id: "reg_revoked",
+                seed_did: "did:plc:agentbearer4444444444",
+                identity_status: "revoked",
+                assertion_sub: "did:plc:agentbearer4444444444",
+                exp_offset_secs: 600,
+                tamper_signature: false,
+                expected_error: "access_denied",
+                expected_description_substring: None,
+            },
+        ];
 
-        let resp = app(state)
-            .oneshot(post_token(&format!(
-                "grant_type={JWT_BEARER}&assertion={assertion}"
-            )))
-            .await
-            .unwrap();
-        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
-        let json = json_body(resp).await;
-        assert_eq!(json["error"], "invalid_grant");
-        // The whole point of the split: an expired assertion is the routine, recoverable case,
-        // and the description must say so — an agent acting sporadically hits this in every
-        // action window and must be able to tell "re-register" from "revoked, stop".
-        assert!(
-            json["error_description"]
-                .as_str()
-                .unwrap()
-                .contains("has expired"),
-            "expired assertion must be described as expired, got: {json}"
-        );
-    }
+        for case in cases {
+            let state = test_state().await;
+            seed_agent_identity(&state, case.reg_id, case.seed_did, case.identity_status).await;
+            let mut assertion = mint_assertion(
+                &state,
+                case.assertion_sub,
+                case.reg_id,
+                "com.atproto.access",
+                crate::time::unix_now_secs() + case.exp_offset_secs,
+            );
+            if case.tamper_signature {
+                assertion = tamper_signature(&assertion);
+            }
 
-    /// A `claimed` row whose stored DID differs from the assertion `sub` gets its own
-    /// description — the recoverable expiry/unclaimed paths must never absorb it.
-    #[tokio::test]
-    async fn jwt_bearer_subject_mismatch_names_the_mismatch() {
-        let state = test_state().await;
-        // The row is claimed, but for a different DID than the assertion names.
-        seed_agent_identity(
-            &state,
-            "reg_mismatch",
-            "did:plc:agentbearer5555555555",
-            "claimed",
-        )
-        .await;
-        let assertion = mint_assertion(
-            &state,
-            "did:plc:agentbearer6666666666",
-            "reg_mismatch",
-            "com.atproto.access",
-            now_secs() + 600,
-        );
-
-        let resp = app(state)
-            .oneshot(post_token(&format!(
-                "grant_type={JWT_BEARER}&assertion={assertion}"
-            )))
-            .await
-            .unwrap();
-        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
-        let json = json_body(resp).await;
-        assert_eq!(json["error"], "invalid_grant");
-        assert!(
-            json["error_description"]
-                .as_str()
-                .unwrap()
-                .contains("does not match"),
-            "subject mismatch must be described as a mismatch, got: {json}"
-        );
-    }
-
-    /// An unclaimed (`active`) registration is not an unknown one: the description points the
-    /// agent at the claim ceremony, not at re-registration.
-    #[tokio::test]
-    async fn jwt_bearer_unclaimed_registration_names_the_ceremony() {
-        let state = test_state().await;
-        let did = "did:plc:agentbearer7777777777";
-        seed_agent_identity(&state, "reg_unclaimed", did, "active").await;
-        let assertion = mint_assertion(
-            &state,
-            did,
-            "reg_unclaimed",
-            "com.atproto.access",
-            now_secs() + 600,
-        );
-
-        let resp = app(state)
-            .oneshot(post_token(&format!(
-                "grant_type={JWT_BEARER}&assertion={assertion}"
-            )))
-            .await
-            .unwrap();
-        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
-        let json = json_body(resp).await;
-        assert_eq!(json["error"], "invalid_grant");
-        assert!(
-            json["error_description"]
-                .as_str()
-                .unwrap()
-                .contains("claimed"),
-            "unclaimed registration must be described as unclaimed, got: {json}"
-        );
+            let resp = app(state)
+                .oneshot(post_token(&format!(
+                    "grant_type={JWT_BEARER}&assertion={assertion}"
+                )))
+                .await
+                .unwrap();
+            assert_eq!(
+                resp.status(),
+                StatusCode::BAD_REQUEST,
+                "case {}",
+                case.reg_id
+            );
+            let json = json_body(resp).await;
+            assert_eq!(json["error"], case.expected_error, "case {}", case.reg_id);
+            if let Some(substring) = case.expected_description_substring {
+                assert!(
+                    json["error_description"]
+                        .as_str()
+                        .unwrap()
+                        .contains(substring),
+                    "case {}: expected description to contain {substring:?}, got {json}",
+                    case.reg_id
+                );
+            }
+        }
     }
 
     /// The sliding renewal: the returned `identity_assertion` is freshly minted with the claimed
@@ -620,7 +598,13 @@ mod tests {
             r#"["atproto","repo:*?action=create&action=update","blob:*/*"]"#,
         )
         .await;
-        let assertion = mint_assertion(&state, did, "reg_renewal", "atproto", now_secs() + 600);
+        let assertion = mint_assertion(
+            &state,
+            did,
+            "reg_renewal",
+            "atproto",
+            crate::time::unix_now_secs() + 600,
+        );
 
         let resp = app(state.clone())
             .oneshot(post_token(&format!(
@@ -647,7 +631,7 @@ mod tests {
         let payload: serde_json::Value =
             serde_json::from_slice(&URL_SAFE_NO_PAD.decode(payload_b64).unwrap()).unwrap();
         assert!(
-            payload["exp"].as_i64().unwrap() > now_secs() + 3600,
+            payload["exp"].as_i64().unwrap() > crate::time::unix_now_secs() + 3600,
             "a renewed assertion must outlive the pre-claim TTL"
         );
         assert_eq!(
@@ -684,7 +668,13 @@ mod tests {
             r#"["atproto","account:email"]"#,
         )
         .await;
-        let assertion = mint_assertion(&state, did, "reg_renew_clamp", "atproto", now_secs() + 600);
+        let assertion = mint_assertion(
+            &state,
+            did,
+            "reg_renew_clamp",
+            "atproto",
+            crate::time::unix_now_secs() + 600,
+        );
 
         let resp = app(state)
             .oneshot(post_token(&format!(
@@ -714,7 +704,7 @@ mod tests {
             did,
             "reg_missing",
             "com.atproto.access",
-            now_secs() + 600,
+            crate::time::unix_now_secs() + 600,
         );
 
         let resp = app(state)
@@ -727,33 +717,6 @@ mod tests {
         assert_eq!(json_body(resp).await["error"], "invalid_grant");
     }
 
-    #[tokio::test]
-    async fn jwt_bearer_revoked_identity_returns_access_denied() {
-        let state = test_state().await;
-        let did = "did:plc:agentbearer4444444444";
-        seed_agent_identity(&state, "reg_revoked", did, "revoked").await;
-        let assertion = mint_assertion(
-            &state,
-            did,
-            "reg_revoked",
-            "com.atproto.access",
-            now_secs() + 600,
-        );
-
-        let resp = app(state)
-            .oneshot(post_token(&format!(
-                "grant_type={JWT_BEARER}&assertion={assertion}"
-            )))
-            .await
-            .unwrap();
-        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
-        assert_eq!(
-            json_body(resp).await["error"],
-            "access_denied",
-            "a revoked identity must be refused with access_denied"
-        );
-    }
-
     /// Drive the full jwt-bearer exchange and return the issued agent Bearer access token.
     async fn exchange_agent_token(state: &AppState, did: &str, registration_id: &str) -> String {
         seed_agent_identity(state, registration_id, did, "claimed").await;
@@ -763,7 +726,7 @@ mod tests {
             registration_id,
             // The conservative default agent profile: repo writes + blobs, no account/identity.
             "atproto repo:*?action=create&action=update blob:*/*",
-            now_secs() + 600,
+            crate::time::unix_now_secs() + 600,
         );
         let resp = app(state.clone())
             .oneshot(post_token(&format!(
@@ -839,7 +802,7 @@ mod tests {
             did,
             "reg_claim_present",
             "atproto repo:*?action=create&action=update",
-            now_secs() + 600,
+            crate::time::unix_now_secs() + 600,
         );
 
         let resp = app(state)
@@ -872,7 +835,7 @@ mod tests {
             did,
             "reg_resource",
             "com.atproto.access",
-            now_secs() + 600,
+            crate::time::unix_now_secs() + 600,
         );
         let body = format!(
             "grant_type={JWT_BEARER}&assertion={assertion}&resource=https%3A%2F%2Fother.example.com%2F"
@@ -893,7 +856,7 @@ mod tests {
             did,
             "reg_okres",
             "com.atproto.access",
-            now_secs() + 600,
+            crate::time::unix_now_secs() + 600,
         );
         // The server's own origin is a valid resource; a trailing slash is tolerated.
         let body = format!(
@@ -903,68 +866,5 @@ mod tests {
         let resp = app(state).oneshot(post_token(&body)).await.unwrap();
         assert_eq!(resp.status(), StatusCode::OK);
         assert_eq!(json_body(resp).await["token_type"], "Bearer");
-    }
-
-    #[tokio::test]
-    async fn jwt_bearer_active_unclaimed_identity_returns_invalid_grant() {
-        // An `active` identity still owes the claim ceremony; no service assertion is minted for it,
-        // so even a validly-signed assertion must be refused until the identity is `claimed`.
-        let state = test_state().await;
-        let did = "did:plc:agentbearer8888888888";
-        seed_agent_identity(&state, "reg_active", did, "active").await;
-        let assertion = mint_assertion(
-            &state,
-            did,
-            "reg_active",
-            "com.atproto.access",
-            now_secs() + 600,
-        );
-
-        let resp = app(state)
-            .oneshot(post_token(&format!(
-                "grant_type={JWT_BEARER}&assertion={assertion}"
-            )))
-            .await
-            .unwrap();
-        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
-        assert_eq!(
-            json_body(resp).await["error"],
-            "invalid_grant",
-            "an unclaimed (active) identity must not be able to exchange an assertion"
-        );
-    }
-
-    #[tokio::test]
-    async fn jwt_bearer_subject_did_mismatch_returns_invalid_grant() {
-        // Defense-in-depth: the registration row's DID must match the assertion's `sub`. Seed the
-        // identity under one DID but sign the assertion for a different one.
-        let state = test_state().await;
-        seed_agent_identity(
-            &state,
-            "reg_mismatch",
-            "did:plc:agentbearer7777777777",
-            "claimed",
-        )
-        .await;
-        let assertion = mint_assertion(
-            &state,
-            "did:plc:someoneelse00000000",
-            "reg_mismatch",
-            "com.atproto.access",
-            now_secs() + 600,
-        );
-
-        let resp = app(state)
-            .oneshot(post_token(&format!(
-                "grant_type={JWT_BEARER}&assertion={assertion}"
-            )))
-            .await
-            .unwrap();
-        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
-        assert_eq!(
-            json_body(resp).await["error"],
-            "invalid_grant",
-            "an assertion sub that doesn't match the registration DID must be rejected"
-        );
     }
 }

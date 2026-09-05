@@ -203,10 +203,10 @@ mod tests {
     use p256::ecdsa::{signature::Signer, Signature, SigningKey};
     use rand_core::OsRng;
 
-    use super::super::test_support::{dpop_key_to_jwk, now_secs};
     use super::*;
     use crate::app::{test_state, AppState};
     use crate::db::oauth::upsert_oauth_client;
+    use crate::routes::test_utils::ec_jwk;
 
     const CLIENT_ID: &str = "https://app.example.com/client-metadata.json";
 
@@ -217,7 +217,7 @@ mod tests {
     }
 
     fn jwk_with_kid(key: &SigningKey, kid: &str) -> serde_json::Value {
-        let mut jwk = dpop_key_to_jwk(key);
+        let mut jwk = ec_jwk(key);
         jwk["kid"] = serde_json::Value::String(kid.to_string());
         jwk
     }
@@ -246,10 +246,24 @@ mod tests {
             "iss": iss_sub,
             "sub": iss_sub,
             "aud": "https://test.example.com",
-            "iat": now_secs(),
-            "exp": now_secs() + 60,
+            "iat": crate::time::unix_now_secs(),
+            "exp": crate::time::unix_now_secs() + 60,
             "jti": "assertion-jti-1",
         })
+    }
+
+    /// Authenticate `assertion` for [`CLIENT_ID`] and assert it is refused as `invalid_client` —
+    /// the shape every rejected-assertion test in this module ends with.
+    async fn expect_invalid_client(state: &AppState, assertion: &str) {
+        let err = authenticate_token_client(
+            state,
+            CLIENT_ID,
+            Some(CLIENT_ASSERTION_TYPE_JWT_BEARER),
+            Some(assertion),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(err.error, "invalid_client");
     }
 
     #[tokio::test]
@@ -294,15 +308,7 @@ mod tests {
         .await;
         let key = SigningKey::random(&mut OsRng);
         let assertion = sign_assertion(&key, "k1", valid_claims(CLIENT_ID));
-        let err = authenticate_token_client(
-            &state,
-            CLIENT_ID,
-            Some(CLIENT_ASSERTION_TYPE_JWT_BEARER),
-            Some(&assertion),
-        )
-        .await
-        .unwrap_err();
-        assert_eq!(err.error, "invalid_client");
+        expect_invalid_client(&state, &assertion).await;
     }
 
     #[tokio::test]
@@ -341,15 +347,7 @@ mod tests {
         seed_client(&state, confidential_metadata(&registered)).await;
         let imposter = SigningKey::random(&mut OsRng);
         let assertion = sign_assertion(&imposter, "k1", valid_claims(CLIENT_ID));
-        let err = authenticate_token_client(
-            &state,
-            CLIENT_ID,
-            Some(CLIENT_ASSERTION_TYPE_JWT_BEARER),
-            Some(&assertion),
-        )
-        .await
-        .unwrap_err();
-        assert_eq!(err.error, "invalid_client");
+        expect_invalid_client(&state, &assertion).await;
     }
 
     #[tokio::test]
@@ -358,15 +356,7 @@ mod tests {
         let key = SigningKey::random(&mut OsRng);
         seed_client(&state, confidential_metadata(&key)).await;
         let assertion = sign_assertion(&key, "k1", valid_claims("https://other.example/meta.json"));
-        let err = authenticate_token_client(
-            &state,
-            CLIENT_ID,
-            Some(CLIENT_ASSERTION_TYPE_JWT_BEARER),
-            Some(&assertion),
-        )
-        .await
-        .unwrap_err();
-        assert_eq!(err.error, "invalid_client");
+        expect_invalid_client(&state, &assertion).await;
     }
 
     #[tokio::test]
@@ -377,22 +367,14 @@ mod tests {
 
         // Expired well beyond the 30s tolerance: rejected.
         let mut claims = valid_claims(CLIENT_ID);
-        claims["exp"] = serde_json::json!(now_secs() - 120);
+        claims["exp"] = serde_json::json!(crate::time::unix_now_secs() - 120);
         let assertion = sign_assertion(&key, "k1", claims);
-        let err = authenticate_token_client(
-            &state,
-            CLIENT_ID,
-            Some(CLIENT_ASSERTION_TYPE_JWT_BEARER),
-            Some(&assertion),
-        )
-        .await
-        .unwrap_err();
-        assert_eq!(err.error, "invalid_client");
+        expect_invalid_client(&state, &assertion).await;
 
         // Expired 10s ago: inside the 30s clock tolerance, accepted (interop with clients
         // whose clocks drift — the reference's zero-tolerance check is a known trap).
         let mut claims = valid_claims(CLIENT_ID);
-        claims["exp"] = serde_json::json!(now_secs() - 10);
+        claims["exp"] = serde_json::json!(crate::time::unix_now_secs() - 10);
         let assertion = sign_assertion(&key, "k1", claims);
         authenticate_token_client(
             &state,
@@ -437,17 +419,9 @@ mod tests {
         // Stale: iat beyond the 60s max age + 30s tolerance.
         let mut claims = valid_claims(CLIENT_ID);
         claims.as_object_mut().unwrap().remove("exp");
-        claims["iat"] = serde_json::json!(now_secs() - 120);
+        claims["iat"] = serde_json::json!(crate::time::unix_now_secs() - 120);
         let assertion = sign_assertion(&key, "k1", claims);
-        let err = authenticate_token_client(
-            &state,
-            CLIENT_ID,
-            Some(CLIENT_ASSERTION_TYPE_JWT_BEARER),
-            Some(&assertion),
-        )
-        .await
-        .unwrap_err();
-        assert_eq!(err.error, "invalid_client");
+        expect_invalid_client(&state, &assertion).await;
 
         // Neither exp nor iat: nothing bounds the assertion's life at all.
         let mut claims = valid_claims(CLIENT_ID);
@@ -455,15 +429,7 @@ mod tests {
         obj.remove("exp");
         obj.remove("iat");
         let assertion = sign_assertion(&key, "k1", claims);
-        let err = authenticate_token_client(
-            &state,
-            CLIENT_ID,
-            Some(CLIENT_ASSERTION_TYPE_JWT_BEARER),
-            Some(&assertion),
-        )
-        .await
-        .unwrap_err();
-        assert_eq!(err.error, "invalid_client");
+        expect_invalid_client(&state, &assertion).await;
     }
 
     /// The `jwks_uri` branch: a client that publishes its keys at a URL rather than inline.
@@ -575,15 +541,7 @@ mod tests {
         )
         .await;
         let assertion = sign_assertion(&key, "k1", valid_claims(CLIENT_ID));
-        let err = authenticate_token_client(
-            &state,
-            CLIENT_ID,
-            Some(CLIENT_ASSERTION_TYPE_JWT_BEARER),
-            Some(&assertion),
-        )
-        .await
-        .unwrap_err();
-        assert_eq!(err.error, "invalid_client");
+        expect_invalid_client(&state, &assertion).await;
     }
 
     /// A confidential client that publishes neither `jwks` nor `jwks_uri` has given the server
@@ -602,15 +560,7 @@ mod tests {
         )
         .await;
         let assertion = sign_assertion(&key, "k1", valid_claims(CLIENT_ID));
-        let err = authenticate_token_client(
-            &state,
-            CLIENT_ID,
-            Some(CLIENT_ASSERTION_TYPE_JWT_BEARER),
-            Some(&assertion),
-        )
-        .await
-        .unwrap_err();
-        assert_eq!(err.error, "invalid_client");
+        expect_invalid_client(&state, &assertion).await;
     }
 
     /// RFC 7523 requires the assertion to be presented under its own type identifier; a client
