@@ -2,24 +2,10 @@
 
 //! Catch-all XRPC proxy — `GET/POST /xrpc/app.bsky.*`, `/xrpc/chat.bsky.*`, and
 //! `/xrpc/com.atproto.moderation.*` — forwarding each request upstream under a freshly minted
-//! ES256 service-auth JWT signed by the account's repo key. Dispatch is dual-path:
-//!
-//! * **Default targets.** With no `atproto-proxy` header, `app.bsky.*` and `chat.bsky.*` fall
-//!   back to their configured defaults (the AppView / chat service); `com.atproto.moderation.*`
-//!   has no default at all (e.g. `createReport`'s target labeler), so a missing header there is
-//!   a 400.
-//! * **Header targets.** When the header is present, on any of the three namespaces,
-//!   `app.rs::xrpc_handler` resolves it via `identity::resolution::resolve_atproto_proxy_target`
-//!   (`did#serviceId` → DID document → matching `service` entry's `serviceEndpoint`) and routes
-//!   there instead — what lets the official app's `app.bsky.video.*` calls, sent with
-//!   `atproto-proxy: did:web:video.bsky.app#bsky_video`, reach the video service rather than
-//!   the AppView. An unresolvable target is a 503. That target DID is caller-controlled, so the
-//!   resolved endpoint is always SSRF-guarded (`identity::resolution::validate_proxy_endpoint`:
-//!   rejects non-http(s) schemes, userinfo, query/fragment, and any host — IP literal or
-//!   DNS-resolved — that isn't a public address, loopback/private/link-local/cloud-metadata/
-//!   unique-local-IPv6 included), and the request goes out on `state.hardened_http_client`,
-//!   whose `SsrfResolver` re-applies the allowlist to any domain resolution at connect time so
-//!   a second DNS answer can't substitute an unchecked address.
+//! ES256 service-auth JWT signed by the account's repo key. Which upstream a request goes to —
+//! the namespace's configured default, or a target named by a caller's `atproto-proxy` header,
+//! and the SSRF guarding that entails — is `xrpc_dispatch.rs::xrpc_handler`'s doc; that's the
+//! sole caller of `proxy_request`/`proxy_xrpc` below.
 //!
 //! The six read-after-write NSIDs — `app.bsky.feed.{getTimeline,getAuthorFeed,getPostThread,
 //! getActorLikes}` and `app.bsky.actor.{getProfile,getProfiles}` — route to
@@ -34,12 +20,10 @@
 //! Both paths share `proxy_request` construction (`mint_service_auth` is `pub(crate)`) and the
 //! header-forwarding seam (`REQ_HEADERS_TO_FORWARD` copied onto the outbound request,
 //! `RES_HEADERS_TO_FORWARD` copied back via `forward_response_headers` — reference-PDS
-//! pipethrough parity; see the constants' docs for why each header matters). Forwarding applies
-//! on the streaming path and on **every rung** of the munge path's fallback ladder, so the
-//! headers a client sees never depend on which path or rung served the request.
-//! `atproto-accept-labelers` is the one that can't be dropped: the AppView applies only the
-//! labelers the caller names there, so losing it silently strips every subscribed labeler's
-//! labels from posts and profiles.
+//! pipethrough parity; see the constants' docs for why each header matters, `atproto-accept-
+//! labelers` above all). Forwarding applies on the streaming path and on **every rung** of the
+//! munge path's fallback ladder, so the headers a client sees never depend on which path or
+//! rung served the request.
 
 use axum::{
     body::Body,
@@ -117,29 +101,46 @@ fn is_length_limit_error(err: &axum::Error) -> bool {
         .unwrap_or(false)
 }
 
+/// Which client an outbound proxy request goes out on, and why.
+///
+/// `CallerResolved` names a target that was resolved and SSRF-validated from a
+/// caller-supplied `atproto-proxy` header naming a caller-controlled DID document
+/// (`identity::proxy::resolve_atproto_proxy_target`) — always for `com.atproto.moderation.*`
+/// (which has no configured default), and for `app.bsky.*`/`chat.bsky.*` only when the
+/// caller's header overrides that namespace's default upstream. It sends on
+/// `state.hardened_http_client`: redirects disabled (the SSRF check only inspects the first
+/// URL, so a malicious target could otherwise 3xx its way onto a private address) and a DNS
+/// resolver that re-validates any domain resolution at connect time so the client can't land
+/// on an address that was never checked.
+///
+/// `Configured` names the admin-configured default upstream (AppView or chat) and sends on
+/// the plain `state.http_client` — not caller-controlled, so neither concern applies.
+#[derive(Clone, Copy)]
+pub(crate) enum Upstream {
+    Configured,
+    CallerResolved,
+}
+
+impl Upstream {
+    fn client(self, state: &AppState) -> &reqwest::Client {
+        match self {
+            Upstream::Configured => &state.http_client,
+            Upstream::CallerResolved => &state.hardened_http_client,
+        }
+    }
+}
+
 /// Build and send the upstream XRPC request (query passthrough, body buffering with the
 /// MAX_PROXY_BODY cap, service-auth JWT mint, atproto-proxy header), returning the raw upstream
 /// response. Both `proxy_xrpc` (streaming) and `read_after_write::pipethrough_munged` (buffering)
 /// build on this so request construction never diverges.
-///
-/// `caller_controlled_target` is `true` whenever the target host was resolved and SSRF-validated
-/// from a caller-supplied `atproto-proxy` header naming a caller-controlled DID document
-/// (`identity::proxy::resolve_atproto_proxy_target`) — always for `com.atproto.moderation.*`
-/// (which has no configured default), and for `app.bsky.*`/`chat.bsky.*` only when the caller's
-/// header overrides that namespace's default upstream. When set, the outbound request is sent on
-/// the shared `state.hardened_http_client` rather than `state.http_client`: redirects disabled
-/// (the SSRF check only inspects the first URL, so a malicious target could otherwise 3xx its way
-/// onto a private address) and a DNS resolver that re-validates any domain resolution at connect
-/// time so the client can't land on an address that was never checked. A `false` (no header)
-/// request uses `state.http_client` — its upstream is the admin-configured default, not
-/// caller-controlled, so neither concern applies.
 pub(crate) async fn proxy_request(
     state: &AppState,
     upstream_url: &str,
     proxy_did: &str,
     nsid: &str,
     did: &str,
-    caller_controlled_target: bool,
+    target: Upstream,
     req: Request,
 ) -> Result<reqwest::Response, Response> {
     // Preserve the original query string verbatim so upstream query params survive the hop.
@@ -148,13 +149,9 @@ pub(crate) async fn proxy_request(
         .query()
         .map(|q| format!("?{q}"))
         .unwrap_or_default();
-    let target = format!("{upstream_url}/xrpc/{nsid}{query}");
+    let target_url = format!("{upstream_url}/xrpc/{nsid}{query}");
 
-    let client = if caller_controlled_target {
-        &state.hardened_http_client
-    } else {
-        &state.http_client
-    };
+    let client = target.client(state);
 
     let (parts, body) = req.into_parts();
 
@@ -191,7 +188,7 @@ pub(crate) async fn proxy_request(
 
     // reqwest 0.12 and axum 0.7 share the same `http` crate, so `Method` and `HeaderValue` are
     // identical types and move across the boundary without conversion.
-    let mut outbound = client.request(parts.method, &target);
+    let mut outbound = client.request(parts.method, &target_url);
 
     // Pass content-type and the client's content-negotiation preference through; the inbound
     // Authorization is intentionally DROPPED and replaced with the minted service-auth JWT. Host,
@@ -244,19 +241,10 @@ pub async fn proxy_xrpc(
     proxy_did: &str,
     nsid: &str,
     did: &str,
-    caller_controlled_target: bool,
+    target: Upstream,
     req: Request,
 ) -> Response {
-    let upstream = match proxy_request(
-        state,
-        upstream_url,
-        proxy_did,
-        nsid,
-        did,
-        caller_controlled_target,
-        req,
-    )
-    .await
+    let upstream = match proxy_request(state, upstream_url, proxy_did, nsid, did, target, req).await
     {
         Ok(resp) => resp,
         Err(resp) => return resp,

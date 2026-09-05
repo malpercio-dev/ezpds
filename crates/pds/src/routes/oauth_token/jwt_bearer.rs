@@ -43,7 +43,7 @@ use serde::{Deserialize, Serialize};
 use super::{cleanup_expired_state, issue_access_token, TokenRequestForm};
 use crate::app::AppState;
 use crate::db::agent_auth::{get_agent_identity, AgentIdentityStatus};
-use crate::routes::oauth_errors::OAuthTokenError;
+use crate::routes::oauth_errors::{insert_no_store_headers, require, OAuthTokenError};
 
 /// Successful jwt-bearer response body. Unlike [`super::TokenResponse`], it carries no
 /// `refresh_token`: the agent re-exchanges its `identity_assertion` (RFC 7523 §2.1) instead of
@@ -82,12 +82,9 @@ pub(super) async fn handle_jwt_bearer(state: &AppState, form: TokenRequestForm) 
     // Prune stale nonces and expired tokens on every request, matching the other grant handlers.
     cleanup_expired_state(state).await;
 
-    let assertion = match form.assertion.as_deref() {
-        Some(a) if !a.is_empty() => a,
-        _ => {
-            return OAuthTokenError::new("invalid_request", "missing parameter: assertion")
-                .into_response();
-        }
+    let assertion = match require(form.assertion.as_deref(), "assertion") {
+        Ok(v) => v,
+        Err(e) => return e.into_response(),
     };
 
     // RFC 8707: `resource` pins the token to a protected resource. ezpds is the sole resource it
@@ -106,19 +103,12 @@ pub(super) async fn handle_jwt_bearer(state: &AppState, form: TokenRequestForm) 
     };
 
     // State gate (the assertion stays cryptographically valid until it expires, so identity state
-    // is enforced here at exchange time, per RFC 7523 §3.1). Require exactly `Claimed`: that is the
-    // only state for which the registration flow mints a service-signed assertion. A `Revoked`
-    // identity was turned off by its owner/operator — an explicit `access_denied` closes the
-    // credential. `Active` still owes the claim ceremony, and a missing/mismatched row can't be
-    // trusted, so both → `invalid_grant`. Also require the stored
-    // DID to match the assertion's `sub`, so the state lookup and the token subject resolve to the
-    // same identity even if the issuance path ever drifts.
-    //
-    // Every `invalid_grant` here names its specific cause in `error_description`: an autonomous
-    // agent deciding what to do next must be able to tell "my assertion lapsed — re-register" from
-    // "this registration never existed / was never claimed" (both recoverable) from a forged or
-    // replayed assertion (not recoverable). The RFC 7523 code stays coarse; the description is the
-    // machine-readable signal.
+    // is enforced here at exchange time, per RFC 7523 §3.1). Require exactly `Claimed` — the only
+    // state the registration flow mints a service-signed assertion for — and that the stored DID
+    // matches the assertion's `sub`, so the state lookup and the token subject resolve to the same
+    // identity even if the issuance path ever drifts. `Revoked` → `access_denied`; `Active` (still
+    // owes the claim ceremony) and a missing/mismatched row → `invalid_grant`. Each cause is named
+    // in `error_description`, for the reason given in the module doc.
     let identity = match get_agent_identity(&state.db, &claims.registration_id).await {
         Ok(Some(identity))
             if identity.status == AgentIdentityStatus::Claimed
@@ -165,10 +155,9 @@ pub(super) async fn handle_jwt_bearer(state: &AppState, form: TokenRequestForm) 
         }
     };
 
-    // Sliding renewal: re-mint the assertion for the response, clamping the row's stored grant to
-    // the operator's *current* `granted_scopes` (matching the re-mint paths in `agent_identity.rs`
-    // and `agent_child.rs`, so narrowing the config narrows every renewal without re-registration).
-    // The access token below still carries the *presented* assertion's scope verbatim.
+    // Re-mint the assertion for the response (the sliding renewal — see the module doc), matching
+    // the re-mint paths in `agent_identity.rs` and `agent_child.rs`. The access token below still
+    // carries the *presented* assertion's scope verbatim.
     let renewed_scopes = crate::auth::oauth_scopes::intersect_scope_tokens(
         &serde_json::from_str::<Vec<String>>(&identity.scopes).unwrap_or_default(),
         &state.config.agent_auth.granted_scopes,
@@ -243,11 +232,7 @@ pub(super) async fn handle_jwt_bearer(state: &AppState, form: TokenRequestForm) 
     }
 
     let mut headers = axum::http::HeaderMap::new();
-    headers.insert(
-        axum::http::header::CACHE_CONTROL,
-        axum::http::HeaderValue::from_static("no-store"),
-    );
-    headers.insert("Pragma", axum::http::HeaderValue::from_static("no-cache"));
+    insert_no_store_headers(&mut headers);
 
     (
         StatusCode::OK,

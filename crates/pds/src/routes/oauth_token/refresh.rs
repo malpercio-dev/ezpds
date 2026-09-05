@@ -26,7 +26,7 @@ use crate::db::oauth::{
     supersede_oauth_refresh_token,
 };
 use crate::routes::oauth_dpop::token_endpoint_dpop;
-use crate::routes::oauth_errors::OAuthTokenError;
+use crate::routes::oauth_errors::{require, OAuthTokenError};
 
 pub(super) async fn handle_refresh_token(
     state: &AppState,
@@ -37,19 +37,13 @@ pub(super) async fn handle_refresh_token(
     cleanup_expired_state(state).await;
 
     // Required fields.
-    let refresh_token_plaintext = match form.refresh_token.as_deref() {
-        Some(t) if !t.is_empty() => t.to_string(),
-        _ => {
-            return OAuthTokenError::new("invalid_request", "missing parameter: refresh_token")
-                .into_response();
-        }
+    let refresh_token_plaintext = match require(form.refresh_token.as_deref(), "refresh_token") {
+        Ok(v) => v.to_string(),
+        Err(e) => return e.into_response(),
     };
-    let client_id = match form.client_id.as_deref() {
-        Some(id) if !id.is_empty() => id.to_string(),
-        _ => {
-            return OAuthTokenError::new("invalid_request", "missing parameter: client_id")
-                .into_response();
-        }
+    let client_id = match require(form.client_id.as_deref(), "client_id") {
+        Ok(v) => v.to_string(),
+        Err(e) => return e.into_response(),
     };
 
     // Enforce the client's registered token_endpoint_auth_method (private_key_jwt clients
@@ -97,13 +91,10 @@ pub(super) async fn handle_refresh_token(
         return OAuthTokenError::new("invalid_grant", "client_id mismatch").into_response();
     }
 
-    // DPoP binding check: tokens issued since V012 always carry jkt.
-    // A NULL jkt means the token predates DPoP binding enforcement — reject it.
+    // DPoP binding check: tokens issued since V012 always carry jkt. A NULL jkt means the
+    // token predates DPoP binding enforcement — reject it rather than silently accepting any key.
     match stored.jkt.as_deref() {
         None => {
-            // Refresh tokens issued after V012 always have a jkt. A NULL jkt means
-            // the token predates DPoP binding enforcement — reject rather than
-            // silently accepting any key.
             return OAuthTokenError::new("invalid_grant", "refresh token not found or expired")
                 .into_response();
         }
