@@ -145,16 +145,8 @@ mod tests {
         assert_eq!(body_json(response).await["takedown"]["applied"], true);
     }
 
-    #[tokio::test]
-    async fn unknown_did_returns_404() {
-        let state = test_state_with_admin_token().await;
-
-        let response = app(state)
-            .oneshot(request("did:plc:gsstdghost", Some("test-admin-token")))
-            .await
-            .unwrap();
-        assert_eq!(response.status(), StatusCode::NOT_FOUND);
-    }
+    // Unknown-DID → 404 is covered by contract_tests::unknown_did_returns_404's
+    // UNKNOWN_DID_ROUTES table.
 
     #[tokio::test]
     async fn without_admin_auth_returns_401() {

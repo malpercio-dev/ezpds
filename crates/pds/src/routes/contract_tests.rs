@@ -589,6 +589,13 @@ async fn invalid_did_returns_400() {
 const UNKNOWN_DID_ROUTES: &[(&str, bool, Option<&str>)] = &[
     ("/v1/accounts/{did}/storage", true, Some("NOT_FOUND")),
     ("/v1/accounts/{did}/usage", true, Some("NOT_FOUND")),
+    // An XRPC path, unlike /v1/accounts/*: the flat XRPC error shape names this "NotFound"
+    // (see xrpc_error_shape.rs), not the nested envelope's "NOT_FOUND".
+    (
+        "/xrpc/com.atproto.admin.getSubjectStatus?did={did}",
+        true,
+        Some("NotFound"),
+    ),
     (
         "/xrpc/com.atproto.repo.listRecords?repo={did}&collection=app.bsky.feed.post",
         false,
