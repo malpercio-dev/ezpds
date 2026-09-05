@@ -42,9 +42,11 @@ requires deciding what counts as that identity's signing authority.
 `#atproto`'s private key is Custos-held, so a broader set would let this server sign its own
 sovereign-session envelope for an account it hosts. This keeps one rule across both `did:web` paths
 — account promotion already enforces `#device` specifically. The predicate matches promotion's
-(`type == "Multikey"`, `controller == did`, exact `{did}#device` id), differing only in shape: the
+(`type == "Multikey"`, `controller == did`, an id naming `#device`), differing only in shape: the
 authority lookup *discovers* the key by extracting `publicKeyMultibase`, rendered as
-`did:key:{multibase}` since a PLC rotation set stores `did:key:` URIs. A document with more than one
+`did:key:{multibase}` since a PLC rotation set stores `did:key:` URIs. Both paths match that id
+through the shared `fragment_id_matches`, which accepts the bare `#device` the wallet composers
+emit or the DID-qualified `{did}#device` form, and never a foreign DID's fragment. A document with more than one
 `#device`-shaped entry is malformed (duplicate `id` values already violate DID Core) and fails
 closed rather than picking one by array order. The document is resolved live; the `did_documents`
 cache is never consulted, because `POST /v1/did-web/document` can write it.
