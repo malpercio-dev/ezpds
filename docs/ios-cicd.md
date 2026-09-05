@@ -416,7 +416,7 @@ Config validation requires the first three together, and the relay refuses to re
 handle whose topic is outside `apns.topics`. This key is the structural reason the relay
 exists: an APNs key is team-bound, so a self-hoster cannot push to the official bundle ids
 and must route through a relay that holds it — see
-[the notification relay design](design-plans/2026-07-10-notification-relay.md).
+[the notification relay design](archive/design-plans/2026-07-10-notification-relay.md).
 
 **One to watch.** The tracked entitlement sets `aps-environment` to `development`, on the
 standard understanding that an App Store export rewrites it to `production`. That has not

@@ -16,7 +16,7 @@ set -euo pipefail
 
 cd "$(dirname "$0")/.."
 
-pattern='(MM-[0-9]+|AC[0-9]+\.[0-9]+)'
+pattern='([Mm][Mm]-[0-9]+|AC[0-9]+\.[0-9]+)'
 hits="$(git grep -nIE "$pattern" -- '*.rs' '*AGENTS.md' ':(exclude)wt/' || true)"
 
 if [ -n "$hits" ]; then

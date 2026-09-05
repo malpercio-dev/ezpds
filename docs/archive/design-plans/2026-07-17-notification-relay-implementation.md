@@ -1,7 +1,11 @@
 # Notification Relay — Implementation Plan (MM-311)
 
+**Status: shipped.** `crates/notify-relay/` is built and deployed as its own Railway service
+(see [docs/deploy.md](../../deploy.md) → "Notification relay"). Archived per
+`docs/archive/README.md`.
+
 [MM-311](https://linear.app/malpercio/issue/MM-311) · implementation leg of
-[docs/design-plans/2026-07-10-notification-relay.md](2026-07-10-notification-relay.md)
+[docs/archive/design-plans/2026-07-10-notification-relay.md](2026-07-10-notification-relay.md)
 (design PR #207, merged — that doc remains the architecture source of truth; this doc pins
 the implementation details against the codebase and decomposes the work into issues).
 

@@ -3,7 +3,7 @@
 - **Status:** Accepted
 - **Date:** 2026-08-30
 - **Deciders:** malpercio
-- **Related:** amends [ADR-0023](0023-sovereign-child-agent-identities.md) · [ADR-0001](0001-client-held-rotation-key-custody.md) · [ADR-0027](0027-rotation-key-ordering.md) · [agent child accounts design](../../design-plans/2026-08-29-agent-child-accounts.md) · supersedes the exploration in [2026-07-24 HD child identities](../../design-plans/2026-07-24-bip32-hd-child-identities.md) · `crates/crypto/src/keys.rs`, `apps/identity-wallet/src-tauri/src/agents.rs`
+- **Related:** amends [ADR-0023](0023-sovereign-child-agent-identities.md) · [ADR-0001](0001-client-held-rotation-key-custody.md) · [ADR-0027](0027-rotation-key-ordering.md) · [agent child accounts design](../../design-plans/2026-08-29-agent-child-accounts.md) · supersedes the exploration in [2026-07-24 HD child identities](../../archive/design-plans/2026-07-24-bip32-hd-child-identities.md) · `crates/crypto/src/keys.rs`, `apps/identity-wallet/src-tauri/src/agents.rs`
 
 ## Context
 

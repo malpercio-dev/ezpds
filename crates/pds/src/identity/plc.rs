@@ -21,7 +21,7 @@ use serde::Deserialize;
 ///
 /// The `identity.*PlcOperation` endpoints only make sense for a `did:plc` identity — they build,
 /// sign, and submit operations against plc.directory's hash-linked operation log. A `did:web`
-/// identity (the operator hosts its own `did.json`; see ADR-0003) has no PLC log at all, so
+/// identity (the operator hosts its own `did.json`; see ADR-0022) has no PLC log at all, so
 /// calling these endpoints for one would otherwise fail confusingly deep in the flow — a 404 on
 /// the plc.directory audit-log fetch. Guard the method up front instead, returning an explicit
 /// "not a did:plc" error the caller can act on: a did:web account repoints its PDS by editing its

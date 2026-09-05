@@ -1,6 +1,10 @@
 # E2E-Encrypted Notification Relay for Self-Hosted Custos
 
-Status: **design exploration** — scheduled as [MM-311](https://linear.app/malpercio/issue/MM-311);
+**Status: shipped.** MM-311 is done — `crates/notify-relay/` is built and deployed as its own
+Railway service (see [docs/deploy.md](../../deploy.md) → "Notification relay"). Archived per
+`docs/archive/README.md`.
+
+Original status: **design exploration** — scheduled as [MM-311](https://linear.app/malpercio/issue/MM-311);
 implementation details and issue decomposition pinned in
 [2026-07-17-notification-relay-implementation.md](2026-07-17-notification-relay-implementation.md).
 Captures the architecture discussion of 2026-07-10 so it survives the session

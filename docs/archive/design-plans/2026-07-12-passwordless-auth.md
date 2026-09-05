@@ -85,7 +85,7 @@ deciding between them (or layering them) is the first open question below.
 
 "Send a push to launch the app for login requests" is the natural cross-device endgame,
 and it now has a foundation: the
-[E2E-encrypted notification relay](../../design-plans/2026-07-10-notification-relay.md) (PR
+[E2E-encrypted notification relay](2026-07-10-notification-relay.md) (PR
 [#207](https://github.com/malpercio-dev/ezpds/pull/207)) defines how a self-hosted Custos
 instance pushes to the official apps through a relay that is untrusted for everything
 except availability — HPKE-sealed payloads, per-device notification keys, opaque push

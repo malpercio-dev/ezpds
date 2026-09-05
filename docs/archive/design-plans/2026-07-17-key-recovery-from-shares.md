@@ -211,7 +211,7 @@ The common case: lost/dead phone, iCloud intact, Custos alive and honest.
    per-IP rate limits, audit events, and a notification to the account email.
 3. **Release delay (default on, operator- and user-configurable).** The release enters a
    `pending` state for a window (e.g. 24h) during which any authenticated session/device
-   can cancel — a push through the [notification relay](../../design-plans/2026-07-10-notification-relay.md)
+   can cancel — a push through the [notification relay](2026-07-10-notification-relay.md)
    when that lands, email links meanwhile. The state machine (detailed in MM-409) is:
    the OTP is single-use and consumed by the opening `release` call, which returns
    `{status: "pending", available_at}`; the client then **re-polls the same

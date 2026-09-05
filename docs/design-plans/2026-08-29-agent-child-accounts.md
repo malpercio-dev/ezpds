@@ -353,7 +353,7 @@ agent-child-accounts.AC4.1–4.3.
   delegation-seed trade-off, seed-rotation fan-out decision (same-seed re-split is a
   child no-op; true seed rotation requires an orchestrated per-child sweep, deferred
   and explicitly recorded), SE-key omission, grandchildren out of scope
-- Superseded-by pointer in `docs/design-plans/2026-07-24-bip32-hd-child-identities.md`;
+- Superseded-by pointer in `docs/archive/design-plans/2026-07-24-bip32-hd-child-identities.md`;
   `sites/docs` operator/config touch-ups if the metadata field lands in the capability
   table
 
