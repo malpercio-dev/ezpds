@@ -39,7 +39,7 @@ Nearly all of this already exists in the tree:
 | Canonical signed-envelope pattern | ADR-0018 admin envelope (`auth/guards.rs::verify_admin_device_request`, `apps/admin-companion/src-tauri/src/signing.rs`) |
 | Wallet approval UX (enter code → preview grants → biometric → confirm) | `AgentClaimApprovalScreen.svelte` + `agents.rs` IPC (claim-preview / claim-confirm) |
 | Consent page + per-scope checkboxes | `oauth_templates.rs::render_consent_page`, MM-237 scope reduction |
-| Push envelope for a future `login-approval` type | notification relay design ([2026-07-10-notification-relay.md](../../design-plans/2026-07-10-notification-relay.md)) already names `{type: "login-approval", request_id, client_name, origin, code}` |
+| Push envelope for a future `login-approval` type | notification relay design ([2026-07-10-notification-relay.md](2026-07-10-notification-relay.md)) already names `{type: "login-approval", request_id, client_name, origin, code}` |
 
 The genuinely new pieces are one table, one approval route, one status route, a second
 path through `oauth_authorize.rs`, and one wallet screen variant.
