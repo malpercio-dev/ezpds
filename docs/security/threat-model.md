@@ -44,7 +44,7 @@ Boundaries and their primary control:
 | --- | --- | --- |
 | Client ↔ PDS HTTP | Bearer/DPoP tokens, XRPC bodies | `auth::extractors::authenticate_access`, TLS |
 | PDS ↔ plc.directory | Signed PLC operations | DAG-CBOR canonicalization + signature verification (`crates/crypto/src/plc.rs`) |
-| PDS ↔ outbound fetch (handle/did:web/client metadata/JWKS/blob mirror) | Caller-influenced URLs | `AppState::hardened_http_client` + `SsrfResolver` (`crates/pds/src/identity/proxy.rs`) — **except OAuth client-metadata fetch from PAR, see [Open items](#open-items)** |
+| PDS ↔ outbound fetch (handle/did:web/client metadata/JWKS/blob mirror) | Caller-influenced URLs | `AppState::hardened_http_client` + `SsrfResolver` (`crates/pds/src/identity/proxy.rs`), `just ssrf-client-check` |
 | PDS ↔ SQLite/filesystem | Queries, blob reads/writes | Per-crate DB module ownership (`crates/pds/AGENTS.md`), path validation |
 | Wallet ↔ Secure Enclave/Keychain | Signing requests, key material | `crates/ios-device-key`, no key ever leaves the enclave |
 | Wallet ↔ PDS | Session tokens, DPoP proofs | RFC 9449 binding (`crates/pds/src/auth/dpop.rs`) |
@@ -84,13 +84,13 @@ unauthenticated PAR endpoint.
 check plus a hardened `reqwest::Client` (`AppState::hardened_http_client`)
 whose custom `SsrfResolver` re-applies a public-address allowlist at DNS
 resolution time, closing the redirect/re-resolution TOCTOU gap. `just
-ssrf-client-check` freezes the well-known handle resolver onto that client.
-**As of this branch, the OAuth client-metadata fetch called from
-`routes/oauth_par.rs` still passes the plain `state.http_client`**, not the
-hardened one — `auth::client_attestation`'s client-metadata resolution already
-uses `state.hardened_http_client`, but the PAR path doesn't. A sibling PR
-(`sec/client-metadata-ssrf`) fixes this; see [Open items](#open-items) rather
-than treating it as mitigated here.
+ssrf-client-check` freezes both caller-influenced fetch sites onto that
+client: the well-known handle resolver and every `resolve_client_metadata`
+call (the OAuth `client_id` metadata document fetched from PAR and from
+client attestation). An IP-literal host never reaches the resolver, so
+`auth::oauth_client_resolution::validate_client_id_url` refuses a private,
+loopback, or link-local IP-literal `client_id` before any fetch, reusing the
+same `ip_allowed` allowlist ([#638](https://github.com/malpercio-dev/ezpds/pull/638)).
 
 ### Admin-token brute force/timing
 
@@ -200,15 +200,6 @@ allowlists, with `core:default` and `withGlobalTauri` both refused. Full spec:
 
 ## Open items
 
-- **OAuth client-metadata fetch is not yet on the hardened client.**
-  `routes/oauth_par.rs`'s `resolve_client_metadata` call passes
-  `state.http_client`, not `state.hardened_http_client` — a caller-influenced
-  URL fetched without the SSRF allowlist. `auth::client_attestation`'s
-  equivalent call already uses the hardened client. Fixed by
-  [#638](https://github.com/malpercio-dev/ezpds/pull/638), which also refuses
-  an IP-literal `client_id` at a private address before any fetch and extends
-  `just ssrf-client-check` to every `resolve_client_metadata` call site; once
-  it merges this row moves under SSRF in Threats and mitigations.
 - **`unsafe` FFI without `// SAFETY:` comments.** `apps/identity-wallet/src-tauri/src/apns.rs`
   (APNs delegate registration) and the vendored `apple.rs` in
   `apps/identity-wallet/vendor/tauri-plugin-auth-session/src/` both carry
