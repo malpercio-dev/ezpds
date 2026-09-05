@@ -12,15 +12,21 @@
 //! (<https://atproto.com/specs/oauth>). The fetched URL is caller-controlled, so the
 //! policy check runs before any network I/O: https is required everywhere except
 //! loopback hosts, which may use plain http (the spec's local-development exception —
-//! also what lets tests serve metadata from 127.0.0.1). Failed resolutions land in a
-//! process-local 60s negative cache (bounded, oldest-evicted) so replaying one failing
-//! client_id against the unauthenticated PAR/authorize endpoints can't loop outbound
-//! fetches.
+//! also what lets tests serve metadata from 127.0.0.1), and an IP-literal https host must
+//! be a public address (see `validate_client_id_url`'s doc — an IP literal bypasses the
+//! hardened client's own connect-time guard). Failed resolutions land in a process-local
+//! 60s negative cache (bounded, oldest-evicted) so replaying one failing client_id
+//! against the unauthenticated PAR endpoint can't loop outbound fetches.
+//!
+//! The fetch itself is caller-influenced by construction, so every call site must pass
+//! `AppState::hardened_http_client`, never the plain `http_client`
+//! (`scripts/ssrf-client-check.sh` guards this).
 //!
 //! Also owns `validate_private_use_redirect`, the reverse-FQDN redirect rule both
 //! request surfaces enforce. Consumers: `routes/oauth_par.rs` and
-//! `routes/oauth_authorize.rs` (`resolve_client_metadata`), and
-//! `routes/oauth_client_metadata.rs` (`url_is_loopback`).
+//! `auth::client_attestation` (`resolve_client_metadata`); `routes/oauth_authorize.rs`
+//! (`validate_private_use_redirect` only — its client lookup is cache-only, never a live
+//! fetch); `routes/oauth_client_metadata.rs` (`url_is_loopback`).
 
 use std::collections::HashMap;
 use std::sync::{Mutex, OnceLock};
@@ -94,6 +100,9 @@ pub enum ClientResolutionError {
     #[error("client_id URL must not contain credentials or a fragment")]
     ForbiddenUrlParts,
 
+    #[error("client_id must not target a private, loopback, or link-local address")]
+    ForbiddenAddress,
+
     #[error("failed to fetch client metadata: {0}")]
     Fetch(String),
 
@@ -119,7 +128,16 @@ pub enum ClientResolutionError {
 
 /// Validate the URL policy for a metadata-URL client_id (pure; no I/O).
 ///
-/// Rules: parseable; https (http only for loopback hosts); no userinfo; no fragment.
+/// Rules: parseable; https (http only for loopback hosts); no userinfo; no fragment; an
+/// IP-literal https host must be a public address.
+///
+/// The last rule exists because an IP-literal host bypasses the hardened client's connect-time
+/// `SsrfResolver` entirely — hyper only consults a `dns::Resolve` for a hostname that actually
+/// needs resolving (see `identity::proxy`'s module doc) — so `https://169.254.169.254/...` would
+/// otherwise sail straight past it. This is the same IP-literal gap
+/// [`crate::identity::proxy::validate_proxy_endpoint`] closes for the `atproto-proxy` target, and
+/// [`crate::identity::proxy::ip_allowed`] is the shared allowlist behind both. A domain host's
+/// addresses are still only checked at connect time.
 fn validate_client_id_url(client_id: &str) -> Result<Url, ClientResolutionError> {
     let url = Url::parse(client_id).map_err(|_| ClientResolutionError::InvalidUrl)?;
 
@@ -131,6 +149,19 @@ fn validate_client_id_url(client_id: &str) -> Result<Url, ClientResolutionError>
 
     if !url.username().is_empty() || url.password().is_some() || url.fragment().is_some() {
         return Err(ClientResolutionError::ForbiddenUrlParts);
+    }
+
+    let literal_ip = match url.host() {
+        Some(Host::Ipv4(ip)) => Some(std::net::IpAddr::V4(ip)),
+        Some(Host::Ipv6(ip)) => Some(std::net::IpAddr::V6(ip)),
+        _ => None,
+    };
+    if url.scheme() == "https" {
+        if let Some(ip) = literal_ip {
+            if !crate::identity::proxy::ip_allowed(ip, false) {
+                return Err(ClientResolutionError::ForbiddenAddress);
+            }
+        }
     }
 
     Ok(url)
@@ -427,6 +458,28 @@ mod tests {
             validate_client_id_url("https://app.example.com/m.json#frag"),
             Err(ClientResolutionError::ForbiddenUrlParts)
         ));
+    }
+
+    /// An IP-literal https client_id at a private/link-local address must be refused by the URL
+    /// policy itself — before any fetch — since that address would otherwise bypass the hardened
+    /// client's own connect-time guard (only consulted for names needing DNS resolution).
+    #[test]
+    fn https_ip_literal_client_id_must_be_a_public_address() {
+        for hostile in [
+            "https://169.254.169.254/client-metadata.json", // cloud-metadata (link-local)
+            "https://10.0.0.1/client-metadata.json",        // RFC 1918 private
+            "https://127.0.0.1/client-metadata.json",       // loopback (not the http exception)
+        ] {
+            assert!(
+                matches!(
+                    validate_client_id_url(hostile),
+                    Err(ClientResolutionError::ForbiddenAddress)
+                ),
+                "must refuse {hostile}"
+            );
+        }
+        // A public IP literal is unaffected.
+        assert!(validate_client_id_url("https://1.2.3.4/client-metadata.json").is_ok());
     }
 
     #[test]
