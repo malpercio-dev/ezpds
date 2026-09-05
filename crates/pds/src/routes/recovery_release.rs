@@ -465,6 +465,11 @@ mod tests {
                 Ok(())
             })
         }
+
+        #[cfg(test)]
+        fn kind(&self) -> crate::email::EmailSenderKind {
+            crate::email::EmailSenderKind::Fake
+        }
     }
 
     struct Harness {
