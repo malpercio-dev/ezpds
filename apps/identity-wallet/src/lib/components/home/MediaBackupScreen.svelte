@@ -571,7 +571,7 @@
   .loading {
     display: flex;
     flex-direction: column;
-    gap: 12px;
+    gap: var(--space-md);
   }
 
   .status-card {
@@ -667,7 +667,7 @@
     background: none;
     border: none;
     padding: var(--space-sm) var(--space-xs);
-    min-height: 44px;
+    min-height: var(--size-tap-target);
     font-family: var(--font-sans);
     font-size: var(--text-label);
     font-weight: var(--weight-semibold);

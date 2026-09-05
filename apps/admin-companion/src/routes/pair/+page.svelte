@@ -343,7 +343,7 @@
 
   .reticle {
     position: relative;
-    width: min(68vw, 300px);
+    width: min(68vw, 300px); /* px-ok: one-off responsive QR-panel max width */
     aspect-ratio: 1;
     border-radius: var(--radius-lg);
     box-shadow: 0 0 0 100vmax var(--scan-scrim);
@@ -355,7 +355,7 @@
     width: var(--space-xl);
     height: var(--space-xl);
     border: var(--ring-width) solid var(--color-primary);
-    filter: drop-shadow(0 0 3px color-mix(in oklab, var(--color-bg) 65%, transparent));
+    filter: drop-shadow(0 0 3px color-mix(in oklab, var(--color-bg) 65%, transparent)); /* px-ok: decorative drop-shadow blur radius */
   }
   .corner--tl {
     top: 0;

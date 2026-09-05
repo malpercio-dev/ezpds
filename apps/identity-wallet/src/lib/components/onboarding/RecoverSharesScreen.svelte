@@ -201,7 +201,7 @@
     resize: vertical;
   }
   textarea:focus {
-    outline: 2px solid var(--color-primary-deep);
+    outline: var(--space-3xs) solid var(--color-primary-deep);
     outline-offset: 1px;
   }
   textarea.has-error {

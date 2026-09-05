@@ -327,7 +327,7 @@
   .sealed {
     display: inline-flex;
     align-items: center;
-    gap: 7px;
+    gap: var(--space-sm);
     font-size: var(--text-label);
     font-weight: var(--weight-semibold);
     color: var(--color-primary-deep);
@@ -336,7 +336,7 @@
   .error-box {
     background: var(--color-critical-surface);
     border-radius: var(--radius-md);
-    padding: 12px var(--space-md);
+    padding: var(--space-md) var(--space-md);
   }
 
   /* The carried diagnostic, subordinate to the sentence: data register, never the headline. */
@@ -361,7 +361,7 @@
   .hold {
     position: relative;
     width: 100%;
-    height: 54px;
+    height: var(--size-button-lg);
     border-radius: var(--radius-md);
     border: none;
     cursor: pointer;

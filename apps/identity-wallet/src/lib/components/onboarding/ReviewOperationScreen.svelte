@@ -170,7 +170,7 @@
   .warnings-head {
     display: flex;
     align-items: center;
-    gap: 7px;
+    gap: var(--space-sm);
     font-size: var(--text-label);
     font-weight: var(--weight-semibold);
     color: var(--color-warning);
@@ -190,8 +190,8 @@
     cursor: pointer;
   }
   .ack input {
-    width: 18px;
-    height: 18px;
+    width: var(--size-icon-2xs);
+    height: var(--size-icon-2xs);
     accent-color: var(--color-primary);
     flex-shrink: 0;
     cursor: pointer;
@@ -203,7 +203,7 @@
   .error-box {
     background: var(--color-critical-surface);
     border-radius: var(--radius-md);
-    padding: 12px var(--space-md);
+    padding: var(--space-md) var(--space-md);
   }
 
   .actions {

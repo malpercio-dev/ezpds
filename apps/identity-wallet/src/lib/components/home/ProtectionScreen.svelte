@@ -396,13 +396,13 @@
   .rows {
     display: flex;
     flex-direction: column;
-    gap: 10px;
+    gap: var(--space-sm);
   }
 
   .row {
     display: flex;
     align-items: center;
-    gap: 13px;
+    gap: var(--space-md);
     width: 100%;
     min-height: var(--size-tap-target);
     padding: var(--space-md);
@@ -419,8 +419,8 @@
     border-color: var(--color-line-strong);
   }
   .row-ic {
-    width: 36px;
-    height: 36px;
+    width: var(--size-icon-lg);
+    height: var(--size-icon-lg);
     border-radius: var(--radius-full);
     display: flex;
     align-items: center;
@@ -432,7 +432,7 @@
     min-width: 0;
     display: flex;
     flex-direction: column;
-    gap: 2px;
+    gap: var(--space-3xs);
   }
   .row-t {
     font-size: var(--text-body);
@@ -513,8 +513,8 @@
   .log-item {
     display: flex;
     align-items: center;
-    gap: 11px;
-    padding: 11px var(--space-md);
+    gap: var(--space-sm);
+    padding: var(--space-sm) var(--space-md);
     background: var(--color-bg);
   }
   .log-ic {
@@ -532,13 +532,13 @@
   .log-t {
     display: flex;
     align-items: center;
-    gap: 7px;
+    gap: var(--space-sm);
     font-size: var(--text-label);
     font-weight: var(--weight-semibold);
     color: var(--color-ink);
   }
   .log-flag {
-    padding: 1px 7px;
+    padding: 1px var(--space-sm);
     border-radius: var(--radius-full);
     background: var(--color-critical-surface);
     color: var(--color-critical);

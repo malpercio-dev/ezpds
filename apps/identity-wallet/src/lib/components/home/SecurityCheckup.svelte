@@ -147,7 +147,7 @@
   summary {
     display: flex;
     align-items: center;
-    gap: 6px;
+    gap: var(--space-sm);
     min-height: var(--size-tap-target);
     font-size: var(--text-label);
     font-weight: var(--weight-semibold);
@@ -181,14 +181,14 @@
      extra line this costs. */
   .line {
     display: grid;
-    grid-template-columns: 16px minmax(0, 1fr);
+    grid-template-columns: var(--space-md) minmax(0, 1fr);
     gap: var(--space-xs);
   }
   .mark {
     display: inline-flex;
     align-items: center;
     justify-content: center;
-    padding-top: 2px;
+    padding-top: var(--space-3xs);
   }
   .text {
     display: flex;

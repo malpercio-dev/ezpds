@@ -151,8 +151,8 @@
     padding: var(--space-md);
   }
   .didweb-ic {
-    width: 34px;
-    height: 34px;
+    width: 34px; /* px-ok: one-off action-icon size */
+    height: 34px; /* px-ok: one-off action-icon size */
     border-radius: var(--radius-full);
     background: var(--color-bg);
     color: var(--color-accent);
@@ -183,7 +183,7 @@
     font-family: var(--font-mono);
     font-size: 0.92em;
     background: var(--color-surface-sunk);
-    padding: 1px 4px;
+    padding: 1px var(--space-xs);
     border-radius: var(--radius-sm);
   }
 
@@ -237,7 +237,7 @@
     font-size: var(--text-data);
     color: var(--color-ink);
     background: var(--color-surface-sunk);
-    padding: 3px 6px;
+    padding: var(--space-2xs) var(--space-sm);
     border-radius: var(--radius-sm);
     flex: 1;
     min-width: 0;
@@ -248,7 +248,7 @@
     color: var(--color-ink);
     border: 1px solid var(--color-line);
     border-radius: var(--radius-sm);
-    padding: 5px 12px;
+    padding: var(--space-xs) var(--space-md);
     font-family: var(--font-sans);
     font-size: var(--text-label);
     font-weight: var(--weight-semibold);
@@ -261,7 +261,7 @@
     background: var(--color-surface);
     border: 1px solid var(--color-line);
     border-radius: var(--radius-md);
-    padding: 10px var(--space-md);
+    padding: var(--space-sm) var(--space-md);
     font-family: var(--font-sans);
     font-size: var(--text-label);
     font-weight: var(--weight-medium);

@@ -22,7 +22,7 @@
        the gold, appearance-invariant by design (the seal doesn't change at
        night), so these stay literal rather than themed tokens. */
     box-shadow:
-      inset 0 0 0 2px oklch(0.99 0.05 80 / 0.35),
-      inset 0 -3px 8px oklch(0.2 0.05 60 / 0.22);
+      inset 0 0 0 2px oklch(0.99 0.05 80 / 0.35), /* px-ok: decorative seal-ring shadow spread, not a spacing value */
+      inset 0 -3px 8px oklch(0.2 0.05 60 / 0.22); /* px-ok: decorative seal-ring shadow offset/blur, not a spacing value */
   }
 </style>

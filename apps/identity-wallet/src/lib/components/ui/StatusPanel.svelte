@@ -98,11 +98,11 @@
   .head {
     display: flex;
     align-items: center;
-    gap: 14px;
+    gap: var(--space-md);
   }
   .ic {
-    width: 52px;
-    height: 52px;
+    width: var(--size-avatar-sm);
+    height: var(--size-avatar-sm);
     border-radius: var(--radius-full);
     background: var(--color-bg);
     display: flex;

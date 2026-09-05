@@ -502,7 +502,7 @@
     display: inline-flex;
     align-items: center;
     justify-content: center;
-    gap: 6px;
+    gap: var(--space-sm);
     min-height: var(--size-tap-target);
     border: none;
     border-radius: var(--radius-sm);
@@ -545,13 +545,13 @@
     display: inline-flex;
     align-items: center;
     justify-content: center;
-    width: 20px;
-    height: 20px;
+    width: var(--size-icon-xs);
+    height: var(--size-icon-xs);
     margin-top: 1px;
     border-radius: 50%;
-    border: 1.5px solid currentColor;
+    border: 1.5px solid currentColor; /* px-ok: small badge hairline, deliberately thicker than 1px */
     font-family: var(--font-sans);
-    font-size: 12px;
+    font-size: var(--text-label);
     font-weight: var(--weight-semibold);
     line-height: 1;
   }
@@ -620,7 +620,7 @@
   .save-error {
     display: flex;
     align-items: flex-start;
-    gap: 6px;
+    gap: var(--space-sm);
     font-size: var(--text-label);
     line-height: var(--leading-label);
     color: var(--color-critical);

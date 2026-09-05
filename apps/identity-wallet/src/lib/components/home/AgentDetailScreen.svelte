@@ -249,7 +249,7 @@
   .meta {
     display: grid;
     grid-template-columns: auto 1fr;
-    gap: 6px var(--space-md);
+    gap: var(--space-sm) var(--space-md);
     margin: 0;
     background: var(--color-surface);
     border: 1px solid var(--color-line);
@@ -309,7 +309,7 @@
   .grant-warn-row {
     display: flex;
     align-items: flex-start;
-    gap: 6px;
+    gap: var(--space-sm);
   }
   .grant-warn-ic {
     color: var(--color-warning);
@@ -345,7 +345,7 @@
     background: var(--color-line-strong);
     flex-shrink: 0;
     /* Optically centres the dot on the first line of entry text; not a scale step. */
-    margin-top: 7px;
+    margin-top: var(--space-sm);
   }
   .entry-body {
     display: flex;

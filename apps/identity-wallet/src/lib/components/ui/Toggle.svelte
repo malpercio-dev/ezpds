@@ -60,7 +60,7 @@
   .text {
     display: flex;
     flex-direction: column;
-    gap: 2px;
+    gap: var(--space-3xs);
     min-width: 0;
   }
   .label {
@@ -81,11 +81,11 @@
   .switch {
     position: relative;
     flex-shrink: 0;
-    width: 46px;
-    height: 28px;
+    width: 46px; /* px-ok: toggle track width, see knob-travel arithmetic below */
+    height: var(--size-icon-md);
     border-radius: var(--radius-full);
     background: var(--color-surface-sunk);
-    border: 1.5px solid var(--color-line-strong);
+    border: 1.5px solid var(--color-line-strong); /* px-ok: toggle track hairline, deliberately thicker than 1px */
     transition:
       background var(--duration-base) var(--ease-standard),
       border-color var(--duration-base) var(--ease-standard);
@@ -98,9 +98,9 @@
   .knob {
     position: absolute;
     top: 50%;
-    left: 3px;
-    width: 20px;
-    height: 20px;
+    left: var(--space-2xs);
+    width: var(--size-icon-xs);
+    height: var(--size-icon-xs);
     border-radius: var(--radius-full);
     /* Always a light knob (like a physical switch), so it stays high-contrast on both the
        hollow off-track and the gold on-track, in light and dark alike. */
@@ -111,13 +111,13 @@
   }
   .row--on .knob {
     /* 46 track − 20 knob − 3 left − 1.5 border ≈ 18px travel to seat at the right. */
-    transform: translate(18px, -50%);
+    transform: translate(18px, -50%); /* px-ok: computed knob-travel distance, see arithmetic comment above */
     border-color: transparent;
   }
 
   .row:active:not(:disabled) .knob {
     /* A brief widen on press — tactile feedback, state still by position. */
-    width: 23px;
+    width: 23px; /* px-ok: press-state knob widen, coupled to the track/knob geometry above */
   }
 
   @media (prefers-reduced-motion: reduce) {

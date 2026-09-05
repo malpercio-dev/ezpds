@@ -492,7 +492,7 @@
   .req-meta {
     display: grid;
     grid-template-columns: auto 1fr;
-    gap: 4px var(--space-sm);
+    gap: var(--space-xs) var(--space-sm);
     margin: var(--space-xs) 0 0;
   }
   .req-meta dt {
@@ -600,8 +600,8 @@
     padding: var(--space-xl) var(--space-md);
   }
   .done-seal {
-    width: 72px;
-    height: 72px;
+    width: var(--size-avatar-lg);
+    height: var(--size-avatar-lg);
     border-radius: var(--radius-full);
     background: var(--color-safe-surface);
     color: var(--color-safe);

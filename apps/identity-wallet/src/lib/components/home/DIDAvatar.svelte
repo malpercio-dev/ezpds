@@ -36,8 +36,8 @@
      like pressed wax. Chroma and lightness are constrained (0.55 L, 0.09 C) so a
      wall of identities reads as a coherent set of seals, not rainbow avatars. */
   .avatar {
-    width: 64px;
-    height: 64px;
+    width: var(--size-avatar-md);
+    height: var(--size-avatar-md);
     border-radius: var(--radius-full);
     display: flex;
     align-items: center;
@@ -52,7 +52,7 @@
        appearance-invariant like the fill (mid-lightness 0.55 holds its
        near-white monogram in both appearances), so it stays literal. */
     box-shadow:
-      inset 0 0 0 1.5px oklch(1 0 0 / 0.22),
-      inset 0 -2px 5px oklch(0.2 0.05 60 / 0.18);
+      inset 0 0 0 1.5px oklch(1 0 0 / 0.22), /* px-ok: decorative avatar-ring shadow spread, not a spacing value */
+      inset 0 -2px 5px oklch(0.2 0.05 60 / 0.18); /* px-ok: decorative avatar-ring shadow offset/blur, not a spacing value */
   }
 </style>

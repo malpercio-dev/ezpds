@@ -42,7 +42,7 @@
   .row {
     display: flex;
     align-items: center;
-    gap: 13px;
+    gap: var(--space-md);
     width: 100%;
     min-height: var(--size-tap-target);
     padding: var(--space-md);
@@ -59,8 +59,8 @@
     border-color: var(--color-line-strong);
   }
   .ic {
-    width: 38px;
-    height: 38px;
+    width: var(--size-icon-xl);
+    height: var(--size-icon-xl);
     border-radius: var(--radius-full);
     background: var(--color-surface);
     color: var(--color-primary-deep);
@@ -72,7 +72,7 @@
   .body {
     display: flex;
     flex-direction: column;
-    gap: 2px;
+    gap: var(--space-3xs);
     min-width: 0;
     flex: 1;
   }

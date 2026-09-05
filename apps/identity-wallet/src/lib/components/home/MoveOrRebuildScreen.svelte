@@ -98,7 +98,7 @@
     font-family: var(--font-mono);
     font-size: 0.92em;
     background: var(--color-surface-sunk);
-    padding: 1px 4px;
+    padding: 1px var(--space-xs);
     border-radius: var(--radius-sm);
   }
   .note {

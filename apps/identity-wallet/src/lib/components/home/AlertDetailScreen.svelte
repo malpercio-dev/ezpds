@@ -109,7 +109,7 @@
   .cards {
     display: flex;
     flex-direction: column;
-    gap: 12px;
+    gap: var(--space-md);
   }
   .card {
     background: var(--color-surface);

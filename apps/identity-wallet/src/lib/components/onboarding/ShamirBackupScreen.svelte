@@ -243,8 +243,8 @@
     background: var(--color-safe-surface);
   }
   .check {
-    width: 36px;
-    height: 36px;
+    width: var(--size-icon-lg);
+    height: var(--size-icon-lg);
     border-radius: var(--radius-full);
     background: var(--color-safe);
     color: var(--color-on-color);
@@ -340,7 +340,7 @@
     padding: var(--space-sm) 0;
   }
   .qr :global(svg) {
-    max-width: 180px;
+    max-width: 180px; /* px-ok: one-off recovery-code card max width */
     height: auto;
   }
   .inline-error {
@@ -378,8 +378,8 @@
     cursor: pointer;
   }
   .confirm input[type='checkbox'] {
-    width: 20px;
-    height: 20px;
+    width: var(--size-icon-xs);
+    height: var(--size-icon-xs);
     accent-color: var(--color-primary);
     flex-shrink: 0;
     cursor: pointer;

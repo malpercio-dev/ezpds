@@ -460,7 +460,7 @@
   .scope-row {
     display: flex;
     align-items: flex-start;
-    gap: 8px;
+    gap: var(--space-sm);
     font-size: var(--text-label);
     color: var(--color-ink);
     line-height: 1.45;
@@ -468,7 +468,7 @@
   }
   .scope-ic {
     flex-shrink: 0;
-    margin-top: 2px;
+    margin-top: var(--space-3xs);
   }
   .scope-row--can .scope-ic {
     color: var(--color-safe);
@@ -490,16 +490,16 @@
     cursor: pointer;
   }
   .priv input {
-    margin-top: 3px;
+    margin-top: var(--space-2xs);
     accent-color: var(--color-primary);
-    width: 18px;
-    height: 18px;
+    width: var(--size-icon-2xs);
+    height: var(--size-icon-2xs);
     flex-shrink: 0;
   }
   .priv-body {
     display: flex;
     flex-direction: column;
-    gap: 2px;
+    gap: var(--space-3xs);
   }
   .priv-s {
     font-size: var(--text-label);
@@ -548,7 +548,7 @@
     border: 1px solid var(--color-line);
     border-radius: var(--radius-md);
     padding: var(--space-sm) var(--space-md);
-    min-height: 44px;
+    min-height: var(--size-tap-target);
     font-family: var(--font-sans);
     font-size: var(--text-label);
     font-weight: var(--weight-semibold);
@@ -578,7 +578,7 @@
   .cards {
     display: flex;
     flex-direction: column;
-    gap: 12px;
+    gap: var(--space-md);
   }
   .card {
     display: flex;
@@ -587,7 +587,7 @@
     background: var(--color-bg);
     border: 1px solid var(--color-line);
     border-radius: var(--radius-xl);
-    padding: 15px;
+    padding: var(--space-md);
   }
   .row {
     display: flex;
@@ -599,7 +599,7 @@
     min-width: 0;
     display: flex;
     flex-direction: column;
-    gap: 3px;
+    gap: var(--space-2xs);
   }
   .name {
     font-size: var(--text-title);
@@ -610,7 +610,7 @@
     display: flex;
     flex-wrap: wrap;
     align-items: center;
-    gap: 6px;
+    gap: var(--space-sm);
   }
   .when {
     font-size: var(--text-label);
@@ -619,8 +619,8 @@
   .badge {
     display: inline-flex;
     align-items: center;
-    gap: 5px;
-    padding: 3px 9px;
+    gap: var(--space-xs);
+    padding: var(--space-2xs) var(--space-sm);
     border-radius: var(--radius-full);
     font-size: var(--text-label);
     font-weight: var(--weight-semibold);
@@ -634,8 +634,8 @@
     background: none;
     border: none;
     padding: var(--space-sm) var(--space-xs);
-    min-height: 44px;
-    min-width: 44px;
+    min-height: var(--size-tap-target);
+    min-width: var(--size-tap-target);
     font-family: var(--font-sans);
     font-size: var(--text-label);
     font-weight: var(--weight-semibold);
@@ -675,6 +675,6 @@
   .loading {
     display: flex;
     flex-direction: column;
-    gap: 12px;
+    gap: var(--space-md);
   }
 </style>

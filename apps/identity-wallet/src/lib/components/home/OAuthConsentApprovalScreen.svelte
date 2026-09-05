@@ -666,7 +666,7 @@
   }
   .reticle {
     position: relative;
-    width: min(68vw, 300px);
+    width: min(68vw, 300px); /* px-ok: one-off QR/photo review max width */
     aspect-ratio: 1;
     border-radius: var(--radius-lg);
     box-shadow: 0 0 0 100vmax var(--scan-scrim);
@@ -675,8 +675,8 @@
     position: absolute;
     width: var(--space-xl);
     height: var(--space-xl);
-    border: 3px solid var(--color-primary);
-    filter: drop-shadow(0 0 3px color-mix(in oklab, var(--color-bg) 65%, transparent));
+    border: 3px solid var(--color-primary); /* px-ok: avatar emphasis ring, deliberately thicker than a hairline */
+    filter: drop-shadow(0 0 3px color-mix(in oklab, var(--color-bg) 65%, transparent)); /* px-ok: decorative drop-shadow blur radius */
   }
   .corner--tl {
     top: 0;
@@ -801,8 +801,8 @@
     cursor: pointer;
   }
   .grant-check input[type='checkbox'] {
-    width: 18px;
-    height: 18px;
+    width: var(--size-icon-2xs);
+    height: var(--size-icon-2xs);
     flex-shrink: 0;
     margin-top: var(--space-3xs);
     accent-color: var(--color-accent);
@@ -895,8 +895,8 @@
     padding: var(--space-xl) var(--space-md);
   }
   .done-seal {
-    width: 72px;
-    height: 72px;
+    width: var(--size-avatar-lg);
+    height: var(--size-avatar-lg);
     border-radius: var(--radius-full);
     background: var(--color-safe-surface);
     color: var(--color-safe);
