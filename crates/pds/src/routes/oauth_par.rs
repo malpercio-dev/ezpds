@@ -595,21 +595,27 @@ mod tests {
         );
     }
 
-    /// Serve a client-metadata document at `/oauth/client-metadata.json` on an ephemeral
-    /// loopback port; returns the document's URL (which doubles as the client_id). The JSON
-    /// is produced by `make_json(url)` so the document can reference its own URL as
-    /// `client_id`, mirroring a real ATProto OAuth client metadata document.
+    /// Serve a client-metadata document on an ephemeral loopback port; returns the document's
+    /// URL (which doubles as the client_id). The JSON is produced by `make_json(url)` so the
+    /// document can reference its own URL as `client_id`, mirroring a real ATProto OAuth client
+    /// metadata document.
+    ///
+    /// The path carries a per-call UUID: the client-resolution negative cache is process-global
+    /// and keyed by client_id, and the test binary runs modules in parallel, so a loopback port
+    /// reused within the cache TTL by a test whose resolution failed would otherwise make an
+    /// unrelated test see "recently failed" instead of its own error.
     async fn serve_client_metadata(make_json: impl FnOnce(&str) -> String) -> String {
         use std::future::IntoFuture;
 
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let path = format!("/oauth/client-metadata-{}.json", uuid::Uuid::new_v4());
         let url = format!(
-            "http://127.0.0.1:{}/oauth/client-metadata.json",
+            "http://127.0.0.1:{}{path}",
             listener.local_addr().unwrap().port()
         );
         let json = make_json(&url);
         let router = axum::Router::new().route(
-            "/oauth/client-metadata.json",
+            &path,
             axum::routing::get(move || {
                 let json = json.clone();
                 async move { ([("content-type", "application/json")], json) }
