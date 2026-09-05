@@ -132,29 +132,9 @@ mod tests {
     use tower::ServiceExt;
 
     use crate::routes::test_utils::{
-        access_jwt, body_json, seed_account_with_repo, state_with_master_key,
+        access_jwt, body_json, put_fixed_record as put_record, seed_account_with_repo,
+        setup_account_with_repo, state_with_master_key,
     };
-
-    async fn setup_account_with_repo() -> (AppState, String) {
-        let state = state_with_master_key().await;
-        let did = "did:plc:syncgetblockstest".to_string();
-        seed_account_with_repo(&state.db, &did).await;
-        (state, did)
-    }
-
-    /// PUT a record at `rkey` via the repo.putRecord endpoint; returns the record's block CID.
-    async fn put_record(app: &axum::Router, token: &str, did: &str, rkey: &str) -> StatusCode {
-        let request = crate::routes::test_utils::put_record_request(
-            did,
-            "app.bsky.feed.post",
-            rkey,
-            serde_json::json!({
-                "record": { "text": "hello", "createdAt": "2026-06-26T00:00:00Z" }
-            }),
-            Some(token),
-        );
-        app.clone().oneshot(request).await.unwrap().status()
-    }
 
     /// All block CIDs currently stored for `did` (commit, MST nodes, record blocks).
     async fn stored_cids(state: &AppState, did: &str) -> Vec<String> {

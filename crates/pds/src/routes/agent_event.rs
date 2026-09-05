@@ -281,46 +281,25 @@ impl IntoResponse for SetError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::Arc;
 
     use axum::body::Body;
     use axum::http::Request;
-    use base64::{engine::general_purpose::STANDARD, Engine as _};
     use chrono::Utc;
     use common::{AgentAuthConfig, TrustedIssuer};
     use jsonwebtoken::{Algorithm, EncodingKey, Header};
-    use p256::pkcs8::{spki::EncodePublicKey, EncodePrivateKey};
-    use rand_core::OsRng;
     use serde_json::json;
     use tower::ServiceExt;
 
-    use crate::app::{app, test_state, AppState};
+    use crate::app::{app, AppState};
+    use crate::routes::test_utils::{
+        es256_keys, insert_account_with_email as insert_account,
+        state_with_agent_auth as state_with,
+    };
 
     const PUBLIC_URL: &str = "https://test.example.com";
     const ISSUER: &str = "https://trusted.example";
 
     // ── key + SET helpers ────────────────────────────────────────────────
-
-    fn der_to_pem(label: &str, der: &[u8]) -> String {
-        let b64 = STANDARD.encode(der);
-        let mut body = String::new();
-        for chunk in b64.as_bytes().chunks(64) {
-            body.push_str(std::str::from_utf8(chunk).unwrap());
-            body.push('\n');
-        }
-        format!("-----BEGIN {label}-----\n{body}-----END {label}-----\n")
-    }
-
-    /// A fresh ES256 keypair as (PKCS#8 private PEM, SPKI public PEM).
-    fn es256_keys() -> (String, String) {
-        let sk = p256::SecretKey::random(&mut OsRng);
-        let priv_pem = der_to_pem("PRIVATE KEY", sk.to_pkcs8_der().unwrap().as_bytes());
-        let pub_pem = der_to_pem(
-            "PUBLIC KEY",
-            sk.public_key().to_public_key_der().unwrap().as_bytes(),
-        );
-        (priv_pem, pub_pem)
-    }
 
     /// Sign a SET carrying the revocation event, with a top-level `sub` and a JSON `events` body.
     fn make_set(priv_pem: &str, iss: &str, aud: &str, sub: &str, events: Value) -> String {
@@ -381,28 +360,6 @@ mod tests {
             jwks_url: None,
             algorithm: "ES256".to_string(),
         }
-    }
-
-    async fn state_with(agent_auth: AgentAuthConfig) -> AppState {
-        let base = test_state().await;
-        let mut config = (*base.config).clone();
-        config.agent_auth = agent_auth;
-        AppState {
-            config: Arc::new(config),
-            ..base
-        }
-    }
-
-    async fn insert_account(db: &sqlx::SqlitePool, did: &str, email: &str) {
-        sqlx::query(
-            "INSERT INTO accounts (did, email, password_hash, created_at, updated_at) \
-             VALUES (?, ?, 'hash', datetime('now'), datetime('now'))",
-        )
-        .bind(did)
-        .bind(email)
-        .execute(db)
-        .await
-        .unwrap();
     }
 
     /// Seed a confirmed (`claimed`) `identity_assertion` registration for `(ISSUER, subject)`.

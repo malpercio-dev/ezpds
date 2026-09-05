@@ -86,29 +86,11 @@ mod tests {
     use axum::http::{self, Request};
     use tower::ServiceExt;
 
-    use crate::routes::test_utils::{access_jwt, seed_account_with_repo, state_with_master_key};
-
-    async fn setup_account_with_repo() -> (AppState, String) {
-        let state = state_with_master_key().await;
-        let did = "did:plc:syncgetrecordtest".to_string();
-        seed_account_with_repo(&state.db, &did).await;
-        (state, did)
-    }
+    use crate::routes::test_utils::{
+        access_jwt, put_fixed_record as put_record, setup_account_with_repo,
+    };
 
     /// PUT a record at `rkey` via the repo.putRecord endpoint.
-    async fn put_record(app: &axum::Router, token: &str, did: &str, rkey: &str) -> StatusCode {
-        let request = crate::routes::test_utils::put_record_request(
-            did,
-            "app.bsky.feed.post",
-            rkey,
-            serde_json::json!({
-                "record": { "text": "hello", "createdAt": "2026-06-26T00:00:00Z" }
-            }),
-            Some(token),
-        );
-        app.clone().oneshot(request).await.unwrap().status()
-    }
-
     fn get_request(did: &str, rkey: &str) -> Request<Body> {
         Request::builder()
             .method(http::Method::GET)

@@ -819,25 +819,8 @@ fn into_claim_attempt_row(row: ClaimAttemptSqlRow) -> AgentClaimAttemptRow {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::db::{open_pool, run_migrations};
-
-    async fn test_pool() -> sqlx::SqlitePool {
-        let pool = open_pool("sqlite::memory:").await.unwrap();
-        run_migrations(&pool).await.unwrap();
-        pool
-    }
-
-    async fn insert_account(pool: &sqlx::SqlitePool, did: &str) {
-        sqlx::query(
-            "INSERT INTO accounts (did, email, password_hash, created_at, updated_at) \
-             VALUES (?, ?, 'hash', datetime('now'), datetime('now'))",
-        )
-        .bind(did)
-        .bind(format!("{}@example.com", did.replace(':', "-")))
-        .execute(pool)
-        .await
-        .unwrap();
-    }
+    use crate::db::accounts::insert_bare_account as insert_account;
+    use crate::db::test_pool;
 
     fn new_identity<'a>(id: &'a str, did: &'a str) -> NewAgentIdentity<'a> {
         NewAgentIdentity {

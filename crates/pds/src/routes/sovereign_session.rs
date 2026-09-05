@@ -222,10 +222,7 @@ mod tests {
     use rand_core::OsRng;
     use serde_json::{json, Value};
     use tower::ServiceExt;
-    use wiremock::{
-        matchers::{method, path},
-        Mock, MockServer, ResponseTemplate,
-    };
+    use wiremock::{matchers::method, Mock, MockServer, ResponseTemplate};
 
     #[test]
     fn server_uses_the_shared_canonical_envelope_vector() {
@@ -256,7 +253,7 @@ mod tests {
     use super::*;
     use crate::app::{app, test_state_with_plc_url, AppState};
     use crate::auth::jwt::{parse_scope, verify_hs256_access_token, AuthScope};
-    use crate::routes::test_utils::body_json;
+    use crate::routes::test_utils::{body_json, mount_owner_audit_log as mount_audit_log};
 
     type SignFn = Box<dyn Fn(&[u8]) -> String + Send + Sync>;
 
@@ -320,28 +317,6 @@ mod tests {
         .execute(&state.db)
         .await
         .unwrap();
-    }
-
-    async fn mount_audit_log(server: &MockServer, did: &str, rotation_keys: &[&str]) {
-        let log = json!([{
-            "did": did,
-            "cid": "bafy-current-head",
-            "createdAt": "2026-07-13T00:00:00Z",
-            "nullified": false,
-            "operation": {
-                "type": "plc_operation",
-                "prev": null,
-                "rotationKeys": rotation_keys,
-                "verificationMethods": {},
-                "alsoKnownAs": ["at://owner.example.com"],
-                "services": {}
-            }
-        }]);
-        Mock::given(method("GET"))
-            .and(path(format!("/{did}/log/audit")))
-            .respond_with(ResponseTemplate::new(200).set_body_json(log))
-            .mount(server)
-            .await;
     }
 
     fn now() -> i64 {

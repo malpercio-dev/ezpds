@@ -22,7 +22,7 @@ use axum::{
     http::{Request, StatusCode},
 };
 use chrono::Utc;
-use common::{AgentAuthConfig, TrustedIssuer};
+use common::AgentAuthConfig;
 use jsonwebtoken::{Algorithm, EncodingKey, Header};
 use p256::pkcs8::{spki::EncodePublicKey, EncodePrivateKey};
 use rand_core::OsRng;
@@ -30,33 +30,12 @@ use serde_json::{json, Value};
 use tower::ServiceExt;
 
 use crate::app::{app, test_state, AppState};
+use crate::routes::test_utils::{
+    insert_account_with_email as insert_account, post_json_with_bearer as post_json,
+    state_with_agent_auth as state_with, trusted_issuer as trusted,
+};
 
 const PUBLIC_URL: &str = "https://test.example.com";
-
-// ── state helpers ────────────────────────────────────────────────────────────
-
-/// `test_state()` with the agent-auth config swapped in (every flow is off by default).
-async fn state_with(agent_auth: AgentAuthConfig) -> AppState {
-    let base = test_state().await;
-    let mut config = (*base.config).clone();
-    config.agent_auth = agent_auth;
-    AppState {
-        config: Arc::new(config),
-        ..base
-    }
-}
-
-async fn insert_account(db: &sqlx::SqlitePool, did: &str, email: &str) {
-    sqlx::query(
-        "INSERT INTO accounts (did, email, password_hash, created_at, updated_at) \
-         VALUES (?, ?, 'hash', datetime('now'), datetime('now'))",
-    )
-    .bind(did)
-    .bind(email)
-    .execute(db)
-    .await
-    .unwrap();
-}
 
 /// A full-access HS256 access token for `did` — the credential the account owner presents to
 /// confirm a claim (mirrors the shape `auth/extractors.rs` accepts).
@@ -121,16 +100,6 @@ fn make_jag(priv_pem: &str, iss: &str, sub: &str, email: &str, iat: i64, exp: i6
     jsonwebtoken::encode(&Header::new(Algorithm::ES256), &claims, &key).unwrap()
 }
 
-fn trusted(issuer: &str, public_key_pem: String) -> TrustedIssuer {
-    TrustedIssuer {
-        issuer: issuer.to_string(),
-        audience: None,
-        public_key_pem: Some(public_key_pem),
-        jwks_url: None,
-        algorithm: "ES256".to_string(),
-    }
-}
-
 /// Sign a provider Security Event Token carrying the revocation event for `sub`. `aud` is this
 /// server; `iss` is the trusted provider. The `jti` is fixed (the SET path keeps no replay store, so
 /// its value is irrelevant).
@@ -183,22 +152,6 @@ async fn get_json(state: AppState, uri: &str) -> (StatusCode, Value) {
         Request::builder().uri(uri).body(Body::empty()).unwrap(),
     )
     .await
-}
-
-async fn post_json(
-    state: AppState,
-    uri: &str,
-    body: Value,
-    token: Option<&str>,
-) -> (StatusCode, Value) {
-    let mut builder = Request::builder()
-        .method("POST")
-        .uri(uri)
-        .header("content-type", "application/json");
-    if let Some(t) = token {
-        builder = builder.header("Authorization", format!("Bearer {t}"));
-    }
-    send(state, builder.body(Body::from(body.to_string())).unwrap()).await
 }
 
 async fn post_form(state: AppState, uri: &str, body: &str) -> (StatusCode, Value) {

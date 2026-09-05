@@ -106,25 +106,18 @@ pub async fn admin_waitlist(
 
 #[cfg(test)]
 mod tests {
-    use axum::body::Body;
-    use axum::http::{Request, StatusCode};
+    use axum::http::StatusCode;
     use tower::ServiceExt;
 
     use crate::app::app;
-    use crate::routes::test_utils::{body_json, test_state_with_admin_token};
+    use crate::routes::test_utils::{
+        body_json, get_request_with_bearer as get, test_state_with_admin_token,
+    };
 
     async fn seed_signup(db: &sqlx::SqlitePool, email: &str, handle: Option<&str>) {
         crate::db::waitlist::insert_signup(db, email, handle)
             .await
             .unwrap();
-    }
-
-    fn get(uri: &str, token: Option<&str>) -> Request<Body> {
-        let mut builder = Request::builder().method("GET").uri(uri);
-        if let Some(token) = token {
-            builder = builder.header("Authorization", format!("Bearer {token}"));
-        }
-        builder.body(Body::empty()).unwrap()
     }
 
     #[tokio::test]

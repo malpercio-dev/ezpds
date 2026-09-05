@@ -318,15 +318,7 @@ pub async fn mint_account_service_auth(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::db::{
-        iroh_identity::get_iroh_identity, jwt_secret::get_jwt_secret, open_pool, run_migrations,
-    };
-
-    async fn test_pool() -> SqlitePool {
-        let pool = open_pool("sqlite::memory:").await.unwrap();
-        run_migrations(&pool).await.unwrap();
-        pool
-    }
+    use crate::db::{iroh_identity::get_iroh_identity, jwt_secret::get_jwt_secret, test_pool};
 
     #[tokio::test]
     async fn jwt_secret_persists_across_loads_with_master_key() {

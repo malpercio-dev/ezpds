@@ -109,17 +109,11 @@ pub async fn rewrap_master_key(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::db::{open_pool, run_migrations};
+    use crate::db::test_pool;
 
     const OLD_KEY: [u8; 32] = [0x11; 32];
     const NEW_KEY: [u8; 32] = [0x22; 32];
     const WRONG_KEY: [u8; 32] = [0x33; 32];
-
-    async fn test_pool() -> SqlitePool {
-        let pool = open_pool("sqlite::memory:").await.unwrap();
-        run_migrations(&pool).await.unwrap();
-        pool
-    }
 
     fn enc(plaintext: &[u8], key: &[u8; 32]) -> String {
         crypto::encrypt_secret_bytes(plaintext, key).unwrap()

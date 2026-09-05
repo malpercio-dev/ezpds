@@ -101,6 +101,7 @@ mod tests {
     use zeroize::Zeroizing;
 
     use crate::app::{app, test_state, AppState};
+    use crate::routes::test_utils::body_json;
     use common::Sensitive;
 
     async fn state_with_master_key() -> AppState {
@@ -177,13 +178,6 @@ mod tests {
             b = b.header("Authorization", format!("Bearer {t}"));
         }
         b.body(Body::empty()).unwrap()
-    }
-
-    async fn body_json(resp: axum::response::Response) -> serde_json::Value {
-        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
-            .await
-            .unwrap();
-        serde_json::from_slice(&bytes).unwrap()
     }
 
     #[tokio::test]

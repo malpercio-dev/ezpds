@@ -284,13 +284,8 @@ pub async fn promote_staged_signing_key(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::db::{open_pool, run_migrations};
-
-    async fn test_pool() -> SqlitePool {
-        let pool = open_pool("sqlite::memory:").await.unwrap();
-        run_migrations(&pool).await.unwrap();
-        pool
-    }
+    use crate::db::accounts::insert_bare_account as insert_account;
+    use crate::db::test_pool;
 
     async fn insert_pending_account(pool: &SqlitePool, account_id: &str) {
         sqlx::query(
@@ -309,18 +304,6 @@ mod tests {
         .bind(format!("{account_id}@example.com"))
         .bind(format!("{account_id}.example.com"))
         .bind(format!("CODE-{account_id}"))
-        .execute(pool)
-        .await
-        .unwrap();
-    }
-
-    async fn insert_account(pool: &SqlitePool, did: &str) {
-        sqlx::query(
-            "INSERT INTO accounts (did, email, password_hash, created_at, updated_at) \
-             VALUES (?, ?, 'hash', datetime('now'), datetime('now'))",
-        )
-        .bind(did)
-        .bind(format!("{did}@example.com"))
         .execute(pool)
         .await
         .unwrap();

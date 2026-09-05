@@ -113,14 +113,7 @@ mod tests {
     use axum::http::{self, Request};
     use tower::ServiceExt;
 
-    use crate::routes::test_utils::{access_jwt, seed_account_with_repo, state_with_master_key};
-
-    async fn setup_account_with_repo() -> (AppState, String) {
-        let state = state_with_master_key().await;
-        let did = "did:plc:listrecordstest".to_string();
-        seed_account_with_repo(&state.db, &did).await;
-        (state, did)
-    }
+    use crate::routes::test_utils::{access_jwt, setup_account_with_repo};
 
     /// Put a record via the putRecord handler (keeps the test honest: real write path).
     async fn put(app: &axum::Router, token: &str, did: &str, rkey: &str, value: serde_json::Value) {

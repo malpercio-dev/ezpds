@@ -195,29 +195,10 @@ mod tests {
     use tower::ServiceExt;
 
     use crate::app::{app, test_state};
-
-    /// Issue a valid HS256 access JWT for a DID using the test state's fixed secret.
-    fn access_jwt(secret: &[u8; 32], sub: &str) -> String {
-        scoped_jwt(secret, sub, "com.atproto.access")
-    }
-
-    /// Issue a scoped HS256 JWT (used to exercise wrong-scope rejection paths).
-    fn scoped_jwt(secret: &[u8; 32], sub: &str, scope: &str) -> String {
-        use jsonwebtoken::{encode, Algorithm, EncodingKey, Header};
-
-        let now = crate::time::unix_now_secs() as u64;
-        encode(
-            &Header::new(Algorithm::HS256),
-            &serde_json::json!({
-                "scope": scope,
-                "sub": sub,
-                "iat": now,
-                "exp": now + 7200_u64,
-            }),
-            &EncodingKey::from_secret(secret),
-        )
-        .unwrap()
-    }
+    use crate::routes::test_utils::{
+        access_jwt, body_json, insert_account_with_email as insert_account,
+        scoped_access_jwt as scoped_jwt,
+    };
 
     fn put_request(token: &str, body: serde_json::Value) -> Request<Body> {
         Request::builder()
@@ -236,25 +217,6 @@ mod tests {
             .header("Authorization", format!("Bearer {token}"))
             .body(Body::empty())
             .unwrap()
-    }
-
-    async fn insert_account(db: &sqlx::SqlitePool, did: &str, email: &str) {
-        sqlx::query(
-            "INSERT INTO accounts (did, email, password_hash, created_at, updated_at) \
-             VALUES (?, ?, NULL, datetime('now'), datetime('now'))",
-        )
-        .bind(did)
-        .bind(email)
-        .execute(db)
-        .await
-        .unwrap();
-    }
-
-    async fn body_json(response: axum::response::Response) -> serde_json::Value {
-        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
-            .await
-            .unwrap();
-        serde_json::from_slice(&bytes).unwrap()
     }
 
     #[tokio::test]

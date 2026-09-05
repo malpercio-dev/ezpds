@@ -183,7 +183,7 @@ mod tests {
 
     use crate::app::{app, test_state, test_state_with_plc_url};
     use crate::firehose::FirehoseEvent;
-    use crate::routes::test_utils::{access_jwt, body_json};
+    use crate::routes::test_utils::{access_jwt, body_json, scoped_access_jwt as scoped_jwt};
 
     async fn insert_account(db: &sqlx::SqlitePool, did: &str, email: &str, deactivated: bool) {
         // Bind the deactivation timestamp as a value (a fixed instant suffices for tests) rather
@@ -203,18 +203,6 @@ mod tests {
         .execute(db)
         .await
         .unwrap();
-    }
-
-    fn scoped_jwt(secret: &[u8; 32], sub: &str, scope: &str) -> String {
-        use jsonwebtoken::{encode, Algorithm, EncodingKey, Header};
-
-        let now = crate::time::unix_now_secs() as u64;
-        encode(
-            &Header::new(Algorithm::HS256),
-            &serde_json::json!({ "scope": scope, "sub": sub, "iat": now, "exp": now + 7200_u64 }),
-            &EncodingKey::from_secret(secret),
-        )
-        .unwrap()
     }
 
     fn activate_request(token: &str) -> Request<Body> {

@@ -50,31 +50,9 @@ mod tests {
     use crate::app::{app, test_state, AppState};
     use crate::identity::dns::{DnsError, TxtResolver};
     use crate::identity::well_known::{WellKnownError, WellKnownResolver};
-    use crate::routes::test_utils::seed_handle;
+    use crate::routes::test_utils::{seed_handle, state_with_txt_records as state_with_dns};
 
     // ── Test doubles ──────────────────────────────────────────────────────────
-
-    /// Returns a fixed list of TXT records for any lookup.
-    struct FixedTxtResolver {
-        records: Vec<String>,
-    }
-
-    impl TxtResolver for FixedTxtResolver {
-        fn txt_lookup<'a>(
-            &'a self,
-            _name: &'a str,
-        ) -> Pin<Box<dyn Future<Output = Result<Vec<String>, DnsError>> + Send + 'a>> {
-            let records = self.records.clone();
-            Box::pin(async move { Ok(records) })
-        }
-    }
-
-    fn state_with_dns(state: AppState, records: Vec<String>) -> AppState {
-        AppState {
-            txt_resolver: Some(Arc::new(FixedTxtResolver { records })),
-            ..state
-        }
-    }
 
     /// Always returns a transport-level error; simulates a broken DNS resolver.
     struct ErrTxtResolver;

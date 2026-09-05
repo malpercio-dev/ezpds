@@ -73,13 +73,7 @@ pub async fn sweep_expired_jtis(pool: &SqlitePool) -> Result<u64, sqlx::Error> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::db::{open_pool, run_migrations};
-
-    async fn test_pool() -> SqlitePool {
-        let pool = open_pool("sqlite::memory:").await.unwrap();
-        run_migrations(&pool).await.unwrap();
-        pool
-    }
+    use crate::db::test_pool;
 
     #[tokio::test]
     async fn duplicate_jti_rejected_per_scope_and_sweep_reclaims_expired() {

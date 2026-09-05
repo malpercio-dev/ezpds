@@ -671,14 +671,16 @@ mod tests {
     };
     use common::{AgentAuthConfig, TrustedIssuer};
     use jsonwebtoken::{Algorithm, EncodingKey, Header};
-    use p256::pkcs8::spki::EncodePublicKey;
     use p256::pkcs8::EncodePrivateKey;
     use rand_core::OsRng;
     use serde_json::json;
-    use sqlx::SqlitePool;
     use tower::ServiceExt;
 
-    use crate::app::{app, test_state, AppState};
+    use crate::app::{app, AppState};
+    use crate::routes::test_utils::{
+        es256_keys, insert_account_with_email as insert_account,
+        state_with_agent_auth as state_with, trusted_issuer as trusted,
+    };
 
     const PUBLIC_URL: &str = "https://test.example.com";
 
@@ -692,17 +694,6 @@ mod tests {
             body.push('\n');
         }
         format!("-----BEGIN {label}-----\n{body}-----END {label}-----\n")
-    }
-
-    /// A fresh ES256 keypair as (PKCS#8 private PEM, SPKI public PEM).
-    fn es256_keys() -> (String, String) {
-        let sk = p256::SecretKey::random(&mut OsRng);
-        let priv_pem = der_to_pem("PRIVATE KEY", sk.to_pkcs8_der().unwrap().as_bytes());
-        let pub_pem = der_to_pem(
-            "PUBLIC KEY",
-            sk.public_key().to_public_key_der().unwrap().as_bytes(),
-        );
-        (priv_pem, pub_pem)
     }
 
     #[derive(serde::Serialize)]
@@ -863,28 +854,6 @@ mod tests {
 
     // ── state + request helpers ──────────────────────────────────────────
 
-    async fn state_with(agent_auth: AgentAuthConfig) -> AppState {
-        let base = test_state().await;
-        let mut config = (*base.config).clone();
-        config.agent_auth = agent_auth;
-        AppState {
-            config: Arc::new(config),
-            ..base
-        }
-    }
-
-    async fn insert_account(db: &SqlitePool, did: &str, email: &str) {
-        sqlx::query(
-            "INSERT INTO accounts (did, email, password_hash, created_at, updated_at) \
-             VALUES (?, ?, 'hash', datetime('now'), datetime('now'))",
-        )
-        .bind(did)
-        .bind(email)
-        .execute(db)
-        .await
-        .unwrap();
-    }
-
     async fn post(state: AppState, body: serde_json::Value) -> (StatusCode, serde_json::Value) {
         let response = app(state)
             .oneshot(
@@ -903,16 +872,6 @@ mod tests {
             .unwrap();
         let json = serde_json::from_slice(&bytes).unwrap_or(serde_json::Value::Null);
         (status, json)
-    }
-
-    fn trusted(issuer: &str, public_key_pem: String) -> TrustedIssuer {
-        TrustedIssuer {
-            issuer: issuer.to_string(),
-            audience: None,
-            public_key_pem: Some(public_key_pem),
-            jwks_url: None,
-            algorithm: "ES256".to_string(),
-        }
     }
 
     /// A dynamic-trust issuer entry (jwks_url instead of an inline PEM). The URL is a marker only —

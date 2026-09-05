@@ -107,18 +107,7 @@ pub(crate) async fn list_child_deletions_of_parent(
 mod tests {
     use super::*;
     use crate::app::test_state;
-
-    async fn seed_account(db: &sqlx::SqlitePool, did: &str) {
-        sqlx::query(
-            "INSERT INTO accounts (did, email, password_hash, created_at, updated_at) \
-             VALUES (?, ?, NULL, datetime('now'), datetime('now'))",
-        )
-        .bind(did)
-        .bind(format!("{did}@example.com"))
-        .execute(db)
-        .await
-        .expect("seed account");
-    }
+    use crate::db::accounts::insert_bare_account as seed_account;
 
     #[tokio::test]
     async fn upsert_is_idempotent_and_lists_by_parent() {

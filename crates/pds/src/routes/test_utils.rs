@@ -859,3 +859,236 @@ pub(crate) fn child_genesis_op(handle: &str, pds: &str, signing_key: &str) -> se
     .unwrap();
     serde_json::from_str(&op.signed_op_json).unwrap()
 }
+
+// ── Additional shared fixtures (append-only — see AGENTS.md route ownership) ───────────────
+//
+// Consolidated out of per-route test-module copies. New shared fixtures belong in this block,
+// appended at the end; the code above is owned by a parallel cleanup and must not be reordered.
+
+/// Insert a minimal active account row. Lives in `db::accounts` (not here) so non-route test
+/// code can depend on it too; re-exported for existing route test call sites.
+pub(crate) use crate::db::accounts::insert_bare_account;
+
+/// Insert an active account row with a caller-supplied email and `password_hash` NULL — the
+/// fixture for tests that exercise an email-adjacent flow (confirmation, subject status, agent
+/// auth) without minting a real password hash or handle row.
+pub(crate) async fn insert_account_with_email(db: &sqlx::SqlitePool, did: &str, email: &str) {
+    sqlx::query(
+        "INSERT INTO accounts (did, email, password_hash, created_at, updated_at) \
+         VALUES (?, ?, NULL, datetime('now'), datetime('now'))",
+    )
+    .bind(did)
+    .bind(email)
+    .execute(db)
+    .await
+    .unwrap();
+}
+
+/// Mount a `GET /{did}/log/audit` PLC audit-log response on a mock plc.directory server: a
+/// single current entry naming `rotation_keys`, with empty `verificationMethods`/`services` and
+/// a fixed `owner.example.com` `alsoKnownAs` — the shape an ownership-binding test needs to
+/// resolve rotation-key authority without caring about the rest of the DID document.
+pub(crate) async fn mount_owner_audit_log(
+    server: &wiremock::MockServer,
+    did: &str,
+    rotation_keys: &[&str],
+) {
+    use wiremock::matchers::{method, path};
+    use wiremock::{Mock, ResponseTemplate};
+
+    let log = serde_json::json!([{
+        "did": did,
+        "cid": "bafy-current-head",
+        "createdAt": "2026-07-13T00:00:00Z",
+        "nullified": false,
+        "operation": {
+            "type": "plc_operation",
+            "prev": null,
+            "rotationKeys": rotation_keys,
+            "verificationMethods": {},
+            "alsoKnownAs": ["at://owner.example.com"],
+            "services": {}
+        }
+    }]);
+    Mock::given(method("GET"))
+        .and(path(format!("/{did}/log/audit")))
+        .respond_with(ResponseTemplate::new(200).set_body_json(log))
+        .mount(server)
+        .await;
+}
+
+/// `state` with a [`FixedTxtResolver`] wired in, answering every TXT lookup with `records`.
+pub(crate) fn state_with_txt_records(state: AppState, records: Vec<String>) -> AppState {
+    AppState {
+        txt_resolver: Some(Arc::new(FixedTxtResolver { records })),
+        ..state
+    }
+}
+
+/// Build a bare GET request to `uri`, with an optional `Bearer` auth header.
+pub(crate) fn get_request_with_bearer(
+    uri: &str,
+    token: Option<&str>,
+) -> axum::http::Request<axum::body::Body> {
+    let mut builder = axum::http::Request::builder()
+        .method(axum::http::Method::GET)
+        .uri(uri);
+    if let Some(token) = token {
+        builder = builder.header("Authorization", format!("Bearer {token}"));
+    }
+    builder.body(axum::body::Body::empty()).unwrap()
+}
+
+/// [`state_with_master_key`] plus a promoted account with a genesis repo (via
+/// [`seed_account_with_repo`]), for the many repo read/write route tests that just need "an
+/// account with a repo" and don't care which DID names it.
+pub(crate) async fn setup_account_with_repo() -> (AppState, String) {
+    let state = state_with_master_key().await;
+    let did = "did:plc:repotestaccount0000".to_string();
+    seed_account_with_repo(&state.db, &did).await;
+    (state, did)
+}
+
+/// [`state_with_master_key`] with `public_url` overridden and invite codes not required — the
+/// migration-mode `createAccount` fixture both did:plc and did:web outbound-migration tests use.
+pub(crate) async fn state_with_master_key_and_url(public_url: &str) -> AppState {
+    let base = state_with_master_key().await;
+    let mut config = (*base.config).clone();
+    config.public_url = public_url.to_string();
+    config.invite_code_required = false;
+    AppState {
+        config: Arc::new(config),
+        ..base
+    }
+}
+
+/// `test_state()` with the given agent-auth config swapped in (every flow is off by default) —
+/// the fixture the auth.md agent-flow route tests use to turn on just the flow under test.
+pub(crate) async fn state_with_agent_auth(agent_auth: common::AgentAuthConfig) -> AppState {
+    let base = test_state().await;
+    let mut config = (*base.config).clone();
+    config.agent_auth = agent_auth;
+    AppState {
+        config: Arc::new(config),
+        ..base
+    }
+}
+
+/// POST `body` as JSON to `uri` against a fresh `app(state)` router, with an optional `Bearer`
+/// token, and return `(status, parsed_json_body)` (`Value::Null` if the body doesn't parse) —
+/// the auth.md agent-flow route tests' one-shot request/response helper.
+pub(crate) async fn post_json_with_bearer(
+    state: AppState,
+    uri: &str,
+    body: serde_json::Value,
+    token: Option<&str>,
+) -> (axum::http::StatusCode, serde_json::Value) {
+    use tower::ServiceExt;
+
+    let mut builder = axum::http::Request::builder()
+        .method(axum::http::Method::POST)
+        .uri(uri)
+        .header("content-type", "application/json");
+    if let Some(t) = token {
+        builder = builder.header("Authorization", format!("Bearer {t}"));
+    }
+    let response = crate::app::app(state)
+        .oneshot(
+            builder
+                .body(axum::body::Body::from(body.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let status = response.status();
+    let bytes = axum::body::to_bytes(response.into_body(), 1 << 20)
+        .await
+        .unwrap();
+    let json = serde_json::from_slice(&bytes).unwrap_or(serde_json::Value::Null);
+    (status, json)
+}
+
+/// A fresh ES256 (P-256) keypair as (PKCS#8 private PEM, SPKI public PEM) — the shape a trusted
+/// agent-auth issuer's static key configuration takes.
+pub(crate) fn es256_keys() -> (String, String) {
+    use base64::{engine::general_purpose::STANDARD, Engine as _};
+    use p256::pkcs8::{spki::EncodePublicKey, EncodePrivateKey};
+
+    fn der_to_pem(label: &str, der: &[u8]) -> String {
+        let b64 = STANDARD.encode(der);
+        let mut body = String::new();
+        for chunk in b64.as_bytes().chunks(64) {
+            body.push_str(std::str::from_utf8(chunk).unwrap());
+            body.push('\n');
+        }
+        format!("-----BEGIN {label}-----\n{body}-----END {label}-----\n")
+    }
+
+    let sk = p256::SecretKey::random(&mut rand_core::OsRng);
+    let priv_pem = der_to_pem("PRIVATE KEY", sk.to_pkcs8_der().unwrap().as_bytes());
+    let pub_pem = der_to_pem(
+        "PUBLIC KEY",
+        sk.public_key().to_public_key_der().unwrap().as_bytes(),
+    );
+    (priv_pem, pub_pem)
+}
+
+/// A static-key `TrustedIssuer` entry for `issuer`, carrying `public_key_pem` as its ES256
+/// verification key (no `jwks_url`) — the agent-auth trust-config fixture for tests that don't
+/// exercise the dynamic-JWKS path.
+pub(crate) fn trusted_issuer(issuer: &str, public_key_pem: String) -> common::TrustedIssuer {
+    common::TrustedIssuer {
+        issuer: issuer.to_string(),
+        audience: None,
+        public_key_pem: Some(public_key_pem),
+        jwks_url: None,
+        algorithm: "ES256".to_string(),
+    }
+}
+
+/// PUT a fixed text record at `rkey` in `app.bsky.feed.post` via the real `putRecord` handler,
+/// returning just the response status — the sync route tests' "plant a record" fixture, which
+/// don't care about its content, only that it exists.
+pub(crate) async fn put_fixed_record(
+    app: &axum::Router,
+    token: &str,
+    did: &str,
+    rkey: &str,
+) -> axum::http::StatusCode {
+    use tower::ServiceExt;
+
+    let request = put_record_request(
+        did,
+        "app.bsky.feed.post",
+        rkey,
+        serde_json::json!({
+            "record": { "text": "hello", "createdAt": "2026-06-26T00:00:00Z" }
+        }),
+        Some(token),
+    );
+    app.clone().oneshot(request).await.unwrap().status()
+}
+
+/// Build a request with an optional `Bearer` header — the two-independent-servers migration
+/// tests' request builder (source/destination or old-PDS/Custos, driven through the real router).
+pub(crate) fn bearer_request(
+    method: &str,
+    uri: String,
+    token: Option<&str>,
+    body: axum::body::Body,
+) -> axum::http::Request<axum::body::Body> {
+    let mut b = axum::http::Request::builder().method(method).uri(uri);
+    if let Some(t) = token {
+        b = b.header("Authorization", format!("Bearer {t}"));
+    }
+    b.body(body).unwrap()
+}
+
+/// Buffer a response body to its raw bytes, with no size cap — for tests that need the exact
+/// wire content (a CAR export) rather than a JSON-parsed body.
+pub(crate) async fn body_bytes(response: axum::response::Response) -> Vec<u8> {
+    axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap()
+        .to_vec()
+}

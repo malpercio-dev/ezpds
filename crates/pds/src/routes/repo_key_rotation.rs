@@ -351,7 +351,7 @@ mod tests {
     use crate::app::{app, test_state_with_plc_url, AppState};
     use crate::auth::token::generate_token;
     use crate::db::repo_keys::{get_signing_key_by_did, get_staged_signing_key};
-    use crate::routes::test_utils::{seed_account_with_signing_key, test_master_key};
+    use crate::routes::test_utils::{body_json, seed_account_with_signing_key, test_master_key};
 
     const DID: &str = "did:plc:rotation1111111111111111";
     const HEAD_CID: &str = "bafyreidmwn2nk3hb2ta2b3wgqzted5cixmwjjmpq2vt6potol7cke2ptoq";
@@ -472,13 +472,6 @@ mod tests {
                 serde_json::json!({ "operation": operation }).to_string(),
             ))
             .unwrap()
-    }
-
-    async fn body_json(response: axum::response::Response) -> serde_json::Value {
-        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
-            .await
-            .unwrap();
-        serde_json::from_slice(&bytes).unwrap()
     }
 
     async fn identity_events(db: &sqlx::SqlitePool) -> i64 {

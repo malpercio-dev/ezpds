@@ -158,7 +158,9 @@ mod tests {
     use axum::http::{self, Request, StatusCode};
     use tower::ServiceExt;
 
-    use crate::routes::test_utils::{body_json, test_state_with_admin_token};
+    use crate::routes::test_utils::{
+        body_json, insert_bare_account as insert_account, test_state_with_admin_token,
+    };
 
     const ADMIN: &str = "test-admin-token";
 
@@ -180,18 +182,6 @@ mod tests {
             .unwrap();
         let status = resp.status();
         (status, body_json(resp).await)
-    }
-
-    async fn insert_account(db: &sqlx::SqlitePool, did: &str) {
-        sqlx::query(
-            "INSERT INTO accounts (did, email, password_hash, created_at, updated_at) \
-             VALUES (?, ?, NULL, datetime('now'), datetime('now'))",
-        )
-        .bind(did)
-        .bind(format!("{did}@example.com"))
-        .execute(db)
-        .await
-        .unwrap();
     }
 
     async fn insert_blob(db: &sqlx::SqlitePool, did: &str, cid: &str, size: i64) {
