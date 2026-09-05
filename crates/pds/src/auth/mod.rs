@@ -229,8 +229,10 @@ mod tests {
         assert!(text.contains("scope=Access"));
     }
 
+    /// A refresh token is a credential for `refreshSession` alone, so the access seam refuses
+    /// it however well-formed and correctly signed it is.
     #[tokio::test]
-    async fn valid_refresh_token_extracts_refresh_scope() {
+    async fn refresh_scoped_token_returns_401_invalid_token() {
         let state = test_state().await;
         let token = mint_token(
             "did:plc:alice",
@@ -240,15 +242,9 @@ mod tests {
             None,
         );
         let resp = get_protected(protected_app(state), Some(&token)).await;
-        assert_eq!(resp.status(), StatusCode::OK);
-        let text = String::from_utf8(
-            axum::body::to_bytes(resp.into_body(), 4096)
-                .await
-                .unwrap()
-                .to_vec(),
-        )
-        .unwrap();
-        assert!(text.contains("scope=Refresh"));
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+        let json = json_body(resp).await;
+        assert_eq!(json["error"]["code"], "INVALID_TOKEN");
     }
 
     #[tokio::test]

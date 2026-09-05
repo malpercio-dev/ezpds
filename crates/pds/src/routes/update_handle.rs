@@ -1103,39 +1103,4 @@ mod tests {
         assert_eq!(body["error"], "InvalidRequest");
         assert_eq!(body["message"], "Input/handle must be a valid handle");
     }
-
-    // ── Auth failures ──────────────────────────────────────────────────────────
-
-    /// Wrong-scope token (refresh instead of access) returns 401.
-    #[tokio::test]
-    async fn wrong_scope_token_returns_401() {
-        use jsonwebtoken::{encode, Algorithm, EncodingKey, Header};
-
-        let state = test_state().await;
-        let db = state.db.clone();
-        let old_handle = format!("alice.{}", state.config.available_user_domains[0]);
-        let new_handle = format!("bob.{}", state.config.available_user_domains[0]);
-        let ts = insert_account_and_session(&db, &old_handle).await;
-
-        let now = crate::time::unix_now_secs() as u64;
-        let refresh_jwt = encode(
-            &Header::new(Algorithm::HS256),
-            &serde_json::json!({
-                "scope": "com.atproto.refresh",
-                "sub": ts.did,
-                "iat": now,
-                "exp": now + 7200_u64,
-            }),
-            &EncodingKey::from_secret(&[0x42u8; 32]),
-        )
-        .unwrap();
-
-        let app = app(state);
-        let response = app
-            .oneshot(update_handle_request(&refresh_jwt, &new_handle))
-            .await
-            .unwrap();
-
-        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
-    }
 }

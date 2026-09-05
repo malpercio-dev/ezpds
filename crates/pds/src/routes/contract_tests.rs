@@ -63,10 +63,9 @@ struct AuthedRoute {
     guard: Guard,
     /// The error name the route pins when the header is absent, where it pins one.
     missing_auth_error: Option<&'static str>,
-    /// The error name the route pins when handed a refresh-scoped token. `None` opts the route
-    /// out of that contract: four `Guard::Access` routes currently accept a refresh-scoped token
-    /// (`getRecommendedDidCredentials` and `checkAccountStatus` answer 200), so the contract is
-    /// asserted where it has been pinned rather than assumed across the whole table.
+    /// The error name a `Guard::Access` route pins when handed a refresh-scoped token, where it
+    /// pins one. The 401 itself is asserted for every such row; only the name is optional,
+    /// because the two response envelopes name the same refusal differently.
     refresh_scope_error: Option<&'static str>,
 }
 
@@ -310,10 +309,7 @@ async fn missing_authorization_header_returns_401() {
 /// not merely the signature.
 #[tokio::test]
 async fn refresh_scoped_token_returns_401() {
-    for route in AUTHED_ROUTES
-        .iter()
-        .filter(|r| r.refresh_scope_error.is_some())
-    {
+    for route in AUTHED_ROUTES.iter().filter(|r| r.guard == Guard::Access) {
         let state = test_state().await;
         seed_account_with_signing_key(&state.db, DID, "alice.example.com").await;
         let token = scoped_access_jwt(&state.jwt_secret, DID, "com.atproto.refresh");

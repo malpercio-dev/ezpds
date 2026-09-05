@@ -4,9 +4,15 @@
 //!
 //! `authenticate_access(headers, method, uri, state)` authenticates an access-token request end
 //! to end: extract the token under either the `Bearer` or `DPoP` scheme (RFC 9449 §7.1), verify
-//! it, enforce the scheme ↔ `cnf.jkt` binding rules in both directions, and — when a DPoP proof
-//! is present — validate that proof against the request `method`/`uri` (its `htm`/`htu`). The
-//! `AuthenticatedUser` axum extractor is a thin wrapper over it.
+//! it, refuse a refresh-scoped token, enforce the scheme ↔ `cnf.jkt` binding rules in both
+//! directions, and — when a DPoP proof is present — validate that proof against the request
+//! `method`/`uri` (its `htm`/`htu`). The `AuthenticatedUser` axum extractor is a thin wrapper
+//! over it.
+//!
+//! Refusing the refresh scope here is what makes it safe for a route to take an
+//! `AuthenticatedUser` and check nothing further: the per-route `AuthScope` checks separate a
+//! full-access session from an app password, and a route that needs no such separation used to
+//! admit a refresh token by saying nothing at all.
 //!
 //! Two callers bypass the extractor and call `authenticate_access` directly, so their binding
 //! enforcement can never drift from the extractor's: the repo-write handlers
@@ -173,8 +179,18 @@ pub fn authenticate_access(
         ));
     }
 
-    // 5. Resolve scope enum.
+    // 5. Resolve the scope, and refuse a refresh-scoped token outright. A refresh token is a
+    //    credential for exactly one endpoint — `refreshSession`, plus `deleteSession`, which
+    //    exists to spend one — and both verify it through `jwt::verify_refresh_token`, never
+    //    here. Admitting one as an access token would leave every route that does not itself
+    //    re-check the scope open to a credential that is meant only to mint new ones.
     let scope = parse_scope(&claims.scope)?;
+    if scope == AuthScope::Refresh {
+        return Err(ApiError::new(
+            ErrorCode::InvalidToken,
+            "access token required",
+        ));
+    }
 
     // 6. DPoP proof validation — only when the DPoP header is present.
     if has_dpop {
