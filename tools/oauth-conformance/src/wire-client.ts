@@ -11,29 +11,24 @@
 
 import * as crypto from 'node:crypto';
 import { exportJWK, generateKeyPair, SignJWT, type JWK, type KeyLike } from 'jose';
+import {
+  newDpopKey,
+  dpopProof as buildDpopProof,
+  type DpopKey as InteropDpopKey,
+} from 'ezpds-interop/src/dpop.js';
 
-/** A DPoP keypair plus the RFC 7638 thumbprint the server binds tokens to. */
-export interface DpopKey {
-  privateKey: KeyLike;
-  publicJwk: JWK;
-  thumbprint: string;
-}
+/**
+ * A DPoP keypair plus the RFC 7638 thumbprint the server binds tokens to.
+ *
+ * Proof construction is `ezpds-interop/src/dpop.js`'s — the Atproto Spaces client needs the
+ * identical RFC 9449 wire format, so there is one builder rather than two independently
+ * hand-rolled ones. What stays local to this suite is the wire client *around* it (no nonce
+ * retry, no error normalization — see the module comment above).
+ */
+export type DpopKey = InteropDpopKey;
 
 export async function generateDpopKey(): Promise<DpopKey> {
-  // `extractable` matters: exportJWK needs the public half in JWK form for the proof header.
-  const { privateKey, publicKey } = await generateKeyPair('ES256', { extractable: true });
-  const publicJwk = await exportJWK(publicKey);
-  // RFC 7638: SHA-256 over the canonical JSON of the required members, in lexicographic
-  // order. For an EC key that is exactly crv, kty, x, y — any other order or any extra
-  // member yields a different thumbprint and every binding check fails.
-  const canonical = JSON.stringify({
-    crv: publicJwk.crv,
-    kty: publicJwk.kty,
-    x: publicJwk.x,
-    y: publicJwk.y,
-  });
-  const thumbprint = crypto.createHash('sha256').update(canonical).digest('base64url');
-  return { privateKey, publicJwk, thumbprint };
+  return newDpopKey();
 }
 
 /**
@@ -41,31 +36,15 @@ export async function generateDpopKey(): Promise<DpopKey> {
  *
  * `htu` must be scheme + host + path with the query string stripped (§4.3) — a proof whose
  * htu carries `?limit=10` is rejected, which is a classic hand-rolled-client bug worth
- * being able to reproduce deliberately.
+ * being able to reproduce deliberately. Enforced by the shared builder.
  */
 export async function dpopProof(
   key: DpopKey,
   htm: string,
   url: string,
-  opts: { nonce?: string; accessToken?: string; iat?: number } = {},
+  opts: { nonce?: string; accessToken?: string } = {},
 ): Promise<string> {
-  const parsed = new URL(url);
-  const htu = `${parsed.origin}${parsed.pathname}`;
-  const payload: Record<string, unknown> = {
-    htm,
-    htu,
-    jti: crypto.randomUUID(),
-  };
-  if (opts.nonce) payload.nonce = opts.nonce;
-  if (opts.accessToken) {
-    // `ath` binds the proof to one access token (§4.3): base64url of SHA-256 over the token
-    // string. Required at resource endpoints, absent at the token endpoint.
-    payload.ath = crypto.createHash('sha256').update(opts.accessToken).digest('base64url');
-  }
-  return new SignJWT(payload)
-    .setProtectedHeader({ typ: 'dpop+jwt', alg: 'ES256', jwk: key.publicJwk })
-    .setIssuedAt(opts.iat)
-    .sign(key.privateKey);
+  return buildDpopProof(key, { method: htm, url, boundToken: opts.accessToken, nonce: opts.nonce });
 }
 
 /** A confidential client's signing keypair, published as a JWK set in its metadata. */

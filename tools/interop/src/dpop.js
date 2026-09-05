@@ -15,6 +15,16 @@ import { webcrypto, createHash, randomUUID } from 'node:crypto';
 
 const b64u = (bytes) => Buffer.from(bytes).toString('base64url');
 
+/**
+ * RFC 7638 thumbprint: SHA-256 over the canonical JSON of an EC JWK's required members, in
+ * lexicographic order. The server thumbprints the same JWK verbatim, so any other order or
+ * an extra member yields a different value and every `cnf.jkt` binding check fails.
+ */
+function thumbprintOf(jwk) {
+  const canonical = JSON.stringify({ crv: jwk.crv, kty: jwk.kty, x: jwk.x, y: jwk.y });
+  return createHash('sha256').update(canonical).digest('base64url');
+}
+
 /** A fresh P-256 proof key. Ephemeral per run: nothing binds to it but live credentials. */
 export async function newDpopKey() {
   const { privateKey, publicKey } = await webcrypto.subtle.generateKey(
@@ -23,19 +33,19 @@ export async function newDpopKey() {
     ['sign', 'verify'],
   );
   const { x, y } = await webcrypto.subtle.exportKey('jwk', publicKey);
-  // Only the RFC 7638 required members, in lexicographic order: the server thumbprints
-  // this JWK verbatim and compares against the credential's `cnf.jkt`.
-  return { privateKey, jwk: { crv: 'P-256', kty: 'EC', x, y } };
+  const jwk = { crv: 'P-256', kty: 'EC', x, y };
+  return { privateKey, jwk, thumbprint: thumbprintOf(jwk) };
 }
 
 /**
  * Build a DPoP proof JWT for one request.
  *
  * @param {{privateKey: CryptoKey, jwk: object}} key
- * @param {{method: string, url: string, boundToken?: string}} req
+ * @param {{method: string, url: string, boundToken?: string, nonce?: string}} req
  *   `boundToken` present ⇒ an `ath` claim (resource proof); absent ⇒ mint-time proof.
+ *   `nonce` carries a server-issued `use_dpop_nonce` challenge (RFC 9449 §8).
  */
-export async function dpopProof(key, { method, url, boundToken }) {
+export async function dpopProof(key, { method, url, boundToken, nonce }) {
   // `htu` is scheme + host + path only (RFC 9449 §4.3) — query strings are stripped,
   // which matters because every XRPC query carries its params there.
   const htu = new URL(url);
@@ -50,6 +60,7 @@ export async function dpopProof(key, { method, url, boundToken }) {
     iat: Math.floor(Date.now() / 1000),
   };
   if (boundToken) claims.ath = b64u(createHash('sha256').update(boundToken).digest());
+  if (nonce) claims.nonce = nonce;
 
   const signingInput = `${b64u(JSON.stringify(header))}.${b64u(JSON.stringify(claims))}`;
   const signature = await webcrypto.subtle.sign(
