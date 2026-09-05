@@ -257,25 +257,21 @@ pub async fn delete_account_handler(
 
 #[cfg(test)]
 mod tests {
-    use axum::{
-        body::Body,
-        http::{Request, StatusCode},
-    };
+    use axum::http::StatusCode;
     use tower::ServiceExt;
 
     use crate::app::{app, test_state, AppState};
     use crate::auth::token::generate_token;
     use crate::db::account_deletion_tokens::insert_account_deletion_token;
     use crate::firehose::FirehoseEvent;
-    use crate::routes::test_utils::{body_json, insert_account_with_password};
+    use crate::routes::test_utils::{
+        body_json, insert_account_with_password, post_req as shared_post_req,
+    };
 
-    fn post_req(json: serde_json::Value) -> Request<Body> {
-        Request::builder()
-            .method("POST")
-            .uri("/xrpc/com.atproto.server.deleteAccount")
-            .header("Content-Type", "application/json")
-            .body(Body::from(json.to_string()))
-            .unwrap()
+    const URI: &str = "/xrpc/com.atproto.server.deleteAccount";
+
+    fn post_req(json: serde_json::Value) -> axum::http::Request<axum::body::Body> {
+        shared_post_req(URI, None, Some(json))
     }
 
     /// Seed a deletion token for `did`, returning its plaintext (as a client would receive it).

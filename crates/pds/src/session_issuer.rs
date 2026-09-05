@@ -198,16 +198,10 @@ mod tests {
     use super::*;
     use crate::app::test_state;
     use crate::auth::jwt::{parse_scope, verify_hs256_access_token, AuthScope};
+    use crate::routes::test_utils::insert_account_with_email;
 
     async fn seed_account(state: &AppState, did: &str) {
-        sqlx::query(
-            "INSERT INTO accounts (did, email, password_hash, created_at, updated_at) \
-             VALUES (?, 'owner@example.com', NULL, datetime('now'), datetime('now'))",
-        )
-        .bind(did)
-        .execute(&state.db)
-        .await
-        .unwrap();
+        insert_account_with_email(&state.db, did, "owner@example.com").await;
     }
 
     #[tokio::test]

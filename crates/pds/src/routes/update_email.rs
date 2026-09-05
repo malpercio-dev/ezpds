@@ -98,26 +98,22 @@ pub async fn update_email(
 
 #[cfg(test)]
 mod tests {
-    use axum::{
-        body::Body,
-        http::{Request, StatusCode},
-    };
+    use axum::http::StatusCode;
     use tower::ServiceExt;
 
     use crate::app::{app, test_state};
     use crate::auth::token::generate_token;
     use crate::db::email_tokens::{insert_email_token, EmailTokenPurpose};
-    use crate::routes::test_utils::{access_jwt, body_json, seed_account_with_signing_key};
+    use crate::routes::test_utils::{
+        access_jwt, body_json, post_req as shared_post_req, seed_account_with_signing_key,
+    };
 
-    fn post_req(jwt: Option<&str>, body: &str) -> Request<Body> {
-        let mut builder = Request::builder()
-            .method("POST")
-            .uri("/xrpc/com.atproto.server.updateEmail")
-            .header("Content-Type", "application/json");
-        if let Some(jwt) = jwt {
-            builder = builder.header("Authorization", format!("Bearer {jwt}"));
-        }
-        builder.body(Body::from(body.to_string())).unwrap()
+    const URI: &str = "/xrpc/com.atproto.server.updateEmail";
+
+    /// `body` is a JSON-literal string (existing call sites already write valid JSON by hand);
+    /// parsed and forwarded to the shared request builder.
+    fn post_req(jwt: Option<&str>, body: &str) -> axum::http::Request<axum::body::Body> {
+        shared_post_req(URI, jwt, Some(serde_json::from_str(body).unwrap()))
     }
 
     async fn confirm(db: &sqlx::SqlitePool, did: &str) {

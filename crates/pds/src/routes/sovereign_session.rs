@@ -253,7 +253,9 @@ mod tests {
     use super::*;
     use crate::app::{app, test_state_with_plc_url, AppState};
     use crate::auth::jwt::{parse_scope, verify_hs256_access_token, AuthScope};
-    use crate::routes::test_utils::{body_json, mount_owner_audit_log as mount_audit_log};
+    use crate::routes::test_utils::{
+        body_json, mount_owner_audit_log as mount_audit_log, seed_owner_account_with_handle,
+    };
 
     type SignFn = Box<dyn Fn(&[u8]) -> String + Send + Sync>;
 
@@ -302,21 +304,7 @@ mod tests {
     }
 
     async fn seed_account(state: &AppState, did: &str) {
-        sqlx::query(
-            "INSERT INTO accounts (did, email, password_hash, created_at, updated_at) \
-             VALUES (?, 'owner@example.com', NULL, datetime('now'), datetime('now'))",
-        )
-        .bind(did)
-        .execute(&state.db)
-        .await
-        .unwrap();
-        sqlx::query(
-            "INSERT INTO handles (handle, did, created_at) VALUES ('owner.example.com', ?, datetime('now'))",
-        )
-        .bind(did)
-        .execute(&state.db)
-        .await
-        .unwrap();
+        seed_owner_account_with_handle(&state.db, did).await;
     }
 
     fn now() -> i64 {

@@ -94,30 +94,28 @@ pub async fn confirm_email(
 
 #[cfg(test)]
 mod tests {
-    use axum::{
-        body::Body,
-        http::{Request, StatusCode},
-    };
+    use axum::http::StatusCode;
     use tower::ServiceExt;
 
     use crate::app::{app, test_state};
     use crate::auth::token::generate_token;
     use crate::db::email_tokens::{insert_email_token, EmailTokenPurpose};
-    use crate::routes::test_utils::{access_jwt, body_json, seed_account_with_signing_key};
+    use crate::routes::test_utils::{
+        access_jwt, body_json, post_req, seed_account_with_signing_key,
+    };
 
-    fn post_req(jwt: Option<&str>, email: &str, token: &str) -> Request<Body> {
-        let mut builder = Request::builder()
-            .method("POST")
-            .uri("/xrpc/com.atproto.server.confirmEmail")
-            .header("Content-Type", "application/json");
-        if let Some(jwt) = jwt {
-            builder = builder.header("Authorization", format!("Bearer {jwt}"));
-        }
-        builder
-            .body(Body::from(format!(
-                r#"{{"email":"{email}","token":"{token}"}}"#
-            )))
-            .unwrap()
+    const URI: &str = "/xrpc/com.atproto.server.confirmEmail";
+
+    fn confirm_req(
+        jwt: Option<&str>,
+        email: &str,
+        token: &str,
+    ) -> axum::http::Request<axum::body::Body> {
+        post_req(
+            URI,
+            jwt,
+            Some(serde_json::json!({"email": email, "token": token})),
+        )
     }
 
     /// Seed a confirm token for `did`, returning the plaintext.
@@ -145,7 +143,7 @@ mod tests {
         let jwt = access_jwt(&state.jwt_secret, did);
 
         let response = app(state)
-            .oneshot(post_req(Some(&jwt), &email, &token))
+            .oneshot(confirm_req(Some(&jwt), &email, &token))
             .await
             .unwrap();
         assert_eq!(response.status(), StatusCode::OK);
@@ -177,7 +175,7 @@ mod tests {
         let jwt = access_jwt(&state.jwt_secret, did);
 
         let response = app(state)
-            .oneshot(post_req(Some(&jwt), &email.to_uppercase(), &token))
+            .oneshot(confirm_req(Some(&jwt), &email.to_uppercase(), &token))
             .await
             .unwrap();
         assert_eq!(
@@ -197,7 +195,7 @@ mod tests {
         let jwt = access_jwt(&state.jwt_secret, did);
 
         let response = app(state)
-            .oneshot(post_req(Some(&jwt), "wrong@example.com", &token))
+            .oneshot(confirm_req(Some(&jwt), "wrong@example.com", &token))
             .await
             .unwrap();
         assert_eq!(response.status(), StatusCode::BAD_REQUEST);
@@ -220,7 +218,7 @@ mod tests {
         let jwt = access_jwt(&state.jwt_secret, did);
 
         let response = app(state)
-            .oneshot(post_req(Some(&jwt), &email, &bogus.plaintext))
+            .oneshot(confirm_req(Some(&jwt), &email, &bogus.plaintext))
             .await
             .unwrap();
         assert_eq!(response.status(), StatusCode::BAD_REQUEST);
@@ -243,13 +241,13 @@ mod tests {
         let jwt = access_jwt(&state.jwt_secret, did);
 
         let first = app(state.clone())
-            .oneshot(post_req(Some(&jwt), &email, &token))
+            .oneshot(confirm_req(Some(&jwt), &email, &token))
             .await
             .unwrap();
         assert_eq!(first.status(), StatusCode::OK);
 
         let second = app(state)
-            .oneshot(post_req(Some(&jwt), &email, &token))
+            .oneshot(confirm_req(Some(&jwt), &email, &token))
             .await
             .unwrap();
         assert_eq!(

@@ -76,24 +76,18 @@ pub async fn request_email_confirmation(
 
 #[cfg(test)]
 mod tests {
-    use axum::{
-        body::Body,
-        http::{Request, StatusCode},
-    };
+    use axum::http::StatusCode;
     use tower::ServiceExt;
 
     use crate::app::{app, test_state};
-    use crate::routes::test_utils::{access_jwt, seed_account_with_signing_key};
+    use crate::routes::test_utils::{
+        access_jwt, post_req as shared_post_req, seed_account_with_signing_key,
+    };
 
-    fn post_req(jwt: Option<&str>) -> Request<Body> {
-        let mut builder = Request::builder()
-            .method("POST")
-            .uri("/xrpc/com.atproto.server.requestEmailConfirmation")
-            .header("Content-Type", "application/json");
-        if let Some(jwt) = jwt {
-            builder = builder.header("Authorization", format!("Bearer {jwt}"));
-        }
-        builder.body(Body::empty()).unwrap()
+    const URI: &str = "/xrpc/com.atproto.server.requestEmailConfirmation";
+
+    fn post_req(jwt: Option<&str>) -> axum::http::Request<axum::body::Body> {
+        shared_post_req(URI, jwt, None)
     }
 
     #[tokio::test]

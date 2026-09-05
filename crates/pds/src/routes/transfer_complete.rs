@@ -85,7 +85,7 @@ mod tests {
 
     use crate::app::{app, test_state, AppState};
     use crate::auth::token::{generate_token, hash_bearer_token};
-    use crate::routes::test_utils::body_json;
+    use crate::routes::test_utils::{body_json, seed_account_random_did as seed_account};
 
     struct AcceptedTransferFixture {
         did: String,
@@ -95,23 +95,6 @@ mod tests {
         target_token: String,
         old_device_id: String,
         old_token: String,
-    }
-
-    async fn seed_account(db: &sqlx::SqlitePool) -> String {
-        let did = format!(
-            "did:plc:{}",
-            &Uuid::new_v4().to_string().replace('-', "")[..24]
-        );
-        sqlx::query(
-            "INSERT INTO accounts (did, email, password_hash, created_at, updated_at) \
-             VALUES (?, ?, NULL, datetime('now'), datetime('now'))",
-        )
-        .bind(&did)
-        .bind(format!("{}@example.com", &did[8..16]))
-        .execute(db)
-        .await
-        .expect("insert account");
-        did
     }
 
     async fn seed_source_session(db: &sqlx::SqlitePool, did: &str) -> String {
