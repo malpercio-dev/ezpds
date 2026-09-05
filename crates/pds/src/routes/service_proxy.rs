@@ -2,24 +2,10 @@
 
 //! Catch-all XRPC proxy — `GET/POST /xrpc/app.bsky.*`, `/xrpc/chat.bsky.*`, and
 //! `/xrpc/com.atproto.moderation.*` — forwarding each request upstream under a freshly minted
-//! ES256 service-auth JWT signed by the account's repo key. Dispatch is dual-path:
-//!
-//! * **Default targets.** With no `atproto-proxy` header, `app.bsky.*` and `chat.bsky.*` fall
-//!   back to their configured defaults (the AppView / chat service); `com.atproto.moderation.*`
-//!   has no default at all (e.g. `createReport`'s target labeler), so a missing header there is
-//!   a 400.
-//! * **Header targets.** When the header is present, on any of the three namespaces,
-//!   `app.rs::xrpc_handler` resolves it via `identity::resolution::resolve_atproto_proxy_target`
-//!   (`did#serviceId` → DID document → matching `service` entry's `serviceEndpoint`) and routes
-//!   there instead — what lets the official app's `app.bsky.video.*` calls, sent with
-//!   `atproto-proxy: did:web:video.bsky.app#bsky_video`, reach the video service rather than
-//!   the AppView. An unresolvable target is a 503. That target DID is caller-controlled, so the
-//!   resolved endpoint is always SSRF-guarded (`identity::resolution::validate_proxy_endpoint`:
-//!   rejects non-http(s) schemes, userinfo, query/fragment, and any host — IP literal or
-//!   DNS-resolved — that isn't a public address, loopback/private/link-local/cloud-metadata/
-//!   unique-local-IPv6 included), and the request goes out on `state.hardened_http_client`,
-//!   whose `SsrfResolver` re-applies the allowlist to any domain resolution at connect time so
-//!   a second DNS answer can't substitute an unchecked address.
+//! ES256 service-auth JWT signed by the account's repo key. Which upstream a request goes to —
+//! the namespace's configured default, or a target named by a caller's `atproto-proxy` header,
+//! and the SSRF guarding that entails — is `xrpc_dispatch.rs::xrpc_handler`'s doc; that's the
+//! sole caller of `proxy_request`/`proxy_xrpc` below.
 //!
 //! The six read-after-write NSIDs — `app.bsky.feed.{getTimeline,getAuthorFeed,getPostThread,
 //! getActorLikes}` and `app.bsky.actor.{getProfile,getProfiles}` — route to
@@ -34,12 +20,10 @@
 //! Both paths share `proxy_request` construction (`mint_service_auth` is `pub(crate)`) and the
 //! header-forwarding seam (`REQ_HEADERS_TO_FORWARD` copied onto the outbound request,
 //! `RES_HEADERS_TO_FORWARD` copied back via `forward_response_headers` — reference-PDS
-//! pipethrough parity; see the constants' docs for why each header matters). Forwarding applies
-//! on the streaming path and on **every rung** of the munge path's fallback ladder, so the
-//! headers a client sees never depend on which path or rung served the request.
-//! `atproto-accept-labelers` is the one that can't be dropped: the AppView applies only the
-//! labelers the caller names there, so losing it silently strips every subscribed labeler's
-//! labels from posts and profiles.
+//! pipethrough parity; see the constants' docs for why each header matters, `atproto-accept-
+//! labelers` above all). Forwarding applies on the streaming path and on **every rung** of the
+//! munge path's fallback ladder, so the headers a client sees never depend on which path or
+//! rung served the request.
 
 use axum::{
     body::Body,

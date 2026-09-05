@@ -128,9 +128,9 @@ pub(super) struct WalletConsentPath<'a> {
 /// Custom URL scheme the identity wallet registers for the consent handoff; the QR and the
 /// "Open in Obsign" link target it. Deliberately the product name rather than the wallet's
 /// reverse-FQDN OAuth-callback scheme: the iOS Camera app's chip displays the raw scheme
-/// string ("Open in obsign"), so the scheme is the user-facing label. The wallet's handoff
-/// parser accepts this and the old `org.obsign.identitywallet` spelling; the typed
-/// `user_code` remains the guaranteed path for wallets that predate either.
+/// string ("Open in obsign"), so the scheme is the user-facing label. Changing this value is
+/// a wallet-compatibility break — the typed `user_code` is the fallback path for any wallet
+/// build that wouldn't recognize a new one.
 const WALLET_HANDOFF_SCHEME: &str = "obsign";
 
 /// Render the OAuth consent + sign-in page.

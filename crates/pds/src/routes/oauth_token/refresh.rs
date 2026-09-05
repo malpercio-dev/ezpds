@@ -91,13 +91,10 @@ pub(super) async fn handle_refresh_token(
         return OAuthTokenError::new("invalid_grant", "client_id mismatch").into_response();
     }
 
-    // DPoP binding check: tokens issued since V012 always carry jkt.
-    // A NULL jkt means the token predates DPoP binding enforcement — reject it.
+    // DPoP binding check: tokens issued since V012 always carry jkt. A NULL jkt means the
+    // token predates DPoP binding enforcement — reject it rather than silently accepting any key.
     match stored.jkt.as_deref() {
         None => {
-            // Refresh tokens issued after V012 always have a jkt. A NULL jkt means
-            // the token predates DPoP binding enforcement — reject rather than
-            // silently accepting any key.
             return OAuthTokenError::new("invalid_grant", "refresh token not found or expired")
                 .into_response();
         }
