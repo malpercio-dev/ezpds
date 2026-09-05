@@ -17,7 +17,7 @@
     onback: () => void;
   } = $props();
 
-  // A did:web identity has no PLC machinery (ADR-0003): no rotation-key hierarchy, no public audit
+  // A did:web identity has no PLC machinery (ADR-0022): no rotation-key hierarchy, no public audit
   // log, no recovery window. We say so plainly rather than presenting the wallet's PLC-only
   // assurances (monitoring, recovery, the claim/Shamir ceremonies) as if they applied.
   let isWebDid = $derived(typeof didDoc.id === 'string' && isDidWeb(didDoc.id));

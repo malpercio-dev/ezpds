@@ -127,6 +127,18 @@ cap-check:
 ticket-ref-check:
     scripts/ticket-ref-check.sh
 
+# Fail if an ADR-NNNN citation outside the ADR log itself points at a superseded ADR or an
+# ADR number with no file — a stale citation reads as still-governing rationale to the next
+# reader. Excludes docs/architecture/decisions/ and docs/archive/.
+adr-ref-check:
+    scripts/adr-ref-check.sh
+
+# Fail if a plan under docs/{design,test,implementation}-plans/ declares itself shipped,
+# landed, superseded, or complete — that plan's whole triad belongs in docs/archive/
+# (docs/archive/README.md), moved together, not left live.
+plan-status-check:
+    scripts/plan-status-check.sh
+
 # Guard the master-key disaster runbook against drift between its canonical copy
 # (docs/operations/master-key-disaster-runbook.md) and its published, operator-facing
 # rewrite on the docs site (sites/docs/.../operator/master-key-runbook.md): the golden
@@ -273,7 +285,7 @@ oauth-conformance-test:
 # Adding a check here covers `just ci` (macOS/full) and `just ci-pds` (Linux) at once —
 # the old design re-stated all twelve checks in each, so a gate added to one and
 # forgotten in the other was a silent gap.
-checks: fmt-check lock-check bruno-check docs-check changelog-check changelog-test font-check cap-check capability-docs-check ticket-ref-check runbook-parity-check auth-seam-check space-auth-seam-check ssrf-client-check gc-guard-check ios-paths-check swift-rs-check ios-template-check bundle-identity-check
+checks: fmt-check lock-check bruno-check docs-check changelog-check changelog-test font-check cap-check capability-docs-check ticket-ref-check adr-ref-check plan-status-check runbook-parity-check auth-seam-check space-auth-seam-check ssrf-client-check gc-guard-check ios-paths-check swift-rs-check ios-template-check bundle-identity-check
 
 # Run the full CI pipeline locally (all crates; use on macOS where the iOS app builds)
 ci: checks clippy test audit deny
