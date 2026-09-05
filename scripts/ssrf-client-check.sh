@@ -50,7 +50,14 @@ while IFS= read -r -d '' file; do
     { armed = 0; print }
   ' "$file" | awk '
     /^[[:space:]]*\/\// { next }
-    /resolve_client_metadata\(/ && !/fn resolve_client_metadata/ { grab = 1; next }
+    /resolve_client_metadata\(/ && !/fn resolve_client_metadata/ {
+      # Same-line form: `resolve_client_metadata(&x, ...)` — take the first argument directly.
+      # Multi-line (rustfmt) form: the first argument is on the next non-empty line.
+      rest = $0; sub(/.*resolve_client_metadata\(/, "", rest); sub(/,.*/, "", rest)
+      gsub(/^[[:space:]]+|[[:space:]]+$/, "", rest)
+      if (rest != "" && rest != ")") { print rest } else { grab = 1 }
+      next
+    }
     grab && NF { gsub(/^[[:space:]]+|[[:space:]]+$/, ""); print; grab = 0 }
   ')"
   [ -z "$args" ] && continue
