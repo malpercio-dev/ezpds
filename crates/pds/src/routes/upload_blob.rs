@@ -303,7 +303,7 @@ async fn collect_body_with_limit(body: Body, max_bytes: usize) -> Result<Vec<u8>
 mod tests {
     use super::*;
     use crate::app::test_state;
-    use crate::routes::test_utils::body_json;
+    use crate::routes::test_utils::{body_json, insert_account_with_email};
     use axum::{body::Body, http::Request, routing::post, Router};
     use std::sync::Arc;
     use tower::ServiceExt;
@@ -362,14 +362,7 @@ mod tests {
 
     /// Helper: seed an account for blob uploads.
     async fn seed_account(state: &AppState, did: &str) {
-        sqlx::query(
-            "INSERT INTO accounts (did, email, password_hash, created_at, updated_at) \
-             VALUES (?, 'test@example.com', NULL, datetime('now'), datetime('now'))",
-        )
-        .bind(did)
-        .execute(&state.db)
-        .await
-        .unwrap();
+        insert_account_with_email(&state.db, did, "test@example.com").await;
     }
 
     /// Seed a local active account plus a cached DID document whose `#atproto` key is `kp` — the

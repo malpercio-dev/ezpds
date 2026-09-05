@@ -104,12 +104,11 @@ mod tests {
     }
 
     fn post_request_password_reset(email: &str) -> Request<Body> {
-        Request::builder()
-            .method("POST")
-            .uri("/xrpc/com.atproto.server.requestPasswordReset")
-            .header("Content-Type", "application/json")
-            .body(Body::from(format!(r#"{{"email":"{email}"}}"#)))
-            .unwrap()
+        crate::routes::test_utils::post_req(
+            "/xrpc/com.atproto.server.requestPasswordReset",
+            None,
+            Some(serde_json::json!({"email": email})),
+        )
     }
 
     /// Seed a valid (non-expired, unused) reset token in the DB. Returns plaintext token.

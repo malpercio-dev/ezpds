@@ -92,22 +92,16 @@ pub async fn request_password_reset(
 
 #[cfg(test)]
 mod tests {
-    use axum::{
-        body::Body,
-        http::{Request, StatusCode},
-    };
+    use axum::http::StatusCode;
     use tower::ServiceExt;
 
     use crate::app::{app, test_state};
-    use crate::routes::test_utils::insert_account_with_password;
+    use crate::routes::test_utils::{insert_account_with_password, post_req};
 
-    fn post_request_password_reset(email: &str) -> Request<Body> {
-        Request::builder()
-            .method("POST")
-            .uri("/xrpc/com.atproto.server.requestPasswordReset")
-            .header("Content-Type", "application/json")
-            .body(Body::from(format!(r#"{{"email":"{email}"}}"#)))
-            .unwrap()
+    const URI: &str = "/xrpc/com.atproto.server.requestPasswordReset";
+
+    fn post_request_password_reset(email: &str) -> axum::http::Request<axum::body::Body> {
+        post_req(URI, None, Some(serde_json::json!({"email": email})))
     }
 
     #[tokio::test]

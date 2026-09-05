@@ -125,10 +125,7 @@ pub async fn submit_plc_operation(
 mod tests {
     use std::collections::BTreeMap;
 
-    use axum::{
-        body::Body,
-        http::{Request, StatusCode},
-    };
+    use axum::http::StatusCode;
     use tower::ServiceExt;
     use wiremock::{
         matchers::{method, path},
@@ -136,7 +133,9 @@ mod tests {
     };
 
     use crate::app::{app, test_state_with_plc_url, AppState};
-    use crate::routes::test_utils::access_jwt;
+    use crate::routes::test_utils::{access_jwt, post_req as shared_post_req};
+
+    const URI: &str = "/xrpc/com.atproto.identity.submitPlcOperation";
 
     async fn state_with_plc(plc_uri: String) -> AppState {
         test_state_with_plc_url(plc_uri).await
@@ -202,15 +201,11 @@ mod tests {
         serde_json::from_str(&signed.signed_op_json).unwrap()
     }
 
-    fn post_req(jwt: Option<&str>, body: serde_json::Value) -> Request<Body> {
-        let mut builder = Request::builder()
-            .method("POST")
-            .uri("/xrpc/com.atproto.identity.submitPlcOperation")
-            .header("Content-Type", "application/json");
-        if let Some(jwt) = jwt {
-            builder = builder.header("Authorization", format!("Bearer {jwt}"));
-        }
-        builder.body(Body::from(body.to_string())).unwrap()
+    fn post_req(
+        jwt: Option<&str>,
+        body: serde_json::Value,
+    ) -> axum::http::Request<axum::body::Body> {
+        shared_post_req(URI, jwt, Some(body))
     }
 
     #[tokio::test]

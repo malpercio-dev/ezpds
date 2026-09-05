@@ -1097,3 +1097,57 @@ pub(crate) async fn body_bytes(response: axum::response::Response) -> Vec<u8> {
         .unwrap()
         .to_vec()
 }
+
+/// Build a `POST uri` request with an optional JSON `body` and an optional `Bearer` auth
+/// header — the request builder shared by the account/session/identity XRPC procedures that
+/// take a JSON body (or none) plus an optional bearer token. `Content-Type: application/json`
+/// is always set: harmless when `body` is `None` (`NoInputBody` rejects only a non-empty body,
+/// never checks the header) and required when it's `Some` (`LexiconInput` 400s a JSON body sent
+/// without it).
+pub(crate) fn post_req(
+    uri: &str,
+    token: Option<&str>,
+    body: Option<serde_json::Value>,
+) -> axum::http::Request<axum::body::Body> {
+    let mut builder = axum::http::Request::builder()
+        .method(axum::http::Method::POST)
+        .uri(uri)
+        .header("Content-Type", "application/json");
+    if let Some(token) = token {
+        builder = builder.header("Authorization", format!("Bearer {token}"));
+    }
+    let raw = body.map(|v| v.to_string()).unwrap_or_default();
+    builder.body(axum::body::Body::from(raw)).unwrap()
+}
+
+/// Insert a bare active account with a randomly generated `did:plc:<uuid-derived>` and an email
+/// derived from it, returning the did — the transfer-flow tests' fixture for "some account that
+/// exists", where the exact did/email values don't matter, only that they're unique per call.
+pub(crate) async fn seed_account_random_did(db: &sqlx::SqlitePool) -> String {
+    let did = format!(
+        "did:plc:{}",
+        &uuid::Uuid::new_v4().to_string().replace('-', "")[..24]
+    );
+    sqlx::query(
+        "INSERT INTO accounts (did, email, password_hash, created_at, updated_at) \
+         VALUES (?, ?, NULL, datetime('now'), datetime('now'))",
+    )
+    .bind(&did)
+    .bind(format!("{}@example.com", &did[8..16]))
+    .execute(db)
+    .await
+    .expect("insert account");
+    did
+}
+
+/// Insert an active account (`owner@example.com`, NULL password) plus a fixed `owner.example.com`
+/// handle for it — the sovereign-session route tests' "an owning account with a resolvable
+/// handle" fixture.
+pub(crate) async fn seed_owner_account_with_handle(db: &sqlx::SqlitePool, did: &str) {
+    insert_account_with_email(db, did, "owner@example.com").await;
+    sqlx::query("INSERT INTO handles (handle, did, created_at) VALUES ('owner.example.com', ?, datetime('now'))")
+        .bind(did)
+        .execute(db)
+        .await
+        .unwrap();
+}

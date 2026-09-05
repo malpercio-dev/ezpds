@@ -32,6 +32,7 @@ use wiremock::{Mock, MockServer, ResponseTemplate};
 
 use crate::app::AppState;
 use crate::db::notifications as store;
+use crate::routes::test_utils::insert_account_with_email;
 
 const ACCOUNT_DID: &str = "did:plc:notifye2e";
 /// A second identity on the *same* device, for the multi-identity case.
@@ -139,15 +140,7 @@ async fn start_pds(relay_addr: EndpointAddr) -> (AppState, Endpoint) {
 }
 
 async fn seed_account(state: &AppState, did: &str) {
-    sqlx::query(
-        "INSERT INTO accounts (did, email, password_hash, created_at, updated_at) \
-         VALUES (?, ? || '@example.com', 'hash', datetime('now'), datetime('now'))",
-    )
-    .bind(did)
-    .bind(did)
-    .execute(&state.db)
-    .await
-    .expect("seed account");
+    insert_account_with_email(&state.db, did, &format!("{did}@example.com")).await;
 }
 
 fn access_token(state: &AppState, did: &str) -> String {

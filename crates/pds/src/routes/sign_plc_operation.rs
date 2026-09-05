@@ -201,8 +201,11 @@ mod tests {
 
     use crate::app::{app, AppState};
     use crate::routes::test_utils::{
-        access_jwt, body_json, seed_account_with_signing_key, state_with_master_key,
+        access_jwt, body_json, post_req as shared_post_req, seed_account_with_signing_key,
+        state_with_master_key,
     };
+
+    const URI: &str = "/xrpc/com.atproto.identity.signPlcOperation";
 
     /// A `state_with_master_key` whose plc.directory points at `plc_uri`.
     pub(super) async fn state_with_master_key_and_plc(plc_uri: String) -> AppState {
@@ -259,14 +262,7 @@ mod tests {
     }
 
     fn post_req(jwt: Option<&str>, body: serde_json::Value) -> Request<Body> {
-        let mut builder = Request::builder()
-            .method("POST")
-            .uri("/xrpc/com.atproto.identity.signPlcOperation")
-            .header("Content-Type", "application/json");
-        if let Some(jwt) = jwt {
-            builder = builder.header("Authorization", format!("Bearer {jwt}"));
-        }
-        builder.body(Body::from(body.to_string())).unwrap()
+        shared_post_req(URI, jwt, Some(body))
     }
 
     #[tokio::test]
