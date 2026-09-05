@@ -384,6 +384,7 @@ tests, so check it when changing an OAuth response shape — see its README.
 | `provisioning_session.rs` | provisioning session creation (email + password → session token) |
 | `space_lifecycle_test.rs` | account-lifecycle + migration coverage for the space surface: which account states may touch a space repo, and the `getRepo` → `/v1/space/import-repo` round trip (asserted on the set hash, the digest syncers fold against) |
 | `test_utils.rs` | test helpers (excluded from production builds) |
+| `space_test_support.rs` | the six `space_*_test.rs`/`simplespace_routes_test.rs` modules' shared request builders, send-and-decode, and record bodies (excluded from production builds) |
 
 ## Metrics
 
@@ -397,9 +398,50 @@ signal with `[telemetry] metrics_enabled` off.
 ## Hard Rules
 
 **Routes must not import from other routes.**
-If two routes share logic, that logic belongs in `auth/` (pure) or `db/` (queries). A route
-importing from another route creates hidden coupling and makes it impossible to reason about
-a handler in isolation.
+If two routes share logic, that logic belongs in `auth/` (pure), `db/` (queries), `identity/`,
+a top-level module such as `account_genesis.rs`, or one of the handler-free support modules under
+`routes/` (`oauth_errors.rs`, `oauth_dpop.rs`, `space_views.rs`, `preference_scope.rs`,
+`test_utils.rs`, `space_test_support.rs`). A route importing from another route creates hidden
+coupling and makes it impossible to reason about a handler in isolation. The rule bars route→route
+imports only — it is not a reason to copy a `db/`, `auth/`, or `test_utils` helper into a route.
+
+**Extend the shared helper; never copy a sibling.**
+Before writing a struct, query, fixture, or loop that resembles one that already exists, diff
+against it and extend or parametrise it. The concrete homes (see the index below): a SQL statement
+needed by two routes goes in `db/`; an auth check shared by two surfaces goes in `auth/guards.rs`;
+a fixture needed by two test modules goes in `routes/test_utils.rs` (add the missing knob rather
+than forking the helper); a periodic task goes through `sweep::spawn_sweep`.
+
+**Tests: one whole-document assertion per constant response, one table per contract.**
+A route that serves a constant document (metadata, JWKS, capabilities) gets one `assert_eq!`
+against the whole expected document, not one `#[tokio::test]` per field. A generic HTTP contract
+(`missing auth → 401`, `non-empty body → 400`, `invalid DID → 400`) is one table-driven test over
+a route list, not a per-route copy. Test names describe behaviour, never acceptance-criteria ids.
+
+**`#[allow(dead_code)]` outside `#[cfg(test)]` needs a one-line reason that is true.**
+The accepted exception is a `sqlx::FromRow` column fetched by `SELECT *` that only tests read.
+Anything else is deleted, wired, or moved under `#[cfg(test)]`; "kept for later" is not a reason.
+
+### Shared helpers index
+
+Look here before writing a helper. Each row is the one home; copies elsewhere are bugs.
+
+| Need | Use |
+|---|---|
+| epoch seconds / RFC 3339 now / SQLite datetime → RFC 3339 | `crate::time::{unix_now, unix_now_secs, now_rfc3339, to_rfc3339_utc}` |
+| log an internal failure and answer 500 | `common::ApiResultExt::{or_internal, or_internal_as}` on the `Result` |
+| the OAuth issuer / public URL without a trailing slash | `Config::issuer()` |
+| cache a freshly authored or resolved DID document | `db::dids::upsert_did_document` (UPDATE-only heal: `rewrite_did_document`) |
+| authenticate the account owner and map to XRPC errors | `auth::guards::authenticate_owner` |
+| the token-endpoint DPoP preamble | `routes::oauth_dpop::token_endpoint_dpop` |
+| insert a generated value, retrying on a UNIQUE collision | `db::insert_with_retry_on_collision` |
+| open an auth.md claim ceremony | `auth::agent_assertion::start_claim_attempt` |
+| the account row + genesis repo + announce shared by account promotion | `account_genesis` |
+| a periodic background pass | `sweep::spawn_sweep` |
+| lower-case hex of a SHA-256 digest | `auth::token::sha256_hex` (inside `crates/crypto` itself: its crate-private `hex::to_hex`) |
+| percent-encoding | `urlencoding::encode` |
+| test state, accounts, tokens, DPoP proofs, request builders, body decoding | `routes::test_utils` |
+| the space route tests' request builders and record bodies | `routes::space_test_support` |
 
 **Every `.rs` file with runtime behavior must have a pattern comment.**
 Add `// pattern: Functional Core`, `// pattern: Imperative Shell`, or
