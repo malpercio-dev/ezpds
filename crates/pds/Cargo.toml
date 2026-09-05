@@ -66,9 +66,9 @@ unicode-segmentation = { workspace = true }
 # links. ipld-core's serde feature is what makes `repo_engine::Cid` serialize as tag 42;
 # serde_bytes is required for the CBOR byte-string `blocks` field.
 serde_ipld_dagcbor = { workspace = true }
-ipld-core = { version = "0.4", features = ["serde"] }
-serde_bytes = "0.11"
-futures-util = { version = "0.3", default-features = false, features = ["std", "sink", "async-await"] }
+ipld-core = { workspace = true }
+serde_bytes = { workspace = true }
+futures-util = { workspace = true }
 
 [dev-dependencies]
 tower = { workspace = true }
@@ -77,6 +77,6 @@ tempfile = { workspace = true }
 # production code only verifies, via the crypto crate's curve dispatch.
 k256 = { workspace = true }
 multibase = { workspace = true }
-wiremock = "0.6"
+wiremock = { workspace = true }
 # End-to-end WebSocket client for the subscribeRepos handler tests.
-tokio-tungstenite = "0.24"
+tokio-tungstenite = { workspace = true }

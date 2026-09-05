@@ -138,6 +138,12 @@ adr-ref-check:
 # (docs/archive/README.md), moved together, not left live.
 plan-status-check:
     scripts/plan-status-check.sh
+# Fail if a member manifest (crates/*/Cargo.toml, apps/*/src-tauri/Cargo.toml) pins its own
+# dependency version/features instead of { workspace = true } (AGENTS.md: "crates use
+# { workspace = true }") — the copy-a-sibling drift that silently duplicates a version or a
+# feature set across crates instead of sharing one workspace.dependencies entry.
+workspace-dep-check:
+    scripts/workspace-dep-check.sh
 
 # Guard the master-key disaster runbook against drift between its canonical copy
 # (docs/operations/master-key-disaster-runbook.md) and its published, operator-facing
@@ -285,7 +291,7 @@ oauth-conformance-test:
 # Adding a check here covers `just ci` (macOS/full) and `just ci-pds` (Linux) at once —
 # the old design re-stated all twelve checks in each, so a gate added to one and
 # forgotten in the other was a silent gap.
-checks: fmt-check lock-check bruno-check docs-check changelog-check changelog-test font-check cap-check capability-docs-check ticket-ref-check adr-ref-check plan-status-check runbook-parity-check auth-seam-check space-auth-seam-check ssrf-client-check gc-guard-check ios-paths-check swift-rs-check ios-template-check bundle-identity-check
+checks: fmt-check lock-check bruno-check docs-check changelog-check changelog-test font-check cap-check capability-docs-check ticket-ref-check adr-ref-check plan-status-check workspace-dep-check runbook-parity-check auth-seam-check space-auth-seam-check ssrf-client-check gc-guard-check ios-paths-check swift-rs-check ios-template-check bundle-identity-check
 
 # Run the full CI pipeline locally (all crates; use on macOS where the iOS app builds)
 ci: checks clippy test audit deny

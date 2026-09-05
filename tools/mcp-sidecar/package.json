@@ -3,6 +3,7 @@
   "private": true,
   "version": "0.1.0",
   "type": "module",
+  "packageManager": "pnpm@9.15.9",
   "description": "Credential-forwarding Streamable-HTTP MCP sidecar: reuses the ezpds-mcp tool surface, terminates only the MCP transport, authenticates each caller via OAuth against Custos, and forwards the caller's token per request while caching nothing durable.",
   "engines": {
     "node": ">=22.21"

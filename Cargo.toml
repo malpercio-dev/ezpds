@@ -45,7 +45,7 @@ license = "AGPL-3.0-only"
 # Individual crates opt in with `{ workspace = true }`.
 [workspace.dependencies]
 # Async runtime
-tokio = { version = "1", features = ["full"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "fs", "sync", "time", "signal", "io-util"] }
 
 # Web framework (pds)
 axum = "0.8"
@@ -65,7 +65,7 @@ reqwest = { version = "0.13", default-features = false, features = ["json", "rus
 http = "1"
 
 # Database
-sqlx = { version = "0.8", features = ["runtime-tokio", "sqlite"] }
+sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "sqlite", "macros"] }
 
 # Serialization
 serde = { version = "1", features = ["derive"] }
@@ -110,6 +110,12 @@ tower = { version = "0.5", features = ["util"] }
 # ATProto (repo-engine)
 atrium-api = "0.25.8"
 atrium-repo = "0.1.8"
+# MST/commit walk combinators (repo-engine) — the plain `futures` facade, not `futures-util`
+# below (a different crate — pds's stream/sink combinators).
+futures = "0.3"
+# Stream/sink combinators for the firehose broadcast subscriber (pds). default-features = false
+# drops the alloc/executor extras it doesn't use; std/sink/async-await are what it re-adds.
+futures-util = { version = "0.3", default-features = false, features = ["std", "sink", "async-await"] }
 
 # Crypto (crypto)
 # rsky-crypto = "0.2"
@@ -152,7 +158,17 @@ base64 = "0.21"
 ciborium = "0.2"
 data-encoding = "2"
 sha2 = "0.10"
+# CIDv1 parsing for the wallet's client-side CAR validator (repo_backup.rs) — reads a fetched
+# repo CAR's framing/hashes without pulling in repo-engine or atrium-repo.
+cid = "0.11"
+# The `Ipld` data model dag-cbor decodes onto (pds's firehose frames, repo-engine's MST/commit
+# nodes, the wallet's client-side CAR validator). serde feature is what makes `repo_engine::Cid`
+# serialize/deserialize as CBOR tag 42.
+ipld-core = { version = "0.4", features = ["serde"] }
 serde_ipld_dagcbor = "0.6"
+# CBOR byte-string encoding for the firehose frame's `blocks` field (pds) — dag-cbor requires
+# a byte-string, not serde's default sequence-of-u8, for `Vec<u8>` fields.
+serde_bytes = "0.11"
 # HMAC-SHA256 for the blob mirror's AWS SigV4 request signing (pds) — same RustCrypto family
 # as sha2/hkdf, already resolved transitively.
 hmac = "0.12"
@@ -221,11 +237,25 @@ tauri-plugin-log = "2"
 # Camera QR scanning (identity-wallet OAuth consent scan path + admin-companion pairing). Mobile-
 # only; each app opts in under its iOS/android target table and registers it behind `#[cfg(mobile)]`.
 tauri-plugin-barcode-scanner = "2"
+# Face ID / Touch ID user-presence gate (identity-wallet migration signing, admin-companion's
+# every signing action). Mobile-only, same target-table pattern as the barcode scanner above.
+tauri-plugin-biometric = "2"
 log = "0.4"
 security-framework = { version = "3" }
 
 # Testing
 tempfile = "3"
+# Stand-in HTTP server for outbound-call tests (pds's federation/APNs seams, notify-relay's
+# APNs leg) — its only two consumers, but declared here rather than copied so the version
+# stays in lockstep.
+wiremock = "0.6"
+# End-to-end WebSocket client for the subscribeRepos handler tests (pds).
+tokio-tungstenite = "0.24"
+# Stand-in HTTP server for the wallet's OAuth-client test fixtures (identity-wallet).
+httpmock = "0.8"
+# Wraps a SHA2-256 digest into a CIDv1 multihash on the build side of the wallet's CAR-fixture
+# tests (identity-wallet) — the validator itself reads CIDs through `cid`'s own API.
+multihash = "0.19"
 
 # Intra-workspace
 common = { path = "crates/common" }

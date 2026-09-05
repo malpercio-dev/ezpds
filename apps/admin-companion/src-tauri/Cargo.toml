@@ -48,8 +48,8 @@ security-framework = { workspace = true, features = ["OSX_10_12"] }
 #   - biometric: Face ID / Touch ID user-presence gate on every signing action.
 #   - sharesheet: the iOS Share Pane for a generated claim code.
 [target.'cfg(any(target_os = "ios", target_os = "android"))'.dependencies]
-tauri-plugin-barcode-scanner = "2"
-tauri-plugin-biometric = "2"
+tauri-plugin-barcode-scanner = { workspace = true }
+tauri-plugin-biometric = { workspace = true }
 # Vendored (see vendor/tauri-plugin-sharesheet/VENDORED.md): the sole crates.io release injects
 # an unused Group Activities entitlement in its build.rs that fails App Store export; our fork
 # strips it. The npm guest API (@buildyourwebapp/tauri-plugin-sharesheet) stays from the registry.
