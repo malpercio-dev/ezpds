@@ -14,17 +14,16 @@ path = "src/lib.rs"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
 [dependencies]
-# Tauri-specific — declared locally (not in workspace.dependencies per design plan)
-tauri = { version = "2", features = [] }
-tauri-plugin-log = "2"
+tauri = { workspace = true, features = [] }
+tauri-plugin-log = { workspace = true }
 # In-app OAuth via ASWebAuthenticationSession (iOS/macOS). VENDORED in-repo (not a live git dep)
 # because it sits in the wallet's auth path — we audit and pin the exact source. Wraps the
 # Apple-blessed session so the custom-scheme callback is captured by the session itself, instead
 # of relying on Safari to auto-launch the app from a redirect (which iOS blocks). Provenance +
 # audit notes: apps/identity-wallet/vendor/tauri-plugin-auth-session/VENDORED.md.
 tauri-plugin-auth-session = { path = "../vendor/tauri-plugin-auth-session" }
-log = "0.4"
-url = "2"
+log = { workspace = true }
+url = { workspace = true }
 # serde/serde_json are in workspace.dependencies (root Cargo.toml lines 30-32)
 serde = { workspace = true }
 serde_json = { workspace = true }
@@ -35,7 +34,7 @@ reqwest = { workspace = true, features = ["form"] }
 # Rebuild a `reqwest::Response` from parts in `oauth_client.rs` after reading a DPoP 400 body
 # (nonce challenge vs. genuine error) — `reqwest::Response: From<http::Response<T>>`.
 http = { workspace = true }
-security-framework = { version = "3", features = ["OSX_10_12"] }
+security-framework = { workspace = true, features = ["OSX_10_12"] }
 # The device key both iOS apps hold (Secure Enclave / software P-256). This app supplies its
 # own Keychain and account names; see crates/ios-device-key.
 ios-device-key = { workspace = true }
@@ -60,16 +59,16 @@ chrono = { workspace = true }
 # documented block shape — no MST-building or repo-engine dependency enters the iOS staticlib.
 # `cid` gives CIDv1 parsing (`Cid::read_bytes`, codec/multihash inspection); `ipld-core` the
 # `Ipld` model for decoding the commit + MST nodes; `serde_ipld_dagcbor` the dag-cbor decoder.
-cid = "0.11"
-ipld-core = { version = "0.4", features = ["serde"] }
-serde_ipld_dagcbor = "0.6"
+cid = { workspace = true }
+ipld-core = { workspace = true }
+serde_ipld_dagcbor = { workspace = true }
 
 # Biometric (Face ID / Touch ID) gate on the migration PLC-op submission. Mobile-only —
 # there is no desktop implementation, so it is target-gated to keep the macOS host build
 # (and the test suite) free of a dependency it cannot compile. Registered behind
 # `#[cfg(mobile)]` in lib.rs. Same version admin-companion already uses.
 [target.'cfg(any(target_os = "ios", target_os = "android"))'.dependencies]
-tauri-plugin-biometric = "2"
+tauri-plugin-biometric = { workspace = true }
 # Camera QR scanning for the wallet-confirmed OAuth consent scan path. Mobile-only (no desktop
 # implementation) and registered behind `#[cfg(mobile)]` in lib.rs, so the macOS host build and test
 # suite never compile it. Version lives in the workspace table (shared with admin-companion's Pair
@@ -112,18 +111,17 @@ block2 = { workspace = true }
 system-configuration = { workspace = true }
 
 [dev-dependencies]
-tokio = { version = "1", features = ["macros", "rt"] }
-httpmock = "0.8"
+tokio = { workspace = true }
+httpmock = { workspace = true }
 tempfile = { workspace = true }
 # Tests construct valid + deliberately-broken repo CARs by hand (commit + MST nodes + record
 # blocks framed into CARv1) to exercise repo_backup's client-side validator. `multihash` wraps
 # the SHA2-256 digest into a CIDv1 multihash on the build side; the validator itself reads CIDs
 # through `cid`'s own API and never needs this crate at runtime.
-multihash = "0.19"
+multihash = { workspace = true }
 
 [build-dependencies]
-# Tauri-specific — declared locally
-tauri-build = { version = "2", features = [] }
+tauri-build = { workspace = true, features = [] }
 
 # Tauri-recommended release optimizations for mobile binary size.
 # IMPORTANT: Cargo ignores [profile.*] in workspace member crates — these settings

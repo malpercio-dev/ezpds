@@ -3,6 +3,7 @@
   "private": true,
   "version": "0.1.0",
   "type": "module",
+  "packageManager": "pnpm@9.15.9",
   "description": "Playwright-driven docs screenshots: boots each mobile app's browser harness (VITE_HARNESS=fake) and captures deterministic per-scenario PNGs (happy + error/rare states) into sites/docs/. Linux-runnable, no macOS/Tauri shell.",
   "engines": {
     "node": ">=22.21"
