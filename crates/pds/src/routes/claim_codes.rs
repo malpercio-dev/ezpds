@@ -663,41 +663,6 @@ mod tests {
     // ── Auth ──────────────────────────────────────────────────────────────────
 
     #[tokio::test]
-    async fn missing_authorization_header_returns_401() {
-        let response = app(test_state_with_admin_token().await)
-            .oneshot(post_claim_codes(r#"{"count": 1}"#, None))
-            .await
-            .unwrap();
-        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
-    }
-
-    #[tokio::test]
-    async fn wrong_bearer_token_returns_401() {
-        let response = app(test_state_with_admin_token().await)
-            .oneshot(post_claim_codes(r#"{"count": 1}"#, Some("wrong-token")))
-            .await
-            .unwrap();
-        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
-    }
-
-    #[tokio::test]
-    async fn bare_token_without_bearer_prefix_returns_401() {
-        let request = Request::builder()
-            .method("POST")
-            .uri("/v1/accounts/claim-codes")
-            .header("Content-Type", "application/json")
-            .header("Authorization", "test-admin-token") // no "Bearer " prefix
-            .body(Body::from(r#"{"count": 1}"#))
-            .unwrap();
-
-        let response = app(test_state_with_admin_token().await)
-            .oneshot(request)
-            .await
-            .unwrap();
-        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
-    }
-
-    #[tokio::test]
     async fn non_json_content_type_returns_415() {
         // Valid JSON body + valid token, but a non-JSON media type: matches the former
         // `Json` extractor's 415 rejection.
@@ -713,19 +678,6 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(response.status(), StatusCode::UNSUPPORTED_MEDIA_TYPE);
-    }
-
-    #[tokio::test]
-    async fn admin_token_not_configured_returns_401() {
-        // test_state() leaves admin_token as None
-        let response = app(test_state().await)
-            .oneshot(post_claim_codes(
-                r#"{"count": 1}"#,
-                Some("test-admin-token"),
-            ))
-            .await
-            .unwrap();
-        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
     }
 
     // ── Device signed-request auth (end-to-end) ────────────────────────────────

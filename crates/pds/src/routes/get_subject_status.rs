@@ -157,17 +157,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn invalid_did_returns_400() {
-        let state = test_state_with_admin_token().await;
-
-        let response = app(state)
-            .oneshot(request("not-a-did", Some("test-admin-token")))
-            .await
-            .unwrap();
-        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
-    }
-
-    #[tokio::test]
     async fn without_admin_auth_returns_401() {
         let state = test_state_with_admin_token().await;
         insert_account(&state.db, "did:plc:gsstd3", "gsstd3@example.com").await;

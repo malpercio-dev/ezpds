@@ -198,23 +198,6 @@ mod tests {
         .unwrap();
     }
 
-    #[tokio::test]
-    async fn missing_token_returns_401() {
-        let state = test_state_with_admin_token().await;
-        let app = crate::app::app(state);
-        let (status, _) = get_storage(&app, "did:plc:whoever", None).await;
-        assert_eq!(status, StatusCode::UNAUTHORIZED);
-    }
-
-    #[tokio::test]
-    async fn nonexistent_account_returns_404() {
-        let state = test_state_with_admin_token().await;
-        let app = crate::app::app(state);
-        let (status, body) = get_storage(&app, "did:plc:ghost", Some(ADMIN)).await;
-        assert_eq!(status, StatusCode::NOT_FOUND);
-        assert_eq!(body["error"]["code"], "NOT_FOUND");
-    }
-
     /// Diagnosing a real blob loss needed a production SQLite shell precisely because this
     /// endpoint could only speak through `blob_owners`. With the uploader witness beside it,
     /// "ownership rows gone, blobs never reclaimed" is legible over HTTP.

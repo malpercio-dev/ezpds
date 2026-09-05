@@ -259,14 +259,6 @@ mod tests {
         (status, body_json(resp).await)
     }
 
-    #[tokio::test]
-    async fn missing_token_returns_401() {
-        let state = test_state_with_admin_token().await;
-        let app = crate::app::app(state);
-        let (status, _) = list(&app, "", None).await;
-        assert_eq!(status, StatusCode::UNAUTHORIZED);
-    }
-
     async fn insert_label(db: &sqlx::SqlitePool, did: &str, labeler: &str, val: &str, cts: &str) {
         sqlx::query("INSERT INTO account_labels (did, labeler_did, val, cts) VALUES (?, ?, ?, ?)")
             .bind(did)

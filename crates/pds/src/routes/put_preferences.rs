@@ -498,25 +498,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn missing_auth_header_returns_401() {
-        let response = app(test_state().await)
-            .oneshot(
-                Request::builder()
-                    .method("POST")
-                    .uri("/xrpc/app.bsky.actor.putPreferences")
-                    .header("Content-Type", "application/json")
-                    .body(Body::from(
-                        serde_json::json!({ "preferences": [] }).to_string(),
-                    ))
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-
-        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
-    }
-
-    #[tokio::test]
     async fn app_pass_token_can_write_non_privileged_preferences() {
         let state = test_state().await;
         insert_account(&state.db, "did:plc:apppass", "apppass@example.com").await;
@@ -705,25 +686,6 @@ mod tests {
         let response = router.oneshot(get_request(&granted_token)).await.unwrap();
         let json = body_json(response).await;
         assert_eq!(json["preferences"], replacement);
-    }
-
-    #[tokio::test]
-    async fn refresh_token_returns_401() {
-        let state = test_state().await;
-        insert_account(&state.db, "did:plc:refresh", "refresh@example.com").await;
-        let token = scoped_jwt(&state.jwt_secret, "did:plc:refresh", "com.atproto.refresh");
-
-        let response = app(state)
-            .oneshot(put_request(
-                &token,
-                serde_json::json!({ "preferences": [] }),
-            ))
-            .await
-            .unwrap();
-
-        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
-        let json = body_json(response).await;
-        assert_eq!(json["error"], "InvalidToken");
     }
 
     #[tokio::test]

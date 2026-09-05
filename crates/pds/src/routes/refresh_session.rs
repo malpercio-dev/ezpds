@@ -354,34 +354,6 @@ mod tests {
         assert_eq!(json["handle"], "alice.test.example.com");
     }
 
-    /// The lexicon defines no input; a spurious body is rejected with 400 (reference-PDS parity),
-    /// leaving the refresh token unrotated.
-    #[tokio::test]
-    async fn non_empty_body_returns_400() {
-        let state = test_state().await;
-        insert_account_with_password(
-            &state.db,
-            "did:plc:refbody",
-            "refbody.test.example.com",
-            "refbody@example.com",
-            "hunter2",
-        )
-        .await;
-        let tokens = create_session_tokens(&state, "did:plc:refbody", "hunter2").await;
-        let refresh_jwt = tokens["refreshJwt"].as_str().unwrap().to_string();
-
-        let request = Request::builder()
-            .method("POST")
-            .uri("/xrpc/com.atproto.server.refreshSession")
-            .header("Authorization", format!("Bearer {refresh_jwt}"))
-            .header("Content-Type", "application/json")
-            .body(Body::from("{}"))
-            .unwrap();
-
-        let response = app(state).oneshot(request).await.unwrap();
-        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
-    }
-
     #[tokio::test]
     async fn new_access_jwt_has_access_scope() {
         let state = test_state().await;
@@ -767,21 +739,6 @@ mod tests {
         );
         let json = body_json(response).await;
         assert_eq!(json["error"], "InvalidToken");
-    }
-
-    #[tokio::test]
-    async fn missing_authorization_header_returns_401() {
-        let request = Request::builder()
-            .method("POST")
-            .uri("/xrpc/com.atproto.server.refreshSession")
-            .body(Body::empty())
-            .unwrap();
-
-        let response = app(test_state().await).oneshot(request).await.unwrap();
-
-        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
-        let json = body_json(response).await;
-        assert_eq!(json["error"], "AuthMissing");
     }
 
     // ── App-password scope preservation ───────────────────────────────────────

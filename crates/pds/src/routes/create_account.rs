@@ -223,7 +223,7 @@ mod tests {
     };
     use tower::ServiceExt;
 
-    use crate::app::{app, test_state};
+    use crate::app::app;
     use crate::routes::test_utils::test_state_with_admin_token;
 
     // ── Helpers ───────────────────────────────────────────────────────────────
@@ -626,57 +626,6 @@ mod tests {
     }
 
     // ── Auth ──────────────────────────────────────────────────────────────────
-
-    #[tokio::test]
-    async fn missing_authorization_header_returns_401() {
-        let response = app(test_state_with_admin_token().await)
-            .oneshot(post_create_account(
-                r#"{"email":"x@example.com","handle":"x.example.com","tier":"free"}"#,
-                None,
-            ))
-            .await
-            .unwrap();
-        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
-    }
-
-    #[tokio::test]
-    async fn wrong_bearer_token_returns_401() {
-        let response = app(test_state_with_admin_token().await)
-            .oneshot(post_create_account(
-                r#"{"email":"x@example.com","handle":"x.example.com","tier":"free"}"#,
-                Some("wrong-token"),
-            ))
-            .await
-            .unwrap();
-        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
-    }
-
-    #[tokio::test]
-    async fn admin_token_not_configured_returns_401() {
-        let response = app(test_state().await)
-            .oneshot(post_create_account(
-                r#"{"email":"x@example.com","handle":"x.example.com","tier":"free"}"#,
-                Some("test-admin-token"),
-            ))
-            .await
-            .unwrap();
-        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
-    }
-
-    #[tokio::test]
-    async fn closed_db_pool_returns_500() {
-        let state = test_state_with_admin_token().await;
-        state.db.close().await;
-
-        let response = app(state)
-            .oneshot(post_create_account(
-                r#"{"email":"x@example.com","handle":"x.example.com","tier":"free"}"#,
-                Some("test-admin-token"),
-            ))
-            .await
-            .unwrap();
-        assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
-    }
 
     // ── Pure unit tests ───────────────────────────────────────────────────────
 

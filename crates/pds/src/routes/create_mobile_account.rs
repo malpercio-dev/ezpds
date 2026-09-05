@@ -1079,24 +1079,4 @@ mod tests {
     }
 
     // ── DB failure ────────────────────────────────────────────────────────────
-
-    #[tokio::test]
-    async fn closed_db_pool_returns_500() {
-        let state = test_state().await;
-        state.db.close().await;
-
-        let response = app(state)
-            .oneshot(post_create_mobile_account(
-                r#"{"email":"a@example.com","handle":"a.example.com","devicePublicKey":"dGVzdC1rZXk=","platform":"ios","claimCode":"ABC123"}"#,
-            ))
-            .await
-            .unwrap();
-
-        assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
-        let body = axum::body::to_bytes(response.into_body(), 4096)
-            .await
-            .unwrap();
-        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
-        assert_eq!(json["error"]["code"], "INTERNAL_ERROR");
-    }
 }

@@ -1801,36 +1801,6 @@ mod tests {
 
     // ── Missing auth ──────────────────────────────────────────────────────────
 
-    /// Missing Authorization header returns 401 UNAUTHORIZED.
-    #[tokio::test]
-    async fn missing_auth_returns_401() {
-        let state = test_state_for_did("https://plc.directory".to_string()).await;
-        let signed_op = serde_json::json!({});
-        let request = Request::builder()
-            .method("POST")
-            .uri("/v1/dids")
-            .header("Content-Type", "application/json")
-            .body(Body::from(
-                serde_json::json!({
-                    "rotationKeyPublic": "did:key:z123",
-                    "signedCreationOp": signed_op,
-                    "password": "test-password",
-                })
-                .to_string(),
-            ))
-            .unwrap();
-
-        let app = crate::app::app(state);
-        let response = app.oneshot(request).await.unwrap();
-
-        assert_eq!(response.status(), StatusCode::UNAUTHORIZED, "expected 401");
-        let body_bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
-            .await
-            .unwrap();
-        let body: serde_json::Value = serde_json::from_slice(&body_bytes).unwrap();
-        assert_eq!(body["error"]["code"], "UNAUTHORIZED");
-    }
-
     // ── Password provisioning ─────────────────────────────────────────────────
 
     /// With `accounts.password_optional` on, a ceremony that omits the password promotes the

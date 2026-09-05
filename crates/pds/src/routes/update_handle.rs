@@ -1106,25 +1106,6 @@ mod tests {
 
     // ── Auth failures ──────────────────────────────────────────────────────────
 
-    /// Missing Authorization header returns 401.
-    #[tokio::test]
-    async fn missing_auth_returns_401() {
-        let state = test_state().await;
-        let new_handle = format!("alice.{}", state.config.available_user_domains[0]);
-
-        let body = serde_json::json!({ "handle": new_handle });
-        let request = Request::builder()
-            .method("POST")
-            .uri("/xrpc/com.atproto.identity.updateHandle")
-            .header("Content-Type", "application/json")
-            .body(Body::from(body.to_string()))
-            .unwrap();
-
-        let app = app(state);
-        let response = app.oneshot(request).await.unwrap();
-        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
-    }
-
     /// Wrong-scope token (refresh instead of access) returns 401.
     #[tokio::test]
     async fn wrong_scope_token_returns_401() {

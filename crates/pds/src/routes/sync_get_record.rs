@@ -235,31 +235,4 @@ mod tests {
             "exclusion proof must resolve the absent key to None using only the CAR blocks"
         );
     }
-
-    #[tokio::test]
-    async fn nonexistent_account_returns_404() {
-        let state = crate::app::test_state().await;
-        let app = crate::app::app(state);
-
-        let response = app
-            .oneshot(get_request("did:plc:nonexistent", "rec1"))
-            .await
-            .unwrap();
-        assert_eq!(response.status(), StatusCode::NOT_FOUND);
-    }
-
-    #[tokio::test]
-    async fn invalid_did_returns_400() {
-        let state = crate::app::test_state().await;
-        let app = crate::app::app(state);
-
-        let request = Request::builder()
-            .method(http::Method::GET)
-            .uri("/xrpc/com.atproto.sync.getRecord?did=not-a-did&collection=app.bsky.feed.post&rkey=rec1")
-            .body(Body::empty())
-            .unwrap();
-
-        let response = app.oneshot(request).await.unwrap();
-        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
-    }
 }

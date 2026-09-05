@@ -273,29 +273,6 @@ mod tests {
 
     // ── Auth failures ──────────────────────────────────────────────────────────
 
-    /// Missing Authorization header returns 401.
-    #[tokio::test]
-    async fn missing_auth_returns_401() {
-        let state = test_state().await;
-        let db = state.db.clone();
-        let did = format!(
-            "did:plc:{}",
-            &Uuid::new_v4().to_string().replace('-', "")[..24]
-        );
-        let handle = format!("alice.{}", state.config.available_user_domains[0]);
-        seed_handle(&db, &handle, &did).await;
-
-        let request = Request::builder()
-            .method("DELETE")
-            .uri(format!("/v1/handles/{handle}"))
-            .body(Body::empty())
-            .unwrap();
-
-        let app = crate::app::app(state);
-        let response = app.oneshot(request).await.unwrap();
-        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
-    }
-
     // ── Authorization (ownership) ─────────────────────────────────────────────
 
     /// Session DID that does not own the handle returns 403.

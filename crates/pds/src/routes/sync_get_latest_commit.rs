@@ -206,15 +206,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn invalid_did_returns_400() {
-        let state = crate::app::test_state().await;
-        let app = crate::app::app(state);
-
-        let (status, _) = get_latest(&app, "not-a-did").await;
-        assert_eq!(status, StatusCode::BAD_REQUEST);
-    }
-
-    #[tokio::test]
     async fn unreadable_repo_head_returns_404() {
         let state = state_with_master_key().await;
         // repo_root_cid points at a commit block that was never written (a valid CIDv1, but

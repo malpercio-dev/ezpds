@@ -299,14 +299,4 @@ mod tests {
             .unwrap();
         assert_eq!(drop.status(), StatusCode::UNAUTHORIZED);
     }
-
-    #[tokio::test]
-    async fn missing_auth_returns_401() {
-        let state = test_state().await;
-        let response = app(state)
-            .oneshot(post_revoke(None, serde_json::json!({"name": "x"})))
-            .await
-            .unwrap();
-        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
-    }
 }

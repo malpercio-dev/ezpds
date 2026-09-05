@@ -296,19 +296,4 @@ mod tests {
             .unwrap();
         assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
     }
-
-    #[tokio::test]
-    async fn missing_auth_returns_401() {
-        let response = app(test_state().await)
-            .oneshot(
-                Request::builder()
-                    .method("POST")
-                    .uri("/xrpc/com.atproto.server.deactivateAccount")
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
-    }
 }

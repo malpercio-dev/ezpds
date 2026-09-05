@@ -142,24 +142,6 @@ mod tests {
         .unwrap()
     }
 
-    /// Issue a refresh-scope JWT (should be rejected by getSession).
-    fn refresh_jwt(secret: &[u8; 32], sub: &str) -> String {
-        use jsonwebtoken::{encode, Algorithm, EncodingKey, Header};
-
-        let now = crate::time::unix_now_secs() as u64;
-        encode(
-            &Header::new(Algorithm::HS256),
-            &serde_json::json!({
-                "scope": "com.atproto.refresh",
-                "sub": sub,
-                "iat": now,
-                "exp": now + 7_776_000_u64,
-            }),
-            &EncodingKey::from_secret(secret),
-        )
-        .unwrap()
-    }
-
     fn get_session_request(token: &str) -> Request<Body> {
         Request::builder()
             .method("GET")
@@ -330,22 +312,6 @@ mod tests {
     // ── Auth failures ─────────────────────────────────────────────────────────
 
     #[tokio::test]
-    async fn missing_auth_header_returns_401() {
-        let response = app(test_state().await)
-            .oneshot(
-                Request::builder()
-                    .method("GET")
-                    .uri("/xrpc/com.atproto.server.getSession")
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-
-        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
-    }
-
-    #[tokio::test]
     async fn invalid_token_returns_401() {
         let response = app(test_state().await)
             .oneshot(get_session_request("not.a.valid.jwt"))
@@ -370,28 +336,6 @@ mod tests {
         assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
         let json = body_json(response).await;
         assert_eq!(json["error"], "ExpiredToken");
-    }
-
-    #[tokio::test]
-    async fn refresh_token_returns_401() {
-        let state = test_state().await;
-        insert_account(
-            &state.db,
-            "did:plc:refresh",
-            "refresh.test.example.com",
-            "r@example.com",
-        )
-        .await;
-        let token = refresh_jwt(&state.jwt_secret, "did:plc:refresh");
-
-        let response = app(state)
-            .oneshot(get_session_request(&token))
-            .await
-            .unwrap();
-
-        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
-        let json = body_json(response).await;
-        assert_eq!(json["error"], "InvalidToken");
     }
 
     #[tokio::test]

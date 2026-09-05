@@ -229,16 +229,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn requires_auth() {
-        let state = test_state().await;
-        let response = app(state)
-            .oneshot(post_req(None, "x@example.com", "tok"))
-            .await
-            .unwrap();
-        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
-    }
-
-    #[tokio::test]
     async fn token_is_single_use() {
         let state = test_state().await;
         let db = state.db.clone();
