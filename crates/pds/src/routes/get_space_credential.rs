@@ -450,9 +450,12 @@ mod tests {
         use wiremock::matchers::{method, path};
         use wiremock::{Mock, ResponseTemplate};
 
-        let client_id = format!("{}/client-metadata.json", server.uri());
+        // Unique per call: the client-resolution negative cache is process-global and keyed by
+        // client_id, so a reused loopback port must not alias another test's failed resolution.
+        let doc_path = format!("/client-metadata-{}.json", uuid::Uuid::new_v4());
+        let client_id = format!("{}{doc_path}", server.uri());
         Mock::given(method("GET"))
-            .and(path("/client-metadata.json"))
+            .and(path(doc_path.as_str()))
             .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
                 "client_id": client_id,
                 "redirect_uris": ["https://app.example.com/callback"],
