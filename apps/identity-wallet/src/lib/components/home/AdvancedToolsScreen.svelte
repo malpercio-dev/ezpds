@@ -109,8 +109,8 @@
     padding: var(--space-md);
   }
   .vestibule-ic {
-    width: 38px;
-    height: 38px;
+    width: var(--size-icon-xl);
+    height: var(--size-icon-xl);
     border-radius: var(--radius-full);
     background: var(--color-bg);
     color: var(--color-accent);

@@ -213,7 +213,7 @@
   .sealed {
     display: inline-flex;
     align-items: center;
-    gap: 7px;
+    gap: var(--space-sm);
     font-size: var(--text-label);
     font-weight: var(--weight-semibold);
     color: var(--color-primary-deep);
@@ -222,7 +222,7 @@
   .error-box {
     background: var(--color-critical-surface);
     border-radius: var(--radius-md);
-    padding: 12px var(--space-md);
+    padding: var(--space-md) var(--space-md);
   }
 
   .actions {

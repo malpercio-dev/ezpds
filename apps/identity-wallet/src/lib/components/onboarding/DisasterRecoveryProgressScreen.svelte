@@ -349,7 +349,7 @@
   .leg-glyph {
     font-size: var(--text-title);
     line-height: var(--leading-headline);
-    width: 22px;
+    width: var(--size-icon-sm);
     flex-shrink: 0;
     text-align: center;
     color: var(--color-muted);
