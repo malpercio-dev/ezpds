@@ -645,8 +645,6 @@ struct PendingAccountPromotion<'a> {
 /// transaction; the no-escrow did:web path writes no escrow.
 async fn promote_account(state: &AppState, p: PendingAccountPromotion<'_>) -> Result<(), ApiError> {
     let did = p.did;
-    let did_document_str =
-        serde_json::to_string(p.did_document).or_internal("failed to serialize DID document")?;
     let session_id = uuid::Uuid::new_v4().to_string();
 
     // Acquired *before* opening the transaction below — see `Firehose::lock_emit`'s docs and
@@ -697,16 +695,12 @@ async fn promote_account(state: &AppState, p: PendingAccountPromotion<'_>) -> Re
         .await?;
     }
 
-    sqlx::query(
-        "INSERT INTO did_documents (did, document, created_at, updated_at) \
-         VALUES (?, ?, datetime('now'), datetime('now'))",
-    )
-    .bind(did)
-    .bind(&did_document_str)
-    .execute(&mut *tx)
-    .await
-    .inspect_err(|e| tracing::error!(error = %e, "failed to insert did_document"))
-    .map_err(|_| ApiError::new(ErrorCode::InternalError, "failed to store DID document"))?;
+    // No prior row can exist for a DID this handler just derived from a fresh genesis op or
+    // did:web ceremony — the promotion transaction is the only writer, and a failed attempt
+    // rolls back atomically — so the upsert's UPDATE branch is dead code here, same as
+    // new-account mode in `create_account_xrpc`. Reused rather than hand-writing a fail-on-conflict
+    // INSERT to keep one write path for `did_documents`.
+    crate::db::dids::upsert_did_document(&mut *tx, did, p.did_document).await?;
 
     sqlx::query(
         "INSERT INTO sessions (id, did, device_id, token_hash, created_at, expires_at) \

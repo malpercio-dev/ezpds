@@ -113,6 +113,11 @@ impl crate::email::EmailSender for AlwaysErrEmail {
             ))
         })
     }
+
+    #[cfg(test)]
+    fn kind(&self) -> crate::email::EmailSenderKind {
+        crate::email::EmailSenderKind::Fake
+    }
 }
 
 /// `test_state()` with an email sender that always fails delivery.

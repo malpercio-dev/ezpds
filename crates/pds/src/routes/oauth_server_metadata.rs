@@ -33,6 +33,18 @@ use crate::app::AppState;
 ///   requires this to be `true` — clients are identified by a client-metadata-document URL
 ///   rather than pre-registration (resolved in `auth::oauth_client_resolution`).
 /// - `agent_auth`: advertises the auth.md agent-registration discovery surface.
+/// - `response_modes_supported`: states `query` and `fragment` explicitly rather than relying
+///   on the RFC 8414 default, so the metadata stays honest if the authorization endpoint's
+///   supported modes ever change.
+/// - `request_uri_parameter_supported` / `require_request_uri_registration` /
+///   `request_parameter_supported`: the three OpenID Connect Discovery `request`/`request_uri`
+///   capability fields, stated explicitly rather than left to their spec defaults — at least
+///   one real client (a Laravel atproto app) treats their absence as "legacy server without
+///   PAR" and silently downgrades. Only PAR-minted `request_uri` values are ever accepted
+///   (`require_request_uri_registration` is `true`, the only value the atproto profile
+///   permits), and JAR (RFC 9101) `request` objects are not accepted
+///   (`request_parameter_supported` is `false`, diverging from the reference provider's
+///   `true`).
 #[derive(Serialize)]
 struct OAuthServerMetadata {
     issuer: String,
@@ -43,9 +55,7 @@ struct OAuthServerMetadata {
     jwks_uri: String,
     scopes_supported: Vec<String>,
     response_types_supported: Vec<String>,
-    /// Explicit rather than relying on the RFC 8414 default (`["query", "fragment"]` when
-    /// absent): the authorization endpoint really answers in both modes, and stating it
-    /// keeps the metadata honest if that ever changes.
+    /// See the struct doc's `response_modes_supported` bullet.
     response_modes_supported: Vec<String>,
     grant_types_supported: Vec<String>,
     token_endpoint_auth_methods_supported: Vec<String>,
@@ -54,23 +64,11 @@ struct OAuthServerMetadata {
     code_challenge_methods_supported: Vec<String>,
     dpop_signing_alg_values_supported: Vec<String>,
     require_pushed_authorization_requests: bool,
-    /// Explicit rather than relying on the absent-field defaults (OpenID Connect Discovery §3
-    /// defines all three `request`/`request_uri` capability fields; `request_uri` support
-    /// defaults to `true` when absent): the reference provider emits all three, and at least
-    /// one real client (a Laravel atproto app) treats their *absence* as "legacy server
-    /// without PAR" and silently downgrades to a non-PAR authorization flow. Absence is
-    /// indistinguishable from incapability to such clients, so this seam states its
-    /// capabilities outright.
+    /// See the struct doc's `request_uri_parameter_supported` bullet.
     request_uri_parameter_supported: bool,
-    /// `true`: the only `request_uri` values the authorization endpoint accepts are the
-    /// PAR-minted `urn:ietf:params:oauth:request_uri:` ones — PAR *is* the registration.
-    /// The atproto OAuth profile also pins this field's *default* to `true` and forbids
-    /// `false`, so stating `true` is the only compliant explicit value.
+    /// See the struct doc's `require_request_uri_registration` bullet.
     require_request_uri_registration: bool,
-    /// `false`, diverging from the reference provider's `true`: this server does not accept
-    /// JAR (RFC 9101) `request` objects, and metadata must not advertise a capability the
-    /// endpoint would reject. OpenID Connect Discovery defaults this to `false` anyway;
-    /// stating it keeps the divergence from the reference visible and deliberate.
+    /// See the struct doc's `request_parameter_supported` bullet.
     request_parameter_supported: bool,
     authorization_response_iss_parameter_supported: bool,
     client_id_metadata_document_supported: bool,
@@ -185,11 +183,8 @@ mod tests {
         serde_json::from_slice(&body).unwrap()
     }
 
-    /// Every field the handler emits, in one whole-document assertion. Each field's rationale
-    /// for its exact value (`request_uri_parameter_supported` defaulting-vs-stated, PAR being
-    /// mandatory, the reference-provider divergences, and the rest) lives in
-    /// `OAuthServerMetadata`'s doc comment, the single home for that rationale — restating it
-    /// here per-field would triple-state it (struct doc, field doc, test).
+    /// Every field the handler emits, in one whole-document assertion. See `OAuthServerMetadata`'s
+    /// struct doc for why each field holds the value it does.
     ///
     /// `scopes_supported` is asserted against `auth::oauth_scopes::supported_scopes()`, the same
     /// source the handler reads, rather than a second hand-typed copy of the list that would

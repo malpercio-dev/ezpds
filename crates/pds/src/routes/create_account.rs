@@ -97,70 +97,67 @@ pub async fn create_account(
     }
 
     // --- Insert: generate account_id + claim code, write in one transaction ---
-    // Retry up to 3 times on the rare event of a claim code collision.
+    // Retry up to 3 times on the rare event of a claim code collision. A UNIQUE violation on
+    // pending_accounts.email/.handle is a terminal conflict, not bad luck on the generated
+    // claim code, so it must not retry — `should_retry` tells the two apart.
+    use crate::db::accounts::PendingAccountConflict;
     let account_id = Uuid::new_v4().to_string();
     let offset = format!("+{CLAIM_CODE_EXPIRES_IN_HOURS} hours");
+    let db = &state.db;
+    let handle = &payload.handle;
+    let tier = &payload.tier;
 
-    for attempt in 0..3_usize {
+    let should_retry = |e: &sqlx::Error| {
+        crate::db::is_unique_violation(e)
+            && !matches!(
+                crate::db::accounts::classify_pending_account_conflict(e),
+                Some(PendingAccountConflict::Email) | Some(PendingAccountConflict::Handle)
+            )
+    };
+
+    // Not `async move`: account_id/email/handle/tier/offset are reused across retry attempts
+    // and must stay borrowed, while claim_code (fresh each attempt) is captured by value because
+    // it's moved out below — Rust infers that split per-variable from how each is used.
+    let result = crate::db::insert_with_retry_if("claim code", should_retry, || {
         let claim_code = generate_code();
-        match insert_pending_account(
-            &state.db,
-            &account_id,
-            &email,
-            &payload.handle,
-            &payload.tier,
-            &claim_code,
-            &offset,
-        )
-        .await
-        {
-            Ok(()) => {
-                return Ok((
-                    StatusCode::CREATED,
-                    Json(CreateAccountResponse {
-                        account_id,
-                        did: None,
-                        claim_code,
-                        status: "pending".to_string(),
-                    }),
-                ))
-            }
-            Err(e) if crate::db::is_unique_violation(&e) => {
-                use crate::db::accounts::PendingAccountConflict;
-                match crate::db::accounts::classify_pending_account_conflict(&e) {
-                    Some(PendingAccountConflict::Email) => {
-                        return Err(ApiError::new(
-                            ErrorCode::AccountExists,
-                            "an account with this email already exists",
-                        ));
-                    }
-                    Some(PendingAccountConflict::Handle) => {
-                        return Err(ApiError::new(
-                            ErrorCode::HandleTaken,
-                            "this handle is already claimed",
-                        ));
-                    }
-                    _ => {
-                        // Not a pending_accounts constraint — treat as claim code collision.
-                        tracing::warn!(attempt, "claim code collision; retrying");
-                        continue;
-                    }
-                }
-            }
-            Err(e) => {
-                return Err(ApiError::internal_as(
-                    e,
-                    "failed to insert pending account",
-                    "failed to create account",
-                ));
-            }
+        async {
+            insert_pending_account(db, &account_id, &email, handle, tier, &claim_code, &offset)
+                .await
+                .map(|()| claim_code)
         }
-    }
-
-    Err({
-        tracing::error!("exhausted all claim code generation attempts");
-        ApiError::new(ErrorCode::InternalError, "failed to create account")
     })
+    .await;
+
+    match result {
+        Ok(Some(claim_code)) => Ok((
+            StatusCode::CREATED,
+            Json(CreateAccountResponse {
+                account_id,
+                did: None,
+                claim_code,
+                status: "pending".to_string(),
+            }),
+        )),
+        Ok(None) => Err({
+            tracing::error!("exhausted all claim code generation attempts");
+            ApiError::new(ErrorCode::InternalError, "failed to create account")
+        }),
+        Err(e) => match crate::db::accounts::classify_pending_account_conflict(&e) {
+            Some(PendingAccountConflict::Email) => Err(ApiError::new(
+                ErrorCode::AccountExists,
+                "an account with this email already exists",
+            )),
+            Some(PendingAccountConflict::Handle) => Err(ApiError::new(
+                ErrorCode::HandleTaken,
+                "this handle is already claimed",
+            )),
+            _ => Err(ApiError::internal_as(
+                e,
+                "failed to insert pending account",
+                "failed to create account",
+            )),
+        },
+    }
 }
 
 fn is_valid_tier(tier: &str) -> bool {
