@@ -203,8 +203,11 @@ pub async fn post_par(
     let (client_metadata_json, freshly_fetched) = match known_client {
         Some(row) => (row.client_metadata, false),
         None if client_id.starts_with("https://") || client_id.starts_with("http://") => {
+            // The fetched URL is caller-supplied (the client_id itself), so it must go through
+            // the SSRF-hardened client, not the plain one used for trusted admin-configured
+            // upstreams — `scripts/ssrf-client-check.sh` guards this call site.
             match crate::auth::oauth_client_resolution::resolve_client_metadata(
-                &state.http_client,
+                &state.hardened_http_client,
                 &client_id,
             )
             .await
@@ -778,6 +781,30 @@ mod tests {
         assert!(
             json["error_description"].as_str().unwrap().contains("https"),
             "plain-http client_id on a non-loopback host must be rejected before any fetch, got: {}",
+            json["error_description"]
+        );
+    }
+
+    #[tokio::test]
+    async fn post_par_rejects_https_url_client_id_at_a_private_address() {
+        // A private/link-local IP-literal client_id must be refused by URL policy before any
+        // fetch is attempted — it bypasses the hardened client's own connect-time guard (only
+        // consulted for names needing DNS resolution), which is exactly why
+        // `resolve_client_metadata` checks IP literals itself. `10.0.0.1` stands in for any
+        // private target; a real SSRF probe would more plausibly use the cloud-metadata address.
+        let state = test_state().await;
+
+        let response = par_with_client_id(state, "https://10.0.0.1/client-metadata.json").await;
+
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let json = error_json(response).await;
+        assert_eq!(json["error"].as_str(), Some("invalid_client"));
+        assert!(
+            json["error_description"]
+                .as_str()
+                .unwrap()
+                .contains("private, loopback, or link-local"),
+            "a private-address client_id must be rejected before any fetch, got: {}",
             json["error_description"]
         );
     }

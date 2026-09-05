@@ -262,9 +262,11 @@ pub(crate) async fn validate_proxy_endpoint(
 
 /// Whether `ip` may be connected to for a caller-influenced target: a public, routable address, or
 /// loopback when the test-only relaxation is in effect. Shared by [`validate_proxy_endpoint`]'s
-/// IP-literal branch and [`SsrfResolver`]'s connect-time domain check, so both enforce one
-/// allowlist.
-fn ip_allowed(ip: IpAddr, allow_loopback: bool) -> bool {
+/// IP-literal branch, [`SsrfResolver`]'s connect-time domain check, and
+/// `auth::oauth_client_resolution`'s IP-literal `client_id` check (the same "hyper skips DNS
+/// resolution, and the resolver, for an IP-literal host" gap applies there), so all three enforce
+/// one allowlist.
+pub(crate) fn ip_allowed(ip: IpAddr, allow_loopback: bool) -> bool {
     is_global_ip(ip) || (allow_loopback && ip.is_loopback())
 }
 
