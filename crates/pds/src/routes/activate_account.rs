@@ -369,43 +369,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn non_empty_body_returns_400() {
-        let state = test_state().await;
-        insert_account(&state.db, "did:plc:act5", "act5@example.com", true).await;
-        let token = access_jwt(&state.jwt_secret, "did:plc:act5");
-
-        let request = Request::builder()
-            .method("POST")
-            .uri("/xrpc/com.atproto.server.activateAccount")
-            .header("Authorization", format!("Bearer {token}"))
-            .header("Content-Type", "application/json")
-            .body(Body::from(r#"{"unexpected":"payload"}"#))
-            .unwrap();
-
-        let response = app(state).oneshot(request).await.unwrap();
-        assert_eq!(
-            response.status(),
-            StatusCode::BAD_REQUEST,
-            "activateAccount must reject a non-empty body"
-        );
-    }
-
-    #[tokio::test]
-    async fn missing_auth_returns_401() {
-        let response = app(test_state().await)
-            .oneshot(
-                Request::builder()
-                    .method("POST")
-                    .uri("/xrpc/com.atproto.server.activateAccount")
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
-    }
-
-    #[tokio::test]
     async fn activation_refreshes_stale_did_doc_and_emits_identity() {
         // The migration-into-obsign case: our cached DID document is a pre-migration snapshot
         // (points at the old PDS + old key). Activation must force-refresh it from the authoritative

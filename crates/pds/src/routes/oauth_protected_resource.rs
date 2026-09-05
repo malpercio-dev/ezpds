@@ -75,25 +75,6 @@ mod tests {
         serde_json::from_slice(&body).unwrap()
     }
 
-    #[tokio::test]
-    async fn returns_200_with_json_content_type() {
-        let response = app(test_state().await)
-            .oneshot(
-                Request::builder()
-                    .uri("/.well-known/oauth-protected-resource")
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-
-        assert_eq!(response.status(), StatusCode::OK);
-        assert_eq!(
-            response.headers().get("content-type").unwrap(),
-            "application/json"
-        );
-    }
-
     /// Every field the handler emits, in one whole-document assertion (test_state() sets
     /// service_name = "custos", the default). `scopes_supported` is asserted against
     /// `auth::oauth_scopes::supported_scopes()`, the same source the handler reads — mirrored in

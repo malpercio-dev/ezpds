@@ -39,7 +39,7 @@ use serde::{Deserialize, Serialize};
 use crate::app::AppState;
 use crate::auth::agent_assertion::POLL_INTERVAL_SECS;
 use crate::db::oauth::{cleanup_expired_auth_codes, cleanup_expired_refresh_tokens};
-use crate::routes::oauth_errors::OAuthTokenError;
+use crate::routes::oauth_errors::{insert_no_store_headers, OAuthTokenError};
 
 // ── Request / response types ──────────────────────────────────────────────────
 
@@ -214,12 +214,7 @@ fn token_response_headers(fresh_nonce: &str) -> Result<axum::http::HeaderMap, OA
             ));
         }
     }
-    // Add Cache-Control headers to prevent caching of sensitive token responses (RFC 6749 §5.1).
-    response_headers.insert(
-        axum::http::header::CACHE_CONTROL,
-        axum::http::HeaderValue::from_static("no-store"),
-    );
-    response_headers.insert("Pragma", axum::http::HeaderValue::from_static("no-cache"));
+    insert_no_store_headers(&mut response_headers);
     Ok(response_headers)
 }
 

@@ -185,25 +185,6 @@ mod tests {
         serde_json::from_slice(&body).unwrap()
     }
 
-    #[tokio::test]
-    async fn returns_200_with_json_content_type() {
-        let response = app(test_state().await)
-            .oneshot(
-                Request::builder()
-                    .uri("/.well-known/oauth-authorization-server")
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-
-        assert_eq!(response.status(), StatusCode::OK);
-        assert_eq!(
-            response.headers().get("content-type").unwrap(),
-            "application/json"
-        );
-    }
-
     /// Every field the handler emits, in one whole-document assertion. Each field's rationale
     /// for its exact value (`request_uri_parameter_supported` defaulting-vs-stated, PAR being
     /// mandatory, the reference-provider divergences, and the rest) lives in

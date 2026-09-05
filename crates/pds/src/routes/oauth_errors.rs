@@ -7,7 +7,7 @@
 // without a route→route import — the same pattern as `oauth_templates.rs`.
 
 use axum::{
-    http::StatusCode,
+    http::{HeaderMap, StatusCode},
     response::{IntoResponse, Json, Response},
 };
 
@@ -107,4 +107,25 @@ impl IntoResponse for OAuthTokenError {
         };
         (status, headers, Json(body)).into_response()
     }
+}
+
+/// Confirm a required form field was supplied and non-empty, or fail with the standard
+/// `invalid_request` shape every token/PAR/revocation endpoint uses for a missing parameter.
+/// Settles the wording too: callers had drifted between "X is required" and "missing
+/// parameter: X" for the same condition.
+pub(super) fn require<'a>(field: Option<&'a str>, name: &str) -> Result<&'a str, OAuthTokenError> {
+    field.filter(|s| !s.is_empty()).ok_or_else(|| {
+        OAuthTokenError::new("invalid_request", format!("missing parameter: {name}"))
+    })
+}
+
+/// Insert the `Cache-Control: no-store` + `Pragma: no-cache` pair every token-endpoint and
+/// revocation success response carries (RFC 6749 §5.1): the body is sensitive token material,
+/// or a revocation outcome tied to it, so caching it anywhere downstream is unsafe.
+pub(super) fn insert_no_store_headers(headers: &mut HeaderMap) {
+    headers.insert(
+        axum::http::header::CACHE_CONTROL,
+        axum::http::HeaderValue::from_static("no-store"),
+    );
+    headers.insert("Pragma", axum::http::HeaderValue::from_static("no-cache"));
 }

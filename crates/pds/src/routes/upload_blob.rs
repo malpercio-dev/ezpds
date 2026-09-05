@@ -532,25 +532,6 @@ mod tests {
         assert!(detail.contains("\"size\":10"), "detail: {detail}");
     }
 
-    /// Unauthenticated request must return 401.
-    #[tokio::test]
-    async fn unauthenticated_returns_401() {
-        let state = test_state().await;
-        let response = app_with_state(state)
-            .oneshot(
-                Request::builder()
-                    .method("POST")
-                    .uri("/xrpc/com.atproto.repo.uploadBlob")
-                    .header("content-type", "application/octet-stream")
-                    .body(Body::from("hello"))
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-
-        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
-    }
-
     /// Authenticated upload with known magic bytes returns blob metadata.
     #[tokio::test]
     async fn upload_png_returns_blob_metadata() {

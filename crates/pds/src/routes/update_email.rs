@@ -283,14 +283,4 @@ mod tests {
             .unwrap();
         assert_eq!(response.status(), StatusCode::BAD_REQUEST);
     }
-
-    #[tokio::test]
-    async fn requires_auth() {
-        let state = test_state().await;
-        let response = app(state)
-            .oneshot(post_req(None, r#"{"email":"x@example.com"}"#))
-            .await
-            .unwrap();
-        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
-    }
 }

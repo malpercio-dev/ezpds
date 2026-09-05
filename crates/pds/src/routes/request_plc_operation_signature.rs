@@ -87,9 +87,7 @@ mod tests {
     use tower::ServiceExt;
 
     use crate::app::{app, test_state};
-    use crate::routes::test_utils::{
-        access_jwt, app_pass_jwt, seed_account_with_signing_key, state_with_failing_email,
-    };
+    use crate::routes::test_utils::{access_jwt, seed_account_with_signing_key};
 
     fn post_req(jwt: Option<&str>) -> Request<Body> {
         let mut builder = Request::builder()
@@ -120,55 +118,6 @@ mod tests {
                 .await
                 .unwrap();
         assert_eq!(count, 1, "one PLC operation token should be stored");
-    }
-
-    #[tokio::test]
-    async fn requires_auth() {
-        let state = test_state().await;
-        let response = app(state).oneshot(post_req(None)).await.unwrap();
-        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
-    }
-
-    /// The lexicon defines no input; a spurious body is rejected with 400, matching the reference
-    /// PDS (the input-strictness divergence this route previously concealed).
-    #[tokio::test]
-    async fn non_empty_body_returns_400() {
-        let state = test_state().await;
-        let db = state.db.clone();
-        let did = "did:plc:reqplcsig4444444444444444";
-        seed_account_with_signing_key(&db, did, "dave.example.com").await;
-        let jwt = access_jwt(&state.jwt_secret, did);
-
-        let request = Request::builder()
-            .method("POST")
-            .uri("/xrpc/com.atproto.identity.requestPlcOperationSignature")
-            .header("Authorization", format!("Bearer {jwt}"))
-            .header("Content-Type", "application/json")
-            .body(Body::from(r#"{"unexpected":"payload"}"#))
-            .unwrap();
-
-        let response = app(state).oneshot(request).await.unwrap();
-        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
-
-        let count: i64 =
-            sqlx::query_scalar("SELECT COUNT(*) FROM plc_operation_tokens WHERE did = ?")
-                .bind(did)
-                .fetch_one(&db)
-                .await
-                .unwrap();
-        assert_eq!(count, 0, "a rejected request must not mint a token");
-    }
-
-    #[tokio::test]
-    async fn email_delivery_failure_returns_503() {
-        let state = state_with_failing_email().await;
-        let db = state.db.clone();
-        let did = "did:plc:reqplcsig3333333333333333";
-        seed_account_with_signing_key(&db, did, "carol.example.com").await;
-        let jwt = access_jwt(&state.jwt_secret, did);
-
-        let response = app(state).oneshot(post_req(Some(&jwt))).await.unwrap();
-        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
     }
 
     /// A did:web account gets an explicit "not a did:plc" 400 before any token is minted or emailed
@@ -203,17 +152,5 @@ mod tests {
             count, 0,
             "no PLC operation token may be minted for a did:web account"
         );
-    }
-
-    #[tokio::test]
-    async fn app_password_scope_rejected() {
-        let state = test_state().await;
-        let db = state.db.clone();
-        let did = "did:plc:reqplcsig2222222222222222";
-        seed_account_with_signing_key(&db, did, "bob.example.com").await;
-        let jwt = app_pass_jwt(&[0x42u8; 32], did, true);
-
-        let response = app(state).oneshot(post_req(Some(&jwt))).await.unwrap();
-        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
     }
 }

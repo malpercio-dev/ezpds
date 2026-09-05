@@ -442,6 +442,7 @@ Look here before writing a helper. Each row is the one home; copies elsewhere ar
 | percent-encoding | `urlencoding::encode` |
 | test state, accounts, tokens, DPoP proofs, request builders, body decoding | `routes::test_utils` |
 | the space route tests' request builders and record bodies | `routes::space_test_support` |
+| a generic HTTP contract asserted over every route it binds (missing auth → 401, spurious body → 400, invalid DID → 400, closed pool → 500) | `routes::contract_tests` |
 
 **Every `.rs` file with runtime behavior must have a pattern comment.**
 Add `// pattern: Functional Core`, `// pattern: Imperative Shell`, or

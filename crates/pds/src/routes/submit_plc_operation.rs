@@ -299,17 +299,6 @@ mod tests {
         assert_eq!(response.status(), StatusCode::BAD_REQUEST);
     }
 
-    #[tokio::test]
-    async fn requires_auth() {
-        let plc = MockServer::start().await;
-        let state = state_with_plc(plc.uri()).await;
-        let response = app(state)
-            .oneshot(post_req(None, serde_json::json!({ "operation": {} })))
-            .await
-            .unwrap();
-        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
-    }
-
     /// A did:web account gets an explicit "not a did:plc" 400 up front, before any plc.directory
     /// round trip.
     #[tokio::test]

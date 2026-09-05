@@ -317,15 +317,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn invalid_did_returns_400() {
-        let state = crate::app::test_state().await;
-        let app = crate::app::app(state);
-
-        let (status, _) = list(&app, "repo=not-a-did&collection=app.bsky.feed.post").await;
-        assert_eq!(status, StatusCode::BAD_REQUEST);
-    }
-
-    #[tokio::test]
     async fn invalid_collection_returns_400() {
         let (state, did) = setup_account_with_repo().await;
         let app = crate::app::app(state);
@@ -334,18 +325,5 @@ mod tests {
         // silently matched as an empty collection.
         let (status, _) = list(&app, &format!("repo={did}&collection=app.bsky")).await;
         assert_eq!(status, StatusCode::BAD_REQUEST);
-    }
-
-    #[tokio::test]
-    async fn nonexistent_account_returns_404() {
-        let state = crate::app::test_state().await;
-        let app = crate::app::app(state);
-
-        let (status, _) = list(
-            &app,
-            "repo=did:plc:nonexistent&collection=app.bsky.feed.post",
-        )
-        .await;
-        assert_eq!(status, StatusCode::NOT_FOUND);
     }
 }

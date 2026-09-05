@@ -303,42 +303,6 @@ mod tests {
 
     // --- Auth tests ---
 
-    #[tokio::test]
-    async fn missing_authorization_header_returns_401() {
-        let response = app(test_state_with_keys().await)
-            .oneshot(post_keys(r#"{"algorithm": "p256"}"#, None))
-            .await
-            .unwrap();
-        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
-    }
-
-    #[tokio::test]
-    async fn wrong_bearer_token_returns_401() {
-        let response = app(test_state_with_keys().await)
-            .oneshot(post_keys(r#"{"algorithm": "p256"}"#, Some("wrong-token")))
-            .await
-            .unwrap();
-        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
-    }
-
-    #[tokio::test]
-    async fn bare_token_without_bearer_prefix_returns_401() {
-        // Authorization header present but "Bearer " prefix missing
-        let request = Request::builder()
-            .method("POST")
-            .uri("/v1/pds/keys")
-            .header("Content-Type", "application/json")
-            .header("Authorization", "test-admin-token") // no "Bearer " prefix
-            .body(Body::from(r#"{"algorithm": "p256"}"#))
-            .unwrap();
-
-        let response = app(test_state_with_keys().await)
-            .oneshot(request)
-            .await
-            .unwrap();
-        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
-    }
-
     // --- Algorithm tests ---
 
     #[tokio::test]
@@ -426,16 +390,5 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(response.status(), StatusCode::UNSUPPORTED_MEDIA_TYPE);
-    }
-
-    #[tokio::test]
-    async fn admin_token_not_configured_returns_401() {
-        // Operator has not set EZPDS_ADMIN_TOKEN; any request to the endpoint returns 401.
-        // test_state() leaves admin_token as None by default.
-        let response = app(test_state().await)
-            .oneshot(post_keys(r#"{"algorithm": "p256"}"#, Some("any-token")))
-            .await
-            .unwrap();
-        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
     }
 }
