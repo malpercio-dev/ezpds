@@ -43,7 +43,7 @@ use serde::{Deserialize, Serialize};
 use super::{cleanup_expired_state, issue_access_token, TokenRequestForm};
 use crate::app::AppState;
 use crate::db::agent_auth::{get_agent_identity, AgentIdentityStatus};
-use crate::routes::oauth_errors::OAuthTokenError;
+use crate::routes::oauth_errors::{insert_no_store_headers, require, OAuthTokenError};
 
 /// Successful jwt-bearer response body. Unlike [`super::TokenResponse`], it carries no
 /// `refresh_token`: the agent re-exchanges its `identity_assertion` (RFC 7523 §2.1) instead of
@@ -82,12 +82,9 @@ pub(super) async fn handle_jwt_bearer(state: &AppState, form: TokenRequestForm) 
     // Prune stale nonces and expired tokens on every request, matching the other grant handlers.
     cleanup_expired_state(state).await;
 
-    let assertion = match form.assertion.as_deref() {
-        Some(a) if !a.is_empty() => a,
-        _ => {
-            return OAuthTokenError::new("invalid_request", "missing parameter: assertion")
-                .into_response();
-        }
+    let assertion = match require(form.assertion.as_deref(), "assertion") {
+        Ok(v) => v,
+        Err(e) => return e.into_response(),
     };
 
     // RFC 8707: `resource` pins the token to a protected resource. ezpds is the sole resource it
@@ -243,11 +240,7 @@ pub(super) async fn handle_jwt_bearer(state: &AppState, form: TokenRequestForm) 
     }
 
     let mut headers = axum::http::HeaderMap::new();
-    headers.insert(
-        axum::http::header::CACHE_CONTROL,
-        axum::http::HeaderValue::from_static("no-store"),
-    );
-    headers.insert("Pragma", axum::http::HeaderValue::from_static("no-cache"));
+    insert_no_store_headers(&mut headers);
 
     (
         StatusCode::OK,

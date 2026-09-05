@@ -31,7 +31,7 @@ use crate::db::oauth::{
     cleanup_expired_par_requests, get_oauth_client, store_par_request, upsert_oauth_client,
     ClientMetadata, StoredPARParams,
 };
-use crate::routes::oauth_errors::OAuthTokenError;
+use crate::routes::oauth_errors::{require, OAuthTokenError};
 
 // ── Request / response types ──────────────────────────────────────────────────
 
@@ -129,39 +129,27 @@ pub async fn post_par(
     headers: HeaderMap,
     Form(form): Form<PARForm>,
 ) -> Response {
-    let client_id = match form.client_id.as_deref().filter(|s| !s.is_empty()) {
-        Some(id) => id.to_string(),
-        None => {
-            return OAuthTokenError::new("invalid_request", "client_id is required").into_response()
-        }
+    let client_id = match require(form.client_id.as_deref(), "client_id") {
+        Ok(v) => v.to_string(),
+        Err(e) => return e.into_response(),
     };
 
-    let redirect_uri = match form.redirect_uri.as_deref().filter(|s| !s.is_empty()) {
-        Some(u) => u.to_string(),
-        None => {
-            return OAuthTokenError::new("invalid_request", "redirect_uri is required")
-                .into_response()
-        }
+    let redirect_uri = match require(form.redirect_uri.as_deref(), "redirect_uri") {
+        Ok(v) => v.to_string(),
+        Err(e) => return e.into_response(),
     };
 
-    let code_challenge = match form.code_challenge.as_deref().filter(|s| !s.is_empty()) {
-        Some(c) => c.to_string(),
-        None => {
-            return OAuthTokenError::new("invalid_request", "code_challenge is required")
-                .into_response()
-        }
+    let code_challenge = match require(form.code_challenge.as_deref(), "code_challenge") {
+        Ok(v) => v.to_string(),
+        Err(e) => return e.into_response(),
     };
 
-    let code_challenge_method = match form
-        .code_challenge_method
-        .as_deref()
-        .filter(|s| !s.is_empty())
-    {
-        Some(m) => m.to_string(),
-        None => {
-            return OAuthTokenError::new("invalid_request", "code_challenge_method is required")
-                .into_response()
-        }
+    let code_challenge_method = match require(
+        form.code_challenge_method.as_deref(),
+        "code_challenge_method",
+    ) {
+        Ok(v) => v.to_string(),
+        Err(e) => return e.into_response(),
     };
 
     // `state` is RECOMMENDED, not required (RFC 6749 §4.1.1) and the atproto profile adds
@@ -175,12 +163,9 @@ pub async fn post_par(
         .unwrap_or_default()
         .to_string();
 
-    let response_type = match form.response_type.as_deref().filter(|s| !s.is_empty()) {
-        Some(r) => r.to_string(),
-        None => {
-            return OAuthTokenError::new("invalid_request", "response_type is required")
-                .into_response()
-        }
+    let response_type = match require(form.response_type.as_deref(), "response_type") {
+        Ok(v) => v.to_string(),
+        Err(e) => return e.into_response(),
     };
 
     // Both advertised response modes are validated up front, so a mode this server can't

@@ -23,7 +23,7 @@ use crate::db::oauth::{
     delete_authorization_code, get_authorization_code, store_initial_oauth_refresh_token,
 };
 use crate::routes::oauth_dpop::token_endpoint_dpop;
-use crate::routes::oauth_errors::OAuthTokenError;
+use crate::routes::oauth_errors::{require, OAuthTokenError};
 
 /// Verify the PKCE S256 code challenge.
 fn verify_pkce_s256(code_verifier: &str, stored_challenge: &str) -> bool {
@@ -42,26 +42,17 @@ pub(super) async fn handle_authorization_code(
     cleanup_expired_state(state).await;
 
     // Required fields: code, redirect_uri, client_id, code_verifier.
-    let code = match form.code.as_deref() {
-        Some(c) if !c.is_empty() => c,
-        _ => {
-            return OAuthTokenError::new("invalid_request", "missing parameter: code")
-                .into_response()
-        }
+    let code = match require(form.code.as_deref(), "code") {
+        Ok(v) => v,
+        Err(e) => return e.into_response(),
     };
-    let redirect_uri = match form.redirect_uri.as_deref() {
-        Some(u) if !u.is_empty() => u,
-        _ => {
-            return OAuthTokenError::new("invalid_request", "missing parameter: redirect_uri")
-                .into_response()
-        }
+    let redirect_uri = match require(form.redirect_uri.as_deref(), "redirect_uri") {
+        Ok(v) => v,
+        Err(e) => return e.into_response(),
     };
-    let client_id = match form.client_id.as_deref() {
-        Some(id) if !id.is_empty() => id,
-        _ => {
-            return OAuthTokenError::new("invalid_request", "missing parameter: client_id")
-                .into_response()
-        }
+    let client_id = match require(form.client_id.as_deref(), "client_id") {
+        Ok(v) => v,
+        Err(e) => return e.into_response(),
     };
 
     // Enforce the client's registered token_endpoint_auth_method (private_key_jwt clients
@@ -76,12 +67,9 @@ pub(super) async fn handle_authorization_code(
     {
         return e.into_response();
     }
-    let code_verifier = match form.code_verifier.as_deref() {
-        Some(v) if !v.is_empty() => v,
-        _ => {
-            return OAuthTokenError::new("invalid_request", "missing parameter: code_verifier")
-                .into_response()
-        }
+    let code_verifier = match require(form.code_verifier.as_deref(), "code_verifier") {
+        Ok(v) => v,
+        Err(e) => return e.into_response(),
     };
 
     // RFC 7636 §4.1: 43–128 unreserved characters [A-Za-z0-9\-._~] (F7).

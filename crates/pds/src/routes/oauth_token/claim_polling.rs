@@ -35,7 +35,7 @@ use crate::db::agent_auth::{
     get_agent_identity, get_agent_identity_by_claim_token, latest_agent_claim_attempt_for_identity,
     AgentIdentityRow, AgentIdentityStatus,
 };
-use crate::routes::oauth_errors::OAuthTokenError;
+use crate::routes::oauth_errors::{insert_no_store_headers, require, OAuthTokenError};
 
 /// Successful claim-polling response body. Like the jwt-bearer response it carries a plain Bearer
 /// access token and no refresh token, plus the post-claim `identity_assertion` the agent stores to
@@ -68,12 +68,9 @@ struct ClaimPollingResponse {
 pub(super) async fn handle_claim_polling(state: &AppState, form: TokenRequestForm) -> Response {
     cleanup_expired_state(state).await;
 
-    let claim_token = match form.claim_token.as_deref() {
-        Some(t) if !t.is_empty() => t,
-        _ => {
-            return OAuthTokenError::new("invalid_request", "missing parameter: claim_token")
-                .into_response();
-        }
+    let claim_token = match require(form.claim_token.as_deref(), "claim_token") {
+        Ok(v) => v,
+        Err(e) => return e.into_response(),
     };
 
     // Pace polling to the advertised interval. Key on the token's SHA-256, never the raw secret; only
@@ -236,11 +233,7 @@ async fn claim_success(state: &AppState, identity: &AgentIdentityRow) -> Respons
         .to_rfc3339_opts(SecondsFormat::Millis, true);
 
     let mut headers = axum::http::HeaderMap::new();
-    headers.insert(
-        axum::http::header::CACHE_CONTROL,
-        axum::http::HeaderValue::from_static("no-store"),
-    );
-    headers.insert("Pragma", axum::http::HeaderValue::from_static("no-cache"));
+    insert_no_store_headers(&mut headers);
 
     (
         StatusCode::OK,

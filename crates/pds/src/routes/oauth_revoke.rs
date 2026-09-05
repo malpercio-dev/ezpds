@@ -44,7 +44,7 @@ use crate::db::oauth::{
     cleanup_expired_refresh_tokens, delete_oauth_refresh_session, get_oauth_refresh_token,
 };
 use crate::routes::oauth_dpop::token_endpoint_dpop;
-use crate::routes::oauth_errors::OAuthTokenError;
+use crate::routes::oauth_errors::{insert_no_store_headers, require, OAuthTokenError};
 
 /// Flat form body for `POST /oauth/revoke` (application/x-www-form-urlencoded, RFC 7009 §2.1).
 ///
@@ -66,12 +66,9 @@ pub async fn post_revoke(
     Form(form): Form<RevokeRequestForm>,
 ) -> Response {
     // `token` is the one required parameter (RFC 7009 §2.1).
-    let token = match form.token.as_deref() {
-        Some(t) if !t.is_empty() => t.to_string(),
-        _ => {
-            return OAuthTokenError::new("invalid_request", "missing parameter: token")
-                .into_response();
-        }
+    let token = match require(form.token.as_deref(), "token") {
+        Ok(v) => v.to_string(),
+        Err(e) => return e.into_response(),
     };
 
     // The `htu` is this endpoint's own URL so a proof minted for the token endpoint can't be
@@ -138,11 +135,7 @@ pub async fn post_revoke(
     if let Ok(hval) = axum::http::HeaderValue::from_str(&fresh_nonce) {
         response_headers.insert("DPoP-Nonce", hval);
     }
-    response_headers.insert(
-        axum::http::header::CACHE_CONTROL,
-        axum::http::HeaderValue::from_static("no-store"),
-    );
-    response_headers.insert("Pragma", axum::http::HeaderValue::from_static("no-cache"));
+    insert_no_store_headers(&mut response_headers);
     (StatusCode::OK, response_headers, ()).into_response()
 }
 
