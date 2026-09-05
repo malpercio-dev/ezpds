@@ -444,28 +444,6 @@ mod tests {
 
     // ── Auth failures ──────────────────────────────────────────────────────────
 
-    /// Missing Authorization header returns 401.
-    #[tokio::test]
-    async fn missing_auth_returns_401() {
-        let state = test_state().await;
-        let db = state.db.clone();
-        let ts = insert_account_and_session(&db).await;
-        let handle = format!("alice.{}", state.config.available_user_domains[0]);
-
-        let request = Request::builder()
-            .method("POST")
-            .uri("/v1/handles")
-            .header("Content-Type", "application/json")
-            .body(Body::from(
-                serde_json::json!({"accountId": ts.did, "handle": handle}).to_string(),
-            ))
-            .unwrap();
-
-        let app = crate::app::app(state);
-        let response = app.oneshot(request).await.unwrap();
-        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
-    }
-
     /// Creating a handle emits exactly one `#identity` firehose frame carrying the new handle,
     /// ordered through the shared sequencer (its `seq` is one greater than the firehose frontier
     /// before the call).

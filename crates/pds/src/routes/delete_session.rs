@@ -194,34 +194,6 @@ mod tests {
         assert_eq!(response.status(), StatusCode::OK);
     }
 
-    /// The lexicon defines no input; a spurious body is rejected with 400 (reference-PDS parity).
-    /// The reference validates input before auth, so this holds regardless of the token.
-    #[tokio::test]
-    async fn non_empty_body_returns_400() {
-        let state = test_state().await;
-        insert_account_with_password(
-            &state.db,
-            "did:plc:delbody",
-            "delbody.test.example.com",
-            "delbody@example.com",
-            "hunter2",
-        )
-        .await;
-        let tokens = create_session_tokens(&state, "did:plc:delbody", "hunter2").await;
-        let refresh_jwt = tokens["refreshJwt"].as_str().unwrap();
-
-        let request = Request::builder()
-            .method("POST")
-            .uri("/xrpc/com.atproto.server.deleteSession")
-            .header("Authorization", format!("Bearer {refresh_jwt}"))
-            .header("Content-Type", "application/json")
-            .body(Body::from("{}"))
-            .unwrap();
-
-        let response = app(state).oneshot(request).await.unwrap();
-        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
-    }
-
     #[tokio::test]
     async fn revocation_deletes_session_and_refresh_tokens() {
         let state = test_state().await;
@@ -460,21 +432,6 @@ mod tests {
         assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
         let json = body_json(response).await;
         assert_eq!(json["error"], "InvalidToken");
-    }
-
-    #[tokio::test]
-    async fn missing_authorization_header_returns_401() {
-        let request = Request::builder()
-            .method("POST")
-            .uri("/xrpc/com.atproto.server.deleteSession")
-            .body(Body::empty())
-            .unwrap();
-
-        let response = app(test_state().await).oneshot(request).await.unwrap();
-
-        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
-        let json = body_json(response).await;
-        assert_eq!(json["error"], "AuthMissing");
     }
 
     #[tokio::test]

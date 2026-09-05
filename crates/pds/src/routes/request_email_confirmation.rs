@@ -83,9 +83,7 @@ mod tests {
     use tower::ServiceExt;
 
     use crate::app::{app, test_state};
-    use crate::routes::test_utils::{
-        access_jwt, app_pass_jwt, seed_account_with_signing_key, state_with_failing_email,
-    };
+    use crate::routes::test_utils::{access_jwt, seed_account_with_signing_key};
 
     fn post_req(jwt: Option<&str>) -> Request<Body> {
         let mut builder = Request::builder()
@@ -117,65 +115,5 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(count, 1, "one confirm token should be stored");
-    }
-
-    #[tokio::test]
-    async fn requires_auth() {
-        let state = test_state().await;
-        let response = app(state).oneshot(post_req(None)).await.unwrap();
-        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
-    }
-
-    /// No lexicon input: a spurious body is rejected with 400 (reference-PDS parity) and
-    /// no token is minted.
-    #[tokio::test]
-    async fn non_empty_body_returns_400() {
-        let state = test_state().await;
-        let db = state.db.clone();
-        let did = "did:plc:reqconfirm4444444444444444";
-        seed_account_with_signing_key(&db, did, "dave.example.com").await;
-        let jwt = access_jwt(&state.jwt_secret, did);
-
-        let request = Request::builder()
-            .method("POST")
-            .uri("/xrpc/com.atproto.server.requestEmailConfirmation")
-            .header("Authorization", format!("Bearer {jwt}"))
-            .header("Content-Type", "application/json")
-            .body(Body::from("{}"))
-            .unwrap();
-
-        let response = app(state).oneshot(request).await.unwrap();
-        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
-
-        let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM email_tokens WHERE did = ?")
-            .bind(did)
-            .fetch_one(&db)
-            .await
-            .unwrap();
-        assert_eq!(count, 0, "a rejected request must not mint a token");
-    }
-
-    #[tokio::test]
-    async fn app_password_scope_rejected() {
-        let state = test_state().await;
-        let db = state.db.clone();
-        let did = "did:plc:reqconfirm2222222222222222";
-        seed_account_with_signing_key(&db, did, "bob.example.com").await;
-        let jwt = app_pass_jwt(&state.jwt_secret, did, true);
-
-        let response = app(state).oneshot(post_req(Some(&jwt))).await.unwrap();
-        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
-    }
-
-    #[tokio::test]
-    async fn email_delivery_failure_returns_503() {
-        let state = state_with_failing_email().await;
-        let db = state.db.clone();
-        let did = "did:plc:reqconfirm3333333333333333";
-        seed_account_with_signing_key(&db, did, "carol.example.com").await;
-        let jwt = access_jwt(&state.jwt_secret, did);
-
-        let response = app(state).oneshot(post_req(Some(&jwt))).await.unwrap();
-        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
     }
 }

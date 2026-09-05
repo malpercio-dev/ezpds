@@ -256,19 +256,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn unauthenticated_returns_401() {
-        let state = crate::app::test_state().await;
-        let app = crate::app::app(state);
-        let request = Request::builder()
-            .method(http::Method::GET)
-            .uri("/xrpc/com.atproto.repo.listMissingBlobs")
-            .body(Body::empty())
-            .unwrap();
-        let resp = app.oneshot(request).await.unwrap();
-        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
-    }
-
-    #[tokio::test]
     async fn empty_repo_returns_no_missing_blobs() {
         let state = state_with_master_key().await;
         let did = "did:plc:missingempty";

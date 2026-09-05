@@ -149,13 +149,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn requires_auth() {
-        let state = test_state().await;
-        let response = app(state).oneshot(get_req(None)).await.unwrap();
-        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
-    }
-
-    #[tokio::test]
     async fn no_signing_key_returns_404() {
         let state = test_state().await;
         let did = "did:plc:nosigningkey11111111111111";

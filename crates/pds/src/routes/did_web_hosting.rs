@@ -375,25 +375,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn missing_auth_returns_401() {
-        let state = test_state().await;
-        let response = app(state)
-            .oneshot(
-                Request::builder()
-                    .method("POST")
-                    .uri("/v1/did-web/hosting")
-                    .header("Content-Type", "application/json")
-                    .body(Body::from(
-                        serde_json::json!({ "enabled": true }).to_string(),
-                    ))
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
-    }
-
-    #[tokio::test]
     async fn dpop_bound_token_as_bearer_returns_401() {
         // A DPoP-bound access token (cnf.jkt present) presented as plain `Bearer` with no proof is
         // the RFC 9449 binding downgrade — a captured token replayed without its key. The owner

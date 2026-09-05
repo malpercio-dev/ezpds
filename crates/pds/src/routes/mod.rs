@@ -153,6 +153,9 @@ pub(crate) mod test_utils;
 mod space_test_support;
 
 #[cfg(test)]
+mod contract_tests;
+
+#[cfg(test)]
 mod outbound_migration_test;
 
 #[cfg(test)]

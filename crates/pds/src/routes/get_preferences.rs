@@ -191,22 +191,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn missing_auth_header_returns_401() {
-        let response = app(test_state().await)
-            .oneshot(
-                Request::builder()
-                    .method("GET")
-                    .uri("/xrpc/app.bsky.actor.getPreferences")
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-
-        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
-    }
-
-    #[tokio::test]
     async fn app_pass_token_reads_non_privileged_preferences() {
         let state = test_state().await;
         insert_account(&state.db, "did:plc:apppass", "apppass@example.com").await;
@@ -301,22 +285,6 @@ mod tests {
         assert_eq!(response.status(), StatusCode::OK);
         let json = body_json(response).await;
         assert_eq!(json["preferences"], stored);
-    }
-
-    #[tokio::test]
-    async fn refresh_token_returns_401() {
-        let state = test_state().await;
-        insert_account(&state.db, "did:plc:refresh", "refresh@example.com").await;
-        let token = scoped_jwt(&state.jwt_secret, "did:plc:refresh", "com.atproto.refresh");
-
-        let response = app(state)
-            .oneshot(get_preferences_request(&token))
-            .await
-            .unwrap();
-
-        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
-        let json = body_json(response).await;
-        assert_eq!(json["error"], "InvalidToken");
     }
 
     #[tokio::test]

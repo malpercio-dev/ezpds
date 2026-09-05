@@ -286,20 +286,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn invalid_did_returns_400() {
-        let state = crate::app::test_state().await;
-        let app = crate::app::app(state);
-
-        let request = Request::builder()
-            .method(http::Method::GET)
-            .uri("/xrpc/com.atproto.sync.getBlocks?did=not-a-did&cids=bafkreifake")
-            .body(Body::empty())
-            .unwrap();
-        let response = app.oneshot(request).await.unwrap();
-        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
-    }
-
-    #[tokio::test]
     async fn invalid_cid_returns_400() {
         let (state, did) = setup_account_with_repo().await;
         let app = crate::app::app(state);

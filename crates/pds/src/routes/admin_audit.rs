@@ -184,14 +184,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn missing_token_returns_401() {
-        let state = test_state_with_admin_token().await;
-        let app = crate::app::app(state);
-        let (status, _) = get_audit(&app, "", None).await;
-        assert_eq!(status, StatusCode::UNAUTHORIZED);
-    }
-
-    #[tokio::test]
     async fn unknown_action_filter_returns_400() {
         let state = test_state_with_admin_token().await;
         let app = crate::app::app(state);

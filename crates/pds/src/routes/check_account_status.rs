@@ -280,20 +280,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn unauthenticated_returns_401() {
-        let state = crate::app::test_state().await;
-        let app = crate::app::app(state);
-
-        let request = Request::builder()
-            .method(http::Method::GET)
-            .uri("/xrpc/com.atproto.server.checkAccountStatus")
-            .body(Body::empty())
-            .unwrap();
-        let resp = app.clone().oneshot(request).await.unwrap();
-        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
-    }
-
-    #[tokio::test]
     async fn nonexistent_account_returns_404() {
         let state = state_with_master_key().await;
         let token = access_jwt(&state.jwt_secret, "did:plc:checkghost");

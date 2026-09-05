@@ -73,25 +73,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn returns_200_with_json_content_type() {
-        let response = app(test_state().await)
-            .oneshot(
-                Request::builder()
-                    .uri("/oauth/jwks")
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-
-        assert_eq!(response.status(), StatusCode::OK);
-        assert_eq!(
-            response.headers().get("content-type").unwrap(),
-            "application/json"
-        );
-    }
-
-    #[tokio::test]
     async fn has_cache_control_header() {
         let response = app(test_state().await)
             .oneshot(
