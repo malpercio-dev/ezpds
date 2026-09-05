@@ -140,6 +140,32 @@ pub(crate) fn validate_handle<'a>(
     Ok(name)
 }
 
+/// What a client- or user-supplied `login_hint` normalizes to: either a `did:` value taken
+/// as-is, or a handle that has been unwrapped of its `at://`/`@` decoration, lowercased, and
+/// confirmed structurally valid. Neither variant is resolved to a DID — callers on an
+/// unauthenticated surface may need local-only resolution, so that step stays theirs.
+pub(crate) enum LoginHint {
+    Did(String),
+    Handle(String),
+}
+
+/// Normalize a `login_hint` (a `did:` string, `at://` URI, `@handle`, or bare handle) into a
+/// [`LoginHint`]. Returns `None` for a handle-shaped hint that fails [`validate_handle_structure`]
+/// — an attacker-suppliable hint on an unauthenticated surface, so an invalid one means "no
+/// usable hint" rather than an error.
+pub(crate) fn normalize_login_hint(hint: &str) -> Option<LoginHint> {
+    if hint.starts_with("did:") {
+        return Some(LoginHint::Did(hint.to_string()));
+    }
+    let handle = hint.strip_prefix("at://").unwrap_or(hint);
+    let handle = handle
+        .strip_prefix('@')
+        .unwrap_or(handle)
+        .to_ascii_lowercase();
+    validate_handle_structure(&handle).ok()?;
+    Some(LoginHint::Handle(handle))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

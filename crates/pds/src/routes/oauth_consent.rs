@@ -280,23 +280,16 @@ async fn hint_binds_account(
     did: &str,
     authority: &AuthoritySet,
 ) -> Result<bool, ApiError> {
-    if hint.starts_with("did:") {
-        return Ok(hint == did);
+    match crate::identity::handle::normalize_login_hint(hint) {
+        Some(crate::identity::handle::LoginHint::Did(hint_did)) => Ok(hint_did == did),
+        Some(crate::identity::handle::LoginHint::Handle(handle)) => {
+            if !authority.asserts_handle(&handle) {
+                return Ok(false);
+            }
+            Ok(resolve_handle_to_did(state, &handle).await?.as_deref() == Some(did))
+        }
+        None => Ok(false),
     }
-
-    let handle = hint.strip_prefix("at://").unwrap_or(hint);
-    let handle = handle
-        .strip_prefix('@')
-        .unwrap_or(handle)
-        .to_ascii_lowercase();
-
-    if crate::identity::handle::validate_handle_structure(&handle).is_err() {
-        return Ok(false);
-    }
-    if !authority.asserts_handle(&handle) {
-        return Ok(false);
-    }
-    Ok(resolve_handle_to_did(state, &handle).await?.as_deref() == Some(did))
 }
 
 /// `POST /oauth/authorize/approve` — verify a device-key-signed approve/deny envelope against the
@@ -463,6 +456,17 @@ pub struct CompleteForm {
     request_id: String,
 }
 
+/// The shared error page for every way `post_authorization_complete` can fail after the
+/// `approved → completed` transition starts (begin, code insert, or commit) — all three leave
+/// the request retryable, so all three tell the user the same thing.
+fn issuance_failed_page() -> Response {
+    error_page(
+        "Server Error",
+        "Failed to issue the authorization code. Please try again.",
+    )
+    .into_response()
+}
+
 /// `POST /oauth/authorize/complete` — the browser exchanges an approved request for an
 /// authorization code and is redirected back to the client. The guarded `approved → completed`
 /// transition mints at most one code; a no-JS "I've approved — continue" button and the page's JS
@@ -481,11 +485,7 @@ pub async fn post_authorization_complete(
         Ok(tx) => tx,
         Err(e) => {
             tracing::error!(error = %e, "failed to begin consent completion transaction");
-            return error_page(
-                "Server Error",
-                "Failed to issue the authorization code. Please try again.",
-            )
-            .into_response();
+            return issuance_failed_page();
         }
     };
 
@@ -517,11 +517,7 @@ pub async fn post_authorization_complete(
     .await
     {
         tracing::error!(error = %e, "failed to store authorization code for wallet consent");
-        return error_page(
-            "Server Error",
-            "Failed to issue the authorization code. Please try again.",
-        )
-        .into_response();
+        return issuance_failed_page();
     }
 
     if let Err(e) = insert_oauth_consent_audit_event(
@@ -540,11 +536,7 @@ pub async fn post_authorization_complete(
 
     if let Err(e) = tx.commit().await {
         tracing::error!(error = %e, "failed to commit consent completion transaction");
-        return error_page(
-            "Server Error",
-            "Failed to issue the authorization code. Please try again.",
-        )
-        .into_response();
+        return issuance_failed_page();
     }
 
     // Answer in the response mode the client asked for at PAR/authorize time (carried on
