@@ -917,23 +917,6 @@ pub(crate) async fn mount_owner_audit_log(
         .await;
 }
 
-/// DNS TXT resolver test double that answers every lookup with the same fixed record list.
-struct FixedTxtResolver {
-    records: Vec<String>,
-}
-
-impl crate::identity::dns::TxtResolver for FixedTxtResolver {
-    fn txt_lookup<'a>(
-        &'a self,
-        _name: &'a str,
-    ) -> Pin<
-        Box<dyn Future<Output = Result<Vec<String>, crate::identity::dns::DnsError>> + Send + 'a>,
-    > {
-        let records = self.records.clone();
-        Box::pin(async move { Ok(records) })
-    }
-}
-
 /// `state` with a [`FixedTxtResolver`] wired in, answering every TXT lookup with `records`.
 pub(crate) fn state_with_txt_records(state: AppState, records: Vec<String>) -> AppState {
     AppState {
