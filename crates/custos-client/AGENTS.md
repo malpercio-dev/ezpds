@@ -129,4 +129,20 @@ exist.
   to its `SessionError`, mirroring `map_discovery_error`'s existing style in the same file).
   A candidate for a future PR if the wallet-core extraction needs the ladder itself moved,
   not yet redesigned behind injected traits.
-  Lexicon-generated (vs. hand-written) typed methods is a separate, not-yet-decided follow-up.
+- **Typed methods stay hand-written; lexicon codegen (`atrium-api`, already a workspace
+  dependency in `repo-engine`) was investigated and rejected for this crate.** Its generated
+  types are missing every Custos lexicon extension this crate's methods actually carry
+  (`createAppPassword`'s `personalDetails`, `describeServer`'s `custos` capabilities block —
+  neither exists in the reference lexicons `atrium-codegen` generates from), so adopting it
+  would mean losing those fields or forking the generated output to patch them back in — more
+  ongoing maintenance than hand-writing, not less. Its `Did`/`Handle` newtypes and `Object<T>`
+  wrapper would also ripple into `IdentityStore`/Keychain naming/Tauri IPC JSON at every call
+  site for no functional gain, its per-method `Error` enums only cover a lexicon's *named*
+  errors (not a replacement for `PdsClientError`'s HTTP-status classification tail), and its
+  `XrpcClient`/`HttpClient` traits carry no RFC 9449 DPoP proof construction — `OAuthClient`'s
+  DPoP/nonce-retry logic would stay exactly as hand-written as it is today either way. auth.md's
+  own endpoints (`agents.rs`) have no upstream lexicon at all, so codegen could never reach half
+  this crate regardless. Git history on the hand-written XRPC methods shows churn from *new
+  methods being added*, not from an existing lexicon's shape silently drifting underneath
+  already-written code — the risk codegen exists to close has not been this crate's actual
+  failure mode.
