@@ -19,7 +19,9 @@
 //! - **Per-server calls**: `describe_server` (pre-migration probe for `did`/domains; every
 //!   success also reports the optional `custos` extension to a [`DescribeServerObserver`]),
 //!   `create_session` (password source login — 401 → `InvalidCredentials`, or
-//!   `AuthFactorTokenRequired` for email 2FA), `fetch_repo_car`,
+//!   `AuthFactorTokenRequired` for email 2FA), `refresh_session` (rotate a Bearer pair;
+//!   no sub/aud validation — see `sovereign_session::refresh_bearer_session`),
+//!   `fetch_repo_car`,
 //!   `fetch_blob`/`fetch_blob_with_type`, `list_blobs`, `reserve_signing_key`,
 //!   `delete_account`.
 //!
@@ -731,6 +733,51 @@ impl PdsClient {
         response.json::<CreateSessionResponse>().await.map_err(|e| {
             PdsClientError::InvalidResponse {
                 message: format!("failed to parse createSession response: {}", e),
+            }
+        })
+    }
+
+    /// Rotate a Bearer session's access/refresh pair (`com.atproto.server.refreshSession`).
+    ///
+    /// The response shares `createSession`'s shape (`accessJwt`/`refreshJwt`/`did`), so this
+    /// reuses [`CreateSessionResponse`] rather than a duplicate type. Sub/audience validation
+    /// against the caller's expected DID and hosting server is *not* done here — that is
+    /// session-lifecycle policy, not a client concern; see
+    /// [`crate::sovereign_session::refresh_bearer_session`] for the validated wrapper.
+    pub async fn refresh_session(
+        &self,
+        pds_url: &str,
+        refresh_jwt: &str,
+    ) -> Result<CreateSessionResponse, PdsClientError> {
+        let url = format!(
+            "{}/xrpc/com.atproto.server.refreshSession",
+            pds_url.trim_end_matches('/')
+        );
+        let response = self
+            .client
+            .post(&url)
+            .header(
+                reqwest::header::AUTHORIZATION,
+                format!("Bearer {refresh_jwt}"),
+            )
+            .send()
+            .await
+            .map_err(|e| {
+                self.note_transport_failure("refreshSession", Some(&url), &e);
+                PdsClientError::NetworkError {
+                    message: format!("refreshSession request failed: {}", e),
+                }
+            })?;
+
+        if !response.status().is_success() {
+            return Err(
+                classify_xrpc_response("refreshSession", response, self.observer.as_ref()).await,
+            );
+        }
+
+        response.json::<CreateSessionResponse>().await.map_err(|e| {
+            PdsClientError::InvalidResponse {
+                message: format!("failed to parse refreshSession response: {}", e),
             }
         })
     }
