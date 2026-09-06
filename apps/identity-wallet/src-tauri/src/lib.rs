@@ -35,7 +35,6 @@ pub mod agents;
 #[cfg(target_os = "ios")]
 pub mod apns;
 pub mod app_passwords;
-pub mod base64url;
 pub mod bg_backup;
 pub mod blob_backup;
 pub mod claim;

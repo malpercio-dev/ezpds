@@ -37,7 +37,11 @@ const ACCOUNTS: DeviceKeyAccounts = DeviceKeyAccounts {
 
 /// The wallet's device-local Keychain, as the shared implementation's store. The
 /// `#[cfg(test)]` in-memory redirection lives in `keychain.rs` and applies through this impl.
-struct WalletKeychain;
+///
+/// `pub(crate)` because `oauth.rs` reuses it for `custos_client::DpopKeypair::get_or_create`
+/// (a different account, same underlying Keychain) — the account-name parameter on
+/// `KeychainStore`'s associated functions is what makes one impl reusable across keys.
+pub(crate) struct WalletKeychain;
 
 impl KeychainStore for WalletKeychain {
     type Error = crate::keychain::KeychainError;

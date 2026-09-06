@@ -318,10 +318,11 @@ fn active_session_from_record(
         bearer_jwt_claims(&record.access_jwt).ok_or_else(|| SessionError::InvalidResponse {
             message: "stored accessJwt is malformed".into(),
         })?;
-    let client = OAuthClient::new_bearer(
+    let client = OAuthClient::new_bearer_with_observer(
         record.access_jwt.clone(),
         record.refresh_jwt.clone(),
         record.pds_url.clone(),
+        crate::oauth_client::diagnostics_observer(),
     )
     .map_err(|e| SessionError::Keychain {
         message: e.to_string(),

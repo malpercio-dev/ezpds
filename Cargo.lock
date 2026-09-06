@@ -1443,6 +1443,27 @@ dependencies = [
 ]
 
 [[package]]
+name = "custos-client"
+version = "0.16.2"
+dependencies = [
+ "base64 0.21.7",
+ "crypto",
+ "http",
+ "httpmock",
+ "ios-device-key",
+ "p256",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "thiserror 2.0.18",
+ "tokio",
+ "tracing",
+ "url",
+ "uuid",
+]
+
+[[package]]
 name = "darling"
 version = "0.20.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3275,6 +3296,7 @@ dependencies = [
  "chrono",
  "cid",
  "crypto",
+ "custos-client",
  "hickory-resolver",
  "http",
  "httpmock",

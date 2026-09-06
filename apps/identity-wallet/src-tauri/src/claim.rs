@@ -1752,12 +1752,9 @@ mod tests {
             dpop_nonce: None,
         }));
 
-        let keypair = crate::oauth::DPoPKeypair::get_or_create().expect("keypair must exist");
-        let oauth_client = crate::oauth_client::OAuthClient::new_for_test(
-            keypair,
-            session,
-            mock_server.base_url(),
-        );
+        let keypair = crate::oauth::test_dpop_keypair().expect("keypair must exist");
+        let oauth_client =
+            crate::oauth_client::new_for_test(keypair, session, mock_server.base_url());
 
         let claim_state = ClaimState {
             did: "did:plc:test".to_string(),
@@ -1835,12 +1832,9 @@ mod tests {
             dpop_nonce: None,
         }));
 
-        let keypair = crate::oauth::DPoPKeypair::get_or_create().expect("keypair must exist");
-        let oauth_client = crate::oauth_client::OAuthClient::new_for_test(
-            keypair,
-            session,
-            mock_server.base_url(),
-        );
+        let keypair = crate::oauth::test_dpop_keypair().expect("keypair must exist");
+        let oauth_client =
+            crate::oauth_client::new_for_test(keypair, session, mock_server.base_url());
 
         let claim_state = ClaimState {
             did: "did:plc:test".to_string(),
@@ -2018,12 +2012,9 @@ mod tests {
             dpop_nonce: None,
         }));
 
-        let keypair = crate::oauth::DPoPKeypair::get_or_create().expect("keypair must exist");
-        let oauth_client = crate::oauth_client::OAuthClient::new_for_test(
-            keypair,
-            session,
-            mock_server.base_url(),
-        );
+        let keypair = crate::oauth::test_dpop_keypair().expect("keypair must exist");
+        let oauth_client =
+            crate::oauth_client::new_for_test(keypair, session, mock_server.base_url());
 
         // rotation_keys is empty: this DID has no prior rotation keys,
         // so adding device_key at [0] is purely an addition (no removals to flag).
@@ -2128,12 +2119,9 @@ mod tests {
             dpop_nonce: None,
         }));
 
-        let keypair = crate::oauth::DPoPKeypair::get_or_create().expect("keypair must exist");
-        let oauth_client = crate::oauth_client::OAuthClient::new_for_test(
-            keypair,
-            session,
-            mock_server.base_url(),
-        );
+        let keypair = crate::oauth::test_dpop_keypair().expect("keypair must exist");
+        let oauth_client =
+            crate::oauth_client::new_for_test(keypair, session, mock_server.base_url());
 
         let did_doc = PlcDidDocument {
             did: "did:plc:test".to_string(),
@@ -2233,12 +2221,9 @@ mod tests {
             dpop_nonce: None,
         }));
 
-        let keypair = crate::oauth::DPoPKeypair::get_or_create().expect("keypair must exist");
-        let oauth_client = crate::oauth_client::OAuthClient::new_for_test(
-            keypair,
-            session,
-            mock_server.base_url(),
-        );
+        let keypair = crate::oauth::test_dpop_keypair().expect("keypair must exist");
+        let oauth_client =
+            crate::oauth_client::new_for_test(keypair, session, mock_server.base_url());
 
         let did_doc = PlcDidDocument {
             did: "did:plc:test".to_string(),
@@ -2337,12 +2322,9 @@ mod tests {
             dpop_nonce: None,
         }));
 
-        let keypair = crate::oauth::DPoPKeypair::get_or_create().expect("keypair must exist");
-        let oauth_client = crate::oauth_client::OAuthClient::new_for_test(
-            keypair,
-            session,
-            mock_server.base_url(),
-        );
+        let keypair = crate::oauth::test_dpop_keypair().expect("keypair must exist");
+        let oauth_client =
+            crate::oauth_client::new_for_test(keypair, session, mock_server.base_url());
 
         let did_doc = PlcDidDocument {
             did: "did:plc:test".to_string(),
@@ -2439,12 +2421,9 @@ mod tests {
             dpop_nonce: None,
         }));
 
-        let keypair = crate::oauth::DPoPKeypair::get_or_create().expect("keypair must exist");
-        let oauth_client = crate::oauth_client::OAuthClient::new_for_test(
-            keypair,
-            session,
-            mock_server.base_url(),
-        );
+        let keypair = crate::oauth::test_dpop_keypair().expect("keypair must exist");
+        let oauth_client =
+            crate::oauth_client::new_for_test(keypair, session, mock_server.base_url());
 
         let mut original_services = HashMap::new();
         original_services.insert(
@@ -2558,12 +2537,9 @@ mod tests {
             dpop_nonce: None,
         }));
 
-        let keypair = crate::oauth::DPoPKeypair::get_or_create().expect("keypair must exist");
-        let oauth_client = crate::oauth_client::OAuthClient::new_for_test(
-            keypair,
-            session,
-            mock_server.base_url(),
-        );
+        let keypair = crate::oauth::test_dpop_keypair().expect("keypair must exist");
+        let oauth_client =
+            crate::oauth_client::new_for_test(keypair, session, mock_server.base_url());
 
         let mut original_services = HashMap::new();
         original_services.insert(

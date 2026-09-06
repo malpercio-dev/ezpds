@@ -134,100 +134,10 @@ fn par_rejection_message(status: reqwest::StatusCode, body: &str) -> String {
     format!("PAR returned {status}: {body}")
 }
 
-/// Error type for PDS client operations.
-///
-/// Serializes to frontend with `#[serde(tag = "code", rename_all = "SCREAMING_SNAKE_CASE")]`,
-/// matching the `OAuthError` / `IdentityStoreError` pattern.
-#[derive(Debug, thiserror::Error, Serialize)]
-#[serde(tag = "code", rename_all = "SCREAMING_SNAKE_CASE")]
-pub enum PdsClientError {
-    /// Neither DNS nor HTTP resolution succeeded for the handle.
-    #[error("handle not found")]
-    HandleNotFound,
-
-    /// plc.directory returned 404 for the DID.
-    #[error("did not found")]
-    DidNotFound,
-
-    /// PDS endpoint is down or unreachable.
-    #[error("pds unreachable: {reason}")]
-    PdsUnreachable {
-        /// Reason for unreachability (transport error, connection refused, etc.).
-        /// Not serialized to frontend (serde skip).
-        #[serde(skip)]
-        reason: String,
-    },
-
-    /// Transport-level failure (DNS timeout, connection refused, TLS error, body read error) —
-    /// the request never got a well-formed HTTP response back. A non-2xx *response* is NOT a
-    /// `NetworkError`: it is classified into one of the status-specific variants below. Keeping
-    /// this variant transport-only is what lets screens tell "check your connection" apart from
-    /// "the server said no".
-    #[error("network error: {message}")]
-    NetworkError { message: String },
-
-    /// The server answered `429 Too Many Requests`. `retry_after` is the raw `Retry-After` header
-    /// (seconds or an HTTP date) when the server sent one, so the UI can say how long to wait
-    /// instead of blaming the connection. `message` is the server's own error text.
-    #[error("rate limited: {message}")]
-    RateLimited {
-        retry_after: Option<String>,
-        message: String,
-    },
-
-    /// The server answered `401 Unauthorized` — the session/token was rejected (expired, wrong
-    /// audience, a scope refusal presented as 401). Distinct from a transport failure so the UI
-    /// can prompt a re-login rather than a retry. `error` is the atproto error code from the
-    /// envelope when present (e.g. `ExpiredToken`, `InvalidToken`) — preserved so a token failure
-    /// reported under 401 is still recognizable by code rather than only by message text; `message`
-    /// is the server's own error text.
-    #[error("unauthorized: {message}")]
-    Unauthorized {
-        error: Option<String>,
-        message: String,
-    },
-
-    /// Any other non-2xx XRPC response, carrying the atproto error envelope so the real reason
-    /// reaches the UI instead of connectivity boilerplate. `error` is the envelope's `error` code
-    /// (e.g. `InvalidRequest`, `InsufficientScope`) when the body was a recognizable envelope;
-    /// `message` is the envelope's human-readable `message` (falling back to the error code, then
-    /// the raw body). `status` is the HTTP status code.
-    #[error("server error {status}: {message}")]
-    XrpcError {
-        status: u16,
-        error: Option<String>,
-        message: String,
-    },
-
-    /// Response body couldn't be parsed or was missing expected fields.
-    #[error("invalid response: {message}")]
-    InvalidResponse { message: String },
-
-    /// PAR or token exchange failed.
-    #[error("oauth failed: {message}")]
-    OauthFailed { message: String },
-
-    /// DID already exists (HTTP 409 from createAccount migration).
-    #[error("did already exists")]
-    DidAlreadyExists,
-
-    /// `createSession` rejected the identifier/password (HTTP 401). Distinct from a transport
-    /// failure so the claim flow can tell the user "wrong password" rather than "network error".
-    #[error("invalid credentials: {message}")]
-    InvalidCredentials { message: String },
-
-    /// `createSession` needs an email 2FA one-time code (`AuthFactorTokenRequired`, HTTP 401).
-    /// The account has email two-factor enabled and the server has emailed a code; retry
-    /// `create_session` with that code as `auth_factor_token`.
-    #[error("auth factor token required")]
-    AuthFactorTokenRequired,
-
-    /// Refused to send the account password to a non-HTTPS PDS URL (loopback excepted). The
-    /// `pds_url` is derived from the DID document, so a plaintext `http://` endpoint must never
-    /// receive the password.
-    #[error("insecure pds url: {url}")]
-    InsecurePdsUrl { url: String },
-}
+/// Error type for PDS client operations. Now defined in `custos-client` (see its module doc
+/// for the classification contract); re-exported here so the ~20 call sites across this app
+/// that `use crate::pds_client::PdsClientError` are unaffected by the extraction.
+pub use custos_client::PdsClientError;
 
 /// Whether a PDS URL is safe to send an account password to: HTTPS, or a loopback host over HTTP
 /// (localhost/127.0.0.1/::1) for local development and the test harness. Anything else — including
@@ -246,173 +156,33 @@ fn pds_url_is_password_safe(pds_url: &str) -> bool {
     }
 }
 
-/// Whether an atproto XRPC error body (`{"error":"...","message":"..."}`) carries `error == code`.
-fn error_code_is(body: &str, code: &str) -> bool {
-    serde_json::from_str::<serde_json::Value>(body)
-        .ok()
-        .and_then(|v| v.get("error").and_then(|e| e.as_str()).map(|s| s == code))
-        .unwrap_or(false)
-}
+// The XRPC envelope/classification machinery (`error_code_is`, `parse_xrpc_error_envelope`,
+// `classify_xrpc_error`, `classify_xrpc_response`, `xrpc_ok`, `xrpc_json`) now lives in
+// `custos-client`, shared with the OAuth client's own request paths. `error_code_is` and
+// `parse_xrpc_error_envelope`/`classify_xrpc_error` are pure and re-exported directly; the
+// three below stay as thin same-signature wrappers (rather than every one of this file's ~70
+// call sites threading a `TransportObserver` through) so this app's diagnostics breadcrumbs
+// keep flowing without touching every call site.
+use custos_client::error_code_is;
 
-/// Parse an atproto XRPC error envelope (`{"error":"Code","message":"human text"}`) out of a
-/// response body. Returns `(error_code, human_message)`:
-/// - `error_code` is the envelope's `error` field when the body was a recognizable JSON envelope,
-///   else `None` (e.g. an HTML gateway page or an empty body);
-/// - `human_message` is the envelope's `message`, falling back to the `error` code, then to the
-///   raw (trimmed) body when it wasn't an envelope at all.
-///
-/// The atproto error envelope is designed to be shown to users, so preserving both fields is what
-/// turns an opaque non-2xx into a diagnosable one.
-fn parse_xrpc_error_envelope(body: &str) -> (Option<String>, String) {
-    let envelope = serde_json::from_str::<serde_json::Value>(body).ok();
-    let error = envelope
-        .as_ref()
-        .and_then(|v| v.get("error"))
-        .and_then(|e| e.as_str())
-        .map(str::to_string);
-    let message = envelope
-        .as_ref()
-        .and_then(|v| v.get("message"))
-        .and_then(|m| m.as_str())
-        .map(str::to_string)
-        .or_else(|| error.clone())
-        .unwrap_or_else(|| body.trim().to_string());
-    (error, message)
-}
-
-/// Classify a non-2xx XRPC response into the typed `PdsClientError` variant that preserves the
-/// server's own words. A pure function of the HTTP status, the raw `Retry-After` header, and the
-/// parsed error envelope, so it is unit-testable without a live response.
-///
-/// Contract:
-/// - `429` → [`PdsClientError::RateLimited`], carrying `retry_after` when the server sent it.
-/// - `401` → [`PdsClientError::Unauthorized`], carrying the atproto `error` code when present so a
-///   token failure reported under 401 stays recognizable by code.
-/// - anything else → [`PdsClientError::XrpcError`] with the atproto `error` code and human message.
-///
-/// It must NEVER return [`PdsClientError::NetworkError`]: by the time we are here the server *did*
-/// answer, so this is never a transport failure.
-fn classify_xrpc_error(status: u16, retry_after: Option<String>, body: &str) -> PdsClientError {
-    let (error, message) = parse_xrpc_error_envelope(body);
-    match status {
-        429 => PdsClientError::RateLimited {
-            retry_after,
-            message,
-        },
-        401 => PdsClientError::Unauthorized { error, message },
-        // Everything else — including 403 — keeps its atproto error code and human message. Domain
-        // callers (e.g. `claim::classify_plc_op_error`) recognize codes like `InsufficientScope`
-        // here; this layer only speaks HTTP-status semantics. `retry_after` is meaningful only for
-        // 429, so it is intentionally dropped for these statuses.
-        _ => PdsClientError::XrpcError {
-            status,
-            error,
-            message,
-        },
-    }
-}
-
-/// Upper bound on how much of an error response body we buffer, keep, and log. An atproto error
-/// envelope is a short JSON object; anything larger is a broken or hostile server, and reading it
-/// in full would let an untrusted endpoint spike memory or flood the logs.
-const MAX_XRPC_ERROR_BODY: usize = 8 * 1024;
-
-/// Read at most `cap` bytes of a response body, streaming so an oversized (untrusted) payload is
-/// never fully buffered. Returns the decoded (lossy-UTF-8) prefix. A transport error mid-read
-/// propagates as `Err` so the caller can treat it as a `NetworkError` rather than a server verdict.
-async fn read_body_capped(
-    mut resp: reqwest::Response,
-    cap: usize,
-) -> Result<String, reqwest::Error> {
-    let mut buf: Vec<u8> = Vec::new();
-    while buf.len() < cap {
-        match resp.chunk().await? {
-            Some(chunk) => {
-                let take = (cap - buf.len()).min(chunk.len());
-                buf.extend_from_slice(&chunk[..take]);
-            }
-            None => break,
-        }
-    }
-    Ok(String::from_utf8_lossy(&buf).into_owned())
-}
-
-/// Read the status, `Retry-After` header, and body off a non-success XRPC response and classify it.
-///
-/// The imperative wrapper around [`classify_xrpc_error`]. The `Retry-After` header is captured
-/// before the body (reading the body consumes the response). The body is bounded to
-/// [`MAX_XRPC_ERROR_BODY`] so an oversized untrusted payload can't spike memory or flood logs, and
-/// a mid-read transport failure surfaces as `NetworkError` rather than a fabricated server verdict.
-/// `context` names the call site (e.g. `"requestPlcOperationSignature"`) for the log line only —
-/// the returned error carries the server's own message, not the context, so screens show it
-/// verbatim.
+/// [`custos_client::classify_xrpc_response`], recording breadcrumbs into the wallet's
+/// diagnostics log.
 async fn classify_xrpc_response(context: &str, resp: reqwest::Response) -> PdsClientError {
-    let status = resp.status();
-    // Capture the host before the body read consumes the response — the diagnostics
-    // breadcrumb records the server hostname only (never the path or query).
-    let host = resp.url().host_str().map(str::to_string);
-    let retry_after = resp
-        .headers()
-        .get(reqwest::header::RETRY_AFTER)
-        .and_then(|v| v.to_str().ok())
-        .map(str::to_string);
-    let body = match read_body_capped(resp, MAX_XRPC_ERROR_BODY).await {
-        Ok(body) => body,
-        Err(e) => {
-            crate::diagnostics::record_transport(
-                context,
-                host.as_deref(),
-                crate::diagnostics::transport_category(&e),
-            );
-            tracing::warn!(context, status = %status, error = %e, "failed to read XRPC error body");
-            return PdsClientError::NetworkError {
-                message: format!("failed to read {status} response body: {e}"),
-            };
-        }
-    };
-    tracing::warn!(context, status = %status, body = %body, "XRPC call returned non-success");
-    // Redacted breadcrumb for the user-exportable diagnostics log: the atproto `error`
-    // code is a short, safe token (e.g. `RateLimited`), never the free-form message/body.
-    let (error_code, _message) = parse_xrpc_error_envelope(&body);
-    crate::diagnostics::record_server(
-        context,
-        host.as_deref(),
-        status.as_u16(),
-        error_code.as_deref(),
-    );
-    classify_xrpc_error(status.as_u16(), retry_after, &body)
+    custos_client::classify_xrpc_response(context, resp, &crate::oauth::WalletTransportObserver)
+        .await
 }
 
-/// The shared tail of an XRPC call once a response has been received: classify a non-2xx
-/// status into the matching [`PdsClientError`] variant via [`classify_xrpc_response`], or hand
-/// back the still-unread response on success. `op` is the same call-site name passed through to
-/// `classify_xrpc_response` (used only for the log line, not the returned error).
-///
-/// This is the one piece truly common to every XRPC call in this file — callers that also need
-/// the JSON body should prefer [`xrpc_json`]; callers with something extra around this branch
-/// (a special-cased status code, a raw-bytes/text body, a custom timeout) call this directly.
+/// [`custos_client::xrpc_ok`], wired to the wallet's diagnostics observer.
 async fn xrpc_ok(op: &str, resp: reqwest::Response) -> Result<reqwest::Response, PdsClientError> {
-    if resp.status().is_success() {
-        Ok(resp)
-    } else {
-        Err(classify_xrpc_response(op, resp).await)
-    }
+    custos_client::xrpc_ok(op, resp, &crate::oauth::WalletTransportObserver).await
 }
 
-/// [`xrpc_ok`], then decode a JSON success body. A malformed body maps to
-/// [`PdsClientError::InvalidResponse`] — the variant most JSON-returning call sites in this file
-/// use; the handful that report [`PdsClientError::NetworkError`] on a parse failure instead call
-/// [`xrpc_ok`] directly and parse inline, to keep that pre-existing distinction intact.
+/// [`custos_client::xrpc_json`], wired to the wallet's diagnostics observer.
 async fn xrpc_json<T: serde::de::DeserializeOwned>(
     op: &str,
     resp: reqwest::Response,
 ) -> Result<T, PdsClientError> {
-    let resp = xrpc_ok(op, resp).await?;
-    resp.json::<T>()
-        .await
-        .map_err(|e| PdsClientError::InvalidResponse {
-            message: format!("failed to parse {op} response: {e}"),
-        })
+    custos_client::xrpc_json(op, resp, &crate::oauth::WalletTransportObserver).await
 }
 
 /// Record a redacted transport-failure breadcrumb for the user-exportable diagnostics log.
@@ -2334,29 +2104,11 @@ mod tests {
     }
 
     // ── XRPC error classification ───────────────────────────────────────────
-
-    /// The envelope parser pulls both the atproto `error` code and the human `message`, and falls
-    /// back sensibly when the body isn't an envelope.
-    #[test]
-    fn parse_xrpc_error_envelope_extracts_code_and_message() {
-        assert_eq!(
-            parse_xrpc_error_envelope(r#"{"error":"InvalidRequest","message":"Missing handle"}"#),
-            (
-                Some("InvalidRequest".to_string()),
-                "Missing handle".to_string()
-            )
-        );
-        // error code but no message → message falls back to the code.
-        assert_eq!(
-            parse_xrpc_error_envelope(r#"{"error":"ExpiredToken"}"#),
-            (Some("ExpiredToken".to_string()), "ExpiredToken".to_string())
-        );
-        // Non-envelope body → no code, message is the trimmed raw body.
-        assert_eq!(
-            parse_xrpc_error_envelope("  <html>502 Bad Gateway</html>  "),
-            (None, "<html>502 Bad Gateway</html>".to_string())
-        );
-    }
+    //
+    // The pure classification unit tests (`parse_xrpc_error_envelope`, `classify_xrpc_error`)
+    // now live in `custos_client`'s own test suite — this file keeps only the integration-level
+    // checks below, which exercise this app's `xrpc_json`/`PdsClient` call paths against a real
+    // mock server rather than re-testing the crate's pure functions directly.
 
     /// `xrpc_json` is the shared tail every migrated call site now routes through: a non-2xx
     /// response classifies through `classify_xrpc_response` (here, RateLimited with the
@@ -2505,84 +2257,6 @@ mod tests {
                 assert!(message.contains("rejected operation"), "got: {message}");
             }
             other => panic!("expected InvalidResponse, got {other:?}"),
-        }
-    }
-
-    /// 429 classifies as RateLimited and carries the Retry-After value through verbatim.
-    #[test]
-    fn classify_xrpc_error_429_is_rate_limited_with_retry_after() {
-        let err = classify_xrpc_error(
-            429,
-            Some("120".to_string()),
-            r#"{"error":"RateLimitExceeded","message":"slow down"}"#,
-        );
-        match err {
-            PdsClientError::RateLimited {
-                retry_after,
-                message,
-            } => {
-                assert_eq!(retry_after.as_deref(), Some("120"));
-                assert_eq!(message, "slow down");
-            }
-            other => panic!("expected RateLimited, got {other:?}"),
-        }
-    }
-
-    /// 401 classifies as Unauthorized, preserving both the atproto error code and the message.
-    #[test]
-    fn classify_xrpc_error_401_is_unauthorized() {
-        let err = classify_xrpc_error(
-            401,
-            None,
-            r#"{"error":"ExpiredToken","message":"Token has expired"}"#,
-        );
-        match err {
-            PdsClientError::Unauthorized { error, message } => {
-                assert_eq!(error.as_deref(), Some("ExpiredToken"));
-                assert_eq!(message, "Token has expired");
-            }
-            other => panic!("expected Unauthorized, got {other:?}"),
-        }
-    }
-
-    /// A 400 keeps the atproto error code and human message so the UI can show them.
-    #[test]
-    fn classify_xrpc_error_400_keeps_error_code_and_message() {
-        let err = classify_xrpc_error(
-            400,
-            None,
-            r#"{"error":"InsufficientScope","message":"token scope does not permit identity operations"}"#,
-        );
-        match err {
-            PdsClientError::XrpcError {
-                status,
-                error,
-                message,
-            } => {
-                assert_eq!(status, 400);
-                assert_eq!(error.as_deref(), Some("InsufficientScope"));
-                assert_eq!(message, "token scope does not permit identity operations");
-            }
-            other => panic!("expected XrpcError, got {other:?}"),
-        }
-    }
-
-    /// A 5xx with a non-envelope body still surfaces the raw body as the message (never a
-    /// NetworkError — the server did answer).
-    #[test]
-    fn classify_xrpc_error_5xx_non_envelope_falls_back_to_body() {
-        let err = classify_xrpc_error(503, None, "service unavailable");
-        match err {
-            PdsClientError::XrpcError {
-                status,
-                error,
-                message,
-            } => {
-                assert_eq!(status, 503);
-                assert_eq!(error, None);
-                assert_eq!(message, "service unavailable");
-            }
-            other => panic!("expected XrpcError, got {other:?}"),
         }
     }
 
@@ -3440,12 +3114,9 @@ mod tests {
             dpop_nonce: None,
         }));
 
-        let keypair = crate::oauth::DPoPKeypair::get_or_create().expect("keypair must exist");
-        let oauth_client = crate::oauth_client::OAuthClient::new_for_test(
-            keypair,
-            session,
-            mock_server.base_url(),
-        );
+        let keypair = crate::oauth::test_dpop_keypair().expect("keypair must exist");
+        let oauth_client =
+            crate::oauth_client::new_for_test(keypair, session, mock_server.base_url());
 
         let result = request_plc_operation_signature(&oauth_client).await;
         assert!(result.is_ok());
@@ -3477,12 +3148,9 @@ mod tests {
             dpop_nonce: None,
         }));
 
-        let keypair = crate::oauth::DPoPKeypair::get_or_create().expect("keypair must exist");
-        let oauth_client = crate::oauth_client::OAuthClient::new_for_test(
-            keypair,
-            session,
-            mock_server.base_url(),
-        );
+        let keypair = crate::oauth::test_dpop_keypair().expect("keypair must exist");
+        let oauth_client =
+            crate::oauth_client::new_for_test(keypair, session, mock_server.base_url());
 
         let result = request_plc_operation_signature(&oauth_client).await;
         assert!(result.is_err());
@@ -3526,12 +3194,9 @@ mod tests {
             dpop_nonce: None,
         }));
 
-        let keypair = crate::oauth::DPoPKeypair::get_or_create().expect("keypair must exist");
-        let oauth_client = crate::oauth_client::OAuthClient::new_for_test(
-            keypair,
-            session,
-            mock_server.base_url(),
-        );
+        let keypair = crate::oauth::test_dpop_keypair().expect("keypair must exist");
+        let oauth_client =
+            crate::oauth_client::new_for_test(keypair, session, mock_server.base_url());
 
         let request = SignPlcOperationRequest {
             token: "test_email_token".to_string(),
@@ -3573,12 +3238,9 @@ mod tests {
             dpop_nonce: None,
         }));
 
-        let keypair = crate::oauth::DPoPKeypair::get_or_create().expect("keypair must exist");
-        let oauth_client = crate::oauth_client::OAuthClient::new_for_test(
-            keypair,
-            session,
-            mock_server.base_url(),
-        );
+        let keypair = crate::oauth::test_dpop_keypair().expect("keypair must exist");
+        let oauth_client =
+            crate::oauth_client::new_for_test(keypair, session, mock_server.base_url());
 
         let request = SignPlcOperationRequest {
             token: "test_token".to_string(),
@@ -3624,12 +3286,9 @@ mod tests {
             dpop_nonce: None,
         }));
 
-        let keypair = crate::oauth::DPoPKeypair::get_or_create().expect("keypair must exist");
-        let oauth_client = crate::oauth_client::OAuthClient::new_for_test(
-            keypair,
-            session,
-            mock_server.base_url(),
-        );
+        let keypair = crate::oauth::test_dpop_keypair().expect("keypair must exist");
+        let oauth_client =
+            crate::oauth_client::new_for_test(keypair, session, mock_server.base_url());
 
         let result = get_recommended_did_credentials(&oauth_client).await;
         assert!(result.is_ok());
@@ -3719,12 +3378,9 @@ mod tests {
             dpop_nonce: None,
         }));
 
-        let keypair = crate::oauth::DPoPKeypair::get_or_create().expect("keypair must exist");
-        let oauth_client = crate::oauth_client::OAuthClient::new_for_test(
-            keypair,
-            session,
-            mock_server.base_url(),
-        );
+        let keypair = crate::oauth::test_dpop_keypair().expect("keypair must exist");
+        let oauth_client =
+            crate::oauth_client::new_for_test(keypair, session, mock_server.base_url());
 
         let result = get_recommended_did_credentials(&oauth_client).await;
         assert!(result.is_err());
@@ -3795,12 +3451,9 @@ mod tests {
             dpop_nonce: None,
         }));
 
-        let keypair = crate::oauth::DPoPKeypair::get_or_create().expect("keypair must exist");
-        let oauth_client = crate::oauth_client::OAuthClient::new_for_test(
-            keypair,
-            session,
-            mock_server.base_url(),
-        );
+        let keypair = crate::oauth::test_dpop_keypair().expect("keypair must exist");
+        let oauth_client =
+            crate::oauth_client::new_for_test(keypair, session, mock_server.base_url());
 
         let request = SignPlcOperationRequest {
             token: "test_email_token".to_string(),
