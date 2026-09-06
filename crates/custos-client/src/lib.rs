@@ -10,16 +10,23 @@
 //!   modes).
 //! - [`custos_client`]: [`CustosClient`], the pre-session HTTP client for one configured
 //!   PDS — plain JSON/Bearer requests plus OAuth PAR/token-exchange.
+//! - [`identity`], [`app_passwords`], [`migration`]: typed XRPC methods over an authenticated
+//!   [`OAuthClient`], grouped per concern (not re-exported at the crate root — reference them
+//!   as `custos_client::identity::…` etc., since several method names would otherwise
+//!   collide, e.g. no collision today but `get_preferences`-shaped names are common).
 //!
 //! App-specific concerns this crate deliberately does not own: Keychain storage (apps supply
 //! an `ios_device_key::KeychainStore` impl), diagnostics UI/export (apps supply a
 //! [`TransportObserver`]), and the wallet's own OAuth client identity (`client_id`,
 //! `redirect_uri`) — those stay in the app, since they name the app itself.
 
+pub mod app_passwords;
 mod base64url;
 pub mod custos_client;
 pub mod dpop;
 pub mod error;
+pub mod identity;
+pub mod migration;
 pub mod oauth_client;
 
 pub use custos_client::{CustosClient, ParRequest, ParResponse, TokenErrorResponse};

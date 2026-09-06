@@ -37,7 +37,10 @@
 //! `upload_blob`, `list_missing_blobs`, `get_preferences`, `put_preferences`,
 //! `check_account_status`, `activate_account`, `deactivate_account`,
 //! `request_account_delete`); the app-password trio (`create_app_password`,
-//! `list_app_passwords`, `revoke_app_password`).
+//! `list_app_passwords`, `revoke_app_password`). All three groups are now thin
+//! same-signature wrappers over `custos_client::{identity,migration,app_passwords}` — the
+//! request/response logic and types live there; this file supplies this app's diagnostics
+//! observer. `PdsClient` itself has not moved (see `crates/custos-client/AGENTS.md`).
 //!
 //! **Status classification.** Every authenticated helper routes its non-2xx branch through
 //! `classify_xrpc_response` (→ the pure `classify_xrpc_error`): `429` →
@@ -335,80 +338,16 @@ pub struct PdsParResponse {
     pub expires_in: u32,
 }
 
-/// Request body for `signPlcOperation`.
-///
-/// Serializes to frontend with `#[serde(rename_all = "camelCase")]`.
-/// Optional fields are skipped if None.
-#[derive(Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct SignPlcOperationRequest {
-    pub token: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub rotation_keys: Option<Vec<String>>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub also_known_as: Option<Vec<String>>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub verification_methods: Option<serde_json::Value>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub services: Option<serde_json::Value>,
-}
-
-/// Response from `signPlcOperation`.
-///
-/// Returned from `POST /xrpc/com.atproto.identity.signPlcOperation`.
-#[derive(Debug, Deserialize)]
-pub struct SignPlcOperationResponse {
-    pub operation: serde_json::Value,
-}
-
-/// Recommended credentials for a DID.
-///
-/// Returned from `GET /xrpc/com.atproto.identity.getRecommendedDidCredentials`.
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct RecommendedCredentials {
-    pub rotation_keys: Option<Vec<String>>,
-    pub also_known_as: Option<Vec<String>>,
-    pub verification_methods: Option<serde_json::Value>,
-    pub services: Option<serde_json::Value>,
-}
-
-// ── Migration XRPC request/response types ──────────────────────────────────
-
-/// Service auth token from getServiceAuth.
-///
-/// Returned from `GET /xrpc/com.atproto.server.getServiceAuth`.
-#[derive(Debug, Deserialize)]
-pub struct ServiceAuthToken {
-    pub token: String,
-}
-
-/// Request body for createAccount migration.
-///
-/// Serializes to frontend with `#[serde(rename_all = "camelCase")]`.
-#[derive(Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct CreateAccountMigrationRequest {
-    pub handle: String,
-    pub email: String,
-    pub did: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub invite_code: Option<String>,
-}
-
-/// Response from createAccount migration.
-///
-/// Returned from `POST /xrpc/com.atproto.server.createAccount`.
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct CreateAccountResponse {
-    pub access_jwt: String,
-    pub refresh_jwt: String,
-    pub handle: String,
-    pub did: String,
-    #[serde(default)]
-    pub did_doc: Option<serde_json::Value>,
-}
+// The claim-trio and migration-set request/response types moved to
+// `custos_client::identity`/`custos_client::migration` alongside the XRPC methods that use
+// them; re-exported here so the wallet's existing `pds_client::{Type}` references (this file's
+// own `use` below, plus `claim.rs`/`migration_orchestrator.rs`) are unaffected.
+pub use custos_client::identity::{
+    RecommendedCredentials, SignPlcOperationRequest, SignPlcOperationResponse,
+};
+pub use custos_client::migration::{
+    CreateAccountMigrationRequest, CreateAccountResponse, ServiceAuthToken,
+};
 
 /// Response from `com.atproto.server.createSession` (legacy password login).
 ///
@@ -495,51 +434,11 @@ impl DeleteCredential {
     }
 }
 
-/// Missing blob entry from listMissingBlobs.
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct MissingBlob {
-    pub cid: String,
-    pub record_uri: String,
-}
-
-/// Response from listMissingBlobs.
-///
-/// Returned from `GET /xrpc/com.atproto.repo.listMissingBlobs`.
-#[derive(Debug, Deserialize)]
-pub struct MissingBlobs {
-    pub blobs: Vec<MissingBlob>,
-    #[serde(default)]
-    pub cursor: Option<String>,
-}
-
-/// Account status from checkAccountStatus.
-///
-/// Returned from `GET /xrpc/com.atproto.server.checkAccountStatus`.
-/// Also returned to the frontend via `verify_import` command, so it must derive Serialize.
-#[derive(Debug, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct AccountStatus {
-    pub activated: bool,
-    pub valid_did: bool,
-    #[serde(default)]
-    pub repo_commit: Option<String>,
-    #[serde(default)]
-    pub repo_rev: Option<String>,
-    pub stored_blocks: i64,
-    pub indexed_records: u64,
-    pub private_state_values: u64,
-    pub expected_blobs: u64,
-    pub imported_blobs: u64,
-}
-
-/// Response from uploadBlob.
-///
-/// Returned from `POST /xrpc/com.atproto.repo.uploadBlob`.
-#[derive(Debug, Deserialize)]
-pub struct UploadBlobResponse {
-    pub blob: serde_json::Value,
-}
+// MissingBlob/MissingBlobs/AccountStatus/UploadBlobResponse moved to
+// `custos_client::migration` alongside the XRPC methods that use them; re-exported here so
+// this file's own `use` below and `migration_orchestrator.rs`/`lib.rs`'s references are
+// unaffected.
+pub use custos_client::migration::{AccountStatus, MissingBlob, MissingBlobs, UploadBlobResponse};
 
 /// One page of a DID's blob CIDs from the public sync listing.
 ///
@@ -1587,28 +1486,23 @@ async fn try_resolve_http(
 }
 
 // ============================================================================
-// XRPC Identity methods (require DPoP-authenticated OAuthClient)
+// XRPC methods (require DPoP-authenticated OAuthClient)
 // ============================================================================
+//
+// The typed methods themselves now live in `custos_client::{identity,app_passwords,migration}`
+// — pure request/response wrappers with no wallet-specific side effects, so the move only
+// needed each call site to gain this wallet's diagnostics observer. These are same-signature
+// forwarding wrappers (no new parameter) so every existing caller in this app is unaffected.
 
 /// Request a PLC operation signature from the PDS.
-///
-/// Triggers email verification on the PDS. `requestPlcOperationSignature` is a
-/// no-input procedure: the request must carry NO body — a spec-strict PDS
-/// (bsky.social) rejects `{}` with `InvalidRequest: A request body was provided
-/// when none was expected` (our own route is laxer, which is how the `{}` shipped).
 pub async fn request_plc_operation_signature(
     client: &crate::oauth_client::OAuthClient,
 ) -> Result<(), PdsClientError> {
-    let resp = client
-        .post_no_body("/xrpc/com.atproto.identity.requestPlcOperationSignature")
-        .await
-        .map_err(|e| PdsClientError::NetworkError {
-            message: format!("request_plc_operation_signature failed: {}", e),
-        })?;
-
-    xrpc_ok("requestPlcOperationSignature", resp)
-        .await
-        .map(|_| ())
+    custos_client::identity::request_plc_operation_signature(
+        client,
+        &crate::oauth::WalletTransportObserver,
+    )
+    .await
 }
 
 /// Sign a PLC operation with credentials from the PDS.
@@ -1616,148 +1510,67 @@ pub async fn sign_plc_operation(
     client: &crate::oauth_client::OAuthClient,
     request: &SignPlcOperationRequest,
 ) -> Result<SignPlcOperationResponse, PdsClientError> {
-    let resp = client
-        .post("/xrpc/com.atproto.identity.signPlcOperation", request)
-        .await
-        .map_err(|e| PdsClientError::NetworkError {
-            message: format!("sign_plc_operation failed: {}", e),
-        })?;
-
-    let resp = xrpc_ok("signPlcOperation", resp).await?;
-
-    resp.json::<SignPlcOperationResponse>()
-        .await
-        .map_err(|e| PdsClientError::NetworkError {
-            message: format!("failed to parse sign_plc_operation response: {}", e),
-        })
+    custos_client::identity::sign_plc_operation(
+        client,
+        request,
+        &crate::oauth::WalletTransportObserver,
+    )
+    .await
 }
 
 /// Fetch recommended credentials for the DID from the PDS.
 pub async fn get_recommended_did_credentials(
     client: &crate::oauth_client::OAuthClient,
 ) -> Result<RecommendedCredentials, PdsClientError> {
-    let resp = client
-        .get("/xrpc/com.atproto.identity.getRecommendedDidCredentials")
-        .await
-        .map_err(|e| PdsClientError::NetworkError {
-            message: format!("get_recommended_did_credentials failed: {}", e),
-        })?;
-
-    let resp = xrpc_ok("getRecommendedDidCredentials", resp).await?;
-
-    resp.json::<RecommendedCredentials>()
-        .await
-        .map_err(|e| PdsClientError::NetworkError {
-            message: format!(
-                "failed to parse get_recommended_did_credentials response: {}",
-                e
-            ),
-        })
+    custos_client::identity::get_recommended_did_credentials(
+        client,
+        &crate::oauth::WalletTransportObserver,
+    )
+    .await
 }
 
 // ============================================================================
 // App-password management (full-access session required)
 // ============================================================================
 
-/// Result of minting an app password (`com.atproto.server.createAppPassword`).
-/// `password` is the generated secret, surfaced ONCE at creation — the server
-/// stores only its hash, so it can never be retrieved again.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct AppPasswordCreated {
-    pub name: String,
-    /// The generated `xxxx-xxxx-xxxx-xxxx` secret. Shown once; never retrievable.
-    pub password: String,
-    pub created_at: String,
-    pub privileged: bool,
-    /// The Custos personal-details grant (ADR-0033). Defaults to `false` when the field is
-    /// absent — which is exactly what a non-Custos PDS returns, so a requested-but-ignored
-    /// grant reads back honestly as not granted.
-    #[serde(default)]
-    pub personal_details: bool,
-}
-
-/// One app-password entry from `listAppPasswords` — public metadata only, never the secret.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct AppPasswordEntry {
-    pub name: String,
-    pub created_at: String,
-    pub privileged: bool,
-    /// The Custos personal-details grant (ADR-0033); `false` when the host omits the field.
-    #[serde(default)]
-    pub personal_details: bool,
-}
-
-#[derive(Deserialize)]
-struct ListAppPasswordsResponse {
-    passwords: Vec<AppPasswordEntry>,
-}
+pub use custos_client::app_passwords::{AppPasswordCreated, AppPasswordEntry};
 
 /// Mint a named app password on the hosting PDS.
-///
-/// Calls `POST /xrpc/com.atproto.server.createAppPassword`. Requires a full-access
-/// session (an app-password session cannot mint more app passwords). A duplicate
-/// name surfaces as `XrpcError { status: 409, .. }`.
 pub async fn create_app_password(
     client: &crate::oauth_client::OAuthClient,
     name: &str,
     privileged: bool,
     personal_details: bool,
 ) -> Result<AppPasswordCreated, PdsClientError> {
-    let resp = client
-        .post(
-            "/xrpc/com.atproto.server.createAppPassword",
-            &serde_json::json!({
-                "name": name,
-                "privileged": privileged,
-                "personalDetails": personal_details,
-            }),
-        )
-        .await
-        .map_err(|e| PdsClientError::NetworkError {
-            message: format!("create_app_password failed: {}", e),
-        })?;
-
-    xrpc_json("createAppPassword", resp).await
+    custos_client::app_passwords::create_app_password(
+        client,
+        name,
+        privileged,
+        personal_details,
+        &crate::oauth::WalletTransportObserver,
+    )
+    .await
 }
 
 /// List the account's app passwords (names, creation times, privilege — never secrets).
-///
-/// Calls `GET /xrpc/com.atproto.server.listAppPasswords`. Requires a full-access session.
 pub async fn list_app_passwords(
     client: &crate::oauth_client::OAuthClient,
 ) -> Result<Vec<AppPasswordEntry>, PdsClientError> {
-    let resp = client
-        .get("/xrpc/com.atproto.server.listAppPasswords")
+    custos_client::app_passwords::list_app_passwords(client, &crate::oauth::WalletTransportObserver)
         .await
-        .map_err(|e| PdsClientError::NetworkError {
-            message: format!("list_app_passwords failed: {}", e),
-        })?;
-
-    xrpc_json::<ListAppPasswordsResponse>("listAppPasswords", resp)
-        .await
-        .map(|body| body.passwords)
 }
 
 /// Revoke a named app password (and, server-side, its sessions/refresh tokens atomically).
-///
-/// Calls `POST /xrpc/com.atproto.server.revokeAppPassword`. Idempotent on the server.
 pub async fn revoke_app_password(
     client: &crate::oauth_client::OAuthClient,
     name: &str,
 ) -> Result<(), PdsClientError> {
-    let resp = client
-        .post(
-            "/xrpc/com.atproto.server.revokeAppPassword",
-            &serde_json::json!({ "name": name }),
-        )
-        .await
-        .map_err(|e| PdsClientError::NetworkError {
-            message: format!("revoke_app_password failed: {}", e),
-        })?;
-
-    xrpc_ok("revokeAppPassword", resp).await.map(|_| ())
+    custos_client::app_passwords::revoke_app_password(
+        client,
+        name,
+        &crate::oauth::WalletTransportObserver,
+    )
+    .await
 }
 
 // ============================================================================
@@ -1765,267 +1578,119 @@ pub async fn revoke_app_password(
 // ============================================================================
 
 /// Get service auth token for migration from the SOURCE PDS.
-///
-/// Calls `GET /xrpc/com.atproto.server.getServiceAuth?aud={dest_did}&lxm={lxm}`.
-/// For migration, `aud` is the destination server DID and `lxm` is typically
-/// "com.atproto.server.createAccount".
 pub async fn get_service_auth(
     client: &crate::oauth_client::OAuthClient,
     aud: &str,
     lxm: &str,
 ) -> Result<ServiceAuthToken, PdsClientError> {
-    let path = format!(
-        "/xrpc/com.atproto.server.getServiceAuth?aud={}&lxm={}",
-        urlencoding::encode(aud),
-        urlencoding::encode(lxm),
-    );
-
-    let resp = client
-        .get(&path)
-        .await
-        .map_err(|e| PdsClientError::NetworkError {
-            message: format!("get_service_auth failed: {}", e),
-        })?;
-
-    let resp = xrpc_ok("getServiceAuth", resp).await?;
-
-    resp.json::<ServiceAuthToken>()
-        .await
-        .map_err(|e| PdsClientError::NetworkError {
-            message: format!("failed to parse get_service_auth response: {}", e),
-        })
+    custos_client::migration::get_service_auth(
+        client,
+        aud,
+        lxm,
+        &crate::oauth::WalletTransportObserver,
+    )
+    .await
 }
 
 /// Create account in migration mode on the destination PDS.
-///
-/// Calls `POST /xrpc/com.atproto.server.createAccount` with the request body.
-/// The `client` should be a Bearer client carrying a service-auth JWT from the source PDS.
-/// A 409 response maps to `PdsClientError::DidAlreadyExists`.
 pub async fn create_account_migration(
     client: &crate::oauth_client::OAuthClient,
     req: &CreateAccountMigrationRequest,
 ) -> Result<CreateAccountResponse, PdsClientError> {
-    let resp = client
-        .post("/xrpc/com.atproto.server.createAccount", req)
-        .await
-        .map_err(|e| PdsClientError::NetworkError {
-            message: format!("create_account_migration failed: {}", e),
-        })?;
-
-    if resp.status().as_u16() == 409 {
-        return Err(PdsClientError::DidAlreadyExists);
-    }
-    let resp = xrpc_ok("createAccount", resp).await?;
-
-    resp.json::<CreateAccountResponse>()
-        .await
-        .map_err(|e| PdsClientError::NetworkError {
-            message: format!("failed to parse create_account_migration response: {}", e),
-        })
+    custos_client::migration::create_account_migration(
+        client,
+        req,
+        &crate::oauth::WalletTransportObserver,
+    )
+    .await
 }
 
 /// Import a CAR into the destination PDS repository.
-///
-/// Calls `POST /xrpc/com.atproto.repo.importRepo` with raw CAR bytes.
-/// Content-Type is `application/vnd.ipld.car`.
 pub async fn import_repo(
     client: &crate::oauth_client::OAuthClient,
     car: Vec<u8>,
 ) -> Result<(), PdsClientError> {
-    let resp = client
-        .post_bytes(
-            "/xrpc/com.atproto.repo.importRepo",
-            "application/vnd.ipld.car",
-            car,
-        )
-        .await
-        .map_err(|e| PdsClientError::NetworkError {
-            message: format!("import_repo failed: {}", e),
-        })?;
-
-    xrpc_ok("importRepo", resp).await.map(|_| ())
+    custos_client::migration::import_repo(client, car, &crate::oauth::WalletTransportObserver).await
 }
 
 /// Upload a blob to the destination PDS.
-///
-/// Calls `POST /xrpc/com.atproto.repo.uploadBlob` with raw blob bytes.
-/// Content-Type is set to the provided MIME type.
 pub async fn upload_blob(
     client: &crate::oauth_client::OAuthClient,
     mime: &str,
     bytes: Vec<u8>,
 ) -> Result<UploadBlobResponse, PdsClientError> {
-    let resp = client
-        .post_bytes("/xrpc/com.atproto.repo.uploadBlob", mime, bytes)
-        .await
-        .map_err(|e| PdsClientError::NetworkError {
-            message: format!("upload_blob failed: {}", e),
-        })?;
-
-    let resp = xrpc_ok("uploadBlob", resp).await?;
-
-    resp.json::<UploadBlobResponse>()
-        .await
-        .map_err(|e| PdsClientError::NetworkError {
-            message: format!("failed to parse upload_blob response: {}", e),
-        })
+    custos_client::migration::upload_blob(
+        client,
+        mime,
+        bytes,
+        &crate::oauth::WalletTransportObserver,
+    )
+    .await
 }
 
 /// List missing blobs on the destination PDS (one page).
-///
-/// Calls `GET /xrpc/com.atproto.repo.listMissingBlobs?cursor=...` (cursor is optional).
 pub async fn list_missing_blobs(
     client: &crate::oauth_client::OAuthClient,
     cursor: Option<&str>,
 ) -> Result<MissingBlobs, PdsClientError> {
-    let path = if let Some(cur) = cursor {
-        format!(
-            "/xrpc/com.atproto.repo.listMissingBlobs?cursor={}",
-            urlencoding::encode(cur)
-        )
-    } else {
-        "/xrpc/com.atproto.repo.listMissingBlobs".to_string()
-    };
-
-    let resp = client
-        .get(&path)
-        .await
-        .map_err(|e| PdsClientError::NetworkError {
-            message: format!("list_missing_blobs failed: {}", e),
-        })?;
-
-    let resp = xrpc_ok("listMissingBlobs", resp).await?;
-
-    resp.json::<MissingBlobs>()
-        .await
-        .map_err(|e| PdsClientError::NetworkError {
-            message: format!("failed to parse list_missing_blobs response: {}", e),
-        })
+    custos_client::migration::list_missing_blobs(
+        client,
+        cursor,
+        &crate::oauth::WalletTransportObserver,
+    )
+    .await
 }
 
 /// Get the user's preferences.
-///
-/// Calls `GET /xrpc/app.bsky.actor.getPreferences`.
-/// Returns the full response object (with `preferences` key).
 pub async fn get_preferences(
     client: &crate::oauth_client::OAuthClient,
 ) -> Result<serde_json::Value, PdsClientError> {
-    let resp = client
-        .get("/xrpc/app.bsky.actor.getPreferences")
-        .await
-        .map_err(|e| PdsClientError::NetworkError {
-            message: format!("get_preferences failed: {}", e),
-        })?;
-
-    let resp = xrpc_ok("getPreferences", resp).await?;
-
-    resp.json::<serde_json::Value>()
-        .await
-        .map_err(|e| PdsClientError::NetworkError {
-            message: format!("failed to parse get_preferences response: {}", e),
-        })
+    custos_client::migration::get_preferences(client, &crate::oauth::WalletTransportObserver).await
 }
 
 /// Put the user's preferences.
-///
-/// Calls `POST /xrpc/app.bsky.actor.putPreferences` with the preferences object
-/// (the same object returned by `get_preferences`).
 pub async fn put_preferences(
     client: &crate::oauth_client::OAuthClient,
     prefs: &serde_json::Value,
 ) -> Result<(), PdsClientError> {
-    let resp = client
-        .post("/xrpc/app.bsky.actor.putPreferences", prefs)
+    custos_client::migration::put_preferences(client, prefs, &crate::oauth::WalletTransportObserver)
         .await
-        .map_err(|e| PdsClientError::NetworkError {
-            message: format!("put_preferences failed: {}", e),
-        })?;
-
-    xrpc_ok("putPreferences", resp).await.map(|_| ())
 }
 
 /// Check the account status on the destination PDS.
-///
-/// Calls `GET /xrpc/com.atproto.server.checkAccountStatus`.
 pub async fn check_account_status(
     client: &crate::oauth_client::OAuthClient,
 ) -> Result<AccountStatus, PdsClientError> {
-    let resp = client
-        .get("/xrpc/com.atproto.server.checkAccountStatus")
+    custos_client::migration::check_account_status(client, &crate::oauth::WalletTransportObserver)
         .await
-        .map_err(|e| PdsClientError::NetworkError {
-            message: format!("check_account_status failed: {}", e),
-        })?;
-
-    let resp = xrpc_ok("checkAccountStatus", resp).await?;
-
-    resp.json::<AccountStatus>()
-        .await
-        .map_err(|e| PdsClientError::NetworkError {
-            message: format!("failed to parse check_account_status response: {}", e),
-        })
 }
 
 /// Activate the account on the destination PDS.
-///
-/// Calls `POST /xrpc/com.atproto.server.activateAccount` with NO body and no
-/// `Content-Type` — it is a no-input procedure. Our handler
-/// (`crates/pds/src/routes/activate_account.rs`) rejects any non-whitespace body
-/// with a 400, and a spec-strict PDS rejects any body at all; `post_no_body`
-/// satisfies both (the previous `post_bytes(.., Vec::new())` workaround still sent
-/// a `Content-Type` header with zero bytes).
 pub async fn activate_account(
     client: &crate::oauth_client::OAuthClient,
 ) -> Result<(), PdsClientError> {
-    let resp = client
-        .post_no_body("/xrpc/com.atproto.server.activateAccount")
-        .await
-        .map_err(|e| PdsClientError::NetworkError {
-            message: format!("activate_account failed: {}", e),
-        })?;
-
-    xrpc_ok("activateAccount", resp).await.map(|_| ())
+    custos_client::migration::activate_account(client, &crate::oauth::WalletTransportObserver).await
 }
 
 /// Deactivate the account on the destination PDS.
-///
-/// Calls `POST /xrpc/com.atproto.server.deactivateAccount` with optional deleteAfter (RFC 3339).
 pub async fn deactivate_account(
     client: &crate::oauth_client::OAuthClient,
     delete_after: Option<&str>,
 ) -> Result<(), PdsClientError> {
-    let body = match delete_after {
-        Some(t) => serde_json::json!({ "deleteAfter": t }),
-        None => serde_json::json!({}),
-    };
-
-    let resp = client
-        .post("/xrpc/com.atproto.server.deactivateAccount", &body)
-        .await
-        .map_err(|e| PdsClientError::NetworkError {
-            message: format!("deactivate_account failed: {}", e),
-        })?;
-
-    xrpc_ok("deactivateAccount", resp).await.map(|_| ())
+    custos_client::migration::deactivate_account(
+        client,
+        delete_after,
+        &crate::oauth::WalletTransportObserver,
+    )
+    .await
 }
 
 /// Request permanent deletion of the authenticated account: mints and emails a single-use code.
-///
-/// Calls `POST /xrpc/com.atproto.server.requestAccountDelete` with NO body (a no-input procedure,
-/// like `activateAccount`). Full-access session authed. The PDS emails a 1-hour confirmation code
-/// to the account address; the code + the account password are then supplied to
-/// `PdsClient::delete_account` to complete the deletion.
 pub async fn request_account_delete(
     client: &crate::oauth_client::OAuthClient,
 ) -> Result<(), PdsClientError> {
-    let resp = client
-        .post_no_body("/xrpc/com.atproto.server.requestAccountDelete")
+    custos_client::migration::request_account_delete(client, &crate::oauth::WalletTransportObserver)
         .await
-        .map_err(|e| PdsClientError::NetworkError {
-            message: format!("request_account_delete failed: {}", e),
-        })?;
-
-    xrpc_ok("requestAccountDelete", resp).await.map(|_| ())
 }
 
 #[cfg(test)]

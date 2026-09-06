@@ -24,6 +24,9 @@ exist.
 | `src/error.rs` | `PdsClientError` (the XRPC failure shape), `classify_xrpc_error`/`parse_xrpc_error_envelope` (pure), `classify_xrpc_response`/`xrpc_ok`/`xrpc_json` (the classification tail), `TransportObserver` |
 | `src/oauth_client.rs` | `OAuthClient` — DPoP and Bearer auth modes, lazy refresh, nonce retry, `TokenPersister` |
 | `src/custos_client.rs` | `CustosClient` — the pre-session HTTP client for one configured PDS (plain JSON/Bearer requests, PAR/token-exchange) |
+| `src/identity.rs` | typed XRPC methods for `com.atproto.identity.*` (the claim trio: `requestPlcOperationSignature`, `signPlcOperation`, `getRecommendedDidCredentials`) |
+| `src/app_passwords.rs` | typed XRPC methods for `com.atproto.server.{create,list,revoke}AppPassword` |
+| `src/migration.rs` | typed XRPC methods for the outbound-migration set (service auth, destination account creation, repo/blob import, preferences, account status/lifecycle) — no orchestration, that stays in the caller |
 | `src/base64url.rs` | the one base64 alphabet this crate uses (unpadded base64url) |
 
 ## Contracts
@@ -69,9 +72,19 @@ exist.
   two apps could share. `OAuthClient::new`/`refresh_token_dpop` and `CustosClient::par`/
   `token_exchange` all take `client_id`/`redirect_uri` as plain parameters instead of deriving
   them internally.
-- Typed XRPC request/response structs for individual lexicon methods
-  (`getServiceAuth`/`createAccount`/`signPlcOperation`/…) and the service-auth/sovereign-session/
-  auth.md agent-flow logic built on top of them stay in identity-wallet's `pds_client.rs`/
-  `migration_orchestrator.rs`/`agents.rs`/`sovereign_session.rs` for now — moving those (and
-  deciding whether they're hand-written or lexicon-generated) is follow-up work, not this
-  extraction.
+- The typed XRPC methods in `identity.rs`/`app_passwords.rs`/`migration.rs` take an explicit
+  `observer: &dyn TransportObserver` parameter — unlike `OAuthClient`/`CustosClient`, which own
+  their observer at construction — because these are free functions, not methods on a
+  long-lived client. Callers (identity-wallet's `pds_client.rs`) wrap each with the same
+  original signature (no new parameter), closing over the app's observer, so none of this
+  file's ~70 XRPC call sites needed to change.
+- `PdsClient` itself (discovery/plc.directory/`describe_server`/`create_session` — the
+  *unauthenticated* half of `pds_client.rs`) has not moved here yet: it has its own
+  constructor/struct-level concerns (a `pds_capabilities` cache side effect inside
+  `describe_server`, the `client_id_for_pds` coupling) that need the same careful decoupling as
+  `OAuthClient`/`CustosClient` got, not done in this PR.
+- `PdsClient`'s own module-level helpers this crate does NOT hold: the sovereign-session and
+  auth.md agent-flow logic built on the XRPC methods above stays in identity-wallet's
+  `migration_orchestrator.rs`/`agents.rs`/`sovereign_session.rs` — that's orchestration/business
+  logic, not client machinery. Lexicon-generated (vs. hand-written) typed methods is a separate,
+  not-yet-decided follow-up.
