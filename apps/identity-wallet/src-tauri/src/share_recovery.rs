@@ -1483,7 +1483,7 @@ mod tests {
                 "bafyprev1",
             ));
         });
-        let pds = PdsClient::new_for_test(plc.base_url());
+        let pds = crate::pds_client::new_for_test(plc.base_url());
 
         let slot = fresh_slot(DID, None);
         push_share(&slot, &set_a[0]).await;
@@ -1520,7 +1520,7 @@ mod tests {
                 "bafyprev1",
             ));
         });
-        let pds = PdsClient::new_for_test(plc.base_url());
+        let pds = crate::pds_client::new_for_test(plc.base_url());
 
         assert!(!IdentityStore.is_delegation_provisioned(DID).unwrap());
 
@@ -1565,7 +1565,7 @@ mod tests {
                 "bafyprev1",
             ));
         });
-        let pds = PdsClient::new_for_test(plc.base_url());
+        let pds = crate::pds_client::new_for_test(plc.base_url());
 
         let incumbent = [0xab_u8; 32];
         IdentityStore
@@ -1591,7 +1591,7 @@ mod tests {
 
     #[tokio::test]
     async fn verify_requires_two_shares() {
-        let pds = PdsClient::new_for_test("http://127.0.0.1:1".to_string());
+        let pds = crate::pds_client::new_for_test("http://127.0.0.1:1".to_string());
         let (set_a, _) = make_split(1);
         let slot = fresh_slot(DID, None);
         push_share(&slot, &set_a[0]).await;
@@ -1621,7 +1621,7 @@ mod tests {
 
         let slot = fresh_slot(DID, Some(custos.base_url()));
         push_share(&slot, &set_a[0]).await;
-        let pds = PdsClient::new_for_test(custos.base_url());
+        let pds = crate::pds_client::new_for_test(custos.base_url());
 
         let status = release_impl(&pds, &slot, Some("123456".to_string()))
             .await
@@ -1680,7 +1680,7 @@ mod tests {
         });
         let slot = fresh_slot(DID, Some(custos.base_url()));
         push_share(&slot, &set_a[0]).await;
-        let pds = PdsClient::new_for_test(custos.base_url());
+        let pds = crate::pds_client::new_for_test(custos.base_url());
         assert!(matches!(
             release_impl(&pds, &slot, Some("123456".to_string())).await,
             Err(ShareRecoveryError::ShareSetMismatch { .. })
@@ -1728,7 +1728,7 @@ mod tests {
                 "services": {}
             }));
         });
-        let pds = PdsClient::new_for_test(plc.base_url());
+        let pds = crate::pds_client::new_for_test(plc.base_url());
 
         let slot = fresh_slot(DID, Some(custos.base_url()));
         push_share(&slot, &set_a[0]).await;
@@ -1786,7 +1786,7 @@ mod tests {
             then.status(200)
                 .json_body(serde_json::json!({ "did": DID }));
         });
-        let pds = PdsClient::new_for_test(plc.base_url());
+        let pds = crate::pds_client::new_for_test(plc.base_url());
 
         let slot = fresh_slot(DID, None);
         push_share(&slot, &set_a[0]).await;
@@ -1893,7 +1893,7 @@ mod tests {
             when.method(httpmock::Method::POST).path(format!("/{DID}"));
             then.status(200).json_body(serde_json::json!({}));
         });
-        let pds = PdsClient::new_for_test(plc.base_url());
+        let pds = crate::pds_client::new_for_test(plc.base_url());
 
         let staged_before = load_epilogue().unwrap().unwrap();
         let new_key_before = staged_before.new_recovery_key_id.clone();
@@ -1950,7 +1950,7 @@ mod tests {
             when.method(httpmock::Method::POST).path(format!("/{DID}"));
             then.status(200).json_body(serde_json::json!({}));
         });
-        let pds = PdsClient::new_for_test(plc.base_url());
+        let pds = crate::pds_client::new_for_test(plc.base_url());
 
         // A persisted sovereign session pointing at the PDS mock (the restart-resume
         // seam: the epilogue reuses it instead of re-minting).
@@ -2026,7 +2026,7 @@ mod tests {
             )
             .unwrap();
 
-        let result = epilogue_impl(&PdsClient::new_for_test(plc.base_url()), false)
+        let result = epilogue_impl(&crate::pds_client::new_for_test(plc.base_url()), false)
             .await
             .unwrap();
         assert!(result.escrow_skipped, "no escrow route means no escrow leg");

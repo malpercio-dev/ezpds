@@ -1,32 +1,20 @@
-// pattern: Imperative Shell
+// pattern: Mixed (unavoidable)
 
-//! Discovery, auth, and XRPC against *arbitrary* PDS endpoints and plc.directory — every
-//! server the wallet learns about at runtime, as opposed to the one configured Custos
-//! (`http.rs::CustosClient`). [`PdsClient`] is stateless: it wraps a `reqwest::Client`
-//! (connection pooling) plus the plc.directory base URL (default `https://plc.directory`;
-//! a test constructor overrides it), and is built eagerly in `AppState::new`.
+//! Re-exports [`custos_client::PdsClient`] — discovery/auth/XRPC against *arbitrary* PDS
+//! endpoints and plc.directory — under this module's historical path, plus
+//! [`new_with_diagnostics`] (wires this app's diagnostics + `pds_capabilities` observers) and
+//! [`try_resolve_dns`] (same, for the change-handle DNS pre-flight). See
+//! `custos_client::pds_client`'s module doc for `PdsClient`'s own behavior and method
+//! inventory.
 //!
 //! **The wallet's OAuth identity** also lives here: [`CANONICAL_CLIENT_ID`],
 //! [`REDIRECT_URI`], [`CALLBACK_SCHEME`], [`client_id_for_pds`] (fixed canonical URL except
 //! a loopback base, which derives its own). The redirect scheme is the client_id host in
 //! reverse-FQDN order — the constants' docs carry the spec rule and the sync requirement
-//! with the Custos client-metadata route and the V042-seeded `oauth_clients` row.
-//!
-//! `PdsClient` methods, grouped:
-//! - **Discovery**: `resolve_handle` (DNS TXT `_atproto.{handle}`, then HTTP
-//!   `/.well-known/atproto-did`; `HandleNotFound` only when both fail), `discover_pds`
-//!   (DID doc → `atproto_pds` endpoint, HEAD reachability check), `discover_auth_server`
-//!   (validates `code` + `S256` support).
-//! - **OAuth against a discovered AS**: `pds_par`, `pds_token_exchange` (returns the raw
-//!   `reqwest::Response` so the caller runs the nonce retry), `build_pds_authorize_url`.
-//! - **plc.directory**: `fetch_audit_log`, `fetch_plc_data_document`,
-//!   `post_plc_operation`, and the free helper `rotation_keys_from_audit_log`.
-//! - **Per-server calls**: `describe_server` (pre-migration probe for `did`/domains; every
-//!   success also records the optional `custos` extension into `pds_capabilities`' cache),
-//!   `create_session` (the claim flow's password source login — 401 →
-//!   `InvalidCredentials`, or `AuthFactorTokenRequired` for email 2FA; the returned JWTs
-//!   feed `OAuthClient::new_bearer`), `fetch_repo_car`, `fetch_blob`/`fetch_blob_with_type`,
-//!   `list_blobs`, `reserve_signing_key`, `delete_account`.
+//! with the Custos client-metadata route and the V042-seeded `oauth_clients` row. This stays
+//! here rather than in `custos-client`: it names the wallet app itself, not a thing another
+//! app could share — `PdsClient::pds_par`/`pds_token_exchange` take `client_id`/
+//! `redirect_uri` as plain parameters instead of deriving them.
 //!
 //! **Module-level XRPC helpers** take an `&OAuthClient` instead of being `PdsClient`
 //! methods — they need an authenticated client the plain one cannot provide, keeping
@@ -37,17 +25,9 @@
 //! `upload_blob`, `list_missing_blobs`, `get_preferences`, `put_preferences`,
 //! `check_account_status`, `activate_account`, `deactivate_account`,
 //! `request_account_delete`); the app-password trio (`create_app_password`,
-//! `list_app_passwords`, `revoke_app_password`). All three groups are now thin
-//! same-signature wrappers over `custos_client::{identity,migration,app_passwords}` — the
-//! request/response logic and types live there; this file supplies this app's diagnostics
-//! observer. `PdsClient` itself has not moved (see `crates/custos-client/AGENTS.md`).
-//!
-//! **Status classification.** Every authenticated helper routes its non-2xx branch through
-//! `classify_xrpc_response` (→ the pure `classify_xrpc_error`): `429` →
-//! `RateLimited { retry_after }`, `401` → `Unauthorized`, anything else →
-//! `XrpcError { status, error, message }` carrying the atproto error envelope.
-//! [`PdsClientError::NetworkError`] is transport-only — a server that answered is never
-//! reported as a connectivity failure.
+//! `list_app_passwords`, `revoke_app_password`). All three groups are thin same-signature
+//! wrappers over `custos_client::{identity,migration,app_passwords}` — the request/response
+//! logic and types live there; this file supplies this app's diagnostics observer.
 //!
 //! **Error reachability.** `PdsClientError` serializes as `{ code: "SCREAMING_SNAKE_CASE" }`
 //! (`PdsUnreachable.reason` is serde-skipped). The discovery/resolve variants
@@ -59,11 +39,7 @@
 //! mapped by `authenticate_source_pds`. [`PlcDidDocument`] and [`PlcService`] derive
 //! `Clone` so claim state can be cloned out of the tokio mutex before network calls.
 
-use std::collections::HashMap;
-use std::time::Duration;
-
-use reqwest::Client;
-use serde::{Deserialize, Serialize};
+use std::sync::Arc;
 
 /// OAuth client metadata path — the canonical client_id's path, also appended to a
 /// loopback Custos base URL by the local-development exception in [`client_id_for_pds`].
@@ -118,1371 +94,65 @@ fn url_is_loopback(base: &str) -> bool {
     }
 }
 
-/// Render a failed PAR response as the authorization server's own words.
-///
-/// A PAR rejection body is an RFC 6749 §5.2 `{error, error_description}` JSON object;
-/// extracting it is what makes a policy rejection (e.g. `invalid_redirect_uri`)
-/// diagnosable in the UI instead of an opaque status line. Falls back to the raw
-/// status + body when the body isn't that shape.
-fn par_rejection_message(status: reqwest::StatusCode, body: &str) -> String {
-    if let Ok(json) = serde_json::from_str::<serde_json::Value>(body) {
-        let code = json.get("error").and_then(|v| v.as_str());
-        let description = json.get("error_description").and_then(|v| v.as_str());
-        match (code, description) {
-            (Some(c), Some(d)) => return format!("{c}: {d}"),
-            (Some(c), None) => return c.to_string(),
-            _ => {}
-        }
-    }
-    format!("PAR returned {status}: {body}")
-}
-
-/// Error type for PDS client operations. Now defined in `custos-client` (see its module doc
-/// for the classification contract); re-exported here so the ~20 call sites across this app
-/// that `use crate::pds_client::PdsClientError` are unaffected by the extraction.
+/// Error type for PDS client operations. Defined in `custos-client` (see its module doc for
+/// the classification contract); re-exported here so the ~20 call sites across this app that
+/// `use crate::pds_client::PdsClientError` are unaffected by the extraction.
 pub use custos_client::PdsClientError;
 
-/// Whether a PDS URL is safe to send an account password to: HTTPS, or a loopback host over HTTP
-/// (localhost/127.0.0.1/::1) for local development and the test harness. Anything else — including
-/// an unparseable URL — is refused, so the password never crosses a plaintext link.
-fn pds_url_is_password_safe(pds_url: &str) -> bool {
-    match url::Url::parse(pds_url) {
-        Ok(url) => match url.scheme() {
-            "https" => true,
-            "http" => matches!(
-                url.host_str(),
-                Some("localhost") | Some("127.0.0.1") | Some("::1") | Some("[::1]")
-            ),
-            _ => false,
-        },
-        Err(_) => false,
-    }
-}
-
-// The XRPC envelope/classification machinery (`error_code_is`, `parse_xrpc_error_envelope`,
-// `classify_xrpc_error`, `classify_xrpc_response`, `xrpc_ok`, `xrpc_json`) now lives in
-// `custos-client`, shared with the OAuth client's own request paths. `error_code_is` and
-// `parse_xrpc_error_envelope`/`classify_xrpc_error` are pure and re-exported directly; the
-// three below stay as thin same-signature wrappers (rather than every one of this file's ~70
-// call sites threading a `TransportObserver` through) so this app's diagnostics breadcrumbs
-// keep flowing without touching every call site.
-use custos_client::error_code_is;
-
-/// [`custos_client::classify_xrpc_response`], recording breadcrumbs into the wallet's
-/// diagnostics log.
-async fn classify_xrpc_response(context: &str, resp: reqwest::Response) -> PdsClientError {
-    custos_client::classify_xrpc_response(context, resp, &crate::oauth::WalletTransportObserver)
-        .await
-}
-
-/// [`custos_client::xrpc_ok`], wired to the wallet's diagnostics observer.
-async fn xrpc_ok(op: &str, resp: reqwest::Response) -> Result<reqwest::Response, PdsClientError> {
-    custos_client::xrpc_ok(op, resp, &crate::oauth::WalletTransportObserver).await
-}
-
-/// [`custos_client::xrpc_json`], wired to the wallet's diagnostics observer.
-async fn xrpc_json<T: serde::de::DeserializeOwned>(
-    op: &str,
-    resp: reqwest::Response,
-) -> Result<T, PdsClientError> {
-    custos_client::xrpc_json(op, resp, &crate::oauth::WalletTransportObserver).await
-}
-
-/// Record a redacted transport-failure breadcrumb for the user-exportable diagnostics log.
-///
-/// This is the transport-side companion to [`classify_xrpc_response`]. A connect/DNS/TLS/timeout
-/// failure or a mid-read body drop never produces a server *verdict*, so it never reaches
-/// `classify_xrpc_response` — without this, the entire "couldn't reach the server" class
-/// (`NetworkError`/`PdsUnreachable`) leaves no breadcrumb, which is exactly what made the re-key
-/// `NETWORK_ERROR` undiagnosable from the exported log. Every `reqwest::Error` site that returns a
-/// connectivity-class error funnels through here.
-///
-/// Only the *host* of `url` is recorded — never the path or query. On plc.directory reads the DID
-/// lives in the path, so callers must pass the full request URL and let this extract the host. When
-/// the host itself is sensitive (a handle domain on the well-known resolve path), pass `None` for
-/// `url` and the breadcrumb records no host.
-fn note_transport_failure(op: &str, url: Option<&str>, e: &reqwest::Error) {
-    crate::diagnostics::record_reqwest_transport(op, url, e);
-}
-
-/// PLC operation data for a DID.
-///
-/// Combines fields from the W3C DID Document (`GET /{did}`) and the PLC audit log
-/// (`GET /{did}/log/audit`). `rotation_keys` only exist in the audit log — they are
-/// NOT part of the W3C DID Document and must be populated separately.
-#[derive(Debug, Clone, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct PlcDidDocument {
-    pub did: String,
-    pub also_known_as: Vec<String>,
-    /// Rotation keys from the latest PLC operation. Empty if only populated from
-    /// the W3C DID Document (which doesn't include rotation keys).
-    #[serde(default)]
-    pub rotation_keys: Vec<String>,
-    pub verification_methods: serde_json::Value,
-    pub services: HashMap<String, PlcService>,
-}
-
-/// PLC service entry (one service in `PlcDidDocument.services`).
-#[derive(Debug, Clone, Deserialize)]
-pub struct PlcService {
-    #[serde(rename = "type")]
-    pub service_type: String,
-    pub endpoint: String,
-}
-
-// ── W3C DID Document (private, for parsing `GET /{did}` responses) ───────────
-
-/// W3C DID Document as returned by `GET {plc_directory_url}/{did}`.
-/// Different shape from PLC operations: `id` not `did`, arrays not HashMaps.
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct W3cDidDocument {
-    id: String,
-    #[serde(default)]
-    also_known_as: Vec<String>,
-    #[serde(default)]
-    verification_method: Vec<W3cVerificationMethod>,
-    #[serde(default)]
-    service: Vec<W3cService>,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct W3cVerificationMethod {
-    id: String,
-    #[serde(default)]
-    public_key_multibase: Option<String>,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct W3cService {
-    id: String,
-    #[serde(rename = "type")]
-    service_type: String,
-    service_endpoint: String,
-}
-
-impl W3cDidDocument {
-    /// Convert to PlcDidDocument. `rotation_keys` will be empty — the caller
-    /// must populate them from the audit log if needed.
-    fn into_plc_doc(self) -> PlcDidDocument {
-        // Convert verification_method array to the { "atproto": "did:key:..." } shape
-        let mut vm_map = serde_json::Map::new();
-        for method in &self.verification_method {
-            // Strip the "did:plc:...#" prefix from the id to get the key name
-            let key_name = method
-                .id
-                .rsplit_once('#')
-                .map(|(_, name)| name.to_string())
-                .unwrap_or_else(|| method.id.clone());
-            if let Some(ref pkm) = method.public_key_multibase {
-                vm_map.insert(key_name, serde_json::Value::String(pkm.clone()));
-            }
-        }
-
-        // Convert service array to HashMap keyed by the id's fragment. Like the
-        // verification-method ids above, service ids come in both W3C forms:
-        // plc.directory serves the bare fragment ("#atproto_pds") while a did:web
-        // document typically carries the absolute form ("did:web:host#atproto_pds").
-        let services = self
-            .service
-            .into_iter()
-            .map(|svc| {
-                let key = svc
-                    .id
-                    .rsplit_once('#')
-                    .map(|(_, name)| name.to_string())
-                    .unwrap_or_else(|| svc.id.clone());
-                let plc_svc = PlcService {
-                    service_type: svc.service_type,
-                    endpoint: svc.service_endpoint,
-                };
-                (key, plc_svc)
-            })
-            .collect();
-
-        PlcDidDocument {
-            did: self.id,
-            also_known_as: self.also_known_as,
-            rotation_keys: Vec::new(),
-            verification_methods: serde_json::Value::Object(vm_map),
-            services,
-        }
-    }
-}
-
-/// OAuth authorization server metadata.
-///
-/// Returned from `GET {pds_url}/.well-known/oauth-authorization-server`.
-#[derive(Debug, Deserialize)]
-pub struct AuthServerMetadata {
-    pub issuer: String,
-    pub authorization_endpoint: String,
-    pub token_endpoint: String,
-    pub pushed_authorization_request_endpoint: Option<String>,
-    pub response_types_supported: Vec<String>,
-    pub grant_types_supported: Vec<String>,
-    pub code_challenge_methods_supported: Vec<String>,
-    pub dpop_signing_alg_values_supported: Option<Vec<String>>,
-    pub scopes_supported: Option<Vec<String>>,
-}
-
-/// Response from PAR (Pushed Authorization Request).
-///
-/// Returned from `POST {pushed_authorization_request_endpoint}`.
-#[derive(Debug, Deserialize)]
-pub struct PdsParResponse {
-    pub request_uri: String,
-    pub expires_in: u32,
-}
+// `PdsClient` itself (discovery/plc.directory/describeServer/createSession/OAuth-against-an-
+// arbitrary-AS) moved to `custos-client`, alongside its request/response types. Re-exported
+// here so this app's ~20 external references (`claim.rs`, `migration_orchestrator.rs`,
+// `handle_change.rs`, etc.) are unaffected by the extraction.
+pub use custos_client::pds_client::{
+    rotation_keys_from_audit_log, AuthServerMetadata, CreateSessionResponse, CustosExtension,
+    DeleteAccountProof, DeleteCredential, DescribeServerObserver, DescribeServerResponse,
+    ListedBlobs, NoopDescribeServerObserver, PdsClient, PdsParRequest, PdsParResponse,
+    PlcDidDocument, PlcService,
+};
 
 // The claim-trio and migration-set request/response types moved to
 // `custos_client::identity`/`custos_client::migration` alongside the XRPC methods that use
-// them; re-exported here so the wallet's existing `pds_client::{Type}` references (this file's
-// own `use` below, plus `claim.rs`/`migration_orchestrator.rs`) are unaffected.
+// them; re-exported here so the wallet's existing `pds_client::{Type}` references (this
+// file's own wrapper functions below, plus `claim.rs`/`migration_orchestrator.rs`) are
+// unaffected.
 pub use custos_client::identity::{
     RecommendedCredentials, SignPlcOperationRequest, SignPlcOperationResponse,
 };
 pub use custos_client::migration::{
-    CreateAccountMigrationRequest, CreateAccountResponse, ServiceAuthToken,
+    AccountStatus, CreateAccountMigrationRequest, CreateAccountResponse, MissingBlob, MissingBlobs,
+    ServiceAuthToken, UploadBlobResponse,
 };
 
-/// Response from `com.atproto.server.createSession` (legacy password login).
-///
-/// The `accessJwt`/`refreshJwt` are the full-session credentials the claim flow needs to drive
-/// PLC operations (`requestPlcOperationSignature`/`signPlcOperation`) — operations no OAuth
-/// `transition:generic` token can authorize. They feed straight into
-/// `OAuthClient::new_bearer`.
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct CreateSessionResponse {
-    pub access_jwt: String,
-    pub refresh_jwt: String,
-    pub did: String,
-    #[serde(default)]
-    pub handle: Option<String>,
+/// Build a [`PdsClient`] wired to this app's diagnostics and `pds_capabilities` observers,
+/// with the default plc.directory URL. The one production instance lives in `AppState`.
+pub(crate) fn new_with_diagnostics() -> PdsClient {
+    PdsClient::new_with_observers(
+        Arc::new(crate::oauth::WalletTransportObserver),
+        Arc::new(crate::oauth::WalletDescribeServerObserver),
+    )
 }
 
-/// Response from describeServer.
-///
-/// Returned from `GET /xrpc/com.atproto.server.describeServer`. This is the public,
-/// unauthenticated server description endpoint used to discover the server's DID and
-/// available user domains (for destination reachability probes), and — on a Custos
-/// host — the capabilities the wallet may feature-gate on.
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct DescribeServerResponse {
-    pub did: String,
-    #[serde(default)]
-    pub available_user_domains: Vec<String>,
-    /// Custos's off-lexicon capability extension. **Absent on every other
-    /// implementation** — the reference PDS and rsky-pds return strictly the lexicon
-    /// fields, millipds adds only a top-level `version` — so this must stay optional and
-    /// its absence must mean "no Custos capabilities", never an error. See
-    /// [`crate::pds_capabilities`].
-    #[serde(default)]
-    pub custos: Option<CustosExtension>,
+/// [`PdsClient`] wired to this app's real observers, with a caller-chosen plc.directory URL
+/// (a mock server, in every current caller). Unlike `custos_client::PdsClient::new_for_test`
+/// (which defaults to no-op observers, correct for a Tauri-free crate with nothing of its own
+/// to record), this app's tests need the real `pds_capabilities` observer wired even in a test
+/// fixture: `pds_capabilities::probe` reads its cache rather than `describe_server`'s return
+/// value directly, so a no-op describe-observer silently starves it and any test exercising
+/// capability-gated routing (see `password_unlock`/`share_recovery`) breaks quietly.
+/// `#[cfg(test)]`, unlike the crate's own `new_for_test`: every caller of this one is inside
+/// this crate's own test code, where `#[cfg(test)]` visibility applies normally (the
+/// cross-crate restriction only bites when a *dependent* crate's test build needs to see a
+/// *dependency's* `#[cfg(test)]` item).
+#[cfg(test)]
+pub(crate) fn new_for_test(plc_directory_url: String) -> PdsClient {
+    new_with_diagnostics().with_plc_directory_url(plc_directory_url)
 }
 
-/// The `custos` object of a describeServer response: what the host is, and what it offers.
-///
-/// Both members are tolerant by design. `version` is informational only (never parsed for
-/// comparison — a client gates on named capabilities, not on version arithmetic), and an
-/// unrecognized capability name is simply one this build does not use, not an error.
-#[derive(Debug, Clone, Default, Deserialize)]
-pub struct CustosExtension {
-    #[serde(default)]
-    pub version: Option<String>,
-    #[serde(default)]
-    pub capabilities: Vec<String>,
-}
-
-/// A device-key-signed authorization to permanently delete an account — the credential a
-/// key-sovereign account presents to `deleteAccount` in place of a password it may never have had.
-///
-/// The bytes signed are `crypto::encode_account_delete_envelope`; the server verifies them against
-/// the identity's authoritative current rotation set. Travels inside the request body's off-lexicon
-/// `custos.proof` object.
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct DeleteAccountProof {
-    pub signing_key: String,
-    pub timestamp: i64,
-    pub nonce: String,
-    pub signature: String,
-}
-
-/// Which first factor a deletion request carries alongside the emailed confirmation code.
-pub enum DeleteCredential {
-    /// The account password — the standard lexicon field, the only option on a host that does
-    /// not advertise `walletAccountDelete`.
-    Password(String),
-    /// A device-key-signed proof of ownership.
-    Proof(DeleteAccountProof),
-}
-
-impl DeleteCredential {
-    /// What goes in the body's required `password` field: the password itself, or the empty
-    /// string when a proof is carrying the request instead.
-    fn password_field(&self) -> &str {
-        match self {
-            Self::Password(password) => password,
-            Self::Proof(_) => "",
-        }
-    }
-}
-
-// MissingBlob/MissingBlobs/AccountStatus/UploadBlobResponse moved to
-// `custos_client::migration` alongside the XRPC methods that use them; re-exported here (the
-// `pub use` below puts the names in scope at their original path) so
-// `migration_orchestrator.rs`/`lib.rs`'s references are unaffected.
-pub use custos_client::migration::{AccountStatus, MissingBlob, MissingBlobs, UploadBlobResponse};
-
-/// One page of a DID's blob CIDs from the public sync listing.
-///
-/// Returned from `GET /xrpc/com.atproto.sync.listBlobs` (auth: none). Used by the
-/// blob-backup sync pass to enumerate the account's blobs on its hosting PDS.
-#[derive(Debug, Deserialize)]
-pub struct ListedBlobs {
-    pub cids: Vec<String>,
-    #[serde(default)]
-    pub cursor: Option<String>,
-}
-
-/// Parameters for a Pushed Authorization Request.
-pub struct PdsParRequest<'a> {
-    pub pkce_challenge: &'a str,
-    pub state_param: &'a str,
-    pub dpop_proof: &'a str,
-    pub dpop_jkt: &'a str,
-    pub login_hint: Option<&'a str>,
-    pub client_id: &'a str,
-}
-
-/// PDS client for discovery and OAuth operations against arbitrary PDS endpoints.
-///
-/// Stateless except for the HTTP client which pools connections.
-pub struct PdsClient {
-    client: Client,
-    plc_directory_url: String,
-}
-
-impl PdsClient {
-    /// Construct a new PdsClient with the default plc.directory URL.
-    pub fn new() -> Self {
-        Self {
-            client: Client::builder()
-                .timeout(Duration::from_secs(30))
-                .build()
-                .unwrap_or_else(|_| Client::new()),
-            plc_directory_url: "https://plc.directory".to_string(),
-        }
-    }
-
-    /// Test constructor: accepts a custom plc.directory URL (e.g., mock server).
-    ///
-    /// Follows the same pattern as `OAuthClient::new_for_test` in oauth_client.rs.
-    #[cfg(test)]
-    pub fn new_for_test(plc_directory_url: String) -> Self {
-        Self {
-            client: Client::builder()
-                .timeout(Duration::from_secs(30))
-                .build()
-                .unwrap_or_else(|_| Client::new()),
-            plc_directory_url,
-        }
-    }
-
-    /// Returns the plc.directory base URL.
-    pub fn plc_directory_url(&self) -> &str {
-        &self.plc_directory_url
-    }
-
-    /// Returns a reference to the inner HTTP client.
-    pub fn client(&self) -> &Client {
-        &self.client
-    }
-
-    /// Resolve a handle to a DID via DNS TXT lookup with HTTP fallback.
-    ///
-    /// Attempts DNS TXT lookup for `_atproto.{handle}` first, then falls back to HTTP
-    /// `/.well-known/atproto-did` if DNS fails or returns no records.
-    /// Returns `HANDLE_NOT_FOUND` only when both methods fail.
-    pub async fn resolve_handle(&self, handle: &str) -> Result<String, PdsClientError> {
-        // Try DNS TXT lookup first
-        let dns_error = match try_resolve_dns(handle).await {
-            Ok(Some(did)) => return Ok(did),
-            Ok(None) => None,
-            Err(e) => Some(e),
-        };
-
-        // Try HTTP well-known lookup
-        let http_url = format!("https://{}/.well-known/atproto-did", handle);
-        match try_resolve_http(&self.client, &http_url).await {
-            Ok(Some(did)) => return Ok(did),
-            Ok(None) => {
-                // Both DNS and HTTP failed; if DNS had a transport error, surface it
-                if let Some(dns_err) = dns_error {
-                    return Err(dns_err);
-                }
-            }
-            Err(e) => return Err(e),
-        }
-
-        // Neither DNS nor HTTP succeeded (both returned "not found", no transport errors)
-        Err(PdsClientError::HandleNotFound)
-    }
-
-    /// Fetch the DID document from plc.directory and extract the PDS endpoint.
-    ///
-    /// Fetches the DID document from plc.directory, extracts the atproto_pds service
-    /// endpoint, and verifies it is reachable via a HEAD request.
-    /// Returns `DID_NOT_FOUND` on 404, `PDS_UNREACHABLE` if the endpoint is down.
-    pub async fn discover_pds(
-        &self,
-        did: &str,
-    ) -> Result<(String, PlcDidDocument), PdsClientError> {
-        // A did:web document lives at the domain itself, not plc.directory. Hostname-form
-        // identifiers only (the shape the wallet composes): a colon would smuggle a port or
-        // path segment into the URL, so those shapes are refused rather than misresolved.
-        let url = if let Some(host) = did.strip_prefix("did:web:") {
-            if host.is_empty() || host.contains([':', '/', '@']) {
-                return Err(PdsClientError::InvalidResponse {
-                    message: "unsupported did:web identifier".to_string(),
-                });
-            }
-            format!("https://{}/.well-known/did.json", host.to_ascii_lowercase())
-        } else {
-            format!("{}/{}", self.plc_directory_url, did)
-        };
-
-        // Fetch the DID document from plc.directory
-        let response = self.client.get(&url).send().await.map_err(|e| {
-            note_transport_failure("discover_pds", Some(&url), &e);
-            PdsClientError::NetworkError {
-                message: format!("failed to fetch DID document: {}", e),
-            }
-        })?;
-
-        if response.status().as_u16() == 404 {
-            return Err(PdsClientError::DidNotFound);
-        }
-
-        // Parse W3C DID Document and convert to PlcDidDocument. Status-classified like the
-        // other plc.directory reads: a throttle or outage verdict is preserved for callers
-        // instead of flattening to a transport error. rotation_keys will be empty —
-        // callers that need them must fetch the audit log.
-        let w3c_doc: W3cDidDocument = xrpc_json("discover_pds", response).await?;
-        let doc = w3c_doc.into_plc_doc();
-
-        // Extract the atproto_pds service
-        let pds_service =
-            doc.services
-                .get("atproto_pds")
-                .ok_or_else(|| PdsClientError::InvalidResponse {
-                    message: "missing atproto_pds service".to_string(),
-                })?;
-
-        let pds_endpoint = &pds_service.endpoint;
-
-        // Verify PDS reachability with a HEAD request (5-second timeout)
-        self.client
-            .head(pds_endpoint)
-            .timeout(Duration::from_secs(5))
-            .send()
-            .await
-            .map_err(|e| {
-                note_transport_failure("discover_pds", Some(pds_endpoint), &e);
-                PdsClientError::PdsUnreachable {
-                    reason: format!("failed to reach PDS endpoint: {}", e),
-                }
-            })?;
-
-        Ok((pds_endpoint.to_string(), doc))
-    }
-
-    /// Discover the OAuth authorization server for a PDS.
-    ///
-    /// Follows RFC 9728 (OAuth Protected Resource Metadata):
-    /// 1. Try `GET {pds_url}/.well-known/oauth-protected-resource` to find the
-    ///    authorization server URL (e.g. Bluesky entryway at `bsky.social`)
-    /// 2. Fetch `GET {auth_server}/.well-known/oauth-authorization-server`
-    /// 3. Fall back to `GET {pds_url}/.well-known/oauth-authorization-server`
-    ///    if the protected resource endpoint doesn't exist (self-hosted PDS)
-    ///
-    /// Validates that the metadata includes "code" in `response_types_supported`
-    /// and "S256" in `code_challenge_methods_supported`.
-    pub async fn discover_auth_server(
-        &self,
-        pds_url: &str,
-    ) -> Result<AuthServerMetadata, PdsClientError> {
-        // Step 1: Try protected resource metadata to find the auth server
-        let auth_server_base = self.discover_protected_resource_auth_server(pds_url).await;
-
-        let metadata_base = match &auth_server_base {
-            Some(server) => {
-                tracing::debug!(auth_server = %server, "using authorization server from protected resource metadata");
-                server.as_str()
-            }
-            None => {
-                tracing::debug!(pds_url = %pds_url, "no protected resource metadata, falling back to PDS directly");
-                pds_url
-            }
-        };
-
-        // Step 2: Fetch the OAuth authorization server metadata
-        let url = format!("{}/.well-known/oauth-authorization-server", metadata_base);
-        tracing::debug!(url = %url, "fetching OAuth authorization server metadata");
-
-        let response = self.client.get(&url).send().await.map_err(|e| {
-            tracing::error!(url = %url, error = %e, "OAuth metadata fetch failed");
-            note_transport_failure("discover_auth_server", Some(&url), &e);
-            PdsClientError::NetworkError {
-                message: format!("failed to fetch OAuth metadata: {}", e),
-            }
-        })?;
-
-        if !response.status().is_success() {
-            tracing::error!(url = %url, status = %response.status(), "OAuth metadata returned non-success");
-            return Err(PdsClientError::InvalidResponse {
-                message: format!(
-                    "OAuth metadata fetch returned {} from {}",
-                    response.status(),
-                    metadata_base
-                ),
-            });
-        }
-
-        let metadata: AuthServerMetadata = response.json().await.map_err(|e| {
-            tracing::error!(url = %url, error = %e, "OAuth metadata parsing failed");
-            PdsClientError::InvalidResponse {
-                message: format!("failed to parse OAuth metadata: {}", e),
-            }
-        })?;
-        tracing::debug!(issuer = %metadata.issuer, "OAuth metadata parsed");
-
-        // Validate required capabilities
-        if !metadata
-            .response_types_supported
-            .contains(&"code".to_string())
-        {
-            return Err(PdsClientError::InvalidResponse {
-                message: "OAuth metadata missing 'code' in response_types_supported".to_string(),
-            });
-        }
-
-        if !metadata
-            .code_challenge_methods_supported
-            .contains(&"S256".to_string())
-        {
-            return Err(PdsClientError::InvalidResponse {
-                message: "OAuth metadata missing 'S256' in code_challenge_methods_supported"
-                    .to_string(),
-            });
-        }
-
-        Ok(metadata)
-    }
-
-    /// Fetch the server description from a PDS.
-    ///
-    /// Gets `GET {pds_url}/xrpc/com.atproto.server.describeServer` (public, no auth).
-    /// This is used as a destination reachability probe (`prepare_migration`) and to
-    /// obtain the destination server's DID for service-auth requests.
-    /// Maps connection failure / non-2xx to `PdsClientError::PdsUnreachable`.
-    pub async fn describe_server(
-        &self,
-        pds_url: &str,
-    ) -> Result<DescribeServerResponse, PdsClientError> {
-        let url = format!(
-            "{}/xrpc/com.atproto.server.describeServer",
-            pds_url.trim_end_matches('/')
-        );
-
-        let response = self
-            .client
-            .get(&url)
-            .timeout(Duration::from_secs(30))
-            .send()
-            .await
-            .map_err(|e| {
-                note_transport_failure("describeServer", Some(&url), &e);
-                PdsClientError::PdsUnreachable {
-                    reason: format!("failed to reach PDS: {}", e),
-                }
-            })?;
-
-        if !response.status().is_success() {
-            return Err(PdsClientError::PdsUnreachable {
-                reason: format!("describeServer returned {}", response.status()),
-            });
-        }
-
-        let described = response
-            .json::<DescribeServerResponse>()
-            .await
-            .map_err(|e| {
-                note_transport_failure("describeServer", Some(&url), &e);
-                PdsClientError::PdsUnreachable {
-                    reason: format!("failed to parse describeServer response: {}", e),
-                }
-            })?;
-
-        // Warm the per-host capability cache from every describeServer call, wherever it
-        // was made from (migration prepare, handle change, consent, sovereign login). The
-        // probe and the cache are then the same fetch rather than a second round trip.
-        crate::pds_capabilities::record(pds_url, described.custos.as_ref());
-
-        Ok(described)
-    }
-
-    /// Create a full password session against a PDS (`com.atproto.server.createSession`).
-    ///
-    /// This is the source-PDS login for the claim (inbound-migration) flow. Unlike OAuth,
-    /// a password `createSession` yields a **full-access** session (`com.atproto.access`), the
-    /// only credential class that can drive PLC operations on a spec-strict PDS like bsky.social.
-    /// The `identifier` is a handle, DID, or email; the `password` must be the account's
-    /// real password (an app password is a lesser scope and is rejected the same way).
-    ///
-    /// The password is used for this single request and never persisted — the caller keeps only
-    /// the returned JWTs (in an in-memory Bearer `OAuthClient`).
-    ///
-    /// `auth_factor_token` carries the email one-time code for accounts with 2FA enabled. Pass
-    /// `None` on the first attempt; a 2FA account then answers with `AuthFactorTokenRequired`
-    /// ([`PdsClientError::AuthFactorTokenRequired`]) and emails a code — retry with that code as
-    /// `Some`. Any other 401 maps to [`PdsClientError::InvalidCredentials`] ("wrong password").
-    pub async fn create_session(
-        &self,
-        pds_url: &str,
-        identifier: &str,
-        password: &str,
-        auth_factor_token: Option<&str>,
-    ) -> Result<CreateSessionResponse, PdsClientError> {
-        // Never send the account password over a plaintext link. `pds_url` comes from the DID
-        // document, so a misconfigured or hostile `http://` endpoint must be refused here.
-        if !pds_url_is_password_safe(pds_url) {
-            tracing::error!(pds_url = %pds_url, "refusing to send password to a non-HTTPS PDS");
-            return Err(PdsClientError::InsecurePdsUrl {
-                url: pds_url.to_string(),
-            });
-        }
-
-        let url = format!(
-            "{}/xrpc/com.atproto.server.createSession",
-            pds_url.trim_end_matches('/')
-        );
-
-        let mut request_body = serde_json::json!({
-            "identifier": identifier,
-            "password": password,
-        });
-        if let Some(token) = auth_factor_token {
-            request_body["authFactorToken"] = serde_json::Value::String(token.to_string());
-        }
-
-        let response = self
-            .client
-            .post(&url)
-            .timeout(Duration::from_secs(30))
-            .json(&request_body)
-            .send()
-            .await
-            .map_err(|e| {
-                note_transport_failure("createSession", Some(&url), &e);
-                PdsClientError::NetworkError {
-                    message: format!("createSession request failed: {}", e),
-                }
-            })?;
-
-        let status = response.status();
-        if status.as_u16() == 401 {
-            let body = response
-                .text()
-                .await
-                .unwrap_or_else(|_| "(response body unreadable)".to_string());
-            // An account with email 2FA answers a token-less attempt with `AuthFactorTokenRequired`
-            // (and emails a code) — distinct from a wrong password, so the UI can prompt for the
-            // code instead of blaming the password.
-            if error_code_is(&body, "AuthFactorTokenRequired") {
-                return Err(PdsClientError::AuthFactorTokenRequired);
-            }
-            return Err(PdsClientError::InvalidCredentials { message: body });
-        }
-        if !status.is_success() {
-            // 401 is already handled above (wrong password / 2FA). Anything else — a 429 rate
-            // limit, a 400 validation error — is classified so its real reason survives.
-            return Err(classify_xrpc_response("createSession", response).await);
-        }
-
-        response.json::<CreateSessionResponse>().await.map_err(|e| {
-            PdsClientError::InvalidResponse {
-                message: format!("failed to parse createSession response: {}", e),
-            }
-        })
-    }
-
-    /// Try to discover the authorization server URL from the PDS's protected
-    /// resource metadata (RFC 9728). Returns `None` if the endpoint doesn't
-    /// exist or can't be parsed — the caller should fall back to the PDS URL.
-    async fn discover_protected_resource_auth_server(&self, pds_url: &str) -> Option<String> {
-        let url = format!("{}/.well-known/oauth-protected-resource", pds_url);
-        tracing::debug!(url = %url, "checking protected resource metadata");
-
-        let response = match self.client.get(&url).send().await {
-            Ok(r) if r.status().is_success() => r,
-            Ok(r) => {
-                tracing::debug!(url = %url, status = %r.status(), "protected resource metadata not available");
-                return None;
-            }
-            Err(e) => {
-                tracing::debug!(url = %url, error = %e, "protected resource metadata fetch failed");
-                return None;
-            }
-        };
-
-        #[derive(serde::Deserialize)]
-        struct ProtectedResource {
-            #[serde(default)]
-            authorization_servers: Vec<String>,
-        }
-
-        match response.json::<ProtectedResource>().await {
-            Ok(pr) => {
-                let server = pr.authorization_servers.into_iter().next();
-                if let Some(ref s) = server {
-                    tracing::debug!(auth_server = %s, "found authorization server in protected resource metadata");
-                }
-                server
-            }
-            Err(e) => {
-                tracing::debug!(url = %url, error = %e, "failed to parse protected resource metadata");
-                None
-            }
-        }
-    }
-
-    /// Perform a Pushed Authorization Request to an arbitrary PDS.
-    ///
-    /// Sends a PAR request with PKCE challenge, DPoP proof, and optional login_hint.
-    pub async fn pds_par(
-        &self,
-        metadata: &AuthServerMetadata,
-        request: PdsParRequest<'_>,
-    ) -> Result<PdsParResponse, PdsClientError> {
-        let par_url = metadata
-            .pushed_authorization_request_endpoint
-            .clone()
-            .unwrap_or_else(|| format!("{}/oauth/par", metadata.issuer));
-
-        let mut form_data = vec![
-            ("response_type", "code".to_string()),
-            ("code_challenge_method", "S256".to_string()),
-            ("code_challenge", request.pkce_challenge.to_string()),
-            ("state", request.state_param.to_string()),
-            ("client_id", request.client_id.to_string()),
-            ("redirect_uri", REDIRECT_URI.to_string()),
-            ("scope", "atproto transition:generic".to_string()),
-            ("dpop_jkt", request.dpop_jkt.to_string()),
-        ];
-
-        if let Some(hint) = request.login_hint {
-            form_data.push(("login_hint", hint.to_string()));
-        }
-
-        let response = self
-            .client
-            .post(&par_url)
-            .header("DPoP", request.dpop_proof)
-            .form(&form_data)
-            .send()
-            .await
-            .map_err(|e| {
-                note_transport_failure("pds_par", Some(&par_url), &e);
-                PdsClientError::NetworkError {
-                    message: format!("PAR request failed: {}", e),
-                }
-            })?;
-
-        let status = response.status();
-        if !status.is_success() {
-            let error_body = response
-                .text()
-                .await
-                .unwrap_or_else(|_| "(response body unreadable)".to_string());
-            // Surface the AS's own OAuth error — a PAR rejection (e.g. bsky.social's
-            // invalid_redirect_uri) must reach the caller as more than a status code.
-            return Err(PdsClientError::OauthFailed {
-                message: par_rejection_message(status, &error_body),
-            });
-        }
-
-        let json_resp =
-            response
-                .json::<PdsParResponse>()
-                .await
-                .map_err(|e| PdsClientError::OauthFailed {
-                    message: format!("failed to parse PAR response: {}", e),
-                })?;
-
-        Ok(json_resp)
-    }
-
-    /// Exchange authorization code for tokens at an arbitrary PDS.
-    ///
-    /// Returns the raw response so the caller can handle nonce retry logic.
-    /// Only transport-level failures are mapped to PdsClientError; HTTP error statuses
-    /// are returned as-is for the caller to inspect.
-    pub async fn pds_token_exchange(
-        &self,
-        metadata: &AuthServerMetadata,
-        code: &str,
-        pkce_verifier: &str,
-        dpop_proof: &str,
-        client_id: &str,
-    ) -> Result<reqwest::Response, PdsClientError> {
-        let token_url = &metadata.token_endpoint;
-
-        let form_data = vec![
-            ("grant_type", "authorization_code"),
-            ("code", code),
-            ("redirect_uri", REDIRECT_URI),
-            ("code_verifier", pkce_verifier),
-            ("client_id", client_id),
-        ];
-
-        self.client
-            .post(token_url)
-            .header("DPoP", dpop_proof)
-            .form(&form_data)
-            .send()
-            .await
-            .map_err(|e| {
-                note_transport_failure("pds_token_exchange", Some(token_url), &e);
-                PdsClientError::OauthFailed {
-                    message: format!("token exchange request failed: {}", e),
-                }
-            })
-    }
-
-    /// Build the browser redirect URL for OAuth authorization.
-    ///
-    /// Constructs `{authorization_endpoint}?client_id=...&request_uri=...` with optional login_hint.
-    pub fn build_pds_authorize_url(
-        metadata: &AuthServerMetadata,
-        request_uri: &str,
-        login_hint: Option<&str>,
-        client_id: &str,
-    ) -> String {
-        let mut url = format!(
-            "{}?client_id={}&request_uri={}",
-            metadata.authorization_endpoint,
-            urlencoding::encode(client_id),
-            urlencoding::encode(request_uri)
-        );
-
-        if let Some(hint) = login_hint {
-            url.push_str(&format!("&login_hint={}", urlencoding::encode(hint)));
-        }
-
-        url
-    }
-
-    /// Fetch the PLC operation audit log for a DID.
-    ///
-    /// Calls `GET {plc_directory_url}/{did}/log/audit` and returns the raw JSON string.
-    pub async fn fetch_audit_log(&self, did: &str) -> Result<String, PdsClientError> {
-        let url = format!("{}/{}/log/audit", self.plc_directory_url, did);
-        let resp = self.client.get(&url).send().await.map_err(|e| {
-            note_transport_failure("fetch_audit_log", Some(&url), &e);
-            PdsClientError::NetworkError {
-                message: format!("failed to fetch audit log: {}", e),
-            }
-        })?;
-
-        if resp.status().as_u16() == 404 {
-            return Err(PdsClientError::DidNotFound);
-        }
-        // A non-2xx is plc.directory's verdict (429 throttle, 5xx outage), not a
-        // connectivity problem — classify by status so callers can say which it was.
-        let resp = xrpc_ok("fetch_audit_log", resp).await?;
-
-        resp.text().await.map_err(|e| {
-            note_transport_failure("fetch_audit_log", Some(&url), &e);
-            PdsClientError::NetworkError {
-                message: format!("failed to read audit log response: {}", e),
-            }
-        })
-    }
-
-    /// Fetch the PLC *data* document for a DID.
-    ///
-    /// Calls `GET {plc_directory_url}/{did}/data` — the PLC-native shape
-    /// (`did, alsoKnownAs, rotationKeys, verificationMethods, services`), which is
-    /// what the per-identity DID-doc cache stores and its readers (the home card's
-    /// `rotationKeys[0]` custody badge, `extractPdsFromPlcDoc`) parse. The W3C
-    /// document (`GET /{did}`) carries no `rotationKeys` and must never be cached.
-    pub async fn fetch_plc_data_document(
-        &self,
-        did: &str,
-    ) -> Result<serde_json::Value, PdsClientError> {
-        let url = format!("{}/{}/data", self.plc_directory_url, did);
-        let resp = self.client.get(&url).send().await.map_err(|e| {
-            note_transport_failure("fetch_plc_data_document", Some(&url), &e);
-            PdsClientError::NetworkError {
-                message: format!("failed to fetch PLC data document: {}", e),
-            }
-        })?;
-
-        if resp.status().as_u16() == 404 {
-            return Err(PdsClientError::DidNotFound);
-        }
-        // Same status-classification as `fetch_audit_log`: a 429/5xx from plc.directory
-        // must not read as "check your connection".
-        let resp = xrpc_ok("fetch_plc_data_document", resp).await?;
-
-        resp.json().await.map_err(|e| {
-            note_transport_failure("fetch_plc_data_document", Some(&url), &e);
-            PdsClientError::NetworkError {
-                message: format!("failed to parse PLC data document: {}", e),
-            }
-        })
-    }
-
-    /// Submit a signed PLC operation to plc.directory.
-    ///
-    /// Calls `POST {plc_directory_url}/{did}` with the signed operation as JSON body.
-    pub async fn post_plc_operation(
-        &self,
-        did: &str,
-        operation: &serde_json::Value,
-    ) -> Result<(), PdsClientError> {
-        let url = format!("{}/{}", self.plc_directory_url, did);
-        let resp = self
-            .client
-            .post(&url)
-            .json(operation)
-            .send()
-            .await
-            .map_err(|e| {
-                note_transport_failure("post_plc_operation", Some(&url), &e);
-                PdsClientError::NetworkError {
-                    message: format!("failed to post plc operation: {}", e),
-                }
-            })?;
-
-        if resp.status().is_success() {
-            Ok(())
-        } else if resp.status().as_u16() == 429 {
-            // A throttle is not a rejection of the operation — surface it as the retryable
-            // condition it is, with the server's pacing hint.
-            Err(classify_xrpc_response("post_plc_operation", resp).await)
-        } else {
-            let body = resp
-                .text()
-                .await
-                .unwrap_or_else(|_| "(response body unreadable)".to_string());
-            Err(PdsClientError::InvalidResponse {
-                message: format!("plc.directory rejected operation: {}", body),
-            })
-        }
-    }
-
-    /// Fetch the full repo as a CAR file (auth: none).
-    ///
-    /// Calls `GET {pds_url}/xrpc/com.atproto.sync.getRepo?did={did}` and returns the raw CAR bytes.
-    /// No Authorization header is sent.
-    pub async fn fetch_repo_car(
-        &self,
-        pds_url: &str,
-        did: &str,
-    ) -> Result<Vec<u8>, PdsClientError> {
-        let url = format!(
-            "{}/xrpc/com.atproto.sync.getRepo?did={}",
-            pds_url.trim_end_matches('/'),
-            urlencoding::encode(did)
-        );
-
-        // A full repo CAR can be large; override the shared 30s client timeout so a slow bulk
-        // download doesn't fail mid-stream.
-        let resp = self
-            .client
-            .get(&url)
-            .timeout(Duration::from_secs(300))
-            .send()
-            .await
-            .map_err(|e| {
-                note_transport_failure("getRepo", Some(&url), &e);
-                PdsClientError::NetworkError {
-                    message: format!("failed to fetch repo CAR: {}", e),
-                }
-            })?;
-
-        let resp = xrpc_ok("getRepo", resp).await?;
-
-        resp.bytes().await.map(|b| b.to_vec()).map_err(|e| {
-            note_transport_failure("getRepo", Some(&url), &e);
-            PdsClientError::NetworkError {
-                message: format!("failed to read repo CAR bytes: {}", e),
-            }
-        })
-    }
-
-    /// Fetch a blob by DID and CID (auth: none).
-    ///
-    /// Calls `GET {pds_url}/xrpc/com.atproto.sync.getBlob?did={did}&cid={cid}` and returns the raw blob bytes.
-    /// No Authorization header is sent.
-    pub async fn fetch_blob(
-        &self,
-        pds_url: &str,
-        did: &str,
-        cid: &str,
-    ) -> Result<Vec<u8>, PdsClientError> {
-        self.fetch_blob_with_type(pds_url, did, cid)
-            .await
-            .map(|(bytes, _)| bytes)
-    }
-
-    /// Fetch a blob by DID and CID, also returning the server's `Content-Type` (auth: none).
-    ///
-    /// Same call as [`fetch_blob`](Self::fetch_blob), but preserves the response's
-    /// `Content-Type` header — the only place the blob's MIME type is available on the
-    /// public sync surface (`listBlobs` yields bare CIDs). The blob-backup manifest
-    /// records it so a later `uploadBlob` restore can replay the original type.
-    pub async fn fetch_blob_with_type(
-        &self,
-        pds_url: &str,
-        did: &str,
-        cid: &str,
-    ) -> Result<(Vec<u8>, Option<String>), PdsClientError> {
-        let url = format!(
-            "{}/xrpc/com.atproto.sync.getBlob?did={}&cid={}",
-            pds_url.trim_end_matches('/'),
-            urlencoding::encode(did),
-            urlencoding::encode(cid)
-        );
-
-        // Blobs (images/video) can be large; override the shared 30s client timeout for the download.
-        let resp = self
-            .client
-            .get(&url)
-            .timeout(Duration::from_secs(300))
-            .send()
-            .await
-            .map_err(|e| {
-                note_transport_failure("getBlob", Some(&url), &e);
-                PdsClientError::NetworkError {
-                    message: format!("failed to fetch blob: {}", e),
-                }
-            })?;
-
-        let resp = xrpc_ok("getBlob", resp).await?;
-
-        // Capture the header before the body read consumes the response.
-        let content_type = resp
-            .headers()
-            .get(reqwest::header::CONTENT_TYPE)
-            .and_then(|v| v.to_str().ok())
-            .map(str::to_string);
-
-        resp.bytes()
-            .await
-            .map(|b| (b.to_vec(), content_type))
-            .map_err(|e| {
-                note_transport_failure("getBlob", Some(&url), &e);
-                PdsClientError::NetworkError {
-                    message: format!("failed to read blob bytes: {}", e),
-                }
-            })
-    }
-
-    /// List a DID's blob CIDs on its PDS, one page (auth: none).
-    ///
-    /// Calls `GET {pds_url}/xrpc/com.atproto.sync.listBlobs?did={did}&cursor={cursor}`.
-    /// This is the source-side listing the blob-backup sync pass paginates (distinct
-    /// from the authenticated destination-side `listMissingBlobs` the migration drain
-    /// uses); the response is bare CIDs plus an optional cursor.
-    pub async fn list_blobs(
-        &self,
-        pds_url: &str,
-        did: &str,
-        cursor: Option<&str>,
-    ) -> Result<ListedBlobs, PdsClientError> {
-        let mut url = format!(
-            "{}/xrpc/com.atproto.sync.listBlobs?did={}",
-            pds_url.trim_end_matches('/'),
-            urlencoding::encode(did)
-        );
-        if let Some(cur) = cursor {
-            url.push_str(&format!("&cursor={}", urlencoding::encode(cur)));
-        }
-
-        let resp = self.client.get(&url).send().await.map_err(|e| {
-            note_transport_failure("listBlobs", Some(&url), &e);
-            PdsClientError::NetworkError {
-                message: format!("failed to list blobs: {}", e),
-            }
-        })?;
-
-        xrpc_json("listBlobs", resp).await
-    }
-
-    /// Reserve a signing key on the PDS (auth: none, idempotent per DID).
-    ///
-    /// Calls `POST {pds_url}/xrpc/com.atproto.server.reserveSigningKey` with body `{"did": did}`,
-    /// or an empty body when `did` is `None`. Returns the `signingKey` field from the response (a
-    /// did:key string).
-    ///
-    /// `None` is the *anonymous* reservation, for a key that has to exist before the DID it will
-    /// belong to does: the child-account mint has to name a repo-signing key inside the genesis op
-    /// whose hash becomes the child's DID. Anonymous reservations are rate-limited per IP and are
-    /// not idempotent — each call yields a fresh key.
-    pub async fn reserve_signing_key(
-        &self,
-        pds_url: &str,
-        did: Option<&str>,
-    ) -> Result<String, PdsClientError> {
-        let url = format!(
-            "{}/xrpc/com.atproto.server.reserveSigningKey",
-            pds_url.trim_end_matches('/')
-        );
-
-        let body = match did {
-            Some(did) => serde_json::json!({ "did": did }),
-            None => serde_json::json!({}),
-        };
-        let resp = self
-            .client
-            .post(&url)
-            .json(&body)
-            .send()
-            .await
-            .map_err(|e| {
-                note_transport_failure("reserveSigningKey", Some(&url), &e);
-                PdsClientError::NetworkError {
-                    message: format!("failed to reserve signing key: {}", e),
-                }
-            })?;
-
-        let resp = xrpc_ok("reserveSigningKey", resp).await?;
-
-        #[derive(Deserialize)]
-        struct ReserveSigningKeyResponse {
-            #[serde(rename = "signingKey")]
-            signing_key: String,
-        }
-
-        resp.json::<ReserveSigningKeyResponse>()
-            .await
-            .map(|r| r.signing_key)
-            .map_err(|e| {
-                note_transport_failure("reserveSigningKey", Some(&url), &e);
-                PdsClientError::NetworkError {
-                    message: format!("failed to parse reserve_signing_key response: {}", e),
-                }
-            })
-    }
-
-    /// Permanently delete an account on its PDS (auth: none — the credentials are in the body).
-    ///
-    /// Calls `POST {pds_url}/xrpc/com.atproto.server.deleteAccount` with `{ did, password, token }`,
-    /// where `token` is the single-use code minted by `requestAccountDelete` and emailed to the
-    /// account. The PDS purges all local account data and emits an `#account` (`status="deleted"`)
-    /// firehose frame; it does NOT touch the did:plc identity (the wallet tombstones that
-    /// separately). Not session-authed, so no `OAuthClient` is needed — but a credential travels in
-    /// the body either way, so the endpoint is refused over a non-HTTPS URL (loopback excepted),
-    /// same guard as the password `createSession` path.
-    ///
-    /// `credential` selects the first factor. [`DeleteCredential::Proof`] additionally sends the
-    /// off-lexicon `custos.proof` object, and sends `password` as the empty string — the vendored
-    /// lexicon marks the field required, so it stays on the wire even for an account that has no
-    /// password. Only a host advertising `walletAccountDelete` reads it.
-    pub async fn delete_account(
-        &self,
-        pds_url: &str,
-        did: &str,
-        credential: &DeleteCredential,
-        token: &str,
-    ) -> Result<(), PdsClientError> {
-        if !pds_url_is_password_safe(pds_url) {
-            return Err(PdsClientError::InsecurePdsUrl {
-                url: pds_url.to_string(),
-            });
-        }
-
-        let url = format!(
-            "{}/xrpc/com.atproto.server.deleteAccount",
-            pds_url.trim_end_matches('/')
-        );
-        let mut body = serde_json::json!({
-            "did": did,
-            "password": credential.password_field(),
-            "token": token,
-        });
-        if let DeleteCredential::Proof(proof) = credential {
-            body["custos"] = serde_json::json!({ "proof": proof });
-        }
-        let resp = self
-            .client
-            .post(&url)
-            .json(&body)
-            .send()
-            .await
-            .map_err(|e| {
-                note_transport_failure("deleteAccount", Some(&url), &e);
-                PdsClientError::NetworkError {
-                    message: format!("delete_account failed: {}", e),
-                }
-            })?;
-
-        xrpc_ok("deleteAccount", resp).await.map(|_| ())
-    }
-}
-
-impl Default for PdsClient {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-// ============================================================================
-// Public helpers
-// ============================================================================
-
-/// Extract rotation keys from the latest entry in a raw PLC audit log JSON string.
-/// Returns an empty Vec if parsing fails or the log has no entries.
-pub fn rotation_keys_from_audit_log(raw_json: &str) -> Vec<String> {
-    let entries: Vec<serde_json::Value> = match serde_json::from_str(raw_json) {
-        Ok(v) => v,
-        Err(_) => return Vec::new(),
-    };
-    entries
-        .last()
-        .and_then(|entry| entry.get("operation"))
-        .and_then(|op| op.get("rotationKeys"))
-        .and_then(|keys| keys.as_array())
-        .map(|arr| {
-            arr.iter()
-                .filter_map(|v| v.as_str().map(String::from))
-                .collect()
-        })
-        .unwrap_or_default()
-}
-
-// ============================================================================
-// Helper functions for resolve_handle
-// ============================================================================
-
-/// DNS TXT lookup for `_atproto.{handle}`. Returns `Ok(Some(did))` on success,
-/// `Ok(None)` if no matching TXT record found, `Err` on transport failure.
-///
-/// `pub(crate)` for the change-handle DNS pre-flight, which reports this wallet-side
-/// vantage separately from the hosting PDS's resolution.
+/// [`custos_client::pds_client::try_resolve_dns`], wired to this app's diagnostics observer.
+/// Used by the change-handle DNS pre-flight to report this wallet-side vantage separately
+/// from the hosting PDS's own resolution.
 pub(crate) async fn try_resolve_dns(handle: &str) -> Result<Option<String>, PdsClientError> {
-    let dns_name = format!("_atproto.{}", handle);
-    tracing::debug!(dns_name = %dns_name, "attempting DNS TXT lookup");
-
-    // Create a resolver using system DNS config (matches PDS pattern in dns.rs:49)
-    let resolver = hickory_resolver::Resolver::builder_tokio()
-        .map_err(|e| PdsClientError::NetworkError {
-            message: format!("failed to create DNS resolver: {}", e),
-        })?
-        .build()
-        .map_err(|e| PdsClientError::NetworkError {
-            message: format!("failed to build DNS resolver: {}", e),
-        })?;
-
-    match resolver.txt_lookup(&dns_name).await {
-        Ok(lookup) => {
-            // Iterate through TXT records and find one starting with "did="
-            for record in lookup.answers() {
-                let hickory_resolver::proto::rr::RData::TXT(txt) = &record.data else {
-                    continue;
-                };
-                for part in txt.txt_data.iter() {
-                    match std::str::from_utf8(part) {
-                        Ok(s) => {
-                            if let Some(did_value) = s.strip_prefix("did=") {
-                                let did = did_value.trim().to_string();
-                                tracing::debug!(did = %did, "DNS TXT resolved");
-                                return Ok(Some(did));
-                            }
-                        }
-                        Err(_) => {
-                            // Non-UTF-8 bytes in TXT record; skip
-                        }
-                    }
-                }
-            }
-            tracing::debug!(dns_name = %dns_name, "no did= TXT record found");
-            Ok(None)
-        }
-        Err(e) => {
-            // Check if it's a "no records found" error (normal for unregistered handles)
-            // vs. a transport error (network failure)
-            if e.is_no_records_found() {
-                tracing::debug!(dns_name = %dns_name, "no DNS TXT records found");
-                Ok(None)
-            } else {
-                tracing::warn!(dns_name = %dns_name, error = %e, "DNS TXT lookup failed");
-                // Host is omitted: the DNS name embeds the handle, which the diagnostics log
-                // must never capture. The fixed `"dns"` category is enough to show the class.
-                crate::diagnostics::record_transport("resolve_handle_dns", None, "dns");
-                Err(PdsClientError::NetworkError {
-                    message: format!("DNS lookup failed: {}", e),
-                })
-            }
-        }
-    }
-}
-
-/// HTTP well-known fetch. `GET {url}` and return trimmed body on 2xx,
-/// `Ok(None)` on 4xx (handle not found), `Err(NetworkError)` on transport or 5xx.
-/// The caller constructs the full URL.
-async fn try_resolve_http(
-    client: &reqwest::Client,
-    url: &str,
-) -> Result<Option<String>, PdsClientError> {
-    tracing::debug!(url = %url, "attempting HTTP well-known lookup");
-    match client.get(url).send().await {
-        Ok(response) => {
-            if response.status().is_success() {
-                match response.text().await {
-                    Ok(body) => {
-                        tracing::debug!(url = %url, did = %body.trim(), "HTTP well-known resolved");
-                        Ok(Some(body.trim().to_string()))
-                    }
-                    Err(e) => {
-                        tracing::warn!(url = %url, error = %e, "HTTP well-known body read failed");
-                        // Host omitted: the well-known URL's host IS the handle domain.
-                        note_transport_failure("resolve_handle_http", None, &e);
-                        Err(PdsClientError::NetworkError {
-                            message: format!("failed to read response body: {}", e),
-                        })
-                    }
-                }
-            } else if response.status().is_client_error() {
-                // 4xx = handle not found at this endpoint
-                tracing::debug!(url = %url, status = %response.status(), "HTTP well-known not found");
-                Ok(None)
-            } else {
-                // 5xx = temporary server error
-                tracing::warn!(url = %url, status = %response.status(), "HTTP well-known server error");
-                Err(PdsClientError::NetworkError {
-                    message: format!("server error from {}: {}", url, response.status()),
-                })
-            }
-        }
-        Err(e) => {
-            tracing::warn!(url = %url, error = %e, "HTTP well-known request failed");
-            // Host omitted: the well-known URL's host IS the handle domain.
-            note_transport_failure("resolve_handle_http", None, &e);
-            Err(PdsClientError::NetworkError {
-                message: format!("HTTP request failed: {}", e),
-            })
-        }
-    }
+    custos_client::pds_client::try_resolve_dns(handle, &crate::oauth::WalletTransportObserver).await
 }
 
 // ============================================================================
@@ -1701,7 +371,7 @@ mod tests {
     #[test]
     fn test_pds_client_default() {
         let client = PdsClient::default();
-        assert_eq!(client.plc_directory_url, "https://plc.directory");
+        assert_eq!(client.plc_directory_url(), "https://plc.directory");
     }
 
     /// The client_id is the fixed canonical URL for every non-loopback Custos — the
@@ -1746,86 +416,9 @@ mod tests {
         assert_eq!(CALLBACK_SCHEME, reversed);
     }
 
-    /// A failed PAR surfaces the AS's own error/error_description; non-OAuth bodies
-    /// fall back to the raw status + body.
-    #[test]
-    fn par_rejection_message_extracts_oauth_error() {
-        let status = reqwest::StatusCode::BAD_REQUEST;
-        assert_eq!(
-            par_rejection_message(
-                status,
-                r#"{"error":"invalid_redirect_uri","error_description":"scheme mismatch"}"#
-            ),
-            "invalid_redirect_uri: scheme mismatch"
-        );
-        assert_eq!(
-            par_rejection_message(status, r#"{"error":"invalid_request"}"#),
-            "invalid_request"
-        );
-        assert_eq!(
-            par_rejection_message(status, "<html>gateway error</html>"),
-            "PAR returned 400 Bad Request: <html>gateway error</html>"
-        );
-    }
-
-    // ── XRPC error classification ───────────────────────────────────────────
-    //
-    // The pure classification unit tests (`parse_xrpc_error_envelope`, `classify_xrpc_error`)
-    // now live in `custos_client`'s own test suite — this file keeps only the integration-level
-    // checks below, which exercise this app's `xrpc_json`/`PdsClient` call paths against a real
-    // mock server rather than re-testing the crate's pure functions directly.
-
-    /// `xrpc_json` is the shared tail every migrated call site now routes through: a non-2xx
-    /// response classifies through `classify_xrpc_response` (here, RateLimited with the
-    /// pacing hint), and a malformed body on an otherwise-successful response maps to
-    /// `InvalidResponse` rather than panicking or silently defaulting.
-    #[tokio::test]
-    async fn xrpc_json_classifies_non_2xx_and_flags_malformed_body() {
-        let mock_server = MockServer::start();
-        mock_server.mock(|when, then| {
-            when.method(httpmock::Method::GET).path("/rate-limited");
-            then.status(429).header("Retry-After", "5").body("{}");
-        });
-        mock_server.mock(|when, then| {
-            when.method(httpmock::Method::GET).path("/garbage");
-            then.status(200).body("not json");
-        });
-
-        let client = reqwest::Client::new();
-
-        let resp = client
-            .get(format!("{}/rate-limited", mock_server.base_url()))
-            .send()
-            .await
-            .unwrap();
-        match xrpc_json::<serde_json::Value>("test", resp)
-            .await
-            .unwrap_err()
-        {
-            PdsClientError::RateLimited { retry_after, .. } => {
-                assert_eq!(retry_after.as_deref(), Some("5"));
-            }
-            other => panic!("expected RateLimited, got {other:?}"),
-        }
-
-        let resp = client
-            .get(format!("{}/garbage", mock_server.base_url()))
-            .send()
-            .await
-            .unwrap();
-        match xrpc_json::<serde_json::Value>("test", resp)
-            .await
-            .unwrap_err()
-        {
-            PdsClientError::InvalidResponse { message } => {
-                assert!(
-                    message.contains("failed to parse test response"),
-                    "got: {message}"
-                );
-            }
-            other => panic!("expected InvalidResponse, got {other:?}"),
-        }
-    }
+    // `par_rejection_message` (a private PAR-error-formatting helper) and the pure XRPC
+    // classification/`xrpc_json` unit tests now live in `custos_client`'s own test suite,
+    // alongside the code they test.
 
     /// A plc.directory 429 on the audit-log read classifies as RateLimited (with the pacing
     /// hint), not as a connectivity failure.
@@ -1840,7 +433,7 @@ mod tests {
                 .body(r#"{"message":"rate limit exceeded"}"#);
         });
 
-        let client = PdsClient::new_for_test(mock_server.base_url());
+        let client = crate::pds_client::new_for_test(mock_server.base_url());
         let err = client
             .fetch_audit_log("did:plc:throttled")
             .await
@@ -1864,7 +457,7 @@ mod tests {
             then.status(500).body("upstream exploded");
         });
 
-        let client = PdsClient::new_for_test(mock_server.base_url());
+        let client = crate::pds_client::new_for_test(mock_server.base_url());
         let err = client.fetch_audit_log("did:plc:outage").await.unwrap_err();
         match err {
             PdsClientError::XrpcError { status, .. } => assert_eq!(status, 500),
@@ -1882,7 +475,7 @@ mod tests {
             then.status(404);
         });
 
-        let client = PdsClient::new_for_test(mock_server.base_url());
+        let client = crate::pds_client::new_for_test(mock_server.base_url());
         let err = client.fetch_audit_log("did:plc:ghost").await.unwrap_err();
         assert!(matches!(err, PdsClientError::DidNotFound));
     }
@@ -1901,7 +494,7 @@ mod tests {
             then.status(400).body(r#"{"message":"invalid prev"}"#);
         });
 
-        let client = PdsClient::new_for_test(mock_server.base_url());
+        let client = crate::pds_client::new_for_test(mock_server.base_url());
         let op = serde_json::json!({});
         match client
             .post_plc_operation("did:plc:busy", &op)
@@ -1987,7 +580,7 @@ mod tests {
             then.status(200);
         });
 
-        let client = PdsClient::new_for_test(mock_server.base_url());
+        let client = crate::pds_client::new_for_test(mock_server.base_url());
         let result = client.discover_pds("did:plc:test123").await;
 
         assert!(result.is_ok());
@@ -2003,48 +596,8 @@ mod tests {
         assert_eq!(doc.verification_methods["atproto"], "zQ3test1");
     }
 
-    // A did:web document carries absolute-form ids ("did:web:host#atproto_pds"), unlike
-    // plc.directory's bare fragments ("#atproto_pds"). Both must key the services map by
-    // the fragment alone, or `discover_pds` reports "missing atproto_pds service" for a
-    // perfectly valid did:web document.
-    #[test]
-    fn test_into_plc_doc_keys_services_by_fragment_for_absolute_ids() {
-        let did = "did:web:rehearsal.example";
-        let w3c_doc: W3cDidDocument = serde_json::from_value(serde_json::json!({
-            "@context": ["https://www.w3.org/ns/did/v1"],
-            "id": did,
-            "alsoKnownAs": ["at://rehearsal.example"],
-            "verificationMethod": [
-                {
-                    "id": format!("{did}#device"),
-                    "type": "Multikey",
-                    "controller": did,
-                    "publicKeyMultibase": "zDnaDevice"
-                },
-                {
-                    "id": format!("{did}#atproto"),
-                    "type": "Multikey",
-                    "controller": did,
-                    "publicKeyMultibase": "zDnaRepo"
-                }
-            ],
-            "service": [{
-                "id": format!("{did}#atproto_pds"),
-                "type": "AtprotoPersonalDataServer",
-                "serviceEndpoint": "https://pds.example"
-            }]
-        }))
-        .expect("document deserializes");
-
-        let doc = w3c_doc.into_plc_doc();
-        let pds = doc
-            .services
-            .get("atproto_pds")
-            .expect("service keyed by fragment, not the absolute id");
-        assert_eq!(pds.endpoint, "https://pds.example");
-        assert_eq!(doc.verification_methods["atproto"], "zDnaRepo");
-        assert_eq!(doc.verification_methods["device"], "zDnaDevice");
-    }
+    // `test_into_plc_doc_keys_services_by_fragment_for_absolute_ids` (tests the private
+    // `W3cDidDocument::into_plc_doc`) moved to `custos_client`'s own test suite.
 
     /// DID_NOT_FOUND error when plc.directory returns 404
     #[tokio::test]
@@ -2056,7 +609,7 @@ mod tests {
             then.status(404);
         });
 
-        let client = PdsClient::new_for_test(mock_server.base_url());
+        let client = crate::pds_client::new_for_test(mock_server.base_url());
         let result = client.discover_pds("did:plc:nonexistent").await;
 
         assert!(result.is_err());
@@ -2091,7 +644,7 @@ mod tests {
                 .json_body(did_doc_json);
         });
 
-        let client = PdsClient::new_for_test(mock_server.base_url());
+        let client = crate::pds_client::new_for_test(mock_server.base_url());
         let result = client.discover_pds("did:plc:test123").await;
 
         assert!(result.is_err());
@@ -2122,7 +675,7 @@ mod tests {
                 .json_body(did_doc_json);
         });
 
-        let client = PdsClient::new_for_test(mock_server.base_url());
+        let client = crate::pds_client::new_for_test(mock_server.base_url());
         let result = client.discover_pds("did:plc:test123").await;
 
         assert!(result.is_err());
@@ -2312,94 +865,8 @@ mod tests {
         }
     }
 
-    // ============================================================================
-    // HTTP fallback resolution tests
-    // ============================================================================
-
-    /// HTTP fallback resolves handle to DID
-    #[tokio::test]
-    async fn test_try_resolve_http_success() {
-        let mock_server = MockServer::start();
-
-        // Mock server returns a valid DID on the well-known endpoint
-        mock_server.mock(|when, then| {
-            when.method(httpmock::Method::GET)
-                .path("/.well-known/atproto-did");
-            then.status(200).body("did:plc:test123");
-        });
-
-        let client = reqwest::Client::new();
-        let url = format!("{}/.well-known/atproto-did", mock_server.base_url());
-        let result = try_resolve_http(&client, &url).await;
-
-        assert!(result.is_ok());
-        assert_eq!(result.unwrap(), Some("did:plc:test123".to_string()));
-    }
-
-    /// HTTP fallback handles response body with whitespace
-    #[tokio::test]
-    async fn test_try_resolve_http_with_whitespace() {
-        let mock_server = MockServer::start();
-
-        // Mock server returns DID with surrounding whitespace
-        mock_server.mock(|when, then| {
-            when.method(httpmock::Method::GET)
-                .path("/.well-known/atproto-did");
-            then.status(200).body("  did:plc:test123\n  ");
-        });
-
-        let client = reqwest::Client::new();
-        let url = format!("{}/.well-known/atproto-did", mock_server.base_url());
-        let result = try_resolve_http(&client, &url).await;
-
-        assert!(result.is_ok());
-        assert_eq!(result.unwrap(), Some("did:plc:test123".to_string()));
-    }
-
-    /// HTTP fallback returns Ok(None) on 404 client error
-    #[tokio::test]
-    async fn test_try_resolve_http_not_found() {
-        let mock_server = MockServer::start();
-
-        // Mock server returns 404
-        mock_server.mock(|when, then| {
-            when.method(httpmock::Method::GET)
-                .path("/.well-known/atproto-did");
-            then.status(404);
-        });
-
-        let client = reqwest::Client::new();
-        let url = format!("{}/.well-known/atproto-did", mock_server.base_url());
-        let result = try_resolve_http(&client, &url).await;
-
-        assert!(result.is_ok());
-        assert_eq!(result.unwrap(), None);
-    }
-
-    /// HTTP fallback returns NetworkError on 500 server error
-    #[tokio::test]
-    async fn test_try_resolve_http_server_error() {
-        let mock_server = MockServer::start();
-
-        // Mock server returns 500
-        mock_server.mock(|when, then| {
-            when.method(httpmock::Method::GET)
-                .path("/.well-known/atproto-did");
-            then.status(500);
-        });
-
-        let client = reqwest::Client::new();
-        let url = format!("{}/.well-known/atproto-did", mock_server.base_url());
-        let result = try_resolve_http(&client, &url).await;
-
-        assert!(result.is_err());
-        match result.unwrap_err() {
-            PdsClientError::NetworkError { .. } => {
-                // Expected: 5xx is a server error, not a missing handle
-            }
-            e => panic!("Expected NetworkError on 5xx, got: {:?}", e),
-        }
-    }
+    // The `try_resolve_http` unit tests (a private PdsClient helper) moved to
+    // `custos_client`'s own test suite, alongside the code they test.
 
     // ============================================================================
     // PAR and token exchange tests
@@ -2446,6 +913,7 @@ mod tests {
                     dpop_jkt: "test_dpop_jkt",
                     login_hint: Some("user@example.com"),
                     client_id: "https://test.example.com/oauth/client-metadata.json",
+                    redirect_uri: REDIRECT_URI,
                 },
             )
             .await;
@@ -2499,6 +967,7 @@ mod tests {
                     dpop_jkt: "jkt",
                     login_hint: None,
                     client_id: "https://test.example.com/oauth/client-metadata.json",
+                    redirect_uri: REDIRECT_URI,
                 },
             )
             .await;
@@ -2545,6 +1014,7 @@ mod tests {
                     dpop_jkt: "jkt",
                     login_hint: None,
                     client_id: "https://test.example.com/oauth/client-metadata.json",
+                    redirect_uri: REDIRECT_URI,
                 },
             )
             .await;
@@ -2596,6 +1066,7 @@ mod tests {
                 "test_verifier",
                 "test_dpop_proof",
                 "https://test.example.com/oauth/client-metadata.json",
+                REDIRECT_URI,
             )
             .await;
 
@@ -2637,6 +1108,7 @@ mod tests {
                 "test_verifier",
                 "test_dpop_proof",
                 "https://test.example.com/oauth/client-metadata.json",
+                REDIRECT_URI,
             )
             .await;
 
@@ -2669,6 +1141,7 @@ mod tests {
                 "test_verifier",
                 "test_dpop_proof",
                 "https://test.example.com/oauth/client-metadata.json",
+                REDIRECT_URI,
             )
             .await;
 
@@ -3176,7 +1649,7 @@ mod tests {
                 .json_body(audit_log_json.clone());
         });
 
-        let client = PdsClient::new_for_test(mock_server.base_url());
+        let client = crate::pds_client::new_for_test(mock_server.base_url());
         let result = client.fetch_audit_log("did:plc:test123").await;
 
         assert!(result.is_ok());
@@ -3197,7 +1670,7 @@ mod tests {
             then.status(404);
         });
 
-        let client = PdsClient::new_for_test(mock_server.base_url());
+        let client = crate::pds_client::new_for_test(mock_server.base_url());
         let result = client.fetch_audit_log("did:plc:notfound").await;
 
         assert!(result.is_err());
@@ -3223,7 +1696,7 @@ mod tests {
             then.status(200);
         });
 
-        let client = PdsClient::new_for_test(mock_server.base_url());
+        let client = crate::pds_client::new_for_test(mock_server.base_url());
         let operation = serde_json::json!({
             "type": "plc_operation",
             "prev": "bafy123",
@@ -3247,7 +1720,7 @@ mod tests {
             then.status(409).body("Conflicting operation");
         });
 
-        let client = PdsClient::new_for_test(mock_server.base_url());
+        let client = crate::pds_client::new_for_test(mock_server.base_url());
         let operation = serde_json::json!({
             "type": "plc_operation"
         });
@@ -4185,7 +2658,7 @@ mod tests {
     #[tokio::test]
     async fn transport_failure_records_a_diagnostics_breadcrumb() {
         // Port 1 on loopback refuses immediately: a connect-class transport failure, no server.
-        let client = PdsClient::new_for_test("http://127.0.0.1:1".to_string());
+        let client = crate::pds_client::new_for_test("http://127.0.0.1:1".to_string());
         let err = client
             .fetch_audit_log("did:plc:diagbreadcrumb")
             .await

@@ -1500,7 +1500,7 @@ mod tests {
     ) -> Result<ChildReconciliation, AgentsError> {
         reconcile_children_impl(
             &bearer_client(server),
-            &PdsClient::new_for_test(server.base_url()),
+            &crate::pds_client::new_for_test(server.base_url()),
             &TEST_SEED,
             stored_index,
         )

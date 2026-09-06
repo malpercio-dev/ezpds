@@ -412,7 +412,7 @@ mod tests {
         )
         .await;
 
-        let client = PdsClient::new_for_test(server.base_url());
+        let client = crate::pds_client::new_for_test(server.base_url());
         let route = unlock_route(&client, &IdentityStore, DID).await.unwrap();
 
         assert_eq!(route.method, UnlockMethod::Sovereign);
@@ -427,7 +427,7 @@ mod tests {
         // A reference PDS answers describeServer with no `custos` object at all.
         describe_mock(&server, None).await;
 
-        let client = PdsClient::new_for_test(server.base_url());
+        let client = crate::pds_client::new_for_test(server.base_url());
         let route = unlock_route(&client, &IdentityStore, DID).await.unwrap();
 
         assert_eq!(route.method, UnlockMethod::Password);
@@ -448,7 +448,7 @@ mod tests {
             })
             .await;
 
-        let client = PdsClient::new_for_test(server.base_url());
+        let client = crate::pds_client::new_for_test(server.base_url());
         let route = unlock_route(&client, &IdentityStore, DID).await.unwrap();
 
         assert_eq!(
@@ -463,7 +463,7 @@ mod tests {
         crate::keychain::clear_for_test();
         crate::pds_capabilities::clear_for_test();
 
-        let client = PdsClient::new_for_test("http://127.0.0.1:9".into());
+        let client = crate::pds_client::new_for_test("http://127.0.0.1:9".into());
         let result = unlock_route(&client, &IdentityStore, DID).await;
 
         assert!(matches!(result, Err(UnlockError::IdentityNotFound)));
@@ -501,7 +501,7 @@ mod tests {
         )
         .await;
 
-        let client = PdsClient::new_for_test(server.base_url());
+        let client = crate::pds_client::new_for_test(server.base_url());
         let ready = unlock_with_password(
             &client,
             &IdentityStore,
@@ -523,7 +523,7 @@ mod tests {
 
         // The whole point: the provider's fast path now restores this identity with no
         // network and no prompt, exactly as it would after a sovereign login.
-        let offline = PdsClient::new_for_test("http://127.0.0.1:9".into());
+        let offline = crate::pds_client::new_for_test("http://127.0.0.1:9".into());
         let session = crate::session_provider::SessionProvider
             .full_access_client(&offline, &IdentityStore, DID, now())
             .await
@@ -545,7 +545,7 @@ mod tests {
         )
         .await;
 
-        let client = PdsClient::new_for_test(server.base_url());
+        let client = crate::pds_client::new_for_test(server.base_url());
         let result = unlock_with_password(
             &client,
             &IdentityStore,
@@ -583,7 +583,7 @@ mod tests {
         )
         .await;
 
-        let client = PdsClient::new_for_test(server.base_url());
+        let client = crate::pds_client::new_for_test(server.base_url());
         let result = unlock_with_password(
             &client,
             &IdentityStore,
@@ -618,7 +618,7 @@ mod tests {
         )
         .await;
 
-        let client = PdsClient::new_for_test(server.base_url());
+        let client = crate::pds_client::new_for_test(server.base_url());
         let result = unlock_with_password(
             &client,
             &IdentityStore,

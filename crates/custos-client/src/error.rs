@@ -24,6 +24,14 @@ pub trait TransportObserver: Send + Sync {
 
     /// A server verdict: a non-2xx XRPC response was fully read and classified.
     fn record_server(&self, op: &str, host: Option<&str>, status: u16, error_code: Option<&str>);
+
+    /// A transport failure that isn't a `reqwest::Error` (e.g. a DNS resolver error) — the
+    /// caller has already reduced it to a fixed category string (never the raw error, which
+    /// may embed caller-supplied data like a handle). Defaults to forwarding into
+    /// [`Self::record_transport`]'s category via a synthetic no-op; observers that want a real
+    /// breadcrumb here should override it. `host` follows the same redaction rule as
+    /// `record_transport`: omit it when the category string itself could embed sensitive data.
+    fn record_transport_category(&self, _op: &str, _host: Option<&str>, _category: &str) {}
 }
 
 /// A [`TransportObserver`] that records nothing.

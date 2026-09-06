@@ -10,6 +10,8 @@
 //!   modes).
 //! - [`custos_client`]: [`CustosClient`], the pre-session HTTP client for one configured
 //!   PDS — plain JSON/Bearer requests plus OAuth PAR/token-exchange.
+//! - [`pds_client`]: [`PdsClient`], discovery/auth/XRPC against *arbitrary* PDS endpoints and
+//!   plc.directory.
 //! - [`identity`], [`app_passwords`], [`migration`]: typed XRPC methods over an authenticated
 //!   [`OAuthClient`], grouped per concern (not re-exported at the crate root — reference them
 //!   as `custos_client::identity::…` etc.). No method name collides across the 17 exported
@@ -29,6 +31,7 @@ pub mod error;
 pub mod identity;
 pub mod migration;
 pub mod oauth_client;
+pub mod pds_client;
 
 pub use custos_client::{CustosClient, ParRequest, ParResponse, TokenErrorResponse};
 pub use dpop::{DpopError, DpopKeypair};
@@ -39,6 +42,7 @@ pub use error::{
 pub use oauth_client::{
     NoopTokenPersister, OAuthClient, OAuthError, OAuthSession, TokenPersister, TokenResponse,
 };
+pub use pds_client::{DescribeServerObserver, NoopDescribeServerObserver, PdsClient};
 
 // Re-exported so callers can implement `DpopKeypair::get_or_create::<K>` against the same
 // `KeychainStore` trait without a direct `ios-device-key` dependency of their own.

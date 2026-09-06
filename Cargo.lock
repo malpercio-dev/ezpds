@@ -1448,6 +1448,7 @@ version = "0.16.2"
 dependencies = [
  "base64 0.21.7",
  "crypto",
+ "hickory-resolver",
  "http",
  "httpmock",
  "ios-device-key",
