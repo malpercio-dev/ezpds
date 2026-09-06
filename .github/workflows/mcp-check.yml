@@ -9,9 +9,10 @@ name: MCP · check
 # them), yet nothing gated it.
 #
 # This lane closes the cheap half: it type-checks BOTH packages (catching a signature
-# break in the shared surface) and runs the sidecar's HERMETIC, self-contained suite
-# (a stub PDS on loopback — no cargo build, no live network, ~5s). It needs NO secrets and
-# no macOS/cargo. The sidecar's MM-370 end-to-end suite (`pnpm test:e2e`) stays out because
+# break in the shared surface), runs the sidecar's HERMETIC, self-contained suite
+# (a stub PDS on loopback — no cargo build, no live network, ~5s), and builds + boots the
+# sidecar's deploy image the way Railway does, which is the only check that sees the
+# image's own dependency closure. It needs NO secrets and no macOS/cargo. The sidecar's MM-370 end-to-end suite (`pnpm test:e2e`) stays out because
 # it needs the `pds` binary; folding it into the ci.yml PDS lane (which already builds
 # `pds`) is a tracked follow-up. The stdio conformance suite (`just mcp-test`) has the same
 # need but already runs in ci.yml's PDS gate, which reuses the binary that lane builds.
@@ -23,6 +24,8 @@ on:
     paths:
       - "tools/mcp/**"
       - "tools/mcp-sidecar/**"
+      # The sidecar image links tools/interop as a runtime dependency.
+      - "tools/interop/**"
       - ".github/actions/setup-pnpm/**"
       - ".github/workflows/mcp-check.yml"
   push:
@@ -30,6 +33,8 @@ on:
     paths:
       - "tools/mcp/**"
       - "tools/mcp-sidecar/**"
+      # The sidecar image links tools/interop as a runtime dependency.
+      - "tools/interop/**"
       - ".github/actions/setup-pnpm/**"
       - ".github/workflows/mcp-check.yml"
   workflow_dispatch:
@@ -81,3 +86,37 @@ jobs:
       - name: Sidecar hermetic suite (registry, forwarding, sessions, redaction, transport, config)
         working-directory: tools/mcp-sidecar
         run: pnpm test
+
+      # The deployed artifact, built the way Railway builds it (repo-root context,
+      # tools/mcp-sidecar/Dockerfile). Type-checking and the hermetic suite both run
+      # against the repo's own node_modules, so neither notices that the IMAGE is
+      # missing a package — moving a dependency from devDependencies to dependencies
+      # is enough to break the `--prod` install with everything else still green.
+      # The image is thrown away; only the build and a boot smoke-test matter.
+      - name: Build the deploy image
+        run: docker build -f tools/mcp-sidecar/Dockerfile -t mcp-sidecar-ci .
+
+      # A green build still ships a crash-loop if a runtime import cannot resolve, so
+      # boot the image and require the MCP endpoint (which pulls in the whole shared
+      # tool surface) to answer.
+      - name: Smoke-test the image
+        run: |
+          docker run -d --name mcp-sidecar-ci -p 18080:8080 \
+            -e PORT=8080 \
+            -e MCP_SIDECAR_PDS_ORIGIN=http://127.0.0.1:9999 \
+            -e MCP_SIDECAR_PUBLIC_ORIGIN=http://localhost:18080 \
+            mcp-sidecar-ci
+          for _ in $(seq 1 30); do
+            curl -fsS -m 2 http://localhost:18080/ >/dev/null && break
+            sleep 1
+          done
+          curl -fsS -m 5 http://localhost:18080/ | grep -q '"status":"ok"'
+          curl -fsS -m 10 -X POST http://localhost:18080/mcp \
+            -H 'Content-Type: application/json' \
+            -H 'Accept: application/json, text/event-stream' \
+            -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"ci","version":"0"}}}' \
+            | grep -q '"serverInfo"'
+
+      - name: Sidecar container logs
+        if: always()
+        run: docker logs mcp-sidecar-ci || true
