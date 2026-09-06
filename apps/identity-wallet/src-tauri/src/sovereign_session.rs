@@ -3,37 +3,42 @@
 //! Per-DID Custos sovereign login: passwordless full-access session issuance proven by
 //! the identity's own device key.
 //!
-//! The flow discovers the selected DID's current hosting PDS and server DID, signs the
-//! shared canonical proof envelope with that DID's device key, exchanges it at
-//! `POST /v1/sessions/sovereign`, validates the response DID and the returned JWT's
-//! subject/audience against this DID and host, and persists a versioned
-//! `SovereignTokenRecord` into the `{did}:oauth-tokens` Keychain record — the same
-//! record `password_unlock` writes and `session_provider` reads, so restore, rotate,
-//! and host-change-discard behave identically whichever unlock minted the session.
+//! The network ceremony (discover the DID's hosting PDS, sign the shared canonical proof
+//! envelope, exchange it at `POST /v1/sessions/sovereign`, validate the response DID and the
+//! returned JWT's subject/audience against this DID and host) lives in
+//! `custos_client::sovereign_session::sovereign_login` — it only needs a [`PdsClient`], the
+//! per-DID device key's public id, and a signing closure, none of which name this app. This
+//! module resolves those from [`IdentityStore`] and persists the result into a versioned
+//! `SovereignTokenRecord` in the `{did}:oauth-tokens` Keychain record — the same record
+//! `password_unlock` writes and `session_provider` reads, so restore, rotate, and
+//! host-change-discard behave identically whichever unlock minted the session.
 //!
 //! [`sovereign_login`] is the narrow Tauri command; the typed frontend
 //! `sovereignLogin(did)` wrapper performs the biometric gate before invoking it, so a
 //! cancelled prompt signs and sends nothing. [`stored_bearer_client`] rebuilds an
-//! authenticated Bearer client from the stored record for XRPC helpers. The
-//! `pub(crate)` JWT helpers [`bearer_jwt_claims`] and [`audience_matches_server`] are
-//! the single source of the sub/aud binding check, reused by `session_provider` and
-//! `password_unlock`. `SovereignLoginError` serializes as
-//! `{ code: "SCREAMING_SNAKE_CASE" }` with camelCase fields.
+//! authenticated Bearer client from the stored record for XRPC helpers. The re-exported
+//! [`bearer_jwt_claims`] and [`audience_matches_server`] are the single source of the
+//! sub/aud binding check, reused by `session_provider` and `password_unlock`. `fresh_nonce`
+//! and `unix_timestamp` are also re-exported here — several other device-key-signed
+//! ceremonies (`agents`, `app_passwords`, `identity_removal`, `migration_orchestrator`, and
+//! more) reuse them as `crate::sovereign_session::{fresh_nonce, unix_timestamp}` for their
+//! own request envelopes, not just this module's own ceremony.
+//! `SovereignLoginError` serializes as `{ code: "SCREAMING_SNAKE_CASE" }` with camelCase
+//! fields — this app's own enum, distinct from (and a superset of, for pre-flight failures)
+//! `custos_client::sovereign_session::SovereignLoginError`.
 
-use std::time::{SystemTime, UNIX_EPOCH};
-
-use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
-use rand_core::{OsRng, RngCore};
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 
 use crate::identity_store::{
     IdentityStore, IdentityStoreError, PerDidSignError, SovereignTokenRecord,
 };
 use crate::oauth::AppState;
 use crate::oauth_client::OAuthClient;
-use crate::pds_client::{PdsClient, PdsClientError};
+use crate::pds_client::PdsClient;
 
-const NONCE_BYTES: usize = 32;
+pub(crate) use custos_client::sovereign_session::{
+    audience_matches_server, bearer_jwt_claims, fresh_nonce, unix_timestamp,
+};
 
 #[derive(Debug, Serialize, thiserror::Error)]
 #[serde(
@@ -66,6 +71,24 @@ pub enum SovereignLoginError {
     ServerFailure { status: u16 },
 }
 
+/// Map the crate's network/validation error into this app's superset enum.
+impl From<custos_client::sovereign_session::SovereignLoginError> for SovereignLoginError {
+    fn from(error: custos_client::sovereign_session::SovereignLoginError) -> Self {
+        use custos_client::sovereign_session::SovereignLoginError as Crate;
+        match error {
+            Crate::UnsupportedHost => Self::UnsupportedHost,
+            Crate::AuthorizationFailed => Self::AuthorizationFailed,
+            Crate::RateLimited { retry_after } => Self::RateLimited { retry_after },
+            Crate::TransportFailure { message } => Self::TransportFailure { message },
+            Crate::SigningFailed { message } => Self::SigningFailed { message },
+            Crate::DidMismatch => Self::DidMismatch,
+            Crate::ServerMismatch => Self::ServerMismatch,
+            Crate::InvalidResponse { message } => Self::InvalidResponse { message },
+            Crate::ServerFailure { status } => Self::ServerFailure { status },
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SovereignLoginResult {
@@ -73,67 +96,6 @@ pub struct SovereignLoginResult {
     pub pds_url: String,
     pub access_expires_at: u64,
     pub refresh_expires_at: u64,
-}
-
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
-struct SovereignSessionRequest<'a> {
-    did: &'a str,
-    signing_key: &'a str,
-    timestamp: i64,
-    nonce: &'a str,
-    signature: String,
-}
-
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct SovereignSessionResponse {
-    access_jwt: String,
-    refresh_jwt: String,
-    did: String,
-}
-
-#[derive(Deserialize)]
-pub(crate) struct BearerJwtClaims {
-    pub(crate) exp: u64,
-    pub(crate) sub: String,
-    pub(crate) aud: String,
-}
-
-/// Decode a Bearer JWT's unverified payload into its `exp`/`sub`/`aud` claims.
-///
-/// The signature is NOT checked — the claims are only used for session-lifecycle
-/// decisions (expiry) and to bind a restored/rotated session to the DID and hosting
-/// server it was issued for, never as authorization data.
-pub(crate) fn bearer_jwt_claims(token: &str) -> Option<BearerJwtClaims> {
-    let payload = token.split('.').nth(1)?;
-    let bytes = URL_SAFE_NO_PAD.decode(payload).ok()?;
-    serde_json::from_slice(&bytes).ok()
-}
-
-/// Whether a JWT `aud` claim identifies the hosting server, accepting either the
-/// server DID or the PDS URL (some issuers set the public URL as the audience).
-pub(crate) fn audience_matches_server(audience: &str, server_did: &str, pds_url: &str) -> bool {
-    audience == server_did || audience.trim_end_matches('/') == pds_url.trim_end_matches('/')
-}
-
-/// Generate a fresh 32-byte canonical base64url nonce for a sovereign-session proof.
-pub(crate) fn fresh_nonce() -> String {
-    let mut nonce_bytes = [0u8; NONCE_BYTES];
-    OsRng.fill_bytes(&mut nonce_bytes);
-    URL_SAFE_NO_PAD.encode(nonce_bytes)
-}
-
-pub(crate) fn unix_timestamp() -> Result<i64, SovereignLoginError> {
-    let seconds = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_err(|e| SovereignLoginError::InvalidResponse {
-            message: format!("system clock is before Unix epoch: {e}"),
-        })?
-        .as_secs();
-    i64::try_from(seconds).map_err(|_| SovereignLoginError::InvalidResponse {
-        message: "system timestamp exceeds supported range".into(),
-    })
 }
 
 fn map_store_error(error: IdentityStoreError) -> SovereignLoginError {
@@ -148,35 +110,6 @@ fn map_store_error(error: IdentityStoreError) -> SovereignLoginError {
     }
 }
 
-fn map_discovery_error(error: PdsClientError) -> SovereignLoginError {
-    match error {
-        PdsClientError::DidNotFound | PdsClientError::InvalidResponse { .. } => {
-            SovereignLoginError::UnsupportedHost
-        }
-        PdsClientError::PdsUnreachable { reason } => {
-            SovereignLoginError::TransportFailure { message: reason }
-        }
-        PdsClientError::NetworkError { message } => {
-            SovereignLoginError::TransportFailure { message }
-        }
-        other => SovereignLoginError::TransportFailure {
-            message: other.to_string(),
-        },
-    }
-}
-
-fn pds_url_is_safe(url: &str) -> bool {
-    let Ok(url) = url::Url::parse(url) else {
-        return false;
-    };
-    url.scheme() == "https"
-        || (url.scheme() == "http"
-            && matches!(
-                url.host_str(),
-                Some("localhost") | Some("127.0.0.1") | Some("::1") | Some("[::1]")
-            ))
-}
-
 /// Mint and persist a full-access session for one managed DID.
 #[tauri::command]
 pub async fn sovereign_login(
@@ -184,14 +117,8 @@ pub async fn sovereign_login(
     did: String,
 ) -> Result<SovereignLoginResult, SovereignLoginError> {
     let nonce = fresh_nonce();
-    sovereign_login_impl(
-        state.pds_client(),
-        &IdentityStore,
-        &did,
-        unix_timestamp()?,
-        &nonce,
-    )
-    .await
+    let timestamp = unix_timestamp()?;
+    sovereign_login_impl(state.pds_client(), &IdentityStore, &did, timestamp, &nonce).await
 }
 
 pub(crate) async fn sovereign_login_impl(
@@ -201,17 +128,6 @@ pub(crate) async fn sovereign_login_impl(
     timestamp: i64,
     nonce: &str,
 ) -> Result<SovereignLoginResult, SovereignLoginError> {
-    let decoded_nonce = URL_SAFE_NO_PAD.decode(nonce).ok();
-    if decoded_nonce.as_deref().map(<[u8]>::len) != Some(NONCE_BYTES)
-        || decoded_nonce
-            .as_deref()
-            .is_some_and(|bytes| URL_SAFE_NO_PAD.encode(bytes) != nonce)
-    {
-        return Err(SovereignLoginError::InvalidResponse {
-            message: "nonce must be 32 canonical base64url bytes".into(),
-        });
-    }
-
     // Resolve the key before any request to the hosting PDS. This both enforces
     // managed-DID membership and guarantees the selected DID's key is the signer.
     let device_key = store
@@ -223,103 +139,18 @@ pub(crate) async fn sovereign_login_impl(
             SovereignLoginError::SigningFailed { message }
         }
     })?;
+    let sign = move |data: &[u8]| signer(data).map_err(|e| e.to_string());
 
-    let (pds_url, did_doc) = pds_client
-        .discover_pds(did)
-        .await
-        .map_err(map_discovery_error)?;
-    if did_doc.did != did {
-        return Err(SovereignLoginError::DidMismatch);
-    }
-    if !pds_url_is_safe(&pds_url) {
-        return Err(SovereignLoginError::UnsupportedHost);
-    }
-    let server = pds_client
-        .describe_server(&pds_url)
-        .await
-        .map_err(map_discovery_error)?;
-    if !server.did.starts_with("did:") || server.did.chars().any(char::is_whitespace) {
-        return Err(SovereignLoginError::ServerMismatch);
-    }
-
-    let envelope = crypto::encode_sovereign_session_envelope(
-        &server.did,
+    let response = custos_client::sovereign_session::sovereign_login(
+        pds_client,
         did,
         &device_key.key_id,
         timestamp,
         nonce,
-    );
-    let signature = signer(&envelope).map_err(|e| SovereignLoginError::SigningFailed {
-        message: e.to_string(),
-    })?;
-    let request = SovereignSessionRequest {
-        did,
-        signing_key: &device_key.key_id,
-        timestamp,
-        nonce,
-        signature: URL_SAFE_NO_PAD.encode(signature),
-    };
+        sign,
+    )
+    .await?;
 
-    let url = format!(
-        "{}{}",
-        pds_url.trim_end_matches('/'),
-        crypto::SOVEREIGN_SESSION_PATH
-    );
-    let response = pds_client
-        .client()
-        .post(url)
-        .json(&request)
-        .send()
-        .await
-        .map_err(|e| SovereignLoginError::TransportFailure {
-            message: e.to_string(),
-        })?;
-    let status = response.status();
-    if !status.is_success() {
-        return Err(match status.as_u16() {
-            401 | 403 => SovereignLoginError::AuthorizationFailed,
-            404 | 405 => SovereignLoginError::UnsupportedHost,
-            429 => SovereignLoginError::RateLimited {
-                retry_after: response
-                    .headers()
-                    .get(reqwest::header::RETRY_AFTER)
-                    .and_then(|value| value.to_str().ok())
-                    .map(str::to_string),
-            },
-            status => SovereignLoginError::ServerFailure { status },
-        });
-    }
-
-    let response: SovereignSessionResponse =
-        response
-            .json()
-            .await
-            .map_err(|e| SovereignLoginError::InvalidResponse {
-                message: e.to_string(),
-            })?;
-    if response.did != did {
-        return Err(SovereignLoginError::DidMismatch);
-    }
-    let access_claims = bearer_jwt_claims(&response.access_jwt).ok_or_else(|| {
-        SovereignLoginError::InvalidResponse {
-            message: "accessJwt is missing valid exp, sub, or aud claims".into(),
-        }
-    })?;
-    let refresh_claims = bearer_jwt_claims(&response.refresh_jwt).ok_or_else(|| {
-        SovereignLoginError::InvalidResponse {
-            message: "refreshJwt is missing valid exp, sub, or aud claims".into(),
-        }
-    })?;
-    if access_claims.sub != did || refresh_claims.sub != did {
-        return Err(SovereignLoginError::DidMismatch);
-    }
-    if !audience_matches_server(&access_claims.aud, &server.did, &pds_url)
-        || !audience_matches_server(&refresh_claims.aud, &server.did, &pds_url)
-    {
-        return Err(SovereignLoginError::ServerMismatch);
-    }
-    let access_expires_at = access_claims.exp;
-    let refresh_expires_at = refresh_claims.exp;
     let stored_at = u64::try_from(timestamp).map_err(|_| SovereignLoginError::InvalidResponse {
         message: "negative timestamp cannot be persisted".into(),
     })?;
@@ -327,10 +158,10 @@ pub(crate) async fn sovereign_login_impl(
         version: SovereignTokenRecord::VERSION,
         access_jwt: response.access_jwt,
         refresh_jwt: response.refresh_jwt,
-        pds_url: pds_url.clone(),
-        server_did: server.did,
-        access_expires_at: Some(access_expires_at),
-        refresh_expires_at: Some(refresh_expires_at),
+        pds_url: response.pds_url.clone(),
+        server_did: response.server_did,
+        access_expires_at: Some(response.access_expires_at),
+        refresh_expires_at: Some(response.refresh_expires_at),
         stored_at,
     };
     store
@@ -339,9 +170,9 @@ pub(crate) async fn sovereign_login_impl(
 
     Ok(SovereignLoginResult {
         did: did.into(),
-        pds_url,
-        access_expires_at,
-        refresh_expires_at,
+        pds_url: response.pds_url,
+        access_expires_at: response.access_expires_at,
+        refresh_expires_at: response.refresh_expires_at,
     })
 }
 
@@ -396,6 +227,7 @@ mod tests {
     const OTHER_DID: &str = "did:plc:bbbbbbbbbbbbbbbbbbbbbbbb";
     const SERVER_DID: &str = "did:web:pds.example.com";
     const TIMESTAMP: i64 = 1_720_000_000;
+    const NONCE_BYTES: usize = 32;
 
     fn jwt(exp: u64) -> String {
         jwt_for(exp, DID, SERVER_DID)
@@ -455,32 +287,6 @@ mod tests {
             })
             .await;
         (plc, head, describe)
-    }
-
-    #[test]
-    fn wallet_uses_the_shared_canonical_envelope_vector() {
-        #[derive(Deserialize)]
-        #[serde(rename_all = "camelCase")]
-        struct Vector {
-            server_did: String,
-            account_did: String,
-            signing_key_did: String,
-            timestamp: i64,
-            nonce: String,
-            envelope: String,
-        }
-        let vector: Vector = serde_json::from_str(include_str!(
-            "../../../../test-vectors/sovereign-session-envelope-v1.json"
-        ))
-        .unwrap();
-        let actual = crypto::encode_sovereign_session_envelope(
-            &vector.server_did,
-            &vector.account_did,
-            &vector.signing_key_did,
-            vector.timestamp,
-            &vector.nonce,
-        );
-        assert_eq!(String::from_utf8(actual).unwrap(), vector.envelope);
     }
 
     #[tokio::test]

@@ -1775,7 +1775,8 @@ pub async fn finalize_migration(
 ) -> Result<(), MigrationError> {
     // Proof material for the sovereign-session mint (imperative shell: clock + RNG). Minted
     // here rather than inside the core so the core stays deterministic under test.
-    let now = crate::sovereign_session::unix_timestamp().map_err(map_sovereign_error)?;
+    let now =
+        crate::sovereign_session::unix_timestamp().map_err(|e| map_sovereign_error(e.into()))?;
     let nonce = crate::sovereign_session::fresh_nonce();
 
     finalize_migration_impl(
