@@ -17,6 +17,11 @@
 //!   as `custos_client::identity::…` etc.). No method name collides across the 17 exported
 //!   today, but grouping by concern means a future `get_preferences`-shaped name landing in
 //!   two groups needs no rename — the module path already disambiguates it.
+//! - [`agents`]: typed methods for auth.md's own agent-consent/child-lifecycle endpoints
+//!   (not `com.atproto.*` XRPC, so they classify responses into their own [`agents::AgentError`]
+//!   rather than [`error::PdsClientError`]). Minting a child account and post-recovery
+//!   reconciliation stay in the app — they sign with wallet key material this crate does not
+//!   hold.
 //! - [`sovereign_session`]: [`sovereign_session::sovereign_login`] (the Custos passwordless
 //!   full-access session ceremony over [`PdsClient`]) and the pure JWT helpers apps reuse to
 //!   validate a restored session's sub/aud binding. No Keychain/persistence concept — the
@@ -27,6 +32,7 @@
 //! [`TransportObserver`]), and the wallet's own OAuth client identity (`client_id`,
 //! `redirect_uri`) — those stay in the app, since they name the app itself.
 
+pub mod agents;
 pub mod app_passwords;
 mod base64url;
 pub mod custos_client;
