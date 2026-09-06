@@ -180,10 +180,15 @@ pub enum AgentError {
     /// Too many attempts in the window; the caller should back off and retry.
     #[error("rate limited")]
     RateLimited,
-    /// Transport-level failure reaching the PDS.
+    /// Transport-level failure reaching the PDS. `message` is diagnostic only (ADR-0031) — a
+    /// transport failure is never the server's words.
     #[error("network error: {message}")]
     NetworkError { message: String },
-    /// The PDS answered with something this method does not understand.
+    /// The PDS answered with something this method does not understand — an unparseable body
+    /// or an unclassified status/ceremony code. `message` is diagnostic only (ADR-0031): it may
+    /// echo a short server-supplied code (e.g. an unrecognized ceremony `error` value) inside
+    /// Rust-authored wrapping text, which is not the same as carrying the server's own prose,
+    /// so it must never render with server attribution.
     #[error("unexpected response: {message}")]
     Unknown { message: String },
 }

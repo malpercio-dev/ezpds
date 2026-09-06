@@ -47,6 +47,9 @@ pub enum DpopError {
     KeyInvalid,
     #[error("DPoP proof construction failed")]
     ProofFailed,
+    /// `message` is diagnostic only (ADR-0031) — a local Keychain failure is never the
+    /// server's words. Per this module's re-export contract above, callers mapping this into
+    /// their own frontend-facing enum should not carry the text through to a serialized field.
     #[error("Keychain error: {message}")]
     KeychainError { message: String },
 }
