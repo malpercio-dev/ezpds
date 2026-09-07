@@ -1,4 +1,4 @@
-// pattern: Functional Core
+// pattern: Imperative Shell
 
 //! App-password management: typed XRPC methods over an authenticated (full-access)
 //! [`OAuthClient`] for `com.atproto.server.{create,list,revoke}AppPassword`.

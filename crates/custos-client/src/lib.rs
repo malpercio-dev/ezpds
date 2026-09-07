@@ -12,8 +12,9 @@
 //!   PDS — plain JSON/Bearer requests plus OAuth PAR/token-exchange.
 //! - [`identity`], [`app_passwords`], [`migration`]: typed XRPC methods over an authenticated
 //!   [`OAuthClient`], grouped per concern (not re-exported at the crate root — reference them
-//!   as `custos_client::identity::…` etc., since several method names would otherwise
-//!   collide, e.g. no collision today but `get_preferences`-shaped names are common).
+//!   as `custos_client::identity::…` etc.). No method name collides across the 17 exported
+//!   today, but grouping by concern means a future `get_preferences`-shaped name landing in
+//!   two groups needs no rename — the module path already disambiguates it.
 //!
 //! App-specific concerns this crate deliberately does not own: Keychain storage (apps supply
 //! an `ios_device_key::KeychainStore` impl), diagnostics UI/export (apps supply a

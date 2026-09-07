@@ -1,4 +1,4 @@
-// pattern: Functional Core
+// pattern: Imperative Shell
 
 //! Migration XRPC helpers: typed methods over an authenticated [`OAuthClient`] for the
 //! outbound-migration set (service auth, destination account creation, repo/blob import,
@@ -269,8 +269,9 @@ pub async fn check_account_status(
 /// Activate the account on the destination PDS.
 ///
 /// Calls `POST /xrpc/com.atproto.server.activateAccount` with NO body and no
-/// `Content-Type` — it is a no-input procedure. A spec-strict PDS rejects any body at all;
-/// `post_no_body` satisfies that.
+/// `Content-Type` — it is a no-input procedure. A spec-strict PDS rejects any body at all
+/// (Custos itself now enforces this via its `NoInputBody` guard, having historically been
+/// laxer here too); `post_no_body` satisfies that.
 pub async fn activate_account(
     client: &OAuthClient,
     observer: &dyn TransportObserver,
@@ -330,4 +331,56 @@ pub async fn request_account_delete(
     xrpc_ok("requestAccountDelete", resp, observer)
         .await
         .map(|_| ())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::error::NoopObserver;
+    use httpmock::prelude::*;
+
+    /// A Bearer-mode client with a far-future access token, so no lazy refresh fires before
+    /// the request under test.
+    fn bearer_client(server: &MockServer) -> OAuthClient {
+        use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
+        let exp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs()
+            + 3600;
+        let header = URL_SAFE_NO_PAD.encode(r#"{"alg":"ES256"}"#);
+        let payload = URL_SAFE_NO_PAD.encode(format!(r#"{{"exp":{exp}}}"#).as_bytes());
+        OAuthClient::new_bearer(
+            format!("{header}.{payload}.sig"),
+            "refresh-jwt".to_string(),
+            server.base_url(),
+        )
+        .expect("new_bearer must succeed")
+    }
+
+    /// `createAccount`'s 409 short-circuit is the one branch here that isn't a plain
+    /// pass-through to the shared XRPC classification tail — a destination account that
+    /// already exists must surface as `DidAlreadyExists`, not the generic `XrpcError` the
+    /// atproto envelope would otherwise classify a 409 into.
+    #[tokio::test]
+    async fn create_account_migration_409_is_did_already_exists() {
+        let server = MockServer::start();
+        server.mock(|when, then| {
+            when.method(POST)
+                .path("/xrpc/com.atproto.server.createAccount");
+            then.status(409)
+                .json_body(serde_json::json!({ "error": "AlreadyExists" }));
+        });
+
+        let req = CreateAccountMigrationRequest {
+            handle: "alice.example.com".to_string(),
+            email: "alice@example.com".to_string(),
+            did: "did:plc:abcdefghijklmnopqrstuvwx".to_string(),
+            invite_code: None,
+        };
+        let err = create_account_migration(&bearer_client(&server), &req, &NoopObserver)
+            .await
+            .unwrap_err();
+        assert!(matches!(err, PdsClientError::DidAlreadyExists));
+    }
 }

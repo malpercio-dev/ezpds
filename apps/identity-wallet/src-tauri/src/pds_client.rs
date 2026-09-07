@@ -435,9 +435,9 @@ impl DeleteCredential {
 }
 
 // MissingBlob/MissingBlobs/AccountStatus/UploadBlobResponse moved to
-// `custos_client::migration` alongside the XRPC methods that use them; re-exported here so
-// this file's own `use` below and `migration_orchestrator.rs`/`lib.rs`'s references are
-// unaffected.
+// `custos_client::migration` alongside the XRPC methods that use them; re-exported here (the
+// `pub use` below puts the names in scope at their original path) so
+// `migration_orchestrator.rs`/`lib.rs`'s references are unaffected.
 pub use custos_client::migration::{AccountStatus, MissingBlob, MissingBlobs, UploadBlobResponse};
 
 /// One page of a DID's blob CIDs from the public sync listing.

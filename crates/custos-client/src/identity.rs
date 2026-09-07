@@ -1,8 +1,8 @@
-// pattern: Functional Core
+// pattern: Imperative Shell
 
 //! The claim trio: typed XRPC methods over an authenticated [`OAuthClient`] for the atproto
-//! identity ceremony (`com.atproto.identity.*`). No wallet-specific side effects — these are
-//! pure request/response wrappers; the caller sequences them and interprets the result.
+//! identity ceremony (`com.atproto.identity.*`). No wallet-specific side effects — each method
+//! is a single request/response round trip; the caller sequences them and interprets the result.
 
 use serde::{Deserialize, Serialize};
 
