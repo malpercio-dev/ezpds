@@ -697,6 +697,38 @@ mod tests {
         assert_eq!(IdentityStore.load_oauth_tokens(DID).unwrap(), None);
     }
 
+    /// A 400 (not just a 401) also means the refresh token itself was rejected — pinned
+    /// separately from the 401 case since `map_refresh_error`'s revocation arm depends on
+    /// `classify_xrpc_error` continuing to route both statuses the same way.
+    #[tokio::test]
+    async fn revoked_refresh_400_needs_unlock_and_discards() {
+        let server = MockServer::start_async().await;
+        let record = record_for(now() - 10, now() + 86_400, &server.base_url(), SERVER_DID);
+        seed(DID, &record);
+        let _plc = discovery_mocks(&server, DID, &server.base_url()).await;
+        let _refresh = server
+            .mock_async(|when, then| {
+                when.method(POST)
+                    .path("/xrpc/com.atproto.server.refreshSession");
+                then.status(400)
+                    .json_body(json!({ "error": "InvalidToken" }));
+            })
+            .await;
+
+        let client = crate::pds_client::new_for_test(server.base_url());
+        let result = SessionProvider
+            .full_access_client(&client, &IdentityStore, DID, now())
+            .await;
+
+        assert!(matches!(
+            result,
+            Err(SessionError::NeedsUnlock {
+                reason: UnlockReason::RefreshRevoked
+            })
+        ));
+        assert_eq!(IdentityStore.load_oauth_tokens(DID).unwrap(), None);
+    }
+
     #[tokio::test]
     async fn rate_limited_refresh_is_distinct_and_keeps_record() {
         let server = MockServer::start_async().await;

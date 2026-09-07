@@ -744,6 +744,13 @@ impl PdsClient {
     /// against the caller's expected DID and hosting server is *not* done here — that is
     /// session-lifecycle policy, not a client concern; see
     /// [`crate::sovereign_session::refresh_bearer_session`] for the validated wrapper.
+    ///
+    /// Non-success responses route through [`crate::error::classify_xrpc_response`], so a
+    /// caller distinguishing "revoked" (discard the record) from "offline" (keep it) by
+    /// status/variant should know: a 401 whose *body read itself* fails yields `NetworkError`
+    /// (offline-shaped), not the classified 401. Narrow — bodies here are small and capped —
+    /// and fails safe (a dead record just outlives one more refresh attempt), but a caller
+    /// wanting a stricter "always discard on 401" guarantee has to special-case it.
     pub async fn refresh_session(
         &self,
         pds_url: &str,
@@ -764,6 +771,10 @@ impl PdsClient {
             .await
             .map_err(|e| {
                 self.note_transport_failure("refreshSession", Some(&url), &e);
+                // Strip the URL before it becomes a message: a reqwest error's `Display`
+                // embeds the full request URL, and this message reaches the frontend
+                // verbatim as SessionError::Offline's payload.
+                let e = e.without_url();
                 PdsClientError::NetworkError {
                     message: format!("refreshSession request failed: {}", e),
                 }
