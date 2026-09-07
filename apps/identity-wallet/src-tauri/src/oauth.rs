@@ -245,10 +245,18 @@ mod tests {
 
     /// End-to-end check of the redaction pipeline through the wallet's real
     /// `WalletTransportObserver` and `crate::diagnostics::export_diagnostics()`: a lazy-refresh
-    /// transport failure must record exactly one breadcrumb, and the exported report must never
-    /// contain the access/refresh tokens or any request-path detail (e.g. a DID query param).
-    /// Uniquely-named markers, not a before/after count, since the diagnostics sink is a
-    /// process-global shared across tests running in parallel.
+    /// transport failure must record a breadcrumb, and the exported report must never contain
+    /// the access/refresh tokens. The three secret assertions are the point of this test and use
+    /// uniquely-named markers (safe under the process-global sink shared with tests running in
+    /// parallel); the `"oauthRefresh"` recorded-check is the shared, hardcoded op name every
+    /// DPoP-mode refresh failure uses, so under parallel execution it could in principle be
+    /// satisfied by a sibling test's own breadcrumb rather than this call's — a weaker signal
+    /// than the secret checks, kept for readability rather than as the test's real assertion.
+    /// The `"private-identity-oauthrs-test"` marker (embedded in the `/resource?did=...` path)
+    /// can never actually leak here: the lazy refresh fails before that request is built, so
+    /// this assertion cannot fail either. Covering a leak from the *resource* request itself
+    /// would need a scenario where the refresh succeeds and the follow-up request fails —
+    /// not this one.
     #[tokio::test]
     async fn lazy_refresh_transport_failure_records_a_redacted_breadcrumb() {
         // A bound-then-dropped listener: a real, briefly-valid port that is guaranteed closed

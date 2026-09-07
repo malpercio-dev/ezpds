@@ -32,7 +32,7 @@ exist.
   reusable across an app's several Keychain-backed keys. It does **not** currently sit on
   `ios_device_key::sign` itself (which never exposes the raw private scalar, the Secure Enclave
   path's whole point) — `dpop.rs`'s module doc names this as an open follow-up, not done here
-  to keep the extraction a pure relocation with no Keychain-schema change.
+  to keep no Keychain-schema change.
 - **Diagnostics and token persistence are injected, never called directly.** `TransportObserver`
   (transport/server breadcrumbs) and `TokenPersister` (DPoP-mode refreshed-token storage) are
   traits an app implements; `NoopObserver`/`NoopTokenPersister` are the defaults for callers
@@ -53,9 +53,10 @@ exist.
 - **`OAuthClient::new`/`DpopKeypair::get_or_create` have no production caller in
   identity-wallet today** — the DPoP-mode OAuth client login was retired when the create flow
   started ending at `home` with no OAuth round trip (see identity-wallet's `oauth.rs` module
-  doc). Both are kept, fully tested, because Bearer construction and the claim/migration
-  password logins still depend on the surrounding machinery, and a revived create-flow login
-  would need this exact entry point.
+  doc). A Bearer client no longer creates or reads the `oauth-dpop-key-priv` Keychain item at
+  all (`dpop: None`); both are kept, fully tested, because the claim/migration password logins
+  still depend on the surrounding machinery, and a revived create-flow login would need this
+  exact entry point.
 
 ## Boundaries
 
