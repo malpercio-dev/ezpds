@@ -24,8 +24,9 @@
 //! pointing at the very app hosting the browser), and the evidence said it proved nothing —
 //! `POST /v1/dids` already returns `status: "active"` plus a session token, `oauth_session`
 //! had writers but zero readers, and `OAuthClient`'s DPoP mode has no production caller
-//! (Bearer construction still initializes the shared [`DpopKeypair`], but Bearer requests
-//! never send DPoP proofs) because every authenticated operation resolves a per-DID session
+//! (Bearer construction does not touch the shared [`DpopKeypair`] at all — a Bearer client's
+//! `dpop` field is `None`, so it never generates or persists a key) because every
+//! authenticated operation resolves a per-DID session
 //! via `SessionProvider::full_access_client` (minted by `sovereign_login`/`password_unlock`
 //! against the device key the genesis op pinned at `rotationKeys[0]`). [`DpopKeypair`], the
 //! global `oauth-*` Keychain items, the `auth_ready` startup emit, and the vendored
@@ -240,5 +241,59 @@ mod tests {
             crate::keychain::load_oauth_tokens().expect("tokens must be persisted");
         assert_eq!(access, "wallet-new-access");
         assert_eq!(refresh, "wallet-new-refresh");
+    }
+
+    /// End-to-end check of the redaction pipeline through the wallet's real
+    /// `WalletTransportObserver` and `crate::diagnostics::export_diagnostics()`: a lazy-refresh
+    /// transport failure must record exactly one breadcrumb, and the exported report must never
+    /// contain the access/refresh tokens or any request-path detail (e.g. a DID query param).
+    /// Uniquely-named markers, not a before/after count, since the diagnostics sink is a
+    /// process-global shared across tests running in parallel.
+    #[tokio::test]
+    async fn lazy_refresh_transport_failure_records_a_redacted_breadcrumb() {
+        // A bound-then-dropped listener: a real, briefly-valid port that is guaranteed closed
+        // by the time the client connects, so the transport failure is deterministic across
+        // platforms (unlike a fixed low port number, which may be filtered rather than refused).
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let base_url = format!("http://{}", listener.local_addr().unwrap());
+        drop(listener);
+
+        let keypair = test_dpop_keypair().expect("keypair must exist");
+        let session = Arc::new(Mutex::new(OAuthSession {
+            access_token: "private-access-token-oauthrs-test".to_string(),
+            refresh_token: "private-refresh-token-oauthrs-test".to_string(),
+            expires_at: 0, // already due for refresh
+            dpop_nonce: None,
+        }));
+        let client = OAuthClient::new(
+            keypair,
+            "test-client-id".to_string(),
+            session,
+            base_url,
+            Arc::new(WalletTransportObserver),
+            Arc::new(WalletTokenPersister),
+        );
+
+        let error = client
+            .get("/resource?did=did:plc:private-identity-oauthrs-test")
+            .await
+            .unwrap_err();
+        assert!(matches!(error, OAuthError::TokenRefreshFailed));
+
+        let report = crate::diagnostics::export_diagnostics();
+        assert!(
+            report.contains("oauthRefresh"),
+            "the transport failure must be recorded"
+        );
+        for secret in [
+            "private-access-token-oauthrs-test",
+            "private-refresh-token-oauthrs-test",
+            "private-identity-oauthrs-test",
+        ] {
+            assert!(
+                !report.contains(secret),
+                "secret leaked into diagnostics report: {secret}"
+            );
+        }
     }
 }

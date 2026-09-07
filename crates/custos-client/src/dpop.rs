@@ -11,9 +11,16 @@
 //! with a dedicated `DeviceKeyAccounts` slot instead of holding a raw exportable scalar here.
 //! That is a real improvement (Secure-Enclave-backed proofs on a real device) left for a
 //! follow-up: this extraction preserves the wallet's exact current key material and Keychain
-//! shape (a raw P-256 scalar under one account) so moving the code carries no behavior change.
-//! It reuses `KeychainStore` at the *trait* level only, which is the portability seam this
-//! crate actually needs.
+//! shape (a raw P-256 scalar under one account) — no Keychain-schema change. It reuses
+//! `KeychainStore` at the *trait* level only, which is the portability seam this crate
+//! actually needs.
+//!
+//! One behavior change did land with the move: [`DpopKeypair::get_or_create`] now mints a new
+//! key only on a genuine not-found (`K::is_not_found`), where the pre-extraction wallet code
+//! minted on *any* Keychain read error, including a locked Keychain or a malformed/wrong-length
+//! stored blob. The old behavior could silently replace a device's DPoP key — and every token
+//! bound to its old `jkt` — when the Keychain was merely locked, not actually empty. Fixed here
+//! rather than carried forward.
 //!
 //! Proof format: `base64url(header_json).base64url(claims_json).base64url(sig)`, where `sig`
 //! is the raw 64-byte low-S-normalized R||S P-256 ECDSA signature of the signing input.
@@ -24,6 +31,7 @@ use p256::ecdsa::{signature::Signer, Signature, SigningKey};
 use sha2::{Digest, Sha256};
 use std::time::{SystemTime, UNIX_EPOCH};
 use uuid::Uuid;
+use zeroize::Zeroizing;
 
 /// Error type for DPoP keypair and proof operations.
 ///
@@ -60,6 +68,9 @@ impl DpopKeypair {
     pub fn get_or_create<K: KeychainStore>(account: &str) -> Result<Self, DpopError> {
         match K::get(account) {
             Ok(bytes) => {
+                // Zeroize the loaded scalar on drop — `K::get` returns a plain `Vec<u8>`, which
+                // does not zero its buffer itself.
+                let bytes = Zeroizing::new(bytes);
                 let signing_key =
                     SigningKey::from_slice(&bytes).map_err(|_| DpopError::KeyInvalid)?;
                 Ok(Self { signing_key })
@@ -67,12 +78,14 @@ impl DpopKeypair {
             Err(e) if K::is_not_found(&e) => {
                 let keypair =
                     crypto::generate_p256_keypair().map_err(|_| DpopError::KeyGenFailed)?;
-                let private_bytes: [u8; 32] = *keypair.private_key_bytes;
-                K::store(account, &private_bytes).map_err(|e| DpopError::KeychainError {
+                // Keep the scalar in its `Zeroizing` wrapper rather than dereferencing it into
+                // a plain `[u8; 32]` — a deref-copy would leave the copy un-zeroized on drop.
+                let private_bytes = keypair.private_key_bytes;
+                K::store(account, &private_bytes[..]).map_err(|e| DpopError::KeychainError {
                     message: e.to_string(),
                 })?;
-                let signing_key =
-                    SigningKey::from_slice(&private_bytes).map_err(|_| DpopError::KeyInvalid)?;
+                let signing_key = SigningKey::from_slice(&private_bytes[..])
+                    .map_err(|_| DpopError::KeyInvalid)?;
                 Ok(Self { signing_key })
             }
             Err(e) => Err(DpopError::KeychainError {

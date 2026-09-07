@@ -243,8 +243,11 @@ pub async fn classify_xrpc_response(
     observer: &dyn TransportObserver,
 ) -> PdsClientError {
     let status = resp.status();
-    // Capture the host before the body read consumes the response — the diagnostics
-    // breadcrumb records the server hostname only (never the path or query).
+    // Capture both before the body read consumes the response. `url` is the full request
+    // URL — `record_transport`'s contract, and what the wallet's `record_reqwest_transport`
+    // adapter `Url::parse`s; a bare host fails that parse and silently drops the breadcrumb's
+    // host. `host` (bare hostname, never the path or query) is what `record_server` wants.
+    let url = resp.url().to_string();
     let host = resp.url().host_str().map(str::to_string);
     let retry_after = resp
         .headers()
@@ -254,7 +257,7 @@ pub async fn classify_xrpc_response(
     let body = match read_body_capped(resp, MAX_XRPC_ERROR_BODY).await {
         Ok(body) => body,
         Err(e) => {
-            observer.record_transport(context, host.as_deref(), &e);
+            observer.record_transport(context, Some(url.as_str()), &e);
             tracing::warn!(context, status = %status, error = %e, "failed to read XRPC error body");
             return PdsClientError::NetworkError {
                 message: format!("failed to read {status} response body: {e}"),
@@ -351,6 +354,25 @@ mod tests {
             PdsClientError::XrpcError { status: 400, error: Some(e), message }
                 if e == "InvalidRequest" && message == "bad request"
         ));
+    }
+
+    /// A 5xx with a non-envelope body still surfaces the raw body as the message (never a
+    /// `NetworkError` — the server did answer).
+    #[test]
+    fn classify_xrpc_error_5xx_non_envelope_falls_back_to_body() {
+        let err = classify_xrpc_error(503, None, "service unavailable");
+        match err {
+            PdsClientError::XrpcError {
+                status,
+                error,
+                message,
+            } => {
+                assert_eq!(status, 503);
+                assert_eq!(error, None);
+                assert_eq!(message, "service unavailable");
+            }
+            other => panic!("expected XrpcError, got {other:?}"),
+        }
     }
 
     #[test]

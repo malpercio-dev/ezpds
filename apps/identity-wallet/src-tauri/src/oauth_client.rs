@@ -7,10 +7,12 @@
 //! `custos_client::oauth_client`'s module doc for the client's own behavior (lazy refresh,
 //! nonce retry, auth modes).
 //!
-//! `OAuthClient::new_bearer`'s plain 3-arg form (used by every test fixture, and by call sites
-//! that construct a short-lived client, e.g. a one-shot service-auth Bearer client) records no
-//! breadcrumbs — that trade-off predates this extraction. Use `new_bearer_with_observer` with
-//! [`diagnostics_observer`] for any client whose failures a user could plausibly need to export.
+//! `OAuthClient::new_bearer`'s plain 3-arg form records no breadcrumbs — every call site in
+//! this app today is a test fixture (verified: none live outside a `#[cfg(test)]` module).
+//! This silent-by-default form is new to this extraction, not inherited from it: pre-extraction
+//! there was one `OAuthClient` and it recorded breadcrumbs unconditionally. Use
+//! `new_bearer_with_observer` with [`diagnostics_observer`] for any client whose failures a
+//! user could plausibly need to export — which today means every production call site.
 
 pub use custos_client::{OAuthClient, OAuthError, OAuthSession};
 

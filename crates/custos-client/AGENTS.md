@@ -39,8 +39,14 @@ exist.
   with nothing to wire up (every test, and `OAuthClient::new_bearer`'s plain 3-arg form).
 - **`OAuthClient::new_bearer_with_observer`, not `new_bearer`, for any client whose failures a
   user could plausibly need to export.** The plain `new_bearer` records no breadcrumbs by
-  design (matches the pre-extraction wallet behavior for short-lived/test clients); the 5 real
-  production call sites in identity-wallet all use the `_with_observer` form.
+  design — a silent-by-default constructor this extraction *introduced*, not one it inherited:
+  pre-extraction there was one `OAuthClient` and it recorded breadcrumbs unconditionally. Every
+  `new_bearer` call site in identity-wallet today is a test fixture (verified: none live
+  outside `#[cfg(test)]`); the 5 real production call sites all use the `_with_observer` form.
+  `#[cfg(test)]`-gating the crate's own `new_bearer` was considered and rejected: a downstream
+  crate's test build cannot see a dependency's `#[cfg(test)]` items, so gating it here would
+  break every one of the wallet's own test-only call sites (the same cross-crate visibility
+  limit `PdsClient::new_for_test` already documents).
 - **`PdsClientError`/`OAuthError`/`DpopError` never carry Rust-authored user-facing prose**
   (ADR-0031) — they are the typed seam; the app's own frontend or command-level enum maps
   `code` to a sentence. This crate's job stops at a typed, classified failure.
