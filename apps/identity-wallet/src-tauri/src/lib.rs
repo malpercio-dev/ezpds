@@ -1750,13 +1750,10 @@ pub fn run() {
                 .level(log::LevelFilter::Debug)
                 .build(),
         )
-        // In-app OAuth session (ASWebAuthenticationSession on iOS/macOS), invoked from the
-        // frontend as `plugin:auth-session|start`. Registered but with no live caller: it drove
-        // the create-flow OAuth login, retired once the create flow started ending at `home`
-        // with no OAuth round trip (see oauth.rs's module doc), and the claim/migration source
-        // logins are password `createSession`, not OAuth (ADR-0021). Kept registered because it
-        // replaced the deep-link + opener plugins, which depended on Safari auto-launching the
-        // app from a custom-scheme redirect — which iOS blocks.
+        // In-app OAuth session (ASWebAuthenticationSession on iOS/macOS). Invoked from the
+        // frontend as `plugin:auth-session|start`; drives both the create-flow and claim-flow
+        // PDS logins. (Replaced the deep-link + opener plugins, which depended on Safari
+        // auto-launching the app from a custom-scheme redirect — which iOS blocks.)
         .plugin(tauri_plugin_auth_session::init());
 
     // Mobile-only plugins: biometric (Face ID / Touch ID) gate on signing actions, the iOS Share
