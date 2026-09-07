@@ -16,7 +16,7 @@
 //! release) is only the pre-filled value in that configuration UI, and the fallback when
 //! nothing was ever configured.
 
-pub use custos_client::{CustosClient, ParResponse, TokenErrorResponse, TokenResponse};
+pub use custos_client::CustosClient;
 
 #[cfg(debug_assertions)]
 const CUSTOS_BASE_URL: &str = "http://localhost:8080";

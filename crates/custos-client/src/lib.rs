@@ -22,7 +22,7 @@ pub mod dpop;
 pub mod error;
 pub mod oauth_client;
 
-pub use custos_client::{CustosClient, ParResponse, TokenErrorResponse};
+pub use custos_client::{CustosClient, ParRequest, ParResponse, TokenErrorResponse};
 pub use dpop::{DpopError, DpopKeypair};
 pub use error::{
     classify_xrpc_error, classify_xrpc_response, error_code_is, parse_xrpc_error_envelope,
