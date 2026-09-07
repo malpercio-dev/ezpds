@@ -107,7 +107,7 @@ pub use custos_client::pds_client::{
     rotation_keys_from_audit_log, AuthServerMetadata, CreateSessionResponse, CustosExtension,
     DeleteAccountProof, DeleteCredential, DescribeServerObserver, DescribeServerResponse,
     ListedBlobs, NoopDescribeServerObserver, PdsClient, PdsParRequest, PdsParResponse,
-    PlcDidDocument, PlcService,
+    PdsTokenExchangeRequest, PlcDidDocument, PlcService,
 };
 
 // The claim-trio and migration-set request/response types moved to
@@ -1062,11 +1062,13 @@ mod tests {
         let result = client
             .pds_token_exchange(
                 &metadata,
-                "test_code",
-                "test_verifier",
-                "test_dpop_proof",
-                "https://test.example.com/oauth/client-metadata.json",
-                REDIRECT_URI,
+                PdsTokenExchangeRequest {
+                    code: "test_code",
+                    pkce_verifier: "test_verifier",
+                    dpop_proof: "test_dpop_proof",
+                    client_id: "https://test.example.com/oauth/client-metadata.json",
+                    redirect_uri: REDIRECT_URI,
+                },
             )
             .await;
 
@@ -1104,11 +1106,13 @@ mod tests {
         let result = client
             .pds_token_exchange(
                 &metadata,
-                "test_code",
-                "test_verifier",
-                "test_dpop_proof",
-                "https://test.example.com/oauth/client-metadata.json",
-                REDIRECT_URI,
+                PdsTokenExchangeRequest {
+                    code: "test_code",
+                    pkce_verifier: "test_verifier",
+                    dpop_proof: "test_dpop_proof",
+                    client_id: "https://test.example.com/oauth/client-metadata.json",
+                    redirect_uri: REDIRECT_URI,
+                },
             )
             .await;
 
@@ -1137,11 +1141,13 @@ mod tests {
         let result = client
             .pds_token_exchange(
                 &metadata,
-                "test_code",
-                "test_verifier",
-                "test_dpop_proof",
-                "https://test.example.com/oauth/client-metadata.json",
-                REDIRECT_URI,
+                PdsTokenExchangeRequest {
+                    code: "test_code",
+                    pkce_verifier: "test_verifier",
+                    dpop_proof: "test_dpop_proof",
+                    client_id: "https://test.example.com/oauth/client-metadata.json",
+                    redirect_uri: REDIRECT_URI,
+                },
             )
             .await;
 
@@ -2463,6 +2469,37 @@ mod tests {
         let desc = result.unwrap();
         assert_eq!(desc.did, "did:web:dest.example.com");
         assert_eq!(desc.available_user_domains, vec![".dest.example.com"]);
+    }
+
+    /// `new_for_test`'s real `WalletDescribeServerObserver` wiring (the same wiring
+    /// `new_with_diagnostics` uses in production) is what lets `pds_capabilities::probe` see
+    /// anything at all — it reads its own cache rather than `describe_server`'s return value,
+    /// so a no-op describe-observer silently starves it (the regression this crate's own
+    /// AGENTS.md Boundaries section names). This pins that a successful `describe_server` call
+    /// actually warms the cache, not just returns a parsed value.
+    #[tokio::test]
+    async fn describe_server_through_new_for_test_warms_the_capabilities_cache() {
+        let mock_server = MockServer::start();
+        mock_server.mock(|when, then| {
+            when.method(GET)
+                .path("/xrpc/com.atproto.server.describeServer");
+            then.status(200).json_body(serde_json::json!({
+                "did": "did:web:cap.example.com",
+                "availableUserDomains": [],
+                "custos": { "version": "0.16.0", "capabilities": ["didWebHosting"] }
+            }));
+        });
+
+        let client = crate::pds_client::new_for_test(mock_server.base_url());
+        client
+            .describe_server(&mock_server.base_url())
+            .await
+            .expect("describe_server succeeds");
+
+        let cached = crate::pds_capabilities::cached(&mock_server.base_url())
+            .expect("a successful describeServer must warm the cache");
+        assert!(cached.reached);
+        assert!(cached.has(crate::pds_capabilities::capability::DID_WEB_HOSTING));
     }
 
     /// describe_server maps non-2xx to PdsUnreachable

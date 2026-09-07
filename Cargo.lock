@@ -3300,7 +3300,6 @@ dependencies = [
  "cid",
  "crypto",
  "custos-client",
- "hickory-resolver",
  "http",
  "httpmock",
  "ios-device-key",

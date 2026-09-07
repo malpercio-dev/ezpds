@@ -27,10 +27,12 @@ pub trait TransportObserver: Send + Sync {
 
     /// A transport failure that isn't a `reqwest::Error` (e.g. a DNS resolver error) — the
     /// caller has already reduced it to a fixed category string (never the raw error, which
-    /// may embed caller-supplied data like a handle). Defaults to forwarding into
-    /// [`Self::record_transport`]'s category via a synthetic no-op; observers that want a real
-    /// breadcrumb here should override it. `host` follows the same redaction rule as
-    /// `record_transport`: omit it when the category string itself could embed sensitive data.
+    /// may embed caller-supplied data like a handle). Defaults to recording nothing — it
+    /// cannot forward into [`Self::record_transport`], which requires a real `reqwest::Error`
+    /// this category string isn't. An observer that doesn't override this drops this whole
+    /// breadcrumb class (this crate's own DNS-failure path, currently); override it for a real
+    /// breadcrumb. `host` follows the same redaction rule as `record_transport`: omit it when
+    /// the category string itself could embed sensitive data.
     fn record_transport_category(&self, _op: &str, _host: Option<&str>, _category: &str) {}
 }
 
@@ -407,5 +409,61 @@ mod tests {
             r#"{"error":"InvalidRequest","message":"nope"}"#,
             "InsufficientScope"
         ));
+    }
+
+    /// `xrpc_json` is the shared tail every XRPC call site routes through: a non-2xx response
+    /// classifies through `classify_xrpc_response` (here, `RateLimited` with the pacing hint),
+    /// and a malformed body on an otherwise-successful response maps to `InvalidResponse`
+    /// rather than panicking or silently defaulting. The only test anywhere driving a real
+    /// `reqwest::Response` through `xrpc_json` — it pins capturing `Retry-After` before the
+    /// body is consumed and the parse-failure branch.
+    #[tokio::test]
+    async fn xrpc_json_classifies_non_2xx_and_flags_malformed_body() {
+        use httpmock::MockServer;
+
+        let mock_server = MockServer::start();
+        mock_server.mock(|when, then| {
+            when.method(httpmock::Method::GET).path("/rate-limited");
+            then.status(429).header("Retry-After", "5").body("{}");
+        });
+        mock_server.mock(|when, then| {
+            when.method(httpmock::Method::GET).path("/garbage");
+            then.status(200).body("not json");
+        });
+
+        let client = reqwest::Client::new();
+
+        let resp = client
+            .get(format!("{}/rate-limited", mock_server.base_url()))
+            .send()
+            .await
+            .unwrap();
+        match xrpc_json::<serde_json::Value>("test", resp, &NoopObserver)
+            .await
+            .unwrap_err()
+        {
+            PdsClientError::RateLimited { retry_after, .. } => {
+                assert_eq!(retry_after.as_deref(), Some("5"));
+            }
+            other => panic!("expected RateLimited, got {other:?}"),
+        }
+
+        let resp = client
+            .get(format!("{}/garbage", mock_server.base_url()))
+            .send()
+            .await
+            .unwrap();
+        match xrpc_json::<serde_json::Value>("test", resp, &NoopObserver)
+            .await
+            .unwrap_err()
+        {
+            PdsClientError::InvalidResponse { message } => {
+                assert!(
+                    message.contains("failed to parse test response"),
+                    "got: {message}"
+                );
+            }
+            other => panic!("expected InvalidResponse, got {other:?}"),
+        }
     }
 }

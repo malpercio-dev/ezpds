@@ -329,6 +329,17 @@ pub struct PdsParRequest<'a> {
     pub redirect_uri: &'a str,
 }
 
+/// Parameters for [`PdsClient::pds_token_exchange`], grouped for the same reason as
+/// [`PdsParRequest`]: two adjacent `&str` positional arguments (`client_id`/`redirect_uri`)
+/// would compile if transposed and silently break OAuth.
+pub struct PdsTokenExchangeRequest<'a> {
+    pub code: &'a str,
+    pub pkce_verifier: &'a str,
+    pub dpop_proof: &'a str,
+    pub client_id: &'a str,
+    pub redirect_uri: &'a str,
+}
+
 fn default_client() -> Client {
     Client::builder()
         .timeout(Duration::from_secs(30))
@@ -838,25 +849,21 @@ impl PdsClient {
     pub async fn pds_token_exchange(
         &self,
         metadata: &AuthServerMetadata,
-        code: &str,
-        pkce_verifier: &str,
-        dpop_proof: &str,
-        client_id: &str,
-        redirect_uri: &str,
+        request: PdsTokenExchangeRequest<'_>,
     ) -> Result<reqwest::Response, PdsClientError> {
         let token_url = &metadata.token_endpoint;
 
         let form_data = vec![
             ("grant_type", "authorization_code"),
-            ("code", code),
-            ("redirect_uri", redirect_uri),
-            ("code_verifier", pkce_verifier),
-            ("client_id", client_id),
+            ("code", request.code),
+            ("redirect_uri", request.redirect_uri),
+            ("code_verifier", request.pkce_verifier),
+            ("client_id", request.client_id),
         ];
 
         self.client
             .post(token_url)
-            .header("DPoP", dpop_proof)
+            .header("DPoP", request.dpop_proof)
             .form(&form_data)
             .send()
             .await
