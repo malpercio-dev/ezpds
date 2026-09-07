@@ -52,9 +52,8 @@ pub enum SovereignLoginError {
     #[error("transport failure: {message}")]
     TransportFailure { message: String },
     /// The caller-supplied signing closure returned an error — a **local** failure (device
-    /// key/Secure Enclave), never the server's. `message` is diagnostic only (ADR-0031); this
-    /// is exactly the false-attribution risk the ADR names (a local failure must never render
-    /// behind "Your PDS reported: …").
+    /// key/Secure Enclave), never the server's. `message` is diagnostic only (ADR-0031 rule 4's
+    /// producer contract: a local failure must never flow into a server-quoted field).
     #[error("signing failure: {message}")]
     SigningFailed { message: String },
     #[error("the discovered DID document did not match the selected identity")]

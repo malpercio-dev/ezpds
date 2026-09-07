@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import {
   formatRateLimitMessage,
   formatServerErrorMessage,
+  formatHandleRejection,
   formatServerRefusal,
 } from './claim-errors';
 
@@ -63,6 +64,31 @@ describe('formatServerErrorMessage', () => {
     const rendered = formatServerErrorMessage(page);
     expect(rendered.length).toBeLessThan(300);
     expect(rendered.startsWith('Your PDS reported: <html>')).toBe(true);
+    expect(rendered.endsWith('…')).toBe(true);
+  });
+});
+
+describe('formatHandleRejection', () => {
+  it('shows the server message verbatim behind a short lead', () => {
+    expect(formatHandleRejection('handle already taken')).toBe(
+      'Your server says: handle already taken',
+    );
+  });
+
+  it('falls back when the server sent no message', () => {
+    expect(formatHandleRejection('   ')).toBe(
+      'Your server would not accept that handle. Try another.',
+    );
+    expect(formatHandleRejection('')).toBe(
+      'Your server would not accept that handle. Try another.',
+    );
+  });
+
+  it('truncates a non-message body instead of rendering kilobytes', () => {
+    const page = `<html><body>${'x'.repeat(8000)}</body></html>`;
+    const rendered = formatHandleRejection(page);
+    expect(rendered.length).toBeLessThan(300);
+    expect(rendered.startsWith('Your server says: <html>')).toBe(true);
     expect(rendered.endsWith('…')).toBe(true);
   });
 });

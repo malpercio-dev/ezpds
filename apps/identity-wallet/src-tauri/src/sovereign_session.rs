@@ -63,9 +63,9 @@ pub enum SovereignLoginError {
     /// server's words.
     #[error("keychain failure: {message}")]
     KeychainFailure { message: String },
-    /// The signer closure (device key / Secure Enclave) failed — a **local** failure. `message`
-    /// is diagnostic only (ADR-0031): this is exactly the false-attribution risk the ADR names,
-    /// so this must never render behind "Your PDS reported: …".
+    /// The signer closure (device key / Secure Enclave) failed — a **local** failure, the same
+    /// one [`custos_client::sovereign_session::SovereignLoginError::SigningFailed`] documents.
+    /// `message` is diagnostic only (ADR-0031 rule 4's producer contract).
     #[error("signing failure: {message}")]
     SigningFailed { message: String },
     #[error("the discovered DID document did not match the selected identity")]
