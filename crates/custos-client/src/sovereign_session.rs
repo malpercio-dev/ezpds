@@ -363,7 +363,7 @@ mod tests {
     }
 
     #[test]
-    fn wallet_uses_the_shared_canonical_envelope_vector() {
+    fn envelope_matches_the_shared_canonical_vector() {
         #[derive(Deserialize)]
         #[serde(rename_all = "camelCase")]
         struct Vector {
