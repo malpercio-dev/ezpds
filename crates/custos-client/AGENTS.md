@@ -116,7 +116,9 @@ exist.
   (`mint_child_from_claim`) and post-recovery reconciliation (`reconcile_children`) stay in
   identity-wallet entirely — both derive rotation keys off the wallet's delegation seed and
   sign a did:plc genesis operation, wallet key material this crate does not hold; only the
-  `list_children` call inside `reconcile_children_impl` is the crate's.
+  `list_children` call inside `reconcile_children_impl` is a crate *network* call (both also
+  reach into the crate for `CeremonyErrorBody`/`map_ceremony_error`, the shared ceremony-code
+  classification `map_child_confirm_error` widens ahead of).
 - `SessionProvider` (session-lifecycle resolution: restore / refresh / `NeedsUnlock`,
   `com.atproto.server.refreshSession` rotation, the per-DID coalescing lock) is still
   identity-wallet-only orchestration in `session_provider.rs`, layered on
