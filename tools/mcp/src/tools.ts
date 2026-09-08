@@ -3,9 +3,10 @@
 // runs as the agent registration the user confirmed — writes are attributed to
 // it and visible in the user's audit log.
 //
-// put_record and delete_record are registered only when the operator sets
-// CUSTOS_MCP_ALLOW_DESTRUCTIVE; with it unset they do not appear in the tool
-// list at all.
+// The four destructive tools — put_record, delete_record, and their space
+// siblings space_put_record/space_delete_record — are registered only when the
+// operator sets CUSTOS_MCP_ALLOW_DESTRUCTIVE; with it unset they do not appear
+// in the tool list at all.
 
 import * as fs from 'node:fs';
 import * as path from 'node:path';
