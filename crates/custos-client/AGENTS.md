@@ -129,4 +129,7 @@ exist.
   to its `SessionError`, mirroring `map_discovery_error`'s existing style in the same file).
   A candidate for a future PR if the wallet-core extraction needs the ladder itself moved,
   not yet redesigned behind injected traits.
-  Lexicon-generated (vs. hand-written) typed methods is a separate, not-yet-decided follow-up.
+- **Typed methods stay hand-written; lexicon codegen (`atrium-api`) was investigated and
+  rejected for this crate** — five independent reasons (missing Custos lexicon extensions,
+  newtype ripple, narrower error classification, no DPoP, no lexicon at all for `agents.rs`)
+  and the revisit trigger are [ADR-0038](../../docs/architecture/decisions/0038-hand-written-xrpc-methods-over-lexicon-codegen.md).
