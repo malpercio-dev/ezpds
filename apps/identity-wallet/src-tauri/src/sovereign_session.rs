@@ -55,16 +55,25 @@ pub enum SovereignLoginError {
     AuthorizationFailed,
     #[error("the hosting server rate limited the login")]
     RateLimited { retry_after: Option<String> },
+    /// `message` is diagnostic only (ADR-0031) — a transport failure is never the server's
+    /// words.
     #[error("transport failure: {message}")]
     TransportFailure { message: String },
+    /// `message` is diagnostic only (ADR-0031) — a local Keychain failure is never the
+    /// server's words.
     #[error("keychain failure: {message}")]
     KeychainFailure { message: String },
+    /// The signer closure (device key / Secure Enclave) failed — a **local** failure, the same
+    /// one [`custos_client::sovereign_session::SovereignLoginError::SigningFailed`] documents.
+    /// `message` is diagnostic only (ADR-0031 rule 4's producer contract).
     #[error("signing failure: {message}")]
     SigningFailed { message: String },
     #[error("the discovered DID document did not match the selected identity")]
     DidMismatch,
     #[error("invalid hosting server identity")]
     ServerMismatch,
+    /// `message` is diagnostic only (ADR-0031) — it describes this client's read of the
+    /// response, not a reason the server stated.
     #[error("invalid sovereign-session response: {message}")]
     InvalidResponse { message: String },
     #[error("hosting server failure: {status}")]

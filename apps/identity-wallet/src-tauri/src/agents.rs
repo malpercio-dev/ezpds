@@ -154,13 +154,18 @@ pub enum AgentsError {
     NotProvisioned,
     /// The server refused the proposed child handle or the genesis operation built around it.
     /// Recoverable by construction: the mint rejects strictly before the claim attempt is spent,
-    /// so the registration stays claimable and a corrected handle can be submitted.
+    /// so the registration stays claimable and a corrected handle can be submitted. `message` is
+    /// server-quoted when the ceremony sent `error_description` (ADR-0031 rule 4: length-bound
+    /// before rendering with attribution); otherwise it falls back to a fixed, non-attributing
+    /// Rust sentence ("the server refused this handle") rather than an empty quote.
     #[error("handle rejected: {message}")]
     HandleRejected { message: String },
-    /// Transport-level failure reaching the PDS.
+    /// Transport-level failure reaching the PDS. `message` is diagnostic only (ADR-0031) —
+    /// never the server's words.
     #[error("network error: {message}")]
     NetworkError { message: String },
-    /// The PDS answered with something this wallet does not understand.
+    /// The PDS answered with something this wallet does not understand. `message` is
+    /// diagnostic only (ADR-0031) — never render it as the server's words.
     #[error("unexpected response: {message}")]
     Unknown { message: String },
 }

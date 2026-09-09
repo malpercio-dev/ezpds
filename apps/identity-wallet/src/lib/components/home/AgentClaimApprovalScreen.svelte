@@ -11,6 +11,7 @@
   } from '$lib/ipc';
   import { authenticateBiometric } from '$lib/biometric';
   import { describeScopes } from '$lib/agent-scopes';
+  import { formatHandleRejection } from '$lib/claim-errors';
   import Button from '$lib/components/ui/Button.svelte';
   import TextField from '$lib/components/ui/TextField.svelte';
   import Spinner from '$lib/components/ui/Spinner.svelte';
@@ -201,12 +202,11 @@
       phase = 'handle';
       const c = errorCode(e);
       if (c === 'HANDLE_REJECTED') {
-        // The claim attempt is untouched, so this is a correction, not a restart. The server's
-        // description says what to fix — a taken handle, a domain it doesn't host — so it is
-        // shown verbatim on the field rather than replaced with a guess.
+        // The claim attempt is untouched, so this is a correction, not a restart. `message` is
+        // server-quoted (ADR-0031) — the server's description of what to fix (a taken handle, a
+        // domain it doesn't host) — so it's shown attributed and length-bound, not verbatim.
         const rejection = e as Extract<AgentsError, { code: 'HANDLE_REJECTED' }>;
-        childHandleError =
-          rejection.message || 'Your server would not accept that handle. Try another.';
+        childHandleError = formatHandleRejection(rejection.message);
         return;
       }
       if (c === 'NOT_PROVISIONED') {

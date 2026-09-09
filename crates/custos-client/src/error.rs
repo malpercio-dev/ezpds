@@ -79,13 +79,17 @@ pub enum PdsClientError {
     /// the request never got a well-formed HTTP response back. A non-2xx *response* is NOT a
     /// `NetworkError`: it is classified into one of the status-specific variants below. Keeping
     /// this variant transport-only is what lets screens tell "check your connection" apart from
-    /// "the server said no".
+    /// "the server said no". `message` is diagnostic only (ADR-0031) — a transport failure is
+    /// never the server's words, so it must never render behind server attribution.
     #[error("network error: {message}")]
     NetworkError { message: String },
 
     /// The server answered `429 Too Many Requests`. `retry_after` is the raw `Retry-After` header
     /// (seconds or an HTTP date) when the server sent one, so the UI can say how long to wait
-    /// instead of blaming the connection. `message` is the server's own error text.
+    /// instead of blaming the connection. `message` comes from [`parse_xrpc_error_envelope`],
+    /// which is exclusively server-supplied (envelope text, or the raw trimmed body as a last
+    /// resort) — server-quoted (ADR-0031 rule 4): renderable only behind explicit attribution,
+    /// length-bound before display.
     #[error("rate limited: {message}")]
     RateLimited {
         retry_after: Option<String>,
@@ -97,7 +101,8 @@ pub enum PdsClientError {
     /// can prompt a re-login rather than a retry. `error` is the atproto error code from the
     /// envelope when present (e.g. `ExpiredToken`, `InvalidToken`) — preserved so a token failure
     /// reported under 401 is still recognizable by code rather than only by message text; `message`
-    /// is the server's own error text.
+    /// comes from [`parse_xrpc_error_envelope`] the same way `RateLimited`'s does — server-quoted
+    /// (ADR-0031 rule 4): renderable only behind explicit attribution, length-bound before display.
     #[error("unauthorized: {message}")]
     Unauthorized {
         error: Option<String>,
@@ -108,7 +113,8 @@ pub enum PdsClientError {
     /// reaches the UI instead of connectivity boilerplate. `error` is the envelope's `error` code
     /// (e.g. `InvalidRequest`, `InsufficientScope`) when the body was a recognizable envelope;
     /// `message` is the envelope's human-readable `message` (falling back to the error code, then
-    /// the raw body). `status` is the HTTP status code.
+    /// the raw body) — server-quoted (ADR-0031 rule 4): renderable only behind explicit
+    /// attribution, length-bound before display. `status` is the HTTP status code.
     #[error("server error {status}: {message}")]
     XrpcError {
         status: u16,
@@ -116,11 +122,19 @@ pub enum PdsClientError {
         message: String,
     },
 
-    /// Response body couldn't be parsed or was missing expected fields.
+    /// Response body couldn't be parsed or was missing expected fields. `message` is
+    /// diagnostic only (ADR-0031) — it describes this client's own read of the response, not
+    /// a reason the server stated.
     #[error("invalid response: {message}")]
     InvalidResponse { message: String },
 
-    /// PAR or token exchange failed.
+    /// PAR or token exchange failed. `message` is mixed provenance depending on the
+    /// construction site: a PAR rejection carries the authorization server's own
+    /// `{error, error_description}` text, but a local parse or transport failure inside this
+    /// call also produces this variant. Because the field is not exclusively server-supplied,
+    /// ADR-0031 rule 4's producer contract is not met, so treat it as **diagnostic only** —
+    /// never render it with server attribution. (A future split into distinct variants per
+    /// construction site would let the PAR-rejection case be declared server-quoted instead.)
     #[error("oauth failed: {message}")]
     OauthFailed { message: String },
 
@@ -130,6 +144,11 @@ pub enum PdsClientError {
 
     /// `createSession` rejected the identifier/password (HTTP 401). Distinct from a transport
     /// failure so the claim flow can tell the user "wrong password" rather than "network error".
+    /// `message` is the raw response body, with one local exception: `pds_client.rs`'s
+    /// `create_session` substitutes a fixed `"(response body unreadable)"` sentinel when the body
+    /// itself fails to read. Both are still server-quoted (ADR-0031 rule 4) — the sentinel names
+    /// no local reason and reads as attributable server text either way — renderable only behind
+    /// explicit attribution, length-bound before display.
     #[error("invalid credentials: {message}")]
     InvalidCredentials { message: String },
 
