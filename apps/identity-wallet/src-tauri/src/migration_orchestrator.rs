@@ -3869,7 +3869,7 @@ mod tests {
         };
         store.store_oauth_tokens(did, &record).unwrap();
 
-        let pds_client = crate::pds_client::PdsClient::new_for_test("http://127.0.0.1:1/".into());
+        let pds_client = crate::pds_client::new_for_test("http://127.0.0.1:1/".into());
         let result =
             ensure_sovereign_session_persisted(&pds_client, &store, did, now, "nonce").await;
         assert!(
@@ -4496,7 +4496,7 @@ mod tests {
         });
 
         // ─ Build clients and state ─
-        let pds_client = crate::pds_client::PdsClient::new_for_test(plc_url.clone());
+        let pds_client = crate::pds_client::new_for_test(plc_url.clone());
 
         let source_client = Arc::new(bearer_client_at(source_url.clone()));
 
@@ -4723,7 +4723,7 @@ mod tests {
             then.status(404);
         });
 
-        let pds_client = crate::pds_client::PdsClient::new_for_test(plc.base_url());
+        let pds_client = crate::pds_client::new_for_test(plc.base_url());
         let source_client = Arc::new(bearer_client_at(source_url.clone()));
 
         let dest_client = create_destination_account_impl(
@@ -4969,7 +4969,7 @@ mod tests {
             then.status(200);
         });
 
-        let pds_client = crate::pds_client::PdsClient::new_for_test(plc.base_url());
+        let pds_client = crate::pds_client::new_for_test(plc.base_url());
         let source_client = Arc::new(bearer_client_at(source.base_url()));
 
         // ─ Run through steps 1–5 (up to verify_import, but NOT arm/finalize) ─
