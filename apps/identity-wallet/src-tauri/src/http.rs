@@ -1,7 +1,11 @@
-// pattern: Imperative Shell
+// pattern: Mixed (unavoidable)
 
-//! [`CustosClient`]: the HTTP client for the *one* PDS the user configured. Discovery and
-//! XRPC against arbitrary endpoints (plc.directory, a claim source, a migration
+//! Re-exports [`custos_client::CustosClient`] — the HTTP client for the *one* PDS the user
+//! configured — and owns the two things that name the wallet itself and so stay out of that
+//! Tauri-free crate: the compile-time default base URL, and [`new_configured`], which wires
+//! the wallet's diagnostics observer.
+//!
+//! Discovery and XRPC against arbitrary endpoints (plc.directory, a claim source, a migration
 //! destination) live in `pds_client.rs`; this client only ever addresses the configured
 //! Custos, which is why it holds a base URL where `PdsClient` is stateless.
 //!
@@ -11,16 +15,8 @@
 //! (`#[cfg(debug_assertions)]`: `http://localhost:8080` debug, `https://pds.obsign.org`
 //! release) is only the pre-filled value in that configuration UI, and the fallback when
 //! nothing was ever configured.
-//!
-//! Methods: `post`, `get`, `get_with_bearer`, `post_with_bearer`, plus the OAuth pair
-//! `par` (POST `/oauth/par` with a DPoP proof) and `token_exchange` (POST `/oauth/token`
-//! with the PKCE verifier). Response types: [`ParResponse`], [`TokenResponse`],
-//! [`TokenErrorResponse`].
 
-use reqwest::{Client, Response};
-use serde::Serialize;
-
-use crate::oauth::OAuthError;
+pub use custos_client::CustosClient;
 
 #[cfg(debug_assertions)]
 const CUSTOS_BASE_URL: &str = "http://localhost:8080";
@@ -36,246 +32,22 @@ pub fn default_pds_url() -> &'static str {
     CUSTOS_BASE_URL
 }
 
-/// Successful response from `POST /oauth/par` (RFC 9126 §2.2).
-#[derive(Debug, serde::Deserialize)]
-pub struct ParResponse {
-    pub request_uri: String,
-    pub expires_in: u32,
-}
-
-/// Successful response from `POST /oauth/token` (RFC 6749 §5.1) — the same shape
-/// `custos_client::oauth_client`'s DPoP refresh parses, so this re-exports that type rather
-/// than defining a byte-identical duplicate.
-pub use custos_client::TokenResponse;
-
-/// Error response from `POST /oauth/token` (RFC 6749 §5.2).
-#[derive(Debug, serde::Deserialize)]
-pub struct TokenErrorResponse {
-    pub error: String,
-    pub error_description: Option<String>,
-}
-
-/// HTTP client for PDS API requests.
-pub struct CustosClient {
-    client: Client,
-    base_url: String,
-}
-
-impl CustosClient {
-    fn record_transport(op: &str, url: &str, error: &reqwest::Error) {
-        crate::diagnostics::record_reqwest_transport(op, Some(url), error);
-    }
-
-    /// Create a new `CustosClient` with the compile-time base URL.
-    pub fn new() -> Self {
-        Self {
-            client: Client::new(),
-            base_url: CUSTOS_BASE_URL.to_string(),
-        }
-    }
-
-    /// Create a new `CustosClient` with a runtime-provided base URL.
-    ///
-    /// The URL must not have a trailing slash. Used when the PDS URL is
-    /// configured at runtime rather than baked in at compile time.
-    pub fn new_with_url(url: String) -> Self {
-        Self {
-            client: Client::new(),
-            base_url: url,
-        }
-    }
-
-    /// POST JSON to `path` (relative, e.g. `"/v1/accounts/mobile"`).
-    ///
-    /// Returns the raw `Response` so callers can inspect the status code
-    /// before attempting to deserialize the body.
-    pub async fn post<T: Serialize>(&self, path: &str, body: &T) -> reqwest::Result<Response> {
-        let url = format!("{}{}", self.base_url, path);
-        self.client
-            .post(&url)
-            .json(body)
-            .send()
-            .await
-            .map_err(|error| {
-                Self::record_transport("custosPost", &url, &error);
-                error.without_url()
-            })
-    }
-
-    /// GET `path` (relative, e.g. `"/v1/PDS/keys"`).
-    ///
-    /// Returns the raw `Response` so callers can inspect the status code
-    /// before attempting to deserialize the body.
-    pub async fn get(&self, path: &str) -> reqwest::Result<Response> {
-        let url = format!("{}{}", self.base_url, path);
-        self.client.get(&url).send().await.map_err(|error| {
-            Self::record_transport("custosGet", &url, &error);
-            error.without_url()
-        })
-    }
-
-    /// GET `path` with a Bearer token in the Authorization header.
-    ///
-    /// Used for authenticated PDS GETs (e.g. `GET /v1/repo-signing-key`, which is
-    /// scoped to the caller's pending session).
-    pub async fn get_with_bearer(
-        &self,
-        path: &str,
-        bearer_token: &str,
-    ) -> reqwest::Result<Response> {
-        let url = format!("{}{}", self.base_url, path);
-        self.client
-            .get(&url)
-            .bearer_auth(bearer_token)
-            .send()
-            .await
-            .map_err(|error| {
-                Self::record_transport("custosGetAuthenticated", &url, &error);
-                error.without_url()
-            })
-    }
-
-    /// POST JSON to `path` with a Bearer token in the Authorization header.
-    ///
-    /// Used for authenticated PDS endpoints (e.g. `POST /v1/dids` which
-    /// requires the pending session token).
-    pub async fn post_with_bearer<T: Serialize>(
-        &self,
-        path: &str,
-        body: &T,
-        bearer_token: &str,
-    ) -> reqwest::Result<Response> {
-        let url = format!("{}{}", self.base_url, path);
-        self.client
-            .post(&url)
-            .bearer_auth(bearer_token)
-            .json(body)
-            .send()
-            .await
-            .map_err(|error| {
-                Self::record_transport("custosPostAuthenticated", &url, &error);
-                error.without_url()
-            })
-    }
-
-    /// POST `/oauth/par` — push the authorization request parameters to the PDS.
-    ///
-    /// Sends the required PKCE and OAuth parameters as `application/x-www-form-urlencoded`.
-    /// Includes a `DPoP` proof header per RFC 9449 §6.
-    ///
-    /// `dpop_jkt` is the JWK thumbprint of the DPoP key; included as a form field for
-    /// servers that support PAR-level DPoP key binding (the PDS ignores it,
-    /// but it is spec-correct to send it).
-    pub async fn par(
-        &self,
-        code_challenge: &str,
-        state_param: &str,
-        dpop_proof: &str,
-        dpop_jkt: &str,
-        login_hint: Option<&str>,
-    ) -> Result<ParResponse, OAuthError> {
-        let url = format!("{}/oauth/par", self.base_url);
-
-        let client_id = crate::pds_client::client_id_for_pds(&self.base_url);
-        let hint_owned;
-        let mut fields = vec![
-            ("client_id", client_id.as_str()),
-            ("redirect_uri", crate::pds_client::REDIRECT_URI),
-            ("code_challenge", code_challenge),
-            ("code_challenge_method", "S256"),
-            ("state", state_param),
-            ("response_type", "code"),
-            ("scope", "atproto"),
-            ("dpop_jkt", dpop_jkt),
-        ];
-
-        if let Some(hint) = login_hint {
-            hint_owned = hint.to_string();
-            fields.push(("login_hint", &hint_owned));
-        }
-
-        let resp = self
-            .client
-            .post(&url)
-            .header("DPoP", dpop_proof)
-            .form(&fields)
-            .send()
-            .await
-            .map_err(|e| {
-                Self::record_transport("oauthPar", &url, &e);
-                let e = e.without_url();
-                tracing::error!(error = %e, "PAR request network error");
-                OAuthError::ParFailed
-            })?;
-
-        let status = resp.status();
-        if status.as_u16() != 201 {
-            let body = resp.text().await.unwrap_or_default();
-            tracing::error!(status = %status, body = %body, "PAR request failed");
-            return Err(OAuthError::ParFailed);
-        }
-
-        resp.json::<ParResponse>().await.map_err(|e| {
-            tracing::error!(error = %e, "PAR response deserialization failed");
-            OAuthError::ParFailed
-        })
-    }
-
-    /// POST `/oauth/token` — exchange an authorization code for tokens.
-    ///
-    /// Sends the authorization code, PKCE verifier, and DPoP proof.
-    /// Returns the token response body on 200, or an error.
-    /// The caller is responsible for reading the `DPoP-Nonce` response header
-    /// if the server returns one (the full `reqwest::Response` is returned for this).
-    pub async fn token_exchange(
-        &self,
-        code: &str,
-        pkce_verifier: &str,
-        dpop_proof: &str,
-    ) -> Result<reqwest::Response, OAuthError> {
-        let url = format!("{}/oauth/token", self.base_url);
-        let client_id = crate::pds_client::client_id_for_pds(&self.base_url);
-        let resp = self
-            .client
-            .post(&url)
-            .header("DPoP", dpop_proof)
-            .form(&[
-                ("grant_type", "authorization_code"),
-                ("code", code),
-                ("redirect_uri", crate::pds_client::REDIRECT_URI),
-                ("client_id", client_id.as_str()),
-                ("code_verifier", pkce_verifier),
-            ])
-            .send()
-            .await
-            .map_err(|e| {
-                Self::record_transport("oauthTokenExchange", &url, &e);
-                let e = e.without_url();
-                tracing::error!(error = %e, "token exchange network error");
-                OAuthError::TokenExchangeFailed
-            })?;
-        Ok(resp)
-    }
-
-    /// Returns the base URL for this PDS client instance.
-    pub fn base_url_str(&self) -> &str {
-        &self.base_url
-    }
-}
-
-impl Default for CustosClient {
-    fn default() -> Self {
-        Self::new()
-    }
+/// Build a [`CustosClient`] for `base_url`, wired to the wallet's diagnostics observer.
+pub fn new_configured(base_url: String) -> CustosClient {
+    CustosClient::new_with_url(base_url, crate::oauth_client::diagnostics_observer())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    /// `new_configured` must wire the wallet's real diagnostics observer, not
+    /// `custos_client::NoopObserver` — a network failure on a client built this way must leave
+    /// a breadcrumb in the exportable diagnostics log (the pre-extraction behavior this
+    /// function preserves).
     #[tokio::test]
-    async fn create_flow_transport_failure_records_one_redacted_breadcrumb() {
-        let client = CustosClient::new_with_url("http://127.0.0.1:1".to_string());
+    async fn new_configured_records_a_redacted_breadcrumb_on_transport_failure() {
+        let client = new_configured("http://127.0.0.1:1".to_string());
         let marker = "create-flow-secret@example.com";
         let before = crate::diagnostics::export().matches("custosPost").count();
 
