@@ -371,11 +371,16 @@ pub fn stored_bearer_client(did: &str) -> Result<Option<OAuthClient>, SovereignL
     {
         return Err(SovereignLoginError::ServerMismatch);
     }
-    OAuthClient::new_bearer(record.access_jwt, record.refresh_jwt, record.pds_url)
-        .map(Some)
-        .map_err(|e| SovereignLoginError::KeychainFailure {
-            message: e.to_string(),
-        })
+    OAuthClient::new_bearer_with_observer(
+        record.access_jwt,
+        record.refresh_jwt,
+        record.pds_url,
+        crate::oauth_client::diagnostics_observer(),
+    )
+    .map(Some)
+    .map_err(|e| SovereignLoginError::KeychainFailure {
+        message: e.to_string(),
+    })
 }
 
 #[cfg(test)]

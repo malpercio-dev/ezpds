@@ -625,10 +625,11 @@ pub(crate) async fn create_destination_account_with_token(
     }
 
     // One-shot Bearer client carrying the service-auth token.
-    let sa_client = OAuthClient::new_bearer(
+    let sa_client = OAuthClient::new_bearer_with_observer(
         service_auth_token.to_string(),
         String::new(),
         dest_pds_url.into(),
+        crate::oauth_client::diagnostics_observer(),
     )
     .map_err(|e| {
         tracing::error!(error = %e, "failed to create service-auth Bearer client");
@@ -654,14 +655,18 @@ pub(crate) async fn create_destination_account_with_token(
     match crate::pds_client::create_account_migration(&sa_client, &req).await {
         Ok(resp) => {
             // 5. Build destination Bearer client from the returned session tokens.
-            let dest_client =
-                OAuthClient::new_bearer(resp.access_jwt, resp.refresh_jwt, dest_pds_url.into())
-                    .map_err(|e| {
-                        tracing::error!(error = %e, "failed to create destination Bearer client from response");
-                        MigrationError::AccountCreationFailed {
-                            message: "failed to create destination client".to_string(),
-                        }
-                    })?;
+            let dest_client = OAuthClient::new_bearer_with_observer(
+                resp.access_jwt,
+                resp.refresh_jwt,
+                dest_pds_url.into(),
+                crate::oauth_client::diagnostics_observer(),
+            )
+            .map_err(|e| {
+                tracing::error!(error = %e, "failed to create destination Bearer client from response");
+                MigrationError::AccountCreationFailed {
+                    message: "failed to create destination client".to_string(),
+                }
+            })?;
             tracing::info!(did = %did, "destination account created successfully");
             Ok(Arc::new(dest_client))
         }

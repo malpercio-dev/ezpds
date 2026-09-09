@@ -6,6 +6,7 @@ members = [
     "crates/crypto",
     "crates/common",
     "crates/ios-device-key",
+    "crates/custos-client",
     "apps/identity-wallet/src-tauri",
     "apps/admin-companion/src-tauri",
 ]
@@ -264,6 +265,8 @@ repo-engine = { path = "crates/repo-engine" }
 notify-relay = { path = "crates/notify-relay" }
 # The device key both iOS apps hold; each supplies its own Keychain and account names.
 ios-device-key = { path = "crates/ios-device-key" }
+# The DPoP/OAuth/XRPC HTTP client shared by identity-wallet and (in future PRs) admin-companion.
+custos-client = { path = "crates/custos-client" }
 
 # ── Local patches ─────────────────────────────────────────────────────────────
 #

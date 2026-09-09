@@ -1,0 +1,33 @@
+//! `custos-client`: the DPoP/OAuth/XRPC HTTP client shared by the identity-wallet and (in
+//! future PRs) admin-companion Tauri apps. Tauri-free by design — it depends on nothing from
+//! either app's `src-tauri`, so it can be reused by a platform-agnostic wallet core.
+//!
+//! - [`dpop`]: RFC 9449 DPoP proof construction/signing ([`DpopKeypair`]).
+//! - [`error`]: the shared XRPC failure shape ([`PdsClientError`]) and the classification tail
+//!   (`xrpc_ok`/`xrpc_json`) every XRPC call routes through, plus the [`TransportObserver`]
+//!   seam apps use to record diagnostics breadcrumbs.
+//! - [`oauth_client`]: [`OAuthClient`], the authenticated XRPC HTTP client (DPoP and Bearer
+//!   modes).
+//!
+//! App-specific concerns this crate deliberately does not own: Keychain storage (apps supply
+//! an `ios_device_key::KeychainStore` impl), diagnostics UI/export (apps supply a
+//! [`TransportObserver`]), and the wallet's own OAuth client identity (`client_id`,
+//! `redirect_uri`) — those stay in the app, since they name the app itself.
+
+mod base64url;
+pub mod dpop;
+pub mod error;
+pub mod oauth_client;
+
+pub use dpop::{DpopError, DpopKeypair};
+pub use error::{
+    classify_xrpc_error, classify_xrpc_response, error_code_is, parse_xrpc_error_envelope,
+    xrpc_json, xrpc_ok, NoopObserver, PdsClientError, TransportObserver,
+};
+pub use oauth_client::{
+    NoopTokenPersister, OAuthClient, OAuthError, OAuthSession, TokenPersister, TokenResponse,
+};
+
+// Re-exported so callers can implement `DpopKeypair::get_or_create::<K>` against the same
+// `KeychainStore` trait without a direct `ios-device-key` dependency of their own.
+pub use ios_device_key::KeychainStore;

@@ -43,15 +43,10 @@ pub struct ParResponse {
     pub expires_in: u32,
 }
 
-/// Successful response from `POST /oauth/token` (RFC 6749 §5.1).
-#[derive(Debug, serde::Deserialize)]
-pub struct TokenResponse {
-    pub access_token: String,
-    pub token_type: String,
-    pub expires_in: u64,
-    pub refresh_token: String,
-    pub scope: String,
-}
+/// Successful response from `POST /oauth/token` (RFC 6749 §5.1) — the same shape
+/// `custos_client::oauth_client`'s DPoP refresh parses, so this re-exports that type rather
+/// than defining a byte-identical duplicate.
+pub use custos_client::TokenResponse;
 
 /// Error response from `POST /oauth/token` (RFC 6749 §5.2).
 #[derive(Debug, serde::Deserialize)]
