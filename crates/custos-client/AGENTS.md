@@ -28,6 +28,7 @@ exist.
 | `src/app_passwords.rs` | typed XRPC methods for `com.atproto.server.{create,list,revoke}AppPassword` |
 | `src/migration.rs` | typed XRPC methods for the outbound-migration set (service auth, destination account creation, repo/blob import, preferences, account status/lifecycle) — no orchestration, that stays in the caller |
 | `src/pds_client.rs` | `PdsClient` — discovery/auth/XRPC against *arbitrary* PDS endpoints and plc.directory (handle resolution, DID-doc discovery, `describeServer`/`createSession`, OAuth against a discovered AS, plc.directory reads/writes, repo/blob sync) |
+| `src/sovereign_session.rs` | the Custos passwordless full-access session ceremony (`sovereign_login`: sign the shared canonical envelope with a caller-supplied closure, `POST /v1/sessions/sovereign` via `PdsClient`, validate the response DID and JWT sub/aud) plus the pure helpers apps reuse for a restored session (`bearer_jwt_claims`, `audience_matches_server`, `fresh_nonce`, `unix_timestamp`) — no Keychain/persistence concept, the caller resolves signing and persists the result |
 | `src/base64url.rs` | the one base64 alphabet this crate uses (unpadded base64url) |
 
 ## Contracts
@@ -94,13 +95,20 @@ exist.
 - `PdsClient`'s own OAuth client identity parameters (`client_id`/`redirect_uri` on `pds_par`/
   `pds_token_exchange`) follow the same pattern as `OAuthClient`/`CustosClient` — plain
   parameters, never derived internally.
-- The sovereign-session and auth.md agent-flow logic built on the XRPC methods above stays in
-  identity-wallet's `sovereign_session.rs`/`agents.rs`/`session_provider.rs` — that is
-  orchestration over `IdentityStore`/`SessionProvider` (Keychain-backed per-DID identity state),
-  not client machinery this Tauri-free crate can hold without dragging that state model in too.
-  A future PR could redesign these behind injected identity/signing/session-persistence traits
-  (mirroring `KeychainStore`/`TokenPersister` here) if the wallet core extraction needs it: the
-  one genuinely reusable slice inside `sovereign_login_impl` is small (build a signed request,
-  POST, classify the response — the key resolution, signing, and persistence around it are all
-  `IdentityStore`-shaped). Lexicon-generated (vs. hand-written) typed methods is a separate,
-  not-yet-decided follow-up.
+- **`sovereign_session::sovereign_login` takes a signing closure, not an identity/Keychain
+  trait.** The genuinely reusable slice of the old `sovereign_login_impl` was small (build the
+  signed request, POST, classify the response); everything around it — resolving the per-DID
+  device key, signing via `IdentityStore`, and persisting a `SovereignTokenRecord` into
+  Keychain — is app-shaped state this crate does not model. identity-wallet's
+  `sovereign_session.rs` is now a thin wrapper: it resolves the device key + signer from
+  `IdentityStore`, calls this module's `sovereign_login`, and persists the result; its own
+  `SovereignLoginError` stays a superset (adds pre-flight variants like `IdentityNotFound`/
+  `KeychainFailure` this crate's classification can't produce) with a `From` conversion for the
+  rest. `fresh_nonce`/`unix_timestamp` are reused well beyond this one ceremony — every other
+  device-key-signed wallet flow (agents, app passwords, identity removal, migration, rotation,
+  …) calls them too, so the wallet re-exports both from its own `sovereign_session.rs` rather
+  than only using them internally.
+- The auth.md agent-flow console (agent consent/audit, the sovereign-child parent console) is
+  still identity-wallet-only orchestration in `agents.rs`/`session_provider.rs` — larger in
+  scope than the sovereign-login ceremony above and not yet redesigned behind injected traits.
+  Lexicon-generated (vs. hand-written) typed methods is a separate, not-yet-decided follow-up.
