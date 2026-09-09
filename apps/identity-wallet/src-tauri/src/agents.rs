@@ -44,22 +44,29 @@
 //! self-heals via `refreshSession` or, failing that, `SESSION_LOCKED { reason }` cues
 //! the frontend to run `unlockIdentity(did)` and retry. This replaced auth on the
 //! never-refreshed global `"session-token"`, whose lapse dead-ended every agent
-//! command as a bogus connection error. Request cores are `_impl` functions taking
-//! `&OAuthClient`, tested against httpmock.
+//! command as a bogus connection error.
+//!
+//! The plain claim/audit/list/revoke network cores and the four child-lifecycle routes are
+//! `custos_client::agents` typed methods (like `app_passwords.rs`) — this module's own
+//! `_impl` functions are only [`mint_child_from_claim_impl`] and [`reconcile_children_impl`],
+//! which derive rotation keys off this identity's delegation seed and sign a did:plc genesis
+//! operation: wallet key material the crate does not hold. `AgentsError` maps
+//! `custos_client::agents::AgentError` via `From` for the shared cases, and keeps its own
+//! `NotProvisioned`/`HandleRejected`/`SessionLocked` variants for the ones only this module
+//! can produce.
 //!
 //! `AgentsError` (NOT_AUTHENTICATED, CODE_NOT_FOUND, CODE_EXPIRED, ALREADY_CLAIMED,
 //! ACCESS_DENIED, AGENT_NOT_FOUND, RATE_LIMITED, NOT_PROVISIONED, HANDLE_REJECTED,
-//! SESSION_LOCKED, NETWORK_ERROR, UNKNOWN) serializes as `{ code: "SCREAMING_SNAKE_CASE" }`; the TypeScript union in
-//! `$lib/ipc` must match exactly, and `SESSION_LOCKED` carries
-//! `reason: UnlockReason`. The ceremony's `{error}` codes map onto it in
-//! `map_ceremony_error`; a session-lifecycle failure maps via `map_session_error` —
-//! only a genuine transport failure is NETWORK_ERROR (a `NeedsUnlock` is
-//! SESSION_LOCKED, every other verdict UNKNOWN) — so denial, expiry, and lock render
-//! as explicit states. The IPC types (`AgentSummary`, `AgentAuditEvent`,
-//! `AgentAuditPage`, `AgentClaimPreview`, `AgentClaimConfirmation`, `MintedChild`,
-//! `ChildReconciliation`) serialize
-//! camelCase and must match their `$lib/ipc` counterparts.
+//! SESSION_LOCKED, NETWORK_ERROR, UNKNOWN) serializes as `{ code: "SCREAMING_SNAKE_CASE" }`; the
+//! TypeScript union in `$lib/ipc` must match exactly, and `SESSION_LOCKED` carries
+//! `reason: UnlockReason`. A session-lifecycle failure maps via `map_session_error` — only a
+//! genuine transport failure is NETWORK_ERROR (a `NeedsUnlock` is SESSION_LOCKED, every other
+//! verdict UNKNOWN) — so denial, expiry, and lock render as explicit states. The IPC types
+//! (`AgentSummary`, `AgentAuditEvent`, `AgentAuditPage`, `AgentClaimPreview`,
+//! `AgentClaimConfirmation`, `MintedChild`, `ChildReconciliation`) serialize camelCase and must
+//! match their `$lib/ipc` counterparts.
 
+use custos_client::agents::CeremonyErrorBody;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -69,71 +76,12 @@ use crate::oauth_client::OAuthClient;
 use crate::pds_client::PdsClient;
 use crate::session_provider::{SessionError, SessionProvider, UnlockReason};
 
-// ── Frontend-facing types (camelCase, mirroring the PDS responses) ─────────────
+pub use custos_client::agents::{
+    AgentAuditEvent, AgentAuditPage, AgentClaimConfirmation, AgentClaimPreview, AgentSummary,
+    ChildAssertion, ChildDeletion, ChildSummary,
+};
 
-/// One agent identity bound to this account (`GET /v1/agents` entry).
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct AgentSummary {
-    pub registration_id: String,
-    pub registration_type: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub issuer: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub subject: Option<String>,
-    pub scopes: Vec<String>,
-    /// `active` (awaiting the claim ceremony), `claimed`, or `revoked`.
-    pub status: String,
-    pub created_at: String,
-    pub updated_at: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub last_used_at: Option<String>,
-}
-
-#[derive(Debug, Deserialize)]
-struct ListAgentsResponse {
-    agents: Vec<AgentSummary>,
-}
-
-/// One audit event (`GET /v1/agents/{id}/audit` entry).
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct AgentAuditEvent {
-    pub id: String,
-    pub event_type: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub did: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub detail: Option<Value>,
-    pub created_at: String,
-}
-
-/// One page of an agent's audit trail, newest first. `cursor` present means more pages exist.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct AgentAuditPage {
-    pub events: Vec<AgentAuditEvent>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub cursor: Option<String>,
-}
-
-/// What confirming a `user_code` would grant (`POST /v1/agents/claim-preview`).
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct AgentClaimPreview {
-    pub registration_id: String,
-    pub registration_type: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub issuer: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub subject: Option<String>,
-    pub scopes: Vec<String>,
-    pub user_code_expires_at: String,
-    /// The handle an `anonymous` agent proposed for an account of its own. Present only when it
-    /// asked; the approval screen offers it as an editable default, never a commitment.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub handle_hint: Option<String>,
-}
+// ── Frontend-facing types staying here (wallet key-material results) ───────────
 
 /// A child account minted by [`mint_child_from_claim`] — the agent's own identity, under this
 /// account's rotation authority. The agent collects its credential through the claim-grant poll it
@@ -160,68 +108,6 @@ struct ChildConfirmResponse {
     #[serde(alias = "registration_id")]
     registration_id: String,
     child: Option<ConfirmedChildBody>,
-}
-
-/// One sovereign child under this account (`GET /agent/child` entry).
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ChildSummary {
-    pub registration_id: String,
-    /// The child's own `did:plc` — how every lifecycle command addresses it.
-    pub did: String,
-    pub handle: String,
-    /// `claimed` (live), `active` (mid-provisioning), or `revoked`.
-    pub status: String,
-    pub created_at: String,
-    pub scopes: Vec<String>,
-    /// Set only once deletion is scheduled: the instant after which the server purges the child
-    /// permanently. Deletion revokes as a side effect, so `status` alone cannot distinguish a
-    /// retired child from a merely revoked one — this is what tells them apart.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub delete_after: Option<String>,
-}
-
-#[derive(Debug, Deserialize)]
-struct ListChildrenResponse {
-    children: Vec<ChildSummary>,
-}
-
-/// Result of scheduling a child's deletion (`POST /agent/child/delete`).
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ChildDeletion {
-    pub did: String,
-    pub status: String,
-    /// The instant after which the child is purged permanently — the date the wallet shows so
-    /// the user knows how long the decision stays reversible on the server side.
-    pub delete_after: String,
-}
-
-/// A freshly renewed child credential (`POST /agent/child/assertion`).
-///
-/// `identity_assertion` is a live credential for the child account, so the screen showing it
-/// treats it like the app-password reveal: shown once, offered for copy, never persisted.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ChildAssertion {
-    pub did: String,
-    pub registration_id: String,
-    pub identity_assertion: String,
-    pub assertion_expires: String,
-    pub scopes: Vec<String>,
-}
-
-/// Result of a confirmed claim (`POST /agent/identity/claim/confirm`).
-///
-/// The ceremony endpoint answers in auth.md snake_case (`registration_id`) while the frontend
-/// receives camelCase like every other IPC type — the alias accepts the server shape.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct AgentClaimConfirmation {
-    #[serde(alias = "registration_id")]
-    pub registration_id: String,
-    pub status: String,
-    pub did: String,
 }
 
 // ── Error type ──────────────────────────────────────────────────────────────────
@@ -279,24 +165,22 @@ pub enum AgentsError {
     Unknown { message: String },
 }
 
-/// auth.md-style `{ error, error_description }` body the ceremony endpoints return.
-#[derive(Debug, Deserialize)]
-struct CeremonyErrorBody {
-    error: String,
-    #[serde(default)]
-    error_description: Option<String>,
-}
-
-/// Map a confirm/preview ceremony error code to the typed variant the frontend renders.
-fn map_ceremony_error(error_code: &str) -> AgentsError {
-    match error_code {
-        "invalid_user_code" | "invalid_request" => AgentsError::CodeNotFound,
-        "claim_expired" => AgentsError::CodeExpired,
-        "claimed_or_in_flight" => AgentsError::AlreadyClaimed,
-        "access_denied" => AgentsError::AccessDenied,
-        other => AgentsError::Unknown {
-            message: format!("ceremony error: {other}"),
-        },
+/// `custos_client::agents::AgentError` covers only the variants a network response can
+/// itself produce — every one of them has a matching state here.
+impl From<custos_client::agents::AgentError> for AgentsError {
+    fn from(error: custos_client::agents::AgentError) -> Self {
+        use custos_client::agents::AgentError as A;
+        match error {
+            A::NotAuthenticated => Self::NotAuthenticated,
+            A::CodeNotFound => Self::CodeNotFound,
+            A::CodeExpired => Self::CodeExpired,
+            A::AlreadyClaimed => Self::AlreadyClaimed,
+            A::AccessDenied => Self::AccessDenied,
+            A::AgentNotFound => Self::AgentNotFound,
+            A::RateLimited => Self::RateLimited,
+            A::NetworkError { message } => Self::NetworkError { message },
+            A::Unknown { message } => Self::Unknown { message },
+        }
     }
 }
 
@@ -351,73 +235,7 @@ async fn full_access_session(
         .map_err(map_session_error)
 }
 
-// ── Network cores (testable against httpmock) ──────────────────────────────────
-
-async fn list_agents_impl(client: &OAuthClient) -> Result<Vec<AgentSummary>, AgentsError> {
-    let resp = client.get("/v1/agents").await.map_err(oauth_err)?;
-    match resp.status().as_u16() {
-        200 => {
-            let body: ListAgentsResponse = resp.json().await.map_err(|e| AgentsError::Unknown {
-                message: format!("failed to parse /v1/agents response: {e}"),
-            })?;
-            Ok(body.agents)
-        }
-        401 | 403 => Err(AgentsError::NotAuthenticated),
-        429 => Err(AgentsError::RateLimited),
-        other => Err(AgentsError::Unknown {
-            message: format!("GET /v1/agents returned {other}"),
-        }),
-    }
-}
-
-async fn revoke_agent_impl(client: &OAuthClient, registration_id: &str) -> Result<(), AgentsError> {
-    let resp = client
-        .post(
-            &format!("/v1/agents/{registration_id}/revoke"),
-            &serde_json::json!({}),
-        )
-        .await
-        .map_err(oauth_err)?;
-    match resp.status().as_u16() {
-        200 => Ok(()),
-        401 | 403 => Err(AgentsError::NotAuthenticated),
-        404 => Err(AgentsError::AgentNotFound),
-        429 => Err(AgentsError::RateLimited),
-        other => Err(AgentsError::Unknown {
-            message: format!("revoke returned {other}"),
-        }),
-    }
-}
-
-/// Shared status mapping for the four child routes. They are deliberately uniform: an unknown or
-/// foreign child DID is the same 404 as one belonging to another parent, so none of them is an
-/// existence oracle. 403 is the assertion route's "child is not active" refusal — revocation is a
-/// one-way rung on the custody ladder, and the frontend says so rather than offering a retry.
-fn child_route_error(status: u16, path: &str) -> AgentsError {
-    match status {
-        401 => AgentsError::NotAuthenticated,
-        403 => AgentsError::AccessDenied,
-        404 => AgentsError::AgentNotFound,
-        429 => AgentsError::RateLimited,
-        other => AgentsError::Unknown {
-            message: format!("{path} returned {other}"),
-        },
-    }
-}
-
-async fn list_children_impl(client: &OAuthClient) -> Result<Vec<ChildSummary>, AgentsError> {
-    let resp = client.get("/agent/child").await.map_err(oauth_err)?;
-    if resp.status().as_u16() != 200 {
-        return Err(child_route_error(
-            resp.status().as_u16(),
-            "GET /agent/child",
-        ));
-    }
-    let body: ListChildrenResponse = resp.json().await.map_err(|e| AgentsError::Unknown {
-        message: format!("failed to parse /agent/child response: {e}"),
-    })?;
-    Ok(body.children)
-}
+// ── Network cores staying here (wallet key material) ───────────────────────────
 
 /// Extra derivation indices scanned past the number of children the server lists.
 ///
@@ -488,7 +306,7 @@ async fn reconcile_children_impl(
     delegation_seed: &[u8; 32],
     stored_index: u32,
 ) -> Result<ChildReconciliation, AgentsError> {
-    let children = list_children_impl(client).await?;
+    let children = custos_client::agents::list_children(client).await?;
     let count = u32::try_from(children.len()).unwrap_or(u32::MAX);
     if stored_index >= count {
         return Ok(ChildReconciliation {
@@ -563,140 +381,6 @@ async fn child_rotation_keys(
     crate::handle_change::latest_full_state(&log)
         .map(|state| state.rotation_keys)
         .map_err(|e| format!("audit log is unreadable: {e}"))
-}
-
-async fn revoke_child_impl(client: &OAuthClient, child_did: &str) -> Result<(), AgentsError> {
-    let resp = client
-        .post(
-            "/agent/child/revoke",
-            &serde_json::json!({ "did": child_did }),
-        )
-        .await
-        .map_err(oauth_err)?;
-    match resp.status().as_u16() {
-        200 => Ok(()),
-        other => Err(child_route_error(other, "child revoke")),
-    }
-}
-
-async fn delete_child_impl(
-    client: &OAuthClient,
-    child_did: &str,
-) -> Result<ChildDeletion, AgentsError> {
-    let resp = client
-        .post(
-            "/agent/child/delete",
-            &serde_json::json!({ "did": child_did }),
-        )
-        .await
-        .map_err(oauth_err)?;
-    if resp.status().as_u16() != 200 {
-        return Err(child_route_error(resp.status().as_u16(), "child delete"));
-    }
-    resp.json().await.map_err(|e| AgentsError::Unknown {
-        message: format!("failed to parse child delete response: {e}"),
-    })
-}
-
-async fn remint_child_assertion_impl(
-    client: &OAuthClient,
-    child_did: &str,
-) -> Result<ChildAssertion, AgentsError> {
-    let resp = client
-        .post(
-            "/agent/child/assertion",
-            &serde_json::json!({ "did": child_did }),
-        )
-        .await
-        .map_err(oauth_err)?;
-    if resp.status().as_u16() != 200 {
-        return Err(child_route_error(resp.status().as_u16(), "child assertion"));
-    }
-    resp.json().await.map_err(|e| AgentsError::Unknown {
-        message: format!("failed to parse child assertion response: {e}"),
-    })
-}
-
-async fn get_agent_audit_impl(
-    client: &OAuthClient,
-    registration_id: &str,
-    cursor: Option<&str>,
-) -> Result<AgentAuditPage, AgentsError> {
-    let path = match cursor {
-        Some(c) => format!(
-            "/v1/agents/{registration_id}/audit?cursor={}",
-            urlencoding::encode(c)
-        ),
-        None => format!("/v1/agents/{registration_id}/audit"),
-    };
-    let resp = client.get(&path).await.map_err(oauth_err)?;
-    match resp.status().as_u16() {
-        200 => resp.json().await.map_err(|e| AgentsError::Unknown {
-            message: format!("failed to parse audit response: {e}"),
-        }),
-        401 | 403 => Err(AgentsError::NotAuthenticated),
-        404 => Err(AgentsError::AgentNotFound),
-        429 => Err(AgentsError::RateLimited),
-        other => Err(AgentsError::Unknown {
-            message: format!("audit returned {other}"),
-        }),
-    }
-}
-
-async fn preview_agent_claim_impl(
-    client: &OAuthClient,
-    user_code: &str,
-) -> Result<AgentClaimPreview, AgentsError> {
-    let resp = client
-        .post(
-            "/v1/agents/claim-preview",
-            &serde_json::json!({ "userCode": user_code }),
-        )
-        .await
-        .map_err(oauth_err)?;
-    match resp.status().as_u16() {
-        200 => resp.json().await.map_err(|e| AgentsError::Unknown {
-            message: format!("failed to parse claim preview: {e}"),
-        }),
-        401 | 403 => Err(AgentsError::NotAuthenticated),
-        // The preview endpoint deliberately collapses every failure shape into one uniform 404.
-        404 => Err(AgentsError::CodeNotFound),
-        429 => Err(AgentsError::RateLimited),
-        other => Err(AgentsError::Unknown {
-            message: format!("claim preview returned {other}"),
-        }),
-    }
-}
-
-async fn confirm_agent_claim_impl(
-    client: &OAuthClient,
-    user_code: &str,
-) -> Result<AgentClaimConfirmation, AgentsError> {
-    let resp = client
-        .post(
-            "/agent/identity/claim/confirm",
-            &serde_json::json!({ "user_code": user_code }),
-        )
-        .await
-        .map_err(oauth_err)?;
-    let status = resp.status();
-    if status.is_success() {
-        return resp.json().await.map_err(|e| AgentsError::Unknown {
-            message: format!("failed to parse confirm response: {e}"),
-        });
-    }
-    if status.as_u16() == 401 {
-        return Err(AgentsError::NotAuthenticated);
-    }
-    if status.as_u16() == 429 {
-        return Err(AgentsError::RateLimited);
-    }
-    match resp.json::<CeremonyErrorBody>().await {
-        Ok(body) => Err(map_ceremony_error(&body.error)),
-        Err(_) => Err(AgentsError::Unknown {
-            message: format!("confirm returned {status}"),
-        }),
-    }
 }
 
 /// Build and sign the child's did:plc genesis operation — the functional core of the mint.
@@ -829,7 +513,7 @@ async fn map_child_confirm_error(status: u16, resp: reqwest::Response) -> Agents
                 .error_description
                 .unwrap_or_else(|| "the server refused this handle".to_string()),
         },
-        Ok(body) => map_ceremony_error(&body.error),
+        Ok(body) => custos_client::agents::map_ceremony_error(&body.error).into(),
         Err(_) => AgentsError::Unknown {
             message: format!("confirm returned {status}"),
         },
@@ -865,7 +549,7 @@ pub async fn list_agents(
     did: String,
 ) -> Result<Vec<AgentSummary>, AgentsError> {
     let session = full_access_session(state.pds_client(), &did).await?;
-    list_agents_impl(&session.client).await
+    Ok(custos_client::agents::list_agents(&session.client).await?)
 }
 
 /// Revoke an agent identity. Idempotent on the server; the next token exchange is refused.
@@ -876,7 +560,7 @@ pub async fn revoke_agent(
     registration_id: String,
 ) -> Result<(), AgentsError> {
     let session = full_access_session(state.pds_client(), &did).await?;
-    revoke_agent_impl(&session.client, &registration_id).await
+    Ok(custos_client::agents::revoke_agent(&session.client, &registration_id).await?)
 }
 
 /// Page an agent's audit trail, newest first. Pass the previous page's `cursor` to continue.
@@ -888,7 +572,13 @@ pub async fn get_agent_audit(
     cursor: Option<String>,
 ) -> Result<AgentAuditPage, AgentsError> {
     let session = full_access_session(state.pds_client(), &did).await?;
-    get_agent_audit_impl(&session.client, &registration_id, cursor.as_deref()).await
+    let page = custos_client::agents::get_agent_audit(
+        &session.client,
+        &registration_id,
+        cursor.as_deref(),
+    )
+    .await?;
+    Ok(page)
 }
 
 /// Preview what confirming a claim-ceremony `user_code` would grant (shown before the
@@ -900,7 +590,7 @@ pub async fn preview_agent_claim(
     user_code: String,
 ) -> Result<AgentClaimPreview, AgentsError> {
     let session = full_access_session(state.pds_client(), &did).await?;
-    preview_agent_claim_impl(&session.client, &user_code).await
+    Ok(custos_client::agents::preview_agent_claim(&session.client, &user_code).await?)
 }
 
 /// Confirm a claim ceremony: the human gate that flips the agent identity `active → claimed`.
@@ -912,7 +602,7 @@ pub async fn confirm_agent_claim(
     user_code: String,
 ) -> Result<AgentClaimConfirmation, AgentsError> {
     let session = full_access_session(state.pds_client(), &did).await?;
-    confirm_agent_claim_impl(&session.client, &user_code).await
+    Ok(custos_client::agents::confirm_agent_claim(&session.client, &user_code).await?)
 }
 
 /// Confirm a claim ceremony the *cooperative* way: instead of handing the agent a credential for
@@ -979,7 +669,7 @@ pub async fn list_children(
     did: String,
 ) -> Result<Vec<ChildSummary>, AgentsError> {
     let session = full_access_session(state.pds_client(), &did).await?;
-    list_children_impl(&session.client).await
+    Ok(custos_client::agents::list_children(&session.client).await?)
 }
 
 /// Revoke a child's delegated capability, keeping its account, repo, and DID intact.
@@ -993,7 +683,7 @@ pub async fn revoke_child(
     child_did: String,
 ) -> Result<(), AgentsError> {
     let session = full_access_session(state.pds_client(), &did).await?;
-    revoke_child_impl(&session.client, &child_did).await
+    Ok(custos_client::agents::revoke_child(&session.client, &child_did).await?)
 }
 
 /// Retire a child's hosting: revoke it, deactivate it now, and schedule the permanent purge.
@@ -1008,7 +698,7 @@ pub async fn delete_child(
     child_did: String,
 ) -> Result<ChildDeletion, AgentsError> {
     let session = full_access_session(state.pds_client(), &did).await?;
-    delete_child_impl(&session.client, &child_did).await
+    Ok(custos_client::agents::delete_child(&session.client, &child_did).await?)
 }
 
 /// Renew a live child's identity assertion — its credential for the token endpoint.
@@ -1017,6 +707,16 @@ pub async fn delete_child(
 /// dormant past a full assertion lifetime and can no longer bootstrap. The response carries a
 /// live credential; the caller shows it once for the user to hand back to the agent and keeps
 /// no copy. A revoked child is refused ([`AgentsError::AccessDenied`]).
+#[tauri::command]
+pub async fn remint_child_assertion(
+    state: tauri::State<'_, crate::oauth::AppState>,
+    did: String,
+    child_did: String,
+) -> Result<ChildAssertion, AgentsError> {
+    let session = full_access_session(state.pds_client(), &did).await?;
+    Ok(custos_client::agents::remint_child_assertion(&session.client, &child_did).await?)
+}
+
 /// Re-derive this identity's children after a recovery and rebuild the local child index.
 ///
 /// The recovery epilogue for child accounts. Once the delegation seed is back in the Keychain —
@@ -1066,310 +766,9 @@ pub async fn reconcile_children(
     Ok(result)
 }
 
-#[tauri::command]
-pub async fn remint_child_assertion(
-    state: tauri::State<'_, crate::oauth::AppState>,
-    did: String,
-    child_did: String,
-) -> Result<ChildAssertion, AgentsError> {
-    let session = full_access_session(state.pds_client(), &did).await?;
-    remint_child_assertion_impl(&session.client, &child_did).await
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use httpmock::prelude::*;
-
-    fn make_bearer_jwt(exp: u64) -> String {
-        use base64::engine::general_purpose::URL_SAFE_NO_PAD;
-        use base64::Engine;
-        let header = URL_SAFE_NO_PAD.encode(r#"{"alg":"ES256"}"#);
-        let payload = URL_SAFE_NO_PAD.encode(format!(r#"{{"exp":{exp}}}"#).as_bytes());
-        format!("{header}.{payload}.sig")
-    }
-
-    /// A Bearer-mode client pointed at the mock server, with a far-future access token so no
-    /// refresh fires before the request under test.
-    fn bearer_client(server: &MockServer) -> OAuthClient {
-        let exp = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_secs()
-            + 3600;
-        OAuthClient::new_bearer(
-            make_bearer_jwt(exp),
-            "refresh".to_string(),
-            server.base_url(),
-        )
-        .expect("new_bearer must succeed")
-    }
-
-    #[tokio::test]
-    async fn list_agents_parses_summaries() {
-        let server = MockServer::start();
-        server.mock(|when, then| {
-            when.method(GET)
-                .path("/v1/agents")
-                .header_exists("authorization");
-            then.status(200).json_body(serde_json::json!({
-                "agents": [{
-                    "registrationId": "reg_1",
-                    "registrationType": "service_auth",
-                    "scopes": ["blob:image/*"],
-                    "status": "claimed",
-                    "createdAt": "2026-01-01T00:00:00.000Z",
-                    "updatedAt": "2026-01-01T00:05:00.000Z",
-                    "lastUsedAt": "2026-01-02T00:00:00.000Z"
-                }]
-            }));
-        });
-
-        let agents = list_agents_impl(&bearer_client(&server)).await.unwrap();
-        assert_eq!(agents.len(), 1);
-        assert_eq!(agents[0].registration_id, "reg_1");
-        assert_eq!(agents[0].status, "claimed");
-        assert_eq!(agents[0].scopes, vec!["blob:image/*"]);
-        assert_eq!(
-            agents[0].last_used_at.as_deref(),
-            Some("2026-01-02T00:00:00.000Z")
-        );
-    }
-
-    #[tokio::test]
-    async fn list_children_parses_scopes_and_purge_date() {
-        let server = MockServer::start();
-        server.mock(|when, then| {
-            when.method(GET)
-                .path("/agent/child")
-                .header_exists("authorization");
-            then.status(200).json_body(serde_json::json!({
-                "children": [
-                    {
-                        "registrationId": "reg_live",
-                        "did": "did:plc:childlive",
-                        "handle": "scribe.example.com",
-                        "status": "claimed",
-                        "createdAt": "2026-01-01T00:00:00.000Z",
-                        "scopes": ["repo:write"]
-                    },
-                    {
-                        "registrationId": "reg_gone",
-                        "did": "did:plc:childgone",
-                        "handle": "old.example.com",
-                        "status": "revoked",
-                        "createdAt": "2026-01-01T00:00:00.000Z",
-                        "scopes": [],
-                        "deleteAfter": "2026-02-01T00:00:00Z"
-                    }
-                ]
-            }));
-        });
-
-        let children = list_children_impl(&bearer_client(&server)).await.unwrap();
-        assert_eq!(children.len(), 2);
-        assert_eq!(children[0].scopes, vec!["repo:write"]);
-        // A live child carries no purge date; only a scheduled deletion does. Without this the
-        // wallet could not tell a revoked child from one counting down to permanent removal.
-        assert!(children[0].delete_after.is_none());
-        assert_eq!(
-            children[1].delete_after.as_deref(),
-            Some("2026-02-01T00:00:00Z")
-        );
-    }
-
-    #[tokio::test]
-    async fn delete_child_returns_the_purge_deadline() {
-        let server = MockServer::start();
-        server.mock(|when, then| {
-            when.method(POST)
-                .path("/agent/child/delete")
-                .json_body(serde_json::json!({ "did": "did:plc:childgone" }));
-            then.status(200).json_body(serde_json::json!({
-                "did": "did:plc:childgone",
-                "status": "deletion_scheduled",
-                "deleteAfter": "2026-02-01T00:00:00Z"
-            }));
-        });
-
-        let scheduled = delete_child_impl(&bearer_client(&server), "did:plc:childgone")
-            .await
-            .unwrap();
-        assert_eq!(scheduled.status, "deletion_scheduled");
-        assert_eq!(scheduled.delete_after, "2026-02-01T00:00:00Z");
-    }
-
-    #[tokio::test]
-    async fn reminting_a_revoked_child_is_access_denied_not_a_retryable_error() {
-        // The server refuses renewal for a revoked child with 403. Surfacing that as a distinct
-        // state matters: revocation is one-way, so the screen must say so rather than invite a
-        // retry that can never succeed.
-        let server = MockServer::start();
-        server.mock(|when, then| {
-            when.method(POST).path("/agent/child/assertion");
-            then.status(403)
-                .json_body(serde_json::json!({ "error": "Forbidden" }));
-        });
-
-        let err = remint_child_assertion_impl(&bearer_client(&server), "did:plc:childgone")
-            .await
-            .unwrap_err();
-        assert!(matches!(err, AgentsError::AccessDenied), "got {err:?}");
-    }
-
-    #[tokio::test]
-    async fn remint_child_assertion_parses_the_renewed_credential() {
-        let server = MockServer::start();
-        server.mock(|when, then| {
-            when.method(POST)
-                .path("/agent/child/assertion")
-                .json_body(serde_json::json!({ "did": "did:plc:childlive" }));
-            then.status(200).json_body(serde_json::json!({
-                "did": "did:plc:childlive",
-                "registrationId": "reg_live",
-                "identityAssertion": "header.payload.sig",
-                "assertionExpires": "2026-01-02T00:00:00.000Z",
-                "scopes": ["repo:write"]
-            }));
-        });
-
-        let renewed = remint_child_assertion_impl(&bearer_client(&server), "did:plc:childlive")
-            .await
-            .unwrap();
-        assert_eq!(renewed.identity_assertion, "header.payload.sig");
-        assert_eq!(renewed.scopes, vec!["repo:write"]);
-    }
-
-    #[tokio::test]
-    async fn an_unknown_child_is_not_found_on_every_lifecycle_route() {
-        // Uniform 404 across the three mutating routes — a foreign child DID answers the same as
-        // a nonexistent one, so none of them is an existence oracle for another account.
-        let server = MockServer::start();
-        for path in [
-            "/agent/child/revoke",
-            "/agent/child/delete",
-            "/agent/child/assertion",
-        ] {
-            server.mock(|when, then| {
-                when.method(POST).path(path);
-                then.status(404)
-                    .json_body(serde_json::json!({ "error": "NotFound" }));
-            });
-        }
-        let client = bearer_client(&server);
-
-        assert!(matches!(
-            revoke_child_impl(&client, "did:plc:nope")
-                .await
-                .unwrap_err(),
-            AgentsError::AgentNotFound
-        ));
-        assert!(matches!(
-            delete_child_impl(&client, "did:plc:nope")
-                .await
-                .unwrap_err(),
-            AgentsError::AgentNotFound
-        ));
-        assert!(matches!(
-            remint_child_assertion_impl(&client, "did:plc:nope")
-                .await
-                .unwrap_err(),
-            AgentsError::AgentNotFound
-        ));
-    }
-
-    #[tokio::test]
-    async fn audit_page_round_trips_cursor() {
-        let server = MockServer::start();
-        server.mock(|when, then| {
-            when.method(GET)
-                .path("/v1/agents/reg_1/audit")
-                .query_param("cursor", "42");
-            then.status(200).json_body(serde_json::json!({
-                "events": [{
-                    "id": "evt_1",
-                    "eventType": "repo_write",
-                    "did": "did:plc:me",
-                    "detail": { "creates": 1 },
-                    "createdAt": "2026-01-02T00:00:00.000Z"
-                }],
-                "cursor": "41"
-            }));
-        });
-
-        let page = get_agent_audit_impl(&bearer_client(&server), "reg_1", Some("42"))
-            .await
-            .unwrap();
-        assert_eq!(page.events.len(), 1);
-        assert_eq!(page.events[0].event_type, "repo_write");
-        assert_eq!(page.cursor.as_deref(), Some("41"));
-    }
-
-    #[tokio::test]
-    async fn revoke_maps_404_to_agent_not_found() {
-        let server = MockServer::start();
-        server.mock(|when, then| {
-            when.method(POST).path("/v1/agents/reg_x/revoke");
-            then.status(404)
-                .json_body(serde_json::json!({ "error": { "code": "NOT_FOUND" } }));
-        });
-
-        let err = revoke_agent_impl(&bearer_client(&server), "reg_x")
-            .await
-            .unwrap_err();
-        assert!(matches!(err, AgentsError::AgentNotFound));
-    }
-
-    #[tokio::test]
-    async fn preview_maps_429_to_rate_limited() {
-        let server = MockServer::start();
-        server.mock(|when, then| {
-            when.method(POST).path("/v1/agents/claim-preview");
-            then.status(429)
-                .json_body(serde_json::json!({ "error": { "code": "RATE_LIMITED" } }));
-        });
-
-        let err = preview_agent_claim_impl(&bearer_client(&server), "123456")
-            .await
-            .unwrap_err();
-        assert!(matches!(err, AgentsError::RateLimited));
-    }
-
-    #[tokio::test]
-    async fn preview_maps_uniform_404_to_code_not_found() {
-        let server = MockServer::start();
-        server.mock(|when, then| {
-            when.method(POST).path("/v1/agents/claim-preview");
-            then.status(404)
-                .json_body(serde_json::json!({ "error": { "code": "NOT_FOUND" } }));
-        });
-
-        let err = preview_agent_claim_impl(&bearer_client(&server), "123456")
-            .await
-            .unwrap_err();
-        assert!(matches!(err, AgentsError::CodeNotFound));
-    }
-
-    #[tokio::test]
-    async fn confirm_success_parses_confirmation() {
-        let server = MockServer::start();
-        server.mock(|when, then| {
-            when.method(POST).path("/agent/identity/claim/confirm");
-            then.status(200).json_body(serde_json::json!({
-                "registration_id": "reg_1",
-                "status": "claimed",
-                "did": "did:plc:me"
-            }));
-        });
-
-        let confirmation = confirm_agent_claim_impl(&bearer_client(&server), "123456")
-            .await
-            .unwrap();
-        assert_eq!(confirmation.registration_id, "reg_1");
-        assert_eq!(confirmation.status, "claimed");
-    }
-
-    // ── cooperative child mint ───────────────────────────────────────────────
 
     const TEST_SEED: [u8; 32] = [0x5a; 32];
     const TEST_PDS: &str = "https://pds.example.com";
@@ -1377,6 +776,26 @@ mod tests {
     fn test_repo_key() -> crypto::DidKeyUri {
         crypto::generate_p256_keypair().unwrap().key_id
     }
+
+    fn bearer_client(server: &httpmock::MockServer) -> OAuthClient {
+        let exp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs()
+            + 3600;
+        use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+        use base64::Engine;
+        let header = URL_SAFE_NO_PAD.encode(r#"{"alg":"ES256"}"#);
+        let payload = URL_SAFE_NO_PAD.encode(format!(r#"{{"exp":{exp}}}"#).as_bytes());
+        OAuthClient::new_bearer(
+            format!("{header}.{payload}.sig"),
+            "refresh".to_string(),
+            server.base_url(),
+        )
+        .expect("new_bearer must succeed")
+    }
+
+    // ── cooperative child mint ───────────────────────────────────────────────
 
     /// The genesis op the wallet signs is the whole custody claim: `rotationKeys[0]` must be the
     /// key derived from *this* identity's delegation seed (the server pins it as the signer), and
@@ -1464,8 +883,8 @@ mod tests {
 
     /// A server answering `GET /agent/child` with `children`, and each child's audit log at the
     /// plc.directory path `PdsClient::new_for_test` will read.
-    fn reconcile_server(children: &[(&str, serde_json::Value)]) -> MockServer {
-        let server = MockServer::start();
+    fn reconcile_server(children: &[(&str, serde_json::Value)]) -> httpmock::MockServer {
+        let server = httpmock::MockServer::start();
         let list: Vec<serde_json::Value> = children
             .iter()
             .enumerate()
@@ -1481,13 +900,14 @@ mod tests {
             })
             .collect();
         server.mock(|when, then| {
-            when.method(GET).path("/agent/child");
+            when.method(httpmock::Method::GET).path("/agent/child");
             then.status(200)
                 .json_body(serde_json::json!({ "children": list }));
         });
         for (did, log) in children {
             server.mock(|when, then| {
-                when.method(GET).path(format!("/{did}/log/audit"));
+                when.method(httpmock::Method::GET)
+                    .path(format!("/{did}/log/audit"));
                 then.status(200).json_body(log.clone());
             });
         }
@@ -1495,7 +915,7 @@ mod tests {
     }
 
     async fn reconcile(
-        server: &MockServer,
+        server: &httpmock::MockServer,
         stored_index: u32,
     ) -> Result<ChildReconciliation, AgentsError> {
         reconcile_children_impl(
@@ -1596,9 +1016,9 @@ mod tests {
     /// wallet of having lost a key over what is usually a network blip.
     #[tokio::test]
     async fn reconcile_reports_an_unreachable_child_as_unchecked_not_unmatched() {
-        let server = MockServer::start();
+        let server = httpmock::MockServer::start();
         server.mock(|when, then| {
-            when.method(GET).path("/agent/child");
+            when.method(httpmock::Method::GET).path("/agent/child");
             then.status(200).json_body(serde_json::json!({
                 "children": [{
                     "registrationId": "reg-0",
@@ -1611,7 +1031,8 @@ mod tests {
             }));
         });
         server.mock(|when, then| {
-            when.method(GET).path("/did:plc:childzero/log/audit");
+            when.method(httpmock::Method::GET)
+                .path("/did:plc:childzero/log/audit");
             then.status(500);
         });
 
@@ -1673,22 +1094,23 @@ mod tests {
         assert_eq!(result.next_index, 9);
     }
 
-    fn mint_server(confirm_status: u16, confirm_body: serde_json::Value) -> MockServer {
-        let server = MockServer::start();
+    fn mint_server(confirm_status: u16, confirm_body: serde_json::Value) -> httpmock::MockServer {
+        let server = httpmock::MockServer::start();
         server.mock(|when, then| {
-            when.method(POST)
+            when.method(httpmock::Method::POST)
                 .path("/xrpc/com.atproto.server.reserveSigningKey");
             then.status(200)
                 .json_body(serde_json::json!({ "signingKey": test_repo_key().0 }));
         });
         server.mock(|when, then| {
-            when.method(POST).path("/agent/identity/claim/confirm");
+            when.method(httpmock::Method::POST)
+                .path("/agent/identity/claim/confirm");
             then.status(confirm_status).json_body(confirm_body);
         });
         server
     }
 
-    async fn mint(server: &MockServer) -> Result<MintedChild, AgentsError> {
+    async fn mint(server: &httpmock::MockServer) -> Result<MintedChild, AgentsError> {
         mint_child_from_claim_impl(
             &bearer_client(server),
             &PdsClient::new(),
@@ -1761,26 +1183,21 @@ mod tests {
     }
 
     #[test]
-    fn ceremony_error_codes_map_to_explicit_states() {
+    fn agent_error_conversion_covers_every_shared_variant() {
+        use custos_client::agents::AgentError as A;
         assert!(matches!(
-            map_ceremony_error("invalid_user_code"),
-            AgentsError::CodeNotFound
-        ));
-        assert!(matches!(
-            map_ceremony_error("claim_expired"),
+            AgentsError::from(A::CodeExpired),
             AgentsError::CodeExpired
         ));
         assert!(matches!(
-            map_ceremony_error("claimed_or_in_flight"),
-            AgentsError::AlreadyClaimed
+            AgentsError::from(A::NotAuthenticated),
+            AgentsError::NotAuthenticated
         ));
         assert!(matches!(
-            map_ceremony_error("access_denied"),
-            AgentsError::AccessDenied
-        ));
-        assert!(matches!(
-            map_ceremony_error("something_else"),
-            AgentsError::Unknown { .. }
+            AgentsError::from(A::Unknown {
+                message: "x".into()
+            }),
+            AgentsError::Unknown { message } if message == "x"
         ));
     }
 

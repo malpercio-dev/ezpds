@@ -29,6 +29,7 @@ exist.
 | `src/migration.rs` | typed XRPC methods for the outbound-migration set (service auth, destination account creation, repo/blob import, preferences, account status/lifecycle) — no orchestration, that stays in the caller |
 | `src/pds_client.rs` | `PdsClient` — discovery/auth/XRPC against *arbitrary* PDS endpoints and plc.directory (handle resolution, DID-doc discovery, `describeServer`/`createSession`, OAuth against a discovered AS, plc.directory reads/writes, repo/blob sync) |
 | `src/sovereign_session.rs` | the Custos passwordless full-access session ceremony (`sovereign_login`: sign the shared canonical envelope with a caller-supplied closure, `POST /v1/sessions/sovereign` via `PdsClient`, validate the response DID and JWT sub/aud) plus the pure helpers apps reuse for a restored session (`bearer_jwt_claims`, `audience_matches_server`, `fresh_nonce`, `unix_timestamp`) — no Keychain/persistence concept, the caller resolves signing and persists the result |
+| `src/agents.rs` | typed methods for auth.md's own agent-consent/child-lifecycle endpoints (`list_agents`, `revoke_agent`, `get_agent_audit`, `preview_agent_claim`, `confirm_agent_claim`, `list_children`, `revoke_child`, `delete_child`, `remint_child_assertion`) plus `AgentError`/`map_ceremony_error`/`CeremonyErrorBody` — these aren't `com.atproto.*` XRPC, so they classify responses themselves rather than through `error.rs`'s envelope tail |
 | `src/base64url.rs` | the one base64 alphabet this crate uses (unpadded base64url) |
 
 ## Contracts
@@ -108,7 +109,19 @@ exist.
   device-key-signed wallet flow (agents, app passwords, identity removal, migration, rotation,
   …) calls them too, so the wallet re-exports both from its own `sovereign_session.rs` rather
   than only using them internally.
-- The auth.md agent-flow console (agent consent/audit, the sovereign-child parent console) is
-  still identity-wallet-only orchestration in `agents.rs`/`session_provider.rs` — larger in
-  scope than the sovereign-login ceremony above and not yet redesigned behind injected traits.
+- **`agents::AgentError` covers only what a network response can itself produce** — it has no
+  `NotProvisioned`/`HandleRejected` (mint-ceremony concepts needing a delegation seed) or
+  `SessionLocked` (a `SessionProvider` concept). identity-wallet's own `AgentsError` stays a
+  superset with a `From` conversion for the shared variants. Minting a child account
+  (`mint_child_from_claim`) and post-recovery reconciliation (`reconcile_children`) stay in
+  identity-wallet entirely — both derive rotation keys off the wallet's delegation seed and
+  sign a did:plc genesis operation, wallet key material this crate does not hold; only the
+  `list_children` call inside `reconcile_children_impl` is a crate *network* call (both also
+  reach into the crate for `CeremonyErrorBody`/`map_ceremony_error`, the shared ceremony-code
+  classification `map_child_confirm_error` widens ahead of).
+- `SessionProvider` (session-lifecycle resolution: restore / refresh / `NeedsUnlock`,
+  `com.atproto.server.refreshSession` rotation, the per-DID coalescing lock) is still
+  identity-wallet-only orchestration in `session_provider.rs`, layered on
+  `IdentityStore`'s `SovereignTokenRecord` — a candidate for a future PR if the wallet-core
+  extraction needs it, not yet redesigned behind injected traits.
   Lexicon-generated (vs. hand-written) typed methods is a separate, not-yet-decided follow-up.
