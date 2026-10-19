@@ -111,7 +111,7 @@ impl AppState {
     /// default URL if none has been set yet.
     pub fn custos_client(&self) -> &crate::http::CustosClient {
         self.custos_client
-            .get_or_init(crate::http::CustosClient::new)
+            .get_or_init(|| crate::http::new_configured(crate::http::default_pds_url().to_string()))
     }
 
     /// Set the custos client from a runtime URL. Silently ignored if already set
@@ -119,7 +119,7 @@ impl AppState {
     pub fn set_custos_client(&self, url: String) {
         if self
             .custos_client
-            .set(crate::http::CustosClient::new_with_url(url.clone()))
+            .set(crate::http::new_configured(url.clone()))
             .is_err()
         {
             tracing::warn!(url = %url, "set_custos_client: custos_client already initialized; ignoring");

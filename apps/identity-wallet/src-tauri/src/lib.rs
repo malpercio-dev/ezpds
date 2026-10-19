@@ -1097,7 +1097,7 @@ async fn save_pds_url(
     state: tauri::State<'_, oauth::AppState>,
 ) -> Result<(), PdsConfigError> {
     let normalized = normalize_pds_url(&url)?;
-    let resp = http::CustosClient::new_with_url(normalized.clone())
+    let resp = http::new_configured(normalized.clone())
         .get("/xrpc/_health")
         .await
         .map_err(|e| {

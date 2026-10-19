@@ -8,6 +8,8 @@
 //!   seam apps use to record diagnostics breadcrumbs.
 //! - [`oauth_client`]: [`OAuthClient`], the authenticated XRPC HTTP client (DPoP and Bearer
 //!   modes).
+//! - [`custos_client`]: [`CustosClient`], the pre-session HTTP client for one configured
+//!   PDS — plain JSON/Bearer requests plus OAuth PAR/token-exchange.
 //!
 //! App-specific concerns this crate deliberately does not own: Keychain storage (apps supply
 //! an `ios_device_key::KeychainStore` impl), diagnostics UI/export (apps supply a
@@ -15,10 +17,12 @@
 //! `redirect_uri`) — those stay in the app, since they name the app itself.
 
 mod base64url;
+pub mod custos_client;
 pub mod dpop;
 pub mod error;
 pub mod oauth_client;
 
+pub use custos_client::{CustosClient, ParRequest, ParResponse, TokenErrorResponse};
 pub use dpop::{DpopError, DpopKeypair};
 pub use error::{
     classify_xrpc_error, classify_xrpc_response, error_code_is, parse_xrpc_error_envelope,

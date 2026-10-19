@@ -23,6 +23,7 @@ exist.
 | `src/dpop.rs` | `DpopKeypair` — RFC 9449 DPoP proof construction/signing, generic over `ios_device_key::KeychainStore` |
 | `src/error.rs` | `PdsClientError` (the XRPC failure shape), `classify_xrpc_error`/`parse_xrpc_error_envelope` (pure), `classify_xrpc_response`/`xrpc_ok`/`xrpc_json` (the classification tail), `TransportObserver` |
 | `src/oauth_client.rs` | `OAuthClient` — DPoP and Bearer auth modes, lazy refresh, nonce retry, `TokenPersister` |
+| `src/custos_client.rs` | `CustosClient` — the pre-session HTTP client for one configured PDS (plain JSON/Bearer requests, PAR/token-exchange) |
 | `src/base64url.rs` | the one base64 alphabet this crate uses (unpadded base64url) |
 
 ## Contracts
@@ -63,13 +64,11 @@ exist.
 - No `tauri`, `security-framework`, or app-specific Keychain/diagnostics code here — those are
   what `KeychainStore`/`TransportObserver`/`TokenPersister` exist to keep out.
 - The wallet's own OAuth client identity (`CANONICAL_CLIENT_ID`, `REDIRECT_URI`,
-  `client_id_for_pds`'s loopback exception) stays in `identity-wallet/src-tauri/src/pds_client.rs`
-  — it names the app itself, not a thing two apps could share. `OAuthClient::new`/
-  `refresh_token_dpop` take `client_id` as a plain constructor parameter instead.
-- `CustosClient` (the wallet's `http.rs`: PAR/token-exchange against the *configured* PDS) has
-  not moved here yet — its `par`/`token_exchange` methods have zero callers today (the same
-  retired create-flow login), so folding them in is low-risk future work, not done in this PR
-  to keep the diff to the DPoP/XRPC-envelope/OAuthClient layer.
+  `client_id_for_pds`'s loopback exception, and the compile-time default PDS base URL) stays in
+  `identity-wallet/src-tauri/src/pds_client.rs`/`http.rs` — it names the app itself, not a thing
+  two apps could share. `OAuthClient::new`/`refresh_token_dpop` and `CustosClient::par`/
+  `token_exchange` all take `client_id`/`redirect_uri` as plain parameters instead of deriving
+  them internally.
 - Typed XRPC request/response structs for individual lexicon methods
   (`getServiceAuth`/`createAccount`/`signPlcOperation`/…) and the service-auth/sovereign-session/
   auth.md agent-flow logic built on top of them stay in identity-wallet's `pds_client.rs`/
