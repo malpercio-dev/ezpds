@@ -34,8 +34,9 @@ export function loginEmail(): string | null {
 export const AGENT_NAME = process.env.CUSTOS_MCP_AGENT_NAME ?? 'Custos MCP';
 
 /**
- * Destructive tools (put_record, delete_record) are off unless this is set to
- * "1" or "true" — with it unset they are not even listed.
+ * Destructive tools — put_record, delete_record, and their space siblings
+ * space_put_record/space_delete_record — are off unless this is set to "1" or
+ * "true"; with it unset they are not even listed.
  */
 export const ALLOW_DESTRUCTIVE = ['1', 'true'].includes(
   (process.env.CUSTOS_MCP_ALLOW_DESTRUCTIVE ?? '').toLowerCase(),
@@ -53,9 +54,12 @@ export const MIN_REQUEST_INTERVAL_MS =
 export const MAX_RATE_LIMIT_RETRIES = 4;
 
 /**
- * The only directory create_post may read image attachments from. With it
- * unset, image attachments are disabled entirely — an unrestricted path would
- * let a prompt-injected agent turn publish any file the process can read.
+ * The only directory the path-reading tools — create_post (image_path),
+ * upload_blob (path), and update_bluesky_profile (avatar/banner paths) — may
+ * read from. With it unset, path-based uploads are disabled (inline base64
+ * uploads still work); an unrestricted path would let a prompt-injected agent
+ * publish any file the process can read. Enforced by resolveUploadPath in
+ * tools.ts, which realpaths both sides so a symlink cannot escape the base.
  */
 export function imageDir(): string | null {
   return process.env.CUSTOS_MCP_IMAGE_DIR ?? null;
