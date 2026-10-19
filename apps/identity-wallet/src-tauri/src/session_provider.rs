@@ -90,12 +90,19 @@ pub enum SessionError {
     RateLimited { retry_after: Option<String> },
     #[error("the identity's hosting server does not support session refresh")]
     UnsupportedHost,
+    /// `message` is diagnostic only (ADR-0031) — a transport failure is never the server's
+    /// words.
     #[error("offline or transport failure: {message}")]
     Offline { message: String },
     #[error("hosting server failure: {status}")]
     ServerFailure { status: u16 },
+    /// `message` is diagnostic only (ADR-0031) — a local Keychain failure is never the
+    /// server's words.
     #[error("keychain failure: {message}")]
     Keychain { message: String },
+    /// A malformed stored/rotated JWT, or a `refresh_bearer_session` validation failure
+    /// (DID/sub/aud mismatch). `message` is diagnostic only (ADR-0031) — it describes this
+    /// client's read of the response, not a reason the server stated.
     #[error("invalid session response: {message}")]
     InvalidResponse { message: String },
 }
