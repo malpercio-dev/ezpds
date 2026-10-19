@@ -1,0 +1,32 @@
+meta {
+  name: Simplespace Get Space
+  type: http
+  seq: 151
+}
+
+get {
+  url: {{baseUrl}}/xrpc/com.atproto.simplespace.getSpace?space=at://{{did}}/space/org.example.bucket/main
+  body: none
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{accessToken}}
+}
+
+params:query {
+  space: at://{{did}}/space/org.example.bucket/main
+}
+
+docs {
+  Describe a simplespace space: { uri, policy, appAccess } with the policy and appAccess
+  rendered as their lexicon unions ($type). Served by the space host.
+
+  Two credentials reach it: an OAuth/session caller with a "space:…?action=read_self"
+  grant who IS the space's authority (400 NotSpaceOwner otherwise), or a DPoP-bound space
+  credential for the space (Authorization: DPoP <credential> plus a per-request DPoP proof
+  whose "ath" is the credential's hash) — what a member hosted anywhere presents. Bearer
+  presentation of a credential is refused.
+
+  Errors: 400 SpaceNotFound (absent, deleted, or a space whose authority lives elsewhere).
+}

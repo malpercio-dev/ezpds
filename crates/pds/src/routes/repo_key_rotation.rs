@@ -43,13 +43,14 @@ use axum::{
 use serde::{Deserialize, Serialize};
 
 use crate::app::AppState;
-use crate::auth::guards::{authenticate_account_owner, OwnerAuthError};
+use crate::auth::guards::authenticate_owner;
+use crate::db::dids::upsert_did_document;
 use crate::db::repo_keys::{
     get_signing_key_by_did, get_staged_signing_key, promote_staged_signing_key, stage_rotation_key,
     RepoSigningKey,
 };
 use crate::identity::plc::{build_did_document_from_op, ensure_did_plc, fetch_current_plc_state};
-use common::{ApiError, ErrorCode};
+use common::{ApiError, ApiResultExt, ErrorCode};
 
 /// The atproto verification-method id a repo signing key is installed under.
 const ATPROTO_VERIFICATION_METHOD_ID: &str = "atproto";
@@ -57,31 +58,11 @@ const ATPROTO_VERIFICATION_METHOD_ID: &str = "atproto";
 /// Map a signing-key query failure to the uniform 500 (`db/repo_keys.rs` returns bare
 /// `sqlx::Error`, matching its sibling queries).
 fn key_query_error(e: sqlx::Error) -> ApiError {
-    tracing::error!(error = %e, "signing-key query failed during rotation");
-    ApiError::new(ErrorCode::InternalError, "failed to access signing keys")
-}
-
-/// Authenticate the account owner and map the neutral rejection into this surface's
-/// vocabulary. Mirrors `did_web_hosting.rs`'s wrapper (routes may not import one another).
-async fn authenticate_owner(
-    headers: &HeaderMap,
-    method: &Method,
-    uri: &Uri,
-    state: &AppState,
-) -> Result<String, ApiError> {
-    authenticate_account_owner(headers, method, uri, state)
-        .await
-        .map_err(|err| match err {
-            OwnerAuthError::Unauthenticated(e) => e,
-            OwnerAuthError::AgentDerived => ApiError::new(
-                ErrorCode::InsufficientScope,
-                "this operation is not available to agent-derived credentials",
-            ),
-            OwnerAuthError::NotFullAccess => ApiError::new(
-                ErrorCode::InvalidToken,
-                "a session or full-access token is required",
-            ),
-        })
+    ApiError::internal_as(
+        e,
+        "signing-key query failed during rotation",
+        "failed to access signing keys",
+    )
 }
 
 // ── POST /v1/repo-keys/rotation ───────────────────────────────────────────────
@@ -130,15 +111,15 @@ pub async fn begin_repo_key_rotation(
 
     // Always mint fresh, replacing any previously staged key: in a compromise scenario a
     // key staged before this rotation began must be assumed known to the attacker.
-    let kp = crypto::generate_p256_keypair().map_err(|e| {
-        tracing::error!(error = %e, "failed to generate rotation signing key");
-        ApiError::new(ErrorCode::InternalError, "failed to generate signing key")
-    })?;
+    let kp = crypto::generate_p256_keypair().or_internal_as(
+        "failed to generate rotation signing key",
+        "failed to generate signing key",
+    )?;
     let private_key_encrypted = crypto::encrypt_private_key(&kp.private_key_bytes, master_key)
-        .map_err(|e| {
-            tracing::error!(error = %e, "failed to encrypt rotation signing key");
-            ApiError::new(ErrorCode::InternalError, "failed to encrypt signing key")
-        })?;
+        .or_internal_as(
+            "failed to encrypt rotation signing key",
+            "failed to encrypt signing key",
+        )?;
     let staged = RepoSigningKey {
         key_id: kp.key_id.to_string(),
         public_key: kp.public_key.clone(),
@@ -303,7 +284,7 @@ pub async fn complete_repo_key_rotation(
             &verified.services,
         ) {
             Ok(doc) => {
-                if let Err(e) = upsert_cached_did_document(&state.db, &did, &doc).await {
+                if let Err(e) = upsert_did_document(&state.db, &did, &doc).await {
                     tracing::warn!(error = %e, did = %did, "failed to refresh cached DID document after rotation (non-fatal)");
                 }
             }
@@ -323,11 +304,13 @@ pub async fn complete_repo_key_rotation(
                 .await
                 .map_err(key_query_error)?;
             if active.as_ref().map(|k| k.key_id.as_str()) != Some(staged.key_id.as_str()) {
-                tracing::error!(did = %did, key_id = %staged.key_id, "rotation cutover failed: staged key vanished before promotion");
-                return Err(ApiError::new(
-                    ErrorCode::InternalError,
-                    "failed to promote the staged signing key",
-                ));
+                return Err({
+                    tracing::error!(did = %did, key_id = %staged.key_id, "rotation cutover failed: staged key vanished before promotion");
+                    ApiError::new(
+                        ErrorCode::InternalError,
+                        "failed to promote the staged signing key",
+                    )
+                });
             }
         }
     }
@@ -346,25 +329,6 @@ pub async fn complete_repo_key_rotation(
     Ok(Json(CompleteRotationResponse {
         signing_key: staged.key_id,
     }))
-}
-
-/// Upsert the locally-cached DID document for `did`. Mirrors `submitPlcOperation`'s
-/// cache refresh (routes may not import one another).
-async fn upsert_cached_did_document(
-    db: &sqlx::SqlitePool,
-    did: &str,
-    document: &serde_json::Value,
-) -> Result<(), sqlx::Error> {
-    sqlx::query(
-        "INSERT INTO did_documents (did, document, created_at, updated_at) \
-         VALUES (?, ?, datetime('now'), datetime('now')) \
-         ON CONFLICT(did) DO UPDATE SET document = excluded.document, updated_at = datetime('now')",
-    )
-    .bind(did)
-    .bind(document.to_string())
-    .execute(db)
-    .await?;
-    Ok(())
 }
 
 // ── Tests ────────────────────────────────────────────────────────────────────
@@ -387,7 +351,7 @@ mod tests {
     use crate::app::{app, test_state_with_plc_url, AppState};
     use crate::auth::token::generate_token;
     use crate::db::repo_keys::{get_signing_key_by_did, get_staged_signing_key};
-    use crate::routes::test_utils::{seed_account_with_signing_key, test_master_key};
+    use crate::routes::test_utils::{body_json, seed_account_with_signing_key, test_master_key};
 
     const DID: &str = "did:plc:rotation1111111111111111";
     const HEAD_CID: &str = "bafyreidmwn2nk3hb2ta2b3wgqzted5cixmwjjmpq2vt6potol7cke2ptoq";
@@ -508,13 +472,6 @@ mod tests {
                 serde_json::json!({ "operation": operation }).to_string(),
             ))
             .unwrap()
-    }
-
-    async fn body_json(response: axum::response::Response) -> serde_json::Value {
-        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
-            .await
-            .unwrap();
-        serde_json::from_slice(&bytes).unwrap()
     }
 
     async fn identity_events(db: &sqlx::SqlitePool) -> i64 {

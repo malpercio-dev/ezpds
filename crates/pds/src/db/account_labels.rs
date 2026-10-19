@@ -173,7 +173,7 @@ pub(crate) async fn count_flagged_accounts(db: &sqlx::SqlitePool) -> Result<i64,
         .await
 }
 
-/// Whether this labeler's initial backfill has already run (V065). Only flags first observed
+/// Whether this labeler's initial backfill has already run (V072). Only flags first observed
 /// *after* seeding are news the operator notifier may page about.
 pub(crate) async fn is_labeler_seeded(
     db: &sqlx::SqlitePool,

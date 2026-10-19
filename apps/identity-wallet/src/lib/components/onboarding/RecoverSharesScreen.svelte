@@ -81,7 +81,7 @@
       <div class="share-row">
         <span class="glyph" aria-hidden="true">✓</span>
         <span class="body">
-          <span class="label">Share {share.index} — {SHARE_HOMES[share.index] ?? 'Backup share'}</span>
+          <span class="label u-title-strong">Share {share.index} — {SHARE_HOMES[share.index] ?? 'Backup share'}</span>
           <span class="meta">Set {share.setId.toString(16).padStart(8, '0')}</span>
         </span>
       </div>
@@ -111,7 +111,7 @@
         class:has-error={error !== null}
       ></textarea>
       {#if error}
-        <p class="error" role="alert">{error}</p>
+        <p class="error u-error-text" role="alert">{error}</p>
       {/if}
       <Button variant="secondary" disabled={adding || !manualShare.trim()} onclick={addManual}>
         {adding ? 'Checking…' : 'Add share'}
@@ -159,11 +159,6 @@
     gap: 1px;
     min-width: 0;
   }
-  .label {
-    font-size: var(--text-body);
-    font-weight: var(--weight-semibold);
-    color: var(--color-ink);
-  }
   .meta {
     font-family: var(--font-mono);
     font-size: var(--text-label);
@@ -206,16 +201,10 @@
     resize: vertical;
   }
   textarea:focus {
-    outline: 2px solid var(--color-primary-deep);
+    outline: var(--space-3xs) solid var(--color-primary-deep);
     outline-offset: 1px;
   }
   textarea.has-error {
     border-color: var(--color-critical);
-  }
-  .error {
-    font-size: var(--text-label);
-    color: var(--color-critical);
-    margin: 0;
-    line-height: 1.4;
   }
 </style>

@@ -111,7 +111,7 @@
     {onback}
   >
     {#if error}
-      <p class="error" role="alert">{error}</p>
+      <p class="error u-error-text" role="alert">{error}</p>
     {/if}
     <Button disabled={busy} onclick={sendCode}>{busy ? 'Sending…' : 'Email me a code'}</Button>
   </OnboardingShell>
@@ -143,16 +143,16 @@
     subtitle="Your server holds the share for a waiting period before handing it over. This delay is a protection: it gives you time to stop a release you didn't ask for."
   >
     <div class="pending-box">
-      <p class="pending-label">Share available after</p>
+      <p class="pending-label u-block-label">Share available after</p>
       <p class="pending-time">{availableAt ?? 'the configured waiting period'}</p>
-      <p class="pending-note">
+      <p class="pending-note u-fine">
         The server has notified your account email. Anyone still signed in to your account can
         cancel this release — if that happens, you'll see it here. You can close the app and come
         back; the wait continues on the server.
       </p>
     </div>
     {#if error}
-      <p class="error" role="alert">{error}</p>
+      <p class="error u-error-text" role="alert">{error}</p>
     {/if}
     <Button disabled={busy} onclick={poll}>{busy ? 'Checking…' : 'Check again'}</Button>
     <Button variant="secondary" onclick={onback}>Back to shares</Button>
@@ -162,7 +162,7 @@
     title="Release no longer available"
     subtitle="The server declined to hand over the share. The release was cancelled from a signed-in device, or it expired."
   >
-    <p class="cancel-note">
+    <p class="cancel-note u-fine">
       If you cancelled it yourself, nothing more to do. If you didn't, someone with access to your
       account stopped it — your other backup shares still work, and no share was disclosed.
     </p>
@@ -172,12 +172,6 @@
 {/if}
 
 <style>
-  .error {
-    font-size: var(--text-label);
-    color: var(--color-critical);
-    margin: 0;
-    line-height: 1.4;
-  }
   .pending-box {
     width: 100%;
     background: var(--color-surface);
@@ -189,23 +183,11 @@
     gap: var(--space-xs);
     text-align: left;
   }
-  .pending-label {
-    font-size: var(--text-label);
-    font-weight: var(--weight-semibold);
-    color: var(--color-muted);
-    margin: 0;
-  }
+
   .pending-time {
     font-family: var(--font-mono);
     font-size: var(--text-data);
     color: var(--color-ink);
     margin: 0;
-  }
-  .pending-note,
-  .cancel-note {
-    font-size: var(--text-label);
-    color: var(--color-muted);
-    margin: 0;
-    line-height: 1.5;
   }
 </style>

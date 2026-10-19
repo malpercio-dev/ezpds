@@ -219,6 +219,7 @@ by that validator**, not optional — omitting them breaks client discovery:
     "blob:*/*",
     "account:*",
     "identity:*",
+    "space:*",
     "include:*"
   ],
   "response_types_supported": ["code"],
@@ -251,7 +252,8 @@ by that validator**, not optional — omitting them breaks client discovery:
     },
     "events_supported": [
       "https://schemas.workos.com/events/agent/auth/identity/assertion/revoked"
-    ]
+    ],
+    "child_provisioning": true
   }
 }
 ```
@@ -288,14 +290,20 @@ into the endpoint/`agent_auth` URLs. Notes on the fields the March draft omitted
   (`jwt-bearer` service-assertion exchange and the machine-pollable `claim`
   grant); see the `oauth_token/` and `agent_*` route docs.
 - `scopes_supported` is `auth/oauth_scopes::supported_scopes()`: the four
-  fixed/transition scopes **plus** a six-entry resource-prefix *summary*
-  (`repo:*`, `rpc:*`, `blob:*/*`, `account:*`, `identity:*`, `include:*`).
+  fixed/transition scopes **plus** a seven-entry resource-prefix *summary*
+  (`repo:*`, `rpc:*`, `blob:*/*`, `account:*`, `identity:*`, `space:*`,
+  `include:*`).
   Each prefix accepts further positional/query parameters per the granular
   atproto scope grammar, so the grantable space is unbounded — the metadata
   summarizes it by prefix rather than enumerating every concrete value.
 - `agent_auth` is an ATProto/auth.md discovery extension (not RFC 8414); its
   endpoints back the agent-registration flow documented in the `agent_identity.rs`
   / `agent_claim.rs` / `agent_event.rs` route entries in `crates/pds/AGENTS.md`.
+  `events_supported` names the SET event types the `events_endpoint` accepts
+  (provider-driven revocation), and `child_provisioning: true` advertises that a
+  claim ceremony can mint the agent its own account rather than binding it to the
+  confirming user's — both advertised statically, since whether a given ceremony
+  takes the child arm is the confirming human's choice, not a server toggle.
 
 ---
 

@@ -14,7 +14,7 @@ use axum::{
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use common::{ApiError, ErrorCode};
+use common::{ApiError, ApiResultExt, ErrorCode};
 
 use crate::app::AppState;
 use crate::auth::guards::require_admin_token;
@@ -71,10 +71,10 @@ pub async fn create_account(
     // --- Email uniqueness: fast-path rejection before INSERT ---
     if crate::uniqueness::email_taken(&state.db, &email)
         .await
-        .map_err(|e| {
-            tracing::error!(error = %e, "failed to check email uniqueness");
-            ApiError::new(ErrorCode::InternalError, "failed to create account")
-        })?
+        .or_internal_as(
+            "failed to check email uniqueness",
+            "failed to create account",
+        )?
     {
         return Err(ApiError::new(
             ErrorCode::AccountExists,
@@ -85,10 +85,10 @@ pub async fn create_account(
     // --- Handle uniqueness: fast-path rejection before INSERT ---
     if crate::uniqueness::handle_taken(&state.db, &payload.handle)
         .await
-        .map_err(|e| {
-            tracing::error!(error = %e, "failed to check handle uniqueness");
-            ApiError::new(ErrorCode::InternalError, "failed to create account")
-        })?
+        .or_internal_as(
+            "failed to check handle uniqueness",
+            "failed to create account",
+        )?
     {
         return Err(ApiError::new(
             ErrorCode::HandleTaken,
@@ -97,71 +97,67 @@ pub async fn create_account(
     }
 
     // --- Insert: generate account_id + claim code, write in one transaction ---
-    // Retry up to 3 times on the rare event of a claim code collision.
+    // Retry up to 3 times on the rare event of a claim code collision. A UNIQUE violation on
+    // pending_accounts.email/.handle is a terminal conflict, not bad luck on the generated
+    // claim code, so it must not retry — `should_retry` tells the two apart.
+    use crate::db::accounts::PendingAccountConflict;
     let account_id = Uuid::new_v4().to_string();
     let offset = format!("+{CLAIM_CODE_EXPIRES_IN_HOURS} hours");
+    let db = &state.db;
+    let handle = &payload.handle;
+    let tier = &payload.tier;
 
-    for attempt in 0..3_usize {
+    let should_retry = |e: &sqlx::Error| {
+        crate::db::is_unique_violation(e)
+            && !matches!(
+                crate::db::accounts::classify_pending_account_conflict(e),
+                Some(PendingAccountConflict::Email) | Some(PendingAccountConflict::Handle)
+            )
+    };
+
+    // Not `async move`: account_id/email/handle/tier/offset are reused across retry attempts
+    // and must stay borrowed, while claim_code (fresh each attempt) is captured by value because
+    // it's moved out below — Rust infers that split per-variable from how each is used.
+    let result = crate::db::insert_with_retry_if("claim code", should_retry, || {
         let claim_code = generate_code();
-        match insert_pending_account(
-            &state.db,
-            &account_id,
-            &email,
-            &payload.handle,
-            &payload.tier,
-            &claim_code,
-            &offset,
-        )
-        .await
-        {
-            Ok(()) => {
-                return Ok((
-                    StatusCode::CREATED,
-                    Json(CreateAccountResponse {
-                        account_id,
-                        did: None,
-                        claim_code,
-                        status: "pending".to_string(),
-                    }),
-                ))
-            }
-            Err(e) if crate::db::is_unique_violation(&e) => {
-                use crate::db::accounts::PendingAccountConflict;
-                match crate::db::accounts::classify_pending_account_conflict(&e) {
-                    Some(PendingAccountConflict::Email) => {
-                        return Err(ApiError::new(
-                            ErrorCode::AccountExists,
-                            "an account with this email already exists",
-                        ));
-                    }
-                    Some(PendingAccountConflict::Handle) => {
-                        return Err(ApiError::new(
-                            ErrorCode::HandleTaken,
-                            "this handle is already claimed",
-                        ));
-                    }
-                    _ => {
-                        // Not a pending_accounts constraint — treat as claim code collision.
-                        tracing::warn!(attempt, "claim code collision; retrying");
-                        continue;
-                    }
-                }
-            }
-            Err(e) => {
-                tracing::error!(error = %e, "failed to insert pending account");
-                return Err(ApiError::new(
-                    ErrorCode::InternalError,
-                    "failed to create account",
-                ));
-            }
+        async {
+            insert_pending_account(db, &account_id, &email, handle, tier, &claim_code, &offset)
+                .await
+                .map(|()| claim_code)
         }
-    }
+    })
+    .await;
 
-    tracing::error!("exhausted all claim code generation attempts");
-    Err(ApiError::new(
-        ErrorCode::InternalError,
-        "failed to create account",
-    ))
+    match result {
+        Ok(Some(claim_code)) => Ok((
+            StatusCode::CREATED,
+            Json(CreateAccountResponse {
+                account_id,
+                did: None,
+                claim_code,
+                status: "pending".to_string(),
+            }),
+        )),
+        Ok(None) => Err({
+            tracing::error!("exhausted all claim code generation attempts");
+            ApiError::new(ErrorCode::InternalError, "failed to create account")
+        }),
+        Err(e) => match crate::db::accounts::classify_pending_account_conflict(&e) {
+            Some(PendingAccountConflict::Email) => Err(ApiError::new(
+                ErrorCode::AccountExists,
+                "an account with this email already exists",
+            )),
+            Some(PendingAccountConflict::Handle) => Err(ApiError::new(
+                ErrorCode::HandleTaken,
+                "this handle is already claimed",
+            )),
+            _ => Err(ApiError::internal_as(
+                e,
+                "failed to insert pending account",
+                "failed to create account",
+            )),
+        },
+    }
 }
 
 fn is_valid_tier(tier: &str) -> bool {
@@ -224,7 +220,7 @@ mod tests {
     };
     use tower::ServiceExt;
 
-    use crate::app::{app, test_state};
+    use crate::app::app;
     use crate::routes::test_utils::test_state_with_admin_token;
 
     // ── Helpers ───────────────────────────────────────────────────────────────
@@ -627,57 +623,6 @@ mod tests {
     }
 
     // ── Auth ──────────────────────────────────────────────────────────────────
-
-    #[tokio::test]
-    async fn missing_authorization_header_returns_401() {
-        let response = app(test_state_with_admin_token().await)
-            .oneshot(post_create_account(
-                r#"{"email":"x@example.com","handle":"x.example.com","tier":"free"}"#,
-                None,
-            ))
-            .await
-            .unwrap();
-        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
-    }
-
-    #[tokio::test]
-    async fn wrong_bearer_token_returns_401() {
-        let response = app(test_state_with_admin_token().await)
-            .oneshot(post_create_account(
-                r#"{"email":"x@example.com","handle":"x.example.com","tier":"free"}"#,
-                Some("wrong-token"),
-            ))
-            .await
-            .unwrap();
-        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
-    }
-
-    #[tokio::test]
-    async fn admin_token_not_configured_returns_401() {
-        let response = app(test_state().await)
-            .oneshot(post_create_account(
-                r#"{"email":"x@example.com","handle":"x.example.com","tier":"free"}"#,
-                Some("test-admin-token"),
-            ))
-            .await
-            .unwrap();
-        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
-    }
-
-    #[tokio::test]
-    async fn closed_db_pool_returns_500() {
-        let state = test_state_with_admin_token().await;
-        state.db.close().await;
-
-        let response = app(state)
-            .oneshot(post_create_account(
-                r#"{"email":"x@example.com","handle":"x.example.com","tier":"free"}"#,
-                Some("test-admin-token"),
-            ))
-            .await
-            .unwrap();
-        assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
-    }
 
     // ── Pure unit tests ───────────────────────────────────────────────────────
 

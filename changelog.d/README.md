@@ -7,7 +7,9 @@ changelog.d/<id>.<type>.md
 ```
 
 - `<id>` is the Linear issue identifier in lowercase (for example, `mm-358`). If a
-  change has no Linear issue, use the pull request number (for example, `271`).
+  change has no Linear issue, use the pull request number (for example, `271`). A
+  stacked series of PRs against one shared issue should also use each PR's own number —
+  one filename per issue would collide across the stack.
 - `<type>` is one of `added`, `changed`, `fixed`, `removed`, or `security`.
 - The file contains one concise, user- or operator-facing Markdown statement. Do not
   include a heading or bullet marker; the release script supplies both.

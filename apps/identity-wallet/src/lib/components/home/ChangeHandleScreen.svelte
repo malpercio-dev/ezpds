@@ -237,7 +237,7 @@
 </script>
 
 {#if phase.kind === 'success'}
-  <div class="screen success">
+  <div class="screen success u-screen">
     <SealEmblem>
       <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" /><path d="m9 11.5 2 2 4-4" /></svg>
     </SealEmblem>
@@ -250,7 +250,7 @@
     <Button onclick={ondone}>Done</Button>
   </div>
 {:else}
-  <div class="screen">
+  <div class="screen u-screen">
     <ScreenHeader title="Change handle" onback={onback} backLabel="Back to identity" />
 
     {#if currentHandle}
@@ -281,7 +281,7 @@
         </p>
 
         {#if customValid && customServedDomain}
-          <p class="status" role="status">
+          <p class="status u-status-text" role="status">
             <span class="handle">{normalizedCustom}</span> is on this server’s own domain —
             use the server domain option below instead; no DNS record is needed.
           </p>
@@ -339,13 +339,13 @@
     {:else if phase.kind === 'loading'}
       <div class="center"><Spinner size={28} label="Loading available handle domains" /></div>
     {:else if phase.kind === 'load_error'}
-      <p class="status">Couldn’t reach the hosting server to load handle domains.</p>
+      <p class="status u-status-text">Couldn’t reach the hosting server to load handle domains.</p>
       <Button onclick={loadDomains}>Try again</Button>
       <button type="button" class="mode-toggle" onclick={() => (mode = 'custom')}>
         Use a domain you own instead
       </button>
     {:else if phase.kind === 'no_domains'}
-      <p class="status">This identity’s hosting server has no handle domains configured.</p>
+      <p class="status u-status-text">This identity’s hosting server has no handle domains configured.</p>
       <button type="button" class="mode-toggle" onclick={() => (mode = 'custom')}>
         Use a domain you own instead
       </button>
@@ -364,7 +364,7 @@
         />
 
         {#if phase.domains.length > 1}
-          <label class="domain-label" for="domain-select">Domain</label>
+          <label class="domain-label u-block-label" for="domain-select">Domain</label>
           <select id="domain-select" class="domain-select" bind:value={selectedDomain}>
             {#each phase.domains as domain}
               <option value={domain}>.{normalizeDomain(domain)}</option>
@@ -385,14 +385,6 @@
 {/if}
 
 <style>
-  .screen {
-    display: flex;
-    flex-direction: column;
-    height: 100%;
-    padding: var(--space-lg) var(--space-md) var(--space-xl);
-    gap: var(--space-md);
-    overflow-y: auto;
-  }
   .current {
     font-size: var(--text-label);
     color: var(--color-muted);
@@ -410,23 +402,12 @@
     gap: var(--space-sm);
     padding: var(--space-xl) 0;
   }
-  .status {
-    font-size: var(--text-body);
-    color: var(--color-muted);
-    text-align: center;
-    margin: 0;
-  }
   .hint {
     font-size: var(--text-label);
     color: var(--color-muted);
     margin: 0;
   }
-  .domain-label {
-    font-size: var(--text-label);
-    font-weight: var(--weight-semibold);
-    color: var(--color-muted);
-    margin: 0;
-  }
+
   .domain-select {
     width: 100%;
     padding: var(--space-md);

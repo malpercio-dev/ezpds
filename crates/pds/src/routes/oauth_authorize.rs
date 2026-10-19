@@ -294,6 +294,46 @@ enum ClientValidationError {
     PrivateUseRedirectMismatch(String),
 }
 
+impl ClientValidationError {
+    /// Render the no-redirect error page for this failure. Shared by the GET and POST
+    /// handlers, which show identical copy for each variant since neither has a
+    /// validated `redirect_uri` to send the user back to yet.
+    fn into_error_page(self) -> Response {
+        match self {
+            Self::UnknownClient => error_page(
+                "This app isn't recognized",
+                "This server doesn't recognize the app asking to sign you in, so the \
+                 request stopped here. Nothing was granted. If this keeps happening, \
+                 the problem is on the app's side.",
+            ),
+            Self::PrivateUseRedirectMismatch(desc) => error_page(
+                "Can't return you to the app",
+                &format!(
+                    "The app asked to send you to an address it hasn't registered, so \
+                     you weren't sent anywhere and nothing was granted. Details for the \
+                     app's developer: {desc}"
+                ),
+            ),
+            Self::DbError => {
+                error_page("Something went wrong on this server", SERVER_ERROR_PAGE_MSG)
+            }
+            Self::MalformedMetadata => error_page(
+                "This app is set up incorrectly",
+                "The app's registration on this server isn't valid, so sign-in can't \
+                 continue. Nothing was granted. The app's developer needs to fix its \
+                 registration.",
+            ),
+            Self::InvalidRedirectUri => error_page(
+                "Can't return you to the app",
+                "The app asked to send you to an address it hasn't registered, so you \
+                 weren't sent anywhere and nothing was granted. If this keeps happening, \
+                 tell the app's developer.",
+            ),
+        }
+        .into_response()
+    }
+}
+
 /// Look up the registered client, parse its metadata, and validate `redirect_uri`.
 ///
 /// Shared by both the GET and POST authorization handlers, which must confirm the
@@ -362,7 +402,7 @@ pub async fn get_authorization(
 ) -> Response {
     // RFC 9207 issuer identifier, emitted as `iss` on every authorization response.
     // Trailing slash trimmed to match the AS-metadata `issuer` value exactly.
-    let issuer = state.config.public_url.trim_end_matches('/').to_string();
+    let issuer = state.config.issuer().to_string();
     let params = match resolve_authorize_params(&state, raw).await {
         Ok(p) => p,
         Err(ResolveError::Client(msg)) => {
@@ -377,73 +417,33 @@ pub async fn get_authorization(
     let metadata =
         match lookup_and_validate_client(&state, &params.client_id, &params.redirect_uri).await {
             Ok(m) => m,
-            Err(ClientValidationError::UnknownClient) => {
-                return error_page(
-                    "This app isn't recognized",
-                    "This server doesn't recognize the app asking to sign you in, so \
-                     the request stopped here. Nothing was granted. If this keeps \
-                     happening, the problem is on the app's side.",
-                )
-                .into_response()
-            }
-            Err(ClientValidationError::PrivateUseRedirectMismatch(desc)) => {
-                return error_page(
-                    "Can't return you to the app",
-                    &format!(
-                        "The app asked to send you to an address it hasn't registered, \
-                         so you weren't sent anywhere and nothing was granted. Details \
-                         for the app's developer: {desc}"
-                    ),
-                )
-                .into_response()
-            }
-            Err(ClientValidationError::DbError) => {
-                return error_page("Something went wrong on this server", SERVER_ERROR_PAGE_MSG)
-                    .into_response()
-            }
-            Err(ClientValidationError::MalformedMetadata) => {
-                return error_page(
-                    "This app is set up incorrectly",
-                    "The app's registration on this server isn't valid, so sign-in \
-                     can't continue. Nothing was granted. The app's developer needs to \
-                     fix its registration.",
-                )
-                .into_response()
-            }
-            Err(ClientValidationError::InvalidRedirectUri) => {
-                return error_page(
-                    "Can't return you to the app",
-                    "The app asked to send you to an address it hasn't registered, so \
-                     you weren't sent anywhere and nothing was granted. If this keeps \
-                     happening, tell the app's developer.",
-                )
-                .into_response()
-            }
+            Err(e) => return e.into_error_page(),
         };
 
     // From here on redirect_uri is validated — errors redirect there, not to an error page.
-    if params.response_type != "code" {
-        return error_redirect(
+    // Captures the fields every error redirect on this request needs, so each call site
+    // names only what's specific to it.
+    let redirect_err = |error: &str, description: &str| -> Response {
+        error_redirect(
             &params.redirect_uri,
-            "unsupported_response_type",
-            "only response_type=code is supported",
+            error,
+            description,
             &params.state,
             &issuer,
             params.response_mode,
         )
-        .into_response();
+        .into_response()
+    };
+
+    if params.response_type != "code" {
+        return redirect_err(
+            "unsupported_response_type",
+            "only response_type=code is supported",
+        );
     }
 
     if params.code_challenge_method != "S256" {
-        return error_redirect(
-            &params.redirect_uri,
-            "invalid_request",
-            "code_challenge_method must be S256",
-            &params.state,
-            &issuer,
-            params.response_mode,
-        )
-        .into_response();
+        return redirect_err("invalid_request", "code_challenge_method must be S256");
     }
 
     let client_name = metadata
@@ -468,18 +468,23 @@ pub async fn get_authorization(
     .await
     {
         Ok(s) => s,
-        Err(desc) => {
-            return error_redirect(
-                &params.redirect_uri,
-                "invalid_scope",
-                &desc,
-                &params.state,
-                &issuer,
-                params.response_mode,
-            )
-            .into_response()
-        }
+        Err(desc) => return redirect_err("invalid_scope", &desc),
     };
+
+    // User-legible text for any `space:` tokens. Best-effort by design: unlike the `include:`
+    // expansion above, this changes only the labels — the checkbox values stay the raw tokens —
+    // so a failed lookup degrades to the raw NSID instead of failing the page.
+    let spaces = crate::auth::space_consent::resolve_space_displays(
+        &state,
+        &state.space_type_cache,
+        &display_scope,
+        &crate::auth::space_consent::preferred_languages(
+            headers
+                .get(axum::http::header::ACCEPT_LANGUAGE)
+                .and_then(|v| v.to_str().ok()),
+        ),
+    )
+    .await;
 
     // Wallet-confirmed consent path: create a single-use pending request that a sovereign /
     // passwordless account approves out-of-band from its wallet. This is best-effort — a creation
@@ -514,6 +519,7 @@ pub async fn get_authorization(
         params.login_hint.as_deref(),
         None,
         wallet.as_ref(),
+        &spaces,
     ))
     .into_response()
 }
@@ -652,18 +658,13 @@ async fn create_pending_request(
 /// never drive outbound handle resolution (the SSRF/amplification posture); an account not on
 /// this instance has no registered wallet devices to push to anyway.
 async fn resolve_login_hint_to_local_did(state: &AppState, hint: &str) -> Option<String> {
-    let did = if hint.starts_with("did:") {
-        hint.to_string()
-    } else {
-        let handle = hint.strip_prefix("at://").unwrap_or(hint);
-        let handle = handle
-            .strip_prefix('@')
-            .unwrap_or(handle)
-            .to_ascii_lowercase();
-        crate::identity::handle::validate_handle_structure(&handle).ok()?;
-        crate::db::handles::resolve_handle(&state.db, &handle)
-            .await
-            .ok()??
+    let did = match crate::identity::handle::normalize_login_hint(hint)? {
+        crate::identity::handle::LoginHint::Did(did) => did,
+        crate::identity::handle::LoginHint::Handle(handle) => {
+            crate::db::handles::resolve_handle(&state.db, &handle)
+                .await
+                .ok()??
+        }
     };
     match active_local_account_exists(&state.db, &did).await {
         Ok(true) => Some(did),
@@ -776,54 +777,13 @@ pub async fn post_authorization(
 ) -> Response {
     // RFC 9207 issuer identifier, emitted as `iss` on every authorization response.
     // Trailing slash trimmed to match the AS-metadata `issuer` value exactly.
-    let issuer = state.config.public_url.trim_end_matches('/').to_string();
+    let issuer = state.config.issuer().to_string();
     // Validate client and redirect_uri first — deny/approve both redirect there,
     // so we must confirm it is safe before using it as a redirect target.
     let metadata =
         match lookup_and_validate_client(&state, &form.client_id, &form.redirect_uri).await {
             Ok(m) => m,
-            Err(ClientValidationError::UnknownClient) => {
-                return error_page(
-                    "This app isn't recognized",
-                    "This server doesn't recognize the app asking to sign you in, so the \
-                 request stopped here. Nothing was granted. If this keeps happening, \
-                 the problem is on the app's side.",
-                )
-                .into_response()
-            }
-            Err(ClientValidationError::PrivateUseRedirectMismatch(desc)) => {
-                return error_page(
-                    "Can't return you to the app",
-                    &format!(
-                        "The app asked to send you to an address it hasn't registered, so \
-                     you weren't sent anywhere and nothing was granted. Details for the \
-                     app's developer: {desc}"
-                    ),
-                )
-                .into_response()
-            }
-            Err(ClientValidationError::DbError) => {
-                return error_page("Something went wrong on this server", SERVER_ERROR_PAGE_MSG)
-                    .into_response()
-            }
-            Err(ClientValidationError::MalformedMetadata) => {
-                return error_page(
-                    "This app is set up incorrectly",
-                    "The app's registration on this server isn't valid, so sign-in can't \
-                 continue. Nothing was granted. The app's developer needs to fix its \
-                 registration.",
-                )
-                .into_response()
-            }
-            Err(ClientValidationError::InvalidRedirectUri) => {
-                return error_page(
-                    "Can't return you to the app",
-                    "The app asked to send you to an address it hasn't registered, so you \
-                 weren't sent anywhere and nothing was granted. If this keeps happening, \
-                 tell the app's developer.",
-                )
-                .into_response()
-            }
+            Err(e) => return e.into_error_page(),
         };
 
     // The hidden response_mode field is attacker-controllable like every other hidden
@@ -842,52 +802,37 @@ pub async fn post_authorization(
     };
 
     // redirect_uri is now validated — denial and all subsequent errors redirect there.
-    if form.action == "deny" {
-        return error_redirect(
+    // Captures the fields every error redirect on this request needs, so each call site
+    // names only what's specific to it.
+    let redirect_err = |error: &str, description: &str| -> Response {
+        error_redirect(
             &form.redirect_uri,
-            "access_denied",
-            "User denied access",
+            error,
+            description,
             &form.state,
             &issuer,
             mode,
         )
-        .into_response();
+        .into_response()
+    };
+
+    if form.action == "deny" {
+        return redirect_err("access_denied", "User denied access");
     }
 
     if form.action != "approve" {
-        return error_redirect(
-            &form.redirect_uri,
-            "invalid_request",
-            "invalid action",
-            &form.state,
-            &issuer,
-            mode,
-        )
-        .into_response();
+        return redirect_err("invalid_request", "invalid action");
     }
 
     if form.response_type != "code" {
-        return error_redirect(
-            &form.redirect_uri,
+        return redirect_err(
             "unsupported_response_type",
             "only response_type=code is supported",
-            &form.state,
-            &issuer,
-            mode,
-        )
-        .into_response();
+        );
     }
 
     if form.code_challenge_method != "S256" {
-        return error_redirect(
-            &form.redirect_uri,
-            "invalid_request",
-            "code_challenge_method must be S256",
-            &form.state,
-            &issuer,
-            mode,
-        )
-        .into_response();
+        return redirect_err("invalid_request", "code_challenge_method must be S256");
     }
 
     // Resolve the identifier and check the login rate limit *before* any expensive work —
@@ -899,6 +844,12 @@ pub async fn post_authorization(
         .client_name
         .clone()
         .unwrap_or_else(|| form.client_id.clone());
+
+    // Token-only space display: the broad-grant warning and everything else derivable without
+    // network I/O. Resolving declarations here would mean outbound DNS/HTTP *before* the
+    // identifier-keyed login rate-limit gate below — the amplification hole that gate exists to
+    // close — so this path shows the raw NSID and keeps the warning.
+    let spaces = crate::auth::space_consent::space_displays_without_resolution(&form.scope);
 
     // Helper closure to re-render the consent page without redirecting to the client.
     let rerender = |hint: Option<&str>, error: &str| -> Response {
@@ -918,6 +869,7 @@ pub async fn post_authorization(
             // The password-error re-render creates no pending request, so the wallet path is
             // omitted here; the user retries the password form (or reloads to get the wallet code).
             None,
+            &spaces,
         ))
         .into_response()
     };
@@ -929,21 +881,10 @@ pub async fn post_authorization(
 
     // Rate-limit check: guard before any DB work, argon2, or scope resolution to shed load early.
     {
-        let mut attempts = match state.failed_login_attempts.lock() {
-            Ok(g) => g,
-            Err(_) => {
-                tracing::error!("failed_login_attempts mutex is poisoned");
-                return error_redirect(
-                    &form.redirect_uri,
-                    "server_error",
-                    "Internal server error",
-                    &form.state,
-                    &issuer,
-                    mode,
-                )
-                .into_response();
-            }
-        };
+        let mut attempts = state
+            .failed_login_attempts
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         if is_rate_limited(&mut attempts, &identifier) {
             return rerender(
                 Some(&identifier),
@@ -971,21 +912,10 @@ pub async fn post_authorization(
                 identifier = %identifier,
                 "OAuth consent: identifier not found or account deactivated"
             );
-            let mut attempts = match state.failed_login_attempts.lock() {
-                Ok(g) => g,
-                Err(_) => {
-                    tracing::error!("failed_login_attempts mutex is poisoned");
-                    return error_redirect(
-                        &form.redirect_uri,
-                        "server_error",
-                        "Internal server error",
-                        &form.state,
-                        &issuer,
-                        mode,
-                    )
-                    .into_response();
-                }
-            };
+            let mut attempts = state
+                .failed_login_attempts
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
             record_failure(&mut attempts, &identifier);
             return rerender(
                 Some(&identifier),
@@ -994,15 +924,7 @@ pub async fn post_authorization(
         }
         Err(e) => {
             tracing::error!(error = %e, "db error resolving identifier for OAuth approval");
-            return error_redirect(
-                &form.redirect_uri,
-                "server_error",
-                "Internal server error",
-                &form.state,
-                &issuer,
-                mode,
-            )
-            .into_response();
+            return redirect_err("server_error", "Internal server error");
         }
     };
 
@@ -1020,21 +942,10 @@ pub async fn post_authorization(
                 did = %account.did,
                 "OAuth consent: credential verification failed"
             );
-            let mut attempts = match state.failed_login_attempts.lock() {
-                Ok(g) => g,
-                Err(_) => {
-                    tracing::error!("failed_login_attempts mutex is poisoned");
-                    return error_redirect(
-                        &form.redirect_uri,
-                        "server_error",
-                        "Internal server error",
-                        &form.state,
-                        &issuer,
-                        mode,
-                    )
-                    .into_response();
-                }
-            };
+            let mut attempts = state
+                .failed_login_attempts
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
             record_failure(&mut attempts, &identifier);
             return rerender(
                 Some(&identifier),
@@ -1047,34 +958,15 @@ pub async fn post_authorization(
                 did = %account.did,
                 "stored password_hash is not a valid PHC string; possible DB corruption"
             );
-            return error_redirect(
-                &form.redirect_uri,
-                "server_error",
-                "Internal server error",
-                &form.state,
-                &issuer,
-                mode,
-            )
-            .into_response();
+            return redirect_err("server_error", "Internal server error");
         }
     }
 
     {
-        let mut attempts = match state.failed_login_attempts.lock() {
-            Ok(g) => g,
-            Err(_) => {
-                tracing::error!("failed_login_attempts mutex is poisoned");
-                return error_redirect(
-                    &form.redirect_uri,
-                    "server_error",
-                    "Internal server error",
-                    &form.state,
-                    &issuer,
-                    mode,
-                )
-                .into_response();
-            }
-        };
+        let mut attempts = state
+            .failed_login_attempts
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         clear_failures(&mut attempts, &identifier);
     }
 
@@ -1087,23 +979,13 @@ pub async fn post_authorization(
     // endpoint already validated it.
     let normalized_scope = match crate::auth::oauth_scopes::normalize_scope_request(&form.scope) {
         Ok(s) => s,
-        Err(desc) => {
-            return error_redirect(
-                &form.redirect_uri,
-                "invalid_scope",
-                &desc,
-                &form.state,
-                &issuer,
-                mode,
-            )
-            .into_response()
-        }
+        Err(desc) => return redirect_err("invalid_scope", &desc),
     };
 
     // Resolve any `include:<nsid>` permission-set references to their granular scopes.
-    // Authoritative — re-run regardless of what the GET already displayed, since hidden form
-    // fields are attacker-controllable. Fails closed: an unresolvable reference rejects the
-    // whole request rather than granting a smaller-than-requested set.
+    // Authoritative — re-run regardless of what the GET already displayed (hidden form fields
+    // are attacker-controllable); fails closed for the same reason `get_authorization`'s
+    // render-only expansion does (see the comment there).
     let expanded_scope = match crate::auth::permission_sets::expand_include_scopes(
         &state,
         &state.permission_set_cache,
@@ -1112,17 +994,7 @@ pub async fn post_authorization(
     .await
     {
         Ok(s) => s,
-        Err(desc) => {
-            return error_redirect(
-                &form.redirect_uri,
-                "invalid_scope",
-                &desc,
-                &form.state,
-                &issuer,
-                mode,
-            )
-            .into_response()
-        }
+        Err(desc) => return redirect_err("invalid_scope", &desc),
     };
 
     // Reduce to the user's actually-checked permissions: `atproto` is always granted
@@ -1137,17 +1009,7 @@ pub async fn post_authorization(
     let granted_scope =
         match crate::auth::oauth_scopes::normalize_scope_request(&granted_tokens.join(" ")) {
             Ok(s) => s,
-            Err(desc) => {
-                return error_redirect(
-                    &form.redirect_uri,
-                    "invalid_scope",
-                    &desc,
-                    &form.state,
-                    &issuer,
-                    mode,
-                )
-                .into_response()
-            }
+            Err(desc) => return redirect_err("invalid_scope", &desc),
         };
 
     let did = account.did;
@@ -1175,15 +1037,7 @@ pub async fn post_authorization(
     .await
     {
         tracing::error!(error = %e, "failed to store authorization code");
-        return error_redirect(
-            &form.redirect_uri,
-            "server_error",
-            "Failed to generate authorization code",
-            &form.state,
-            &issuer,
-            mode,
-        )
-        .into_response();
+        return redirect_err("server_error", "Failed to generate authorization code");
     }
 
     // Return plaintext to the client; the DB stores only the hash. `iss` (RFC 9207) is
@@ -1202,10 +1056,6 @@ pub async fn post_authorization(
 
 #[cfg(test)]
 mod tests {
-    use argon2::{
-        password_hash::{rand_core::OsRng, SaltString},
-        Argon2, PasswordHasher,
-    };
     use axum::{
         body::Body,
         http::{Request, StatusCode},
@@ -1216,6 +1066,7 @@ mod tests {
     use crate::app::{app, test_state};
     use crate::auth::token::hash_bearer_token;
     use crate::db::oauth::register_oauth_client;
+    use crate::routes::test_utils;
 
     const CLIENT_ID: &str = "https://app.example.com/client-metadata.json";
     const REDIRECT_URI: &str = "https://app.example.com/callback";
@@ -1251,27 +1102,14 @@ mod tests {
     /// password hash, plus an associated handle for identifier-based login tests.
     async fn state_with_client_and_account_with_password(password: &str) -> crate::app::AppState {
         let state = state_with_client().await;
-        let salt = SaltString::generate(&mut OsRng);
-        let password_hash = Argon2::default()
-            .hash_password(password.as_bytes(), &salt)
-            .unwrap()
-            .to_string();
-        sqlx::query(
-            "INSERT INTO accounts (did, email, password_hash, created_at, updated_at) \
-             VALUES (?, ?, ?, datetime('now'), datetime('now'))",
+        test_utils::insert_account_with_password(
+            &state.db,
+            DID,
+            TEST_HANDLE,
+            "test@example.com",
+            password,
         )
-        .bind(DID)
-        .bind("test@example.com")
-        .bind(&password_hash)
-        .execute(&state.db)
-        .await
-        .unwrap();
-        sqlx::query("INSERT INTO handles (handle, did, created_at) VALUES (?, ?, datetime('now'))")
-            .bind(TEST_HANDLE)
-            .bind(DID)
-            .execute(&state.db)
-            .await
-            .unwrap();
+        .await;
         state
     }
 
@@ -1286,29 +1124,15 @@ mod tests {
              &scope=atproto\
              &response_type=code\
              &identifier={}&password={}",
-            crate::routes::oauth_templates::encode_param(identifier),
-            crate::routes::oauth_templates::encode_param(password),
+            urlencoding::encode(identifier),
+            urlencoding::encode(password),
         )
     }
 
     /// Test state with a mobile-provisioned account: handle is set but password_hash is NULL.
     async fn state_with_client_and_mobile_account() -> crate::app::AppState {
         let state = state_with_client().await;
-        sqlx::query(
-            "INSERT INTO accounts (did, email, password_hash, created_at, updated_at) \
-             VALUES (?, ?, NULL, datetime('now'), datetime('now'))",
-        )
-        .bind(DID)
-        .bind("test@example.com")
-        .execute(&state.db)
-        .await
-        .unwrap();
-        sqlx::query("INSERT INTO handles (handle, did, created_at) VALUES (?, ?, datetime('now'))")
-            .bind(TEST_HANDLE)
-            .bind(DID)
-            .execute(&state.db)
-            .await
-            .unwrap();
+        test_utils::seed_handle(&state.db, TEST_HANDLE, DID).await;
         state
     }
 
@@ -1358,8 +1182,8 @@ mod tests {
         .unwrap();
         format!(
             "/oauth/authorize?client_id={}&request_uri={}",
-            crate::routes::oauth_templates::encode_param(CLIENT_ID),
-            crate::routes::oauth_templates::encode_param(&request_uri),
+            urlencoding::encode(CLIENT_ID),
+            urlencoding::encode(&request_uri),
         )
     }
 
@@ -1729,14 +1553,7 @@ mod tests {
         assert_eq!(resp.status(), StatusCode::SEE_OTHER);
 
         let location = resp.headers().get("location").unwrap().to_str().unwrap();
-        let plaintext = location
-            .split("code=")
-            .nth(1)
-            .unwrap()
-            .split('&')
-            .next()
-            .unwrap();
-        let code_hash = hash_bearer_token(plaintext).unwrap();
+        let code_hash = hash_bearer_token(code_from_location(location)).unwrap();
 
         let row: Option<(String,)> =
             sqlx::query_as("SELECT code FROM oauth_authorization_codes WHERE code = ?")
@@ -1992,57 +1809,13 @@ mod tests {
 
     // ── PAR (Pushed Authorization Request) flow ───────────────────────────────
 
-    async fn store_test_par_request(state: &crate::app::AppState, request_uri: &str) {
-        use crate::db::oauth::store_par_request;
-        store_par_request(
-            &state.db,
-            request_uri,
-            CLIENT_ID,
-            r#"{"redirect_uri":"https://app.example.com/callback","code_challenge":"testchallenge","code_challenge_method":"S256","state":"teststate","response_type":"code","scope":"atproto","login_hint":null}"#,
-        )
-        .await
-        .unwrap();
-    }
-
-    async fn store_test_par_request_with_login_hint(
-        state: &crate::app::AppState,
-        request_uri: &str,
-        login_hint: &str,
-    ) {
-        use crate::db::oauth::store_par_request;
-        let params = format!(
-            r#"{{"redirect_uri":"https://app.example.com/callback","code_challenge":"testchallenge","code_challenge_method":"S256","state":"teststate","response_type":"code","scope":"atproto","login_hint":"{}"}}"#,
-            login_hint
-        );
-        store_par_request(&state.db, request_uri, CLIENT_ID, &params)
-            .await
-            .unwrap();
-    }
-
     #[tokio::test]
     async fn get_authorization_with_valid_request_uri_renders_consent_page() {
         let state = state_with_client().await;
-        let request_uri = "urn:ietf:params:oauth:request_uri:test-par-token-abc";
-        store_test_par_request(&state, request_uri).await;
-
-        let response = app(state)
-            .oneshot(
-                Request::builder()
-                    .uri(format!(
-                        "/oauth/authorize?client_id={}&request_uri={}",
-                        CLIENT_ID, request_uri
-                    ))
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
+        let response = get_authorize_via_par(state, par_params()).await;
 
         assert_eq!(response.status(), StatusCode::OK);
-        let body = axum::body::to_bytes(response.into_body(), 32768)
-            .await
-            .unwrap();
-        let html = std::str::from_utf8(&body).unwrap();
+        let html = body_string(response).await;
         assert!(
             html.contains("Test App"),
             "consent page should show the registered client name"
@@ -2053,24 +1826,17 @@ mod tests {
     async fn get_authorization_with_invalid_request_uri_returns_error_page() {
         let state = state_with_client().await;
 
-        let response = app(state)
-            .oneshot(
-                Request::builder()
-                    .uri(format!(
-                        "/oauth/authorize?client_id={}&request_uri=urn:ietf:params:oauth:request_uri:nonexistent",
-                        CLIENT_ID
-                    ))
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
+        let response = get_authorize(
+            state,
+            &format!(
+                "/oauth/authorize?client_id={}&request_uri=urn:ietf:params:oauth:request_uri:nonexistent",
+                CLIENT_ID
+            ),
+        )
+        .await;
 
         assert_eq!(response.status(), StatusCode::BAD_REQUEST);
-        let body = axum::body::to_bytes(response.into_body(), 32768)
-            .await
-            .unwrap();
-        let html = std::str::from_utf8(&body).unwrap();
+        let html = body_string(response).await;
         assert!(
             html.contains("This sign-in request didn&#39;t work"),
             "invalid request_uri should render an error page"
@@ -2089,29 +1855,22 @@ mod tests {
         )
         .bind("urn:ietf:params:oauth:request_uri:formerly-valid-expired")
         .bind(CLIENT_ID)
-        .bind(r#"{"redirect_uri":"https://app.example.com/callback","code_challenge":"c","code_challenge_method":"S256","state":"s","response_type":"code","scope":"atproto","login_hint":null}"#)
+        .bind(par_params().to_string())
         .execute(&state.db)
         .await
         .unwrap();
 
-        let response = app(state)
-            .oneshot(
-                Request::builder()
-                    .uri(format!(
-                        "/oauth/authorize?client_id={}&request_uri=urn:ietf:params:oauth:request_uri:formerly-valid-expired",
-                        CLIENT_ID
-                    ))
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
+        let response = get_authorize(
+            state,
+            &format!(
+                "/oauth/authorize?client_id={}&request_uri=urn:ietf:params:oauth:request_uri:formerly-valid-expired",
+                CLIENT_ID
+            ),
+        )
+        .await;
 
         assert_eq!(response.status(), StatusCode::BAD_REQUEST);
-        let body = axum::body::to_bytes(response.into_body(), 32768)
-            .await
-            .unwrap();
-        let html = std::str::from_utf8(&body).unwrap();
+        let html = body_string(response).await;
         assert!(
             html.contains("This sign-in request didn&#39;t work"),
             "expired request_uri should render an error page"
@@ -2121,27 +1880,12 @@ mod tests {
     #[tokio::test]
     async fn get_authorization_with_par_forwards_login_hint_to_consent_page() {
         let state = state_with_client().await;
-        let request_uri = "urn:ietf:params:oauth:request_uri:test-par-login-hint";
-        store_test_par_request_with_login_hint(&state, request_uri, "alice.example.com").await;
-
-        let response = app(state)
-            .oneshot(
-                Request::builder()
-                    .uri(format!(
-                        "/oauth/authorize?client_id={}&request_uri={}",
-                        CLIENT_ID, request_uri
-                    ))
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
+        let mut params = par_params();
+        params["login_hint"] = "alice.example.com".into();
+        let response = get_authorize_via_par(state, params).await;
 
         assert_eq!(response.status(), StatusCode::OK);
-        let body = axum::body::to_bytes(response.into_body(), 32768)
-            .await
-            .unwrap();
-        let html = std::str::from_utf8(&body).unwrap();
+        let html = body_string(response).await;
         assert!(
             html.contains("alice.example.com"),
             "login_hint from PAR should pre-populate the identifier field on the consent page"
@@ -2154,24 +1898,17 @@ mod tests {
         // authorization request with inline parameters must be refused at flow start,
         // with no consent page and no pending wallet request created.
         let state = state_with_client().await;
-        let response = app(state.clone())
-            .oneshot(
-                Request::builder()
-                    .uri(format!(
-                        "/oauth/authorize?client_id={}&redirect_uri=https%3A%2F%2Fapp.example.com%2Fcallback&code_challenge=abc&code_challenge_method=S256&state=s&response_type=code&scope=atproto",
-                        crate::routes::oauth_templates::encode_param(CLIENT_ID)
-                    ))
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
+        let response = get_authorize(
+            state.clone(),
+            &format!(
+                "/oauth/authorize?client_id={}&redirect_uri=https%3A%2F%2Fapp.example.com%2Fcallback&code_challenge=abc&code_challenge_method=S256&state=s&response_type=code&scope=atproto",
+                urlencoding::encode(CLIENT_ID)
+            ),
+        )
+        .await;
 
         assert_eq!(response.status(), StatusCode::BAD_REQUEST);
-        let body = axum::body::to_bytes(response.into_body(), 32768)
-            .await
-            .unwrap();
-        let html = std::str::from_utf8(&body).unwrap();
+        let html = body_string(response).await;
         assert!(
             html.contains("This sign-in request didn&#39;t work"),
             "a non-PAR request must get the no-redirect error page"
@@ -2194,21 +1931,14 @@ mod tests {
         let state = state_with_client().await;
         let params = par_params();
         let url = authorize_url_via_par(&state, &params).await;
-        let response = app(state.clone())
-            .oneshot(
-                Request::builder()
-                    .uri(format!("{url}&request=eyJhbGciOiJub25lIn0.e30."))
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
+        let response = get_authorize(
+            state.clone(),
+            &format!("{url}&request=eyJhbGciOiJub25lIn0.e30."),
+        )
+        .await;
 
         assert_eq!(response.status(), StatusCode::BAD_REQUEST);
-        let body = axum::body::to_bytes(response.into_body(), 32768)
-            .await
-            .unwrap();
-        let html = std::str::from_utf8(&body).unwrap();
+        let html = body_string(response).await;
         assert!(
             html.contains("This sign-in request didn&#39;t work"),
             "a JAR request must get the no-redirect error page"
@@ -2226,27 +1956,17 @@ mod tests {
     #[tokio::test]
     async fn get_authorization_with_mismatched_client_id_returns_error_page() {
         let state = state_with_client().await;
-        let request_uri = "urn:ietf:params:oauth:request_uri:test-par-mismatch";
-        store_test_par_request(&state, request_uri).await;
+        let url = authorize_url_via_par(&state, &par_params()).await;
+        let request_uri = url.split("request_uri=").nth(1).unwrap();
 
-        let response = app(state)
-            .oneshot(
-                Request::builder()
-                    .uri(format!(
-                        "/oauth/authorize?client_id=https://other.example.com/client&request_uri={}",
-                        request_uri
-                    ))
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
+        let response = get_authorize(
+            state,
+            &format!("/oauth/authorize?client_id=https://other.example.com/client&request_uri={request_uri}"),
+        )
+        .await;
 
         assert_eq!(response.status(), StatusCode::BAD_REQUEST);
-        let body = axum::body::to_bytes(response.into_body(), 32768)
-            .await
-            .unwrap();
-        let html = std::str::from_utf8(&body).unwrap();
+        let html = body_string(response).await;
         assert!(
             html.contains("This sign-in request didn&#39;t work"),
             "mismatched client_id should render an error page"
@@ -2255,30 +1975,13 @@ mod tests {
 
     // ── include: permission-set expansion ─────
 
-    use std::future::Future;
-    use std::pin::Pin;
     use wiremock::matchers::{method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
-    use crate::identity::dns::{DnsError, TxtResolver};
-    use crate::routes::test_utils::seed_did_document;
+    use crate::routes::test_utils::{seed_did_document, FixedTxtResolver};
 
     const AUTHORITY_DID: &str = "did:plc:authoritydidxxxxxxxxxxxxx";
     const AUTHORITY_NSID: &str = "app.bsky.authFull";
-
-    struct FixedTxtResolver {
-        records: Vec<String>,
-    }
-
-    impl TxtResolver for FixedTxtResolver {
-        fn txt_lookup<'a>(
-            &'a self,
-            _name: &'a str,
-        ) -> Pin<Box<dyn Future<Output = Result<Vec<String>, DnsError>> + Send + 'a>> {
-            let records = self.records.clone();
-            Box::pin(async move { Ok(records) })
-        }
-    }
 
     /// A test state with a registered client + password account, plus DNS/DID-document
     /// resolution wired up for `AUTHORITY_NSID` to a mock PDS serving `schema`.
@@ -2334,12 +2037,7 @@ mod tests {
     fn include_scope_form(scope: &str, granted: &[&str]) -> String {
         let granted_params: String = granted
             .iter()
-            .map(|g| {
-                format!(
-                    "&granted_scope={}",
-                    crate::routes::oauth_templates::encode_param(g)
-                )
-            })
+            .map(|g| format!("&granted_scope={}", urlencoding::encode(g)))
             .collect();
         format!(
             "action=approve\
@@ -2351,15 +2049,15 @@ mod tests {
              &scope={}\
              &response_type=code\
              &identifier={}&password={}{}",
-            crate::routes::oauth_templates::encode_param(scope),
-            crate::routes::oauth_templates::encode_param(TEST_HANDLE),
-            crate::routes::oauth_templates::encode_param(TEST_PASSWORD),
+            urlencoding::encode(scope),
+            urlencoding::encode(TEST_HANDLE),
+            urlencoding::encode(TEST_PASSWORD),
             granted_params,
         )
     }
 
     #[tokio::test]
-    async fn ac4_1_include_scope_stores_expanded_scope_on_authorization_code() {
+    async fn include_scope_stores_expanded_scope_on_authorization_code() {
         let (state, _server) = state_with_include_authority(serde_json::json!([
             { "type": "permission", "resource": "identity", "attr": "handle" }
         ]))
@@ -2372,22 +2070,9 @@ mod tests {
         let location = resp.headers().get("location").unwrap().to_str().unwrap();
         assert!(!location.contains("error="), "unexpected error: {location}");
 
-        let plaintext = location
-            .split("code=")
-            .nth(1)
-            .unwrap()
-            .split('&')
-            .next()
-            .unwrap();
-        let code_hash = hash_bearer_token(plaintext).unwrap();
-        let row: (String,) =
-            sqlx::query_as("SELECT scope FROM oauth_authorization_codes WHERE code = ?")
-                .bind(&code_hash)
-                .fetch_one(&db)
-                .await
-                .unwrap();
         assert_eq!(
-            row.0, "atproto identity:handle",
+            stored_scope_for(&db, location).await,
+            "atproto identity:handle",
             "stored scope must be the expanded granular set, not the raw include: token"
         );
     }
@@ -2411,25 +2096,14 @@ mod tests {
         let location = resp.headers().get("location").unwrap().to_str().unwrap();
         assert!(!location.contains("error="), "unexpected error: {location}");
 
-        let plaintext = location
-            .split("code=")
-            .nth(1)
-            .unwrap()
-            .split('&')
-            .next()
-            .unwrap();
-        let code_hash = hash_bearer_token(plaintext).unwrap();
-        let row: (String,) =
-            sqlx::query_as("SELECT scope FROM oauth_authorization_codes WHERE code = ?")
-                .bind(&code_hash)
-                .fetch_one(&db)
-                .await
-                .unwrap();
-        assert_eq!(row.0, "atproto transition:generic");
+        assert_eq!(
+            stored_scope_for(&db, location).await,
+            "atproto transition:generic"
+        );
     }
 
     #[tokio::test]
-    async fn ac4_2_unresolvable_include_scope_redirects_invalid_scope() {
+    async fn unresolvable_include_scope_redirects_invalid_scope() {
         // No txt_resolver configured at all — the include: reference cannot resolve.
         let state = state_with_client_and_account_with_password(TEST_PASSWORD).await;
         let scope = "atproto include:app.bsky.authFull".to_string();
@@ -2440,7 +2114,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn ac4_3_get_consent_page_shows_expanded_permissions_for_include_scope() {
+    async fn get_consent_page_shows_expanded_permissions_for_include_scope() {
         let (state, _server) = state_with_include_authority(serde_json::json!([
             { "type": "permission", "resource": "identity", "attr": "handle" }
         ]))
@@ -2479,15 +2153,19 @@ mod tests {
 
     // ── Consent UI grouping + per-scope opt-out ──
 
-    async fn stored_scope_for(db: &sqlx::SqlitePool, location: &str) -> String {
-        let plaintext = location
+    /// Extract the plaintext authorization code from a `Location` redirect's `code=` query param.
+    fn code_from_location(location: &str) -> &str {
+        location
             .split("code=")
             .nth(1)
             .unwrap()
             .split('&')
             .next()
-            .unwrap();
-        let code_hash = hash_bearer_token(plaintext).unwrap();
+            .unwrap()
+    }
+
+    async fn stored_scope_for(db: &sqlx::SqlitePool, location: &str) -> String {
+        let code_hash = hash_bearer_token(code_from_location(location)).unwrap();
         let row: (String,) =
             sqlx::query_as("SELECT scope FROM oauth_authorization_codes WHERE code = ?")
                 .bind(&code_hash)
@@ -2498,7 +2176,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn ac5_1_consent_page_groups_permissions_by_resource_type() {
+    async fn consent_page_groups_permissions_by_resource_type() {
         let state = state_with_client().await;
         let mut params = par_params();
         params["scope"] = "atproto repo:app.bsky.feed.post identity:handle".into();
@@ -2525,7 +2203,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn ac5_2_unchecking_a_permission_excludes_it_from_the_granted_scope() {
+    async fn unchecking_a_permission_excludes_it_from_the_granted_scope() {
         let state = state_with_client_and_account_with_password(TEST_PASSWORD).await;
         let db = state.db.clone();
         // Only identity:handle is submitted as granted — repo:app.bsky.feed.post was unchecked.
@@ -2545,7 +2223,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn ac5_3_atproto_cannot_be_unchecked() {
+    async fn atproto_cannot_be_unchecked() {
         let state = state_with_client_and_account_with_password(TEST_PASSWORD).await;
         let db = state.db.clone();
         // No granted_scope submitted at all — everything unchecked. atproto must still grant.
@@ -2691,21 +2369,5 @@ mod tests {
             html.contains("com.example.app:"),
             "the rejection must name the required reverse-FQDN scheme"
         );
-    }
-
-    #[tokio::test]
-    async fn ac7_1_legacy_scope_without_include_is_unaffected() {
-        // No txt_resolver configured — if legacy scopes triggered any resolution attempt,
-        // this would fail. It must succeed exactly as it does without this feature.
-        let state = state_with_client_and_account_with_password(TEST_PASSWORD).await;
-        let resp = post_authorize(
-            state,
-            &approve_form_with_credentials(TEST_HANDLE, TEST_PASSWORD),
-        )
-        .await;
-        assert_eq!(resp.status(), StatusCode::SEE_OTHER);
-        let location = resp.headers().get("location").unwrap().to_str().unwrap();
-        assert!(location.contains("code="));
-        assert!(!location.contains("error="));
     }
 }

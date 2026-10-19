@@ -49,7 +49,7 @@ use crate::routes::notification_views::{
     require_notifications_enabled, sender_keys_response, validate_registration_fields,
     SenderKeysResponse,
 };
-use common::{ApiError, ErrorCode};
+use common::{ApiError, ApiResultExt, ErrorCode};
 
 // ── POST /v1/notifications/register ───────────────────────────────────────────
 
@@ -108,10 +108,10 @@ pub async fn register_notifications(
         payload.ping,
     )
     .await
-    .map_err(|e| {
-        tracing::error!(error = %e, "failed to store a notification registration");
-        ApiError::new(ErrorCode::InternalError, "failed to store the registration")
-    })?;
+    .or_internal_as(
+        "failed to store a notification registration",
+        "failed to store the registration",
+    )?;
 
     if let Some(sender) = state.notify_sender.as_ref() {
         sender.send(NotifyJob::RegisterHandle {
@@ -165,13 +165,10 @@ pub async fn unregister_notifications(
 
     let existed = store::delete_registration(&state.db, &user.did, &device_uuid)
         .await
-        .map_err(|e| {
-            tracing::error!(error = %e, "failed to delete a notification registration");
-            ApiError::new(
-                ErrorCode::InternalError,
-                "failed to delete the registration",
-            )
-        })?;
+        .or_internal_as(
+            "failed to delete a notification registration",
+            "failed to delete the registration",
+        )?;
 
     if let (Some(handle), Some(sender)) = (handle, state.notify_sender.as_ref()) {
         sender.send(NotifyJob::DropHandle { handle });
@@ -203,6 +200,7 @@ pub async fn get_sender_keys(
 mod tests {
     use super::*;
     use crate::app::app as build_router;
+    use crate::routes::test_utils::insert_account_with_email;
     use axum::body::Body;
     use axum::http::{Request, StatusCode};
     use serde_json::{json, Value};
@@ -222,14 +220,7 @@ mod tests {
     }
 
     async fn seed_account(state: &AppState, did: &str) {
-        sqlx::query(
-            "INSERT INTO accounts (did, email, password_hash, created_at, updated_at) \
-             VALUES (?, 'notif@example.com', 'hash', datetime('now'), datetime('now'))",
-        )
-        .bind(did)
-        .execute(&state.db)
-        .await
-        .expect("seed account");
+        insert_account_with_email(&state.db, did, "notif@example.com").await;
     }
 
     /// A full-access HS256 access token, the shape `authenticate_access` verifies.

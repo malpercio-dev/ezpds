@@ -118,7 +118,7 @@
 {#if sending}
   <div class="centered">
     <Spinner size={44} label="Sending verification email" />
-    <p class="status">Sending verification email…</p>
+    <p class="status u-status-text">Sending verification email…</p>
   </div>
 {:else if sendError}
   <OnboardingShell title="Email verification" subtitle="We couldn't send the verification email.">
@@ -153,12 +153,6 @@
     height: 100%;
     gap: var(--space-lg);
     padding: var(--space-xl);
-  }
-  .status {
-    font-size: var(--text-body);
-    color: var(--color-muted);
-    margin: 0;
-    text-align: center;
   }
   .error {
     font-size: var(--text-label);

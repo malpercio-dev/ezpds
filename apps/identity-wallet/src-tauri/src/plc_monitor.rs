@@ -949,7 +949,7 @@ mod tests {
         let (device_pub, device_priv) = setup_identity(did);
 
         let mock_server = MockServer::start();
-        let client = PdsClient::new_for_test(mock_server.base_url());
+        let client = crate::pds_client::new_for_test(mock_server.base_url());
         let monitor = PlcMonitor::new(&client);
 
         // Use a separate rotation key (rotationKeys[0]); device key signs as rotationKeys[1]
@@ -1077,7 +1077,7 @@ mod tests {
         ]);
 
         let mock_server = MockServer::start();
-        let client = PdsClient::new_for_test(mock_server.base_url());
+        let client = crate::pds_client::new_for_test(mock_server.base_url());
         let monitor = PlcMonitor::new(&client);
         mock_server.mock(|when, then| {
             when.method(GET).path(format!("/{did}/log/audit"));
@@ -1104,7 +1104,7 @@ mod tests {
         let (device_pub, _device_priv) = setup_identity(did);
 
         let mock_server = MockServer::start();
-        let client = PdsClient::new_for_test(mock_server.base_url());
+        let client = crate::pds_client::new_for_test(mock_server.base_url());
         let monitor = PlcMonitor::new(&client);
 
         // Sign the genesis op with a DIFFERENT key (not the device key)
@@ -1151,7 +1151,7 @@ mod tests {
         let (device_pub, _device_priv) = setup_identity(did);
 
         let mock_server = MockServer::start();
-        let client = PdsClient::new_for_test(mock_server.base_url());
+        let client = crate::pds_client::new_for_test(mock_server.base_url());
         let monitor = PlcMonitor::new(&client);
 
         let expected_timestamp = "2026-03-29T12:34:56.789Z";
@@ -1198,7 +1198,7 @@ mod tests {
         use httpmock::prelude::*;
 
         let mock_server = MockServer::start();
-        let client = PdsClient::new_for_test(mock_server.base_url());
+        let client = crate::pds_client::new_for_test(mock_server.base_url());
         let monitor = PlcMonitor::new(&client);
 
         let did = "did:plc:ac67net";
@@ -1226,7 +1226,7 @@ mod tests {
         let _ = setup_identity(did);
 
         let mock_server = MockServer::start();
-        let client = PdsClient::new_for_test(mock_server.base_url());
+        let client = crate::pds_client::new_for_test(mock_server.base_url());
         let monitor = PlcMonitor::new(&client);
 
         mock_server.mock(|when, then| {
@@ -1261,7 +1261,7 @@ mod tests {
         let _ = store.add_identity(did);
 
         let mock_server = MockServer::start();
-        let client = PdsClient::new_for_test(mock_server.base_url());
+        let client = crate::pds_client::new_for_test(mock_server.base_url());
         let monitor = PlcMonitor::new(&client);
 
         // Any audit-log fetch for this DID would land here. It must never be reached.
@@ -1290,7 +1290,7 @@ mod tests {
         let (bob_pub, bob_priv) = setup_identity(did_bob);
 
         let mock_server = MockServer::start();
-        let client = PdsClient::new_for_test(mock_server.base_url());
+        let client = crate::pds_client::new_for_test(mock_server.base_url());
         let monitor = PlcMonitor::new(&client);
 
         // Alice: genesis signed by alice's device key
@@ -1366,7 +1366,7 @@ mod tests {
         let (bob_pub, _bob_priv) = setup_identity(did_bob);
 
         let mock_server = MockServer::start();
-        let client = PdsClient::new_for_test(mock_server.base_url());
+        let client = crate::pds_client::new_for_test(mock_server.base_url());
         let monitor = PlcMonitor::new(&client);
 
         // Alice: genesis signed by alice's device key → authorized

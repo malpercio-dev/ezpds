@@ -17,7 +17,7 @@
     onback: () => void;
   } = $props();
 
-  // A did:web identity has no PLC machinery (ADR-0003): no rotation-key hierarchy, no public audit
+  // A did:web identity has no PLC machinery (ADR-0022): no rotation-key hierarchy, no public audit
   // log, no recovery window. We say so plainly rather than presenting the wallet's PLC-only
   // assurances (monitoring, recovery, the claim/Shamir ceremonies) as if they applied.
   let isWebDid = $derived(typeof didDoc.id === 'string' && isDidWeb(didDoc.id));
@@ -59,7 +59,7 @@
   }
 </script>
 
-<div class="screen">
+<div class="screen u-screen">
   <ScreenHeader title="DID document" onback={onback} backLabel="Back to manage identity" />
 
   {#if isWebDid}
@@ -82,13 +82,13 @@
   {/if}
 
   <div class="section">
-    <p class="label">Identifier</p>
+    <p class="label u-block-label">Identifier</p>
     <p class="mono">{didDoc.id ?? '—'}</p>
   </div>
 
   {#if alsoKnownAs.length > 0}
     <div class="section">
-      <p class="label">Also known as</p>
+      <p class="label u-block-label">Also known as</p>
       {#each alsoKnownAs as alias}
         <p class="mono">{alias}</p>
       {/each}
@@ -97,7 +97,7 @@
 
   {#if verificationMethods.length > 0}
     <div class="section">
-      <p class="label">Verification keys</p>
+      <p class="label u-block-label">Verification keys</p>
       {#each verificationMethods as method}
         <div class="card">
           <p class="card-type">{method.type ?? 'Unknown'}</p>
@@ -120,7 +120,7 @@
 
   {#if services.length > 0}
     <div class="section">
-      <p class="label">Services</p>
+      <p class="label u-block-label">Services</p>
       {#each services as svc}
         <div class="card">
           <p class="card-type">{svc.type ?? 'Unknown'}</p>
@@ -140,14 +140,6 @@
 </div>
 
 <style>
-  .screen {
-    display: flex;
-    flex-direction: column;
-    height: 100%;
-    padding: var(--space-lg) var(--space-md) var(--space-xl);
-    gap: var(--space-md);
-    overflow-y: auto;
-  }
   /* did:web explainer — informational, not an alarm: aubergine "reveal the machinery" tone,
      paired with an icon + text (never color alone) per the design brief. */
   .didweb {
@@ -159,8 +151,8 @@
     padding: var(--space-md);
   }
   .didweb-ic {
-    width: 34px;
-    height: 34px;
+    width: 34px; /* px-ok: one-off action-icon size */
+    height: 34px; /* px-ok: one-off action-icon size */
     border-radius: var(--radius-full);
     background: var(--color-bg);
     color: var(--color-accent);
@@ -191,7 +183,7 @@
     font-family: var(--font-mono);
     font-size: 0.92em;
     background: var(--color-surface-sunk);
-    padding: 1px 4px;
+    padding: 1px var(--space-xs);
     border-radius: var(--radius-sm);
   }
 
@@ -204,12 +196,7 @@
     flex-direction: column;
     gap: var(--space-sm);
   }
-  .label {
-    font-size: var(--text-label);
-    font-weight: var(--weight-semibold);
-    color: var(--color-muted);
-    margin: 0;
-  }
+
   .mono {
     font-family: var(--font-mono);
     font-size: var(--text-data);
@@ -250,7 +237,7 @@
     font-size: var(--text-data);
     color: var(--color-ink);
     background: var(--color-surface-sunk);
-    padding: 3px 6px;
+    padding: var(--space-2xs) var(--space-sm);
     border-radius: var(--radius-sm);
     flex: 1;
     min-width: 0;
@@ -261,7 +248,7 @@
     color: var(--color-ink);
     border: 1px solid var(--color-line);
     border-radius: var(--radius-sm);
-    padding: 5px 12px;
+    padding: var(--space-xs) var(--space-md);
     font-family: var(--font-sans);
     font-size: var(--text-label);
     font-weight: var(--weight-semibold);
@@ -274,7 +261,7 @@
     background: var(--color-surface);
     border: 1px solid var(--color-line);
     border-radius: var(--radius-md);
-    padding: 10px var(--space-md);
+    padding: var(--space-sm) var(--space-md);
     font-family: var(--font-sans);
     font-size: var(--text-label);
     font-weight: var(--weight-medium);

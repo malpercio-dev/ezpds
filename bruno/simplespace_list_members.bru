@@ -1,0 +1,31 @@
+meta {
+  name: Simplespace List Members
+  type: http
+  seq: 154
+}
+
+get {
+  url: {{baseUrl}}/xrpc/com.atproto.simplespace.listMembers?space=at://{{did}}/space/org.example.bucket/main&limit=100
+  body: none
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{accessToken}}
+}
+
+params:query {
+  space: at://{{did}}/space/org.example.bucket/main
+  limit: 100
+  ~cursor:
+}
+
+docs {
+  Page through a simplespace space's member list: { members: [{ did }], cursor? }, keyset
+  paged by DID ascending ("limit" 1..1000, default 100; the cursor is the last DID of a
+  full page, a short page ends the walk).
+
+  OAuth only — a space credential does not reach it, so a member hosted elsewhere cannot
+  enumerate the list — with a "space:…?action=read_self" grant, and the caller must be the
+  space's authority. Errors: 400 SpaceNotFound, 400 NotSpaceOwner, 403 InsufficientScope.
+}

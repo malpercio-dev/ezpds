@@ -23,15 +23,15 @@
   .skel {
     display: flex;
     align-items: center;
-    gap: 14px;
+    gap: var(--space-md);
     background: var(--color-bg);
     border: 1px solid var(--color-line);
     border-radius: var(--radius-xl);
     padding: var(--space-md);
   }
   .skel-seal {
-    width: 52px;
-    height: 52px;
+    width: var(--size-avatar-sm);
+    height: var(--size-avatar-sm);
     border-radius: var(--radius-full);
     background: var(--color-surface-sunk);
     flex-shrink: 0;
@@ -44,7 +44,7 @@
     flex: 1;
   }
   .skel-line {
-    height: 12px;
+    height: 12px; /* px-ok: one-off skeleton text-line height */
     border-radius: var(--radius-sm);
     background: var(--color-surface-sunk);
     animation: shimmer 1.4s ease-in-out infinite;

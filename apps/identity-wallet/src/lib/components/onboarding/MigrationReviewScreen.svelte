@@ -173,7 +173,7 @@
   <div class="content">
     <div class="hero">
       <h1 class="hero-title">Review the migration</h1>
-      <p class="hero-sub">This is the exact operation that will be signed and submitted to move your identity.</p>
+      <p class="hero-sub u-body-soft">This is the exact operation that will be signed and submitted to move your identity.</p>
     </div>
 
     {#if loading}
@@ -182,7 +182,7 @@
       </div>
     {:else if loadError}
       <div class="error-box" role="alert">
-        <p class="error-text">{loadError}</p>
+        <p class="error-text u-error-text">{loadError}</p>
         {#if loadErrorIsTerminal}
           <p class="error-sub">This can't be retried from here.</p>
         {/if}
@@ -191,8 +191,8 @@
         <Button onclick={loadOp}>Retry</Button>
       {/if}
     {:else if signedOp}
-      <div class="block">
-        <p class="block-label">This will</p>
+      <div class="block u-stack-sm">
+        <p class="block-label u-block-label">This will</p>
         {#if !hasChanges}
           <p class="no-changes">No key or service changes to apply.</p>
         {:else}
@@ -216,7 +216,7 @@
 
       {#if error}
         <div class="error-box" role="alert">
-          <p class="error-text">{error}</p>
+          <p class="error-text u-error-text">{error}</p>
           {#if errorIsTerminal}
             <p class="error-sub">This can't be retried from here.</p>
           {/if}
@@ -261,12 +261,6 @@
     color: var(--color-ink);
     margin: 0 0 var(--space-sm);
   }
-  .hero-sub {
-    font-size: var(--text-body);
-    line-height: var(--leading-body);
-    color: var(--color-ink-soft);
-    margin: 0;
-  }
 
   .centered {
     display: flex;
@@ -274,17 +268,6 @@
     padding: var(--space-xl) 0;
   }
 
-  .block {
-    display: flex;
-    flex-direction: column;
-    gap: var(--space-sm);
-  }
-  .block-label {
-    font-size: var(--text-label);
-    font-weight: var(--weight-semibold);
-    color: var(--color-muted);
-    margin: 0;
-  }
   .no-changes {
     font-size: var(--text-body);
     color: var(--color-muted);
@@ -296,12 +279,7 @@
     border-radius: var(--radius-md);
     padding: var(--space-sm) var(--space-md);
   }
-  .error-text {
-    font-size: var(--text-label);
-    color: var(--color-critical);
-    margin: 0;
-    line-height: 1.4;
-  }
+
   .error-sub {
     font-size: var(--text-label);
     color: var(--color-critical);

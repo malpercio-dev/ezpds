@@ -46,7 +46,7 @@ Decisions recorded in
 (sovereign child identities — keeps acts-as-you first-class and the self-host default) and
 [ADR-0024](../../docs/architecture/decisions/0024-hosted-agent-credential-forwarding.md)
 (the hosted tier forwards credentials, holds nothing durable). Full reasoning:
-[design plan §1](../../docs/design-plans/2026-07-14-hosted-custos-mcp.md) (the attribution ×
+[design plan §1](../../docs/archive/design-plans/2026-07-14-hosted-custos-mcp.md) (the attribution ×
 hosting matrix). For the hosted, sovereign-child sibling, see
 [`tools/mcp-sidecar/README.md`](../mcp-sidecar/README.md).
 
@@ -55,11 +55,25 @@ hosting matrix). For the hosted, sovereign-child sibling, see
 - **The agent acts as you.** Tools write to your real repository on whatever PDS you point
   this at. Point it at staging (or a local PDS) unless you mean it.
 - **Scopes are enforced server-side.** The default agent profile is
-  `atproto repo:*?action=create&action=update blob:*/*` — create/update posts and records,
-  upload blobs, read. No deletes, no account or identity operations. The PDS operator controls
-  this via `[agent_auth] granted_scopes`.
-- **Destructive tools are off by default.** `put_record`/`delete_record` are not even listed
-  unless you set `CUSTOS_MCP_ALLOW_DESTRUCTIVE=1` (and delete still needs a server-side grant).
+  `atproto repo:*?action=create&action=update repo:*?action=delete blob:*/*
+  rpc:*?aud=did:web:api.bsky.app` — create, edit, and delete records in your repo, upload
+  blobs, and read the AppView through the PDS proxy (feeds, post engagement, notifications).
+  No account or identity operations. The PDS operator controls this via
+  `[agent_auth] granted_scopes`. Delete is granted so an agent can retract its own mistaken
+  write; it does not widen the blast radius, since `action=update` already lets it overwrite a
+  record irreversibly. The `rpc:` grant is bound to the AppView audience — an operator running
+  a non-default AppView must restate it with their own `aud`, and chat/DM access
+  (`transition:chat.bsky`) is deliberately not in the profile.
+- **Destructive tools are off by default.** `put_record`/`delete_record` (and their space
+  siblings `space_put_record`/`space_delete_record`) are not even listed unless you set
+  `CUSTOS_MCP_ALLOW_DESTRUCTIVE=1`. The client-side gate and the server-side grant are
+  independent: a registration minted before delete joined the default profile still refuses
+  with 403 until it re-registers.
+- **Atproto Spaces tools need a `space:` grant.** `list_spaces`, `space_get_record`,
+  `space_list_records`, and `space_create_record` drive the user's permissioned space repos;
+  the default profile grants no `space:` scope, so each reports a clean refusal naming what
+  the operator must add to `[agent_auth] granted_scopes` (for example
+  `space:*?authority=*&collection=*` — a bare `space:*` confers reads but no write target).
 - **Revocation wins.** If the registration is revoked on the server, the next exchange fails
   and the MCP server stays down until a human explicitly re-onboards it (`custos-mcp reset`).
 
@@ -88,7 +102,7 @@ variables only:
 | `CUSTOS_MCP_EMAIL` | first run | Your account email on that PDS (`login_hint` for registration) |
 | `CUSTOS_MCP_AGENT_NAME` | no | Display name for the registration (default "Custos MCP") |
 | `CUSTOS_MCP_ALLOW_DESTRUCTIVE` | no | `1` lists `put_record`/`delete_record` |
-| `CUSTOS_MCP_IMAGE_DIR` | no | The one directory `create_post` may read image attachments from; unset = attachments disabled |
+| `CUSTOS_MCP_IMAGE_DIR` | no | The one directory `create_post`, `upload_blob` (by `path`), and `update_bluesky_profile` may read files from; unset = path-based uploads disabled (inline `data` uploads still work) |
 | `CUSTOS_MCP_STATE_DIR` | no | Credential-cache dir (default: OS state dir, e.g. `~/.local/state/custos-mcp`) |
 | `CUSTOS_MCP_PACE_MS` | no | Min gap between HTTP requests (default 150) |
 
@@ -134,22 +148,30 @@ If the code expires unconfirmed, restart the server for a fresh one.
 
 Credentials are cached per-PDS-host under the state dir, `0600`, and never appear in logs or
 tool responses. Access tokens are short-lived and re-minted from the identity assertion
-transparently; when the assertion itself expires (server default: 1 hour), a new claim
-ceremony is required.
+transparently, and every exchange also returns a renewed assertion the client persists (a
+sliding window — server default: 30 days for a claimed binding). A new claim ceremony is only
+needed after the agent has been completely inactive for a full assertion lifetime.
 
 ## Tools
 
 | Tool | What it does |
 |---|---|
 | `whoami` | Onboarding status, DID/handle, granted scopes; pending claim code if any |
-| `create_post` | `app.bsky.feed.post` via `createRecord` — text, reply refs, optional image via `uploadBlob` (only from `CUSTOS_MCP_IMAGE_DIR`) |
+| `create_post` | `app.bsky.feed.post` via `createRecord` — text, reply refs, optional image via `uploadBlob` (only from `CUSTOS_MCP_IMAGE_DIR`). URLs, `#hashtags`, and `@mentions` in the text become rich-text facets automatically; pass `facets` to override. `embed` takes an `app.bsky.embed.*` value verbatim — quote posts (`app.bsky.embed.record`, from a uri+cid `get_record` or `search_timeline` returned) and external link cards (`app.bsky.embed.external`); mutually exclusive with `image_path` |
+| `upload_blob` | Upload a blob and return its ref, for avatars, banners, or any other record field that takes a blob. Pass bytes inline as base64 (`data`: a data URL like `data:image/png;base64,…`, or bare base64 plus `mime_type`) — the remote-client path, works without `CUSTOS_MCP_IMAGE_DIR`, capped at 5 MiB decoded; or a `path` inside `CUSTOS_MCP_IMAGE_DIR` (MIME inferred from the extension for png/jpg/gif/webp). A blob no record references is eventually garbage-collected |
+| `update_bluesky_profile` | Update the Bluesky profile record `app.bsky.actor.profile` — display name, description, avatar, banner. Read-modify-write, so omitted fields keep their value and an empty string clears one; guarded with `swapRecord` against the CID just read, so a concurrent edit fails with `InvalidSwap` rather than overwriting. Set an image either by path (uploaded for you, from `CUSTOS_MCP_IMAGE_DIR`) or by a blob ref from `upload_blob` |
 | `get_record` / `list_records` | Read a repo by collection (defaults to the onboarded account) |
 | `search_timeline` | Timeline, or post search with `query` — proxied through the PDS to its AppView |
 | `account_status` | `checkAccountStatus`: activation, repo head, record/blob counts |
-| `put_record` / `delete_record` | Gated behind `CUSTOS_MCP_ALLOW_DESTRUCTIVE=1`; hidden otherwise |
+| `list_spaces` | Atproto Spaces: list the permissioned spaces the account's repo has written to, filterable by space type or authority DID (needs a `space:` grant) |
+| `space_get_record` / `space_list_records` | Read the account's records inside a permissioned space, addressed by a canonical space ref (needs a `space:` grant) |
+| `space_create_record` | Create a record in the account's repo inside a permissioned space (needs a `space:` grant covering create) |
+| `put_record` / `delete_record` | Gated behind `CUSTOS_MCP_ALLOW_DESTRUCTIVE=1`; hidden otherwise. `delete_record` is how an agent retracts its own mistaken write |
+| `space_put_record` / `space_delete_record` | Space siblings of `put_record`/`delete_record`, gated behind the same `CUSTOS_MCP_ALLOW_DESTRUCTIVE=1` (each also needs a `space:` grant covering the write) |
 
 Calls outside the granted scopes fail with the server's 403 relayed as a plain-language
-error naming the missing permission and the scopes the agent actually holds.
+error naming the missing permission and the scopes the agent actually holds. The `space:`
+grant the Spaces tools need is not in the default profile — see the Spaces ground rule above.
 
 ## Revocation
 

@@ -43,10 +43,18 @@ pub enum Request {
         enc: String,
         /// Base64url HPKE ciphertext.
         ct: String,
+        /// Accepted for wire compatibility but **not consulted** by the relay: the push
+        /// type dictates the APNs priority, so a caller cannot set it (see the `push`
+        /// handler in `service.rs` for why).
         #[serde(default)]
         priority: Option<u8>,
+        /// APNs expiration for this push. `None` lets the relay apply its default expiry
+        /// (`apns.rs`).
         #[serde(default)]
         ttl_secs: Option<u32>,
+        /// Metadata-minimizing ping mode: `Some(true)` sends a content-free
+        /// `content-available` background wake instead of the sealed envelope, so
+        /// `kid`/`enc`/`ct` carry nothing. Absent or `false` is a normal sealed push.
         #[serde(default)]
         ping: Option<bool>,
     },

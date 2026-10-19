@@ -33,6 +33,18 @@ use crate::app::AppState;
 ///   requires this to be `true` — clients are identified by a client-metadata-document URL
 ///   rather than pre-registration (resolved in `auth::oauth_client_resolution`).
 /// - `agent_auth`: advertises the auth.md agent-registration discovery surface.
+/// - `response_modes_supported`: states `query` and `fragment` explicitly rather than relying
+///   on the RFC 8414 default, so the metadata stays honest if the authorization endpoint's
+///   supported modes ever change.
+/// - `request_uri_parameter_supported` / `require_request_uri_registration` /
+///   `request_parameter_supported`: the three OpenID Connect Discovery `request`/`request_uri`
+///   capability fields, stated explicitly rather than left to their spec defaults — at least
+///   one real client (a Laravel atproto app) treats their absence as "legacy server without
+///   PAR" and silently downgrades. Only PAR-minted `request_uri` values are ever accepted
+///   (`require_request_uri_registration` is `true`, the only value the atproto profile
+///   permits), and JAR (RFC 9101) `request` objects are not accepted
+///   (`request_parameter_supported` is `false`, diverging from the reference provider's
+///   `true`).
 #[derive(Serialize)]
 struct OAuthServerMetadata {
     issuer: String,
@@ -43,9 +55,7 @@ struct OAuthServerMetadata {
     jwks_uri: String,
     scopes_supported: Vec<String>,
     response_types_supported: Vec<String>,
-    /// Explicit rather than relying on the RFC 8414 default (`["query", "fragment"]` when
-    /// absent): the authorization endpoint really answers in both modes, and stating it
-    /// keeps the metadata honest if that ever changes.
+    /// See the struct doc's `response_modes_supported` bullet.
     response_modes_supported: Vec<String>,
     grant_types_supported: Vec<String>,
     token_endpoint_auth_methods_supported: Vec<String>,
@@ -54,23 +64,11 @@ struct OAuthServerMetadata {
     code_challenge_methods_supported: Vec<String>,
     dpop_signing_alg_values_supported: Vec<String>,
     require_pushed_authorization_requests: bool,
-    /// Explicit rather than relying on the absent-field defaults (OpenID Connect Discovery §3
-    /// defines all three `request`/`request_uri` capability fields; `request_uri` support
-    /// defaults to `true` when absent): the reference provider emits all three, and at least
-    /// one real client (a Laravel atproto app) treats their *absence* as "legacy server
-    /// without PAR" and silently downgrades to a non-PAR authorization flow. Absence is
-    /// indistinguishable from incapability to such clients, so this seam states its
-    /// capabilities outright.
+    /// See the struct doc's `request_uri_parameter_supported` bullet.
     request_uri_parameter_supported: bool,
-    /// `true`: the only `request_uri` values the authorization endpoint accepts are the
-    /// PAR-minted `urn:ietf:params:oauth:request_uri:` ones — PAR *is* the registration.
-    /// The atproto OAuth profile also pins this field's *default* to `true` and forbids
-    /// `false`, so stating `true` is the only compliant explicit value.
+    /// See the struct doc's `require_request_uri_registration` bullet.
     require_request_uri_registration: bool,
-    /// `false`, diverging from the reference provider's `true`: this server does not accept
-    /// JAR (RFC 9101) `request` objects, and metadata must not advertise a capability the
-    /// endpoint would reject. OpenID Connect Discovery defaults this to `false` anyway;
-    /// stating it keeps the divergence from the reference visible and deliberate.
+    /// See the struct doc's `request_parameter_supported` bullet.
     request_parameter_supported: bool,
     authorization_response_iss_parameter_supported: bool,
     client_id_metadata_document_supported: bool,
@@ -86,6 +84,11 @@ struct AgentAuthMetadata {
     identity_types_supported: Vec<String>,
     identity_assertion: IdentityAssertionMetadata,
     events_supported: Vec<String>,
+    /// This server can end a claim ceremony by minting the agent an account of its own (a
+    /// `child` registration) instead of binding it to the confirming user's account. Advertised
+    /// statically, like `identity_types_supported`: whether any given ceremony takes that arm is
+    /// the confirming human's choice, not a server capability that comes and goes.
+    child_provisioning: bool,
 }
 
 #[derive(Serialize)]
@@ -94,7 +97,7 @@ struct IdentityAssertionMetadata {
 }
 
 pub async fn oauth_server_metadata(State(state): State<AppState>) -> impl IntoResponse {
-    let base = state.config.public_url.trim_end_matches('/');
+    let base = state.config.issuer();
     Json(OAuthServerMetadata {
         issuer: base.to_string(),
         authorization_endpoint: format!("{base}/oauth/authorize"),
@@ -147,21 +150,21 @@ pub async fn oauth_server_metadata(State(state): State<AppState>) -> impl IntoRe
                 ],
             },
             events_supported: vec![crate::auth::issuer_trust::REVOKED_EVENT_TYPE.to_string()],
+            child_provisioning: true,
         },
     })
 }
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
-
     use axum::{
         body::Body,
         http::{Request, StatusCode},
     };
     use tower::ServiceExt;
 
-    use crate::app::{app, test_state, AppState};
+    use crate::app::{app, test_state};
+    use crate::routes::test_utils;
 
     async fn metadata_json() -> serde_json::Value {
         let response = app(test_state().await)
@@ -180,281 +183,70 @@ mod tests {
         serde_json::from_slice(&body).unwrap()
     }
 
+    /// Every field the handler emits, in one whole-document assertion. See `OAuthServerMetadata`'s
+    /// struct doc for why each field holds the value it does.
+    ///
+    /// `scopes_supported` is asserted against `auth::oauth_scopes::supported_scopes()`, the same
+    /// source the handler reads, rather than a second hand-typed copy of the list that would
+    /// have to be edited in lockstep.
     #[tokio::test]
-    async fn returns_200_with_json_content_type() {
-        let response = app(test_state().await)
-            .oneshot(
-                Request::builder()
-                    .uri("/.well-known/oauth-authorization-server")
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-
-        assert_eq!(response.status(), StatusCode::OK);
-        assert_eq!(
-            response.headers().get("content-type").unwrap(),
-            "application/json"
-        );
-    }
-
-    #[tokio::test]
-    async fn accessible_without_auth_headers() {
-        // Lock in that the discovery endpoint requires no credentials.
-        // A future global auth middleware must not inadvertently protect this route.
-        let response = app(test_state().await)
-            .oneshot(
-                Request::builder()
-                    .uri("/.well-known/oauth-authorization-server")
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(response.status(), StatusCode::OK);
-    }
-
-    #[tokio::test]
-    async fn issuer_matches_public_url() {
+    async fn metadata_document_matches_expected_shape() {
         let json = metadata_json().await;
-        assert_eq!(json["issuer"], "https://test.example.com");
-    }
-
-    #[tokio::test]
-    async fn endpoints_use_public_url_as_base() {
-        let json = metadata_json().await;
-        assert_eq!(
-            json["authorization_endpoint"],
-            "https://test.example.com/oauth/authorize"
-        );
-        assert_eq!(
-            json["token_endpoint"],
-            "https://test.example.com/oauth/token"
-        );
-        assert_eq!(
-            json["pushed_authorization_request_endpoint"],
-            "https://test.example.com/oauth/par"
-        );
-        assert_eq!(json["jwks_uri"], "https://test.example.com/oauth/jwks");
-    }
-
-    #[tokio::test]
-    async fn advertises_revocation_endpoint_and_auth_methods() {
-        let json = metadata_json().await;
-        assert_eq!(
-            json["revocation_endpoint"], "https://test.example.com/oauth/revoke",
-            "RFC 8414 revocation_endpoint must point at /oauth/revoke"
-        );
-        let methods: Vec<&str> = json["revocation_endpoint_auth_methods_supported"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .map(|v| v.as_str().unwrap())
+        let scopes_supported: Vec<String> = crate::auth::oauth_scopes::supported_scopes()
+            .into_iter()
+            .map(String::from)
             .collect();
-        assert!(methods.contains(&"none"), "must support public clients");
-        assert!(methods.contains(&"private_key_jwt"));
-    }
-
-    #[tokio::test]
-    async fn scopes_supported_reflects_the_full_granular_scope_grammar() {
-        // Locks the discovery contract: the fixed/transition scopes plus a declarative
-        // summary of each granular resource-type prefix.
-        // Each prefix accepts further positional/query parameters per oauth_scopes.rs's
-        // grammar — this list summarizes the supported surface, it doesn't enumerate the
-        // (unbounded) space of concrete grantable scopes.
-        let json = metadata_json().await;
         assert_eq!(
-            json["scopes_supported"],
-            serde_json::json!([
-                "atproto",
-                "transition:email",
-                "transition:generic",
-                "transition:chat.bsky",
-                "repo:*",
-                "rpc:*",
-                "blob:*/*",
-                "account:*",
-                "identity:*",
-                "include:*"
-            ])
+            json,
+            serde_json::json!({
+                "issuer": "https://test.example.com",
+                "authorization_endpoint": "https://test.example.com/oauth/authorize",
+                "token_endpoint": "https://test.example.com/oauth/token",
+                "revocation_endpoint": "https://test.example.com/oauth/revoke",
+                "pushed_authorization_request_endpoint": "https://test.example.com/oauth/par",
+                "jwks_uri": "https://test.example.com/oauth/jwks",
+                "scopes_supported": scopes_supported,
+                "response_types_supported": ["code"],
+                "response_modes_supported": ["query", "fragment"],
+                "grant_types_supported": [
+                    "authorization_code",
+                    "refresh_token",
+                    "urn:ietf:params:oauth:grant-type:jwt-bearer",
+                    "urn:workos:agent-auth:grant-type:claim"
+                ],
+                "token_endpoint_auth_methods_supported": ["none", "private_key_jwt"],
+                "token_endpoint_auth_signing_alg_values_supported": ["ES256"],
+                "revocation_endpoint_auth_methods_supported": ["none", "private_key_jwt"],
+                "code_challenge_methods_supported": ["S256"],
+                "dpop_signing_alg_values_supported": ["ES256"],
+                "require_pushed_authorization_requests": true,
+                "request_uri_parameter_supported": true,
+                "require_request_uri_registration": true,
+                "request_parameter_supported": false,
+                "authorization_response_iss_parameter_supported": true,
+                "client_id_metadata_document_supported": true,
+                "agent_auth": {
+                    "skill": "https://test.example.com/auth.md",
+                    "identity_endpoint": "https://test.example.com/agent/identity",
+                    "claim_endpoint": "https://test.example.com/agent/identity/claim",
+                    "events_endpoint": "https://test.example.com/agent/event/notify",
+                    "identity_types_supported": ["anonymous", "identity_assertion", "service_auth"],
+                    "identity_assertion": {
+                        "assertion_types_supported": ["urn:ietf:params:oauth:token-type:id-jag"]
+                    },
+                    "events_supported": [
+                        "https://schemas.workos.com/events/agent/auth/identity/assertion/revoked"
+                    ],
+                    "child_provisioning": true
+                }
+            })
         );
-    }
-
-    #[tokio::test]
-    async fn response_types_is_exactly_code() {
-        let json = metadata_json().await;
-        assert_eq!(
-            json["response_types_supported"],
-            serde_json::json!(["code"])
-        );
-    }
-
-    #[tokio::test]
-    async fn grant_types_include_authorization_code_refresh_token_and_agent_auth_grants() {
-        let json = metadata_json().await;
-        let grants = json["grant_types_supported"].as_array().unwrap();
-        assert!(grants.iter().any(|v| v == "authorization_code"));
-        assert!(grants.iter().any(|v| v == "refresh_token"));
-        assert!(grants
-            .iter()
-            .any(|v| v == "urn:ietf:params:oauth:grant-type:jwt-bearer"));
-        assert!(grants
-            .iter()
-            .any(|v| v == "urn:workos:agent-auth:grant-type:claim"));
-    }
-
-    #[tokio::test]
-    async fn agent_auth_advertises_agent_endpoints_from_public_url() {
-        let json = metadata_json().await;
-        assert_eq!(
-            json["agent_auth"]["skill"],
-            "https://test.example.com/auth.md"
-        );
-        assert_eq!(
-            json["agent_auth"]["identity_endpoint"],
-            "https://test.example.com/agent/identity"
-        );
-        assert_eq!(
-            json["agent_auth"]["claim_endpoint"],
-            "https://test.example.com/agent/identity/claim"
-        );
-        assert_eq!(
-            json["agent_auth"]["events_endpoint"],
-            "https://test.example.com/agent/event/notify"
-        );
-    }
-
-    #[tokio::test]
-    async fn agent_auth_advertises_supported_identity_types_assertions_and_events() {
-        let json = metadata_json().await;
-        assert_eq!(
-            json["agent_auth"]["identity_types_supported"],
-            serde_json::json!(["anonymous", "identity_assertion", "service_auth"])
-        );
-        assert_eq!(
-            json["agent_auth"]["identity_assertion"]["assertion_types_supported"],
-            serde_json::json!(["urn:ietf:params:oauth:token-type:id-jag"])
-        );
-        assert_eq!(
-            json["agent_auth"]["events_supported"],
-            serde_json::json!([
-                "https://schemas.workos.com/events/agent/auth/identity/assertion/revoked"
-            ])
-        );
-    }
-
-    #[tokio::test]
-    async fn token_endpoint_auth_methods_are_none_and_private_key_jwt() {
-        let json = metadata_json().await;
-        let methods: Vec<&str> = json["token_endpoint_auth_methods_supported"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .map(|v| v.as_str().unwrap())
-            .collect();
-        assert!(methods.contains(&"none"), "must support public clients");
-        assert!(
-            methods.contains(&"private_key_jwt"),
-            "must support private_key_jwt per AT Protocol OAuth spec §1.2"
-        );
-    }
-
-    #[tokio::test]
-    async fn token_endpoint_auth_signing_alg_includes_es256() {
-        // A server advertising `private_key_jwt` must also advertise the JWS algs it accepts
-        // for the client assertion; the atproto OAuth metadata validator rejects the server
-        // (e.g. tangled.org login) with "token_endpoint_auth_signing_alg_values_supported must
-        // include 'ES256'" if this field is absent or omits ES256.
-        let json = metadata_json().await;
-        assert!(
-            json["token_endpoint_auth_signing_alg_values_supported"]
-                .as_array()
-                .unwrap()
-                .iter()
-                .any(|v| v == "ES256"),
-            "must include ES256 when private_key_jwt is a supported token-endpoint auth method"
-        );
-    }
-
-    #[tokio::test]
-    async fn dpop_signing_alg_includes_es256() {
-        let json = metadata_json().await;
-        assert!(json["dpop_signing_alg_values_supported"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .any(|v| v == "ES256"));
-    }
-
-    #[tokio::test]
-    async fn pkce_method_is_exactly_s256() {
-        // AT Protocol OAuth prohibits plain — assert the exact set, not just contains.
-        let json = metadata_json().await;
-        assert_eq!(
-            json["code_challenge_methods_supported"],
-            serde_json::json!(["S256"])
-        );
-    }
-
-    #[tokio::test]
-    async fn response_modes_are_query_and_fragment() {
-        // Stated explicitly rather than leaning on the RFC 8414 absent-field default; the
-        // authorization endpoint answers in both modes (fragment is the
-        // @atproto/oauth-client-browser default).
-        let json = metadata_json().await;
-        assert_eq!(
-            json["response_modes_supported"],
-            serde_json::json!(["query", "fragment"])
-        );
-    }
-
-    #[tokio::test]
-    async fn par_is_required() {
-        let json = metadata_json().await;
-        assert_eq!(json["require_pushed_authorization_requests"], true);
-    }
-
-    #[tokio::test]
-    async fn request_uri_capability_fields_are_explicit() {
-        // OpenID Connect Discovery §3 gives all three fields defaults when absent, but real
-        // clients gate their PAR flow on the fields' *presence*: a Laravel atproto client
-        // observed in production read our field-less metadata as "legacy server", downgraded
-        // to a non-PAR authorization flow, and its callback half then failed before ever
-        // reaching the token endpoint. The keys must exist, not merely default.
-        let json = metadata_json().await;
-        assert_eq!(json["request_uri_parameter_supported"], true);
-        assert_eq!(json["require_request_uri_registration"], true);
-        // Deliberately false: JAR (RFC 9101) request objects are not accepted, and the
-        // metadata must not claim otherwise even though the reference provider says true.
-        assert_eq!(json["request_parameter_supported"], false);
-    }
-
-    #[tokio::test]
-    async fn authorization_response_iss_parameter_is_supported() {
-        // The atproto OAuth metadata validator requires this to be true; the authorization
-        // endpoint returns the RFC 9207 `iss` parameter to back the claim.
-        let json = metadata_json().await;
-        assert_eq!(json["authorization_response_iss_parameter_supported"], true);
-    }
-
-    #[tokio::test]
-    async fn client_id_metadata_document_is_supported() {
-        // The atproto OAuth metadata validator requires this to be true — clients are
-        // identified by a client-metadata-document URL rather than pre-registration.
-        let json = metadata_json().await;
-        assert_eq!(json["client_id_metadata_document_supported"], true);
     }
 
     #[tokio::test]
     async fn trailing_slash_in_public_url_does_not_double_slash_endpoints() {
-        let base = test_state().await;
-        let mut config = (*base.config).clone();
-        config.public_url = "https://pds.example.com/".to_string();
-        let state = AppState {
-            config: Arc::new(config),
-            ..base
-        };
+        let state =
+            test_utils::state_with(|c| c.public_url = "https://pds.example.com/".to_string()).await;
 
         let response = app(state)
             .oneshot(

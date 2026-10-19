@@ -9,11 +9,13 @@
 import {
   DEFAULT_PDS_URL,
   emptyWalletState,
+  fakePlcDid,
   seedAgent,
   seedAlert,
   seedAppPassword,
   seedIdentity,
   upsertIdentity,
+  HARNESS_AGENT_SCOPES,
   type WalletState,
 } from './state';
 
@@ -32,13 +34,16 @@ export type ScenarioName =
   | 'alert-multi'
   | 'migration-in-flight'
   | 'agent-connected'
+  | 'agent-accounts-unprovisioned'
+  | 'agent-child-mint'
+  | 'agent-children'
+  | 'agent-children-recovered'
   | 'app-password-minted'
   | 'device-key-unusable'
   | 'notifications-unverified'
   | 'rekey-eligible'
   | 'rekey-mixed'
   | 'self-held-kit'
-  | 'self-held-kit-escrow-host'
   | 'recover-escrow'
   | 'recover-sovereign'
   | 'recover-wrong-set'
@@ -237,6 +242,157 @@ export const scenarios: Record<ScenarioName, () => WalletState> = {
     return state;
   },
 
+  // The cooperative mint, ready to drive: a provisioned identity, plus one child already
+  // holding `scribe.harness.pds.local`. Approve an agent with a code starting with "CHILD"
+  // (e.g. CHILD1) — the preview comes back anonymous with that same handle proposed, so
+  // accepting the agent's proposal reproduces the taken-handle rejection and any other handle
+  // mints. Deliberately the agent's *own* proposal that collides: the wallet must never treat
+  // the hint as settled.
+  'agent-child-mint': () => {
+    const state = emptyWalletState();
+    state.pdsUrl = DEFAULT_PDS_URL;
+    const identity = seedIdentity({ handle: 'alice.harness.pds.local' });
+    identity.children = [
+      {
+        registrationId: 'reg-CHILD0',
+        did: fakePlcDid(`${identity.did}:child:0`),
+        handle: 'scribe.harness.pds.local',
+        status: 'claimed',
+        createdAt: '2026-07-15T12:00:00.000Z',
+        scopes: [...HARNESS_AGENT_SCOPES],
+        audit: [],
+      },
+    ];
+    identity.childIndex = identity.children.length;
+    upsertIdentity(state, identity);
+    return state;
+  },
+
+  // The parent console with every child state on screen at once: one live (renew / revoke /
+  // delete all reachable), one already revoked (renewal must refuse — revocation is one-way),
+  // and one counting down to permanent removal. The live child carries an audit trail read
+  // through the /v1/agents parent arm, so the detail screen's activity record is populated.
+  'agent-children': () => {
+    const state = emptyWalletState();
+    state.pdsUrl = DEFAULT_PDS_URL;
+    const identity = seedIdentity({ handle: 'alice.harness.pds.local' });
+    const now = '2026-07-15T12:00:00.000Z';
+    const childDid = (i: number) => fakePlcDid(`${identity.did}:child:${i}`);
+    identity.children = [
+      {
+        registrationId: 'reg-CHILD0',
+        did: childDid(0),
+        handle: 'scribe.harness.pds.local',
+        status: 'claimed',
+        createdAt: now,
+        scopes: [...HARNESS_AGENT_SCOPES],
+        audit: [
+          { id: 'ev-child0-1', eventType: 'claim_confirmed', did: childDid(0), createdAt: now },
+          { id: 'ev-child0-2', eventType: 'token_exchanged', createdAt: now, detail: { grant: 'claim' } },
+          {
+            id: 'ev-child0-3',
+            eventType: 'repo_write',
+            did: childDid(0),
+            createdAt: now,
+            detail: { creates: 2, collections: ['app.bsky.feed.post'] },
+          },
+        ],
+      },
+      {
+        registrationId: 'reg-CHILD1',
+        did: childDid(1),
+        handle: 'archivist.harness.pds.local',
+        status: 'revoked',
+        createdAt: now,
+        scopes: ['atproto', 'repo:*?action=create&action=update'],
+        audit: [
+          { id: 'ev-child1-1', eventType: 'claim_confirmed', did: childDid(1), createdAt: now },
+          { id: 'ev-child1-2', eventType: 'revoked', did: identity.did, createdAt: now },
+        ],
+      },
+      {
+        registrationId: 'reg-CHILD2',
+        did: childDid(2),
+        handle: 'retired.harness.pds.local',
+        status: 'revoked',
+        createdAt: now,
+        scopes: [],
+        deleteAfter: isoInDays(7),
+        audit: [{ id: 'ev-child2-1', eventType: 'revoked', did: identity.did, createdAt: now }],
+      },
+    ];
+    // This is the device that minted them, so its counter already clears the list and the
+    // recovery epilogue has nothing to report.
+    identity.childIndex = identity.children.length;
+    upsertIdentity(state, identity);
+    return state;
+  },
+
+  // A restored device meeting its children again: the delegation seed came back with the
+  // recovery seed, but the child counter did not, so the recovery epilogue runs against the
+  // server's list. One child re-derives, one names a rotation key this seed cannot reproduce
+  // (unrecoverable, the finding that must never be silent), and one cannot be checked at all
+  // because plc.directory refused — a different sentence, not a softer one.
+  'agent-children-recovered': () => {
+    const state = emptyWalletState();
+    state.pdsUrl = DEFAULT_PDS_URL;
+    const identity = seedIdentity({ handle: 'alice.harness.pds.local' });
+    const now = '2026-07-15T12:00:00.000Z';
+    const childDid = (i: number) => fakePlcDid(`${identity.did}:child:${i}`);
+    identity.children = [
+      {
+        registrationId: 'reg-CHILD0',
+        did: childDid(0),
+        handle: 'scribe.harness.pds.local',
+        status: 'claimed',
+        createdAt: now,
+        scopes: [...HARNESS_AGENT_SCOPES],
+        audit: [{ id: 'ev-r0', eventType: 'claim_confirmed', did: childDid(0), createdAt: now }],
+      },
+      {
+        registrationId: 'reg-CHILD1',
+        did: childDid(1),
+        handle: 'archivist.harness.pds.local',
+        status: 'claimed',
+        createdAt: now,
+        scopes: [...HARNESS_AGENT_SCOPES],
+        recoveryKey: 'lost',
+        audit: [{ id: 'ev-r1', eventType: 'claim_confirmed', did: childDid(1), createdAt: now }],
+      },
+      {
+        registrationId: 'reg-CHILD2',
+        did: childDid(2),
+        handle: 'courier.harness.pds.local',
+        status: 'claimed',
+        createdAt: now,
+        scopes: [...HARNESS_AGENT_SCOPES],
+        recoveryKey: 'unreachable',
+        audit: [{ id: 'ev-r2', eventType: 'claim_confirmed', did: childDid(2), createdAt: now }],
+      },
+    ];
+    // The counter a restore does not bring back: behind the list, which is what puts the
+    // epilogue in play.
+    identity.childIndex = 0;
+    upsertIdentity(state, identity);
+    return state;
+  },
+
+  // An identity created before agent accounts existed: no delegation seed, so My Agents
+  // offers "Enable agent accounts" and the child-mint path must refuse to start. Share 1
+  // is in iCloud and escrow releases instantly, so the provisioning ceremony is drivable
+  // end to end (enter the code, verify, provisioned).
+  'agent-accounts-unprovisioned': () => {
+    const state = emptyWalletState();
+    state.pdsUrl = DEFAULT_PDS_URL;
+    state.recovery.share1Present = true;
+    state.recovery.escrow.delaySecs = 0;
+    upsertIdentity(
+      state,
+      seedIdentity({ handle: 'alice.harness.pds.local', agentAccountsProvisioned: false })
+    );
+    return state;
+  },
+
   // Happy path A (escrow-assisted): Share 1 in iCloud, escrow releases the moment
   // the emailed code is entered (zero-delay server config).
   'recover-escrow': () => {
@@ -390,25 +546,6 @@ export const scenarios: Record<ScenarioName, () => WalletState> = {
     upsertIdentity(state, identity);
     return state;
   },
-
-  /**
-   * The same identity after the kit, now hosted somewhere that DOES advertise escrow — the
-   * upsell seam's only true state. `self_held_kit_escrow_offer_cmd` answers true here and
-   * false everywhere else, and "Add a recovery key" is withheld (there is nothing to add).
-   */
-  'self-held-kit-escrow-host': () => {
-    const state = emptyWalletState();
-    state.pdsUrl = DEFAULT_PDS_URL;
-    state.pdsCapabilities = {
-      version: '0.8.5',
-      reached: true,
-      capabilities: ['createCeremony', 'escrow', 'sovereignSessions'],
-    };
-    const identity = seedIdentity({ handle: 'alice.harness.pds.local', recoveryKey: true });
-    identity.selfHeldKitInstalled = true;
-    upsertIdentity(state, identity);
-    return state;
-  },
 };
 
 /** Whether a string names a known scenario. */
@@ -454,4 +591,12 @@ function alertScenario(hoursAgo: number): WalletState {
 
 function isoHoursAgo(hours: number): string {
   return new Date(Date.now() - hours * 3600_000).toISOString();
+}
+
+/**
+ * A future ISO timestamp, off the live clock. Pinning a purge deadline to a literal would land
+ * it in the past and render the child as already-removed rather than counting down.
+ */
+function isoInDays(days: number): string {
+  return new Date(Date.now() + days * 86_400_000).toISOString();
 }

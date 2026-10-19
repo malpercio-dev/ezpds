@@ -25,7 +25,7 @@
 //! (`LabelDiff::new_flags` — never a `cts` refresh) is collected across every labeler and
 //! sent as ONE batched `notify_admin_devices` push per pass. A labeler's first completed
 //! reconcile is its *seeding* pass — the backfill of labels that were in force before this
-//! instance started watching — and fires nothing; the `labels_seeded` marker (V065) is what
+//! instance started watching — and fires nothing; the `labels_seeded` marker (V072) is what
 //! makes that suppression survive restarts and follow the labeler out of the config.
 
 use std::time::Duration;
@@ -323,23 +323,12 @@ struct QueryLabelsPage {
 mod tests {
     use super::*;
     use crate::app::test_state;
+    use crate::db::accounts::insert_bare_account as insert_account;
     use serde_json::json;
     use wiremock::matchers::{method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
     const LABELER: &str = "did:plc:testlabeler";
-
-    async fn insert_account(db: &sqlx::SqlitePool, did: &str) {
-        sqlx::query(
-            "INSERT INTO accounts (did, email, password_hash, created_at, updated_at) \
-             VALUES (?, ?, NULL, datetime('now'), datetime('now'))",
-        )
-        .bind(did)
-        .bind(format!("{did}@example.com"))
-        .execute(db)
-        .await
-        .unwrap();
-    }
 
     /// Point the labeler DID's cached document at a mock labeler service.
     async fn seed_labeler_doc(db: &sqlx::SqlitePool, endpoint: &str) {

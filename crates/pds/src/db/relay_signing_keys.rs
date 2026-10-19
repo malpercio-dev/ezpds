@@ -5,7 +5,7 @@
 //! `insert_signing_key` persists a freshly minted one, backing `GET`/`POST /v1/pds/keys`
 //! (deprecated `/v1/relay/keys` aliases). Plain data out; no business logic.
 
-use common::{ApiError, ErrorCode};
+use common::{ApiError, ApiResultExt, ErrorCode};
 
 /// A stored operator signing key's public fields.
 pub struct RelaySigningKey {
@@ -26,10 +26,10 @@ pub async fn latest_signing_key(
     )
     .fetch_optional(db)
     .await
-    .map_err(|e| {
-        tracing::error!(error = %e, "failed to query pds signing key");
-        ApiError::new(ErrorCode::InternalError, "failed to query signing key")
-    })?;
+    .or_internal_as(
+        "failed to query pds signing key",
+        "failed to query signing key",
+    )?;
 
     Ok(row.map(|(id, public_key, algorithm)| RelaySigningKey {
         id,

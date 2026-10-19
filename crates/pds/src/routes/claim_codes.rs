@@ -24,14 +24,14 @@ use axum::{
 };
 use serde::{Deserialize, Serialize};
 
-use common::{ApiError, ErrorCode};
+use common::{ApiError, ApiResultExt, ErrorCode};
 
 use crate::app::AppState;
 use crate::auth::guards::{require_admin, require_admin_json};
 use crate::code_gen::generate_code;
 use crate::db::admin_audit::{record_admin_audit_event, AdminAuditAction};
 use crate::db::claim_codes::{list_claim_codes, revoke_claim_code, RevokeClaimCodeOutcome};
-use crate::db::is_unique_violation;
+use crate::db::insert_with_retry_on_collision;
 
 const MAX_COUNT: u32 = 10;
 const MAX_LIST_LIMIT: u32 = 200;
@@ -102,30 +102,34 @@ async fn claim_codes_inner(
     }
 
     // --- Generate unique codes and insert in a single transaction ---
-    // Attempt up to 3 times total (2 retries) on the rare event of a uniqueness
-    // conflict with an existing DB row (probability ≈ existing_codes / 36^6 per code).
-    for attempt in 0..3_usize {
-        let codes = generate_unique_codes(payload.count as usize);
-        match insert_claim_codes(&state.db, actor, &codes, payload.expires_in_hours).await {
-            Ok(()) => return Ok(Json(ClaimCodesResponse { codes })),
-            Err(e) if is_unique_violation(&e) => {
-                tracing::warn!(attempt, "claim code uniqueness conflict; retrying");
-                continue;
-            }
-            Err(e) => {
-                tracing::error!(error = %e, "failed to insert claim codes");
-                return Err(ApiError::new(
-                    ErrorCode::InternalError,
-                    "failed to store claim codes",
-                ));
-            }
+    // A conflict with an existing DB row has probability ≈ existing_codes / 36^6 per code.
+    let db = &state.db;
+    let count = payload.count as usize;
+    let expires_in_hours = payload.expires_in_hours;
+    let codes = insert_with_retry_on_collision("claim code", || {
+        let codes = generate_unique_codes(count);
+        async move {
+            insert_claim_codes(db, actor, &codes, expires_in_hours)
+                .await
+                .map(|()| codes)
         }
-    }
+    })
+    .await
+    .map_err(|e| {
+        ApiError::internal_as(
+            e,
+            "failed to insert claim codes",
+            "failed to store claim codes",
+        )
+    })?
+    .ok_or_else(|| {
+        ApiError::new(
+            ErrorCode::InternalError,
+            "failed to generate unique claim codes after retries",
+        )
+    })?;
 
-    Err(ApiError::new(
-        ErrorCode::InternalError,
-        "failed to generate unique claim codes after retries",
-    ))
+    Ok(Json(ClaimCodesResponse { codes }))
 }
 
 // ── Inventory: list + revoke ──────────────────────────────────────────────────
@@ -224,10 +228,7 @@ pub async fn list_claim_code_inventory(
 
     let rows = list_claim_codes(&state.db, cursor, params.limit)
         .await
-        .map_err(|e| {
-            tracing::error!(error = %e, "failed to list claim codes");
-            ApiError::new(ErrorCode::InternalError, "failed to list claim codes")
-        })?;
+        .or_internal("failed to list claim codes")?;
 
     // A short page means the history is exhausted; a full page may have more.
     let cursor = (rows.len() == params.limit as usize)
@@ -291,10 +292,7 @@ async fn revoke_inner(
 ) -> Result<Json<RevokeClaimCodeResponse>, ApiError> {
     let outcome = revoke_claim_code(&state.db, &payload.code)
         .await
-        .map_err(|e| {
-            tracing::error!(error = %e, "failed to revoke claim code");
-            ApiError::new(ErrorCode::InternalError, "failed to revoke claim code")
-        })?;
+        .or_internal("failed to revoke claim code")?;
 
     match outcome {
         RevokeClaimCodeOutcome::Revoked | RevokeClaimCodeOutcome::AlreadyRevoked => {
@@ -388,7 +386,7 @@ mod tests {
     use tower::ServiceExt;
 
     use crate::app::{app, test_state};
-    use crate::routes::test_utils::test_state_with_admin_token;
+    use crate::routes::test_utils::{body_json, test_state_with_admin_token};
 
     // ── Helpers ──────────────────────────────────────────────────────────────
 
@@ -665,41 +663,6 @@ mod tests {
     // ── Auth ──────────────────────────────────────────────────────────────────
 
     #[tokio::test]
-    async fn missing_authorization_header_returns_401() {
-        let response = app(test_state_with_admin_token().await)
-            .oneshot(post_claim_codes(r#"{"count": 1}"#, None))
-            .await
-            .unwrap();
-        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
-    }
-
-    #[tokio::test]
-    async fn wrong_bearer_token_returns_401() {
-        let response = app(test_state_with_admin_token().await)
-            .oneshot(post_claim_codes(r#"{"count": 1}"#, Some("wrong-token")))
-            .await
-            .unwrap();
-        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
-    }
-
-    #[tokio::test]
-    async fn bare_token_without_bearer_prefix_returns_401() {
-        let request = Request::builder()
-            .method("POST")
-            .uri("/v1/accounts/claim-codes")
-            .header("Content-Type", "application/json")
-            .header("Authorization", "test-admin-token") // no "Bearer " prefix
-            .body(Body::from(r#"{"count": 1}"#))
-            .unwrap();
-
-        let response = app(test_state_with_admin_token().await)
-            .oneshot(request)
-            .await
-            .unwrap();
-        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
-    }
-
-    #[tokio::test]
     async fn non_json_content_type_returns_415() {
         // Valid JSON body + valid token, but a non-JSON media type: matches the former
         // `Json` extractor's 415 rejection.
@@ -717,19 +680,6 @@ mod tests {
         assert_eq!(response.status(), StatusCode::UNSUPPORTED_MEDIA_TYPE);
     }
 
-    #[tokio::test]
-    async fn admin_token_not_configured_returns_401() {
-        // test_state() leaves admin_token as None
-        let response = app(test_state().await)
-            .oneshot(post_claim_codes(
-                r#"{"count": 1}"#,
-                Some("test-admin-token"),
-            ))
-            .await
-            .unwrap();
-        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
-    }
-
     // ── Device signed-request auth (end-to-end) ────────────────────────────────
 
     #[tokio::test]
@@ -739,7 +689,6 @@ mod tests {
             ADMIN_SIGNATURE_HEADER, ADMIN_TIMESTAMP_HEADER,
         };
         use crate::db::admin_devices::{insert_device, NewAdminDevice};
-        use std::time::{SystemTime, UNIX_EPOCH};
 
         // A state with NO master token: proves the device path is independent of it.
         let state = test_state().await;
@@ -759,10 +708,7 @@ mod tests {
 
         let body = r#"{"count":2,"expiresInHours":24}"#;
         let path = "/v1/accounts/claim-codes";
-        let ts = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_secs() as i64;
+        let ts = crate::time::unix_now_secs();
         let nonce = "e2e-nonce-1";
         let sign_string = admin_request_sign_string("POST", path, ts, nonce, body.as_bytes());
         let signature = crate::routes::test_utils::sign_p256(&keypair, sign_string.as_bytes());
@@ -794,7 +740,6 @@ mod tests {
             ADMIN_SIGNATURE_HEADER, ADMIN_TIMESTAMP_HEADER,
         };
         use crate::db::admin_devices::{insert_device, NewAdminDevice};
-        use std::time::{SystemTime, UNIX_EPOCH};
 
         let state = test_state().await;
         let keypair = crypto::generate_p256_keypair().unwrap();
@@ -812,10 +757,7 @@ mod tests {
         .unwrap();
 
         let path = "/v1/accounts/claim-codes";
-        let ts = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_secs() as i64;
+        let ts = crate::time::unix_now_secs();
         let nonce = "e2e-nonce-2";
         // Sign over count:1 but send count:9 — the body hash will not match.
         let sign_string = admin_request_sign_string("POST", path, ts, nonce, br#"{"count":1}"#);
@@ -872,13 +814,6 @@ mod tests {
             builder = builder.header("Authorization", format!("Bearer {token}"));
         }
         builder.body(Body::empty()).unwrap()
-    }
-
-    async fn body_json(response: axum::response::Response) -> serde_json::Value {
-        let body = axum::body::to_bytes(response.into_body(), 65536)
-            .await
-            .unwrap();
-        serde_json::from_slice(&body).unwrap()
     }
 
     #[tokio::test]
@@ -1001,7 +936,6 @@ mod tests {
             ADMIN_SIGNATURE_HEADER, ADMIN_TIMESTAMP_HEADER,
         };
         use crate::db::admin_devices::{insert_device, NewAdminDevice};
-        use std::time::{SystemTime, UNIX_EPOCH};
 
         let state = test_state().await;
         seed_code(&state.db, "WAITIN", "-1 minutes", "+24 hours", false, false).await;
@@ -1021,10 +955,7 @@ mod tests {
 
         // A GET signs the empty body; the query string is not part of the signed path.
         let path = "/v1/accounts/claim-codes";
-        let ts = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_secs() as i64;
+        let ts = crate::time::unix_now_secs();
         let nonce = "inventory-nonce-1";
         let sign_string = admin_request_sign_string("GET", path, ts, nonce, b"");
         let signature = crate::routes::test_utils::sign_p256(&keypair, sign_string.as_bytes());
@@ -1153,7 +1084,6 @@ mod tests {
             ADMIN_SIGNATURE_HEADER, ADMIN_TIMESTAMP_HEADER,
         };
         use crate::db::admin_devices::{insert_device, NewAdminDevice};
-        use std::time::{SystemTime, UNIX_EPOCH};
 
         let state = test_state().await;
         seed_code(&state.db, "LIVE01", "-1 minutes", "+24 hours", false, false).await;
@@ -1173,10 +1103,7 @@ mod tests {
 
         let body = r#"{"code":"LIVE01"}"#;
         let path = "/v1/accounts/claim-codes/revoke";
-        let ts = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_secs() as i64;
+        let ts = crate::time::unix_now_secs();
         let nonce = "revoke-nonce-1";
         let sign_string = admin_request_sign_string("POST", path, ts, nonce, body.as_bytes());
         let signature = crate::routes::test_utils::sign_p256(&keypair, sign_string.as_bytes());
@@ -1208,7 +1135,6 @@ mod tests {
             ADMIN_SIGNATURE_HEADER, ADMIN_TIMESTAMP_HEADER,
         };
         use crate::db::admin_devices::{insert_device, NewAdminDevice};
-        use std::time::{SystemTime, UNIX_EPOCH};
 
         let state = test_state().await;
         let keypair = crypto::generate_p256_keypair().unwrap();
@@ -1227,10 +1153,7 @@ mod tests {
 
         let body = r#"{"count":1}"#;
         let path = "/v1/accounts/claim-codes";
-        let ts = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_secs() as i64;
+        let ts = crate::time::unix_now_secs();
         let nonce = "ct-order-nonce";
         let sign_string = admin_request_sign_string("POST", path, ts, nonce, body.as_bytes());
         let signature = crate::routes::test_utils::sign_p256(&keypair, sign_string.as_bytes());

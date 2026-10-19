@@ -12,7 +12,7 @@ Five Railway services in one project. Each has its own section below.
 
 | Service | Source | Public surface | State |
 |---|---|---|---|
-| **PDS** (Custos) | repo-root `Dockerfile` | `obsign.org`, `pds.obsign.org`, `*.obsign.org` | `/data` volume, Litestream-replicated |
+| **PDS** (Custos) | repo-root `Dockerfile` | `pds.obsign.org`, `*.obsign.org` (not the apex — see [Domain: `obsign.org` (apex)](#domain-obsignorg-apex)) | `/data` volume, Litestream-replicated |
 | **Marketing site** | `sites/marketing/` | `obsign.org` apex content | none (static) |
 | **Docs site** | `sites/docs/` | `docs.obsign.org` | none (static) |
 | **MCP sidecar** | `tools/mcp-sidecar/` | `mcp.obsign.org` | none — forwards credentials, holds nothing ([ADR-0024](architecture/decisions/0024-hosted-agent-credential-forwarding.md)) |
@@ -108,7 +108,7 @@ CI/CD lives on **GitHub**. Deploys use **Railway's native GitHub integration** �
 | Environment | Railway watches | Deploys when |
 |-------------|-----------------|--------------|
 | **staging** (`ezpds-staging.up.railway.app`, serverless sleep) | `main` branch | a PR merges to `main` (after CI passes) |
-| **production** (`obsign.org` custom domain, kept warm) | `production` branch | the `production` branch is advanced to a `v*` tag (after CI passes) |
+| **production** (`pds.obsign.org` custom domain, kept warm) | `production` branch | the `production` branch is advanced to a `v*` tag (after CI passes) |
 
 Each environment has its own secrets (distinct master key, admin token, user-domain list) and its own `/data` volume, set in the Railway dashboard. Merging to `main` deploys **staging only** — production never moves on a `main` merge.
 
@@ -312,7 +312,7 @@ service's settings:
 
 ### Domain: `docs.obsign.org`
 
-`obsign.org` + `*.obsign.org` are already Railway custom domains on the **PDS**
+`pds.obsign.org` + `*.obsign.org` are already Railway custom domains on the **PDS**
 service (DNS at Cloudflare), and the wildcard means `docs.obsign.org` currently
 resolves to the PDS. To route it to the docs service instead:
 
@@ -376,16 +376,18 @@ wiring than the Root-Directory trick:
 - **Wait for CI** — optional, same reasoning as the static sites: `just ci-pds` does not run the
   sidecar's Node suite, so waiting adds no real safety; harmless if you'd rather gate uniformly.
 - **Environment:** `MCP_SIDECAR_PDS_ORIGIN` = the PDS's private address
-  (`http://<pds-service>.railway.internal:<port>`), `MCP_SIDECAR_PUBLIC_ORIGIN` =
-  `https://mcp.obsign.org` (the OAuth resource identifier), and
-  `MCP_SIDECAR_AUTH_SERVER_ORIGIN` = `https://obsign.org` (the **public** Custos
-  authorization server advertised to clients — never the private forwarding
-  address, which is unreachable from outside the Railway network).
+  (`http://<pds-service>.railway.internal:<port>`) and `MCP_SIDECAR_PUBLIC_ORIGIN` =
+  `https://mcp.obsign.org` (the OAuth resource identifier).
   `MCP_SIDECAR_PDS_ORIGIN` is **required** — the sidecar parse-fails loudly rather
-  than defaulting to a public URL. All three origins must carry an explicit
+  than defaulting to a public URL. Both origins must carry an explicit
   `http://`/`https://` scheme: a bare `pds.railway.internal:8080` technically
   *parses* as a URL (the host becomes the scheme), so the sidecar refuses it at
   startup rather than failing illegibly on the first forwarded call.
+  The **public authorization server** advertised to clients is not configured here —
+  the sidecar reads the PDS's own RFC 8414 `issuer` over the private origin. A
+  separate `MCP_SIDECAR_AUTH_SERVER_ORIGIN` used to hold a copy of it and went
+  stale at the `pds.obsign.org` migration, dead-ending OAuth discovery (MM-536);
+  **delete that variable** from the service if it is still set — it is now ignored.
   **No volume, no secret.** Railway injects `PORT`.
 
 ### Domain: `mcp.obsign.org`

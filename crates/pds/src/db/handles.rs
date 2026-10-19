@@ -72,12 +72,10 @@ pub async fn insert_handle(
     match result {
         Ok(_) => Ok(InsertHandleOutcome::Inserted),
         Err(e) if is_unique_violation(&e) => Ok(InsertHandleOutcome::HandleTaken),
-        Err(e) => {
-            tracing::error!(error = %e, "failed to insert handle");
-            Err(ApiError::new(
-                ErrorCode::InternalError,
-                "failed to register handle",
-            ))
-        }
+        Err(e) => Err(ApiError::internal_as(
+            e,
+            "failed to insert handle",
+            "failed to register handle",
+        )),
     }
 }

@@ -37,7 +37,7 @@ use crate::app::AppState;
 use crate::auth::jwt::{peek_jwt_iss, verify_service_auth_jwt, ServiceAuthError};
 use crate::db::accounts::{account_lifecycle, AccountLifecycle};
 use crate::identity::resolution::{
-    atproto_verification_key, resolve_did_document, resolve_did_document_force_refresh,
+    atproto_verification_key, refresh_did_document_after_signature_mismatch, resolve_did_document,
 };
 
 /// A caller authenticated by an atproto service-auth JWT, authorized for **exactly one** lexicon
@@ -139,7 +139,10 @@ pub async fn require_service_auth(
 /// verify once more. Bounded to a single refetch per verification (and each caller carries its own
 /// rate limiting), so it can't be turned into a resolution amplifier. Non-signature failures (bad
 /// alg/curve, wrong `iss`/`aud`, expired, wrong `lxm`, or a missing `#atproto` method) skip the
-/// refresh — re-resolving the key cannot fix them.
+/// refresh — re-resolving the key cannot fix them. The refresh itself runs under a per-DID
+/// cool-down (`identity::resolution::refresh_did_document_after_signature_mismatch`), so a caller
+/// replaying one badly-signed token cannot turn the cache bypass into an upstream fetch per
+/// request; a suppressed refresh leaves the signature-mismatch verdict standing.
 ///
 /// Shared by the `uploadBlob` service-auth guard and migration-mode `createAccount`; each passes
 /// its own `iss`/`aud`/`lxm`.
@@ -155,12 +158,7 @@ pub async fn verify_service_auth_resolving_key(
     match verify_service_auth_against_doc(token, iss, aud, lxm, &cached, now) {
         Ok(()) => Ok(cached),
         Err(ServiceAuthError::SignatureMismatch) => {
-            tracing::info!(
-                iss = %iss,
-                "service-auth signature failed against the cached DID document; \
-                 force-refreshing the #atproto key and retrying once"
-            );
-            let fresh = resolve_did_document_force_refresh(state, iss).await?;
+            let fresh = refresh_did_document_after_signature_mismatch(state, iss).await?;
             verify_service_auth_against_doc(token, iss, aud, lxm, &fresh, now)?;
             Ok(fresh)
         }

@@ -27,7 +27,10 @@ docs {
   `POST /agent/identity`, or returned after a claim ceremony) for a short-lived
   **Bearer** access token. No DPoP proof is required — the assertion is already
   key-bound by the registration ceremony — and **no refresh token** is issued:
-  the same assertion is re-exchanged until it expires.
+  instead every successful exchange returns a **renewed `identity_assertion`**
+  (sliding window, `[agent_auth] claimed_assertion_ttl_secs`, default 30 days),
+  which the agent should persist in place of the one it presented. The renewal
+  is re-clamped to the operator's current `granted_scopes`.
 
   ## Request
 
@@ -45,7 +48,9 @@ docs {
     "access_token": "<at+jwt>",
     "token_type": "Bearer",
     "expires_in": 300,
-    "scope": "com.atproto.access"
+    "scope": "com.atproto.access",
+    "identity_assertion": "<renewed service-signed assertion JWT>",
+    "assertion_expires": "2026-09-28T00:00:00.000Z"
   }
   ```
 

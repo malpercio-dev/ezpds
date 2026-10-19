@@ -11,13 +11,7 @@ use uuid::Uuid;
 ///
 /// `encoding_key` is derived from the P-256 private key in PKCS#8 DER format, as required by
 /// `jsonwebtoken`. `key_id` is a UUID that appears as the `kid` header in issued access tokens.
-///
-/// # Dead Code Lint
-///
-/// Axum's `State<AppState>` extractor is opaque to Rust's dead code analyzer — fields read
-/// through `State<AppState>` appear unused even though they are accessed by every handler.
 #[derive(Clone)]
-#[allow(dead_code)]
 pub struct OAuthSigningKey {
     /// UUID identifier embedded in JWT `kid` header.
     pub key_id: String,
@@ -247,15 +241,17 @@ fn build_encoding_key(
     Ok(jsonwebtoken::EncodingKey::from_ec_der(pkcs8_der.as_bytes()))
 }
 
-/// Load the per-account repo signing key for a promoted DID and build a [`CommitSigner`].
+/// Load and decrypt the per-account repo signing key for a promoted DID.
 ///
-/// Used by genesis creation and record writes to sign commits with the key published
-/// as the DID's `#atproto` verification method (so the signatures verify network-wide).
-pub async fn load_repo_signer(
+/// The raw private scalar, for the one caller that cannot go through [`CommitSigner`]: a space
+/// repo's deniable commit signs a context string rather than a commit block, and derives its MAC
+/// key from the same material (`crypto::sign_space_commit`). Stays wrapped so it is wiped on
+/// drop rather than left in the caller's stack frame.
+pub async fn load_repo_signing_key(
     pool: &sqlx::SqlitePool,
     did: &str,
     master_key: &[u8; 32],
-) -> Result<repo_engine::CommitSigner, ApiError> {
+) -> Result<zeroize::Zeroizing<[u8; 32]>, ApiError> {
     use crate::db::repo_keys::get_signing_key_by_did;
 
     let key = get_signing_key_by_did(pool, did)
@@ -274,6 +270,19 @@ pub async fn load_repo_signer(
             ApiError::new(ErrorCode::InternalError, "failed to decrypt signing key")
         })?;
 
+    Ok(private)
+}
+
+/// Load the per-account repo signing key for a promoted DID and build a [`CommitSigner`].
+///
+/// Used by genesis creation and record writes to sign commits with the key published
+/// as the DID's `#atproto` verification method (so the signatures verify network-wide).
+pub async fn load_repo_signer(
+    pool: &sqlx::SqlitePool,
+    did: &str,
+    master_key: &[u8; 32],
+) -> Result<repo_engine::CommitSigner, ApiError> {
+    let private = load_repo_signing_key(pool, did, master_key).await?;
     repo_engine::CommitSigner::from_bytes(&private).map_err(|e| {
         tracing::error!(error = %e, did = %did, "invalid repo signing key");
         ApiError::new(ErrorCode::InternalError, "invalid signing key")
@@ -309,15 +318,7 @@ pub async fn mint_account_service_auth(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::db::{
-        iroh_identity::get_iroh_identity, jwt_secret::get_jwt_secret, open_pool, run_migrations,
-    };
-
-    async fn test_pool() -> SqlitePool {
-        let pool = open_pool("sqlite::memory:").await.unwrap();
-        run_migrations(&pool).await.unwrap();
-        pool
-    }
+    use crate::db::{iroh_identity::get_iroh_identity, jwt_secret::get_jwt_secret, test_pool};
 
     #[tokio::test]
     async fn jwt_secret_persists_across_loads_with_master_key() {

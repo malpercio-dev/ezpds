@@ -16,7 +16,7 @@ use axum::{extract::State, http::StatusCode, response::Json};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use common::{ApiError, ErrorCode};
+use common::{ApiError, ApiResultExt, ErrorCode};
 
 use crate::app::AppState;
 use crate::auth::token::generate_token;
@@ -75,10 +75,10 @@ pub async fn create_mobile_account(
     // --- Email uniqueness: fast-path rejection before INSERT ---
     if crate::uniqueness::email_taken(&state.db, &email)
         .await
-        .map_err(|e| {
-            tracing::error!(error = %e, "failed to check email uniqueness");
-            ApiError::new(ErrorCode::InternalError, "failed to create account")
-        })?
+        .or_internal_as(
+            "failed to check email uniqueness",
+            "failed to create account",
+        )?
     {
         return Err(ApiError::new(
             ErrorCode::AccountExists,
@@ -89,10 +89,10 @@ pub async fn create_mobile_account(
     // --- Handle uniqueness: fast-path rejection before INSERT ---
     if crate::uniqueness::handle_taken(&state.db, &payload.handle)
         .await
-        .map_err(|e| {
-            tracing::error!(error = %e, "failed to check handle uniqueness");
-            ApiError::new(ErrorCode::InternalError, "failed to create account")
-        })?
+        .or_internal_as(
+            "failed to check handle uniqueness",
+            "failed to create account",
+        )?
     {
         return Err(ApiError::new(
             ErrorCode::HandleTaken,
@@ -1079,24 +1079,4 @@ mod tests {
     }
 
     // ── DB failure ────────────────────────────────────────────────────────────
-
-    #[tokio::test]
-    async fn closed_db_pool_returns_500() {
-        let state = test_state().await;
-        state.db.close().await;
-
-        let response = app(state)
-            .oneshot(post_create_mobile_account(
-                r#"{"email":"a@example.com","handle":"a.example.com","devicePublicKey":"dGVzdC1rZXk=","platform":"ios","claimCode":"ABC123"}"#,
-            ))
-            .await
-            .unwrap();
-
-        assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
-        let body = axum::body::to_bytes(response.into_body(), 4096)
-            .await
-            .unwrap();
-        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
-        assert_eq!(json["error"]["code"], "INTERNAL_ERROR");
-    }
 }

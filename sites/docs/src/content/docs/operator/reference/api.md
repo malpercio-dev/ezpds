@@ -3,7 +3,7 @@ title: HTTP & XRPC API
 description: Generated route reference for the Custos server.
 ---
 
-> Generated from source for ezpds **v0.12.0**. Do not edit this page by hand.
+> Generated from source for ezpds **v0.16.2**. Do not edit this page by hand.
 
 Every path registered by the server is listed here. For `/xrpc/` endpoints, use the namespace after `/xrpc/` to find the request, response, and authentication schema in the [AT Protocol Lexicon reference](https://docs.bsky.app/docs/api/at-protocol-xrpc-api). Custos-specific endpoints are explained in the operator workflows elsewhere in this documentation; this generated inventory is the complete route-coverage index.
 
@@ -15,6 +15,7 @@ Every path registered by the server is listed here. For `/xrpc/` endpoints, use 
 | `/.well-known/oauth-authorization-server` | Custos HTTP |
 | `/.well-known/oauth-protected-resource` | Custos HTTP |
 | `/agent/child` | Custos HTTP |
+| `/agent/child/assertion` | Custos HTTP |
 | `/agent/child/delete` | Custos HTTP |
 | `/agent/child/revoke` | Custos HTTP |
 | `/agent/event/notify` | Custos HTTP |
@@ -55,6 +56,8 @@ Every path registered by the server is listed here. For `/xrpc/` endpoints, use 
 | `/v1/admin/recovery-releases` | Custos HTTP |
 | `/v1/admin/relay-status` | Custos HTTP |
 | `/v1/admin/request-crawl` | Custos HTTP |
+| `/v1/admin/spaces` | Custos HTTP |
+| `/v1/admin/spaces/takedown` | Custos HTTP |
 | `/v1/admin/transfers` | Custos HTTP |
 | `/v1/admin/transfers/{id}/cancel` | Custos HTTP |
 | `/v1/admin/waitlist` | Custos HTTP |
@@ -82,6 +85,7 @@ Every path registered by the server is listed here. For `/xrpc/` endpoints, use 
 | `/v1/repo-keys/rotation/complete` | Custos HTTP |
 | `/v1/repo-signing-key` | Custos HTTP |
 | `/v1/sessions/sovereign` | Custos HTTP |
+| `/v1/space/import-repo` | Custos HTTP |
 | `/v1/transfer/accept` | Custos HTTP |
 | `/v1/transfer/complete` | Custos HTTP |
 | `/v1/transfer/initiate` | Custos HTTP |
@@ -135,6 +139,31 @@ Every path registered by the server is listed here. For `/xrpc/` endpoints, use 
 | `/xrpc/com.atproto.server.resetPassword` | AT Protocol XRPC |
 | `/xrpc/com.atproto.server.revokeAppPassword` | AT Protocol XRPC |
 | `/xrpc/com.atproto.server.updateEmail` | AT Protocol XRPC |
+| `/xrpc/com.atproto.simplespace.addMember` | AT Protocol XRPC |
+| `/xrpc/com.atproto.simplespace.createSpace` | AT Protocol XRPC |
+| `/xrpc/com.atproto.simplespace.deleteSpace` | AT Protocol XRPC |
+| `/xrpc/com.atproto.simplespace.getSpace` | AT Protocol XRPC |
+| `/xrpc/com.atproto.simplespace.listMembers` | AT Protocol XRPC |
+| `/xrpc/com.atproto.simplespace.removeMember` | AT Protocol XRPC |
+| `/xrpc/com.atproto.simplespace.updateSpace` | AT Protocol XRPC |
+| `/xrpc/com.atproto.space.applyWrites` | AT Protocol XRPC |
+| `/xrpc/com.atproto.space.createRecord` | AT Protocol XRPC |
+| `/xrpc/com.atproto.space.deleteRecord` | AT Protocol XRPC |
+| `/xrpc/com.atproto.space.getBlob` | AT Protocol XRPC |
+| `/xrpc/com.atproto.space.getDelegationToken` | AT Protocol XRPC |
+| `/xrpc/com.atproto.space.getLatestCommit` | AT Protocol XRPC |
+| `/xrpc/com.atproto.space.getRecord` | AT Protocol XRPC |
+| `/xrpc/com.atproto.space.getRepo` | AT Protocol XRPC |
+| `/xrpc/com.atproto.space.getSpaceCredential` | AT Protocol XRPC |
+| `/xrpc/com.atproto.space.listBlobs` | AT Protocol XRPC |
+| `/xrpc/com.atproto.space.listRecords` | AT Protocol XRPC |
+| `/xrpc/com.atproto.space.listRepoOps` | AT Protocol XRPC |
+| `/xrpc/com.atproto.space.listRepos` | AT Protocol XRPC |
+| `/xrpc/com.atproto.space.listSpaces` | AT Protocol XRPC |
+| `/xrpc/com.atproto.space.notifyWrite` | AT Protocol XRPC |
+| `/xrpc/com.atproto.space.putRecord` | AT Protocol XRPC |
+| `/xrpc/com.atproto.space.registerNotify` | AT Protocol XRPC |
+| `/xrpc/com.atproto.space.unregisterNotify` | AT Protocol XRPC |
 | `/xrpc/com.atproto.sync.getBlob` | AT Protocol XRPC |
 | `/xrpc/com.atproto.sync.getBlocks` | AT Protocol XRPC |
 | `/xrpc/com.atproto.sync.getLatestCommit` | AT Protocol XRPC |

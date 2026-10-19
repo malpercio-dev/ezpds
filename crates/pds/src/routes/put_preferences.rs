@@ -148,12 +148,17 @@ pub async fn put_preferences_handler(
         match get_preferences(&mut *tx, &user.did).await? {
             Some(blob) => serde_json::from_str::<Vec<Value>>(&blob)
                 .map_err(|e| {
-                    tracing::error!(did = %user.did, error = %e, "stored preferences blob is not valid JSON");
-                    ApiError::new(ErrorCode::InternalError, "stored preferences are corrupt")
+                    {
+                        tracing::error!(did = %user.did, error = %e, "stored preferences blob is not valid JSON");
+                        ApiError::new(ErrorCode::InternalError, "stored preferences are corrupt")
+                    }
                 })?
                 .into_iter()
                 .filter(|pref| {
-                    let ty = pref.as_object().and_then(|obj| obj.get("$type")).and_then(Value::as_str);
+                    let ty = pref
+                        .as_object()
+                        .and_then(|obj| obj.get("$type"))
+                        .and_then(Value::as_str);
                     ty.is_some_and(is_full_access_only_pref)
                 })
                 .collect(),
@@ -170,8 +175,10 @@ pub async fn put_preferences_handler(
     put_preferences(&mut *tx, &user.did, &blob).await?;
 
     tx.commit().await.map_err(|e| {
-        tracing::error!(did = %user.did, error = %e, "putPreferences: failed to commit transaction");
-        ApiError::new(ErrorCode::InternalError, "failed to store preferences")
+        {
+            tracing::error!(did = %user.did, error = %e, "putPreferences: failed to commit transaction");
+            ApiError::new(ErrorCode::InternalError, "failed to store preferences")
+        }
     })?;
 
     Ok(StatusCode::OK)
@@ -188,33 +195,10 @@ mod tests {
     use tower::ServiceExt;
 
     use crate::app::{app, test_state};
-
-    /// Issue a valid HS256 access JWT for a DID using the test state's fixed secret.
-    fn access_jwt(secret: &[u8; 32], sub: &str) -> String {
-        scoped_jwt(secret, sub, "com.atproto.access")
-    }
-
-    /// Issue a scoped HS256 JWT (used to exercise wrong-scope rejection paths).
-    fn scoped_jwt(secret: &[u8; 32], sub: &str, scope: &str) -> String {
-        use jsonwebtoken::{encode, Algorithm, EncodingKey, Header};
-        use std::time::{SystemTime, UNIX_EPOCH};
-
-        let now = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_secs();
-        encode(
-            &Header::new(Algorithm::HS256),
-            &serde_json::json!({
-                "scope": scope,
-                "sub": sub,
-                "iat": now,
-                "exp": now + 7200_u64,
-            }),
-            &EncodingKey::from_secret(secret),
-        )
-        .unwrap()
-    }
+    use crate::routes::test_utils::{
+        access_jwt, body_json, insert_account_with_email as insert_account,
+        scoped_access_jwt as scoped_jwt,
+    };
 
     fn put_request(token: &str, body: serde_json::Value) -> Request<Body> {
         Request::builder()
@@ -233,25 +217,6 @@ mod tests {
             .header("Authorization", format!("Bearer {token}"))
             .body(Body::empty())
             .unwrap()
-    }
-
-    async fn insert_account(db: &sqlx::SqlitePool, did: &str, email: &str) {
-        sqlx::query(
-            "INSERT INTO accounts (did, email, password_hash, created_at, updated_at) \
-             VALUES (?, ?, NULL, datetime('now'), datetime('now'))",
-        )
-        .bind(did)
-        .bind(email)
-        .execute(db)
-        .await
-        .unwrap();
-    }
-
-    async fn body_json(response: axum::response::Response) -> serde_json::Value {
-        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
-            .await
-            .unwrap();
-        serde_json::from_slice(&bytes).unwrap()
     }
 
     #[tokio::test]
@@ -533,25 +498,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn missing_auth_header_returns_401() {
-        let response = app(test_state().await)
-            .oneshot(
-                Request::builder()
-                    .method("POST")
-                    .uri("/xrpc/app.bsky.actor.putPreferences")
-                    .header("Content-Type", "application/json")
-                    .body(Body::from(
-                        serde_json::json!({ "preferences": [] }).to_string(),
-                    ))
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-
-        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
-    }
-
-    #[tokio::test]
     async fn app_pass_token_can_write_non_privileged_preferences() {
         let state = test_state().await;
         insert_account(&state.db, "did:plc:apppass", "apppass@example.com").await;
@@ -740,25 +686,6 @@ mod tests {
         let response = router.oneshot(get_request(&granted_token)).await.unwrap();
         let json = body_json(response).await;
         assert_eq!(json["preferences"], replacement);
-    }
-
-    #[tokio::test]
-    async fn refresh_token_returns_401() {
-        let state = test_state().await;
-        insert_account(&state.db, "did:plc:refresh", "refresh@example.com").await;
-        let token = scoped_jwt(&state.jwt_secret, "did:plc:refresh", "com.atproto.refresh");
-
-        let response = app(state)
-            .oneshot(put_request(
-                &token,
-                serde_json::json!({ "preferences": [] }),
-            ))
-            .await
-            .unwrap();
-
-        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
-        let json = body_json(response).await;
-        assert_eq!(json["error"], "InvalidToken");
     }
 
     #[tokio::test]

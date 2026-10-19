@@ -266,7 +266,7 @@
 </script>
 
 {#if loading}
-  <div class="screen">
+  <div class="screen u-screen-lg">
     <ScreenHeader title="Identities" size="home" />
     <div class="cards" aria-hidden="true">
       {#each [0, 1] as i (i)}
@@ -275,7 +275,7 @@
     </div>
   </div>
 {:else}
-  <div class="screen">
+  <div class="screen u-screen-lg">
     <ScreenHeader title="Identities" size="home">
       {#snippet actions()}
         <button class="icon-btn" onclick={loadData} aria-label="Refresh">
@@ -290,8 +290,8 @@
     </ScreenHeader>
 
     {#if loadError}
-      <div class="notice">
-        <p class="notice-text">{loadError}</p>
+      <div class="notice u-notice">
+        <p class="notice-text u-notice-text">{loadError}</p>
         <Button variant="secondary" onclick={loadData}>Try again</Button>
       </div>
     {:else if identities.length === 0}
@@ -458,7 +458,7 @@
           <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg>
         </span>
         <span class="add-body">
-          <span class="add-t">Add an identity</span>
+          <span class="add-t u-title-strong">Add an identity</span>
 <!-- The door names the question behind it rather than pre-empting it with two of the
                four answers — the situation screen is what sorts create from claim from
                recovery, and listing a subset here would send the other two away. -->
@@ -471,15 +471,6 @@
 {/if}
 
 <style>
-  .screen {
-    display: flex;
-    flex-direction: column;
-    height: 100%;
-    padding: var(--space-lg) var(--space-md) var(--space-xl);
-    gap: var(--space-lg);
-    overflow-y: auto;
-  }
-
   .icon-btn {
     display: inline-flex;
     align-items: center;
@@ -508,7 +499,7 @@
   .monitor {
     display: flex;
     align-items: center;
-    gap: 13px;
+    gap: var(--space-md);
     width: 100%;
     /* Carried by both branches, not just the door, so the button and the div occupy
        identical space — a strip that shifted by 2px depending on whether it was tappable
@@ -532,8 +523,8 @@
     opacity: 0.65;
   }
   .monitor-ic {
-    width: 38px;
-    height: 38px;
+    width: var(--size-icon-xl);
+    height: var(--size-icon-xl);
     border-radius: var(--radius-full);
     background: var(--color-bg);
     display: flex;
@@ -554,7 +545,7 @@
   .monitor-s {
     display: flex;
     align-items: center;
-    gap: 6px;
+    gap: var(--space-sm);
     font-size: var(--text-label);
   }
   .monitor--safe {
@@ -632,8 +623,8 @@
   }
 
   .pulse {
-    width: 7px;
-    height: 7px;
+    width: 7px; /* px-ok: one-off live-status dot size */
+    height: 7px; /* px-ok: one-off live-status dot size */
     border-radius: var(--radius-full);
     background: var(--color-safe-solid);
     flex-shrink: 0;
@@ -664,13 +655,13 @@
   .cards {
     display: flex;
     flex-direction: column;
-    gap: 12px;
+    gap: var(--space-md);
   }
 
   .card {
     display: flex;
     align-items: center;
-    gap: 14px;
+    gap: var(--space-md);
     background: var(--color-bg);
     border: 1px solid var(--color-line);
     border-radius: var(--radius-xl);
@@ -719,14 +710,14 @@
   .badges {
     display: flex;
     flex-wrap: wrap;
-    gap: 6px;
-    margin-top: 5px;
+    gap: var(--space-sm);
+    margin-top: var(--space-xs);
   }
   .badge {
     display: inline-flex;
     align-items: center;
-    gap: 5px;
-    padding: 3px 9px;
+    gap: var(--space-xs);
+    padding: var(--space-2xs) var(--space-sm);
     border-radius: var(--radius-full);
     font-size: var(--text-label);
     font-weight: var(--weight-semibold);
@@ -778,7 +769,7 @@
     gap: var(--space-sm);
     width: 100%;
     min-height: var(--size-tap-target);
-    padding: 10px 15px;
+    padding: var(--space-sm) var(--space-md);
     background: var(--color-critical-surface);
     color: var(--color-critical);
     border: 1px solid var(--color-line);
@@ -808,7 +799,7 @@
     gap: var(--space-sm);
     width: 100%;
     min-height: var(--size-tap-target);
-    padding: 10px 15px;
+    padding: var(--space-sm) var(--space-md);
     background: var(--color-seal-tint);
     color: var(--color-accent);
     border: 1px solid var(--color-line);
@@ -837,7 +828,7 @@
     gap: var(--space-sm);
     width: 100%;
     min-height: var(--size-tap-target);
-    padding: 10px 15px;
+    padding: var(--space-sm) var(--space-md);
     background: var(--color-seal-tint);
     color: var(--color-accent);
     border: 1px solid var(--color-line);
@@ -861,7 +852,7 @@
   .strip-body {
     display: flex;
     flex-direction: column;
-    gap: 2px;
+    gap: var(--space-3xs);
   }
   .strip-t {
     font-size: var(--text-label);
@@ -880,9 +871,9 @@
   .add-card {
     display: flex;
     align-items: center;
-    gap: 13px;
+    gap: var(--space-md);
     background: transparent;
-    border: 1.5px dashed var(--color-line);
+    border: 1.5px dashed var(--color-line); /* px-ok: dashed empty-state hairline, deliberately thicker than 1px */
     border-radius: var(--radius-xl);
     padding: var(--space-md);
     width: 100%;
@@ -895,8 +886,8 @@
     background: var(--color-seal-tint);
   }
   .add-plus {
-    width: 42px;
-    height: 42px;
+    width: var(--size-icon-2xl);
+    height: var(--size-icon-2xl);
     border-radius: var(--radius-full);
     background: var(--color-surface);
     color: var(--color-primary-deep);
@@ -909,11 +900,6 @@
     display: flex;
     flex-direction: column;
     gap: 1px;
-  }
-  .add-t {
-    font-size: var(--text-body);
-    font-weight: var(--weight-semibold);
-    color: var(--color-ink);
   }
   .add-s {
     font-size: var(--text-label);
@@ -932,8 +918,8 @@
     padding: var(--space-xl) var(--space-md);
   }
   .empty-seal {
-    width: 64px;
-    height: 64px;
+    width: var(--size-avatar-md);
+    height: var(--size-avatar-md);
     border-radius: var(--radius-full);
     background: var(--color-seal-pale);
     color: var(--color-primary-deep);
@@ -953,21 +939,6 @@
     color: var(--color-muted);
     margin: 0;
     max-width: 32ch;
-  }
-  .notice {
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    gap: var(--space-md);
-    background: var(--color-critical-surface);
-    border-radius: var(--radius-lg);
-    padding: var(--space-lg);
-    text-align: center;
-  }
-  .notice-text {
-    font-size: var(--text-body);
-    color: var(--color-critical);
-    margin: 0;
   }
 
 </style>

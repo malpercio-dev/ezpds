@@ -29,7 +29,7 @@
   } = $props();
 </script>
 
-<div class="screen">
+<div class="screen u-screen-lg">
   <ScreenHeader title="Advanced" onback={onback} backLabel="Back to manage identity" />
 
   <div class="vestibule">
@@ -46,7 +46,7 @@
     </div>
   </div>
 
-  <section class="zone">
+  <section class="zone u-stack-xs">
     {#if onrecoverykit}
       <NavRow
         title="Add a recovery key"
@@ -97,15 +97,6 @@
 </div>
 
 <style>
-  .screen {
-    display: flex;
-    flex-direction: column;
-    height: 100%;
-    padding: var(--space-lg) var(--space-md) var(--space-xl);
-    gap: var(--space-lg);
-    overflow-y: auto;
-  }
-
   /* Framing, not an alarm: the seal tint the brief reserves for revealing the machinery,
      never the warning or critical palette. Nothing has gone wrong — the user simply walked
      into the room where the machinery lives. */
@@ -118,8 +109,8 @@
     padding: var(--space-md);
   }
   .vestibule-ic {
-    width: 38px;
-    height: 38px;
+    width: var(--size-icon-xl);
+    height: var(--size-icon-xl);
     border-radius: var(--radius-full);
     background: var(--color-bg);
     color: var(--color-accent);
@@ -147,9 +138,4 @@
     margin: 0;
   }
 
-  .zone {
-    display: flex;
-    flex-direction: column;
-    gap: var(--space-xs);
-  }
 </style>

@@ -20,6 +20,11 @@
 //! rather than the plain one, matching the transport policy client_id resolution already applies to
 //! that URL.
 //!
+//! The OAuth-client instance is read through [`client_verification_key`], the one place a
+//! client's self-signed JWT is matched to the keys its metadata publishes — shared by the token
+//! endpoint's `private_key_jwt` client assertion and by Atproto Spaces client attestations
+//! (`auth::client_attestation`), so the two cannot drift apart on transport policy or caching.
+//!
 //! Both cache instances are reachable from requests where the `kid` comes from an *unverified* JWT
 //! header (`POST /agent/identity`, `POST /agent/event/notify`, and the token endpoint's
 //! `private_key_jwt` client assertion). A per-URL refetch cooldown (stamped per fetch *attempt*)
@@ -258,6 +263,51 @@ impl JwksCache {
             },
         );
     }
+}
+
+/// Resolve the key an OAuth client's self-signed JWT verifies against, from the client's own
+/// metadata document: the inline `jwks` first, else a policy-checked, cached fetch of `jwks_uri`.
+///
+/// One implementation for both places a client signs something with its own key — the token
+/// endpoint's RFC 7523 `private_key_jwt` client assertion and an Atproto Spaces client attestation
+/// — so the transport policy and the cache can never diverge between them. The error is a bare
+/// message because those two callers report it in different envelopes (`invalid_client` vs.
+/// `InvalidClientAttestation`).
+///
+/// `jwks_uri` gets exactly the transport policy `client_id` resolution uses: https, no
+/// credentials, with loopback as the one place plain http is acceptable (a loopback development
+/// client, explicitly supported by the spec, must still be able to publish keys by URL). The
+/// scheme check is not the SSRF control and never was: that is the hardened client's connect-time
+/// resolver behind `cache`, which refuses loopback and private addresses in production regardless.
+pub async fn client_verification_key(
+    cache: &JwksCache,
+    jwks: Option<&serde_json::Value>,
+    jwks_uri: Option<&str>,
+    kid: Option<&str>,
+) -> Result<DecodingKey, String> {
+    const NO_MATCH: &str = "no matching key in the client's JWK set";
+
+    if let Some(jwks) = jwks {
+        let set: JwkSet = serde_json::from_value(jwks.clone())
+            .map_err(|_| "client metadata jwks is not a valid JWK set".to_string())?;
+        return select_key(&set, kid).ok_or_else(|| NO_MATCH.to_string());
+    }
+    let Some(url) = jwks_uri else {
+        return Err("client metadata provides neither jwks nor jwks_uri".to_string());
+    };
+    let parsed = url::Url::parse(url)
+        .map_err(|_| "client metadata jwks_uri is not a valid URL".to_string())?;
+    if !parsed.username().is_empty() || parsed.password().is_some() {
+        return Err("client metadata jwks_uri must carry no credentials".to_string());
+    }
+    if parsed.scheme() != "https" && !crate::auth::oauth_client_resolution::url_is_loopback(url) {
+        return Err("client metadata jwks_uri must be an https URL".to_string());
+    }
+    cache
+        .decoding_key(url, kid)
+        .await
+        .map_err(|e| format!("failed to fetch client jwks_uri: {e}"))?
+        .ok_or_else(|| NO_MATCH.to_string())
 }
 
 /// Select a decoding key from a JWK set by `kid`. When the ID-JAG carries no `kid`, the choice is

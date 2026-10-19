@@ -47,11 +47,13 @@ pub fn validate_procedure_body(
     let Some(input) = registry().input(nsid) else {
         // A handler asked for validation of a procedure whose lexicon isn't vendored — a wiring
         // defect, not a client error.
-        tracing::error!(nsid, "no vendored lexicon input for procedure");
-        return Err(ApiError::new(
-            ErrorCode::InternalError,
-            "server lexicon configuration error",
-        ));
+        return Err({
+            tracing::error!(nsid, "no vendored lexicon input for procedure");
+            ApiError::new(
+                ErrorCode::InternalError,
+                "server lexicon configuration error",
+            )
+        });
     };
 
     let content_type = headers

@@ -10,8 +10,8 @@ directly — a relay is structurally required. It is trusted for *availability o
 reach it already HPKE-sealed to a per-device key, so neither the relay nor Apple ever sees
 plaintext, and the relay holds no key material belonging to an instance or a device.
 
-Architecture: [`docs/design-plans/2026-07-10-notification-relay.md`](../../docs/design-plans/2026-07-10-notification-relay.md).
-Implementation detail: [`docs/design-plans/2026-07-17-notification-relay-implementation.md`](../../docs/design-plans/2026-07-17-notification-relay-implementation.md).
+Architecture: [`docs/archive/design-plans/2026-07-10-notification-relay.md`](../../docs/archive/design-plans/2026-07-10-notification-relay.md).
+Implementation detail: [`docs/archive/design-plans/2026-07-17-notification-relay-implementation.md`](../../docs/archive/design-plans/2026-07-17-notification-relay-implementation.md).
 
 Its own binary and its own SQLite database — nothing is shared with the pds crate at
 runtime. The conventions *are* shared: pattern comments, `db/` submodules owning queries

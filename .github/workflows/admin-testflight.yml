@@ -21,6 +21,7 @@ on:
     paths:
       - "apps/admin-companion/**"
       - "crates/crypto/**"
+      - "crates/ios-device-key/**"
       # The [patch.crates-io] swift-rs fork is workspace-wide: it compiles this
       # app's plugin Swift too, even though it lives under identity-wallet.
       - "apps/identity-wallet/swift-rs-patch/**"
@@ -39,8 +40,10 @@ on:
       # into this app's project too since the console's notification adoption.
       - "ios/**"
       - "scripts/ios/**"
-      # The shared runner preamble (toolchain, cache, tauri-cli pin, brew shim).
+      # The shared runner preamble (toolchain, cache, tauri-cli pin, brew shim), and the
+      # pnpm+Node composite it delegates to.
       - ".github/actions/ios-setup/**"
+      - ".github/actions/setup-pnpm/**"
       - "rust-toolchain.toml"
       - ".github/workflows/admin-testflight.yml"
       # The shared build/sign/upload body this caller delegates to.

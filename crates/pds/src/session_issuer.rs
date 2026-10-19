@@ -11,7 +11,7 @@
 
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use common::{ApiError, ErrorCode};
+use common::{ApiError, ApiResultExt, ErrorCode};
 use uuid::Uuid;
 
 use crate::app::AppState;
@@ -135,10 +135,7 @@ pub async fn issue_session_in_transaction(
 
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
-        .map_err(|e| {
-            tracing::error!(error = %e, "system clock is before Unix epoch");
-            ApiError::new(ErrorCode::InternalError, "failed to issue token")
-        })?
+        .or_internal_as("system clock is before Unix epoch", "failed to issue token")?
         .as_secs();
     let aud = state
         .config
@@ -201,16 +198,10 @@ mod tests {
     use super::*;
     use crate::app::test_state;
     use crate::auth::jwt::{parse_scope, verify_hs256_access_token, AuthScope};
+    use crate::routes::test_utils::insert_account_with_email;
 
     async fn seed_account(state: &AppState, did: &str) {
-        sqlx::query(
-            "INSERT INTO accounts (did, email, password_hash, created_at, updated_at) \
-             VALUES (?, 'owner@example.com', NULL, datetime('now'), datetime('now'))",
-        )
-        .bind(did)
-        .execute(&state.db)
-        .await
-        .unwrap();
+        insert_account_with_email(&state.db, did, "owner@example.com").await;
     }
 
     #[tokio::test]

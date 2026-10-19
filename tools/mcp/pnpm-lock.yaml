@@ -11,6 +11,9 @@ importers:
       '@modelcontextprotocol/sdk':
         specifier: ^1.29.0
         version: 1.29.0(zod@3.25.76)
+      ezpds-interop:
+        specifier: file:../interop
+        version: file:../interop
       zod:
         specifier: ^3.25.0
         version: 3.25.76
@@ -18,9 +21,6 @@ importers:
       '@types/node':
         specifier: ^22.15.0
         version: 22.20.1
-      ezpds-interop:
-        specifier: file:../interop
-        version: file:../interop
       typescript:
         specifier: ^5.8.0
         version: 5.9.3

@@ -6,10 +6,10 @@ describe('did:web ceremony document', () => {
     const doc = composeDidWebDocument('Alice.Example.com', 'alice.example.com', 'zdevice', 'zrepo', 'https://pds.example.com/');
     expect(doc.id).toBe('did:web:alice.example.com');
     expect(doc.verificationMethod.map((vm) => [vm.id, vm.publicKeyMultibase])).toEqual([
-      ['did:web:alice.example.com#device', 'zdevice'],
-      ['did:web:alice.example.com#atproto', 'zrepo'],
+      ['#device', 'zdevice'],
+      ['#atproto', 'zrepo'],
     ]);
-    expect(doc.service[0]).toMatchObject({ id: 'did:web:alice.example.com#atproto_pds', serviceEndpoint: 'https://pds.example.com' });
+    expect(doc.service[0]).toMatchObject({ id: '#atproto_pds', serviceEndpoint: 'https://pds.example.com' });
   });
 
   it('uses well-known resolution and deterministic serialization', () => {

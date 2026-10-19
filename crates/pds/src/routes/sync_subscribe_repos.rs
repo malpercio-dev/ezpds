@@ -89,9 +89,7 @@ async fn handle_socket(socket: WebSocket, state: AppState, cursor: Option<u64>) 
         Ok(SubscribeOutcome::Subscribed(sub)) => sub,
         Ok(SubscribeOutcome::FutureCursor { .. }) => {
             // A cursor ahead of everything we've emitted is a client error: refuse and close.
-            let frame = encode_error_frame("FutureCursor", "cursor is in the future");
-            let _ = send_message(&mut sender, Message::Binary(Bytes::from(frame))).await;
-            let _ = tokio::time::timeout(READ_TIMEOUT, sender.close()).await;
+            send_error_and_close(&mut sender, "FutureCursor", "cursor is in the future").await;
             return;
         }
         Err(e) => {
@@ -99,9 +97,12 @@ async fn handle_socket(socket: WebSocket, state: AppState, cursor: Option<u64>) 
             // or a sequence gap). Fail closed rather than stream live past a hole; the client
             // reconnects from its last good cursor.
             tracing::error!(error = %e, "failed to assemble firehose replay backlog; closing");
-            let frame = encode_error_frame("InternalError", "failed to read replay backlog");
-            let _ = send_message(&mut sender, Message::Binary(Bytes::from(frame))).await;
-            let _ = tokio::time::timeout(READ_TIMEOUT, sender.close()).await;
+            send_error_and_close(
+                &mut sender,
+                "InternalError",
+                "failed to read replay backlog",
+            )
+            .await;
             return;
         }
     };
@@ -167,9 +168,12 @@ async fn handle_socket(socket: WebSocket, state: AppState, cursor: Option<u64>) 
                     }
                     Err(e) => {
                         tracing::error!(error = %e, "failed to read firehose replay page; closing");
-                        let frame = encode_error_frame("InternalError", "failed to read replay backlog");
-                        let _ = send_message(&mut sender, Message::Binary(Bytes::from(frame))).await;
-                        let _ = tokio::time::timeout(READ_TIMEOUT, sender.close()).await;
+                        send_error_and_close(
+                            &mut sender,
+                            "InternalError",
+                            "failed to read replay backlog",
+                        )
+                        .await;
                         break;
                     }
                 }
@@ -181,12 +185,12 @@ async fn handle_socket(socket: WebSocket, state: AppState, cursor: Option<u64>) 
                     }
                 }
                 Err(RecvError::Lagged(_)) => {
-                    let frame = encode_error_frame(
+                    send_error_and_close(
+                        &mut sender,
                         "ConsumerTooSlow",
                         "consumer fell too far behind the firehose; reconnect with your last cursor",
-                    );
-                    let _ = send_message(&mut sender, Message::Binary(Bytes::from(frame))).await;
-                    let _ = tokio::time::timeout(READ_TIMEOUT, sender.close()).await;
+                    )
+                    .await;
                     break;
                 }
                 Err(RecvError::Closed) => break,
@@ -253,17 +257,39 @@ async fn send_message(sender: &mut SplitSink<WebSocket, Message>, message: Messa
     )
 }
 
-/// DAG-CBOR header for a message frame: `{op, t}`.
-#[derive(Serialize)]
-struct MessageHeader {
-    op: i64,
-    t: &'static str,
+/// Send an error frame, then close the socket (bounded by [`READ_TIMEOUT`] like every other
+/// send). Every path that fails the connection closed — a future cursor, a broken replay
+/// backlog, a lagged consumer — follows this same two-step sequence before the caller returns
+/// or breaks out of the connection loop.
+async fn send_error_and_close(
+    sender: &mut SplitSink<WebSocket, Message>,
+    error: &str,
+    message: &str,
+) {
+    let frame = encode_error_frame(error, message);
+    let _ = send_message(sender, Message::Binary(Bytes::from(frame))).await;
+    let _ = tokio::time::timeout(READ_TIMEOUT, sender.close()).await;
 }
 
-/// DAG-CBOR header for an error frame: `{op}` (op = -1).
+/// DAG-CBOR frame header: `{op, t}` for a message (`op = 1`), or `{op}` alone for an error
+/// (`op = -1`, `t` omitted rather than null — the two shapes every firehose frame uses).
 #[derive(Serialize)]
-struct ErrorHeader {
+struct FrameHeader {
     op: i64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    t: Option<&'static str>,
+}
+
+/// Concatenate an encoded frame header with an encoded body — the header-then-body tail every
+/// `encode_*_frame` function shares. Every header and current body type is a fixed shape of
+/// scalars, links, and byte strings with no floats, so a DAG-CBOR encode failure here is a
+/// programming bug, not a runtime condition callers need to handle.
+fn frame<B: Serialize>(op: i64, t: Option<&'static str>, body: &B) -> Vec<u8> {
+    let mut bytes =
+        serde_ipld_dagcbor::to_vec(&FrameHeader { op, t }).expect("frame header must encode");
+    let body_bytes = serde_ipld_dagcbor::to_vec(body).expect("frame body must encode");
+    bytes.extend_from_slice(&body_bytes);
+    bytes
 }
 
 /// The `#commit` message body, encoded as DAG-CBOR per com.atproto.sync.subscribeRepos.
@@ -311,27 +337,24 @@ fn encode_commit_frame(commit: &CommitEvent) -> Result<Vec<u8>, String> {
     let commit_cid = Cid::try_from(commit.commit.as_str())
         .map_err(|e| format!("invalid commit CID {:?}: {e}", commit.commit))?;
 
-    let prev_data = match &commit.prev_data {
-        Some(s) => Some(
-            Cid::try_from(s.as_str()).map_err(|e| format!("invalid prevData CID {s:?}: {e}"))?,
-        ),
-        None => None,
-    };
+    let prev_data = commit
+        .prev_data
+        .as_deref()
+        .map(|s| Cid::try_from(s).map_err(|e| format!("invalid prevData CID {s:?}: {e}")))
+        .transpose()?;
 
     let mut ops = Vec::with_capacity(commit.ops.len());
     for op in &commit.ops {
-        let cid = match &op.cid {
-            Some(s) => {
-                Some(Cid::try_from(s.as_str()).map_err(|e| format!("invalid op CID {s:?}: {e}"))?)
-            }
-            None => None,
-        };
-        let prev = match &op.prev {
-            Some(s) => Some(
-                Cid::try_from(s.as_str()).map_err(|e| format!("invalid op prev CID {s:?}: {e}"))?,
-            ),
-            None => None,
-        };
+        let cid = op
+            .cid
+            .as_deref()
+            .map(|s| Cid::try_from(s).map_err(|e| format!("invalid op CID {s:?}: {e}")))
+            .transpose()?;
+        let prev = op
+            .prev
+            .as_deref()
+            .map(|s| Cid::try_from(s).map_err(|e| format!("invalid op prev CID {s:?}: {e}")))
+            .transpose()?;
         ops.push(RepoOpWire {
             action: op.action.as_str(),
             path: op.path(),
@@ -340,10 +363,6 @@ fn encode_commit_frame(commit: &CommitEvent) -> Result<Vec<u8>, String> {
         });
     }
 
-    let header = MessageHeader {
-        op: 1,
-        t: "#commit",
-    };
     let body = CommitBody {
         seq: commit.seq,
         rebase: false,
@@ -359,10 +378,7 @@ fn encode_commit_frame(commit: &CommitEvent) -> Result<Vec<u8>, String> {
         time: &commit.time,
     };
 
-    let mut frame = serde_ipld_dagcbor::to_vec(&header).map_err(|e| e.to_string())?;
-    let body_bytes = serde_ipld_dagcbor::to_vec(&body).map_err(|e| e.to_string())?;
-    frame.extend_from_slice(&body_bytes);
-    Ok(frame)
+    Ok(frame(1, Some("#commit"), &body))
 }
 
 /// The `#account` message body, encoded as DAG-CBOR per com.atproto.sync.subscribeRepos.
@@ -383,10 +399,6 @@ struct AccountBody<'a> {
 /// concatenated with the DAG-CBOR body. Unlike `#commit`, every field is a plain scalar, so
 /// encoding is infallible (matching how [`encode_error_frame`] treats its fixed-shape structs).
 fn encode_account_frame(account: &AccountEvent) -> Vec<u8> {
-    let header = MessageHeader {
-        op: 1,
-        t: "#account",
-    };
     let body = AccountBody {
         seq: account.seq,
         did: &account.did,
@@ -394,11 +406,7 @@ fn encode_account_frame(account: &AccountEvent) -> Vec<u8> {
         active: account.active,
         status: account.status.as_deref(),
     };
-
-    let mut frame = serde_ipld_dagcbor::to_vec(&header).expect("#account header must encode");
-    let body_bytes = serde_ipld_dagcbor::to_vec(&body).expect("#account body must encode");
-    frame.extend_from_slice(&body_bytes);
-    frame
+    frame(1, Some("#account"), &body)
 }
 
 /// The `#identity` message body, encoded as DAG-CBOR per com.atproto.sync.subscribeRepos.
@@ -419,21 +427,13 @@ struct IdentityBody<'a> {
 /// concatenated with the DAG-CBOR body. Like `#account`, every field is a plain scalar, so
 /// encoding is infallible.
 fn encode_identity_frame(identity: &IdentityEvent) -> Vec<u8> {
-    let header = MessageHeader {
-        op: 1,
-        t: "#identity",
-    };
     let body = IdentityBody {
         seq: identity.seq,
         did: &identity.did,
         time: &identity.time,
         handle: identity.handle.as_deref(),
     };
-
-    let mut frame = serde_ipld_dagcbor::to_vec(&header).expect("#identity header must encode");
-    let body_bytes = serde_ipld_dagcbor::to_vec(&body).expect("#identity body must encode");
-    frame.extend_from_slice(&body_bytes);
-    frame
+    frame(1, Some("#identity"), &body)
 }
 
 /// The `#sync` message body, encoded as DAG-CBOR per com.atproto.sync.subscribeRepos.
@@ -454,7 +454,6 @@ struct SyncBody<'a> {
 /// Encode a [`SyncEvent`] into a complete firehose frame: the `#sync` header concatenated with the
 /// DAG-CBOR body. Infallible for the same reason as [`encode_account_frame`] — no CID parsing.
 fn encode_sync_frame(sync: &SyncEvent) -> Vec<u8> {
-    let header = MessageHeader { op: 1, t: "#sync" };
     let body = SyncBody {
         seq: sync.seq,
         did: &sync.did,
@@ -462,11 +461,7 @@ fn encode_sync_frame(sync: &SyncEvent) -> Vec<u8> {
         rev: &sync.rev,
         time: &sync.time,
     };
-
-    let mut frame = serde_ipld_dagcbor::to_vec(&header).expect("#sync header must encode");
-    let body_bytes = serde_ipld_dagcbor::to_vec(&body).expect("#sync body must encode");
-    frame.extend_from_slice(&body_bytes);
-    frame
+    frame(1, Some("#sync"), &body)
 }
 
 /// Encode an error frame: the `{op: -1}` header concatenated with `{error, message}`.
@@ -477,13 +472,7 @@ fn encode_error_frame(error: &str, message: &str) -> Vec<u8> {
         message: &'a str,
     }
 
-    // These are tiny fixed-shape structs; encoding cannot fail in practice.
-    let mut frame =
-        serde_ipld_dagcbor::to_vec(&ErrorHeader { op: -1 }).expect("error header must encode");
-    let body =
-        serde_ipld_dagcbor::to_vec(&ErrorBody { error, message }).expect("error body must encode");
-    frame.extend_from_slice(&body);
-    frame
+    frame(-1, None, &ErrorBody { error, message })
 }
 
 #[cfg(test)]

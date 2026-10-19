@@ -39,6 +39,53 @@ function hashToken(seed: string): string {
   return h.toString(36).padStart(7, '0').slice(0, 12);
 }
 
+/**
+ * A child account this identity has minted for an agent — its own DID and handle, under this
+ * identity's rotation authority. Enough to drive the mint: the handle set is what a taken-handle
+ * rejection is checked against, and the length is the next derivation index.
+ */
+export interface FakeChild {
+  registrationId: string;
+  did: string;
+  handle: string;
+  /** `claimed` = live, `active` = mid-provisioning, `revoked` = credential turned off. */
+  status: 'active' | 'claimed' | 'revoked';
+  createdAt: string;
+  scopes: string[];
+  /**
+   * Set once deletion is scheduled. Deleting revokes as a side effect, so this is the only thing
+   * separating a retired child from a merely revoked one — the same asymmetry the real list route
+   * resolves by joining the deletion tombstone.
+   */
+  deleteAfter?: string;
+  /**
+   * What the recovery epilogue should conclude about this child, for driving the states a real
+   * reconciliation can reach. Absent means the derived key matches — the ordinary case. `lost`
+   * models a child whose public directory entry names a key this seed does not derive;
+   * `unreachable` models a directory read that failed, which is not the same claim.
+   */
+  recoveryKey?: 'lost' | 'unreachable';
+  /**
+   * The child's own append-only trail. Kept here rather than on the parent's `agents` list
+   * because that is what the server does: the child's registration is bound to the child's DID,
+   * and the parent reads it through the `/v1/agents` parent arm, not by owning it.
+   */
+  audit: AgentAuditEvent[];
+}
+
+/**
+ * The agent grant a default-configured Custos issues (`[agent_auth] granted_scopes`). Real scope
+ * tokens, not placeholders: `describeScopes` parses the atproto scope grammar, so an invented
+ * token like `blob:upload` renders as literal nonsense ("Upload upload files") and the harness
+ * stops being a faithful preview of the permissions screen.
+ */
+export const HARNESS_AGENT_SCOPES = [
+  'atproto',
+  'repo:*?action=create&action=update',
+  'repo:*?action=delete',
+  'blob:*/*',
+];
+
 /** One agent bound to an identity, plus its append-only audit trail. */
 export interface FakeAgent {
   summary: AgentSummary;
@@ -131,11 +178,8 @@ export interface FakeIdentity {
    * `build_self_held_kit`, survives `submit`, cleared by `confirm`.
    */
   selfHeldKitStagedRecoveryKey: string | null;
-  /**
-   * Whether this identity carries a completed self-held kit — the durable
-   * `{did}:self-held-kit` marker. Drives `self_held_kit_escrow_offer_cmd`, the upsell seam
-   * that lights up only if the identity later lands on an escrow-capable host.
-   */
+  /** Whether this identity carries a completed self-held kit — the durable
+   *  `{did}:self-held-kit` marker, mirroring the Keychain slot. */
   selfHeldKitInstalled: boolean;
   /**
    * Models a device restored from an encrypted backup: the device-key metadata came back,
@@ -144,6 +188,25 @@ export interface FakeIdentity {
    * browser that has no enclave to empty.
    */
   deviceKeyUnusable: boolean;
+  /**
+   * Whether this identity holds a delegation seed — the `{did}:delegation-seed` Keychain slot
+   * the create ceremony writes and "Enable agent accounts" backfills. Drives
+   * `agent_accounts_provisioned`, so an unprovisioned identity can be driven through the
+   * provisioning gate in the browser. Identities created before the seed existed are the
+   * unprovisioned case; seed one with `agentAccountsProvisioned: false`.
+   */
+  agentAccountsProvisioned: boolean;
+  /**
+   * The child accounts this identity has minted for agents.
+   */
+  children: FakeChild[];
+  /**
+   * The browser stand-in for the `{did}:child-index` Keychain slot: the next derivation index
+   * this device will mint at. Normally it clears `children.length`, because each mint advances
+   * it. A *restored* device holds the delegation seed but no counter, so seeding this below
+   * `children.length` is what puts the recovery epilogue in play.
+   */
+  childIndex: number;
 }
 
 /** Transient state for the multi-step import (claim) flow. */
@@ -457,6 +520,8 @@ export function seedIdentity(
     deviceKeyIsRoot?: boolean;
     recoveryKey?: boolean;
     deviceKeyUnusable?: boolean;
+    agentAccountsProvisioned?: boolean;
+    childIndex?: number;
   }
 ): FakeIdentity {
   const pdsUrl = opts.pdsUrl ?? DEFAULT_PDS_URL;
@@ -486,6 +551,9 @@ export function seedIdentity(
     selfHeldKitStagedRecoveryKey: null,
     selfHeldKitInstalled: false,
     deviceKeyUnusable: opts.deviceKeyUnusable ?? false,
+    agentAccountsProvisioned: opts.agentAccountsProvisioned ?? true,
+    childIndex: opts.childIndex ?? 0,
+    children: [],
   };
 }
 
@@ -548,7 +616,7 @@ export function seedAgent(seed: string, did: string): FakeAgent {
       registrationType: 'service_auth',
       issuer: `did:web:agent-${hashToken(seed)}.example`,
       subject: did,
-      scopes: ['repo:write', 'blob:upload'],
+      scopes: [...HARNESS_AGENT_SCOPES],
       status: 'claimed',
       createdAt: now,
       updatedAt: now,

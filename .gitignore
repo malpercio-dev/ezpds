@@ -77,3 +77,6 @@ linear-export/
 # Node dependency trees for the tools/* packages (each is an independent pnpm
 # package with its own node_modules; only the lockfiles are tracked).
 tools/*/node_modules/
+
+# Local credential drop for account-recovery tooling; never commit.
+/app_password

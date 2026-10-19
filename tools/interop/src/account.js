@@ -19,7 +19,7 @@ import {
   randomPassword,
   randomSuffix,
 } from './crypto.js';
-import { loadState, saveState, getAccount } from './state.js';
+import { loadState, saveState, getAccount, accountHost } from './state.js';
 
 export async function describeServer() {
   return xrpc(BASE_URL, 'com.atproto.server.describeServer');
@@ -189,12 +189,13 @@ function jwtExpiresSoon(jwt, marginSeconds = 60) {
 export async function ensureSession(name) {
   const state = loadState();
   const account = getAccount(state, name);
+  const host = accountHost(account);
 
   if (account.accessJwt && !jwtExpiresSoon(account.accessJwt)) return account;
 
   if (account.refreshJwt && !jwtExpiresSoon(account.refreshJwt)) {
     try {
-      const refreshed = await xrpc(BASE_URL, 'com.atproto.server.refreshSession', {
+      const refreshed = await xrpc(host, 'com.atproto.server.refreshSession', {
         method: 'POST',
         token: account.refreshJwt,
       });
@@ -207,7 +208,10 @@ export async function ensureSession(name) {
     }
   }
 
-  const session = await xrpc(BASE_URL, 'com.atproto.server.createSession', {
+  if (!account.password) {
+    throw new Error(`session for "${name}" expired and no password is stored — re-run import-session`);
+  }
+  const session = await xrpc(host, 'com.atproto.server.createSession', {
     method: 'POST',
     body: { identifier: account.did, password: account.password },
   });
@@ -244,7 +248,40 @@ export async function scheduleEphemeralDeletion(name, { afterMinutes = 5 } = {})
 
 export async function getSession(name) {
   const account = await ensureSession(name);
-  return xrpc(BASE_URL, 'com.atproto.server.getSession', { token: account.accessJwt });
+  return xrpc(accountHost(account), 'com.atproto.server.getSession', { token: account.accessJwt });
+}
+
+/**
+ * Adopt an account that already exists on some PDS — including a foreign one this CLI
+ * cannot provision on (the `/v1/*` provisioning ceremony is Custos-proprietary).
+ *
+ * Standard `createSession` and nothing else, which is all the spaces scenarios need. The
+ * account is recorded with its host, so every later call for it targets that PDS rather
+ * than the configured BASE_URL. Marked `foreign` so account teardown never touches it.
+ */
+export async function importSession({ name, host, identifier, password }) {
+  const state = loadState();
+  if (state.accounts[name]) {
+    throw new Error(`account "${name}" already exists in state (did: ${state.accounts[name].did}). Pick another --name.`);
+  }
+  const base = host.replace(/\/+$/, '');
+  const session = await xrpc(base, 'com.atproto.server.createSession', {
+    method: 'POST',
+    body: { identifier, password },
+  });
+  state.accounts[name] = {
+    name,
+    kind: 'foreign',
+    host: base,
+    did: session.did,
+    handle: session.handle,
+    password,
+    accessJwt: session.accessJwt,
+    refreshJwt: session.refreshJwt,
+    createdAt: new Date().toISOString(),
+  };
+  saveState(state);
+  return state.accounts[name];
 }
 
 export { keypairFromHex };

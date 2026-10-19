@@ -12,7 +12,7 @@ use axum::{extract::State, http::StatusCode, response::Json};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use common::{ApiError, ErrorCode};
+use common::{ApiError, ApiResultExt, ErrorCode};
 
 use crate::app::AppState;
 use crate::auth::token::generate_token;
@@ -85,10 +85,7 @@ pub async fn transfer_accept(
         &device_token.hash,
     )
     .await
-    .map_err(|e| {
-        tracing::error!(error = %e, "failed to accept transfer");
-        ApiError::new(ErrorCode::InternalError, "failed to accept transfer")
-    })?;
+    .or_internal("failed to accept transfer")?;
 
     match outcome {
         AcceptOutcome::Accepted { transfer_id } => Ok((
@@ -121,24 +118,7 @@ mod tests {
     use uuid::Uuid;
 
     use crate::app::{app, test_state, AppState};
-    use crate::routes::test_utils::body_json;
-
-    async fn seed_account(db: &sqlx::SqlitePool) -> String {
-        let did = format!(
-            "did:plc:{}",
-            &Uuid::new_v4().to_string().replace('-', "")[..24]
-        );
-        sqlx::query(
-            "INSERT INTO accounts (did, email, password_hash, created_at, updated_at) \
-             VALUES (?, ?, NULL, datetime('now'), datetime('now'))",
-        )
-        .bind(&did)
-        .bind(format!("{}@example.com", &did[8..16]))
-        .execute(db)
-        .await
-        .expect("insert account");
-        did
-    }
+    use crate::routes::test_utils::{body_json, seed_account_random_did as seed_account};
 
     async fn seed_transfer(db: &sqlx::SqlitePool, code: &str, status: &str) -> (String, String) {
         let did = seed_account(db).await;

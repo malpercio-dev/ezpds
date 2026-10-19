@@ -363,12 +363,12 @@
   }
 </script>
 
-<div class="screen" class:hidden={scanning}>
+<div class="screen u-screen-lg" class:hidden={scanning}>
   <ScreenHeader title="Sign in to an app" {onback} />
 
   {#if phase === 'enter' || phase === 'loading'}
     <div class="body">
-      <p class="lede">
+      <p class="lede u-body-copy">
         An app is asking to sign in as you. Scan the QR on its sign-in page, or enter the
         short code it shows — either way you see what it's asking for before anything happens.
       </p>
@@ -390,7 +390,7 @@
 
       <div class="divider" aria-hidden="true"><span>or enter the code</span></div>
 
-      <label class="field-label" for="consent-code">Code from the sign-in page</label>
+      <label class="field-label u-label-muted" for="consent-code">Code from the sign-in page</label>
       <TextField
         id="consent-code"
         bind:value={code}
@@ -408,7 +408,7 @@
           <span class="halt-ic" aria-hidden="true">
             <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M7.86 2h8.28L22 7.86v8.28L16.14 22H7.86L2 16.14V7.86z"/><path d="M12 8v4"/><path d="M12 16h.01"/></svg>
           </span>
-          <span class="halt-body">
+          <span class="halt-body u-stack-2xs">
             <span class="halt-t">{ceremonyError.title}</span>
             <span class="halt-s">{ceremonyError.body}</span>
           </span>
@@ -438,7 +438,7 @@
         </div>
 
         <p class="section-label" id="grant-list-label">Choose what this app may do</p>
-        <ul class="grants" aria-labelledby="grant-list-label">
+        <ul class="grants u-list-reset" aria-labelledby="grant-list-label">
           <li class="grant grant--base">
             <span class="grant-ic" aria-hidden="true">
               <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="m5 12 5 5L20 7"/></svg>
@@ -465,7 +465,7 @@
             </li>
           {/each}
         </ul>
-        <p class="fine">
+        <p class="fine u-fine">
           Uncheck anything you don’t want to grant — the app will only be able to do what’s left
           checked. You can revoke this app’s access later from the app itself.
         </p>
@@ -476,10 +476,10 @@
                can't complete. Type-the-number (GitHub style) beats pick-from-three: there is
                nothing to guess-tap. -->
           <div class="match" class:match--error={!!matchError}>
-            <label class="field-label" for="match-number">
+            <label class="field-label u-label-muted" for="match-number">
               Enter the number shown on the sign-in screen
             </label>
-            <p class="match-why">
+            <p class="match-why u-fine">
               This proves you can see the screen that asked to sign in. If you didn’t start this
               sign-in and see no number anywhere, deny the request.
             </p>
@@ -503,7 +503,7 @@
             <span class="halt-ic" aria-hidden="true">
               <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M7.86 2h8.28L22 7.86v8.28L16.14 22H7.86L2 16.14V7.86z"/><path d="M12 8v4"/><path d="M12 16h.01"/></svg>
             </span>
-            <span class="halt-body">
+            <span class="halt-body u-stack-2xs">
               <span class="halt-t">{ceremonyError.title}</span>
               <span class="halt-s">{ceremonyError.body}</span>
             </span>
@@ -576,14 +576,6 @@
 {/if}
 
 <style>
-  .screen {
-    display: flex;
-    flex-direction: column;
-    height: 100%;
-    padding: var(--space-lg) var(--space-md) var(--space-xl);
-    gap: var(--space-lg);
-    overflow-y: auto;
-  }
   .screen.hidden {
     display: none;
   }
@@ -674,7 +666,7 @@
   }
   .reticle {
     position: relative;
-    width: min(68vw, 300px);
+    width: min(68vw, 300px); /* px-ok: one-off QR/photo review max width */
     aspect-ratio: 1;
     border-radius: var(--radius-lg);
     box-shadow: 0 0 0 100vmax var(--scan-scrim);
@@ -683,8 +675,8 @@
     position: absolute;
     width: var(--space-xl);
     height: var(--space-xl);
-    border: 3px solid var(--color-primary);
-    filter: drop-shadow(0 0 3px color-mix(in oklab, var(--color-bg) 65%, transparent));
+    border: 3px solid var(--color-primary); /* px-ok: avatar emphasis ring, deliberately thicker than a hairline */
+    filter: drop-shadow(0 0 3px color-mix(in oklab, var(--color-bg) 65%, transparent)); /* px-ok: decorative drop-shadow blur radius */
   }
   .corner--tl {
     top: 0;
@@ -740,19 +732,6 @@
     gap: var(--space-md);
   }
 
-  .lede {
-    font-size: var(--text-body);
-    color: var(--color-muted);
-    line-height: 1.5;
-    margin: 0;
-  }
-
-  .field-label {
-    font-size: var(--text-label);
-    font-weight: var(--weight-semibold);
-    color: var(--color-muted);
-  }
-
   .req-card {
     background: var(--color-surface);
     border: 1px solid var(--color-line);
@@ -805,14 +784,6 @@
     margin: var(--space-xs) 0 0;
   }
 
-  .grants {
-    list-style: none;
-    display: flex;
-    flex-direction: column;
-    gap: var(--space-sm);
-    margin: 0;
-    padding: 0;
-  }
   .grant {
     display: flex;
     align-items: flex-start;
@@ -830,8 +801,8 @@
     cursor: pointer;
   }
   .grant-check input[type='checkbox'] {
-    width: 18px;
-    height: 18px;
+    width: var(--size-icon-2xs);
+    height: var(--size-icon-2xs);
     flex-shrink: 0;
     margin-top: var(--space-3xs);
     accent-color: var(--color-accent);
@@ -867,13 +838,6 @@
     overflow-wrap: anywhere;
   }
 
-  .fine {
-    font-size: var(--text-label);
-    color: var(--color-muted);
-    line-height: 1.5;
-    margin: 0;
-  }
-
   /* Number-match block: framed like a checkpoint, not colored as an alarm — it is a normal,
      expected step for push-delivered prompts (status never by color alone; the words carry it). */
   .match {
@@ -888,12 +852,6 @@
   .match--error {
     border-color: var(--color-critical);
   }
-  .match-why {
-    font-size: var(--text-label);
-    color: var(--color-muted);
-    line-height: 1.5;
-    margin: 0;
-  }
 
   .halt {
     display: flex;
@@ -907,11 +865,6 @@
     color: var(--color-critical);
     flex-shrink: 0;
     margin-top: var(--space-3xs);
-  }
-  .halt-body {
-    display: flex;
-    flex-direction: column;
-    gap: var(--space-2xs);
   }
   .halt-t {
     font-size: var(--text-body);
@@ -942,8 +895,8 @@
     padding: var(--space-xl) var(--space-md);
   }
   .done-seal {
-    width: 72px;
-    height: 72px;
+    width: var(--size-avatar-lg);
+    height: var(--size-avatar-lg);
     border-radius: var(--radius-full);
     background: var(--color-safe-surface);
     color: var(--color-safe);

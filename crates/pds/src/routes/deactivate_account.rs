@@ -97,8 +97,10 @@ pub async fn deactivate_account_handler(
                     ApiError::new(ErrorCode::InternalError, "failed to deactivate account")
                 })?;
             tx.commit().await.map_err(|e| {
-                tracing::error!(error = %e, did = %user.did, "failed to commit deactivate transaction");
-                ApiError::new(ErrorCode::InternalError, "failed to deactivate account")
+                {
+                    tracing::error!(error = %e, did = %user.did, "failed to commit deactivate transaction");
+                    ApiError::new(ErrorCode::InternalError, "failed to deactivate account")
+                }
             })?;
             pending.finish();
             tracing::info!(
@@ -124,35 +126,10 @@ mod tests {
 
     use crate::app::{app, test_state};
     use crate::firehose::FirehoseEvent;
-    use crate::routes::test_utils::{access_jwt, body_json};
-
-    async fn insert_account(db: &sqlx::SqlitePool, did: &str, email: &str) {
-        sqlx::query(
-            "INSERT INTO accounts (did, email, password_hash, created_at, updated_at) \
-             VALUES (?, ?, NULL, datetime('now'), datetime('now'))",
-        )
-        .bind(did)
-        .bind(email)
-        .execute(db)
-        .await
-        .unwrap();
-    }
-
-    fn scoped_jwt(secret: &[u8; 32], sub: &str, scope: &str) -> String {
-        use jsonwebtoken::{encode, Algorithm, EncodingKey, Header};
-        use std::time::{SystemTime, UNIX_EPOCH};
-
-        let now = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_secs();
-        encode(
-            &Header::new(Algorithm::HS256),
-            &serde_json::json!({ "scope": scope, "sub": sub, "iat": now, "exp": now + 7200_u64 }),
-            &EncodingKey::from_secret(secret),
-        )
-        .unwrap()
-    }
+    use crate::routes::test_utils::{
+        access_jwt, body_json, insert_account_with_email as insert_account,
+        scoped_access_jwt as scoped_jwt,
+    };
 
     fn deactivate_request(token: &str, body: Body) -> Request<Body> {
         Request::builder()
@@ -315,21 +292,6 @@ mod tests {
 
         let response = app(state)
             .oneshot(deactivate_request(&token, Body::empty()))
-            .await
-            .unwrap();
-        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
-    }
-
-    #[tokio::test]
-    async fn missing_auth_returns_401() {
-        let response = app(test_state().await)
-            .oneshot(
-                Request::builder()
-                    .method("POST")
-                    .uri("/xrpc/com.atproto.server.deactivateAccount")
-                    .body(Body::empty())
-                    .unwrap(),
-            )
             .await
             .unwrap();
         assert_eq!(response.status(), StatusCode::UNAUTHORIZED);

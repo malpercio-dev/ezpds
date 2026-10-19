@@ -509,7 +509,7 @@ mod tests {
             })
             .await;
 
-        let client = PdsClient::new_for_test(server.base_url());
+        let client = crate::pds_client::new_for_test(server.base_url());
         let result = preview_oauth_consent_impl(&client, DID, "user_code", "ABCD-2345")
             .await
             .unwrap();
@@ -548,7 +548,7 @@ mod tests {
             })
             .await;
 
-        let client = PdsClient::new_for_test(server.base_url());
+        let client = crate::pds_client::new_for_test(server.base_url());
         let result = preview_oauth_consent_impl(&client, DID, "request_id", REQUEST_ID)
             .await
             .unwrap();
@@ -572,7 +572,7 @@ mod tests {
             .await;
 
         let result = preview_oauth_consent_impl(
-            &PdsClient::new_for_test(server.base_url()),
+            &crate::pds_client::new_for_test(server.base_url()),
             DID,
             "user_code",
             "NOPE-0000",
@@ -622,7 +622,7 @@ mod tests {
             })
             .await;
 
-        let client = PdsClient::new_for_test(server.base_url());
+        let client = crate::pds_client::new_for_test(server.base_url());
         let result = confirm_oauth_consent_impl(
             &client,
             &IdentityStore,
@@ -687,7 +687,7 @@ mod tests {
             })
             .await;
 
-        let client = PdsClient::new_for_test(server.base_url());
+        let client = crate::pds_client::new_for_test(server.base_url());
         let result = confirm_oauth_consent_impl(
             &client,
             &IdentityStore,
@@ -729,7 +729,7 @@ mod tests {
             })
             .await;
 
-        let client = PdsClient::new_for_test(server.base_url());
+        let client = crate::pds_client::new_for_test(server.base_url());
         let result = preview_oauth_consent_impl(&client, DID, "user_code", "ABCD-2345")
             .await
             .unwrap();
@@ -750,7 +750,7 @@ mod tests {
                 .await;
             let nonce = URL_SAFE_NO_PAD.encode([status as u8; 32]);
             let result = confirm_oauth_consent_impl(
-                &PdsClient::new_for_test(server.base_url()),
+                &crate::pds_client::new_for_test(server.base_url()),
                 &IdentityStore,
                 DID,
                 REQUEST_ID,

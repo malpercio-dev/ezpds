@@ -691,6 +691,25 @@ async fn perform_did_ceremony(
         }
     }
 
+    // Step 9: Provision the identity for child (agent) accounts by persisting the
+    // delegation seed derived from this ceremony's recovery seed. This is the only
+    // moment in the create flow where that seed exists and the DID is known, so it
+    // happens here rather than in `register_created_identity`.
+    //
+    // Non-fatal: the DID is already committed and the account is fully usable without
+    // it, and "Enable agent accounts" re-provisions from the user's shares at any time.
+    // Failing the ceremony here would instead strand the user on a DID that
+    // `DidAlreadyExists` refuses to re-create.
+    if let Err(e) = identity_store::IdentityStore
+        .store_delegation_seed(&create_did_resp.did, &shares.delegation_seed)
+    {
+        tracing::warn!(
+            did = %create_did_resp.did,
+            error = %e,
+            "delegation seed not persisted; identity is unprovisioned for agent accounts"
+        );
+    }
+
     Ok(DIDCeremonyResult {
         did: create_did_resp.did,
         share3: shares.share3.to_string(),
@@ -995,13 +1014,33 @@ async fn get_available_user_domains(
     Ok(server_info.available_user_domains)
 }
 
+/// Rewrite the retired `obsign.org` apex to the host that actually serves the PDS.
+///
+/// The apex stopped answering XRPC at the 2026-07-24 `pds.obsign.org` migration — it 404s every
+/// path — but an install configured before that date still holds it in the Keychain, and nothing
+/// corrects it: the URL is read once at launch into a `OnceLock`, and the only screen that can
+/// rewrite it sits behind "create new identity". Rewriting on read rather than writing back keeps
+/// this idempotent and failure-free; a later deliberate save replaces the stored value normally.
+fn migrate_retired_apex(url: String) -> String {
+    if url.trim_end_matches('/') == "https://obsign.org" {
+        return "https://pds.obsign.org".to_string();
+    }
+    url
+}
+
+/// The configured PDS base URL as every reader should see it — the stored value past
+/// [`migrate_retired_apex`]. `None` when the wallet was never configured.
+fn configured_pds_url() -> Option<String> {
+    keychain::load_pds_url().map(migrate_retired_apex)
+}
+
 /// Return the saved PDS base URL, or `None` if not yet configured.
 ///
 /// The frontend calls this on mount to decide whether to show the PDS
 /// configuration screen.
 #[tauri::command]
 fn get_pds_url() -> Option<String> {
-    keychain::load_pds_url()
+    configured_pds_url()
 }
 
 /// The three values the in-app appearance setting can take. `"system"` means
@@ -1058,7 +1097,7 @@ async fn save_pds_url(
     state: tauri::State<'_, oauth::AppState>,
 ) -> Result<(), PdsConfigError> {
     let normalized = normalize_pds_url(&url)?;
-    let resp = http::CustosClient::new_with_url(normalized.clone())
+    let resp = http::new_configured(normalized.clone())
         .get("/xrpc/_health")
         .await
         .map_err(|e| {
@@ -1729,7 +1768,7 @@ pub fn run() {
     builder
         .setup(|app| {
             // Restore PDS URL from Keychain if previously configured.
-            if let Some(url) = keychain::load_pds_url() {
+            if let Some(url) = configured_pds_url() {
                 app.state::<oauth::AppState>().set_custos_client(url);
             }
 
@@ -1807,8 +1846,6 @@ pub fn run() {
             get_appearance_preference,
             set_appearance_preference,
             diagnostics::export_diagnostics,
-            oauth::prepare_oauth_flow,
-            oauth::complete_oauth_flow,
             claim::resolve_identity,
             claim::authenticate_source_pds,
             claim::request_claim_verification,
@@ -1819,6 +1856,13 @@ pub fn run() {
             agents::get_agent_audit,
             agents::preview_agent_claim,
             agents::confirm_agent_claim,
+            agents::agent_accounts_provisioned,
+            agents::mint_child_from_claim,
+            agents::list_children,
+            agents::revoke_child,
+            agents::delete_child,
+            agents::remint_child_assertion,
+            agents::reconcile_children,
             oauth_consent::preview_oauth_consent,
             oauth_consent::preview_oauth_consent_by_request_id,
             oauth_consent::confirm_oauth_consent,
@@ -1832,11 +1876,9 @@ pub fn run() {
             repo_backup::get_repo_backup_status,
             repo_backup::set_repo_backup_enabled,
             repo_backup::run_repo_backup,
-            repo_backup::export_repo_backup,
             bg_backup::get_background_backup_settings,
             bg_backup::set_background_backup_settings,
             notifications::register_for_notifications,
-            notifications::refresh_notification_sender_keys,
             notifications::get_notification_diagnostics,
             notifications::clear_notification_failures,
             notification_routes::take_pending_notification_route,
@@ -1853,7 +1895,6 @@ pub fn run() {
             self_held_kit::submit_self_held_kit_cmd,
             self_held_kit::confirm_self_held_kit_cmd,
             self_held_kit::self_held_kit_in_progress_cmd,
-            self_held_kit::self_held_kit_escrow_offer_cmd,
             recovery::submit_recovery_override_cmd,
             identity_removal::get_identity_removal_route,
             identity_removal::request_identity_removal,
@@ -1890,7 +1931,6 @@ pub fn run() {
             endpoint_repair::repair_hosting_endpoint,
             share_recovery::start_share_recovery,
             share_recovery::add_recovery_share,
-            share_recovery::remove_recovery_share,
             share_recovery::initiate_escrow_release,
             share_recovery::request_escrow_release,
             share_recovery::verify_recovery_shares,
@@ -2761,6 +2801,27 @@ mod tests {
         );
 
         let _ = store.remove_identity(did);
+    }
+
+    /// The retired apex is rewritten to the serving host; every other configured URL —
+    /// including a self-hosted Custos and the localhost default — passes through untouched.
+    #[test]
+    fn retired_apex_is_rewritten_and_nothing_else_is() {
+        assert_eq!(
+            migrate_retired_apex("https://obsign.org".to_string()),
+            "https://pds.obsign.org"
+        );
+        assert_eq!(
+            migrate_retired_apex("https://obsign.org/".to_string()),
+            "https://pds.obsign.org"
+        );
+        for untouched in [
+            "https://pds.obsign.org",
+            "https://custos.example.com",
+            "http://localhost:8080",
+        ] {
+            assert_eq!(migrate_retired_apex(untouched.to_string()), untouched);
+        }
     }
 
     #[test]

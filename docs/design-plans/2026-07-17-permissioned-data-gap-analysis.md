@@ -1,20 +1,141 @@
-# Permissioned Data (atproto proposal 0016) — Custos Gap Analysis
+# Atproto Spaces (proposal 0016, née Permissioned Data) — Custos Gap Analysis
 
-**Date:** 2026-07-17
-**Status:** Research / gap analysis — no implementation decision yet
+**Date:** 2026-07-17 · **Revised:** 2026-08-20 (official alpha release) · 2026-09-04 (weekly watch) · 2026-09-11 (weekly watch)
+**Status:** Research / gap analysis — updated for the alpha; implementation green-lit for Phase 0
 **Sources:**
-- [0016 Permissioned Data proposal](https://github.com/bluesky-social/proposals/tree/main/0016-permissioned-data) (canonical, published 2026-07-02)
-- [Permissioned Data Diary 7: Off the Record](https://dholms.leaflet.pub/3mqtqvjidqs2p) (2026-07-17 — repo structure, signing, sync rationale)
-- Earlier diaries: [Diary 2: Buckets](https://dholms.leaflet.pub/3mfrsbcn2gk2a), [Diary 4: The Big Picture](https://dholms.leaflet.pub/3mhj6bcqats2o)
+- [0016 proposal](https://github.com/bluesky-social/proposals/tree/main/0016-permissioned-data) (canonical; kept in sync with the reference implementation as of the alpha; last diffed against commit `119fa6b`)
+- [The Atproto Spaces Alpha is Live](https://atproto.com/blog/atproto-spaces-alpha) (2026-08-20 announcement)
+- Reference implementation: `permissioned-data` branch of bluesky-social/atproto — lexicons under `lexicons/com/atproto/{space,simplespace}/`, protocol library in `packages/space/` (LtHash, deniable commits, DPoP, sync — **with golden test vectors**)
+- [Permissioned Data Diary 7: Off the Record](https://dholms.leaflet.pub/3mqtqvjidqs2p) (2026-07-17 — repo structure, signing, sync rationale); earlier diaries: [Diary 2: Buckets](https://dholms.leaflet.pub/3mfrsbcn2gk2a), [Diary 4: The Big Picture](https://dholms.leaflet.pub/3mhj6bcqats2o)
 - [Community forum discussion](https://discourse.atprotocol.community/t/permissioned-data-proposal-discussion/946)
-- Reference implementation in progress: bluesky-social/atproto PR #5187 (lexicons + WIP impl)
 
-> **Spec stability warning.** The proposal says details/terminology/behaviors are
-> likely to change. Since the first draft the member list was removed from the
-> protocol, and the URI scheme (`at://` with a `space` segment vs. a dedicated
-> scheme) is "still undecided" per Diary 7. dholms plans an alpha
-> protocol + PDS "in the next couple weeks" (as of 2026-07-17) and an IETF
-> working-group meeting on July 23. Anything we build now must expect churn.
+> **Alpha status (2026-08-20).** The protocol is now named **Atproto Spaces**
+> and the alpha is officially open: a hosted sandbox PDS, a tagged Docker image
+> (`ghcr.io/bluesky-social/atproto:pds-spaces-alpha`), alpha-tagged TypeScript
+> `@atproto` SDK packages, and a sample app ([bulletin.my](https://bulletin.my),
+> source at bluesky-social/bulletin). Updates ship **Thursdays** (announcements
+> thread on atmosphere.community); target launch is "later this year".
+> Breaking changes are still promised — the alpha explicitly disclaims
+> production use — but the proposal is now the collaboration point and is kept
+> current with the reference implementation. Ecosystem implementations exist
+> (ZDS/Zig, atproto-crates/Rust, rsky/Blacksky, HappyView), so interop targets
+> are real.
+
+## 0. Spec deltas since the 2026-07-17 analysis
+
+The July analysis was written against the 2026-07-02 proposal text. The
+August revisions (proposals repo, commits `393bb7d`…`54c9cf5`) change it in
+these ways, each folded into the sections below:
+
+1. **Space credentials are DPoP-bound, not bearer** (the big one). A
+   credential carries `cnf.jkt`; `getSpaceCredential` requires a DPoP proof
+   (no `ath` on that proof — the delegation token is a grant, not an access
+   token; the delegation token itself rides `Authorization: Bearer`,
+   alongside the `DPoP:` proof header, on that request) and every
+   credential-authed request to a repo host presents
+   `Authorization: DPoP <credential>` plus a per-request proof that hosts MUST
+   validate per RFC 9449 (`typ`/`alg` header fields, signature vs. header
+   `jwk`, thumbprint vs. `cnf.jkt`, `ath` = hash of the credential, `htm`/`htu`
+   — `htu` is the plain request URL, no `lxm` claim — `iat` recency, `jti`
+   unseen; no DPoP server-provided nonces anywhere in the flow). Rationale: a
+   bearer credential would let any repo host replay it against every other
+   host in the space. Syncers should mint a fresh keypair per credential and
+   discard it on expiry.
+2. **MAC construction pinned**: `mac = HMAC-SHA256(HKDF-Expand(ikm, ctx, 32),
+   hash)` — the *expand step only* of RFC 5869 (§2.3), with `ikm` used
+   directly as the PRK and `ctx` as `info`. No extract step.
+3. **CAR index ordering pinned**: canonical DAG-CBOR map order (shortest key
+   first, then bytewise) — not plain lexicographic; record blocks follow in
+   index order.
+4. **Endpoint changes**: `com.atproto.space.listBlobs` added (repo read/sync
+   group, covered by `read`/`read_self`, used by migration);
+   `com.atproto.space.unregisterNotify` added; `getSpace` **moved** from
+   `com.atproto.space` into `com.atproto.simplespace` as a read query (OAuth
+   `read_self` or space credential; `listMembers` likewise now takes
+   `read_self`). `notifyWrite` now carries the repo's current `rev` + `hash`.
+5. **Space deletion semantics reworked**: members' repo hosts are **not**
+   notified and member data is **not** flagged/erased — a member's records are
+   their own and simply become unreadable to everyone else.
+   `notifySpaceDeleted` goes to registered syncers only, and the durable
+   deletion signal is an explicit `SpaceDeleted` error from
+   `getSpaceCredential` on renewal (any other renewal failure means nothing).
+6. **Scope semantics**: `read_self` now **ignores `collection`** (it was
+   collection-constrained in July); permission-set space entries now carry
+   `manage` as well.
+7. **`simplespace` config hardening**: `policy` and `appAccess` are open
+   unions at the schema layer; a host MUST reject values it does not implement
+   at `createSpace`/`updateSpace` time.
+8. **Golden test vectors now exist** in `packages/space/tests/` — e.g. the
+   empty-state digest is `sha256(2048 zero bytes)` =
+   `e5a00aa9…36b183ad`, and `add("one"); add("two")` digests to
+   `ae05cb6d…701c63e7` — plus full test suites for commits, credentials,
+   DPoP, and sync. The July "no vectors" risk is resolved.
+
+### 2026-09-04 weekly watch (proposals repo, commits `54c9cf5`…`35a2d37`)
+
+Prose-clarification pass, no lexicon/endpoint/vector movement (re-verified
+against `permissioned-data` @ `7cefacc`: same 20 `com.atproto.space.*` + 9
+`com.atproto.simplespace.*` schema files, same golden LtHash digests). Four
+deltas worth folding in:
+
+1. **DID-doc entries error on malformed data instead of falling back.** If
+   `#atproto_space` is present but malformed/invalid, a host MUST return an
+   error rather than silently falling back to `#atproto`; same for
+   `#atproto_space_host` vs. `#atproto_pds`. Fallback is only for an *absent*
+   entry, not a broken one. The `#atproto_space_host` service entry also now
+   has a pinned type, `AtprotoSpaceHost`.
+2. **`collections` in a space type declaration may not be a wildcard `*`**
+   (the `name` field's old 1–64 length cap was also dropped — cosmetic).
+   Doesn't change Custos's plan: the doc already modeled `collection`
+   resolution as dynamic, like permission sets.
+3. **Client attestation is now explicitly optional in the base protocol**
+   text, not just inferable from "some spaces don't require one" — no change
+   to Custos's plan, which already treated it as conditional.
+4. **`getSpaceCredential` wire format spelled out for the first time**: the
+   delegation token travels as `Authorization: Bearer <delegation token>`
+   alongside a `DPoP: <proof>` header (the proof still carries no `ath` — the
+   delegation token is a grant, not an access token); the proof's `htu` is
+   the plain request URL (scheme + host + path, no query/fragment) rather
+   than an `lxm` claim; DPoP server-provided nonces are **not** used anywhere
+   in the flow; and host-side proof validation must additionally check the
+   proof's `typ` (`dpop+jwt`) and `alg` header fields alongside the checklist
+   already in item 1 above. This affects the wire contract MM-510 mints
+   against and the space-credential row in the auth-model table below.
+
+### 2026-09-11 weekly watch (proposals repo, commit `35a2d37`…`119fa6b`)
+
+One substantive change — **`simplespace` write access** — confirmed against
+the lexicon files on `permissioned-data` @ `9d787eb` (`addMember.json`
+removed, `putMember.json` added; `createSpace`/`updateSpace` now require
+`readPolicy` + `writePolicy` instead of one `policy` field; golden LtHash
+digests unchanged). This affects MM-511, MM-514, and MM-516:
+
+1. **Read and write are now independent permissions**, each governed by its
+   own policy field. `policy` splits into `readPolicy` (mints a space
+   credential) and `writePolicy` (governs whether the authority tracks the
+   writer in `listRepos` and forwards its `notifyWrite` notifications);
+   both default to `member-list` and accept the same three variants
+   (`public` / `member-list` / `managing-app`).
+2. **`addMember` is replaced by `putMember`**, which sets a member's `read`
+   and `write` booleans together (both required, replacing the pair
+   wholesale — there's no partial update of just one). `listMembers` returns
+   the same two booleans per member. The `manage=update` grant now
+   authorizes `putMember` where it used to authorize `addMember`.
+3. **Write access does not gate writing** — the base protocol text now says
+   explicitly that a space authority "controls which writers it tracks and
+   which write notifications it forwards, and may exclude writers for any
+   reason including spam or other abuse," but this is purely a sync-fanout
+   decision: an unauthorized writer can still write records into their own
+   permissioned repo (nothing in the protocol stops them), the authority
+   just won't track or sync them. Terminology also tightened: notifications
+   flow from "an account" (not "a member") to "repo hosts" (not "members")
+   notifying the authority — writing was never member-list-gated at the
+   protocol level, only at simplespace's implementation layer, and now
+   simplespace makes that split explicit via `writePolicy`.
+4. **`checkUserAccess` gained an `access` parameter** (`read` | `write`) so
+   the managing app knows which decision it's being asked for; the
+   `clientId` param is omitted on write checks since `notifyWrite` doesn't
+   identify an originating client application.
 
 ## 1. What the proposal specifies
 
@@ -39,10 +160,12 @@ format, sync mechanism, addressing, and resolution path.
   notifications). A PDS is both for accounts/spaces anchored on it.
 - **Space authority DID** resolves via two optional DID-doc entries:
   verification method `#atproto_space` (falls back to `#atproto`) and service
-  `#atproto_space_host` (falls back to `#atproto_pds`).
+  `#atproto_space_host` (typed `AtprotoSpaceHost`; falls back to
+  `#atproto_pds`). Fallback applies only when an entry is *absent* — a
+  present-but-malformed/invalid entry MUST error, never silently fall back.
 - **Space type declarations**: a new Lexicon shape, `"type": "space"`, with
   `key`, `name` (+ localized), `collections` (default collection set for
-  scopes/consent).
+  scopes/consent; MUST NOT contain a wildcard `*`).
 
 ### Repo format (no MST)
 
@@ -56,14 +179,16 @@ format, sync mechanism, addressing, and resolution path.
   `ctx = "atproto-space-v1" || u16be-len-prefixed(space URI, author DID, rev(TID), ikm)`
   (TLS 1.3 vector encoding). Per serving: fresh 32-byte `ikm`,
   `sig = sign(ctx)` with the user's signing key (ES256 or ES256K),
-  `mac = HMAC-SHA256(HKDF-SHA256(ikm, ctx), hash)`. A fresh `ikm`/`sig`/`mac`
+  `mac = HMAC-SHA256(HKDF-Expand(ikm, ctx, 32), hash)` (RFC 5869 §2.3 expand
+  only — `ikm` is the PRK, `ctx` the `info`). A fresh `ikm`/`sig`/`mac`
   is produced **per reader served**. `signedCommit = {ver: 1, hash, ikm, sig,
   mac, rev}`. A leaked commit proves only that the user signed a
   `(space, author, rev, ikm)` context — anyone can forge a matching `mac` for
   any `hash`.
 - **CAR serialization** with **two roots**: (1) the signed commit, (2) a DRISL
-  (DAG-CBOR) index map `"{collection}/{rkey}" → CID` in lexicographic order;
-  record blocks follow in the same order. Streams verifiably: check
+  (DAG-CBOR) index map `"{collection}/{rkey}" → CID` in canonical DAG-CBOR map
+  order (shortest key first, then bytewise); record blocks follow in index
+  order. Streams verifiably: check
   sig+mac → fold index into a running LtHash and compare to `hash` → verify
   each record block CID.
 
@@ -81,20 +206,29 @@ format, sync mechanism, addressing, and resolution path.
   assertion aimed at the space host.
 - **Space credential** — minted by the space authority
   (`com.atproto.space.getSpaceCredential`) in exchange for a delegation token
-  (+ attestation if required). `typ: atproto-space-credential+jwt`,
-  `kid` `#atproto_space` or `#atproto`, `iss` = authority DID, `sub` = space
-  URI, **no `aud`**, ~2 h, multi-use across every repo host in the space.
-  Verifiable offline against the authority's published key.
+  presented as `Authorization: Bearer <delegation token>` + a `DPoP:` proof
+  header (+ attestation if required). `typ:
+  atproto-space-credential+jwt`, `kid` `#atproto_space` or `#atproto`,
+  `iss` = authority DID, `sub` = space URI, **no `aud`**, ~2 h, multi-use
+  across every repo host in the space. Verifiable offline against the
+  authority's published key. **DPoP-bound**: carries `cnf.jkt` (thumbprint of
+  the key from the mint-time proof) and is presented under the `DPoP` scheme
+  with a fresh per-request proof (`ath` = hash of the credential) that every
+  repo host MUST validate per RFC 9449 — never bearer. Syncers mint an
+  ephemeral keypair per credential.
 - **`space:` OAuth scope**:
   `space:<spaceType>[?authority=<did|self|*>][&skey=…][&collection=…][&action=…][&manage=…]`.
   Defaults: `authority=self`, `skey=*`, `action=read,create,update,delete`,
   `collection` = the space type declaration's `collections` (resolved
   dynamically, like permission sets). `read` is all-or-nothing per space
   (grants the read/sync methods **and** `getDelegationToken`); `read_self`
-  covers only the holder's own repo, no delegation token. `manage` verbs gate
-  the management surface. Read/sync methods accept **either** a covering OAuth
-  grant or a space credential; writes accept OAuth only. Permission sets gain
-  a `"resource": "space"` entry type (no wildcard `spaceType` inside sets).
+  covers only the holder's own repo, no delegation token; both `read` and
+  `read_self` ignore `collection` (read is all-or-nothing at the space/repo
+  boundary). `manage` verbs gate the management surface. Read/sync methods
+  accept **either** a covering OAuth grant or a DPoP-bound space credential;
+  writes accept OAuth only. Permission sets gain a `"resource": "space"` entry
+  type carrying the same params incl. `manage` (no wildcard `spaceType` inside
+  sets).
   Consent screens must render the declaration's `name` and the authority's
   bidirectionally-verified handle; wildcard authority+type demands a prominent
   warning.
@@ -111,47 +245,77 @@ format, sync mechanism, addressing, and resolution path.
 - **Full-state recovery** — `getRepo` (two-root CAR) with streaming
   verification; or "healing" via `getLatestCommit` + `listRecords
   excludeValues` diff + selective `getRecord`.
-- **Write notifications** — best-effort, no record data.
-  `registerNotify` (space-credential-authed; on space host = whole space, on
-  repo host = one repo); `notifyWrite` (service auth) from repo host → space
-  host → fan-out to registered syncers. On first write into a *shared* space,
-  the repo host **auto-registers** the authority's `#atproto_space_host` as a
-  subscriber. Self-healing via the set hash; periodic sweep via `listRepos`
-  (writer set with per-repo `rev` + `hash` — accounts that have written, never
-  a member/reader list).
+- **Write notifications** — best-effort, no record data (just the repo's new
+  `rev` + `hash`). `registerNotify` / `unregisterNotify`
+  (space-credential-authed; on space host = whole space, on repo host = one
+  repo; registrations expire); `notifyWrite` (service auth) from repo host →
+  space host → fan-out to registered syncers. On first write into a *shared*
+  space, the repo host **auto-registers** the authority's
+  `#atproto_space_host` as a subscriber. Self-healing via the set hash;
+  periodic sweep via `listRepos` (writer set with per-repo `rev` + `hash` —
+  accounts that have written, never a member/reader list). The authority
+  decides which writers it tracks and forwards notifications for, and may
+  exclude one for any reason (spam, abuse); that filter is a sync-fanout
+  decision only — it never stops an account from writing to its own
+  permissioned repo, which the base protocol does not gate. Which policy
+  governs the filter is implementation-defined (`simplespace`'s
+  `writePolicy`, below).
 - **Space deletion** — authority stops answering, deletes its own repo,
-  best-effort `notifySpaceDeleted`; syncers must delete copies, repo hosts
-  flag-don't-delete members' own data.
+  best-effort `notifySpaceDeleted` to registered syncers (who must delete
+  their copies). Members' repo hosts are **not** notified and keep the
+  member's own records — they simply become unreadable to everyone else. The
+  durable signal for a syncer that missed the notification is an explicit
+  `SpaceDeleted` error on credential renewal; any other renewal failure says
+  nothing about the space.
 
 ### Required PDS management: `com.atproto.simplespace`
 
 Every PDS MUST implement it (spaces anchored on the user's own DID):
-`createSpace` / `updateSpace` / `deleteSpace` / `addMember` / `removeMember` /
-`listMembers`, config `{policy: public | member-list | managing-app, appAccess:
-#open | #allowList, managingApp}`. `managing-app` policy defers the per-user
-authorization decision at credential-mint time to the app via
-`com.atproto.simplespace.checkUserAccess` (served by the managing app,
-service-auth from the authority). Other space-management implementations are
-first-class but live on bespoke space services, not the PDS.
+`createSpace` / `updateSpace` / `deleteSpace` / `getSpace` / `putMember` /
+`removeMember` / `listMembers`, config `{readPolicy: public | member-list |
+managing-app, writePolicy: public | member-list | managing-app, appAccess:
+#open | #allowList, managingApp}`. Read and write are independent
+permissions: `readPolicy` gates whether a space credential is minted;
+`writePolicy` gates whether the authority tracks a writer in `listRepos` and
+forwards their `notifyWrite` notifications (it does **not** prevent the
+writer from writing into their own repo — see the "Write notifications"
+bullet above). Both policy fields and `appAccess` are open unions — a host
+MUST reject values it does not implement at `createSpace`/`updateSpace`
+time. `putMember` sets a member's `read`/`write` booleans together
+(`member-list` policy consults them per-permission); it replaces the old
+`addMember`, and `manage=update` now authorizes it in `addMember`'s place.
+The management procedures need the relevant `manage` grant; the read
+queries need only read access (`getSpace`: OAuth `read_self` or a space
+credential; `listMembers`: `read_self`). `managing-app` policy — settable
+independently for reads and writes — defers the per-user authorization
+decision to the app via `com.atproto.simplespace.checkUserAccess` (served
+by the managing app, service-auth from the authority, now parameterized by
+an `access: read | write` field; `clientId` is omitted on write checks,
+since `notifyWrite` carries no originating client). Other space-management
+implementations are first-class but live on bespoke space services, not the
+PDS.
 
 ### XRPC surface (all `com.atproto.space.*` unless noted)
 
 | Group | Methods |
 |---|---|
-| Host | `getSpace`, `getSpaceCredential`, `listRepos` |
-| Repo (read/sync) | `getRecord`, `listRecords`, `getBlob`, `getLatestCommit`, `getRepo`, `listRepoOps` |
+| Host | `getSpaceCredential` (delegation token + DPoP), `listRepos` |
+| Repo (read/sync) | `getRecord`, `listRecords`, `getBlob`, `listBlobs`, `getLatestCommit`, `getRepo`, `listRepoOps` |
 | PDS | `getDelegationToken`, `createRecord`, `putRecord`, `deleteRecord`, `applyWrites`, `listSpaces` |
-| Notifications | `registerNotify`, `notifyWrite`, `notifySpaceDeleted` |
-| `com.atproto.simplespace.*` | `createSpace`, `updateSpace`, `deleteSpace`, `addMember`, `removeMember`, `listMembers`, `checkUserAccess` (served by managing app) |
+| Notifications | `registerNotify`, `unregisterNotify`, `notifyWrite`, `notifySpaceDeleted` |
+| `com.atproto.simplespace.*` | `createSpace`, `updateSpace`, `deleteSpace`, `getSpace`, `putMember`, `removeMember`, `listMembers`, `checkUserAccess` (served by managing app) |
 
-≈ 18 space methods on the PDS + 6 simplespace methods ⇒ **~24 new routes**
-(each needing a `.bru` file under the bruno-parity gate).
+The alpha lexicons pin this at **20 `com.atproto.space.*` + 9
+`com.atproto.simplespace.*` schema files** (incl. `defs`); Custos serves
+~26 of them as routes (`checkUserAccess` is outbound-only for us, `defs` are
+not endpoints) — each needing a `.bru` file under the bruno-parity gate.
 
 ### Lifecycle interactions
 
-Migration must enumerate **all** of an account's permissioned repos + blobs.
-Deactivation/deletion/takedown propagate exactly as for public data. Syncers
-of permissioned-only data still need firehose `#account`/`#identity` events.
+Migration must enumerate **all** of an account's permissioned repos (via
+`listSpaces`) + blobs (via `listBlobs`). Deactivation/deletion/takedown
+propagate exactly as for public data. Syncers of permissioned-only data still
+need firehose `#account`/`#identity` events.
 
 ## 2. What Custos already has (reuse inventory)
 
@@ -168,6 +332,7 @@ to reuse standard PDS plumbing, and Custos has strong versions of most of it:
 | Space-type declaration resolution (consent names, default collections) | `auth/permission_sets.rs` — NSID→lexicon-record resolution with TTL cache and the SSRF-hardened client (`ssrf-client-check` gate applies) |
 | Record plumbing (TIDs, rkey/NSID validation, JSON↔DAG-CBOR, blob-ref walking, monotonic revs) | `repo-engine::records` (`generate_tid`, `next_commit_rev`, `validate_record_path`, `json_to_record_value`, `record_blob_cids`) |
 | CAR framing | `repo-engine::car_export` (`car_v1_header`, `car_v1_block_frame`, streaming) |
+| DPoP binding of space credentials (`cnf.jkt`, per-request proofs, `ath`/`htm`/`htu`/`jti` checks) | Full RFC 9449 stack already live for OAuth: `auth/dpop.rs` (proof validation + nonce store) and the scheme↔`cnf.jkt` binding enforced in `auth/extractors.rs::authenticate_access` |
 | Single-use `jti` replay protection | DPoP nonce-store pattern (`auth/dpop.rs`) |
 | Background fan-out workers | `crawler.rs` / `firehose_gc.rs` / sweep patterns |
 | Ownership/lifecycle modeling | `accounts` lifecycle states, `blob_owners`/`block_owners` per-account ownership rows |
@@ -186,26 +351,31 @@ rides `subscribeRepos`.
 
 ## 3. Gap analysis — the work, by layer
 
-### W1. Crypto primitives (new, small, spec-frozen enough to start)
-- LtHash: 2048-byte state, BLAKE3-XOF expansion, u16-LE lane add/sub mod 2^16
-  (~80 lines per Diary 7). New dep: `blake3`; `hmac`/`hkdf`/`sha2` as needed.
+### W1. Crypto primitives (new, small — vectors published, start here)
+- LtHash: 2048-byte state, BLAKE3-XOF expansion (dkLen = 2048), u16-LE lane
+  add/sub mod 2^16 (~80 lines). New dep: `blake3`; `hmac`/`hkdf`/`sha2` as
+  needed. Element format `{collection}/{rkey}/{cid}`.
 - `ctx` TLS-vector encoding; commit sign (`sign(ctx)`) + MAC
-  (`HMAC(HKDF(ikm, ctx), hash)`) + verify path.
+  (`HMAC-SHA256(HKDF-Expand(ikm, ctx, 32), hash)` — expand only, `ikm` as
+  PRK) + verify path.
 - Home: `crates/crypto` (pure, no deps on repo-engine) or a sibling module in
-  `repo-engine`; Functional Core either way. Test against reference vectors as
-  soon as the alpha/PR #5187 publishes them — until then, round-trip +
+  `repo-engine`; Functional Core either way. Pin the reference golden vectors
+  from `packages/space/tests/` (empty digest `e5a00aa9…`, `one`+`two` digest
+  `ae05cb6d…`, plus commit/DPoP/credential suites) alongside round-trip +
   property tests (order-independence, add/remove inverse, empty-state zero).
 
 ### W2. Permissioned repo store (new storage engine — the big one)
 - No MST, so this is a DB-backed record store + incremental LtHash state +
   oplog, not an atrium extension. New tables (V048+): `spaces` (authority,
-  type, skey, config, policy, lifecycle), `space_repos` (account × space, rev,
-  2048-byte LtHash state, commit fields), `space_records` (path → CID + DAG-CBOR
+  type, skey, config, read policy, write policy, lifecycle), `space_repos`
+  (account × space, rev, 2048-byte LtHash state, commit fields),
+  `space_records` (path → CID + DAG-CBOR
   value), `space_repo_ops` (oplog: rev, collection, rkey, cid, prev; compaction
   window like `firehose_gc`), `space_members` (simplespace member list),
   `space_notify_registrations`, plus a `jti` replay table.
-- Two-root CAR serializer/parser (signed commit + DRISL index + ordered
-  blocks) for `getRepo` and migration import.
+- Two-root CAR serializer/parser (signed commit + DRISL index in canonical
+  DAG-CBOR map order + blocks in index order) for `getRepo` and migration
+  import.
 - A `space_record_write.rs` analog of `record_write.rs`: single write choke
   point doing validate → CAS rev → update LtHash → append oplog → blob ref
   accounting → notification dispatch.
@@ -220,47 +390,85 @@ rides `subscribeRepos`.
   gates, `manage` verbs. Mirror the existing grammar's test discipline.
 - Dynamic `collection` default = space-type declaration's `collections` —
   reuse the permission-set resolution path (same dynamic-update semantics).
+  The declaration's `collections` field itself is validated non-wildcard at
+  the space-type-registry layer (reject a `*` entry the same way
+  `createSpace`/`updateSpace` reject an unimplemented open-union value).
 - Permission sets: accept `"resource": "space"` entries; enforce no-wildcard
   `spaceType` inside sets + namespace-authority rules.
-- Token issuance/verification: delegation tokens (mint, single-use, 60 s),
-  space credentials (mint as authority; verify as repo host against
-  `#atproto_space`→`#atproto` fallback), client attestations (resolve client
-  metadata JWKS — SSRF-hardened client mandatory).
-- **New auth seam.** Read/sync methods accept OAuth *or* space credential.
-  That dual acceptance must be one function (e.g.
-  `auth::space::authenticate_space_read`) with a `just`-gate in the spirit of
-  `auth-seam-check`, so no route grows its own credential parsing.
+- Token issuance/verification: delegation tokens (mint, single-use, 60 s,
+  presented to `getSpaceCredential` as `Authorization: Bearer` alongside the
+  `DPoP:` proof header), space credentials (mint as authority — copying the
+  mint-time DPoP proof's key thumbprint into `cnf.jkt`; verify as repo host
+  against `#atproto_space`→`#atproto` fallback for an *absent* entry only — a
+  present-but-malformed key or `#atproto_space_host` service entry errors
+  rather than falling back — **plus** full RFC 9449 proof validation incl.
+  `typ`/`alg`, `ath`, and per-host `jti` replay tracking; no DPoP nonces),
+  client attestations (resolve client metadata JWKS — SSRF-hardened client
+  mandatory; optional per space, so the mint path must tolerate its absence
+  cleanly). As a *syncer/client* (e.g. tooling), mint an ephemeral P-256
+  keypair per credential.
+- **New auth seam.** Read/sync methods accept OAuth *or* a DPoP-bound space
+  credential — both proof-of-possession, never bearer. That dual acceptance
+  must be one function (e.g. `auth::space::authenticate_space_read`) with a
+  `just`-gate in the spirit of `auth-seam-check`, so no route grows its own
+  credential parsing. It composes directly with the existing DPoP validator
+  in `auth/dpop.rs` and mirrors the scheme↔`cnf.jkt` binding
+  `authenticate_access` already enforces for OAuth.
 - Consent screen: render space-type `name`, authority handle
   (bidirectionally verified), wildcard warnings, in the `/oauth/authorize`
   templates.
 
-### W4. XRPC surface (~24 routes)
+### W4. XRPC surface (~26 routes)
 One file per route per the route-isolation rule; queries in `db/`, auth in
 `auth/`; register in `app.rs`; one `.bru` each (bruno-parity). Groups: PDS
 CRUD + `listSpaces` + `getDelegationToken`; repo read/sync (`getRecord`,
-`listRecords`, `getBlob`, `getLatestCommit`, `getRepo`, `listRepoOps`); host
-(`getSpace`, `getSpaceCredential`, `listRepos`); notifications
-(`registerNotify`, `notifyWrite`, `notifySpaceDeleted`); simplespace
-management. `checkUserAccess` is *outbound* from Custos-as-authority
-(inbound only if we ever ship a managing app).
+`listRecords`, `getBlob`, `listBlobs`, `getLatestCommit`, `getRepo`,
+`listRepoOps`); host (`getSpaceCredential`, `listRepos`); notifications
+(`registerNotify`, `unregisterNotify`, `notifyWrite`, `notifySpaceDeleted`);
+simplespace management incl. `getSpace`. `checkUserAccess` is *outbound* from
+Custos-as-authority (inbound only if we ever ship a managing app). The alpha
+lexicons (`lexicons/com/atproto/{space,simplespace}/` on the
+`permissioned-data` branch) are the schema source of truth to codegen or
+hand-mirror.
 
 ### W5. Space-host role
-Credential issuance policy engine (`public` / `member-list` / `managing-app` ×
-`appAccess` `#open`/`#allowList`), writer-set tracking (fed by notifications +
-own writes), notification fan-out worker with retries, auto-registration of
-the authority on first write into a shared space, space deletion flow
-(stop issuing, delete own repo, notify, flag members' repos).
+Credential issuance policy engine (independent read/write `public` /
+`member-list` / `managing-app` policies × `appAccess` `#open`/`#allowList`,
+rejecting unimplemented open-union values at create/update), DPoP-binding at
+mint time, writer-set tracking (fed by notifications + own writes, filtered
+by the write-access policy — an authority may decline to track/forward a
+given writer for any reason without that writer being blocked from writing
+to their own repo), notification fan-out worker with retries and
+registration expiry (`registerNotify`/`unregisterNotify`), auto-registration
+of the authority on first write into a shared space, space deletion flow
+(stop issuing, delete own repo, notify registered syncers, answer renewals
+with `SpaceDeleted`; members' data stays put and simply becomes unreadable to
+others).
 
 ### W6. Identity
 Emit/accept `#atproto_space` + `#atproto_space_host` in DID docs (PLC ops via
 the wallet-signed rotation surface; did:web hosting), resolution with
-fallbacks, and surface them in `getRecommendedDidCredentials`.
+fallbacks — an absent entry falls back (`#atproto`/`#atproto_pds`), but a
+present, malformed/invalid one MUST error rather than fall back — and surface
+them in `getRecommendedDidCredentials`.
 
 ### W7. Lifecycle & migration
 Deactivation/suspension/takedown checks on every space read/write path;
 account deletion cascades; migration enumeration of all (space, repo, blobs)
 — extends the `/v1/transfer/*` flows and `importRepo`; oplog reset semantics
 on migration.
+
+Two corrections from building it. **`/v1/transfer/*` is not the migration
+surface** — those routes are the planned *device* swap and move no repo data;
+the flows migration actually extends are `checkAccountStatus`, `importRepo`,
+and the account activate/deactivate pair. And **the alpha lexicons define no
+space import endpoint** (the 20 `com.atproto.space.*` schema files are
+export-only on the repo-read side), so a destination host has to offer its own;
+Custos serves `POST /v1/space/import-repo` on its `/v1/*` surface rather than
+squatting a namespace the spec may yet fill differently. Oplog reset needed no
+code: the new host's oplog simply starts empty, and a syncer reconnecting with
+a `since` from the old host folds to a set hash the new head does not match —
+already the signal to heal with a full `getRepo`.
 
 ### W8. Ops, tooling, product surface (follow-on)
 Rate limiting keyed by space credential; metrics; admin-companion moderation
@@ -269,33 +477,65 @@ interop CLI scenarios against the reference alpha; MCP tools
 (`tools/mcp`) for agent access to spaces; identity-wallet consent UX for
 `space:` scopes; NixOS/Railway config for any new env vars.
 
+Also deferred (MM-527): benchmark per-serving commit signing, then decide
+whether anything needs caching. `space_views::sign_current_commit` mints a
+fresh deniable commit per serving, so every sync call
+(`getLatestCommit`/`getRepo`/`listRepoOps`) reads the repo head, SELECTs the
+wrapped signing key, unwraps it, and signs. The unwrap is not the expensive
+step — it is 32 bytes. The DB round trip is the candidate bottleneck, and it
+costs more than its latency suggests, because the single-connection pool makes
+each sync call serialize against every other DB user. The cost is per-reader,
+scaling with syncers × poll frequency rather than with writes, so a quiet repo
+with many pollers is the worst case. Measure before caching, and note what a
+cache would actually change: `load_repo_signing_key` already returns
+`Zeroizing<[u8; 32]>`, so the question is not whether the key is zeroized but
+how long it stays resident — microseconds today, a TTL under a cache. If the
+DB read dominates, caching the head read may beat caching key material at
+all.
+
 ## 4. Suggested phasing
 
-1. **Phase 0 — primitives (can start now, churn-safe):** W1 crypto + `space:`
-   scope grammar (parse/normalize/display only). Pure, testable, and the part
-   of the spec least likely to move (LtHash/deniable-commit rationale is
-   settled per Diary 7).
+1. **Phase 0 — primitives (started with the alpha, vector-pinned):** W1
+   crypto + `space:` scope grammar (parse/normalize/display only). Pure,
+   testable against the published golden vectors, and the part of the spec
+   least likely to move.
 2. **Phase 1 — personal spaces (authority = self):** W2 store + PDS CRUD/read
-   routes + delegation token + credential mint where PDS is both roles +
-   simplespace with `member-list`/`public` + consent UI. Delivers the
+   routes + delegation token + DPoP-bound credential mint where PDS is both
+   roles + simplespace with `member-list`/`public` + consent UI. Delivers the
    bookmarks/drafts/private-posts modality end-to-end on a single PDS. Gate
-   behind a config flag (e.g. `EZPDS_SPACES_ENABLED`) until the spec is
-   official.
+   behind a config flag (e.g. `EZPDS_SPACES_ENABLED`) until the protocol
+   launches (target "later this year").
+   > **Decision (2026-08-27, MM-524):** the gate shipped as `[spaces] enabled`
+   > / `EZPDS_SPACES_ENABLED`, default **off** until the protocol launches, as
+   > planned (it had shipped always-on in the interim). Disabled, the routes
+   > are simply not registered — an XRPC space method answers the catch-all's
+   > `MethodNotImplemented`, stored space data is untouched, and the space
+   > sweeps are not spawned. Discoverability is the `spaces` entry in
+   > `describeServer`'s `custos` capability set, keyed to `spaces.enabled`
+   > **and** `signing_key_master_key` (the precondition for the sync surface:
+   > per-serving commit signing needs the KEK-wrapped repo signing key, so
+   > `getLatestCommit`/`listRepoOps`/`getRepo` answer 503 without one).
 3. **Phase 2 — shared spaces & sync:** oplog + `listRepoOps`, two-root CAR
-   `getRepo`, notifications + auto-registration, writer set, space deletion.
-   Validate against dholms' alpha PDS + at least one ecosystem syncer.
+   `getRepo`, notifications + auto-registration + expiry, writer set, space
+   deletion. Validate against the alpha: the hosted sandbox PDS, the
+   alpha-tagged TS SDK as a client against Custos, and the bulletin sample
+   app. Track the Thursday release notes on atmosphere.community and re-diff
+   the proposal each time before building the next slice.
 4. **Phase 3 — ecosystem hardening:** client attestation + `#allowList`,
    `managing-app` policy, migration enumeration, moderation/admin surface,
    tooling (interop, MCP, wallet UX).
 
 ## 5. Risks & open questions
 
-- **Spec churn** is the dominant risk: member list already removed, URI scheme
-  "still undecided", further updates promised before an official spec, IETF
-  WG just starting. Phase 0 is safe; Phases 1+ should track PR #5187 and the
-  alpha implementation, and interop-test early.
-- **No published test vectors yet** for LtHash folding, `ctx` encoding, or the
-  MAC chain — interop drift risk until the alpha lands.
+- **Spec churn** is still real but has changed character: the proposal is now
+  tracked against a running reference implementation with weekly (Thursday)
+  alpha releases and an explicit breaking-changes warning until launch
+  ("later this year"). The August deltas (§0) show the kind of movement to
+  expect — auth hardening and endpoint reshuffles, not architectural rewrites.
+  Mitigation: re-diff the proposals repo before each implementation slice, and
+  interop-test against the hosted alpha PDS + TS SDK continuously.
+- ~~No published test vectors~~ **Resolved**: golden vectors and full test
+  suites ship in `packages/space/tests/` on the `permissioned-data` branch.
 - **Per-reader commit signing** puts a KEK-decrypt + ECDSA sign on the serving
   path of every sync response; needs a benchmark and possibly an in-memory
   decrypted-key cache with zeroization.
@@ -303,8 +543,10 @@ interop CLI scenarios against the reference alpha; MCP tools
   write per space write is fine transactionally, but heavy shared-space sync
   traffic may motivate the deferred per-user-DB split the DB layer was
   designed to allow.
-- **Replay stores** (delegation `jti`, attestation `jti`, DPoP-style) need TTL
-  sweeps.
+- **Replay stores** (delegation `jti`, attestation `jti`, and now per-host
+  DPoP-proof `jti` on every credential-authed sync request) need TTL sweeps;
+  the sync-path store sees the highest volume and should be sized/swept
+  accordingly.
 - **Agent interaction**: `intersect_scope_tokens` clamping for `space:` scopes
   must be exactly right — an agent must never widen into a space its parent
   grant doesn't cover; sovereign-child accounts (ADR-0023) participate in
@@ -319,8 +561,36 @@ interop CLI scenarios against the reference alpha; MCP tools
 ## 6. Rough size
 
 Comparable to Wave 2 (Auth) + Wave 4 (Repo/Blobs) combined: a new storage
-engine, ~24 routes, a scope-grammar extension, three token types, and a
-notification subsystem — plus ~24 `.bru` files, ~6–8 migrations, and CI-gate
-updates (`auth-seam-check` extension, bruno parity). Phase 0 alone is small
-(days); Phases 1–2 are a multi-wave milestone on the order of the original
-v0.1 auth+repo build-out.
+engine, ~26 routes, a scope-grammar extension, three token types (all
+DPoP-bound or single-use), and a notification subsystem — plus ~26 `.bru`
+files, ~6–8 migrations, and CI-gate updates (`auth-seam-check` extension,
+bruno parity). Phase 0 alone is small (days); Phases 1–2 are a multi-wave
+milestone on the order of the original v0.1 auth+repo build-out.
+
+## 7. Issue breakdown (Wave 10)
+
+Implementation tracking: Linear team `MM`, project `ezpds`, label **`Wave 10:
+Spaces`** (Wave 9 is taken by Obsign Anywhere; spaces is a new post-v0.1
+workstream, distinct from the milestone map's v0.2 desktop enrollment). Filed
+2026-08-20. Phases are strict dependency order; issues within a phase can
+proceed in parallel (blocking relations are wired in Linear).
+
+| Issue | Phase | Scope |
+|---|---|---|
+| MM-506 | 0 | Spaces crypto primitives: LtHash (BLAKE3-XOF, 1024×u16 lanes) + deniable commit `ctx`/sign/MAC/verify in `crates/crypto`, pinned to the reference golden vectors |
+| MM-507 | 0 | `space:` OAuth scope grammar in `auth/oauth_scopes.rs`: parse/normalize/match/`intersect_scope_tokens` + `require_space` gates (no routes yet); permission-set `resource: "space"` entries |
+| MM-508 | 1 | Permissioned repo store: migrations (`spaces`, `space_repos` incl. LtHash state, `space_records`, `space_repo_ops`, `space_members`, notify registrations, `jti` replay) + `space_record_write` choke point |
+| MM-509 | 1 | PDS record routes: `com.atproto.space.{createRecord,putRecord,deleteRecord,applyWrites,listSpaces,getRecord,listRecords,getLatestCommit}` + `.bru` files (blocked by MM-506/507/508) |
+| MM-510 | 1 | Space auth: delegation-token mint, DPoP-bound space-credential mint/verify (`cnf.jkt`, per-request RFC 9449 proofs), `auth::space::authenticate_space_read` seam + `just` seam gate (blocked by MM-507) |
+| MM-511 | 1 | `com.atproto.simplespace` management surface: `createSpace`/`updateSpace`/`deleteSpace`/`getSpace`/`putMember`/`removeMember`/`listMembers`; independent `readPolicy`/`writePolicy` (`member-list` + `public`); open-union rejection (blocked by MM-508) |
+| MM-512 | 1 | Consent UI for `space:` scopes in `/oauth/authorize`: space-type declaration resolution (name, default collections), authority handle display, wildcard warnings (blocked by MM-507) |
+| MM-513 | 2 | Sync surface: `listRepoOps` oplog (+compaction), two-root CAR `getRepo` (canonical DAG-CBOR index order), `listBlobs`, space blob refs + GC union (blocked by MM-509/510) |
+| MM-514 | 2 | Space-host role: writer set (filtered per write-access policy, never blocking the write itself), `registerNotify`/`unregisterNotify` (+expiry), `notifyWrite` fan-out worker, authority auto-registration, space deletion + `SpaceDeleted` renewal error (blocked by MM-510/511) |
+| MM-515 | 2 | Identity: `#atproto_space` / `#atproto_space_host` DID-doc entries (PLC + did:web) with fallbacks; `getRecommendedDidCredentials` |
+| MM-516 | 3 | Client attestation verification + `appAccess` `#allowList`; `managing-app` policy (read and write, set independently) with outbound `checkUserAccess` carrying an `access: read \| write` param (blocked by MM-510/511) |
+| MM-517 | 3 | Lifecycle & migration: `/v1/transfer/*` enumeration via `listSpaces`/`listBlobs`, deactivation/takedown propagation on space paths, spaces `importRepo` (blocked by MM-513) |
+| MM-518 | 3 | Tooling & interop: Bruno collection, interop CLI scenarios vs the alpha (hosted sandbox PDS + TS SDK as client), MCP tool surface, browser-harness coverage (blocked by MM-509) |
+
+A weekly routine watches the alpha's Thursday releases and PRs spec-delta
+updates to this doc — see
+[`docs/operations/spaces-alpha-watch-routine.md`](../operations/spaces-alpha-watch-routine.md).

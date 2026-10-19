@@ -1,6 +1,6 @@
 # PDS Crate (Custos)
 
-Last verified: 2026-08-02
+Last verified: 2026-08-29
 
 ## Purpose
 
@@ -18,13 +18,13 @@ src/
   main.rs          — startup: open pool, run migrations, bind server
   telemetry.rs     — OTel tracing-subscriber init (`init_subscriber`) + shutdown-flushing `OtelGuard`; `[telemetry]` config incl. `log_format = "json"` — see module doc
   metrics.rs       — OTel meter + Prometheus registry behind `GET /metrics`; `metrics::names` is the instrument source of truth (each constant documents what it measures and who records it) — see module doc
-  app.rs           — router construction (route table + shared middleware layers); re-exports `AppState`/`FailedLoginStore` (and the `#[cfg(test)]` constructors) from `state.rs` so existing `crate::app::AppState` imports stay unchanged
+  app.rs           — router construction (route table + shared middleware layers); re-exports `AppState`/`FailedLoginStore` (and the `#[cfg(test)]` constructors) from `state.rs` so existing `crate::app::AppState` imports stay unchanged. The Atproto Spaces surface (`space_routes()` + `/v1/space/import-repo`) registers only when `[spaces] enabled` — disabled, space methods answer the catch-all's `MethodNotImplemented`
   state.rs         — `AppState` definition + `FailedLoginStore`, plus the `#[cfg(test)]` `test_state`/`test_state_with_plc_url` constructors
   xrpc_dispatch.rs — catch-all XRPC proxy dispatcher (`xrpc_handler` at `/xrpc/{method}`): upstream resolution for the three proxied namespaces + the read-after-write branch — see module doc
   firehose/        — persistent subscribeRepos event pipeline (see section below)
   firehose_gc.rs   — periodic `repo_seq` retention sweep (age/count pruning below the live frontier)
   blob_store.rs    — blob storage backend: durable filesystem I/O, CID computation, MIME detection; blobs at `{data_dir}/blobs/{cid[0:2]}/{cid}` — see module doc
-  blob_gc.rs       — periodic blob GC over per-account ownership rows (`blob_owners`, V039); fails closed on a failed reconcile (that account leaks disk until fixed) — see module doc
+  blob_gc.rs       — periodic blob GC over per-account ownership rows (`blob_owners`, V039); references union the public MST and stored space records (V065); fails closed on a failed reconcile (that account leaks disk until fixed) — see module doc
   blob_mirror/     — off-volume blob replication to an S3-compatible bucket (`[blob_mirror]` / `EZPDS_BLOB_MIRROR_*`); boot restore runs before the listener binds; `s3.rs` is a hand-rolled SigV4 client — see module doc
   blob_scrub.rs    — periodic blob-integrity scrub: re-hash every stored blob + walk both orphan directions; auto-heals from the mirror when configured — see module doc
   crawler.rs       — outbound requestCrawl notifier (rate-limited, retrying, fire-and-forget) — see section below
@@ -34,13 +34,20 @@ src/
   iroh_tunnel.rs   — opt-in (`[iroh] enabled`) NAT-traversing QUIC endpoint devices dial by node id; v0.1 echo ALPN, IPv6 gate for v4-only hosts — see module doc
   notify_relay_client.rs — outbound iroh leg to the notification relay (`ezpds/notify/0`) + the fire-and-forget send worker; lazy cached connection, self-healing enrollment — see module doc
   notifications.rs — sending side: pad + HPKE-seal one payload per registered device and enqueue; inert when `[notifications] relay` is unset — see module doc
-  record_write.rs  — shared repo write flow + firehose commit emission + post-commit block GC (one reachability walk per commit) — see module doc
+  record_write.rs  — shared repo write flow + firehose commit emission + post-commit block GC (one reachability walk per commit); every commit passes the MST integrity check (new head's key count vs the maintained `accounts.record_count` witness, V068) before the CAS — see module doc
+  space_record_write.rs — the single write choke point for permissioned space repos (V065, DB-backed, no MST): validate → CAS rev → LtHash fold → oplog append → writer-set row, all one transaction; blob refs are GC-derived, and the notification fan-out is spawned from here post-commit so no write path can skip it. `SpaceWriteAdmission` is the one knob on its account-lifecycle guard: `Import` admits the deactivated state migration runs in (and skips write-point charging), `Active` is everything else — see module doc
+  space_uri.rs     — space-ref syntax (`at://{authority}/space/{type}/{skey}`) and the wider space AT-URI family; deliberately separate from `repo_engine::AtUri`, whose callers resolve MST paths a space URI must never reach
+  space_notify.rs  — outbound Atproto Spaces write notifications: the repo-host → space-host report (with the authority auto-registration that creates the subscription) and the space-host → registered-syncer fan-out; detached, retrying, bounded — see module doc
+  space_jti_sweep.rs — periodic `space_jti_replay` retention sweep; each row carries its own token's acceptance horizon (template: sovereign_session_nonce_sweep.rs)
+  space_oplog_sweep.rs — hourly `space_repo_ops` compaction sweep (7-day retention): the oplog is droppable by spec, and a syncer whose `since` predates the window heals via `getRepo` — see module doc
   repo_rev.rs      — shared `read_repo_rev`, homed beside `record_write.rs` so the public sync endpoints share it without a route-to-route import
   time.rs          — shared epoch/RFC-3339 time helpers; the variants differ on return type + pre-epoch handling — pick by call-site contract (module doc)
   account_delete.rs— shared permanent account-deletion transaction (FK-ordered child tables, blob-file reclamation, `#account` deleted frame), used by deleteAccount and the reaper — see module doc
+  account_genesis.rs— the steps the two account-genesis transactions (`create_did.rs`, `create_account_xrpc.rs`) share: the `accounts` row, the genesis blocks + staged `#commit`/`#sync`, and the post-commit announce. Deliberately not one merged promotion — the module doc says what differs around it
   account_reaper.rs— periodic sweep permanently deleting deactivated accounts past `deleteAfter` (template: firehose_gc.rs)
   agent_claim_sweep.rs— periodic sweep flipping lapsed agent claim attempts to `expired` (template: account_reaper.rs) — see module doc
-  labeler_watch.rs — periodic labeler watcher reconciling `account_labels` (V051) to the labels currently in force; first pass runs at boot; genuinely new flags fire ONE batched operator push per pass, seeding-suppressed via `labels_seeded` (V065) — see module doc
+  agent_child_core.rs— the verify → provision → publish → finalize core behind sovereign child accounts, shared by every route that provisions one; resumable rather than atomic, because the plc.directory publish can't join a SQLite transaction — see module doc
+  labeler_watch.rs — periodic labeler watcher reconciling `account_labels` (V051) to the labels currently in force; first pass runs at boot; genuinely new flags fire ONE batched operator push per pass, seeding-suppressed via `labels_seeded` (V072) — see module doc
   label_state.rs   — Functional Core for the watcher: reduce raw label events to the in-force set and diff against persisted rows
   admin_nonce_sweep.rs— periodic stale `admin_nonces` sweep (pure storage reclamation; retention stays above the replay-acceptance window) — see module doc
   sovereign_session_nonce_sweep.rs— hourly `sovereign_session_nonces` sweep; a compile-time assertion keeps retention above the replay window
@@ -98,12 +105,16 @@ it could not be asked. Details: the module doc in `src/relay_status.rs`.
 
 Reference-parity request rate limiting. The pure sliding-window algorithm lives in
 `auth/rate_limit.rs` (Functional Core); this module is the Imperative Shell owning the
-process-level limiters and the Axum middleware. Three families — global per-IP, per-endpoint
+process-level limiters and the Axum middleware. Five families — global per-IP, per-endpoint
 per-IP (guess-target endpoint pairs share one limiter instance so alternating endpoints can't
-double a guess budget), and per-account write points charged in `record_write::commit_repo_write`
-on the **authenticated** DID — all off when `[rate_limit] enabled = false`, all tunable via
-`[rate_limit]` / `EZPDS_RATE_LIMIT_*` (a knob of `0` disables that limiter). The family
-rosters, exemptions, and `RateLimit-*` header behavior: the module doc.
+double a guess budget), per-account write points charged in `record_write::commit_repo_write`
+on the **authenticated** DID, per-space-credential requests charged at the credential seam
+in `auth/space.rs` on the **verified** `cnf.jkt`, and a per-DID cool-down on the
+signature-mismatch DID-document force-refresh (the one limiter guarding an *outbound* resource,
+charged in `identity::resolution::refresh_did_document_after_signature_mismatch`) — all off when
+`[rate_limit] enabled = false`; the first four are tunable via `[rate_limit]` /
+`EZPDS_RATE_LIMIT_*` (a knob of `0` disables that limiter), the cool-down is a fixed constant.
+The family rosters, exemptions, and `RateLimit-*` header behavior: the module doc.
 
 ### `identity/`
 
@@ -117,7 +128,7 @@ example `authority.rs` reads through `plc.rs` and `resolution.rs`, and `well_kno
 | File | Contents |
 |---|---|
 | `mod.rs` | `pub mod` declarations only — no shared code |
-| `resolution.rs` | shared handle/DID resolution chain and the cache-first DID-document reads (the `did_documents` cache has no TTL; `resolve_did_document_force_refresh` is the only un-staling path) — see module doc |
+| `resolution.rs` | shared handle/DID resolution chain, the cache-first DID-document reads (two tiers: the `did_documents` table holds this server's own/migrated accounts with no TTL, force-refreshed by `resolve_did_document_force_refresh`; `AppState::did_document_cache` holds every remote document on 1h-stale / 24h-hard TTLs with stale-while-revalidate), the cool-down-bounded `refresh_did_document_after_signature_mismatch` seam every token-signature-mismatch retry takes (`auth/space.rs` and `auth/service_auth.rs` both), and the pure DID-document accessors including the Atproto Spaces fallbacks (`space_verification_key`, `space_host_endpoint`) — see module doc |
 | `proxy.rs` | the `atproto-proxy` header target guard and the shared SSRF-hardened client (`AppState::hardened_http_client`). Security-critical — the module doc carries the full design (`SsrfResolver` connect-time DNS allowlist, TOCTOU closure, all four consumers); `just ssrf-client-check` guards the well-known-resolver wiring |
 | `did.rs` | general `did:` syntax validation (Functional Core): the canonical `is_valid_did`, re-exported by `auth/validation.rs` and called by `lexicon/formats.rs` for the `did` string format — see module doc |
 | `handle.rs` | handle validation: structural + domain policy + reserved infrastructure names — see module doc |
@@ -143,14 +154,19 @@ Pure authentication logic and middleware. Submodules:
 | File | Pattern | Contents |
 |---|---|---|
 | `agent_assertion.rs` | Mixed (unavoidable) | shared auth.md agent machinery both `routes/agent_identity.rs` and `routes/agent_claim.rs` need (routes can't import each other): assertion minting, claim-block helpers, `AgentAuthError`, agent audit — see module doc |
+| `client_attestation.rs` | Imperative Shell | Atproto Spaces client attestation: verify the JWT an app signs to name itself to a space authority (`typ atproto-client-attestation+jwt`, `iss` = `sub` = `client_id`, `aud` the space host, single-use `jti`). Resolves the caller-named `client_id` to its client-metadata document and JWKS through the SSRF-hardened client — skip that and `appAccess: #allowList` is an unverified claim, not a perimeter. Key resolution is shared verbatim with the token endpoint (`jwks::client_verification_key`) — see module doc |
 | `dpop.rs` | Mixed (unavoidable) | DPoP proof validation, nonce store |
 | `extractors.rs` | Imperative Shell | `AuthenticatedUser` extractor + `authenticate_access`, the single authoritative access-auth path (RFC 9449 scheme ↔ `cnf.jkt` binding); `just auth-seam-check` freezes the seam — see module doc |
 | `guards.rs` | Imperative Shell | route-level auth guards (admin, session, pending-session, device) + `authenticate_account_owner`'s dual credential; queries `sessions`/`devices`/`admin_devices`, owns no schema — see module doc |
 | `issuer_trust.rs` | Mixed (unavoidable) | shared trusted-issuer verification for the two provider-signed auth.md tokens (ID-JAG + SET); also owns `REVOKED_EVENT_TYPE` — see module doc |
-| `jwks.rs` | Imperative Shell | `JwksFetcher` + TTL `JwksCache` — the dynamic-trust half of `issuer_trust.rs`'s key resolution, with a per-URL refetch cooldown against bogus-`kid` amplification — see module doc |
+| `jwks.rs` | Imperative Shell | `JwksFetcher` + TTL `JwksCache` — the dynamic-trust half of `issuer_trust.rs`'s key resolution, with a per-URL refetch cooldown against bogus-`kid` amplification. Also `client_verification_key`, the one place an OAuth client's self-signed JWT is matched to the keys its metadata publishes (token-endpoint client assertions and space client attestations both) — see module doc |
 | `jwt.rs` | Functional Core | JWT parsing, scope validation, access/refresh token verification, HS256 token issuance |
 | `oauth_client_resolution.rs` | Mixed (unavoidable) | the ATProto OAuth client resolver: client_id URL policy before any I/O, metadata fetch, bounded negative cache; also `validate_private_use_redirect` — see module doc |
 | `oauth_response_mode.rs` | Functional Core | `ResponseMode` (`query` \| `fragment`): parse the OAuth `response_mode` and pick the redirect separator; shared by four route surfaces — see module doc |
+| `oauth_scopes.rs` | Functional Core | the granular ATProto OAuth scope grammar (proposal 0011, plus `space:` from the Spaces proposal 0016): parse, normalize, and canonicalize `resource[:positional][?param=value]` across the six resource types, and enforce it via the `require_*`/`allows_*` checks scoped routes call; `supported_scopes()` backs the discovery metadata. Ported for round-trip parity with `@atproto/oauth-scopes` — see module doc |
+| `permission_sets.rs` | Mixed (unavoidable) | resolves `include:<nsid>` scope references to Lexicon-published permission-set records and expands them into the grammar `oauth_scopes.rs` validates; owns the TTL'd `PermissionSetCache` and the shared `resolve_cached` helper `space_consent.rs` reuses. Does live DNS/HTTP, so not a pure core despite living in `auth/` — see module doc |
+| `space.rs` | Mixed (unavoidable) | the one authorization seam every `com.atproto.space.*` route enters through: authenticate, confirm the caller owns the repo it named, and match the operation against its `space:` grant. A read naming another account's repo answers `RepoNotFound`, not `Forbidden` — deliberate non-disclosure. Mixed because a grant naming no `collection` falls back to the space type declaration's, resolved over the network — see module doc Also the Atproto Spaces token machinery: delegation-token mint/verify (single-use via `space_jti_replay`), DPoP-bound space-credential mint/verify (`#atproto_space` key, `#atproto` accepted only when no dedicated key is published), the issuance policy, and the credential arm of `authenticate_space_read` — a covering OAuth grant on the caller's own repo *or* a DPoP-bound credential for any repo in the space, never bearer, with full RFC 9449 proof validation + per-host `jti` replay; `just space-auth-seam-check` freezes it. Issuance is two perimeters, app first (`appAccess` decides from stored config alone, so a refused app is never disclosed to a third-party managing app) then user (`public`/`member-list`/`managing-app`, the last an outbound service-auth `checkUserAccess` that denies on any failure to get an answer). The simplespace management/read seams (`authenticate_space_owner`, `authenticate_space_access`) are siblings built on the same arms. Account lifecycle is enforced at two different cuts on purpose: `require_serviceable_caller` (the gate every account-credential arm passes) refuses moderation states but admits self-service deactivation — that is the migration window — while `require_serviceable_authority` (the space-*host* arm) demands a fully active authority before this server answers a syncer's credential for its space. `require_space_servable` is the third, per-*space* cut: the operator's V070 takedown, answering `SpaceNotFound` after authentication at every seam (the write path re-reads the same row inside its commit transaction) — see module doc |
+| `space_consent.rs` | Mixed (unavoidable) | the user-legible text `/oauth/authorize` shows for `space:` grants: the space type declaration's `name` (localized), a named authority's bidirectionally-verified handle, the collections a bare grant resolves to, and the both-wildcards warning. Reuses `permission_sets.rs`'s Lexicon resolution path and TTL-cache machinery; degrades to the raw token instead of failing the page — see module doc |
 | `password.rs` | Functional Core | `hash_password`, `verify_password` (argon2id) |
 | `rate_limit.rs` | Functional Core | sliding-window login-failure limiter + the generic `MultiWindowLimiter` used by the top-level `rate_limit.rs` middleware |
 | `service_auth.rs` | Imperative Shell | `require_service_auth(lxm)` — the inbound atproto service-auth guard, one lexicon method per call — plus the shared resolve-and-verify key machinery migration-`createAccount` reuses — see module doc |
@@ -158,6 +174,7 @@ Pure authentication logic and middleware. Submodules:
 | `signing_key.rs` | Imperative Shell | ES256 signing key load-or-create |
 | `bearer.rs` | Functional Core | Authorization-header extraction: `extract_access_token` (Bearer + DPoP, RFC 9449) and Bearer-only `extract_bearer_token` — see module doc |
 | `token.rs` | Functional Core | single source of truth for the bearer/device token format (32 random bytes → base64url wire, SHA-256 hex DB): `generate_token`, `sha256_hex`, `hash_bearer_token` — see module doc |
+| `validation.rs` | Functional Core | pure format/shape helpers shared across routes (`is_valid_did` re-export, device-public-key bounds, failed-login lock plumbing); each returns a bool or a message the caller maps to its own `ApiError` — see module doc |
 
 **Rule:** `auth/` has no knowledge of specific routes. Route handlers call into `auth/`; `auth/` never imports from `routes/`.
 
@@ -199,6 +216,10 @@ and async query functions; no business logic lives here.
 | `admin_audit.rs` | server-wide append-only admin-action audit log (V052); doctrine and function inventory in the module doc |
 | `admin_devices.rs` | admin-device model (V025): pairing codes, devices, anti-replay nonces — see module doc |
 | `sovereign_session_nonces.rs` | sovereign-session anti-replay store (V043); the sweep-retention rule is in the module doc |
+| `spaces.rs` | `spaces` rows (V065/V069/V070): every space this PDS interacts with, keyed by canonical URI, plus the `space_members` list and the `allowList` client-ID set (`app_allowed`, read through `SpaceRow::allowed_client_ids` — an absent or unparseable list reads as empty, which admits no app) — the `insert_space` (member write) vs `create_space` (simplespace create) distinction is in the module doc; the remaining notify queries land with the space-host surface. V070's `takendown_at` is the operator's refusal to serve, independent of the owner's `deleted_at` tombstone — `set_space_takedown` writes it, `list_hosted_spaces` is the operator listing |
+| `space_notify.rs` | the space-host notification tables: `space_notify_registrations` (V065, one table for both roles — `repo_did = ''` is a whole-space subscription on a space host, a named repo is the auto-registration a repo host writes for itself) and `space_writers` (V067, the `listRepos` set). Expiry is enforced by the read query, not a sweep — see module doc |
+| `space_repos.rs` | permissioned repo store queries (V065): repo heads (rev + LtHash state), record blocks, oplog; the write transaction lives in `space_record_write.rs` — see module doc |
+| `space_jti.rs` | spaces-token jti replay store (V065): scope-discriminated insert-if-absent + the expiry sweep — see module doc |
 | `waitlist.rs` | public waitlist signup store (V057, no FKs — off the purge path) — see module doc |
 | `account_labels.rs` | watched-labeler flag store (V051) — see module doc; the filtered listing predicates live beside `list_accounts_admin` in `accounts.rs` |
 
@@ -231,7 +252,8 @@ tests, so check it when changing an OAuth response shape — see its README.
 | `oauth_server_metadata.rs` | `GET /.well-known/oauth-authorization-server` |
 | `oauth_jwks.rs` | `GET /oauth/jwks` |
 | `agent_identity.rs` | `POST /agent/identity` — auth.md registration (Step 3), dispatching on `type` (`identity_assertion`/`service_auth`/`anonymous`); every flow operator-opt-in, scopes clamped to current config — see module doc |
-| `agent_claim.rs` | `POST /agent/identity/claim` + `/claim/confirm` — the auth.md claim ceremony (Step 4): public agent initiate, owner-authed confirm flips `active → claimed`; polling collection lives at the token endpoint — see module doc |
+| `agent_claim.rs` | `POST /agent/identity/claim` + `/claim/confirm` — the auth.md claim ceremony (Step 4): public agent initiate, owner-authed confirm flips `active → claimed`; polling collection lives at the token endpoint. Confirm has two arms — bind the agent to the confirming account, or (with a `child` block, ownerless anonymous registrations only) mint it an account of its own via `agent_child_core.rs` and convert the registration in place — see module doc |
+| `agent_child.rs` | `POST /agent/child` (mint), `GET /agent/child` (list), `POST /agent/child/{assertion,revoke,delete}` — parent-owned sovereign child agents; the mint body lives in `agent_child_core.rs` so the claim ceremony can share it. Owner-guarded throughout: agent-derived callers are refused, a foreign child DID is a uniform 404, and its lifecycle verbs are the custody ladder (renew the capability / revoke it / schedule the hosting for deletion) — see module doc |
 | `agent_event.rs` | `POST /agent/event/notify` — auth.md `events_endpoint`: a trusted-issuer SET (RFC 8417/8935) revokes the matching registration; idempotent 202 — see module doc |
 | `agents.rs` | `GET /v1/agents`, `POST /v1/agents/claim-preview`, `POST /v1/agents/{registration_id}/revoke`, `GET /v1/agents/{registration_id}/audit` — owner-guarded "My agents" management; agent-derived callers refused, a parent operates its sovereign children — see module doc |
 | `notifications.rs` | `POST/DELETE /v1/notifications/register[/{deviceUuid}]`, `GET /v1/notifications/sender-keys` — the account push surface, keyed on `(did, device_uuid)`; the relay round trip stays out of the request path — see module doc |
@@ -239,6 +261,7 @@ tests, so check it when changing an OAuth response shape — see its README.
 | `notification_views.rs` | shared handler-free support for both notification surfaces (routes may not import one another): enabled-check, registration validators, `sender-keys` shape |
 | `oauth_templates.rs` | pure HTML rendering helpers (Functional Core, no handler) |
 | `oauth_errors.rs` | shared `OAuthTokenError` — the RFC 6749 §5.2 responder used by `oauth_token/` and `oauth_revoke.rs` (Functional Core, no handler) |
+| `oauth_dpop.rs` | shared handler-free support for `oauth_token/`'s grant handlers and `oauth_revoke.rs` (routes may not import one another): `token_endpoint_dpop` — the RFC 9449 multiple-header check, proof extraction, and `validate_dpop_for_token_endpoint` dispatch against the caller's own URL |
 | `static_assets.rs` | `GET /static/*path` — embedded brand fonts and future web-UI assets |
 | `landing.rs` | `GET /` — the instance landing page (embedded `assets/landing.html`): config facts, a `_health` status chip, joiner/developer pointers |
 | `create_session.rs` | `POST /xrpc/com.atproto.server.createSession` — password auth with app-password fallback — see module doc |
@@ -247,6 +270,8 @@ tests, so check it when changing an OAuth response shape — see its README.
 | `list_app_passwords.rs` | `GET /xrpc/com.atproto.server.listAppPasswords` — metadata only, never the secret; full access required |
 | `revoke_app_password.rs` | `POST /xrpc/com.atproto.server.revokeAppPassword` — delete an app password and its sessions atomically (idempotent 200); full access required |
 | `get_session.rs` | `GET /xrpc/com.atproto.server.getSession` |
+| `get_delegation_token.rs` | `GET /xrpc/com.atproto.space.getDelegationToken` — mint a single-use 60 s delegation token for a space (account-key JWT, `kid #atproto`); requires an OAuth/full session whose grant covers `read` on the space; the space need not be known here |
+| `get_space_credential.rs` | `POST /xrpc/com.atproto.space.getSpaceCredential` — the space-authority side: delegation token (Authorization) + mint-time DPoP proof → 2 h DPoP-bound space credential (`cnf.jkt`); answers only for spaces anchored on a local account. An optional `clientAttestation` is verified whenever present, but only *after* the delegation token, so no unauthenticated caller can drive its outbound client_id resolution; the attested client_id then feeds both issuance perimeters |
 | `get_service_auth.rs` | `GET /xrpc/com.atproto.server.getServiceAuth` — mint a short-lived inter-service JWT for a requested `aud`, optional `lxm`/`exp` bounds; shares the mint helper with `service_proxy.rs` |
 | `update_subject_status.rs` | `POST /xrpc/com.atproto.admin.updateSubjectStatus` — apply/clear an account takedown; admin-authed; subject-kind limits and firehose semantics in the module doc |
 | `get_subject_status.rs` | `GET /xrpc/com.atproto.admin.getSubjectStatus` — report an account's takedown status; admin-authed — see module doc |
@@ -276,6 +301,7 @@ tests, so check it when changing an OAuth response shape — see its README.
 | `admin_request_crawl.rs` | `POST /v1/admin/request-crawl` — un-throttled "Request crawl" action paired with relay-status; per-relay outcomes reported; admin-authed — see module doc |
 | `admin_revoke_credentials.rs` | `POST /v1/admin/accounts/{id}/revoke-credentials` — operator kill-switch: one-transaction credential sweep with per-family counts; admin-authed — see module doc |
 | `admin_account_repair.rs` | `POST /v1/admin/accounts/{id}/email` + `.../reset-token` — operator account-repair pair; reset tokens refused for passwordless accounts — see module doc |
+| `admin_spaces.rs` | `GET /v1/admin/spaces` + `POST /v1/admin/spaces/takedown` — per-space operator moderation: the inventory of what this host stores (owned *and* foreign-authority spaces, with repo/record counts) and the reversible refusal to serve one URI. The only lever that reaches a space governed elsewhere, where `deleteSpace` is not this host's to call; not gated on `[spaces] enabled` — see module doc and [ADR-0035](../../docs/architecture/decisions/0035-per-space-operator-takedown.md) |
 | `admin_audit.rs` | `GET /v1/admin/audit` — the server-wide admin audit log, newest first, attributed per credential; admin-authed; filters, writer inventory, and logging rules in the module doc |
 | `admin_transfers.rs` | `GET /v1/admin/transfers` + `POST /v1/admin/transfers/{id}/cancel` — in-flight device-transfer visibility and interruption; the 6-char code is never returned (it is a live account-takeover credential) — see module doc |
 | `waitlist_signup.rs` | `POST /waitlist` — public CORS'd interest signup, 404 unless `[waitlist] enabled`; handle validated but never resolved — see module doc |
@@ -309,6 +335,29 @@ tests, so check it when changing an OAuth response shape — see its README.
 | `put_record.rs` | `POST /xrpc/com.atproto.repo.putRecord` |
 | `delete_record.rs` | `POST /xrpc/com.atproto.repo.deleteRecord` |
 | `describe_repo.rs` | `GET /xrpc/com.atproto.repo.describeRepo` |
+| `space_create_record.rs` | `POST /xrpc/com.atproto.space.createRecord` — create a record in the caller's own permissioned space repo |
+| `space_put_record.rs` | `POST /xrpc/com.atproto.space.putRecord` — upsert; reads the record's presence first so an app granted only `update` is not asked for `create` too |
+| `space_delete_record.rs` | `POST /xrpc/com.atproto.space.deleteRecord` — idempotent *here*, by skipping the commit for an absent record; the store keeps the strict precondition `applyWrites` needs |
+| `space_apply_writes.rs` | `POST /xrpc/com.atproto.space.applyWrites` — batch of ≤200 writes in one commit; every op states a precondition, so the batch lands whole or reports `RecordAlreadyExists`/`RecordNotFound` |
+| `space_list_spaces.rs` | `GET /xrpc/com.atproto.space.listSpaces` — spaces the caller has *written to* (never a membership list); the query's filters are what its `space:` grant is matched against, since it names no one space |
+| `space_get_record.rs` | `GET /xrpc/com.atproto.space.getRecord` |
+| `space_list_records.rs` | `GET /xrpc/com.atproto.space.listRecords` — `(collection, rkey)` keyset paging, values inlined unless `excludeValues` |
+| `space_get_latest_commit.rs` | `GET /xrpc/com.atproto.space.getLatestCommit` — mints a fresh deniable commit per serving (new `ikm`/`sig`/`mac` each time); never stored (`space_views::sign_current_commit`) |
+| `space_list_repo_ops.rs` | `GET /xrpc/com.atproto.space.listRepoOps` — page the oplog since a rev; only a record's *current* value is inlined (stale ops join to nothing); a short page reaches the head and carries the signed commit, a full page a `rev/idx` cursor — see module doc |
+| `space_get_repo.rs` | `GET /xrpc/com.atproto.space.getRepo` — streaming two-root CAR (signed commit, then DRISL index in canonical DAG-CBOR key order, record blocks in index order); `excludeValues` writes only the roots — see module doc |
+| `space_import_repo.rs` | `POST /v1/space/import-repo` — the inbound migration leg for a permissioned repo, consuming `space.getRepo`'s two-root CAR. Custos-native (`/v1/*`), because the alpha lexicons define no space import; deactivated-account precondition like `com.atproto.repo.importRepo`, and the repo becomes *exactly* the CAR (records the index omits are deleted in the same commit) — see module doc |
+| `space_get_blob.rs` | `GET /xrpc/com.atproto.space.getBlob` — space-authed blob serving; a stored-but-unreferenced blob answers the same `BlobNotFound` as an unknown CID, and the response is `Cache-Control: private` (unlike the public route's immutable-public) — see module doc |
+| `space_list_repos.rs` | `GET /xrpc/com.atproto.space.listRepos` — the space host's writer set (repos that have *written*, never a reader list) with each repo's last-reported `rev`/`hash`; a space whose authority is elsewhere reads as `SpaceNotFound` |
+| `space_register_notify.rs` / `space_unregister_notify.rs` | `POST /xrpc/com.atproto.space.{registerNotify,unregisterNotify}` — syncer subscriptions on the space host; the subscriber is a *service identifier* (DID + optional `#fragment`) resolved at registration (`ServiceNotResolvable`), re-registering renews the expiry, unregister is idempotent |
+| `space_notify_write.rs` | `POST /xrpc/com.atproto.space.notifyWrite` — inbound report from a foreign repo host. Deliberately *not* `require_service_auth` (that guard demands a local issuer); the key is resolved from the network and the issuer must be the repo or the space authority — see module doc |
+| `space_list_blobs.rs` | `GET /xrpc/com.atproto.space.listBlobs` — blob CIDs referenced by a repo's records (derived by decoding stored blocks, like blob GC), `since` filtered on V066's per-record rev |
+| `space_views.rs` | shared handler-free support for the space + simplespace routes (routes may not import one another): space-ref parsing, the `validate`-flag record check, stored-block decoding, the write-result shape, repo-head load + per-serving commit signing (`load_repo`/`sign_current_commit`/`commit_json`), blob-reference derivation (`space_blob_cids`), and the simplespace config's lexicon-union ↔ column mapping |
+| `simplespace_create_space.rs` | `POST /xrpc/com.atproto.simplespace.createSpace` — a space anchored on the caller's own DID; `manage=create`; unimplemented open-union config values refused |
+| `simplespace_update_space.rs` | `POST /xrpc/com.atproto.simplespace.updateSpace` — `manage=update`, owner only |
+| `simplespace_delete_space.rs` | `POST /xrpc/com.atproto.simplespace.deleteSpace` — tombstone + cleanup (members, registrations, writer set, the authority's own repo) then a best-effort `notifySpaceDeleted` fan-out, idempotent; `manage=delete`, owner only — see module doc |
+| `simplespace_get_space.rs` | `GET /xrpc/com.atproto.simplespace.getSpace` — the one simplespace method a space credential reaches; OAuth callers are owner-only |
+| `simplespace_add_member.rs` / `simplespace_remove_member.rs` | `POST /xrpc/com.atproto.simplespace.{addMember,removeMember}` — the member list behind the `member-list` policy; `manage=update`, owner only, idempotent |
+| `simplespace_list_members.rs` | `GET /xrpc/com.atproto.simplespace.listMembers` — OAuth `read_self`, owner only, DID-keyset paged |
 | `service_proxy.rs` | `GET/POST /xrpc/{app.bsky,chat.bsky,com.atproto.moderation}.*` — dual-path proxy (namespace defaults / SSRF-guarded header targets); dispatch, munge routing, and the header-forwarding seam are in the module doc |
 | `get_preferences.rs` | `GET /xrpc/app.bsky.actor.getPreferences` — local read, registered ahead of the catch-all; app-password callers never see full-access-only types unless minted with the personal-details grant (ADR-0033) |
 | `put_preferences.rs` | `POST /xrpc/app.bsky.actor.putPreferences` — local scope-limited write; an ungranted app-password write preserves full-access-only entries |
@@ -333,7 +382,9 @@ tests, so check it when changing an OAuth response shape — see its README.
 | `check_account_status.rs` | `GET /xrpc/com.atproto.server.checkAccountStatus` — activation/repo/blob completeness report for migration tooling |
 | `oauth_client_metadata.rs` | `GET /oauth/client-metadata.json` — the wallet's OAuth client metadata; fixed canonical client_id except under a loopback `public_url` — see module doc |
 | `provisioning_session.rs` | provisioning session creation (email + password → session token) |
+| `space_lifecycle_test.rs` | account-lifecycle + migration coverage for the space surface: which account states may touch a space repo, and the `getRepo` → `/v1/space/import-repo` round trip (asserted on the set hash, the digest syncers fold against) |
 | `test_utils.rs` | test helpers (excluded from production builds) |
+| `space_test_support.rs` | the six `space_*_test.rs`/`simplespace_routes_test.rs` modules' shared request builders, send-and-decode, and record bodies (excluded from production builds) |
 
 ## Metrics
 
@@ -347,9 +398,51 @@ signal with `[telemetry] metrics_enabled` off.
 ## Hard Rules
 
 **Routes must not import from other routes.**
-If two routes share logic, that logic belongs in `auth/` (pure) or `db/` (queries). A route
-importing from another route creates hidden coupling and makes it impossible to reason about
-a handler in isolation.
+If two routes share logic, that logic belongs in `auth/` (pure), `db/` (queries), `identity/`,
+a top-level module such as `account_genesis.rs`, or one of the handler-free support modules under
+`routes/` (`oauth_errors.rs`, `oauth_dpop.rs`, `space_views.rs`, `preference_scope.rs`,
+`test_utils.rs`, `space_test_support.rs`). A route importing from another route creates hidden
+coupling and makes it impossible to reason about a handler in isolation. The rule bars route→route
+imports only — it is not a reason to copy a `db/`, `auth/`, or `test_utils` helper into a route.
+
+**Extend the shared helper; never copy a sibling.**
+Before writing a struct, query, fixture, or loop that resembles one that already exists, diff
+against it and extend or parametrise it. The concrete homes (see the index below): a SQL statement
+needed by two routes goes in `db/`; an auth check shared by two surfaces goes in `auth/guards.rs`;
+a fixture needed by two test modules goes in `routes/test_utils.rs` (add the missing knob rather
+than forking the helper); a periodic task goes through `sweep::spawn_sweep`.
+
+**Tests: one whole-document assertion per constant response, one table per contract.**
+A route that serves a constant document (metadata, JWKS, capabilities) gets one `assert_eq!`
+against the whole expected document, not one `#[tokio::test]` per field. A generic HTTP contract
+(`missing auth → 401`, `non-empty body → 400`, `invalid DID → 400`) is one table-driven test over
+a route list, not a per-route copy. Test names describe behaviour, never acceptance-criteria ids.
+
+**`#[allow(dead_code)]` outside `#[cfg(test)]` needs a one-line reason that is true.**
+The accepted exception is a `sqlx::FromRow` column fetched by `SELECT *` that only tests read.
+Anything else is deleted, wired, or moved under `#[cfg(test)]`; "kept for later" is not a reason.
+
+### Shared helpers index
+
+Look here before writing a helper. Each row is the one home; copies elsewhere are bugs.
+
+| Need | Use |
+|---|---|
+| epoch seconds / RFC 3339 now / SQLite datetime → RFC 3339 | `crate::time::{unix_now, unix_now_secs, now_rfc3339, to_rfc3339_utc}` |
+| log an internal failure and answer 500 | `common::ApiResultExt::{or_internal, or_internal_as}` on the `Result` |
+| the OAuth issuer / public URL without a trailing slash | `Config::issuer()` |
+| cache a freshly authored or resolved DID document | `db::dids::upsert_did_document` (UPDATE-only heal: `rewrite_did_document`) |
+| authenticate the account owner and map to XRPC errors | `auth::guards::authenticate_owner` |
+| the token-endpoint DPoP preamble | `routes::oauth_dpop::token_endpoint_dpop` |
+| insert a generated value, retrying on a UNIQUE collision | `db::insert_with_retry_on_collision` |
+| open an auth.md claim ceremony | `auth::agent_assertion::start_claim_attempt` |
+| the account row + genesis repo + announce shared by account promotion | `account_genesis` |
+| a periodic background pass | `sweep::spawn_sweep` |
+| lower-case hex of a SHA-256 digest | `auth::token::sha256_hex` (inside `crates/crypto` itself: its crate-private `hex::to_hex`) |
+| percent-encoding | `urlencoding::encode` |
+| test state, accounts, tokens, DPoP proofs, request builders, body decoding | `routes::test_utils` |
+| the space route tests' request builders and record bodies | `routes::space_test_support` |
+| a generic HTTP contract asserted over every route it binds (missing auth → 401, spurious body → 400, invalid DID → 400, closed pool → 500) | `routes::contract_tests` |
 
 **Every `.rs` file with runtime behavior must have a pattern comment.**
 Add `// pattern: Functional Core`, `// pattern: Imperative Shell`, or

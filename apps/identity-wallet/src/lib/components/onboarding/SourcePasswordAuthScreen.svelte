@@ -154,7 +154,7 @@
 {#if authenticating}
   <div class="centered">
     <Spinner size={44} label="Signing in" />
-    <p class="status">{openingStatus}</p>
+    <p class="status u-status-text">{openingStatus}</p>
   </div>
 {:else if needsTwoFactor}
   <OnboardingShell
@@ -226,12 +226,6 @@
     height: 100%;
     gap: var(--space-lg);
     padding: var(--space-xl);
-  }
-  .status {
-    font-size: var(--text-body);
-    color: var(--color-muted);
-    margin: 0;
-    text-align: center;
   }
   .pds-chip {
     font-family: var(--font-mono);

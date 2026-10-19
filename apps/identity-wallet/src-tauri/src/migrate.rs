@@ -196,25 +196,24 @@ pub async fn build_did_web_migration_document_cmd(
             if name != ATPROTO_VERIFICATION_METHOD_ID {
                 if let Some(key) = value.as_str() {
                     methods.push(serde_json::json!({
-                        "id": format!("{did}#{name}"), "type": "Multikey", "controller": did,
+                        "id": format!("#{name}"), "type": "Multikey", "controller": did,
                         "publicKeyMultibase": multibase(key)
                     }));
                 }
             }
         }
     }
-    methods.retain(|method| {
-        method.get("id").and_then(serde_json::Value::as_str) != Some(&format!("{did}#device"))
-    });
-    methods.push(serde_json::json!({"id": format!("{did}#device"), "type": "Multikey", "controller": did, "publicKeyMultibase": multibase(&device.key_id)}));
-    methods.push(serde_json::json!({"id": format!("{did}#atproto"), "type": "Multikey", "controller": did, "publicKeyMultibase": multibase(&repo_key)}));
+    methods
+        .retain(|method| method.get("id").and_then(serde_json::Value::as_str) != Some("#device"));
+    methods.push(serde_json::json!({"id": "#device", "type": "Multikey", "controller": did, "publicKeyMultibase": multibase(&device.key_id)}));
+    methods.push(serde_json::json!({"id": "#atproto", "type": "Multikey", "controller": did, "publicKeyMultibase": multibase(&repo_key)}));
     let document = serde_json::json!({
         "@context": ["https://www.w3.org/ns/did/v1"],
         "id": did,
         // Domain migration must never let destination recommendations change the user's handle.
         "alsoKnownAs": current.also_known_as,
         "verificationMethod": methods,
-        "service": [{"id": format!("{did}#atproto_pds"), "type": "AtprotoPersonalDataServer", "serviceEndpoint": pds_endpoint}],
+        "service": [{"id": "#atproto_pds", "type": "AtprotoPersonalDataServer", "serviceEndpoint": pds_endpoint}],
     });
     let document_text = format!(
         "{}\n",
@@ -224,8 +223,8 @@ pub async fn build_did_web_migration_document_cmd(
     );
     Ok(DidWebMigrationDocument {
         document_text,
-        device_key: format!("{did}#device"),
-        repo_key: format!("{did}#atproto"),
+        device_key: "#device".to_string(),
+        repo_key: "#atproto".to_string(),
         pds_endpoint,
     })
 }
@@ -1733,7 +1732,7 @@ mod tests {
     #[tokio::test]
     #[ignore] // Requires socket binding; ignore in sandboxed environments
     async fn test_build_and_submit_migration_self_signs_repoint() {
-        use crate::oauth::{DPoPKeypair, OAuthSession};
+        use crate::oauth::OAuthSession;
         use httpmock::prelude::*;
         use std::sync::{Arc, Mutex};
 
@@ -1793,7 +1792,7 @@ mod tests {
                     "services": { "atproto_pds": { "type": "AtprotoPersonalDataServer", "endpoint": "https://new.pds" } }
                 }));
         });
-        let pds_client = PdsClient::new_for_test(plc.base_url());
+        let pds_client = crate::pds_client::new_for_test(plc.base_url());
 
         // Destination PDS mock: getRecommendedDidCredentials for the NEW PDS.
         let dest = MockServer::start();
@@ -1809,15 +1808,14 @@ mod tests {
                     "services": { ATPROTO_PDS_SERVICE_ID: { "type": "AtprotoPersonalDataServer", "endpoint": "https://new.pds" } }
                 }));
         });
-        let keypair = DPoPKeypair::get_or_create().expect("dpop keypair");
+        let keypair = crate::oauth::test_dpop_keypair().expect("dpop keypair");
         let session = Arc::new(Mutex::new(OAuthSession {
             access_token: "test-access".to_string(),
             refresh_token: "test-refresh".to_string(),
             expires_at: u64::MAX, // never trigger a refresh
             dpop_nonce: None,
         }));
-        let dest_client =
-            crate::oauth_client::OAuthClient::new_for_test(keypair, session, dest.base_url());
+        let dest_client = crate::oauth_client::new_for_test(keypair, session, dest.base_url());
 
         // Build the self-signed repoint op.
         let built = build_migration_op(&pds_client, &dest_client, did)
@@ -1985,7 +1983,7 @@ mod tests {
             when.method(POST).path(format!("/{did}"));
             then.status(200).json_body(serde_json::json!({}));
         });
-        let pds_client = PdsClient::new_for_test(plc.base_url());
+        let pds_client = crate::pds_client::new_for_test(plc.base_url());
 
         // A dummy op body — reconcile-first must return before this is ever POSTed.
         let dummy_op = serde_json::json!({ "type": "plc_operation" });
@@ -2039,7 +2037,7 @@ mod tests {
             when.method(POST).path(format!("/{did}"));
             then.status(200).json_body(serde_json::json!({}));
         });
-        let pds_client = PdsClient::new_for_test(plc.base_url());
+        let pds_client = crate::pds_client::new_for_test(plc.base_url());
 
         let op = serde_json::json!({ "type": "plc_operation" });
         submit_migration_op_reconciling(&pds_client, did, &op, op_cid)
@@ -2083,7 +2081,7 @@ mod tests {
             when.method(POST).path(format!("/{did}"));
             then.status(400).body("bad op");
         });
-        let pds_client = PdsClient::new_for_test(plc.base_url());
+        let pds_client = crate::pds_client::new_for_test(plc.base_url());
 
         let op = serde_json::json!({ "type": "plc_operation" });
         let err = submit_migration_op_reconciling(&pds_client, did, &op, op_cid)

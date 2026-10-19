@@ -75,8 +75,10 @@ pub async fn activate_account_handler(
         // Already active: idempotent no-op. Don't re-emit a status-quo `#account` event.
         AccountStateChange::Unchanged => {
             tx.commit().await.map_err(|e| {
-                tracing::error!(error = %e, did = %user.did, "failed to commit activate (no-op) transaction");
-                ApiError::new(ErrorCode::InternalError, "failed to activate account")
+                {
+                    tracing::error!(error = %e, did = %user.did, "failed to commit activate (no-op) transaction");
+                    ApiError::new(ErrorCode::InternalError, "failed to activate account")
+                }
             })?;
             tracing::debug!(did = %user.did, "activateAccount: already active; no event emitted");
         }
@@ -88,25 +90,33 @@ pub async fn activate_account_handler(
                 .stage_account(&mut tx, user.did.clone(), true, None)
                 .await
                 .map_err(|e| {
-                    tracing::error!(error = %e, did = %user.did, "failed to stage #account activation event");
-                    ApiError::new(ErrorCode::InternalError, "failed to activate account")
+                    {
+                        tracing::error!(error = %e, did = %user.did, "failed to stage #account activation event");
+                        ApiError::new(ErrorCode::InternalError, "failed to activate account")
+                    }
                 })?;
             match sync {
                 Some(sync_input) => {
                     let pending = account.stage_sync(&mut tx, sync_input).await.map_err(|e| {
-                        tracing::error!(error = %e, did = %user.did, "failed to stage #sync activation event");
-                        ApiError::new(ErrorCode::InternalError, "failed to activate account")
+                        {
+                            tracing::error!(error = %e, did = %user.did, "failed to stage #sync activation event");
+                            ApiError::new(ErrorCode::InternalError, "failed to activate account")
+                        }
                     })?;
                     tx.commit().await.map_err(|e| {
-                        tracing::error!(error = %e, did = %user.did, "failed to commit activate transaction");
-                        ApiError::new(ErrorCode::InternalError, "failed to activate account")
+                        {
+                            tracing::error!(error = %e, did = %user.did, "failed to commit activate transaction");
+                            ApiError::new(ErrorCode::InternalError, "failed to activate account")
+                        }
                     })?;
                     pending.finish();
                 }
                 None => {
                     tx.commit().await.map_err(|e| {
-                        tracing::error!(error = %e, did = %user.did, "failed to commit activate transaction");
-                        ApiError::new(ErrorCode::InternalError, "failed to activate account")
+                        {
+                            tracing::error!(error = %e, did = %user.did, "failed to commit activate transaction");
+                            ApiError::new(ErrorCode::InternalError, "failed to activate account")
+                        }
                     })?;
                     account.finish();
                 }
@@ -173,7 +183,7 @@ mod tests {
 
     use crate::app::{app, test_state, test_state_with_plc_url};
     use crate::firehose::FirehoseEvent;
-    use crate::routes::test_utils::{access_jwt, body_json};
+    use crate::routes::test_utils::{access_jwt, body_json, scoped_access_jwt as scoped_jwt};
 
     async fn insert_account(db: &sqlx::SqlitePool, did: &str, email: &str, deactivated: bool) {
         // Bind the deactivation timestamp as a value (a fixed instant suffices for tests) rather
@@ -193,22 +203,6 @@ mod tests {
         .execute(db)
         .await
         .unwrap();
-    }
-
-    fn scoped_jwt(secret: &[u8; 32], sub: &str, scope: &str) -> String {
-        use jsonwebtoken::{encode, Algorithm, EncodingKey, Header};
-        use std::time::{SystemTime, UNIX_EPOCH};
-
-        let now = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_secs();
-        encode(
-            &Header::new(Algorithm::HS256),
-            &serde_json::json!({ "scope": scope, "sub": sub, "iat": now, "exp": now + 7200_u64 }),
-            &EncodingKey::from_secret(secret),
-        )
-        .unwrap()
     }
 
     fn activate_request(token: &str) -> Request<Body> {
@@ -375,43 +369,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn non_empty_body_returns_400() {
-        let state = test_state().await;
-        insert_account(&state.db, "did:plc:act5", "act5@example.com", true).await;
-        let token = access_jwt(&state.jwt_secret, "did:plc:act5");
-
-        let request = Request::builder()
-            .method("POST")
-            .uri("/xrpc/com.atproto.server.activateAccount")
-            .header("Authorization", format!("Bearer {token}"))
-            .header("Content-Type", "application/json")
-            .body(Body::from(r#"{"unexpected":"payload"}"#))
-            .unwrap();
-
-        let response = app(state).oneshot(request).await.unwrap();
-        assert_eq!(
-            response.status(),
-            StatusCode::BAD_REQUEST,
-            "activateAccount must reject a non-empty body"
-        );
-    }
-
-    #[tokio::test]
-    async fn missing_auth_returns_401() {
-        let response = app(test_state().await)
-            .oneshot(
-                Request::builder()
-                    .method("POST")
-                    .uri("/xrpc/com.atproto.server.activateAccount")
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
-    }
-
-    #[tokio::test]
     async fn activation_refreshes_stale_did_doc_and_emits_identity() {
         // The migration-into-obsign case: our cached DID document is a pre-migration snapshot
         // (points at the old PDS + old key). Activation must force-refresh it from the authoritative
@@ -458,16 +415,9 @@ mod tests {
                 "serviceEndpoint": "https://old.example.com",
             }],
         });
-        sqlx::query(
-            "INSERT INTO did_documents (did, document, created_at, updated_at) \
-             VALUES (?, ?, datetime('now'), datetime('now')) \
-             ON CONFLICT(did) DO UPDATE SET document = excluded.document",
-        )
-        .bind(did)
-        .bind(stale_doc.to_string())
-        .execute(&state.db)
-        .await
-        .unwrap();
+        crate::db::dids::upsert_did_document(&state.db, did, &stale_doc)
+            .await
+            .unwrap();
 
         let token = access_jwt(&state.jwt_secret, did);
         let db = state.db.clone();

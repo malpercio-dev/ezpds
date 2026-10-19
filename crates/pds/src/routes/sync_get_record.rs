@@ -65,8 +65,10 @@ pub async fn sync_get_record(
     let car_bytes = export_record_proof_car(&mut block_store, root_cid, &mst_key)
         .await
         .map_err(|e| {
-            tracing::error!(error = %e, did = %did, key = %mst_key, "failed to export record proof CAR");
-            ApiError::new(ErrorCode::InternalError, "failed to get record")
+            {
+                tracing::error!(error = %e, did = %did, key = %mst_key, "failed to export record proof CAR");
+                ApiError::new(ErrorCode::InternalError, "failed to get record")
+            }
         })?;
 
     Ok((
@@ -84,29 +86,11 @@ mod tests {
     use axum::http::{self, Request};
     use tower::ServiceExt;
 
-    use crate::routes::test_utils::{access_jwt, seed_account_with_repo, state_with_master_key};
-
-    async fn setup_account_with_repo() -> (AppState, String) {
-        let state = state_with_master_key().await;
-        let did = "did:plc:syncgetrecordtest".to_string();
-        seed_account_with_repo(&state.db, &did).await;
-        (state, did)
-    }
+    use crate::routes::test_utils::{
+        access_jwt, put_fixed_record as put_record, setup_account_with_repo,
+    };
 
     /// PUT a record at `rkey` via the repo.putRecord endpoint.
-    async fn put_record(app: &axum::Router, token: &str, did: &str, rkey: &str) -> StatusCode {
-        let request = crate::routes::test_utils::put_record_request(
-            did,
-            "app.bsky.feed.post",
-            rkey,
-            serde_json::json!({
-                "record": { "text": "hello", "createdAt": "2026-06-26T00:00:00Z" }
-            }),
-            Some(token),
-        );
-        app.clone().oneshot(request).await.unwrap().status()
-    }
-
     fn get_request(did: &str, rkey: &str) -> Request<Body> {
         Request::builder()
             .method(http::Method::GET)
@@ -250,32 +234,5 @@ mod tests {
             resolved, None,
             "exclusion proof must resolve the absent key to None using only the CAR blocks"
         );
-    }
-
-    #[tokio::test]
-    async fn nonexistent_account_returns_404() {
-        let state = crate::app::test_state().await;
-        let app = crate::app::app(state);
-
-        let response = app
-            .oneshot(get_request("did:plc:nonexistent", "rec1"))
-            .await
-            .unwrap();
-        assert_eq!(response.status(), StatusCode::NOT_FOUND);
-    }
-
-    #[tokio::test]
-    async fn invalid_did_returns_400() {
-        let state = crate::app::test_state().await;
-        let app = crate::app::app(state);
-
-        let request = Request::builder()
-            .method(http::Method::GET)
-            .uri("/xrpc/com.atproto.sync.getRecord?did=not-a-did&collection=app.bsky.feed.post&rkey=rec1")
-            .body(Body::empty())
-            .unwrap();
-
-        let response = app.oneshot(request).await.unwrap();
-        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
     }
 }

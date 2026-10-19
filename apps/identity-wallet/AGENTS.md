@@ -66,8 +66,12 @@ screen and reproduce any state without a Mac/Xcode/simulator. Design + ACs:
 - Utilities (each file's header carries its rules):
   - `src/lib/appearance.ts` — System/Light/Dark override; Keychain is truth, localStorage mirror is pre-paint only
   - `src/lib/agent-scopes.ts` — plain-language OAuth scope descriptions; elevated flags + unknown-token honesty rule
+  - `src/lib/agent-display.ts` — agent status/event/type labels + `agentName`/`agentDetailLine`, and the separate child-state vocabulary (`childState`/`CHILD_STATUS`, where a scheduled purge outranks the revocation it implies); carries the status-is-text+icon+position-never-colour-alone rule. The agents-surface peer of `agent-scopes.ts`
+  - `src/lib/handle.ts` — handle assembly + validation shared by create (`HandleScreen`) and change-handle (`ChangeHandleScreen`); `composeHandle`/`isValidLabel` for the served-domain label path, `isValidHandle`/`normalizeHandle` for the custom-domain full-handle path
+  - `src/lib/did-web.ts` — did:web identity-document composition + validation shared by the did:web onboarding screens; `didWebFromDomain` (hostname → `did:web`, path/port rejected), `composeDidWebDocument`/`serializeDidWebDocument`, `didWebDocumentUrl`, and the `self`/`custos` hosting split. The did:web peer of `handle.ts`
   - `src/lib/deadline.ts` — 72h PLC recovery-window math (`getDeadline`/`getUrgency`/`formatCountdown`)
   - `src/lib/identity-status.ts` — identity panel state derivation; panel-vs-badge `safe` and the load-bearing did:web `isVerified` short-circuit
+  - `src/lib/did-doc-utils.ts` — DID-document accessors bridging PLC-directory format and W3C (`did`/`id`, `services` map vs `service` array, rotation-key shape); `extractPdsFromPlcDoc`/`extractHandle`/`truncateDid`/`didMethod`/`isDidWeb`/`isOldModelRecovery` and `normalizePlcDocToW3c`, which the DID-document screens render from
   - `src/lib/protection.ts` — shared Defend derivations; ordering-vs-`activeStrip` rule, worst-state-wins summary
   - `src/lib/alarm-landing.ts` — pure launch/foreground alarm-landing decision (`decideAlarmLanding`, `alarmKey`)
   - `src/lib/identity-cards.ts` — `loadIdentityCard(s)` local facts; `degraded`-flag semantics
@@ -78,6 +82,7 @@ screen and reproduce any state without a Mac/Xcode/simulator. Design + ACs:
   - `src/lib/consent-qr.ts` — pure `parseConsentQr`; ignores the QR's origin (the server re-verifies by `request_id`)
   - `src/lib/consent-route.ts` — which managed identity answers a consent request that arrived with no identity attached (Camera-app QR); unauthenticated-preview probe over the `request_id`, refuses to guess a `login_hint`-bound account rather than open the wrong one
   - `src/lib/claim-errors.ts` — shared RATE_LIMITED / SERVER_ERROR message formatting
+  - `src/lib/migration-errors.ts` — presentation-only migration-progress error detail (`describeBlobTransferDetail`/`describeBlobLoss`); pure string functions attributing a blob-transfer failure to the right side of the transfer, the tested-utility sibling of `claim-errors.ts`
 
 **Guarantees:** SSR is disabled globally (`ssr = false` in `src/routes/+layout.ts`) — the
 frontend is a static SPA loaded from disk by WKWebView, with build output in `dist/`
@@ -112,32 +117,32 @@ allowlist lives in its module's doc — `claim.rs` (the 4-point claim verificati
 | `lib.rs` | crate root and app wiring: the cross-cutting IPC commands (account creation, both DID ceremonies, PDS config/capabilities, IdentityStore reads, appearance) plus `run()`'s startup sequence — see module doc |
 | `main.rs` | desktop entry point (calls `lib::run()`) |
 | `keychain.rs` | the two Keychain stores (device-local + iCloud-synchronizable, allowlist-gated), protection classes, the access-group entitlement invariant, and the **canonical account inventory** — the module doc is the authority on every account name |
-| `device_key.rs` | the global P-256 device key, software-or-Secure-Enclave by `#[cfg]`; `get_or_create` idempotent, `sign` low-S-normalized r\|\|s — see module doc |
+| `device_key.rs` | the global P-256 device key: this app's Keychain and account names bound to the shared `crates/ios-device-key` implementation (software-or-Secure-Enclave by `#[cfg]`; `get_or_create` idempotent, `sign` low-S-normalized r\|\|s) — see both module docs |
 | `identity_store.rs` | multi-identity Keychain lifecycle (`managed-dids` index + per-DID entries), lazy per-DID device keys with the Secure-Enclave liveness probe, the shared `SovereignTokenRecord` session record; removal semantics and the Share 1 exception in the module doc |
 | `share_ceremony.rs` | client-side 2-of-3 share generation + the three fail-closed staging slots (create / re-key / self-held kit); staging contract and load-bearing teardown order in the module doc |
-| `share_recovery.rs` | the "Recover existing identity" ceremony (10 IPC commands) and its resumable rotation epilogue — see module doc |
+| `share_recovery.rs` | the "Recover existing identity" ceremony (9 IPC commands) and its resumable rotation epilogue — see module doc |
 | `rekey.rs` | additive-only re-key of pre-inversion `[device, PDS]` accounts onto the client-share model; owns the per-DID Share 1 slot (`recovery-share-1:{did}`) and its synced-store accessors — see module doc |
-| `sovereign_session.rs` | passwordless per-DID sovereign login: device-key proof → validated Bearer session persisted to `{did}:oauth-tokens`; owns the shared sub/aud binding helpers — see module doc |
-| `session_provider.rs` | the per-DID session seam every authenticated operation goes through: restore / coalesced single-flight refresh / host-change discard, distinct terminal errors, and the `ensure_identity_session` pre-flight — see module doc |
+| `sovereign_session.rs` | passwordless per-DID sovereign login: resolves the device key + signer from `IdentityStore`, delegates the network ceremony to `custos_client::sovereign_session::sovereign_login`, and persists a validated Bearer session to `{did}:oauth-tokens`; re-exports the crate's `bearer_jwt_claims`/`audience_matches_server` sub/aud binding helpers and its `fresh_nonce`/`unix_timestamp` (reused by several other device-key-signed flows, not just this one) — see module doc |
+| `session_provider.rs` | the per-DID session seam every authenticated operation goes through: restore / coalesced single-flight refresh / host-change discard, distinct terminal errors, and the `ensure_identity_session` pre-flight. The refresh network call + sub/aud re-validation is `custos_client::sovereign_session::refresh_bearer_session`; this module owns the decision ladder, the coalescing lock, and persisting/discarding the `IdentityStore` record — see module doc |
 | `password_unlock.rs` | the password origin for the shared session record on non-sovereign hosts: capability-driven route choice (unreached ⇒ SOVEREIGN) + `createSession` → bind → persist — see module doc |
 | `source_login.rs` | the one shared password `createSession` core (HTTPS + account-match + 2FA) behind the claim, migration, and password-unlock paths (ADR-0021) — see module doc |
-| `oauth.rs` | `AppState` (all flow-state slots) + the retired OAuth PKCE machinery (`prepare/complete_oauth_flow`, no live caller); slot inventory and the create-flow-ends-at-home retirement rationale in the module doc |
-| `oauth_client.rs` | `OAuthClient`, the authenticated XRPC client: DPoP and Bearer modes, lazy refresh, nonce retry, non-nonce 400s passed through intact — see module doc |
-| `http.rs` | `CustosClient` for the one configured PDS (runtime URL, Keychain-persisted); OAuth `par`/`token_exchange` — see module doc |
-| `pds_client.rs` | discovery/auth/XRPC against arbitrary PDSes + plc.directory, the wallet's OAuth identity constants (canonical client_id, reverse-FQDN redirect, V042 sync), and the status-classification seam (`NetworkError` is transport-only); full inventory and error reachability in the module doc |
+| `oauth.rs` | `AppState` (all flow-state slots); re-exports `custos_client::{DpopKeypair, OAuthSession, OAuthError}` plus this app's `KeychainStore`/`TransportObserver`/`TokenPersister` adapters for that crate. The create-flow OAuth login (`prepare/complete_oauth_flow`) was removed once the create flow started ending at `home` with no OAuth round trip — slot inventory and the retirement rationale in the module doc |
+| `oauth_client.rs` | Re-exports `custos_client::OAuthClient` (DPoP and Bearer modes, lazy refresh, nonce retry, non-nonce 400s passed through intact — see that crate's module doc) plus `diagnostics_observer()`, the one seam a real `new_bearer_with_observer` call site should pass |
+| `http.rs` | Re-exports `custos_client::CustosClient` for the one configured PDS (runtime URL, Keychain-persisted); owns the compile-time default base URL and `new_configured`, which wires this app's diagnostics observer — see module doc |
+| `pds_client.rs` | Re-exports `custos_client::PdsClient` (discovery/auth/XRPC against arbitrary PDSes + plc.directory) plus this app's OAuth identity constants (canonical client_id, reverse-FQDN redirect, V042 sync) and `new_with_diagnostics`/`new_for_test`, which wire this app's diagnostics + `pds_capabilities` observers (`new_for_test` wires *real* observers unlike the crate's own — see `crates/custos-client/AGENTS.md`'s Boundaries for why). Also re-exports `PdsClientError` + the claim/app-password/migration typed XRPC types, and wraps `custos_client::{identity,app_passwords,migration}`'s methods with this app's diagnostics observer — full inventory and error reachability in the module doc |
 | `pds_capabilities.rs` | per-host cache of `describeServer`'s `custos` extension; absence is not an error, gates ask about features never vendors — cache contract in the module doc |
 | `claim.rs` | the 5-command PLC claim pipeline (password source login per ADR-0021; a claim changes nothing but inserting the device key) — see module doc |
 | `migrate.rs` | self-signed migration identity leg (ADR-0002 path 1): build + device-key-sign + direct plc.directory submit; also the did:web document leg; `guard_migration_op`'s allowlist and the claim-guard inversion in the module doc |
 | `migration_orchestrator.rs` | the outbound-migration state machine (prepare → … → finalize; also disaster recovery's transfer tail); cutover ordering, the capability-gated credential branch, blob-loss handling, and state-vs-session persistence in the module doc |
 | `disaster_recovery.rs` | sovereign disaster recovery ("Rebuild from backup"): two guarded PLC ops around an offline-JWT `createAccount` + iCloud-CAR import; sequencing and the anti-lockout rule in the module doc |
 | `endpoint_repair.rs` | sovereign `atproto_pds`-endpoint repair (device-key-signed, direct to plc.directory; new host probed first); the endpoint-string-only guard and its no-op reconcile in the module doc |
-| `handle_change.rs` | sovereign change-handle: `updateHandle` first, device-key-signed alsoKnownAs op second, retry self-heals; guard and error classifiers in the module doc |
+| `handle_change.rs` | sovereign change-handle: `updateHandle` first, device-key-signed alsoKnownAs op second, retry self-heals; also `check_custom_handle_dns`, the read-only DNS pre-flight for a handle on a user-owned domain (folds the hosting PDS's `resolveHandle` and the wallet's own TXT lookup, returning the exact `_atproto` record required); guard and error classifiers in the module doc |
 | `rotate_repo_key.rs` | sovereign repo signing-key rotation (ADR-0025): PDS stages, wallet signs, PDS submits + cuts over under the repo write lock — see module doc |
-| `self_held_kit.rs` | escrow-less self-held Shamir kit for claimed identities: build/submit/confirm + the escrow-offer seam; share custody and the plc.directory-only posture in the module doc |
+| `self_held_kit.rs` | escrow-less self-held Shamir kit for claimed identities: build/submit/confirm; share custody and the plc.directory-only posture in the module doc |
 | `identity_removal.rs` | permanent removal: `deleteAccount` → (did:plc) tombstone → wipe-last, resumable via the pending-removals marker; password-vs-signed-proof resolution and the local-only forget hatch in the module doc |
 | `recovery.rs` | the recovery override: fork-point counter-op signed by the device key, inside plc.directory's 72-hour window — see module doc |
 | `plc_monitor.rs` | background + foreground PLC sweeps over did:plc identities only (omission is not a verdict) and the fold-based sweep history behind the Protection surface — set rule, degradation contract, and fold rules in the module doc |
-| `agents.rs` | agent consent + audit: the 5 per-identity "My agents" + claim-ceremony commands over a self-healing per-DID session — see module doc |
+| `agents.rs` | agent consent + audit plus the sovereign-child parent console: the per-identity "My agents" claim-ceremony and child-lifecycle commands over a self-healing per-DID session. The plain network cores are `custos_client::agents` typed methods; only minting a child account and post-recovery reconciliation stay here (they sign with the wallet's delegation seed) — see module doc |
 | `oauth_consent.rs` | wallet-confirmed OAuth consent client (preview by code / by QR `request_id`, device-key-signed approve); envelope contents and Phase C match-code rules in the module doc |
 | `app_passwords.rs` | app-password mint/list/revoke over a per-DID full-access session (the "sign the Bluesky app into a passwordless account" surface) — see module doc |
 | `blob_backup.rs` | user-held media backup: CID-verified incremental iCloud mirror + per-blob-degrading restore; also feeds the migration blob drain (`mirror_fallback_blob`) and the background sweep — see module doc |
@@ -165,9 +170,10 @@ PDS running at the configured URL for account creation to succeed at runtime.
 ## Dependencies
 
 - Frontend → Rust via Tauri IPC (`@tauri-apps/api/core` `invoke()`).
-- Rust → workspace deps: `crates/crypto` (P-256 software path + envelope builders), `p256`,
-  `multibase`, `hickory-resolver` (DNS TXT handle resolution), `urlencoding`, `chrono`;
-  reqwest is rustls-only (no OpenSSL — rustls handles iOS TLS natively).
+- Rust → workspace deps: `crates/crypto` (P-256 software path + envelope builders),
+  `crates/custos-client` (the DPoP/OAuth/XRPC client, including DNS TXT handle resolution — see
+  its AGENTS.md), `crates/ios-device-key` (device key), `p256`, `multibase`, `urlencoding`,
+  `chrono`; reqwest is rustls-only (no OpenSSL — rustls handles iOS TLS natively).
 - Rust → the configured PDS, arbitrary PDSes, and plc.directory over HTTPS at runtime (the
   endpoint inventory is each client module's doc: `http.rs`, `pds_client.rs`).
 - Rust/frontend → `tauri-plugin-auth-session` (**vendored** in

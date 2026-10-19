@@ -20,6 +20,8 @@ on:
       - "apps/identity-wallet/**"
       - "apps/admin-companion/vendor/tauri-plugin-sharesheet/**"
       - "crates/crypto/**"
+      - "crates/custos-client/**"
+      - "crates/ios-device-key/**"
       - "Cargo.toml"
       - "Cargo.lock"
       # The build/upload delegate to `just ios-*`, so a recipe change can break the lane.
@@ -37,8 +39,10 @@ on:
       # them.
       - "ios/**"
       - "scripts/ios/**"
-      # The shared runner preamble (toolchain, cache, tauri-cli pin, brew shim).
+      # The shared runner preamble (toolchain, cache, tauri-cli pin, brew shim), and the
+      # pnpm+Node composite it delegates to.
       - ".github/actions/ios-setup/**"
+      - ".github/actions/setup-pnpm/**"
       - "rust-toolchain.toml"
       - ".github/workflows/ios-testflight.yml"
       # The shared build/sign/upload body this caller delegates to.

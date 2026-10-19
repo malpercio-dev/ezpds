@@ -1,0 +1,34 @@
+meta {
+  name: Space Get Latest Commit
+  type: http
+  seq: 147
+}
+
+get {
+  url: {{baseUrl}}/xrpc/com.atproto.space.getLatestCommit?space=at://did:plc:authorityaaaaaaaaaaaaaaa/space/org.example.bucket/main&repo={{did}}
+  body: none
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{accessToken}}
+}
+
+params:query {
+  space: at://did:plc:authorityaaaaaaaaaaaaaaa/space/org.example.bucket/main
+  repo: {{did}}
+}
+
+docs {
+  The current signed commit for a permissioned repo. It is MINTED PER SERVING, never stored:
+  each call draws a fresh "ikm", signs the (space, author, rev, ikm) context, and MACs the
+  repo hash under a key derived from that ikm. Two calls over an unchanged repo therefore
+  return the same "hash" and "rev" but different "ikm"/"sig"/"mac" — that is not a bug.
+
+  The signature deliberately does not cover the hash, so a leaked commit proves only that the
+  user signed a context: anyone holding its ikm can forge a matching mac for any hash. That
+  deniability is the point.
+
+  "hash", "ikm", "sig" and "mac" are lex-JSON byte strings ({"$bytes": "<base64>"}). A repo
+  the account has never written to returns 400 RepoNotFound.
+}

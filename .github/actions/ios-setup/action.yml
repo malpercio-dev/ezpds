@@ -4,6 +4,8 @@
 # Rust iOS target, a warm rust-cache, tauri-cli at the pinned version, and the
 # arm64 Homebrew shim. Keeping it here means a pin bump, a cache tweak, or a new
 # brew workaround is applied in ONE place instead of being copied across lanes.
+# The pnpm + Node step itself delegates to .github/actions/setup-pnpm, the same
+# composite ci.yml, mcp-check.yml, and ios-pr-check.yml's own `frontend` job use.
 #
 # NOT included: `actions/checkout` (a local composite action can only run after
 # the repo is already checked out, so each caller checks out first) and the
@@ -23,23 +25,9 @@ runs:
     - name: Install just
       uses: extractions/setup-just@dd310ad5a97d8e7b41793f8ef055398d51ad4de6 # v2
 
-    - name: Install pnpm
-      uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
+    - name: Setup pnpm + Node
+      uses: ./.github/actions/setup-pnpm
       with:
-        # Exact pin — keep in lockstep with "packageManager" in apps/*/package.json,
-        # so --frozen-lockfile can never fail on a pnpm lockfile-format difference
-        # between local and CI.
-        version: 9.15.9
-
-    - name: Setup Node 22
-      uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
-      with:
-        node-version: 22
-        # Cache the pnpm store (keyed by the lockfile hash) so `pnpm install
-        # --frozen-lockfile` restores from cache instead of re-downloading the whole
-        # dependency tree every run. pnpm is already on PATH from the action-setup step
-        # above — setup-node's `cache: pnpm` requires it to be installed first.
-        cache: pnpm
         cache-dependency-path: apps/${{ inputs.app }}/pnpm-lock.yaml
 
     - name: Install frontend dependencies

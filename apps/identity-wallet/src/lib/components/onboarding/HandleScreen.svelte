@@ -92,10 +92,10 @@
   {#if domains.kind === 'loading'}
     <Spinner size={28} label="Loading available handle domains" />
   {:else if domains.kind === 'error'}
-    <p class="status">{domainErrorCopy(domains.code)}</p>
+    <p class="status u-status-text">{domainErrorCopy(domains.code)}</p>
     <Button onclick={loadDomains}>Try again</Button>
   {:else if domains.kind === 'none'}
-    <p class="status">This server has no handle domains configured. Please contact your operator.</p>
+    <p class="status u-status-text">This server has no handle domains configured. Please contact your operator.</p>
   {:else}
     <TextField
       bind:value={label}
@@ -114,12 +114,6 @@
 </OnboardingShell>
 
 <style>
-  .status {
-    font-size: var(--text-body);
-    color: var(--color-muted);
-    text-align: center;
-    margin: 0;
-  }
   .preview {
     font-size: var(--text-label);
     color: var(--color-muted);

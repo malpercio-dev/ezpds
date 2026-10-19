@@ -185,6 +185,20 @@ These endpoints extend the existing provisioning API. All endpoints require bear
 
 **5.2 Recovery Endpoints**
 
+> **⚠️ Superseded contract — do not implement §§5.2–5.3 as written.** The
+> shipped recovery surface differs from the rows below. `POST /v1/recovery/initiate`
+> is **public** (no credentials), emails a single-use 1-hour OTP, always returns
+> 200 (no enumeration/escrow oracle), and returns **no share**; the escrow share
+> is released later by `POST /v1/recovery/release` (OTP → cancellable delay
+> window, default 24h). Reconstruction and the signing challenge run **client-side**
+> in the wallet, not against a `/v1/recovery/verify-key` endpoint. PDS-held-share
+> management (§5.3) is `PUT`/`DELETE /v1/recovery/escrow-share`, not
+> `/v1/keys/shares/:id`; the onboarding deposit itself rides `POST /v1/dids`'
+> client-share path. See the
+> [`recovery_release.rs`](../crates/pds/src/routes/recovery_release.rs) and
+> [`recovery_escrow.rs`](../crates/pds/src/routes/recovery_escrow.rs) module docs
+> and [identity-and-key-custody.md](architecture/identity-and-key-custody.md).
+
   ------------------------- ----------------- ------------------------------------------------------------------------------------------------------
   **Endpoint**              **Method**        **Purpose**
   /v1/recovery/initiate     POST              Begin recovery ceremony. Requires account credentials. Returns share 2 (encrypted to session key).

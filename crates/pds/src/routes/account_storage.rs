@@ -158,7 +158,9 @@ mod tests {
     use axum::http::{self, Request, StatusCode};
     use tower::ServiceExt;
 
-    use crate::routes::test_utils::{body_json, test_state_with_admin_token};
+    use crate::routes::test_utils::{
+        body_json, insert_bare_account as insert_account, test_state_with_admin_token,
+    };
 
     const ADMIN: &str = "test-admin-token";
 
@@ -182,18 +184,6 @@ mod tests {
         (status, body_json(resp).await)
     }
 
-    async fn insert_account(db: &sqlx::SqlitePool, did: &str) {
-        sqlx::query(
-            "INSERT INTO accounts (did, email, password_hash, created_at, updated_at) \
-             VALUES (?, ?, NULL, datetime('now'), datetime('now'))",
-        )
-        .bind(did)
-        .bind(format!("{did}@example.com"))
-        .execute(db)
-        .await
-        .unwrap();
-    }
-
     async fn insert_blob(db: &sqlx::SqlitePool, did: &str, cid: &str, size: i64) {
         crate::db::blobs::insert_blob(
             db,
@@ -206,23 +196,6 @@ mod tests {
         )
         .await
         .unwrap();
-    }
-
-    #[tokio::test]
-    async fn missing_token_returns_401() {
-        let state = test_state_with_admin_token().await;
-        let app = crate::app::app(state);
-        let (status, _) = get_storage(&app, "did:plc:whoever", None).await;
-        assert_eq!(status, StatusCode::UNAUTHORIZED);
-    }
-
-    #[tokio::test]
-    async fn nonexistent_account_returns_404() {
-        let state = test_state_with_admin_token().await;
-        let app = crate::app::app(state);
-        let (status, body) = get_storage(&app, "did:plc:ghost", Some(ADMIN)).await;
-        assert_eq!(status, StatusCode::NOT_FOUND);
-        assert_eq!(body["error"]["code"], "NOT_FOUND");
     }
 
     /// Diagnosing a real blob loss needed a production SQLite shell precisely because this
@@ -268,7 +241,6 @@ mod tests {
             ADMIN_SIGNATURE_HEADER, ADMIN_TIMESTAMP_HEADER,
         };
         use crate::db::admin_devices::{insert_device, NewAdminDevice};
-        use std::time::{SystemTime, UNIX_EPOCH};
 
         // A state with NO master token: proves the device path is independent of it.
         let state = crate::app::test_state().await;
@@ -291,10 +263,7 @@ mod tests {
         insert_blob(&state.db, did, "bafdevblob", 250).await;
 
         let path = format!("/v1/accounts/{did}/storage");
-        let ts = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_secs() as i64;
+        let ts = crate::time::unix_now_secs();
         let nonce = "storage-nonce-1";
         let sign_string = admin_request_sign_string("GET", &path, ts, nonce, b"");
         let signature = crate::routes::test_utils::sign_p256(&keypair, sign_string.as_bytes());

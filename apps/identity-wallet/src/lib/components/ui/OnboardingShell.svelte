@@ -77,7 +77,7 @@
     gap: var(--space-md);
     text-align: center;
     width: 100%;
-    max-width: 360px;
+    max-width: 360px; /* px-ok: one-off onboarding-card max width */
     margin: 0 auto;
   }
 

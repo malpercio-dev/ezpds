@@ -28,13 +28,8 @@ pub struct SweepStats {
 
 /// Spawn the periodic sweep. The first pass runs one full interval after startup.
 pub fn spawn_sovereign_session_nonce_sweep(state: AppState) -> JoinHandle<()> {
-    tokio::spawn(async move {
-        let mut ticker = tokio::time::interval(SWEEP_INTERVAL);
-        ticker.tick().await;
-        loop {
-            ticker.tick().await;
-            run_sovereign_session_nonce_sweep(&state).await;
-        }
+    crate::sweep::spawn_sweep(SWEEP_INTERVAL, false, state, |state| async move {
+        run_sovereign_session_nonce_sweep(&state).await;
     })
 }
 

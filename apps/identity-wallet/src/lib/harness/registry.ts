@@ -43,6 +43,12 @@ import type {
   AgentAuditPage,
   AgentClaimPreview,
   AgentClaimConfirmation,
+  MintedChild,
+  ChildSummary,
+  ChildDeletion,
+  ChildAssertion,
+  ChildReconciliation,
+  ChildKeyCheck,
   ConsentPreview,
   ConsentDecision,
   AppPasswordCreated,
@@ -52,9 +58,7 @@ import type {
   BlobRestoreReport,
   RepoBackupStatus,
   RepoBackupRunReport,
-  RepoExport,
   RegistrationOutcome,
-  SenderKeyPinning,
   NotificationDiagnostics,
   RegisterHandleResult,
   CreateAccountResult,
@@ -77,8 +81,10 @@ import {
   makeDidDoc,
   seedIdentity,
   upsertIdentity,
+  HARNESS_AGENT_SCOPES,
   type WalletState,
   type FakeIdentity,
+  type FakeChild,
 } from './state';
 
 /** A fake command handler. `args` is the object the frontend passed to `invoke`. */
@@ -133,10 +139,8 @@ export type CommandName =
   | 'get_pds_url'
   | 'save_pds_url'
   | 'get_pds_capabilities'
-  // oauth.ts
-  | 'prepare_oauth_flow'
+  // auth-session plugin (registered for the retired OAuth create-flow login; no live caller)
   | 'plugin:auth-session|start'
-  | 'complete_oauth_flow'
   // appearance.ts
   | 'get_appearance_preference'
   | 'set_appearance_preference'
@@ -167,7 +171,6 @@ export type CommandName =
   // share-recovery.ts
   | 'start_share_recovery'
   | 'add_recovery_share'
-  | 'remove_recovery_share'
   | 'initiate_escrow_release'
   | 'request_escrow_release'
   | 'verify_recovery_shares'
@@ -222,13 +225,19 @@ export type CommandName =
   | 'submit_self_held_kit_cmd'
   | 'confirm_self_held_kit_cmd'
   | 'self_held_kit_in_progress_cmd'
-  | 'self_held_kit_escrow_offer_cmd'
   // agents.ts
   | 'list_agents'
   | 'revoke_agent'
   | 'get_agent_audit'
   | 'preview_agent_claim'
   | 'confirm_agent_claim'
+  | 'agent_accounts_provisioned'
+  | 'mint_child_from_claim'
+  | 'list_children'
+  | 'revoke_child'
+  | 'delete_child'
+  | 'remint_child_assertion'
+  | 'reconcile_children'
   | 'preview_oauth_consent'
   | 'preview_oauth_consent_by_request_id'
   | 'confirm_oauth_consent'
@@ -249,10 +258,8 @@ export type CommandName =
   | 'get_repo_backup_status'
   | 'set_repo_backup_enabled'
   | 'run_repo_backup'
-  | 'export_repo_backup'
   // notifications.ts
   | 'register_for_notifications'
-  | 'refresh_notification_sender_keys'
   | 'get_notification_diagnostics'
   | 'clear_notification_failures'
   // biometric plugin (driven by $lib/biometric — resolves = allow the gate)
@@ -264,6 +271,31 @@ export type Registry = Record<CommandName, Handler>;
 /** Read `did` from an args object (the common single-arg case). */
 function didArg(args: Record<string, unknown>): string {
   return String(args.did ?? '');
+}
+
+/** When a harness-minted child was created — the same pinned instant `seedAgent` uses. */
+const HARNESS_CHILD_CREATED_AT = '2026-07-15T12:00:00.000Z';
+/** The harness's stand-in for the server's `accounts.child_deletion_grace_secs`. */
+const HARNESS_CHILD_GRACE_HOURS = 24 * 7;
+
+/**
+ * Find the child named by `childDid` under the parent `did` and apply `mutate` to it.
+ *
+ * Scoped to the parent on purpose: the real routes reach children only through
+ * `get_child_of_parent`, and answer a uniform `AGENT_NOT_FOUND` for a child that is unknown *or*
+ * belongs to someone else. A fake that searched every identity would let a screen pass here and
+ * 404 in production.
+ */
+function mutateChild(
+  state: WalletState,
+  args: Record<string, unknown>,
+  mutate: (child: FakeChild) => void
+): FakeChild {
+  const identity = findIdentity(state, didArg(args));
+  const child = identity?.children.find((c) => c.did === String(args.childDid ?? ''));
+  if (!child) throw { code: 'AGENT_NOT_FOUND' };
+  mutate(child);
+  return child;
 }
 
 /** Whether the device key sits at rotationKeys[0]. */
@@ -416,14 +448,11 @@ export function buildRegistry(state: WalletState): Registry {
     // reference PDS would (no `custos` extension at all → no capabilities).
     get_pds_capabilities: () => state.pdsCapabilities,
 
-    // ── oauth (create-flow login; faked in every mode) ───────────────────────
-    prepare_oauth_flow: () => ({
-      authUrl: 'https://harness.pds.local/oauth/authorize?request_uri=harness',
-      callbackScheme: 'org.obsign.identitywallet',
-    }),
+    // The auth-session plugin's `start()` command — registered for the retired OAuth
+    // create-flow login (no live caller); the stub is kept so the plugin itself, still
+    // registered in `run()`, has a harness handler if anything invokes it directly.
     'plugin:auth-session|start': () =>
       'org.obsign.identitywallet:/oauth/callback?code=harness-code&state=harness-state',
-    complete_oauth_flow: () => null,
 
     // ── appearance ───────────────────────────────────────────────────────────
     get_appearance_preference: () => state.appearance,
@@ -668,11 +697,6 @@ export function buildRegistry(state: WalletState): Registry {
       r.collected.push(collected);
       return collected;
     },
-    remove_recovery_share: (args): CollectedShare[] => {
-      const r = state.recovery;
-      r.collected = r.collected.filter((s) => s.index !== Number(args.index));
-      return [...r.collected];
-    },
     initiate_escrow_release: () => {
       state.recovery.escrow.initiated = true;
       return null;
@@ -708,6 +732,11 @@ export function buildRegistry(state: WalletState): Registry {
       if (r.collected.length < 2) throw { code: 'SHARES_INCOMPLETE' };
       if (r.verifyOutcome === 'mismatch') throw { code: 'SHARES_DO_NOT_MATCH_IDENTITY' };
       const did = r.did ?? fakePlcDid('recovered');
+      // Verification is also the provisioning path: the real backend derives and persists
+      // the delegation seed here, which is what "Enable agent accounts" runs to backfill an
+      // identity created before the seed existed.
+      const provisioned = findIdentity(state, did);
+      if (provisioned) provisioned.agentAccountsProvisioned = true;
       return {
         did,
         handle: r.handle,
@@ -1157,14 +1186,9 @@ export function buildRegistry(state: WalletState): Registry {
       const identity = findIdentity(state, didArg(args));
       return Boolean(identity?.selfHeldKitStagedRecoveryKey);
     },
-    self_held_kit_escrow_offer_cmd: (args): boolean => {
-      const identity = findIdentity(state, didArg(args));
-      return Boolean(
-        identity?.selfHeldKitInstalled && state.pdsCapabilities.capabilities.includes('escrow')
-      );
-    },
-
     // ── agents ───────────────────────────────────────────────────────────────
+    agent_accounts_provisioned: (args): boolean =>
+      findIdentity(state, didArg(args))?.agentAccountsProvisioned ?? false,
     list_agents: (): AgentSummary[] => state.identities.flatMap((i) => i.agents.map((a) => a.summary)),
     revoke_agent: (args) => {
       const registrationId = String(args.registrationId ?? '');
@@ -1174,22 +1198,162 @@ export function buildRegistry(state: WalletState): Registry {
       }
       return null;
     },
+    // Children are searched too: a child's registration is bound to the child's DID, so the
+    // parent reads its trail through the /v1/agents *parent arm* rather than owning the row.
     get_agent_audit: (args): AgentAuditPage => {
       const registrationId = String(args.registrationId ?? '');
       for (const identity of state.identities) {
         const agent = identity.agents.find((a) => a.summary.registrationId === registrationId);
         if (agent) return { events: agent.audit };
+        const child = identity.children.find((c) => c.registrationId === registrationId);
+        if (child) return { events: child.audit };
       }
       return { events: [] };
     },
-    preview_agent_claim: (args): AgentClaimPreview => ({
-      registrationId: `reg-${String(args.userCode ?? 'HARNESS')}`,
-      registrationType: 'service_auth',
-      issuer: 'did:web:agent.example',
-      subject: state.identities[0]?.did,
-      scopes: ['repo:write', 'blob:upload'],
-      userCodeExpiresAt: isoInHours(1),
-    }),
+    // A user code starting with "CHILD" previews an *anonymous* registration carrying a proposed
+    // handle — the only registration kind the server will mint a child for, and so the only way to
+    // reach the own-account fork in a browser.
+    preview_agent_claim: (args): AgentClaimPreview => {
+      const userCode = String(args.userCode ?? 'HARNESS');
+      if (userCode.startsWith('CHILD')) {
+        return {
+          registrationId: `reg-${userCode}`,
+          registrationType: 'anonymous',
+          scopes: [...HARNESS_AGENT_SCOPES],
+          userCodeExpiresAt: isoInHours(1),
+          handleHint: 'scribe.harness.pds.local',
+        };
+      }
+      return {
+        registrationId: `reg-${userCode}`,
+        registrationType: 'service_auth',
+        issuer: 'did:web:agent.example',
+        subject: state.identities[0]?.did,
+        scopes: [...HARNESS_AGENT_SCOPES],
+        userCodeExpiresAt: isoInHours(1),
+      };
+    },
+    // The cooperative arm. The real command reserves a signing key, derives the child's rotation
+    // key at the next index, signs its genesis op and confirms the claim with it; the fake keeps
+    // the two properties the screens depend on — an unprovisioned identity cannot mint, and a
+    // handle already in use is refused *without* consuming the claim, so the user corrects and
+    // retries rather than restarting the ceremony.
+    mint_child_from_claim: (args): MintedChild => {
+      const did = didArg(args);
+      const identity = findIdentity(state, did) ?? state.identities[0];
+      if (!identity) throw { code: 'IDENTITY_NOT_FOUND' };
+      if (!identity.agentAccountsProvisioned) throw { code: 'NOT_PROVISIONED' };
+
+      const handle = String(args.handle ?? '').trim().toLowerCase();
+      const taken =
+        state.identities.some((i) => i.handle === handle) ||
+        state.identities.some((i) => i.children.some((c) => c.handle === handle));
+      if (taken) {
+        throw { code: 'HANDLE_REJECTED', message: 'Handle is already taken on this server.' };
+      }
+
+      // The child DID stands in for the genesis-op hash: derived from the parent and the index, so
+      // successive mints yield distinct children exactly as distinct derivation indices do.
+      const child: FakeChild = {
+        registrationId: `reg-${String(args.userCode ?? 'HARNESS')}`,
+        did: fakePlcDid(`${identity.did}:child:${identity.children.length}`),
+        handle,
+        status: 'claimed',
+        createdAt: HARNESS_CHILD_CREATED_AT,
+        scopes: [...HARNESS_AGENT_SCOPES],
+        audit: [
+          {
+            id: `ev-${identity.children.length}-claim`,
+            eventType: 'claim_confirmed',
+            createdAt: HARNESS_CHILD_CREATED_AT,
+          },
+        ],
+      };
+      identity.children.push(child);
+      // The real command advances the index only after the server confirms, so a rejected handle
+      // costs nothing — the two mutations belong together here for the same reason.
+      identity.childIndex = Math.max(identity.childIndex, identity.children.length);
+      return { registrationId: child.registrationId, did: child.did, handle: child.handle };
+    },
+
+    // ── child lifecycle (the parent console) ─────────────────────────────────
+    // Children are per-identity here, unlike `list_agents`, which flattens every identity's
+    // agents. That mirrors the server: a child is listed by its parent, never globally.
+    // Projected field by field, not spread: `FakeChild` also carries the child's audit trail,
+    // and a fake that handed a screen data the real route never returns is how a screen comes to
+    // depend on it.
+    list_children: (args): ChildSummary[] =>
+      (findIdentity(state, didArg(args))?.children ?? []).map((c) => ({
+        registrationId: c.registrationId,
+        did: c.did,
+        handle: c.handle,
+        status: c.status,
+        createdAt: c.createdAt,
+        scopes: [...c.scopes],
+        ...(c.deleteAfter ? { deleteAfter: c.deleteAfter } : {}),
+      })),
+    revoke_child: (args) => {
+      mutateChild(state, args, (child) => {
+        child.status = 'revoked';
+      });
+      return null;
+    },
+    delete_child: (args): ChildDeletion => {
+      const child = mutateChild(state, args, (c) => {
+        // Delete implies revoke on the server, so the fake must not model them as independent —
+        // a screen that assumed otherwise would look right here and be wrong in production.
+        c.status = 'revoked';
+        c.deleteAfter = isoInHours(HARNESS_CHILD_GRACE_HOURS);
+      });
+      return {
+        did: child.did,
+        status: 'deletion_scheduled',
+        deleteAfter: child.deleteAfter as string,
+      };
+    },
+    // The recovery epilogue. The real command re-derives a key per index and checks each against
+    // the child's plc.directory audit log; the fake keeps the two properties the screen depends
+    // on — it reports nothing at all when the local counter already covers the server's list (so
+    // the ordinary device never sees a banner), and it distinguishes a key that does not derive
+    // from one the directory could not be asked about.
+    reconcile_children: (args): ChildReconciliation => {
+      const identity = findIdentity(state, didArg(args));
+      if (!identity) throw { code: 'IDENTITY_NOT_FOUND' };
+      if (!identity.agentAccountsProvisioned) throw { code: 'NOT_PROVISIONED' };
+      if (identity.childIndex >= identity.children.length) {
+        return { rebuilt: false, children: [], nextIndex: identity.childIndex };
+      }
+
+      const children: ChildKeyCheck[] = identity.children.map((child, index) => {
+        const base = { did: child.did, handle: child.handle };
+        if (child.recoveryKey === 'lost') return { ...base, status: 'unmatched' };
+        if (child.recoveryKey === 'unreachable') {
+          return { ...base, status: 'unchecked', message: 'plc.directory could not be read' };
+        }
+        return { ...base, status: 'matched', index };
+      });
+      const nextIndex = children.reduce(
+        (highest, check) => (check.status === 'matched' ? Math.max(highest, check.index + 1) : highest),
+        identity.childIndex
+      );
+      identity.childIndex = nextIndex;
+      return { rebuilt: true, children, nextIndex };
+    },
+    remint_child_assertion: (args): ChildAssertion => {
+      const child = mutateChild(state, args, () => {});
+      // Renewal is refused for anything not live — revocation is a one-way rung on the custody
+      // ladder, and the real route answers 403 (ACCESS_DENIED), never a retryable error.
+      if (child.status !== 'claimed') {
+        throw { code: 'ACCESS_DENIED' };
+      }
+      return {
+        did: child.did,
+        registrationId: child.registrationId,
+        identityAssertion: `harness.${child.registrationId}.assertion`,
+        assertionExpires: isoInHours(24),
+        scopes: child.scopes,
+      };
+    },
     confirm_agent_claim: (args): AgentClaimConfirmation => {
       const registrationId = `reg-${String(args.userCode ?? 'HARNESS')}`;
       const identity = state.identities[0];
@@ -1201,7 +1365,7 @@ export function buildRegistry(state: WalletState): Registry {
             registrationType: 'service_auth',
             issuer: 'did:web:agent.example',
             subject: identity.did,
-            scopes: ['repo:write', 'blob:upload'],
+            scopes: [...HARNESS_AGENT_SCOPES],
             status: 'claimed',
             createdAt: now,
             updatedAt: now,
@@ -1215,6 +1379,8 @@ export function buildRegistry(state: WalletState): Registry {
     // ── wallet-confirmed OAuth consent ───────────────────────────────────────
     // A user code starting with "PUSH" fakes a push-delivered prompt (matchRequired), so the
     // number-match UI is reachable in a browser; the matching number is always "42".
+    // A user code starting with "SPACE" previews a granular request carrying an Atproto
+    // Spaces grant, so the space-scope consent copy is reachable in a browser.
     preview_oauth_consent: (args): ConsentPreview => ({
       requestId: `poauth-${String(args.userCode ?? 'HARNESS')}`,
       clientId: 'https://app.example.com/client-metadata.json',
@@ -1222,7 +1388,13 @@ export function buildRegistry(state: WalletState): Registry {
       redirectUri: 'https://app.example.com/callback',
       origin: 'https://app.example.com',
       ip: '203.0.113.5',
-      requestedScope: ['atproto', 'transition:generic'],
+      requestedScope: String(args.userCode ?? '').startsWith('SPACE')
+        ? [
+            'atproto',
+            'repo:*?action=create&action=update',
+            'space:org.example.bucket?authority=self&collection=org.example.note',
+          ]
+        : ['atproto', 'transition:generic'],
       loginHint: null,
       matchRequired: String(args.userCode ?? '').startsWith('PUSH'),
     }),
@@ -1366,27 +1538,6 @@ export function buildRegistry(state: WalletState): Registry {
         lastBackupAt: backup.lastBackupAt,
       };
     },
-    export_repo_backup: (args): RepoExport => {
-      const identity = findIdentity(state, didArg(args));
-      if (!identity) throw { code: 'IDENTITY_NOT_FOUND', message: 'identity not found' };
-      const backup = identity.repoBackup;
-      if (backup.mirroredRev === null) {
-        throw {
-          code: 'STORAGE_ERROR',
-          message: 'no repo snapshot has been backed up for this identity yet',
-        };
-      }
-      return {
-        rootCid: backup.rootCid,
-        rev: backup.rev,
-        sizeBytes: backup.sizeBytes,
-        lastBackupAt: backup.lastBackupAt,
-        // A stand-in for the base64 CAR bytes — the harness never imports it, only proves
-        // the export surface returns validated metadata + a payload.
-        carBase64: btoa(`fake-car:${backup.rootCid}`),
-      };
-    },
-
     // ── push notifications ───────────────────────────────────────────────────
     // The fake models the two states a browser can genuinely be in. With no `apnsToken` (the
     // default — a browser has no APNs) registration reports `AWAITING_APNS_TOKEN` exactly as a
@@ -1428,23 +1579,6 @@ export function buildRegistry(state: WalletState): Registry {
         deviceUuid: notifications.deviceUuid,
         notificationKeyId: notifications.notificationKeyId,
       };
-    },
-    refresh_notification_sender_keys: (args): SenderKeyPinning => {
-      const identity = findIdentity(state, didArg(args));
-      if (!identity) throw { code: 'IDENTITY_NOT_FOUND', message: 'identity not found' };
-      const host = identity.pdsUrl;
-
-      if (!state.notifications.relaySupported) {
-        // A 501 leaves whatever was pinned exactly as it was — switching the feature off is
-        // not a revocation.
-        return { host, pinned: false, keys: state.notifications.pinnedHosts[host] ?? [] };
-      }
-      // Wholesale replacement, the property that makes a revoked key stop being trusted.
-      const keys = [
-        { kid: 1, publicKey: 'did:key:zDnaeharnesssenderkey00000000000000000000001' },
-      ];
-      state.notifications.pinnedHosts[host] = keys;
-      return { host, pinned: true, keys };
     },
     get_notification_diagnostics: (): NotificationDiagnostics => ({
       deviceUuid: state.notifications.deviceUuid,

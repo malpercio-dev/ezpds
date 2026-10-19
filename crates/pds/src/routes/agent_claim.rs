@@ -24,6 +24,14 @@
 //!   `identity_assertion` (owner DID, current `granted_scopes`), and flipping
 //!   `active → claimed` so the assertion exchanges at the token endpoint.
 //!
+//! Confirm has a second, cooperative arm. An ownerless `anonymous` registration may instead be
+//! confirmed with a `child` block — the handle the user settled on plus a wallet-signed genesis op
+//! — which provisions the agent an account of its own (own `did:plc`, repo, handle) under the
+//! confirming account's ownership and converts that same registration row into a `child` one. The
+//! mint is `agent_child_core`, shared with `POST /agent/child`; it consumes the claim attempt in
+//! its own final transaction, so a rejected mint leaves the `user_code` usable. Nothing changes for
+//! the agent: its claim-grant poll returns the same shape, subject to the child.
+//!
 //! Ceremony errors use the auth.md-style `{error, error_description}` body. The machine-pollable
 //! claim grant (`urn:workos:agent-auth:grant-type:claim`) that lets a `service_auth`/`anonymous`
 //! agent auto-collect the minted credential lives at the token endpoint
@@ -38,22 +46,21 @@ use axum::{
     response::{IntoResponse, Response},
     Json,
 };
-use chrono::{Duration, SecondsFormat, Utc};
+use chrono::{SecondsFormat, Utc};
 use serde::{Deserialize, Serialize};
 
+use crate::agent_child_core::{mint_child_account, ChildRegistration};
 use crate::app::AppState;
 use crate::auth::agent_assertion::{
-    mint_identity_assertion, new_claim_attempt_id, parse_sqlite_datetime, record_agent_audit,
-    scopes_to_json, to_sqlite_datetime, verification_uri, AgentAuthError, POLL_INTERVAL_SECS,
+    mint_identity_assertion, parse_sqlite_datetime, scopes_to_json, start_claim_attempt,
+    to_sqlite_datetime, verification_uri, AgentAuthError, POLL_INTERVAL_SECS,
 };
 use crate::auth::guards::{authenticate_account_owner, OwnerAuthError};
 use crate::auth::oauth_scopes::intersect_scope_tokens;
-use crate::code_gen::generate_code;
 use crate::db::agent_auth::{
     claim_agent_identity, complete_agent_claim_attempt, get_agent_claim_attempt_by_user_code,
-    get_agent_identity, get_agent_identity_by_claim_token, insert_agent_claim_attempt,
-    latest_agent_claim_attempt_for_identity, AgentIdentityStatus, ClaimAttemptStatus,
-    NewAgentClaimAttempt,
+    get_agent_identity, get_agent_identity_by_claim_token, latest_agent_claim_attempt_for_identity,
+    AgentIdentityStatus, ClaimAttemptStatus,
 };
 
 // ── POST /agent/identity/claim (initiate) ─────────────────────────────────────
@@ -168,27 +175,12 @@ async fn initiate(
                 parse_sqlite_datetime(&attempt.user_code_expires_at),
             ),
             _ => {
-                let attempt_id = new_claim_attempt_id();
-                let user_code = generate_code();
-                let expiry = Utc::now()
-                    + Duration::seconds(state.config.agent_auth.user_code_ttl_secs as i64);
-                insert_agent_claim_attempt(
+                let started = start_claim_attempt(
                     &state.db,
-                    &NewAgentClaimAttempt {
-                        id: &attempt_id,
-                        identity_id: &identity.id,
-                        user_code: &user_code,
-                        user_code_expires_at: &to_sqlite_datetime(&expiry),
-                        email: req.email.as_deref().or(identity.email.as_deref()),
-                    },
-                )
-                .await?;
-                record_agent_audit(
-                    &state.db,
+                    &state.config.agent_auth,
                     &identity.id,
                     identity.did.as_deref(),
-                    crate::db::agent_audit::AgentAuditEventType::ClaimInitiated,
-                    serde_json::json!({ "claim_attempt_id": attempt_id }),
+                    req.email.as_deref().or(identity.email.as_deref()),
                 )
                 .await?;
 
@@ -213,12 +205,12 @@ async fn initiate(
                         // The app deep-links straight to the confirm screen; the user_code is
                         // deliberately absent — it is the credential the human types, and a
                         // notification payload is not where it belongs.
-                        .with_data(serde_json::json!({ "claimAttemptId": attempt_id })),
+                        .with_data(serde_json::json!({ "claimAttemptId": started.attempt_id })),
                     )
                     .await;
                 }
 
-                (attempt_id, user_code, expiry)
+                (started.attempt_id, started.user_code, started.expires)
             }
         };
 
@@ -231,7 +223,7 @@ async fn initiate(
         claim_attempt: ClaimAttemptBlock {
             user_code,
             expires_in,
-            verification_uri: verification_uri(&state.config.agent_auth, &state.config.public_url),
+            verification_uri: verification_uri(&state.config.agent_auth, state.config.issuer()),
             interval: POLL_INTERVAL_SECS,
         },
     };
@@ -246,13 +238,38 @@ pub struct ClaimConfirmRequest {
     /// Optional cross-check: when present, must name the registration this `user_code` belongs to.
     #[serde(default)]
     pub registration_id: Option<String>,
+    /// The cooperative arm: instead of binding the agent to the confirming account, mint it an
+    /// account of its own under that account's ownership.
+    #[serde(default)]
+    pub child: Option<ClaimConfirmChild>,
+}
+
+/// The wallet's half of the cooperative mint: the handle the user settled on, and the genesis
+/// operation it signed with the child's derived rotation key.
+#[derive(Debug, Deserialize)]
+pub struct ClaimConfirmChild {
+    pub handle: Option<String>,
+    #[serde(rename = "plcOp")]
+    pub plc_op: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Serialize)]
 struct ClaimConfirmResponse {
     registration_id: String,
     status: &'static str,
+    /// The account that confirmed — identical on both arms. On the child arm the *registration* now
+    /// names the child instead; that DID is in `child.did`.
     did: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    child: Option<ConfirmedChild>,
+}
+
+#[derive(Debug, Serialize)]
+struct ConfirmedChild {
+    did: String,
+    handle: String,
+    #[serde(rename = "didDocument")]
+    did_document: serde_json::Value,
 }
 
 /// `POST /agent/identity/claim/confirm` — the account owner confirms a claim (full-access authed).
@@ -392,6 +409,11 @@ async fn confirm(
         None => Some(caller_did.as_str()),
     };
 
+    if let Some(child) = req.child.as_ref() {
+        return confirm_with_child(state, &caller_did, &identity, &attempt.id, bind_did, child)
+            .await;
+    }
+
     // The post-claim assertion carries the operator's current full granted-scope profile. Normalize
     // it into a deterministic, deduplicated set so this mint matches the `identity_assertion` mint
     // path byte-for-byte: `intersect_scope_tokens(xs, xs)` is the crate's canonicalizer — it returns
@@ -402,8 +424,8 @@ async fn confirm(
     let scopes = intersect_scope_tokens(granted, granted);
     let minted = mint_identity_assertion(
         &state.oauth_signing_keypair,
-        &state.config.public_url,
-        state.config.agent_auth.assertion_ttl_secs,
+        state.config.issuer(),
+        state.config.agent_auth.claimed_assertion_ttl_secs,
         &caller_did,
         &identity.id,
         identity.registration_type.as_str(),
@@ -470,48 +492,121 @@ async fn confirm(
             registration_id: identity.id,
             status: "claimed",
             did: caller_did,
+            child: None,
         }),
     )
         .into_response())
 }
 
+/// The cooperative arm of the ceremony: rather than handing the agent a credential to act *as* the
+/// confirming user, provision it an account of its own — own `did:plc`, repo, and handle — whose
+/// rotation authority the user's wallet holds.
+///
+/// Only an ownerless `anonymous` registration qualifies. A `service_auth` / `identity_assertion`
+/// registration was bound to its account before the user ever saw a code, so "act for me" is the
+/// grant it asked for; re-pointing it at a new DID mid-ceremony would silently answer a different
+/// question than the one on the approval screen.
+///
+/// The mint (shared with `POST /agent/child` via `agent_child_core`) consumes the claim attempt in
+/// its own final transaction, so everything that can reject — handle validation, genesis
+/// verification, the reserved-signing-key check, publication to plc.directory — happens strictly
+/// before the attempt is spent and leaves the registration claimable for a corrected retry.
+async fn confirm_with_child(
+    state: &AppState,
+    caller_did: &str,
+    identity: &crate::db::agent_auth::AgentIdentityRow,
+    claim_attempt_id: &str,
+    bind_did: Option<&str>,
+    child: &ClaimConfirmChild,
+) -> Result<Response, AgentAuthError> {
+    if bind_did.is_none() {
+        return Err(AgentAuthError::new(
+            StatusCode::BAD_REQUEST,
+            "invalid_request",
+            "a child account can only be minted for an ownerless anonymous registration",
+        ));
+    }
+    let handle = child
+        .handle
+        .as_deref()
+        .map(str::trim)
+        .filter(|h| !h.is_empty())
+        .ok_or_else(|| {
+            AgentAuthError::new(
+                StatusCode::BAD_REQUEST,
+                "invalid_request",
+                "missing required field: child.handle",
+            )
+        })?;
+    let plc_op = child.plc_op.as_ref().ok_or_else(|| {
+        AgentAuthError::new(
+            StatusCode::BAD_REQUEST,
+            "invalid_request",
+            "missing required field: child.plcOp",
+        )
+    })?;
+
+    let minted = mint_child_account(
+        state,
+        caller_did,
+        handle,
+        plc_op,
+        ChildRegistration::FromClaim {
+            registration_id: &identity.id,
+            claim_attempt_id,
+            confirmed_by: caller_did,
+        },
+    )
+    .await
+    .map_err(child_mint_error)?;
+
+    Ok((
+        StatusCode::OK,
+        Json(ClaimConfirmResponse {
+            registration_id: minted.registration_id,
+            status: "claimed",
+            did: caller_did.to_string(),
+            child: Some(ConfirmedChild {
+                did: minted.did,
+                handle: handle.to_string(),
+                did_document: minted.did_document,
+            }),
+        }),
+    )
+        .into_response())
+}
+
+/// Re-shape a mint failure into the ceremony's `{error, error_description}` envelope. A client
+/// error keeps its status and its (already caller-facing) message so the wallet can say what to
+/// fix — a taken handle, an unreserved signing key, a genesis op that doesn't verify. Anything
+/// 5xx collapses to the opaque `server_error`, as everywhere else on this surface.
+fn child_mint_error(err: common::ApiError) -> AgentAuthError {
+    let status =
+        StatusCode::from_u16(err.status_code()).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
+    if status.is_client_error() {
+        AgentAuthError::new(status, "invalid_request", err.message())
+    } else {
+        AgentAuthError::server_error()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::Arc;
 
     use axum::body::Body;
     use axum::http::Request;
     use common::AgentAuthConfig;
     use serde_json::{json, Value};
-    use sqlx::SqlitePool;
     use tower::ServiceExt;
 
-    use crate::app::{app, test_state, AppState};
+    use crate::app::{app, AppState};
+    use crate::routes::test_utils::{
+        insert_account_with_email as insert_account, post_json_with_bearer as post_json,
+        state_with_agent_auth as state_with,
+    };
 
     // ── harness ──────────────────────────────────────────────────────────────
-
-    async fn state_with(agent_auth: AgentAuthConfig) -> AppState {
-        let base = test_state().await;
-        let mut config = (*base.config).clone();
-        config.agent_auth = agent_auth;
-        AppState {
-            config: Arc::new(config),
-            ..base
-        }
-    }
-
-    async fn insert_account(db: &SqlitePool, did: &str, email: &str) {
-        sqlx::query(
-            "INSERT INTO accounts (did, email, password_hash, created_at, updated_at) \
-             VALUES (?, ?, 'hash', datetime('now'), datetime('now'))",
-        )
-        .bind(did)
-        .bind(email)
-        .execute(db)
-        .await
-        .unwrap();
-    }
 
     /// Mint a full-access HS256 access token for `did` (the shape the extractor accepts, mirroring
     /// `auth::mod` test helpers). `scope` selects full access vs app-pass.
@@ -536,31 +631,6 @@ mod tests {
             &jsonwebtoken::EncodingKey::from_secret(&state.jwt_secret),
         )
         .unwrap()
-    }
-
-    async fn post_json(
-        state: AppState,
-        uri: &str,
-        body: Value,
-        token: Option<&str>,
-    ) -> (StatusCode, Value) {
-        let mut builder = Request::builder()
-            .method("POST")
-            .uri(uri)
-            .header("content-type", "application/json");
-        if let Some(t) = token {
-            builder = builder.header("Authorization", format!("Bearer {t}"));
-        }
-        let response = app(state)
-            .oneshot(builder.body(Body::from(body.to_string())).unwrap())
-            .await
-            .unwrap();
-        let status = response.status();
-        let bytes = axum::body::to_bytes(response.into_body(), 1 << 20)
-            .await
-            .unwrap();
-        let json = serde_json::from_slice(&bytes).unwrap_or(Value::Null);
-        (status, json)
     }
 
     async fn register(state: AppState, body: Value) -> Value {

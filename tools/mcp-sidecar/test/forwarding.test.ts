@@ -12,6 +12,7 @@ import {
   startSidecar,
   connectClient,
   fakeToken,
+  toolJson,
   type StubPds,
   type RunningSidecar,
 } from './support.ts';
@@ -83,4 +84,39 @@ test('AC2.5: the registry retains caller identity but no credential', async () =
   } finally {
     await client.close();
   }
+});
+
+test('inline upload_blob decodes base64 and forwards real bytes with the caller token', async () => {
+  // The remote-client path: no CUSTOS_MCP_IMAGE_DIR exists on this sidecar,
+  // so only inline data can work — which is the point of the test. The payload
+  // is text (not binary) because the stub PDS records bodies as UTF-8; if the
+  // tool wrongly forwarded the base64 text instead of the decoded bytes, the
+  // recorded body would be the base64 itself.
+  const payload = 'hello blob';
+  const dataUrl = `data:text/plain;base64,${Buffer.from(payload).toString('base64')}`;
+  assert.notEqual(dataUrl.slice(dataUrl.indexOf(',') + 1), payload);
+  pds.respondWith(200, {
+    blob: { $type: 'blob', ref: { $link: 'bafytest' }, mimeType: 'text/plain', size: payload.length },
+  });
+  const client = await connectClient(sidecar.url, token);
+  try {
+    const uploaded = toolJson(
+      await client.callTool({
+        name: 'upload_blob',
+        arguments: { data: dataUrl },
+      }),
+    );
+    assert.equal(uploaded.blob.ref.$link, 'bafytest');
+  } finally {
+    await client.close();
+  }
+
+  const upload = pds.requests.find((r) => r.path.includes('com.atproto.repo.uploadBlob'));
+  assert.ok(upload, 'the forwarded uploadBlob reached the PDS');
+  assert.equal(
+    upload.authorization,
+    `Bearer ${token}`,
+    'the caller token was forwarded verbatim as a Bearer credential',
+  );
+  assert.equal(upload.body, payload, 'the decoded bytes (not the base64 text) were forwarded');
 });

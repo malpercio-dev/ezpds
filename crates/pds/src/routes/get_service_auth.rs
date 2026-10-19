@@ -6,8 +6,6 @@
 //
 // Implements: GET /xrpc/com.atproto.server.getServiceAuth
 
-use std::time::{SystemTime, UNIX_EPOCH};
-
 use axum::{extract::State, response::Json};
 use serde::{Deserialize, Serialize};
 
@@ -126,10 +124,7 @@ pub async fn get_service_auth(
     // multiple fragments, so a single `split_once` cleanly yields the base DID.
     let aud_claim = aud.split_once('#').map_or(aud, |(did, _)| did);
 
-    let now = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .map_err(|_| ApiError::new(ErrorCode::InternalError, "system clock error"))?;
+    let now = crate::time::unix_now()?;
 
     // An empty `lxm` is treated as absent (method-unrestricted) rather than a token bound to the
     // empty method, which no service would honour.
@@ -265,34 +260,11 @@ mod tests {
     use tower::ServiceExt;
 
     use crate::app::app;
-    use crate::routes::test_utils::{seed_account_with_repo, state_with_master_key};
+    use crate::routes::test_utils::{
+        access_jwt, body_json, scoped_access_jwt, seed_account_with_repo, state_with_master_key,
+    };
 
     const TEST_DID: &str = "did:plc:tester";
-
-    /// Issue a valid HS256 access JWT for `sub` using the state's fixed test secret.
-    fn access_jwt(secret: &[u8; 32], sub: &str) -> String {
-        scoped_access_jwt(secret, sub, "com.atproto.access")
-    }
-
-    fn scoped_access_jwt(secret: &[u8; 32], sub: &str, scope: &str) -> String {
-        use jsonwebtoken::{encode, Algorithm, EncodingKey, Header};
-        use std::time::{SystemTime, UNIX_EPOCH};
-        let now = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_secs();
-        encode(
-            &Header::new(Algorithm::HS256),
-            &serde_json::json!({
-                "scope": scope,
-                "sub": sub,
-                "iat": now,
-                "exp": now + 7200_u64,
-            }),
-            &EncodingKey::from_secret(secret),
-        )
-        .unwrap()
-    }
 
     fn get_request(token: &str, query: &str) -> Request<Body> {
         Request::builder()
@@ -301,13 +273,6 @@ mod tests {
             .header("Authorization", format!("Bearer {token}"))
             .body(Body::empty())
             .unwrap()
-    }
-
-    async fn body_json(response: axum::response::Response) -> serde_json::Value {
-        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
-            .await
-            .unwrap();
-        serde_json::from_slice(&bytes).unwrap()
     }
 
     /// Decode a JWT's header and claims (signature segment ignored).
@@ -320,11 +285,7 @@ mod tests {
     }
 
     fn now() -> u64 {
-        use std::time::{SystemTime, UNIX_EPOCH};
-        SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_secs()
+        crate::time::unix_now_secs() as u64
     }
 
     #[tokio::test]

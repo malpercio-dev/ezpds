@@ -43,10 +43,14 @@ docs {
     "registrationId": "reg_...",
     "registrationType": "service_auth",
     "scopes": ["repo:app.bsky.feed.post?action=create", "blob:image/*"],
-    "userCodeExpiresAt": "2026-01-01T00:10:00.000Z"
+    "userCodeExpiresAt": "2026-01-01T00:10:00.000Z",
+    "handleHint": "scribe.example.com"
   }
   ```
 
   `issuer`/`subject` appear for `identity_assertion` registrations. `scopes` is the operator's
   current granted-scope profile — canonicalized exactly as confirmation will store it.
+  `handleHint` appears only when an `anonymous` agent proposed a handle for an account of its own
+  (`POST /agent/identity` with `handle_hint`) — the screen offers it as an editable default for
+  the cooperative child arm of the confirm endpoint, never as a commitment.
 }

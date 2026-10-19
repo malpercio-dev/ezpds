@@ -1,0 +1,35 @@
+meta {
+  name: Space List Repos
+  type: http
+  seq: 159
+}
+
+get {
+  url: {{baseUrl}}/xrpc/com.atproto.space.listRepos?space=at://{{did}}/space/org.example.bucket/main&limit=100
+  body: none
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{accessToken}}
+}
+
+params:query {
+  space: at://{{did}}/space/org.example.bucket/main
+  limit: 100
+  ~cursor:
+}
+
+docs {
+  The space host's writer set: every repo that has written into the space, with the rev and
+  commit hash last reported for it. This is the sync boundary, not an access-control list —
+  it enumerates writers, never readers, and a member who has only ever read is absent.
+
+  For a repo hosted elsewhere the rev/hash come from that host's notifyWrite and may lag; the
+  repo's own host is the source of truth. Syncers use this as the periodic sweep that heals
+  anything the best-effort write notifications missed.
+
+  Answered only by the space's authority. A space this server merely keeps repos in reads as
+  400 SpaceNotFound — ask its authority instead. Auth: a space credential, or the authority's
+  own session.
+}

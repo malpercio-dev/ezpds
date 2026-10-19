@@ -121,11 +121,37 @@ font-check:
 cap-check:
     scripts/capability-check.sh
 
+# Verify the two mobile apps' "never hardcode px" design-token rule stays true: every
+# gap/padding/margin/radius/font-size/dimension in apps/*/src CSS must come from a
+# --space-*/--radius-*/--text-*/--size-* token, not a bare `Npx` literal. Narrow allowlist
+# (0/0.5/1px hairlines, media/container breakpoints, a per-line `px-ok:` escape hatch) —
+# see scripts/px-token-check.sh for the full rationale.
+px-check:
+    scripts/px-token-check.sh
+
 # Fail if Rust source carries a Linear ticket / AC reference in a comment (AGENTS.md hard
 # rule — traceability belongs in docs/, not `.rs`). #227 swept these out; #266 put sixteen
 # back a day later. This is the forcing function so that regression can't recur silently.
 ticket-ref-check:
     scripts/ticket-ref-check.sh
+
+# Fail if an ADR-NNNN citation outside the ADR log itself points at a superseded ADR or an
+# ADR number with no file — a stale citation reads as still-governing rationale to the next
+# reader. Excludes docs/architecture/decisions/ and docs/archive/.
+adr-ref-check:
+    scripts/adr-ref-check.sh
+
+# Fail if a plan under docs/{design,test,implementation}-plans/ declares itself shipped,
+# landed, superseded, or complete — that plan's whole triad belongs in docs/archive/
+# (docs/archive/README.md), moved together, not left live.
+plan-status-check:
+    scripts/plan-status-check.sh
+# Fail if a member manifest (crates/*/Cargo.toml, apps/*/src-tauri/Cargo.toml) pins its own
+# dependency version/features instead of { workspace = true } (AGENTS.md: "crates use
+# { workspace = true }") — the copy-a-sibling drift that silently duplicates a version or a
+# feature set across crates instead of sharing one workspace.dependencies entry.
+workspace-dep-check:
+    scripts/workspace-dep-check.sh
 
 # Guard the master-key disaster runbook against drift between its canonical copy
 # (docs/operations/master-key-disaster-runbook.md) and its published, operator-facing
@@ -140,6 +166,13 @@ runbook-parity-check:
 # Fails on any direct call outside the blessed seam (or a test).
 auth-seam-check:
     scripts/auth-seam-check.sh
+
+# Freeze the space-read auth seam: every Atproto Spaces read/sync route authenticates through
+# auth::space::authenticate_space_read (OAuth grant OR DPoP-bound space credential, never
+# bearer, full RFC 9449 proof validation + per-host jti replay). Fails on any direct
+# verify_space_credential / validate_dpop call outside the two auth seams.
+space-auth-seam-check:
+    scripts/space-auth-seam-check.sh
 
 # Guard the operator capability documentation against drift from the capability table in
 # crates/pds/src/capabilities.rs — the source of truth for what describeServer advertises
@@ -204,6 +237,11 @@ interop-setup:
 interop *args:
     tools/interop/bin/interop {{args}}
 
+# Unit-check the interop CLI's pure pieces (DPoP proof construction, CAR parsing).
+# Offline and fast; the live scenarios are the `interop` commands above.
+interop-test:
+    cd tools/interop && pnpm test
+
 # Install dependencies for the Custos MCP server (tools/mcp) — one-time setup.
 mcp-setup:
     cd tools/mcp && pnpm install
@@ -261,7 +299,7 @@ oauth-conformance-test:
 # Adding a check here covers `just ci` (macOS/full) and `just ci-pds` (Linux) at once —
 # the old design re-stated all twelve checks in each, so a gate added to one and
 # forgotten in the other was a silent gap.
-checks: fmt-check lock-check bruno-check docs-check changelog-check changelog-test font-check cap-check capability-docs-check ticket-ref-check runbook-parity-check auth-seam-check ssrf-client-check gc-guard-check ios-paths-check swift-rs-check ios-template-check bundle-identity-check
+checks: fmt-check lock-check bruno-check docs-check changelog-check changelog-test font-check cap-check px-check capability-docs-check ticket-ref-check adr-ref-check plan-status-check workspace-dep-check runbook-parity-check auth-seam-check space-auth-seam-check ssrf-client-check gc-guard-check ios-paths-check swift-rs-check ios-template-check bundle-identity-check
 
 # Run the full CI pipeline locally (all crates; use on macOS where the iOS app builds)
 ci: checks clippy test audit deny

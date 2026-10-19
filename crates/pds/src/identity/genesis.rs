@@ -7,7 +7,7 @@
 //! validation) are a Functional Core; `post_to_plc_directory` is the one Imperative Shell
 //! function here (an outbound HTTP call), kept alongside its callers.
 
-use common::{ApiError, ErrorCode};
+use common::{ApiError, ApiResultExt, ErrorCode};
 
 use super::resolution::bounded_body_preview;
 
@@ -33,10 +33,10 @@ pub fn verify_and_validate_genesis_op(
     let rotation_key = crypto::DidKeyUri(rotation_key_public.to_string());
 
     // Serialize the submitted signed op to a JSON string for crypto verification.
-    let signed_op_str = serde_json::to_string(signed_creation_op).map_err(|e| {
-        tracing::error!(error = %e, "failed to serialize signedCreationOp");
-        ApiError::new(ErrorCode::InternalError, "failed to process signed op")
-    })?;
+    let signed_op_str = serde_json::to_string(signed_creation_op).or_internal_as(
+        "failed to serialize signedCreationOp",
+        "failed to process signed op",
+    )?;
 
     // Verify the ECDSA signature and derive the DID.
     let verified = crypto::verify_genesis_op(&signed_op_str, &rotation_key).map_err(|e| {
@@ -154,58 +154,21 @@ pub fn build_commit_block_car(
     Some(car)
 }
 
-/// Construct a minimal DID Core document from a verified genesis operation.
+/// Construct the DID Core document for a verified genesis operation — every verification
+/// method and service the op carries, rendered by [`super::plc::build_did_document_from_op`].
 ///
 /// No I/O — pure construction from [`crypto::VerifiedGenesisOp`] fields.
 ///
 /// # Errors
-/// Returns `InternalError` if `verificationMethods["atproto"]` is absent or is not a did:key: URI.
+/// Returns `InternalError` if `verificationMethods["atproto"]` or `services["atproto_pds"]` is
+/// absent, or a verification method is not a `did:key:` URI.
 pub fn build_did_document(
     verified: &crypto::VerifiedGenesisOp,
 ) -> Result<serde_json::Value, ApiError> {
-    let did = &verified.did;
-
-    // Extract the multibase key from did:key URI for publicKeyMultibase.
-    // did:key:zAbcDef... → publicKeyMultibase = "zAbcDef..."
-    let atproto_did_key = verified
-        .verification_methods
-        .get("atproto")
-        .ok_or_else(|| {
-            ApiError::new(
-                ErrorCode::InternalError,
-                "atproto verification method not found in op",
-            )
-        })?;
-    let public_key_multibase = atproto_did_key.strip_prefix("did:key:").ok_or_else(|| {
-        ApiError::new(
-            ErrorCode::InternalError,
-            "atproto key is not a did:key: URI",
-        )
-    })?;
-
-    let service_endpoint = verified.atproto_pds_endpoint.as_deref().ok_or_else(|| {
-        ApiError::new(
-            ErrorCode::InternalError,
-            "missing service endpoint in verified op",
-        )
-    })?;
-
-    Ok(serde_json::json!({
-        "@context": [
-            "https://www.w3.org/ns/did/v1"
-        ],
-        "id": did,
-        "alsoKnownAs": &verified.also_known_as,
-        "verificationMethod": [{
-            "id": format!("{did}#atproto"),
-            "type": "Multikey",
-            "controller": did,
-            "publicKeyMultibase": public_key_multibase
-        }],
-        "service": [{
-            "id": "#atproto_pds",
-            "type": "AtprotoPersonalDataServer",
-            "serviceEndpoint": service_endpoint
-        }]
-    }))
+    super::plc::build_did_document_from_op(
+        &verified.did,
+        &verified.verification_methods,
+        &verified.also_known_as,
+        &verified.services,
+    )
 }

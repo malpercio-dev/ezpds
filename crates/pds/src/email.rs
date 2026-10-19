@@ -56,6 +56,24 @@ pub trait EmailSender: Send + Sync {
         &'a self,
         message: EmailMessage,
     ) -> Pin<Box<dyn Future<Output = Result<(), EmailError>> + Send + 'a>>;
+
+    /// Which concrete sender this is. Test-only: nothing outside the test suite needs to tell
+    /// senders apart once built (every caller only ever uses [`EmailSender::send`]), so this
+    /// stays behind `#[cfg(test)]` rather than becoming production API with one caller.
+    #[cfg(test)]
+    fn kind(&self) -> EmailSenderKind;
+}
+
+/// See [`EmailSender::kind`]. `Fake` covers the test-only sender doubles scattered across route
+/// test modules (a capturing sink, an always-erroring sender) — they aren't one of
+/// `build_email_sender`'s three real variants, so they don't share a kind with any of them.
+#[cfg(test)]
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum EmailSenderKind {
+    Log,
+    Smtp,
+    Http,
+    Fake,
 }
 
 /// Default [`EmailSender`]: logs the message rather than sending it.
@@ -78,6 +96,11 @@ impl EmailSender for LogEmailSender {
             );
             Ok(())
         })
+    }
+
+    #[cfg(test)]
+    fn kind(&self) -> EmailSenderKind {
+        EmailSenderKind::Log
     }
 }
 
@@ -143,6 +166,11 @@ impl EmailSender for SmtpEmailSender {
                 .map_err(|e| EmailError(format!("SMTP send failed: {e}")))?;
             Ok(())
         })
+    }
+
+    #[cfg(test)]
+    fn kind(&self) -> EmailSenderKind {
+        EmailSenderKind::Smtp
     }
 }
 
@@ -228,6 +256,11 @@ impl EmailSender for HttpEmailSender {
             }
             Ok(())
         })
+    }
+
+    #[cfg(test)]
+    fn kind(&self) -> EmailSenderKind {
+        EmailSenderKind::Http
     }
 }
 
@@ -372,11 +405,9 @@ mod tests {
     }
 
     #[test]
-    fn build_email_sender_selects_log_by_default() {
+    fn build_email_sender_constructs_log_sender() {
         let sender = build_email_sender(&EmailConfig::default()).unwrap();
-        // A Log sender delivers without a transport; just confirm construction succeeds and the
-        // returned object is usable.
-        let _ = sender;
+        assert_eq!(sender.kind(), EmailSenderKind::Log);
     }
 
     /// A minimal `provider = "mailtrap"` config pointed at `api_url`.
@@ -399,11 +430,10 @@ mod tests {
     }
 
     #[test]
-    fn build_email_sender_selects_http_for_mailtrap() {
+    fn build_email_sender_constructs_http_sender() {
         let config = mailtrap_config("https://send.api.mailtrap.io/api/send");
-        // Construction succeeds and yields a usable `dyn EmailSender`.
         let sender = build_email_sender(&config).unwrap();
-        let _ = sender;
+        assert_eq!(sender.kind(), EmailSenderKind::Http);
     }
 
     #[test]

@@ -29,14 +29,37 @@ export interface StubPds {
   close: () => Promise<void>;
 }
 
+/** The public issuer the stub PDS advertises in its RFC 8414 metadata. */
+export const STUB_PDS_ISSUER = 'https://pds.obsign.org';
+
+export interface StubPdsOptions {
+  /**
+   * What `/.well-known/oauth-authorization-server` returns. `'ok'` serves
+   * `{ issuer: STUB_PDS_ISSUER }`; the others reproduce a PDS that cannot be
+   * discovered, which the sidecar must surface rather than paper over.
+   */
+  asMetadata?: 'ok' | 'missing-issuer' | 'unavailable';
+}
+
 /** A stub PDS that records every request and returns a canned XRPC response. */
-export function startStubPds(): Promise<StubPds> {
+export function startStubPds(options: StubPdsOptions = {}): Promise<StubPds> {
+  const asMetadata = options.asMetadata ?? 'ok';
   const requests: CapturedRequest[] = [];
   let nextStatus = 200;
   let nextBody: unknown = {};
 
   return new Promise((resolve) => {
     const server = http.createServer((req, res) => {
+      // Discovery is not a forwarded XRPC call, so it stays out of `requests`.
+      if (req.url === '/.well-known/oauth-authorization-server') {
+        if (asMetadata === 'unavailable') {
+          res.writeHead(500).end();
+          return;
+        }
+        res.writeHead(200, { 'content-type': 'application/json' });
+        res.end(JSON.stringify(asMetadata === 'ok' ? { issuer: STUB_PDS_ISSUER } : {}));
+        return;
+      }
       const chunks: Buffer[] = [];
       req.on('data', (c) => chunks.push(c as Buffer));
       req.on('end', () => {

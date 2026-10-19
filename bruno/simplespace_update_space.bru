@@ -1,0 +1,33 @@
+meta {
+  name: Simplespace Update Space
+  type: http
+  seq: 149
+}
+
+post {
+  url: {{baseUrl}}/xrpc/com.atproto.simplespace.updateSpace
+  body: json
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{accessToken}}
+}
+
+body:json {
+  {
+    "space": "at://{{did}}/space/org.example.bucket/main",
+    "policy": { "$type": "com.atproto.simplespace.defs#publicPolicy" }
+  }
+}
+
+docs {
+  Update a simplespace space's configuration. Each supplied union ("policy", "appAccess")
+  replaces its axis wholesale; an omitted one is left unchanged. The same open-union rule
+  as createSpace applies: an unimplemented member is refused with 400 UnsupportedPolicy /
+  UnsupportedAppAccess before the row is touched.
+
+  Requires a "space:…?manage=update" grant and the caller must be the space's authority.
+  Errors: 400 SpaceNotFound (absent, deleted, or not a simplespace this host answers for),
+  400 NotSpaceOwner, 403 InsufficientScope.
+}

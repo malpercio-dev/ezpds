@@ -1,0 +1,30 @@
+meta {
+  name: Space Get Blob
+  type: http
+  seq: 157
+}
+
+get {
+  url: {{baseUrl}}/xrpc/com.atproto.space.getBlob?space=at://did:plc:authorityaaaaaaaaaaaaaaa/space/org.example.bucket/main&repo={{did}}&cid={{blobCid}}
+  body: none
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{accessToken}}
+}
+
+params:query {
+  space: at://did:plc:authorityaaaaaaaaaaaaaaa/space/org.example.bucket/main
+  repo: {{did}}
+  cid: {{blobCid}}
+}
+
+docs {
+  Fetch a blob referenced from a record in a permissioned space. Blobs upload once via
+  com.atproto.repo.uploadBlob and are associated on reference; this route serves the stored
+  bytes only to a caller the space read seam admits (covering OAuth grant or DPoP-bound space
+  credential), and only when some record in this (space, repo) references the CID. A stored
+  but unreferenced blob answers the same 400 BlobNotFound as an unknown CID — existence is
+  never disclosed. Bytes are re-hashed against the CID before serving.
+}

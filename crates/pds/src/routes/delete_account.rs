@@ -195,11 +195,11 @@ pub async fn delete_account_handler(
                 VerifyResult::Ok => {}
                 VerifyResult::WrongPassword => return Err(invalid_credentials()),
                 VerifyResult::CorruptHash => {
-                    tracing::error!(
-                        did = %payload.did,
-                        "stored password_hash is not a valid PHC string; possible DB corruption"
-                    );
-                    return Err(ApiError::new(ErrorCode::InternalError, "internal error"));
+                    return Err({
+                        tracing::error!(
+                        did = %payload.did, "stored password_hash is not a valid PHC string; possible DB corruption");
+                        ApiError::new(ErrorCode::InternalError, "internal error")
+                    });
                 }
             },
         },
@@ -219,8 +219,10 @@ pub async fn delete_account_handler(
         if !insert_nonce_if_absent(&state.db, &payload.did, &proof.nonce)
             .await
             .map_err(|e| {
-                tracing::error!(error = %e, did = %payload.did, "failed to consume account deletion nonce");
-                ApiError::new(ErrorCode::InternalError, "failed to delete account")
+                {
+                    tracing::error!(error = %e, did = %payload.did, "failed to consume account deletion nonce");
+                    ApiError::new(ErrorCode::InternalError, "failed to delete account")
+                }
             })?
         {
             tracing::warn!(
@@ -255,25 +257,21 @@ pub async fn delete_account_handler(
 
 #[cfg(test)]
 mod tests {
-    use axum::{
-        body::Body,
-        http::{Request, StatusCode},
-    };
+    use axum::http::StatusCode;
     use tower::ServiceExt;
 
     use crate::app::{app, test_state, AppState};
     use crate::auth::token::generate_token;
     use crate::db::account_deletion_tokens::insert_account_deletion_token;
     use crate::firehose::FirehoseEvent;
-    use crate::routes::test_utils::{body_json, insert_account_with_password};
+    use crate::routes::test_utils::{
+        body_json, insert_account_with_password, post_req as shared_post_req,
+    };
 
-    fn post_req(json: serde_json::Value) -> Request<Body> {
-        Request::builder()
-            .method("POST")
-            .uri("/xrpc/com.atproto.server.deleteAccount")
-            .header("Content-Type", "application/json")
-            .body(Body::from(json.to_string()))
-            .unwrap()
+    const URI: &str = "/xrpc/com.atproto.server.deleteAccount";
+
+    fn post_req(json: serde_json::Value) -> axum::http::Request<axum::body::Body> {
+        shared_post_req(URI, None, Some(json))
     }
 
     /// Seed a deletion token for `did`, returning its plaintext (as a client would receive it).
@@ -428,14 +426,12 @@ mod tests {
         use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
         use p256::ecdsa::{signature::Signer as _, Signature as P256Signature, SigningKey};
         use serde_json::{json, Value};
-        use wiremock::{
-            matchers::{method, path},
-            Mock, MockServer, ResponseTemplate,
-        };
+        use wiremock::MockServer;
 
         use super::super::NONCE_BYTES;
         use super::*;
         use crate::app::test_state_with_plc_url;
+        use crate::routes::test_utils::mount_owner_audit_log as mount_audit_log;
 
         /// A DID whose rotation set the mock plc.directory answers for.
         const DID: &str = "did:plc:aaaaaaaaaaaaaaaaaaaaaaaa";
@@ -474,28 +470,6 @@ mod tests {
             .execute(db)
             .await
             .unwrap();
-        }
-
-        async fn mount_audit_log(server: &MockServer, did: &str, rotation_keys: &[&str]) {
-            let log = json!([{
-                "did": did,
-                "cid": "bafy-current-head",
-                "createdAt": "2026-07-27T00:00:00Z",
-                "nullified": false,
-                "operation": {
-                    "type": "plc_operation",
-                    "prev": null,
-                    "rotationKeys": rotation_keys,
-                    "verificationMethods": {},
-                    "alsoKnownAs": ["at://owner.example.com"],
-                    "services": {}
-                }
-            }]);
-            Mock::given(method("GET"))
-                .and(path(format!("/{did}/log/audit")))
-                .respond_with(ResponseTemplate::new(200).set_body_json(log))
-                .mount(server)
-                .await;
         }
 
         /// Build a request body carrying a deletion proof. `envelope_did` is the DID the signed

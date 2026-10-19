@@ -564,7 +564,7 @@ async fn create_destination_account_impl(
     // 1. Reserve signing key at destination
     tracing::debug!(did = %did, dest_url = %dest_pds_url, "reserving signing key at destination");
     let _reserved_key = pds_client
-        .reserve_signing_key(dest_pds_url, did)
+        .reserve_signing_key(dest_pds_url, Some(did))
         .await
         .map_err(|e| {
             tracing::error!(did = %did, error = %e, "reserveSigningKey failed");
@@ -625,10 +625,11 @@ pub(crate) async fn create_destination_account_with_token(
     }
 
     // One-shot Bearer client carrying the service-auth token.
-    let sa_client = OAuthClient::new_bearer(
+    let sa_client = OAuthClient::new_bearer_with_observer(
         service_auth_token.to_string(),
         String::new(),
         dest_pds_url.into(),
+        crate::oauth_client::diagnostics_observer(),
     )
     .map_err(|e| {
         tracing::error!(error = %e, "failed to create service-auth Bearer client");
@@ -654,14 +655,18 @@ pub(crate) async fn create_destination_account_with_token(
     match crate::pds_client::create_account_migration(&sa_client, &req).await {
         Ok(resp) => {
             // 5. Build destination Bearer client from the returned session tokens.
-            let dest_client =
-                OAuthClient::new_bearer(resp.access_jwt, resp.refresh_jwt, dest_pds_url.into())
-                    .map_err(|e| {
-                        tracing::error!(error = %e, "failed to create destination Bearer client from response");
-                        MigrationError::AccountCreationFailed {
-                            message: "failed to create destination client".to_string(),
-                        }
-                    })?;
+            let dest_client = OAuthClient::new_bearer_with_observer(
+                resp.access_jwt,
+                resp.refresh_jwt,
+                dest_pds_url.into(),
+                crate::oauth_client::diagnostics_observer(),
+            )
+            .map_err(|e| {
+                tracing::error!(error = %e, "failed to create destination Bearer client from response");
+                MigrationError::AccountCreationFailed {
+                    message: "failed to create destination client".to_string(),
+                }
+            })?;
             tracing::info!(did = %did, "destination account created successfully");
             Ok(Arc::new(dest_client))
         }
@@ -1770,7 +1775,8 @@ pub async fn finalize_migration(
 ) -> Result<(), MigrationError> {
     // Proof material for the sovereign-session mint (imperative shell: clock + RNG). Minted
     // here rather than inside the core so the core stays deterministic under test.
-    let now = crate::sovereign_session::unix_timestamp().map_err(map_sovereign_error)?;
+    let now =
+        crate::sovereign_session::unix_timestamp().map_err(|e| map_sovereign_error(e.into()))?;
     let nonce = crate::sovereign_session::fresh_nonce();
 
     finalize_migration_impl(
@@ -3864,7 +3870,7 @@ mod tests {
         };
         store.store_oauth_tokens(did, &record).unwrap();
 
-        let pds_client = crate::pds_client::PdsClient::new_for_test("http://127.0.0.1:1/".into());
+        let pds_client = crate::pds_client::new_for_test("http://127.0.0.1:1/".into());
         let result =
             ensure_sovereign_session_persisted(&pds_client, &store, did, now, "nonce").await;
         assert!(
@@ -4491,7 +4497,7 @@ mod tests {
         });
 
         // ─ Build clients and state ─
-        let pds_client = crate::pds_client::PdsClient::new_for_test(plc_url.clone());
+        let pds_client = crate::pds_client::new_for_test(plc_url.clone());
 
         let source_client = Arc::new(bearer_client_at(source_url.clone()));
 
@@ -4718,7 +4724,7 @@ mod tests {
             then.status(404);
         });
 
-        let pds_client = crate::pds_client::PdsClient::new_for_test(plc.base_url());
+        let pds_client = crate::pds_client::new_for_test(plc.base_url());
         let source_client = Arc::new(bearer_client_at(source_url.clone()));
 
         let dest_client = create_destination_account_impl(
@@ -4964,7 +4970,7 @@ mod tests {
             then.status(200);
         });
 
-        let pds_client = crate::pds_client::PdsClient::new_for_test(plc.base_url());
+        let pds_client = crate::pds_client::new_for_test(plc.base_url());
         let source_client = Arc::new(bearer_client_at(source.base_url()));
 
         // ─ Run through steps 1–5 (up to verify_import, but NOT arm/finalize) ─

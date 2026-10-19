@@ -130,15 +130,15 @@
   <div class="screen">
     <ScreenHeader title="Rotate signing key" onback={onback} backLabel="Back to identity" />
 
-    <p class="intro">
+    <p class="intro u-body-soft">
       Your hosting server holds a key that signs this identity’s data. Rotating replaces it with a
       freshly generated one — use this if you suspect the server’s key was exposed, or as periodic
       hygiene. Your device key is untouched and stays in control.
     </p>
 
-    <div class="identity">
-      <span class="id-label">Identity</span>
-      <span class="id-did">{truncateDid(did)}</span>
+    <div class="identity u-stack-2xs">
+      <span class="id-label u-label-muted">Identity</span>
+      <span class="id-did u-id-mono">{truncateDid(did)}</span>
     </div>
 
     {#if phase.kind === 'loading'}
@@ -147,7 +147,7 @@
         <p class="hint">Requesting a fresh key and sealing the change…</p>
       </div>
     {:else if phase.kind === 'load_error'}
-      <p class="status" role="alert">{phase.error}</p>
+      <p class="status u-notice-text" role="alert">{phase.error}</p>
       <Button onclick={build}>Try again</Button>
     {:else if phase.kind === 'working'}
       <div class="center">
@@ -155,8 +155,8 @@
         <p class="hint">Publishing the new key and switching over…</p>
       </div>
     {:else if phase.kind === 'ready'}
-      <div class="block">
-        <p class="block-label">This rotation will</p>
+      <div class="block u-stack-sm">
+        <p class="block-label u-block-label">This rotation will</p>
         {#each phase.op.diff.addedKeys as key}
           <DiffRow variant="restore" title="Install the fresh signing key" value={key} />
         {/each}
@@ -172,7 +172,7 @@
 
       {#if phase.error}
         <div class="error-box" role="alert">
-          <p class="error-text">{phase.error}</p>
+          <p class="error-text u-error-text">{phase.error}</p>
         </div>
       {/if}
 
@@ -215,30 +215,6 @@
     max-width: 34ch;
   }
 
-  .intro {
-    font-size: var(--text-body);
-    line-height: var(--leading-body);
-    color: var(--color-ink-soft);
-    margin: 0;
-  }
-
-  .identity {
-    display: flex;
-    flex-direction: column;
-    gap: var(--space-2xs);
-  }
-  .id-label {
-    font-size: var(--text-label);
-    font-weight: var(--weight-semibold);
-    color: var(--color-muted);
-  }
-  .id-did {
-    font-family: var(--font-mono);
-    font-size: var(--text-data);
-    color: var(--color-ink-soft);
-    word-break: break-all;
-  }
-
   .center {
     display: flex;
     flex-direction: column;
@@ -252,28 +228,11 @@
     margin: 0;
     text-align: center;
   }
-  .status {
-    font-size: var(--text-body);
-    color: var(--color-critical);
-    margin: 0;
-  }
-
-  .block {
-    display: flex;
-    flex-direction: column;
-    gap: var(--space-sm);
-  }
-  .block-label {
-    font-size: var(--text-label);
-    font-weight: var(--weight-semibold);
-    color: var(--color-muted);
-    margin: 0;
-  }
 
   .sealed {
     display: inline-flex;
     align-items: center;
-    gap: 7px;
+    gap: var(--space-sm);
     font-size: var(--text-label);
     font-weight: var(--weight-semibold);
     color: var(--color-primary-deep);
@@ -282,13 +241,7 @@
   .error-box {
     background: var(--color-critical-surface);
     border-radius: var(--radius-md);
-    padding: 12px var(--space-md);
-  }
-  .error-text {
-    font-size: var(--text-label);
-    color: var(--color-critical);
-    margin: 0;
-    line-height: 1.4;
+    padding: var(--space-md) var(--space-md);
   }
 
   .actions {

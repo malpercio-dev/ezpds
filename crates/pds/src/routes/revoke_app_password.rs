@@ -50,8 +50,11 @@ pub async fn revoke_app_password(
     }
 
     let map_err = |e: sqlx::Error| {
-        tracing::error!(error = %e, "DB error revoking app password");
-        ApiError::new(ErrorCode::InternalError, "failed to revoke app password")
+        ApiError::internal_as(
+            e,
+            "DB error revoking app password",
+            "failed to revoke app password",
+        )
     };
 
     // Delete the app password and every session it opened, atomically. The refresh tokens must
@@ -295,15 +298,5 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(drop.status(), StatusCode::UNAUTHORIZED);
-    }
-
-    #[tokio::test]
-    async fn missing_auth_returns_401() {
-        let state = test_state().await;
-        let response = app(state)
-            .oneshot(post_revoke(None, serde_json::json!({"name": "x"})))
-            .await
-            .unwrap();
-        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
     }
 }

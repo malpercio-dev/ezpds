@@ -408,18 +408,18 @@
   </div>
 
   <div class="content">
-    <div class="identity">
-      <span class="id-label">Identity</span>
+    <div class="identity u-stack-xs">
+      <span class="id-label u-label-muted">Identity</span>
       {#if handle}
         <span class="id-handle">{handle}</span>
       {/if}
-      <span class="id-did">{truncateDid(did)}</span>
+      <span class="id-did u-id-mono">{truncateDid(did)}</span>
     </div>
 
     {#if phase === 'warn'}
       <div class="hero">
         <h1 class="hero-title">Permanently remove this identity</h1>
-        <p class="hero-sub">This cannot be undone. Removing this identity will:</p>
+        <p class="hero-sub u-body-soft">This cannot be undone. Removing this identity will:</p>
       </div>
       <ul class="consequences">
         <li><strong>Delete your account</strong> and all its data on your server.</li>
@@ -429,13 +429,13 @@
         <li><strong>Erase its keys</strong> from this device.</li>
       </ul>
       {#if isDidWeb}
-        <p class="note">
+        <p class="note u-fine">
           This identity lives at your own domain, so there is nothing to retire on the network.
           It keeps working until you take its document down — we'll show you what to remove
           once the account is deleted.
         </p>
       {/if}
-      <p class="note">
+      <p class="note u-fine">
         We'll email a confirmation code to the account address.
         {#if routeLoaded && requiresPassword}
           You'll enter that code and your account password to confirm.
@@ -447,12 +447,12 @@
     {:else if phase === 'requesting'}
       <div class="loading">
         <Spinner size={32} label="Sending confirmation code" />
-        <p class="loading-text">Sending a confirmation code to your email…</p>
+        <p class="loading-text u-status-text">Sending a confirmation code to your email…</p>
       </div>
     {:else if phase === 'confirm'}
       <div class="hero">
         <h1 class="hero-title">Confirm removal</h1>
-        <p class="hero-sub">
+        <p class="hero-sub u-body-soft">
           {#if requiresPassword}
             Enter the code we emailed you and your account password, then hold to remove.
           {:else}
@@ -460,8 +460,8 @@
           {/if}
         </p>
       </div>
-      <div class="form">
-        <label class="field-label" for="removal-code">Confirmation code</label>
+      <div class="form u-stack-sm">
+        <label class="field-label u-label-muted" for="removal-code">Confirmation code</label>
         <TextField
           id="removal-code"
           bind:value={code}
@@ -471,7 +471,7 @@
           placeholder="Code from your email"
         />
         {#if requiresPassword}
-          <label class="field-label" for="removal-password">Account password</label>
+          <label class="field-label u-label-muted" for="removal-password">Account password</label>
           <TextField
             id="removal-password"
             type="password"
@@ -483,12 +483,12 @@
     {:else if phase === 'working'}
       <div class="loading">
         <Spinner size={32} label="Removing identity" />
-        <p class="loading-text">{workingMessage}</p>
+        <p class="loading-text u-status-text">{workingMessage}</p>
       </div>
     {:else if phase === 'tombstone_retry'}
       <div class="hero">
         <h1 class="hero-title">Almost done</h1>
-        <p class="hero-sub">
+        <p class="hero-sub u-body-soft">
           {#if isDidWeb}
             Your account was deleted, but erasing this identity's keys from this device didn't
             finish. Retry to complete removal.
@@ -501,7 +501,7 @@
     {:else if phase === 'web_epilogue'}
       <div class="hero">
         <h1 class="hero-title">One step is yours</h1>
-        <p class="hero-sub">
+        <p class="hero-sub u-body-soft">
           Your account is deleted and this identity's keys are erased from this device. The
           identity itself keeps resolving for as long as its document stays published.
         </p>
@@ -520,7 +520,7 @@
           stopped it being served, and there is nothing left for you to do.
         </li>
       </ul>
-      <p class="note">
+      <p class="note u-fine">
         The wallet can't do this part for you — it never had control of the domain. Until the
         document is gone, anyone can still resolve this DID to its last published state.
       </p>
@@ -529,7 +529,7 @@
         <h1 class="hero-title">
           {alsoTombstone ? 'Retire and remove this identity' : 'Remove from this device only'}
         </h1>
-        <p class="hero-sub">
+        <p class="hero-sub u-body-soft">
           Use this if this identity's account no longer exists on its server — for example it was
           already deleted, or you migrated it elsewhere.
         </p>
@@ -547,7 +547,7 @@
           </li>
         {/if}
       </ul>
-      <p class="note danger-note">
+      <p class="note danger-note u-fine">
         {#if alsoTombstone}
           Tombstoning is permanent and network-wide. Only continue if you are certain you want to
           destroy this identity everywhere — it cannot be undone.
@@ -558,7 +558,7 @@
       </p>
 
       {#if isDidWeb}
-        <p class="note">
+        <p class="note u-fine">
           There is no network-wide retirement the wallet can perform for a domain
           identity: it is retired by taking its document
           {#if didWebDocUrl}
@@ -573,8 +573,8 @@
         {#if showAdvanced}
           <label class="advanced-check">
             <input type="checkbox" bind:checked={alsoTombstone} />
-            <span class="check-body">
-              <span class="check-title">Also retire this identity on the network</span>
+            <span class="check-body u-stack-xs">
+              <span class="check-title u-title-strong">Also retire this identity on the network</span>
               <span class="check-desc">
                 Sign and publish a did:plc tombstone so the identity is permanently retired
                 everywhere, not just on this device. Requires this device to still hold one of the
@@ -588,7 +588,7 @@
 
     {#if error}
       <div class="error-box" role="alert">
-        <p class="error-text">{error}</p>
+        <p class="error-text u-error-text">{error}</p>
       </div>
     {/if}
   </div>
@@ -705,26 +705,10 @@
     gap: var(--space-md);
   }
 
-  .identity {
-    display: flex;
-    flex-direction: column;
-    gap: var(--space-xs);
-  }
-  .id-label {
-    font-size: var(--text-label);
-    font-weight: var(--weight-semibold);
-    color: var(--color-muted);
-  }
   .id-handle {
     font-size: var(--text-body);
     font-weight: var(--weight-semibold);
     color: var(--color-ink);
-    word-break: break-all;
-  }
-  .id-did {
-    font-family: var(--font-mono);
-    font-size: var(--text-data);
-    color: var(--color-ink-soft);
     word-break: break-all;
   }
 
@@ -735,12 +719,6 @@
     line-height: 1.15;
     color: var(--color-ink);
     margin: 0 0 var(--space-sm);
-  }
-  .hero-sub {
-    font-size: var(--text-body);
-    line-height: var(--leading-body);
-    color: var(--color-ink-soft);
-    margin: 0;
   }
 
   .consequences {
@@ -756,30 +734,12 @@
     color: var(--color-ink-soft);
   }
 
-  .note {
-    font-size: var(--text-label);
-    color: var(--color-muted);
-    line-height: 1.5;
-    margin: 0;
-  }
-
   /* Literal machine strings inline in prose — a DID method, a document URL, an HTTP status.
      Wraps anywhere because a did:web document URL is long and must never widen the screen. */
   .mono {
     font-family: var(--font-mono);
     font-size: 0.95em;
     word-break: break-all;
-  }
-
-  .form {
-    display: flex;
-    flex-direction: column;
-    gap: var(--space-sm);
-  }
-  .field-label {
-    font-size: var(--text-label);
-    font-weight: var(--weight-semibold);
-    color: var(--color-muted);
   }
 
   .loading {
@@ -789,23 +749,11 @@
     gap: var(--space-md);
     padding: var(--space-xl) 0;
   }
-  .loading-text {
-    font-size: var(--text-body);
-    color: var(--color-muted);
-    margin: 0;
-    text-align: center;
-  }
 
   .error-box {
     background: var(--color-critical-surface);
     border-radius: var(--radius-md);
-    padding: 12px var(--space-md);
-  }
-  .error-text {
-    font-size: var(--text-label);
-    color: var(--color-critical);
-    margin: 0;
-    line-height: 1.4;
+    padding: var(--space-md) var(--space-md);
   }
 
   .actions {
@@ -820,7 +768,7 @@
   .hold {
     position: relative;
     width: 100%;
-    height: 54px;
+    height: var(--size-button-lg);
     border-radius: var(--radius-md);
     border: none;
     cursor: pointer;
@@ -887,7 +835,7 @@
     background: var(--color-surface);
     border: 1px solid var(--color-line);
     border-radius: var(--radius-md);
-    padding: 10px var(--space-md);
+    padding: var(--space-sm) var(--space-md);
     font-family: var(--font-sans);
     font-size: var(--text-label);
     font-weight: var(--weight-medium);
@@ -908,21 +856,11 @@
   }
   .advanced-check input[type='checkbox'] {
     margin-top: var(--space-3xs);
-    width: 20px;
-    height: 20px;
+    width: var(--size-icon-xs);
+    height: var(--size-icon-xs);
     flex-shrink: 0;
     accent-color: var(--color-critical-solid);
     cursor: pointer;
-  }
-  .check-body {
-    display: flex;
-    flex-direction: column;
-    gap: var(--space-xs);
-  }
-  .check-title {
-    font-size: var(--text-body);
-    font-weight: var(--weight-semibold);
-    color: var(--color-ink);
   }
   .check-desc {
     font-size: var(--text-label);

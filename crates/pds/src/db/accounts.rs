@@ -34,7 +34,7 @@
 //! subqueries. The flagged-account predicates (`FLAGGED_SQL`, `count_accounts_admin_flagged`)
 //! live beside it here; the label rows are `db/account_labels.rs`'s.
 
-use common::{ApiError, ErrorCode};
+use common::{ApiError, ApiResultExt, ErrorCode};
 use sqlx::Sqlite;
 
 /// Whether `did` names a locally-hosted account in an active lifecycle — not deactivated,
@@ -92,10 +92,7 @@ pub(crate) async fn account_email(
         .bind(did)
         .fetch_optional(db)
         .await
-        .map_err(|e| {
-            tracing::error!(error = %e, "failed to look up account email");
-            ApiError::new(ErrorCode::InternalError, "database error")
-        })
+        .or_internal_as("failed to look up account email", "database error")
 }
 
 /// Whether a fully-provisioned account row exists for `did` (unfiltered by lifecycle). Used by the
@@ -105,10 +102,7 @@ pub(crate) async fn account_exists(db: &sqlx::SqlitePool, did: &str) -> Result<b
         .bind(did)
         .fetch_one(db)
         .await
-        .map_err(|e| {
-            tracing::error!(error = %e, "failed to check accounts existence");
-            ApiError::new(ErrorCode::InternalError, "database error")
-        })?;
+        .or_internal_as("failed to check accounts existence", "database error")?;
 
     Ok(exists)
 }
@@ -215,13 +209,10 @@ pub(crate) async fn update_account_email(
         Ok(r) if r.rows_affected() == 1 => Ok(EmailUpdateOutcome::Updated),
         Ok(_) => Ok(EmailUpdateOutcome::NotFound),
         Err(e) if crate::db::is_unique_violation(&e) => Ok(EmailUpdateOutcome::Taken),
-        Err(e) => {
+        Err(e) => Err({
             tracing::error!(did = %did, error = %e, "failed to update account email");
-            Err(ApiError::new(
-                ErrorCode::InternalError,
-                "failed to update email",
-            ))
-        }
+            ApiError::new(ErrorCode::InternalError, "failed to update email")
+        }),
     }
 }
 
@@ -233,10 +224,13 @@ pub(crate) async fn update_account_email(
 /// route can keep serving a self-service-deactivated account — the migration window between
 /// a deactivated `createAccount` and `activateAccount` — while still refusing moderation
 /// states. The caller decides which lifecycle states it admits.
-pub(crate) async fn account_lifecycle(
-    db: &sqlx::SqlitePool,
+pub(crate) async fn account_lifecycle<'e, E>(
+    db: E,
     did: &str,
-) -> Result<Option<AccountLifecycle>, ApiError> {
+) -> Result<Option<AccountLifecycle>, ApiError>
+where
+    E: sqlx::Executor<'e, Database = sqlx::Sqlite>,
+{
     let row: Option<(Option<String>, Option<String>, Option<String>)> = sqlx::query_as(
         "SELECT deactivated_at, suspended_at, taken_down_at FROM accounts WHERE did = ?",
     )
@@ -397,10 +391,10 @@ pub async fn accounts_due_for_deletion(db: &sqlx::SqlitePool) -> Result<Vec<Stri
     )
     .fetch_all(db)
     .await
-    .map_err(|e| {
-        tracing::error!(error = %e, "DB error listing accounts due for deletion");
-        ApiError::new(ErrorCode::InternalError, "failed to list accounts")
-    })?;
+    .or_internal_as(
+        "DB error listing accounts due for deletion",
+        "failed to list accounts",
+    )?;
     Ok(rows.into_iter().map(|(did,)| did).collect())
 }
 
@@ -431,10 +425,10 @@ pub async fn account_password_hash(
             .bind(did)
             .fetch_optional(db)
             .await
-            .map_err(|e| {
-                tracing::error!(error = %e, "DB error fetching account password hash");
-                ApiError::new(ErrorCode::InternalError, "failed to look up account")
-            })?;
+            .or_internal_as(
+                "DB error fetching account password hash",
+                "failed to look up account",
+            )?;
     Ok(row.map(|(hash,)| hash))
 }
 
@@ -705,29 +699,54 @@ pub(crate) async fn current_repo_root(
 /// conflict. Single statement, so no transaction is opened here — generic over the executor so
 /// the caller can run it inside a transaction that also stages the firehose `#commit` row (see
 /// `record_write::commit_repo_write`), making the CAS and the event commit atomically.
+///
+/// `new_record_count` is the new head's verified MST key count, stored alongside the root as the
+/// write-path integrity witness (V068); `None` (a failed count walk) stores NULL so the check
+/// re-initializes on the next write instead of comparing against a stale value.
 pub(crate) async fn advance_repo_root_if_active<'e, E>(
     executor: E,
     did: &str,
     new_root: &str,
     new_rev: &str,
     expected_root: &str,
+    new_record_count: Option<i64>,
 ) -> Result<bool, sqlx::Error>
 where
     E: sqlx::Executor<'e, Database = Sqlite>,
 {
     let updated = sqlx::query(
-        "UPDATE accounts SET repo_root_cid = ?, repo_rev = ? \
+        "UPDATE accounts SET repo_root_cid = ?, repo_rev = ?, record_count = ? \
          WHERE did = ? AND repo_root_cid = ? AND deactivated_at IS NULL \
            AND suspended_at IS NULL AND taken_down_at IS NULL",
     )
     .bind(new_root)
     .bind(new_rev)
+    .bind(new_record_count)
     .bind(did)
     .bind(expected_root)
     .execute(executor)
     .await?;
 
     Ok(updated.rows_affected() == 1)
+}
+
+/// Fetch the account's maintained MST record count (V068), unfiltered by lifecycle status.
+///
+/// `None` means the count is unknown (pre-V068 account, fresh genesis, or a just-imported repo);
+/// the write-path integrity check skips its comparison and initializes the count on that write.
+pub(crate) async fn repo_record_count<'e, E>(
+    executor: E,
+    did: &str,
+) -> Result<Option<i64>, sqlx::Error>
+where
+    E: sqlx::Executor<'e, Database = Sqlite>,
+{
+    let row: Option<Option<i64>> =
+        sqlx::query_scalar("SELECT record_count FROM accounts WHERE did = ?")
+            .bind(did)
+            .fetch_optional(executor)
+            .await?;
+    Ok(row.flatten())
 }
 
 /// Swap the repo root/rev of a **deactivated** account after an `importRepo`, atomically with the
@@ -759,8 +778,11 @@ pub(crate) async fn swap_repo_root_for_deactivated<'e, E>(
 where
     E: sqlx::Executor<'e, Database = Sqlite>,
 {
+    // `record_count = NULL`: an imported repo's key count is unknown here, so the write-path
+    // integrity witness (V068) resets to "unknown" and re-initializes on the next record write
+    // rather than comparing against the pre-import repo's count.
     let updated = sqlx::query(
-        "UPDATE accounts SET repo_root_cid = ?, repo_rev = ? \
+        "UPDATE accounts SET repo_root_cid = ?, repo_rev = ?, record_count = NULL \
          WHERE did = ? AND repo_root_cid IS ? AND deactivated_at IS NOT NULL \
            AND suspended_at IS NULL AND taken_down_at IS NULL",
     )
@@ -1185,8 +1207,10 @@ pub(crate) async fn resolve_by_email(
     .map_err(|e| {
         // Logging the email domain aids ops triage without exposing the full address in logs.
         let domain = email.split('@').nth(1).unwrap_or("<unknown>");
-        tracing::error!(error = %e, email_domain = %domain, "DB error resolving email");
-        ApiError::new(ErrorCode::InternalError, "failed to resolve identifier")
+        {
+            tracing::error!(error = %e, email_domain = %domain, "DB error resolving email");
+            ApiError::new(ErrorCode::InternalError, "failed to resolve identifier")
+        }
     })?;
 
     Ok(row.map(|(did, password_hash, handle)| AccountRow {
@@ -1259,32 +1283,29 @@ pub(crate) async fn resolve_identifier(
     }
 }
 
+/// Insert a minimal active account row — enough to satisfy a foreign key or exercise
+/// account-adjacent queries where the account's own fields aren't asserted. Re-exported from
+/// `routes::test_utils` for route test call sites; other modules' tests reach it directly.
+#[cfg(test)]
+pub(crate) async fn insert_bare_account(db: &sqlx::SqlitePool, did: &str) {
+    sqlx::query(
+        "INSERT INTO accounts (did, email, password_hash, created_at, updated_at) \
+         VALUES (?, ?, NULL, datetime('now'), datetime('now'))",
+    )
+    .bind(did)
+    .bind(format!("{did}@example.com"))
+    .execute(db)
+    .await
+    .unwrap();
+}
+
 // ── Tests ────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
 mod tests {
+    use super::insert_bare_account as insert_account;
     use super::*;
-    use crate::db::{open_pool, run_migrations};
-
-    /// Create an in-memory SQLite pool with all migrations applied.
-    async fn test_pool() -> sqlx::SqlitePool {
-        let db = open_pool("sqlite::memory:").await.expect("test pool");
-        run_migrations(&db).await.expect("migrations");
-        db
-    }
-
-    /// Insert a minimal active account row.
-    async fn insert_account(db: &sqlx::SqlitePool, did: &str) {
-        sqlx::query(
-            "INSERT INTO accounts (did, email, password_hash, created_at, updated_at) \
-             VALUES (?, ?, NULL, datetime('now'), datetime('now'))",
-        )
-        .bind(did)
-        .bind(format!("{did}@example.com"))
-        .execute(db)
-        .await
-        .unwrap();
-    }
+    use crate::db::test_pool;
 
     /// Insert an active account row that also has a `repo_root_cid`.
     async fn insert_account_with_repo(db: &sqlx::SqlitePool, did: &str, cid: &str) {
@@ -1902,7 +1923,7 @@ mod tests {
         set_lifecycle_column(&db, "did:plc:cas_susp", "suspended_at").await;
 
         let swapped =
-            advance_repo_root_if_active(&db, "did:plc:cas_susp", "new-root", "rev-1", cid)
+            advance_repo_root_if_active(&db, "did:plc:cas_susp", "new-root", "rev-1", cid, None)
                 .await
                 .unwrap();
         assert!(
@@ -1918,9 +1939,10 @@ mod tests {
         insert_account_with_repo(&db, "did:plc:cas_td", cid).await;
         set_lifecycle_column(&db, "did:plc:cas_td", "taken_down_at").await;
 
-        let swapped = advance_repo_root_if_active(&db, "did:plc:cas_td", "new-root", "rev-1", cid)
-            .await
-            .unwrap();
+        let swapped =
+            advance_repo_root_if_active(&db, "did:plc:cas_td", "new-root", "rev-1", cid, None)
+                .await
+                .unwrap();
         assert!(
             !swapped,
             "the commit CAS must not advance the root for a taken-down account"

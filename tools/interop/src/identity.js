@@ -41,6 +41,26 @@ export function pdsEndpointFromDoc(doc) {
   return service?.serviceEndpoint ?? null;
 }
 
+/** Fetch a DID document by method (the two methods atproto uses). */
+export async function resolveDidDoc(did) {
+  if (did.startsWith('did:plc:')) return fetchPlcDocument(did);
+  if (did.startsWith('did:web:')) return fetchDidWebDocument(did);
+  throw new Error(`unsupported DID method: ${did}`);
+}
+
+/**
+ * Where to reach a space authority. The Spaces alpha names no service type of its own, so
+ * a host that publishes one is doing more than the spec asks; Custos recommends
+ * `#atproto_space` / `AtprotoSpaceHost`. Falling back to the PDS endpoint is what makes a
+ * foreign authority that publishes neither still reachable.
+ */
+export function spaceEndpointFromDoc(doc) {
+  const service = (doc.service ?? []).find(
+    (s) => s.id === '#atproto_space' || s.id?.endsWith('#atproto_space') || s.type === 'AtprotoSpaceHost',
+  );
+  return service?.serviceEndpoint ?? pdsEndpointFromDoc(doc);
+}
+
 /**
  * Full identity verification for one of our accounts. Checks:
  *  - PDS resolveHandle(handle) → did

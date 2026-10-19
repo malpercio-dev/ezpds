@@ -62,9 +62,7 @@ where
         tracing::error!(
             child_did = %child_did,
             parent_did = %parent_did,
-            error = %e,
-            "DB error recording child deletion"
-        );
+            error = %e, "DB error recording child deletion");
         ApiError::new(ErrorCode::InternalError, "failed to record child deletion")
     })?;
     Ok(())
@@ -72,7 +70,6 @@ where
 
 /// List a parent's recorded child deletions, newest-first. Survives the children's purge, so it is
 /// the parent's durable "which children did I retire, and when" audit view.
-#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) async fn list_child_deletions_of_parent(
     db: &sqlx::SqlitePool,
     parent_did: &str,
@@ -110,18 +107,7 @@ pub(crate) async fn list_child_deletions_of_parent(
 mod tests {
     use super::*;
     use crate::app::test_state;
-
-    async fn seed_account(db: &sqlx::SqlitePool, did: &str) {
-        sqlx::query(
-            "INSERT INTO accounts (did, email, password_hash, created_at, updated_at) \
-             VALUES (?, ?, NULL, datetime('now'), datetime('now'))",
-        )
-        .bind(did)
-        .bind(format!("{did}@example.com"))
-        .execute(db)
-        .await
-        .expect("seed account");
-    }
+    use crate::db::accounts::insert_bare_account as seed_account;
 
     #[tokio::test]
     async fn upsert_is_idempotent_and_lists_by_parent() {

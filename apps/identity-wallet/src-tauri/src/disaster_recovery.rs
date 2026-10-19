@@ -307,7 +307,7 @@ fn did_key_for_scalar(scalar: &[u8; 32]) -> Result<String, DisasterRecoveryError
 /// Signing closure over the stored recovery signing key scalar: deterministic (RFC
 /// 6979) P-256 ECDSA, low-S normalized, raw 64-byte r‖s — the contract every crypto
 /// builder and the service-auth JWT verifier expect.
-fn recovery_sign_closure(
+pub(crate) fn recovery_sign_closure(
     scalar: zeroize::Zeroizing<[u8; 32]>,
 ) -> impl FnOnce(&[u8]) -> Result<Vec<u8>, crypto::CryptoError> {
     move |data: &[u8]| {
@@ -723,7 +723,7 @@ pub async fn create_recovery_destination_account(
     // the JWT offline, and run the shared createAccount core.
     if existing_dest_client.is_none() {
         pds_client
-            .reserve_signing_key(&dest_pds_url, &did)
+            .reserve_signing_key(&dest_pds_url, Some(&did))
             .await
             .map_err(|e| MigrationError::AccountCreationFailed {
                 message: format!("failed to reserve signing key: {e}"),

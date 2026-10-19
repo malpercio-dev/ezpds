@@ -1,0 +1,24 @@
+   Compiling pds v0.16.2 (/Users/jacob.zweifel/workspace/malpercio-dev/ezpds/.claude/worktrees/agent-a7b5403d478e1a751/crates/pds)
+error[E0428]: the name `FixedTxtResolver` is defined multiple times
+   --> crates/pds/src/routes/test_utils.rs:921:1
+    |
+ 65 | pub(crate) struct FixedTxtResolver {
+    | ---------------------------------- previous definition of the type `FixedTxtResolver` here
+...
+921 | struct FixedTxtResolver {
+    | ^^^^^^^^^^^^^^^^^^^^^^^ `FixedTxtResolver` redefined here
+    |
+    = note: `FixedTxtResolver` must be defined only once in the type namespace of this module
+
+error[E0119]: conflicting implementations of trait `TxtResolver` for type `test_utils::FixedTxtResolver`
+   --> crates/pds/src/routes/test_utils.rs:925:1
+    |
+ 69 | impl crate::identity::dns::TxtResolver for FixedTxtResolver {
+    | ----------------------------------------------------------- first implementation here
+...
+925 | impl crate::identity::dns::TxtResolver for FixedTxtResolver {
+    | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ conflicting implementation for `test_utils::FixedTxtResolver`
+
+Some errors have detailed explanations: E0119, E0428.
+For more information about an error, try `rustc --explain E0119`.
+error: could not compile `pds` (bin "pds" test) due to 2 previous errors

@@ -205,12 +205,15 @@ export async function pollClaim(
 /**
  * Exchange the identity assertion for a fresh access token (RFC 7523
  * JWT-bearer grant). The token inherits the assertion's scopes verbatim.
+ * The server also returns a renewed identity assertion with each exchange
+ * (a sliding window) — persist it so the session only expires after a full
+ * assertion lifetime of total inactivity.
  */
 export async function exchangeAssertion(
   tokenEndpoint: string,
   assertion: string,
   resource: string,
-): Promise<{ accessToken: string; expiresIn: number; scope: string }> {
+): Promise<{ accessToken: string; expiresIn: number; scope: string; assertion?: string }> {
   try {
     const token = await request(tokenEndpoint, {
       method: 'POST',
@@ -224,11 +227,27 @@ export async function exchangeAssertion(
       accessToken: token.access_token,
       expiresIn: token.expires_in,
       scope: token.scope ?? '',
+      assertion: typeof token.identity_assertion === 'string' ? token.identity_assertion : undefined,
     };
   } catch (err) {
-    if (err instanceof HttpError) {
-      if (err.errorCode === 'access_denied') throw new RevokedError();
-      if (err.errorCode === 'invalid_grant') throw new SessionExpiredError();
+    if (err instanceof HttpError && err.errorCode === 'access_denied') {
+      throw new RevokedError();
+    }
+    if (err instanceof HttpError && err.errorCode === 'invalid_grant') {
+      // The RFC 7523 code is coarse on purpose; the description names the cause.
+      // Expired (assertion TTL lapsed), unknown registration, and unclaimed are all
+      // recoverable — restart onboarding. Anything else ("is invalid", subject
+      // mismatch) is a forged/replayed/foreign assertion: re-registering on a loop
+      // would be the wrong response, so fail loudly with the server's reason.
+      const cause = err.errorDescription ?? '';
+      if (cause.includes('is invalid') || cause.includes('does not match')) {
+        throw new Error(
+          `The PDS rejected the identity_assertion as invalid (${cause}). This is not an ` +
+            'expiry: do not re-register in a loop — verify the credentials file belongs to ' +
+            'this PDS and has not been tampered with.',
+        );
+      }
+      throw new SessionExpiredError();
     }
     throw err;
   }
@@ -406,6 +425,9 @@ export class AgentSession {
       this.creds.accessToken = token.accessToken;
       this.creds.accessTokenExpiresAt = now + token.expiresIn;
       this.creds.scopes = token.scope ? token.scope.split(' ') : this.creds.scopes;
+      // Sliding renewal: the exchange returns a fresh assertion; persisting it
+      // keeps the session alive without a new claim ceremony.
+      if (token.assertion) this.creds.assertion = token.assertion;
       saveCredentials(this.creds);
       return token.accessToken;
     } catch (err) {

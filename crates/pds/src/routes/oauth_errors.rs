@@ -3,11 +3,11 @@
 // The shared OAuth 2.0 error response type for the token-issuing and token-revocation
 // endpoints. Pure: given an error code, description, and optional DPoP nonce it builds an
 // Axum response; no I/O, no database, no AppState. Lives here (rather than in either
-// handler) so `oauth_token.rs` and `oauth_revoke.rs` share one responder without a
-// route→route import — the same pattern as `oauth_templates.rs`.
+// handler) so `oauth_token/`, `oauth_revoke.rs`, and `oauth_par.rs` share one responder
+// without a route→route import — the same pattern as `oauth_templates.rs`.
 
 use axum::{
-    http::StatusCode,
+    http::{HeaderMap, StatusCode},
     response::{IntoResponse, Json, Response},
 };
 
@@ -25,20 +25,16 @@ pub(super) struct OAuthTokenError {
 }
 
 impl OAuthTokenError {
-    pub(super) fn new(error: &'static str, error_description: &'static str) -> Self {
+    /// `error_description` takes either a fixed `&'static str` or a `String` built at
+    /// runtime (e.g. naming the offending value) — descriptions stay mechanical facts,
+    /// never secrets.
+    pub(super) fn new(
+        error: &'static str,
+        error_description: impl Into<std::borrow::Cow<'static, str>>,
+    ) -> Self {
         Self {
             error,
-            error_description: std::borrow::Cow::Borrowed(error_description),
-            dpop_nonce: None,
-        }
-    }
-
-    /// Like [`OAuthTokenError::new`] but for descriptions built at runtime (e.g. naming the
-    /// offending value). Same wire shape; descriptions stay mechanical facts, never secrets.
-    pub(super) fn new_owned(error: &'static str, error_description: String) -> Self {
-        Self {
-            error,
-            error_description: std::borrow::Cow::Owned(error_description),
+            error_description: error_description.into(),
             dpop_nonce: None,
         }
     }
@@ -111,4 +107,25 @@ impl IntoResponse for OAuthTokenError {
         };
         (status, headers, Json(body)).into_response()
     }
+}
+
+/// Confirm a required form field was supplied and non-empty, or fail with the standard
+/// `invalid_request` shape every token/PAR/revocation endpoint uses for a missing parameter.
+/// Settles the wording too: callers had drifted between "X is required" and "missing
+/// parameter: X" for the same condition.
+pub(super) fn require<'a>(field: Option<&'a str>, name: &str) -> Result<&'a str, OAuthTokenError> {
+    field.filter(|s| !s.is_empty()).ok_or_else(|| {
+        OAuthTokenError::new("invalid_request", format!("missing parameter: {name}"))
+    })
+}
+
+/// Insert the `Cache-Control: no-store` + `Pragma: no-cache` pair every token-endpoint and
+/// revocation success response carries (RFC 6749 §5.1): the body is sensitive token material,
+/// or a revocation outcome tied to it, so caching it anywhere downstream is unsafe.
+pub(super) fn insert_no_store_headers(headers: &mut HeaderMap) {
+    headers.insert(
+        axum::http::header::CACHE_CONTROL,
+        axum::http::HeaderValue::from_static("no-store"),
+    );
+    headers.insert("Pragma", axum::http::HeaderValue::from_static("no-cache"));
 }

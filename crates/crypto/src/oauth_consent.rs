@@ -26,12 +26,7 @@ pub const OAUTH_CONSENT_DECISION_DENY: &str = "deny";
 /// Both the wallet (choosing the granted set) and the server (reconstructing the envelope) hash
 /// the identical verbatim string, so the scope binding is agreed without a shared normalizer.
 pub fn granted_scope_hash(granted_scope: &str) -> String {
-    let digest = Sha256::digest(granted_scope.as_bytes());
-    let mut out = String::with_capacity(digest.len() * 2);
-    for byte in digest {
-        out.push_str(&format!("{byte:02x}"));
-    }
-    out
+    crate::hex::to_hex(&Sha256::digest(granted_scope.as_bytes()))
 }
 
 /// Encode the exact bytes signed by an OAuth-consent approval/denial client.

@@ -8,7 +8,7 @@
 //! (delete the session's tokens + the session row) transactions stay in their route
 //! handlers.
 
-use common::{ApiError, ErrorCode};
+use common::{ApiError, ApiResultExt};
 
 /// An active (unexpired) refresh token's rotation-relevant columns.
 pub struct ActiveRefreshToken {
@@ -32,10 +32,7 @@ pub async fn get_active_refresh_token(
     .bind(jti)
     .fetch_optional(db)
     .await
-    .map_err(|e| {
-        tracing::error!(error = %e, "DB error looking up refresh token");
-        ApiError::new(ErrorCode::InternalError, "internal error")
-    })?;
+    .or_internal_as("DB error looking up refresh token", "internal error")?;
 
     Ok(row.map(
         |(did, session_id, next_jti, app_password_name)| ActiveRefreshToken {
@@ -58,10 +55,10 @@ pub async fn session_id_for_jti(
             .bind(jti)
             .fetch_optional(db)
             .await
-            .map_err(|e| {
-                tracing::error!(error = %e, "DB error looking up refresh token for deleteSession");
-                ApiError::new(ErrorCode::InternalError, "internal error")
-            })?;
+            .or_internal_as(
+                "DB error looking up refresh token for deleteSession",
+                "internal error",
+            )?;
 
     Ok(session_id)
 }

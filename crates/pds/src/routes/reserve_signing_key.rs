@@ -13,7 +13,7 @@ use axum::{
 use serde::{Deserialize, Serialize};
 use std::net::SocketAddr;
 
-use common::{ApiError, ErrorCode};
+use common::{ApiError, ApiResultExt, ErrorCode};
 
 use crate::app::AppState;
 use crate::auth::rate_limit::{is_rate_limited, record_failure};
@@ -83,12 +83,16 @@ pub async fn reserve_signing_key(
         let existing = get_reserved_repo_key_by_did(&state.db, did)
             .await
             .map_err(|e| {
-                tracing::error!(error = %e, did = %did, "failed to read conflicted reserved signing key");
-                ApiError::new(ErrorCode::InternalError, "failed to read signing key")
+                {
+                    tracing::error!(error = %e, did = %did, "failed to read conflicted reserved signing key");
+                    ApiError::new(ErrorCode::InternalError, "failed to read signing key")
+                }
             })?
             .ok_or_else(|| {
-                tracing::error!(did = %did, "reserved signing-key conflict row disappeared");
-                ApiError::new(ErrorCode::InternalError, "failed to reserve signing key")
+                {
+                    tracing::error!(did = %did, "reserved signing-key conflict row disappeared");
+                    ApiError::new(ErrorCode::InternalError, "failed to reserve signing key")
+                }
             })?;
         return Ok(Json(ReserveSigningKeyResponse {
             signing_key: existing.key_id,
@@ -101,7 +105,7 @@ pub async fn reserve_signing_key(
 }
 
 fn validate_did(did: &str) -> Result<(), ApiError> {
-    if crate::auth::validation::is_valid_did(did) {
+    if crate::identity::did::is_valid_did(did) {
         return Ok(());
     }
 
@@ -150,15 +154,15 @@ fn generate_reserved_key(state: &AppState) -> Result<RepoSigningKey, ApiError> {
             )
         })?;
 
-    let keypair = crypto::generate_p256_keypair().map_err(|e| {
-        tracing::error!(error = %e, "failed to generate reserved signing key");
-        ApiError::new(ErrorCode::InternalError, "key generation failed")
-    })?;
+    let keypair = crypto::generate_p256_keypair().or_internal_as(
+        "failed to generate reserved signing key",
+        "key generation failed",
+    )?;
     let private_key_encrypted = crypto::encrypt_private_key(&keypair.private_key_bytes, master_key)
-        .map_err(|e| {
-            tracing::error!(error = %e, "failed to encrypt reserved signing key");
-            ApiError::new(ErrorCode::InternalError, "key encryption failed")
-        })?;
+        .or_internal_as(
+            "failed to encrypt reserved signing key",
+            "key encryption failed",
+        )?;
 
     Ok(RepoSigningKey {
         key_id: keypair.key_id.to_string(),
@@ -177,7 +181,7 @@ mod tests {
 
     use crate::app::{app, test_state};
     use crate::auth::rate_limit::RATE_LIMIT_MAX_FAILURES;
-    use crate::routes::test_utils::state_with_master_key;
+    use crate::routes::test_utils::{body_json, state_with_master_key};
 
     fn post_req(body: serde_json::Value) -> Request<Body> {
         post_req_from(body, None)
@@ -195,13 +199,6 @@ mod tests {
             req.extensions_mut().insert(ConnectInfo(addr));
         }
         req
-    }
-
-    async fn body_json(resp: axum::response::Response) -> serde_json::Value {
-        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
-            .await
-            .unwrap();
-        serde_json::from_slice(&bytes).unwrap()
     }
 
     #[tokio::test]

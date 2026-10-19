@@ -16,7 +16,7 @@ use axum::{
 use serde::Serialize;
 use uuid::Uuid;
 
-use common::{ApiError, ErrorCode};
+use common::{ApiError, ApiResultExt, ErrorCode};
 
 use crate::app::AppState;
 use crate::auth::guards::require_session;
@@ -69,10 +69,10 @@ pub async fn transfer_initiate(
             TRANSFER_TTL_MINUTES,
         )
         .await
-        .map_err(|e| {
-            tracing::error!(error = %e, "failed to insert transfer session");
-            ApiError::new(ErrorCode::InternalError, "failed to initiate transfer")
-        })?;
+        .or_internal_as(
+            "failed to insert transfer session",
+            "failed to initiate transfer",
+        )?;
 
         match outcome {
             InitiateOutcome::Created { expires_at } => {
@@ -99,14 +99,16 @@ pub async fn transfer_initiate(
 
     // Exhausted every attempt without a free code — implausible at 36^6 with a short
     // TTL, but surface a clean 500 rather than loop forever.
-    tracing::error!(
-        attempts = MAX_CODE_ATTEMPTS,
-        "exhausted transfer-code generation attempts"
-    );
-    Err(ApiError::new(
-        ErrorCode::InternalError,
-        "failed to allocate a unique transfer code",
-    ))
+    Err({
+        tracing::error!(
+            attempts = MAX_CODE_ATTEMPTS,
+            "exhausted transfer-code generation attempts"
+        );
+        ApiError::new(
+            ErrorCode::InternalError,
+            "failed to allocate a unique transfer code",
+        )
+    })
 }
 
 #[cfg(test)]

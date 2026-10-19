@@ -71,8 +71,11 @@ pub async fn revoke_account_credentials(
     }
 
     let map_err = |e: sqlx::Error| {
-        tracing::error!(error = %e, "DB error revoking account credentials");
-        ApiError::new(ErrorCode::InternalError, "failed to revoke credentials")
+        ApiError::internal_as(
+            e,
+            "DB error revoking account credentials",
+            "failed to revoke credentials",
+        )
     };
 
     // One transaction so a partially-swept account can never be observed. Delete order
@@ -470,7 +473,6 @@ mod tests {
             ADMIN_SIGNATURE_HEADER, ADMIN_TIMESTAMP_HEADER,
         };
         use crate::db::admin_devices::{insert_device, NewAdminDevice};
-        use std::time::{SystemTime, UNIX_EPOCH};
 
         // A state with NO master token: proves the device path is independent of it.
         let state = crate::app::test_state().await;
@@ -498,10 +500,7 @@ mod tests {
         create_session(&state, "did:plc:arc6", "hunter2").await;
 
         let path = "/v1/admin/accounts/did:plc:arc6/revoke-credentials";
-        let ts = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_secs() as i64;
+        let ts = crate::time::unix_now_secs();
         let nonce = "revoke-credentials-nonce-1";
         let sign_string = admin_request_sign_string("POST", path, ts, nonce, b"");
         let signature = crate::routes::test_utils::sign_p256(&keypair, sign_string.as_bytes());

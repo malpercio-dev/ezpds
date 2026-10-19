@@ -74,14 +74,18 @@ pub(crate) async fn authenticate_source_password(
     )
     .await?;
 
-    OAuthClient::new_bearer(session.access_jwt, session.refresh_jwt, pds_url.to_string()).map_err(
-        |e| {
-            tracing::error!(error = %e, "failed to build Bearer client from source session");
-            SourceLoginError::NetworkError {
-                message: "failed to build source session client".to_string(),
-            }
-        },
+    OAuthClient::new_bearer_with_observer(
+        session.access_jwt,
+        session.refresh_jwt,
+        pds_url.to_string(),
+        crate::oauth_client::diagnostics_observer(),
     )
+    .map_err(|e| {
+        tracing::error!(error = %e, "failed to build Bearer client from source session");
+        SourceLoginError::NetworkError {
+            message: "failed to build source session client".to_string(),
+        }
+    })
 }
 
 /// The `createSession` half of [`authenticate_source_password`], returning the raw JWT pair

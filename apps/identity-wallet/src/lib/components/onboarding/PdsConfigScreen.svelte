@@ -13,7 +13,7 @@
   import Button from '$lib/components/ui/Button.svelte';
   import Spinner from '$lib/components/ui/Spinner.svelte';
 
-  const DEFAULT_PDS_URL = 'https://obsign.org';
+  const DEFAULT_PDS_URL = 'https://pds.obsign.org';
 
   let {
     onnext,
@@ -112,7 +112,7 @@
     type="url"
     mono
     disabled={loading}
-    placeholder="https://obsign.org"
+    placeholder="https://pds.obsign.org"
     autocomplete="off"
     autocorrect="off"
     autocapitalize="off"

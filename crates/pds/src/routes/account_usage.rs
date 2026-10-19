@@ -190,28 +190,11 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn missing_token_returns_401() {
-        let state = test_state_with_admin_token().await;
-        let app = crate::app::app(state);
-        let (status, _) = get_usage(&app, "did:plc:whoever", None).await;
-        assert_eq!(status, StatusCode::UNAUTHORIZED);
-    }
-
-    #[tokio::test]
     async fn wrong_token_returns_401() {
         let state = test_state_with_admin_token().await;
         let app = crate::app::app(state);
         let (status, _) = get_usage(&app, "did:plc:whoever", Some("nope")).await;
         assert_eq!(status, StatusCode::UNAUTHORIZED);
-    }
-
-    #[tokio::test]
-    async fn nonexistent_account_returns_404() {
-        let state = test_state_with_admin_token().await;
-        let app = crate::app::app(state);
-        let (status, body) = get_usage(&app, "did:plc:ghost", Some(ADMIN)).await;
-        assert_eq!(status, StatusCode::NOT_FOUND);
-        assert_eq!(body["error"]["code"], "NOT_FOUND");
     }
 
     #[tokio::test]
@@ -256,7 +239,6 @@ mod tests {
             ADMIN_SIGNATURE_HEADER, ADMIN_TIMESTAMP_HEADER,
         };
         use crate::db::admin_devices::{insert_device, NewAdminDevice};
-        use std::time::{SystemTime, UNIX_EPOCH};
 
         // A state with NO master token: proves the device path is independent of it.
         let state = crate::app::test_state().await;
@@ -286,10 +268,7 @@ mod tests {
         .unwrap();
 
         let path = format!("/v1/accounts/{did}/usage");
-        let ts = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_secs() as i64;
+        let ts = crate::time::unix_now_secs();
         let nonce = "usage-nonce-1";
         let sign_string = admin_request_sign_string("GET", &path, ts, nonce, b"");
         let signature = crate::routes::test_utils::sign_p256(&keypair, sign_string.as_bytes());

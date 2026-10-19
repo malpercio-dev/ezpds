@@ -24,7 +24,9 @@
 //!   pre-claim assertion carrying the operator's `[agent_auth] pre_claim_scopes`, and return it
 //!   alongside a `claim_token` for an optional later claim ceremony. The identity stays
 //!   `active` (unclaimed), so its assertion cannot yet be exchanged at the token endpoint (the
-//!   jwt-bearer grant requires a `claimed` identity with a bound DID).
+//!   jwt-bearer grant requires a `claimed` identity with a bound DID). An optional `handle_hint`
+//!   records the handle the agent would like if the confirming user chooses to mint it an account
+//!   of its own; the approval screen reads it back from `POST /v1/agents/claim-preview`.
 //!
 //! Claim-lifecycle interpretation (auth.md leaves the exact transitions to the ceremony):
 //! `active` = registered, awaiting the user's claim confirmation; `claimed` = confirmed and
@@ -52,20 +54,19 @@ use uuid::Uuid;
 
 use crate::app::AppState;
 use crate::auth::agent_assertion::{
-    claim_block, mint_identity_assertion, new_claim_attempt_id, record_agent_audit, scopes_to_json,
+    claim_block, mint_identity_assertion, record_agent_audit, scopes_to_json, start_claim_attempt,
     to_sqlite_datetime, verification_uri, AgentAuthError,
 };
 use crate::auth::issuer_trust::{
     select_issuer, unverified_claim, verify_trusted_jwt, TrustedJwtError,
 };
 use crate::auth::token::generate_token;
-use crate::code_gen::generate_code;
 use crate::db::accounts::resolve_by_email;
 use crate::db::agent_audit::AgentAuditEventType;
 use crate::db::agent_auth::{
-    get_agent_identity_by_issuer_subject, insert_agent_claim_attempt, insert_agent_identity,
-    set_agent_identity_assertion, AgentIdentityRow, AgentIdentityStatus,
-    InsertAgentIdentityOutcome, NewAgentClaimAttempt, NewAgentIdentity, RegistrationType,
+    get_agent_identity_by_issuer_subject, insert_agent_identity, set_agent_identity_assertion,
+    AgentIdentityRow, AgentIdentityStatus, InsertAgentIdentityOutcome, NewAgentIdentity,
+    RegistrationType,
 };
 
 /// The one assertion type this server accepts for the `identity_assertion` flow.
@@ -84,6 +85,9 @@ pub struct AgentIdentityRequest {
     pub assertion: Option<String>,
     // service_auth
     pub login_hint: Option<String>,
+    /// anonymous: the handle the agent would like if the confirming user chooses to mint it a
+    /// child account of its own. Advisory — see `handle_anonymous`.
+    pub handle_hint: Option<String>,
 }
 
 /// Success body for an `identity_assertion` that needed no confirmation.
@@ -127,7 +131,7 @@ pub async fn post_agent_identity(
     let result = match req.typ.as_deref() {
         Some("identity_assertion") => handle_identity_assertion(&state, &req).await,
         Some("service_auth") => handle_service_auth(&state, &req).await,
-        Some("anonymous") => handle_anonymous(&state).await,
+        Some("anonymous") => handle_anonymous(&state, &req).await,
         Some(other) => Err(AgentAuthError::new(
             StatusCode::BAD_REQUEST,
             "invalid_request",
@@ -149,7 +153,10 @@ pub async fn post_agent_identity(
 /// assertion carrying `pre_claim_scopes` and returns it plus a `claim_token` for an optional later
 /// claim ceremony. The identity persists with a NULL `did` (V038) and `active` status until a claim
 /// binds an account.
-async fn handle_anonymous(state: &AppState) -> Result<Response, AgentAuthError> {
+async fn handle_anonymous(
+    state: &AppState,
+    req: &AgentIdentityRequest,
+) -> Result<Response, AgentAuthError> {
     if !state.config.agent_auth.anonymous_enabled {
         return Err(AgentAuthError::new(
             StatusCode::BAD_REQUEST,
@@ -157,6 +164,26 @@ async fn handle_anonymous(state: &AppState) -> Result<Response, AgentAuthError> 
             "anonymous agent registration is not enabled on this server",
         ));
     }
+
+    // A `handle_hint` is a *proposal* the claim-approval screen shows the user, who edits or
+    // discards it before signing the child's genesis op — so it is checked for handle shape only,
+    // not against this server's domains or the handle table. Deferring those to the mint keeps an
+    // agent that registers before discovering the server's domains from being turned away, while
+    // still refusing to store something the wallet would render as a handle but isn't one.
+    let handle_hint = match req
+        .handle_hint
+        .as_deref()
+        .map(str::trim)
+        .filter(|h| !h.is_empty())
+    {
+        Some(hint) => {
+            crate::identity::handle::validate_handle_structure(hint).map_err(|message| {
+                AgentAuthError::new(StatusCode::BAD_REQUEST, "invalid_request", message)
+            })?;
+            Some(hint.to_string())
+        }
+        None => None,
+    };
 
     let registration_id = new_registration_id();
     let claim_token = new_claim_token();
@@ -169,7 +196,7 @@ async fn handle_anonymous(state: &AppState) -> Result<Response, AgentAuthError> 
     // name yet. It carries the pre-claim scope set and is marked `anonymous` in its claims.
     let minted = mint_identity_assertion(
         &state.oauth_signing_keypair,
-        &state.config.public_url,
+        state.config.issuer(),
         state.config.agent_auth.assertion_ttl_secs,
         &registration_id,
         &registration_id,
@@ -193,6 +220,7 @@ async fn handle_anonymous(state: &AppState) -> Result<Response, AgentAuthError> 
             pre_claim_scopes: Some(&scopes_json),
             claim_token: Some(&claim_token),
             claim_token_expires_at: Some(&to_sqlite_datetime(&claim_expiry)),
+            handle_hint: handle_hint.as_deref(),
         },
     )
     .await?;
@@ -211,6 +239,7 @@ async fn handle_anonymous(state: &AppState) -> Result<Response, AgentAuthError> 
         serde_json::json!({
             "registration_type": RegistrationType::Anonymous.as_str(),
             "scopes": pre_claim_scopes,
+            "handle_hint": handle_hint,
         }),
     )
     .await?;
@@ -261,88 +290,116 @@ async fn handle_service_auth(
             )
         })?;
 
+    let Some(pending) = register_with_claim_ceremony(
+        state,
+        RegistrationType::ServiceAuth,
+        None,
+        None,
+        login_hint,
+        &account.did,
+    )
+    .await?
+    else {
+        // Random registration id / claim token collided — astronomically unlikely; treat as a
+        // transient server fault rather than a client error.
+        tracing::error!("agent identity insert reported an unexpected duplicate");
+        return Err(AgentAuthError::server_error());
+    };
+
+    Ok(ok_json(&ServiceAuthResponse {
+        registration_id: pending.registration_id,
+        registration_type: RegistrationType::ServiceAuth.as_str(),
+        claim_token: pending.claim_token,
+        claim: pending.claim,
+    }))
+}
+
+/// A registration that is inserted and awaiting the user's confirmation, with its claim ceremony
+/// already open.
+struct PendingRegistration {
+    registration_id: String,
+    claim_token: String,
+    claim: Value,
+}
+
+/// Register a not-yet-claimed agent identity bound to `did`, then open its claim ceremony.
+///
+/// The two flows that land here — `service_auth` and a first-seen `identity_assertion` — differ
+/// only in what identifies the agent (`issuer`/`subject`), in how each recovers from a duplicate,
+/// and in the response they wrap the claim block in, so everything between is shared.
+///
+/// No assertion is minted until the ceremony completes; `assertion_expires_at` is NOT NULL, so it
+/// is parked at the claim-token expiry (overwritten by `set_agent_identity_assertion` on claim).
+/// `Ok(None)` means the insert collided with an existing row — the caller decides whether that is
+/// a lost race to recover from or a server fault.
+async fn register_with_claim_ceremony(
+    state: &AppState,
+    registration_type: RegistrationType,
+    issuer: Option<&str>,
+    subject: Option<&str>,
+    email: &str,
+    did: &str,
+) -> Result<Option<PendingRegistration>, AgentAuthError> {
     let registration_id = new_registration_id();
     let claim_token = new_claim_token();
-    let user_code = generate_code();
     let scopes_json = scopes_to_json(&state.config.agent_auth.granted_scopes);
+    let claim_expiry = to_sqlite_datetime(
+        &(Utc::now() + Duration::seconds(state.config.agent_auth.claim_token_ttl_secs as i64)),
+    );
 
-    let claim_expiry =
-        Utc::now() + Duration::seconds(state.config.agent_auth.claim_token_ttl_secs as i64);
-    let user_code_expiry =
-        Utc::now() + Duration::seconds(state.config.agent_auth.user_code_ttl_secs as i64);
-
-    // No assertion is minted until the ceremony completes; `assertion_expires_at` is NOT NULL, so
-    // park it at the claim-token expiry (overwritten by `set_agent_identity_assertion` on claim).
     let outcome = insert_agent_identity(
         &state.db,
         &NewAgentIdentity {
             id: &registration_id,
-            did: Some(&account.did),
+            did: Some(did),
             parent_did: None,
-            registration_type: RegistrationType::ServiceAuth,
-            issuer: None,
-            subject: None,
-            email: Some(login_hint),
+            registration_type,
+            issuer,
+            subject,
+            email: Some(email),
             scopes: &scopes_json,
             identity_assertion: None,
-            assertion_expires_at: &to_sqlite_datetime(&claim_expiry),
+            assertion_expires_at: &claim_expiry,
             pre_claim_scopes: None,
             claim_token: Some(&claim_token),
-            claim_token_expires_at: Some(&to_sqlite_datetime(&claim_expiry)),
+            claim_token_expires_at: Some(&claim_expiry),
+            handle_hint: None,
         },
     )
     .await?;
     if outcome == InsertAgentIdentityOutcome::Duplicate {
-        // Random registration id / claim token collided — astronomically unlikely; treat as a
-        // transient server fault rather than a client error.
-        tracing::error!(registration_id = %registration_id, "agent identity insert reported an unexpected duplicate");
-        return Err(AgentAuthError::server_error());
+        return Ok(None);
     }
 
     record_agent_audit(
         &state.db,
         &registration_id,
-        Some(&account.did),
+        Some(did),
         AgentAuditEventType::Registered,
         serde_json::json!({
-            "registration_type": RegistrationType::ServiceAuth.as_str(),
+            "registration_type": registration_type.as_str(),
             "scopes": state.config.agent_auth.granted_scopes,
         }),
     )
     .await?;
 
-    let claim_attempt_id = new_claim_attempt_id();
-    insert_agent_claim_attempt(
+    let started = start_claim_attempt(
         &state.db,
-        &NewAgentClaimAttempt {
-            id: &claim_attempt_id,
-            identity_id: &registration_id,
-            user_code: &user_code,
-            user_code_expires_at: &to_sqlite_datetime(&user_code_expiry),
-            email: Some(login_hint),
-        },
-    )
-    .await?;
-
-    record_agent_audit(
-        &state.db,
+        &state.config.agent_auth,
         &registration_id,
-        Some(&account.did),
-        AgentAuditEventType::ClaimInitiated,
-        serde_json::json!({ "claim_attempt_id": claim_attempt_id }),
+        Some(did),
+        Some(email),
     )
     .await?;
 
-    let claim = claim_block(
-        &user_code,
-        &verification_uri(&state.config.agent_auth, &state.config.public_url),
-        &user_code_expiry,
-    );
-    Ok(ok_json(&ServiceAuthResponse {
+    Ok(Some(PendingRegistration {
         registration_id,
-        registration_type: RegistrationType::ServiceAuth.as_str(),
         claim_token,
-        claim,
+        claim: claim_block(
+            &started.user_code,
+            &verification_uri(&state.config.agent_auth, state.config.issuer()),
+            &started.expires,
+        ),
     }))
 }
 
@@ -406,7 +463,7 @@ async fn handle_identity_assertion(
     let claims: IdJagClaims = verify_trusted_jwt(
         &state.jwks_cache,
         issuer_cfg,
-        &state.config.public_url,
+        state.config.issuer(),
         assertion,
         &["exp", "aud", "iss"],
     )
@@ -454,8 +511,8 @@ async fn existing_identity_assertion(
                 .ok_or_else(AgentAuthError::server_error)?;
             let minted = mint_identity_assertion(
                 &state.oauth_signing_keypair,
-                &state.config.public_url,
-                state.config.agent_auth.assertion_ttl_secs,
+                state.config.issuer(),
+                state.config.agent_auth.claimed_assertion_ttl_secs,
                 did,
                 &existing.id,
                 RegistrationType::IdentityAssertion.as_str(),
@@ -483,33 +540,18 @@ async fn existing_identity_assertion(
                 .claim_token
                 .clone()
                 .ok_or_else(AgentAuthError::server_error)?;
-            let user_code = generate_code();
-            let user_code_expiry =
-                Utc::now() + Duration::seconds(state.config.agent_auth.user_code_ttl_secs as i64);
-            let claim_attempt_id = new_claim_attempt_id();
-            insert_agent_claim_attempt(
+            let started = start_claim_attempt(
                 &state.db,
-                &NewAgentClaimAttempt {
-                    id: &claim_attempt_id,
-                    identity_id: &existing.id,
-                    user_code: &user_code,
-                    user_code_expires_at: &to_sqlite_datetime(&user_code_expiry),
-                    email: existing.email.as_deref(),
-                },
-            )
-            .await?;
-            record_agent_audit(
-                &state.db,
+                &state.config.agent_auth,
                 &existing.id,
                 existing.did.as_deref(),
-                AgentAuditEventType::ClaimInitiated,
-                serde_json::json!({ "claim_attempt_id": claim_attempt_id }),
+                existing.email.as_deref(),
             )
             .await?;
             let claim = claim_block(
-                &user_code,
-                &verification_uri(&state.config.agent_auth, &state.config.public_url),
-                &user_code_expiry,
+                &started.user_code,
+                &verification_uri(&state.config.agent_auth, state.config.issuer()),
+                &started.expires,
             );
             Err(AgentAuthError::interaction_required(claim, claim_token))
         }
@@ -547,35 +589,16 @@ async fn new_identity_assertion(
         )
     })?;
 
-    let registration_id = new_registration_id();
-    let claim_token = new_claim_token();
-    let user_code = generate_code();
-    let scopes_json = scopes_to_json(&state.config.agent_auth.granted_scopes);
-    let claim_expiry =
-        Utc::now() + Duration::seconds(state.config.agent_auth.claim_token_ttl_secs as i64);
-    let user_code_expiry =
-        Utc::now() + Duration::seconds(state.config.agent_auth.user_code_ttl_secs as i64);
-
-    let outcome = insert_agent_identity(
-        &state.db,
-        &NewAgentIdentity {
-            id: &registration_id,
-            did: Some(&account.did),
-            parent_did: None,
-            registration_type: RegistrationType::IdentityAssertion,
-            issuer: Some(iss),
-            subject: Some(&claims.sub),
-            email: Some(email),
-            scopes: &scopes_json,
-            identity_assertion: None,
-            assertion_expires_at: &to_sqlite_datetime(&claim_expiry),
-            pre_claim_scopes: None,
-            claim_token: Some(&claim_token),
-            claim_token_expires_at: Some(&to_sqlite_datetime(&claim_expiry)),
-        },
+    let Some(pending) = register_with_claim_ceremony(
+        state,
+        RegistrationType::IdentityAssertion,
+        Some(iss),
+        Some(&claims.sub),
+        email,
+        &account.did,
     )
-    .await?;
-    if outcome == InsertAgentIdentityOutcome::Duplicate {
+    .await?
+    else {
         // A concurrent request registered the same `(iss, sub)` between our lookup and insert.
         // Retry the read path so the caller still gets a coherent interaction_required challenge.
         if let Some(existing) =
@@ -584,48 +607,12 @@ async fn new_identity_assertion(
             return existing_identity_assertion(state, existing).await;
         }
         return Err(AgentAuthError::server_error());
-    }
+    };
 
-    record_agent_audit(
-        &state.db,
-        &registration_id,
-        Some(&account.did),
-        AgentAuditEventType::Registered,
-        serde_json::json!({
-            "registration_type": RegistrationType::IdentityAssertion.as_str(),
-            "scopes": state.config.agent_auth.granted_scopes,
-        }),
-    )
-    .await?;
-
-    let claim_attempt_id = new_claim_attempt_id();
-    insert_agent_claim_attempt(
-        &state.db,
-        &NewAgentClaimAttempt {
-            id: &claim_attempt_id,
-            identity_id: &registration_id,
-            user_code: &user_code,
-            user_code_expires_at: &to_sqlite_datetime(&user_code_expiry),
-            email: Some(email),
-        },
-    )
-    .await?;
-
-    record_agent_audit(
-        &state.db,
-        &registration_id,
-        Some(&account.did),
-        AgentAuditEventType::ClaimInitiated,
-        serde_json::json!({ "claim_attempt_id": claim_attempt_id }),
-    )
-    .await?;
-
-    let claim = claim_block(
-        &user_code,
-        &verification_uri(&state.config.agent_auth, &state.config.public_url),
-        &user_code_expiry,
-    );
-    Err(AgentAuthError::interaction_required(claim, claim_token))
+    Err(AgentAuthError::interaction_required(
+        pending.claim,
+        pending.claim_token,
+    ))
 }
 
 // ── ID-JAG verification error mapping ──────────────────────────────────────────────
@@ -684,14 +671,16 @@ mod tests {
     };
     use common::{AgentAuthConfig, TrustedIssuer};
     use jsonwebtoken::{Algorithm, EncodingKey, Header};
-    use p256::pkcs8::spki::EncodePublicKey;
     use p256::pkcs8::EncodePrivateKey;
     use rand_core::OsRng;
     use serde_json::json;
-    use sqlx::SqlitePool;
     use tower::ServiceExt;
 
-    use crate::app::{app, test_state, AppState};
+    use crate::app::{app, AppState};
+    use crate::routes::test_utils::{
+        es256_keys, insert_account_with_email as insert_account,
+        state_with_agent_auth as state_with, trusted_issuer as trusted,
+    };
 
     const PUBLIC_URL: &str = "https://test.example.com";
 
@@ -705,17 +694,6 @@ mod tests {
             body.push('\n');
         }
         format!("-----BEGIN {label}-----\n{body}-----END {label}-----\n")
-    }
-
-    /// A fresh ES256 keypair as (PKCS#8 private PEM, SPKI public PEM).
-    fn es256_keys() -> (String, String) {
-        let sk = p256::SecretKey::random(&mut OsRng);
-        let priv_pem = der_to_pem("PRIVATE KEY", sk.to_pkcs8_der().unwrap().as_bytes());
-        let pub_pem = der_to_pem(
-            "PUBLIC KEY",
-            sk.public_key().to_public_key_der().unwrap().as_bytes(),
-        );
-        (priv_pem, pub_pem)
     }
 
     #[derive(serde::Serialize)]
@@ -876,28 +854,6 @@ mod tests {
 
     // ── state + request helpers ──────────────────────────────────────────
 
-    async fn state_with(agent_auth: AgentAuthConfig) -> AppState {
-        let base = test_state().await;
-        let mut config = (*base.config).clone();
-        config.agent_auth = agent_auth;
-        AppState {
-            config: Arc::new(config),
-            ..base
-        }
-    }
-
-    async fn insert_account(db: &SqlitePool, did: &str, email: &str) {
-        sqlx::query(
-            "INSERT INTO accounts (did, email, password_hash, created_at, updated_at) \
-             VALUES (?, ?, 'hash', datetime('now'), datetime('now'))",
-        )
-        .bind(did)
-        .bind(email)
-        .execute(db)
-        .await
-        .unwrap();
-    }
-
     async fn post(state: AppState, body: serde_json::Value) -> (StatusCode, serde_json::Value) {
         let response = app(state)
             .oneshot(
@@ -916,16 +872,6 @@ mod tests {
             .unwrap();
         let json = serde_json::from_slice(&bytes).unwrap_or(serde_json::Value::Null);
         (status, json)
-    }
-
-    fn trusted(issuer: &str, public_key_pem: String) -> TrustedIssuer {
-        TrustedIssuer {
-            issuer: issuer.to_string(),
-            audience: None,
-            public_key_pem: Some(public_key_pem),
-            jwks_url: None,
-            algorithm: "ES256".to_string(),
-        }
     }
 
     /// A dynamic-trust issuer entry (jwks_url instead of an inline PEM). The URL is a marker only —
@@ -991,7 +937,13 @@ mod tests {
         assert_eq!(assertion.split('.').count(), 3, "assertion must be a JWT");
         assert_eq!(
             body["scopes"],
-            json!(["atproto", "repo:*?action=create&action=update", "blob:*/*"])
+            json!([
+                "atproto",
+                "repo:*?action=create&action=update",
+                "repo:*?action=delete",
+                "blob:*/*",
+                "rpc:*?aud=did:web:api.bsky.app"
+            ])
         );
 
         // The identity was persisted ownerless (NULL did), active, with the assertion stored.

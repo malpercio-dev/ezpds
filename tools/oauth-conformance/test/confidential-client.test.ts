@@ -203,6 +203,34 @@ test('an expired assertion is refused', async () => {
   assert.equal(exchange.final.json.error, 'invalid_client');
 });
 
+test('an assertion without exp is accepted', async () => {
+  // REGRESSION: the reference provider requires only `jti` and bounds an assertion's age via
+  // `iat` — its own source notes the RFC 7523 non-compliance — so real-world confidential
+  // clients mint iat-only assertions. Requiring `exp` here broke attie.ai logins after the
+  // user had already approved consent (2026-08-28).
+  const key = await generateDpopKey();
+  const { code, verifier } = await authorizeAndGetCode();
+
+  const assertion = await clientAssertion(clientKey, client.clientId, metadata.issuer, {
+    exp: null,
+  });
+  const exchange = await tokenRequestWithNonceRetry(metadata, key, {
+    grant_type: 'authorization_code',
+    code,
+    redirect_uri: client.redirectUri,
+    client_id: client.clientId,
+    code_verifier: verifier,
+    client_assertion_type: CLIENT_ASSERTION_TYPE,
+    client_assertion: assertion,
+  });
+  assert.equal(
+    exchange.final.status,
+    200,
+    `an iat-only assertion must authenticate: ${exchange.final.text}`,
+  );
+  assert.equal(exchange.final.json.sub, fixture.account.did);
+});
+
 test('a refresh also requires the client assertion', async () => {
   // REGRESSION: client authentication that only guards the initial exchange is barely
   // authentication at all — a refresh token is the longer-lived credential of the two, and a

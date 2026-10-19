@@ -7,6 +7,155 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Changes are collected in `changelog.d/` during development and inserted here when
 `just set-version` prepares a release. There is intentionally no `Unreleased` section.
 
+## [0.16.2] - 2026-09-04
+
+### Fixed
+
+- Minting an agent child account now emits an `#identity` firehose frame alongside the `#account` frame, so relays and AppViews learn the child's handle binding immediately — previously the frame was never emitted and every app showed a freshly minted child as an invalid handle until an unrelated event forced a re-resolution.
+
+
+## [0.16.1] - 2026-09-03
+
+### Added
+
+- DPoP proof verification is now pinned against the RFC 9449 normative vectors (Figure 8 JWK thumbprint, Figure 2 token-request proof, Figure 13 resource proof with `ath`), so a canonicalization or hashing regression in the ES256 `cnf.jkt` path fails a known-answer test instead of only a length check.
+
+- The Custos MCP `upload_blob` tool now takes the blob inline as base64 (`data` argument, either a `data:` URL or bare base64 alongside `mime_type`), so a remote client over the hosted sidecar can upload an avatar, banner, or thumbnail without a shared filesystem — previously the tool read only from the sidecar's own `CUSTOS_MCP_IMAGE_DIR` volume, which a remote agent cannot write to. Reading by `path` remains for stdio callers that do share the server's filesystem; passing both is refused, and inline uploads are capped at 5 MiB decoded (the sidecar's request-body ceiling rises to match).
+
+
+### Fixed
+
+- The wallet now defaults to `https://pds.obsign.org` instead of the retired `obsign.org` apex, which has answered 404 for every PDS call since the 2026-07-24 hostname migration. A fresh install no longer pre-fills a server it cannot reach, and an install that saved the apex before that date is rewritten to the serving host on launch rather than staying wedged.
+
+- The wallet now writes did:web documents with bare `#device`, `#atproto`, and `#atproto_pds` ids instead of DID-qualified ones. Some third-party resolvers only match the bare form, so a wallet-composed identity could resolve on Custos yet fail to load elsewhere. Custos accepts both forms.
+
+
+## [0.16.0] - 2026-09-03
+
+### Added
+
+- Groundwork for agent child accounts: the crypto layer can now derive an account's delegation seed and per-child account seeds from its recovery seed, so a child's rotation key needs no new stored secret. Nothing uses these yet — no change to existing accounts or keys.
+
+- An account owner can now renew a sovereign child agent's expired credential without re-provisioning it: `POST /agent/child/assertion` issues a fresh identity assertion for an active child, re-clamped to the operator's current agent scopes and recorded on the child's audit trail. Revoked children, agent-derived callers, and other accounts' children are refused.
+
+- An agent that registers anonymously can now be given an account of its own instead of a credential to act as you. It proposes a handle (`handle_hint`), the claim-approval screen shows that proposal, and confirming with a signed genesis op mints the agent its own DID, repo, and handle under your cryptographic ownership — the agent's existing claim poll simply returns a credential subject to the new account, with no change on its side. Servers advertise the capability as `agent_auth.child_provisioning`, and the served `auth.md` documents the flow.
+
+- The wallet can now hold the delegation seed that lets an identity give an agent an account of its own: new identities get it during the recovery-share ceremony, and any identity created earlier can enable it from My Agents by entering two of its recovery shares. Nothing is rotated or published — the shares are checked against the public record, and only the device changes.
+
+- When an agent registers on its own, the approval screen now offers a second answer: instead of letting it act as you, you can give it an account of its own — its own handle and its own record, with a recovery key derived from your seed so the account stays yours. The agent can propose a handle; you decide it. If your server turns the handle down, nothing is spent and you can simply pick another.
+
+- The wallet's My Agents screen now lists the agent accounts you have minted alongside the agents acting on your behalf, and opens each one on a detail screen showing its handle, DID, permissions, and full activity record. From there you can renew a dormant agent's credential, revoke it while keeping its account and history, or delete the account outright — which takes it offline immediately and shows the date its data is permanently removed.
+
+- Restoring your wallet on a new device now brings your agents' accounts back with it. My Agents re-derives each account's recovery key from your recovery seed and checks it against the public directory, so the wallet can tell you plainly which agent accounts it can still recover — and names any it cannot, rather than leaving you to find out during an emergency. An account it simply could not reach is reported as unchecked, never as lost.
+
+- `create_post` on the Custos MCP server takes an `embed`, so an agent can publish quote posts and external link cards. Previously the only embed it could produce was an image attachment from `image_path`, which left quoting another post — and posting a link with a preview card — out of reach entirely. The value is written to the record as given (`app.bsky.embed.record` for a quote, `app.bsky.embed.external` for a card), so anything the lexicon accepts is reachable; `upload_blob` supplies a ref for a card's thumbnail. Passing both `embed` and `image_path` is refused rather than silently dropping one.
+
+- The Custos MCP server exposes an `upload_blob` tool: upload a file and get its blob ref back, for setting an avatar or banner or filling any other record field that takes a blob. Until now blob upload only happened inside `create_post`'s image attachment, so anything else meant calling `com.atproto.repo.uploadBlob` on the PDS by hand. Files are read from the same confined `CUSTOS_MCP_IMAGE_DIR` directory `create_post` uses — with it unset, uploads stay disabled.
+
+- Agents connected over MCP can now update the account's Bluesky profile — display name, description, avatar, and banner — with a single `update_bluesky_profile` call, instead of needing the operator to unlock the raw record-write tools. It reads the current profile first and changes only the fields named, so nothing you did not mention is lost, and a profile edited somewhere else mid-call makes the write fail rather than quietly overwrite it. An avatar or banner can be given as a file to upload or as a ref from an upload you already did.
+
+- Agent identities can now read the AppView through the PDS proxy: the default `[agent_auth] granted_scopes` profile gains `rpc:*?aud=did:web:api.bsky.app`, so an agent can see the likes, reposts, and replies its own posts earned and read its own notifications instead of getting `InsufficientScope`. The grant is bound to the AppView audience rather than `aud=*` — the proxy signs service auth with the account holder's own repo key — and existing registrations pick it up when they re-register or re-claim. The wallet now names the service an `rpc:` grant reaches ("Call the Bluesky app service on your behalf") instead of describing every one of them as "other services".
+
+
+### Changed
+
+- Agents can now delete records in the account they were claimed against: the default `[agent_auth] granted_scopes` profile adds `repo:*?action=delete`, so an agent that publishes a mistaken post can retract it instead of escalating to the operator. This does not widen what an agent can destroy — the profile already granted `action=update`, which overwrites a record just as irreversibly. Agent registrations created before this release keep their existing scopes and pick delete up when they re-register or are re-claimed.
+
+- Agent identity assertions for confirmed bindings no longer strand sporadic agents behind a fresh claim ceremony: every successful jwt-bearer exchange now returns a renewed `identity_assertion` (a sliding window the Custos MCP client persists automatically), and assertions minted for claimed bindings — claim confirmations, re-mints, and sovereign-child capabilities — live `[agent_auth] claimed_assertion_ttl_secs` (default 30 days) instead of the 1-hour pre-claim TTL. Revocation remains the kill switch: a revoked identity is refused at its next exchange regardless of the assertion's remaining lifetime.
+
+
+### Fixed
+
+- The served `auth.md` skill's discovery example now shows the `agent_auth.events_supported` and `agent_auth.child_provisioning` fields the server already advertises at `/.well-known/oauth-authorization-server`, so an agent reading the skill top to bottom sees the same metadata shape it will fetch.
+
+- Connecting an MCP client to the hosted Custos server no longer dead-ends during sign-in. The server told clients to authorize against an address that had stopped serving Custos, so the standard OAuth discovery walk stopped with nothing to go on. It now reports the authorization server the PDS itself publishes, so the two can no longer disagree — and if it cannot read that, it says so and asks the client to retry rather than sending it somewhere wrong.
+
+- The Custos MCP `whoami` tool no longer reports the PDS base URL. On the hosted sidecar that field carried the deployment's internal hostname (`http://ezpds.railway.internal:8080`) straight back to the client; a stdio caller configures the URL itself, so the field told nobody anything they did not already know.
+
+- The Custos MCP tools now check text against the limits atproto actually enforces, before writing. `create_post` advertised a 3000-character ceiling while `app.bsky.feed.post` caps text at 300 graphemes (and 3000 UTF-8 bytes), so a long post was accepted by the tool and then refused by the PDS with a raw `InvalidRequest`; the same mismatch applied to `update_bluesky_profile`'s display name and description. Over-long text is now rejected with a message naming the limit and how far past it you are, counting grapheme clusters and UTF-8 bytes rather than JavaScript characters.
+
+- Posts published through the Custos MCP `create_post` tool now carry rich-text facets: URLs, `#hashtags`, and `@mentions` in the post text render as links instead of dead plain text, and linked URLs get their social card. Detection covers fully-qualified `http(s)://` URLs (bare domains are left alone so filenames and prose are not turned into links); a `facets` argument overrides it when the link text differs from the URL.
+
+- Failed agent token exchanges now say why: an expired identity assertion, an unclaimed or unknown registration, and a subject/DID mismatch each get their own `error_description` on the jwt-bearer grant (revocation stays the distinct `access_denied`), and the Custos MCP client routes on them — a lapsed assertion still triggers the re-onboarding path, but a rejected-as-invalid assertion now fails loudly instead of looking like a session expiry, so a sporadic agent can tell "re-register" from "revoked, stop" without operator archaeology.
+
+
+## [0.15.0] - 2026-08-29
+
+### Added
+
+- The Atproto Spaces surface is now operator-gated behind `[spaces] enabled` / `EZPDS_SPACES_ENABLED` (off by default while the protocol is pre-launch alpha; deployments already using spaces must set it). When enabled alongside a signing-key master key, `describeServer` advertises a new `spaces` capability so clients and syncers can discover the surface — without a master key, space writes succeed but the sync routes 503, so the capability is withheld. `GET /v1/admin/health` now also reports the space jti-replay and oplog-compaction sweeps' last completed pass.
+
+- Operators can now take down a single Atproto Space instead of the whole account that owns it — including a space governed by another server, where this host stores members' repos and has no other lever. A taken-down space answers `SpaceNotFound` to every read, write, credential renewal and listing while nothing stored is destroyed, so clearing the takedown restores it exactly. `GET /v1/admin/spaces` lists what the server stores (owned and foreign, with repo and record counts) and `POST /v1/admin/spaces/takedown` applies or clears the refusal; both are recorded in the admin audit log.
+
+
+### Changed
+
+- Documentation: corrected two Atproto Spaces source-doc annotations — the `auth/space.rs` seam doc now notes that `createSpace` authenticates as the caller (there is no prior owner to check), rather than implying every simplespace management method runs the owner check, and the `db/spaces.rs` header now attributes the `app_access`/`app_allowed` allowList columns to their V069 migration. No behavior change.
+
+- Update marketing site
+
+- Custos's outbound Atproto Spaces write notifications are now verified against a mock foreign space host: the exact `notifyWrite` / `notifySpaceDeleted` request bodies, the method-scoped service auth each carries, the retry-and-give-up ladder, and the `#atproto_space_host` → `#atproto_pds` endpoint fallback that every alpha-era host is actually reached through.
+
+- The vendored Atproto Spaces lexicons are now pinned to an exact upstream commit rather than the moving `permissioned-data` branch, so their byte-identity with `bluesky-social/atproto` is reproducibly auditable.
+
+
+### Fixed
+
+- Confidential OAuth clients whose `private_key_jwt` assertion carries `iat` but no `exp` — the shape the reference provider and real-world clients such as attie.ai mint — can now complete the token exchange; an `exp`-less assertion is bounded by a 60-second `iat` max age instead of being rejected.
+
+
+## [0.14.0] - 2026-08-27
+
+### Added
+
+- Repo writes now verify the new commit's record count against a maintained per-repo count and abort loudly if a commit drops records it did not explicitly delete, so MST corruption like the 2026-08-27 data-loss incident can no longer persist silently.
+
+- Atproto Spaces space-host role: `com.atproto.space.listRepos` (the writer set, with each repo's last-reported rev and commit hash), `registerNotify`/`unregisterNotify` for syncer subscriptions with a seven-day renewable expiry, and inbound `notifyWrite` from foreign repo hosts. Every space write now fans out best-effort notifications — a repo host auto-registers the authority's `#atproto_space_host` and reports to it, a space host forwards to its registered syncers — and `simplespace.deleteSpace` sends `notifySpaceDeleted` before dropping the subscriptions.
+
+- Atproto Spaces: a space can now gate credentials on *which app* is asking, and on a per-user decision made elsewhere. `getSpaceCredential` verifies an optional client attestation — resolving the app's `client_id` to its published client-metadata document and JWKS over the SSRF-hardened client, and spending its `jti` single-use — so `appAccess: #allowList` is an enforced perimeter rather than an unverified claim; a space with `policy: managing-app` asks the app it names, over service auth, whether to authorize each user, and denies whenever that app answers no or cannot be reached. Both config members are consequently accepted by `createSpace`/`updateSpace` instead of refused, and `getSpace` reports the allow list back.
+
+- Atproto Spaces now follow their account's lifecycle, and can follow it to a new host. A suspension or takedown closes the whole permissioned-space surface — reads, writes, and delegation tokens alike — while self-service deactivation closes only ordinary writes, keeping the migration window open; a space host stops answering a syncer's credential the moment the space's authority stops being an active account, reporting `SpaceNotFound` rather than the durable `SpaceDeleted` signal. Migration gains its inbound leg: `POST /v1/space/import-repo` ingests the two-root CAR that `com.atproto.space.getRepo` exports, into a deactivated account, making the destination repo exactly the CAR's record set — so it hashes to the digest the source published and every syncer can converge on it. Enumerate what to move with `listSpaces` + `listBlobs`; blobs still travel by `uploadBlob`, and the new host's oplog starts fresh.
+
+- Atproto Spaces tooling and hardening: credential-authed space requests are now rate-limited per credential holder (keyed by the credential's bound DPoP key thumbprint, `rate_limit.space_credential_per_5min`, rejections visible as `rate_limit_rejections_total{limiter="space_credential"}`); the Custos MCP server grows an agent tool surface for spaces (`list_spaces`, `space_get_record`, `space_list_records`, `space_create_record`, plus destructive-gated put/delete) that the hosted sidecar re-exports; the wallet's consent screens describe `space:` grants in plain language instead of showing the raw token; and the interop CLI gains a `spaces-test` round-trip scenario. Operators can now also set the agent scope profile via `EZPDS_AGENT_AUTH_GRANTED_SCOPES` (comma-separated), as the docs already promised.
+
+- A token whose signature fails against a cached DID document now force-refreshes that document at most once per minute per DID, and the new `did_signature_refresh_total` metric reports how often that healing refresh runs, fails, or is held back — so a caller replaying a badly-signed token can no longer drive one plc.directory or did:web fetch per request.
+
+
+## [0.13.0] - 2026-08-27
+
+### Added
+
+- Notification registrations can opt into a metadata-minimizing ping mode (`ping: true` on the register routes): the relay then sends a content-free `content-available` background push — no sealed payload reaches the relay or Apple at all — and the app fetches events from its Custos on wake. Sealed alert pushes remain the default.
+
+- Groundwork for Spaces (permissioned data): the LtHash multiset hash and deniable commit sign/verify primitives land in the crypto crate, pinned to the reference golden vectors from the atproto `permissioned-data` branch. No server or app surface changes yet.
+
+- OAuth grants can now carry Atproto Spaces permissions: the `space:<spaceType>` scope grammar (with `authority`, `skey`, `collection`, `action`, and `manage` parameters) parses, normalizes, and enforces alongside the existing resource types, and permission sets may bundle `"resource": "space"` entries. Read access is all-or-nothing per space, record writes stay collection-constrained, and space management is a separate, default-empty capability. The space XRPC routes that consume these grants ship separately.
+
+- Groundwork for Spaces (permissioned data): the DB-backed permissioned repo store lands — schema for spaces, per-space repos (incremental LtHash state), records, the sync oplog, members, notify registrations, and jti replay protection, plus the single write choke point and blob GC that unions public and space references. No routes yet; the record CRUD and management surfaces follow.
+
+- Spaces (permissioned data): the PDS record surface goes live — `com.atproto.space.createRecord`, `putRecord`, `deleteRecord`, `applyWrites`, `listSpaces`, `getRecord`, `listRecords`, and `getLatestCommit`, all OAuth-authed against the caller's own permissioned repos and gated by their `space:` grant. Writing into a space this server has not seen records it, so joining another authority's space needs no prior setup, and `getLatestCommit` mints a fresh deniable commit per request rather than serving a stored one.
+
+- Atproto Spaces (permissioned data) auth: `com.atproto.space.getDelegationToken` mints single-use delegation tokens, and `com.atproto.space.getSpaceCredential` — Custos as a space authority — exchanges one plus a DPoP proof for a DPoP-bound space credential (`cnf.jkt`), honoring the `public` and `member-list` policies. Repo-host verification of those credentials, with full RFC 9449 per-request proof validation and per-host replay protection, lives behind the one new read-side auth seam the upcoming space read/sync routes use.
+
+- Atproto Spaces: the PDS-required `com.atproto.simplespace` management surface — `createSpace`, `updateSpace`, `deleteSpace`, `getSpace`, `addMember`, `removeMember`, `listMembers`. Spaces are anchored on the caller's own DID and managed under `space:…?manage=` grants; `getSpace` also accepts a DPoP-bound space credential, so a member hosted anywhere can read the space's configuration. `public` and `member-list` policies with `open` app access are implemented; `managing-app` and `allowList` are refused at create/update time (`UnsupportedPolicy` / `UnsupportedAppAccess`) rather than stored unenforced. Deleting a space tombstones it (so credential renewals answer `SpaceDeleted`), removes the authority's own repo, and leaves members' records in place, unreadable.
+
+- The OAuth consent screen now describes Atproto Spaces requests in plain language instead of raw scope strings: each `space:` grant is shown under the space type's declared name (localized to the browser's language when the declaration offers a translation), a named authority appears as its bidirectionally-verified handle, and the collections the app could write are spelled out. A request for every kind of space under any authority is called out with a prominent warning. The raw scope token stays visible on each row, and a declaration that can't be reached falls back to it rather than blocking the sign-in.
+
+- Atproto Spaces sync surface: `com.atproto.space.listRepoOps` (incremental oplog sync with head commits and an hourly compaction sweep bounding retention to seven days), `com.atproto.space.getRepo` (streaming two-root CAR export — signed commit plus canonical DRISL index), and space-authed `com.atproto.space.getBlob`/`listBlobs` for permissioned blob fetch and enumeration. All behind the space read seam (covering OAuth grant or DPoP-bound space credential).
+
+- DID documents now carry every verification method and service a PLC operation publishes — including the Atproto Spaces `#atproto_space` key and `#atproto_space_host` service — and `getRecommendedDidCredentials` recommends both; resolution falls back to `#atproto` / `#atproto_pds` when they are absent.
+
+
+### Fixed
+
+- Proxied Bluesky requests no longer depend on a live DID-document fetch. An `atproto-proxy` header naming the operator's own configured AppView or chat service (which the official Bluesky app sends on every request) is now recognised as the default rather than a caller-chosen retarget, so a slow or failing `did:web:api.bsky.app` no longer breaks feed loads — and those requests regain read-after-write merging, so your own new posts appear in your timeline immediately. Every other DID document resolved from plc.directory or a `did:web` endpoint is now cached for an hour and refreshed in the background for up to a day, matching the reference PDS.
+
+- Repo writes can no longer silently destroy records: a local patch to the atrium-repo
+  MST fixes an upstream bug (atrium-rs/atrium#343) where inserting a record whose key
+  hashes to a higher tree layer could discard every record sorting on one side of the
+  insertion point — whole collections vanished with no error and no firehose delete.
+
+
 ## [0.12.0] - 2026-08-19
 
 ### Added

@@ -42,7 +42,7 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, OnceLock};
 
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 
 use crate::identity_store::{IdentityStore, IdentityStoreError, SovereignTokenRecord};
 use crate::oauth_client::OAuthClient;
@@ -90,12 +90,19 @@ pub enum SessionError {
     RateLimited { retry_after: Option<String> },
     #[error("the identity's hosting server does not support session refresh")]
     UnsupportedHost,
+    /// `message` is diagnostic only (ADR-0031) — a transport failure is never the server's
+    /// words.
     #[error("offline or transport failure: {message}")]
     Offline { message: String },
     #[error("hosting server failure: {status}")]
     ServerFailure { status: u16 },
+    /// `message` is diagnostic only (ADR-0031) — a local Keychain failure is never the
+    /// server's words.
     #[error("keychain failure: {message}")]
     Keychain { message: String },
+    /// A malformed stored/rotated JWT, or a `refresh_bearer_session` validation failure
+    /// (DID/sub/aud mismatch). `message` is diagnostic only (ADR-0031) — it describes this
+    /// client's read of the response, not a reason the server stated.
     #[error("invalid session response: {message}")]
     InvalidResponse { message: String },
 }
@@ -138,15 +145,6 @@ impl From<&ActiveSession> for SessionReady {
             rotated: session.rotated,
         }
     }
-}
-
-/// Bearer-mode rotation response from `com.atproto.server.refreshSession`.
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct RefreshSessionResponse {
-    access_jwt: String,
-    refresh_jwt: String,
-    did: String,
 }
 
 /// Per-DID full-access session resolver.
@@ -318,10 +316,11 @@ fn active_session_from_record(
         bearer_jwt_claims(&record.access_jwt).ok_or_else(|| SessionError::InvalidResponse {
             message: "stored accessJwt is malformed".into(),
         })?;
-    let client = OAuthClient::new_bearer(
+    let client = OAuthClient::new_bearer_with_observer(
         record.access_jwt.clone(),
         record.refresh_jwt.clone(),
         record.pds_url.clone(),
+        crate::oauth_client::diagnostics_observer(),
     )
     .map_err(|e| SessionError::Keychain {
         message: e.to_string(),
@@ -336,8 +335,13 @@ fn active_session_from_record(
     })
 }
 
-/// Rotate a near-expiry pair via `com.atproto.server.refreshSession` and atomically
-/// persist the returned pair. Exactly one network attempt — no retry loop.
+/// Rotate a near-expiry pair via `custos_client::sovereign_session::refresh_bearer_session`
+/// and atomically persist the returned pair. Exactly one network attempt — no retry loop.
+///
+/// The network round trip, response parsing, and sub/aud/DID validation all live in the
+/// crate (shared with any Bearer full-access session, not just a sovereign-minted one);
+/// this function owns only what depends on this app's session-record format: persisting the
+/// rotated pair and discarding a dead record on a classified revocation.
 async fn rotate_and_persist(
     pds_client: &PdsClient,
     store: &IdentityStore,
@@ -345,88 +349,18 @@ async fn rotate_and_persist(
     record: &SovereignTokenRecord,
     now: i64,
 ) -> Result<ActiveSession, SessionError> {
-    let url = format!(
-        "{}/xrpc/com.atproto.server.refreshSession",
-        record.pds_url.trim_end_matches('/')
-    );
-    let response = pds_client
-        .client()
-        .post(url.as_str())
-        .header(
-            reqwest::header::AUTHORIZATION,
-            format!("Bearer {}", record.refresh_jwt),
-        )
-        .send()
-        .await
-        .map_err(|e| {
-            // Strip the URL from the error before it becomes a message: a reqwest error's
-            // `Display` embeds the full request URL, which can carry account material.
-            let e = e.without_url();
-            // Redacted breadcrumb so a refresh transport failure is visible in diagnostics —
-            // it otherwise records nothing and surfaces only as a generic offline error.
-            crate::diagnostics::record_transport(
-                "refreshSession",
-                reqwest::Url::parse(&url)
-                    .ok()
-                    .and_then(|u| u.host_str().map(str::to_string))
-                    .as_deref(),
-                crate::diagnostics::transport_category(&e),
-            );
-            SessionError::Offline {
-                message: e.to_string(),
-            }
-        })?;
-
-    let status = response.status();
-    if !status.is_success() {
-        let retry_after = response
-            .headers()
-            .get(reqwest::header::RETRY_AFTER)
-            .and_then(|value| value.to_str().ok())
-            .map(str::to_string);
-        return Err(classify_refresh_failure(
-            status.as_u16(),
-            retry_after,
-            store,
-            did,
-        )?);
-    }
-
-    let refreshed: RefreshSessionResponse =
-        response
-            .json()
-            .await
-            .map_err(|e| SessionError::InvalidResponse {
-                message: e.to_string(),
-            })?;
-
-    // Bind the rotated pair to the same DID and hosting server the record was minted
-    // for — a rotation must never silently re-audience the session.
-    if refreshed.did != did {
-        return Err(SessionError::InvalidResponse {
-            message: "refreshSession returned a different DID".into(),
-        });
-    }
-    let access =
-        bearer_jwt_claims(&refreshed.access_jwt).ok_or_else(|| SessionError::InvalidResponse {
-            message: "rotated accessJwt is missing valid claims".into(),
-        })?;
-    let refresh =
-        bearer_jwt_claims(&refreshed.refresh_jwt).ok_or_else(|| SessionError::InvalidResponse {
-            message: "rotated refreshJwt is missing valid claims".into(),
-        })?;
-    if access.sub != did || refresh.sub != did {
-        return Err(SessionError::InvalidResponse {
-            message: "rotated tokens are bound to a different DID".into(),
-        });
-    }
-    if !audience_matches_server(&access.aud, &record.server_did, &record.pds_url)
-        || !audience_matches_server(&refresh.aud, &record.server_did, &record.pds_url)
+    let refreshed = match custos_client::sovereign_session::refresh_bearer_session(
+        pds_client,
+        &record.pds_url,
+        &record.refresh_jwt,
+        did,
+        &record.server_did,
+    )
+    .await
     {
-        return Err(SessionError::InvalidResponse {
-            message: "rotated tokens are bound to a different host".into(),
-        });
-    }
+        Ok(refreshed) => refreshed,
+        Err(e) => return Err(map_refresh_error(e, store, did)?),
+    };
 
     let stored_at = u64::try_from(now).map_err(|_| SessionError::InvalidResponse {
         message: "negative timestamp cannot be persisted".into(),
@@ -437,8 +371,8 @@ async fn rotate_and_persist(
         refresh_jwt: refreshed.refresh_jwt,
         pds_url: record.pds_url.clone(),
         server_did: record.server_did.clone(),
-        access_expires_at: Some(access.exp),
-        refresh_expires_at: Some(refresh.exp),
+        access_expires_at: Some(refreshed.access_expires_at),
+        refresh_expires_at: Some(refreshed.refresh_expires_at),
         stored_at,
     };
     store
@@ -448,29 +382,39 @@ async fn rotate_and_persist(
     active_session_from_record(did, new_record, true)
 }
 
-/// Classify a non-success `refreshSession` response into a distinct terminal error.
+/// Classify a `refresh_bearer_session` failure into a distinct terminal error.
 ///
-/// A rejected refresh token (400/401) is revoked/replayed — the dead record is
-/// discarded and the identity falls back to a passwordless unlock. Rate limiting,
-/// an unsupported host, and other server failures each stay recognizable so the UI
-/// (and downstream callers) never collapse them into one another. Returns `Err` only
-/// if discarding the dead record itself fails.
-fn classify_refresh_failure(
-    status: u16,
-    retry_after: Option<String>,
+/// A rejected refresh token (401, or a 400 XRPC verdict — both mean revoked/replayed) has
+/// its dead record discarded, falling back to a passwordless unlock. Rate limiting, an
+/// unsupported host, and other server failures each stay recognizable so the UI (and
+/// downstream callers) never collapse them into one another. A validation failure inside
+/// `refresh_bearer_session` itself (DID/sub/aud mismatch, unparseable response) surfaces as
+/// `InvalidResponse` — a concerning verdict about this one rotation attempt, never silently
+/// read as connectivity or an unsupported host. Returns `Err` only if discarding the dead
+/// record itself fails.
+fn map_refresh_error(
+    error: PdsClientError,
     store: &IdentityStore,
     did: &str,
 ) -> Result<SessionError, SessionError> {
-    Ok(match status {
-        400 | 401 => {
+    Ok(match error {
+        PdsClientError::Unauthorized { .. } | PdsClientError::XrpcError { status: 400, .. } => {
             store.delete_oauth_tokens(did).map_err(map_store_error)?;
             SessionError::NeedsUnlock {
                 reason: UnlockReason::RefreshRevoked,
             }
         }
-        404 | 405 => SessionError::UnsupportedHost,
-        429 => SessionError::RateLimited { retry_after },
-        other => SessionError::ServerFailure { status: other },
+        PdsClientError::XrpcError {
+            status: 404 | 405, ..
+        } => SessionError::UnsupportedHost,
+        PdsClientError::RateLimited { retry_after, .. } => {
+            SessionError::RateLimited { retry_after }
+        }
+        PdsClientError::XrpcError { status, .. } => SessionError::ServerFailure { status },
+        PdsClientError::NetworkError { message } => SessionError::Offline { message },
+        other => SessionError::InvalidResponse {
+            message: other.to_string(),
+        },
     })
 }
 
@@ -594,7 +538,7 @@ mod tests {
 
         // An unroutable plc.directory: reaching the network at all would error, so a
         // success proves the fast path never touched it.
-        let client = PdsClient::new_for_test("http://127.0.0.1:9".into());
+        let client = crate::pds_client::new_for_test("http://127.0.0.1:9".into());
         let session = SessionProvider
             .full_access_client(&client, &IdentityStore, DID, now())
             .await
@@ -635,7 +579,7 @@ mod tests {
             })
             .await;
 
-        let client = PdsClient::new_for_test(server.base_url());
+        let client = crate::pds_client::new_for_test(server.base_url());
         let session = SessionProvider
             .full_access_client(&client, &IdentityStore, DID, now())
             .await
@@ -670,7 +614,7 @@ mod tests {
             })
             .await;
 
-        let client = PdsClient::new_for_test(server.base_url());
+        let client = crate::pds_client::new_for_test(server.base_url());
         let (a, b) = tokio::join!(
             SessionProvider.full_access_client(&client, &IdentityStore, DID, now()),
             SessionProvider.full_access_client(&client, &IdentityStore, DID, now()),
@@ -706,7 +650,7 @@ mod tests {
             })
             .await;
 
-        let client = PdsClient::new_for_test(server.base_url());
+        let client = crate::pds_client::new_for_test(server.base_url());
         let result = SessionProvider
             .full_access_client(&client, &IdentityStore, DID, now())
             .await;
@@ -746,7 +690,39 @@ mod tests {
             })
             .await;
 
-        let client = PdsClient::new_for_test(server.base_url());
+        let client = crate::pds_client::new_for_test(server.base_url());
+        let result = SessionProvider
+            .full_access_client(&client, &IdentityStore, DID, now())
+            .await;
+
+        assert!(matches!(
+            result,
+            Err(SessionError::NeedsUnlock {
+                reason: UnlockReason::RefreshRevoked
+            })
+        ));
+        assert_eq!(IdentityStore.load_oauth_tokens(DID).unwrap(), None);
+    }
+
+    /// A 400 (not just a 401) also means the refresh token itself was rejected — pinned
+    /// separately from the 401 case since `map_refresh_error`'s revocation arm depends on
+    /// `classify_xrpc_error` continuing to route both statuses the same way.
+    #[tokio::test]
+    async fn revoked_refresh_400_needs_unlock_and_discards() {
+        let server = MockServer::start_async().await;
+        let record = record_for(now() - 10, now() + 86_400, &server.base_url(), SERVER_DID);
+        seed(DID, &record);
+        let _plc = discovery_mocks(&server, DID, &server.base_url()).await;
+        let _refresh = server
+            .mock_async(|when, then| {
+                when.method(POST)
+                    .path("/xrpc/com.atproto.server.refreshSession");
+                then.status(400)
+                    .json_body(json!({ "error": "InvalidToken" }));
+            })
+            .await;
+
+        let client = crate::pds_client::new_for_test(server.base_url());
         let result = SessionProvider
             .full_access_client(&client, &IdentityStore, DID, now())
             .await;
@@ -774,7 +750,7 @@ mod tests {
             })
             .await;
 
-        let client = PdsClient::new_for_test(server.base_url());
+        let client = crate::pds_client::new_for_test(server.base_url());
         let result = SessionProvider
             .full_access_client(&client, &IdentityStore, DID, now())
             .await;
@@ -802,7 +778,7 @@ mod tests {
         seed(DID, &record);
 
         // Expired access forces the refresh path, but discovery cannot reach the network.
-        let client = PdsClient::new_for_test("http://127.0.0.1:9".into());
+        let client = crate::pds_client::new_for_test("http://127.0.0.1:9".into());
         let result = SessionProvider
             .full_access_client(&client, &IdentityStore, DID, now())
             .await;
@@ -817,7 +793,7 @@ mod tests {
         crate::keychain::clear_for_test();
         IdentityStore.add_identity(DID).unwrap();
 
-        let client = PdsClient::new_for_test("http://127.0.0.1:9".into());
+        let client = crate::pds_client::new_for_test("http://127.0.0.1:9".into());
         let result = SessionProvider
             .full_access_client(&client, &IdentityStore, DID, now())
             .await;
@@ -842,7 +818,7 @@ mod tests {
 
         // Unroutable plc.directory: reaching it would error, so a clean NeedsUnlock
         // proves the dead-chain short-circuit precedes any discovery.
-        let client = PdsClient::new_for_test("http://127.0.0.1:9".into());
+        let client = crate::pds_client::new_for_test("http://127.0.0.1:9".into());
         let result = SessionProvider
             .full_access_client(&client, &IdentityStore, DID, now())
             .await;
@@ -887,7 +863,7 @@ mod tests {
             .store_oauth_tokens(OTHER_DID, &bob_record)
             .unwrap();
 
-        let client = PdsClient::new_for_test("http://127.0.0.1:9".into());
+        let client = crate::pds_client::new_for_test("http://127.0.0.1:9".into());
         let alice = SessionProvider
             .full_access_client(&client, &IdentityStore, DID, now())
             .await

@@ -293,13 +293,16 @@ pub async fn list_expired_temp_owners(
 }
 
 /// Return the DIDs blob GC must reconcile: every account that owns a blob reference, plus
-/// every account with a repo (whose records may reference blob CIDs it has no ownership row
-/// for yet — the reconcile pass adopts those, healing pre-V039 implicit sharing).
+/// every account with a public repo or a space repo (whose records may reference blob CIDs it
+/// has no ownership row for yet — the reconcile pass adopts those, healing pre-V039 implicit
+/// sharing).
 pub async fn list_gc_candidate_dids(pool: &SqlitePool) -> Result<Vec<String>, sqlx::Error> {
     sqlx::query_scalar::<_, String>(
         "SELECT DISTINCT account_did FROM blob_owners \
          UNION \
-         SELECT did FROM accounts WHERE repo_root_cid IS NOT NULL",
+         SELECT did FROM accounts WHERE repo_root_cid IS NOT NULL \
+         UNION \
+         SELECT DISTINCT account_did FROM space_repos",
     )
     .fetch_all(pool)
     .await
@@ -519,25 +522,13 @@ pub async fn list_all_blobs(pool: &SqlitePool) -> Result<Vec<PhysicalBlob>, sqlx
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::db::{open_pool, run_migrations};
+    use crate::db::accounts::insert_bare_account;
+    use crate::db::test_pool;
 
-    async fn test_pool() -> SqlitePool {
-        let pool = open_pool("sqlite::memory:").await.unwrap();
-        run_migrations(&pool).await.unwrap();
-        pool
-    }
-
-    /// Insert a test account (required for the FK on blob_owners.account_did).
+    /// Insert a test account (required for the FK on blob_owners.account_did), returning its DID
+    /// for callers that want it back rather than re-stating the literal.
     async fn insert_account(pool: &SqlitePool, did: &str) -> String {
-        sqlx::query(
-            "INSERT INTO accounts (did, email, password_hash, created_at, updated_at)
-             VALUES (?, ?, 'hash', datetime('now'), datetime('now'))",
-        )
-        .bind(did)
-        .bind(format!("{did}@example.com"))
-        .execute(pool)
-        .await
-        .unwrap();
+        insert_bare_account(pool, did).await;
         did.to_string()
     }
 

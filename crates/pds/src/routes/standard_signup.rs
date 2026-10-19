@@ -39,7 +39,6 @@ const INVITE_CODE_EXPIRES_IN_HOURS: u32 = 24;
 #[serde(rename_all = "camelCase")]
 pub struct CreateInviteCodeRequest {
     use_count: u32,
-    #[allow(dead_code)]
     for_account: Option<String>,
 }
 
@@ -106,10 +105,6 @@ pub struct InviteCodeUse {
 #[serde(rename_all = "camelCase")]
 pub struct CheckHandleAvailabilityParams {
     handle: String,
-    #[allow(dead_code)]
-    email: Option<String>,
-    #[allow(dead_code)]
-    birth_date: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -319,12 +314,14 @@ pub async fn check_handle_availability(
         &state.config.available_user_domains,
         &state.config.reserved_handles,
     )
-        .is_ok()
+    .is_ok()
         && !crate::uniqueness::handle_taken(&state.db, &params.handle)
             .await
             .map_err(|e| {
-                tracing::error!(error = %e, handle = %params.handle, "failed to check handle availability");
-                ApiError::new(ErrorCode::InternalError, "failed to check handle availability")
+                {
+                    tracing::error!(error = %e, handle = %params.handle, "failed to check handle availability");
+                    ApiError::new(ErrorCode::InternalError, "failed to check handle availability")
+                }
             })?;
 
     let result = if available {
@@ -384,10 +381,11 @@ fn account_bound_invites_unsupported() -> ApiError {
 
 fn map_mint_error(error: MintClaimCodesError) -> ApiError {
     match error {
-        MintClaimCodesError::Store(e) => {
-            tracing::error!(error = %e, "failed to insert invite claim codes");
-            ApiError::new(ErrorCode::InternalError, "failed to store invite codes")
-        }
+        MintClaimCodesError::Store(e) => ApiError::internal_as(
+            e,
+            "failed to insert invite claim codes",
+            "failed to store invite codes",
+        ),
         MintClaimCodesError::Exhausted => {
             tracing::error!("failed to generate unique invite codes after retries");
             ApiError::new(

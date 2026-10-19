@@ -108,7 +108,7 @@ pub async fn apply_writes(
     let did = crate::record_write::resolve_repo_did(&state, &body.repo).await?;
     let did = did.as_str();
 
-    if !crate::auth::validation::is_valid_did(did) {
+    if !crate::identity::did::is_valid_did(did) {
         return Err(ApiError::new(ErrorCode::InvalidClaim, "invalid DID format"));
     }
 
@@ -762,6 +762,51 @@ mod tests {
             .unwrap();
         let r = app.oneshot(get_k2).await.unwrap();
         assert_eq!(r.status(), StatusCode::NOT_FOUND);
+    }
+
+    /// An `#update` op on an absent key is an upsert that *creates* the key while staying
+    /// labeled `Update`. The MST integrity witness must count it as +1 (via the op's null
+    /// `prev`), or every such batch after the count is initialized would falsely abort.
+    #[tokio::test]
+    async fn upsert_update_on_absent_key_counts_as_a_create() {
+        let (state, did) = setup().await;
+        let token = access_jwt(&state.jwt_secret, &did);
+        let app = crate::app::app(state.clone());
+
+        // First batch initializes the maintained record count (1).
+        let seed = serde_json::json!({ "repo": did, "writes": [create_item("k1", "orig")] });
+        let r = app
+            .clone()
+            .oneshot(apply_req(seed, Some(&token)))
+            .await
+            .unwrap();
+        assert_eq!(r.status(), StatusCode::OK);
+
+        // Second batch: an update of a key that does not exist yet. The check is live now, so a
+        // mislabeled delta (0 instead of +1) would abort this write.
+        let body = serde_json::json!({
+            "repo": did,
+            "writes": [{
+                "$type": "com.atproto.repo.applyWrites#update",
+                "collection": "app.bsky.feed.post",
+                "rkey": "fresh",
+                "value": {"text": "upsert-created"},
+            }],
+        });
+        let r = app
+            .clone()
+            .oneshot(apply_req(body, Some(&token)))
+            .await
+            .unwrap();
+        assert_eq!(r.status(), StatusCode::OK);
+
+        let count: Option<i64> =
+            sqlx::query_scalar("SELECT record_count FROM accounts WHERE did = ?")
+                .bind(&did)
+                .fetch_one(&state.db)
+                .await
+                .unwrap();
+        assert_eq!(count, Some(2));
     }
 
     #[tokio::test]

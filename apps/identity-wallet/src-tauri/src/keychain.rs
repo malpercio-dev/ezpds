@@ -84,8 +84,10 @@
 //!   the deliberate-removal record launch reconciliation consults.
 //! * `pending-removals` (`identity_removal`) — DIDs whose post-delete tombstone/wipe
 //!   is unfinished; fail-open.
-//! * `oauth-dpop-key-priv`, `oauth-access-token`, `oauth-refresh-token` — the retained
-//!   but currently dead legacy OAuth-client items ([`store_dpop_key`]/[`store_oauth_tokens`]).
+//! * `oauth-dpop-key-priv` (loaded via `custos_client::DpopKeypair::get_or_create` over
+//!   `device_key::WalletKeychain`, at [`DPOP_KEY_PRIV_ACCOUNT`]), `oauth-access-token`,
+//!   `oauth-refresh-token` — the retained but currently dead legacy OAuth-client items
+//!   ([`store_oauth_tokens`]).
 //! * the five `notification-*` accounts (`notifications::NOTIFICATION_ACCOUNTS` is the
 //!   inventory) — the key, the pinned sender-key document, and the extension's failure
 //!   log are written via [`store_item_after_first_unlock`]; none of the five ever syncs.
@@ -94,11 +96,12 @@
 //! * `recovery-share-1` — the deprecated app-global Share 1 slot, read only by the
 //!   launch migration and the recovery auto-load fallback.
 //!
-//! Per-DID accounts follow `"{did}:suffix"` with ten suffixes: `device-key`,
+//! Per-DID accounts follow `"{did}:suffix"` with twelve suffixes: `device-key`,
 //! `device-key-pub`, `device-key-app-label`, `did-doc`, `plc-log`, `oauth-tokens`,
-//! `recovery-signing-key` (all `identity_store`; the last written by
-//! `disaster_recovery`), `blob-backup-enabled` (`blob_backup`), `repo-backup-enabled`
-//! (`repo_backup`), and `self-held-kit` (`self_held_kit`). Three more per-DID slots
+//! `recovery-signing-key`, `delegation-seed`, `child-index` (all `identity_store`;
+//! `recovery-signing-key` written by `disaster_recovery`, `delegation-seed` by the
+//! create ceremony and by share verification), `blob-backup-enabled` (`blob_backup`),
+//! `repo-backup-enabled` (`repo_backup`), and `self-held-kit` (`self_held_kit`). Three more per-DID slots
 //! use a prefix form: `recovery-share-1:{did}` (`rekey::recovery_share1_account` —
 //! the only account family [`syncs_to_icloud`] admits to the synchronizable store) and
 //! the staging pair `rekey-staging:{did}` / `self-held-kit-staging:{did}`
@@ -359,39 +362,18 @@ pub fn is_not_found(err: &KeychainError) -> bool {
 
 // ── OAuth Keychain helpers ─────────────────────────────────────────────────────
 
-const DPOP_KEY_PRIV_ACCOUNT: &str = "oauth-dpop-key-priv";
+/// The wallet's DPoP proof-signing key (see the module doc's account inventory). Read by
+/// `oauth.rs` through `custos_client::DpopKeypair::get_or_create::<device_key::WalletKeychain>`
+/// rather than a dedicated load/store pair — that generic path is the one implementation of
+/// "load or mint a Keychain-backed key" this crate needs. `#[cfg(test)]`: `OAuthClient::new`
+/// (DPoP mode) has no production caller today (see `oauth.rs`'s module doc), so this account is
+/// currently reachable only from `oauth::test_dpop_keypair`.
+#[cfg(test)]
+pub(crate) const DPOP_KEY_PRIV_ACCOUNT: &str = "oauth-dpop-key-priv";
 const OAUTH_ACCESS_TOKEN_ACCOUNT: &str = "oauth-access-token";
 const OAUTH_REFRESH_TOKEN_ACCOUNT: &str = "oauth-refresh-token";
 const PDS_URL_ACCOUNT: &str = "relay-base-url";
 const APPEARANCE_ACCOUNT: &str = "appearance-preference";
-
-/// Store the DPoP private key scalar (32 bytes) in the Keychain.
-pub fn store_dpop_key(private_bytes: &[u8]) -> Result<(), KeychainError> {
-    store_item(DPOP_KEY_PRIV_ACCOUNT, private_bytes)
-}
-
-/// Load the DPoP private key scalar from the Keychain.
-///
-/// Returns `None` if no key has been stored yet (first run).
-/// The returned bytes are wrapped in `Zeroizing` to ensure they are cleared on drop.
-pub fn load_dpop_key() -> Option<zeroize::Zeroizing<[u8; 32]>> {
-    match get_item(DPOP_KEY_PRIV_ACCOUNT) {
-        Ok(bytes) if bytes.len() == 32 => {
-            let mut arr = [0u8; 32];
-            arr.copy_from_slice(&bytes);
-            Some(zeroize::Zeroizing::new(arr))
-        }
-        Ok(_) => {
-            tracing::warn!("DPoP key in Keychain has unexpected length; treating as absent");
-            None
-        }
-        Err(e) if is_not_found(&e) => None,
-        Err(e) => {
-            tracing::error!(error = ?e, "Keychain error loading DPoP key");
-            None
-        }
-    }
-}
 
 /// Store the OAuth access token and refresh token in the Keychain.
 pub fn store_oauth_tokens(access_token: &str, refresh_token: &str) -> Result<(), KeychainError> {

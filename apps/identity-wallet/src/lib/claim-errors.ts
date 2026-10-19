@@ -54,6 +54,21 @@ export function formatServerErrorMessage(message: string): string {
 }
 
 /**
+ * Text for `HANDLE_REJECTED`'s `message` (agent child-account minting), declared server-quoted
+ * (ADR-0031) — the reason a proposed handle failed (taken, unreachable domain, …). Rendered
+ * inline as a `TextField` error, so the lead is shorter than {@link formatServerErrorMessage}'s
+ * but the same bound/fallback/truncation rules apply.
+ */
+export function formatHandleRejection(message: string): string {
+  const trimmed = message.trim();
+  if (trimmed.length === 0) return 'Your server would not accept that handle. Try another.';
+  if (trimmed.length > MAX_QUOTED_SERVER_TEXT) {
+    return `Your server says: ${trimmed.slice(0, MAX_QUOTED_SERVER_TEXT)}…`;
+  }
+  return `Your server says: ${trimmed}`;
+}
+
+/**
  * Text for a `SERVER_ERROR` whose `message` is mixed-provenance and must not be quoted
  * (ADR-0031: the session-mapped buckets, where `status: null` means a failure local to
  * restoring the session). A present `status` is a real server verdict, so the sentence may

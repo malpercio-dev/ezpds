@@ -31,13 +31,8 @@ pub struct SweepStats {
 /// Spawn the periodic claim-attempt expiry sweep. The first tick is consumed without sweeping so
 /// the server does not run it mid-boot; the first pass runs one `interval` after startup.
 pub fn spawn_agent_claim_sweep(state: AppState, interval: Duration) -> JoinHandle<()> {
-    tokio::spawn(async move {
-        let mut ticker = tokio::time::interval(interval);
-        ticker.tick().await;
-        loop {
-            ticker.tick().await;
-            run_agent_claim_sweep(&state).await;
-        }
+    crate::sweep::spawn_sweep(interval, false, state, |state| async move {
+        run_agent_claim_sweep(&state).await;
     })
 }
 
@@ -119,18 +114,7 @@ pub async fn run_agent_claim_sweep(state: &AppState) -> SweepStats {
 mod tests {
     use super::*;
     use crate::app::test_state;
-
-    async fn seed_account(db: &sqlx::SqlitePool, did: &str) {
-        sqlx::query(
-            "INSERT INTO accounts (did, email, password_hash, created_at, updated_at) \
-             VALUES (?, ?, NULL, datetime('now'), datetime('now'))",
-        )
-        .bind(did)
-        .bind(format!("{did}@example.com"))
-        .execute(db)
-        .await
-        .unwrap();
-    }
+    use crate::db::accounts::insert_bare_account as seed_account;
 
     async fn seed_identity(db: &sqlx::SqlitePool, id: &str, did: Option<&str>) {
         sqlx::query(

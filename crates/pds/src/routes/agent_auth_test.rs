@@ -1,7 +1,7 @@
 // pattern: Imperative Shell
 //
 // End-to-end integration tests for the auth.md agent-authentication flows. The per-route modules
-// (`agent_identity.rs`, `agent_claim.rs`, `oauth_token.rs`, `oauth_revoke.rs`, the two discovery
+// (`agent_identity.rs`, `agent_claim.rs`, `oauth_token/`, `oauth_revoke.rs`, the two discovery
 // endpoints) already unit-test each handler in isolation. This module instead drives the *whole
 // journey* across endpoints through the real HTTP router — discovery → register → claim initiate →
 // poll → confirm → token exchange → revoke — so a contract drift between two handlers (e.g. a
@@ -22,7 +22,7 @@ use axum::{
     http::{Request, StatusCode},
 };
 use chrono::Utc;
-use common::{AgentAuthConfig, TrustedIssuer};
+use common::AgentAuthConfig;
 use jsonwebtoken::{Algorithm, EncodingKey, Header};
 use p256::pkcs8::{spki::EncodePublicKey, EncodePrivateKey};
 use rand_core::OsRng;
@@ -30,33 +30,12 @@ use serde_json::{json, Value};
 use tower::ServiceExt;
 
 use crate::app::{app, test_state, AppState};
+use crate::routes::test_utils::{
+    insert_account_with_email as insert_account, post_json_with_bearer as post_json,
+    state_with_agent_auth as state_with, trusted_issuer as trusted,
+};
 
 const PUBLIC_URL: &str = "https://test.example.com";
-
-// ── state helpers ────────────────────────────────────────────────────────────
-
-/// `test_state()` with the agent-auth config swapped in (every flow is off by default).
-async fn state_with(agent_auth: AgentAuthConfig) -> AppState {
-    let base = test_state().await;
-    let mut config = (*base.config).clone();
-    config.agent_auth = agent_auth;
-    AppState {
-        config: Arc::new(config),
-        ..base
-    }
-}
-
-async fn insert_account(db: &sqlx::SqlitePool, did: &str, email: &str) {
-    sqlx::query(
-        "INSERT INTO accounts (did, email, password_hash, created_at, updated_at) \
-         VALUES (?, ?, 'hash', datetime('now'), datetime('now'))",
-    )
-    .bind(did)
-    .bind(email)
-    .execute(db)
-    .await
-    .unwrap();
-}
 
 /// A full-access HS256 access token for `did` — the credential the account owner presents to
 /// confirm a claim (mirrors the shape `auth/extractors.rs` accepts).
@@ -121,16 +100,6 @@ fn make_jag(priv_pem: &str, iss: &str, sub: &str, email: &str, iat: i64, exp: i6
     jsonwebtoken::encode(&Header::new(Algorithm::ES256), &claims, &key).unwrap()
 }
 
-fn trusted(issuer: &str, public_key_pem: String) -> TrustedIssuer {
-    TrustedIssuer {
-        issuer: issuer.to_string(),
-        audience: None,
-        public_key_pem: Some(public_key_pem),
-        jwks_url: None,
-        algorithm: "ES256".to_string(),
-    }
-}
-
 /// Sign a provider Security Event Token carrying the revocation event for `sub`. `aud` is this
 /// server; `iss` is the trusted provider. The `jti` is fixed (the SET path keeps no replay store, so
 /// its value is irrelevant).
@@ -183,22 +152,6 @@ async fn get_json(state: AppState, uri: &str) -> (StatusCode, Value) {
         Request::builder().uri(uri).body(Body::empty()).unwrap(),
     )
     .await
-}
-
-async fn post_json(
-    state: AppState,
-    uri: &str,
-    body: Value,
-    token: Option<&str>,
-) -> (StatusCode, Value) {
-    let mut builder = Request::builder()
-        .method("POST")
-        .uri(uri)
-        .header("content-type", "application/json");
-    if let Some(t) = token {
-        builder = builder.header("Authorization", format!("Bearer {t}"));
-    }
-    send(state, builder.body(Body::from(body.to_string())).unwrap()).await
 }
 
 async fn post_form(state: AppState, uri: &str, body: &str) -> (StatusCode, Value) {
@@ -1222,5 +1175,432 @@ async fn audit_cursor_pages_without_gaps_or_duplicates() {
     assert_eq!(
         paged_ids, all_ids,
         "paged reads must reproduce the single-page read exactly — no gaps, no duplicates"
+    );
+}
+
+// ── cooperative child mint (auth.md claim ceremony, child arm) ────────────────
+
+/// `state_with()` plus everything a child mint needs: a stubbed plc.directory, the signing-key
+/// master key, and a served handle domain. Callers must keep the `MockServer` alive for the whole
+/// test — see the note on `agent_child.rs`'s equivalent helper.
+async fn child_mint_state(agent_auth: AgentAuthConfig) -> (AppState, wiremock::MockServer) {
+    use wiremock::{
+        matchers::{method, path_regex},
+        Mock, MockServer, ResponseTemplate,
+    };
+
+    let plc = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path_regex(r"^/did:plc:[a-z2-7]+$"))
+        .respond_with(ResponseTemplate::new(200))
+        .mount(&plc)
+        .await;
+    let base = crate::app::test_state_with_plc_url(plc.uri()).await;
+    let mut config = (*base.config).clone();
+    config.agent_auth = agent_auth;
+    config.signing_key_master_key = Some(common::Sensitive(zeroize::Zeroizing::new(
+        crate::routes::test_utils::test_master_key(),
+    )));
+    config.available_user_domains = vec!["example.com".to_string()];
+    (
+        AppState {
+            config: Arc::new(config),
+            ..base
+        },
+        plc,
+    )
+}
+
+/// The wallet's half of a cooperative mint: reserve a repo signing key and sign the child's
+/// genesis op for `handle`.
+async fn child_block(state: &AppState, handle: &str) -> Value {
+    let repo_key = crate::routes::test_utils::reserve_repo_key(&state.db).await;
+    let op = crate::routes::test_utils::child_genesis_op(
+        handle,
+        &state.config.public_url,
+        &repo_key.key_id.0,
+    );
+    json!({ "handle": handle, "plcOp": op })
+}
+
+/// The `sub` claim of a JWT, without verifying it — enough to assert whose credential this is.
+fn jwt_sub(token: &str) -> String {
+    use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
+    let payload = token.split('.').nth(1).expect("jwt has a payload segment");
+    let decoded = URL_SAFE_NO_PAD
+        .decode(payload)
+        .expect("payload is base64url");
+    let claims: Value = serde_json::from_slice(&decoded).expect("payload is JSON");
+    claims["sub"].as_str().expect("sub claim").to_string()
+}
+
+fn anonymous_cfg() -> AgentAuthConfig {
+    AgentAuthConfig {
+        anonymous_enabled: true,
+        ..AgentAuthConfig::default()
+    }
+}
+
+/// The handle an agent proposes at registration reaches the human who decides — otherwise the
+/// approval screen could only offer a blank field, and the agent's preference would be lost
+/// between the two halves of the ceremony.
+#[tokio::test]
+async fn handle_hint_registered_anonymously_surfaces_in_claim_preview() {
+    let state = state_with(anonymous_cfg()).await;
+    let owner = "did:plc:hinowner00000000000000000";
+    insert_account(&state.db, owner, "hint-owner@example.com").await;
+
+    let (_s, reg) = post_json(
+        state.clone(),
+        "/agent/identity",
+        json!({ "type": "anonymous", "handle_hint": "scribe.example.com" }),
+        None,
+    )
+    .await;
+    let claim_token = reg["claim_token"].as_str().unwrap().to_string();
+    let (_is, ibody) = post_json(
+        state.clone(),
+        "/agent/identity/claim",
+        json!({ "claim_token": claim_token }),
+        None,
+    )
+    .await;
+    let user_code = ibody["claim_attempt"]["user_code"].as_str().unwrap();
+
+    let (status, preview) = post_json(
+        state.clone(),
+        "/v1/agents/claim-preview",
+        json!({ "userCode": user_code }),
+        Some(&owner_token(&state, owner)),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(preview["handleHint"], "scribe.example.com");
+
+    // A hint that isn't handle-shaped is refused at registration rather than stored and rendered.
+    let (bad_status, bad) = post_json(
+        state.clone(),
+        "/agent/identity",
+        json!({ "type": "anonymous", "handle_hint": "not a handle" }),
+        None,
+    )
+    .await;
+    assert_eq!(bad_status, StatusCode::BAD_REQUEST);
+    assert_eq!(bad["error"], "invalid_request");
+}
+
+/// The whole cooperative journey: an anonymous agent proposes a handle, the owner confirms with a
+/// signed child genesis op, and the agent's *unchanged* claim poll hands back a credential whose
+/// subject is the child — not the confirming account.
+#[tokio::test]
+async fn cooperative_confirm_mints_a_child_and_the_poll_returns_its_credential() {
+    let (state, _plc) = child_mint_state(anonymous_cfg()).await;
+    let owner = "did:plc:coopowner0000000000000000";
+    insert_account(&state.db, owner, "coop-owner@example.com").await;
+
+    let (_s, reg) = post_json(
+        state.clone(),
+        "/agent/identity",
+        json!({ "type": "anonymous", "handle_hint": "scribe.example.com" }),
+        None,
+    )
+    .await;
+    let registration_id = reg["registration_id"].as_str().unwrap().to_string();
+    let claim_token = reg["claim_token"].as_str().unwrap().to_string();
+    let (_is, ibody) = post_json(
+        state.clone(),
+        "/agent/identity/claim",
+        json!({ "claim_token": claim_token }),
+        None,
+    )
+    .await;
+    let user_code = ibody["claim_attempt"]["user_code"].as_str().unwrap();
+
+    let (status, confirmed) = post_json(
+        state.clone(),
+        "/agent/identity/claim/confirm",
+        json!({
+            "user_code": user_code,
+            "child": child_block(&state, "scribe.example.com").await,
+        }),
+        Some(&owner_token(&state, owner)),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "cooperative confirm: {confirmed}");
+    assert_eq!(confirmed["registration_id"], registration_id.as_str());
+    assert_eq!(confirmed["status"], "claimed");
+    assert_eq!(confirmed["did"], owner, "`did` still names the confirmer");
+    let child_did = confirmed["child"]["did"].as_str().unwrap().to_string();
+    assert_eq!(confirmed["child"]["handle"], "scribe.example.com");
+    assert!(confirmed["child"]["didDocument"]["id"] == child_did.as_str());
+
+    // The registration was converted in place: one row, now the child's.
+    type ConvertedRow = (String, Option<String>, String, Option<String>, String);
+    let rows: Vec<ConvertedRow> = sqlx::query_as(
+        "SELECT id, did, registration_type, parent_did, status FROM agent_identities",
+    )
+    .fetch_all(&state.db)
+    .await
+    .unwrap();
+    assert_eq!(rows.len(), 1, "no second registration row");
+    assert_eq!(rows[0].0, registration_id);
+    assert_eq!(rows[0].1.as_deref(), Some(child_did.as_str()));
+    assert_eq!(rows[0].2, "child");
+    assert_eq!(rows[0].3.as_deref(), Some(owner));
+    assert_eq!(rows[0].4, "claimed");
+
+    // The child is a real local account with its own handle and repo.
+    let (handle_did,): (String,) = sqlx::query_as("SELECT did FROM handles WHERE handle = ?")
+        .bind("scribe.example.com")
+        .fetch_one(&state.db)
+        .await
+        .unwrap();
+    assert_eq!(handle_did, child_did);
+    let (deactivated, root): (Option<String>, Option<String>) =
+        sqlx::query_as("SELECT deactivated_at, repo_root_cid FROM accounts WHERE did = ?")
+            .bind(&child_did)
+            .fetch_one(&state.db)
+            .await
+            .unwrap();
+    assert!(deactivated.is_none(), "child is activated");
+    assert!(root.is_some(), "child has a genesis repo");
+
+    // The agent's poll is unchanged — and answers with the child's credential.
+    reset_poll_throttle(&state);
+    let (poll_status, token) = poll_claim(state.clone(), &claim_token).await;
+    assert_eq!(poll_status, StatusCode::OK, "claim poll: {token}");
+    assert_eq!(
+        jwt_sub(token["access_token"].as_str().unwrap()),
+        child_did,
+        "access token is subject to the child, not the confirming account"
+    );
+    assert_eq!(
+        jwt_sub(token["identity_assertion"].as_str().unwrap()),
+        child_did
+    );
+}
+
+/// A rejected mint must not burn the ceremony: the user retypes a handle and confirms again.
+#[tokio::test]
+async fn a_taken_handle_rejects_without_consuming_the_claim_attempt() {
+    let (state, _plc) = child_mint_state(anonymous_cfg()).await;
+    let owner = "did:plc:takenowner000000000000000";
+    insert_account(&state.db, owner, "taken-owner@example.com").await;
+    sqlx::query("INSERT INTO handles (handle, did, created_at) VALUES (?, ?, datetime('now'))")
+        .bind("taken.example.com")
+        .bind(owner)
+        .execute(&state.db)
+        .await
+        .unwrap();
+
+    let (claim_token, user_code) = register_and_initiate_anonymous_claim(&state).await;
+    let token = owner_token(&state, owner);
+
+    let (status, body) = post_json(
+        state.clone(),
+        "/agent/identity/claim/confirm",
+        json!({
+            "user_code": user_code,
+            "child": child_block(&state, "taken.example.com").await,
+        }),
+        Some(&token),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT, "taken handle: {body}");
+    assert_eq!(body["error"], "invalid_request");
+
+    // The ceremony survived: the same user_code still confirms, with a free handle.
+    let (retry_status, retry) = post_json(
+        state.clone(),
+        "/agent/identity/claim/confirm",
+        json!({
+            "user_code": user_code,
+            "child": child_block(&state, "free.example.com").await,
+        }),
+        Some(&token),
+    )
+    .await;
+    assert_eq!(retry_status, StatusCode::OK, "retry: {retry}");
+    assert_eq!(retry["child"]["handle"], "free.example.com");
+
+    reset_poll_throttle(&state);
+    let (_ps, granted) = poll_claim(state.clone(), &claim_token).await;
+    assert_eq!(
+        jwt_sub(granted["access_token"].as_str().unwrap()),
+        retry["child"]["did"].as_str().unwrap()
+    );
+}
+
+/// A genesis op the server can't stand behind leaves nothing behind either — no account, no
+/// handle, no converted registration.
+#[tokio::test]
+async fn an_unverifiable_child_block_rejects_with_no_partial_state() {
+    let (state, _plc) = child_mint_state(anonymous_cfg()).await;
+    let owner = "did:plc:badopowner0000000000000000";
+    insert_account(&state.db, owner, "badop-owner@example.com").await;
+    let token = owner_token(&state, owner);
+
+    // An `atproto` key this server never reserved: structurally fine, but unmintable.
+    let stranger = crypto::generate_p256_keypair().unwrap();
+    let unreserved = crate::routes::test_utils::child_genesis_op(
+        "stranger.example.com",
+        &state.config.public_url,
+        &stranger.key_id.0,
+    );
+    let (claim_token, user_code) = register_and_initiate_anonymous_claim(&state).await;
+    let (status, body) = post_json(
+        state.clone(),
+        "/agent/identity/claim/confirm",
+        json!({
+            "user_code": user_code,
+            "child": { "handle": "stranger.example.com", "plcOp": unreserved },
+        }),
+        Some(&token),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "unreserved key: {body}");
+
+    // A signature that doesn't verify against rotationKeys[0].
+    let tampered = {
+        let mut op = child_block(&state, "tampered.example.com").await;
+        op["plcOp"]["alsoKnownAs"] = json!(["at://someone-else.example.com"]);
+        op
+    };
+    let (tampered_status, tampered_body) = post_json(
+        state.clone(),
+        "/agent/identity/claim/confirm",
+        json!({ "user_code": user_code, "child": tampered }),
+        Some(&token),
+    )
+    .await;
+    assert_eq!(
+        tampered_status,
+        StatusCode::BAD_REQUEST,
+        "tampered op: {tampered_body}"
+    );
+
+    let (accounts,): (i64,) = sqlx::query_as("SELECT COUNT(*) FROM accounts WHERE did != ?")
+        .bind(owner)
+        .fetch_one(&state.db)
+        .await
+        .unwrap();
+    assert_eq!(accounts, 0, "no child account was created");
+    let (provisionings,): (i64,) = sqlx::query_as("SELECT COUNT(*) FROM agent_child_provisionings")
+        .fetch_one(&state.db)
+        .await
+        .unwrap();
+    assert_eq!(provisionings, 0, "no provisioning was reserved");
+    let (registration_type, did): (String, Option<String>) =
+        sqlx::query_as("SELECT registration_type, did FROM agent_identities")
+            .fetch_one(&state.db)
+            .await
+            .unwrap();
+    assert_eq!(registration_type, "anonymous");
+    assert!(did.is_none(), "the registration is still ownerless");
+
+    // Still claimable the ordinary way.
+    reset_poll_throttle(&state);
+    let (poll_status, _) = poll_claim(state.clone(), &claim_token).await;
+    assert_eq!(poll_status, StatusCode::BAD_REQUEST, "still pending");
+}
+
+/// Regression pin: a confirm with no `child` block is the pre-existing flow, byte for byte.
+#[tokio::test]
+async fn confirm_without_a_child_block_is_unchanged() {
+    let state = state_with(anonymous_cfg()).await;
+    let owner = "did:plc:plainowner000000000000000";
+    insert_account(&state.db, owner, "plain-owner@example.com").await;
+    let (_claim_token, user_code) = register_and_initiate_anonymous_claim(&state).await;
+
+    let (status, body) = post_json(
+        state.clone(),
+        "/agent/identity/claim/confirm",
+        json!({ "user_code": user_code }),
+        Some(&owner_token(&state, owner)),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["did"], owner);
+    assert_eq!(body["status"], "claimed");
+    assert!(
+        body.get("child").is_none(),
+        "no child key on the ordinary arm"
+    );
+    let (registration_type, did): (String, Option<String>) =
+        sqlx::query_as("SELECT registration_type, did FROM agent_identities")
+            .fetch_one(&state.db)
+            .await
+            .unwrap();
+    assert_eq!(registration_type, "anonymous");
+    assert_eq!(did.as_deref(), Some(owner));
+}
+
+/// A `service_auth` registration asked to act *for* an account before the user ever saw a code.
+/// Re-pointing it at a fresh DID mid-ceremony would answer a different question than the one on
+/// the approval screen, so the child arm is refused there.
+#[tokio::test]
+async fn a_pre_bound_registration_cannot_take_the_child_arm() {
+    let (state, _plc) = child_mint_state(AgentAuthConfig {
+        service_auth_enabled: true,
+        ..AgentAuthConfig::default()
+    })
+    .await;
+    let owner = "did:plc:boundowner000000000000000";
+    insert_account(&state.db, owner, "bound-owner@example.com").await;
+
+    let (_s, reg) = post_json(
+        state.clone(),
+        "/agent/identity",
+        json!({ "type": "service_auth", "login_hint": "bound-owner@example.com" }),
+        None,
+    )
+    .await;
+    let user_code = reg["claim"]["user_code"].as_str().unwrap();
+
+    let (status, body) = post_json(
+        state.clone(),
+        "/agent/identity/claim/confirm",
+        json!({
+            "user_code": user_code,
+            "child": child_block(&state, "bound.example.com").await,
+        }),
+        Some(&owner_token(&state, owner)),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    assert_eq!(body["error"], "invalid_request");
+}
+
+/// Discovery tells an agent this arm exists before it registers — that is the only way it knows to
+/// send a `handle_hint` at all.
+#[tokio::test]
+async fn discovery_advertises_child_provisioning_and_documents_it() {
+    let (_s, meta) = get_json(
+        test_state().await,
+        "/.well-known/oauth-authorization-server",
+    )
+    .await;
+    assert_eq!(meta["agent_auth"]["child_provisioning"], true);
+
+    let response = app(test_state().await)
+        .oneshot(
+            Request::builder()
+                .uri("/auth.md")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let body = axum::body::to_bytes(response.into_body(), 1 << 20)
+        .await
+        .unwrap();
+    let document = String::from_utf8(body.to_vec()).unwrap();
+    assert!(
+        document.contains("handle_hint"),
+        "auth.md documents the hint"
+    );
+    assert!(
+        document.contains("child_provisioning"),
+        "auth.md names the advertised capability"
     );
 }

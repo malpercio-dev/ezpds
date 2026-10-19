@@ -77,13 +77,10 @@ pub(crate) async fn insert_app_password(
     match result {
         Ok(_) => Ok(InsertOutcome::Created),
         Err(e) if is_unique_violation(&e) => Ok(InsertOutcome::DuplicateName),
-        Err(e) => {
+        Err(e) => Err({
             tracing::error!(did = %did, error = %e, "DB error inserting app password");
-            Err(ApiError::new(
-                ErrorCode::InternalError,
-                "failed to create app password",
-            ))
-        }
+            ApiError::new(ErrorCode::InternalError, "failed to create app password")
+        }),
     }
 }
 

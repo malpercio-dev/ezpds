@@ -21,6 +21,7 @@ use crate::app::AppState;
 use crate::auth::extractors::AuthenticatedUser;
 use crate::auth::jwt::AuthScope;
 use crate::auth::oauth_scopes;
+use crate::db::dids::upsert_did_document;
 use crate::identity::plc::{build_did_document_from_op, ensure_did_plc, fetch_current_plc_state};
 use crate::lexicon::LexiconInput;
 
@@ -96,7 +97,7 @@ pub async fn submit_plc_operation(
         &verified.services,
     ) {
         Ok(doc) => {
-            if let Err(e) = update_cached_did_document(&state.db, did, &doc).await {
+            if let Err(e) = upsert_did_document(&state.db, did, &doc).await {
                 tracing::warn!(error = %e, did = %did, "failed to refresh cached DID document after submitPlcOperation (non-fatal)");
             }
         }
@@ -120,32 +121,11 @@ pub async fn submit_plc_operation(
     Ok(Json(SubmitPlcOperationResponse {}))
 }
 
-/// Upsert the locally-cached DID document for `did`.
-async fn update_cached_did_document(
-    db: &sqlx::SqlitePool,
-    did: &str,
-    document: &serde_json::Value,
-) -> Result<(), sqlx::Error> {
-    sqlx::query(
-        "INSERT INTO did_documents (did, document, created_at, updated_at) \
-         VALUES (?, ?, datetime('now'), datetime('now')) \
-         ON CONFLICT(did) DO UPDATE SET document = excluded.document, updated_at = datetime('now')",
-    )
-    .bind(did)
-    .bind(document.to_string())
-    .execute(db)
-    .await?;
-    Ok(())
-}
-
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeMap;
 
-    use axum::{
-        body::Body,
-        http::{Request, StatusCode},
-    };
+    use axum::http::StatusCode;
     use tower::ServiceExt;
     use wiremock::{
         matchers::{method, path},
@@ -153,7 +133,9 @@ mod tests {
     };
 
     use crate::app::{app, test_state_with_plc_url, AppState};
-    use crate::routes::test_utils::access_jwt;
+    use crate::routes::test_utils::{access_jwt, post_req as shared_post_req};
+
+    const URI: &str = "/xrpc/com.atproto.identity.submitPlcOperation";
 
     async fn state_with_plc(plc_uri: String) -> AppState {
         test_state_with_plc_url(plc_uri).await
@@ -219,15 +201,11 @@ mod tests {
         serde_json::from_str(&signed.signed_op_json).unwrap()
     }
 
-    fn post_req(jwt: Option<&str>, body: serde_json::Value) -> Request<Body> {
-        let mut builder = Request::builder()
-            .method("POST")
-            .uri("/xrpc/com.atproto.identity.submitPlcOperation")
-            .header("Content-Type", "application/json");
-        if let Some(jwt) = jwt {
-            builder = builder.header("Authorization", format!("Bearer {jwt}"));
-        }
-        builder.body(Body::from(body.to_string())).unwrap()
+    fn post_req(
+        jwt: Option<&str>,
+        body: serde_json::Value,
+    ) -> axum::http::Request<axum::body::Body> {
+        shared_post_req(URI, jwt, Some(body))
     }
 
     #[tokio::test]
@@ -314,17 +292,6 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(response.status(), StatusCode::BAD_REQUEST);
-    }
-
-    #[tokio::test]
-    async fn requires_auth() {
-        let plc = MockServer::start().await;
-        let state = state_with_plc(plc.uri()).await;
-        let response = app(state)
-            .oneshot(post_req(None, serde_json::json!({ "operation": {} })))
-            .await
-            .unwrap();
-        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
     }
 
     /// A did:web account gets an explicit "not a did:plc" 400 up front, before any plc.directory

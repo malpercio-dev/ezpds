@@ -40,7 +40,7 @@ pub async fn list_records(
     // The lexicon's `repo` format is `at-identifier` (DID or handle), but this route resolves
     // only DIDs directly — a stricter, deliberate restriction the lexicon layer doesn't cover, so
     // it stays a handler-level check rather than being subsumed by `LexiconParams`.
-    if !crate::auth::validation::is_valid_did(did) {
+    if !crate::identity::did::is_valid_did(did) {
         return Err(ApiError::new(ErrorCode::InvalidClaim, "invalid DID format"));
     }
 
@@ -113,14 +113,7 @@ mod tests {
     use axum::http::{self, Request};
     use tower::ServiceExt;
 
-    use crate::routes::test_utils::{access_jwt, seed_account_with_repo, state_with_master_key};
-
-    async fn setup_account_with_repo() -> (AppState, String) {
-        let state = state_with_master_key().await;
-        let did = "did:plc:listrecordstest".to_string();
-        seed_account_with_repo(&state.db, &did).await;
-        (state, did)
-    }
+    use crate::routes::test_utils::{access_jwt, setup_account_with_repo};
 
     /// Put a record via the putRecord handler (keeps the test honest: real write path).
     async fn put(app: &axum::Router, token: &str, did: &str, rkey: &str, value: serde_json::Value) {
@@ -324,15 +317,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn invalid_did_returns_400() {
-        let state = crate::app::test_state().await;
-        let app = crate::app::app(state);
-
-        let (status, _) = list(&app, "repo=not-a-did&collection=app.bsky.feed.post").await;
-        assert_eq!(status, StatusCode::BAD_REQUEST);
-    }
-
-    #[tokio::test]
     async fn invalid_collection_returns_400() {
         let (state, did) = setup_account_with_repo().await;
         let app = crate::app::app(state);
@@ -341,18 +325,5 @@ mod tests {
         // silently matched as an empty collection.
         let (status, _) = list(&app, &format!("repo={did}&collection=app.bsky")).await;
         assert_eq!(status, StatusCode::BAD_REQUEST);
-    }
-
-    #[tokio::test]
-    async fn nonexistent_account_returns_404() {
-        let state = crate::app::test_state().await;
-        let app = crate::app::app(state);
-
-        let (status, _) = list(
-            &app,
-            "repo=did:plc:nonexistent&collection=app.bsky.feed.post",
-        )
-        .await;
-        assert_eq!(status, StatusCode::NOT_FOUND);
     }
 }

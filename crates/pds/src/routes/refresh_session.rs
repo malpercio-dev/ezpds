@@ -13,7 +13,7 @@ use axum::{extract::State, http::HeaderMap, http::StatusCode, response::Json};
 use serde::Serialize;
 use uuid::Uuid;
 
-use common::{ApiError, ErrorCode};
+use common::{ApiError, ApiResultExt, ErrorCode};
 
 use crate::app::AppState;
 use crate::auth::extract_bearer_token;
@@ -84,33 +84,33 @@ pub async fn refresh_session(
     // --- Replay detection: next_jti being set means this token was already rotated ---
     if next_jti.is_some() {
         // Revoke the entire session atomically.
-        let mut tx = state.db.begin().await.map_err(|e| {
-            tracing::error!(error = %e, "failed to begin revocation transaction");
-            ApiError::new(ErrorCode::InternalError, "internal error")
-        })?;
+        let mut tx = state
+            .db
+            .begin()
+            .await
+            .or_internal_as("failed to begin revocation transaction", "internal error")?;
 
         sqlx::query("DELETE FROM refresh_tokens WHERE session_id = ?")
             .bind(&session_id)
             .execute(&mut *tx)
             .await
-            .map_err(|e| {
-                tracing::error!(error = %e, "failed to delete refresh tokens during revocation");
-                ApiError::new(ErrorCode::InternalError, "internal error")
-            })?;
+            .or_internal_as(
+                "failed to delete refresh tokens during revocation",
+                "internal error",
+            )?;
 
         sqlx::query("DELETE FROM sessions WHERE id = ?")
             .bind(&session_id)
             .execute(&mut *tx)
             .await
-            .map_err(|e| {
-                tracing::error!(error = %e, "failed to delete session during revocation");
-                ApiError::new(ErrorCode::InternalError, "internal error")
-            })?;
+            .or_internal_as(
+                "failed to delete session during revocation",
+                "internal error",
+            )?;
 
-        tx.commit().await.map_err(|e| {
-            tracing::error!(error = %e, "failed to commit revocation transaction");
-            ApiError::new(ErrorCode::InternalError, "internal error")
-        })?;
+        tx.commit()
+            .await
+            .or_internal_as("failed to commit revocation transaction", "internal error")?;
 
         tracing::warn!(
             did = %did,
@@ -127,10 +127,7 @@ pub async fn refresh_session(
     // --- Issue new tokens ---
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
-        .map_err(|e| {
-            tracing::error!(error = %e, "system clock is before Unix epoch");
-            ApiError::new(ErrorCode::InternalError, "failed to issue token")
-        })?
+        .or_internal_as("system clock is before Unix epoch", "failed to issue token")?
         .as_secs();
 
     let aud = state
@@ -355,34 +352,6 @@ mod tests {
         assert!(json["refreshJwt"].as_str().is_some(), "refreshJwt required");
         assert_eq!(json["did"], "did:plc:alice");
         assert_eq!(json["handle"], "alice.test.example.com");
-    }
-
-    /// The lexicon defines no input; a spurious body is rejected with 400 (reference-PDS parity),
-    /// leaving the refresh token unrotated.
-    #[tokio::test]
-    async fn non_empty_body_returns_400() {
-        let state = test_state().await;
-        insert_account_with_password(
-            &state.db,
-            "did:plc:refbody",
-            "refbody.test.example.com",
-            "refbody@example.com",
-            "hunter2",
-        )
-        .await;
-        let tokens = create_session_tokens(&state, "did:plc:refbody", "hunter2").await;
-        let refresh_jwt = tokens["refreshJwt"].as_str().unwrap().to_string();
-
-        let request = Request::builder()
-            .method("POST")
-            .uri("/xrpc/com.atproto.server.refreshSession")
-            .header("Authorization", format!("Bearer {refresh_jwt}"))
-            .header("Content-Type", "application/json")
-            .body(Body::from("{}"))
-            .unwrap();
-
-        let response = app(state).oneshot(request).await.unwrap();
-        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
     }
 
     #[tokio::test]
@@ -770,21 +739,6 @@ mod tests {
         );
         let json = body_json(response).await;
         assert_eq!(json["error"], "InvalidToken");
-    }
-
-    #[tokio::test]
-    async fn missing_authorization_header_returns_401() {
-        let request = Request::builder()
-            .method("POST")
-            .uri("/xrpc/com.atproto.server.refreshSession")
-            .body(Body::empty())
-            .unwrap();
-
-        let response = app(test_state().await).oneshot(request).await.unwrap();
-
-        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
-        let json = body_json(response).await;
-        assert_eq!(json["error"], "AuthMissing");
     }
 
     // ── App-password scope preservation ───────────────────────────────────────

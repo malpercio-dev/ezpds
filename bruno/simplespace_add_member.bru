@@ -1,0 +1,32 @@
+meta {
+  name: Simplespace Add Member
+  type: http
+  seq: 152
+}
+
+post {
+  url: {{baseUrl}}/xrpc/com.atproto.simplespace.addMember
+  body: json
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{accessToken}}
+}
+
+body:json {
+  {
+    "space": "at://{{did}}/space/org.example.bucket/main",
+    "did": "did:plc:memberaaaaaaaaaaaaaaaaaa"
+  }
+}
+
+docs {
+  Add a DID to a simplespace space's member list — the host-internal list consulted at
+  credential-mint time under the "member-list" policy (it is not a synced protocol
+  structure). The member is not notified; their PDS materializes a repo on first write.
+  Idempotent.
+
+  Membership management is a space-level "manage=update" operation; the caller must be the
+  space's authority. Errors: 400 SpaceNotFound, 400 NotSpaceOwner, 403 InsufficientScope.
+}

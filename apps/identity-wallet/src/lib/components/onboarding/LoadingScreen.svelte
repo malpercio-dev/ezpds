@@ -10,7 +10,7 @@
 
 <div class="screen">
   <Spinner size={48} label={statusText} />
-  <p class="status">{statusText}</p>
+  <p class="status u-status-text">{statusText}</p>
 </div>
 
 <style>
@@ -22,11 +22,5 @@
     height: 100%;
     gap: var(--space-lg);
     padding: var(--space-xl);
-  }
-  .status {
-    font-size: var(--text-body);
-    color: var(--color-muted);
-    margin: 0;
-    text-align: center;
   }
 </style>

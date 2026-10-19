@@ -13,7 +13,7 @@ actionable). MM-405 blocks MM-312 (passwordless). Captures the
 recovery-ceremony discussion of 2026-07-17 (capture-before-close). Builds on
 [ADR-0001](../../architecture/decisions/0001-client-held-rotation-key-custody.md),
 [ADR-0002](../../architecture/decisions/0002-wallet-authorized-account-migration.md), and the
-[passwordless-auth exploration](../../design-plans/2026-07-12-passwordless-auth.md), which flagged the Shamir
+[passwordless-auth exploration](2026-07-12-passwordless-auth.md), which flagged the Shamir
 reconstruction ceremony as a **hard prerequisite** for removing the password.
 
 > **Correction (2026-07-24).** §4 step 1 and §5 step 1 below say Share 1 "appears
@@ -211,7 +211,7 @@ The common case: lost/dead phone, iCloud intact, Custos alive and honest.
    per-IP rate limits, audit events, and a notification to the account email.
 3. **Release delay (default on, operator- and user-configurable).** The release enters a
    `pending` state for a window (e.g. 24h) during which any authenticated session/device
-   can cancel — a push through the [notification relay](../../design-plans/2026-07-10-notification-relay.md)
+   can cancel — a push through the [notification relay](2026-07-10-notification-relay.md)
    when that lands, email links meanwhile. The state machine (detailed in MM-409) is:
    the OTP is single-use and consumed by the opening `release` call, which returns
    `{status: "pending", available_at}`; the client then **re-polls the same

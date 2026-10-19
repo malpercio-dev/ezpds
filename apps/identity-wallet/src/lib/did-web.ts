@@ -42,13 +42,13 @@ export function composeDidWebDocument(
     alsoKnownAs: [`at://${handle}`],
     verificationMethod: [
       {
-        id: `${did}#device`,
+        id: '#device',
         type: 'Multikey',
         controller: did,
         publicKeyMultibase: deviceKeyMultibase,
       },
       {
-        id: `${did}#atproto`,
+        id: '#atproto',
         type: 'Multikey',
         controller: did,
         publicKeyMultibase: repoKeyMultibase,
@@ -56,7 +56,7 @@ export function composeDidWebDocument(
     ],
     service: [
       {
-        id: `${did}#atproto_pds`,
+        id: '#atproto_pds',
         type: 'AtprotoPersonalDataServer',
         serviceEndpoint: pdsUrl.replace(/\/$/, ''),
       },

@@ -91,7 +91,7 @@ export function didMethod(did: string): string | null {
  * Whether `did` is a `did:web` identity.
  *
  * `did:web` has no rotation-key hierarchy, no plc.directory audit log, and no recovery window
- * (ADR-0003): the DID document lives at the user's own domain and is defended by domain control,
+ * (ADR-0022): the DID document lives at the user's own domain and is defended by domain control,
  * not by the PLC machinery. The wallet uses this to gate the `did:plc`-only surfaces (PLC
  * monitoring, the recovery-window override, the claim/Shamir ceremonies) so it never presents
  * those assurances for an identity they do not apply to — it says so in-app instead of silently

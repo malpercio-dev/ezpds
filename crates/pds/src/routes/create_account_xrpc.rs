@@ -30,11 +30,15 @@
 use axum::{extract::State, http::HeaderMap, response::Json};
 use serde::{Deserialize, Serialize};
 
-use common::{ApiError, ErrorCode};
+use common::{ApiError, ApiResultExt, ErrorCode};
 
+use crate::account_genesis::{
+    announce_active_account, insert_account_row, stage_genesis_repo, GenesisRepo, NewAccountRow,
+};
 use crate::app::AppState;
 use crate::auth::password::{hash_password, resolve_password};
 use crate::auth::service_auth::verify_service_auth_resolving_key;
+use crate::db::dids::upsert_did_document;
 use crate::db::is_unique_violation;
 use crate::db::repo_keys::{
     get_reserved_repo_key_by_did, get_reserved_repo_key_by_id, insert_did_signing_key,
@@ -175,10 +179,10 @@ async fn create_account_new(
         })?;
     let repo_key = get_reserved_repo_key_by_id(&state.db, atproto_key_id)
         .await
-        .map_err(|e| {
-            tracing::error!(error = %e, "failed to load reserved signing key");
-            ApiError::new(ErrorCode::InternalError, "failed to load signing key")
-        })?
+        .or_internal_as(
+            "failed to load reserved signing key",
+            "failed to load signing key",
+        )?
         .ok_or_else(|| {
             ApiError::new(
                 ErrorCode::InvalidClaim,
@@ -206,14 +210,14 @@ async fn create_account_new(
             )
         })?;
     let genesis_private = crypto::decrypt_private_key(&repo_key.private_key_encrypted, master_key)
-        .map_err(|e| {
-            tracing::error!(error = %e, "failed to decrypt reserved signing key for genesis");
-            ApiError::new(ErrorCode::InternalError, "failed to prepare genesis repo")
-        })?;
-    let genesis_signer = repo_engine::CommitSigner::from_bytes(&genesis_private).map_err(|e| {
-        tracing::error!(error = %e, "invalid reserved signing key for genesis");
-        ApiError::new(ErrorCode::InternalError, "failed to prepare genesis repo")
-    })?;
+        .or_internal_as(
+            "failed to decrypt reserved signing key for genesis",
+            "failed to prepare genesis repo",
+        )?;
+    let genesis_signer = repo_engine::CommitSigner::from_bytes(&genesis_private).or_internal_as(
+        "invalid reserved signing key for genesis",
+        "failed to prepare genesis repo",
+    )?;
     let (genesis_root, genesis_rev, genesis_blocks) =
         repo_engine::build_genesis_repo(&did, &genesis_signer)
             .await
@@ -297,11 +301,6 @@ async fn promote_new_account(
     state: &AppState,
     p: NewAccountPromotion<'_>,
 ) -> Result<IssuedSession, ApiError> {
-    let did_document_str = serde_json::to_string(p.did_document).map_err(|e| {
-        tracing::error!(error = %e, "failed to serialize DID document");
-        ApiError::new(ErrorCode::InternalError, "failed to serialize DID document")
-    })?;
-
     // Acquire the firehose lock *before* opening the transaction — see the lock/connection
     // ordering rule in `firehose/mod.rs`'s module doc for why that order matters on the
     // single-connection pool.
@@ -316,28 +315,20 @@ async fn promote_new_account(
     // Redeem the invite code first: a bad code rolls the whole transaction back before any work.
     redeem_invite_code(&mut tx, state, p.invite_code).await?;
 
-    sqlx::query(
-        "INSERT INTO accounts \
-         (did, email, password_hash, repo_root_cid, repo_rev, created_at, updated_at) \
-         VALUES (?, ?, ?, ?, ?, datetime('now'), datetime('now'))",
+    insert_account_row(
+        &mut tx,
+        &NewAccountRow {
+            did: p.did,
+            email: p.email,
+            password_hash: p.password_hash,
+            repo_root_cid: p.genesis_root,
+            repo_rev: p.genesis_rev,
+        },
+        "account already exists",
     )
-    .bind(p.did)
-    .bind(p.email)
-    .bind(p.password_hash)
-    .bind(p.genesis_root)
-    .bind(p.genesis_rev)
-    .execute(&mut *tx)
-    .await
-    .map_err(|e| {
-        tracing::error!(error = %e, "failed to insert account");
-        if is_unique_violation(&e) {
-            ApiError::new(ErrorCode::DidAlreadyExists, "account already exists")
-        } else {
-            ApiError::new(ErrorCode::InternalError, "failed to create account")
-        }
-    })?;
+    .await?;
 
-    insert_did_document(&mut tx, p.did, &did_document_str).await?;
+    upsert_did_document(&mut *tx, p.did, p.did_document).await?;
     insert_handle(&mut tx, p.handle, p.did).await?;
 
     insert_did_signing_key(&mut *tx, p.did, p.repo_key)
@@ -345,49 +336,19 @@ async fn promote_new_account(
         .inspect_err(|e| tracing::error!(error = %e, "failed to insert repo signing key"))
         .map_err(|_| ApiError::new(ErrorCode::InternalError, "failed to store signing key"))?;
 
-    for (cid, bytes) in p.genesis_blocks {
-        let cid = cid.to_string();
-        crate::db::blocks::put_block_with_rev(
-            &mut tx,
-            &cid,
-            p.did,
-            bytes.as_slice(),
-            Some(p.genesis_rev),
-        )
-        .await
-        .inspect_err(|e| tracing::error!(error = %e, "failed to insert genesis block"))
-        .map_err(|_| ApiError::new(ErrorCode::InternalError, "failed to store genesis repo"))?;
-    }
-
-    // Stage the genesis `#commit` and a chained Sync v1.1 `#sync` head assertion in this same
-    // transaction, so a fresh host self-announces to the relay atomically with the repo it describes.
-    let pending_commit = emit_guard
-        .stage_commit(
-            &mut tx,
-            crate::firehose::CommitInput {
-                repo: p.did.to_string(),
-                commit: p.genesis_root.to_string(),
-                rev: p.genesis_rev.to_string(),
-                since: None,
-                prev_data: None,
-                ops: Vec::new(),
-                blocks: p.genesis_car,
-            },
-        )
-        .await
-        .inspect_err(|e| tracing::error!(error = %e, did = %p.did, "failed to stage genesis firehose commit event"))
-        .map_err(|_| ApiError::new(ErrorCode::InternalError, "failed to sequence genesis repo"))?
-        .stage_sync(
-            &mut tx,
-            crate::firehose::SyncInput {
-                did: p.did.to_string(),
-                rev: p.genesis_rev.to_string(),
-                blocks: p.genesis_sync_car,
-            },
-        )
-        .await
-        .inspect_err(|e| tracing::error!(error = %e, did = %p.did, "failed to stage genesis firehose sync event"))
-        .map_err(|_| ApiError::new(ErrorCode::InternalError, "failed to sequence genesis repo"))?;
+    let pending_commit = stage_genesis_repo(
+        &mut tx,
+        emit_guard,
+        GenesisRepo {
+            did: p.did,
+            root: p.genesis_root,
+            rev: p.genesis_rev,
+            blocks: p.genesis_blocks,
+            car: p.genesis_car,
+            sync_car: p.genesis_sync_car,
+        },
+    )
+    .await?;
 
     let session =
         issue_session_in_transaction(&mut tx, state, p.did, &SessionKind::FullAccess).await?;
@@ -397,16 +358,7 @@ async fn promote_new_account(
         .inspect_err(|e| tracing::error!(error = %e, "failed to commit createAccount transaction"))
         .map_err(|_| ApiError::new(ErrorCode::InternalError, "failed to commit transaction"))?;
 
-    pending_commit.finish();
-
-    if let Err(e) = state
-        .firehose
-        .emit_account(p.did.to_string(), true, None)
-        .await
-    {
-        tracing::warn!(error = %e, did = %p.did, "failed to sequence #account firehose event after account creation (non-fatal)");
-    }
-    state.crawlers.notify();
+    announce_active_account(state, pending_commit, p.did).await;
 
     Ok(session)
 }
@@ -500,10 +452,10 @@ async fn create_account_migration(
     // can sign commits once the repo is imported.
     let repo_key = get_reserved_repo_key_by_did(&state.db, did)
         .await
-        .map_err(|e| {
-            tracing::error!(error = %e, "failed to load reserved signing key");
-            ApiError::new(ErrorCode::InternalError, "failed to load signing key")
-        })?
+        .or_internal_as(
+            "failed to load reserved signing key",
+            "failed to load signing key",
+        )?
         .ok_or_else(|| {
             ApiError::new(
                 ErrorCode::InvalidClaim,
@@ -514,10 +466,6 @@ async fn create_account_migration(
     ensure_email_and_handle_free(state, &email, &payload.handle).await?;
     precheck_invite_code(state, payload.invite_code.as_deref()).await?;
 
-    let did_document_str = serde_json::to_string(&did_document).map_err(|e| {
-        tracing::error!(error = %e, "failed to serialize resolved DID document");
-        ApiError::new(ErrorCode::InternalError, "failed to store DID document")
-    })?;
     // A migration account may carry no password (OAuth-only); store NULL then.
     let password_hash = match payload.password.as_deref().filter(|p| !p.is_empty()) {
         Some(p) => Some(hash_password(p)?),
@@ -554,7 +502,7 @@ async fn create_account_migration(
         }
     })?;
 
-    insert_did_document(&mut tx, did, &did_document_str).await?;
+    upsert_did_document(&mut *tx, did, &did_document).await?;
     insert_handle(&mut tx, &payload.handle, did).await?;
     insert_did_signing_key(&mut *tx, did, &repo_key)
         .await
@@ -579,28 +527,11 @@ async fn create_account_migration(
 }
 
 // ── Shared helpers ───────────────────────────────────────────────────────────
-
-async fn insert_did_document(
-    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
-    did: &str,
-    document: &str,
-) -> Result<(), ApiError> {
-    // Upsert: in migration mode the DID document is already cached locally by the resolver, so a
-    // plain INSERT would conflict on the `did` primary key. New-account mode has no prior row, so
-    // the ON CONFLICT branch simply never fires.
-    sqlx::query(
-        "INSERT INTO did_documents (did, document, created_at, updated_at) \
-         VALUES (?, ?, datetime('now'), datetime('now')) \
-         ON CONFLICT(did) DO UPDATE SET document = excluded.document, updated_at = datetime('now')",
-    )
-    .bind(did)
-    .bind(document)
-    .execute(&mut **tx)
-    .await
-    .inspect_err(|e| tracing::error!(error = %e, "failed to insert did_document"))
-    .map_err(|_| ApiError::new(ErrorCode::InternalError, "failed to store DID document"))?;
-    Ok(())
-}
+//
+// `upsert_did_document` (`db::dids`) is called with `&mut *tx`: in migration mode the DID
+// document is already cached locally by the resolver, so a plain INSERT would conflict on the
+// `did` primary key — the UPDATE branch is what fires there. New-account mode has no prior row,
+// so the INSERT branch fires and the UPDATE branch never does.
 
 async fn insert_handle(
     tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
@@ -640,19 +571,19 @@ async fn ensure_email_and_handle_free(
     email: &str,
     handle: &str,
 ) -> Result<(), ApiError> {
-    if email_taken(&state.db, email).await.map_err(|e| {
-        tracing::error!(error = %e, "failed to check email uniqueness");
-        ApiError::new(ErrorCode::InternalError, "failed to create account")
-    })? {
+    if email_taken(&state.db, email).await.or_internal_as(
+        "failed to check email uniqueness",
+        "failed to create account",
+    )? {
         return Err(ApiError::new(
             ErrorCode::AccountExists,
             "an account with this email already exists",
         ));
     }
-    if handle_taken(&state.db, handle).await.map_err(|e| {
-        tracing::error!(error = %e, "failed to check handle uniqueness");
-        ApiError::new(ErrorCode::InternalError, "failed to create account")
-    })? {
+    if handle_taken(&state.db, handle).await.or_internal_as(
+        "failed to check handle uniqueness",
+        "failed to create account",
+    )? {
         return Err(ApiError::new(
             ErrorCode::HandleTaken,
             "this handle is already claimed",
@@ -715,10 +646,7 @@ async fn redeem_invite_code(
     .bind(code)
     .execute(&mut **tx)
     .await
-    .map_err(|e| {
-        tracing::error!(error = %e, "failed to redeem invite code");
-        ApiError::new(ErrorCode::InternalError, "failed to redeem invite code")
-    })?;
+    .or_internal("failed to redeem invite code")?;
     if result.rows_affected() == 0 {
         return Err(ApiError::new(
             ErrorCode::InvalidRequest,
@@ -755,7 +683,7 @@ mod tests {
     };
 
     use crate::app::{app, test_state_with_plc_url, AppState};
-    use crate::routes::test_utils::{seed_did_document, test_master_key};
+    use crate::routes::test_utils::{body_json, seed_did_document, test_master_key};
 
     const CREATE_ACCOUNT_URI: &str = "/xrpc/com.atproto.server.createAccount";
 
@@ -774,13 +702,6 @@ mod tests {
             config: Arc::new(config),
             ..base
         }
-    }
-
-    async fn body_json(response: axum::response::Response) -> serde_json::Value {
-        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
-            .await
-            .unwrap();
-        serde_json::from_slice(&bytes).unwrap()
     }
 
     fn post(body: serde_json::Value, bearer: Option<&str>) -> Request<Body> {
@@ -1193,10 +1114,7 @@ mod tests {
     ) -> String {
         let key = *kp.private_key_bytes;
         let signer = repo_engine::CommitSigner::from_bytes(&key).expect("signer");
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_secs();
+        let now = crate::time::unix_now_secs() as u64;
         crate::auth::jwt::mint_service_auth_jwt(|b| signer.sign(b), iss, aud, lxm, now, now + 300)
     }
 

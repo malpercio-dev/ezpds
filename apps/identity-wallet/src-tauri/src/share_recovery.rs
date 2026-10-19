@@ -1,6 +1,6 @@
 // pattern: Imperative Shell
 
-//! The "Recover existing identity" ceremony (10 Tauri IPC commands) — the consuming
+//! The "Recover existing identity" ceremony (9 Tauri IPC commands) — the consuming
 //! inverse of `share_ceremony.rs`. Two shares of the 2-of-3 split reconstruct the
 //! recovery seed; the seed re-derives the recovery rotation key (`rotationKeys[1]` in
 //! the `[device, recovery, PDS]` layout); that key signs a PLC rotation op installing a
@@ -16,9 +16,9 @@
 //! Command spine: `start_share_recovery` (resolve handle/did:plc via plc.directory,
 //! then auto-load Share 1 — synchronizable per-DID slot, then device-local per-DID,
 //! then the legacy global slot, each tier validated independently so a damaged higher
-//! tier cannot shadow a good lower one) → `add_recovery_share`/`remove_recovery_share`
-//! (base32 or word-phrase entry; `SHARE_CHECKSUM`, `SHARE_SET_MISMATCH` — carrying
-//! both set_ids — and `DUPLICATE_SHARE` are distinct, pre-combine errors) →
+//! tier cannot shadow a good lower one) → `add_recovery_share` (base32 or word-phrase
+//! entry; `SHARE_CHECKSUM`, `SHARE_SET_MISMATCH` — carrying both set_ids — and
+//! `DUPLICATE_SHARE` are distinct, pre-combine errors) →
 //! `verify_recovery_shares` (combine → derive → compare against the **authoritative
 //! plc.directory audit log**, never a cached DID document — the PLC-native shape is
 //! the only one carrying `rotationKeys` — so `SHARES_DO_NOT_MATCH_IDENTITY` surfaces
@@ -55,7 +55,7 @@ use rand_core::{OsRng, RngCore};
 use serde::{Deserialize, Serialize};
 use zeroize::Zeroizing;
 
-use crate::handle_change::{latest_full_state, CurrentHandleState};
+use crate::handle_change::CurrentHandleState;
 use crate::identity_store::{IdentityStore, IdentityStoreError, PerDidSignError};
 use crate::keychain;
 use crate::oauth::AppState;
@@ -500,28 +500,6 @@ pub(crate) async fn add_share_impl(
     Ok(collected)
 }
 
-/// Drop a collected share (user correction), e.g. after pasting the wrong phrase.
-#[tauri::command]
-pub async fn remove_recovery_share(
-    state: tauri::State<'_, AppState>,
-    index: u8,
-) -> Result<Vec<CollectedShare>, ShareRecoveryError> {
-    let mut guard = state.share_recovery_state.lock().await;
-    let session = guard
-        .as_mut()
-        .ok_or(ShareRecoveryError::NoRecoverySession)?;
-    session.shares.retain(|s| s.index != index);
-    session.verified = None;
-    Ok(session
-        .shares
-        .iter()
-        .map(|s| CollectedShare {
-            set_id: s.set_id,
-            index: s.index,
-        })
-        .collect())
-}
-
 // ── Escrow release (assisted path) ───────────────────────────────────────────
 
 /// Ask the account's PDS to email a release OTP. Always succeeds server-side for any
@@ -742,6 +720,22 @@ pub(crate) async fn verify_impl(
         return Err(ShareRecoveryError::SharesDoNotMatchIdentity);
     }
 
+    // Provision the identity for child (agent) accounts. Verification is the one point
+    // in this flow where the account's ORIGINAL recovery seed is in memory alongside a
+    // DID whose rotation keys have just been confirmed to match it — the epilogue below
+    // replaces that seed, so deriving anywhere later would yield a different delegation
+    // seed and orphan every child already minted. Doubles as the "Enable agent accounts"
+    // provisioning path for an identity created before the delegation seed existed.
+    //
+    // Never fatal. A `DelegationSeedConflict` means these shares reconstruct a
+    // superseded seed (a re-key installed a newer set); the stored delegation seed wins
+    // because it is the one the DID's existing children were minted against, and
+    // recovery's job is to give the user their identity back either way.
+    let delegation_seed = crypto::derive_delegation_seed(&seed);
+    if let Err(e) = IdentityStore.store_delegation_seed(&did, &delegation_seed) {
+        tracing::warn!(did = %did, error = %e, "delegation seed not persisted during share verification");
+    }
+
     let mut guard = slot.lock().await;
     let session = guard
         .as_mut()
@@ -906,14 +900,10 @@ async fn fetch_current_state(
     pds: &PdsClient,
     did: &str,
 ) -> Result<CurrentHandleState, ShareRecoveryError> {
-    let audit_json = pds.fetch_audit_log(did).await.map_err(map_pds_error)?;
-    let audit =
-        crypto::parse_audit_log(&audit_json).map_err(|e| ShareRecoveryError::InvalidAuditLog {
-            message: e.to_string(),
-        })?;
-    latest_full_state(&audit).map_err(|e| ShareRecoveryError::InvalidAuditLog {
-        message: e.to_string(),
+    crate::handle_change::fetch_current_state(pds, did, map_pds_error, |message| {
+        ShareRecoveryError::InvalidAuditLog { message }
     })
+    .await
 }
 
 /// Refresh the per-identity caches with the PLC *data* document (never the W3C form,
@@ -1493,7 +1483,7 @@ mod tests {
                 "bafyprev1",
             ));
         });
-        let pds = PdsClient::new_for_test(plc.base_url());
+        let pds = crate::pds_client::new_for_test(plc.base_url());
 
         let slot = fresh_slot(DID, None);
         push_share(&slot, &set_a[0]).await;
@@ -1516,8 +1506,92 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn verify_persists_the_delegation_seed_derived_from_the_recovered_seed() {
+        crate::keychain::clear_for_test();
+        let (set_a, recovery_key) = make_split(0x7777_0001);
+
+        let plc = MockServer::start();
+        plc.mock(|when, then| {
+            when.method(httpmock::Method::GET)
+                .path(format!("/{DID}/log/audit"));
+            then.status(200).body(audit_log_json(
+                &["did:key:zOldDevice", recovery_key.as_str(), "did:key:zPds"],
+                "https://pds.example.com",
+                "bafyprev1",
+            ));
+        });
+        let pds = crate::pds_client::new_for_test(plc.base_url());
+
+        assert!(!IdentityStore.is_delegation_provisioned(DID).unwrap());
+
+        let slot = fresh_slot(DID, None);
+        push_share(&slot, &set_a[0]).await;
+        push_share(&slot, &set_a[2]).await;
+        verify_impl(&pds, &slot).await.unwrap();
+
+        // Provisioning is a pure function of the shares the user just supplied.
+        let seed = crypto::combine_envelopes(&set_a[0], &set_a[2]).unwrap();
+        assert_eq!(
+            IdentityStore
+                .load_delegation_seed(DID)
+                .unwrap()
+                .unwrap()
+                .as_slice(),
+            crypto::derive_delegation_seed(&seed).as_slice()
+        );
+
+        // Re-verifying the same shares is idempotent, not a conflict.
+        let slot2 = fresh_slot(DID, None);
+        push_share(&slot2, &set_a[0]).await;
+        push_share(&slot2, &set_a[1]).await;
+        verify_impl(&pds, &slot2).await.unwrap();
+    }
+
+    /// A re-key installs a new recovery seed. Verifying against the *newer* share set
+    /// must leave the stored delegation seed alone — it is the root the DID's existing
+    /// children were minted from — and must still hand the user their identity back.
+    #[tokio::test]
+    async fn verify_keeps_the_stored_delegation_seed_when_shares_are_from_a_newer_set() {
+        crate::keychain::clear_for_test();
+        let (set_a, recovery_key) = make_split(0x7777_0002);
+
+        let plc = MockServer::start();
+        plc.mock(|when, then| {
+            when.method(httpmock::Method::GET)
+                .path(format!("/{DID}/log/audit"));
+            then.status(200).body(audit_log_json(
+                &["did:key:zOldDevice", recovery_key.as_str(), "did:key:zPds"],
+                "https://pds.example.com",
+                "bafyprev1",
+            ));
+        });
+        let pds = crate::pds_client::new_for_test(plc.base_url());
+
+        let incumbent = [0xab_u8; 32];
+        IdentityStore
+            .store_delegation_seed(DID, &incumbent)
+            .unwrap();
+
+        let slot = fresh_slot(DID, None);
+        push_share(&slot, &set_a[0]).await;
+        push_share(&slot, &set_a[2]).await;
+        verify_impl(&pds, &slot)
+            .await
+            .expect("recovery is never blocked by the conflict");
+
+        assert_eq!(
+            IdentityStore
+                .load_delegation_seed(DID)
+                .unwrap()
+                .unwrap()
+                .as_slice(),
+            incumbent
+        );
+    }
+
+    #[tokio::test]
     async fn verify_requires_two_shares() {
-        let pds = PdsClient::new_for_test("http://127.0.0.1:1".to_string());
+        let pds = crate::pds_client::new_for_test("http://127.0.0.1:1".to_string());
         let (set_a, _) = make_split(1);
         let slot = fresh_slot(DID, None);
         push_share(&slot, &set_a[0]).await;
@@ -1547,7 +1621,7 @@ mod tests {
 
         let slot = fresh_slot(DID, Some(custos.base_url()));
         push_share(&slot, &set_a[0]).await;
-        let pds = PdsClient::new_for_test(custos.base_url());
+        let pds = crate::pds_client::new_for_test(custos.base_url());
 
         let status = release_impl(&pds, &slot, Some("123456".to_string()))
             .await
@@ -1606,7 +1680,7 @@ mod tests {
         });
         let slot = fresh_slot(DID, Some(custos.base_url()));
         push_share(&slot, &set_a[0]).await;
-        let pds = PdsClient::new_for_test(custos.base_url());
+        let pds = crate::pds_client::new_for_test(custos.base_url());
         assert!(matches!(
             release_impl(&pds, &slot, Some("123456".to_string())).await,
             Err(ShareRecoveryError::ShareSetMismatch { .. })
@@ -1654,7 +1728,7 @@ mod tests {
                 "services": {}
             }));
         });
-        let pds = PdsClient::new_for_test(plc.base_url());
+        let pds = crate::pds_client::new_for_test(plc.base_url());
 
         let slot = fresh_slot(DID, Some(custos.base_url()));
         push_share(&slot, &set_a[0]).await;
@@ -1712,7 +1786,7 @@ mod tests {
             then.status(200)
                 .json_body(serde_json::json!({ "did": DID }));
         });
-        let pds = PdsClient::new_for_test(plc.base_url());
+        let pds = crate::pds_client::new_for_test(plc.base_url());
 
         let slot = fresh_slot(DID, None);
         push_share(&slot, &set_a[0]).await;
@@ -1819,7 +1893,7 @@ mod tests {
             when.method(httpmock::Method::POST).path(format!("/{DID}"));
             then.status(200).json_body(serde_json::json!({}));
         });
-        let pds = PdsClient::new_for_test(plc.base_url());
+        let pds = crate::pds_client::new_for_test(plc.base_url());
 
         let staged_before = load_epilogue().unwrap().unwrap();
         let new_key_before = staged_before.new_recovery_key_id.clone();
@@ -1876,7 +1950,7 @@ mod tests {
             when.method(httpmock::Method::POST).path(format!("/{DID}"));
             then.status(200).json_body(serde_json::json!({}));
         });
-        let pds = PdsClient::new_for_test(plc.base_url());
+        let pds = crate::pds_client::new_for_test(plc.base_url());
 
         // A persisted sovereign session pointing at the PDS mock (the restart-resume
         // seam: the epilogue reuses it instead of re-minting).
@@ -1952,7 +2026,7 @@ mod tests {
             )
             .unwrap();
 
-        let result = epilogue_impl(&PdsClient::new_for_test(plc.base_url()), false)
+        let result = epilogue_impl(&crate::pds_client::new_for_test(plc.base_url()), false)
             .await
             .unwrap();
         assert!(result.escrow_skipped, "no escrow route means no escrow leg");

@@ -33,6 +33,10 @@ pub mod repo_keys;
 pub mod server_stats;
 pub mod sessions;
 pub mod sovereign_session_nonces;
+pub mod space_jti;
+pub mod space_notify;
+pub mod space_repos;
+pub mod spaces;
 pub mod transfers;
 pub mod waitlist;
 
@@ -206,6 +210,74 @@ pub fn unique_violation_column<'a>(e: &'a sqlx::Error, table: &str) -> Option<&'
     None
 }
 
+/// Insert a freshly generated value, regenerating and retrying on a UNIQUE-constraint
+/// collision. `Ok(None)` means every attempt collided — the caller decides what a run of bad
+/// luck that long means for its endpoint.
+///
+/// The cap is deliberately small: every generator reaching here draws from a keyspace where a
+/// conflict is astronomically unlikely, so the loop absorbs a freak collision rather than
+/// papering over a generator that is too narrow. `generated` names the value in the warning.
+///
+/// Retries on any UNIQUE violation. When an insert can also violate a *different* column that
+/// is a terminal conflict rather than bad luck on the generated value (`create_account`'s
+/// claim-code insert also touches `pending_accounts.email`/`.handle`), use
+/// [`insert_with_retry_if`] instead and classify the error yourself.
+pub async fn insert_with_retry_on_collision<T, F, Fut>(
+    generated: &'static str,
+    insert: F,
+) -> Result<Option<T>, sqlx::Error>
+where
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = Result<T, sqlx::Error>>,
+{
+    insert_with_retry_if(generated, is_unique_violation, insert).await
+}
+
+/// [`insert_with_retry_on_collision`], generalized with a caller-supplied `should_retry`
+/// predicate for inserts where not every UNIQUE violation means "regenerate and try again" —
+/// some are a terminal conflict on a different column in the same statement. The predicate
+/// still has to check `is_unique_violation` itself; a non-violation error (e.g. a dropped
+/// connection) must not be classified as retryable by accident.
+pub async fn insert_with_retry_if<T, F, Fut>(
+    generated: &'static str,
+    should_retry: impl Fn(&sqlx::Error) -> bool,
+    mut insert: F,
+) -> Result<Option<T>, sqlx::Error>
+where
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = Result<T, sqlx::Error>>,
+{
+    for attempt in 0..3_usize {
+        match insert().await {
+            Ok(value) => return Ok(Some(value)),
+            Err(e) if should_retry(&e) => {
+                tracing::warn!(
+                    attempt,
+                    generated,
+                    "collision on a generated value; retrying"
+                );
+            }
+            Err(e) => return Err(e),
+        }
+    }
+    Ok(None)
+}
+
+// ── Shared test fixtures ────────────────────────────────────────────────────
+//
+// Used by `db` submodule tests and by other modules' tests that need a bare database without a
+// full `AppState` (`test_state()` in `app.rs` is the fixture for that). Route tests reach this
+// via `routes::test_utils`, which re-exports it.
+
+/// Open a fresh in-memory pool and run migrations. Each call is independent — no files created
+/// on disk.
+#[cfg(test)]
+pub(crate) async fn test_pool() -> SqlitePool {
+    let pool = open_pool("sqlite::memory:").await.unwrap();
+    run_migrations(&pool).await.unwrap();
+    pool
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -230,15 +302,14 @@ mod tests {
     /// Tests that URL parse errors surface as DbError::InvalidUrl, not DbError::Pool.
     #[tokio::test]
     async fn open_pool_invalid_url_returns_correct_error() {
-        // sqlx's URL parser is lenient for sqlite: scheme. Use a genuinely invalid URL.
-        // Most common invalid case: wrong scheme like "postgres:" instead of "sqlite:"
-        // For this test, we verify any error from open_pool can occur and surface correctly.
-        // The important thing is that if from_str() fails, it becomes DbError::InvalidUrl.
-        // Since sqlx accepts most strings as relative paths, we don't force a parse error.
-        // Instead, this test documents the behavior: open_pool succeeds for most inputs
-        // and fails at first query if the path is invalid.
-        let result = open_pool("sqlite::memory:").await;
-        assert!(result.is_ok(), "in-memory database should always succeed");
+        // sqlx accepts most strings as relative filenames, so a bare bad path won't fail to
+        // parse. An unrecognized `mode` query value does: `SqliteConnectOptions::from_str`
+        // rejects it before any connection is attempted.
+        let result = open_pool("sqlite:test.db?mode=bogus").await;
+        assert!(
+            matches!(result, Err(DbError::InvalidUrl(_))),
+            "expected DbError::InvalidUrl, got {result:?}"
+        );
     }
 
     /// Verify that successful migrations return Ok and bootstrap the schema_migrations table.

@@ -12,7 +12,7 @@ models are both first-class (design plan §1 matrix):
 - **Hosted, sovereign child** → this sidecar. The agent is its own identity; the sidecar never
   holds a durable credential that could act as anyone.
 
-Design: [`docs/design-plans/2026-07-14-hosted-custos-mcp.md`](../../docs/design-plans/2026-07-14-hosted-custos-mcp.md)
+Design: [`docs/design-plans/2026-07-14-hosted-custos-mcp.md`](../../docs/archive/design-plans/2026-07-14-hosted-custos-mcp.md)
 §3–§5. Posture fixed by [ADR-0024](../../docs/architecture/decisions/0024-hosted-agent-credential-forwarding.md)
 (credential forwarding) and [ADR-0023](../../docs/architecture/decisions/0023-sovereign-child-agent-identities.md)
 (sovereign child identities).
@@ -54,17 +54,20 @@ Configuration is environment variables only:
 |---|---|---|
 | `MCP_SIDECAR_PDS_ORIGIN` | yes | Where the sidecar forwards XRPC calls. In the co-located tier this is the PDS's **private** Railway address (`http://pds.railway.internal:PORT`), never the public domain. Parse **fails loudly** if unset. |
 | `MCP_SIDECAR_PUBLIC_ORIGIN` | prod | The sidecar's own public origin (`https://mcp.obsign.org`), advertised as the OAuth resource identifier. Defaults to the PDS origin for local single-host runs. |
-| `MCP_SIDECAR_AUTH_SERVER_ORIGIN` | prod | The **public** Custos authorization-server origin (`https://obsign.org`) advertised to clients in the protected-resource metadata — never the private `*.railway.internal` forwarding address. Defaults to the PDS origin for local single-host runs. |
 | `PORT` | no | Listen port (Railway injects it; default 8080). |
 | `MCP_SIDECAR_PATH` | no | MCP endpoint path (default `/mcp`). |
-| `CUSTOS_MCP_ALLOW_DESTRUCTIVE` | no | Same gate as the stdio server: `1` lists `put_record`/`delete_record`. |
-| `CUSTOS_MCP_IMAGE_DIR` | no | Same gate as the stdio server: the one directory `create_post` may read image attachments from. |
+| `CUSTOS_MCP_ALLOW_DESTRUCTIVE` | no | Same gate as the stdio server: `1` lists `put_record`/`delete_record` and their space siblings `space_put_record`/`space_delete_record`. |
+| `CUSTOS_MCP_IMAGE_DIR` | no | Same gate as the stdio server: the one directory `create_post`, `upload_blob` (by `path`), and `update_bluesky_profile` may read files from. Inline `data` uploads bypass it — that is the remote-client path. |
 
 Endpoints:
 
 - `POST /mcp` — the MCP Streamable-HTTP transport (an MCP client connects here).
 - `GET /.well-known/oauth-protected-resource` — MCP-spec protected-resource metadata pointing
-  a caller at Custos as the authorization server (ADR-0019).
+  a caller at Custos as the authorization server (ADR-0019). The advertised authorization
+  server is **not** configured: the sidecar reads the PDS's own RFC 8414 `issuer` (over the
+  private forwarding origin) and caches it, so the two can never disagree. A hand-set copy of
+  that origin is what silently dead-ended discovery when the PDS moved hosts (MM-536). If the
+  PDS publishes no usable `issuer`, this returns a retryable **503** rather than guessing.
 - `GET /` — liveness (200, touches no credential).
 
 ## Connecting an MCP client
@@ -120,7 +123,7 @@ deps installed in `tools/mcp` too (`just mcp-setup`); the node-only CI lane
 (`.github/workflows/mcp-check.yml`) runs the scaffold half only. Still fully offline.
 
 **Live** (`test/live/`) — the HV-2 driver for a deployed sidecar
-([`docs/test-plans/2026-07-15-MM-356.md`](../../docs/test-plans/2026-07-15-MM-356.md)):
+([`docs/test-plans/2026-07-15-MM-356.md`](../../docs/archive/test-plans/2026-07-15-MM-356.md)):
 `hv2-create-post.mjs` runs the whole pass against real deployments (ephemeral parent →
 mint child, genesis to the **real** plc.directory → forwarded token → `create_post`
 through the deployed sidecar → attribution + plc read-backs; usage in its header —

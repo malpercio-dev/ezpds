@@ -1,6 +1,6 @@
 # Crypto Crate
 
-Last verified: 2026-08-06
+Last verified: 2026-08-20
 
 ## Purpose
 Provides cryptographic primitives for the ezpds workspace:
@@ -18,7 +18,11 @@ Provides cryptographic primitives for the ezpds workspace:
 - RFC 9180 HPKE sealing (plus length-bucket padding) for the notification
   relay's push payloads; and
 - offline atproto inter-service (`getServiceAuth`-style) JWT minting, so a
-  wallet-held key can mint its own migration token for sovereign recovery.
+  wallet-held key can mint its own migration token for sovereign recovery; and
+- the Spaces (permissioned data) primitives: the LtHash multiset hash over a
+  permissioned repo's contents and the deniable commit sign/verify pair,
+  pinned to the reference golden vectors from the atproto `permissioned-data`
+  branch.
 
 This is a pure functional core -- no I/O, no database, no config. Each
 primitive's full contract is in [Contracts](#contracts) below.
@@ -76,6 +80,16 @@ pub fn derive_recovery_keypair(seed: &[u8; 32]) -> Result<P256Keypair, CryptoErr
 - HKDF-SHA256 with fixed salt (`ezpds/recovery-seed/v1`) + `info` domain string, rejection-sampled into the P-256 scalar range `[1, n)` (a rejected candidate re-expands with an incremented counter appended to `info`; the first candidate succeeds with overwhelming probability)
 - The derived key's did:key sits in `rotationKeys` (recovery slot); it signs low-S like every other signer in the crate
 - Errors: `CryptoError::KeyGeneration` only if HKDF fails or the counter space is exhausted (practically impossible)
+
+**`derive_delegation_seed` / `derive_child_seed`**
+```rust
+pub fn derive_delegation_seed(recovery_seed: &[u8; 32]) -> Zeroizing<[u8; 32]>
+pub fn derive_child_seed(delegation_seed: &[u8; 32], index: u32) -> Zeroizing<[u8; 32]>
+```
+- The child-account key hierarchy: the recovery seed derives one at-rest `delegation_seed` (the wallet's per-identity secret for minting child accounts), which derives a seed per child index.
+- HKDF-SHA256, salts `ezpds/delegation-seed/v1` / `ezpds/child-seed/v1`, child index appended big-endian to `info`. Single expand, no rejection sampling — the outputs are opaque seeds, not curve scalars.
+- `derive_recovery_keypair(derive_child_seed(..))` is the leaf step, so the child's rotation key comes off the already-pinned scalar path.
+- Infallible (32 bytes is far under HKDF's output ceiling); one-way, so a leaked delegation seed exposes only the child subtree.
 
 **`split_secret`**
 ```rust
@@ -396,6 +410,45 @@ pub fn diff_audit_logs(cached: &[AuditEntry], current: &[AuditEntry]) -> Vec<Aud
 - Returns the new entries in the order they appear in `current`
 - Used to detect PLC operations a caller's cache hasn't seen yet (e.g. a refreshed audit log fetch)
 
+**`LtHash`** / **`format_set_hash_element`**
+
+```rust
+impl LtHash {
+    pub fn new() -> Self;                                       // empty multiset (all-zero state)
+    pub fn from_state(state: &[u8]) -> Result<Self, CryptoError>; // resume persisted state (must be 2048 bytes)
+    pub fn add(&mut self, element: &str);
+    pub fn remove(&mut self, element: &str);
+    pub fn state(&self) -> [u8; LTHASH_STATE_BYTES];            // 2048 bytes, for persistence
+    pub fn digest(&self) -> [u8; 32];                           // sha256(state), the commit hash
+    pub fn is_empty(&self) -> bool;
+}
+pub fn format_set_hash_element(collection: &str, rkey: &str, cid: &str) -> String
+```
+
+- The Spaces homomorphic multiset hash: each element expands to 1024 little-endian u16 lanes (BLAKE3 XOF, dkLen = 2048) summed into the state mod 2^16, so add/remove commute and a repo host updates the digest incrementally per record write. Golden-vector pinned (empty digest `e5a00aa9…`, `one`+`two` digest `ae05cb6d…`) — a lane-format change invalidates every persisted state.
+- `format_set_hash_element` builds the per-record element `{collection}/{rkey}/{cid}`. Injectivity rests on the outer fields being slash-free (NSID + base32 CID), inherited from lexicon validation — not enforced here.
+
+**`sign_space_commit`** / **`verify_space_commit`** / **`encode_space_commit_ctx`**
+
+```rust
+pub fn encode_space_commit_ctx(ctx: &SpaceCommitCtx<'_>, ikm: &[u8]) -> Result<Vec<u8>, CryptoError>
+pub fn sign_space_commit(
+    ctx: &SpaceCommitCtx<'_>,       // space URI + author DID + rev TID
+    hash: [u8; 32],                 // LtHash::digest of the repo contents
+    signing_private_key: &[u8; 32], // author's P-256 signing key scalar
+) -> Result<SignedSpaceCommit, CryptoError>
+pub fn verify_space_commit(
+    commit: &SignedSpaceCommit,
+    ctx: &SpaceCommitCtx<'_>,
+    author_key: &DidKeyUri,         // dual-curve: P-256 or secp256k1
+) -> Result<(), CryptoError>
+```
+
+- The deniable commit over a permissioned repo digest. `ctx` is TLS-vector encoded (`"atproto-space-v1"` + u16be-len-prefixed space/author/rev/ikm); `sig = sign(ctx)` (low-S P-256) deliberately never covers `hash` — the binding is `mac = HMAC-SHA256(HKDF-Expand(ikm, ctx, 32), hash)` (RFC 5869 expand only, `ikm` as PRK). Anyone holding the commit knows `ikm` and can forge a MAC for any hash, so a leaked commit proves nothing about content.
+- `sign_space_commit` draws a fresh 32-byte `ikm` per call — each reader served gets a distinct `ikm`/`sig`/`mac` triple over the same hash.
+- `verify_space_commit` checks version, rev-vs-ctx agreement, MAC, then the signature via the dual-curve `did:key` path (foreign authors may sign ES256K; signing here stays P-256-only).
+- Errors: `CryptoError::Space` for a ctx field over the u16 length prefix, a bad state length, version/rev/MAC mismatch; `CryptoError::SignatureVerification` from the signature path.
+
 ### Public types
 
 **`P256Keypair`**
@@ -454,7 +507,7 @@ pub fn diff_audit_logs(cached: &[AuditEntry], current: &[AuditEntry]) -> Vec<Aud
 - `Debug` redacts `payload`
 
 **`CryptoError`** variants:
-- `KeyGeneration`, `Encryption`, `Decryption`, `SecretSharing`, `SecretReconstruction`, `ShareVersion`, `ShareChecksum`, `ShareFormat`, `PlcOperation`, `SignatureVerification`
+- `KeyGeneration`, `Encryption`, `Decryption`, `SecretSharing`, `SecretReconstruction`, `ShareVersion`, `ShareChecksum`, `ShareFormat`, `PlcOperation`, `SignatureVerification`, `Space`
 - The three `Share*` variants are the **distinct** share-envelope decode failures: `ShareVersion` (unsupported version), `ShareChecksum` (integrity check failed), `ShareFormat` (structural/encoding error)
 
 ### Format guarantees
@@ -468,7 +521,7 @@ pub fn diff_audit_logs(cached: &[AuditEntry], current: &[AuditEntry]) -> Vec<Aud
 
 ## Dependencies
 
-- **Uses**: hpke (RFC 9180 sealing for notification payloads; 0.13 deliberately, so it resolves onto the workspace's p256 0.13 / aes-gcm 0.10 / hkdf 0.12 rather than forking a second major of each — guard-banned in `deny.toml`), rand_core_os (renamed rand_core 0.9 with `os_rng`, the CSPRNG hpke 0.13 expects), p256 (ECDSA/key generation), k256 (secp256k1 ECDSA — verification only, for ops signed by the reference ecosystem), aes-gcm (AES-256-GCM), multibase (base58btc encoding), rand_core (OS RNG), base64 (storage encoding), zeroize (secret cleanup), ciborium (CBOR serialization for did:plc), data-encoding (base32-lowercase for DIDs; base32 uppercase for share envelopes), sha2 (SHA-256), hkdf (HKDF-SHA256 for recovery-key derivation), serde/serde_json (struct serialization)
+- **Uses**: hpke (RFC 9180 sealing for notification payloads; 0.13 deliberately, so it resolves onto the workspace's p256 0.13 / aes-gcm 0.10 / hkdf 0.12 rather than forking a second major of each — guard-banned in `deny.toml`), rand_core_os (renamed rand_core 0.9 with `os_rng`, the CSPRNG hpke 0.13 expects), p256 (ECDSA/key generation), k256 (secp256k1 ECDSA — verification only, for ops signed by the reference ecosystem), aes-gcm (AES-256-GCM), multibase (base58btc encoding), rand_core (OS RNG), base64 (storage encoding), zeroize (secret cleanup), ciborium (CBOR serialization for did:plc), data-encoding (base32-lowercase for DIDs; base32 uppercase for share envelopes), sha2 (SHA-256), hkdf (HKDF-SHA256 for recovery-key derivation and the space-commit MAC key), hmac (HMAC-SHA256 for the space-commit MAC), blake3 (XOF element expansion for the Spaces LtHash), serde/serde_json (struct serialization)
 - **Used by**: `crates/pds/` (key generation, did:plc genesis building and verification in POST /v1/dids; `seal_notification` + the padding arithmetic for outbound push notifications, with `p256_public_key_from_did_key`/`p256_keypair_from_secret` for the device-key and sender-key encodings; sovereign-session canonical proof encoding and dual-curve verification; `crates/pds/src/plc_ops.rs` shares the interop PLC-signing surface's audit-log fetch + service parsing; `routes/sign_plc_operation.rs`/`routes/submit_plc_operation.rs` build/verify rotation ops via `build_did_plc_rotation_op`/`verify_plc_operation`), `apps/identity-wallet/` (external signer genesis op building in DID ceremony; shared sovereign-session encoder for the wallet client; `mint_service_auth_jwt` for the disaster-recovery `createAccount` service-auth token — `src-tauri/src/disaster_recovery.rs`)
 
 ## Invariants
@@ -480,13 +533,14 @@ pub fn diff_audit_logs(cached: &[AuditEntry], current: &[AuditEntry]) -> Vec<Aud
 - `combine_shares` requires exactly 2 shares with distinct indices in [1, 3]; returns `CryptoError::SecretReconstruction` otherwise
 - **Share envelope v2 is self-describing and checksummed.** A `ShareEnvelope` carries its own version, `set_id`, index, and a 4-byte SHA-256 checksum, so a corrupted share fails at `from_bytes`/`decode_share*` (distinct `ShareVersion`/`ShareChecksum`/`ShareFormat` errors) before it can reach `combine_envelopes`, and `combine_envelopes` refuses shares whose `set_id` differs (cross-generation shares never reconstruct a silently-wrong seed). **Fields are private** and construction routes only through validated paths, so an in-hand envelope's invariants cannot be forged (a caller cannot set a bad version or mutate the payload); `combine_envelopes` also re-checks the version. The GF(2^8) split/combine core is shared with `split_secret`/`combine_shares` and unchanged. The Share-3 mnemonic and the base32 form encode the identical 42 bytes; the mnemonic uses a fixed 256-word list (one word per byte) whose length/uniqueness **and exact ordered mapping (SHA-256 golden digest)** are test-pinned — never reorder or replace an entry, as that invalidates every previously written human share. Encoded share strings (base32 + mnemonic) are returned in `Zeroizing<String>`, matching the crate's rule that share material never lands in non-zeroizing storage.
 - **`derive_recovery_keypair` is deterministic and pinned.** The HKDF salt (`ezpds/recovery-seed/v1`) + `info` domain string + rejection-sampling counter scheme is fixed by a golden test; changing any of it produces a different recovery key and orphans accounts whose `rotationKeys` already carry the old one. The `ShareEnvelope` `set_id` and this derivation are independent.
+- **The child-key hierarchy is pinned end to end.** `derive_delegation_seed` → `derive_child_seed(i)` → `derive_recovery_keypair` is fixed by golden vectors on all three stages (seed hex plus the child's did:key); changing a salt, `info` string, or the big-endian index encoding derives different child keys and orphans every child identity whose `rotationKeys` already carry the old one.
 - GF(2^8) arithmetic uses the AES irreducible polynomial (0x11b); secret bytes are always the first argument to `gf_mul` (non-branching position)
 - **did:plc tombstone op is `{type, prev, sig}` only, in canonical DAG-CBOR key order.** The tombstone structs carry no maps (unlike genesis/rotation ops), so they need no `CanonicalMap`; canonical ordering comes from serde field declaration order — unsigned is `prev`(4) before `type`(4) (`prev` < `type` bytewise), signed leads with `sig`(3). `prev` is a required non-null CID string (typed `String`, never CBOR null). Pinned by `tombstone_cbor_key_order_is_canonical`; `build_tombstone_round_trips` proves builder↔verifier byte-identity via the CID.
 - **did:plc op CBOR is canonical DAG-CBOR for any number of map entries.** The op structs wrap `services` / `verificationMethods` in an internal `CanonicalMap` that serializes keys length-first (DAG-CBOR order) instead of `BTreeMap`/`ciborium`'s bytewise order — bytewise would emit a non-canonical op for keys of differing length (e.g. `atproto_pds` + `atproto_labeler`) that plc.directory rejects. Cross-checked against `@ipld/dag-cbor` by the `golden_*` tests (genesis op bytes + derived DID, proving byte-identity transitively via the hash) and `rotation_op_with_multiple_services_encodes_canonically` (multi-service CID). Public APIs still take/return plain `BTreeMap<String, _>`; the canonical ordering is internal to the op encoder.
 
 ## Key Files
 - `src/lib.rs` - Re-exports public API
-- `src/keys.rs` - P-256 key generation, AES-256-GCM encrypt/decrypt
+- `src/keys.rs` - P-256 key generation, AES-256-GCM encrypt/decrypt, recovery + child-account key derivation
 - `src/plc.rs` - did:plc genesis operation builder and verifier
 - `src/sovereign_session.rs` - canonical sovereign-session signed-envelope encoder and protocol constants
 - `src/oauth_consent.rs` - canonical wallet-confirmed OAuth-consent approval/denial signed-envelope encoder, `granted_scope_hash`, and protocol constants
@@ -495,4 +549,5 @@ pub fn diff_audit_logs(cached: &[AuditEntry], current: &[AuditEntry]) -> Vec<Aud
 - `src/shamir.rs` - Shamir Secret Sharing (split/combine, GF(2^8) arithmetic) + share envelope v2 (`ShareEnvelope`, base32/mnemonic encode-decode, `split_secret_into_envelopes`/`combine_envelopes`)
 - `src/mnemonic.rs` - BIP-39-style 256-word list + byte↔word encoding for the human-custody Share 3 (module-private; used by `shamir.rs`)
 - `src/hpke.rs` - HPKE seal/open for notification payloads (pinned suite) + serialized-body padding arithmetic
+- `src/space.rs` - Spaces LtHash multiset hash + deniable commit sign/verify (golden-vector pinned)
 - `src/error.rs` - CryptoError enum

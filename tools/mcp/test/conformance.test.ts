@@ -66,14 +66,37 @@ async function connectClient(extra: Record<string, string> = {}): Promise<Client
 function toolJson(result: any): any {
   const content = result.content as { type: string; text: string }[];
   assert.ok(content?.[0]?.type === 'text', 'tool result has text content');
-  return JSON.parse(content[0]!.text);
+  try {
+    return JSON.parse(content[0]!.text);
+  } catch {
+    // A relayed error is plain text; surface it instead of a bare parse error.
+    throw new Error(`tool returned non-JSON content: ${content[0]!.text}`);
+  }
 }
 
 before(async () => {
   tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'custos-mcp-test-'));
   mcpStateDir = path.join(tmp, 'mcp-state');
   plc = await startMockPlc();
-  pds = await spawnPds({ dir: tmp, plcUrl: plc.url, agentAuthEnabled: true });
+  pds = await spawnPds({
+    dir: tmp,
+    plcUrl: plc.url,
+    agentAuthEnabled: true,
+    // A DELIBERATELY NARROWED profile: the shipped default also carries
+    // `repo:*?action=delete`, which this fixture omits so AC2.2 can still
+    // exercise the InsufficientScope relay against a real refusal. Plus a
+    // blanket space grant, so the space tools' happy path is exercised.
+    // The explicit params matter: a bare `space:*` confers reads but never a
+    // write target (no type declaration to draw collections from), and
+    // authority defaults to `self`, which an unfiltered listSpaces (authority
+    // `*`) does not match.
+    grantedScopes: [
+      'atproto',
+      'repo:*?action=create&action=update',
+      'blob:*/*',
+      'space:*?authority=*&collection=*',
+    ],
+  });
   account = await provisionAccount(pds.baseUrl, path.join(tmp, 'interop-state'));
 });
 
@@ -124,11 +147,23 @@ test('onboarding ceremony, tool surface, and credential hygiene', async (t) => {
     'list_records',
     'search_timeline',
     'account_status',
+    'upload_blob',
+    'update_bluesky_profile',
+    'list_spaces',
+    'space_get_record',
+    'space_list_records',
+    'space_create_record',
   ]) {
     assert.ok(tools.includes(expected), `tool list includes ${expected}`);
   }
-  assert.ok(!tools.includes('delete_record'), 'delete_record not offered by default');
-  assert.ok(!tools.includes('put_record'), 'put_record not offered by default');
+  for (const destructive of [
+    'delete_record',
+    'put_record',
+    'space_put_record',
+    'space_delete_record',
+  ]) {
+    assert.ok(!tools.includes(destructive), `${destructive} not offered by default`);
+  }
 
   // The human confirms in the wallet (here: the claim/confirm endpoint directly).
   await confirmClaim(pds.baseUrl, account.accessJwt, waiting.userCode);
@@ -154,12 +189,19 @@ test('onboarding ceremony, tool surface, and credential hygiene', async (t) => {
   const whoamiText = JSON.stringify(ready);
   assert.ok(!whoamiText.includes(creds.accessToken), 'access token not in whoami output');
   assert.ok(!whoamiText.includes(creds.assertion), 'assertion not in whoami output');
+  // The PDS base URL stays out of the report: hosted deployments configure it
+  // as an internal hostname, which clients must never be handed.
+  assert.equal(ready.pds_url, undefined, 'PDS base URL not in whoami output');
 
-  // AC2.1 — create_post produces a record visible via getRecord.
+  // AC2.1 — create_post produces a record visible via getRecord. The text
+  // carries a URL: the stored record must carry the matching link facet, or the
+  // post renders as dead plain text (detection itself is unit-tested in
+  // test/facets.test.ts; this pins that the tool actually attaches the result).
+  const postText = 'custos-mcp conformance post https://obsign.org';
   const post = toolJson(
     await client.callTool({
       name: 'create_post',
-      arguments: { text: 'custos-mcp conformance post' },
+      arguments: { text: postText },
     }),
   );
   assert.ok(post.uri?.startsWith(`at://${account.did}/app.bsky.feed.post/`));
@@ -172,7 +214,16 @@ test('onboarding ceremony, tool surface, and credential hygiene', async (t) => {
       arguments: { collection: 'app.bsky.feed.post', rkey },
     }),
   );
-  assert.equal(fetched.value.text, 'custos-mcp conformance post');
+  assert.equal(fetched.value.text, postText);
+  assert.deepEqual(fetched.value.facets, [
+    {
+      index: {
+        byteStart: postText.indexOf('https://'),
+        byteEnd: Buffer.byteLength(postText, 'utf8'),
+      },
+      features: [{ $type: 'app.bsky.richtext.facet#link', uri: 'https://obsign.org' }],
+    },
+  ]);
 
   const listed = toolJson(
     await client.callTool({
@@ -186,9 +237,146 @@ test('onboarding ceremony, tool surface, and credential hygiene', async (t) => {
   assert.equal(typeof status.activated, 'boolean');
 });
 
+test('create_post writes an embed through verbatim, and refuses two embeds at once', async (t) => {
+  const client = await connectClient();
+  t.after(() => client.close());
+
+  // A quote post needs a uri+cid pair, which is exactly what create_post and
+  // get_record hand back — so quoting is reachable with the tools on offer.
+  const quoted = toolJson(
+    await client.callTool({ name: 'create_post', arguments: { text: 'the post being quoted' } }),
+  );
+
+  const embed = {
+    $type: 'app.bsky.embed.record',
+    record: { uri: quoted.uri, cid: quoted.cid },
+  };
+  const quoting = toolJson(
+    await client.callTool({
+      name: 'create_post',
+      arguments: { text: 'quoting the post above', embed },
+    }),
+  );
+  const stored = toolJson(
+    await client.callTool({
+      name: 'get_record',
+      arguments: { collection: 'app.bsky.feed.post', rkey: quoting.uri.split('/').pop() },
+    }),
+  );
+  // Verbatim: the point of a passthrough is that the tool adds no interpretation
+  // of its own between what the caller wrote and what the PDS stored.
+  assert.deepEqual(stored.value.embed, embed);
+
+  // An external link card is the other shape callers reach for, and it must not
+  // need a blob to be publishable.
+  const card = {
+    $type: 'app.bsky.embed.external',
+    external: {
+      uri: 'https://obsign.org',
+      title: 'Obsign',
+      description: 'sovereign identity',
+    },
+  };
+  const carded = toolJson(
+    await client.callTool({
+      name: 'create_post',
+      arguments: { text: 'with a link card', embed: card },
+    }),
+  );
+  assert.deepEqual(
+    toolJson(
+      await client.callTool({
+        name: 'get_record',
+        arguments: { collection: 'app.bsky.feed.post', rkey: carded.uri.split('/').pop() },
+      }),
+    ).value.embed,
+    card,
+  );
+
+  // image_path builds an embed of its own; silently dropping one of the two
+  // would publish a post the caller did not ask for.
+  const both = await client.callTool({
+    name: 'create_post',
+    arguments: { text: 'two embeds', embed: card, image_path: 'anything.png' },
+  });
+  assert.equal(both.isError, true);
+  assert.match((both.content as { text: string }[])[0]!.text, /not both/);
+});
+
+test('update_bluesky_profile merges into app.bsky.actor.profile instead of clobbering it', async (t) => {
+  const client = await connectClient();
+  t.after(() => client.close());
+
+  async function profile(): Promise<any> {
+    return toolJson(
+      await client.callTool({
+        name: 'get_record',
+        arguments: { collection: 'app.bsky.actor.profile', rkey: 'self' },
+      }),
+    ).value;
+  }
+
+  // First write: no profile record exists yet, so this creates one.
+  toolJson(
+    await client.callTool({
+      name: 'update_bluesky_profile',
+      arguments: { display_name: 'Conformance Agent', description: 'first bio' },
+    }),
+  );
+  let value = await profile();
+  assert.equal(value.displayName, 'Conformance Agent');
+  assert.equal(value.description, 'first bio');
+
+  // The property that makes this a tool rather than a raw putRecord: naming one
+  // field must not drop the others. A clobbering implementation passes every
+  // other assertion here and fails only this one.
+  toolJson(
+    await client.callTool({
+      name: 'update_bluesky_profile',
+      arguments: { description: 'second bio' },
+    }),
+  );
+  value = await profile();
+  assert.equal(value.description, 'second bio');
+  assert.equal(value.displayName, 'Conformance Agent', 'unnamed fields survive the update');
+
+  // Empty string is the clear, distinct from omission.
+  toolJson(await client.callTool({ name: 'update_bluesky_profile', arguments: { description: '' } }));
+  value = await profile();
+  assert.equal(value.description, undefined, 'empty string clears the field');
+  assert.equal(value.displayName, 'Conformance Agent');
+
+  // A call naming nothing is a caller mistake, not an empty write.
+  const empty = await client.callTool({ name: 'update_bluesky_profile', arguments: {} });
+  assert.equal(empty.isError, true);
+  assert.match((empty.content as { text: string }[])[0]!.text, /nothing to update/);
+});
+
+test('jwt-bearer exchange returns a renewed identity_assertion (sliding window)', async () => {
+  // Pin the renewal on the wire: every successful exchange must hand back a fresh
+  // assertion so a sporadic agent never needs a second claim ceremony.
+  const creds = JSON.parse(fs.readFileSync(credsFile(), 'utf8'));
+  const res = await fetch(`${pds.baseUrl}/oauth/token`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/x-www-form-urlencoded' },
+    body: new URLSearchParams({
+      grant_type: 'urn:ietf:params:oauth:grant-type:jwt-bearer',
+      assertion: creds.assertion,
+    }),
+  });
+  assert.equal(res.status, 200);
+  const body: any = await res.json();
+  assert.equal(typeof body.identity_assertion, 'string', 'exchange returns a renewed assertion');
+  assert.notEqual(body.identity_assertion, creds.assertion, 'the renewal is freshly minted');
+  assert.equal(typeof body.assertion_expires, 'string', 'the renewal carries its expiry');
+  assert.ok(new Date(body.assertion_expires).getTime() > Date.now(), 'the renewal is unexpired');
+});
+
 test('AC2.2: out-of-scope calls relay the 403 as a comprehensible error', async (t) => {
-  // Same cached credentials, destructive tools enabled: delete needs the
-  // repo delete action, which the default agent profile does not grant.
+  // Same cached credentials, destructive tools enabled: delete needs the repo
+  // delete action, which this fixture's narrowed profile withholds (the shipped
+  // default grants it). This asserts the refusal is comprehensible when an
+  // operator narrows scopes — not that delete is unavailable out of the box.
   const client = await connectClient({ CUSTOS_MCP_ALLOW_DESTRUCTIVE: '1' });
   t.after(() => client.close());
 
@@ -204,6 +392,346 @@ test('AC2.2: out-of-scope calls relay the 403 as a comprehensible error', async 
   assert.match(message, /InsufficientScope/, 'names the refusal');
   assert.match(message, /Granted scopes:/, 'reports the granted scopes');
   assert.doesNotMatch(message, /\n\s+at /, 'no stack trace');
+});
+
+test('upload_blob returns a blob ref and stays inside the configured directory', async (t) => {
+  // 1x1 PNG. Content does not matter to the PDS; the blob ref shape does.
+  const imgDir = fs.mkdtempSync(path.join(tmp, 'blobs-'));
+  fs.writeFileSync(
+    path.join(imgDir, 'pixel.png'),
+    Buffer.from(
+      'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==',
+      'base64',
+    ),
+  );
+  // A file the tool must refuse to read: outside the configured directory.
+  const secret = path.join(tmp, 'outside-the-jail.png');
+  fs.writeFileSync(secret, 'not yours');
+
+  const client = await connectClient({ CUSTOS_MCP_IMAGE_DIR: imgDir });
+  t.after(() => client.close());
+
+  const uploaded = toolJson(
+    await client.callTool({ name: 'upload_blob', arguments: { path: 'pixel.png' } }),
+  );
+  assert.equal(uploaded.blob?.$type, 'blob');
+  assert.equal(uploaded.blob.mimeType, 'image/png');
+  assert.ok(uploaded.blob.ref?.$link, 'blob ref carries a CID link');
+  assert.ok(uploaded.blob.size > 0, 'blob size is reported');
+
+  // The confinement is the point of the CUSTOS_MCP_IMAGE_DIR gate: a path that
+  // escapes it must be refused, not read.
+  const escaped = await client.callTool({
+    name: 'upload_blob',
+    arguments: { path: path.relative(imgDir, secret) },
+  });
+  assert.equal(escaped.isError, true);
+  assert.match((escaped.content as { text: string }[])[0]!.text, /must be inside|does not exist/);
+
+  // Without the directory configured at all, path uploads are off rather than
+  // defaulting to some readable path.
+  const unconfigured = await connectClient();
+  t.after(() => unconfigured.close());
+  const disabled = await unconfigured.callTool({
+    name: 'upload_blob',
+    arguments: { path: 'pixel.png' },
+  });
+  assert.equal(disabled.isError, true);
+  assert.match((disabled.content as { text: string }[])[0]!.text, /uploads are disabled/);
+});
+
+test('upload_blob takes inline base64 — the remote-client path, no directory needed', async (t) => {
+  // No CUSTOS_MCP_IMAGE_DIR at all: inline data must not depend on it.
+  const client = await connectClient();
+  t.after(() => client.close());
+
+  const pngBytes = Buffer.from(
+    'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==',
+    'base64',
+  );
+
+  // Data URL: the mime type travels with the bytes.
+  const fromUrl = toolJson(
+    await client.callTool({
+      name: 'upload_blob',
+      arguments: { data: `data:image/png;base64,${pngBytes.toString('base64')}` },
+    }),
+  );
+  assert.equal(fromUrl.blob?.$type, 'blob');
+  assert.equal(fromUrl.blob.mimeType, 'image/png');
+  assert.equal(fromUrl.blob.size, pngBytes.length, 'the decoded bytes were uploaded');
+
+  // Bare base64: the mime type arrives as its own argument.
+  const fromBare = toolJson(
+    await client.callTool({
+      name: 'upload_blob',
+      arguments: { data: pngBytes.toString('base64'), mime_type: 'image/png' },
+    }),
+  );
+  assert.equal(fromBare.blob?.mimeType, 'image/png');
+  assert.equal(fromBare.blob?.size, pngBytes.length);
+
+  const errText = async (args: Record<string, unknown>): Promise<string> => {
+    const res = await client.callTool({ name: 'upload_blob', arguments: args });
+    assert.equal(res.isError, true, JSON.stringify(args));
+    return (res.content as { text: string }[])[0]!.text;
+  };
+
+  // Caller mistakes are named, not silently resolved.
+  assert.match(await errText({ data: '%%not-base64%%' }), /not (valid )?base64|neither a data URL/);
+  assert.match(
+    await errText({ data: pngBytes.toString('base64') }),
+    /no content type/,
+  );
+  assert.match(
+    await errText({
+      data: `data:image/png;base64,${pngBytes.toString('base64')}`,
+      mime_type: 'image/jpeg',
+    }),
+    /declares image\/png but mime_type argument says image\/jpeg/,
+  );
+  assert.match(await errText({}), /nothing to upload/);
+  assert.match(
+    await errText({ data: `data:image/png;base64,${pngBytes.toString('base64')}`, path: 'x.png' }),
+    /pass either data or path, not both/,
+  );
+
+  // The size ceiling is enforced on decoded bytes, before anything reaches the PDS.
+  const tooBig = Buffer.alloc(5 * 1024 * 1024 + 1, 7);
+  assert.match(
+    await errText({ data: `data:application/octet-stream;base64,${tooBig.toString('base64')}` }),
+    new RegExp(`inline upload is ${tooBig.length} bytes`),
+  );
+});
+
+test('update_bluesky_profile takes an image by path or by an upload_blob ref', async (t) => {
+  const imgDir = fs.mkdtempSync(path.join(tmp, 'profile-images-'));
+  fs.writeFileSync(
+    path.join(imgDir, 'avatar.png'),
+    Buffer.from(
+      'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==',
+      'base64',
+    ),
+  );
+  const client = await connectClient({ CUSTOS_MCP_IMAGE_DIR: imgDir });
+  t.after(() => client.close());
+
+  // By path: the tool uploads the file itself, so setting an avatar is one call.
+  const byPath = toolJson(
+    await client.callTool({
+      name: 'update_bluesky_profile',
+      arguments: { avatar_path: 'avatar.png' },
+    }),
+  );
+  assert.equal(byPath.profile.avatar?.$type, 'blob');
+  assert.ok(byPath.profile.avatar.ref?.$link, 'the stored avatar carries a CID link');
+
+  // By ref: the pairing with upload_blob, for a blob the caller already has.
+  const uploaded = toolJson(
+    await client.callTool({ name: 'upload_blob', arguments: { path: 'avatar.png' } }),
+  );
+  const byRef = toolJson(
+    await client.callTool({
+      name: 'update_bluesky_profile',
+      arguments: { banner_blob: uploaded.blob },
+    }),
+  );
+  assert.deepEqual(byRef.profile.banner, uploaded.blob, 'the ref is stored as given');
+  assert.equal(byRef.profile.avatar?.$type, 'blob', 'the avatar set earlier survived');
+
+  // Both forms for one field is a caller mistake, not a silent precedence rule.
+  const both = await client.callTool({
+    name: 'update_bluesky_profile',
+    arguments: { avatar_path: 'avatar.png', avatar_blob: uploaded.blob },
+  });
+  assert.equal(both.isError, true);
+  assert.match((both.content as { text: string }[])[0]!.text, /not both/);
+});
+
+test('spaces: the agent tool surface drives a permissioned space end-to-end', async (t) => {
+  // The space is the account's own simplespace, created by the owner (full
+  // session) the way the wallet would — the agent then reads and writes it
+  // under its space:* grant.
+  const spaceUri = `at://${account.did}/space/org.example.bucket/main`;
+  const createSpace = await fetch(`${pds.baseUrl}/xrpc/com.atproto.simplespace.createSpace`, {
+    method: 'POST',
+    headers: {
+      'content-type': 'application/json',
+      authorization: `Bearer ${account.accessJwt}`,
+    },
+    body: JSON.stringify({
+      type: 'org.example.bucket',
+      skey: 'main',
+      policy: { $type: 'com.atproto.simplespace.defs#publicPolicy' },
+      appAccess: { $type: 'com.atproto.simplespace.defs#open' },
+    }),
+  });
+  assert.ok(createSpace.ok, `createSpace failed: ${await createSpace.text()}`);
+
+  const client = await connectClient();
+  t.after(() => client.close());
+
+  const created = toolJson(
+    await client.callTool({
+      name: 'space_create_record',
+      arguments: {
+        space: spaceUri,
+        collection: 'org.example.note',
+        record: { text: 'custos-mcp space conformance note' },
+      },
+    }),
+  );
+  assert.ok(created.uri, 'space createRecord returned a uri');
+  assert.ok(created.cid, 'space createRecord returned a cid');
+
+  const rkey = created.uri.split('/').pop();
+  const fetched = toolJson(
+    await client.callTool({
+      name: 'space_get_record',
+      arguments: { space: spaceUri, collection: 'org.example.note', rkey },
+    }),
+  );
+  assert.equal(fetched.value.text, 'custos-mcp space conformance note');
+
+  const listed = toolJson(
+    await client.callTool({
+      name: 'space_list_records',
+      arguments: { space: spaceUri, collection: 'org.example.note' },
+    }),
+  );
+  // listRecords entries are keyed by collection + rkey (space records carry no per-record uri).
+  assert.ok(listed.records.some((record: any) => record.rkey === rkey && record.cid));
+
+  const spaces = toolJson(await client.callTool({ name: 'list_spaces', arguments: {} }));
+  assert.ok(
+    spaces.spaces.some((space: any) => space.uri === spaceUri),
+    `list_spaces reports the space (got ${JSON.stringify(spaces)})`,
+  );
+});
+
+/**
+ * The cooperative arm of the claim ceremony (auth.md §3.5): an anonymous agent proposes a handle,
+ * the human confirms with a wallet-signed genesis op, and the agent's *unchanged* claim poll hands
+ * back a credential for an account of its own. Driven over raw HTTP rather than through the MCP
+ * client because the MCP server only speaks `service_auth` — this pins the protocol the wallet and
+ * a child-aware agent will speak.
+ */
+test('cooperative mint: handle_hint → claim as child → the agent writes as itself', async () => {
+  const { newKeypair, buildGenesisOp } = await import('ezpds-interop/src/crypto.js');
+  const handle = `scribe-${Math.random().toString(36).slice(2, 8)}.localhost`;
+
+  const registered: any = await (
+    await fetch(`${pds.baseUrl}/agent/identity`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ type: 'anonymous', handle_hint: handle }),
+    })
+  ).json();
+  assert.equal(registered.registration_type, 'anonymous');
+  const claimToken = registered.claim_token;
+
+  const started: any = await (
+    await fetch(`${pds.baseUrl}/agent/identity/claim`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ claim_token: claimToken }),
+    })
+  ).json();
+  const userCode = started.claim_attempt.user_code;
+
+  // The approval screen sees the agent's proposal before the human decides.
+  const preview: any = await (
+    await fetch(`${pds.baseUrl}/v1/agents/claim-preview`, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        authorization: `Bearer ${account.accessJwt}`,
+      },
+      body: JSON.stringify({ userCode }),
+    })
+  ).json();
+  assert.equal(preview.handleHint, handle, 'claim-preview surfaces the proposed handle');
+
+  // The wallet's half: reserve the repo signing key, then sign the child's genesis op with a
+  // rotation key it holds. `buildGenesisOp` also fills a middle recovery slot the server does not
+  // inspect for children — only rotationKeys[0] (the signer) and the atproto key matter here.
+  const reserved: any = await (
+    await fetch(`${pds.baseUrl}/xrpc/com.atproto.server.reserveSigningKey`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({}),
+    })
+  ).json();
+  const rotationKey = await newKeypair();
+  const spare = await newKeypair();
+  const { signedOp } = await buildGenesisOp({
+    rotationKeyId: rotationKey.keyId,
+    recoveryKeyId: spare.keyId,
+    repoSigningKeyId: reserved.signingKey,
+    rotationKeypair: rotationKey.keypair,
+    handle,
+    pdsUrl: pds.baseUrl,
+  });
+
+  const confirmRes = await fetch(`${pds.baseUrl}/agent/identity/claim/confirm`, {
+    method: 'POST',
+    headers: {
+      'content-type': 'application/json',
+      authorization: `Bearer ${account.accessJwt}`,
+    },
+    body: JSON.stringify({ user_code: userCode, child: { handle, plcOp: signedOp } }),
+  });
+  const confirmed: any = await confirmRes.json();
+  assert.ok(confirmRes.ok, `child confirm failed: ${JSON.stringify(confirmed)}`);
+  assert.equal(confirmed.did, account.did, '`did` still names the confirming account');
+  const childDid: string = confirmed.child.did;
+  assert.match(childDid, /^did:plc:/);
+  assert.equal(confirmed.child.handle, handle);
+  assert.notEqual(childDid, account.did, 'the agent got its own DID, not the user\'s');
+
+  // The agent polls exactly as it would have — and collects a child-subject credential.
+  const granted: any = await (
+    await fetch(`${pds.baseUrl}/oauth/token`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({
+        grant_type: 'urn:workos:agent-auth:grant-type:claim',
+        claim_token: claimToken,
+      }),
+    })
+  ).json();
+  assert.ok(granted.access_token, `claim poll did not grant: ${JSON.stringify(granted)}`);
+  const sub = (token: string) =>
+    JSON.parse(Buffer.from(token.split('.')[1]!, 'base64url').toString()).sub;
+  assert.equal(sub(granted.access_token), childDid, 'access token is subject to the child');
+  assert.equal(sub(granted.identity_assertion), childDid, 'assertion is subject to the child');
+
+  // And a record written with it lands in the child's repo, under the child's handle.
+  const writeRes = await fetch(`${pds.baseUrl}/xrpc/com.atproto.repo.createRecord`, {
+    method: 'POST',
+    headers: {
+      'content-type': 'application/json',
+      authorization: `Bearer ${granted.access_token}`,
+    },
+    body: JSON.stringify({
+      repo: childDid,
+      collection: 'app.bsky.feed.post',
+      record: { $type: 'app.bsky.feed.post', text: 'posted as myself', createdAt: new Date().toISOString() },
+    }),
+  });
+  const written: any = await writeRes.json();
+  assert.ok(writeRes.ok, `child write failed: ${JSON.stringify(written)}`);
+  assert.ok(written.uri.startsWith(`at://${childDid}/app.bsky.feed.post/`), written.uri);
+
+  const rkey = written.uri.split('/').pop();
+  const readBack: any = await (
+    await fetch(
+      `${pds.baseUrl}/xrpc/com.atproto.repo.getRecord?repo=${encodeURIComponent(handle)}` +
+        `&collection=app.bsky.feed.post&rkey=${rkey}`,
+    )
+  ).json();
+  assert.equal(readBack.value.text, 'posted as myself');
+  assert.equal(readBack.uri, written.uri);
 });
 
 test('AC3.2: revocation fails closed and never auto-re-registers', async (t) => {

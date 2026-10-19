@@ -266,6 +266,9 @@ pub struct VerifiedGenesisOp {
     pub verification_methods: BTreeMap<String, String>,
     /// Endpoint from `services["atproto_pds"]`, if present.
     pub atproto_pds_endpoint: Option<String>,
+    /// Full `services` map from the op — every entry, not only `atproto_pds`, so optional
+    /// entries such as `atproto_space_host` survive into the rendered DID document.
+    pub services: BTreeMap<String, PlcService>,
 }
 
 /// RFC 4648 base32 with lowercase symbols (a-z, 2-7).
@@ -1266,6 +1269,7 @@ pub fn verify_genesis_op(
         also_known_as: signed_op.also_known_as,
         verification_methods: signed_op.verification_methods.into_inner(),
         atproto_pds_endpoint,
+        services: signed_op.services.into_inner(),
     })
 }
 
@@ -1412,10 +1416,6 @@ mod tests {
     const GOLDEN_DID: &str = "did:plc:7exl2lz3g2kd37kmzxfp6yrz";
     const GOLDEN_CID: &str = "bafyreihzf26s6ozwsq672tgnzl7weolwff5yskqx4hnryrdrrxvqgbbssm";
 
-    fn hex(bytes: &[u8]) -> String {
-        bytes.iter().map(|b| format!("{b:02x}")).collect()
-    }
-
     fn golden_services() -> CanonicalMap<PlcService> {
         let mut services = BTreeMap::new();
         services.insert(
@@ -1468,7 +1468,7 @@ mod tests {
         let mut cbor = Vec::new();
         into_writer(&op, &mut cbor).expect("encode unsigned op");
         assert_eq!(
-            hex(&cbor),
+            crate::hex::to_hex(&cbor),
             GOLDEN_UNSIGNED_CBOR_HEX,
             "ciborium unsigned-op bytes must equal @ipld/dag-cbor canonical bytes"
         );
@@ -1480,7 +1480,7 @@ mod tests {
         let mut cbor = Vec::new();
         into_writer(&golden_signed_op(), &mut cbor).expect("encode signed op");
         assert_eq!(
-            hex(&cbor),
+            crate::hex::to_hex(&cbor),
             GOLDEN_SIGNED_CBOR_HEX,
             "ciborium signed-op bytes must equal @ipld/dag-cbor canonical bytes"
         );
@@ -1575,7 +1575,7 @@ mod tests {
             (24..=255).contains(&s.len()),
             "helper only covers 24..=255 byte strings"
         );
-        format!("78{:02x}{}", s.len(), hex(s.as_bytes()))
+        format!("78{:02x}{}", s.len(), crate::hex::to_hex(s.as_bytes()))
     }
 
     /// The `rotationKeys` map entry as it appears in the golden 2-key CBOR: the key name
@@ -1635,7 +1635,7 @@ mod tests {
         let mut cbor = Vec::new();
         into_writer(&op, &mut cbor).expect("encode unsigned op");
         assert_eq!(
-            hex(&cbor),
+            crate::hex::to_hex(&cbor),
             expected,
             "3-rotation-key unsigned CBOR must match the DAG-CBOR reference"
         );
@@ -2153,6 +2153,14 @@ mod tests {
             verified.atproto_pds_endpoint,
             Some("https://pds.example.com".to_string()),
             "atproto_pds_endpoint should be set correctly"
+        );
+        assert_eq!(
+            verified
+                .services
+                .get("atproto_pds")
+                .map(|s| s.endpoint.as_str()),
+            Some("https://pds.example.com"),
+            "the full services map should be carried through"
         );
     }
 

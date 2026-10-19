@@ -2,6 +2,7 @@
   "name": "ezpds-oauth-conformance",
   "private": true,
   "type": "module",
+  "packageManager": "pnpm@9.15.9",
   "engines": {
     "node": ">=22.21"
   },

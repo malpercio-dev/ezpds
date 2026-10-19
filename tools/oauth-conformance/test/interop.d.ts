@@ -27,6 +27,16 @@ declare module 'ezpds-interop/src/account.js' {
   }>;
 }
 
+declare module 'ezpds-interop/src/hermetic-pds.js' {
+  export function pdsBinary(repoRoot: string, explicit?: string): string;
+  export function freePort(): Promise<number>;
+  export function startMockPlc(): Promise<{ url: string; close: () => void }>;
+  export function startTlsProxy(
+    tls: { key: Buffer; cert: Buffer },
+    opts?: { port?: number; upstreamPort?: number },
+  ): Promise<{ port: number; setUpstreamPort: (port: number) => void; close: () => void }>;
+}
+
 declare module 'ezpds-interop/src/crypto.js' {
   /** An `@atproto/crypto` P256Keypair; only its `sign` is used here. */
   export interface Keypair {
@@ -54,4 +64,26 @@ declare module 'ezpds-interop/src/crypto.js' {
   }): Promise<{ did: string; signedOp: Record<string, unknown>; cid: string }>;
 
   export function computeCid(signedOp: unknown): string;
+}
+
+declare module 'ezpds-interop/src/dpop.js' {
+  import type { webcrypto } from 'node:crypto';
+
+  /** A DPoP keypair plus the RFC 7638 thumbprint the server binds tokens to. */
+  export interface DpopKey {
+    privateKey: webcrypto.CryptoKey;
+    jwk: { crv: string; kty: string; x: string; y: string };
+    thumbprint: string;
+  }
+
+  export function newDpopKey(): Promise<DpopKey>;
+
+  /**
+   * Mint a DPoP proof (RFC 9449 §4). `boundToken` present ⇒ an `ath` claim (resource proof);
+   * absent ⇒ mint-time proof. `nonce` carries a server-issued `use_dpop_nonce` challenge.
+   */
+  export function dpopProof(
+    key: DpopKey,
+    req: { method: string; url: string; boundToken?: string; nonce?: string },
+  ): Promise<string>;
 }

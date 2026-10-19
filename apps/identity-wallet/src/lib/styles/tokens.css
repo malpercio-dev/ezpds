@@ -97,6 +97,24 @@
      for icon-only buttons and the invisible spacers that balance them. */
   --size-tap-target: 44px;
 
+  /* ── Sizing (icon & avatar containers) ────────────────────────── */
+  /* Exact recurring diameters pulled out of the px sweep (px-token-check.sh)
+     rather than the 4px spacing scale — these are containers, not gaps, so
+     they hold their own step values instead of rounding to the nearest
+     --space-*. Each one replaced the same hand-typed number duplicated
+     across 2+ screens. */
+  --size-icon-2xs: 18px;   /* small inline row icon (app passwords, oauth consent, review) */
+  --size-icon-xs: 20px;    /* icon container / the Toggle knob diameter */
+  --size-icon-sm: 22px;    /* progress-screen status icon */
+  --size-icon-md: 28px;    /* DiffRow leading icon; also the Toggle track height */
+  --size-icon-lg: 36px;    /* protection-strip / recovery-kit row icon */
+  --size-icon-xl: 38px;    /* the NavRow-style destination-row icon circle */
+  --size-icon-2xl: 42px;   /* the "add identity/agent" plus-button circle */
+  --size-avatar-sm: 52px;  /* skeleton seal placeholder / status-panel icon */
+  --size-avatar-md: 64px;  /* default identity avatar diameter */
+  --size-avatar-lg: 72px;  /* large avatar (agent claim, oauth consent done state) */
+  --size-button-lg: 54px;  /* large CTA button height (recovery override, remove identity) */
+
   /* ── Radii ────────────────────────────────────────────────────── */
   --radius-sm: 4px;
   --radius-md: 8px;

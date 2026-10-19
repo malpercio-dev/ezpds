@@ -44,5 +44,5 @@ p256 = { workspace = true }
 [dev-dependencies]
 tempfile = { workspace = true }
 # A stand-in APNs that asserts the headers and body Apple would see. Same version the pds
-# crate pins; not a workspace dep because those two are its only users.
-wiremock = "0.6"
+# crate pins (workspace table, so the two never drift).
+wiremock = { workspace = true }

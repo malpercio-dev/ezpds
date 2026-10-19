@@ -1,0 +1,29 @@
+meta {
+  name: Get Delegation Token (space.getDelegationToken)
+  type: http
+  seq: 140
+}
+
+get {
+  url: {{baseUrl}}/xrpc/com.atproto.space.getDelegationToken?space={{space}}
+  body: none
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{accessJwt}}
+}
+
+vars:pre-request {
+  baseUrl: http://localhost:8080
+  space: at://did:plc:exampleauthority/space/org.example.bucket/self
+}
+
+docs {
+  Atproto Spaces (proposal 0016). Mints a single-use, 60 s delegation token for `space`
+  (`at://{authority}/space/{spaceType}/{skey}`), signed by the account's `#atproto` repo key
+  (`typ atproto-space-delegation+jwt`, `kid #atproto`, `sub` = space, `aud` = the authority's
+  `#atproto_space_host`). Requires an OAuth (or full-access) session whose grant covers `read`
+  on the space — a `read_self`-only or app-password session gets 403 InsufficientScope. The app
+  exchanges it at the authority's `getSpaceCredential` (with a DPoP proof) for a space credential.
+}

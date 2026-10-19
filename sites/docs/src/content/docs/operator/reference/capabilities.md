@@ -3,7 +3,7 @@ title: Capability reference
 description: Generated list of the capabilities a Custos deployment advertises.
 ---
 
-> Generated from source for ezpds **v0.12.0**. Do not edit this page by hand.
+> Generated from source for ezpds **v0.16.2**. Do not edit this page by hand.
 
 Custos advertises these under the `custos` extension object of `com.atproto.server.describeServer`, alongside the running version. A client feature-gates on the presence of a name; a server that sends no `custos` object — the reference PDS, rsky-pds, millipds — has none of them, and clients fall back to standard AT Protocol behaviour. See [Capabilities](/operator/capabilities/) for what each one means for your deployment and how to turn it on.
 
@@ -18,4 +18,5 @@ Custos advertises these under the `custos` extension object of `com.atproto.serv
 | `walletAccountDelete` | An account can be permanently deleted with a device-key-signed proof from one of its current rotation keys instead of the account password. | Always offered |
 | `didWebHosting` | Custos serves an opted-in account's did:web document at the account's own domain and propagates edits to relays. | Always offered |
 | `appPasswordPersonalDetails` | An app password can be minted with the personal-details grant, letting its sessions read and set the full-access-only preferences (e.g. the birth date age checks require). | Always offered |
+| `spaces` | The Atproto Spaces alpha surface: permissioned space repos with DPoP-bound space credentials, oplog/CAR sync, and simplespace management. | `spaces.enabled`, `signing_key_master_key` |
 | `waitlist` | Public interest-signup waitlist: unauthenticated email (+ optional atproto handle) signups a marketing page can post to, readable back by the operator. | `waitlist.enabled` |

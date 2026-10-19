@@ -2,11 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { buildRegistry } from './registry';
 import { scenarios } from './scenarios';
 import type { WalletState } from './state';
-import type {
-  NotificationDiagnostics,
-  RegistrationOutcome,
-  SenderKeyPinning,
-} from '$lib/ipc';
+import type { NotificationDiagnostics, RegistrationOutcome } from '$lib/ipc';
 
 /**
  * Drives the push-notification flow logic through the fake IPC seam — the half of MM-419 a
@@ -85,18 +81,11 @@ describe('wallet harness push notifications', () => {
     const outcome = registry.register_for_notifications({ did }) as RegistrationOutcome;
     expect(outcome.status).toBe('UNSUPPORTED');
     expect(state.notifications.registeredDids).toEqual([]);
-
-    // And a re-pin against it leaves whatever was pinned alone: switching the feature off is not
-    // a revocation, and clearing on it would strip every device that checked in during an outage.
-    state.notifications.pinnedHosts[state.identities[0].pdsUrl] = [
-      { kid: 9, publicKey: 'did:key:zPreviouslyPinned' },
-    ];
-    const pinning = registry.refresh_notification_sender_keys({ did }) as SenderKeyPinning;
-    expect(pinning.pinned).toBe(false);
-    expect(pinning.keys).toEqual([{ kid: 9, publicKey: 'did:key:zPreviouslyPinned' }]);
   });
 
   it('replaces a host key set wholesale on re-pin — the revocation mechanism', () => {
+    // Registration is also the re-pin (there is no separate re-pin command): a key the server
+    // stops publishing must actually stop being trusted, not merge into what was pinned before.
     const state = withApnsToken(scenarios['one-identity']());
     const registry = buildRegistry(state);
     const did = (registry.list_identities({}) as string[])[0];
@@ -107,15 +96,12 @@ describe('wallet harness push notifications', () => {
       { kid: 2, publicKey: 'did:key:zRevoked' },
     ];
 
-    const pinning = registry.refresh_notification_sender_keys({ did }) as SenderKeyPinning;
+    registry.register_for_notifications({ did });
 
-    expect(pinning.pinned).toBe(true);
-    expect(pinning.host).toBe(host);
     expect(
       state.notifications.pinnedHosts[host].map((k) => k.publicKey),
       'a key the server stopped publishing is the one it revoked — merging would keep trusting it',
     ).not.toContain('did:key:zRevoked');
-    expect(state.notifications.pinnedHosts[host]).toEqual(pinning.keys);
   });
 
   it('reports diagnostics without inventing state or leaking the private half', () => {
@@ -172,8 +158,5 @@ describe('wallet harness push notifications', () => {
   it('refuses an unknown identity rather than registering a DID this wallet does not manage', () => {
     const registry = buildRegistry(withApnsToken(scenarios['one-identity']()));
     expect(() => registry.register_for_notifications({ did: 'did:plc:nosuchidentity' })).toThrow();
-    expect(() =>
-      registry.refresh_notification_sender_keys({ did: 'did:plc:nosuchidentity' }),
-    ).toThrow();
   });
 });

@@ -246,10 +246,10 @@
   });
 </script>
 
-<div class="screen">
+<div class="screen u-screen">
   <ScreenHeader title="App passwords" {onback} backLabel="Back to identity" />
 
-  <p class="lede">
+  <p class="lede u-body-copy">
     Sign in to the official Bluesky app — and other apps that ask for a password — without
     ever exposing your keys. Each app password is a separate, revocable credential.
   </p>
@@ -291,22 +291,22 @@
       {/each}
     </div>
   {:else if locked}
-    <div class="notice notice--locked">
-      <p class="notice-text notice-text--ink">
+    <div class="notice notice--locked u-notice">
+      <p class="notice-text notice-text--ink u-notice-text">
         This identity is locked. Unlock it to manage app passwords.
       </p>
       <Button onclick={unlockAndReload}>Unlock</Button>
     </div>
   {:else if loadError}
-    <div class="notice" role="alert">
-      <p class="notice-text">{loadError}</p>
+    <div class="notice u-notice" role="alert">
+      <p class="notice-text u-notice-text">{loadError}</p>
       <Button variant="secondary" onclick={load}>Try again</Button>
     </div>
   {:else}
     {#if created}
       <div class="reveal" role="status">
         <p class="reveal-title">“{created.name}” is ready</p>
-        <p class="reveal-sub">
+        <p class="reveal-sub u-fine">
           Use your handle and this password in the Bluesky app’s sign-in screen. This is the
           only time it will be shown — the wallet doesn’t keep a copy.
         </p>
@@ -343,7 +343,7 @@
         <label class="priv">
           <input type="checkbox" bind:checked={privileged} />
           <span class="priv-body">
-            <span class="priv-t">Allow direct messages</span>
+            <span class="priv-t u-title-strong">Allow direct messages</span>
             <span class="priv-s">
               Lets the app read and send your Bluesky DMs. Leave off unless you need chat.
             </span>
@@ -353,7 +353,7 @@
           <label class="priv">
             <input type="checkbox" bind:checked={personalDetails} />
             <span class="priv-body">
-              <span class="priv-t">Allow personal details</span>
+              <span class="priv-t u-title-strong">Allow personal details</span>
               <span class="priv-s">
                 Lets the app read and set the personal details stored with your account —
                 today that's the birth date the official Bluesky app's age verification
@@ -370,7 +370,7 @@
 
     <p class="section-label">Active app passwords</p>
     {#if passwords.length === 0}
-      <p class="empty">
+      <p class="empty u-body-copy">
         None yet. Create one above, then sign in to the Bluesky app with your handle and
         that password.
       </p>
@@ -416,7 +416,7 @@
                   be undone.
                 </p>
                 {#if revokeError}<p class="confirm-error" role="alert">{revokeError}</p>{/if}
-                <div class="confirm-actions">
+                <div class="confirm-actions u-stack-sm">
                   <Button onclick={() => doRevoke(entry.name)} disabled={revoking}>
                     {#if revoking}<Spinner size={16} /> Revoking…{:else}Revoke with biometrics{/if}
                   </Button>
@@ -441,26 +441,10 @@
 </div>
 
 <style>
-  .screen {
-    display: flex;
-    flex-direction: column;
-    height: 100%;
-    padding: var(--space-lg) var(--space-md) var(--space-xl);
-    gap: var(--space-md);
-    overflow-y: auto;
-  }
-
   .truncate {
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
-  }
-
-  .lede {
-    font-size: var(--text-body);
-    color: var(--color-muted);
-    line-height: 1.5;
-    margin: 0;
   }
 
   /* What the credential can and cannot do — text + icon, never color alone. */
@@ -476,7 +460,7 @@
   .scope-row {
     display: flex;
     align-items: flex-start;
-    gap: 8px;
+    gap: var(--space-sm);
     font-size: var(--text-label);
     color: var(--color-ink);
     line-height: 1.45;
@@ -484,7 +468,7 @@
   }
   .scope-ic {
     flex-shrink: 0;
-    margin-top: 2px;
+    margin-top: var(--space-3xs);
   }
   .scope-row--can .scope-ic {
     color: var(--color-safe);
@@ -506,21 +490,16 @@
     cursor: pointer;
   }
   .priv input {
-    margin-top: 3px;
+    margin-top: var(--space-2xs);
     accent-color: var(--color-primary);
-    width: 18px;
-    height: 18px;
+    width: var(--size-icon-2xs);
+    height: var(--size-icon-2xs);
     flex-shrink: 0;
   }
   .priv-body {
     display: flex;
     flex-direction: column;
-    gap: 2px;
-  }
-  .priv-t {
-    font-size: var(--text-body);
-    font-weight: var(--weight-semibold);
-    color: var(--color-ink);
+    gap: var(--space-3xs);
   }
   .priv-s {
     font-size: var(--text-label);
@@ -543,12 +522,6 @@
     font-weight: var(--weight-semibold);
     color: var(--color-ink);
     overflow-wrap: anywhere;
-    margin: 0;
-  }
-  .reveal-sub {
-    font-size: var(--text-label);
-    color: var(--color-muted);
-    line-height: 1.5;
     margin: 0;
   }
   .reveal-row {
@@ -575,7 +548,7 @@
     border: 1px solid var(--color-line);
     border-radius: var(--radius-md);
     padding: var(--space-sm) var(--space-md);
-    min-height: 44px;
+    min-height: var(--size-tap-target);
     font-family: var(--font-sans);
     font-size: var(--text-label);
     font-weight: var(--weight-semibold);
@@ -602,17 +575,10 @@
     margin: var(--space-xs) 0 0;
   }
 
-  .empty {
-    font-size: var(--text-body);
-    color: var(--color-muted);
-    line-height: 1.5;
-    margin: 0;
-  }
-
   .cards {
     display: flex;
     flex-direction: column;
-    gap: 12px;
+    gap: var(--space-md);
   }
   .card {
     display: flex;
@@ -621,7 +587,7 @@
     background: var(--color-bg);
     border: 1px solid var(--color-line);
     border-radius: var(--radius-xl);
-    padding: 15px;
+    padding: var(--space-md);
   }
   .row {
     display: flex;
@@ -633,7 +599,7 @@
     min-width: 0;
     display: flex;
     flex-direction: column;
-    gap: 3px;
+    gap: var(--space-2xs);
   }
   .name {
     font-size: var(--text-title);
@@ -644,7 +610,7 @@
     display: flex;
     flex-wrap: wrap;
     align-items: center;
-    gap: 6px;
+    gap: var(--space-sm);
   }
   .when {
     font-size: var(--text-label);
@@ -653,8 +619,8 @@
   .badge {
     display: inline-flex;
     align-items: center;
-    gap: 5px;
-    padding: 3px 9px;
+    gap: var(--space-xs);
+    padding: var(--space-2xs) var(--space-sm);
     border-radius: var(--radius-full);
     font-size: var(--text-label);
     font-weight: var(--weight-semibold);
@@ -668,8 +634,8 @@
     background: none;
     border: none;
     padding: var(--space-sm) var(--space-xs);
-    min-height: 44px;
-    min-width: 44px;
+    min-height: var(--size-tap-target);
+    min-width: var(--size-tap-target);
     font-family: var(--font-sans);
     font-size: var(--text-label);
     font-weight: var(--weight-semibold);
@@ -697,30 +663,10 @@
     color: var(--color-critical);
     margin: 0;
   }
-  .confirm-actions {
-    display: flex;
-    flex-direction: column;
-    gap: var(--space-sm);
-  }
 
-  .notice {
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    gap: var(--space-md);
-    background: var(--color-critical-surface);
-    border-radius: var(--radius-lg);
-    padding: var(--space-lg);
-    text-align: center;
-  }
   .notice--locked {
     background: var(--color-surface);
     border: 1px solid var(--color-line);
-  }
-  .notice-text {
-    font-size: var(--text-body);
-    color: var(--color-critical);
-    margin: 0;
   }
   .notice-text--ink {
     color: var(--color-ink);
@@ -729,6 +675,6 @@
   .loading {
     display: flex;
     flex-direction: column;
-    gap: 12px;
+    gap: var(--space-md);
   }
 </style>

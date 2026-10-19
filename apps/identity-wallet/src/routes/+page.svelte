@@ -25,7 +25,8 @@
   - Home: home → { protection | identity_detail → { move_or_rebuild → { migration_start |
     recovery_rebuild_start } | manage_identity → { change_handle | media_backup |
     did_document | advanced_tools → { self_held_kit_review | rotate_repo_key |
-    endpoint_repair | remove_identity } } | app_passwords | my_agents |
+    endpoint_repair | remove_identity } } | app_passwords | my_agents →
+    { agent_approval | enable_agent_accounts } |
     oauth_consent_approval | alert_detail → recovery_override } }, plus home → settings;
     `protection` itself reaches identity_detail and alert_detail. Each re-homed screen's
     `onback` returns to the door it hangs off; the two multi-entry surfaces record their
@@ -67,7 +68,7 @@
   import PdsAuthScreen from '$lib/components/onboarding/PdsAuthScreen.svelte';
   import EmailVerificationScreen from '$lib/components/onboarding/EmailVerificationScreen.svelte';
   import ReviewOperationScreen from '$lib/components/onboarding/ReviewOperationScreen.svelte';
-  import ClaimSuccessScreen from '$lib/components/onboarding/ClaimSuccessScreen.svelte';
+  import SuccessScreen from '$lib/components/onboarding/SuccessScreen.svelte';
   import RecoverStartScreen from '$lib/components/onboarding/RecoverStartScreen.svelte';
   import RecoverSharesScreen from '$lib/components/onboarding/RecoverSharesScreen.svelte';
   import RecoverEscrowScreen from '$lib/components/onboarding/RecoverEscrowScreen.svelte';
@@ -79,7 +80,6 @@
   import MigrationSourceAuthScreen from '$lib/components/onboarding/MigrationSourceAuthScreen.svelte';
   import MigrationProgressScreen from '$lib/components/onboarding/MigrationProgressScreen.svelte';
   import MigrationReviewScreen from '$lib/components/onboarding/MigrationReviewScreen.svelte';
-  import MigrationSuccessScreen from '$lib/components/onboarding/MigrationSuccessScreen.svelte';
   import IdentityScreen from '$lib/components/home/IdentityScreen.svelte';
   import MoveOrRebuildScreen from '$lib/components/home/MoveOrRebuildScreen.svelte';
   import ManageIdentityScreen from '$lib/components/home/ManageIdentityScreen.svelte';
@@ -95,6 +95,7 @@
   import AlertDetailScreen from '$lib/components/home/AlertDetailScreen.svelte';
   import RecoveryOverrideScreen from '$lib/components/home/RecoveryOverrideScreen.svelte';
   import MyAgentsScreen from '$lib/components/home/MyAgentsScreen.svelte';
+  import EnableAgentAccountsScreen from '$lib/components/home/EnableAgentAccountsScreen.svelte';
   import AgentClaimApprovalScreen from '$lib/components/home/AgentClaimApprovalScreen.svelte';
   import OAuthConsentApprovalScreen from '$lib/components/home/OAuthConsentApprovalScreen.svelte';
   import SettingsScreen from '$lib/components/home/SettingsScreen.svelte';
@@ -171,6 +172,7 @@
     | 'media_backup'
     | 'remove_identity'
     | 'alert_detail'
+    | 'enable_agent_accounts'
     | 'recovery_override'
     | 'my_agents'
     | 'agent_approval'
@@ -943,8 +945,10 @@
       oncancel={() => goTo('identity_input')}
     />
   {:else if step === 'claim_success'}
-    <ClaimSuccessScreen
-      claimResult={claimResult!}
+    <SuccessScreen
+      result={claimResult!}
+      title="Identity claimed"
+      subtitle="This device now holds the deciding key — you're in control of this identity."
       ondone={() => goTo('home')}
     />
   {:else if step === 'pds_config'}
@@ -1124,6 +1128,15 @@
       did={selectedDid ?? ''}
       onback={() => goTo('identity_detail')}
       onapprove={() => goTo('agent_approval')}
+      onprovision={() => goTo('enable_agent_accounts')}
+    />
+
+  {:else if step === 'enable_agent_accounts'}
+    <EnableAgentAccountsScreen
+      did={selectedDid ?? ''}
+      handle={selectedDidDoc ? extractHandle(selectedDidDoc) : null}
+      onback={() => goTo('my_agents')}
+      ondone={() => goTo('my_agents')}
     />
 
   {:else if step === 'agent_approval'}
@@ -1131,6 +1144,7 @@
       did={selectedDid ?? ''}
       onback={() => goTo('my_agents')}
       ondone={() => goTo('my_agents')}
+      onprovision={() => goTo('enable_agent_accounts')}
     />
 
   {:else if step === 'oauth_consent_approval'}
@@ -1428,8 +1442,11 @@
     {/if}
 
   {:else if step === 'migration_success'}
-    <MigrationSuccessScreen
+    <SuccessScreen
       result={migrationResult!}
+      title="Migration complete"
+      subtitle="Your identity now lives on its new server. Your identifier hasn't changed."
+      pdsLabel="New PDS"
       destPdsLabel={migrationDestPds}
       ondone={() => goTo('home')}
     />

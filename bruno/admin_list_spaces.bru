@@ -1,0 +1,64 @@
+meta {
+  name: Admin List Hosted Spaces
+  type: http
+  seq: 164
+}
+
+get {
+  url: {{baseUrl}}/v1/admin/spaces?limit=50
+  body: none
+  auth: bearer
+}
+
+params:query {
+  limit: 50
+  ~cursor:
+  ~status: takendown
+}
+
+auth:bearer {
+  token: {{adminToken}}
+}
+
+docs {
+  # GET /v1/admin/spaces
+
+  Every Atproto Space this server stores anything about, URI order, cursor-paginated —
+  the operator's inventory of what it is actually serving under the permissioned-data
+  surface. Two kinds of row appear, and the difference is the point of the endpoint:
+
+  - `localAuthority: true` — a space anchored on a local account, created through
+    `com.atproto.simplespace.createSpace`. This server holds its config and its owner
+    can delete it.
+  - `localAuthority: false` — a space whose *authority* is a different server. This
+    server stores members' repos in it (the row is recorded on a member's first write,
+    because nothing else in the protocol announces the join), but `deleteSpace` is not
+    its to call. Takedown is the only lever here.
+
+  Deleted spaces are included: a tombstoned row can still carry other members' records,
+  which are theirs and are left in place by the spec's deletion semantics.
+
+  Not gated on `[spaces] enabled` — turning the surface off stops serving new traffic
+  but leaves whatever is already stored, which is exactly when an operator still needs
+  to look. Admin-authed: the master token (shown here) **or** an active device's signed
+  request (the signature covers the bare path, so paging params vary without re-signing).
+
+  Query params (all optional):
+  - `limit` — page size, default 50, clamped to 1..=100.
+  - `cursor` — the `cursor` value from the previous page (the last row's `uri`).
+  - `status` — `takendown` narrows to the spaces the operator has refused. Anything
+    else is a 400.
+
+  Response:
+  - `spaces` — array in URI order, each:
+    - `uri` — canonical space URI, `at://{authority}/space/{type}/{skey}`.
+    - `authorityDid` — the DID that governs the space.
+    - `localAuthority` — whether this server is that authority (see above).
+    - `createdAt` — when this server first recorded the space.
+    - `deletedAt` — the *owner's* tombstone (`deleteSpace`); omitted when absent.
+    - `takendownAt` — when the operator took the space down; omitted when it is being
+      served.
+    - `repoCount` — repos this server stores in the space.
+    - `recordCount` — records across those repos.
+  - `cursor` — pass back as `?cursor=` for the next page; omitted on the last page.
+}

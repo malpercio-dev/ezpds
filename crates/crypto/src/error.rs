@@ -20,4 +20,6 @@ pub enum CryptoError {
     PlcOperation(String),
     #[error("signature verification failed: {0}")]
     SignatureVerification(String),
+    #[error("space primitive failed: {0}")]
+    Space(String),
 }

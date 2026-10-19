@@ -1,4 +1,5 @@
 pub mod agent_assertion;
+pub mod client_attestation;
 pub mod dpop;
 pub mod extractors;
 pub mod guards;
@@ -14,6 +15,8 @@ pub mod rate_limit;
 pub mod service_auth;
 pub mod signed_proof;
 pub mod signing_key;
+pub mod space;
+pub mod space_consent;
 pub mod token;
 pub mod validation;
 
@@ -27,6 +30,7 @@ pub use dpop::{
     DpopTokenEndpointError,
 };
 pub use permission_sets::{new_permission_set_cache, PermissionSetCache};
+pub use space_consent::{new_space_type_cache, SpaceTypeCache};
 // Foundational types: used once authenticated routes are wired up.
 #[allow(unused_imports)]
 pub use extractors::{authenticate_access, AuthenticatedUser};
@@ -54,14 +58,14 @@ mod tests {
     };
     use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
     use jsonwebtoken::{encode, Algorithm, EncodingKey, Header};
-    use p256::ecdsa::{signature::Signer, Signature, SigningKey};
+    use p256::ecdsa::{signature::Signer, Signature};
     use p256::pkcs8::EncodePrivateKey;
     use rand_core::OsRng;
     use serde::Serialize;
-    use sha2::{Digest, Sha256};
     use tower::ServiceExt;
 
     use crate::app::{test_state, AppState};
+    use crate::routes::test_utils;
 
     // ── Test token helpers ────────────────────────────────────────────────────
 
@@ -76,13 +80,6 @@ mod tests {
         cnf: Option<serde_json::Value>,
     }
 
-    fn now_secs() -> u64 {
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_secs()
-    }
-
     /// Mint a valid HS256 JWT using the given secret.
     fn mint_token(
         sub: &str,
@@ -91,7 +88,7 @@ mod tests {
         secret: &[u8; 32],
         cnf: Option<serde_json::Value>,
     ) -> String {
-        let exp = (now_secs() as i64 + exp_offset_secs) as u64;
+        let exp = (crate::time::unix_now_secs() + exp_offset_secs) as u64;
         let claims = TestClaims {
             sub: sub.to_owned(),
             aud: "did:plc:test".to_owned(),
@@ -109,90 +106,10 @@ mod tests {
 
     // ── DPoP test helpers ─────────────────────────────────────────────────────
 
-    /// Compute the JWK thumbprint for a P-256 signing key.
-    fn dpop_key_thumbprint(key: &SigningKey) -> String {
-        let jwk = dpop_key_to_jwk(key);
-        jwk_thumbprint(&jwk).unwrap()
-    }
-
-    /// Build a minimal JWK Value from a P-256 signing key (public portion only).
-    fn dpop_key_to_jwk(key: &SigningKey) -> serde_json::Value {
-        let vk = key.verifying_key();
-        let point = vk.to_encoded_point(false);
-        let x = URL_SAFE_NO_PAD.encode(point.x().unwrap());
-        let y = URL_SAFE_NO_PAD.encode(point.y().unwrap());
-        serde_json::json!({ "kty": "EC", "crv": "P-256", "x": x, "y": y })
-    }
-
-    /// Build a valid DPoP proof JWT signed with the given P-256 key using current time as `iat`.
-    /// Includes the ath (access token hash) claim for use at resource endpoints.
-    fn make_dpop_proof(key: &SigningKey, htm: &str, htu: &str) -> String {
-        // Use a dummy access token for tests — the ath is computed from this.
-        let dummy_access_token = "eyJhbGciOiJFUzI1NiIsInR5cCI6ImF0K2p3dCJ9.eyJpc3MiOiJodHRwczovL3Rlc3QuZXhhbXBsZS5jb20iLCJqdGkiOiIxMjM0NTY3OC1hYmNkLWVmZ2gtaWprbCIsInN1YiI6ImRpZDpwbGM6YWxpY2UiLCJhdWQiOiJodHRwczovL3Rlc3QuZXhhbXBsZS5jb20iLCJpYXQiOjE2NzcwMDAwMDAsImV4cCI6MTY3NzAwMzAwMCwic2NvcGUiOiJjb20uYXRwcm90by5hY2Nlc3MiLCJjbmYiOnsianRrIjoiMTIzNDU2Nzg5MCJ9fQ.signature";
-        make_dpop_proof_with_iat_and_ath(key, htm, htu, now_secs() as i64, dummy_access_token)
-    }
-
-    /// Build a DPoP proof JWT with an explicit `iat` — used to test freshness rejection.
-    /// Does NOT include ath claim (for token endpoint tests where ath is not required).
-    fn make_dpop_proof_with_iat(key: &SigningKey, htm: &str, htu: &str, iat: i64) -> String {
-        let jwk = dpop_key_to_jwk(key);
-        let header = serde_json::json!({
-            "typ": "dpop+jwt",
-            "alg": "ES256",
-            "jwk": jwk,
-        });
-        let payload = serde_json::json!({
-            "htm": htm,
-            "htu": htu,
-            "iat": iat,
-            "jti": uuid::Uuid::new_v4().to_string(),
-        });
-
-        let hdr_b64 = URL_SAFE_NO_PAD.encode(serde_json::to_string(&header).unwrap().as_bytes());
-        let pay_b64 = URL_SAFE_NO_PAD.encode(serde_json::to_string(&payload).unwrap().as_bytes());
-        let signing_input = format!("{hdr_b64}.{pay_b64}");
-
-        let sig: Signature = key.sign(signing_input.as_bytes());
-        let sig_b64 = URL_SAFE_NO_PAD.encode(sig.to_bytes().as_ref() as &[u8]);
-
-        format!("{hdr_b64}.{pay_b64}.{sig_b64}")
-    }
-
-    /// Build a DPoP proof JWT with explicit `iat` and `ath` claim (for resource endpoint testing).
-    fn make_dpop_proof_with_iat_and_ath(
-        key: &SigningKey,
-        htm: &str,
-        htu: &str,
-        iat: i64,
-        access_token: &str,
-    ) -> String {
-        let jwk = dpop_key_to_jwk(key);
-        let header = serde_json::json!({
-            "typ": "dpop+jwt",
-            "alg": "ES256",
-            "jwk": jwk,
-        });
-        let ath = {
-            let hash = Sha256::digest(access_token.as_bytes());
-            URL_SAFE_NO_PAD.encode(hash)
-        };
-        let payload = serde_json::json!({
-            "htm": htm,
-            "htu": htu,
-            "iat": iat,
-            "jti": uuid::Uuid::new_v4().to_string(),
-            "ath": ath,
-        });
-
-        let hdr_b64 = URL_SAFE_NO_PAD.encode(serde_json::to_string(&header).unwrap().as_bytes());
-        let pay_b64 = URL_SAFE_NO_PAD.encode(serde_json::to_string(&payload).unwrap().as_bytes());
-        let signing_input = format!("{hdr_b64}.{pay_b64}");
-
-        let sig: Signature = key.sign(signing_input.as_bytes());
-        let sig_b64 = URL_SAFE_NO_PAD.encode(sig.to_bytes().as_ref() as &[u8]);
-
-        format!("{hdr_b64}.{pay_b64}.{sig_b64}")
-    }
+    /// A fixed access-token literal for negative-path DPoP tests that need *an* `ath` claim but
+    /// fail before it is ever checked (wrong key, wrong htm/htu, wrong signature) — the request's
+    /// actual `Authorization` token doesn't have to match it.
+    const DUMMY_ACCESS_TOKEN: &str = "eyJhbGciOiJFUzI1NiIsInR5cCI6ImF0K2p3dCJ9.eyJpc3MiOiJodHRwczovL3Rlc3QuZXhhbXBsZS5jb20iLCJqdGkiOiIxMjM0NTY3OC1hYmNkLWVmZ2gtaWprbCIsInN1YiI6ImRpZDpwbGM6YWxpY2UiLCJhdWQiOiJodHRwczovL3Rlc3QuZXhhbXBsZS5jb20iLCJpYXQiOjE2NzcwMDAwMDAsImV4cCI6MTY3NzAwMzAwMCwic2NvcGUiOiJjb20uYXRwcm90by5hY2Nlc3MiLCJjbmYiOnsianRrIjoiMTIzNDU2Nzg5MCJ9fQ.signature";
 
     // ── Minimal test router ───────────────────────────────────────────────────
 
@@ -312,8 +229,10 @@ mod tests {
         assert!(text.contains("scope=Access"));
     }
 
+    /// A refresh token is a credential for `refreshSession` alone, so the access seam refuses
+    /// it however well-formed and correctly signed it is.
     #[tokio::test]
-    async fn valid_refresh_token_extracts_refresh_scope() {
+    async fn refresh_scoped_token_returns_401_invalid_token() {
         let state = test_state().await;
         let token = mint_token(
             "did:plc:alice",
@@ -323,15 +242,9 @@ mod tests {
             None,
         );
         let resp = get_protected(protected_app(state), Some(&token)).await;
-        assert_eq!(resp.status(), StatusCode::OK);
-        let text = String::from_utf8(
-            axum::body::to_bytes(resp.into_body(), 4096)
-                .await
-                .unwrap()
-                .to_vec(),
-        )
-        .unwrap();
-        assert!(text.contains("scope=Refresh"));
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+        let json = json_body(resp).await;
+        assert_eq!(json["error"]["code"], "INVALID_TOKEN");
     }
 
     #[tokio::test]
@@ -406,8 +319,8 @@ mod tests {
     #[tokio::test]
     async fn dpop_bound_token_without_dpop_header_returns_401() {
         let state = test_state().await;
-        let dpop_key = SigningKey::random(&mut OsRng);
-        let thumbprint = dpop_key_thumbprint(&dpop_key);
+        let dpop_key = test_utils::DpopProofKey::generate();
+        let thumbprint = dpop_key.thumbprint();
 
         // Access token has cnf.jkt → DPoP-bound.
         let token = mint_token(
@@ -431,7 +344,7 @@ mod tests {
         // not earlier (the old test used "dummy.dpop.value" which failed at base64
         // decode and never reached the binding check).
         let state = test_state().await;
-        let dpop_key = SigningKey::random(&mut OsRng);
+        let dpop_key = test_utils::DpopProofKey::generate();
         let token = mint_token(
             "did:plc:user",
             "com.atproto.access",
@@ -439,10 +352,10 @@ mod tests {
             &state.jwt_secret,
             None,
         );
-        let dpop_proof = make_dpop_proof(
-            &dpop_key,
+        let dpop_proof = dpop_key.proof(
             "GET",
             &format!("{}/protected", state.config.public_url),
+            DUMMY_ACCESS_TOKEN,
         );
         let req = Request::builder()
             .uri("/protected")
@@ -479,8 +392,8 @@ mod tests {
     #[tokio::test]
     async fn valid_dpop_bound_token_is_accepted() {
         let state = test_state().await;
-        let dpop_key = SigningKey::random(&mut OsRng);
-        let thumbprint = dpop_key_thumbprint(&dpop_key);
+        let dpop_key = test_utils::DpopProofKey::generate();
+        let thumbprint = dpop_key.thumbprint();
 
         let token = mint_token(
             "did:plc:alice",
@@ -492,8 +405,7 @@ mod tests {
         // htu = public_url + path (matches how the extractor builds expected_htu)
         let htu = format!("{}/protected", state.config.public_url);
         // DPoP proof needs the ath (access token hash) claim for resource endpoint verification.
-        let dpop_proof =
-            make_dpop_proof_with_iat_and_ath(&dpop_key, "GET", &htu, now_secs() as i64, &token);
+        let dpop_proof = dpop_key.proof_at("GET", &htu, &token, crate::time::unix_now_secs());
 
         let req = Request::builder()
             .uri("/protected")
@@ -511,9 +423,9 @@ mod tests {
     async fn dpop_proof_with_forged_signature_returns_401() {
         let state = test_state().await;
         // Attacker's key — different from the key that signed the access token.
-        let attacker_key = SigningKey::random(&mut OsRng);
-        let legit_key = SigningKey::random(&mut OsRng);
-        let thumbprint = dpop_key_thumbprint(&legit_key);
+        let attacker_key = test_utils::DpopProofKey::generate();
+        let legit_key = test_utils::DpopProofKey::generate();
+        let thumbprint = legit_key.thumbprint();
 
         let token = mint_token(
             "did:plc:alice",
@@ -525,7 +437,7 @@ mod tests {
         // Proof is signed by attacker_key but claims legit_key's thumbprint in the header JWK.
         // The JWK in the proof header is attacker_key's public key → thumbprint mismatch.
         let htu = format!("{}/protected", state.config.public_url);
-        let dpop_proof = make_dpop_proof(&attacker_key, "GET", &htu);
+        let dpop_proof = attacker_key.proof("GET", &htu, DUMMY_ACCESS_TOKEN);
 
         let req = Request::builder()
             .uri("/protected")
@@ -544,8 +456,8 @@ mod tests {
     #[tokio::test]
     async fn dpop_wrong_htm_returns_401() {
         let state = test_state().await;
-        let dpop_key = SigningKey::random(&mut OsRng);
-        let thumbprint = dpop_key_thumbprint(&dpop_key);
+        let dpop_key = test_utils::DpopProofKey::generate();
+        let thumbprint = dpop_key.thumbprint();
         let token = mint_token(
             "did:plc:alice",
             "com.atproto.access",
@@ -555,7 +467,7 @@ mod tests {
         );
         let htu = format!("{}/protected", state.config.public_url);
         // htm says POST but request is GET.
-        let dpop_proof = make_dpop_proof(&dpop_key, "POST", &htu);
+        let dpop_proof = dpop_key.proof("POST", &htu, DUMMY_ACCESS_TOKEN);
 
         let req = Request::builder()
             .uri("/protected")
@@ -572,8 +484,8 @@ mod tests {
     #[tokio::test]
     async fn dpop_wrong_htu_returns_401() {
         let state = test_state().await;
-        let dpop_key = SigningKey::random(&mut OsRng);
-        let thumbprint = dpop_key_thumbprint(&dpop_key);
+        let dpop_key = test_utils::DpopProofKey::generate();
+        let thumbprint = dpop_key.thumbprint();
         let token = mint_token(
             "did:plc:alice",
             "com.atproto.access",
@@ -582,10 +494,10 @@ mod tests {
             Some(serde_json::json!({ "jkt": thumbprint })),
         );
         // htu points to a different endpoint.
-        let dpop_proof = make_dpop_proof(
-            &dpop_key,
+        let dpop_proof = dpop_key.proof(
             "GET",
             &format!("{}/other-endpoint", state.config.public_url),
+            DUMMY_ACCESS_TOKEN,
         );
 
         let req = Request::builder()
@@ -603,8 +515,8 @@ mod tests {
     #[tokio::test]
     async fn dpop_wrong_typ_returns_401() {
         let state = test_state().await;
-        let dpop_key = SigningKey::random(&mut OsRng);
-        let thumbprint = dpop_key_thumbprint(&dpop_key);
+        let dpop_key = test_utils::DpopProofKey::generate();
+        let thumbprint = dpop_key.thumbprint();
         let token = mint_token(
             "did:plc:alice",
             "com.atproto.access",
@@ -613,18 +525,20 @@ mod tests {
             Some(serde_json::json!({ "jkt": thumbprint })),
         );
 
-        let jwk = dpop_key_to_jwk(&dpop_key);
+        let jwk = dpop_key.jwk();
         // Wrong typ — should be "dpop+jwt".
         let header = serde_json::json!({ "typ": "JWT", "alg": "ES256", "jwk": jwk });
         let payload = serde_json::json!({
             "htm": "GET",
             "htu": format!("{}/protected", state.config.public_url),
-            "iat": now_secs() as i64,
+            "iat": crate::time::unix_now_secs(),
             "jti": "test-jti",
         });
         let hdr_b64 = URL_SAFE_NO_PAD.encode(serde_json::to_string(&header).unwrap().as_bytes());
         let pay_b64 = URL_SAFE_NO_PAD.encode(serde_json::to_string(&payload).unwrap().as_bytes());
-        let sig: Signature = dpop_key.sign(format!("{hdr_b64}.{pay_b64}").as_bytes());
+        let sig: Signature = dpop_key
+            .signing_key()
+            .sign(format!("{hdr_b64}.{pay_b64}").as_bytes());
         let dpop_proof = format!(
             "{hdr_b64}.{pay_b64}.{}",
             URL_SAFE_NO_PAD.encode(sig.to_bytes().as_ref() as &[u8])
@@ -645,8 +559,8 @@ mod tests {
     #[tokio::test]
     async fn dpop_empty_jti_returns_401() {
         let state = test_state().await;
-        let dpop_key = SigningKey::random(&mut OsRng);
-        let thumbprint = dpop_key_thumbprint(&dpop_key);
+        let dpop_key = test_utils::DpopProofKey::generate();
+        let thumbprint = dpop_key.thumbprint();
         let token = mint_token(
             "did:plc:alice",
             "com.atproto.access",
@@ -655,18 +569,20 @@ mod tests {
             Some(serde_json::json!({ "jkt": thumbprint })),
         );
 
-        let jwk = dpop_key_to_jwk(&dpop_key);
+        let jwk = dpop_key.jwk();
         let header = serde_json::json!({ "typ": "dpop+jwt", "alg": "ES256", "jwk": jwk });
         // Empty jti.
         let payload = serde_json::json!({
             "htm": "GET",
             "htu": format!("{}/protected", state.config.public_url),
-            "iat": now_secs() as i64,
+            "iat": crate::time::unix_now_secs(),
             "jti": "",
         });
         let hdr_b64 = URL_SAFE_NO_PAD.encode(serde_json::to_string(&header).unwrap().as_bytes());
         let pay_b64 = URL_SAFE_NO_PAD.encode(serde_json::to_string(&payload).unwrap().as_bytes());
-        let sig: Signature = dpop_key.sign(format!("{hdr_b64}.{pay_b64}").as_bytes());
+        let sig: Signature = dpop_key
+            .signing_key()
+            .sign(format!("{hdr_b64}.{pay_b64}").as_bytes());
         let dpop_proof = format!(
             "{hdr_b64}.{pay_b64}.{}",
             URL_SAFE_NO_PAD.encode(sig.to_bytes().as_ref() as &[u8])
@@ -687,8 +603,8 @@ mod tests {
     #[tokio::test]
     async fn dpop_stale_proof_returns_401() {
         let state = test_state().await;
-        let dpop_key = SigningKey::random(&mut OsRng);
-        let thumbprint = dpop_key_thumbprint(&dpop_key);
+        let dpop_key = test_utils::DpopProofKey::generate();
+        let thumbprint = dpop_key.thumbprint();
         let token = mint_token(
             "did:plc:alice",
             "com.atproto.access",
@@ -697,11 +613,11 @@ mod tests {
             Some(serde_json::json!({ "jkt": thumbprint })),
         );
         // iat = now - 120: 120 s in the past — outside the ±60 s freshness window.
-        let dpop_proof = make_dpop_proof_with_iat(
-            &dpop_key,
+        let dpop_proof = dpop_key.proof_with(
             "GET",
             &format!("{}/protected", state.config.public_url),
-            now_secs() as i64 - 120,
+            None,
+            Some(crate::time::unix_now_secs() - 120),
         );
         let req = Request::builder()
             .uri("/protected")
@@ -718,8 +634,8 @@ mod tests {
     #[tokio::test]
     async fn dpop_future_dated_proof_returns_401() {
         let state = test_state().await;
-        let dpop_key = SigningKey::random(&mut OsRng);
-        let thumbprint = dpop_key_thumbprint(&dpop_key);
+        let dpop_key = test_utils::DpopProofKey::generate();
+        let thumbprint = dpop_key.thumbprint();
         let token = mint_token(
             "did:plc:alice",
             "com.atproto.access",
@@ -729,11 +645,11 @@ mod tests {
         );
         // iat = now + 120: 120 s in the future — also outside the ±60 s window.
         // This exercises the abs() branch (unsigned_abs() after widening).
-        let dpop_proof = make_dpop_proof_with_iat(
-            &dpop_key,
+        let dpop_proof = dpop_key.proof_with(
             "GET",
             &format!("{}/protected", state.config.public_url),
-            now_secs() as i64 + 120,
+            None,
+            Some(crate::time::unix_now_secs() + 120),
         );
         let req = Request::builder()
             .uri("/protected")
@@ -753,8 +669,8 @@ mod tests {
         // `now - i64::MIN` overflows in debug (panic → DoS) and wraps in release
         // (magnitude check bypass). The widened arithmetic must reject it as stale.
         let state = test_state().await;
-        let dpop_key = SigningKey::random(&mut OsRng);
-        let thumbprint = dpop_key_thumbprint(&dpop_key);
+        let dpop_key = test_utils::DpopProofKey::generate();
+        let thumbprint = dpop_key.thumbprint();
         let token = mint_token(
             "did:plc:alice",
             "com.atproto.access",
@@ -762,11 +678,11 @@ mod tests {
             &state.jwt_secret,
             Some(serde_json::json!({ "jkt": thumbprint })),
         );
-        let dpop_proof = make_dpop_proof_with_iat(
-            &dpop_key,
+        let dpop_proof = dpop_key.proof_with(
             "GET",
             &format!("{}/protected", state.config.public_url),
-            i64::MIN,
+            None,
+            Some(i64::MIN),
         );
         let req = Request::builder()
             .uri("/protected")
@@ -785,8 +701,8 @@ mod tests {
         // RFC 9449 §11.1: multiple DPoP headers must be rejected.
         // A header-prepending proxy could inject a forged proof as the first value.
         let state = test_state().await;
-        let dpop_key = SigningKey::random(&mut OsRng);
-        let thumbprint = dpop_key_thumbprint(&dpop_key);
+        let dpop_key = test_utils::DpopProofKey::generate();
+        let thumbprint = dpop_key.thumbprint();
         let token = mint_token(
             "did:plc:alice",
             "com.atproto.access",
@@ -795,8 +711,8 @@ mod tests {
             Some(serde_json::json!({ "jkt": thumbprint })),
         );
         let htu = format!("{}/protected", state.config.public_url);
-        let proof1 = make_dpop_proof(&dpop_key, "GET", &htu);
-        let proof2 = make_dpop_proof(&dpop_key, "GET", &htu);
+        let proof1 = dpop_key.proof("GET", &htu, DUMMY_ACCESS_TOKEN);
+        let proof2 = dpop_key.proof("GET", &htu, DUMMY_ACCESS_TOKEN);
         let req = Request::builder()
             .uri("/protected")
             .header("Authorization", format!("DPoP {token}"))
@@ -888,7 +804,7 @@ mod tests {
             exp: u64,
             scope: String,
         }
-        let now = now_secs();
+        let now = crate::time::unix_now_secs() as u64;
         let claims = Es256Claims {
             iss: state.config.public_url.clone(),
             jti: uuid::Uuid::new_v4().to_string(),
@@ -933,7 +849,7 @@ mod tests {
             exp: u64,
             scope: String,
         }
-        let now = now_secs();
+        let now = crate::time::unix_now_secs() as u64;
         let claims = Es256Claims {
             iss: state.config.public_url.clone(),
             jti: uuid::Uuid::new_v4().to_string(),

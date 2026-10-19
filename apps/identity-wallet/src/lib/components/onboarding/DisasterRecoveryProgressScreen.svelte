@@ -259,12 +259,12 @@
     </p>
   </div>
 
-  <ul class="checklist">
+  <ul class="checklist u-list-reset">
     {#each LEGS as leg (leg.id)}
       <li class="leg leg--{legStates[leg.id]}">
         <span class="leg-glyph" aria-hidden="true">{statusGlyph(legStates[leg.id])}</span>
         <span class="leg-body">
-          <span class="leg-label">{leg.label}</span>
+          <span class="leg-label u-title-strong">{leg.label}</span>
           <span class="leg-status">{statusWord(legStates[leg.id])}</span>
         </span>
       </li>
@@ -290,14 +290,14 @@
           </li>
         {/each}
       </ul>
-      <div class="loss-actions">
+      <div class="loss-actions u-stack-sm">
         <Button onclick={continueWithLoss}>Continue without them</Button>
         <Button variant="secondary" onclick={retry}>Try again</Button>
       </div>
     </div>
   {:else if failure}
     <div class="error-box" role="alert">
-      <p class="error-text">{failure}</p>
+      <p class="error-text u-error-text">{failure}</p>
       {#if failureDetail}
         <p class="error-detail">{failureDetail}</p>
       {/if}
@@ -337,14 +337,6 @@
     max-width: 32ch;
   }
 
-  .checklist {
-    list-style: none;
-    margin: 0;
-    padding: 0;
-    display: flex;
-    flex-direction: column;
-    gap: var(--space-sm);
-  }
   .leg {
     display: flex;
     align-items: flex-start;
@@ -357,7 +349,7 @@
   .leg-glyph {
     font-size: var(--text-title);
     line-height: var(--leading-headline);
-    width: 22px;
+    width: var(--size-icon-sm);
     flex-shrink: 0;
     text-align: center;
     color: var(--color-muted);
@@ -377,11 +369,6 @@
     gap: 1px;
     min-width: 0;
   }
-  .leg-label {
-    font-size: var(--text-body);
-    font-weight: var(--weight-semibold);
-    color: var(--color-ink);
-  }
   .leg-status {
     font-size: var(--text-label);
     color: var(--color-muted);
@@ -398,12 +385,7 @@
     border-radius: var(--radius-md);
     padding: var(--space-sm) var(--space-md);
   }
-  .error-text {
-    font-size: var(--text-label);
-    color: var(--color-critical);
-    margin: 0;
-    line-height: 1.4;
-  }
+
   .error-detail {
     font-family: var(--font-mono);
     font-size: var(--text-label);
@@ -469,10 +451,5 @@
     font-size: var(--text-label);
     color: var(--color-muted);
     word-break: break-all;
-  }
-  .loss-actions {
-    display: flex;
-    flex-direction: column;
-    gap: var(--space-sm);
   }
 </style>

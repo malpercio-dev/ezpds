@@ -107,9 +107,12 @@ pub async fn register_admin_notifications(
     )
     .await
     {
-        tracing::error!(error = %e, "failed to store an admin notification registration");
-        return ApiError::new(ErrorCode::InternalError, "failed to store the registration")
-            .into_response();
+        return ApiError::internal_as(
+            e,
+            "failed to store an admin notification registration",
+            "failed to store the registration",
+        )
+        .into_response();
     }
 
     if let Some(sender) = state.notify_sender.as_ref() {

@@ -3,7 +3,7 @@ title: Mobile IPC commands
 description: Generated Tauri command surface for Obsign and Brass Console.
 ---
 
-> Generated from source for ezpds **v0.12.0**. Do not edit this page by hand.
+> Generated from source for ezpds **v0.16.2**. Do not edit this page by hand.
 
 These are the literal commands invoked by each frontend registry.
 
@@ -14,6 +14,7 @@ Source: `apps/identity-wallet/src/lib/ipc/`
 | Command | Kind |
 | --- | --- |
 | `add_recovery_share` | App command |
+| `agent_accounts_provisioned` | App command |
 | `arm_identity_leg` | App command |
 | `authenticate_migration_source` | App command |
 | `authenticate_source_pds` | App command |
@@ -30,7 +31,6 @@ Source: `apps/identity-wallet/src/lib/ipc/`
 | `check_identity_status` | App command |
 | `clear_notification_failures` | App command |
 | `complete_did_web_ceremony` | App command |
-| `complete_oauth_flow` | App command |
 | `confirm_agent_claim` | App command |
 | `confirm_identity_removal` | App command |
 | `confirm_oauth_consent` | App command |
@@ -42,11 +42,11 @@ Source: `apps/identity-wallet/src/lib/ipc/`
 | `create_app_password` | App command |
 | `create_destination_account` | App command |
 | `create_recovery_destination_account` | App command |
+| `delete_child` | App command |
 | `detect_migration_path_cmd` | App command |
 | `enroll_recovery_signing_key` | App command |
 | `ensure_identity_session` | App command |
 | `export_diagnostics` | App command |
-| `export_repo_backup` | App command |
 | `finalize_migration` | App command |
 | `forget_identity_locally` | App command |
 | `get_agent_audit` | App command |
@@ -69,10 +69,11 @@ Source: `apps/identity-wallet/src/lib/ipc/`
 | `initiate_escrow_release` | App command |
 | `list_agents` | App command |
 | `list_app_passwords` | App command |
+| `list_children` | App command |
 | `list_identities` | App command |
 | `list_pending_removals` | App command |
+| `mint_child_from_claim` | App command |
 | `perform_did_ceremony` | App command |
-| `plugin:auth-session|start` | Tauri plugin |
 | `plugin:sharesheet|share_text` | Tauri plugin |
 | `prepare_did_web_ceremony` | App command |
 | `prepare_disaster_recovery` | App command |
@@ -80,15 +81,15 @@ Source: `apps/identity-wallet/src/lib/ipc/`
 | `preview_agent_claim` | App command |
 | `preview_oauth_consent` | App command |
 | `preview_oauth_consent_by_request_id` | App command |
+| `reconcile_children` | App command |
 | `recover_identity` | App command |
 | `recovery_transfer_repo` | App command |
 | `refresh_did_doc` | App command |
-| `refresh_notification_sender_keys` | App command |
 | `register_created_identity` | App command |
 | `register_for_notifications` | App command |
 | `register_handle` | App command |
 | `rekey_in_progress_cmd` | App command |
-| `remove_recovery_share` | App command |
+| `remint_child_assertion` | App command |
 | `repair_hosting_endpoint` | App command |
 | `request_claim_verification` | App command |
 | `request_escrow_release` | App command |
@@ -97,11 +98,11 @@ Source: `apps/identity-wallet/src/lib/ipc/`
 | `restore_blob_backup` | App command |
 | `revoke_agent` | App command |
 | `revoke_app_password` | App command |
+| `revoke_child` | App command |
 | `run_blob_backup` | App command |
 | `run_recovery_epilogue` | App command |
 | `run_repo_backup` | App command |
 | `save_pds_url` | App command |
-| `self_held_kit_escrow_offer_cmd` | App command |
 | `self_held_kit_in_progress_cmd` | App command |
 | `set_appearance_preference` | App command |
 | `set_background_backup_settings` | App command |
@@ -147,6 +148,7 @@ Source: `apps/admin-companion/src/lib/ipc.ts`
 | `list_admin_devices` | App command |
 | `list_audit` | App command |
 | `list_claim_codes` | App command |
+| `list_hosted_spaces` | App command |
 | `list_pairings` | App command |
 | `list_transfers` | App command |
 | `pair_device` | App command |
@@ -161,5 +163,6 @@ Source: `apps/admin-companion/src/lib/ipc.ts`
 | `set_account_email` | App command |
 | `set_active_pairing` | App command |
 | `set_biometric_enabled` | App command |
+| `set_space_takedown` | App command |
 | `unpair` | App command |
 | `update_subject_status` | App command |

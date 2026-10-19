@@ -7,7 +7,9 @@ use std::time::Instant;
 use common::Config;
 use reqwest::Client;
 
-use crate::auth::{ClaimPollTracker, DpopNonces, OAuthSigningKey, PermissionSetCache};
+use crate::auth::{
+    ClaimPollTracker, DpopNonces, OAuthSigningKey, PermissionSetCache, SpaceTypeCache,
+};
 use crate::identity::dns::{DnsProvider, TxtResolver};
 use crate::identity::well_known::WellKnownResolver;
 
@@ -73,6 +75,13 @@ pub struct AppState {
     /// In-memory cache of resolved `include:<nsid>` permission sets. Shared across all OAuth
     /// authorize requests.
     pub permission_set_cache: PermissionSetCache,
+    pub space_type_cache: SpaceTypeCache,
+    /// TTL cache of *remote* DID documents (1h stale / 24h hard, stale-while-revalidate),
+    /// consulted after the `did_documents` table and populated by every resolution that reaches
+    /// plc.directory or a did:web endpoint. Without it the `atproto-proxy` target lookup,
+    /// service-auth verification, and Lexicon-authority fetch each pay a live third-party
+    /// request every time. See [`crate::identity::resolution`]'s module doc for the two tiers.
+    pub did_document_cache: crate::identity::resolution::DidDocumentCache,
     /// In-memory sliding-window store for failed createSession attempts (rate limiting).
     /// Shared across all requests via Arc<Mutex<...>>.
     pub failed_login_attempts: FailedLoginStore,
@@ -125,7 +134,7 @@ pub(crate) async fn test_state() -> AppState {
 
 #[cfg(test)]
 pub async fn test_state_with_plc_url(plc_directory_url: String) -> AppState {
-    use crate::auth::{new_claim_poll_tracker, new_permission_set_cache};
+    use crate::auth::{new_claim_poll_tracker, new_permission_set_cache, new_space_type_cache};
     use crate::db::{open_pool, run_migrations};
     use common::{
         AppViewConfig, BlobsConfig, ChatConfig, CrawlersConfig, FirehoseConfig, IrohConfig,
@@ -212,6 +221,10 @@ pub async fn test_state_with_plc_url(plc_directory_url: String) -> AppState {
             accounts: common::AccountsConfig::default(),
             recovery: common::RecoveryConfig::default(),
             waitlist: common::WaitlistConfig::default(),
+            // Spaces on in the shared test config — most space tests exercise the route
+            // surface — while the production default stays off (pre-launch alpha). The
+            // gating tests opt back out by swapping the config on the returned state.
+            spaces: common::SpacesConfig { enabled: true },
             admin_devices: common::AdminDevicesConfig::default(),
             oauth: OAuthConfig::default(),
             agent_auth: common::AgentAuthConfig::default(),
@@ -268,6 +281,8 @@ pub async fn test_state_with_plc_url(plc_directory_url: String) -> AppState {
         dpop_nonces,
         poll_tracker: new_claim_poll_tracker(),
         permission_set_cache: new_permission_set_cache(),
+        space_type_cache: new_space_type_cache(),
+        did_document_cache: crate::identity::resolution::new_did_document_cache(),
         failed_login_attempts: Arc::new(Mutex::new(HashMap::new())),
         firehose,
         crawlers: Arc::new({

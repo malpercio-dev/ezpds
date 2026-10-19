@@ -92,16 +92,9 @@ jobs:
       # by default), so point the suite at it instead of paying for a second `cargo build -p
       # pds`. This is a Rust-only lane otherwise, so node/pnpm are set up here rather than at
       # the top of the job.
-      - name: Install pnpm
-        uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
+      - name: Setup pnpm + Node
+        uses: ./.github/actions/setup-pnpm
         with:
-          version: 10.33.0
-
-      - name: Setup Node 22
-        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
-        with:
-          node-version: 22
-          cache: pnpm
           cache-dependency-path: |
             tools/mcp/pnpm-lock.yaml
             tools/oauth-conformance/pnpm-lock.yaml

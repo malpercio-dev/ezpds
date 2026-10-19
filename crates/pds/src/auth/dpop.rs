@@ -9,8 +9,6 @@ use serde::Deserialize;
 use sha2::{Digest, Sha256};
 use std::sync::Arc;
 
-use super::jwt::AccessTokenClaims;
-
 /// Decoded DPoP proof JWT header fields relevant to validation.
 #[derive(Debug, Deserialize)]
 struct DPopHeader {
@@ -146,19 +144,16 @@ impl DpopNonceRotator {
 /// issuance and validation; the token endpoint's freshness check rejects such requests
 /// on its own `ClockError` path anyway.
 fn unix_now_secs() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0)
+    crate::time::unix_now_secs().max(0) as u64
 }
 
 /// Error from DPoP validation at the token endpoint.
 ///
-/// Converted to `OAuthTokenError` by the handler in `routes/oauth_token.rs`.
+/// Converted to `OAuthTokenError` by the handler in `routes/oauth_token/`.
 pub enum DpopTokenEndpointError {
     /// `DPoP:` header is absent.
     ///
-    /// Never constructed in practice — the handler in `routes/oauth_token.rs` pre-checks for a
+    /// Never constructed in practice — the handler in `routes/oauth_token/` pre-checks for a
     /// missing `DPoP:` header and returns an error directly, so this function is only called when
     /// the header is present. Retained for API completeness so callers can match exhaustively.
     #[allow(dead_code)]
@@ -168,6 +163,27 @@ pub enum DpopTokenEndpointError {
     /// Nonce is missing or outside the acceptance window — fresh nonce included for the
     /// response header.
     UseNonce(String),
+}
+
+impl DpopTokenEndpointError {
+    /// Render as the resource-endpoint error vocabulary. For the one proof validator that is
+    /// reused outside the OAuth token/PAR endpoints — `getSpaceCredential`'s mint-time proof,
+    /// which shares [`validate_dpop_for_par`]'s no-nonce, no-`ath` rules — where the RFC 6749
+    /// `{error, error_description}` shape does not apply.
+    pub fn into_api_error(self) -> ApiError {
+        match self {
+            DpopTokenEndpointError::MissingHeader => {
+                ApiError::new(ErrorCode::InvalidToken, "DPoP proof header required")
+            }
+            DpopTokenEndpointError::InvalidProof(msg) => {
+                ApiError::new(ErrorCode::InvalidToken, msg)
+            }
+            // Unreachable for the nonce-free validator; keep the mapping total.
+            DpopTokenEndpointError::UseNonce(_) => {
+                ApiError::new(ErrorCode::InvalidToken, "DPoP nonce required")
+            }
+        }
+    }
 }
 
 /// A DPoP proof whose header and signature have passed the shared prologue.
@@ -313,7 +329,7 @@ fn verify_dpop_proof_prologue(dpop_token: &str) -> Result<VerifiedProof, DPopPro
 /// Maximum age — and future-dating tolerance — of a DPoP proof's `iat`, in
 /// seconds. RFC 9449 §11.1 leaves the window to the server; a tight ±60s bounds
 /// replay without tripping on ordinary clock skew.
-const DPOP_MAX_AGE_SECS: u64 = 60;
+pub const DPOP_MAX_AGE_SECS: u64 = 60;
 
 /// Why the shared freshness check rejected a proof.
 enum FreshnessError {
@@ -435,35 +451,41 @@ pub fn validate_dpop_for_token_endpoint(
         .map_err(|_| DpopTokenEndpointError::InvalidProof("JWK thumbprint computation failed"))
 }
 
-/// Validate the DPoP proof JWT (RFC 9449).
+/// Validate the DPoP proof JWT (RFC 9449) presented with a DPoP-bound token at a resource
+/// endpoint, and return the proof's `jti`.
+///
+/// The bound token is an OAuth access token (`auth/extractors.rs`) or an Atproto Spaces space
+/// credential (`auth/space.rs`); `bound_jkt` is its `cnf.jkt` and `bound_token_str` its exact
+/// wire form (the `ath` input).
 ///
 /// Checks:
 /// - `typ` header is `"dpop+jwt"`
 /// - Signature verifies against the embedded JWK
 /// - `htm` matches request method, `htu` matches `public_url + path`
-/// - `jti` is present and non-empty (presence only — **not** deduplicated; see Replay below)
+/// - `jti` is present and non-empty (presence only here — see Replay below)
 /// - `iat` is within the 60-second freshness window
-/// - Access token `cnf.jkt` matches the computed JWK thumbprint
-/// - `ath` claim is present and matches the access token
+/// - the token's `cnf.jkt` matches the computed JWK thumbprint
+/// - `ath` claim is present and matches the token
 ///
 /// # Replay
 ///
-/// There is no `jti` store anywhere in the codebase (and the token-endpoint nonce is derived,
-/// not stored), so resource-endpoint proofs are **not** deduplicated — RFC 9449 §11.1 makes `jti`
-/// tracking a SHOULD, not a MUST, and the reference PDS's posture is similar. Replay is bounded
-/// only by the ±60s `iat` freshness window plus the `ath` access-token binding: a captured
-/// (access token + proof) pair is replayable against the same method+URI until the proof goes
-/// stale (~60s). This is safe only while every endpoint behind `AuthenticatedUser` stays
-/// idempotent / content-addressed; if one ever authorizes a non-idempotent side effect, add `jti`
-/// (or nonce) tracking here first. Same posture as `service_auth::require_service_auth`.
+/// This function keeps no `jti` store (and the token-endpoint nonce is derived, not stored), so
+/// OAuth resource-endpoint proofs are **not** deduplicated — RFC 9449 §11.1 makes `jti` tracking
+/// a SHOULD, not a MUST, and the reference PDS's posture is similar. Replay is bounded only by the
+/// ±60s `iat` freshness window plus the `ath` token binding: a captured (token + proof) pair is
+/// replayable against the same method+URI until the proof goes stale (~60s). This is safe only
+/// while every endpoint behind `AuthenticatedUser` stays idempotent / content-addressed; if one
+/// ever authorizes a non-idempotent side effect, add `jti` (or nonce) tracking there first. Same
+/// posture as `service_auth::require_service_auth`. The space-credential seam, whose spec makes
+/// per-host `jti` tracking a MUST, spends the returned `jti` in `space_jti_replay` itself.
 pub fn validate_dpop(
     dpop_token: &str,
     method: &Method,
     uri: &axum::http::Uri,
     public_url: &str,
-    access_claims: &AccessTokenClaims,
-    access_token_str: &str,
-) -> Result<(), ApiError> {
+    bound_jkt: Option<&str>,
+    bound_token_str: &str,
+) -> Result<String, ApiError> {
     let invalid = || ApiError::new(ErrorCode::InvalidToken, "DPoP proof invalid");
 
     // Shared prologue: header decode + typ/crv/alg/signature checks.
@@ -471,19 +493,15 @@ pub fn validate_dpop(
     let dpop_header = proof.header;
     let dpop_claims = proof.claims;
 
-    // Compute JWK thumbprint (RFC 7638) and verify the access token was bound to this key.
+    // Compute JWK thumbprint (RFC 7638) and verify the token was bound to this key.
     // Signature has already been verified above, so the JWK is authentic.
     let thumbprint = jwk_thumbprint(&dpop_header.jwk).map_err(|e| {
         tracing::debug!(error = %e, "failed to compute JWK thumbprint from DPoP proof header");
         invalid()
     })?;
-    let bound_thumbprint = access_claims
-        .cnf
-        .as_ref()
-        .and_then(|c| c.jkt.as_deref())
-        .ok_or_else(|| {
-            ApiError::new(ErrorCode::InvalidToken, "access token missing DPoP binding")
-        })?;
+    let bound_thumbprint = bound_jkt.ok_or_else(|| {
+        ApiError::new(ErrorCode::InvalidToken, "access token missing DPoP binding")
+    })?;
     if thumbprint != bound_thumbprint {
         tracing::debug!("DPoP proof key thumbprint does not match cnf.jkt in access token");
         return Err(ApiError::new(
@@ -492,11 +510,8 @@ pub fn validate_dpop(
         ));
     }
 
-    // Validate ath (RFC 9449 §4.3): binds the proof to a specific access token.
-    let expected_ath = {
-        let hash = Sha256::digest(access_token_str.as_bytes());
-        URL_SAFE_NO_PAD.encode(hash)
-    };
+    // Validate ath (RFC 9449 §4.3): binds the proof to a specific token.
+    let expected_ath = access_token_hash(bound_token_str);
     match dpop_claims.ath.as_deref() {
         None | Some("") => {
             return Err(ApiError::new(
@@ -542,8 +557,9 @@ pub fn validate_dpop(
 
     // Validate `htu` (HTTP URI — scheme + host + path, no query string per RFC 9449 §4.3).
     // Axum receives path-form URIs behind a reverse proxy, so we reconstruct the
-    // canonical URL from the configured public_url rather than the raw request URI.
-    let expected_htu = format!("{}{}", public_url.trim_end_matches('/'), uri.path());
+    // canonical URL from the configured public_url (already trimmed — see `Config::issuer`)
+    // rather than the raw request URI.
+    let expected_htu = format!("{public_url}{}", uri.path());
     if dpop_claims.htu != expected_htu {
         tracing::debug!(
             proof_htu = %dpop_claims.htu,
@@ -565,7 +581,7 @@ pub fn validate_dpop(
         FreshnessError::Stale => ApiError::new(ErrorCode::InvalidToken, "DPoP proof is stale"),
     })?;
 
-    Ok(())
+    Ok(dpop_claims.jti)
 }
 
 /// Map a DPoP `alg` header string to a [`jsonwebtoken::Algorithm`].
@@ -578,6 +594,11 @@ pub fn dpop_alg_from_str(alg: &str) -> Option<Algorithm> {
         "ES256" => Some(Algorithm::ES256),
         _ => None,
     }
+}
+
+/// RFC 9449 §4.3 `ath`: `base64url(SHA-256(ASCII(access_token)))`.
+fn access_token_hash(access_token: &str) -> String {
+    URL_SAFE_NO_PAD.encode(Sha256::digest(access_token.as_bytes()))
 }
 
 /// Compute the RFC 7638 JWK thumbprint: SHA-256 of the canonical JSON member set,
@@ -706,5 +727,56 @@ mod tests {
         assert!(nonce
             .chars()
             .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_'));
+    }
+
+    // ── RFC 9449 normative vectors ────────────────────────────────────────────
+    //
+    // The RFC's example client key (Figures 2, 8, 11, 13) and its RFC 7638 thumbprint. The
+    // proofs are dated 2019, so only the signature-verifying prologue can run them; the
+    // ±60s `iat` freshness check lives in each validator's tail.
+
+    const RFC9449_JKT: &str = "0ZcOCORZNYy-DWpqq30jZyJGHTN0d2HglBV3uiguA4I";
+
+    #[test]
+    fn ec_jwk_thumbprint_matches_rfc9449_figure8() {
+        let jwk = serde_json::json!({
+            "kty": "EC",
+            "crv": "P-256",
+            "x": "l8tFrhx-34tV3hRICRDY9zCkDlpBhF42UQUfWVAWBFs",
+            "y": "9VE4jf_Ok_o64zbTTlcuNJajHmt6v9TDVrU0CdvGRDA",
+        });
+        assert_eq!(jwk_thumbprint(&jwk).unwrap(), RFC9449_JKT);
+    }
+
+    #[test]
+    fn rfc9449_figure2_token_request_proof_passes_prologue() {
+        let proof = "eyJ0eXAiOiJkcG9wK2p3dCIsImFsZyI6IkVTMjU2IiwiandrIjp7Imt0eSI6IkVDIiwieCI6Imw4dEZyaHgtMzR0VjNoUklDUkRZOXpDa0RscEJoRjQyVVFVZldWQVdCRnMiLCJ5IjoiOVZFNGpmX09rX282NHpiVFRsY3VOSmFqSG10NnY5VERWclUwQ2R2R1JEQSIsImNydiI6IlAtMjU2In19.eyJqdGkiOiItQndDM0VTYzZhY2MybFRjIiwiaHRtIjoiUE9TVCIsImh0dSI6Imh0dHBzOi8vc2VydmVyLmV4YW1wbGUuY29tL3Rva2VuIiwiaWF0IjoxNTYyMjYyNjE2fQ.2-GxA6T8lP4vfrg8v-FdWP0A0zdrj8igiMLvqRMUvwnQg4PtFLbdLXiOSsX0x7NVY-FNyJK70nfbV37xRZT3Lg";
+        let verified = verify_dpop_proof_prologue(proof)
+            .map_err(DPopProofError::token_endpoint_message)
+            .expect("RFC 9449 Figure 2 proof must verify");
+        assert_eq!(verified.claims.jti, "-BwC3ESc6acc2lTc");
+        assert_eq!(verified.claims.htm, "POST");
+        assert_eq!(verified.claims.htu, "https://server.example.com/token");
+        assert_eq!(verified.claims.iat, 1562262616);
+        assert_eq!(verified.claims.nonce, None);
+        assert_eq!(verified.claims.ath, None);
+        assert_eq!(jwk_thumbprint(&verified.header.jwk).unwrap(), RFC9449_JKT);
+    }
+
+    #[test]
+    fn rfc9449_figure13_resource_proof_ath_matches_access_token() {
+        let proof = "eyJ0eXAiOiJkcG9wK2p3dCIsImFsZyI6IkVTMjU2IiwiandrIjp7Imt0eSI6IkVDIiwieCI6Imw4dEZyaHgtMzR0VjNoUklDUkRZOXpDa0RscEJoRjQyVVFVZldWQVdCRnMiLCJ5IjoiOVZFNGpmX09rX282NHpiVFRsY3VOSmFqSG10NnY5VERWclUwQ2R2R1JEQSIsImNydiI6IlAtMjU2In19.eyJqdGkiOiJlMWozVl9iS2ljOC1MQUVCIiwiaHRtIjoiR0VUIiwiaHR1IjoiaHR0cHM6Ly9yZXNvdXJjZS5leGFtcGxlLm9yZy9wcm90ZWN0ZWRyZXNvdXJjZSIsImlhdCI6MTU2MjI2MjYxOCwiYXRoIjoiZlVIeU8ycjJaM0RaNTNFc05yV0JiMHhXWG9hTnk1OUlpS0NBcWtzbVFFbyJ9.2oW9RP35yRqzhrtNP86L-Ey71EOptxRimPPToA1plemAgR6pxHF8y6-yqyVnmcw6Fy1dqd-jfxSYoMxhAJpLjA";
+        let verified = verify_dpop_proof_prologue(proof)
+            .map_err(DPopProofError::token_endpoint_message)
+            .expect("RFC 9449 Figure 13 proof must verify");
+        let ath = access_token_hash("Kz~8mXK1EalYznwH-LC-1fBAo.4Ljp~zsPE_NeO.gxU");
+        assert_eq!(ath, "fUHyO2r2Z3DZ53EsNrWBb0xWXoaNy59IiKCAqksmQEo");
+        assert_eq!(verified.claims.ath.as_deref(), Some(ath.as_str()));
+        assert_eq!(verified.claims.htm, "GET");
+        assert_eq!(
+            verified.claims.htu,
+            "https://resource.example.org/protectedresource"
+        );
+        assert_eq!(jwk_thumbprint(&verified.header.jwk).unwrap(), RFC9449_JKT);
     }
 }

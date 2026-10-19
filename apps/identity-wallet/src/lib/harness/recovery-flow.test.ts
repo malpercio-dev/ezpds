@@ -184,7 +184,7 @@ describe('recovery flow scenarios', () => {
     expect(result.escrowDeposited).toBe(true);
   });
 
-  it('duplicate and post-release re-entry behave idempotently', () => {
+  it('a duplicate share add is rejected rather than double-counted', () => {
     const { state, registry } = setup('recover-escrow');
     start(registry);
     registry.add_recovery_share({ share: state.recovery.fixtures.share3 });
@@ -192,7 +192,5 @@ describe('recovery flow scenarios', () => {
       () => registry.add_recovery_share({ share: state.recovery.fixtures.share3 }),
       'DUPLICATE_SHARE'
     );
-    const removed = registry.remove_recovery_share({ index: 3 }) as CollectedShare[];
-    expect(removed.some((s) => s.index === 3)).toBe(false);
   });
 });

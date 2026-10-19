@@ -38,6 +38,55 @@ describe('describeScope', () => {
     expect(describeScope('repo:*').elevated).toBe(false);
   });
 
+  it('describes space grants, mirroring the server defaults', () => {
+    // No params: your own spaces, full record access (the grammar's default action set).
+    expect(describeScope('space:org.example.bucket').summary).toBe(
+      'Read, create, edit, and delete records in your org.example.bucket private spaces'
+    );
+    // Explicit actions; read_self folds into read.
+    expect(describeScope('space:*?action=read&action=read_self').summary).toBe(
+      'Read records in your private spaces'
+    );
+    // Foreign authority and the anyone wildcard are said out loud.
+    expect(
+      describeScope('space:org.example.bucket?authority=did:plc:abc234567abc234567abc234').summary
+    ).toBe(
+      'Read, create, edit, and delete records in org.example.bucket private spaces run by did:plc:abc234567abc234567abc234'
+    );
+    expect(describeScope('space:*?authority=*&collection=*').summary).toBe(
+      'Read, create, edit, and delete records in private spaces run by anyone'
+    );
+    // manage verbs act on the spaces themselves and are called out separately.
+    expect(describeScope('space:org.example.bucket?manage=delete').summary).toBe(
+      'Read, create, edit, and delete records in your org.example.bucket private spaces — and delete those spaces themselves'
+    );
+    expect(describeScope('space:*').elevated).toBe(false);
+  });
+
+  it('names the service an rpc grant is bound to', () => {
+    // The default agent profile's AppView-read grant.
+    expect(describeScope('rpc:*?aud=did:web:api.bsky.app').summary).toBe(
+      'Call the Bluesky app service on your behalf'
+    );
+    // A `#serviceId` fragment does not change what the grant reaches, so it does not change
+    // the name either — the server matches audiences on the bare DID.
+    expect(describeScope('rpc:*?aud=did:web:api.bsky.chat#bsky_chat').summary).toBe(
+      'Call the Bluesky chat service on your behalf'
+    );
+    // A named method leads with the method.
+    expect(describeScope('rpc:app.bsky.feed.getPosts?aud=did:web:api.bsky.app').summary).toBe(
+      'Call app.bsky.feed.getPosts on the Bluesky app service'
+    );
+    // An audience with no friendly name is shown verbatim, never softened.
+    expect(describeScope('rpc:*?aud=did:plc:abc234567abc234567abc234').summary).toBe(
+      'Call did:plc:abc234567abc234567abc234 on your behalf'
+    );
+    // The one unbounded case says so.
+    expect(describeScope('rpc:app.bsky.feed.getPosts?aud=*').summary).toBe(
+      'Call app.bsky.feed.getPosts on ANY service'
+    );
+  });
+
   it('never hides an unknown token behind a vague label', () => {
     const desc = describeScope('mystery:thing?x=1');
     expect(desc.summary).toBe('mystery:thing?x=1');

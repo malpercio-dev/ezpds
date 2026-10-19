@@ -35,20 +35,18 @@ const POSITIVE_CACHE_TTL: Duration = Duration::from_secs(24 * 60 * 60);
 /// broken authority don't re-trigger the full resolution chain on every retry.
 const NEGATIVE_CACHE_TTL: Duration = Duration::from_secs(60);
 
-pub(crate) enum CacheEntry {
-    Resolved {
-        scopes: Vec<String>,
-        expires_at: Instant,
-    },
-    Failed {
-        expires_at: Instant,
-    },
+pub(crate) enum CacheEntry<T> {
+    Resolved { value: T, expires_at: Instant },
+    Failed { expires_at: Instant },
 }
+
+/// A TTL cache over one flavour of Lexicon resolution, keyed by whatever identifies a result.
+pub(crate) type ResolutionCache<T> = Arc<Mutex<HashMap<String, CacheEntry<T>>>>;
 
 /// In-memory cache of resolved permission sets, keyed on the full `include:` token (NSID + any
 /// `aud` param — a different `aud` can change the expansion via `inheritAud` entries).
 /// `Arc<Mutex<HashMap<...>>>`, held in `AppState`.
-pub type PermissionSetCache = Arc<Mutex<HashMap<String, CacheEntry>>>;
+pub type PermissionSetCache = ResolutionCache<Vec<String>>;
 
 /// Create an empty `PermissionSetCache`.
 pub fn new_permission_set_cache() -> PermissionSetCache {
@@ -57,6 +55,48 @@ pub fn new_permission_set_cache() -> PermissionSetCache {
 
 fn cache_key(nsid: &str, include_aud: Option<&str>) -> String {
     format!("{nsid}|{}", include_aud.unwrap_or(""))
+}
+
+/// Serve `key` from `cache` while its entry is live, otherwise await `resolve` and record the
+/// outcome under the positive/negative TTLs above.
+///
+/// `resolve` is taken as a future rather than a closure result so a cache hit never starts the
+/// work — constructing an async fn's future does nothing until it is awaited, and this only
+/// awaits it on a miss. `cached_failure` builds the error a negatively-cached entry reports,
+/// which is per-caller wording rather than a shared string.
+pub(super) async fn resolve_cached<T: Clone>(
+    cache: &ResolutionCache<T>,
+    key: String,
+    cached_failure: impl FnOnce() -> String,
+    resolve: impl std::future::Future<Output = Result<T, String>>,
+) -> Result<T, String> {
+    let now = Instant::now();
+
+    {
+        let map = cache.lock().await;
+        match map.get(&key) {
+            Some(CacheEntry::Resolved { value, expires_at }) if *expires_at > now => {
+                return Ok(value.clone())
+            }
+            Some(CacheEntry::Failed { expires_at }) if *expires_at > now => {
+                return Err(cached_failure());
+            }
+            _ => {}
+        }
+    }
+
+    let result = resolve.await;
+    let entry = match &result {
+        Ok(value) => CacheEntry::Resolved {
+            value: value.clone(),
+            expires_at: now + POSITIVE_CACHE_TTL,
+        },
+        Err(_) => CacheEntry::Failed {
+            expires_at: now + NEGATIVE_CACHE_TTL,
+        },
+    };
+    cache.lock().await.insert(key, entry);
+    result
 }
 
 /// Resolve and expand a single `include:<nsid>` reference, consulting `cache` first and
@@ -68,34 +108,13 @@ pub(crate) async fn resolve_permission_set_cached(
     nsid: &str,
     include_aud: Option<&str>,
 ) -> Result<Vec<String>, String> {
-    let key = cache_key(nsid, include_aud);
-    let now = Instant::now();
-
-    {
-        let map = cache.lock().await;
-        match map.get(&key) {
-            Some(CacheEntry::Resolved { scopes, expires_at }) if *expires_at > now => {
-                return Ok(scopes.clone())
-            }
-            Some(CacheEntry::Failed { expires_at }) if *expires_at > now => {
-                return Err(format!("\"{nsid}\" could not be resolved (cached failure)"));
-            }
-            _ => {}
-        }
-    }
-
-    let result = resolve_permission_set(state, nsid, include_aud).await;
-    let entry = match &result {
-        Ok(scopes) => CacheEntry::Resolved {
-            scopes: scopes.clone(),
-            expires_at: now + POSITIVE_CACHE_TTL,
-        },
-        Err(_) => CacheEntry::Failed {
-            expires_at: now + NEGATIVE_CACHE_TTL,
-        },
-    };
-    cache.lock().await.insert(key, entry);
-    result
+    resolve_cached(
+        cache,
+        cache_key(nsid, include_aud),
+        || format!("\"{nsid}\" could not be resolved (cached failure)"),
+        resolve_permission_set(state, nsid, include_aud),
+    )
+    .await
 }
 
 /// Upper bound on distinct `include:` references processed per scope string. Each one can
@@ -201,19 +220,7 @@ pub(crate) async fn resolve_authority_endpoint(
         .await
         .map_err(|_| format!("could not resolve the DID document for \"{authority_did}\""))?;
 
-    let endpoint = doc
-        .get("service")
-        .and_then(Value::as_array)
-        .into_iter()
-        .flatten()
-        .find(|entry| {
-            matches!(
-                entry.get("id").and_then(Value::as_str),
-                Some("#atproto_pds")
-            )
-        })
-        .and_then(|entry| entry.get("serviceEndpoint"))
-        .and_then(Value::as_str)
+    let endpoint = resolution::service_endpoint(&doc, "atproto_pds")
         .ok_or_else(|| format!("\"{authority_did}\" does not advertise a PDS service endpoint"))?;
 
     proxy::validate_proxy_endpoint(endpoint, state.allow_loopback_proxy_targets)
@@ -271,6 +278,20 @@ enum PermissionEntry {
     },
     Identity {
         attr: String,
+    },
+    Space {
+        #[serde(rename = "spaceType")]
+        space_type: String,
+        #[serde(default)]
+        authority: Option<String>,
+        #[serde(default)]
+        skey: Option<String>,
+        #[serde(default, deserialize_with = "string_or_vec")]
+        collection: Vec<String>,
+        #[serde(default, deserialize_with = "string_or_vec")]
+        action: Vec<String>,
+        #[serde(default, deserialize_with = "string_or_vec")]
+        manage: Vec<String>,
     },
 }
 
@@ -340,7 +361,47 @@ fn render_permission_entry(entry: &PermissionEntry, include_aud: Option<&str>) -
             format_scope("account", Some(attr), &params)
         }
         PermissionEntry::Identity { attr } => format_scope("identity", Some(attr), &[]),
+        PermissionEntry::Space {
+            space_type,
+            authority,
+            skey,
+            collection,
+            action,
+            manage,
+        } => {
+            let mut params: Vec<(String, String)> = Vec::new();
+            if let Some(authority) = authority {
+                params.push(("authority".to_string(), authority.clone()));
+            }
+            if let Some(skey) = skey {
+                params.push(("skey".to_string(), skey.clone()));
+            }
+            params.extend(
+                collection
+                    .iter()
+                    .map(|c| ("collection".to_string(), c.clone())),
+            );
+            params.extend(action.iter().map(|a| ("action".to_string(), a.clone())));
+            params.extend(manage.iter().map(|m| ("manage".to_string(), m.clone())));
+            format_scope("space", Some(space_type), &params)
+        }
     }
+}
+
+/// Whether `nsid` falls under the namespace authority of the permission set `set_nsid`.
+///
+/// Per the permission spec, a set may only reference resources in its own NSID group or in a
+/// group nested below it — never a sibling group or a parent. A space entry's `spaceType` is
+/// held to this rule; its `collection` values deliberately are not, since a space routinely
+/// carries record types from other namespaces.
+fn under_namespace_authority(set_nsid: &str, nsid: &str) -> bool {
+    let Some((set_group, _)) = set_nsid.rsplit_once('.') else {
+        return false;
+    };
+    let Some((group, _)) = nsid.rsplit_once('.') else {
+        return false;
+    };
+    group == set_group || group.starts_with(&format!("{set_group}."))
 }
 
 /// Whether a permission entry is a `blob` grant covering `*/*` — disallowed inside a
@@ -360,7 +421,7 @@ struct GetRecordResponse {
 /// string, so the fetch goes through the shared SSRF-hardened client (`state.hardened_http_client`)
 /// — redirects disabled + a DNS resolver enforcing the public-address allowlist at connect time —
 /// the same client `routes::service_proxy` uses for its own caller-controlled targets.
-async fn fetch_lexicon_schema(
+pub(super) async fn fetch_lexicon_schema(
     client: &reqwest::Client,
     authority: &AuthorityEndpoint,
     nsid: &str,
@@ -456,6 +517,26 @@ pub(crate) async fn resolve_permission_set(
                     return None;
                 }
             }
+            // A set may not hand out a cross-type space grant: `spaceType` must name one
+            // concrete type, under the set's own namespace authority. `space:*` is
+            // expressible only as a standalone scope the user requests directly.
+            if let PermissionEntry::Space { space_type, .. } = entry {
+                if space_type == "*" {
+                    tracing::debug!(
+                        nsid,
+                        "skipping permission-set space entry with a wildcard spaceType"
+                    );
+                    return None;
+                }
+                if !under_namespace_authority(nsid, space_type) {
+                    tracing::debug!(
+                        nsid,
+                        space_type,
+                        "skipping permission-set space entry outside the set's namespace authority"
+                    );
+                    return None;
+                }
+            }
             let raw = render_permission_entry(entry, include_aud);
             let normalized = normalize_token(&raw);
             if normalized.is_none() {
@@ -464,6 +545,54 @@ pub(crate) async fn resolve_permission_set(
             normalized
         })
         .collect())
+}
+
+/// Doubles for a mocked Lexicon authority, shared with `auth::space_consent`'s tests — both
+/// modules resolve through the same DNS-TXT-then-DID-document chain, so they mock the same one.
+#[cfg(test)]
+pub(super) mod tests_support {
+    use std::future::Future;
+    use std::pin::Pin;
+    use std::sync::Arc;
+
+    use crate::app::AppState;
+    use crate::identity::dns::{DnsError, TxtResolver};
+
+    pub(crate) const AUTHORITY_DID: &str = "did:plc:authoritydidxxxxxxxxxxxxx";
+
+    pub(crate) struct FixedTxtResolver {
+        pub records: Vec<String>,
+    }
+
+    impl TxtResolver for FixedTxtResolver {
+        fn txt_lookup<'a>(
+            &'a self,
+            _name: &'a str,
+        ) -> Pin<Box<dyn Future<Output = Result<Vec<String>, DnsError>> + Send + 'a>> {
+            let records = self.records.clone();
+            Box::pin(async move { Ok(records) })
+        }
+    }
+
+    /// `state` with its DNS TXT resolver replaced by one that always answers `records`.
+    pub(crate) fn state_with_dns(state: AppState, records: Vec<String>) -> AppState {
+        AppState {
+            txt_resolver: Some(Arc::new(FixedTxtResolver { records })),
+            ..state
+        }
+    }
+
+    /// A DID document for `AUTHORITY_DID` advertising `endpoint` as its PDS.
+    pub(crate) fn pds_doc(endpoint: &str) -> serde_json::Value {
+        serde_json::json!({
+            "id": AUTHORITY_DID,
+            "service": [{
+                "id": "#atproto_pds",
+                "type": "AtprotoPersonalDataServer",
+                "serviceEndpoint": endpoint,
+            }],
+        })
+    }
 }
 
 #[cfg(test)]
@@ -476,6 +605,7 @@ mod tests {
     use crate::db::dids::seed_did_document;
     use crate::identity::dns::{DnsError, TxtResolver};
 
+    use super::tests_support::{pds_doc, state_with_dns, AUTHORITY_DID};
     use super::*;
 
     // ── nsid_authority_domain ────────────────────────────────────────────────
@@ -501,20 +631,6 @@ mod tests {
 
     // ── Test doubles ─────────────────────────────────────────────────────────
 
-    struct FixedTxtResolver {
-        records: Vec<String>,
-    }
-
-    impl TxtResolver for FixedTxtResolver {
-        fn txt_lookup<'a>(
-            &'a self,
-            _name: &'a str,
-        ) -> Pin<Box<dyn Future<Output = Result<Vec<String>, DnsError>> + Send + 'a>> {
-            let records = self.records.clone();
-            Box::pin(async move { Ok(records) })
-        }
-    }
-
     struct ErrTxtResolver;
 
     impl TxtResolver for ErrTxtResolver {
@@ -524,26 +640,6 @@ mod tests {
         ) -> Pin<Box<dyn Future<Output = Result<Vec<String>, DnsError>> + Send + 'a>> {
             Box::pin(async move { Err(DnsError("connection refused".to_string())) })
         }
-    }
-
-    fn state_with_dns(state: AppState, records: Vec<String>) -> AppState {
-        AppState {
-            txt_resolver: Some(Arc::new(FixedTxtResolver { records })),
-            ..state
-        }
-    }
-
-    const AUTHORITY_DID: &str = "did:plc:authoritydidxxxxxxxxxxxxx";
-
-    fn pds_doc(endpoint: &str) -> serde_json::Value {
-        serde_json::json!({
-            "id": AUTHORITY_DID,
-            "service": [{
-                "id": "#atproto_pds",
-                "type": "AtprotoPersonalDataServer",
-                "serviceEndpoint": endpoint,
-            }],
-        })
     }
 
     // ── resolve_authority_endpoint ───────────────────────────────────────────
@@ -794,6 +890,128 @@ mod tests {
         );
     }
 
+    /// Space entries carry the same parameters as a `space:` scope string, and render through
+    /// the same grammar — including `manage`, which no other entry type has.
+    #[tokio::test]
+    async fn space_entry_expands_with_its_params() {
+        let server = MockServer::start().await;
+        let nsid = "app.bsky.authFull";
+        let schema = permission_set_schema(
+            nsid,
+            serde_json::json!([
+                {
+                    "type": "permission",
+                    "resource": "space",
+                    "spaceType": "app.bsky.forum",
+                    "authority": "*",
+                    "skey": "default",
+                    "collection": ["app.bsky.reply", "app.bsky.thread"],
+                    "action": ["read", "create"],
+                    "manage": ["update"],
+                },
+                { "type": "permission", "resource": "space", "spaceType": "app.bsky.bookmarks" },
+            ]),
+        );
+        let state = state_with_mock_authority(&server, nsid, schema).await;
+
+        let tokens = resolve_permission_set(&state, nsid, None)
+            .await
+            .expect("should expand");
+        assert_eq!(
+            tokens,
+            vec![
+                "space:app.bsky.forum?authority=*&skey=default&collection=app.bsky.reply&collection=app.bsky.thread&action=read&action=create&manage=update".to_string(),
+                "space:app.bsky.bookmarks".to_string(),
+            ]
+        );
+    }
+
+    /// A cross-type grant is expressible only as a standalone scope the user requests
+    /// directly, so a set that tries to bundle one has that entry dropped.
+    #[tokio::test]
+    async fn wildcard_space_type_entry_is_skipped() {
+        let server = MockServer::start().await;
+        let nsid = "app.bsky.authFull";
+        let schema = permission_set_schema(
+            nsid,
+            serde_json::json!([
+                { "type": "permission", "resource": "space", "spaceType": "*", "authority": "*" },
+                { "type": "permission", "resource": "space", "spaceType": "app.bsky.forum" },
+            ]),
+        );
+        let state = state_with_mock_authority(&server, nsid, schema).await;
+
+        let tokens = resolve_permission_set(&state, nsid, None)
+            .await
+            .expect("should expand");
+        assert_eq!(tokens, vec!["space:app.bsky.forum".to_string()]);
+    }
+
+    /// The set may only reach space types under its own namespace authority — a sibling
+    /// group or another organization's namespace is out of reach.
+    #[tokio::test]
+    async fn space_entry_outside_the_namespace_authority_is_skipped() {
+        let server = MockServer::start().await;
+        let nsid = "app.bsky.feed.authPost";
+        let schema = permission_set_schema(
+            nsid,
+            serde_json::json!([
+                { "type": "permission", "resource": "space", "spaceType": "com.atmoboards.forum" },
+                { "type": "permission", "resource": "space", "spaceType": "app.bsky.actor.space" },
+                {
+                    "type": "permission",
+                    "resource": "space",
+                    "spaceType": "app.bsky.feed.threads",
+                    "collection": ["com.atmoboards.thread"],
+                },
+            ]),
+        );
+        let state = state_with_mock_authority(&server, nsid, schema).await;
+
+        let tokens = resolve_permission_set(&state, nsid, None)
+            .await
+            .expect("should expand");
+        assert_eq!(
+            tokens,
+            vec!["space:app.bsky.feed.threads?collection=com.atmoboards.thread".to_string()],
+            "only the same-group space type survives; its foreign collection is allowed"
+        );
+    }
+
+    // ── under_namespace_authority ────────────────────────────────────────────
+
+    #[test]
+    fn namespace_authority_covers_the_same_group_and_its_children_only() {
+        // Same group.
+        assert!(under_namespace_authority(
+            "app.example.feed.authOnlyPost",
+            "app.example.feed.post"
+        ));
+        // A group above may reach down, recursively.
+        assert!(under_namespace_authority(
+            "app.example.authFull",
+            "app.example.feed.post"
+        ));
+        // Siblings and parents are out of reach.
+        assert!(!under_namespace_authority(
+            "app.example.feed.authOnlyPost",
+            "app.example.actor.profile"
+        ));
+        assert!(!under_namespace_authority(
+            "app.example.feed.authOnlyPost",
+            "app.example.profile"
+        ));
+        // A near-miss prefix is not a child group.
+        assert!(!under_namespace_authority(
+            "app.example.feed.authOnlyPost",
+            "app.example.feedback.post"
+        ));
+        assert!(!under_namespace_authority(
+            "nodots",
+            "app.example.feed.post"
+        ));
+    }
+
     // ── resolve_permission_set_cached ────────────────────────────────────────
 
     #[tokio::test]
@@ -848,7 +1066,7 @@ mod tests {
             map.insert(
                 cache_key(nsid, None),
                 CacheEntry::Resolved {
-                    scopes: vec!["stale:token".to_string()],
+                    value: vec!["stale:token".to_string()],
                     expires_at: past,
                 },
             );

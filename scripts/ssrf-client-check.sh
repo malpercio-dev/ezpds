@@ -25,8 +25,7 @@ arg="$(awk '
 
 case "$arg" in
   hardened_http_client.clone*|hardened_http_client\)*|hardened_http_client)
-    echo "✓ well-known handle resolver uses the SSRF-hardened HTTP client"
-    exit 0 ;;
+    echo "✓ well-known handle resolver uses the SSRF-hardened HTTP client" ;;
   "")
     echo "✗ could not find HttpWellKnownResolver::new(...) in $main — did the wiring move?" >&2
     exit 1 ;;
@@ -34,3 +33,46 @@ case "$arg" in
     echo "✗ HttpWellKnownResolver wired to an unrecognized client: '$arg' (expected hardened_http_client)" >&2
     exit 1 ;;
 esac
+
+# resolve_client_metadata (auth/oauth_client_resolution.rs) fetches a caller-supplied OAuth
+# client_id URL — same shape as the well-known handle fetch above. Every non-test call site must
+# pass `hardened_http_client`; wiring the plain `http_client` there was the sec/client-metadata-ssrf
+# fix this guard now freezes against a regression.
+#
+# Scan every .rs file under crates/pds/src, dropping each file's trailing `#[cfg(test)] mod
+# tests { ... }` block first (a unit test may exercise the resolver with a bare reqwest client —
+# that's not a production call site).
+fail=0
+while IFS= read -r -d '' file; do
+  args="$(awk '
+    /^#\[cfg\(test\)\]$/ { armed = 1; next }
+    armed && /^mod tests[[:space:]]*\{/ { exit }
+    { armed = 0; print }
+  ' "$file" | awk '
+    /^[[:space:]]*\/\// { next }
+    /resolve_client_metadata\(/ && !/fn resolve_client_metadata/ {
+      # Same-line form: `resolve_client_metadata(&x, ...)` — take the first argument directly.
+      # Multi-line (rustfmt) form: the first argument is on the next non-empty line.
+      rest = $0; sub(/.*resolve_client_metadata\(/, "", rest); sub(/,.*/, "", rest)
+      gsub(/^[[:space:]]+|[[:space:]]+$/, "", rest)
+      if (rest != "" && rest != ")") { print rest } else { grab = 1 }
+      next
+    }
+    grab && NF { gsub(/^[[:space:]]+|[[:space:]]+$/, ""); print; grab = 0 }
+  ')"
+  [ -z "$args" ] && continue
+
+  while IFS= read -r arg; do
+    case "$arg" in
+      *hardened_http_client*) ;;
+      *)
+        echo "✗ $file: resolve_client_metadata called with unrecognized client argument: '$arg' (expected hardened_http_client)" >&2
+        fail=1 ;;
+    esac
+  done < <(printf '%s\n' "$args")
+done < <(find crates/pds/src -name '*.rs' -print0)
+
+if [ "$fail" -ne 0 ]; then
+  exit 1
+fi
+echo "✓ every resolve_client_metadata call site uses the SSRF-hardened HTTP client"

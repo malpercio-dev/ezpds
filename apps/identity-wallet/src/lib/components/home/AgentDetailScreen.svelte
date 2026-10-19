@@ -101,7 +101,7 @@
   onMount(loadMoreAudit);
 </script>
 
-<div class="screen">
+<div class="screen u-screen">
   <ScreenHeader title={agentName(agent)} {onback} backLabel="Back to agent list" truncate />
 
   <div class="status status--{status}">
@@ -114,7 +114,7 @@
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>
       {/if}
     </span>
-    <span class="status-body">
+    <span class="status-body u-stack-3xs">
       <span class="status-t">{currentStatus.label}</span>
       <span class="status-s">{currentStatus.hint}</span>
     </span>
@@ -129,7 +129,7 @@
   </dl>
 
   <p class="section-label">Permissions</p>
-  <ul class="grants">
+  <ul class="grants u-list-reset">
     {#each describeScopes(agent.scopes) as scope (scope.token)}
       <li class="grant" class:grant--elevated={scope.elevated}>
         {#if scope.elevated}
@@ -150,8 +150,8 @@
   <p class="section-label">Activity record</p>
   <p class="section-sub">Everything this agent has done, newest first. Entries cannot be edited or deleted.</p>
   {#if auditError}
-    <div class="notice" role="alert">
-      <p class="notice-text">{auditError}</p>
+    <div class="notice u-notice" role="alert">
+      <p class="notice-text u-notice-text">{auditError}</p>
       <Button variant="secondary" onclick={loadMoreAudit}>Try again</Button>
     </div>
   {:else if auditEvents.length === 0 && !auditLoading}
@@ -200,15 +200,6 @@
 </div>
 
 <style>
-  .screen {
-    display: flex;
-    flex-direction: column;
-    height: 100%;
-    padding: var(--space-lg) var(--space-md) var(--space-xl);
-    gap: var(--space-md);
-    overflow-y: auto;
-  }
-
   .status {
     display: flex;
     align-items: center;
@@ -244,11 +235,6 @@
   .status--revoked .status-s {
     color: var(--color-muted);
   }
-  .status-body {
-    display: flex;
-    flex-direction: column;
-    gap: var(--space-3xs);
-  }
   .status-t {
     font-size: var(--text-title);
     font-weight: var(--weight-semibold);
@@ -263,7 +249,7 @@
   .meta {
     display: grid;
     grid-template-columns: auto 1fr;
-    gap: 6px var(--space-md);
+    gap: var(--space-sm) var(--space-md);
     margin: 0;
     background: var(--color-surface);
     border: 1px solid var(--color-line);
@@ -297,14 +283,6 @@
     line-height: 1.45;
   }
 
-  .grants {
-    list-style: none;
-    display: flex;
-    flex-direction: column;
-    gap: var(--space-sm);
-    margin: 0;
-    padding: 0;
-  }
   .grant {
     display: flex;
     flex-direction: column;
@@ -331,7 +309,7 @@
   .grant-warn-row {
     display: flex;
     align-items: flex-start;
-    gap: 6px;
+    gap: var(--space-sm);
   }
   .grant-warn-ic {
     color: var(--color-warning);
@@ -367,7 +345,7 @@
     background: var(--color-line-strong);
     flex-shrink: 0;
     /* Optically centres the dot on the first line of entry text; not a scale step. */
-    margin-top: 7px;
+    margin-top: var(--space-sm);
   }
   .entry-body {
     display: flex;
@@ -415,19 +393,4 @@
     margin: 0;
   }
 
-  .notice {
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    gap: var(--space-md);
-    background: var(--color-critical-surface);
-    border-radius: var(--radius-lg);
-    padding: var(--space-lg);
-    text-align: center;
-  }
-  .notice-text {
-    font-size: var(--text-body);
-    color: var(--color-critical);
-    margin: 0;
-  }
 </style>

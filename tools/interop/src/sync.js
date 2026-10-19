@@ -1,34 +1,10 @@
 // Sync-protocol checks: CAR export, latest-commit agreement, repo status, and
 // listRepos presence — the surface a relay consumes when crawling this host.
 
-import * as dagCbor from '@ipld/dag-cbor';
 import { BASE_URL } from './config.js';
+import { parseCarHeader } from './car.js';
 import { request, xrpc } from './http.js';
 import { loadState, getAccount } from './state.js';
-
-function readVarint(bytes, offset) {
-  let value = 0n;
-  let shift = 0n;
-  let pos = offset;
-  for (;;) {
-    const byte = bytes[pos++];
-    value |= BigInt(byte & 0x7f) << shift;
-    if ((byte & 0x80) === 0) break;
-    shift += 7n;
-  }
-  return [Number(value), pos];
-}
-
-/** Parse a CARv1 header and return { version, roots: [cidString] , size }. */
-export function parseCarHeader(bytes) {
-  const [headerLen, bodyStart] = readVarint(bytes, 0);
-  const header = dagCbor.decode(bytes.subarray(bodyStart, bodyStart + headerLen));
-  return {
-    version: header.version,
-    roots: (header.roots ?? []).map((cid) => cid.toString()),
-    size: bytes.length,
-  };
-}
 
 export async function getRepoCar(did) {
   const res = await request(`${BASE_URL}/xrpc/com.atproto.sync.getRepo?did=${encodeURIComponent(did)}`, { raw: true });

@@ -224,6 +224,43 @@ behave exactly as they do on the reference PDS.
 no operator switch; whether any given app password carries it is the account
 holder's mint-time choice, and it cannot be added to an existing credential.
 
+### `spaces`
+
+The [Atproto Spaces](https://github.com/bluesky-social/proposals) alpha surface:
+permissioned space repos a client writes with `space:` OAuth grants
+(`com.atproto.space.*` record CRUD), DPoP-bound space credentials for
+cross-host reads, oplog and two-root CAR sync for syncers, and the
+`com.atproto.simplespace.*` management routes (create a space, member lists,
+deletion). The protocol is **pre-launch alpha**: the upstream lexicons carry a
+breaking-changes warning until launch, so treat the surface as
+interop-for-implementers rather than a stability promise.
+
+While the surface is switched off, the space routes are not registered at all:
+an XRPC space method answers the same `MethodNotImplemented` a PDS that never
+implemented spaces gives, and any space data already stored stays on disk,
+untouched, until the surface is switched back on.
+
+Two operational knobs exist today: `rate_limit.space_credential_per_5min`
+(`EZPDS_RATE_LIMIT_SPACE_CREDENTIAL_PER_5MIN`) caps per-credential request
+volume, and the oplog is compacted on a fixed seven-day retention (a syncer
+further behind heals with a full `getRepo` — by spec, never a correctness
+problem). The two background sweeps behind that (jti replay retention, oplog
+compaction) run while spaces are enabled and report their last completed pass
+under `sweeps` in `GET /v1/admin/health` (`null` while spaces are off, like an
+idle sweep).
+
+**Controlled by:** `spaces.enabled` and `signing_key_master_key`, both
+required. The switch is off by default while the protocol is pre-launch alpha:
+enable it with `[spaces] enabled = true` (`EZPDS_SPACES_ENABLED`) to serve the
+routes. The master key is what makes an enabled surface *whole*: space writes
+succeed without one, but every sync serving — `getLatestCommit`,
+`listRepoOps`, `getRepo` — mints a fresh signed commit from the account's repo
+signing key, which is stored encrypted under the master key; without
+`EZPDS_SIGNING_KEY_MASTER_KEY` those routes answer `ServiceUnavailable` and a
+syncer cannot follow the repo. A deployment nobody can sync a space from does
+not advertise spaces: with the switch on and a master key configured (as any
+real deployment should have), the capability appears.
+
 ### `waitlist`
 
 A public interest-signup waitlist for a pre-launch deployment: an unauthenticated

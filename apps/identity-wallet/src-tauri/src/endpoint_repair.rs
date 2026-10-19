@@ -649,7 +649,7 @@ mod tests {
             then.status(200)
                 .json_body(serde_json::json!({"did": "did:plc:abc", "active": true}));
         });
-        let client = PdsClient::new_for_test(server.base_url());
+        let client = crate::pds_client::new_for_test(server.base_url());
         verify_destination_hosts(&client, &server.base_url(), "did:plc:abc")
             .await
             .expect("200 probe must pass");
@@ -665,7 +665,7 @@ mod tests {
             then.status(400)
                 .json_body(serde_json::json!({"error": "RepoNotFound"}));
         });
-        let client = PdsClient::new_for_test(server.base_url());
+        let client = crate::pds_client::new_for_test(server.base_url());
         let err = verify_destination_hosts(&client, &server.base_url(), "did:plc:abc")
             .await
             .expect_err("400 probe must fail");
@@ -683,7 +683,7 @@ mod tests {
                 .path("/xrpc/com.atproto.sync.getRepoStatus");
             then.status(429).header("Retry-After", "17");
         });
-        let client = PdsClient::new_for_test(server.base_url());
+        let client = crate::pds_client::new_for_test(server.base_url());
         let err = verify_destination_hosts(&client, &server.base_url(), "did:plc:abc")
             .await
             .expect_err("429 probe must fail");

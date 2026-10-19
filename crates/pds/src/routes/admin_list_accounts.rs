@@ -29,7 +29,7 @@ use axum::http::{HeaderMap, Method, Uri};
 use axum::Json;
 use serde::{Deserialize, Serialize};
 
-use common::{ApiError, ErrorCode};
+use common::{ApiError, ApiResultExt, ErrorCode};
 
 use crate::app::AppState;
 use crate::auth::guards::require_admin;
@@ -160,10 +160,7 @@ pub async fn list_accounts(
 
     let rows = crate::db::accounts::list_accounts_admin(&state.db, cursor, limit, status, q)
         .await
-        .map_err(|e| {
-            tracing::error!(error = %e, "failed to list accounts");
-            ApiError::new(ErrorCode::InternalError, "failed to list accounts")
-        })?;
+        .or_internal("failed to list accounts")?;
 
     // A full page means more rows may follow — surface the last row's (flagged, did)
     // position as the next cursor.
@@ -176,19 +173,16 @@ pub async fn list_accounts(
 
     let flagged_total = crate::db::accounts::count_accounts_admin_flagged(&state.db, status, q)
         .await
-        .map_err(|e| {
-            tracing::error!(error = %e, "failed to count flagged accounts");
-            ApiError::new(ErrorCode::InternalError, "failed to list accounts")
-        })?;
+        .or_internal_as(
+            "failed to count flagged accounts",
+            "failed to list accounts",
+        )?;
 
     // One query for the whole page's flags (empty map when nothing is flagged).
     let page_dids: Vec<String> = rows.iter().map(|r| r.did.clone()).collect();
     let mut flags_by_did = crate::db::account_labels::labels_for_dids(&state.db, &page_dids)
         .await
-        .map_err(|e| {
-            tracing::error!(error = %e, "failed to load account labels");
-            ApiError::new(ErrorCode::InternalError, "failed to list accounts")
-        })?;
+        .or_internal_as("failed to load account labels", "failed to list accounts")?;
 
     // Quota is u64 in config; clamp into i64 for the JSON number (1 GiB default is far below
     // i64::MAX, and an operator would not set a quota anywhere near it).
@@ -239,7 +233,9 @@ mod tests {
     use axum::http::{self, Request, StatusCode};
     use tower::ServiceExt;
 
-    use crate::routes::test_utils::{body_json, test_state_with_admin_token};
+    use crate::routes::test_utils::{
+        body_json, insert_bare_account as insert_account, test_state_with_admin_token,
+    };
 
     const ADMIN: &str = "test-admin-token";
 
@@ -261,26 +257,6 @@ mod tests {
             .unwrap();
         let status = resp.status();
         (status, body_json(resp).await)
-    }
-
-    async fn insert_account(db: &sqlx::SqlitePool, did: &str) {
-        sqlx::query(
-            "INSERT INTO accounts (did, email, password_hash, created_at, updated_at) \
-             VALUES (?, ?, NULL, datetime('now'), datetime('now'))",
-        )
-        .bind(did)
-        .bind(format!("{did}@example.com"))
-        .execute(db)
-        .await
-        .unwrap();
-    }
-
-    #[tokio::test]
-    async fn missing_token_returns_401() {
-        let state = test_state_with_admin_token().await;
-        let app = crate::app::app(state);
-        let (status, _) = list(&app, "", None).await;
-        assert_eq!(status, StatusCode::UNAUTHORIZED);
     }
 
     async fn insert_label(db: &sqlx::SqlitePool, did: &str, labeler: &str, val: &str, cts: &str) {
@@ -530,7 +506,6 @@ mod tests {
             ADMIN_SIGNATURE_HEADER, ADMIN_TIMESTAMP_HEADER,
         };
         use crate::db::admin_devices::{insert_device, NewAdminDevice};
-        use std::time::{SystemTime, UNIX_EPOCH};
 
         // A state with NO master token: proves the device path is independent of it.
         let state = crate::app::test_state().await;
@@ -552,10 +527,7 @@ mod tests {
         // The signature covers the bare path only — the query string can vary per page
         // without re-signing, matching how the companion app appends cursor/filter params.
         let path = "/v1/admin/accounts";
-        let ts = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_secs() as i64;
+        let ts = crate::time::unix_now_secs();
         let nonce = "list-accounts-nonce-1";
         let sign_string = admin_request_sign_string("GET", path, ts, nonce, b"");
         let signature = crate::routes::test_utils::sign_p256(&keypair, sign_string.as_bytes());

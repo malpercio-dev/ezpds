@@ -280,6 +280,34 @@ pub(super) static MIGRATIONS: &[Migration] = &[
     },
     Migration {
         version: 65,
-        sql: include_str!("migrations/V065__labels_seeded.sql"),
+        sql: include_str!("migrations/V065__spaces.sql"),
+    },
+    Migration {
+        version: 66,
+        sql: include_str!("migrations/V066__space_record_rev.sql"),
+    },
+    Migration {
+        version: 67,
+        sql: include_str!("migrations/V067__space_writers.sql"),
+    },
+    Migration {
+        version: 68,
+        sql: include_str!("migrations/V068__account_record_count.sql"),
+    },
+    Migration {
+        version: 69,
+        sql: include_str!("migrations/V069__space_app_allow_list.sql"),
+    },
+    Migration {
+        version: 70,
+        sql: include_str!("migrations/V070__space_takedown.sql"),
+    },
+    Migration {
+        version: 71,
+        sql: include_str!("migrations/V071__agent_handle_hint.sql"),
+    },
+    Migration {
+        version: 72,
+        sql: include_str!("migrations/V072__labels_seeded.sql"),
     },
 ];

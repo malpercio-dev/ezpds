@@ -40,7 +40,7 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::app::AppState;
-use crate::auth::guards::{authenticate_account_owner, OwnerAuthError};
+use crate::auth::guards::authenticate_owner;
 use crate::auth::token::{generate_token, hash_bearer_token};
 use crate::db::accounts::{account_email, resolve_identifier};
 use crate::db::recovery_audit::{insert_recovery_audit_event, RecoveryAuditEventType};
@@ -340,19 +340,7 @@ pub async fn recovery_release_cancel(
     uri: Uri,
     headers: HeaderMap,
 ) -> Result<Json<CancelResponse>, ApiError> {
-    let did = authenticate_account_owner(&headers, &method, &uri, &state)
-        .await
-        .map_err(|err| match err {
-            OwnerAuthError::Unauthenticated(e) => e,
-            OwnerAuthError::AgentDerived => ApiError::new(
-                ErrorCode::InsufficientScope,
-                "this operation is not available to agent-derived credentials",
-            ),
-            OwnerAuthError::NotFullAccess => ApiError::new(
-                ErrorCode::InvalidToken,
-                "a session or full-access token is required",
-            ),
-        })?;
+    let did = authenticate_owner(&headers, &method, &uri, &state).await?;
 
     let mut tx = state.db.begin().await.map_err(map_db_err)?;
     let cancelled = clear_release(&mut *tx, &did).await.map_err(map_db_err)?;
@@ -394,8 +382,11 @@ fn require_master_key(state: &AppState) -> Result<[u8; 32], ApiError> {
 }
 
 fn map_db_err(e: sqlx::Error) -> ApiError {
-    tracing::error!(error = %e, "DB error in recovery release flow");
-    ApiError::new(ErrorCode::InternalError, "recovery release failed")
+    ApiError::internal_as(
+        e,
+        "DB error in recovery release flow",
+        "recovery release failed",
+    )
 }
 
 /// Best-effort notification to the account email on release request / actual release. A delivery
@@ -448,6 +439,7 @@ async fn notify(state: &AppState, did: &str, kind: &str) {
 mod tests {
     use super::*;
     use crate::app::{app, test_state, AppState};
+    use crate::db::accounts::insert_bare_account as seed_account;
     use crate::email::{EmailError, EmailMessage, EmailSender};
     use crate::routes::test_utils::test_master_key;
     use axum::body::Body;
@@ -473,6 +465,11 @@ mod tests {
                 Ok(())
             })
         }
+
+        #[cfg(test)]
+        fn kind(&self) -> crate::email::EmailSenderKind {
+            crate::email::EmailSenderKind::Fake
+        }
     }
 
     struct Harness {
@@ -495,18 +492,6 @@ mod tests {
             ..base
         };
         Harness { state, emails }
-    }
-
-    async fn seed_account(db: &sqlx::SqlitePool, did: &str) {
-        sqlx::query(
-            "INSERT INTO accounts (did, email, password_hash, created_at, updated_at) \
-             VALUES (?, ?, NULL, datetime('now'), datetime('now'))",
-        )
-        .bind(did)
-        .bind(format!("{did}@example.com"))
-        .execute(db)
-        .await
-        .expect("seed account");
     }
 
     /// The Share 2 envelope (index 2) for a set, both wrapped (for storage) and as its base32

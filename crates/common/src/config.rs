@@ -74,6 +74,9 @@ pub struct Config {
     pub recovery: RecoveryConfig,
     /// Public interest-signup waitlist (the `waitlist` capability). Off by default.
     pub waitlist: WaitlistConfig,
+    /// The Atproto Spaces alpha surface (the `spaces` capability). Off by default until
+    /// the protocol launches.
+    pub spaces: SpacesConfig,
     /// Operator companion-app admin-device knobs (the stale-nonce sweep interval
     /// and retention).
     pub admin_devices: AdminDevicesConfig,
@@ -115,6 +118,12 @@ pub struct Config {
 }
 
 impl Config {
+    /// The instance's public URL with any trailing slash stripped — the OAuth `issuer` value
+    /// and the base every endpoint URL this server advertises about itself is built from.
+    pub fn issuer(&self) -> &str {
+        self.public_url.trim_end_matches('/')
+    }
+
     /// The bare hostname of the instance's public URL (scheme and path stripped).
     pub fn public_host(&self) -> &str {
         self.public_url
@@ -438,6 +447,24 @@ pub struct WaitlistConfig {
     pub enabled: bool,
 }
 
+/// Atproto Spaces (permissioned data) configuration.
+///
+/// The spaces surface is a pre-launch alpha protocol: the upstream lexicons carry a
+/// breaking-changes warning until launch, so it is off by default. Enabling it registers
+/// the `com.atproto.space.*` and `com.atproto.simplespace.*` routes plus
+/// `/v1/space/import-repo`, starts the space retention sweeps, and — with a signing-key
+/// master key configured — advertises the `spaces` capability. Disabled, those XRPC
+/// methods answer the catch-all's `MethodNotImplemented`, exactly like a PDS that never
+/// implemented spaces; stored space data is untouched and blob GC still counts its
+/// references.
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct SpacesConfig {
+    /// Serve the Atproto Spaces surface (and advertise the `spaces` capability once a
+    /// signing-key master key is also configured). Default `false`.
+    #[serde(default)]
+    pub enabled: bool,
+}
+
 /// Clock-skew tolerance for admin device signed-request timestamps, in seconds: a request's
 /// claimed `timestamp` verifies at any relay clock within `timestamp ±
 /// ADMIN_TIMESTAMP_WINDOW_SECS` (see `pds::auth::guards::verify_signed_request`). Lives here
@@ -599,6 +626,14 @@ pub struct RateLimitConfig {
     /// cap on top of the global one. `0` disables.
     #[serde(default = "default_waitlist_per_5min")]
     pub waitlist_per_5min: u64,
+    /// Credential-authed space read/sync requests per space-credential holder per 5 minutes,
+    /// keyed by the credential's bound DPoP key thumbprint (`cnf.jkt`) — re-minting a credential
+    /// does not reset the budget, and the key works across IPs where the global cap cannot.
+    /// Default 3000 (in line with the global per-IP cap): these requests hit the per-serve
+    /// commit-signing path, so a single hot holder must not be able to monopolize it. `0`
+    /// disables.
+    #[serde(default = "default_space_credential_per_5min")]
+    pub space_credential_per_5min: u64,
     /// Repo-write points per account per hour (reference: 5000). `0` disables the hourly budget.
     #[serde(default = "default_write_points_hourly")]
     pub write_points_hourly: u64,
@@ -622,6 +657,7 @@ impl Default for RateLimitConfig {
             oauth_consent_create_per_5min: default_oauth_consent_create_per_5min(),
             oauth_consent_action_per_5min: default_oauth_consent_action_per_5min(),
             waitlist_per_5min: default_waitlist_per_5min(),
+            space_credential_per_5min: default_space_credential_per_5min(),
             write_points_hourly: default_write_points_hourly(),
             write_points_daily: default_write_points_daily(),
         }
@@ -674,6 +710,10 @@ fn default_oauth_consent_create_per_5min() -> u64 {
 
 fn default_oauth_consent_action_per_5min() -> u64 {
     30
+}
+
+fn default_space_credential_per_5min() -> u64 {
+    3000
 }
 
 fn default_write_points_hourly() -> u64 {
@@ -767,9 +807,18 @@ pub struct AgentAuthConfig {
     /// means every `identity_assertion` request is refused with `issuer_not_enabled`.
     #[serde(default)]
     pub trusted_issuers: Vec<TrustedIssuer>,
-    /// Lifetime, in seconds, of a minted service `identity_assertion`. Default 3600 (1 hour).
+    /// Lifetime, in seconds, of a service `identity_assertion` minted before any human has
+    /// confirmed the binding (the anonymous pre-claim assertion). Default 3600 (1 hour).
     #[serde(default = "default_agent_assertion_ttl_secs")]
     pub assertion_ttl_secs: u64,
+    /// Lifetime, in seconds, of a service `identity_assertion` minted for a *confirmed* binding —
+    /// the claim-ceremony confirm, the re-mint for an already-claimed `(iss, sub)`, sovereign-child
+    /// capabilities, and the renewal returned by every successful jwt-bearer exchange. Long by
+    /// design (default 2592000, 30 days): the human already confirmed the binding once, and
+    /// revocation — not expiry — is the kill switch (a revoked identity is refused at its next
+    /// exchange regardless of the assertion's remaining lifetime).
+    #[serde(default = "default_agent_claimed_assertion_ttl_secs")]
+    pub claimed_assertion_ttl_secs: u64,
     /// Lifetime, in seconds, of a claim token returned for a pending claim ceremony. Default 600.
     #[serde(default = "default_agent_claim_token_ttl_secs")]
     pub claim_token_ttl_secs: u64,
@@ -781,8 +830,15 @@ pub struct AgentAuthConfig {
     #[serde(default = "default_agent_auth_time_max_age_secs")]
     pub auth_time_max_age_secs: u64,
     /// Scopes granted to a fully-registered agent identity. Defaults to a conservative granular
-    /// profile — write-to-own-repo plus blob uploads, with AppView reads reaching the agent through
-    /// the read-proxy (which any access-level token may use). See `default_agent_granted_scopes`.
+    /// profile — write-to-own-repo (including delete, so an agent can retract its own mistaken
+    /// write without operator cleanup), blob uploads, and AppView reads (`rpc:*?aud=<appview>`),
+    /// so an agent can read the engagement its own posts earned and its own notifications. See
+    /// `default_agent_granted_scopes`.
+    ///
+    /// **Repointing the AppView:** the default `rpc:` token names the default AppView audience
+    /// literally, since a serde default cannot read `appview.did`. An operator who sets a
+    /// different `appview.did` must restate `granted_scopes` with their own audience, or agent
+    /// proxy reads fail closed with `InsufficientScope`.
     ///
     /// **Operator warning:** these are enforced through the same granular scope grammar as OAuth
     /// tokens (`auth/oauth_scopes.rs`), so an agent token can only do what these scopes permit. Do
@@ -790,6 +846,9 @@ pub struct AgentAuthConfig {
     /// scope, or `transition:generic`) unless you intend agents to change account settings, rotate
     /// handles/PLC identity, or otherwise hold account-lifecycle control — that hands an agent the
     /// same reach as the account owner's own wallet.
+    ///
+    /// Env override: `EZPDS_AGENT_AUTH_GRANTED_SCOPES`, comma-separated (the `EZPDS_CRAWLERS`
+    /// convention; scope tokens never contain commas).
     #[serde(default = "default_agent_granted_scopes")]
     pub granted_scopes: Vec<String>,
     /// Scopes carried by a pre-claim (anonymous) assertion. Defaults to the same conservative
@@ -828,6 +887,7 @@ impl Default for AgentAuthConfig {
             anonymous_enabled: false,
             trusted_issuers: Vec::new(),
             assertion_ttl_secs: default_agent_assertion_ttl_secs(),
+            claimed_assertion_ttl_secs: default_agent_claimed_assertion_ttl_secs(),
             claim_token_ttl_secs: default_agent_claim_token_ttl_secs(),
             user_code_ttl_secs: default_agent_user_code_ttl_secs(),
             auth_time_max_age_secs: default_agent_auth_time_max_age_secs(),
@@ -876,6 +936,10 @@ fn default_agent_assertion_ttl_secs() -> u64 {
     60 * 60 // 1 hour
 }
 
+fn default_agent_claimed_assertion_ttl_secs() -> u64 {
+    30 * 24 * 60 * 60 // 30 days
+}
+
 fn default_agent_claim_token_ttl_secs() -> u64 {
     10 * 60 // 10 minutes
 }
@@ -903,17 +967,36 @@ fn default_agent_jwks_refetch_cooldown_secs() -> u64 {
 /// The conservative default scope profile for agent-derived credentials.
 ///
 /// A valid granular atproto scope set (per `auth/oauth_scopes.rs`): the required `atproto` base
-/// scope, write access to the account's own repo (create/update — deliberately not delete), and
-/// blob uploads. It grants **no** `account:*`, `identity:*`, `rpc:*`, or legacy full-access scope,
-/// so an agent token cannot change account settings, rotate the handle/PLC identity, manage app
-/// passwords, or mint service auth. AppView reads still work: the read-proxy admits any
-/// access-level token without requiring an `rpc:` grant. Operators override via
-/// `[agent_auth] granted_scopes` / `EZPDS_AGENT_AUTH_GRANTED_SCOPES`.
+/// scope, write access to the account's own repo (create/update/delete), and blob uploads. It
+/// grants **no** `account:*`, `identity:*`, `rpc:*`, or legacy full-access scope, so an agent
+/// token cannot change account settings, rotate the handle/PLC identity, manage app passwords, or
+/// mint service auth. AppView reads still work: the read-proxy admits any access-level token
+/// without requiring an `rpc:` grant. Operators override via `[agent_auth] granted_scopes` /
+/// `EZPDS_AGENT_AUTH_GRANTED_SCOPES`.
+///
+/// Delete is a **separate token** rather than a third `action=` on the create/update one. Scope
+/// clamping (`intersect_scope_tokens`) matches tokens by exact canonical string, so folding delete
+/// into the existing token would stop it matching the `granted_scopes` already stored on every
+/// live registration — silently withdrawing create/update too. As its own token it unions in
+/// (`allows_repo` is an any-token match) and leaves existing registrations untouched; they pick
+/// delete up when they re-register or re-claim.
+///
+/// Delete is granted because withholding it does not contain an agent that already holds
+/// `action=update` — overwriting a record's content is as irreversible as removing it — while
+/// costing the agent any way to retract its own mistaken write without operator intervention.
 fn default_agent_granted_scopes() -> Vec<String> {
     vec![
         "atproto".to_string(),
         "repo:*?action=create&action=update".to_string(),
+        "repo:*?action=delete".to_string(),
         "blob:*/*".to_string(),
+        // Reads through the AppView proxy: engagement counts on the agent's own posts, and its
+        // notifications. `aud` names the *default* AppView's bare DID because a serde default
+        // cannot see `appview.did`; `aud_matches` compares audiences fragment-insensitively, so
+        // this matches the configured `did:web:api.bsky.app#bsky_appview`. Deliberately not
+        // `aud=*`: the proxy mints a service-auth JWT signed by the user's own repo key for
+        // whatever audience the `atproto-proxy` header names.
+        "rpc:*?aud=did:web:api.bsky.app".to_string(),
     ]
 }
 
@@ -1384,6 +1467,8 @@ pub(crate) struct RawConfig {
     #[serde(default)]
     pub(crate) waitlist: WaitlistConfig,
     #[serde(default)]
+    pub(crate) spaces: SpacesConfig,
+    #[serde(default)]
     pub(crate) admin_devices: AdminDevicesConfig,
     #[serde(default)]
     pub(crate) oauth: OAuthConfig,
@@ -1674,6 +1759,10 @@ pub(crate) fn apply_env_overrides(
     if let Some(v) = env.get("EZPDS_RATE_LIMIT_WAITLIST_PER_5MIN") {
         raw.rate_limit.waitlist_per_5min = parse_u64("EZPDS_RATE_LIMIT_WAITLIST_PER_5MIN", v)?;
     }
+    if let Some(v) = env.get("EZPDS_RATE_LIMIT_SPACE_CREDENTIAL_PER_5MIN") {
+        raw.rate_limit.space_credential_per_5min =
+            parse_u64("EZPDS_RATE_LIMIT_SPACE_CREDENTIAL_PER_5MIN", v)?;
+    }
     if let Some(v) = env.get("EZPDS_RATE_LIMIT_WRITE_POINTS_HOURLY") {
         raw.rate_limit.write_points_hourly = parse_u64("EZPDS_RATE_LIMIT_WRITE_POINTS_HOURLY", v)?;
     }
@@ -1754,6 +1843,9 @@ pub(crate) fn apply_env_overrides(
     if let Some(v) = env.get("EZPDS_WAITLIST_ENABLED") {
         raw.waitlist.enabled = parse_bool_env("EZPDS_WAITLIST_ENABLED", v)?;
     }
+    if let Some(v) = env.get("EZPDS_SPACES_ENABLED") {
+        raw.spaces.enabled = parse_bool_env("EZPDS_SPACES_ENABLED", v)?;
+    }
     // OAuth access-token lifetime. Overridable by env so the conformance suite can spawn a
     // PDS with a near-instant expiry and assert what a client sees when a token lapses.
     if let Some(v) = env.get("EZPDS_OAUTH_ACCESS_TOKEN_TTL_SECS") {
@@ -1780,6 +1872,10 @@ pub(crate) fn apply_env_overrides(
     if let Some(v) = env.get("EZPDS_AGENT_AUTH_ASSERTION_TTL_SECS") {
         raw.agent_auth.assertion_ttl_secs = parse_u64("EZPDS_AGENT_AUTH_ASSERTION_TTL_SECS", v)?;
     }
+    if let Some(v) = env.get("EZPDS_AGENT_AUTH_CLAIMED_ASSERTION_TTL_SECS") {
+        raw.agent_auth.claimed_assertion_ttl_secs =
+            parse_u64("EZPDS_AGENT_AUTH_CLAIMED_ASSERTION_TTL_SECS", v)?;
+    }
     if let Some(v) = env.get("EZPDS_AGENT_AUTH_CLAIM_TOKEN_TTL_SECS") {
         raw.agent_auth.claim_token_ttl_secs =
             parse_u64("EZPDS_AGENT_AUTH_CLAIM_TOKEN_TTL_SECS", v)?;
@@ -1790,6 +1886,14 @@ pub(crate) fn apply_env_overrides(
     if let Some(v) = env.get("EZPDS_AGENT_AUTH_AUTH_TIME_MAX_AGE_SECS") {
         raw.agent_auth.auth_time_max_age_secs =
             parse_u64("EZPDS_AGENT_AUTH_AUTH_TIME_MAX_AGE_SECS", v)?;
+    }
+    if let Some(v) = env.get("EZPDS_AGENT_AUTH_GRANTED_SCOPES") {
+        raw.agent_auth.granted_scopes = v
+            .split(',')
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(str::to_string)
+            .collect();
     }
     if let Some(v) = env.get("EZPDS_AGENT_AUTH_VERIFICATION_URI") {
         raw.agent_auth.verification_uri = Some(v.clone());
@@ -2430,6 +2534,7 @@ pub(crate) fn validate_and_build(raw: RawConfig) -> Result<Config, ConfigError> 
         accounts: raw.accounts,
         recovery: raw.recovery,
         waitlist: raw.waitlist,
+        spaces: raw.spaces,
         admin_devices: raw.admin_devices,
         oauth: raw.oauth,
         agent_auth: raw.agent_auth,
@@ -2755,9 +2860,17 @@ mod tests {
         assert_eq!(config.agent_auth.assertion_ttl_secs, 3600);
         assert_eq!(config.agent_auth.claim_token_ttl_secs, 600);
         // The default is a conservative granular profile, not the legacy full-access scope.
+        // Delete rides as its own token so folding it in cannot break the exact-string clamp
+        // against scopes already stored on live registrations.
         assert_eq!(
             config.agent_auth.granted_scopes,
-            vec!["atproto", "repo:*?action=create&action=update", "blob:*/*"]
+            vec![
+                "atproto",
+                "repo:*?action=create&action=update",
+                "repo:*?action=delete",
+                "blob:*/*",
+                "rpc:*?aud=did:web:api.bsky.app"
+            ]
         );
         assert!(config.agent_auth.verification_uri.is_none());
     }
@@ -3055,6 +3168,20 @@ mod tests {
         let config = validate_and_build(raw).unwrap();
         assert!(config.waitlist.enabled);
         assert_eq!(config.rate_limit.waitlist_per_5min, 10);
+    }
+
+    #[test]
+    fn spaces_default_to_disabled() {
+        let config = validate_and_build(minimal_raw()).unwrap();
+        assert!(!config.spaces.enabled);
+    }
+
+    #[test]
+    fn spaces_env_override_enables() {
+        let env = HashMap::from([("EZPDS_SPACES_ENABLED".to_string(), "true".to_string())]);
+        let raw = apply_env_overrides(minimal_raw(), &env).unwrap();
+        let config = validate_and_build(raw).unwrap();
+        assert!(config.spaces.enabled);
     }
 
     #[test]

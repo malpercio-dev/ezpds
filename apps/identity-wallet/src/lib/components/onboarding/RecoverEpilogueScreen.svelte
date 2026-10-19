@@ -161,12 +161,12 @@
     </p>
   </div>
 
-  <ul class="checklist">
+  <ul class="checklist u-list-reset">
     {#each STEPS as step (step.id)}
       <li class="leg leg--{stepStates[step.id]}">
         <span class="leg-glyph" aria-hidden="true">{statusGlyph(stepStates[step.id])}</span>
         <span class="leg-body">
-          <span class="leg-label">{step.label}</span>
+          <span class="leg-label u-title-strong">{step.label}</span>
           <span class="leg-status">{statusWord(stepStates[step.id])}</span>
         </span>
       </li>
@@ -175,7 +175,7 @@
 
   {#if failure}
     <div class="error-box" role="alert">
-      <p class="error-text">{failure}</p>
+      <p class="error-text u-error-text">{failure}</p>
       {#if escrowFailed}
         <p class="error-detail">
           You can retry, or continue without server escrow — then only your iCloud share and your
@@ -221,14 +221,6 @@
     max-width: 34ch;
   }
 
-  .checklist {
-    list-style: none;
-    margin: 0;
-    padding: 0;
-    display: flex;
-    flex-direction: column;
-    gap: var(--space-sm);
-  }
   .leg {
     display: flex;
     align-items: flex-start;
@@ -241,7 +233,7 @@
   .leg-glyph {
     font-size: var(--text-title);
     line-height: var(--leading-headline);
-    width: 22px;
+    width: var(--size-icon-sm);
     flex-shrink: 0;
     text-align: center;
     color: var(--color-muted);
@@ -261,11 +253,6 @@
     gap: 1px;
     min-width: 0;
   }
-  .leg-label {
-    font-size: var(--text-body);
-    font-weight: var(--weight-semibold);
-    color: var(--color-ink);
-  }
   .leg-status {
     font-size: var(--text-label);
     color: var(--color-muted);
@@ -282,12 +269,7 @@
     border-radius: var(--radius-md);
     padding: var(--space-sm) var(--space-md);
   }
-  .error-text {
-    font-size: var(--text-label);
-    color: var(--color-critical);
-    margin: 0;
-    line-height: 1.4;
-  }
+
   .error-detail {
     font-size: var(--text-label);
     color: var(--color-critical-soft);

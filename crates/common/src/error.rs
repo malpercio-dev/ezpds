@@ -93,6 +93,64 @@ pub enum ErrorCode {
     /// lexicon's error name and the AT Protocol XRPC error format.
     #[serde(rename = "BlockNotFound")]
     BlockNotFound,
+    /// The named space is unknown to this host, or has been deleted. Declared by every
+    /// `com.atproto.space.*` and `com.atproto.simplespace.*` method.
+    #[serde(rename = "SpaceNotFound")]
+    SpaceNotFound,
+    /// The named account holds no permissioned repo in the space.
+    ///
+    /// Deliberately also the answer when the caller may not read the named repo at all: whether
+    /// some other account holds a repo in a space is not a fact a caller without read access to
+    /// that space is entitled to learn, so "not yours" and "not there" are one reply.
+    #[serde(rename = "RepoNotFound")]
+    RepoNotFound,
+    /// No record exists at the requested path in a permissioned repo — either read
+    /// (`com.atproto.space.getRecord`) or as an `applyWrites` update/delete precondition.
+    #[serde(rename = "RecordNotFound")]
+    RecordNotFound,
+    /// `com.atproto.space.getBlob` named a blob no record in the space references, or one this
+    /// host does not hold. One reply for both, so an unreferenced blob's existence is never
+    /// disclosed (the reference's `isBlobInSpace` check does the same).
+    #[serde(rename = "BlobNotFound")]
+    BlobNotFound,
+    /// A create targeted a path that already holds a record. Distinct from the generic
+    /// [`Conflict`](ErrorCode::Conflict), which reports a lost race rather than a stated
+    /// precondition the caller can fix by choosing another key.
+    #[serde(rename = "RecordAlreadyExists")]
+    RecordAlreadyExists,
+    /// The space has been deleted by its authority — the durable deletion signal a syncer sees
+    /// when it tries to renew a space credential (Spaces proposal, "Space deletion").
+    #[serde(rename = "SpaceDeleted")]
+    SpaceDeleted,
+    /// The space authority refused a credential on the basis of the requesting user.
+    #[serde(rename = "UserNotAuthorized")]
+    UserNotAuthorized,
+    /// The space authority refused a credential on the basis of the requesting app.
+    #[serde(rename = "AppNotAuthorized")]
+    AppNotAuthorized,
+    /// The delegation token presented to `getSpaceCredential` failed verification.
+    #[serde(rename = "InvalidDelegationToken")]
+    InvalidDelegationToken,
+    /// The client attestation presented to `getSpaceCredential` failed verification — malformed,
+    /// unresolvable client, wrong signature, wrong audience, expired, or replayed.
+    #[serde(rename = "InvalidClientAttestation")]
+    InvalidClientAttestation,
+    /// A simplespace management call by an account that is not the space's authority.
+    #[serde(rename = "NotSpaceOwner")]
+    NotSpaceOwner,
+    /// `createSpace` named a space that already exists (and is not deleted).
+    #[serde(rename = "SpaceAlreadyExists")]
+    SpaceAlreadyExists,
+    /// The requested simplespace `policy` is not one this host implements (an open union).
+    #[serde(rename = "UnsupportedPolicy")]
+    UnsupportedPolicy,
+    /// The requested simplespace `appAccess` is not one this host implements (an open union).
+    #[serde(rename = "UnsupportedAppAccess")]
+    UnsupportedAppAccess,
+    /// `registerNotify`'s subscriber identifier did not resolve to a DID document with a
+    /// matching service endpoint, so a registration for it could never deliver.
+    #[serde(rename = "ServiceNotResolvable")]
+    ServiceNotResolvable,
     // Codes for endpoints/designs not yet shipped (tiers, did:web self-service, device
     // leases, Shamir recovery, etc.) are catalogued in docs/provisioning-api-spec.md's
     // status-code appendix; add them here as those designs actually land.
@@ -151,6 +209,21 @@ impl ErrorCode {
             ErrorCode::InvalidRequest => "InvalidRequest",
             ErrorCode::HandleResolutionFailed => "HandleResolutionFailed",
             ErrorCode::BlockNotFound => "BlockNotFound",
+            ErrorCode::SpaceNotFound => "SpaceNotFound",
+            ErrorCode::RepoNotFound => "RepoNotFound",
+            ErrorCode::RecordNotFound => "RecordNotFound",
+            ErrorCode::BlobNotFound => "BlobNotFound",
+            ErrorCode::RecordAlreadyExists => "RecordAlreadyExists",
+            ErrorCode::SpaceDeleted => "SpaceDeleted",
+            ErrorCode::UserNotAuthorized => "UserNotAuthorized",
+            ErrorCode::AppNotAuthorized => "AppNotAuthorized",
+            ErrorCode::InvalidDelegationToken => "InvalidDelegationToken",
+            ErrorCode::InvalidClientAttestation => "InvalidClientAttestation",
+            ErrorCode::NotSpaceOwner => "NotSpaceOwner",
+            ErrorCode::SpaceAlreadyExists => "SpaceAlreadyExists",
+            ErrorCode::UnsupportedPolicy => "UnsupportedPolicy",
+            ErrorCode::UnsupportedAppAccess => "UnsupportedAppAccess",
+            ErrorCode::ServiceNotResolvable => "ServiceNotResolvable",
         }
     }
 
@@ -188,6 +261,31 @@ impl ErrorCode {
             ErrorCode::InvalidRequest => 400,
             ErrorCode::HandleResolutionFailed => 400,
             ErrorCode::BlockNotFound => 400,
+            // The reference raises all four as `InvalidRequestError` with a named `error`, which
+            // is HTTP 400 — clients dispatch on the name, not the status.
+            ErrorCode::SpaceNotFound => 400,
+            ErrorCode::RepoNotFound => 400,
+            ErrorCode::RecordNotFound => 400,
+            ErrorCode::BlobNotFound => 400,
+            ErrorCode::RecordAlreadyExists => 400,
+            ErrorCode::SpaceDeleted => 400,
+            ErrorCode::UserNotAuthorized => 403,
+            ErrorCode::AppNotAuthorized => 403,
+            // The delegation token is the request's authorization credential, so a bad one is an
+            // authentication failure, like InvalidToken.
+            ErrorCode::InvalidDelegationToken => 401,
+            // 400, not 401: the delegation token is the request's authorization and its failure is
+            // a 401, but the attestation is a body parameter naming the app, and the reference
+            // answers a bad one as an invalid request.
+            ErrorCode::InvalidClientAttestation => 400,
+            // The reference raises the simplespace management errors as `InvalidRequestError`
+            // too — including NotSpaceOwner, which is an ownership precondition, not an auth
+            // failure (the caller is authenticated; the space is just not theirs).
+            ErrorCode::NotSpaceOwner => 400,
+            ErrorCode::SpaceAlreadyExists => 400,
+            ErrorCode::UnsupportedPolicy => 400,
+            ErrorCode::UnsupportedAppAccess => 400,
+            ErrorCode::ServiceNotResolvable => 400,
         }
     }
 }
@@ -229,6 +327,13 @@ impl ApiError {
         }
     }
 
+    /// Re-code an error while keeping its message — for a seam whose caller speaks a more
+    /// specific error vocabulary than the shared verifier that produced the failure.
+    pub fn with_code(mut self, code: ErrorCode) -> Self {
+        self.code = code;
+        self
+    }
+
     pub fn with_details(mut self, details: Value) -> Self {
         self.details = Some(details);
         self
@@ -245,6 +350,19 @@ impl ApiError {
     /// Returns the HTTP status code for this error as a `u16`.
     pub fn status_code(&self) -> u16 {
         self.code.status_code()
+    }
+
+    /// The error's code. Callers that distinguish two conditions sharing one status — the space
+    /// surface's named `RecordNotFound`/`RecordAlreadyExists` errors are both 400 — assert on
+    /// this rather than on [`Self::status_code`].
+    pub fn code(&self) -> &ErrorCode {
+        &self.code
+    }
+
+    /// The error's caller-facing message. For a seam that re-encodes this error in another wire
+    /// dialect and wants to carry the explanation across rather than flatten it to a status.
+    pub fn message(&self) -> &str {
+        &self.message
     }
 }
 
@@ -267,6 +385,55 @@ pub struct ApiErrorParts {
     pub code: ErrorCode,
     pub message: String,
     pub details: Option<Value>,
+}
+
+#[cfg(feature = "axum")]
+impl ApiError {
+    /// Log `err` at ERROR level under `context`, then build the matching
+    /// `ErrorCode::InternalError`, using `context` as the public-facing message too. Covers
+    /// the common "log the DB/IO failure, answer 500 with the same wording" call site.
+    pub fn internal(err: impl std::fmt::Display, context: &'static str) -> Self {
+        Self::internal_as(err, context, context)
+    }
+
+    /// Like [`Self::internal`], but the log context and the caller-facing `message` differ.
+    pub fn internal_as(
+        err: impl std::fmt::Display,
+        context: &'static str,
+        message: impl Into<String>,
+    ) -> Self {
+        tracing::error!(error = %err, "{}", context);
+        Self::new(ErrorCode::InternalError, message)
+    }
+}
+
+/// Extends `Result<T, E>` with a `.map_err` shorthand for the "log the failure, answer 500"
+/// call site, so it reads as one line at the `?` instead of a `.map_err(|e| { .. })` closure.
+#[cfg(feature = "axum")]
+pub trait ApiResultExt<T> {
+    /// `.map_err(|e| ApiError::internal(e, context))`.
+    fn or_internal(self, context: &'static str) -> Result<T, ApiError>;
+    /// `.map_err(|e| ApiError::internal_as(e, context, message))`.
+    fn or_internal_as(
+        self,
+        context: &'static str,
+        message: impl Into<String>,
+    ) -> Result<T, ApiError>;
+}
+
+#[cfg(feature = "axum")]
+impl<T, E: std::fmt::Display> ApiResultExt<T> for Result<T, E> {
+    fn or_internal(self, context: &'static str) -> Result<T, ApiError> {
+        self.map_err(|e| ApiError::internal(e, context))
+    }
+
+    fn or_internal_as(
+        self,
+        context: &'static str,
+        message: impl Into<String>,
+    ) -> Result<T, ApiError> {
+        self.map_err(|e| ApiError::internal_as(e, context, message))
+    }
 }
 
 #[cfg(feature = "axum")]

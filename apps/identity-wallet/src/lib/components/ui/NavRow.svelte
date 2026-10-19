@@ -32,7 +32,7 @@
     <span class="ic" aria-hidden="true">{@render icon()}</span>
   {/if}
   <span class="body">
-    <span class="title">{title}</span>
+    <span class="title u-title-strong">{title}</span>
     {#if subtitle}<span class="subtitle">{subtitle}</span>{/if}
   </span>
   <svg class="chev" width="9" height="16" viewBox="0 0 11 18" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m2 1 7 8-7 8" /></svg>
@@ -42,7 +42,7 @@
   .row {
     display: flex;
     align-items: center;
-    gap: 13px;
+    gap: var(--space-md);
     width: 100%;
     min-height: var(--size-tap-target);
     padding: var(--space-md);
@@ -59,8 +59,8 @@
     border-color: var(--color-line-strong);
   }
   .ic {
-    width: 38px;
-    height: 38px;
+    width: var(--size-icon-xl);
+    height: var(--size-icon-xl);
     border-radius: var(--radius-full);
     background: var(--color-surface);
     color: var(--color-primary-deep);
@@ -72,14 +72,9 @@
   .body {
     display: flex;
     flex-direction: column;
-    gap: 2px;
+    gap: var(--space-3xs);
     min-width: 0;
     flex: 1;
-  }
-  .title {
-    font-size: var(--text-body);
-    font-weight: var(--weight-semibold);
-    color: var(--color-ink);
   }
   .subtitle {
     font-size: var(--text-label);

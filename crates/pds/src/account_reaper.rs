@@ -37,14 +37,8 @@ pub struct ReaperStats {
 /// accounts during startup; the first pass runs one `interval` after boot. The task loops for the
 /// life of the process and is dropped on shutdown.
 pub fn spawn_account_reaper(state: AppState, interval: Duration) -> JoinHandle<()> {
-    tokio::spawn(async move {
-        let mut ticker = tokio::time::interval(interval);
-        // `interval`'s first tick fires immediately — skip it so the reaper doesn't run mid-boot.
-        ticker.tick().await;
-        loop {
-            ticker.tick().await;
-            run_account_reaper(&state).await;
-        }
+    crate::sweep::spawn_sweep(interval, false, state, |state| async move {
+        run_account_reaper(&state).await;
     })
 }
 

@@ -54,6 +54,7 @@ use serde_json::Value;
 use schema::{LexDef, LexObject, LexRecord, LexSchema, LexXrpcBody};
 
 pub use extractor::{validate_procedure_body, LexiconInput};
+pub(crate) use formats::is_valid_record_key;
 #[cfg(test)]
 pub(crate) use output::validate_xrpc_output;
 pub use params::{parse_raw_query, validate_params_map, LexiconParams};
@@ -109,6 +110,11 @@ static LEXICON_SOURCES: &[&str] = &[
     include_str!("../../lexicons/com/atproto/server/resetPassword.json"),
     include_str!("../../lexicons/com/atproto/server/revokeAppPassword.json"),
     include_str!("../../lexicons/com/atproto/server/updateEmail.json"),
+    // Atproto Spaces (proposal 0016) token-flow documents: `getSpaceCredential` (JSON-input
+    // procedure) and `getDelegationToken` (query) — from the `permissioned-data` branch, like
+    // the record documents below (see the README's "Atproto Spaces" note).
+    include_str!("../../lexicons/com/atproto/space/getSpaceCredential.json"),
+    include_str!("../../lexicons/com/atproto/space/getDelegationToken.json"),
     // Query (`type: "query"`, GET) documents, vendored so natively-handled queries run
     // `LexiconParams` validation with `assertValidXrpcParams` parity.
     include_str!("../../lexicons/com/atproto/identity/resolveDid.json"),
@@ -132,6 +138,36 @@ static LEXICON_SOURCES: &[&str] = &[
     // validation roots, so `check_refs` requires them.
     include_str!("../../lexicons/com/atproto/identity/defs.json"),
     include_str!("../../lexicons/com/atproto/repo/defs.json"),
+    // Atproto Spaces (`com.atproto.space.*`), the permissioned-data surface. Pinned to the
+    // `permissioned-data` branch rather than the `@atproto/pds` tag the rest of this list
+    // follows — the alpha ships no tag carrying them (see the README).
+    include_str!("../../lexicons/com/atproto/space/applyWrites.json"),
+    include_str!("../../lexicons/com/atproto/space/createRecord.json"),
+    include_str!("../../lexicons/com/atproto/space/defs.json"),
+    include_str!("../../lexicons/com/atproto/space/deleteRecord.json"),
+    include_str!("../../lexicons/com/atproto/space/getBlob.json"),
+    include_str!("../../lexicons/com/atproto/space/getLatestCommit.json"),
+    include_str!("../../lexicons/com/atproto/space/getRecord.json"),
+    include_str!("../../lexicons/com/atproto/space/getRepo.json"),
+    include_str!("../../lexicons/com/atproto/space/listBlobs.json"),
+    include_str!("../../lexicons/com/atproto/space/listRecords.json"),
+    include_str!("../../lexicons/com/atproto/space/listRepoOps.json"),
+    include_str!("../../lexicons/com/atproto/space/listRepos.json"),
+    include_str!("../../lexicons/com/atproto/space/listSpaces.json"),
+    include_str!("../../lexicons/com/atproto/space/notifyWrite.json"),
+    include_str!("../../lexicons/com/atproto/space/putRecord.json"),
+    include_str!("../../lexicons/com/atproto/space/registerNotify.json"),
+    include_str!("../../lexicons/com/atproto/space/unregisterNotify.json"),
+    // The PDS-required simplespace management surface (`com.atproto.simplespace.*`), same
+    // branch. `checkUserAccess` is served by a managing app, never here, so it is not vendored.
+    include_str!("../../lexicons/com/atproto/simplespace/addMember.json"),
+    include_str!("../../lexicons/com/atproto/simplespace/createSpace.json"),
+    include_str!("../../lexicons/com/atproto/simplespace/defs.json"),
+    include_str!("../../lexicons/com/atproto/simplespace/deleteSpace.json"),
+    include_str!("../../lexicons/com/atproto/simplespace/getSpace.json"),
+    include_str!("../../lexicons/com/atproto/simplespace/listMembers.json"),
+    include_str!("../../lexicons/com/atproto/simplespace/removeMember.json"),
+    include_str!("../../lexicons/com/atproto/simplespace/updateSpace.json"),
 ];
 
 /// A procedure's declared input body: its encoding and (for JSON inputs) its schema.

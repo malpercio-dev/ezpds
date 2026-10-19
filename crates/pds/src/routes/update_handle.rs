@@ -34,11 +34,11 @@ use crate::app::AppState;
 use crate::auth::extractors::AuthenticatedUser;
 use crate::auth::jwt::AuthScope;
 use crate::auth::oauth_scopes;
-use crate::db::dids::{fetch_also_known_as, update_also_known_as};
+use crate::db::dids::{fetch_also_known_as, update_also_known_as, upsert_did_document};
 use crate::db::repo_keys::get_signing_key_by_did;
 use crate::identity::plc::{build_did_document_from_op, fetch_current_plc_state};
 use crate::lexicon::LexiconInput;
-use common::{ApiError, ErrorCode};
+use common::{ApiError, ApiResultExt, ErrorCode};
 
 struct CustodiedPlcUpdate {
     signed_operation: String,
@@ -161,10 +161,10 @@ pub async fn update_handle_handler(
     // can never both resolve the handle locally — the concurrent-claimant safety property is
     // preserved without holding the connection across the network POST above.
     {
-        let mut tx = state.db.begin().await.map_err(|e| {
-            tracing::error!(error = %e, "failed to begin transaction for handle swap");
-            ApiError::new(ErrorCode::InternalError, "failed to update handles")
-        })?;
+        let mut tx = state.db.begin().await.or_internal_as(
+            "failed to begin transaction for handle swap",
+            "failed to update handles",
+        )?;
 
         let rows_deleted = sqlx::query("DELETE FROM handles WHERE did = ?")
             .bind(did)
@@ -187,13 +187,13 @@ pub async fn update_handle_handler(
                     // Race: another request inserted this handle between our check and insert.
                     return ApiError::new(ErrorCode::HandleTaken, "handle was taken concurrently");
                 }
-                tracing::error!(
+                {
+                    tracing::error!(
                     error = %e,
                     handle = %payload.handle,
-                    did = %did,
-                    "failed to insert handle"
-                );
-                ApiError::new(ErrorCode::InternalError, "failed to update handles")
+                    did = %did, "failed to insert handle");
+                    ApiError::new(ErrorCode::InternalError, "failed to update handles")
+                }
             })?;
 
         if let Some(plc_update) = &plc_update {
@@ -202,25 +202,15 @@ pub async fn update_handle_handler(
             // leave plc.directory ahead of a reverted local handle). A stale/missing cache row is
             // reconciled by the next re-resolve, matching the non-fatal posture in
             // submit_plc_operation.rs.
-            if let Err(e) = sqlx::query(
-                "INSERT INTO did_documents (did, document, created_at, updated_at) \
-                 VALUES (?, ?, datetime('now'), datetime('now')) \
-                 ON CONFLICT(did) DO UPDATE SET \
-                    document = excluded.document, updated_at = datetime('now')",
-            )
-            .bind(did)
-            .bind(plc_update.did_document.to_string())
-            .execute(&mut *tx)
-            .await
-            {
+            if let Err(e) = upsert_did_document(&mut *tx, did, &plc_update.did_document).await {
                 tracing::warn!(error = %e, did = %did, "failed to cache submitted handle PLC operation (non-fatal)");
             }
         }
 
-        tx.commit().await.map_err(|e| {
-            tracing::error!(error = %e, "failed to commit handle swap transaction");
-            ApiError::new(ErrorCode::InternalError, "failed to update handles")
-        })?;
+        tx.commit().await.or_internal_as(
+            "failed to commit handle swap transaction",
+            "failed to update handles",
+        )?;
     }
 
     if plc_update.is_none() {
@@ -412,32 +402,11 @@ mod tests {
     };
 
     use crate::app::{app, test_state, AppState};
-    use crate::identity::dns::{DnsError, TxtResolver};
     use crate::identity::well_known::{WellKnownError, WellKnownResolver};
-    use crate::routes::test_utils::{seed_account_with_signing_key, state_with_master_key};
-
-    // ── Test doubles ──────────────────────────────────────────────────────────
-
-    struct FixedTxtResolver {
-        records: Vec<String>,
-    }
-
-    impl TxtResolver for FixedTxtResolver {
-        fn txt_lookup<'a>(
-            &'a self,
-            _name: &'a str,
-        ) -> Pin<Box<dyn Future<Output = Result<Vec<String>, DnsError>> + Send + 'a>> {
-            let records = self.records.clone();
-            Box::pin(async move { Ok(records) })
-        }
-    }
-
-    fn state_with_txt(state: AppState, records: Vec<String>) -> AppState {
-        AppState {
-            txt_resolver: Some(Arc::new(FixedTxtResolver { records })),
-            ..state
-        }
-    }
+    use crate::routes::test_utils::{
+        seed_account_with_signing_key, state_with_master_key,
+        state_with_txt_records as state_with_txt,
+    };
 
     struct FixedWellKnownResolver {
         did: Option<String>,
@@ -1133,63 +1102,5 @@ mod tests {
         // handler's own domain-policy checks), with the reference PDS's message shape.
         assert_eq!(body["error"], "InvalidRequest");
         assert_eq!(body["message"], "Input/handle must be a valid handle");
-    }
-
-    // ── Auth failures ──────────────────────────────────────────────────────────
-
-    /// Missing Authorization header returns 401.
-    #[tokio::test]
-    async fn missing_auth_returns_401() {
-        let state = test_state().await;
-        let new_handle = format!("alice.{}", state.config.available_user_domains[0]);
-
-        let body = serde_json::json!({ "handle": new_handle });
-        let request = Request::builder()
-            .method("POST")
-            .uri("/xrpc/com.atproto.identity.updateHandle")
-            .header("Content-Type", "application/json")
-            .body(Body::from(body.to_string()))
-            .unwrap();
-
-        let app = app(state);
-        let response = app.oneshot(request).await.unwrap();
-        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
-    }
-
-    /// Wrong-scope token (refresh instead of access) returns 401.
-    #[tokio::test]
-    async fn wrong_scope_token_returns_401() {
-        use jsonwebtoken::{encode, Algorithm, EncodingKey, Header};
-        use std::time::{SystemTime, UNIX_EPOCH};
-
-        let state = test_state().await;
-        let db = state.db.clone();
-        let old_handle = format!("alice.{}", state.config.available_user_domains[0]);
-        let new_handle = format!("bob.{}", state.config.available_user_domains[0]);
-        let ts = insert_account_and_session(&db, &old_handle).await;
-
-        let now = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_secs();
-        let refresh_jwt = encode(
-            &Header::new(Algorithm::HS256),
-            &serde_json::json!({
-                "scope": "com.atproto.refresh",
-                "sub": ts.did,
-                "iat": now,
-                "exp": now + 7200_u64,
-            }),
-            &EncodingKey::from_secret(&[0x42u8; 32]),
-        )
-        .unwrap();
-
-        let app = app(state);
-        let response = app
-            .oneshot(update_handle_request(&refresh_jwt, &new_handle))
-            .await
-            .unwrap();
-
-        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
     }
 }

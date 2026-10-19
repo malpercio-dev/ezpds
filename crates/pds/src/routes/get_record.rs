@@ -148,14 +148,7 @@ mod tests {
     use serde_json::json;
     use tower::ServiceExt;
 
-    use crate::routes::test_utils::{access_jwt, seed_account_with_repo, state_with_master_key};
-
-    async fn setup_account_with_repo() -> (AppState, String) {
-        let state = state_with_master_key().await;
-        let did = "did:plc:getrecordtest".to_string();
-        seed_account_with_repo(&state.db, &did).await;
-        (state, did)
-    }
+    use crate::routes::test_utils::{access_jwt, setup_account_with_repo};
 
     #[tokio::test]
     async fn get_record_nonexistent_returns_404() {

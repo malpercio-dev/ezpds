@@ -1,0 +1,42 @@
+meta {
+  name: Simplespace Create Space
+  type: http
+  seq: 148
+}
+
+post {
+  url: {{baseUrl}}/xrpc/com.atproto.simplespace.createSpace
+  body: json
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{accessToken}}
+}
+
+body:json {
+  {
+    "type": "org.example.bucket",
+    "skey": "main",
+    "policy": { "$type": "com.atproto.simplespace.defs#memberListPolicy" },
+    "appAccess": { "$type": "com.atproto.simplespace.defs#open" }
+  }
+}
+
+docs {
+  Atproto Spaces (simplespace): create a space anchored on the authenticated account's own
+  DID. The URI is at://{callerDid}/space/{type}/{skey}; "skey" is optional (a TID is
+  generated when absent) and uses record-key syntax.
+
+  "policy" and "appAccess" are open unions and both are required. This host implements
+  every member the lexicon declares — "#publicPolicy", "#memberListPolicy",
+  "#managingAppPolicy" (whose "managingApp" must be a DID with an optional service
+  fragment), "#open", and "#allowList" (whose "allowed" is the list of OAuth client IDs
+  matched against the attested client_id). An unknown $type is refused with 400
+  UnsupportedPolicy / UnsupportedAppAccess and never stored — a host must not store a
+  policy it cannot enforce.
+
+  Responds { uri }. Errors: 400 SpaceAlreadyExists when an active space already holds the
+  URI (a deleted one may be created again), 403 InsufficientScope when the OAuth grant
+  carries no "space:…?manage=create" covering the space.
+}

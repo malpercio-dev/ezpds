@@ -21,7 +21,7 @@
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use axum::{extract::State, http::StatusCode, response::Json};
-use common::{ApiError, ErrorCode, SOVEREIGN_TIMESTAMP_WINDOW_SECS};
+use common::{ApiError, ApiResultExt, ErrorCode, SOVEREIGN_TIMESTAMP_WINDOW_SECS};
 use serde::{Deserialize, Serialize};
 
 use crate::app::AppState;
@@ -66,13 +66,10 @@ fn rejected(reason: &'static str, did: &str, signing_key: &str) -> ApiError {
 fn unix_timestamp() -> Result<i64, ApiError> {
     let seconds = SystemTime::now()
         .duration_since(UNIX_EPOCH)
-        .map_err(|e| {
-            tracing::error!(error = %e, "system clock is before Unix epoch");
-            ApiError::new(
-                ErrorCode::InternalError,
-                "failed to verify request timestamp",
-            )
-        })?
+        .or_internal_as(
+            "system clock is before Unix epoch",
+            "failed to verify request timestamp",
+        )?
         .as_secs();
     i64::try_from(seconds).map_err(|_| {
         ApiError::new(
@@ -180,15 +177,13 @@ pub async fn create_sovereign_session(
     if !insert_nonce_if_absent(&mut *tx, &request.did, &request.nonce)
         .await
         .map_err(|e| {
-            tracing::error!(error = %e, account_did = %request.did, "failed to consume sovereign nonce");
-            ApiError::new(ErrorCode::InternalError, "failed to create session")
+            {
+                tracing::error!(error = %e, account_did = %request.did, "failed to consume sovereign nonce");
+                ApiError::new(ErrorCode::InternalError, "failed to create session")
+            }
         })?
     {
-        return Err(rejected(
-            "nonce_replay",
-            &request.did,
-            &request.signing_key,
-        ));
+        return Err(rejected("nonce_replay", &request.did, &request.signing_key));
     }
     let issued =
         issue_session_in_transaction(&mut tx, &state, &request.did, &SessionKind::FullAccess)
@@ -227,10 +222,7 @@ mod tests {
     use rand_core::OsRng;
     use serde_json::{json, Value};
     use tower::ServiceExt;
-    use wiremock::{
-        matchers::{method, path},
-        Mock, MockServer, ResponseTemplate,
-    };
+    use wiremock::{matchers::method, Mock, MockServer, ResponseTemplate};
 
     #[test]
     fn server_uses_the_shared_canonical_envelope_vector() {
@@ -261,7 +253,9 @@ mod tests {
     use super::*;
     use crate::app::{app, test_state_with_plc_url, AppState};
     use crate::auth::jwt::{parse_scope, verify_hs256_access_token, AuthScope};
-    use crate::routes::test_utils::body_json;
+    use crate::routes::test_utils::{
+        body_json, mount_owner_audit_log as mount_audit_log, seed_owner_account_with_handle,
+    };
 
     type SignFn = Box<dyn Fn(&[u8]) -> String + Send + Sync>;
 
@@ -310,43 +304,7 @@ mod tests {
     }
 
     async fn seed_account(state: &AppState, did: &str) {
-        sqlx::query(
-            "INSERT INTO accounts (did, email, password_hash, created_at, updated_at) \
-             VALUES (?, 'owner@example.com', NULL, datetime('now'), datetime('now'))",
-        )
-        .bind(did)
-        .execute(&state.db)
-        .await
-        .unwrap();
-        sqlx::query(
-            "INSERT INTO handles (handle, did, created_at) VALUES ('owner.example.com', ?, datetime('now'))",
-        )
-        .bind(did)
-        .execute(&state.db)
-        .await
-        .unwrap();
-    }
-
-    async fn mount_audit_log(server: &MockServer, did: &str, rotation_keys: &[&str]) {
-        let log = json!([{
-            "did": did,
-            "cid": "bafy-current-head",
-            "createdAt": "2026-07-13T00:00:00Z",
-            "nullified": false,
-            "operation": {
-                "type": "plc_operation",
-                "prev": null,
-                "rotationKeys": rotation_keys,
-                "verificationMethods": {},
-                "alsoKnownAs": ["at://owner.example.com"],
-                "services": {}
-            }
-        }]);
-        Mock::given(method("GET"))
-            .and(path(format!("/{did}/log/audit")))
-            .respond_with(ResponseTemplate::new(200).set_body_json(log))
-            .mount(server)
-            .await;
+        seed_owner_account_with_handle(&state.db, did).await;
     }
 
     fn now() -> i64 {

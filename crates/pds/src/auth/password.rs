@@ -7,7 +7,7 @@ use argon2::{
     Argon2, PasswordHash, PasswordHasher, PasswordVerifier,
 };
 
-use common::{ApiError, ErrorCode};
+use common::{ApiError, ApiResultExt, ErrorCode};
 
 /// Outcome of verifying a password against a stored hash.
 ///
@@ -46,10 +46,7 @@ pub(crate) fn hash_password(password: &str) -> Result<String, ApiError> {
     Argon2::default()
         .hash_password(password.as_bytes(), &salt)
         .map(|h| h.to_string())
-        .map_err(|e| {
-            tracing::error!(error = %e, "argon2id hashing failed");
-            ApiError::new(ErrorCode::InternalError, "failed to process password")
-        })
+        .or_internal_as("argon2id hashing failed", "failed to process password")
 }
 
 /// What a newly created account's `accounts.password_hash` column will become — decided from the

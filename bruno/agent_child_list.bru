@@ -16,4 +16,9 @@ auth:bearer {
 
 docs {
   Lists sovereign child identities provisioned by the authenticated local parent account.
+
+  Each entry carries `registrationId`, `did`, `handle`, `status`, `createdAt`, and the child's
+  granted `scopes`. A child whose deletion has been scheduled also carries `deleteAfter`, the
+  instant the reaper purges it — deleting a child revokes it as a side effect, so `status` alone
+  cannot distinguish a retired child from a merely revoked one.
 }

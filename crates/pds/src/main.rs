@@ -6,8 +6,10 @@ use reqwest::Client;
 use std::{path::PathBuf, sync::Arc};
 
 mod account_delete;
+mod account_genesis;
 mod account_reaper;
 mod admin_nonce_sweep;
+mod agent_child_core;
 mod agent_claim_sweep;
 mod app;
 mod auth;
@@ -47,7 +49,13 @@ mod rewrap;
 mod routes;
 mod session_issuer;
 mod sovereign_session_nonce_sweep;
+mod space_jti_sweep;
+mod space_notify;
+mod space_oplog_sweep;
+mod space_record_write;
+mod space_uri;
 mod state;
+mod sweep;
 mod sweep_status;
 mod telemetry;
 mod time;
@@ -597,6 +605,8 @@ async fn run() -> anyhow::Result<()> {
         dpop_nonces: Arc::new(auth::DpopNonceRotator::from_jwt_secret(&jwt_secret)),
         poll_tracker: auth::new_claim_poll_tracker(),
         permission_set_cache: auth::new_permission_set_cache(),
+        space_type_cache: auth::new_space_type_cache(),
+        did_document_cache: identity::resolution::new_did_document_cache(),
         failed_login_attempts: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
         firehose,
         crawlers,
@@ -776,6 +786,33 @@ async fn run() -> anyhow::Result<()> {
         max_age_secs = sovereign_session_nonce_sweep::MAX_AGE_SECS,
         "sovereign-session nonce retention sweep started"
     );
+
+    // Spawn the two space retention sweeps only while the spaces surface is enabled —
+    // disabled, no route can write the tables they reclaim, and their `null` rows in the
+    // health readout then read as "not configured", like the blob mirror's. Rows already
+    // stored keep their data; only reclamation pauses with the surface.
+    let _space_sweeps = if state.config.spaces.enabled {
+        // The jti retention sweep: the (scope, jti) primary key enforces anti-replay; each
+        // row's expires_at carries its own token's acceptance horizon, so the sweep only
+        // bounds storage growth.
+        let jti = space_jti_sweep::spawn_space_jti_sweep(state.clone());
+        tracing::info!(
+            interval_secs = space_jti_sweep::SWEEP_INTERVAL.as_secs(),
+            "space jti retention sweep started"
+        );
+
+        // The permissioned-repo oplog compaction sweep. The oplog is droppable by spec;
+        // this bounds it to a backfill window, and a syncer further behind heals via getRepo.
+        let oplog = space_oplog_sweep::spawn_space_oplog_sweep(state.clone());
+        tracing::info!(
+            interval_secs = space_oplog_sweep::SWEEP_INTERVAL.as_secs(),
+            retention_secs = space_oplog_sweep::OPLOG_RETENTION_SECS,
+            "space oplog compaction sweep started"
+        );
+        Some((jti, oplog))
+    } else {
+        None
+    };
 
     // Spawn the Iroh accept loop when the tunnel is enabled. Like the blob GC it is detached
     // and runs for the life of the endpoint; closing the endpoint at shutdown ends the loop.

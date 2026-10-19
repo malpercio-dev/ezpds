@@ -29,6 +29,8 @@ pub(crate) enum AgentAuditEventType {
     BlobUpload,
     /// The identity was revoked by the account owner.
     Revoked,
+    /// A sovereign child's `identity_assertion` was renewed by its parent.
+    AssertionReminted,
 }
 
 impl AgentAuditEventType {
@@ -42,6 +44,7 @@ impl AgentAuditEventType {
             AgentAuditEventType::RepoWrite => "repo_write",
             AgentAuditEventType::BlobUpload => "blob_upload",
             AgentAuditEventType::Revoked => "revoked",
+            AgentAuditEventType::AssertionReminted => "assertion_reminted",
         }
     }
 }
@@ -89,9 +92,7 @@ where
         tracing::error!(
             registration_id = %registration_id,
             event_type = %event_type.as_str(),
-            error = %e,
-            "DB error inserting agent audit event"
-        );
+            error = %e, "DB error inserting agent audit event");
         ApiError::new(ErrorCode::InternalError, "failed to record audit event")
     })?;
     Ok(())
@@ -106,23 +107,24 @@ pub(crate) async fn list_agent_audit_events(
     limit: i64,
 ) -> Result<Vec<AgentAuditEventRow>, ApiError> {
     type AuditSqlRow = (i64, String, Option<String>, String, Option<String>, String);
-    let rows: Vec<AuditSqlRow> =
-        sqlx::query_as(
-            "SELECT rowid, id, did, event_type, detail, created_at \
+    let rows: Vec<AuditSqlRow> = sqlx::query_as(
+        "SELECT rowid, id, did, event_type, detail, created_at \
              FROM agent_audit_events \
              WHERE registration_id = ? AND (? IS NULL OR rowid < ?) \
              ORDER BY rowid DESC LIMIT ?",
-        )
-        .bind(registration_id)
-        .bind(before_seq)
-        .bind(before_seq)
-        .bind(limit)
-        .fetch_all(db)
-        .await
-        .map_err(|e| {
+    )
+    .bind(registration_id)
+    .bind(before_seq)
+    .bind(before_seq)
+    .bind(limit)
+    .fetch_all(db)
+    .await
+    .map_err(|e| {
+        {
             tracing::error!(registration_id = %registration_id, error = %e, "DB error listing agent audit events");
             ApiError::new(ErrorCode::InternalError, "failed to list audit events")
-        })?;
+        }
+    })?;
 
     Ok(rows
         .into_iter()
@@ -143,19 +145,8 @@ pub(crate) async fn list_agent_audit_events(
 mod tests {
     use super::*;
     use crate::app::test_state;
+    use crate::db::accounts::insert_bare_account as seed_account;
     use crate::db::agent_auth::{self, NewAgentIdentity, RegistrationType};
-
-    async fn seed_account(db: &sqlx::SqlitePool, did: &str) {
-        sqlx::query(
-            "INSERT INTO accounts (did, email, password_hash, created_at, updated_at) \
-             VALUES (?, ?, NULL, datetime('now'), datetime('now'))",
-        )
-        .bind(did)
-        .bind(format!("{did}@example.com"))
-        .execute(db)
-        .await
-        .expect("seed account");
-    }
 
     async fn seed_identity(db: &sqlx::SqlitePool, id: &str) {
         agent_auth::insert_agent_identity(
@@ -174,6 +165,7 @@ mod tests {
                 pre_claim_scopes: None,
                 claim_token: None,
                 claim_token_expires_at: None,
+                handle_hint: None,
             },
         )
         .await

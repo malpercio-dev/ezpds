@@ -82,10 +82,18 @@ at the agent-registration surface:
     "identity_types_supported": ["anonymous", "identity_assertion", "service_auth"],
     "identity_assertion": {
       "assertion_types_supported": ["urn:ietf:params:oauth:token-type:id-jag"]
-    }
+    },
+    "events_supported": [
+      "https://schemas.workos.com/events/agent/auth/identity/assertion/revoked"
+    ],
+    "child_provisioning": true
   }
 }
 ```
+
+`events_supported` lists the SET event types the `events_endpoint` accepts (§7);
+`child_provisioning` advertises that a claim ceremony can mint the agent an account
+of its own (§3.5).
 
 > **The full auth.md surface is live here.** This metadata declares the whole
 > auth.md surface, and on this deployment every part of it is implemented: the
@@ -136,7 +144,7 @@ The server verifies the ID-JAG's signature, `iss` (must be on the trust list),
     "registration_type": "identity_assertion",
     "identity_assertion": "<service-signed JWT>",
     "assertion_expires": "2026-01-01T00:00:00.000Z",
-    "scopes": ["atproto", "blob:*/*", "repo:*?action=create&action=update"]
+    "scopes": ["atproto", "blob:*/*", "repo:*?action=create&action=update", "repo:*?action=delete", "rpc:*?aud=did:web:api.bsky.app"]
   }
   ```
 
@@ -199,9 +207,15 @@ POST {{public_url}}/agent/identity
 Content-Type: application/json
 
 {
-  "type": "anonymous"
+  "type": "anonymous",
+  "handle_hint": "scribe.example.com"
 }
 ```
+
+`handle_hint` is optional. Send it if you would rather end up with an **account of your
+own** than a credential to act as the user (§3.5); the user sees it on the approval screen
+as an editable suggestion. It is checked for handle shape only — the user may change it,
+and nothing is reserved until they confirm.
 
 **200:**
 
@@ -211,7 +225,7 @@ Content-Type: application/json
   "registration_type": "anonymous",
   "identity_assertion": "<service-signed pre-claim assertion>",
   "assertion_expires": "2026-01-01T01:00:00.000Z",
-  "scopes": ["atproto", "repo:*?action=create&action=update", "blob:*/*"],
+  "scopes": ["atproto", "repo:*?action=create&action=update", "repo:*?action=delete", "blob:*/*", "rpc:*?aud=did:web:api.bsky.app"],
   "claim_token": "clm_…"
 }
 ```
@@ -285,7 +299,7 @@ polling faster than the `interval` answers `slow_down` (back off before retrying
   "access_token": "<Bearer token>",
   "token_type": "Bearer",
   "expires_in": 300,
-  "scope": "atproto blob:*/* repo:*?action=create&action=update",
+  "scope": "atproto blob:*/* repo:*?action=create&action=update repo:*?action=delete rpc:*?aud=did:web:api.bsky.app",
   "identity_assertion": "<service-signed identity_assertion>",
   "assertion_expires": "2026-01-01T01:00:00.000Z"
 }
@@ -294,6 +308,30 @@ polling faster than the `interval` answers `slow_down` (back off before retrying
 The response carries both a live access token (usable immediately — §5) and the
 minted `identity_assertion`: store the assertion and re-exchange it per §4 when
 the access token expires.
+
+### 3.5 Being given an account of your own
+
+`{{service_name}}` can end an `anonymous` claim ceremony a second way. Instead of
+binding your registration to the confirming user's account, they can have the server
+mint **you** an account — your own `did:plc`, your own repo, your own handle — whose
+rotation authority stays in their wallet. The AS metadata advertises this as
+`agent_auth.child_provisioning`.
+
+**Nothing changes on your side.** Ask for it by sending a `handle_hint` at
+registration (§3.3), then run the ceremony exactly as in §3.4. The user decides; if
+they take this arm, the same claim-grant poll returns the same response shape — the
+Bearer token and `identity_assertion` simply carry *your* DID as their subject instead
+of theirs. Records you write land in your repo, under your handle.
+
+If they take the ordinary arm instead, the credential names their account, as in §3.4.
+Either way you learn which by reading the `sub` of the returned `identity_assertion`
+(or by calling `com.atproto.server.getSession` with the access token). Treat the
+subject as opaque and do not assume it is the confirming user.
+
+Two consequences worth planning for: your account is a real account on this server —
+it can be deactivated, revoked, or deleted by the user who owns it, exactly like the
+credential in §3.4 — and its handle is whatever the user settled on, which may not be
+the `handle_hint` you proposed.
 
 ## 4. Exchange the assertion for an access token
 
@@ -317,14 +355,17 @@ grant_type=urn:ietf:params:oauth:grant-type:jwt-bearer
   "access_token": "<Bearer token>",
   "token_type": "Bearer",
   "expires_in": 300,
-  "scope": "atproto blob:*/* repo:*?action=create&action=update"
+  "scope": "atproto blob:*/* repo:*?action=create&action=update repo:*?action=delete rpc:*?aud=did:web:api.bsky.app"
 }
 ```
 
 The `scope` is a granular AT Protocol scope string — by default a conservative
-least-privilege profile (write to your own repo plus blob uploads; no account or
-identity management). Operators can widen or narrow it via configuration; the
-token grants exactly what the registration was clamped to, never more.
+least-privilege profile (create, edit, and delete records in your own repo, plus blob
+uploads; no account or identity management). Delete is included so an agent can retract
+a mistaken write of its own without an operator; it is carried as its own `repo:` token
+because registrations are clamped by exact token string. Operators can widen or narrow
+the profile via configuration; the token grants exactly what the registration was
+clamped to, never more.
 
 The agent identity must be **claimed** and the assertion `sub` (a DID) must match
 it; an unclaimed or unknown identity returns `invalid_grant`, a revoked identity

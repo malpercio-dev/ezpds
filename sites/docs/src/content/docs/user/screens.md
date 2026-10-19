@@ -112,7 +112,10 @@ Direct-message access is off unless you allow it per credential.
 ## Agents
 
 Agents you have authorized to act on your behalf are listed under **My agents**, each
-with its permissions and full activity record.
+with its permissions and full activity record. You can also give an agent an account of
+its own — one you still control and can recover — so what it does is attributed to the
+agent rather than to you. Any agent can be turned off from here, and an agent with its own
+account can be removed for good.
 
 <figure>
   <img src="/screenshots/wallet/agents.png" alt="Obsign 'My agents' screen showing a connected agent" width="280" />

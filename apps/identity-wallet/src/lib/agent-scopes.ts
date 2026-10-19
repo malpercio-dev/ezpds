@@ -49,6 +49,69 @@ function describeRepo(rest: string): string {
   return `${capitalize(verbs)} ${what}`;
 }
 
+/** `read_self` folds into `read`: the distinction is protocol plumbing, not a user decision. */
+const SPACE_ACTION_VERBS: Record<string, string> = {
+  read: 'read',
+  read_self: 'read',
+  create: 'create',
+  update: 'edit',
+  delete: 'delete',
+};
+
+/**
+ * Describe a `space:` grant (Atproto Spaces — permissioned, non-public data). Mirrors the
+ * server grammar's defaults: no `action` means read/create/edit/delete, no `authority` means
+ * the user's own spaces, `manage` verbs act on the spaces themselves and are called out
+ * separately.
+ */
+function describeSpace(rest: string): string {
+  const [target, query] = rest.split('?', 2);
+  const params = new URLSearchParams(query ?? '');
+  const actions = params.getAll('action');
+  const manage = params.getAll('manage');
+  const authority = params.get('authority') ?? 'self';
+  const verbs = actions.length
+    ? joinWords([...new Set(actions.map((a) => SPACE_ACTION_VERBS[a] ?? a))])
+    : 'read, create, edit, and delete';
+  const kind = target === '*' ? 'private spaces' : `${target} private spaces`;
+  const whose =
+    authority === 'self'
+      ? `your ${kind}`
+      : authority === '*'
+        ? `${kind} run by anyone`
+        : `${kind} run by ${authority}`;
+  let summary = `${capitalize(verbs)} records in ${whose}`;
+  if (manage.length) {
+    summary += ` — and ${joinWords(manage.map((m) => ACTION_VERBS[m] ?? m))} those spaces themselves`;
+  }
+  return summary;
+}
+
+/** Friendly names for the well-known service audiences an `rpc:` grant names. */
+const SERVICE_NAMES: Record<string, string> = {
+  'did:web:api.bsky.app': 'the Bluesky app service',
+  'did:web:api.bsky.chat': 'the Bluesky chat service',
+};
+
+/**
+ * Describe an `rpc:` grant — calling a method on another service, which the PDS answers by
+ * minting service auth signed by this account's own repo key.
+ *
+ * The audience is the containment, so it is named rather than summarized away: a known service
+ * by its plain name, anything else by its literal DID. `aud=*` is the one unbounded case and
+ * says so.
+ */
+function describeRpc(rest: string): string {
+  const [lxm, query] = rest.split('?', 2);
+  const aud = new URLSearchParams(query ?? '').get('aud') ?? '*';
+  // The server matches audiences on the bare DID, so a `#serviceId` fragment never changes what
+  // the grant reaches — strip it before looking up a name.
+  const did = aud.split('#')[0];
+  const where = aud === '*' ? 'ANY service' : (SERVICE_NAMES[did] ?? did);
+  // A wildcard method reads as the service itself; a named one leads with the method.
+  return lxm === '*' ? `Call ${where} on your behalf` : `Call ${lxm} on ${where}`;
+}
+
 function describeBlob(rest: string): string {
   if (rest === '*/*' || rest === '*') return 'Upload files (any type)';
   if (rest === 'image/*') return 'Upload images';
@@ -74,8 +137,11 @@ export function describeScope(token: string): ScopeDescription {
   if (token.startsWith('blob:')) {
     return { summary: describeBlob(token.slice('blob:'.length)), token, elevated: false };
   }
+  if (token.startsWith('space:')) {
+    return { summary: describeSpace(token.slice('space:'.length)), token, elevated: false };
+  }
   if (token.startsWith('rpc:')) {
-    return { summary: 'Call other services on your behalf', token, elevated: false };
+    return { summary: describeRpc(token.slice('rpc:'.length)), token, elevated: false };
   }
   if (token.startsWith('account:')) {
     return { summary: 'Manage your account settings', token, elevated: true };

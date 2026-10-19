@@ -25,6 +25,19 @@
 //!    points against the *authenticated* DID over an hourly and a daily window. Enforced in
 //!    [`crate::record_write::commit_repo_write`] where the verified DID is known (keying on an
 //!    unverified token subject would let anyone drain a victim's budget).
+//! 4. **Per-space-credential** — every credential-authed space request costs 1 point against the
+//!    credential's *verified* DPoP key thumbprint (`cnf.jkt`). Enforced at the credential seam in
+//!    `crate::auth::space` after the proof and replay checks pass, so garbage requests cannot
+//!    drain a holder's budget and re-minting a credential (fresh `jti`, same key) does not reset
+//!    it. Complements the global per-IP cap for the one caller class that legitimately works
+//!    across IPs: a syncer fleet holding one credential.
+//!
+//! 5. **Per-DID signature-mismatch refresh cool-down** — the one limiter that guards an
+//!    *outbound* resource rather than an inbound one. A token whose signature fails against the
+//!    cached DID document force-refreshes that document once to heal a fossil key
+//!    (`identity::resolution::refresh_did_document_after_signature_mismatch`), which by design
+//!    bypasses the TTL-less `did_documents` cache — so a caller replaying one badly-signed token
+//!    buys an upstream plc.directory / did:web fetch per request. Keyed by the token's `iss`.
 //!
 //! All limiters are pure pass-throughs when `[rate_limit] enabled = false` (the test harness sets
 //! this so unit tests are never throttled).
@@ -48,6 +61,11 @@ use crate::auth::rate_limit::{MultiWindowLimiter, RateLimitDecision, Window};
 const FIVE_MIN: Duration = Duration::from_secs(5 * 60);
 const ONE_HOUR: Duration = Duration::from_secs(60 * 60);
 const ONE_DAY: Duration = Duration::from_secs(24 * 60 * 60);
+
+/// How often one DID may force-refresh its document to heal a token signature mismatch. Not a
+/// config knob: it bounds *our* upstream fetches, not a caller's service level, and one refresh
+/// per minute already heals a real key rotation on the next request.
+const DID_REFRESH_COOLDOWN: Duration = Duration::from_secs(60);
 
 /// Point cost of each repo-write action, matching the reference PDS write-point model.
 pub const WRITE_COST_CREATE: u64 = 3;
@@ -82,6 +100,13 @@ pub struct RateLimiterState {
     /// requesting IP (`ip:<addr>`) and the `client_id` (`client:<id>`) keys — a single limiter with
     /// two independent keyspaces, so neither dimension can flood the pending-request table.
     oauth_consent_creation: Mutex<MultiWindowLimiter>,
+    /// Credential-authed space requests, keyed by the credential's verified `cnf.jkt`.
+    space_credential: Mutex<MultiWindowLimiter>,
+    /// Signature-mismatch DID-document force-refreshes, keyed by the token's `iss`. Keyed on an
+    /// *unverified* claim by necessity — the mismatch is what we are reacting to — which is safe
+    /// only because exhausting a DID's budget denies nothing a valid token needs: a valid token
+    /// verifies against the cached document and never reaches this path.
+    did_refresh: Mutex<MultiWindowLimiter>,
 }
 
 impl RateLimiterState {
@@ -180,6 +205,14 @@ impl RateLimiterState {
                 window: FIVE_MIN,
                 max_points: cfg.oauth_consent_create_per_5min,
             }])),
+            space_credential: Mutex::new(MultiWindowLimiter::new([Window {
+                window: FIVE_MIN,
+                max_points: cfg.space_credential_per_5min,
+            }])),
+            did_refresh: Mutex::new(MultiWindowLimiter::new([Window {
+                window: DID_REFRESH_COOLDOWN,
+                max_points: 1,
+            }])),
         }
     }
 
@@ -206,6 +239,48 @@ impl RateLimiterState {
             }
         }
         Ok(())
+    }
+
+    /// Charge one credential-authed space request against the credential's bound DPoP key
+    /// thumbprint. Returns [`ErrorCode::RateLimited`] (429, with the standard `Retry-After` /
+    /// `RateLimit-*` headers) when the holder's budget is exhausted. Call only with a *verified*
+    /// `cnf.jkt` — keying on an unverified claim would let anyone drain a holder's budget. A
+    /// no-op when rate limiting is disabled.
+    pub fn check_space_credential(&self, jkt: &str) -> Result<(), ApiError> {
+        if !self.enabled {
+            return Ok(());
+        }
+        let decision = lock(&self.space_credential).check(jkt, 1, Instant::now());
+        if decision.allowed {
+            Ok(())
+        } else {
+            Err(ApiError::new(
+                ErrorCode::RateLimited,
+                "space credential rate limit exceeded; slow down and retry later",
+            )
+            .with_header("retry-after", decision.reset_after_secs.to_string())
+            .with_header("ratelimit-limit", decision.limit.to_string())
+            .with_header("ratelimit-remaining", decision.remaining.to_string())
+            .with_header("ratelimit-reset", decision.reset_after_secs.to_string()))
+        }
+    }
+
+    /// Whether `did` may force-refresh its DID document now to heal a token signature mismatch,
+    /// consuming the allowance when it may. At most one refresh per [`DID_REFRESH_COOLDOWN`], so a
+    /// caller replaying a badly-signed token cannot turn the cache-bypassing heal into one
+    /// upstream fetch per request.
+    ///
+    /// Returns `bool` rather than an `ApiError`: a suppressed refresh is not a 429 to the caller —
+    /// the cached document was there and the signature did not verify against it, so the caller
+    /// gets that verdict. A no-op (always `true`) when rate limiting is disabled, so the healing
+    /// path stays exercisable in tests.
+    pub fn allow_did_refresh(&self, did: &str) -> bool {
+        if !self.enabled {
+            return true;
+        }
+        lock(&self.did_refresh)
+            .check(did, 1, Instant::now())
+            .allowed
     }
 
     /// Charge `cost` write points to `did`'s repo-write budget. Returns

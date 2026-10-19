@@ -34,36 +34,13 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::app::AppState;
-use crate::auth::guards::{authenticate_account_owner, OwnerAuthError};
+use crate::auth::guards::authenticate_owner;
 use crate::db::recovery_audit::{insert_recovery_audit_event, RecoveryAuditEventType};
 use crate::db::recovery_escrow::{
     delete_escrow_share, escrow_share_exists, insert_escrow_share, null_legacy_recovery_share,
     replace_escrow_share,
 };
-use common::{ApiError, ErrorCode};
-
-/// Authenticate the account owner and map the neutral rejection into this surface's vocabulary.
-/// Mirrors `agents.rs`'s wrapper (routes may not import one another).
-async fn authenticate_owner(
-    headers: &HeaderMap,
-    method: &Method,
-    uri: &Uri,
-    state: &AppState,
-) -> Result<String, ApiError> {
-    authenticate_account_owner(headers, method, uri, state)
-        .await
-        .map_err(|err| match err {
-            OwnerAuthError::Unauthenticated(e) => e,
-            OwnerAuthError::AgentDerived => ApiError::new(
-                ErrorCode::InsufficientScope,
-                "this operation is not available to agent-derived credentials",
-            ),
-            OwnerAuthError::NotFullAccess => ApiError::new(
-                ErrorCode::InvalidToken,
-                "a session or full-access token is required",
-            ),
-        })
-}
+use common::{ApiError, ApiResultExt, ErrorCode};
 
 /// The escrow slot always holds Share 2 — the index reserved for Custos in the 2-of-3 split.
 const ESCROW_SHARE_INDEX: u8 = 2;
@@ -115,10 +92,10 @@ pub async fn put_escrow_share(
             )
         })?;
     let wrapped = crypto::encrypt_secret_bytes(envelope.to_bytes().as_slice(), master_key)
-        .map_err(|e| {
-            tracing::error!(error = %e, "failed to wrap escrow share");
-            ApiError::new(ErrorCode::InternalError, "failed to store escrow share")
-        })?;
+        .or_internal_as(
+            "failed to wrap escrow share",
+            "failed to store escrow share",
+        )?;
 
     let map_err = |e: sqlx::Error| {
         tracing::error!(did = %did, error = %e, "DB error storing escrow share");
@@ -210,6 +187,7 @@ pub async fn delete_escrow_share_handler(
 mod tests {
     use super::*;
     use crate::app::{test_state, AppState};
+    use crate::db::accounts::insert_bare_account as seed_account;
     use crate::routes::test_utils::test_master_key;
     use axum::http::HeaderValue;
     use std::sync::Arc;
@@ -225,18 +203,6 @@ mod tests {
             config: Arc::new(config),
             ..base
         }
-    }
-
-    async fn seed_account(db: &sqlx::SqlitePool, did: &str) {
-        sqlx::query(
-            "INSERT INTO accounts (did, email, password_hash, created_at, updated_at) \
-             VALUES (?, ?, NULL, datetime('now'), datetime('now'))",
-        )
-        .bind(did)
-        .bind(format!("{did}@example.com"))
-        .execute(db)
-        .await
-        .expect("seed account");
     }
 
     /// Insert a wallet session for the DID and return headers bearing its token.

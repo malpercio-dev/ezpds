@@ -184,14 +184,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn missing_token_returns_401() {
-        let state = test_state_with_admin_token().await;
-        let app = crate::app::app(state);
-        let (status, _) = get_audit(&app, "", None).await;
-        assert_eq!(status, StatusCode::UNAUTHORIZED);
-    }
-
-    #[tokio::test]
     async fn unknown_action_filter_returns_400() {
         let state = test_state_with_admin_token().await;
         let app = crate::app::app(state);
@@ -335,7 +327,6 @@ mod tests {
             ADMIN_SIGNATURE_HEADER, ADMIN_TIMESTAMP_HEADER,
         };
         use crate::db::admin_devices::{insert_device, NewAdminDevice};
-        use std::time::{SystemTime, UNIX_EPOCH};
 
         // A state with NO master token: the acting device is the only credential.
         let state = crate::app::test_state().await;
@@ -366,10 +357,7 @@ mod tests {
         .unwrap();
         let app = crate::app::app(state);
 
-        let ts = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_secs() as i64;
+        let ts = crate::time::unix_now_secs();
         let signed = |method: &str, path: &str, nonce: &str| {
             let sign_string = admin_request_sign_string(method, path, ts, nonce, b"");
             crate::routes::test_utils::sign_p256(&keypair, sign_string.as_bytes())

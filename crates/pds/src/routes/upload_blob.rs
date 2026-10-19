@@ -24,7 +24,7 @@ use axum::{
 };
 use serde::Serialize;
 
-use common::{ApiError, ErrorCode};
+use common::{ApiError, ApiResultExt, ErrorCode};
 
 use crate::app::AppState;
 use crate::auth::extractors::AuthenticatedUser;
@@ -145,10 +145,10 @@ pub async fn upload_blob(
     let quota = state.config.blobs.max_storage_per_account as i64;
     let used = blobs::account_storage_bytes(&state.db, did)
         .await
-        .map_err(|e| {
-            tracing::error!(error = %e, "failed to check account storage");
-            ApiError::new(ErrorCode::InternalError, "failed to check storage quota")
-        })?;
+        .or_internal_as(
+            "failed to check account storage",
+            "failed to check storage quota",
+        )?;
     if used + bytes.len() as i64 > quota {
         return Err(ApiError::new(
             ErrorCode::PayloadTooLarge,
@@ -163,10 +163,7 @@ pub async fn upload_blob(
     // 5. Store blob on filesystem (CID computation + write); persist the resolved MIME type.
     let stored = blob_store::store_blob(&state.config.data_dir, &bytes, &mime_type)
         .await
-        .map_err(|e| {
-            tracing::error!(error = %e, "failed to store blob on filesystem");
-            ApiError::new(ErrorCode::InternalError, "failed to store blob")
-        })?;
+        .or_internal_as("failed to store blob on filesystem", "failed to store blob")?;
 
     // 6. Compute temp_until = now + the configured grace TTL. Until a repo record
     //    references this blob, it is a garbage-collection candidate after this instant.
@@ -344,7 +341,7 @@ fn crosses_storage_warning(used_before: i64, used_after: i64, quota: i64) -> boo
 mod tests {
     use super::*;
     use crate::app::test_state;
-    use crate::routes::test_utils::body_json;
+    use crate::routes::test_utils::{body_json, insert_account_with_email};
     use axum::{body::Body, http::Request, routing::post, Router};
     use std::sync::Arc;
     use tower::ServiceExt;
@@ -378,10 +375,7 @@ mod tests {
     fn issue_test_jwt_with_scope(state: &AppState, did: &str, scope: &str) -> String {
         use jsonwebtoken::{encode, Algorithm, EncodingKey, Header};
 
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_secs();
+        let now = crate::time::unix_now_secs() as u64;
         encode(
             &Header::new(Algorithm::HS256),
             &serde_json::json!({
@@ -421,14 +415,7 @@ mod tests {
 
     /// Helper: seed an account for blob uploads.
     async fn seed_account(state: &AppState, did: &str) {
-        sqlx::query(
-            "INSERT INTO accounts (did, email, password_hash, created_at, updated_at) \
-             VALUES (?, 'test@example.com', NULL, datetime('now'), datetime('now'))",
-        )
-        .bind(did)
-        .execute(&state.db)
-        .await
-        .unwrap();
+        insert_account_with_email(&state.db, did, "test@example.com").await;
     }
 
     /// Seed a local active account plus a cached DID document whose `#atproto` key is `kp` — the
@@ -457,10 +444,7 @@ mod tests {
     fn service_auth_token(kp: &crypto::P256Keypair, iss: &str, aud: &str, lxm: &str) -> String {
         let key = *kp.private_key_bytes;
         let signer = repo_engine::CommitSigner::from_bytes(&key).unwrap();
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_secs();
+        let now = crate::time::unix_now_secs() as u64;
         crate::auth::jwt::mint_service_auth_jwt(
             |b| signer.sign(b),
             iss,
@@ -592,25 +576,6 @@ mod tests {
         let detail = events[0].detail.as_deref().unwrap();
         assert!(detail.contains("image/png"), "detail: {detail}");
         assert!(detail.contains("\"size\":10"), "detail: {detail}");
-    }
-
-    /// Unauthenticated request must return 401.
-    #[tokio::test]
-    async fn unauthenticated_returns_401() {
-        let state = test_state().await;
-        let response = app_with_state(state)
-            .oneshot(
-                Request::builder()
-                    .method("POST")
-                    .uri("/xrpc/com.atproto.repo.uploadBlob")
-                    .header("content-type", "application/octet-stream")
-                    .body(Body::from("hello"))
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-
-        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
     }
 
     /// Authenticated upload with known magic bytes returns blob metadata.

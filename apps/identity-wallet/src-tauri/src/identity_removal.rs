@@ -999,7 +999,7 @@ mod tests {
                 "availableUserDomains": [".example.com"],
             }));
         });
-        let pds_client = PdsClient::new_for_test(server.base_url());
+        let pds_client = crate::pds_client::new_for_test(server.base_url());
 
         let result = build_delete_credential(
             &pds_client,
@@ -1031,7 +1031,7 @@ mod tests {
                 "custos": { "version": "0.8.5", "capabilities": ["walletAccountDelete"] },
             }));
         });
-        let pds_client = PdsClient::new_for_test(server.base_url());
+        let pds_client = crate::pds_client::new_for_test(server.base_url());
 
         let credential = build_delete_credential(&pds_client, &server.base_url(), did, None)
             .await
@@ -1078,7 +1078,7 @@ mod tests {
             when.any_request();
             then.status(200).body("{}");
         });
-        let pds_client = PdsClient::new_for_test(server.base_url());
+        let pds_client = crate::pds_client::new_for_test(server.base_url());
 
         let credential = build_delete_credential(
             &pds_client,
@@ -1214,7 +1214,7 @@ mod tests {
             when.any_request();
             then.status(200).body("{}");
         });
-        let pds_client = PdsClient::new_for_test(server.base_url());
+        let pds_client = crate::pds_client::new_for_test(server.base_url());
 
         let cid = retire_and_wipe(&pds_client, "did:web:example.com")
             .await
@@ -1244,7 +1244,7 @@ mod tests {
             when.any_request();
             then.status(200).body("{}");
         });
-        let pds_client = PdsClient::new_for_test(server.base_url());
+        let pds_client = crate::pds_client::new_for_test(server.base_url());
 
         let cid = retire_and_wipe(&pds_client, "did:web:example.com")
             .await
@@ -1266,7 +1266,7 @@ mod tests {
     async fn did_web_retire_is_idempotent_for_an_already_wiped_did() {
         crate::keychain::clear_for_test();
         let server = httpmock::MockServer::start();
-        let pds_client = PdsClient::new_for_test(server.base_url());
+        let pds_client = crate::pds_client::new_for_test(server.base_url());
 
         let cid = retire_and_wipe(&pds_client, "did:web:never.example")
             .await

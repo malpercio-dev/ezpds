@@ -13,9 +13,14 @@
 //!
 //! Assertion checks follow RFC 7523 §3 with the atproto OAuth profile's narrowing: ES256
 //! only, `iss` = `sub` = `client_id`, `aud` = this AS's issuer (the token-endpoint URL is
-//! also accepted — both appear in the wild), `exp` required, and a 30-second clock tolerance
-//! (the reference implementation's zero-tolerance `iat` check is a documented interop trap —
-//! bluesky-social/atproto#4474). The verification key comes from the metadata's inline
+//! also accepted — both appear in the wild), and a 30-second clock tolerance (the reference
+//! implementation's zero-tolerance `iat` check is a documented interop trap —
+//! bluesky-social/atproto#4474). One deliberate divergence from the RFC's letter: `exp` is
+//! validated when present but not required. The reference provider requires only `jti` and
+//! bounds an assertion's life by `maxTokenAge` over `iat` (its own source notes the RFC 7523
+//! non-compliance), so real-world clients mint `iat`-only assertions — attie.ai's logins
+//! failed here for exactly that reason (2026-08-28). An assertion without `exp` must instead
+//! carry a fresh `iat`. The verification key comes from the metadata's inline
 //! `jwks` or its `jwks_uri`; the latter is a client-controlled URL, so it gets the same
 //! transport policy as `client_id` itself (https except loopback, no credentials) and is
 //! fetched with the SSRF-hardened client, which is the actual guard, and cached
@@ -25,7 +30,6 @@
 //! (authorization codes) or rotation-guarded (refresh tokens), so a replayed assertion alone
 //! wins nothing.
 
-use jsonwebtoken::jwk::JwkSet;
 use jsonwebtoken::{Algorithm, DecodingKey, Validation};
 use serde::Deserialize;
 
@@ -40,15 +44,21 @@ pub(super) const CLIENT_ASSERTION_TYPE_JWT_BEARER: &str =
 /// 30 seconds covers real-world drift without meaningfully widening the replay window).
 const CLOCK_TOLERANCE_SECS: u64 = 30;
 
+/// Maximum age of an `exp`-less assertion, measured from its `iat` (the reference provider's
+/// `CLIENT_ASSERTION_MAX_AGE`). Applied on top of [`CLOCK_TOLERANCE_SECS`].
+const IAT_MAX_AGE_SECS: i64 = 60;
+
 #[derive(Debug, Deserialize)]
 struct ClientAssertionClaims {
     iss: String,
     sub: String,
     jti: Option<String>,
+    exp: Option<i64>,
+    iat: Option<i64>,
 }
 
 fn invalid_client(description: impl Into<String>) -> OAuthTokenError {
-    OAuthTokenError::new_owned("invalid_client", description.into())
+    OAuthTokenError::new("invalid_client", description.into())
 }
 
 /// Enforce the client's registered `token_endpoint_auth_method` for a token request.
@@ -120,15 +130,31 @@ async fn verify_private_key_jwt(
 
     let key = resolve_client_key(state, metadata, header.kid.as_deref()).await?;
 
-    let issuer = state.config.public_url.trim_end_matches('/').to_string();
+    let issuer = state.config.issuer().to_string();
     let token_url = format!("{issuer}/oauth/token");
     let mut validation = Validation::new(Algorithm::ES256);
     validation.leeway = CLOCK_TOLERANCE_SECS;
     validation.set_audience(&[issuer, token_url]);
-    validation.set_required_spec_claims(&["exp", "aud"]);
+    validation.set_required_spec_claims(&["aud"]);
 
     let data = jsonwebtoken::decode::<ClientAssertionClaims>(assertion, &key, &validation)
         .map_err(|e| invalid_client(format!("client_assertion rejected: {e}")))?;
+
+    // `exp`, when present, was enforced by the validation above. Without it the assertion
+    // would otherwise never lapse, so `iat` must bound its age instead.
+    if data.claims.exp.is_none() {
+        let iat = data
+            .claims
+            .iat
+            .ok_or_else(|| invalid_client("client_assertion must carry exp or iat"))?;
+        let now = crate::time::unix_now_secs();
+        if iat > now + CLOCK_TOLERANCE_SECS as i64 {
+            return Err(invalid_client("client_assertion iat is in the future"));
+        }
+        if now > iat + IAT_MAX_AGE_SECS + CLOCK_TOLERANCE_SECS as i64 {
+            return Err(invalid_client("client_assertion without exp is too old"));
+        }
+    }
 
     if data.claims.iss != client_id || data.claims.sub != client_id {
         return Err(invalid_client(
@@ -141,71 +167,34 @@ async fn verify_private_key_jwt(
     Ok(())
 }
 
-/// Resolve the client's assertion-verification key from its metadata: the inline `jwks`
-/// first, else a policy-checked, cached fetch of `jwks_uri` via the SSRF-hardened client.
+/// Resolve the client's assertion-verification key from its metadata.
+///
+/// The inline-`jwks`/`jwks_uri` resolution — including the `jwks_uri` transport policy and the
+/// cached, SSRF-hardened fetch — is shared with Atproto Spaces client attestations; see
+/// [`crate::auth::jwks::client_verification_key`].
 async fn resolve_client_key(
     state: &AppState,
     metadata: &ClientMetadata,
     kid: Option<&str>,
 ) -> Result<DecodingKey, OAuthTokenError> {
-    if let Some(jwks) = &metadata.jwks {
-        let set: JwkSet = serde_json::from_value(jwks.clone())
-            .map_err(|_| invalid_client("client metadata jwks is not a valid JWK set"))?;
-        return select_key(&set, kid);
-    }
-    if let Some(url) = &metadata.jwks_uri {
-        let parsed = url::Url::parse(url)
-            .map_err(|_| invalid_client("client metadata jwks_uri is not a valid URL"))?;
-        // The URL comes from a client-authored document, so it gets exactly the transport
-        // policy client_id resolution uses: https, no credentials — with loopback as the one
-        // place plain http is acceptable. Holding `jwks_uri` to a stricter rule than the
-        // `client_id` it was fetched from would make a loopback development client
-        // (explicitly supported by the spec, and by `oauth_client_resolution`) unable to
-        // publish its keys by URL at all.
-        //
-        // The scheme check is not the SSRF control and never was: that is the hardened
-        // client's connect-time resolver, which refuses loopback and private addresses in
-        // production regardless of what this allows.
-        if !parsed.username().is_empty() || parsed.password().is_some() {
-            return Err(invalid_client(
-                "client metadata jwks_uri must carry no credentials",
-            ));
+    crate::auth::jwks::client_verification_key(
+        &state.oauth_client_jwks_cache,
+        metadata.jwks.as_ref(),
+        metadata.jwks_uri.as_deref(),
+        kid,
+    )
+    .await
+    .map_err(|e| {
+        if metadata.jwks.is_none() && metadata.jwks_uri.is_none() {
+            return invalid_client(
+                "client metadata declares private_key_jwt but provides neither jwks nor jwks_uri",
+            );
         }
-        if parsed.scheme() != "https" && !crate::auth::oauth_client_resolution::url_is_loopback(url)
-        {
-            return Err(invalid_client(
-                "client metadata jwks_uri must be an https URL",
-            ));
+        if let Some(uri) = &metadata.jwks_uri {
+            tracing::debug!(jwks_uri = uri, error = %e, "failed to resolve client jwks_uri");
         }
-        // Cached (own TTL + refetch cooldown from `[oauth]`, fetched via the SSRF-hardened
-        // client) rather than fetched on every token request — see `auth::jwks`'s module doc.
-        return state
-            .oauth_client_jwks_cache
-            .decoding_key(url, kid)
-            .await
-            .map_err(|e| {
-                tracing::error!(jwks_uri = url, error = %e, "failed to resolve client jwks_uri");
-                invalid_client(format!("failed to fetch client jwks_uri: {e}"))
-            })?
-            .ok_or_else(|| invalid_client("no matching key in the client's JWK set"));
-    }
-    Err(invalid_client(
-        "client metadata declares private_key_jwt but provides neither jwks nor jwks_uri",
-    ))
-}
-
-fn select_key(set: &JwkSet, kid: Option<&str>) -> Result<DecodingKey, OAuthTokenError> {
-    let jwk = match kid {
-        Some(kid) => set
-            .keys
-            .iter()
-            .find(|k| k.common.key_id.as_deref() == Some(kid)),
-        // No kid on the assertion: unambiguous only when the set holds exactly one key.
-        None if set.keys.len() == 1 => set.keys.first(),
-        None => None,
-    }
-    .ok_or_else(|| invalid_client("no matching key in the client's JWK set"))?;
-    DecodingKey::from_jwk(jwk).map_err(|_| invalid_client("client JWK is not a usable key"))
+        invalid_client(e)
+    })
 }
 
 #[cfg(test)]
@@ -214,10 +203,10 @@ mod tests {
     use p256::ecdsa::{signature::Signer, Signature, SigningKey};
     use rand_core::OsRng;
 
-    use super::super::test_support::{dpop_key_to_jwk, now_secs};
     use super::*;
     use crate::app::{test_state, AppState};
     use crate::db::oauth::upsert_oauth_client;
+    use crate::routes::test_utils::ec_jwk;
 
     const CLIENT_ID: &str = "https://app.example.com/client-metadata.json";
 
@@ -228,7 +217,7 @@ mod tests {
     }
 
     fn jwk_with_kid(key: &SigningKey, kid: &str) -> serde_json::Value {
-        let mut jwk = dpop_key_to_jwk(key);
+        let mut jwk = ec_jwk(key);
         jwk["kid"] = serde_json::Value::String(kid.to_string());
         jwk
     }
@@ -257,10 +246,24 @@ mod tests {
             "iss": iss_sub,
             "sub": iss_sub,
             "aud": "https://test.example.com",
-            "iat": now_secs(),
-            "exp": now_secs() + 60,
+            "iat": crate::time::unix_now_secs(),
+            "exp": crate::time::unix_now_secs() + 60,
             "jti": "assertion-jti-1",
         })
+    }
+
+    /// Authenticate `assertion` for [`CLIENT_ID`] and assert it is refused as `invalid_client` —
+    /// the shape every rejected-assertion test in this module ends with.
+    async fn expect_invalid_client(state: &AppState, assertion: &str) {
+        let err = authenticate_token_client(
+            state,
+            CLIENT_ID,
+            Some(CLIENT_ASSERTION_TYPE_JWT_BEARER),
+            Some(assertion),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(err.error, "invalid_client");
     }
 
     #[tokio::test]
@@ -305,15 +308,7 @@ mod tests {
         .await;
         let key = SigningKey::random(&mut OsRng);
         let assertion = sign_assertion(&key, "k1", valid_claims(CLIENT_ID));
-        let err = authenticate_token_client(
-            &state,
-            CLIENT_ID,
-            Some(CLIENT_ASSERTION_TYPE_JWT_BEARER),
-            Some(&assertion),
-        )
-        .await
-        .unwrap_err();
-        assert_eq!(err.error, "invalid_client");
+        expect_invalid_client(&state, &assertion).await;
     }
 
     #[tokio::test]
@@ -352,15 +347,7 @@ mod tests {
         seed_client(&state, confidential_metadata(&registered)).await;
         let imposter = SigningKey::random(&mut OsRng);
         let assertion = sign_assertion(&imposter, "k1", valid_claims(CLIENT_ID));
-        let err = authenticate_token_client(
-            &state,
-            CLIENT_ID,
-            Some(CLIENT_ASSERTION_TYPE_JWT_BEARER),
-            Some(&assertion),
-        )
-        .await
-        .unwrap_err();
-        assert_eq!(err.error, "invalid_client");
+        expect_invalid_client(&state, &assertion).await;
     }
 
     #[tokio::test]
@@ -369,15 +356,7 @@ mod tests {
         let key = SigningKey::random(&mut OsRng);
         seed_client(&state, confidential_metadata(&key)).await;
         let assertion = sign_assertion(&key, "k1", valid_claims("https://other.example/meta.json"));
-        let err = authenticate_token_client(
-            &state,
-            CLIENT_ID,
-            Some(CLIENT_ASSERTION_TYPE_JWT_BEARER),
-            Some(&assertion),
-        )
-        .await
-        .unwrap_err();
-        assert_eq!(err.error, "invalid_client");
+        expect_invalid_client(&state, &assertion).await;
     }
 
     #[tokio::test]
@@ -388,22 +367,14 @@ mod tests {
 
         // Expired well beyond the 30s tolerance: rejected.
         let mut claims = valid_claims(CLIENT_ID);
-        claims["exp"] = serde_json::json!(now_secs() - 120);
+        claims["exp"] = serde_json::json!(crate::time::unix_now_secs() - 120);
         let assertion = sign_assertion(&key, "k1", claims);
-        let err = authenticate_token_client(
-            &state,
-            CLIENT_ID,
-            Some(CLIENT_ASSERTION_TYPE_JWT_BEARER),
-            Some(&assertion),
-        )
-        .await
-        .unwrap_err();
-        assert_eq!(err.error, "invalid_client");
+        expect_invalid_client(&state, &assertion).await;
 
         // Expired 10s ago: inside the 30s clock tolerance, accepted (interop with clients
         // whose clocks drift — the reference's zero-tolerance check is a known trap).
         let mut claims = valid_claims(CLIENT_ID);
-        claims["exp"] = serde_json::json!(now_secs() - 10);
+        claims["exp"] = serde_json::json!(crate::time::unix_now_secs() - 10);
         let assertion = sign_assertion(&key, "k1", claims);
         authenticate_token_client(
             &state,
@@ -413,6 +384,52 @@ mod tests {
         )
         .await
         .expect("small clock skew must be tolerated");
+    }
+
+    /// The interop case that broke attie.ai: the reference provider never requires `exp`
+    /// (only `jti`, with a max age over `iat`), so real-world confidential clients mint
+    /// `iat`-only assertions. Those must authenticate while fresh.
+    #[tokio::test]
+    async fn assertion_without_exp_is_accepted_while_iat_is_fresh() {
+        let state = test_state().await;
+        let key = SigningKey::random(&mut OsRng);
+        seed_client(&state, confidential_metadata(&key)).await;
+
+        let mut claims = valid_claims(CLIENT_ID);
+        claims.as_object_mut().unwrap().remove("exp");
+        let assertion = sign_assertion(&key, "k1", claims);
+        authenticate_token_client(
+            &state,
+            CLIENT_ID,
+            Some(CLIENT_ASSERTION_TYPE_JWT_BEARER),
+            Some(&assertion),
+        )
+        .await
+        .expect("an exp-less assertion with a fresh iat must authenticate");
+    }
+
+    /// Without `exp` the `iat` bound is the only thing keeping the assertion from being
+    /// replayable forever, so a stale one — and one carrying neither claim — must be refused.
+    #[tokio::test]
+    async fn assertion_without_exp_needs_a_fresh_iat() {
+        let state = test_state().await;
+        let key = SigningKey::random(&mut OsRng);
+        seed_client(&state, confidential_metadata(&key)).await;
+
+        // Stale: iat beyond the 60s max age + 30s tolerance.
+        let mut claims = valid_claims(CLIENT_ID);
+        claims.as_object_mut().unwrap().remove("exp");
+        claims["iat"] = serde_json::json!(crate::time::unix_now_secs() - 120);
+        let assertion = sign_assertion(&key, "k1", claims);
+        expect_invalid_client(&state, &assertion).await;
+
+        // Neither exp nor iat: nothing bounds the assertion's life at all.
+        let mut claims = valid_claims(CLIENT_ID);
+        let obj = claims.as_object_mut().unwrap();
+        obj.remove("exp");
+        obj.remove("iat");
+        let assertion = sign_assertion(&key, "k1", claims);
+        expect_invalid_client(&state, &assertion).await;
     }
 
     /// The `jwks_uri` branch: a client that publishes its keys at a URL rather than inline.
@@ -524,15 +541,7 @@ mod tests {
         )
         .await;
         let assertion = sign_assertion(&key, "k1", valid_claims(CLIENT_ID));
-        let err = authenticate_token_client(
-            &state,
-            CLIENT_ID,
-            Some(CLIENT_ASSERTION_TYPE_JWT_BEARER),
-            Some(&assertion),
-        )
-        .await
-        .unwrap_err();
-        assert_eq!(err.error, "invalid_client");
+        expect_invalid_client(&state, &assertion).await;
     }
 
     /// A confidential client that publishes neither `jwks` nor `jwks_uri` has given the server
@@ -551,15 +560,7 @@ mod tests {
         )
         .await;
         let assertion = sign_assertion(&key, "k1", valid_claims(CLIENT_ID));
-        let err = authenticate_token_client(
-            &state,
-            CLIENT_ID,
-            Some(CLIENT_ASSERTION_TYPE_JWT_BEARER),
-            Some(&assertion),
-        )
-        .await
-        .unwrap_err();
-        assert_eq!(err.error, "invalid_client");
+        expect_invalid_client(&state, &assertion).await;
     }
 
     /// RFC 7523 requires the assertion to be presented under its own type identifier; a client

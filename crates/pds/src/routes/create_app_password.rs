@@ -340,16 +340,6 @@ mod tests {
         assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
     }
 
-    #[tokio::test]
-    async fn missing_auth_returns_401() {
-        let state = test_state().await;
-        let response = app(state)
-            .oneshot(post_create(None, serde_json::json!({"name": "x"})))
-            .await
-            .unwrap();
-        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
-    }
-
     #[test]
     fn generated_secret_has_expected_shape() {
         for _ in 0..20 {

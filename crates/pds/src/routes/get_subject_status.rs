@@ -24,8 +24,8 @@ use common::{ApiError, ErrorCode};
 
 use crate::app::AppState;
 use crate::auth::guards::require_admin;
-use crate::auth::validation::is_valid_did;
 use crate::db::accounts::{get_repo_status, AccountLifecycle};
+use crate::identity::did::is_valid_did;
 use crate::routes::admin_subject_defs::{RepoRefView, StatusAttrView};
 
 #[derive(Deserialize)]
@@ -66,8 +66,11 @@ pub async fn get_subject_status(
     let row = get_repo_status(&state.db, &params.did)
         .await
         .map_err(|e| {
-            tracing::error!(error = %e, did = %params.did, "failed to query subject status");
-            ApiError::new(ErrorCode::InternalError, "failed to get subject status").into_response()
+            {
+                tracing::error!(error = %e, did = %params.did, "failed to query subject status");
+                ApiError::new(ErrorCode::InternalError, "failed to get subject status")
+            }
+            .into_response()
         })?
         .ok_or_else(|| {
             ApiError::new(ErrorCode::NotFound, "subject account not found").into_response()
@@ -95,19 +98,9 @@ mod tests {
     use tower::ServiceExt;
 
     use crate::app::app;
-    use crate::routes::test_utils::{body_json, test_state_with_admin_token};
-
-    async fn insert_account(db: &sqlx::SqlitePool, did: &str, email: &str) {
-        sqlx::query(
-            "INSERT INTO accounts (did, email, password_hash, created_at, updated_at) \
-             VALUES (?, ?, NULL, datetime('now'), datetime('now'))",
-        )
-        .bind(did)
-        .bind(email)
-        .execute(db)
-        .await
-        .unwrap();
-    }
+    use crate::routes::test_utils::{
+        body_json, insert_account_with_email as insert_account, test_state_with_admin_token,
+    };
 
     fn request(did: &str, bearer: Option<&str>) -> Request<Body> {
         let mut builder = Request::builder().method("GET").uri(format!(
@@ -152,27 +145,8 @@ mod tests {
         assert_eq!(body_json(response).await["takedown"]["applied"], true);
     }
 
-    #[tokio::test]
-    async fn unknown_did_returns_404() {
-        let state = test_state_with_admin_token().await;
-
-        let response = app(state)
-            .oneshot(request("did:plc:gsstdghost", Some("test-admin-token")))
-            .await
-            .unwrap();
-        assert_eq!(response.status(), StatusCode::NOT_FOUND);
-    }
-
-    #[tokio::test]
-    async fn invalid_did_returns_400() {
-        let state = test_state_with_admin_token().await;
-
-        let response = app(state)
-            .oneshot(request("not-a-did", Some("test-admin-token")))
-            .await
-            .unwrap();
-        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
-    }
+    // Unknown-DID → 404 is covered by contract_tests::unknown_did_returns_404's
+    // UNKNOWN_DID_ROUTES table.
 
     #[tokio::test]
     async fn without_admin_auth_returns_401() {

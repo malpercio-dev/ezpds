@@ -37,7 +37,7 @@ use axum::{
     http::StatusCode,
     response::{IntoResponse, Json, Response},
 };
-use common::{ApiError, ErrorCode, SOVEREIGN_TIMESTAMP_WINDOW_SECS};
+use common::{ApiError, ApiResultExt, ErrorCode, SOVEREIGN_TIMESTAMP_WINDOW_SECS};
 use serde::{Deserialize, Serialize};
 
 use crate::app::AppState;
@@ -280,23 +280,16 @@ async fn hint_binds_account(
     did: &str,
     authority: &AuthoritySet,
 ) -> Result<bool, ApiError> {
-    if hint.starts_with("did:") {
-        return Ok(hint == did);
+    match crate::identity::handle::normalize_login_hint(hint) {
+        Some(crate::identity::handle::LoginHint::Did(hint_did)) => Ok(hint_did == did),
+        Some(crate::identity::handle::LoginHint::Handle(handle)) => {
+            if !authority.asserts_handle(&handle) {
+                return Ok(false);
+            }
+            Ok(resolve_handle_to_did(state, &handle).await?.as_deref() == Some(did))
+        }
+        None => Ok(false),
     }
-
-    let handle = hint.strip_prefix("at://").unwrap_or(hint);
-    let handle = handle
-        .strip_prefix('@')
-        .unwrap_or(handle)
-        .to_ascii_lowercase();
-
-    if crate::identity::handle::validate_handle_structure(&handle).is_err() {
-        return Ok(false);
-    }
-    if !authority.asserts_handle(&handle) {
-        return Ok(false);
-    }
-    Ok(resolve_handle_to_did(state, &handle).await?.as_deref() == Some(did))
 }
 
 /// `POST /oauth/authorize/approve` — verify a device-key-signed approve/deny envelope against the
@@ -401,10 +394,10 @@ pub async fn post_authorization_approve(
 
     // 7. Terminate the request and audit it in one transaction. The guarded UPDATE is the single-use
     //    point: a replayed envelope lands on an already-terminal row and wins nothing.
-    let mut tx = state.db.begin().await.map_err(|e| {
-        tracing::error!(error = %e, "failed to begin consent approval transaction");
-        ApiError::new(ErrorCode::InternalError, "failed to record decision")
-    })?;
+    let mut tx = state.db.begin().await.or_internal_as(
+        "failed to begin consent approval transaction",
+        "failed to record decision",
+    )?;
     let won = if approve {
         approve_pending_authorization(&mut *tx, &request.request_id, &request.did, &stored_scope)
             .await?
@@ -438,10 +431,10 @@ pub async fn post_authorization_approve(
         Some(&detail),
     )
     .await?;
-    tx.commit().await.map_err(|e| {
-        tracing::error!(error = %e, "failed to commit consent approval transaction");
-        ApiError::new(ErrorCode::InternalError, "failed to record decision")
-    })?;
+    tx.commit().await.or_internal_as(
+        "failed to commit consent approval transaction",
+        "failed to record decision",
+    )?;
 
     tracing::info!(
         account_did = %request.did,
@@ -463,6 +456,17 @@ pub struct CompleteForm {
     request_id: String,
 }
 
+/// The shared error page for every way `post_authorization_complete` can fail after the
+/// `approved → completed` transition starts (begin, code insert, or commit) — all three leave
+/// the request retryable, so all three tell the user the same thing.
+fn issuance_failed_page() -> Response {
+    error_page(
+        "Server Error",
+        "Failed to issue the authorization code. Please try again.",
+    )
+    .into_response()
+}
+
 /// `POST /oauth/authorize/complete` — the browser exchanges an approved request for an
 /// authorization code and is redirected back to the client. The guarded `approved → completed`
 /// transition mints at most one code; a no-JS "I've approved — continue" button and the page's JS
@@ -471,7 +475,7 @@ pub async fn post_authorization_complete(
     State(state): State<AppState>,
     Form(form): Form<CompleteForm>,
 ) -> Response {
-    let issuer = state.config.public_url.trim_end_matches('/').to_string();
+    let issuer = state.config.issuer().to_string();
 
     // The guarded transition, authorization-code insert, and completion audit share one transaction:
     // a failed code insert rolls the `approved → completed` transition back, so the request stays
@@ -481,11 +485,7 @@ pub async fn post_authorization_complete(
         Ok(tx) => tx,
         Err(e) => {
             tracing::error!(error = %e, "failed to begin consent completion transaction");
-            return error_page(
-                "Server Error",
-                "Failed to issue the authorization code. Please try again.",
-            )
-            .into_response();
+            return issuance_failed_page();
         }
     };
 
@@ -517,11 +517,7 @@ pub async fn post_authorization_complete(
     .await
     {
         tracing::error!(error = %e, "failed to store authorization code for wallet consent");
-        return error_page(
-            "Server Error",
-            "Failed to issue the authorization code. Please try again.",
-        )
-        .into_response();
+        return issuance_failed_page();
     }
 
     if let Err(e) = insert_oauth_consent_audit_event(
@@ -540,11 +536,7 @@ pub async fn post_authorization_complete(
 
     if let Err(e) = tx.commit().await {
         tracing::error!(error = %e, "failed to commit consent completion transaction");
-        return error_page(
-            "Server Error",
-            "Failed to issue the authorization code. Please try again.",
-        )
-        .into_response();
+        return issuance_failed_page();
     }
 
     // Answer in the response mode the client asked for at PAR/authorize time (carried on
@@ -582,6 +574,7 @@ mod tests {
     use crate::app::{app, test_state_with_plc_url, AppState};
     use crate::db::oauth::register_oauth_client;
     use crate::db::pending_oauth_authorizations::NewPendingOAuthAuthorization;
+    use crate::routes::test_utils;
 
     const CLIENT_ID: &str = "https://app.example.com/client-metadata.json";
     const CLIENT_METADATA: &str =
@@ -615,21 +608,7 @@ mod tests {
         register_oauth_client(&state.db, CLIENT_ID, CLIENT_METADATA)
             .await
             .unwrap();
-        sqlx::query(
-            "INSERT INTO accounts (did, email, password_hash, created_at, updated_at) \
-             VALUES (?, 'owner@example.com', NULL, datetime('now'), datetime('now'))",
-        )
-        .bind(DID)
-        .execute(&state.db)
-        .await
-        .unwrap();
-        sqlx::query(
-            "INSERT INTO handles (handle, did, created_at) VALUES ('owner.example.com', ?, datetime('now'))",
-        )
-        .bind(DID)
-        .execute(&state.db)
-        .await
-        .unwrap();
+        test_utils::seed_handle(&state.db, "owner.example.com", DID).await;
         state
     }
 
@@ -682,10 +661,6 @@ mod tests {
             .respond_with(ResponseTemplate::new(200).set_body_json(log))
             .mount(plc)
             .await;
-    }
-
-    fn now() -> i64 {
-        crate::time::unix_now_secs()
     }
 
     fn approval_body(
@@ -782,7 +757,7 @@ mod tests {
                 request_id,
                 "approve",
                 REQUESTED_SCOPE,
-                now(),
+                crate::time::unix_now_secs(),
                 1,
             ),
         )
@@ -852,7 +827,7 @@ mod tests {
             request_id,
             "approve",
             REQUESTED_SCOPE,
-            now(),
+            crate::time::unix_now_secs(),
             2,
         );
 
@@ -875,7 +850,15 @@ mod tests {
         seed_pending(&state, request_id, None).await;
 
         // Sign over the base scope, then tamper the submitted grantedScope to a wider set.
-        let mut body = approval_body(&state, &key, request_id, "approve", "atproto", now(), 3);
+        let mut body = approval_body(
+            &state,
+            &key,
+            request_id,
+            "approve",
+            "atproto",
+            crate::time::unix_now_secs(),
+            3,
+        );
         body["grantedScope"] = json!(REQUESTED_SCOPE);
         let resp = post_json(state.clone(), "/oauth/authorize/approve", body).await;
         assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
@@ -895,7 +878,15 @@ mod tests {
         let resp = post_json(
             state.clone(),
             "/oauth/authorize/approve",
-            approval_body(&state, &key, request_id, "deny", "", now(), 4),
+            approval_body(
+                &state,
+                &key,
+                request_id,
+                "deny",
+                "",
+                crate::time::unix_now_secs(),
+                4,
+            ),
         )
         .await;
         assert_eq!(resp.status(), StatusCode::OK);
@@ -950,7 +941,7 @@ mod tests {
                 request_id,
                 "approve",
                 REQUESTED_SCOPE,
-                now(),
+                crate::time::unix_now_secs(),
                 5,
             ),
         )
@@ -977,7 +968,7 @@ mod tests {
                 request_id,
                 "approve",
                 REQUESTED_SCOPE,
-                now(),
+                crate::time::unix_now_secs(),
                 6,
             ),
         )
@@ -985,149 +976,103 @@ mod tests {
         assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
     }
 
-    // The regression the binding check exists for: an atproto client forwards the handle the user
-    // typed, not a DID, so a handle-shaped hint must bind the account it denotes rather than fail a
-    // string comparison against the DID.
-    #[tokio::test]
-    async fn login_hint_handle_binds_the_approving_account() {
-        let plc = MockServer::start().await;
-        let state = setup(&plc).await;
-        let key = p256_key();
-        mount_audit_log(&plc, &[&key.did]).await;
-        let request_id = "poauth_hint_handle";
-        seed_pending(&state, request_id, Some("owner.example.com")).await;
-
-        let resp = post_json(
-            state.clone(),
-            "/oauth/authorize/approve",
-            approval_body(
-                &state,
-                &key,
-                request_id,
-                "approve",
-                REQUESTED_SCOPE,
-                now(),
-                7,
-            ),
-        )
-        .await;
-        assert_eq!(resp.status(), StatusCode::OK);
+    /// One `login_hint` binding case: the hint the client forwards, the account's asserted
+    /// `alsoKnownAs` (`None` uses the default `at://owner.example.com`), whether the account's
+    /// `handles` row is deleted before the approval (simulating an asserted-but-unresolvable
+    /// handle), and the expected approval outcome.
+    struct LoginHintCase {
+        name: &'static str,
+        hint: &'static str,
+        aka: Option<&'static str>,
+        delete_handle: bool,
+        expected_status: StatusCode,
     }
 
-    // Clients forward what the user typed verbatim, so the hint is normalized before it is bound.
     #[tokio::test]
-    async fn login_hint_handle_binds_case_insensitively_and_ignores_decoration() {
-        let plc = MockServer::start().await;
-        let state = setup(&plc).await;
-        let key = p256_key();
-        mount_audit_log(&plc, &[&key.did]).await;
-        let request_id = "poauth_hint_decorated";
-        seed_pending(&state, request_id, Some("@Owner.Example.com")).await;
+    async fn login_hint_handle_binding_cases() {
+        let cases = [
+            // The regression the binding check exists for: an atproto client forwards the handle
+            // the user typed, not a DID, so a handle-shaped hint must bind the account it
+            // denotes rather than fail a string comparison against the DID.
+            LoginHintCase {
+                name: "binds_the_approving_account",
+                hint: "owner.example.com",
+                aka: None,
+                delete_handle: false,
+                expected_status: StatusCode::OK,
+            },
+            // Clients forward what the user typed verbatim, so the hint is normalized before it
+            // is bound.
+            LoginHintCase {
+                name: "binds_case_insensitively_and_ignores_decoration",
+                hint: "@Owner.Example.com",
+                aka: None,
+                delete_handle: false,
+                expected_status: StatusCode::OK,
+            },
+            // Normalization has to reach both sides. `alsoKnownAs` is hand-authored — a did:web's
+            // document especially — so the account's asserted handle can carry any case, and
+            // normalizing only the hint would leave a legitimate binding silently refused.
+            LoginHintCase {
+                name: "binds_a_mixed_case_asserted_handle",
+                hint: "owner.example.com",
+                aka: Some("at://Owner.Example.com"),
+                delete_handle: false,
+                expected_status: StatusCode::OK,
+            },
+            // Assertion alone must not bind: `alsoKnownAs` is writable by whoever controls the
+            // DID, so the handle must also resolve back to it. Here the account still claims the
+            // handle but the resolution chain no longer answers with this DID.
+            LoginHintCase {
+                name: "asserted_but_unresolvable_is_rejected",
+                hint: "owner.example.com",
+                aka: None,
+                delete_handle: true,
+                expected_status: StatusCode::UNAUTHORIZED,
+            },
+            // A handle the account never claimed is rejected even if it resolves elsewhere.
+            LoginHintCase {
+                name: "not_asserted_is_rejected",
+                hint: "stranger.example.com",
+                aka: None,
+                delete_handle: false,
+                expected_status: StatusCode::UNAUTHORIZED,
+            },
+        ];
 
-        let resp = post_json(
-            state.clone(),
-            "/oauth/authorize/approve",
-            approval_body(
-                &state,
-                &key,
-                request_id,
-                "approve",
-                REQUESTED_SCOPE,
-                now(),
-                8,
-            ),
-        )
-        .await;
-        assert_eq!(resp.status(), StatusCode::OK);
-    }
+        for (nonce_fill, case) in cases.into_iter().enumerate() {
+            let plc = MockServer::start().await;
+            let state = setup(&plc).await;
+            let key = p256_key();
+            match case.aka {
+                Some(aka) => mount_audit_log_with_aka(&plc, &[&key.did], aka).await,
+                None => mount_audit_log(&plc, &[&key.did]).await,
+            }
+            if case.delete_handle {
+                sqlx::query("DELETE FROM handles WHERE handle = 'owner.example.com'")
+                    .execute(&state.db)
+                    .await
+                    .unwrap();
+            }
+            let request_id = format!("poauth_hint_{}", case.name);
+            seed_pending(&state, &request_id, Some(case.hint)).await;
 
-    // Normalization has to reach both sides. `alsoKnownAs` is hand-authored — a did:web's document
-    // especially — so the account's asserted handle can carry any case, and normalizing only the
-    // hint would leave a legitimate binding silently refused.
-    #[tokio::test]
-    async fn login_hint_binds_a_mixed_case_asserted_handle() {
-        let plc = MockServer::start().await;
-        let state = setup(&plc).await;
-        let key = p256_key();
-        mount_audit_log_with_aka(&plc, &[&key.did], "at://Owner.Example.com").await;
-        let request_id = "poauth_hint_mixed_aka";
-        seed_pending(&state, request_id, Some("owner.example.com")).await;
-
-        let resp = post_json(
-            state.clone(),
-            "/oauth/authorize/approve",
-            approval_body(
-                &state,
-                &key,
-                request_id,
-                "approve",
-                REQUESTED_SCOPE,
-                now(),
-                11,
-            ),
-        )
-        .await;
-        assert_eq!(resp.status(), StatusCode::OK);
-    }
-
-    // Assertion alone must not bind: `alsoKnownAs` is writable by whoever controls the DID, so the
-    // handle must also resolve back to it. Here the account still claims the handle but the
-    // resolution chain no longer answers with this DID.
-    #[tokio::test]
-    async fn login_hint_handle_asserted_but_unresolvable_is_rejected() {
-        let plc = MockServer::start().await;
-        let state = setup(&plc).await;
-        let key = p256_key();
-        mount_audit_log(&plc, &[&key.did]).await;
-        sqlx::query("DELETE FROM handles WHERE handle = 'owner.example.com'")
-            .execute(&state.db)
-            .await
-            .unwrap();
-        let request_id = "poauth_hint_unresolvable";
-        seed_pending(&state, request_id, Some("owner.example.com")).await;
-
-        let resp = post_json(
-            state.clone(),
-            "/oauth/authorize/approve",
-            approval_body(
-                &state,
-                &key,
-                request_id,
-                "approve",
-                REQUESTED_SCOPE,
-                now(),
-                9,
-            ),
-        )
-        .await;
-        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
-    }
-
-    // A handle the account never claimed is rejected even if it resolves elsewhere.
-    #[tokio::test]
-    async fn login_hint_handle_not_asserted_is_rejected() {
-        let plc = MockServer::start().await;
-        let state = setup(&plc).await;
-        let key = p256_key();
-        mount_audit_log(&plc, &[&key.did]).await;
-        let request_id = "poauth_hint_stranger";
-        seed_pending(&state, request_id, Some("stranger.example.com")).await;
-
-        let resp = post_json(
-            state.clone(),
-            "/oauth/authorize/approve",
-            approval_body(
-                &state,
-                &key,
-                request_id,
-                "approve",
-                REQUESTED_SCOPE,
-                now(),
-                10,
-            ),
-        )
-        .await;
-        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+            let resp = post_json(
+                state.clone(),
+                "/oauth/authorize/approve",
+                approval_body(
+                    &state,
+                    &key,
+                    &request_id,
+                    "approve",
+                    REQUESTED_SCOPE,
+                    crate::time::unix_now_secs(),
+                    nonce_fill as u8,
+                ),
+            )
+            .await;
+            assert_eq!(resp.status(), case.expected_status, "case {}", case.name);
+        }
     }
 
     // Status polling faster than the minimum interval is throttled (the slow_down discipline).
@@ -1196,7 +1141,7 @@ mod tests {
                 request_id,
                 "approve",
                 REQUESTED_SCOPE,
-                now(),
+                crate::time::unix_now_secs(),
                 7,
             ),
         )
@@ -1249,7 +1194,7 @@ mod tests {
                 request_id,
                 "approve",
                 REQUESTED_SCOPE,
-                now(),
+                crate::time::unix_now_secs(),
                 31,
             ),
         )
@@ -1263,7 +1208,7 @@ mod tests {
             request_id,
             "approve",
             REQUESTED_SCOPE,
-            now(),
+            crate::time::unix_now_secs(),
             32,
         );
         wrong["matchCode"] = json!("24");
@@ -1289,7 +1234,7 @@ mod tests {
             request_id,
             "approve",
             REQUESTED_SCOPE,
-            now(),
+            crate::time::unix_now_secs(),
             33,
         );
         right["matchCode"] = json!("42");
@@ -1320,7 +1265,15 @@ mod tests {
         let resp = post_json(
             state.clone(),
             "/oauth/authorize/approve",
-            approval_body(&state, &key, request_id, "deny", "", now(), 34),
+            approval_body(
+                &state,
+                &key,
+                request_id,
+                "deny",
+                "",
+                crate::time::unix_now_secs(),
+                34,
+            ),
         )
         .await;
         assert_eq!(resp.status(), StatusCode::OK);
@@ -1366,14 +1319,7 @@ mod tests {
         register_oauth_client(&state.db, CLIENT_ID, CLIENT_METADATA)
             .await
             .unwrap();
-        sqlx::query(
-            "INSERT INTO accounts (did, email, password_hash, created_at, updated_at) \
-             VALUES (?, 'owner@example.com', NULL, datetime('now'), datetime('now'))",
-        )
-        .bind(DID)
-        .execute(&state.db)
-        .await
-        .unwrap();
+        test_utils::seed_handle(&state.db, "owner.example.com", DID).await;
 
         let request_id = "poauth_fragment_mode";
         let new = crate::db::pending_oauth_authorizations::NewPendingOAuthAuthorization {

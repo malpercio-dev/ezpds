@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::app::AppState;
 use crate::lexicon::LexiconParams;
-use common::{ApiError, ErrorCode};
+use common::{ApiError, ApiResultExt};
 
 const DEFAULT_LIMIT: i64 = 500;
 
@@ -57,10 +57,7 @@ pub async fn list_repos(
 
     let rows = crate::db::accounts::list_repos(&state.db, cursor, limit)
         .await
-        .map_err(|e| {
-            tracing::error!(error = %e, "failed to list repos");
-            ApiError::new(ErrorCode::InternalError, "failed to list repos")
-        })?;
+        .or_internal("failed to list repos")?;
 
     // A full page means more rows may follow — surface the last DID as the next cursor.
     // A short page is the last page, so no cursor is emitted. The cursor is derived from the

@@ -1,0 +1,34 @@
+meta {
+  name: Simplespace Delete Space
+  type: http
+  seq: 150
+}
+
+post {
+  url: {{baseUrl}}/xrpc/com.atproto.simplespace.deleteSpace
+  body: json
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{accessToken}}
+}
+
+body:json {
+  {
+    "space": "at://{{did}}/space/org.example.bucket/main"
+  }
+}
+
+docs {
+  Delete a simplespace space. The space row stays as a tombstone (getSpaceCredential keeps
+  answering SpaceDeleted, the durable deletion signal for syncers), its config and member
+  list are cleared, and the authority's own repo in the space is deleted with it. Other
+  members' repos are not erased — their records are theirs — they simply stop being
+  readable or writable. Idempotent: deleting again is a 200. The URI may later be
+  created again.
+
+  Requires a "space:…?manage=delete" grant and the caller must be the space's authority.
+  Errors: 400 SpaceNotFound when the space never existed, 400 NotSpaceOwner,
+  403 InsufficientScope.
+}

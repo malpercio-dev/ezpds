@@ -2,6 +2,7 @@
 
 pub mod account_delete;
 pub mod error;
+mod hex;
 pub mod hpke;
 pub mod keys;
 mod mnemonic;
@@ -10,6 +11,7 @@ pub mod plc;
 pub mod service_auth;
 pub mod shamir;
 pub mod sovereign_session;
+pub mod space;
 
 pub use account_delete::{
     encode_account_delete_envelope, ACCOUNT_DELETE_DOMAIN, ACCOUNT_DELETE_METHOD,
@@ -22,9 +24,9 @@ pub use hpke::{
     PADDING_BUCKETS,
 };
 pub use keys::{
-    decrypt_private_key, decrypt_secret_bytes, derive_recovery_keypair, encrypt_private_key,
-    encrypt_secret_bytes, generate_p256_keypair, p256_keypair_from_secret,
-    p256_public_key_from_did_key, DidKeyUri, P256Keypair,
+    decrypt_private_key, decrypt_secret_bytes, derive_child_seed, derive_delegation_seed,
+    derive_recovery_keypair, encrypt_private_key, encrypt_secret_bytes, generate_p256_keypair,
+    p256_keypair_from_secret, p256_public_key_from_did_key, DidKeyUri, P256Keypair,
 };
 pub use oauth_consent::{
     encode_oauth_consent_envelope, granted_scope_hash, OAUTH_CONSENT_APPROVE_PATH,
@@ -48,4 +50,8 @@ pub use shamir::{
 pub use sovereign_session::{
     encode_sovereign_session_envelope, SOVEREIGN_SESSION_DOMAIN, SOVEREIGN_SESSION_METHOD,
     SOVEREIGN_SESSION_PATH,
+};
+pub use space::{
+    encode_space_commit_ctx, format_set_hash_element, sign_space_commit, verify_space_commit,
+    LtHash, SignedSpaceCommit, SpaceCommitCtx, LTHASH_STATE_BYTES, SPACE_COMMIT_VERSION,
 };

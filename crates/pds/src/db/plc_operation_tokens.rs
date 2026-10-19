@@ -10,7 +10,7 @@
 //! short-lived, and only the SHA-256 hash of the plaintext is ever stored — the
 //! same envelope as `password_reset` (V014).
 
-use common::{ApiError, ErrorCode};
+use common::{ApiError, ApiResultExt};
 
 /// Insert a new PLC-operation signature token with a 1-hour expiry.
 ///
@@ -32,13 +32,10 @@ pub async fn insert_plc_operation_token(
     .bind(did)
     .execute(db)
     .await
-    .map_err(|e| {
-        tracing::error!(error = %e, "failed to insert PLC operation token");
-        ApiError::new(
-            ErrorCode::InternalError,
-            "failed to create PLC operation token",
-        )
-    })?;
+    .or_internal_as(
+        "failed to insert PLC operation token",
+        "failed to create PLC operation token",
+    )?;
     Ok(())
 }
 
@@ -64,13 +61,10 @@ pub async fn plc_operation_token_is_valid(
     .bind(did)
     .fetch_one(db)
     .await
-    .map_err(|e| {
-        tracing::error!(error = %e, "failed to check PLC operation token validity");
-        ApiError::new(
-            ErrorCode::InternalError,
-            "failed to check PLC operation token",
-        )
-    })?;
+    .or_internal_as(
+        "failed to check PLC operation token validity",
+        "failed to check PLC operation token",
+    )?;
     Ok(valid)
 }
 
@@ -96,13 +90,7 @@ pub async fn consume_plc_operation_token(
     .bind(did)
     .execute(db)
     .await
-    .map_err(|e| {
-        tracing::error!(error = %e, "failed to consume PLC operation token");
-        ApiError::new(
-            ErrorCode::InternalError,
-            "failed to consume PLC operation token",
-        )
-    })?;
+    .or_internal("failed to consume PLC operation token")?;
     Ok(result.rows_affected() == 1)
 }
 
@@ -110,25 +98,8 @@ pub async fn consume_plc_operation_token(
 mod tests {
     use super::*;
     use crate::auth::token::generate_token;
-    use crate::db::{open_pool, run_migrations};
-
-    async fn test_pool() -> sqlx::SqlitePool {
-        let pool = open_pool("sqlite::memory:").await.unwrap();
-        run_migrations(&pool).await.unwrap();
-        pool
-    }
-
-    async fn insert_account(pool: &sqlx::SqlitePool, did: &str) {
-        sqlx::query(
-            "INSERT INTO accounts (did, email, password_hash, created_at, updated_at) \
-             VALUES (?, ?, 'hash', datetime('now'), datetime('now'))",
-        )
-        .bind(did)
-        .bind(format!("{did}@example.com"))
-        .execute(pool)
-        .await
-        .unwrap();
-    }
+    use crate::db::accounts::insert_bare_account as insert_account;
+    use crate::db::test_pool;
 
     #[tokio::test]
     async fn valid_token_consumes_once() {

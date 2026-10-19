@@ -1,0 +1,30 @@
+meta {
+  name: Space Delete Record
+  type: http
+  seq: 142
+}
+
+post {
+  url: {{baseUrl}}/xrpc/com.atproto.space.deleteRecord
+  body: json
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{accessToken}}
+}
+
+body:json {
+  {
+    "space": "at://did:plc:authorityaaaaaaaaaaaaaaa/space/org.example.bucket/main",
+    "repo": {{did}},
+    "collection": "org.example.note",
+    "rkey": "self"
+  }
+}
+
+docs {
+  Idempotent: succeeds whether or not the record was present, and an absent record commits
+  nothing at all — no revision is burned and no oplog entry is appended. Requires the
+  "delete" action on a covering "space:" grant.
+}

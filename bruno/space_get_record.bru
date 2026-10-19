@@ -1,0 +1,32 @@
+meta {
+  name: Space Get Record
+  type: http
+  seq: 145
+}
+
+get {
+  url: {{baseUrl}}/xrpc/com.atproto.space.getRecord?space=at://did:plc:authorityaaaaaaaaaaaaaaa/space/org.example.bucket/main&repo={{did}}&collection=org.example.note&rkey=self
+  body: none
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{accessToken}}
+}
+
+params:query {
+  space: at://did:plc:authorityaaaaaaaaaaaaaaa/space/org.example.bucket/main
+  repo: {{did}}
+  collection: org.example.note
+  rkey: self
+}
+
+docs {
+  Read one record from a permissioned space repo. An account credential reads only that
+  account's own repo; reaching another member's takes a space credential, which the space
+  authority issues.
+
+  Naming another account's repo returns the same 400 RepoNotFound an absent repo returns —
+  whether a given account holds a repo in a space is not disclosed to a caller who cannot
+  read that space. A missing record is 400 RecordNotFound.
+}

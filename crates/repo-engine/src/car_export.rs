@@ -293,10 +293,15 @@ fn write_uvarint(buf: &mut Vec<u8>, mut n: u64) {
 /// in memory: a consumer reads the header, then each [`car_v1_block_frame`] as it arrives. The
 /// bytes are identical to what [`build_car`] (via `CarStore`) would write for the same root.
 pub fn car_v1_header(root: Cid) -> Vec<u8> {
-    let header = CarV1Header {
-        version: 1,
-        roots: vec![root],
-    };
+    car_v1_header_roots(vec![root])
+}
+
+/// Encode the length-prefixed CARv1 header declaring `roots` (in order) as the file's roots.
+///
+/// The multi-root variant of [`car_v1_header`], for CARs whose format pins more than one root —
+/// the Atproto Spaces `getRepo` export declares two (signed commit, then DRISL index).
+pub fn car_v1_header_roots(roots: Vec<Cid>) -> Vec<u8> {
+    let header = CarV1Header { version: 1, roots };
     // The header is a tiny fixed-shape map; DAG-CBOR encoding cannot fail.
     let header_bytes = serde_ipld_dagcbor::to_vec(&header).expect("encode CAR header");
 

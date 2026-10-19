@@ -20,14 +20,20 @@
 # ── Dependency stage: prod deps for both packages ────────────────────────
 FROM node:22-alpine AS deps
 ENV NODE_ENV=production
-RUN corepack enable && corepack prepare pnpm@10.33.0 --activate
+# corepack honours each package's own `packageManager` pin, so this only has to
+# match it; naming a different version here just downloads a pnpm nobody runs.
+RUN corepack enable && corepack prepare pnpm@9.15.9 --activate
 WORKDIR /app
 
 # Manifests + lockfiles only, so the dependency layer caches independently of
-# source edits. --prod skips devDependencies (tsc, the file: interop harness dep);
-# the sidecar runs TypeScript natively, so nothing is compiled here.
+# source edits. --prod drops the devDependencies (tsc); it does NOT drop
+# ezpds-interop, which both packages depend on at runtime for the shared HTTP
+# client — so tools/interop has to be in the context for pnpm to link `file:../interop`,
+# and in the runtime image for the import to resolve. The sidecar runs TypeScript
+# natively, so nothing is compiled here.
 COPY tools/mcp/package.json tools/mcp/pnpm-lock.yaml ./tools/mcp/
 COPY tools/mcp-sidecar/package.json tools/mcp-sidecar/pnpm-lock.yaml ./tools/mcp-sidecar/
+COPY tools/interop ./tools/interop
 WORKDIR /app/tools/mcp
 RUN pnpm install --prod --frozen-lockfile
 WORKDIR /app/tools/mcp-sidecar
@@ -44,6 +50,9 @@ COPY tools/mcp ./tools/mcp
 COPY tools/mcp-sidecar ./tools/mcp-sidecar
 COPY --from=deps /app/tools/mcp/node_modules ./tools/mcp/node_modules
 COPY --from=deps /app/tools/mcp-sidecar/node_modules ./tools/mcp-sidecar/node_modules
+# Whole directory, not just node_modules: the `file:` link resolves to this path,
+# so the image needs interop's sources and its own installed deps.
+COPY --from=deps /app/tools/interop ./tools/interop
 
 # Run as the built-in non-root `node` user, matching the repo's container
 # security posture (the PDS image runs as a non-root uid; see docs/deploy.md →

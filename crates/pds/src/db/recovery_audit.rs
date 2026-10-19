@@ -73,9 +73,7 @@ where
         tracing::error!(
             did = %did,
             event_type = %event_type.as_str(),
-            error = %e,
-            "DB error inserting recovery audit event"
-        );
+            error = %e, "DB error inserting recovery audit event");
         ApiError::new(ErrorCode::InternalError, "failed to record audit event")
     })?;
     Ok(())
@@ -85,18 +83,7 @@ where
 mod tests {
     use super::*;
     use crate::app::test_state;
-
-    async fn seed_account(db: &sqlx::SqlitePool, did: &str) {
-        sqlx::query(
-            "INSERT INTO accounts (did, email, password_hash, created_at, updated_at) \
-             VALUES (?, ?, NULL, datetime('now'), datetime('now'))",
-        )
-        .bind(did)
-        .bind(format!("{did}@example.com"))
-        .execute(db)
-        .await
-        .expect("seed account");
-    }
+    use crate::db::accounts::insert_bare_account as seed_account;
 
     #[tokio::test]
     async fn insert_round_trips_every_variant() {

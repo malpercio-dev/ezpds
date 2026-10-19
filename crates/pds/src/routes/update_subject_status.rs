@@ -31,9 +31,9 @@ use common::{ApiError, ErrorCode};
 
 use crate::app::AppState;
 use crate::auth::guards::require_admin_json;
-use crate::auth::validation::is_valid_did;
 use crate::db::accounts::{set_account_takedown, TakedownStateChange};
 use crate::db::admin_audit::{record_admin_audit_event, AdminAuditAction};
+use crate::identity::did::is_valid_did;
 use crate::routes::admin_subject_defs::{RepoRefView, StatusAttrView};
 
 /// `subject` is a lexicon union (`com.atproto.admin.defs#repoRef` | `com.atproto.repo.strongRef`
@@ -143,8 +143,11 @@ pub async fn update_subject_status(
     // the transaction, per `Firehose::lock_emit`'s lock/connection-ordering contract.
     let emit_guard = state.firehose.lock_emit().await;
     let mut tx = state.db.begin().await.map_err(|e| {
-        tracing::error!(error = %e, did = %did, "failed to open updateSubjectStatus transaction");
-        ApiError::new(ErrorCode::InternalError, "failed to update account status").into_response()
+        {
+            tracing::error!(error = %e, did = %did, "failed to open updateSubjectStatus transaction");
+            ApiError::new(ErrorCode::InternalError, "failed to update account status")
+        }
+        .into_response()
     })?;
 
     let applied = takedown.applied;
@@ -160,8 +163,10 @@ pub async fn update_subject_status(
         }
         TakedownStateChange::Unchanged(lifecycle) => {
             tx.commit().await.map_err(|e| {
-                tracing::error!(error = %e, did = %did, "failed to commit updateSubjectStatus (no-op) transaction");
-                ApiError::new(ErrorCode::InternalError, "failed to update account status").into_response()
+                {
+                    tracing::error!(error = %e, did = %did, "failed to commit updateSubjectStatus (no-op) transaction");
+                    ApiError::new(ErrorCode::InternalError, "failed to update account status")
+                }.into_response()
             })?;
             tracing::debug!(
                 did = %did,
@@ -178,8 +183,11 @@ pub async fn update_subject_status(
                 .stage_account(&mut tx, did.clone(), active, status)
                 .await
                 .map_err(|e| {
-                    tracing::error!(error = %e, did = %did, "failed to stage #account takedown event");
-                    ApiError::new(ErrorCode::InternalError, "failed to update account status").into_response()
+                    {
+                        tracing::error!(error = %e, did = %did, "failed to stage #account takedown event");
+                        ApiError::new(ErrorCode::InternalError, "failed to update account status")
+                    }
+                    .into_response()
                 })?;
             // Audit the transition atomically with it. Only real transitions are recorded —
             // the Unchanged arm above is a no-op the operator didn't change anything with.
@@ -203,8 +211,11 @@ pub async fn update_subject_status(
             .await
             .map_err(IntoResponse::into_response)?;
             tx.commit().await.map_err(|e| {
-                tracing::error!(error = %e, did = %did, "failed to commit updateSubjectStatus transaction");
-                ApiError::new(ErrorCode::InternalError, "failed to update account status").into_response()
+                {
+                    tracing::error!(error = %e, did = %did, "failed to commit updateSubjectStatus transaction");
+                    ApiError::new(ErrorCode::InternalError, "failed to update account status")
+                }
+                .into_response()
             })?;
             pending.finish();
             tracing::info!(
@@ -237,19 +248,9 @@ mod tests {
 
     use crate::app::app;
     use crate::firehose::FirehoseEvent;
-    use crate::routes::test_utils::{body_json, test_state_with_admin_token};
-
-    async fn insert_account(db: &sqlx::SqlitePool, did: &str, email: &str) {
-        sqlx::query(
-            "INSERT INTO accounts (did, email, password_hash, created_at, updated_at) \
-             VALUES (?, ?, NULL, datetime('now'), datetime('now'))",
-        )
-        .bind(did)
-        .bind(email)
-        .execute(db)
-        .await
-        .unwrap();
-    }
+    use crate::routes::test_utils::{
+        body_json, insert_account_with_email as insert_account, test_state_with_admin_token,
+    };
 
     fn request(body: &str, bearer: Option<&str>) -> Request<Body> {
         let mut builder = Request::builder()

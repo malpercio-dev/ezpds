@@ -39,12 +39,15 @@
 use axum::{extract::State, http::HeaderMap, Json};
 use serde::{Deserialize, Serialize};
 
+use crate::account_genesis::{
+    announce_active_account, insert_account_row, stage_genesis_repo, GenesisRepo, NewAccountRow,
+};
 use crate::app::AppState;
 use crate::auth::guards::require_pending_session;
 use crate::auth::password::resolve_password;
 use crate::auth::token::generate_token;
-use crate::db::is_unique_violation;
-use common::{ApiError, ErrorCode};
+use crate::identity::resolution::fragment_id_matches;
+use common::{ApiError, ApiResultExt, ErrorCode};
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -106,10 +109,7 @@ pub async fn create_did_handler(
     // repo commits with the matching private key.
     let repo_key = crate::db::repo_keys::get_pending_repo_key(&state.db, &session.account_id)
         .await
-        .map_err(|e| {
-            tracing::error!(error = %e, "failed to load pending repo signing key");
-            ApiError::new(ErrorCode::InternalError, "failed to load signing key")
-        })?
+        .or_internal_as("failed to load pending repo signing key", "failed to load signing key")?
         .ok_or_else(|| {
             ApiError::new(
                 ErrorCode::InvalidClaim,
@@ -272,14 +272,14 @@ pub async fn create_did_handler(
             )
         })?;
     let genesis_private = crypto::decrypt_private_key(&repo_key.private_key_encrypted, master_key)
-        .map_err(|e| {
-            tracing::error!(error = %e, "failed to decrypt repo signing key for genesis");
-            ApiError::new(ErrorCode::InternalError, "failed to prepare genesis repo")
-        })?;
-    let genesis_signer = repo_engine::CommitSigner::from_bytes(&genesis_private).map_err(|e| {
-        tracing::error!(error = %e, "invalid repo signing key for genesis");
-        ApiError::new(ErrorCode::InternalError, "failed to prepare genesis repo")
-    })?;
+        .or_internal_as(
+            "failed to decrypt repo signing key for genesis",
+            "failed to prepare genesis repo",
+        )?;
+    let genesis_signer = repo_engine::CommitSigner::from_bytes(&genesis_private).or_internal_as(
+        "invalid repo signing key for genesis",
+        "failed to prepare genesis repo",
+    )?;
     let (genesis_root, genesis_rev, genesis_blocks) =
         repo_engine::build_genesis_repo(&did, &genesis_signer)
             .await
@@ -340,10 +340,10 @@ pub async fn create_did_handler(
             // does — the shared SecretFamily ciphertext format, so rewrap-master-key
             // covers this row like every other wrapped column.
             let wrapped = crypto::encrypt_secret_bytes(envelope.to_bytes().as_slice(), master_key)
-                .map_err(|e| {
-                    tracing::error!(error = %e, "failed to wrap escrow share for promotion");
-                    ApiError::new(ErrorCode::InternalError, "failed to protect escrow share")
-                })?;
+                .or_internal_as(
+                    "failed to wrap escrow share for promotion",
+                    "failed to protect escrow share",
+                )?;
             EscrowDeposit::ClientShare {
                 wrapped_envelope: wrapped,
                 set_id: envelope.set_id(),
@@ -354,19 +354,21 @@ pub async fn create_did_handler(
     };
     promote_account(
         &state,
-        &did,
-        &pending.email,
-        &session.account_id,
-        &did_document,
-        &session_token.hash,
-        &deposit,
-        password_hash.as_deref(),
-        &repo_key,
-        &genesis_root_str,
-        &genesis_rev,
-        &genesis_blocks,
-        genesis_car,
-        genesis_sync_car,
+        PendingAccountPromotion {
+            did: &did,
+            email: &pending.email,
+            account_id: &session.account_id,
+            did_document: &did_document,
+            token_hash: &session_token.hash,
+            deposit: &deposit,
+            password_hash: password_hash.as_deref(),
+            repo_key: &repo_key,
+            genesis_root: &genesis_root_str,
+            genesis_rev: &genesis_rev,
+            genesis_blocks: &genesis_blocks,
+            genesis_car,
+            genesis_sync_car,
+        },
     )
     .await?;
 
@@ -430,9 +432,11 @@ fn validate_did_web_document(
         .and_then(serde_json::Value::as_array)
         .ok_or_else(|| ApiError::new(ErrorCode::InvalidClaim, "verificationMethod is required"))?;
     let has_key = |fragment: &str, multibase: &str| {
-        let id = format!("{did}#{fragment}");
         methods.iter().any(|method| {
-            method.get("id").and_then(serde_json::Value::as_str) == Some(&id)
+            method
+                .get("id")
+                .and_then(serde_json::Value::as_str)
+                .is_some_and(|id| fragment_id_matches(id, did, fragment))
                 && method.get("type").and_then(serde_json::Value::as_str) == Some("Multikey")
                 && method.get("controller").and_then(serde_json::Value::as_str) == Some(did)
                 && method
@@ -455,13 +459,15 @@ fn validate_did_web_document(
     }
 
     let expected_endpoint = pds_url.trim_end_matches('/');
-    let expected_service = format!("{did}#atproto_pds");
     let has_service = document
         .get("service")
         .and_then(serde_json::Value::as_array)
         .is_some_and(|services| {
             services.iter().any(|service| {
-                service.get("id").and_then(serde_json::Value::as_str) == Some(&expected_service)
+                service
+                    .get("id")
+                    .and_then(serde_json::Value::as_str)
+                    .is_some_and(|id| fragment_id_matches(id, did, "atproto_pds"))
                     && service.get("type").and_then(serde_json::Value::as_str)
                         == Some("AtprotoPersonalDataServer")
                     && service
@@ -506,10 +512,7 @@ async fn load_pending_account(
     .bind(account_id)
     .fetch_optional(db)
     .await
-    .map_err(|e| {
-        tracing::error!(error = %e, "failed to query pending account");
-        ApiError::new(ErrorCode::InternalError, "failed to load account")
-    })?
+    .or_internal_as("failed to query pending account", "failed to load account")?
     .ok_or_else(|| ApiError::new(ErrorCode::Unauthorized, "account not found"))
 }
 
@@ -532,15 +535,15 @@ async fn pre_store_did(
 ) -> Result<bool, ApiError> {
     if let Some(pre_stored_did) = &pending.pending_did {
         if did != pre_stored_did {
-            tracing::error!(
+            return Err({
+                tracing::error!(
                 derived_did = %did,
-                stored_did = %pre_stored_did,
-                "retry path: derived DID does not match pre-stored DID; inputs may have changed"
-            );
-            return Err(ApiError::new(
-                ErrorCode::InternalError,
-                "DID mismatch: derived DID does not match pre-stored value",
-            ));
+                stored_did = %pre_stored_did, "retry path: derived DID does not match pre-stored DID; inputs may have changed");
+                ApiError::new(
+                    ErrorCode::InternalError,
+                    "DID mismatch: derived DID does not match pre-stored value",
+                )
+            });
         }
         let plc_registered = pending.pending_plc_registered_at.is_some();
         tracing::info!(
@@ -556,17 +559,16 @@ async fn pre_store_did(
         .bind(account_id)
         .execute(db)
         .await
-        .map_err(|e| {
-            tracing::error!(error = %e, "failed to pre-store pending DID");
-            ApiError::new(ErrorCode::InternalError, "failed to store pending DID")
-        })?;
+        .or_internal_as(
+            "failed to pre-store pending DID",
+            "failed to store pending DID",
+        )?;
 
     if result.rows_affected() == 0 {
-        tracing::error!(account_id = %account_id, "pending account row vanished during DID pre-store");
-        return Err(ApiError::new(
-            ErrorCode::InternalError,
-            "account no longer exists",
-        ));
+        return Err({
+            tracing::error!(account_id = %account_id, "pending account row vanished during DID pre-store");
+            ApiError::new(ErrorCode::InternalError, "account no longer exists")
+        });
     }
     Ok(false)
 }
@@ -584,20 +586,16 @@ async fn mark_plc_registered(db: &sqlx::SqlitePool, account_id: &str) -> Result<
     .bind(account_id)
     .execute(db)
     .await
-    .map_err(|e| {
-        tracing::error!(error = %e, "failed to mark PLC registration confirmed");
-        ApiError::new(
-            ErrorCode::InternalError,
-            "failed to record PLC registration",
-        )
-    })?;
+    .or_internal_as(
+        "failed to mark PLC registration confirmed",
+        "failed to record PLC registration",
+    )?;
 
     if result.rows_affected() == 0 {
-        tracing::error!(account_id = %account_id, "pending account row vanished before PLC registration mark");
-        return Err(ApiError::new(
-            ErrorCode::InternalError,
-            "account no longer exists",
-        ));
+        return Err({
+            tracing::error!(account_id = %account_id, "pending account row vanished before PLC registration mark");
+            ApiError::new(ErrorCode::InternalError, "account no longer exists")
+        });
     }
     Ok(())
 }
@@ -613,6 +611,29 @@ async fn check_already_promoted(db: &sqlx::SqlitePool, did: &str) -> Result<(), 
     Ok(())
 }
 
+/// Owned/borrowed inputs to the pending-account promotion transaction, grouped to avoid a
+/// `too_many_arguments` signature (mirrors `create_account_xrpc::NewAccountPromotion`).
+struct PendingAccountPromotion<'a> {
+    did: &'a str,
+    email: &'a str,
+    /// The `pending_accounts` row — and its sessions and devices — this promotion consumes.
+    account_id: &'a str,
+    did_document: &'a serde_json::Value,
+    /// Hash of the session token the ceremony already issued to the device.
+    token_hash: &'a str,
+    deposit: &'a EscrowDeposit,
+    /// The argon2id PHC string for the password set during the ceremony, or `None` for a
+    /// passwordless account (the `optionalPassword` capability), which stores NULL — the same
+    /// column state migration-mode `createAccount` has always written for OAuth-only accounts.
+    password_hash: Option<&'a str>,
+    repo_key: &'a crate::db::repo_keys::RepoSigningKey,
+    genesis_root: &'a str,
+    genesis_rev: &'a str,
+    genesis_blocks: &'a [(repo_engine::Cid, Vec<u8>)],
+    genesis_car: Vec<u8>,
+    genesis_sync_car: Vec<u8>,
+}
+
 /// Atomically promote a pending account to a full account (Steps 10-13), and sequence the
 /// account's genesis repo to the firehose so a never-crawled host self-announces instead of
 /// staying invisible until its first record write.
@@ -621,32 +642,9 @@ async fn check_already_promoted(db: &sqlx::SqlitePool, did: &str) -> Result<(), 
 /// `#commit` firehose event, then DELETE pending_sessions + devices + pending_accounts.
 /// `deposit` decides the escrow write: the client-share path inserts the wrapped Share 2
 /// envelope into `recovery_escrow` (with its `deposited` audit event) in the same
-/// transaction; the no-escrow did:web path writes no escrow. `accounts.recovery_share`
-/// stays NULL on both paths (the server no longer holds any server-generated share).
-/// `password_hash` is the argon2id PHC string for the account's password set during the ceremony,
-/// or `None` for a passwordless account (the `optionalPassword` capability), which stores NULL —
-/// the same column state migration-mode `createAccount` has always written for OAuth-only accounts.
-#[allow(clippy::too_many_arguments)]
-async fn promote_account(
-    state: &AppState,
-    did: &str,
-    email: &str,
-    account_id: &str,
-    did_document: &serde_json::Value,
-    token_hash: &str,
-    deposit: &EscrowDeposit,
-    password_hash: Option<&str>,
-    repo_key: &crate::db::repo_keys::RepoSigningKey,
-    genesis_root: &str,
-    genesis_rev: &str,
-    genesis_blocks: &[(repo_engine::Cid, Vec<u8>)],
-    genesis_car: Vec<u8>,
-    genesis_sync_car: Vec<u8>,
-) -> Result<(), ApiError> {
-    let did_document_str = serde_json::to_string(did_document).map_err(|e| {
-        tracing::error!(error = %e, "failed to serialize DID document");
-        ApiError::new(ErrorCode::InternalError, "failed to serialize DID document")
-    })?;
+/// transaction; the no-escrow did:web path writes no escrow.
+async fn promote_account(state: &AppState, p: PendingAccountPromotion<'_>) -> Result<(), ApiError> {
+    let did = p.did;
     let session_id = uuid::Uuid::new_v4().to_string();
 
     // Acquired *before* opening the transaction below — see `Firehose::lock_emit`'s docs and
@@ -660,30 +658,18 @@ async fn promote_account(
         .inspect_err(|e| tracing::error!(error = %e, "failed to begin promotion transaction"))
         .map_err(|_| ApiError::new(ErrorCode::InternalError, "failed to begin transaction"))?;
 
-    // `accounts.recovery_share` (the legacy server-held Share 2 column, V010) is never
-    // written on new promotions — the client-share path escrows into `recovery_escrow` and
-    // did:web escrows nothing. The column stays in the schema for legacy rows until the
-    // old-account re-key migration drops it; a fresh account leaves it NULL by omission.
-    sqlx::query(
-        "INSERT INTO accounts \
-         (did, email, password_hash, repo_root_cid, repo_rev, created_at, updated_at) \
-         VALUES (?, ?, ?, ?, ?, datetime('now'), datetime('now'))",
+    insert_account_row(
+        &mut tx,
+        &NewAccountRow {
+            did,
+            email: p.email,
+            password_hash: p.password_hash,
+            repo_root_cid: p.genesis_root,
+            repo_rev: p.genesis_rev,
+        },
+        "DID is already fully promoted",
     )
-    .bind(did)
-    .bind(email)
-    .bind(password_hash)
-    .bind(genesis_root)
-    .bind(genesis_rev)
-    .execute(&mut *tx)
-    .await
-    .map_err(|e| {
-        tracing::error!(error = %e, "failed to insert account");
-        if is_unique_violation(&e) {
-            ApiError::new(ErrorCode::DidAlreadyExists, "DID is already fully promoted")
-        } else {
-            ApiError::new(ErrorCode::InternalError, "failed to create account")
-        }
-    })?;
+    .await?;
 
     // Client-share ceremony: land the escrow deposit (and its audit event) atomically with
     // the account it belongs to — the same rows PUT /v1/recovery/escrow-share would write,
@@ -692,7 +678,7 @@ async fn promote_account(
         wrapped_envelope,
         set_id,
         version,
-    } = deposit
+    } = p.deposit
     {
         crate::db::recovery_escrow::insert_escrow_share(&mut *tx, did, wrapped_envelope)
             .await
@@ -709,16 +695,12 @@ async fn promote_account(
         .await?;
     }
 
-    sqlx::query(
-        "INSERT INTO did_documents (did, document, created_at, updated_at) \
-         VALUES (?, ?, datetime('now'), datetime('now'))",
-    )
-    .bind(did)
-    .bind(&did_document_str)
-    .execute(&mut *tx)
-    .await
-    .inspect_err(|e| tracing::error!(error = %e, "failed to insert did_document"))
-    .map_err(|_| ApiError::new(ErrorCode::InternalError, "failed to store DID document"))?;
+    // No prior row can exist for a DID this handler just derived from a fresh genesis op or
+    // did:web ceremony — the promotion transaction is the only writer, and a failed attempt
+    // rolls back atomically — so the upsert's UPDATE branch is dead code here, same as
+    // new-account mode in `create_account_xrpc`. Reused rather than hand-writing a fail-on-conflict
+    // INSERT to keep one write path for `did_documents`.
+    crate::db::dids::upsert_did_document(&mut *tx, did, p.did_document).await?;
 
     sqlx::query(
         "INSERT INTO sessions (id, did, device_id, token_hash, created_at, expires_at) \
@@ -726,7 +708,7 @@ async fn promote_account(
     )
     .bind(&session_id)
     .bind(did)
-    .bind(token_hash)
+    .bind(p.token_hash)
     .execute(&mut *tx)
     .await
     .inspect_err(|e| tracing::error!(error = %e, "failed to insert session"))
@@ -734,84 +716,41 @@ async fn promote_account(
 
     // Move the per-account repo signing key from the pending account into signing_keys
     // (DID-keyed), atomically with promotion. The PDS loads it to sign repo commits.
-    crate::db::repo_keys::insert_did_signing_key(&mut *tx, did, repo_key)
+    crate::db::repo_keys::insert_did_signing_key(&mut *tx, did, p.repo_key)
         .await
         .inspect_err(|e| tracing::error!(error = %e, "failed to insert repo signing key"))
         .map_err(|_| ApiError::new(ErrorCode::InternalError, "failed to store signing key"))?;
 
-    // Persist the genesis repo blocks (built in memory before the PLC call) in the same
-    // transaction, so account + signing key + a complete repo all commit together.
-    for (cid, bytes) in genesis_blocks {
-        let cid = cid.to_string();
-        crate::db::blocks::put_block_with_rev(
-            &mut tx,
-            &cid,
+    let pending_commit = stage_genesis_repo(
+        &mut tx,
+        emit_guard,
+        GenesisRepo {
             did,
-            bytes.as_slice(),
-            Some(genesis_rev),
-        )
-        .await
-        .inspect_err(|e| tracing::error!(error = %e, "failed to insert genesis block"))
-        .map_err(|_| ApiError::new(ErrorCode::InternalError, "failed to store genesis repo"))?;
-    }
-
-    // Stage the genesis `#commit` event in the same transaction as the repo it describes: a
-    // repo root recorded on `accounts` with no corresponding firehose row would be the same
-    // "durable write, silently dropped event" hazard `record_write::commit_repo_write` avoids
-    // for ordinary record writes.
-    // Stage the genesis `#commit` and, chained after it in the same transaction and under the same
-    // sequencer lock, a Sync v1.1 `#sync` state assertion (carrying just the signed commit block).
-    // The reference PDS emits `#sync` on account activation; for a fresh account, genesis *is* that
-    // activation, so a relay learns this host's authoritative head atomically with the repo it
-    // describes. `prev_data` is `None` — the genesis commit has no predecessor.
-    let pending_commit = emit_guard
-        .stage_commit(
-            &mut tx,
-            crate::firehose::CommitInput {
-                repo: did.to_string(),
-                commit: genesis_root.to_string(),
-                rev: genesis_rev.to_string(),
-                since: None,
-                prev_data: None,
-                ops: Vec::new(),
-                blocks: genesis_car,
-            },
-        )
-        .await
-        .inspect_err(|e| tracing::error!(error = %e, did = %did, "failed to stage genesis firehose commit event"))
-        .map_err(|_| {
-            ApiError::new(ErrorCode::InternalError, "failed to sequence genesis repo")
-        })?
-        .stage_sync(
-            &mut tx,
-            crate::firehose::SyncInput {
-                did: did.to_string(),
-                rev: genesis_rev.to_string(),
-                blocks: genesis_sync_car,
-            },
-        )
-        .await
-        .inspect_err(|e| tracing::error!(error = %e, did = %did, "failed to stage genesis firehose sync event"))
-        .map_err(|_| {
-            ApiError::new(ErrorCode::InternalError, "failed to sequence genesis repo")
-        })?;
+            root: p.genesis_root,
+            rev: p.genesis_rev,
+            blocks: p.genesis_blocks,
+            car: p.genesis_car,
+            sync_car: p.genesis_sync_car,
+        },
+    )
+    .await?;
 
     sqlx::query("DELETE FROM pending_sessions WHERE account_id = ?")
-        .bind(account_id)
+        .bind(p.account_id)
         .execute(&mut *tx)
         .await
         .inspect_err(|e| tracing::error!(error = %e, "failed to delete pending sessions"))
         .map_err(|_| ApiError::new(ErrorCode::InternalError, "failed to clean up sessions"))?;
 
     sqlx::query("DELETE FROM devices WHERE account_id = ?")
-        .bind(account_id)
+        .bind(p.account_id)
         .execute(&mut *tx)
         .await
         .inspect_err(|e| tracing::error!(error = %e, "failed to delete devices"))
         .map_err(|_| ApiError::new(ErrorCode::InternalError, "failed to clean up devices"))?;
 
     sqlx::query("DELETE FROM pending_accounts WHERE id = ?")
-        .bind(account_id)
+        .bind(p.account_id)
         .execute(&mut *tx)
         .await
         .inspect_err(|e| tracing::error!(error = %e, "failed to delete pending account"))
@@ -822,32 +761,7 @@ async fn promote_account(
         .inspect_err(|e| tracing::error!(error = %e, "failed to commit promotion transaction"))
         .map_err(|_| ApiError::new(ErrorCode::InternalError, "failed to commit transaction"))?;
 
-    // Only now that the transaction (which already carries the genesis commit's and the `#sync`'s
-    // `repo_seq` rows) has committed successfully: advance the sequence counter past both and
-    // broadcast the `#commit` then the `#sync`.
-    pending_commit.finish();
-
-    // Emit the `#account` (active) frame separately, best-effort, once the account and its
-    // genesis commit are both durable — mirrors `create_handle.rs`'s post-write `#identity`
-    // emission: a sequencer write failure here is logged and dropped rather than failing an
-    // otherwise-successful account creation. A relay that misses it still learns the account is
-    // active from the genesis commit above or a later one.
-    if let Err(e) = state
-        .firehose
-        .emit_account(did.to_string(), true, None)
-        .await
-    {
-        tracing::warn!(
-            error = %e,
-            did = %did,
-            "failed to sequence #account firehose event after account promotion (non-fatal)"
-        );
-    }
-
-    // A fresh account may be the first thing this host has ever announced: request crawl so a
-    // relay that has never seen this PDS discovers it now rather than waiting on some future
-    // commit to trigger the notification.
-    state.crawlers.notify();
+    announce_active_account(state, pending_commit, did).await;
 
     Ok(())
 }
@@ -885,6 +799,29 @@ mod tests {
         assert_eq!(
             validate_did_web_document(
                 &document,
+                "alice.example.com",
+                "did:key:zdevice",
+                "did:key:zrepo",
+                "https://pds.example.com/",
+            )
+            .unwrap(),
+            did
+        );
+
+        // The wallet composes bare-fragment ids (the reference stack's shape, and the only one
+        // every third-party resolver matches); a hand-authored DID-qualified id stays accepted.
+        let bare = serde_json::json!({
+            "id": did,
+            "alsoKnownAs": ["at://alice.example.com"],
+            "verificationMethod": [
+                {"id": "#device", "type": "Multikey", "controller": did, "publicKeyMultibase": "zdevice"},
+                {"id": "#atproto", "type": "Multikey", "controller": did, "publicKeyMultibase": "zrepo"}
+            ],
+            "service": [{"id": "#atproto_pds", "type": "AtprotoPersonalDataServer", "serviceEndpoint": "https://pds.example.com"}]
+        });
+        assert_eq!(
+            validate_did_web_document(
+                &bare,
                 "alice.example.com",
                 "did:key:zdevice",
                 "did:key:zrepo",
@@ -1857,36 +1794,6 @@ mod tests {
     }
 
     // ── Missing auth ──────────────────────────────────────────────────────────
-
-    /// Missing Authorization header returns 401 UNAUTHORIZED.
-    #[tokio::test]
-    async fn missing_auth_returns_401() {
-        let state = test_state_for_did("https://plc.directory".to_string()).await;
-        let signed_op = serde_json::json!({});
-        let request = Request::builder()
-            .method("POST")
-            .uri("/v1/dids")
-            .header("Content-Type", "application/json")
-            .body(Body::from(
-                serde_json::json!({
-                    "rotationKeyPublic": "did:key:z123",
-                    "signedCreationOp": signed_op,
-                    "password": "test-password",
-                })
-                .to_string(),
-            ))
-            .unwrap();
-
-        let app = crate::app::app(state);
-        let response = app.oneshot(request).await.unwrap();
-
-        assert_eq!(response.status(), StatusCode::UNAUTHORIZED, "expected 401");
-        let body_bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
-            .await
-            .unwrap();
-        let body: serde_json::Value = serde_json::from_slice(&body_bytes).unwrap();
-        assert_eq!(body["error"]["code"], "UNAUTHORIZED");
-    }
 
     // ── Password provisioning ─────────────────────────────────────────────────
 

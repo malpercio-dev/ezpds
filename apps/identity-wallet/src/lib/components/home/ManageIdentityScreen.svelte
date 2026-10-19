@@ -27,10 +27,10 @@
   } = $props();
 </script>
 
-<div class="screen">
+<div class="screen u-screen-lg">
   <ScreenHeader title="Manage identity" onback={onback} backLabel="Back to identity" />
 
-  <section class="zone">
+  <section class="zone u-stack-xs">
     {#if onchangehandle}
       <NavRow
         title="Change handle"
@@ -64,7 +64,7 @@
     </NavRow>
   </section>
 
-  <section class="zone">
+  <section class="zone u-stack-xs">
     <NavRow
       tone="door"
       title="Advanced"
@@ -79,17 +79,4 @@
 </div>
 
 <style>
-  .screen {
-    display: flex;
-    flex-direction: column;
-    height: 100%;
-    padding: var(--space-lg) var(--space-md) var(--space-xl);
-    gap: var(--space-lg);
-    overflow-y: auto;
-  }
-  .zone {
-    display: flex;
-    flex-direction: column;
-    gap: var(--space-xs);
-  }
 </style>

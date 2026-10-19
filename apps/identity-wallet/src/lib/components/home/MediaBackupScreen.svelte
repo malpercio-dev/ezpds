@@ -310,10 +310,10 @@
   onMount(load);
 </script>
 
-<div class="screen">
+<div class="screen u-screen">
   <ScreenHeader title="Media backup" {onback} backLabel="Back to identity" />
 
-  <p class="lede">
+  <p class="lede u-body-copy">
     Keep your own copy of this account’s photos and videos in iCloud Drive. If your
     server ever loses them, you can put them back — byte for byte, with every post
     still pointing at the right media.
@@ -326,13 +326,13 @@
       {/each}
     </div>
   {:else if loadError}
-    <div class="notice" role="alert">
-      <p class="notice-text">{loadError}</p>
+    <div class="notice u-notice" role="alert">
+      <p class="notice-text u-notice-text">{loadError}</p>
       <Button variant="secondary" onclick={load}>Try again</Button>
     </div>
   {:else if status && status.location === null}
-    <div class="notice notice--muted">
-      <p class="notice-text notice-text--ink">
+    <div class="notice notice--muted u-notice">
+      <p class="notice-text notice-text--ink u-notice-text">
         iCloud Drive isn’t available on this device. Turn it on in Settings → your name →
         iCloud → iCloud Drive, then come back here.
       </p>
@@ -341,16 +341,16 @@
   {:else if status}
     <div class="status-card">
       <div class="stat-row">
-        <span class="stat">
+        <span class="stat u-stack-3xs">
           <span class="stat-n">{status.backedUpCount}</span>
           <span class="stat-l">items backed up</span>
         </span>
-        <span class="stat">
+        <span class="stat u-stack-3xs">
           <span class="stat-n">{formatBytes(status.backedUpBytes)}</span>
           <span class="stat-l">of iCloud storage</span>
         </span>
       </div>
-      <p class="status-meta">
+      <p class="status-meta u-fine">
         {#if status.location === 'icloud'}
           Stored in your iCloud Drive — visible in the Files app under “Obsign”.
         {:else}
@@ -363,7 +363,7 @@
     </div>
 
     {#if !status.enabled}
-      <p class="explain">
+      <p class="explain u-body-copy">
         Backups are optional and count against your iCloud storage (the free plan is 5 GB,
         shared with everything else). Accounts with lots of video can be large. Turning
         this on backs up your media now and keeps it topped up each time you open the app.
@@ -451,7 +451,7 @@
             overwritten or deleted.
           </p>
           {#if restoreError}<p class="error" role="alert">{restoreError}</p>{/if}
-          <div class="confirm-actions">
+          <div class="confirm-actions u-stack-sm">
             <Button onclick={doRestore} disabled={restoring}>
               {#if restoring}<Spinner size={16} /> Restoring…{:else}Restore with biometrics{/if}
             </Button>
@@ -481,7 +481,7 @@
     <!-- Back up your posts — the user-held CAR snapshot of the account's repo. -->
     <div class="section-divider" role="separator"></div>
     <h2 class="section-title">Back up your posts</h2>
-    <p class="lede">
+    <p class="lede u-body-copy">
       Keep your own copy of your timeline — every post, like, follow, and profile edit — in
       iCloud Drive. It’s the one part of your account held only on your server, so this is the
       copy that survives your server itself losing it.
@@ -490,16 +490,16 @@
     {#if repoStatus}
       <div class="status-card">
         <div class="stat-row">
-          <span class="stat">
+          <span class="stat u-stack-3xs">
             <span class="stat-n">{repoStatus.rev ? formatBytes(repoStatus.sizeBytes) : '—'}</span>
             <span class="stat-l">snapshot size</span>
           </span>
-          <span class="stat">
+          <span class="stat u-stack-3xs">
             <span class="stat-n">{repoStatus.rev ? 'Backed up' : 'Not yet'}</span>
             <span class="stat-l">of your posts</span>
           </span>
         </div>
-        <p class="status-meta">
+        <p class="status-meta u-fine">
           {#if repoStatus.location === 'icloud'}
             Stored in your iCloud Drive — visible in the Files app under “Obsign”.
           {:else}
@@ -525,7 +525,7 @@
       {#if repoError}<p class="error" role="alert">{repoError}</p>{/if}
 
       {#if !repoStatus.enabled}
-        <p class="explain">
+        <p class="explain u-body-copy">
           This backs up your posts now and keeps the copy current each time you open the app.
           It’s small — just text and structure, not your media (backed up above) — so it barely
           touches your iCloud storage.
@@ -556,22 +556,6 @@
 </div>
 
 <style>
-  .screen {
-    display: flex;
-    flex-direction: column;
-    height: 100%;
-    padding: var(--space-lg) var(--space-md) var(--space-xl);
-    gap: var(--space-md);
-    overflow-y: auto;
-  }
-
-  .lede {
-    font-size: var(--text-body);
-    color: var(--color-muted);
-    line-height: 1.5;
-    margin: 0;
-  }
-
   .section-divider {
     height: 1px;
     background: var(--color-line);
@@ -587,7 +571,7 @@
   .loading {
     display: flex;
     flex-direction: column;
-    gap: 12px;
+    gap: var(--space-md);
   }
 
   .status-card {
@@ -603,11 +587,6 @@
     display: flex;
     gap: var(--space-lg);
   }
-  .stat {
-    display: flex;
-    flex-direction: column;
-    gap: var(--space-3xs);
-  }
   .stat-n {
     font-size: var(--text-title);
     font-weight: var(--weight-semibold);
@@ -617,19 +596,6 @@
   .stat-l {
     font-size: var(--text-label);
     color: var(--color-muted);
-  }
-  .status-meta {
-    font-size: var(--text-label);
-    color: var(--color-muted);
-    line-height: 1.5;
-    margin: 0;
-  }
-
-  .explain {
-    font-size: var(--text-body);
-    color: var(--color-muted);
-    line-height: 1.5;
-    margin: 0;
   }
 
   .report {
@@ -696,17 +662,12 @@
     line-height: 1.5;
     margin: 0;
   }
-  .confirm-actions {
-    display: flex;
-    flex-direction: column;
-    gap: var(--space-sm);
-  }
 
   .disable-link {
     background: none;
     border: none;
     padding: var(--space-sm) var(--space-xs);
-    min-height: 44px;
+    min-height: var(--size-tap-target);
     font-family: var(--font-sans);
     font-size: var(--text-label);
     font-weight: var(--weight-semibold);
@@ -725,24 +686,9 @@
     margin: calc(-1 * var(--space-sm)) 0 0;
   }
 
-  .notice {
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    gap: var(--space-md);
-    background: var(--color-critical-surface);
-    border-radius: var(--radius-lg);
-    padding: var(--space-lg);
-    text-align: center;
-  }
   .notice--muted {
     background: var(--color-surface);
     border: 1px solid var(--color-line);
-  }
-  .notice-text {
-    font-size: var(--text-body);
-    color: var(--color-critical);
-    margin: 0;
   }
   .notice-text--ink {
     color: var(--color-ink);

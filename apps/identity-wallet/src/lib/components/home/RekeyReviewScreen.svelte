@@ -120,15 +120,15 @@
 <div class="screen">
   <ScreenHeader title="Add a recovery key" onback={onback} backLabel="Back to identity" />
 
-  <p class="intro">
+  <p class="intro u-body-soft">
     This identity predates recovery keys. Adding one gives you a way back in if you lose this
     device — through your saved shares — without changing anything you rely on today. Your device
     key stays firmly in control, and nothing is removed.
   </p>
 
-  <div class="identity">
-    <span class="id-label">Identity</span>
-    <span class="id-did">{truncateDid(did)}</span>
+  <div class="identity u-stack-2xs">
+    <span class="id-label u-label-muted">Identity</span>
+    <span class="id-did u-id-mono">{truncateDid(did)}</span>
   </div>
 
   {#if phase.kind === 'loading'}
@@ -137,7 +137,7 @@
       <p class="hint">Generating your new recovery shares…</p>
     </div>
   {:else if phase.kind === 'load_error'}
-    <p class="status" role="alert">{phase.error}</p>
+    <p class="status u-notice-text" role="alert">{phase.error}</p>
     <Button onclick={build}>Try again</Button>
   {:else if phase.kind === 'working'}
     <div class="center">
@@ -145,8 +145,8 @@
       <p class="hint">Publishing the change and saving your shares…</p>
     </div>
   {:else if phase.kind === 'ready'}
-    <div class="block">
-      <p class="block-label">This upgrade will</p>
+    <div class="block u-stack-sm">
+      <p class="block-label u-block-label">This upgrade will</p>
       {#each phase.preview.diff.addedKeys as key}
         <DiffRow variant="restore" title="Add your new recovery key" value={key} />
       {/each}
@@ -160,7 +160,7 @@
 
     {#if phase.error}
       <div class="error-box" role="alert">
-        <p class="error-text">{phase.error}</p>
+        <p class="error-text u-error-text">{phase.error}</p>
       </div>
     {/if}
 
@@ -181,30 +181,6 @@
     overflow-y: auto;
   }
 
-  .intro {
-    font-size: var(--text-body);
-    line-height: var(--leading-body);
-    color: var(--color-ink-soft);
-    margin: 0;
-  }
-
-  .identity {
-    display: flex;
-    flex-direction: column;
-    gap: var(--space-2xs);
-  }
-  .id-label {
-    font-size: var(--text-label);
-    font-weight: var(--weight-semibold);
-    color: var(--color-muted);
-  }
-  .id-did {
-    font-family: var(--font-mono);
-    font-size: var(--text-data);
-    color: var(--color-ink-soft);
-    word-break: break-all;
-  }
-
   .center {
     display: flex;
     flex-direction: column;
@@ -218,23 +194,7 @@
     margin: 0;
     text-align: center;
   }
-  .status {
-    font-size: var(--text-body);
-    color: var(--color-critical);
-    margin: 0;
-  }
 
-  .block {
-    display: flex;
-    flex-direction: column;
-    gap: var(--space-sm);
-  }
-  .block-label {
-    font-size: var(--text-label);
-    font-weight: var(--weight-semibold);
-    color: var(--color-muted);
-    margin: 0;
-  }
   .reassure {
     font-size: var(--text-label);
     color: var(--color-ink-soft);
@@ -244,7 +204,7 @@
   .sealed {
     display: inline-flex;
     align-items: center;
-    gap: 7px;
+    gap: var(--space-sm);
     font-size: var(--text-label);
     font-weight: var(--weight-semibold);
     color: var(--color-primary-deep);
@@ -253,13 +213,7 @@
   .error-box {
     background: var(--color-critical-surface);
     border-radius: var(--radius-md);
-    padding: 12px var(--space-md);
-  }
-  .error-text {
-    font-size: var(--text-label);
-    color: var(--color-critical);
-    margin: 0;
-    line-height: 1.4;
+    padding: var(--space-md) var(--space-md);
   }
 
   .actions {

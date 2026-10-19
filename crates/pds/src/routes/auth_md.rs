@@ -36,7 +36,7 @@ pub async fn serve_auth_md(State(state): State<AppState>) -> impl IntoResponse {
 /// Pure template render: substitute this instance's facts into the embedded document. The public
 /// URL is trimmed of a trailing slash so examples never emit `https://host//oauth/...`.
 fn render_auth_md(config: &Config) -> String {
-    let base = config.public_url.trim_end_matches('/');
+    let base = config.issuer();
     AUTH_MD_TEMPLATE
         .replace("{{public_url}}", base)
         .replace("{{service_name}}", &config.service_name)

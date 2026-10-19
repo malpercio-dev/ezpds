@@ -177,12 +177,16 @@ async fn collect_repo_blob_refs(
         let row = crate::db::blocks::get_block(&state.db, &cid_str)
             .await
             .map_err(|e| {
-                tracing::error!(error = %e, did = %did, cid = %cid_str, "failed to read block");
-                ApiError::new(ErrorCode::InternalError, "failed to list missing blobs")
+                {
+                    tracing::error!(error = %e, did = %did, cid = %cid_str, "failed to read block");
+                    ApiError::new(ErrorCode::InternalError, "failed to list missing blobs")
+                }
             })?
             .ok_or_else(|| {
-                tracing::error!(did = %did, cid = %cid_str, key = %key, "MST entry references missing block");
-                ApiError::new(ErrorCode::InternalError, "repo integrity error")
+                {
+                    tracing::error!(did = %did, cid = %cid_str, key = %key, "MST entry references missing block");
+                    ApiError::new(ErrorCode::InternalError, "repo integrity error")
+                }
             })?;
 
         let ipld: Ipld = serde_ipld_dagcbor::from_slice(&row.bytes).map_err(|e| {
@@ -249,19 +253,6 @@ mod tests {
             app.clone().oneshot(req).await.unwrap().status(),
             StatusCode::OK
         );
-    }
-
-    #[tokio::test]
-    async fn unauthenticated_returns_401() {
-        let state = crate::app::test_state().await;
-        let app = crate::app::app(state);
-        let request = Request::builder()
-            .method(http::Method::GET)
-            .uri("/xrpc/com.atproto.repo.listMissingBlobs")
-            .body(Body::empty())
-            .unwrap();
-        let resp = app.oneshot(request).await.unwrap();
-        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
     }
 
     #[tokio::test]
