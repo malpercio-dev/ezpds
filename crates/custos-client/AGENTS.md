@@ -27,6 +27,7 @@ exist.
 | `src/identity.rs` | typed XRPC methods for `com.atproto.identity.*` (the claim trio: `requestPlcOperationSignature`, `signPlcOperation`, `getRecommendedDidCredentials`) |
 | `src/app_passwords.rs` | typed XRPC methods for `com.atproto.server.{create,list,revoke}AppPassword` |
 | `src/migration.rs` | typed XRPC methods for the outbound-migration set (service auth, destination account creation, repo/blob import, preferences, account status/lifecycle) — no orchestration, that stays in the caller |
+| `src/pds_client.rs` | `PdsClient` — discovery/auth/XRPC against *arbitrary* PDS endpoints and plc.directory (handle resolution, DID-doc discovery, `describeServer`/`createSession`, OAuth against a discovered AS, plc.directory reads/writes, repo/blob sync) |
 | `src/base64url.rs` | the one base64 alphabet this crate uses (unpadded base64url) |
 
 ## Contracts
@@ -73,18 +74,33 @@ exist.
   `token_exchange` all take `client_id`/`redirect_uri` as plain parameters instead of deriving
   them internally.
 - The typed XRPC methods in `identity.rs`/`app_passwords.rs`/`migration.rs` take an explicit
-  `observer: &dyn TransportObserver` parameter — unlike `OAuthClient`/`CustosClient`, which own
-  their observer at construction — because these are free functions, not methods on a
+  `observer: &dyn TransportObserver` parameter — unlike `OAuthClient`/`CustosClient`/`PdsClient`,
+  which own their observer at construction — because these are free functions, not methods on a
   long-lived client. Callers (identity-wallet's `pds_client.rs`) wrap each with the same
   original signature (no new parameter), closing over the app's observer, so none of this
   file's ~70 XRPC call sites needed to change.
-- `PdsClient` itself (discovery/plc.directory/`describe_server`/`create_session` — the
-  *unauthenticated* half of `pds_client.rs`) has not moved here yet: it has its own
-  constructor/struct-level concerns (a `pds_capabilities` cache side effect inside
-  `describe_server`, the `client_id_for_pds` coupling) that need the same careful decoupling as
-  `OAuthClient`/`CustosClient` got, not done in this PR.
-- `PdsClient`'s own module-level helpers this crate does NOT hold: the sovereign-session and
-  auth.md agent-flow logic built on the XRPC methods above stays in identity-wallet's
-  `migration_orchestrator.rs`/`agents.rs`/`sovereign_session.rs` — that's orchestration/business
-  logic, not client machinery. Lexicon-generated (vs. hand-written) typed methods is a separate,
+- **`PdsClient::describe_server` reports the `custos` capability extension to a second,
+  separate trait — `DescribeServerObserver`** — not folded into `TransportObserver`.
+  `pds_capabilities::probe` (identity-wallet) reads its own cache rather than
+  `describe_server`'s return value directly, so a no-op describe-observer silently starves it:
+  every `PdsClient` construction site an app's tests use for capability-gated routing needs the
+  real observer wired, not just the one production instance. Identity-wallet solves this with
+  its own `pds_client::new_for_test` (real observers, `#[cfg(test)]`, distinct from this
+  crate's `PdsClient::new_for_test`, which defaults to no-ops and is deliberately *not*
+  `#[cfg(test)]` — see that constructor's doc comment for why) — this is the one place the
+  "no-op by default" pattern from the rest of this crate does not hold, and a lesson for the
+  next PR that adds a per-construction-site observer: check whether *anything* reads the
+  side effect back out of a shared cache before defaulting it away.
+- `PdsClient`'s own OAuth client identity parameters (`client_id`/`redirect_uri` on `pds_par`/
+  `pds_token_exchange`) follow the same pattern as `OAuthClient`/`CustosClient` — plain
+  parameters, never derived internally.
+- The sovereign-session and auth.md agent-flow logic built on the XRPC methods above stays in
+  identity-wallet's `sovereign_session.rs`/`agents.rs`/`session_provider.rs` — that is
+  orchestration over `IdentityStore`/`SessionProvider` (Keychain-backed per-DID identity state),
+  not client machinery this Tauri-free crate can hold without dragging that state model in too.
+  A future PR could redesign these behind injected identity/signing/session-persistence traits
+  (mirroring `KeychainStore`/`TokenPersister` here) if the wallet core extraction needs it: the
+  one genuinely reusable slice inside `sovereign_login_impl` is small (build a signed request,
+  POST, classify the response — the key resolution, signing, and persistence around it are all
+  `IdentityStore`-shaped). Lexicon-generated (vs. hand-written) typed methods is a separate,
   not-yet-decided follow-up.

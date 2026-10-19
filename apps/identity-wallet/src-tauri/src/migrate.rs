@@ -1792,7 +1792,7 @@ mod tests {
                     "services": { "atproto_pds": { "type": "AtprotoPersonalDataServer", "endpoint": "https://new.pds" } }
                 }));
         });
-        let pds_client = PdsClient::new_for_test(plc.base_url());
+        let pds_client = crate::pds_client::new_for_test(plc.base_url());
 
         // Destination PDS mock: getRecommendedDidCredentials for the NEW PDS.
         let dest = MockServer::start();
@@ -1983,7 +1983,7 @@ mod tests {
             when.method(POST).path(format!("/{did}"));
             then.status(200).json_body(serde_json::json!({}));
         });
-        let pds_client = PdsClient::new_for_test(plc.base_url());
+        let pds_client = crate::pds_client::new_for_test(plc.base_url());
 
         // A dummy op body — reconcile-first must return before this is ever POSTed.
         let dummy_op = serde_json::json!({ "type": "plc_operation" });
@@ -2037,7 +2037,7 @@ mod tests {
             when.method(POST).path(format!("/{did}"));
             then.status(200).json_body(serde_json::json!({}));
         });
-        let pds_client = PdsClient::new_for_test(plc.base_url());
+        let pds_client = crate::pds_client::new_for_test(plc.base_url());
 
         let op = serde_json::json!({ "type": "plc_operation" });
         submit_migration_op_reconciling(&pds_client, did, &op, op_cid)
@@ -2081,7 +2081,7 @@ mod tests {
             when.method(POST).path(format!("/{did}"));
             then.status(400).body("bad op");
         });
-        let pds_client = PdsClient::new_for_test(plc.base_url());
+        let pds_client = crate::pds_client::new_for_test(plc.base_url());
 
         let op = serde_json::json!({ "type": "plc_operation" });
         let err = submit_migration_op_reconciling(&pds_client, did, &op, op_cid)

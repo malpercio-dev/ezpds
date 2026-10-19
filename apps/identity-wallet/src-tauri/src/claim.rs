@@ -1998,7 +1998,7 @@ mod tests {
             then.status(200).body(&audit_log_json);
         });
 
-        let pds_client_with_plc = crate::pds_client::PdsClient::new_for_test(plc_mock.base_url());
+        let pds_client_with_plc = crate::pds_client::new_for_test(plc_mock.base_url());
 
         // Create test session and OAuthClient
         let session = Arc::new(Mutex::new(crate::oauth::OAuthSession {
@@ -2106,7 +2106,7 @@ mod tests {
             then.status(200).body(&audit_log_json);
         });
 
-        let pds_client_with_plc = crate::pds_client::PdsClient::new_for_test(plc_mock.base_url());
+        let pds_client_with_plc = crate::pds_client::new_for_test(plc_mock.base_url());
 
         let session = Arc::new(Mutex::new(crate::oauth::OAuthSession {
             access_token: "test_token".to_string(),
@@ -2208,7 +2208,7 @@ mod tests {
             then.status(200).body(&audit_log_json);
         });
 
-        let pds_client_with_plc = crate::pds_client::PdsClient::new_for_test(plc_mock.base_url());
+        let pds_client_with_plc = crate::pds_client::new_for_test(plc_mock.base_url());
 
         let session = Arc::new(Mutex::new(crate::oauth::OAuthSession {
             access_token: "test_token".to_string(),
@@ -2309,7 +2309,7 @@ mod tests {
             then.status(200).body(&audit_log_json);
         });
 
-        let pds_client_with_plc = crate::pds_client::PdsClient::new_for_test(plc_mock.base_url());
+        let pds_client_with_plc = crate::pds_client::new_for_test(plc_mock.base_url());
 
         let session = Arc::new(Mutex::new(crate::oauth::OAuthSession {
             access_token: "test_token".to_string(),
@@ -2408,7 +2408,7 @@ mod tests {
             then.status(200).body(&audit_log_json);
         });
 
-        let pds_client_with_plc = crate::pds_client::PdsClient::new_for_test(plc_mock.base_url());
+        let pds_client_with_plc = crate::pds_client::new_for_test(plc_mock.base_url());
 
         let session = Arc::new(Mutex::new(crate::oauth::OAuthSession {
             access_token: "test_token".to_string(),
@@ -2524,7 +2524,7 @@ mod tests {
             then.status(200).body(&audit_log_json);
         });
 
-        let pds_client_with_plc = crate::pds_client::PdsClient::new_for_test(plc_mock.base_url());
+        let pds_client_with_plc = crate::pds_client::new_for_test(plc_mock.base_url());
 
         let session = Arc::new(Mutex::new(crate::oauth::OAuthSession {
             access_token: "test_token".to_string(),
@@ -2614,7 +2614,7 @@ mod tests {
             }));
         });
 
-        let pds_client = crate::pds_client::PdsClient::new_for_test(mock_server.base_url());
+        let pds_client = crate::pds_client::new_for_test(mock_server.base_url());
 
         // The claim flow's source client is a full-session **Bearer** client
         // (`authenticate_source_pds` → `OAuthClient::new_bearer`), so the test must use one too.
@@ -2717,7 +2717,7 @@ mod tests {
                 ]));
         });
 
-        let pds_client = crate::pds_client::PdsClient::new_for_test(mock_server.base_url());
+        let pds_client = crate::pds_client::new_for_test(mock_server.base_url());
 
         let claim_state = ClaimState {
             did: "did:plc:test".to_string(),
@@ -2769,7 +2769,7 @@ mod tests {
                 .json_body(serde_json::json!({"error": "Conflicting operation"}));
         });
 
-        let pds_client = crate::pds_client::PdsClient::new_for_test(mock_server.base_url());
+        let pds_client = crate::pds_client::new_for_test(mock_server.base_url());
 
         let claim_state = ClaimState {
             did: "did:plc:test".to_string(),

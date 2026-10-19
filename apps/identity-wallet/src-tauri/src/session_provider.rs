@@ -595,7 +595,7 @@ mod tests {
 
         // An unroutable plc.directory: reaching the network at all would error, so a
         // success proves the fast path never touched it.
-        let client = PdsClient::new_for_test("http://127.0.0.1:9".into());
+        let client = crate::pds_client::new_for_test("http://127.0.0.1:9".into());
         let session = SessionProvider
             .full_access_client(&client, &IdentityStore, DID, now())
             .await
@@ -636,7 +636,7 @@ mod tests {
             })
             .await;
 
-        let client = PdsClient::new_for_test(server.base_url());
+        let client = crate::pds_client::new_for_test(server.base_url());
         let session = SessionProvider
             .full_access_client(&client, &IdentityStore, DID, now())
             .await
@@ -671,7 +671,7 @@ mod tests {
             })
             .await;
 
-        let client = PdsClient::new_for_test(server.base_url());
+        let client = crate::pds_client::new_for_test(server.base_url());
         let (a, b) = tokio::join!(
             SessionProvider.full_access_client(&client, &IdentityStore, DID, now()),
             SessionProvider.full_access_client(&client, &IdentityStore, DID, now()),
@@ -707,7 +707,7 @@ mod tests {
             })
             .await;
 
-        let client = PdsClient::new_for_test(server.base_url());
+        let client = crate::pds_client::new_for_test(server.base_url());
         let result = SessionProvider
             .full_access_client(&client, &IdentityStore, DID, now())
             .await;
@@ -747,7 +747,7 @@ mod tests {
             })
             .await;
 
-        let client = PdsClient::new_for_test(server.base_url());
+        let client = crate::pds_client::new_for_test(server.base_url());
         let result = SessionProvider
             .full_access_client(&client, &IdentityStore, DID, now())
             .await;
@@ -775,7 +775,7 @@ mod tests {
             })
             .await;
 
-        let client = PdsClient::new_for_test(server.base_url());
+        let client = crate::pds_client::new_for_test(server.base_url());
         let result = SessionProvider
             .full_access_client(&client, &IdentityStore, DID, now())
             .await;
@@ -803,7 +803,7 @@ mod tests {
         seed(DID, &record);
 
         // Expired access forces the refresh path, but discovery cannot reach the network.
-        let client = PdsClient::new_for_test("http://127.0.0.1:9".into());
+        let client = crate::pds_client::new_for_test("http://127.0.0.1:9".into());
         let result = SessionProvider
             .full_access_client(&client, &IdentityStore, DID, now())
             .await;
@@ -818,7 +818,7 @@ mod tests {
         crate::keychain::clear_for_test();
         IdentityStore.add_identity(DID).unwrap();
 
-        let client = PdsClient::new_for_test("http://127.0.0.1:9".into());
+        let client = crate::pds_client::new_for_test("http://127.0.0.1:9".into());
         let result = SessionProvider
             .full_access_client(&client, &IdentityStore, DID, now())
             .await;
@@ -843,7 +843,7 @@ mod tests {
 
         // Unroutable plc.directory: reaching it would error, so a clean NeedsUnlock
         // proves the dead-chain short-circuit precedes any discovery.
-        let client = PdsClient::new_for_test("http://127.0.0.1:9".into());
+        let client = crate::pds_client::new_for_test("http://127.0.0.1:9".into());
         let result = SessionProvider
             .full_access_client(&client, &IdentityStore, DID, now())
             .await;
@@ -888,7 +888,7 @@ mod tests {
             .store_oauth_tokens(OTHER_DID, &bob_record)
             .unwrap();
 
-        let client = PdsClient::new_for_test("http://127.0.0.1:9".into());
+        let client = crate::pds_client::new_for_test("http://127.0.0.1:9".into());
         let alice = SessionProvider
             .full_access_client(&client, &IdentityStore, DID, now())
             .await

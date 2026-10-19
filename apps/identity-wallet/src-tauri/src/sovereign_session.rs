@@ -521,7 +521,7 @@ mod tests {
             })
             .await;
 
-        let client = PdsClient::new_for_test(server.base_url());
+        let client = crate::pds_client::new_for_test(server.base_url());
         let result = sovereign_login_impl(&client, &IdentityStore, DID, TIMESTAMP, &nonce)
             .await
             .unwrap();
@@ -553,7 +553,7 @@ mod tests {
         let nonce = URL_SAFE_NO_PAD.encode([8u8; NONCE_BYTES]);
 
         let result = sovereign_login_impl(
-            &PdsClient::new_for_test(server.base_url()),
+            &crate::pds_client::new_for_test(server.base_url()),
             &IdentityStore,
             DID,
             TIMESTAMP,
@@ -579,7 +579,7 @@ mod tests {
         let nonce = URL_SAFE_NO_PAD.encode([9u8; NONCE_BYTES]);
 
         let result = sovereign_login_impl(
-            &PdsClient::new_for_test(server.base_url()),
+            &crate::pds_client::new_for_test(server.base_url()),
             &IdentityStore,
             DID,
             TIMESTAMP,
@@ -612,7 +612,7 @@ mod tests {
         let nonce = URL_SAFE_NO_PAD.encode([10u8; NONCE_BYTES]);
 
         let result = sovereign_login_impl(
-            &PdsClient::new_for_test(server.base_url()),
+            &crate::pds_client::new_for_test(server.base_url()),
             &IdentityStore,
             DID,
             TIMESTAMP,
@@ -645,7 +645,7 @@ mod tests {
         let nonce = URL_SAFE_NO_PAD.encode([11u8; NONCE_BYTES]);
 
         sovereign_login_impl(
-            &PdsClient::new_for_test(server.base_url()),
+            &crate::pds_client::new_for_test(server.base_url()),
             &IdentityStore,
             DID,
             TIMESTAMP,
@@ -676,7 +676,7 @@ mod tests {
                 .await;
             let nonce = URL_SAFE_NO_PAD.encode([status as u8; NONCE_BYTES]);
             let result = sovereign_login_impl(
-                &PdsClient::new_for_test(server.base_url()),
+                &crate::pds_client::new_for_test(server.base_url()),
                 &IdentityStore,
                 DID,
                 TIMESTAMP,

@@ -129,7 +129,7 @@ allowlist lives in its module's doc — `claim.rs` (the 4-point claim verificati
 | `oauth.rs` | `AppState` (all flow-state slots); re-exports `custos_client::{DpopKeypair, OAuthSession, OAuthError}` plus this app's `KeychainStore`/`TransportObserver`/`TokenPersister` adapters for that crate. The create-flow OAuth login (`prepare/complete_oauth_flow`) was removed once the create flow started ending at `home` with no OAuth round trip — slot inventory and the retirement rationale in the module doc |
 | `oauth_client.rs` | Re-exports `custos_client::OAuthClient` (DPoP and Bearer modes, lazy refresh, nonce retry, non-nonce 400s passed through intact — see that crate's module doc) plus `diagnostics_observer()`, the one seam a real `new_bearer_with_observer` call site should pass |
 | `http.rs` | Re-exports `custos_client::CustosClient` for the one configured PDS (runtime URL, Keychain-persisted); owns the compile-time default base URL and `new_configured`, which wires this app's diagnostics observer — see module doc |
-| `pds_client.rs` | discovery/auth/XRPC against arbitrary PDSes + plc.directory (`PdsClient`, not yet moved — see `crates/custos-client/AGENTS.md`'s Boundaries), the wallet's OAuth identity constants (canonical client_id, reverse-FQDN redirect, V042 sync); re-exports `custos_client::PdsClientError` + the claim/app-password/migration typed XRPC types, and wraps `custos_client::{identity,app_passwords,migration}`'s methods and `xrpc_ok`/`xrpc_json`/`classify_xrpc_response` with this app's diagnostics observer — full inventory and error reachability in the module doc |
+| `pds_client.rs` | Re-exports `custos_client::PdsClient` (discovery/auth/XRPC against arbitrary PDSes + plc.directory) plus this app's OAuth identity constants (canonical client_id, reverse-FQDN redirect, V042 sync) and `new_with_diagnostics`/`new_for_test`, which wire this app's diagnostics + `pds_capabilities` observers (`new_for_test` wires *real* observers unlike the crate's own — see `crates/custos-client/AGENTS.md`'s Boundaries for why). Also re-exports `PdsClientError` + the claim/app-password/migration typed XRPC types, and wraps `custos_client::{identity,app_passwords,migration}`'s methods with this app's diagnostics observer — full inventory and error reachability in the module doc |
 | `pds_capabilities.rs` | per-host cache of `describeServer`'s `custos` extension; absence is not an error, gates ask about features never vendors — cache contract in the module doc |
 | `claim.rs` | the 5-command PLC claim pipeline (password source login per ADR-0021; a claim changes nothing but inserting the device key) — see module doc |
 | `migrate.rs` | self-signed migration identity leg (ADR-0002 path 1): build + device-key-sign + direct plc.directory submit; also the did:web document leg; `guard_migration_op`'s allowlist and the claim-guard inversion in the module doc |
@@ -171,9 +171,9 @@ PDS running at the configured URL for account creation to succeed at runtime.
 
 - Frontend → Rust via Tauri IPC (`@tauri-apps/api/core` `invoke()`).
 - Rust → workspace deps: `crates/crypto` (P-256 software path + envelope builders),
-  `crates/custos-client` (the DPoP/OAuth/XRPC client — see its AGENTS.md), `crates/ios-device-key`
-  (device key), `p256`, `multibase`, `hickory-resolver` (DNS TXT handle resolution),
-  `urlencoding`, `chrono`; reqwest is rustls-only (no OpenSSL — rustls handles iOS TLS natively).
+  `crates/custos-client` (the DPoP/OAuth/XRPC client, including DNS TXT handle resolution — see
+  its AGENTS.md), `crates/ios-device-key` (device key), `p256`, `multibase`, `urlencoding`,
+  `chrono`; reqwest is rustls-only (no OpenSSL — rustls handles iOS TLS natively).
 - Rust → the configured PDS, arbitrary PDSes, and plc.directory over HTTPS at runtime (the
   endpoint inventory is each client module's doc: `http.rs`, `pds_client.rs`).
 - Rust/frontend → `tauri-plugin-auth-session` (**vendored** in

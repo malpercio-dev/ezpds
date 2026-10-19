@@ -1064,7 +1064,7 @@ mod tests {
 
         // Setup mock server
         let mock_server = MockServer::start();
-        let client = PdsClient::new_for_test(mock_server.base_url());
+        let client = crate::pds_client::new_for_test(mock_server.base_url());
 
         // Mock GET /{did}/log/audit — returns audit log with genesis + unauthorized op
         mock_server.mock(|when, then| {
@@ -1182,7 +1182,7 @@ mod tests {
 
         // Start mock server
         let mock_server = MockServer::start();
-        let client = PdsClient::new_for_test(mock_server.base_url());
+        let client = crate::pds_client::new_for_test(mock_server.base_url());
 
         // Generate a test genesis operation
         let device_priv_bytes =
