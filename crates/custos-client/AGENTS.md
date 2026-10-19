@@ -27,8 +27,8 @@ exist.
 | `src/identity.rs` | typed XRPC methods for `com.atproto.identity.*` (the claim trio: `requestPlcOperationSignature`, `signPlcOperation`, `getRecommendedDidCredentials`) |
 | `src/app_passwords.rs` | typed XRPC methods for `com.atproto.server.{create,list,revoke}AppPassword` |
 | `src/migration.rs` | typed XRPC methods for the outbound-migration set (service auth, destination account creation, repo/blob import, preferences, account status/lifecycle) — no orchestration, that stays in the caller |
-| `src/pds_client.rs` | `PdsClient` — discovery/auth/XRPC against *arbitrary* PDS endpoints and plc.directory (handle resolution, DID-doc discovery, `describeServer`/`createSession`, OAuth against a discovered AS, plc.directory reads/writes, repo/blob sync) |
-| `src/sovereign_session.rs` | the Custos passwordless full-access session ceremony (`sovereign_login`: sign the shared canonical envelope with a caller-supplied closure, `POST /v1/sessions/sovereign` via `PdsClient`, validate the response DID and JWT sub/aud) plus the pure helpers apps reuse for a restored session (`bearer_jwt_claims`, `audience_matches_server`, `fresh_nonce`, `unix_timestamp`) — no Keychain/persistence concept, the caller resolves signing and persists the result |
+| `src/pds_client.rs` | `PdsClient` — discovery/auth/XRPC against *arbitrary* PDS endpoints and plc.directory (handle resolution, DID-doc discovery, `describeServer`/`createSession`/`refresh_session`, OAuth against a discovered AS, plc.directory reads/writes, repo/blob sync) |
+| `src/sovereign_session.rs` | the Custos passwordless full-access session ceremony (`sovereign_login`: sign the shared canonical envelope with a caller-supplied closure, `POST /v1/sessions/sovereign` via `PdsClient`, validate the response DID and JWT sub/aud) plus the pure helpers apps reuse for a restored/rotated session (`bearer_jwt_claims`, `audience_matches_server`, `fresh_nonce`, `unix_timestamp`) and `refresh_bearer_session` (rotate via `PdsClient::refresh_session` + re-validate the same sub/aud binding, for any Bearer full-access session) — no Keychain/persistence/session-lifecycle-policy concept, the caller resolves signing, decides when to refresh, and persists the result |
 | `src/agents.rs` | typed methods for auth.md's own agent-consent/child-lifecycle endpoints (`list_agents`, `revoke_agent`, `get_agent_audit`, `preview_agent_claim`, `confirm_agent_claim`, `list_children`, `revoke_child`, `delete_child`, `remint_child_assertion`) plus `AgentError`/`map_ceremony_error`/`CeremonyErrorBody` — these aren't `com.atproto.*` XRPC, so they classify responses themselves rather than through `error.rs`'s envelope tail |
 | `src/base64url.rs` | the one base64 alphabet this crate uses (unpadded base64url) |
 
@@ -119,9 +119,14 @@ exist.
   `list_children` call inside `reconcile_children_impl` is a crate *network* call (both also
   reach into the crate for `CeremonyErrorBody`/`map_ceremony_error`, the shared ceremony-code
   classification `map_child_confirm_error` widens ahead of).
-- `SessionProvider` (session-lifecycle resolution: restore / refresh / `NeedsUnlock`,
-  `com.atproto.server.refreshSession` rotation, the per-DID coalescing lock) is still
-  identity-wallet-only orchestration in `session_provider.rs`, layered on
-  `IdentityStore`'s `SovereignTokenRecord` — a candidate for a future PR if the wallet-core
-  extraction needs it, not yet redesigned behind injected traits.
+- **`refresh_bearer_session` is the network+validation slice of a Bearer rotation; the
+  decision ladder around it stays in identity-wallet.** `SessionProvider::full_access_client`
+  (restore / decide-to-refresh / `NeedsUnlock`, the per-DID coalescing lock,
+  `IdentityStore`'s `SovereignTokenRecord` reads/writes) is still identity-wallet-only
+  orchestration in `session_provider.rs` — it calls this function once it has decided a
+  rotation is needed, then persists the result or discards the record on a classified
+  revocation (`map_refresh_error`, session_provider.rs's own mapping from `PdsClientError`
+  to its `SessionError`, mirroring `map_discovery_error`'s existing style in the same file).
+  A candidate for a future PR if the wallet-core extraction needs the ladder itself moved,
+  not yet redesigned behind injected traits.
   Lexicon-generated (vs. hand-written) typed methods is a separate, not-yet-decided follow-up.

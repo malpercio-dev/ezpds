@@ -14,7 +14,11 @@
 //!
 //! [`bearer_jwt_claims`] and [`audience_matches_server`] are the pure JWT helpers apps reuse
 //! to validate a restored/rotated session against the DID and hosting server it was issued
-//! for — the single source of the sub/aud binding check.
+//! for — the single source of the sub/aud binding check. [`refresh_bearer_session`] is the
+//! validated rotation counterpart: it rotates via [`PdsClient::refresh_session`] and
+//! re-checks the same binding, for any Bearer full-access session (sovereign-minted or
+//! password-originated) — a caller's session-lifecycle resolver (restore / refresh /
+//! "needs unlock") stays in the app, since it depends on that app's session-record format.
 
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -111,6 +115,70 @@ pub fn bearer_jwt_claims(token: &str) -> Option<BearerJwtClaims> {
 /// server DID or the PDS URL (some issuers set the public URL as the audience).
 pub fn audience_matches_server(audience: &str, server_did: &str, pds_url: &str) -> bool {
     audience == server_did || audience.trim_end_matches('/') == pds_url.trim_end_matches('/')
+}
+
+/// A validated, rotated Bearer session pair — the result of [`refresh_bearer_session`].
+pub struct RefreshedSession {
+    pub access_jwt: String,
+    pub refresh_jwt: String,
+    pub access_expires_at: u64,
+    pub refresh_expires_at: u64,
+}
+
+/// Rotate a Bearer full-access session (`PdsClient::refresh_session`) and validate the
+/// response is still bound to `did` and `server_did`/`pds_url` — the same sub/aud binding
+/// [`sovereign_login`] checks on mint, re-checked here so a rotation can never silently
+/// re-audience the session onto a different identity or host.
+///
+/// Not specific to a sovereign-minted session: any Bearer full-access session (however it
+/// was originally issued — device-key proof or password `createSession`) refreshes the
+/// same way, which is why this lives beside the shared [`bearer_jwt_claims`]/
+/// [`audience_matches_server`] helpers rather than being sovereign-login-only.
+pub async fn refresh_bearer_session(
+    pds_client: &PdsClient,
+    pds_url: &str,
+    refresh_jwt: &str,
+    did: &str,
+    server_did: &str,
+) -> Result<RefreshedSession, PdsClientError> {
+    let refreshed = pds_client.refresh_session(pds_url, refresh_jwt).await?;
+
+    // Bind the rotated pair to the same DID and hosting server the caller expected — a
+    // rotation must never silently re-audience the session.
+    if refreshed.did != did {
+        return Err(PdsClientError::InvalidResponse {
+            message: "refreshSession returned a different DID".into(),
+        });
+    }
+    let access = bearer_jwt_claims(&refreshed.access_jwt).ok_or_else(|| {
+        PdsClientError::InvalidResponse {
+            message: "rotated accessJwt is missing valid claims".into(),
+        }
+    })?;
+    let refresh = bearer_jwt_claims(&refreshed.refresh_jwt).ok_or_else(|| {
+        PdsClientError::InvalidResponse {
+            message: "rotated refreshJwt is missing valid claims".into(),
+        }
+    })?;
+    if access.sub != did || refresh.sub != did {
+        return Err(PdsClientError::InvalidResponse {
+            message: "rotated tokens are bound to a different DID".into(),
+        });
+    }
+    if !audience_matches_server(&access.aud, server_did, pds_url)
+        || !audience_matches_server(&refresh.aud, server_did, pds_url)
+    {
+        return Err(PdsClientError::InvalidResponse {
+            message: "rotated tokens are bound to a different host".into(),
+        });
+    }
+
+    Ok(RefreshedSession {
+        access_jwt: refreshed.access_jwt,
+        refresh_jwt: refreshed.refresh_jwt,
+        access_expires_at: access.exp,
+        refresh_expires_at: refresh.exp,
+    })
 }
 
 /// Generate a fresh 32-byte canonical base64url nonce for a sovereign-session proof.
@@ -554,5 +622,112 @@ mod tests {
                 _ => false,
             });
         }
+    }
+
+    // ── refresh_bearer_session ─────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn refresh_bearer_session_returns_the_validated_rotated_pair() {
+        let server = MockServer::start_async().await;
+        let new_access = jwt(TIMESTAMP as u64 + 3_600);
+        let new_refresh = jwt(TIMESTAMP as u64 + 172_800);
+        server
+            .mock_async({
+                let new_access = new_access.clone();
+                let new_refresh = new_refresh.clone();
+                move |when, then| {
+                    when.method(POST)
+                        .path("/xrpc/com.atproto.server.refreshSession")
+                        .header("Authorization", "Bearer old-refresh");
+                    then.status(200).json_body(json!({
+                        "accessJwt": new_access,
+                        "refreshJwt": new_refresh,
+                        "did": DID,
+                    }));
+                }
+            })
+            .await;
+
+        let client = PdsClient::new_for_test("http://plc.invalid".into());
+        let result =
+            refresh_bearer_session(&client, &server.base_url(), "old-refresh", DID, SERVER_DID)
+                .await
+                .expect("refresh succeeds");
+
+        assert_eq!(result.access_jwt, new_access);
+        assert_eq!(result.refresh_jwt, new_refresh);
+        assert_eq!(result.access_expires_at, TIMESTAMP as u64 + 3_600);
+    }
+
+    #[tokio::test]
+    async fn refresh_bearer_session_rejects_a_different_did() {
+        let server = MockServer::start_async().await;
+        server
+            .mock_async(move |when, then| {
+                when.method(POST)
+                    .path("/xrpc/com.atproto.server.refreshSession");
+                then.status(200).json_body(json!({
+                    "accessJwt": jwt(TIMESTAMP as u64 + 3_600),
+                    "refreshJwt": jwt(TIMESTAMP as u64 + 172_800),
+                    "did": OTHER_DID,
+                }));
+            })
+            .await;
+
+        let client = PdsClient::new_for_test("http://plc.invalid".into());
+        let result =
+            refresh_bearer_session(&client, &server.base_url(), "old-refresh", DID, SERVER_DID)
+                .await;
+
+        assert!(matches!(
+            result,
+            Err(PdsClientError::InvalidResponse { .. })
+        ));
+    }
+
+    #[tokio::test]
+    async fn refresh_bearer_session_rejects_a_foreign_audience() {
+        let server = MockServer::start_async().await;
+        server
+            .mock_async(move |when, then| {
+                when.method(POST)
+                    .path("/xrpc/com.atproto.server.refreshSession");
+                then.status(200).json_body(json!({
+                    "accessJwt": jwt_for(TIMESTAMP as u64 + 3_600, DID, "did:web:someone-else.example.com"),
+                    "refreshJwt": jwt(TIMESTAMP as u64 + 172_800),
+                    "did": DID,
+                }));
+            })
+            .await;
+
+        let client = PdsClient::new_for_test("http://plc.invalid".into());
+        let result =
+            refresh_bearer_session(&client, &server.base_url(), "old-refresh", DID, SERVER_DID)
+                .await;
+
+        assert!(matches!(
+            result,
+            Err(PdsClientError::InvalidResponse { .. })
+        ));
+    }
+
+    #[tokio::test]
+    async fn refresh_bearer_session_propagates_a_revoked_refresh_token() {
+        let server = MockServer::start_async().await;
+        server
+            .mock_async(move |when, then| {
+                when.method(POST)
+                    .path("/xrpc/com.atproto.server.refreshSession");
+                then.status(401)
+                    .json_body(json!({ "error": "ExpiredToken" }));
+            })
+            .await;
+
+        let client = PdsClient::new_for_test("http://plc.invalid".into());
+        let result =
+            refresh_bearer_session(&client, &server.base_url(), "old-refresh", DID, SERVER_DID)
+                .await;
+
+        assert!(matches!(result, Err(PdsClientError::Unauthorized { .. })));
     }
 }
