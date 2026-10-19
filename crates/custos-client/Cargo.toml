@@ -20,6 +20,8 @@ url = { workspace = true }
 urlencoding = { workspace = true }
 # DNS TXT lookup for handle resolution (PdsClient::resolve_handle).
 hickory-resolver = { workspace = true }
+# Sovereign-session nonce generation.
+rand_core = { workspace = true }
 # Zeroizes the DPoP private key scalar on drop (dpop.rs's `get_or_create`).
 zeroize = { workspace = true }
 # Software P-256 keypair generation for the DPoP proof key — the same functional core the

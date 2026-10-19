@@ -17,6 +17,10 @@
 //!   as `custos_client::identity::…` etc.). No method name collides across the 17 exported
 //!   today, but grouping by concern means a future `get_preferences`-shaped name landing in
 //!   two groups needs no rename — the module path already disambiguates it.
+//! - [`sovereign_session`]: [`sovereign_session::sovereign_login`] (the Custos passwordless
+//!   full-access session ceremony over [`PdsClient`]) and the pure JWT helpers apps reuse to
+//!   validate a restored session's sub/aud binding. No Keychain/persistence concept — the
+//!   caller resolves signing and persists the result (see that module's doc).
 //!
 //! App-specific concerns this crate deliberately does not own: Keychain storage (apps supply
 //! an `ios_device_key::KeychainStore` impl), diagnostics UI/export (apps supply a
@@ -32,6 +36,7 @@ pub mod identity;
 pub mod migration;
 pub mod oauth_client;
 pub mod pds_client;
+pub mod sovereign_session;
 
 pub use custos_client::{CustosClient, ParRequest, ParResponse, TokenErrorResponse};
 pub use dpop::{DpopError, DpopKeypair};
