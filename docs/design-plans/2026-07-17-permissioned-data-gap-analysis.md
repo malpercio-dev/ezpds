@@ -1,9 +1,9 @@
 # Atproto Spaces (proposal 0016, née Permissioned Data) — Custos Gap Analysis
 
-**Date:** 2026-07-17 · **Revised:** 2026-08-20 (official alpha release) · 2026-09-04 (weekly watch)
+**Date:** 2026-07-17 · **Revised:** 2026-08-20 (official alpha release) · 2026-09-04 (weekly watch) · 2026-09-11 (weekly watch)
 **Status:** Research / gap analysis — updated for the alpha; implementation green-lit for Phase 0
 **Sources:**
-- [0016 proposal](https://github.com/bluesky-social/proposals/tree/main/0016-permissioned-data) (canonical; kept in sync with the reference implementation as of the alpha; last diffed against commit `35a2d37`)
+- [0016 proposal](https://github.com/bluesky-social/proposals/tree/main/0016-permissioned-data) (canonical; kept in sync with the reference implementation as of the alpha; last diffed against commit `119fa6b`)
 - [The Atproto Spaces Alpha is Live](https://atproto.com/blog/atproto-spaces-alpha) (2026-08-20 announcement)
 - Reference implementation: `permissioned-data` branch of bluesky-social/atproto — lexicons under `lexicons/com/atproto/{space,simplespace}/`, protocol library in `packages/space/` (LtHash, deniable commits, DPoP, sync — **with golden test vectors**)
 - [Permissioned Data Diary 7: Off the Record](https://dholms.leaflet.pub/3mqtqvjidqs2p) (2026-07-17 — repo structure, signing, sync rationale); earlier diaries: [Diary 2: Buckets](https://dholms.leaflet.pub/3mfrsbcn2gk2a), [Diary 4: The Big Picture](https://dholms.leaflet.pub/3mhj6bcqats2o)
@@ -101,6 +101,41 @@ deltas worth folding in:
    proof's `typ` (`dpop+jwt`) and `alg` header fields alongside the checklist
    already in item 1 above. This affects the wire contract MM-510 mints
    against and the space-credential row in the auth-model table below.
+
+### 2026-09-11 weekly watch (proposals repo, commit `35a2d37`…`119fa6b`)
+
+One substantive change — **`simplespace` write access** — confirmed against
+the lexicon files on `permissioned-data` @ `9d787eb` (`addMember.json`
+removed, `putMember.json` added; `createSpace`/`updateSpace` now require
+`readPolicy` + `writePolicy` instead of one `policy` field; golden LtHash
+digests unchanged). This affects MM-511, MM-514, and MM-516:
+
+1. **Read and write are now independent permissions**, each governed by its
+   own policy field. `policy` splits into `readPolicy` (mints a space
+   credential) and `writePolicy` (governs whether the authority tracks the
+   writer in `listRepos` and forwards its `notifyWrite` notifications);
+   both default to `member-list` and accept the same three variants
+   (`public` / `member-list` / `managing-app`).
+2. **`addMember` is replaced by `putMember`**, which sets a member's `read`
+   and `write` booleans together (both required, replacing the pair
+   wholesale — there's no partial update of just one). `listMembers` returns
+   the same two booleans per member. The `manage=update` grant now
+   authorizes `putMember` where it used to authorize `addMember`.
+3. **Write access does not gate writing** — the base protocol text now says
+   explicitly that a space authority "controls which writers it tracks and
+   which write notifications it forwards, and may exclude writers for any
+   reason including spam or other abuse," but this is purely a sync-fanout
+   decision: an unauthorized writer can still write records into their own
+   permissioned repo (nothing in the protocol stops them), the authority
+   just won't track or sync them. Terminology also tightened: notifications
+   flow from "an account" (not "a member") to "repo hosts" (not "members")
+   notifying the authority — writing was never member-list-gated at the
+   protocol level, only at simplespace's implementation layer, and now
+   simplespace makes that split explicit via `writePolicy`.
+4. **`checkUserAccess` gained an `access` parameter** (`read` | `write`) so
+   the managing app knows which decision it's being asked for; the
+   `clientId` param is omitted on write checks since `notifyWrite` doesn't
+   identify an originating client application.
 
 ## 1. What the proposal specifies
 
@@ -218,7 +253,13 @@ format, sync mechanism, addressing, and resolution path.
   space, the repo host **auto-registers** the authority's
   `#atproto_space_host` as a subscriber. Self-healing via the set hash;
   periodic sweep via `listRepos` (writer set with per-repo `rev` + `hash` —
-  accounts that have written, never a member/reader list).
+  accounts that have written, never a member/reader list). The authority
+  decides which writers it tracks and forwards notifications for, and may
+  exclude one for any reason (spam, abuse); that filter is a sync-fanout
+  decision only — it never stops an account from writing to its own
+  permissioned repo, which the base protocol does not gate. Which policy
+  governs the filter is implementation-defined (`simplespace`'s
+  `writePolicy`, below).
 - **Space deletion** — authority stops answering, deletes its own repo,
   best-effort `notifySpaceDeleted` to registered syncers (who must delete
   their copies). Members' repo hosts are **not** notified and keep the
@@ -230,18 +271,29 @@ format, sync mechanism, addressing, and resolution path.
 ### Required PDS management: `com.atproto.simplespace`
 
 Every PDS MUST implement it (spaces anchored on the user's own DID):
-`createSpace` / `updateSpace` / `deleteSpace` / `getSpace` / `addMember` /
-`removeMember` / `listMembers`, config `{policy: public | member-list |
-managing-app, appAccess: #open | #allowList, managingApp}`. `policy` and
-`appAccess` are open unions — a host MUST reject values it does not implement
-at `createSpace`/`updateSpace` time. The management procedures need the
-relevant `manage` grant; the read queries need only read access (`getSpace`:
-OAuth `read_self` or a space credential; `listMembers`: `read_self`).
-`managing-app` policy defers the per-user authorization decision at
-credential-mint time to the app via `com.atproto.simplespace.checkUserAccess`
-(served by the managing app, service-auth from the authority). Other
-space-management implementations are first-class but live on bespoke space
-services, not the PDS.
+`createSpace` / `updateSpace` / `deleteSpace` / `getSpace` / `putMember` /
+`removeMember` / `listMembers`, config `{readPolicy: public | member-list |
+managing-app, writePolicy: public | member-list | managing-app, appAccess:
+#open | #allowList, managingApp}`. Read and write are independent
+permissions: `readPolicy` gates whether a space credential is minted;
+`writePolicy` gates whether the authority tracks a writer in `listRepos` and
+forwards their `notifyWrite` notifications (it does **not** prevent the
+writer from writing into their own repo — see the "Write notifications"
+bullet above). Both policy fields and `appAccess` are open unions — a host
+MUST reject values it does not implement at `createSpace`/`updateSpace`
+time. `putMember` sets a member's `read`/`write` booleans together
+(`member-list` policy consults them per-permission); it replaces the old
+`addMember`, and `manage=update` now authorizes it in `addMember`'s place.
+The management procedures need the relevant `manage` grant; the read
+queries need only read access (`getSpace`: OAuth `read_self` or a space
+credential; `listMembers`: `read_self`). `managing-app` policy — settable
+independently for reads and writes — defers the per-user authorization
+decision to the app via `com.atproto.simplespace.checkUserAccess` (served
+by the managing app, service-auth from the authority, now parameterized by
+an `access: read | write` field; `clientId` is omitted on write checks,
+since `notifyWrite` carries no originating client). Other space-management
+implementations are first-class but live on bespoke space services, not the
+PDS.
 
 ### XRPC surface (all `com.atproto.space.*` unless noted)
 
@@ -251,7 +303,7 @@ services, not the PDS.
 | Repo (read/sync) | `getRecord`, `listRecords`, `getBlob`, `listBlobs`, `getLatestCommit`, `getRepo`, `listRepoOps` |
 | PDS | `getDelegationToken`, `createRecord`, `putRecord`, `deleteRecord`, `applyWrites`, `listSpaces` |
 | Notifications | `registerNotify`, `unregisterNotify`, `notifyWrite`, `notifySpaceDeleted` |
-| `com.atproto.simplespace.*` | `createSpace`, `updateSpace`, `deleteSpace`, `getSpace`, `addMember`, `removeMember`, `listMembers`, `checkUserAccess` (served by managing app) |
+| `com.atproto.simplespace.*` | `createSpace`, `updateSpace`, `deleteSpace`, `getSpace`, `putMember`, `removeMember`, `listMembers`, `checkUserAccess` (served by managing app) |
 
 The alpha lexicons pin this at **20 `com.atproto.space.*` + 9
 `com.atproto.simplespace.*` schema files** (incl. `defs`); Custos serves
@@ -315,8 +367,9 @@ rides `subscribeRepos`.
 ### W2. Permissioned repo store (new storage engine — the big one)
 - No MST, so this is a DB-backed record store + incremental LtHash state +
   oplog, not an atrium extension. New tables (V048+): `spaces` (authority,
-  type, skey, config, policy, lifecycle), `space_repos` (account × space, rev,
-  2048-byte LtHash state, commit fields), `space_records` (path → CID + DAG-CBOR
+  type, skey, config, read policy, write policy, lifecycle), `space_repos`
+  (account × space, rev, 2048-byte LtHash state, commit fields),
+  `space_records` (path → CID + DAG-CBOR
   value), `space_repo_ops` (oplog: rev, collection, rkey, cid, prev; compaction
   window like `firehose_gc`), `space_members` (simplespace member list),
   `space_notify_registrations`, plus a `jti` replay table.
@@ -379,10 +432,13 @@ lexicons (`lexicons/com/atproto/{space,simplespace}/` on the
 hand-mirror.
 
 ### W5. Space-host role
-Credential issuance policy engine (`public` / `member-list` / `managing-app` ×
-`appAccess` `#open`/`#allowList`, rejecting unimplemented open-union values at
-create/update), DPoP-binding at mint time, writer-set tracking (fed by
-notifications + own writes), notification fan-out worker with retries and
+Credential issuance policy engine (independent read/write `public` /
+`member-list` / `managing-app` policies × `appAccess` `#open`/`#allowList`,
+rejecting unimplemented open-union values at create/update), DPoP-binding at
+mint time, writer-set tracking (fed by notifications + own writes, filtered
+by the write-access policy — an authority may decline to track/forward a
+given writer for any reason without that writer being blocked from writing
+to their own repo), notification fan-out worker with retries and
 registration expiry (`registerNotify`/`unregisterNotify`), auto-registration
 of the authority on first write into a shared space, space deletion flow
 (stop issuing, delete own repo, notify registered syncers, answer renewals
@@ -526,12 +582,12 @@ proceed in parallel (blocking relations are wired in Linear).
 | MM-508 | 1 | Permissioned repo store: migrations (`spaces`, `space_repos` incl. LtHash state, `space_records`, `space_repo_ops`, `space_members`, notify registrations, `jti` replay) + `space_record_write` choke point |
 | MM-509 | 1 | PDS record routes: `com.atproto.space.{createRecord,putRecord,deleteRecord,applyWrites,listSpaces,getRecord,listRecords,getLatestCommit}` + `.bru` files (blocked by MM-506/507/508) |
 | MM-510 | 1 | Space auth: delegation-token mint, DPoP-bound space-credential mint/verify (`cnf.jkt`, per-request RFC 9449 proofs), `auth::space::authenticate_space_read` seam + `just` seam gate (blocked by MM-507) |
-| MM-511 | 1 | `com.atproto.simplespace` management surface: `createSpace`/`updateSpace`/`deleteSpace`/`getSpace`/`addMember`/`removeMember`/`listMembers`; `member-list` + `public` policies; open-union rejection (blocked by MM-508) |
+| MM-511 | 1 | `com.atproto.simplespace` management surface: `createSpace`/`updateSpace`/`deleteSpace`/`getSpace`/`putMember`/`removeMember`/`listMembers`; independent `readPolicy`/`writePolicy` (`member-list` + `public`); open-union rejection (blocked by MM-508) |
 | MM-512 | 1 | Consent UI for `space:` scopes in `/oauth/authorize`: space-type declaration resolution (name, default collections), authority handle display, wildcard warnings (blocked by MM-507) |
 | MM-513 | 2 | Sync surface: `listRepoOps` oplog (+compaction), two-root CAR `getRepo` (canonical DAG-CBOR index order), `listBlobs`, space blob refs + GC union (blocked by MM-509/510) |
-| MM-514 | 2 | Space-host role: writer set, `registerNotify`/`unregisterNotify` (+expiry), `notifyWrite` fan-out worker, authority auto-registration, space deletion + `SpaceDeleted` renewal error (blocked by MM-510/511) |
+| MM-514 | 2 | Space-host role: writer set (filtered per write-access policy, never blocking the write itself), `registerNotify`/`unregisterNotify` (+expiry), `notifyWrite` fan-out worker, authority auto-registration, space deletion + `SpaceDeleted` renewal error (blocked by MM-510/511) |
 | MM-515 | 2 | Identity: `#atproto_space` / `#atproto_space_host` DID-doc entries (PLC + did:web) with fallbacks; `getRecommendedDidCredentials` |
-| MM-516 | 3 | Client attestation verification + `appAccess` `#allowList`; `managing-app` policy with outbound `checkUserAccess` (blocked by MM-510/511) |
+| MM-516 | 3 | Client attestation verification + `appAccess` `#allowList`; `managing-app` policy (read and write, set independently) with outbound `checkUserAccess` carrying an `access: read \| write` param (blocked by MM-510/511) |
 | MM-517 | 3 | Lifecycle & migration: `/v1/transfer/*` enumeration via `listSpaces`/`listBlobs`, deactivation/takedown propagation on space paths, spaces `importRepo` (blocked by MM-513) |
 | MM-518 | 3 | Tooling & interop: Bruno collection, interop CLI scenarios vs the alpha (hosted sandbox PDS + TS SDK as client), MCP tool surface, browser-harness coverage (blocked by MM-509) |
 
