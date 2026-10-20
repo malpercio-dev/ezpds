@@ -732,6 +732,8 @@ mod tests {
                 app_access: Some("open"),
                 app_allowed: None,
                 managing_app: None,
+                write_policy: None,
+                write_managing_app: None,
             },
         )
         .await

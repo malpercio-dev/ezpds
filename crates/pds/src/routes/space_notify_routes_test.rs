@@ -49,9 +49,10 @@ async fn setup() -> AppState {
             "com.atproto.simplespace.createSpace",
             &alice,
             serde_json::json!({
-                "type": TYPE,
+                "spaceType": TYPE,
                 "skey": "main",
-                "policy": { "$type": "com.atproto.simplespace.defs#publicPolicy" },
+                "readPolicy": { "$type": "com.atproto.simplespace.defs#publicPolicy" },
+                "writePolicy": { "$type": "com.atproto.simplespace.defs#publicPolicy" },
                 "appAccess": { "$type": "com.atproto.simplespace.defs#open" },
             }),
         ),
@@ -96,7 +97,7 @@ async fn write_one(state: &AppState, space_uri: &str, did: &str, rkey: &str) -> 
     )
     .await
     .unwrap();
-    crate::space_notify::fan_out_write(state, &space, did, &outcome.rev, &outcome.hash)
+    crate::space_notify::fan_out_write(state, &space, did, &outcome.rev, &outcome.hash, None)
         .await
         .unwrap();
     outcome.rev
@@ -132,7 +133,7 @@ async fn list_repos_reports_the_writers_of_a_locally_hosted_space() {
     assert_eq!(status, StatusCode::OK, "{body}");
     assert_eq!(registrations(&body), vec![ALICE, BOB], "{body}");
     let alice_row = &body["repos"][0];
-    assert_eq!(alice_row["rev"], rev);
+    assert_eq!(alice_row["repoRev"], rev);
     assert!(
         alice_row["hash"]["$bytes"].is_string(),
         "hash is lex-JSON bytes: {body}"
@@ -141,13 +142,22 @@ async fn list_repos_reports_the_writers_of_a_locally_hosted_space() {
     // A second write advances the same row rather than adding one — the set is per repo.
     let rev2 = write_one(&state, SPACE, ALICE, "three").await;
     let (_, body) = send(&state, get(&list_repos_query(SPACE), &alice)).await;
-    assert_eq!(registrations(&body), vec![ALICE, BOB], "{body}");
-    assert_eq!(body["repos"][0]["rev"], rev2, "{body}");
+    assert_eq!(
+        registrations(&body),
+        vec![BOB, ALICE],
+        "ordered by spaceRev, so the repo that just moved comes last: {body}"
+    );
+    assert_eq!(body["repos"][1]["repoRev"], rev2, "{body}");
+    assert!(
+        body["repos"][0]["spaceRev"].as_str() < body["repos"][1]["spaceRev"].as_str(),
+        "{body}"
+    );
 }
 
-/// A full page carries a cursor; the page it opens is the rest.
+/// The cursor is a `spaceRev`: a page opens strictly after it, and a short page still carries
+/// one so a syncer can resume later and see only what changed.
 #[tokio::test]
-async fn list_repos_pages_on_the_repo_did() {
+async fn list_repos_pages_on_the_space_rev() {
     let state = setup().await;
     let alice = access_jwt(&state.jwt_secret, ALICE);
     write_one(&state, SPACE, ALICE, "one").await;
@@ -170,6 +180,21 @@ async fn list_repos_pages_on_the_repo_did() {
     )
     .await;
     assert_eq!(registrations(&body), vec![BOB], "{body}");
+    let cursor = body["cursor"]
+        .as_str()
+        .expect("a short page still carries a cursor");
+    assert_eq!(cursor, body["repos"][0]["spaceRev"].as_str().unwrap());
+
+    let (_, body) = send(
+        &state,
+        get(
+            &format!("{}&cursor={cursor}", list_repos_query(SPACE)),
+            &alice,
+        ),
+    )
+    .await;
+    assert!(registrations(&body).is_empty(), "{body}");
+    assert!(body.get("cursor").is_none(), "{body}");
 }
 
 fn list_repos_query(space: &str) -> String {
@@ -437,7 +462,28 @@ async fn notify_write_records_a_foreign_repo_in_the_writer_set() {
 
     let (_, body) = send(&state, get(&list_repos_query(SPACE), &alice)).await;
     assert_eq!(registrations(&body), vec![carol.clone()], "{body}");
-    assert_eq!(body["repos"][0]["rev"], "3kabcdefghij2");
+    assert_eq!(body["repos"][0]["repoRev"], "3kabcdefghij2");
+}
+
+/// A `repoRev` ahead of the permitted clock skew is refused rather than pinned into the writer
+/// set, where it would sort ahead of every honest update.
+#[tokio::test]
+async fn notify_write_refuses_a_future_rev() {
+    let state = setup().await;
+    let (carol, token) = foreign_repo_token(&state, "com.atproto.space.notifyWrite").await;
+    let future = "j222222222222".to_string();
+
+    let (status, body) = send(
+        &state,
+        post(
+            "com.atproto.space.notifyWrite",
+            &token,
+            notify_body(SPACE, &carol, &future),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    assert_eq!(body["error"], "FutureRev");
 }
 
 /// The token must be issued by one of the two parties entitled to speak about the write: the
@@ -473,7 +519,7 @@ fn notify_body(space: &str, repo: &str, rev: &str) -> serde_json::Value {
     serde_json::json!({
         "space": space,
         "repo": repo,
-        "rev": rev,
+        "repoRev": rev,
         "hash": { "$bytes": base64::engine::general_purpose::STANDARD.encode([7u8; 32]) },
     })
 }

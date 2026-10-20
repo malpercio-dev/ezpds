@@ -4,7 +4,7 @@
 //! routes (routes may not import one another): space-ref parsing, the `validate`-flag record
 //! check, stored-block decoding, the `{uri, cid, validationStatus}` shape every write route
 //! answers with, the simplespace config's lexicon ↔ column mapping, and the
-//! `addMember`/`removeMember` write body.
+//! `putMember`/`removeMember` write body.
 //!
 //! Authorization is deliberately *not* here — it lives in `auth/space.rs`, the one seam every
 //! space route enters through; `write_membership` is called only after the route has already
@@ -268,7 +268,7 @@ fn union_type(value: &serde_json::Value) -> &str {
         .unwrap_or("")
 }
 
-/// Map a lexicon `policy` union to the `(policy, managing_app)` columns.
+/// Map a lexicon `readPolicy`/`writePolicy` union to the `(policy, managing_app)` columns.
 ///
 /// `policy` is an open union, and the spec makes a host reject any value it does not
 /// implement at create/update time rather than store what it cannot enforce — so an
@@ -363,16 +363,20 @@ pub fn app_access_from_lex(
     }
 }
 
-/// The `getSpace` body for a stored simplespace row.
-pub fn simplespace_view(row: &SpaceRow) -> serde_json::Value {
-    let policy = match row.policy.as_deref() {
+/// A stored `(policy, managing_app)` pair as its lexicon union value.
+fn policy_to_lex(policy: Option<&str>, managing_app: Option<&str>) -> serde_json::Value {
+    match policy {
         Some("public") => serde_json::json!({ "$type": PUBLIC_POLICY }),
         Some("managing-app") => serde_json::json!({
             "$type": MANAGING_APP_POLICY,
-            "managingApp": row.managing_app.clone().unwrap_or_default(),
+            "managingApp": managing_app.unwrap_or_default(),
         }),
         _ => serde_json::json!({ "$type": MEMBER_LIST_POLICY }),
-    };
+    }
+}
+
+/// The `getSpace` body for a stored simplespace row.
+pub fn simplespace_view(row: &SpaceRow) -> serde_json::Value {
     let app_access = match row.app_access.as_deref() {
         Some("allowList") => serde_json::json!({
             "$type": ALLOW_LIST_APP_ACCESS,
@@ -380,7 +384,15 @@ pub fn simplespace_view(row: &SpaceRow) -> serde_json::Value {
         }),
         _ => serde_json::json!({ "$type": OPEN_APP_ACCESS }),
     };
-    serde_json::json!({ "uri": row.uri, "policy": policy, "appAccess": app_access })
+    serde_json::json!({
+        "uri": row.uri,
+        "readPolicy": policy_to_lex(row.policy.as_deref(), row.managing_app.as_deref()),
+        "writePolicy": policy_to_lex(
+            row.write_policy.as_deref(),
+            row.write_managing_app.as_deref(),
+        ),
+        "appAccess": app_access,
+    })
 }
 
 /// Load the simplespace this host answers for at `space`, or `SpaceNotFound`: absent, deleted,
@@ -405,18 +417,22 @@ where
         .ok_or_else(|| ApiError::new(ErrorCode::SpaceNotFound, "space not found"))
 }
 
-/// Which `com.atproto.simplespace.{addMember,removeMember}` operation [`write_membership`]
+/// Which `com.atproto.simplespace.{putMember,removeMember}` operation [`write_membership`]
 /// performs.
 pub enum MembershipAction {
-    Add,
+    /// Add the member, or replace their read/write access.
+    Put {
+        read: bool,
+        write: bool,
+    },
     Remove,
 }
 
-/// Shared write body for `simplespace.addMember` / `simplespace.removeMember`, called after the
+/// Shared write body for `simplespace.putMember` / `simplespace.removeMember`, called after the
 /// route has already authenticated the space owner (see the module doc). Loads the active
-/// simplespace and adds or removes `did` from its member list inside one transaction, so a
+/// simplespace and puts or removes `did` on its member list inside one transaction, so a
 /// member row can never land after a concurrent `deleteSpace` has already wiped the list. Both
-/// operations are idempotent (`ON CONFLICT DO NOTHING` / a no-op DELETE).
+/// operations are idempotent (an upsert / a no-op DELETE).
 pub async fn write_membership(
     state: &AppState,
     space: &SpaceRef,
@@ -424,7 +440,7 @@ pub async fn write_membership(
     action: MembershipAction,
 ) -> Result<(), ApiError> {
     let verb = match action {
-        MembershipAction::Add => "add",
+        MembershipAction::Put { .. } => "put",
         MembershipAction::Remove => "remove",
     };
     let internal = |e: sqlx::Error| {
@@ -435,9 +451,11 @@ pub async fn write_membership(
     let mut tx = state.db.begin().await.map_err(internal)?;
     load_active_simplespace(&mut *tx, space).await?;
     match action {
-        MembershipAction::Add => crate::db::spaces::add_member(&mut *tx, &space.uri, did)
-            .await
-            .map_err(internal)?,
+        MembershipAction::Put { read, write } => {
+            crate::db::spaces::put_member(&mut *tx, &space.uri, did, read, write)
+                .await
+                .map_err(internal)?
+        }
         MembershipAction::Remove => crate::db::spaces::remove_member(&mut *tx, &space.uri, did)
             .await
             .map_err(internal)?,

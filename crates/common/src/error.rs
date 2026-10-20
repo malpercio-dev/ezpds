@@ -97,6 +97,10 @@ pub enum ErrorCode {
     /// `com.atproto.space.*` and `com.atproto.simplespace.*` method.
     #[serde(rename = "SpaceNotFound")]
     SpaceNotFound,
+    /// A space write notification carried a repo revision further ahead of this host's clock than
+    /// the permitted skew. Declared by `com.atproto.space.notifyWrite`.
+    #[serde(rename = "FutureRev")]
+    FutureRev,
     /// The named account holds no permissioned repo in the space.
     ///
     /// Deliberately also the answer when the caller may not read the named repo at all: whether
@@ -210,6 +214,7 @@ impl ErrorCode {
             ErrorCode::HandleResolutionFailed => "HandleResolutionFailed",
             ErrorCode::BlockNotFound => "BlockNotFound",
             ErrorCode::SpaceNotFound => "SpaceNotFound",
+            ErrorCode::FutureRev => "FutureRev",
             ErrorCode::RepoNotFound => "RepoNotFound",
             ErrorCode::RecordNotFound => "RecordNotFound",
             ErrorCode::BlobNotFound => "BlobNotFound",
@@ -264,6 +269,7 @@ impl ErrorCode {
             // The reference raises all four as `InvalidRequestError` with a named `error`, which
             // is HTTP 400 — clients dispatch on the name, not the status.
             ErrorCode::SpaceNotFound => 400,
+            ErrorCode::FutureRev => 400,
             ErrorCode::RepoNotFound => 400,
             ErrorCode::RecordNotFound => 400,
             ErrorCode::BlobNotFound => 400,

@@ -21,13 +21,14 @@ params:query {
 }
 
 docs {
-  The space host's writer set: every repo that has written into the space, with the rev and
-  commit hash last reported for it. This is the sync boundary, not an access-control list —
+  The space host's writer set: every repo that has written into the space, with the repoRev and
+  commit hash last reported for it and the spaceRev at which it last changed. This is the sync boundary, not an access-control list —
   it enumerates writers, never readers, and a member who has only ever read is absent.
 
   For a repo hosted elsewhere the rev/hash come from that host's notifyWrite and may lag; the
   repo's own host is the source of truth. Syncers use this as the periodic sweep that heals
-  anything the best-effort write notifications missed.
+  anything the best-effort write notifications missed: repos are returned in ascending
+  spaceRev order and the cursor is a spaceRev (exclusive), so resume from the last one seen.
 
   Answered only by the space's authority. A space this server merely keeps repos in reads as
   400 SpaceNotFound — ask its authority instead. Auth: a space credential, or the authority's

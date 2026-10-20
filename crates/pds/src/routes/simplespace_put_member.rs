@@ -1,6 +1,7 @@
 // pattern: Imperative Shell
 
-//! com.atproto.simplespace.addMember — add a DID to a space's member list.
+//! com.atproto.simplespace.putMember — add a DID to a space's member list, or replace its
+//! read and write access.
 
 use axum::extract::State;
 use axum::http::{HeaderMap, Method, StatusCode, Uri};
@@ -14,22 +15,25 @@ use crate::lexicon::LexiconInput;
 use common::ApiError;
 
 #[derive(Deserialize)]
-pub struct AddMemberInput {
+pub struct PutMemberInput {
     space: String,
     did: String,
+    read: bool,
+    write: bool,
 }
 
-/// POST /xrpc/com.atproto.simplespace.addMember
+/// POST /xrpc/com.atproto.simplespace.putMember
 ///
 /// Membership management is a space-level `manage=update` operation. The member list is
-/// host-internal state consulted at credential-mint time under the `member-list` policy; the
-/// member is not notified (their PDS materializes a repo on first write). Idempotent.
-pub async fn simplespace_add_member(
+/// host-internal state consulted under the `member-list` read and write policies (the `read`
+/// bit at credential-mint time, the `write` bit when a write notification arrives); the member
+/// is not notified (their PDS materializes a repo on first write). Idempotent.
+pub async fn simplespace_put_member(
     State(state): State<AppState>,
     method: Method,
     uri: Uri,
     headers: HeaderMap,
-    LexiconInput(input): LexiconInput<AddMemberInput>,
+    LexiconInput(input): LexiconInput<PutMemberInput>,
 ) -> Result<impl IntoResponse, ApiError> {
     let space = super::space_views::parse_space(&input.space)?;
     authenticate_space_owner(
@@ -45,7 +49,10 @@ pub async fn simplespace_add_member(
         &state,
         &space,
         &input.did,
-        super::space_views::MembershipAction::Add,
+        super::space_views::MembershipAction::Put {
+            read: input.read,
+            write: input.write,
+        },
     )
     .await?;
     Ok((StatusCode::OK, axum::Json(serde_json::json!({}))))

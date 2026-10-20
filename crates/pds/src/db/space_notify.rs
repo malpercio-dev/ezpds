@@ -119,64 +119,91 @@ pub async fn subscribers_for_space(
     .await
 }
 
-/// Record a repo's latest reported head in the writer set — but only when this host is the
-/// space's **authority**, which is exactly `spaces.policy IS NOT NULL` (a row with no simplespace
-/// config is a space this host only keeps repos in; its authority lives elsewhere and answers
-/// `listRepos` itself).
+/// The space revisions assigned to a recorded write: the new one, and the one it follows.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WriterRevs {
+    pub space_rev: String,
+    /// `None` on the first update in a space.
+    pub prev_space_rev: Option<String>,
+}
+
+/// Record (or advance) a repo in a space's writer set, assigning the update the next space
+/// revision. A no-op returning `None` unless this host is the space's authority
+/// (`spaces.policy IS NOT NULL`) — the guard shares the caller's connection, so inside the write
+/// transaction it is atomic with the write.
 ///
-/// The guard is in SQL rather than a preceding `SELECT` so the check and the write are one
-/// statement, and so a caller inside the write transaction cannot observe a space that stopped
-/// being ours between the two.
-pub async fn upsert_writer<'e, E>(
-    executor: E,
+/// The space revision is a TID strictly greater than every one already assigned in the space
+/// (the maximum over the writer rows, since each update replaces its writer's row), which is
+/// what makes it usable as a `listRepos` cursor and lets a syncer detect a missed notification
+/// from a `prevSpaceRev` that is not the one it last saw.
+pub async fn upsert_writer(
+    conn: &mut sqlx::SqliteConnection,
     space_uri: &str,
     repo_did: &str,
     rev: &str,
     hash: &[u8],
-) -> Result<(), sqlx::Error>
-where
-    E: sqlx::Executor<'e, Database = Sqlite>,
-{
+) -> Result<Option<WriterRevs>, sqlx::Error> {
+    let is_authority: Option<i64> =
+        sqlx::query_scalar("SELECT 1 FROM spaces WHERE uri = ? AND policy IS NOT NULL")
+            .bind(space_uri)
+            .fetch_optional(&mut *conn)
+            .await?;
+    if is_authority.is_none() {
+        return Ok(None);
+    }
+    let prev: Option<String> = sqlx::query_scalar(
+        "SELECT MAX(space_rev) FROM space_writers WHERE space_uri = ? AND space_rev != ''",
+    )
+    .bind(space_uri)
+    .fetch_one(&mut *conn)
+    .await?;
+    let space_rev = repo_engine::next_record_rev(prev.as_deref().unwrap_or(""))
+        .map_err(|e| sqlx::Error::Protocol(e.to_string()))?;
     sqlx::query(
-        "INSERT INTO space_writers (space_uri, repo_did, rev, hash, updated_at) \
-         SELECT ?, ?, ?, ?, datetime('now') \
-         WHERE EXISTS (SELECT 1 FROM spaces WHERE uri = ? AND policy IS NOT NULL) \
+        "INSERT INTO space_writers (space_uri, repo_did, rev, hash, space_rev, updated_at) \
+         VALUES (?, ?, ?, ?, ?, datetime('now')) \
          ON CONFLICT (space_uri, repo_did) \
-         DO UPDATE SET rev = excluded.rev, hash = excluded.hash, updated_at = excluded.updated_at",
+         DO UPDATE SET rev = excluded.rev, hash = excluded.hash, \
+                       space_rev = excluded.space_rev, updated_at = excluded.updated_at",
     )
     .bind(space_uri)
     .bind(repo_did)
     .bind(rev)
     .bind(hash)
-    .bind(space_uri)
-    .execute(executor)
+    .bind(&space_rev)
+    .execute(&mut *conn)
     .await?;
-    Ok(())
+    Ok(Some(WriterRevs {
+        space_rev,
+        prev_space_rev: prev,
+    }))
 }
 
-/// One `listRepos` row.
+/// One writer-set row, as `listRepos` reports it.
 #[derive(Debug, Clone, sqlx::FromRow)]
 pub struct SpaceWriterRow {
     pub repo_did: String,
     pub rev: String,
     pub hash: Vec<u8>,
+    pub space_rev: String,
 }
 
-/// One page of a space's writer set, by DID ascending, after `after` when given.
+/// One page of the writer set in ascending space-revision order, after `after_space_rev`
+/// (exclusive) when given.
 pub async fn list_writers(
     pool: &SqlitePool,
     space_uri: &str,
-    after: Option<&str>,
+    after_space_rev: Option<&str>,
     limit: i64,
 ) -> Result<Vec<SpaceWriterRow>, sqlx::Error> {
     sqlx::query_as::<_, SpaceWriterRow>(
-        "SELECT repo_did, rev, hash FROM space_writers \
-         WHERE space_uri = ? AND (? IS NULL OR repo_did > ?) \
-         ORDER BY repo_did ASC LIMIT ?",
+        "SELECT repo_did, rev, hash, space_rev FROM space_writers \
+         WHERE space_uri = ? AND (? IS NULL OR space_rev > ?) \
+         ORDER BY space_rev ASC, repo_did ASC LIMIT ?",
     )
     .bind(space_uri)
-    .bind(after)
-    .bind(after)
+    .bind(after_space_rev)
+    .bind(after_space_rev)
     .bind(limit)
     .fetch_all(pool)
     .await

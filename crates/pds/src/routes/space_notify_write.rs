@@ -18,11 +18,15 @@ use common::{ApiError, ErrorCode};
 
 const LXM: &str = "com.atproto.space.notifyWrite";
 
+/// How far ahead of this host's clock a `repoRev` may be.
+const MAX_REV_SKEW_SECS: u64 = 5 * 60;
+
 #[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct NotifyWriteInput {
     space: String,
     repo: String,
-    rev: String,
+    repo_rev: String,
     /// Lex-JSON `{"$bytes": "<base64>"}` — the repo's commit hash after the write.
     hash: serde_json::Value,
 }
@@ -36,10 +40,13 @@ pub struct NotifyWriteInput {
 /// entitled to speak about this write — the repo whose head moved (a repo host reporting its own
 /// user's commit) or the space's authority (a space host forwarding to a registered syncer).
 ///
-/// Best-effort by lexicon, which declares no errors: an authenticated notification about a space
-/// this host is not the authority for is accepted and dropped rather than refused, because a
-/// syncer forwarding into a space it merely holds a copy of has nothing to do with the report
-/// either way.
+/// An authenticated notification about a space this host is not the authority for is accepted and
+/// dropped rather than refused, because a syncer forwarding into a space it merely holds a copy
+/// of has nothing to do with the report either way. A `repoRev` further ahead of this host's
+/// clock than [`MAX_REV_SKEW_SECS`] is refused (`FutureRev`) — such a revision would pin the
+/// repo's writer-set entry ahead of every honest update. When this host is the authority the
+/// repo must also pass the space's write policy; a repo it refuses is acknowledged and not
+/// tracked or forwarded.
 pub async fn space_notify_write(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -47,6 +54,13 @@ pub async fn space_notify_write(
 ) -> Result<impl IntoResponse, ApiError> {
     let space = super::space_views::parse_space(&input.space)?;
     let hash = decode_hash(&input.hash)?;
+    let now = unix_now()?;
+    if repo_engine::tid_micros(&input.repo_rev) / 1_000_000 > now + MAX_REV_SKEW_SECS {
+        return Err(ApiError::new(
+            ErrorCode::FutureRev,
+            "repoRev is ahead of the permitted clock skew",
+        ));
+    }
 
     let token = extract_bearer_token(&headers)?;
     let iss = peek_jwt_iss(token)
@@ -64,26 +78,43 @@ pub async fn space_notify_write(
         ));
     }
     let server_did = state.config.resolve_server_did();
-    let now = unix_now()?;
     verify_service_auth_resolving_key(&state, token, &iss, &server_did, LXM, now).await?;
 
     // The claim goes into the writer set only when this host is the space's authority — the
     // query's own guard — and only for a space it already knows about; a notification about an
     // unknown space is not a licence to create one.
-    crate::db::space_notify::upsert_writer(&state.db, &space.uri, &input.repo, &input.rev, &hash)
+    let internal = |e: sqlx::Error| {
+        tracing::error!(error = %e, space = %space.uri, "failed to record space writer");
+        ApiError::new(ErrorCode::InternalError, "internal server error")
+    };
+    let row = crate::db::spaces::get_space(&state.db, &space.uri)
         .await
-        .map_err(|e| {
-            tracing::error!(error = %e, space = %space.uri, "failed to record space writer");
-            ApiError::new(ErrorCode::InternalError, "internal server error")
-        })?;
+        .map_err(internal)?;
+    if let Some(row) = row.filter(|r| r.deleted_at.is_none() && r.policy.is_some()) {
+        if !crate::auth::space::authorize_write_notification(&state, &row, &input.repo).await? {
+            return Ok((StatusCode::OK, axum::Json(serde_json::json!({}))));
+        }
+    }
+    let mut conn = state.db.acquire().await.map_err(internal)?;
+    let revs = crate::db::space_notify::upsert_writer(
+        &mut conn,
+        &space.uri,
+        &input.repo,
+        &input.repo_rev,
+        &hash,
+    )
+    .await
+    .map_err(internal)?;
+    drop(conn);
 
     // Forward to the registered syncers, skipping the repo whose host just told us.
     drop(crate::space_notify::fan_out_write(
         &state,
         &space,
         &input.repo,
-        &input.rev,
+        &input.repo_rev,
         &hash,
+        revs,
     ));
 
     Ok((StatusCode::OK, axum::Json(serde_json::json!({}))))

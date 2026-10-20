@@ -775,7 +775,7 @@ pub async fn verify_space_credential(
 /// is ever told this user asked. The authority is deliberately **not** exempt from the app
 /// perimeter — an authority that closed its space to all but two apps meant that for itself too.
 ///
-/// The user perimeter is the `policy` axis. Here the authority always passes: it is the only
+/// The user perimeter is the read `policy` axis. Here the authority always passes: it is the only
 /// party who can reconfigure the space, so it must not be able to lock itself out. `public`
 /// admits anyone, `member-list` consults `space_members`, and `managing-app` hands the decision
 /// to the app the config names.
@@ -797,19 +797,16 @@ pub async fn authorize_credential_request(
     if user_did == space.authority_did {
         return Ok(());
     }
-    let authorized = match space.policy.as_deref() {
-        Some("public") => true,
-        Some("member-list") => spaces::is_member(&state.db, &space.uri, user_did)
-            .await
-            .map_err(|e| {
-                tracing::error!(error = %e, space = %space.uri, "failed to read space members");
-                ApiError::new(ErrorCode::InternalError, "internal server error")
-            })?,
-        Some("managing-app") => check_managing_app(state, space, user_did, client_id).await,
-        // Unreachable through create/update, which refuse any policy this host cannot evaluate;
-        // a row that got here some other way is not one to hand out credentials for.
-        _ => false,
-    };
+    let authorized = policy_admits(
+        state,
+        space,
+        space.policy.as_deref(),
+        space.managing_app.as_deref(),
+        Access::Read,
+        user_did,
+        client_id,
+    )
+    .await?;
     if authorized {
         Ok(())
     } else {
@@ -818,6 +815,78 @@ pub async fn authorize_credential_request(
             "the requesting user is not authorized for this space",
         ))
     }
+}
+
+/// Whether the authority tracks and forwards `repo_did`'s write notifications, per the space's
+/// **write** policy. The authority's own repo always passes, mirroring the read side.
+pub async fn authorize_write_notification(
+    state: &AppState,
+    space: &SpaceRow,
+    repo_did: &str,
+) -> Result<bool, ApiError> {
+    if repo_did == space.authority_did {
+        return Ok(true);
+    }
+    policy_admits(
+        state,
+        space,
+        space.write_policy.as_deref(),
+        space.write_managing_app.as_deref(),
+        Access::Write,
+        repo_did,
+        None,
+    )
+    .await
+}
+
+/// Which side of a space a policy decision is for.
+#[derive(Clone, Copy)]
+enum Access {
+    Read,
+    Write,
+}
+
+impl Access {
+    fn as_str(self) -> &'static str {
+        match self {
+            Access::Read => "read",
+            Access::Write => "write",
+        }
+    }
+}
+
+/// Evaluate one policy axis for `user_did`: `public` admits anyone, `member-list` consults
+/// `space_members` (the read or write bit per `access`), and `managing-app` hands the decision
+/// to the app the config names.
+async fn policy_admits(
+    state: &AppState,
+    space: &SpaceRow,
+    policy: Option<&str>,
+    managing_app: Option<&str>,
+    access: Access,
+    user_did: &str,
+    client_id: Option<&str>,
+) -> Result<bool, ApiError> {
+    Ok(match policy {
+        Some("public") => true,
+        Some("member-list") => spaces::member_can(
+            &state.db,
+            &space.uri,
+            user_did,
+            matches!(access, Access::Write),
+        )
+        .await
+        .map_err(|e| {
+            tracing::error!(error = %e, space = %space.uri, "failed to read space members");
+            ApiError::new(ErrorCode::InternalError, "internal server error")
+        })?,
+        Some("managing-app") => {
+            check_managing_app(state, space, managing_app, access, user_did, client_id).await
+        }
+        // Unreachable through create/update, which refuse any policy this host cannot evaluate;
+        // a row that got here some other way is not one to hand out credentials for.
+        _ => false,
+    })
 }
 
 /// The lexicon method a `managing-app` authorization check invokes.
@@ -842,10 +911,12 @@ const CHECK_USER_ACCESS_TIMEOUT: std::time::Duration = std::time::Duration::from
 async fn check_managing_app(
     state: &AppState,
     space: &SpaceRow,
+    managing_app: Option<&str>,
+    access: Access,
     user_did: &str,
     client_id: Option<&str>,
 ) -> bool {
-    let Some(managing_app) = space.managing_app.as_deref() else {
+    let Some(managing_app) = managing_app else {
         return false;
     };
     let (did, fragment) = match managing_app.split_once('#') {
@@ -904,8 +975,9 @@ async fn check_managing_app(
     };
     url.query_pairs_mut()
         .append_pair("space", &space.uri)
-        .append_pair("user", user_did);
-    if let Some(client_id) = client_id {
+        .append_pair("user", user_did)
+        .append_pair("access", access.as_str());
+    if let (Access::Read, Some(client_id)) = (access, client_id) {
         url.query_pairs_mut().append_pair("clientId", client_id);
     }
     // The endpoint comes from a DID document the space's own config points at, so it is
@@ -1686,6 +1758,8 @@ mod tests {
             app_access: Some("open".to_string()),
             app_allowed: None,
             managing_app: None,
+            write_policy: None,
+            write_managing_app: None,
             deleted_at: None,
             takendown_at: None,
         };
@@ -1700,6 +1774,8 @@ mod tests {
                 app_access: Some("open"),
                 app_allowed: None,
                 managing_app: None,
+                write_policy: None,
+                write_managing_app: None,
             },
         )
         .await
@@ -1749,6 +1825,60 @@ mod tests {
             .is_ok());
     }
 
+    /// The read and write axes are independent: a member-list read policy consults the `read`
+    /// bit, a member-list write policy the `write` bit, and neither borrows the other's.
+    #[tokio::test]
+    async fn read_and_write_policies_consult_their_own_member_bits() {
+        let state = state_with_master_key().await;
+        insert_space(
+            &state.db,
+            &NewSpace {
+                uri: SPACE,
+                authority_did: AUTHORITY,
+                space_type: "org.example.bucket",
+                skey: "self",
+                policy: Some("member-list"),
+                app_access: Some("open"),
+                app_allowed: None,
+                managing_app: None,
+                write_policy: Some("member-list"),
+                write_managing_app: None,
+            },
+        )
+        .await
+        .unwrap();
+        let row = spaces::get_space(&state.db, SPACE).await.unwrap().unwrap();
+
+        spaces::put_member(&state.db, SPACE, ALICE, true, false)
+            .await
+            .unwrap();
+        assert!(authorize_credential_request(&state, &row, ALICE, None)
+            .await
+            .is_ok());
+        assert!(!authorize_write_notification(&state, &row, ALICE)
+            .await
+            .unwrap());
+
+        spaces::put_member(&state.db, SPACE, ALICE, false, true)
+            .await
+            .unwrap();
+        assert!(authorize_credential_request(&state, &row, ALICE, None)
+            .await
+            .is_err());
+        assert!(authorize_write_notification(&state, &row, ALICE)
+            .await
+            .unwrap());
+
+        // A public write policy admits a repo that is no member.
+        let mut open_writes = row.clone();
+        open_writes.write_policy = Some("public".to_string());
+        assert!(
+            authorize_write_notification(&state, &open_writes, "did:plc:stranger")
+                .await
+                .unwrap()
+        );
+    }
+
     #[tokio::test]
     async fn issuance_policy_app_perimeter_is_the_allow_list() {
         let state = state_with_master_key().await;
@@ -1761,6 +1891,8 @@ mod tests {
             app_access: Some("allowList".to_string()),
             app_allowed: Some(serde_json::json!([ALLOWED]).to_string()),
             managing_app: None,
+            write_policy: None,
+            write_managing_app: None,
             deleted_at: None,
             takendown_at: None,
         };

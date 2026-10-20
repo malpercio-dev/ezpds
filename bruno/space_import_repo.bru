@@ -44,7 +44,7 @@ docs {
   commit, so a return migration cannot leave a previous residency behind. Blobs are not
   carried — enumerate them on the source with com.atproto.space.listBlobs and transfer them
   with uploadBlob. If this host is to be the space's authority, recreate the simplespace
-  config and member list with createSpace/addMember.
+  config and member list with createSpace/putMember.
 
   The destination's oplog starts fresh: syncers holding a `since` from the old host fold to a
   set hash that will not match the new head, which is their signal to heal with a full

@@ -92,6 +92,12 @@ pub fn next_record_rev(prev_rev: &str) -> Result<String, RecordError> {
     Ok(next_commit_rev(prev_rev)?.as_str().to_string())
 }
 
+/// The microseconds-since-epoch timestamp a TID encodes, for callers that bound how far ahead of
+/// the wall clock a revision may be.
+pub fn tid_micros(tid: &str) -> u64 {
+    decode_tid(tid) >> 10
+}
+
 /// Encode a record value as its canonical DAG-CBOR block and compute the block CID
 /// (CIDv1, dag-cbor codec, SHA2-256 multihash — the same shape every repo block carries).
 ///
