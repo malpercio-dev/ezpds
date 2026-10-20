@@ -30,6 +30,9 @@ It is deliberately split from two neighbours:
 - [`identity-and-key-custody.md`](identity-and-key-custody.md) — where identity
   keys live, the `did:plc` rotation-key hierarchy, and the client-held-key
   custody model that is ezpds's core differentiator.
+- [`frozen-contracts.md`](frozen-contracts.md) — the wire, data, device, and
+  operations surfaces that may not change without a deliberate migration, each
+  with the suite that proves it. The acceptance oracle for Wave 11.
 
 ## Conventions
 

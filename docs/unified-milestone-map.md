@@ -282,7 +282,7 @@ Note: `app.bsky.*` calls are proxied to the appview, not implemented locally. Th
 The four phases above track one axis — **where the repo lives and who signs it** (phone → desktop
 → recovery → sovereign signing). Everything built since v0.1 closed has been on a second,
 orthogonal axis: **subsystems that widen what a Custos-hosted identity can do**, tracked in Linear
-as numbered waves (`Wave 8: auth.md`, `Wave 9: Obsign Anywhere`, `Wave 10: Spaces`). A wave is not
+as numbered waves (`Wave 8: auth.md`, `Wave 9: Obsign Anywhere`, `Wave 10: Spaces`, `Wave 11: v2 In Place`). A wave is not
 a phase — it neither blocks nor is blocked by v0.2, and shipping one does not advance the
 lifecycle. They are recorded here so the map stops reading as if nothing landed after v0.1.
 
@@ -323,6 +323,31 @@ vendored at a pinned `permissioned-data` commit and re-diffed weekly by the
   records for but is not the authority of.
 - Per-reader commit-signing benchmark, and a cache only if it earns one (MM-527) — every sync
   call re-reads and unwraps the repo signing key, and the cost scales with syncers, not writes.
+
+#### Wave 11 — v2 In Place (rebuild Custos and Obsign without a flag day)
+
+**Goal:** rules held by a type instead of a guard script or prose, and a platform-free wallet core
+(`obsign-core`) that can be bound into native iOS and Android shells — all as ordinary PRs behind the
+[frozen contracts](architecture/frozen-contracts.md).
+
+**Lifecycle phase:** unchanged. Nothing here waits on v0.2 or blocks it. No new app record, bundle
+id, Keychain access group, or iCloud container.
+
+Full plan, evidence, and the four decisions taken 2026-09-06:
+[design-plans/2026-09-06-v2-in-place.md](design-plans/2026-09-06-v2-in-place.md).
+
+| Track | Component | Description |
+|-------|-----------|-------------|
+| S0 / M0 | Freeze and instrument | Design plan, frozen-contracts doc, ADR-0013 split, PostgreSQL off the map, Keychain account-name pin test |
+| S1 | Types and client | `Did`/`Handle` newtypes, `custos-client`, generated TS types for the Node tools |
+| S2 | Guards to types | Seam scripts become types, `unwrap_used` denied, one `Sweep` scheduler |
+| S3 | Feature crates | `custos-db` + feature crates, Spaces first |
+| S4 | Journal + MST exit | `Journal` helper for ceremonies; atrium-repo to atproto-repo |
+| M1–M3 | Bound core | Extract `obsign-core` under Tauri, wasm build in CI, UniFFI bindings + Swift package (no shell) |
+| M4 | Native shells | Trigger-gated; no issue until a trigger fires |
+
+**Decided off the map:** PostgreSQL. The write path is serialized by design and the runbooks assume
+one SQLite file.
 
 ---
 
