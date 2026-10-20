@@ -184,7 +184,6 @@ Note: `app.bsky.*` calls are proxied to the appview, not implemented locally. Th
 - Key rotation
 - Unplanned device recovery
 - Tier pricing (all users on free tier)
-- PostgreSQL backend
 - CDN/S3 blob storage (optional, not required)
 - BYO PDS distribution
 
@@ -242,7 +241,6 @@ Note: `app.bsky.*` calls are proxied to the appview, not implemented locally. Th
 | DELETE /v1/pds/keys/:keyId | Revoke PDS signing key | mobile §9 |
 | Tier pricing | Free/Pro/Business subscription tiers | architecture, cross-spec §1.4 |
 | BYO PDS binary | Nix/Docker distribution for self-hosted operators | architecture |
-| PostgreSQL option | Alternative to SQLite for larger deployments | oauth spec §8, architecture |
 | S3 blob backend | Default for managed PDS (R2 recommended) | blob spec §9 |
 | CDN integration | R2 + Workers for Pro/Business blob serving | blob spec §9 |
 | Local → S3 migration tool | For operators upgrading storage | blob spec §9 |
@@ -369,7 +367,6 @@ v1.0 Critical Path:
   v0.2 complete → Recovery ceremony → Shamir reconstruction
                 → Tier pricing → BYO PDS packaging
                 → S3 migration → CDN setup
-                → PostgreSQL option
 
 Wave 10 (Spaces) — off the phase critical path entirely; gated by [spaces] enabled:
   v0.1 complete → Permissioned repo store (rev CAS + LtHash) → Record CRUD
