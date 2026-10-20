@@ -1,11 +1,11 @@
 // pattern: Imperative Shell
 //
-// Gathers: headers (delegation token in Authorization, DPoP proof), JSON body (space,
-//          clientAttestation), DB pool + master key
-// Processes: space-ref parse → space row (local authority, not deleted) → mint-time DPoP proof
-//            → delegation token verify + jti spend → client attestation verify + jti spend
-//            → issuance policy (app perimeter, then user) → load the authority's signer
-//            → mint the DPoP-bound credential
+// Gathers: headers (delegation token in Authorization, RFC 9421 Signature-Input/Signature),
+//          JSON body (space, clientAttestation), DB pool + master key
+// Processes: space-ref parse → space row (local authority, not deleted) → `atproto-space`
+//            signature over Authorization → delegation token verify + jti spend → client
+//            attestation verify + jti spend → issuance policy (app perimeter, then user)
+//            → load the authority's signer → mint the credential bound to the signature's key
 // Returns: JSON { credential } on success; ApiError on failure
 //
 // Implements: POST /xrpc/com.atproto.space.getSpaceCredential
@@ -18,9 +18,10 @@ use common::{ApiError, ErrorCode};
 use crate::app::AppState;
 use crate::auth::client_attestation::verify_client_attestation;
 use crate::auth::extract_bearer_token;
+use crate::auth::http_signature::{verify_space_signature, SignedFor};
 use crate::auth::space::{
-    authorize_credential_request, mint_space_credential, mint_time_dpop_thumbprint, space_host_aud,
-    unix_now, verify_delegation_token,
+    authorize_credential_request, mint_space_credential, space_host_aud, unix_now,
+    verify_delegation_token,
 };
 use crate::lexicon::LexiconInput;
 
@@ -42,9 +43,9 @@ pub struct GetSpaceCredentialResponse {
 
 /// POST /xrpc/com.atproto.space.getSpaceCredential
 ///
-/// Exchange a delegation token (the request's `Authorization` token) plus a DPoP proof for a
-/// space credential bound to the proof's key — the space-authority side of the Atproto Spaces
-/// credential flow. This server answers only for spaces anchored on an account it hosts.
+/// Exchange a delegation token (the request's `Authorization` token) plus an `atproto-space`
+/// HTTP message signature over it for a space credential bound to the signing key (`cnf.kid`)
+/// — the space-authority side of the Atproto Spaces credential flow. This server answers only for spaces anchored on an account it hosts.
 pub async fn get_space_credential(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -68,7 +69,7 @@ pub async fn get_space_credential(
     // Ordered after the tombstone check for the same reason `require_serviceable_authority` is:
     // `SpaceDeleted` is the one durable renewal signal, and a takedown is reversible, so it must
     // not overwrite it. Refusing here stops a syncer renewing its way past a takedown — the read
-    // seam would refuse it anyway, but a 2 h credential should not outlive the operator's action.
+    // seam would refuse it anyway, but a credential should not outlive the operator's action.
     crate::auth::space::require_space_servable(&state, &space).await?;
     // A row with no simplespace config is a space this PDS only hosts repos for; its authority
     // lives elsewhere and is the one to ask.
@@ -83,11 +84,12 @@ pub async fn get_space_credential(
     // being an active account.
     crate::auth::space::require_serviceable_authority(&state, &space).await?;
 
-    // Stateless checks first, so a malformed proof doesn't burn the single-use delegation token.
-    let jkt = mint_time_dpop_thumbprint(&headers, &state)?;
+    // Stateless checks first, so a bad signature doesn't burn the single-use delegation token.
+    // The signature covers the whole Authorization field, so it binds this key to this token.
+    let key_id = verify_space_signature(&headers, SignedFor::Delegation)?;
     let now = unix_now()?;
     // The delegation token rides the Authorization header as a Bearer token (it is the grant
-    // being exchanged, not the DPoP-bound credential being minted).
+    // being exchanged, not the credential being minted).
     let delegation_token = extract_bearer_token(&headers)?;
     let delegation = verify_delegation_token(&state, delegation_token, &space, now).await?;
 
@@ -123,7 +125,7 @@ pub async fn get_space_credential(
         |bytes| signer.sign(bytes),
         &row.authority_did,
         &space,
-        &jkt,
+        &key_id,
         now,
     );
 
@@ -139,12 +141,12 @@ mod tests {
     use crate::db::dids::seed_did_document;
     use crate::db::spaces::{insert_space, NewSpace};
     use crate::routes::test_utils::{
-        body_json, seed_account_with_repo, state_with_master_key, DpopProofKey,
+        body_json, seed_account_with_repo, state_with_master_key, SpaceSigKey,
     };
     use crate::space_uri::parse_space_ref;
     use axum::{
         body::Body,
-        http::{header::AUTHORIZATION, HeaderMap, HeaderValue, Method, Request, StatusCode},
+        http::{header::AUTHORIZATION, HeaderValue, Method, Request, StatusCode},
     };
     use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
     use tower::ServiceExt;
@@ -154,7 +156,6 @@ mod tests {
     const BOB: &str = "did:plc:bob";
     const SPACE: &str = "at://did:plc:abc234567abc234567abc234/space/org.example.bucket/self";
     const PATH: &str = "/xrpc/com.atproto.space.getSpaceCredential";
-    const HTU: &str = "https://test.example.com/xrpc/com.atproto.space.getSpaceCredential";
 
     fn did_doc(did: &str, kp: &crypto::P256Keypair) -> serde_json::Value {
         let multibase = kp.key_id.0.strip_prefix("did:key:").unwrap().to_string();
@@ -215,23 +216,27 @@ mod tests {
         .unwrap();
     }
 
-    fn request(delegation: &str, dpop: Option<&str>, space: &str) -> Request<Body> {
-        attested_request(delegation, dpop, space, None)
+    /// The exchange request, signed by `key` when given (unsigned otherwise).
+    fn request(delegation: &str, key: Option<&SpaceSigKey>, space: &str) -> Request<Body> {
+        attested_request(delegation, key, space, None)
     }
 
     fn attested_request(
         delegation: &str,
-        dpop: Option<&str>,
+        key: Option<&SpaceSigKey>,
         space: &str,
         attestation: Option<&str>,
     ) -> Request<Body> {
         let mut b = Request::builder()
             .method("POST")
             .uri(PATH)
-            .header(AUTHORIZATION, format!("Bearer {delegation}"))
             .header("content-type", "application/json");
-        if let Some(p) = dpop {
-            b = b.header("DPoP", p);
+        match key {
+            Some(key) => b
+                .headers_mut()
+                .unwrap()
+                .extend(key.delegation_headers(delegation)),
+            None => b = b.header(AUTHORIZATION, format!("Bearer {delegation}")),
         }
         let mut body = serde_json::json!({ "space": space });
         if let Some(attestation) = attestation {
@@ -246,20 +251,19 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn exchanges_a_delegation_token_and_proof_for_a_dpop_bound_credential() {
+    async fn exchanges_a_signed_delegation_token_for_a_key_bound_credential() {
         let state = state_with_master_key().await;
         seed_identity(&state, AUTHORITY).await;
         let alice = seed_identity(&state, ALICE).await;
         seed_space(&state, "member-list").await;
         add_member(&state, ALICE).await;
         let space = parse_space_ref(SPACE).unwrap();
-        let key = DpopProofKey::generate();
+        let key = SpaceSigKey::generate();
         let now = unix_now().unwrap();
 
         let delegation = mint_delegation_token(|b| alice.sign(b), ALICE, &space, now);
-        let proof = key.proof_no_ath("POST", HTU);
         let response = app(state.clone())
-            .oneshot(request(&delegation, Some(&proof), SPACE))
+            .oneshot(request(&delegation, Some(&key), SPACE))
             .await
             .unwrap();
         assert_eq!(response.status(), StatusCode::OK);
@@ -274,43 +278,30 @@ mod tests {
         let claims = segment(&credential, 1);
         assert_eq!(claims["iss"], AUTHORITY);
         assert_eq!(claims["sub"], SPACE);
-        assert_eq!(claims["cnf"]["jkt"], key.thumbprint());
+        assert_eq!(claims["cnf"], serde_json::json!({ "kid": key.key_id() }));
         assert!(claims.get("aud").is_none());
         assert_eq!(
             claims["exp"].as_u64().unwrap() - claims["iat"].as_u64().unwrap(),
-            7200
+            600
         );
 
-        // The minted credential is accepted by the repo-host seam under DPoP with a proof from
-        // the bound key — the full round trip.
-        let read_path = "/xrpc/com.atproto.space.getRecord";
-        let read_proof = key.proof(
-            "GET",
-            &format!("https://test.example.com{read_path}"),
-            &credential,
-        );
-        let mut headers = HeaderMap::new();
-        headers.insert(
-            AUTHORIZATION,
-            HeaderValue::from_str(&format!("DPoP {credential}")).unwrap(),
-        );
-        headers.insert("DPoP", HeaderValue::from_str(&read_proof).unwrap());
+        // The minted credential is accepted by the repo-host seam when signed by the bound key
+        // — the full round trip.
         let reader = authenticate_space_read(
             &state,
-            &headers,
+            &key.credential_headers(&credential, ALICE),
             &Method::GET,
-            &read_path.parse().unwrap(),
+            &"/xrpc/com.atproto.space.getRecord".parse().unwrap(),
             &space,
             ALICE,
         )
         .await
         .unwrap();
-        assert!(matches!(reader, SpaceReader::Credential(c) if c.jkt == key.thumbprint()));
+        assert!(matches!(reader, SpaceReader::Credential(c) if c.kid == key.key_id()));
 
         // The delegation token was single-use: replaying the exchange fails.
-        let proof = key.proof_no_ath("POST", HTU);
         let response = app(state)
-            .oneshot(request(&delegation, Some(&proof), SPACE))
+            .oneshot(request(&delegation, Some(&key), SPACE))
             .await
             .unwrap();
         assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
@@ -318,42 +309,49 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn refuses_without_proof_non_members_unknown_and_deleted_spaces() {
+    async fn refuses_unsigned_non_members_unknown_and_deleted_spaces() {
         let state = state_with_master_key().await;
         seed_identity(&state, AUTHORITY).await;
         let alice = seed_identity(&state, ALICE).await;
         seed_space(&state, "member-list").await;
         let space = parse_space_ref(SPACE).unwrap();
-        let key = DpopProofKey::generate();
+        let key = SpaceSigKey::generate();
         let now = unix_now().unwrap();
 
-        // No DPoP proof: refused before the delegation token is spent...
+        // No signature: refused before the delegation token is spent...
         let delegation = mint_delegation_token(|b| alice.sign(b), ALICE, &space, now);
         let response = app(state.clone())
             .oneshot(request(&delegation, None, SPACE))
             .await
             .unwrap();
         assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
-        // ...so the same token still exchanges once a proof is attached — but alice is not a
-        // member, so the policy refuses her.
-        let proof = key.proof_no_ath("POST", HTU);
+        // ...so the same token still exchanges once signed — but alice is not a member, so the
+        // policy refuses her.
         let response = app(state.clone())
-            .oneshot(request(&delegation, Some(&proof), SPACE))
+            .oneshot(request(&delegation, Some(&key), SPACE))
             .await
             .unwrap();
         assert_eq!(response.status(), StatusCode::FORBIDDEN);
         assert_eq!(body_json(response).await["error"], "UserNotAuthorized");
 
-        // A proof bound to the wrong URL is refused.
+        // A signature over a different delegation token does not carry over to this one, and
+        // the old DPoP shape is refused.
         let delegation = mint_delegation_token(|b| alice.sign(b), ALICE, &space, now);
-        let wrong = key.proof_no_ath(
-            "POST",
-            "https://elsewhere.example.com/xrpc/com.atproto.space.getSpaceCredential",
+        let mut req = request(&delegation, None, SPACE);
+        req.headers_mut()
+            .extend(key.delegation_headers("some-other-token"));
+        req.headers_mut().insert(
+            AUTHORIZATION,
+            HeaderValue::from_str(&format!("Bearer {delegation}")).unwrap(),
         );
-        let response = app(state.clone())
-            .oneshot(request(&delegation, Some(&wrong), SPACE))
-            .await
-            .unwrap();
+        let response = app(state.clone()).oneshot(req).await.unwrap();
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+        let mut req = request(&delegation, None, SPACE);
+        req.headers_mut().insert(
+            "DPoP",
+            HeaderValue::from_static("eyJhbGciOiJFUzI1NiJ9.e30.c2ln"),
+        );
+        let response = app(state.clone()).oneshot(req).await.unwrap();
         assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
 
         // Unknown space.
@@ -364,9 +362,8 @@ mod tests {
             &parse_space_ref(other).unwrap(),
             now,
         );
-        let proof = key.proof_no_ath("POST", HTU);
         let response = app(state.clone())
-            .oneshot(request(&delegation, Some(&proof), other))
+            .oneshot(request(&delegation, Some(&key), other))
             .await
             .unwrap();
         assert_eq!(response.status(), StatusCode::BAD_REQUEST);
@@ -379,9 +376,8 @@ mod tests {
             .await
             .unwrap();
         let delegation = mint_delegation_token(|b| alice.sign(b), ALICE, &space, now);
-        let proof = key.proof_no_ath("POST", HTU);
         let response = app(state)
-            .oneshot(request(&delegation, Some(&proof), SPACE))
+            .oneshot(request(&delegation, Some(&key), SPACE))
             .await
             .unwrap();
         assert_eq!(response.status(), StatusCode::BAD_REQUEST);
@@ -491,24 +487,14 @@ mod tests {
         .await;
 
         let space = parse_space_ref(SPACE).unwrap();
-        let proof_key = DpopProofKey::generate();
+        let sig_key = SpaceSigKey::generate();
         let now = unix_now().unwrap();
         let aud = format!("{AUTHORITY}#atproto_space_host");
         let mint = |attestation: Option<String>| {
             let state = state.clone();
             let delegation = mint_delegation_token(|b| alice.sign(b), ALICE, &space, now);
-            let proof = proof_key.proof_no_ath("POST", HTU);
-            async move {
-                app(state)
-                    .oneshot(attested_request(
-                        &delegation,
-                        Some(&proof),
-                        SPACE,
-                        attestation.as_deref(),
-                    ))
-                    .await
-                    .unwrap()
-            }
+            let req = attested_request(&delegation, Some(&sig_key), SPACE, attestation.as_deref());
+            async move { app(state).oneshot(req).await.unwrap() }
         };
 
         // No attestation: the space cannot tell which app is asking, so it refuses on the app.
@@ -622,18 +608,13 @@ mod tests {
         seed_configured_space(&state, "managing-app", Some(APP), "open", None).await;
 
         let space = parse_space_ref(SPACE).unwrap();
-        let proof_key = DpopProofKey::generate();
+        let key = SpaceSigKey::generate();
         let now = unix_now().unwrap();
         let mint = |did: &'static str, signer: &repo_engine::CommitSigner| {
             let state = state.clone();
             let delegation = mint_delegation_token(|b| signer.sign(b), did, &space, now);
-            let proof = proof_key.proof_no_ath("POST", HTU);
-            async move {
-                app(state)
-                    .oneshot(request(&delegation, Some(&proof), SPACE))
-                    .await
-                    .unwrap()
-            }
+            let req = request(&delegation, Some(&key), SPACE);
+            async move { app(state).oneshot(req).await.unwrap() }
         };
 
         let response = mint(ALICE, &alice).await;
@@ -667,14 +648,13 @@ mod tests {
         let alice = seed_identity(&state, ALICE).await;
         seed_space(&state, "public").await;
         let space = parse_space_ref(SPACE).unwrap();
-        let key = DpopProofKey::generate();
+        let key = SpaceSigKey::generate();
         let now = unix_now().unwrap();
 
         for (did, signer) in [(ALICE, &alice), (AUTHORITY, &authority)] {
             let delegation = mint_delegation_token(|b| signer.sign(b), did, &space, now);
-            let proof = key.proof_no_ath("POST", HTU);
             let response = app(state.clone())
-                .oneshot(request(&delegation, Some(&proof), SPACE))
+                .oneshot(request(&delegation, Some(&key), SPACE))
                 .await
                 .unwrap();
             assert_eq!(response.status(), StatusCode::OK, "{did}");

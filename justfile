@@ -168,9 +168,10 @@ auth-seam-check:
     scripts/auth-seam-check.sh
 
 # Freeze the space-read auth seam: every Atproto Spaces read/sync route authenticates through
-# auth::space::authenticate_space_read (OAuth grant OR DPoP-bound space credential, never
-# bearer, full RFC 9449 proof validation + per-host jti replay). Fails on any direct
-# verify_space_credential / validate_dpop call outside the two auth seams.
+# auth::space::authenticate_space_read (OAuth grant OR a space credential bound by an RFC 9421
+# signature over the request's audience, never bearer or DPoP). Fails on any direct
+# verify_space_credential / verify_space_signature call outside the space seam (or
+# validate_dpop outside the OAuth seam).
 space-auth-seam-check:
     scripts/space-auth-seam-check.sh
 

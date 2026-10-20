@@ -1,12 +1,12 @@
-// RFC 9449 DPoP proof construction — the client half of the Atproto Spaces
-// credential flow.
+// RFC 9449 DPoP proof construction for OAuth clients — the builder the OAuth
+// conformance suite (tools/oauth-conformance) drives the PAR/token/resource
+// flows with. (Atproto Spaces credentials are not DPoP-bound; they use RFC 9421
+// signatures, see space-signature.js.)
 //
-// Two proof shapes ride this one builder, matching the two server seams:
-//   * mint-time (`getSpaceCredential`): no `ath`, because the token in
-//     `Authorization` is the delegation grant being spent, not a DPoP-bound
-//     token. The proof's key is what the minted credential gets bound to.
-//   * resource (every credential-authed read): `ath` = SHA-256 of the
-//     credential, which rides `Authorization: DPoP <credential>`.
+// Two proof shapes ride this one builder:
+//   * no `ath`: PAR and the token endpoint, where no bound token exists yet.
+//   * resource: `ath` = SHA-256 of the bound access token, which rides
+//     `Authorization: DPoP <token>`.
 //
 // WebCrypto rather than node:crypto's sign(): ECDSA there returns raw R||S,
 // which is exactly the JWS ES256 encoding (node's returns DER).

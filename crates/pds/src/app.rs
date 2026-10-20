@@ -266,7 +266,7 @@ fn apply_shared_layers(router: Router<AppState>, state: &AppState) -> Router<App
 fn space_routes() -> Router<AppState> {
     Router::new()
         // The space-credential mint pair: an OAuth session trades a delegation token for a
-        // DPoP-bound space credential.
+        // key-bound space credential.
         .route(
             "/xrpc/com.atproto.space.getDelegationToken",
             get(get_delegation_token),

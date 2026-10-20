@@ -138,12 +138,14 @@ host on:
    registers a space it may never have heard of, the path that lets anyone join a foreign
    authority's space;
 2. the repo host mints a **delegation token** (`space.getDelegationToken`);
-3. the **space host** spends it for a DPoP-bound **space credential**
-   (`space.getSpaceCredential`, Bearer delegation + a mint-time proof carrying no `ath`);
+3. the **space host** spends it for a **space credential** bound to a fresh P-256 key
+   (`space.getSpaceCredential`, Bearer delegation + an RFC 9421 `atproto-space` signature
+   naming the key, which becomes the credential's `cnf.kid`);
 4. that credential drives reads on **both** hosts — `space.getRecord`/`listRepoOps`/`getRepo`
    on the repo host, `simplespace.getSpace`/`space.listRepos` on the authority — each under
-   `Authorization: DPoP` with a fresh per-request proof;
-5. it also asserts the credential is **refused** when presented without a proof. A host that
+   `Authorization: Atproto-Space`, signed together with the request's audience (the repo
+   owner's DID on the repo host, the authority's DID on the space host);
+5. it also asserts the credential is **refused** when presented without its signature. A host that
    accepts it as a plain bearer token has thrown away the binding.
 
 ### Naming the two hosts
@@ -203,11 +205,6 @@ the authority's own request, which is the part a host is likeliest to get wrong.
 [alpha-watch routine](../../docs/operations/spaces-alpha-watch-routine.md) tracks the spec
 drift that would invalidate any of this.
 
-**Gotcha:** the mint-time DPoP proof's `htu` is checked against the authority's *configured
-public URL*. Calling a host by an address it does not publish for itself fails with a
-generic `InvalidToken`; the CLI adds a hint on 401, but the fix is always to use the URL
-the host publishes.
-
 ## What the suite checks
 
 | Step | What it proves |
@@ -217,7 +214,7 @@ the host publishes.
 | identity | `resolveHandle`, `/.well-known/atproto-did`, and the plc.directory DID doc all agree; PDS endpoint in the doc points at this deployment |
 | CRUD | createRecord → getRecord (CID match) → listRecords → deleteRecord |
 | spaces | Atproto Spaces round-trip on the account's own PDS: `simplespace.createSpace` → `space.createRecord` → getRecord/listRecords/listSpaces → `getLatestCommit`/`listRepoOps`/`getRepo` (CAR parsed: two roots, blocks verified against their CIDs, record present in the index) → deleteRecord → `deleteSpace` (random skey per run; the space is torn down even on failure) |
-| spaces credential | delegation token → DPoP-bound space credential → credential-authed reads on both the repo host and the authority; the credential is rejected when presented without a proof |
+| spaces credential | delegation token → signature-bound space credential → credential-authed reads on both the repo host and the authority; the credential is rejected when presented without its signature |
 | spaces allowList | an `allowList` space answers `AppNotAuthorized` to a credential request naming no client |
 | firehose | a live `subscribeRepos` subscriber sees the `#commit` frame for a write, correct repo + op path |
 | sync | CAR export parses, root CID == `getLatestCommit`, `getRepoStatus` active, repo in `listRepos` |

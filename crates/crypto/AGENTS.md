@@ -394,6 +394,17 @@ pub fn verify_p256_signature(
 - Message is hashed with SHA-256 internally — pass the bytes exactly as signed, do not pre-hash
 - Errors: `CryptoError::SignatureVerification` for a malformed public key, an unparseable signature, or a verification mismatch
 
+**`verify_p256_signature_any_s`**
+
+```rust
+pub fn verify_p256_signature_any_s(
+    public_key: &DidKeyUri, message: &[u8], signature: &[u8; 64],
+) -> Result<(), CryptoError>
+```
+
+- `verify_p256_signature` without the low-S rule: a high-S signature is normalized to `(r, n − s)` before verifying, which accepts exactly the same signers. For Atproto Spaces RFC 9421 HTTP message signatures, which the spec says to accept with either S. P-256 only, same errors as `verify_p256_signature`
+- The one deliberate exception to the low-S invariant below: nothing is derived from these signatures' bytes, so malleability buys an attacker nothing. Never use it for PLC ops, commits, or anything hashed into an identifier
+
 **`parse_audit_log`**
 ```rust
 pub fn parse_audit_log(json: &str) -> Result<Vec<AuditEntry>, CryptoError>
@@ -516,7 +527,7 @@ pub fn verify_space_commit(
 - **Notification envelope (v1)**: HPKE DHKEM(P-256, HKDF-SHA256) + HKDF-SHA256 + AES-256-GCM, `mode_auth`, `info = b"ezpds/notify/1"`, empty `aad`. `enc` = 65-byte uncompressed SEC1 point (87 base64url chars); `ct` = plaintext + 16-byte tag. Pinned by `tests/fixtures/notify/hpke-notify-v1.json` — regenerating those vectors is a wire-format change.
 - **Encryption**: `base64(nonce(12) || ciphertext(32) || tag(16))` = 80 base64 chars; fresh nonce per call
 - **did:plc genesis op sig**: base64url (no padding) decoding to exactly 64 bytes (r‖s, big-endian, low-S canonical). `build_did_plc_genesis_op` low-S normalizes its own signature; external-signer callbacks must return low-S themselves.
-- **Low-S enforced on verify (both curves)**: every verification path (`verify_genesis_op`, `verify_plc_operation`, `verify_p256_signature`) rejects non-canonical high-S signatures on P-256 and secp256k1 alike, matching `@atproto/crypto`/plc.directory strict verification. Because DIDs/CIDs are derived from the *signed* CBOR, accepting a malleated high-S twin would let one signature yield a second valid op with a different DID/CID.
+- **Low-S enforced on verify (both curves)**: every verification path except `verify_p256_signature_any_s` (`verify_genesis_op`, `verify_plc_operation`, `verify_p256_signature`) rejects non-canonical high-S signatures on P-256 and secp256k1 alike, matching `@atproto/crypto`/plc.directory strict verification. Because DIDs/CIDs are derived from the *signed* CBOR, accepting a malleated high-S twin would let one signature yield a second valid op with a different DID/CID.
 - **secp256k1 is verify-only**: `SECP256K1_MULTICODEC_PREFIX` (`[0xe7, 0x01]`, `zQ3…`) exists for verifying ops signed by the reference ecosystem; nothing in this crate generates or signs with secp256k1 keys.
 
 ## Dependencies

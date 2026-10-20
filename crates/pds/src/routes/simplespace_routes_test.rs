@@ -15,7 +15,7 @@ use crate::auth::space::{authorize_credential_request, mint_space_credential, un
 use crate::db::dids::seed_did_document;
 use crate::routes::space_test_support::{send, xrpc_get, xrpc_post};
 use crate::routes::test_utils::{
-    access_jwt, scoped_access_jwt, seed_account_with_repo, state_with_master_key, DpopProofKey,
+    access_jwt, scoped_access_jwt, seed_account_with_repo, state_with_master_key, SpaceSigKey,
 };
 use crate::space_uri::parse_space_ref;
 
@@ -576,9 +576,9 @@ async fn management_is_gated_by_manage_grants_and_ownership() {
 }
 
 /// `getSpace` is the one simplespace method a space credential reaches: a member hosted
-/// anywhere presents the DPoP-bound credential the authority issued, with a per-request proof.
+/// anywhere presents the credential the authority issued, signed by its bound key.
 #[tokio::test]
-async fn get_space_accepts_a_dpop_bound_space_credential() {
+async fn get_space_accepts_a_signed_space_credential() {
     let state = setup().await;
     let kp = seed_account_with_repo(&state.db, CAROL).await;
     let multibase = kp.key_id.0.strip_prefix("did:key:").unwrap().to_string();
@@ -604,48 +604,42 @@ async fn get_space_accepts_a_dpop_bound_space_credential() {
     .await;
     assert_eq!(status, StatusCode::OK, "{body}");
 
-    let key = DpopProofKey::generate();
+    let key = SpaceSigKey::generate();
     let space = parse_space_ref(&carol_space).unwrap();
     let credential = mint_space_credential(
         |b| signer.sign(b),
         CAROL,
         &space,
-        &key.thumbprint(),
+        key.key_id(),
         unix_now().unwrap(),
     );
-    // The proof's `htu` is the request URL without its query (RFC 9449 §4.2).
-    let path = "/xrpc/com.atproto.simplespace.getSpace";
-    let query = format!("{path}?space={carol_space}");
-    let request = |credential: &str| {
-        Request::builder()
-            .method(http::Method::GET)
-            .uri(&query)
-            .header("Authorization", format!("DPoP {credential}"))
-            .header(
-                "DPoP",
-                key.proof(
-                    "GET",
-                    &format!("https://test.example.com{path}"),
-                    credential,
-                ),
-            )
-            .body(Body::empty())
+    // A space-level read is addressed to the space's authority.
+    let signed_get = |uri: String, credential: &str, audience: &str| {
+        let mut b = Request::builder().method(http::Method::GET).uri(uri);
+        b.headers_mut()
             .unwrap()
+            .extend(key.credential_headers(credential, audience));
+        b.body(Body::empty()).unwrap()
     };
-    let (status, body) = send(&state, request(&credential)).await;
+    let query = format!("/xrpc/com.atproto.simplespace.getSpace?space={carol_space}");
+    let (status, body) = send(&state, signed_get(query.clone(), &credential, CAROL)).await;
     assert_eq!(status, StatusCode::OK, "{body}");
     assert_eq!(body["uri"], carol_space);
     assert_eq!(body["readPolicy"]["$type"], MEMBER_LIST);
+
+    // Addressed to anyone but the authority, it is refused.
+    let (status, _) = send(&state, signed_get(query.clone(), &credential, ALICE)).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
 
     // A credential for some other space is refused, and one presented as Bearer is too.
     let other = mint_space_credential(
         |b| signer.sign(b),
         CAROL,
         &parse_space_ref(&format!("at://{CAROL}/space/{TYPE}/other")).unwrap(),
-        &key.thumbprint(),
+        key.key_id(),
         unix_now().unwrap(),
     );
-    let (status, _) = send(&state, request(&other)).await;
+    let (status, _) = send(&state, signed_get(query.clone(), &other, CAROL)).await;
     assert_eq!(status, StatusCode::UNAUTHORIZED);
     let (status, _) = send(
         &state,
@@ -660,23 +654,13 @@ async fn get_space_accepts_a_dpop_bound_space_credential() {
     assert_eq!(status, StatusCode::UNAUTHORIZED);
 
     // listMembers is OAuth-only: the credential does not reach the authority's member list.
-    let list_path = "/xrpc/com.atproto.simplespace.listMembers";
     let (status, _) = send(
         &state,
-        Request::builder()
-            .method(http::Method::GET)
-            .uri(format!("{list_path}?space={carol_space}"))
-            .header("Authorization", format!("DPoP {credential}"))
-            .header(
-                "DPoP",
-                key.proof(
-                    "GET",
-                    &format!("https://test.example.com{list_path}"),
-                    &credential,
-                ),
-            )
-            .body(Body::empty())
-            .unwrap(),
+        signed_get(
+            format!("/xrpc/com.atproto.simplespace.listMembers?space={carol_space}"),
+            &credential,
+            CAROL,
+        ),
     )
     .await;
     assert_eq!(status, StatusCode::UNAUTHORIZED);

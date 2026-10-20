@@ -228,7 +228,7 @@ holder's mint-time choice, and it cannot be added to an existing credential.
 
 The [Atproto Spaces](https://github.com/bluesky-social/proposals) alpha surface:
 permissioned space repos a client writes with `space:` OAuth grants
-(`com.atproto.space.*` record CRUD), DPoP-bound space credentials for
+(`com.atproto.space.*` record CRUD), signature-bound space credentials for
 cross-host reads, oplog and two-root CAR sync for syncers, and the
 `com.atproto.simplespace.*` management routes (create a space, member lists,
 deletion). The protocol is **pre-launch alpha**: the upstream lexicons carry a

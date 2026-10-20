@@ -25,5 +25,5 @@ docs {
   (`typ atproto-space-delegation+jwt`, `kid #atproto`, `sub` = space, `aud` = the authority's
   `#atproto_space_host`). Requires an OAuth (or full-access) session whose grant covers `read`
   on the space — a `read_self`-only or app-password session gets 403 InsufficientScope. The app
-  exchanges it at the authority's `getSpaceCredential` (with a DPoP proof) for a space credential.
+  exchanges it at the authority's `getSpaceCredential` (with an RFC 9421 signature) for a space credential.
 }

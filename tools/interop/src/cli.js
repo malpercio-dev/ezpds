@@ -38,7 +38,7 @@ Checks
   crud-test --name <n>             create/read/list/delete round-trip
   spaces-test --name <n>           Atproto Spaces round-trip (simplespace + records + sync reads)
   spaces-cross-host --member <n> [--authority <n>] [--space <uri>] [--space-host <url>]
-                                   delegation token → DPoP-bound credential → credential-authed
+                                   delegation token → signature-bound credential → credential-authed
                                    reads on the repo host AND the space host
   spaces-allowlist --name <n>      an allowList space refuses an unattested credential request
   firehose-test --name <n>         write a post, observe its #commit frame

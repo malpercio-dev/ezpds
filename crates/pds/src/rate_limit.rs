@@ -26,8 +26,8 @@
 //!    [`crate::record_write::commit_repo_write`] where the verified DID is known (keying on an
 //!    unverified token subject would let anyone drain a victim's budget).
 //! 4. **Per-space-credential** — every credential-authed space request costs 1 point against the
-//!    credential's *verified* DPoP key thumbprint (`cnf.jkt`). Enforced at the credential seam in
-//!    `crate::auth::space` after the proof and replay checks pass, so garbage requests cannot
+//!    credential's *verified* bound key (`cnf.kid`). Enforced at the credential seam in
+//!    `crate::auth::space` after the signature check passes, so garbage requests cannot
 //!    drain a holder's budget and re-minting a credential (fresh `jti`, same key) does not reset
 //!    it. Complements the global per-IP cap for the one caller class that legitimately works
 //!    across IPs: a syncer fleet holding one credential.
@@ -100,7 +100,7 @@ pub struct RateLimiterState {
     /// requesting IP (`ip:<addr>`) and the `client_id` (`client:<id>`) keys — a single limiter with
     /// two independent keyspaces, so neither dimension can flood the pending-request table.
     oauth_consent_creation: Mutex<MultiWindowLimiter>,
-    /// Credential-authed space requests, keyed by the credential's verified `cnf.jkt`.
+    /// Credential-authed space requests, keyed by the credential's verified `cnf.kid`.
     space_credential: Mutex<MultiWindowLimiter>,
     /// Signature-mismatch DID-document force-refreshes, keyed by the token's `iss`. Keyed on an
     /// *unverified* claim by necessity — the mismatch is what we are reacting to — which is safe
@@ -241,16 +241,16 @@ impl RateLimiterState {
         Ok(())
     }
 
-    /// Charge one credential-authed space request against the credential's bound DPoP key
-    /// thumbprint. Returns [`ErrorCode::RateLimited`] (429, with the standard `Retry-After` /
-    /// `RateLimit-*` headers) when the holder's budget is exhausted. Call only with a *verified*
-    /// `cnf.jkt` — keying on an unverified claim would let anyone drain a holder's budget. A
+    /// Charge one credential-authed space request against the credential's bound key. Returns
+    /// [`ErrorCode::RateLimited`] (429, with the standard `Retry-After` / `RateLimit-*` headers)
+    /// when the holder's budget is exhausted. Call only with a *verified*
+    /// `cnf.kid` — keying on an unverified claim would let anyone drain a holder's budget. A
     /// no-op when rate limiting is disabled.
-    pub fn check_space_credential(&self, jkt: &str) -> Result<(), ApiError> {
+    pub fn check_space_credential(&self, kid: &str) -> Result<(), ApiError> {
         if !self.enabled {
             return Ok(());
         }
-        let decision = lock(&self.space_credential).check(jkt, 1, Instant::now());
+        let decision = lock(&self.space_credential).check(kid, 1, Instant::now());
         if decision.allowed {
             Ok(())
         } else {

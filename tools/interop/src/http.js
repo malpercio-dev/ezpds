@@ -2,7 +2,7 @@
 // through here so pacing and 429 handling are enforced globally, not per-module.
 
 import { MIN_REQUEST_INTERVAL_MS, MAX_RATE_LIMIT_RETRIES } from './config.js';
-import { dpopProof } from './dpop.js';
+import { spaceSigHeaders } from './space-signature.js';
 
 export class HttpError extends Error {
   constructor(status, body, url) {
@@ -62,17 +62,19 @@ export function sleep(ms) {
  *
  * @param {string} url
  * @param {{method?: string, headers?: object, body?: any, token?: string, raw?: boolean,
- *          dpop?: {key: object, bind?: string}, minIntervalMs?: number, maxRetries?: number}} options
+ *          spaceSig?: {key: object, credential?: string, audience?: string},
+ *          minIntervalMs?: number, maxRetries?: number}} options
  *   `body` objects are JSON-encoded; a `URLSearchParams` body is form-encoded instead
  *   (`application/x-www-form-urlencoded`, e.g. an OAuth token-endpoint request); string
  *   and `Uint8Array` bodies pass through as-is. With `raw: true` the Response is returned
  *   unconsumed (for CAR/blob downloads); otherwise JSON (or text) is parsed and
  *   non-2xx throws HttpError.
  *
- *   `dpop` attaches an RFC 9449 proof. With `bind` (a DPoP-bound space credential) the
- *   request also switches to `Authorization: DPoP <bind>` and the proof carries `ath`;
- *   without it the proof is the mint-time kind and `token` still supplies the Bearer
- *   grant — the two shapes `getSpaceCredential` and the credential-authed reads want.
+ *   `spaceSig` attaches an Atproto Spaces RFC 9421 signature (`space-signature.js`).
+ *   With `credential` the request switches to `Authorization: Atproto-Space <credential>`
+ *   and signs it together with `audience`; without it, `token` still supplies the Bearer
+ *   delegation grant and the signature names its key — the two shapes the credential-authed
+ *   reads and `getSpaceCredential` want.
  *
  *   `minIntervalMs`/`maxRetries` override this module's own pacing defaults for callers
  *   (e.g. tools/mcp) that configure their own — every request still funnels through the
@@ -84,6 +86,12 @@ export async function request(url, options = {}) {
   const minIntervalMs = options.minIntervalMs ?? MIN_REQUEST_INTERVAL_MS;
   const maxRetries = options.maxRetries ?? MAX_RATE_LIMIT_RETRIES;
   if (options.token) headers['Authorization'] = `Bearer ${options.token}`;
+  if (options.spaceSig) {
+    const { key, credential, audience } = options.spaceSig;
+    Object.assign(headers, await spaceSigHeaders(key, credential === undefined
+      ? { authorization: headers['Authorization'] }
+      : { authorization: `Atproto-Space ${credential}`, audience }));
+  }
 
   let body;
   if (options.body !== undefined) {
@@ -101,13 +109,6 @@ export async function request(url, options = {}) {
 
   for (let attempt = 0; ; attempt++) {
     await pace(minIntervalMs);
-    // Minted per attempt, not once: a proof's `iat` is good for 60s while a Retry-After
-    // wait can be 120s, and the space read seam spends each `jti` once per host — so a
-    // reused proof after a rate-limit retry would be rejected as stale *and* as a replay.
-    if (options.dpop) {
-      if (options.dpop.bind) headers['Authorization'] = `DPoP ${options.dpop.bind}`;
-      headers['DPoP'] = await dpopProof(options.dpop.key, { method, url, boundToken: options.dpop.bind });
-    }
     let res;
     try {
       res = await fetch(url, { method, headers, body });

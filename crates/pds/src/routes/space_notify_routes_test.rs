@@ -21,7 +21,7 @@ use crate::auth::space::{mint_space_credential, unix_now};
 use crate::db::dids::seed_did_document;
 use crate::routes::space_test_support::{send, xrpc_get as get, xrpc_post as post};
 use crate::routes::test_utils::{
-    access_jwt, seed_account_with_repo, state_with_master_key, DpopProofKey,
+    access_jwt, seed_account_with_repo, state_with_master_key, SpaceSigKey,
 };
 use crate::space_record_write::{
     apply_space_writes, SpaceWriteAction, SpaceWriteAdmission, SpaceWriteOp,
@@ -298,23 +298,23 @@ async fn space_host_methods_refuse_a_foreign_authoritys_space() {
     write_one(&state, FOREIGN_SPACE, ALICE, "one").await;
 
     let signer = repo_engine::CommitSigner::from_bytes(&foreign_kp.private_key_bytes).unwrap();
-    let key = DpopProofKey::generate();
+    let key = SpaceSigKey::generate();
     let credential = mint_space_credential(
         |b| signer.sign(b),
         FOREIGN,
         &parse_space_ref(FOREIGN_SPACE).unwrap(),
-        &key.thumbprint(),
+        key.key_id(),
         unix_now().unwrap(),
     );
 
     for (method, request) in [
         (
             "com.atproto.space.listRepos",
-            dpop_get(&list_repos_query(FOREIGN_SPACE), &credential, &key),
+            signed_get(&list_repos_query(FOREIGN_SPACE), &credential, &key),
         ),
         (
             "com.atproto.space.registerNotify",
-            dpop_post(
+            signed_post(
                 "com.atproto.space.registerNotify",
                 &credential,
                 &key,
@@ -323,7 +323,7 @@ async fn space_host_methods_refuse_a_foreign_authoritys_space() {
         ),
         (
             "com.atproto.space.unregisterNotify",
-            dpop_post(
+            signed_post(
                 "com.atproto.space.unregisterNotify",
                 &credential,
                 &key,
@@ -337,48 +337,32 @@ async fn space_host_methods_refuse_a_foreign_authoritys_space() {
     }
 }
 
-/// A credential-authed GET. The proof's `htu` is the URL without its query (RFC 9449 §4.2).
-fn dpop_get(method_and_query: &str, credential: &str, key: &DpopProofKey) -> Request<Body> {
-    let path = format!("/xrpc/{}", method_and_query.split('?').next().unwrap());
-    Request::builder()
+/// A credential-authed GET, addressed to the space's authority as every space-host method is.
+fn signed_get(method_and_query: &str, credential: &str, key: &SpaceSigKey) -> Request<Body> {
+    let mut b = Request::builder()
         .method(http::Method::GET)
-        .uri(format!("/xrpc/{method_and_query}"))
-        .header("Authorization", format!("DPoP {credential}"))
-        .header(
-            "DPoP",
-            key.proof(
-                "GET",
-                &format!("https://test.example.com{path}"),
-                credential,
-            ),
-        )
-        .body(Body::empty())
+        .uri(format!("/xrpc/{method_and_query}"));
+    b.headers_mut()
         .unwrap()
+        .extend(key.credential_headers(credential, FOREIGN));
+    b.body(Body::empty()).unwrap()
 }
 
-/// A credential-authed POST.
-fn dpop_post(
+/// A credential-authed POST, addressed like [`signed_get`].
+fn signed_post(
     method: &str,
     credential: &str,
-    key: &DpopProofKey,
+    key: &SpaceSigKey,
     body: serde_json::Value,
 ) -> Request<Body> {
-    let path = format!("/xrpc/{method}");
-    Request::builder()
+    let mut b = Request::builder()
         .method(http::Method::POST)
-        .uri(&path)
-        .header("Content-Type", "application/json")
-        .header("Authorization", format!("DPoP {credential}"))
-        .header(
-            "DPoP",
-            key.proof(
-                "POST",
-                &format!("https://test.example.com{path}"),
-                credential,
-            ),
-        )
-        .body(Body::from(body.to_string()))
+        .uri(format!("/xrpc/{method}"))
+        .header("Content-Type", "application/json");
+    b.headers_mut()
         .unwrap()
+        .extend(key.credential_headers(credential, FOREIGN));
+    b.body(Body::from(body.to_string())).unwrap()
 }
 
 /// A syncer DID document that *does* carry a service endpoint, so `registerNotify`'s

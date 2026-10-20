@@ -20,7 +20,7 @@ pub struct GetSpaceParams {
 /// GET /xrpc/com.atproto.simplespace.getSpace
 ///
 /// Served by the space host: an OAuth caller must be the authority with a `read_self` grant,
-/// a member hosted anywhere (including here) presents the DPoP-bound space credential the
+/// a member hosted anywhere (including here) presents the signature-bound space credential the
 /// authority issued it — which is itself the proof it is authorized for the space.
 pub async fn simplespace_get_space(
     State(state): State<AppState>,
