@@ -47,7 +47,7 @@ understand why the architecture is the way it is.
 | [0010](0010-toolchains-managed-outside-nix.md) | Accepted | Manage the compiler toolchains outside Nix (rustup + dynamic Apple toolchain) |
 | [0011](0011-sqlite-via-sqlx.md) | Accepted | SQLite (via sqlx) as the datastore |
 | [0012](0012-canonical-dag-cbor-for-plc-ops.md) | Accepted | Canonical DAG-CBOR encoding for did:plc operations |
-| [0013](0013-native-swiftui-shell-over-rust-core.md) | Deferred | Native SwiftUI shell over the Rust core (if/when we leave Tauri) |
+| [0013](0013-native-swiftui-shell-over-rust-core.md) | Deferred | A native shell (SwiftUI / Kotlin) over the bound Rust core, triggered by Android demand, a blocking WKWebView defect, or an assurance call for native fidelity; background execution is not a trigger (revised 2026-10-20, core split out to [0039](0039-obsign-core-bound-rust-core.md)) |
 | [0014](0014-atrium-repo-for-repo-engine.md) | Accepted | Adopt `atrium-repo` for the repo engine's MST and block store (0.1.8 is since consumed as a vendored patch — see [0034](0034-vendored-atrium-repo-mst-patch.md)) |
 | [0015](0015-ci-on-github-actions.md) | Accepted | Host CI on GitHub Actions (leaving the tangled spindle) |
 | [0016](0016-dynamic-lexicon-permission-set-resolution.md) | Accepted | Dynamic Lexicon-based permission-set resolution, not a static scope table |
@@ -73,3 +73,4 @@ understand why the architecture is the way it is.
 | [0036](0036-sliding-agent-assertion-renewal.md) | Accepted | Confirmed agent bindings get a 30-day assertion TTL and a sliding renewal on every jwt-bearer exchange; revocation, not expiry, is the kill switch — amends [0019](0019-authmd-agent-authentication.md) |
 | [0037](0037-hd-derived-child-custody.md) | Accepted | Child rotation keys are HD-derived from a delegation seed rooted in the recovery seed, making [0023](0023-sovereign-child-agent-identities.md)'s custody claim structural; seed-rotation fan-out deferred, grandchildren out of scope |
 | [0038](0038-hand-written-xrpc-methods-over-lexicon-codegen.md) | Accepted | `custos-client`'s typed XRPC methods stay hand-written; `atrium-api` lexicon codegen was investigated and rejected (missing Custos extensions, newtype ripple, narrower error classification, no DPoP, no lexicon for `agents.rs`) |
+| [0039](0039-obsign-core-bound-rust-core.md) | Accepted | The wallet's Rust is a platform-free `obsign-core` behind five platform traits (`KeyStore`, `Signer`, `EventSink`, `Scheduler`, `Clock`), bound into shells with UniFFI and designed for iOS and Android; no `cfg(target_os)` or Apple crate in the core; split out of [0013](0013-native-swiftui-shell-over-rust-core.md) |
