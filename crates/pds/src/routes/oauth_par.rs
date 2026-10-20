@@ -205,7 +205,7 @@ pub async fn post_par(
         None if client_id.starts_with("https://") || client_id.starts_with("http://") => {
             // The fetched URL is caller-supplied (the client_id itself), so it must go through
             // the SSRF-hardened client, not the plain one used for trusted admin-configured
-            // upstreams — `scripts/ssrf-client-check.sh` guards this call site.
+            // upstreams; `resolve_client_metadata` takes a `HardenedClient`, so no other compiles.
             match crate::auth::oauth_client_resolution::resolve_client_metadata(
                 &state.hardened_http_client,
                 &client_id,

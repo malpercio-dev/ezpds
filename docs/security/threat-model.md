@@ -44,7 +44,7 @@ Boundaries and their primary control:
 | --- | --- | --- |
 | Client ↔ PDS HTTP | Bearer/DPoP tokens, XRPC bodies | `auth::extractors::authenticate_access`, TLS |
 | PDS ↔ plc.directory | Signed PLC operations | DAG-CBOR canonicalization + signature verification (`crates/crypto/src/plc.rs`) |
-| PDS ↔ outbound fetch (handle/did:web/client metadata/JWKS/blob mirror) | Caller-influenced URLs | `AppState::hardened_http_client` + `SsrfResolver` (`crates/pds/src/identity/proxy.rs`), `just ssrf-client-check` |
+| PDS ↔ outbound fetch (handle/did:web/client metadata/JWKS/blob mirror) | Caller-influenced URLs | `HardenedClient` + `CallerUrl` + `SsrfResolver` (`crates/pds/src/identity/proxy.rs`) |
 | PDS ↔ SQLite/filesystem | Queries, blob reads/writes | Per-crate DB module ownership (`crates/pds/AGENTS.md`), path validation |
 | Wallet ↔ Secure Enclave/Keychain | Signing requests, key material | `crates/ios-device-key`, no key ever leaves the enclave |
 | Wallet ↔ PDS | Session tokens, DPoP proofs | RFC 9449 binding (`crates/pds/src/auth/dpop.rs`) |
@@ -81,13 +81,18 @@ unauthenticated PAR endpoint.
 ### SSRF via caller-influenced fetches
 
 `crates/pds/src/identity/proxy.rs` is the SSRF guard: a validated scheme/host
-check plus a hardened `reqwest::Client` (`AppState::hardened_http_client`)
-whose custom `SsrfResolver` re-applies a public-address allowlist at DNS
-resolution time, closing the redirect/re-resolution TOCTOU gap. `just
-ssrf-client-check` freezes both caller-influenced fetch sites onto that
-client: the well-known handle resolver and every `resolve_client_metadata`
-call (the OAuth `client_id` metadata document fetched from PAR and from
-client attestation). An IP-literal host never reaches the resolver, so
+check plus a hardened client (`HardenedClient`, stored as
+`AppState::hardened_http_client`) whose custom `SsrfResolver` re-applies a
+public-address allowlist at DNS resolution time, closing the
+redirect/re-resolution TOCTOU gap. The compiler holds every caller-influenced
+fetch onto that client: such a target is a `CallerUrl`, which only
+`HardenedClient` accepts, and the resolvers of caller-named targets (the
+well-known handle resolver, `resolve_client_metadata` for the OAuth
+`client_id` from PAR and client attestation, and `atproto-proxy` header
+targets) take a `&HardenedClient`. The OAuth-client JWKS fetcher is the one
+exception: it shares a plain-`reqwest::Client` fetcher with
+operator-configured issuers, so it receives the hardened client's inner
+`reqwest::Client`, which keeps the resolver but not the type check. An IP-literal host never reaches the resolver, so
 `auth::oauth_client_resolution::validate_client_id_url` refuses a private,
 loopback, or link-local IP-literal `client_id` before any fetch, reusing the
 same `ip_allowed` allowlist ([#638](https://github.com/malpercio-dev/ezpds/pull/638)).
@@ -216,7 +221,7 @@ allowlists, with `core:default` and `withGlobalTauri` both refused. Full spec:
 ## Keeping this current
 
 The gates that hold specific rows above are `just auth-seam-check`,
-`just space-auth-seam-check`, `just ssrf-client-check`, `just cap-check`,
+`just space-auth-seam-check`, `just cap-check`,
 `just capability-docs-check`, `just runbook-parity-check`,
 `just bundle-identity-check`, `just audit`, and `just deny` — all part of
 `just ci` / `just ci-pds`, listed with what each one freezes in the root

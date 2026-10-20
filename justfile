@@ -192,12 +192,6 @@ space-auth-seam-check:
 capability-docs-check:
     scripts/capability-docs-check.sh
 
-# Guard the caller-influenced identity fetch against SSRF: resolveHandle's well-known
-# fallback fetches a caller-controlled host, so it must use the SSRF-hardened HTTP client.
-# Fails on a novel/un-hardened wiring; the plain-client wiring is baselined as MM-387.
-ssrf-client-check:
-    scripts/ssrf-client-check.sh
-
 # Prove scripts/gc.sh never targets the real main working tree for pruning when run from a
 # secondary worktree (the normal agent workflow) — regression guard for MM-390. Spins up a
 # throwaway worktree, runs gc.sh dry-run from it, asserts the main checkout is skipped.
@@ -309,7 +303,7 @@ oauth-conformance-test:
 # Adding a check here covers `just ci` (macOS/full) and `just ci-pds` (Linux) at once —
 # the old design re-stated all twelve checks in each, so a gate added to one and
 # forgotten in the other was a silent gap.
-checks: fmt-check lock-check bruno-check docs-check lexgen-check changelog-check changelog-test font-check cap-check px-check capability-docs-check ticket-ref-check adr-ref-check plan-status-check workspace-dep-check runbook-parity-check auth-seam-check space-auth-seam-check ssrf-client-check gc-guard-check ios-paths-check swift-rs-check ios-template-check bundle-identity-check
+checks: fmt-check lock-check bruno-check docs-check lexgen-check changelog-check changelog-test font-check cap-check px-check capability-docs-check ticket-ref-check adr-ref-check plan-status-check workspace-dep-check runbook-parity-check auth-seam-check space-auth-seam-check gc-guard-check ios-paths-check swift-rs-check ios-template-check bundle-identity-check
 
 # Run the full CI pipeline locally (all crates; use on macOS where the iOS app builds)
 ci: checks clippy test audit deny

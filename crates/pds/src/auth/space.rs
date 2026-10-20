@@ -977,7 +977,7 @@ async fn check_managing_app(
     // caller-influenced: the hardened client is what decides which address this reaches.
     let response = state
         .hardened_http_client
-        .get(url)
+        .get(&crate::identity::proxy::CallerUrl::new(url))
         .bearer_auth(token)
         .timeout(CHECK_USER_ACCESS_TIMEOUT)
         .send()

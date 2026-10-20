@@ -308,15 +308,16 @@ pub(crate) async fn pipethrough_munged(
     let actor = extract_actor_param(&req, nsid);
     let uri = extract_query_param(&req, "uri");
 
+    // The munge path always hits the admin-configured AppView, never a caller-controlled
+    // header target, so it uses the plain client — not the SSRF-hardened one.
+    let appview =
+        crate::routes::service_proxy::Upstream::Configured(state.config.appview.url.clone());
     let upstream = match crate::routes::service_proxy::proxy_request(
         state,
-        &state.config.appview.url,
+        &appview,
         &state.config.appview.did,
         nsid,
         did,
-        // The munge path always hits the admin-configured AppView, never a caller-controlled
-        // header target, so it uses the plain client — not the SSRF-hardened one.
-        crate::routes::service_proxy::Upstream::Configured,
         req,
     )
     .await

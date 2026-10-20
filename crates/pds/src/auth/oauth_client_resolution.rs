@@ -18,9 +18,8 @@
 //! 60s negative cache (bounded, oldest-evicted) so replaying one failing client_id
 //! against the unauthenticated PAR endpoint can't loop outbound fetches.
 //!
-//! The fetch itself is caller-influenced by construction, so every call site must pass
-//! `AppState::hardened_http_client`, never the plain `http_client`
-//! (`scripts/ssrf-client-check.sh` guards this).
+//! The fetch itself is caller-influenced by construction, so `resolve_client_metadata` takes a
+//! `HardenedClient`: passing the plain `http_client` does not compile.
 //!
 //! Also owns `validate_private_use_redirect`, the reverse-FQDN redirect rule both
 //! request surfaces enforce. Consumers: `routes/oauth_par.rs` and
@@ -28,6 +27,7 @@
 //! (`validate_private_use_redirect` only — its client lookup is cache-only, never a live
 //! fetch); `routes/oauth_client_metadata.rs` (`url_is_loopback`).
 
+use crate::identity::proxy::{CallerUrl, HardenedClient};
 use std::collections::HashMap;
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
@@ -362,7 +362,7 @@ pub(crate) fn loopback_client_metadata(client_id: &str) -> Result<String, Client
 /// A loopback client_id short-circuits the fetch: its metadata is synthesized from the
 /// identifier itself, because there is no document to retrieve.
 pub async fn resolve_client_metadata(
-    http: &reqwest::Client,
+    http: &HardenedClient,
     client_id: &str,
 ) -> Result<String, ClientResolutionError> {
     if is_loopback_client_id(client_id) {
@@ -391,12 +391,12 @@ pub async fn resolve_client_metadata(
 /// The fetch + validation pipeline behind [`resolve_client_metadata`], separated so the
 /// caller can record any failure into the negative cache in one place.
 async fn fetch_and_validate(
-    http: &reqwest::Client,
+    http: &HardenedClient,
     client_id: &str,
     url: Url,
 ) -> Result<String, ClientResolutionError> {
     let response = http
-        .get(url)
+        .get(&CallerUrl::new(url))
         .header("Accept", "application/json")
         .timeout(FETCH_TIMEOUT)
         .send()
@@ -502,7 +502,7 @@ mod tests {
             listener.local_addr().unwrap().port()
         };
         let client_id = format!("http://127.0.0.1:{port}/oauth/client-metadata.json");
-        let http = reqwest::Client::new();
+        let http = crate::identity::proxy::build_hardened_client(true).unwrap();
 
         let first = resolve_client_metadata(&http, &client_id).await;
         assert!(

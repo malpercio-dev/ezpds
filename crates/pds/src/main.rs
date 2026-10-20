@@ -430,7 +430,7 @@ async fn run() -> anyhow::Result<()> {
     // doc for why this doesn't share `jwks_cache` above.
     let oauth_client_jwks_cache = Arc::new(auth::jwks::JwksCache::new(
         Arc::new(auth::jwks::HttpJwksFetcher::new(
-            hardened_http_client.clone(),
+            hardened_http_client.clone().into_inner(),
         )),
         std::time::Duration::from_secs(config.oauth.client_jwks_cache_ttl_secs),
         std::time::Duration::from_secs(config.oauth.client_jwks_refetch_cooldown_secs),

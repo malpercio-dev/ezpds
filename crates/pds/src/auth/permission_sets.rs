@@ -422,17 +422,17 @@ struct GetRecordResponse {
 /// — redirects disabled + a DNS resolver enforcing the public-address allowlist at connect time —
 /// the same client `routes::service_proxy` uses for its own caller-controlled targets.
 pub(super) async fn fetch_lexicon_schema(
-    client: &reqwest::Client,
+    client: &crate::identity::proxy::HardenedClient,
     authority: &AuthorityEndpoint,
     nsid: &str,
 ) -> Result<Value, String> {
-    let url = format!(
+    let url = crate::identity::proxy::CallerUrl::new(format!(
         "{}/xrpc/com.atproto.repo.getRecord?repo={}&collection={}&rkey={}",
         authority.url.trim_end_matches('/'),
         urlencoding::encode(&authority.did),
         urlencoding::encode(LEXICON_SCHEMA_COLLECTION),
         urlencoding::encode(nsid),
-    );
+    ));
 
     let response = client.get(&url).send().await.map_err(|e| {
         tracing::warn!(error = %e, nsid, "failed to fetch Lexicon schema record");

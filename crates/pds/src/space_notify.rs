@@ -265,7 +265,10 @@ async fn deliver(
     .await
     .map_err(|e| e.to_string())?;
 
-    let url = format!("{}/xrpc/{lxm}", endpoint.trim_end_matches('/'));
+    let url = crate::identity::proxy::CallerUrl::new(format!(
+        "{}/xrpc/{lxm}",
+        endpoint.trim_end_matches('/')
+    ));
     let mut backoff = BASE_BACKOFF;
     let mut last = String::new();
     for attempt in 1..=MAX_ATTEMPTS {

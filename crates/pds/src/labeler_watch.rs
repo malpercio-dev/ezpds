@@ -269,29 +269,31 @@ async fn fetch_labels(
     let target = resolve_atproto_proxy_target(state, &format!("{labeler_did}#atproto_labeler"))
         .await
         .map_err(|e| anyhow::anyhow!("failed to resolve labeler service endpoint: {e:?}"))?;
-    let base = url::Url::parse(&format!(
-        "{}/xrpc/com.atproto.label.queryLabels",
-        target.url.trim_end_matches('/')
-    ))?;
+    let url = target.url.join("/xrpc/com.atproto.label.queryLabels");
+    let limit = QUERY_LABELS_PAGE_LIMIT.to_string();
 
     let mut events = Vec::new();
     for chunk in dids.chunks(QUERY_LABELS_MAX_PATTERNS) {
         let mut cursor: Option<String> = None;
         for _page in 0..QUERY_LABELS_MAX_PAGES {
-            let mut url = base.clone();
-            {
-                let mut pairs = url.query_pairs_mut();
+            let query = {
+                let mut query = url::form_urlencoded::Serializer::new(String::new());
                 for did in chunk {
-                    pairs.append_pair("uriPatterns", did);
+                    query.append_pair("uriPatterns", did);
                 }
-                pairs.append_pair("sources", labeler_did);
-                pairs.append_pair("limit", &QUERY_LABELS_PAGE_LIMIT.to_string());
+                query.append_pair("sources", labeler_did);
+                query.append_pair("limit", &limit);
                 if let Some(c) = &cursor {
-                    pairs.append_pair("cursor", c);
+                    query.append_pair("cursor", c);
                 }
-            }
+                query.finish()
+            };
 
-            let response = state.hardened_http_client.get(url).send().await?;
+            let response = state
+                .hardened_http_client
+                .get(&url.join(&format!("?{query}")))
+                .send()
+                .await?;
             if !response.status().is_success() {
                 anyhow::bail!("queryLabels returned {}", response.status());
             }
