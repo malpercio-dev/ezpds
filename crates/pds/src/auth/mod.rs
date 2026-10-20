@@ -3,6 +3,7 @@ pub mod client_attestation;
 pub mod dpop;
 pub mod extractors;
 pub mod guards;
+pub mod http_signature;
 pub mod issuer_trust;
 pub mod jwks;
 pub mod jwt;

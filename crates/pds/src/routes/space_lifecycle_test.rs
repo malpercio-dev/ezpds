@@ -25,7 +25,7 @@ use crate::routes::space_test_support::{
 };
 use crate::routes::test_utils::{
     access_jwt, body_json, scoped_access_jwt, seed_account_with_repo, state_with_master_key,
-    DpopProofKey,
+    SpaceSigKey,
 };
 use crate::space_uri::parse_space_ref;
 
@@ -228,31 +228,15 @@ async fn a_credential_stops_being_served_when_the_authority_is_not_active() {
         StatusCode::OK
     );
 
-    let key = DpopProofKey::generate();
+    let key = SpaceSigKey::generate();
     let credential = mint_space_credential(
         |b| signer.sign(b),
         DID,
         &parse_space_ref(&own_space).unwrap(),
-        &key.thumbprint(),
+        key.key_id(),
         unix_now().unwrap(),
     );
-    let path = "/xrpc/com.atproto.simplespace.getSpace";
-    let request = || {
-        Request::builder()
-            .method(http::Method::GET)
-            .uri(format!("{path}?space={own_space}"))
-            .header("Authorization", format!("DPoP {credential}"))
-            .header(
-                "DPoP",
-                key.proof(
-                    "GET",
-                    &format!("https://test.example.com{path}"),
-                    &credential,
-                ),
-            )
-            .body(Body::empty())
-            .unwrap()
-    };
+    let request = || get_space_signed(&own_space, &key, &credential);
     assert_eq!(
         send(&state, request()).await,
         StatusCode::OK,
@@ -270,10 +254,10 @@ async fn a_credential_stops_being_served_when_the_authority_is_not_active() {
 }
 
 /// Credential-authed requests draw from a per-holder budget keyed by the credential's *verified*
-/// `cnf.jkt` — so re-minting a fresh credential (new `jti`, same DPoP key) does not reset it,
+/// `cnf.kid` — so re-minting a fresh credential (new `jti`, same bound key) does not reset it,
 /// and only a fully authenticated request spends from it.
 #[tokio::test]
-async fn credential_requests_are_rate_limited_per_key_thumbprint() {
+async fn credential_requests_are_rate_limited_per_bound_key() {
     let mut state = state_with_master_key().await;
     state.rate_limiter = std::sync::Arc::new(crate::rate_limit::RateLimiterState::new(
         &common::RateLimitConfig {
@@ -317,30 +301,14 @@ async fn credential_requests_are_rate_limited_per_key_thumbprint() {
         StatusCode::OK
     );
 
-    let key = DpopProofKey::generate();
-    let path = "/xrpc/com.atproto.simplespace.getSpace";
-    let request = |credential: &str| {
-        Request::builder()
-            .method(http::Method::GET)
-            .uri(format!("{path}?space={own_space}"))
-            .header("Authorization", format!("DPoP {credential}"))
-            .header(
-                "DPoP",
-                key.proof(
-                    "GET",
-                    &format!("https://test.example.com{path}"),
-                    credential,
-                ),
-            )
-            .body(Body::empty())
-            .unwrap()
-    };
+    let key = SpaceSigKey::generate();
+    let request = |credential: &str| get_space_signed(&own_space, &key, credential);
     let mint = || {
         mint_space_credential(
             |b| signer.sign(b),
             DID,
             &parse_space_ref(&own_space).unwrap(),
-            &key.thumbprint(),
+            key.key_id(),
             unix_now().unwrap(),
         )
     };
@@ -348,8 +316,8 @@ async fn credential_requests_are_rate_limited_per_key_thumbprint() {
     let credential = mint();
     assert_eq!(send(&state, request(&credential)).await, StatusCode::OK);
 
-    // The budget is spent: a fresh proof — and even a freshly minted credential — still 429s,
-    // because the key is the credential's bound key thumbprint, not its jti.
+    // The budget is spent: even a freshly minted credential still 429s, because the limiter
+    // keys on the credential's bound key, not its jti.
     let response = crate::app::app(state.clone())
         .oneshot(request(&mint()))
         .await
@@ -357,6 +325,18 @@ async fn credential_requests_are_rate_limited_per_key_thumbprint() {
     assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
     assert!(response.headers().contains_key("retry-after"));
     assert_eq!(body_json(response).await["error"], "RateLimitExceeded");
+}
+
+/// `simplespace.getSpace` for `space` under `credential`, signed by `key` and addressed to the
+/// space's authority.
+fn get_space_signed(space: &str, key: &SpaceSigKey, credential: &str) -> Request<Body> {
+    let mut b = Request::builder().method(http::Method::GET).uri(format!(
+        "/xrpc/com.atproto.simplespace.getSpace?space={space}"
+    ));
+    b.headers_mut()
+        .unwrap()
+        .extend(key.credential_headers(credential, DID));
+    b.body(Body::empty()).unwrap()
 }
 
 // ── migration ────────────────────────────────────────────────────────────────

@@ -5,8 +5,9 @@
 //!
 //! The `(scope, jti)` primary key is the replay defense: only the first insert
 //! for a given scope reports `true`, and the writer stamps `expires_at` with
-//! the token's own acceptance horizon (a delegation token's ~60 s validity, a
-//! DPoP proof's `iat` recency window). The periodic sweep
+//! the token's own acceptance horizon (a delegation token's or client
+//! attestation's validity). Space credentials themselves spend no `jti`: replay
+//! against one audience is allowed until expiry, by spec. The periodic sweep
 //! (`space_jti_sweep.rs`) is storage reclamation only — a row is deleted only
 //! once no token carrying its jti could still be accepted.
 
@@ -20,8 +21,6 @@ pub enum SpaceJtiScope {
     Delegation,
     /// Client attestation JWTs.
     Attestation,
-    /// Per-request DPoP proofs on credential-authed sync calls.
-    Dpop,
 }
 
 impl SpaceJtiScope {
@@ -29,7 +28,6 @@ impl SpaceJtiScope {
         match self {
             SpaceJtiScope::Delegation => "delegation",
             SpaceJtiScope::Attestation => "attestation",
-            SpaceJtiScope::Dpop => "dpop",
         }
     }
 }
@@ -92,7 +90,7 @@ mod tests {
         );
         // The same string on a different surface is an independent jti.
         assert!(
-            insert_jti_if_absent(&pool, SpaceJtiScope::Dpop, "jti-1", 60)
+            insert_jti_if_absent(&pool, SpaceJtiScope::Attestation, "jti-1", 60)
                 .await
                 .unwrap()
         );

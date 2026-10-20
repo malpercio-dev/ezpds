@@ -17,26 +17,29 @@
 //!   authority's `#atproto_space_host`, single-use, ~60 s. [`mint_delegation_token`] /
 //!   [`verify_delegation_token`] (the latter spends the `jti` in `space_jti_replay`).
 //! * **Space credential** — the space authority mints it (`getSpaceCredential`) in exchange for
-//!   a delegation token plus a mint-time DPoP proof (no `ath`): `typ
-//!   atproto-space-credential+jwt`, `kid #atproto_space`, no `aud`, `cnf.jkt` = the proof key's
-//!   RFC 7638 thumbprint, ~2 h. [`mint_space_credential`] / [`verify_space_credential`] (the
-//!   latter resolves the authority's key by `kid`: `#atproto_space` with the `#atproto`
-//!   fallback, or `#atproto` only when the authority publishes no dedicated space key).
+//!   a delegation token plus an RFC 9421 `atproto-space` signature over that request's
+//!   `Authorization` (`auth/http_signature.rs`): `typ atproto-space-credential+jwt`, `kid
+//!   #atproto_space`, no `aud`, `cnf.kid` = the signature's P-256 `did:key`, 10 min (a verifier
+//!   accepts up to 60). [`mint_space_credential`] / [`verify_space_credential`] (the latter
+//!   resolves the authority's key by `kid`: `#atproto_space` with the `#atproto` fallback, or
+//!   `#atproto` only when the authority publishes no dedicated space key). The `jti` is a
+//!   revocation id, not a nonce: a credential is reusable until it expires.
 //! * **The read seam** — [`authenticate_space_read`] accepts a covering OAuth grant on the
-//!   caller's *own* repo *or* a DPoP-bound space credential for any repo in the space, never a
-//!   bearer credential. [`authenticate_space_access`] is the same pair of arms for a method
-//!   that names a space but no repo (`simplespace.getSpace`), and
+//!   caller's *own* repo *or* a signature-bound space credential for any repo in the space,
+//!   never a bearer credential. [`authenticate_space_access`] is the same pair of arms for a
+//!   method that names a space but no repo (`simplespace.getSpace`), and
 //!   [`authenticate_space_owner`] is the OAuth-only arm every simplespace management method
 //!   *on an existing space* takes: grant check, then "the caller *is* the authority"
 //!   (`NotSpaceOwner`). `createSpace` is the exception — a space anchored on the caller's own
 //!   DID has no prior owner to check, so it takes [`authenticate_space_caller`] and the grant
-//!   check alone. The credential arm runs the full RFC 9449 per-request proof validation
-//!   (`auth/dpop.rs`'s `validate_dpop`: signature vs header `jwk`, thumbprint vs `cnf.jkt`,
-//!   `ath` = hash of the credential, `htm`/`htu`, `iat` recency) plus the per-host `jti` replay
-//!   check the proposal makes a MUST. `just space-auth-seam-check`
-//!   (`scripts/space-auth-seam-check.sh`) confines `verify_space_credential` and
-//!   `validate_dpop` to this seam and `extractors.rs`, so no route grows its own credential
-//!   parsing.
+//!   check alone. The credential arm takes `Authorization: Atproto-Space <credential>` plus an
+//!   `atproto-space` signature over that header and `Atproto-Space-Audience`, verified against
+//!   `cnf.kid`; the audience must be the DID the request is for (the repo owner on a repo read,
+//!   the authority on a space-level one), which is what stops a credential captured at one repo
+//!   host being replayed at another. Replay against the same audience is allowed until expiry,
+//!   by spec. `just space-auth-seam-check` (`scripts/space-auth-seam-check.sh`) confines
+//!   `verify_space_credential` and `verify_space_signature` to this seam and the mint route, so
+//!   no route grows its own credential parsing.
 //! * **The operator cut** — [`require_space_servable`] refuses a space the operator took down
 //!   (V070), the per-space counterpart to [`require_serviceable_caller`]'s account-level one and
 //!   the only lever that reaches a space whose authority is a foreign server. Every seam above
@@ -50,8 +53,7 @@
 //!   on any failure to get an answer).
 //!
 //! Both account-key-signed token shapes share `jwt.rs`'s [`sign_jwt`] / [`verify_did_key_jwt`]
-//! core with service auth; the scheme ↔ `cnf.jkt` binding on the credential arm mirrors the one
-//! `extractors::authenticate_access` enforces for OAuth.
+//! core with service auth.
 
 use axum::http::{HeaderMap, Method, Uri};
 use common::{ApiError, ApiResultExt, ErrorCode};
@@ -68,9 +70,9 @@ use crate::identity::resolution::{
 };
 use crate::space_uri::SpaceRef;
 
-use super::bearer::{extract_access_token, AuthScheme};
-use super::dpop::{validate_dpop, validate_dpop_for_par, DPOP_MAX_AGE_SECS};
+use super::bearer::{extract_access_token, extract_space_credential};
 use super::extractors::AuthenticatedUser;
+use super::http_signature::{verify_space_signature, SignedFor};
 use super::jwt::{
     peek_jwt_iss, peek_jwt_typ, random_jti, sign_jwt, verify_did_key_jwt, AuthScope, DidKeyJwt,
     ServiceAuthError,
@@ -87,9 +89,11 @@ pub const DELEGATION_TOKEN_TTL_SECS: u64 = 60;
 /// spent `jti` is retained for, so a token can never outlive its replay row.
 pub const DELEGATION_TOKEN_MAX_TTL_SECS: u64 = 5 * 60;
 /// Lifetime of a space credential this server mints (the proposal's default).
-pub const SPACE_CREDENTIAL_TTL_SECS: u64 = 2 * 60 * 60;
-/// Request path the mint-time DPoP proof's `htu` must name.
-pub const GET_SPACE_CREDENTIAL_PATH: &str = "/xrpc/com.atproto.space.getSpaceCredential";
+pub const SPACE_CREDENTIAL_TTL_SECS: u64 = 10 * 60;
+/// Longest `exp − iat` accepted on an inbound space credential (the proposal's cap).
+pub const SPACE_CREDENTIAL_MAX_TTL_SECS: u64 = 60 * 60;
+/// Clock skew tolerated on an inbound credential's `iat` (the reference's).
+const CLOCK_SKEW_SECS: u64 = 5;
 
 /// The delegation-token audience for `space`: its authority's space-host service reference.
 pub fn space_host_aud(space: &SpaceRef) -> String {
@@ -176,8 +180,8 @@ pub async fn authenticate_space_write(
 pub enum SpaceReader {
     /// An account reading its own repo under an OAuth (or legacy) session.
     User(AuthenticatedUser),
-    /// A syncer holding a DPoP-bound space credential for the space, proof of possession
-    /// verified for this request. May read any repo in the space on this host.
+    /// A syncer holding a space credential for the space, its `cnf.kid` signature verified for
+    /// this request and audience. May read any repo in the space on this host.
     Credential(VerifiedCredential),
 }
 
@@ -189,15 +193,13 @@ pub enum SpaceReader {
 ///   under a `read`/`read_self` grant. A caller naming someone else's repo gets the same
 ///   `RepoNotFound` an absent repo gets, on purpose: whether a given account holds a repo in a
 ///   space is not a fact a caller without read access to that space is entitled to learn.
-/// * A **space credential** — `Authorization: DPoP <credential>` plus a per-request proof — reads
-///   any repo in the space it names. Only the authority issues one, and only after deciding the
-///   holder may read the space; a repo host keeps no member list of its own to consult. The
-///   credential's `sub` must be `space`, the scheme must be `DPoP` with exactly one `DPoP`
-///   header (the scheme ↔ binding rule `extractors::authenticate_access` enforces for OAuth),
-///   the proof is validated in full (`validate_dpop`, with the credential as the bound token)
-///   and its `jti` spent per host in `space_jti_replay` for the proof acceptance window. Because
-///   this caller is not the owner, the repo must be an active local account's: a deactivated or
-///   taken-down owner's repo reads as `RepoNotFound` here, where the owner could still read it.
+/// * A **space credential** — `Authorization: Atproto-Space <credential>` plus its signature —
+///   reads any repo in the space it names. Only the authority issues one, and only after
+///   deciding the holder may read the space; a repo host keeps no member list of its own to
+///   consult. The request's audience must be `repo` (see [`authenticate_space_credential`]).
+///   Because this caller is not the owner, the repo must be an active local account's: a
+///   deactivated or taken-down owner's repo reads as `RepoNotFound` here, where the owner could
+///   still read it.
 pub async fn authenticate_space_read(
     state: &AppState,
     headers: &HeaderMap,
@@ -206,9 +208,7 @@ pub async fn authenticate_space_read(
     space: &SpaceRef,
     repo: &str,
 ) -> Result<SpaceReader, ApiError> {
-    let (scheme, token) = extract_access_token(headers)?;
-
-    if peek_jwt_typ(token).as_deref() != Some(SPACE_CREDENTIAL_TYP) {
+    let Some(token) = presented_space_credential(headers)? else {
         let user = authenticate_space_caller(state, headers, method, uri).await?;
         if user.did != repo {
             return Err(repo_not_found(repo));
@@ -216,10 +216,9 @@ pub async fn authenticate_space_read(
         require_space_grant(state, &user, space, SpaceOp::ReadSelf).await?;
         require_space_servable(state, space).await?;
         return Ok(SpaceReader::User(user));
-    }
+    };
 
-    let credential =
-        authenticate_space_credential(state, headers, scheme, token, method, uri, space).await?;
+    let credential = authenticate_space_credential(state, headers, token, space, repo).await?;
 
     require_space_servable(state, space).await?;
 
@@ -236,8 +235,8 @@ pub async fn authenticate_space_read(
 /// The same two arms as [`authenticate_space_read`]: an account credential must carry a
 /// `read_self` grant for the space *and* belong to the space's authority (the reference's
 /// `assertSpaceScope` + `assertSpaceOwner` — a member hosted here still presents a space
-/// credential, like a member hosted anywhere else); a DPoP-bound space credential for the
-/// space is accepted with the full per-request proof validation.
+/// credential, like a member hosted anywhere else); a space credential for the space is
+/// accepted when its signature is addressed to the authority.
 ///
 /// This is the space-*host* seam — every route behind it answers only for a space anchored on
 /// a local account — so the credential arm additionally requires that authority to be an
@@ -253,14 +252,13 @@ pub async fn authenticate_space_access(
     uri: &Uri,
     space: &SpaceRef,
 ) -> Result<SpaceReader, ApiError> {
-    let (scheme, token) = extract_access_token(headers)?;
-    if peek_jwt_typ(token).as_deref() != Some(SPACE_CREDENTIAL_TYP) {
+    let Some(token) = presented_space_credential(headers)? else {
         let user =
             authenticate_space_owner(state, headers, method, uri, space, SpaceOp::ReadSelf).await?;
         return Ok(SpaceReader::User(user));
-    }
+    };
     let credential =
-        authenticate_space_credential(state, headers, scheme, token, method, uri, space).await?;
+        authenticate_space_credential(state, headers, token, space, &space.authority).await?;
     require_serviceable_authority(state, space).await?;
     require_space_servable(state, space).await?;
     Ok(SpaceReader::Credential(credential))
@@ -346,33 +344,37 @@ pub async fn authenticate_space_owner(
     Ok(user)
 }
 
-/// The credential arm shared by the seams above: `Authorization: DPoP <credential>` plus a
-/// per-request proof, for `space`. Scheme must be `DPoP` with exactly one `DPoP` header (the
-/// scheme ↔ binding rule `extractors::authenticate_access` enforces for OAuth); the
-/// credential's `sub` must be `space`; the proof is validated in full (`validate_dpop`, with
-/// the credential as the bound token) and its `jti` spent per host in `space_jti_replay` for
-/// the proof acceptance window.
+/// The space credential a request presents, if it takes the credential arm at all: the token
+/// in `Authorization: Atproto-Space <credential>`. A space credential under any other scheme is
+/// refused outright rather than handed to the OAuth arm — that is the pre-RFC 9421 DPoP shape,
+/// and naming it is kinder than the OAuth arm's generic signature failure.
+fn presented_space_credential(headers: &HeaderMap) -> Result<Option<&str>, ApiError> {
+    if let Some(token) = extract_space_credential(headers) {
+        return Ok(Some(token));
+    }
+    if let Ok((_, token)) = extract_access_token(headers) {
+        if peek_jwt_typ(token).as_deref() == Some(SPACE_CREDENTIAL_TYP) {
+            return Err(ApiError::new(
+                ErrorCode::InvalidToken,
+                "space credential must use the Atproto-Space authorization scheme",
+            ));
+        }
+    }
+    Ok(None)
+}
+
+/// The credential arm shared by the seams above: `token` (from `Authorization: Atproto-Space`)
+/// must be a credential for `space`, and the request must carry an `atproto-space` signature
+/// over `Authorization` and `Atproto-Space-Audience` by the credential's `cnf.kid`, with that
+/// audience equal to `audience` — the DID this request is for. No nonce and no replay store:
+/// the audience is the binding, and reuse against it is allowed until the credential expires.
 async fn authenticate_space_credential(
     state: &AppState,
     headers: &HeaderMap,
-    scheme: AuthScheme,
     token: &str,
-    method: &Method,
-    uri: &Uri,
     space: &SpaceRef,
+    audience: &str,
 ) -> Result<VerifiedCredential, ApiError> {
-    if scheme != AuthScheme::Dpop {
-        return Err(ApiError::new(
-            ErrorCode::InvalidToken,
-            "space credential must use the DPoP authorization scheme",
-        ));
-    }
-    let proof = single_dpop_header(headers)?.ok_or_else(|| {
-        ApiError::new(
-            ErrorCode::InvalidToken,
-            "space credential requires a DPoP proof header",
-        )
-    })?;
     // Cheap pre-filter on the unverified `sub`, so a credential for some other space cannot
     // drive DID resolution (a cache miss plus the force-refresh retry is two upstream fetches
     // per request) before it is thrown out. The authoritative comparison follows verification.
@@ -395,37 +397,19 @@ async fn authenticate_space_credential(
         ));
     }
 
-    let jti = validate_dpop(
-        proof,
-        method,
-        uri,
-        state.config.issuer(),
-        Some(&credential.jkt),
-        token,
+    verify_space_signature(
+        headers,
+        SignedFor::Credential {
+            key_id: &credential.kid,
+            audience,
+        },
     )?;
-    // Per-host replay protection (a MUST for credential-authed requests): a proof is acceptable
-    // for ±DPOP_MAX_AGE_SECS around its iat, so its jti is retained for the full window.
-    let fresh = insert_jti_if_absent(
-        &state.db,
-        SpaceJtiScope::Dpop,
-        &jti,
-        (2 * DPOP_MAX_AGE_SECS) as i64,
-    )
-    .await
-    .or_internal_as("failed to record DPoP proof jti", "internal server error")?;
-    if !fresh {
-        return Err(ApiError::new(
-            ErrorCode::InvalidToken,
-            "DPoP proof jti has already been used",
-        ));
-    }
 
-    // Charged last, on the *verified* key thumbprint, so unauthenticated garbage cannot drain a
-    // holder's budget — and after the replay check, so a replayed proof is an auth error, never
-    // a confusing 429.
+    // Charged last, on the *verified* key, so unauthenticated garbage cannot drain a holder's
+    // budget.
     state
         .rate_limiter
-        .check_space_credential(&credential.jkt)
+        .check_space_credential(&credential.kid)
         .inspect_err(|_| {
             state.metrics.rate_limit_rejections.add(
                 1,
@@ -642,15 +626,15 @@ pub async fn verify_delegation_token(
 
 // ── Space credentials ────────────────────────────────────────────────────────
 
-/// Mint a space credential for `space`, as its authority `authority_did`, bound to the DPoP
-/// key with thumbprint `jkt`. `sign` is the authority's space signing key — this server signs
+/// Mint a space credential for `space`, as its authority `authority_did`, bound to the P-256
+/// `did:key` `key_id` (from the exchange's signature). `sign` is the authority's space signing key — this server signs
 /// with the account's repo key, which is also what it publishes as `#atproto_space`, hence that
 /// `kid` (verifiers fall back to `#atproto` when the dedicated entry is absent).
 pub fn mint_space_credential<F>(
     sign: F,
     authority_did: &str,
     space: &SpaceRef,
-    jkt: &str,
+    key_id: &str,
     now: u64,
 ) -> String
 where
@@ -664,7 +648,7 @@ where
     let payload = serde_json::json!({
         "iss": authority_did,
         "sub": space.uri,
-        "cnf": { "jkt": jkt },
+        "cnf": { "kid": key_id },
         "iat": now,
         "exp": now + SPACE_CREDENTIAL_TTL_SECS,
         "jti": random_jti(),
@@ -672,20 +656,21 @@ where
     sign_jwt(sign, &header, &payload)
 }
 
-/// A space credential whose signature and claims verified. Its DPoP binding is enforced by
-/// [`authenticate_space_read`], not here.
+/// A space credential whose signature and claims verified. Its key binding is enforced by
+/// [`authenticate_space_credential`], not here.
 #[derive(Debug, Clone)]
 pub struct VerifiedCredential {
     /// The space the credential reads (`sub`).
     pub space: SpaceRef,
-    /// The bound DPoP key's thumbprint (`cnf.jkt`).
-    pub jkt: String,
+    /// The bound key (`cnf.kid`), a `did:key`.
+    pub kid: String,
 }
 
 /// Verify a space credential as a repo host: `typ`; the signature against the authority's key
 /// named by `kid` (cache-first, force-refreshed and retried once on a mismatch — a foreign
 /// authority may be ES256K, which the shared core accepts); `sub` a space anchored on `iss`;
-/// `exp` in the future; and a `cnf.jkt`.
+/// `exp` in the future, `iat` not, and `exp − iat` within [`SPACE_CREDENTIAL_MAX_TTL_SECS`]; and
+/// a `cnf.kid`.
 ///
 /// `kid` selects the key the way the proposal's key separation intends: `#atproto_space`
 /// resolves the dedicated space key, falling back to `#atproto` only when the authority
@@ -693,8 +678,8 @@ pub struct VerifiedCredential {
 /// space key — an authority that separates the two keys did so precisely so a repo-key
 /// compromise cannot mint credentials, and the presenter chooses `kid`.
 ///
-/// Only [`authenticate_space_read`] may call this — the proof-of-possession check that makes a
-/// verified credential usable lives there, and `just space-auth-seam-check` enforces it.
+/// Only [`authenticate_space_credential`] may call this — the proof-of-possession check that
+/// makes a verified credential usable lives there, and `just space-auth-seam-check` enforces it.
 pub async fn verify_space_credential(
     state: &AppState,
     token: &str,
@@ -743,25 +728,33 @@ pub async fn verify_space_credential(
             "space credential issuer is not the space's authority",
         ));
     }
-    match claims.get("exp").and_then(Value::as_u64) {
-        Some(exp) if exp > now => {}
-        Some(_) => {
-            return Err(ApiError::new(
-                ErrorCode::TokenExpired,
-                "space credential has expired",
-            ))
-        }
-        None => return Err(invalid("space credential has no exp")),
+    let (Some(iat), Some(exp)) = (
+        claims.get("iat").and_then(Value::as_u64),
+        claims.get("exp").and_then(Value::as_u64),
+    ) else {
+        return Err(invalid("space credential needs numeric iat and exp"));
+    };
+    if exp <= now {
+        return Err(ApiError::new(
+            ErrorCode::TokenExpired,
+            "space credential has expired",
+        ));
     }
-    let jkt = claims
+    if iat > now + CLOCK_SKEW_SECS {
+        return Err(invalid("space credential issued in the future"));
+    }
+    if exp <= iat || exp - iat > SPACE_CREDENTIAL_MAX_TTL_SECS {
+        return Err(invalid("invalid space credential lifetime"));
+    }
+    let kid = claims
         .get("cnf")
-        .and_then(|c| c.get("jkt"))
+        .and_then(|c| c.get("kid"))
         .and_then(Value::as_str)
-        .filter(|j| !j.is_empty())
-        .ok_or_else(|| invalid("space credential has no cnf.jkt binding"))?
+        .filter(|k| k.starts_with("did:key:"))
+        .ok_or_else(|| invalid("space credential has no cnf.kid binding"))?
         .to_string();
 
-    Ok(VerifiedCredential { space, jkt })
+    Ok(VerifiedCredential { space, kid })
 }
 
 // ── Credential issuance policy ───────────────────────────────────────────────
@@ -1000,25 +993,6 @@ async fn check_managing_app(
     }
 }
 
-/// Validate the mint-time DPoP proof on a `getSpaceCredential` request and return the proof
-/// key's thumbprint — the value that becomes the credential's `cnf.jkt`. Same rules as the PAR
-/// proof: signature vs header `jwk`, `htm` POST, `htu` = this server's `getSpaceCredential`
-/// URL, `jti` present, `iat` fresh; no server nonce and no `ath` (the delegation token is a
-/// grant, not an access token).
-pub fn mint_time_dpop_thumbprint(
-    headers: &HeaderMap,
-    state: &AppState,
-) -> Result<String, ApiError> {
-    let proof = single_dpop_header(headers)?.ok_or_else(|| {
-        ApiError::new(
-            ErrorCode::InvalidToken,
-            "getSpaceCredential requires a DPoP proof header",
-        )
-    })?;
-    let htu = format!("{}{}", state.config.issuer(), GET_SPACE_CREDENTIAL_PATH);
-    validate_dpop_for_par(proof, "POST", &htu).map_err(|e| e.into_api_error())
-}
-
 // ── Shared plumbing ──────────────────────────────────────────────────────────
 
 /// Resolve `iss`'s DID document, pick the verification key with `pick_key`, and verify `token`
@@ -1087,18 +1061,6 @@ fn peek_jwt_segment(token: &str, index: usize) -> Option<Value> {
     serde_json::from_slice(&URL_SAFE_NO_PAD.decode(b64).ok()?).ok()
 }
 
-/// The single `DPoP` header value, or `None` when absent. More than one is rejected (RFC 9449
-/// §11.1: a header-prepending proxy could inject a forged proof as the first value).
-fn single_dpop_header(headers: &HeaderMap) -> Result<Option<&str>, ApiError> {
-    if headers.get_all("DPoP").iter().count() > 1 {
-        return Err(ApiError::new(
-            ErrorCode::InvalidToken,
-            "multiple DPoP headers are not permitted",
-        ));
-    }
-    Ok(headers.get("DPoP").and_then(|v| v.to_str().ok()))
-}
-
 pub(crate) use crate::time::unix_now;
 
 #[cfg(test)]
@@ -1109,7 +1071,7 @@ mod tests {
     use crate::db::spaces::{insert_space, NewSpace};
     use crate::routes::test_utils::{
         access_jwt, app_pass_jwt, scoped_access_jwt, seed_account_with_repo, state_with_master_key,
-        DpopProofKey,
+        SpaceSigKey,
     };
     use crate::space_uri::parse_space_ref;
     use axum::http::{header::AUTHORIZATION, HeaderValue};
@@ -1118,7 +1080,7 @@ mod tests {
     const AUTHORITY: &str = "did:plc:abc234567abc234567abc234";
     const ALICE: &str = "did:plc:alice";
     const SPACE: &str = "at://did:plc:abc234567abc234567abc234/space/org.example.bucket/self";
-    const PUBLIC_URL: &str = "https://test.example.com";
+    const GET_RECORD: &str = "/xrpc/com.atproto.space.getRecord";
 
     /// A DID document whose `#atproto` (and, when `with_space_key`, `#atproto_space`) Multikey
     /// holds `kp`'s public key — what this server publishes for its own accounts. A
@@ -1174,16 +1136,30 @@ mod tests {
         serde_json::from_slice(&URL_SAFE_NO_PAD.decode(b64).unwrap()).unwrap()
     }
 
-    fn headers(scheme: &str, token: &str, dpop: Option<&str>) -> HeaderMap {
+    fn headers(scheme: &str, token: &str) -> HeaderMap {
         let mut h = HeaderMap::new();
         h.insert(
             AUTHORIZATION,
             HeaderValue::from_str(&format!("{scheme} {token}")).unwrap(),
         );
-        if let Some(p) = dpop {
-            h.insert("DPoP", HeaderValue::from_str(p).unwrap());
-        }
         h
+    }
+
+    /// Run the read seam for `repo` with `headers`, as a `getRecord` call.
+    async fn read(
+        state: &AppState,
+        headers: &HeaderMap,
+        repo: &str,
+    ) -> Result<SpaceReader, ApiError> {
+        authenticate_space_read(
+            state,
+            headers,
+            &Method::GET,
+            &get_uri(GET_RECORD),
+            &space(),
+            repo,
+        )
+        .await
     }
 
     fn get_uri(path: &str) -> Uri {
@@ -1350,20 +1326,20 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn space_credential_mints_and_the_seam_accepts_it_with_proof_of_possession() {
+    async fn space_credential_mints_and_the_seam_accepts_it_with_its_signature() {
         let state = state_with_master_key().await;
         let authority = seed_identity(&state, AUTHORITY, true).await;
         // The repo being read belongs to alice, an active local account; the credential holder
         // is neither alice nor the authority.
         seed_identity(&state, ALICE, false).await;
-        let key = DpopProofKey::generate();
+        let key = SpaceSigKey::generate();
         let now = unix_now().unwrap();
 
         let credential = mint_space_credential(
             |b| authority.sign(b),
             AUTHORITY,
             &space(),
-            &key.thumbprint(),
+            key.key_id(),
             now,
         );
         let hdr = header(&credential);
@@ -1372,87 +1348,54 @@ mod tests {
         let claims = payload(&credential);
         assert_eq!(claims["iss"], AUTHORITY);
         assert_eq!(claims["sub"], SPACE);
-        assert_eq!(claims["cnf"]["jkt"], key.thumbprint());
+        assert_eq!(claims["cnf"], serde_json::json!({ "kid": key.key_id() }));
         assert!(claims.get("aud").is_none());
         assert_eq!(claims["exp"], now + SPACE_CREDENTIAL_TTL_SECS);
+        assert_eq!(SPACE_CREDENTIAL_TTL_SECS, 600);
 
-        let path = "/xrpc/com.atproto.space.getRecord";
-        let htu = format!("{PUBLIC_URL}{path}");
-        let proof = key.proof("GET", &htu, &credential);
-        let reader = authenticate_space_read(
-            &state,
-            &headers("DPoP", &credential, Some(&proof)),
-            &Method::GET,
-            &get_uri(path),
-            &space(),
-            ALICE,
-        )
-        .await
-        .unwrap();
-        match reader {
+        let signed = key.credential_headers(&credential, ALICE);
+        match read(&state, &signed, ALICE).await.unwrap() {
             SpaceReader::Credential(c) => {
                 assert_eq!(c.space.authority, AUTHORITY);
                 assert_eq!(c.space.uri, SPACE);
-                assert_eq!(c.jkt, key.thumbprint());
+                assert_eq!(c.kid, key.key_id());
             }
             other => panic!("expected the credential arm, got {other:?}"),
         }
 
-        let seam = |dpop: String| {
-            let state = state.clone();
-            let credential = credential.clone();
-            async move {
-                authenticate_space_read(
-                    &state,
-                    &headers("DPoP", &credential, Some(&dpop)),
-                    &Method::GET,
-                    &get_uri(path),
-                    &space(),
-                    ALICE,
-                )
-                .await
-            }
-        };
+        // The same signed request again is fine: replay against one audience is allowed until
+        // expiry, by spec.
+        assert!(read(&state, &signed, ALICE).await.is_ok());
 
-        // The same proof again is a per-host replay.
-        let err = seam(proof.clone()).await.unwrap_err();
+        // A signature by a key other than cnf.kid is refused.
+        let other_key = SpaceSigKey::generate();
         assert_eq!(
-            err.status_code(),
-            401,
-            "replayed proof jti must be rejected"
-        );
-
-        // A fresh proof works again; one from a different key (thumbprint ≠ cnf.jkt) does not.
-        assert!(seam(key.proof("GET", &htu, &credential)).await.is_ok());
-        let other_key = DpopProofKey::generate();
-        assert_eq!(
-            seam(other_key.proof("GET", &htu, &credential))
-                .await
-                .unwrap_err()
-                .status_code(),
+            read(
+                &state,
+                &other_key.credential_headers(&credential, ALICE),
+                ALICE
+            )
+            .await
+            .unwrap_err()
+            .status_code(),
             401
         );
-        // A proof for another method/URI does not transfer.
-        assert_eq!(
-            seam(key.proof("POST", &htu, &credential))
+
+        // The audience must be the repo the request reads: a request signed for alice cannot
+        // read another repo, nor one signed for anyone else read alice's.
+        seed_identity(&state, "did:plc:carol", false).await;
+        for (audience, repo) in [(ALICE, "did:plc:carol"), (AUTHORITY, ALICE)] {
+            let err = read(&state, &key.credential_headers(&credential, audience), repo)
                 .await
-                .unwrap_err()
-                .status_code(),
-            401
-        );
+                .unwrap_err();
+            assert_eq!(*err.code(), ErrorCode::InvalidToken, "{audience} → {repo}");
+        }
 
         // A repo whose owner is not an active local account reads as RepoNotFound for a
         // credential holder (the owner could still read it themselves).
-        let err = authenticate_space_read(
+        let err = read(
             &state,
-            &headers(
-                "DPoP",
-                &credential,
-                Some(&key.proof("GET", &htu, &credential)),
-            ),
-            &Method::GET,
-            &get_uri(path),
-            &space(),
+            &key.credential_headers(&credential, "did:plc:stranger"),
             "did:plc:stranger",
         )
         .await
@@ -1461,46 +1404,41 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn space_credential_is_never_bearer() {
+    async fn space_credential_is_never_bearer_or_dpop() {
         let state = state_with_master_key().await;
         let authority = seed_identity(&state, AUTHORITY, true).await;
         seed_identity(&state, ALICE, false).await;
-        let key = DpopProofKey::generate();
+        let key = SpaceSigKey::generate();
         let now = unix_now().unwrap();
         let credential = mint_space_credential(
             |b| authority.sign(b),
             AUTHORITY,
             &space(),
-            &key.thumbprint(),
+            key.key_id(),
             now,
         );
-        let path = "/xrpc/com.atproto.space.getRecord";
-        let proof = key.proof("GET", &format!("{PUBLIC_URL}{path}"), &credential);
 
-        // Bearer scheme (even with a valid proof attached) and DPoP scheme without a proof are
-        // both refused — the scheme ↔ binding rule in both directions.
-        for (scheme, dpop) in [
-            ("Bearer", Some(proof.as_str())),
-            ("Bearer", None),
-            ("DPoP", None),
-        ] {
-            let err = authenticate_space_read(
-                &state,
-                &headers(scheme, &credential, dpop),
-                &Method::GET,
-                &get_uri(path),
-                &space(),
-                ALICE,
-            )
-            .await
-            .unwrap_err();
-            assert_eq!(
-                err.status_code(),
-                401,
-                "{scheme} with dpop={} must be rejected",
-                dpop.is_some()
+        // The pre-RFC 9421 shapes are refused by name, signature attached or not.
+        for scheme in ["Bearer", "DPoP"] {
+            let mut signed = key.credential_headers(&credential, ALICE);
+            signed.insert(
+                AUTHORIZATION,
+                HeaderValue::from_str(&format!("{scheme} {credential}")).unwrap(),
             );
+            for h in [signed, headers(scheme, &credential)] {
+                let err = read(&state, &h, ALICE).await.unwrap_err();
+                assert_eq!(err.status_code(), 401, "{scheme}");
+                assert!(err.message().contains("Atproto-Space"), "{scheme}: {err:?}");
+            }
         }
+        // The right scheme with no signature at all is refused too.
+        assert_eq!(
+            read(&state, &headers("Atproto-Space", &credential), ALICE)
+                .await
+                .unwrap_err()
+                .status_code(),
+            401
+        );
     }
 
     #[tokio::test]
@@ -1508,61 +1446,81 @@ mod tests {
         let state = state_with_master_key().await;
         let authority = seed_identity(&state, AUTHORITY, true).await;
         let alice = seed_identity(&state, ALICE, false).await;
-        let key = DpopProofKey::generate();
+        let key = SpaceSigKey::generate();
         let now = unix_now().unwrap();
-        let path = "/xrpc/com.atproto.space.getRecord";
-        let htu = format!("{PUBLIC_URL}{path}");
-        let seam = |cred: String, proof: String| {
-            let state = state.clone();
-            async move {
-                authenticate_space_read(
-                    &state,
-                    &headers("DPoP", &cred, Some(&proof)),
-                    &Method::GET,
-                    &get_uri(path),
-                    &space(),
-                    ALICE,
-                )
-                .await
-            }
-        };
-
-        // Credential for a different space than the request targets.
         let other =
             parse_space_ref("at://did:plc:abc234567abc234567abc234/space/org.example.bucket/other")
                 .unwrap();
-        let cred = mint_space_credential(
-            |b| authority.sign(b),
-            AUTHORITY,
-            &other,
-            &key.thumbprint(),
-            now,
-        );
-        let proof = key.proof("GET", &htu, &cred);
-        assert_eq!(seam(cred, proof).await.unwrap_err().status_code(), 401);
 
-        // Signed by alice (a valid key, but not the space's authority): iss ≠ space authority.
-        let cred =
-            mint_space_credential(|b| alice.sign(b), ALICE, &space(), &key.thumbprint(), now);
-        let proof = key.proof("GET", &htu, &cred);
-        assert_eq!(seam(cred, proof).await.unwrap_err().status_code(), 401);
+        for cred in [
+            // Credential for a different space than the request targets.
+            mint_space_credential(|b| authority.sign(b), AUTHORITY, &other, key.key_id(), now),
+            // Signed by alice (a valid key, but not the space's authority).
+            mint_space_credential(|b| alice.sign(b), ALICE, &space(), key.key_id(), now),
+            // Forged: claims iss = authority but signed by alice's key.
+            mint_space_credential(|b| alice.sign(b), AUTHORITY, &space(), key.key_id(), now),
+        ] {
+            let err = read(&state, &key.credential_headers(&cred, ALICE), ALICE)
+                .await
+                .unwrap_err();
+            assert_eq!(err.status_code(), 401);
+        }
+    }
 
-        // Forged: claims iss = authority but signed by alice's key.
-        let cred = mint_space_credential(
-            |b| alice.sign(b),
-            AUTHORITY,
-            &space(),
-            &key.thumbprint(),
-            now,
+    #[tokio::test]
+    async fn space_credential_lifetime_is_bounded() {
+        let state = state_with_master_key().await;
+        let authority = seed_identity(&state, AUTHORITY, true).await;
+        let key = SpaceSigKey::generate();
+        let now = unix_now().unwrap();
+        let header = serde_json::json!({ "typ": SPACE_CREDENTIAL_TYP, "alg": "ES256", "kid": "#atproto_space" });
+        let with = |iat: u64, exp: u64| {
+            sign_jwt(
+                |b| authority.sign(b),
+                &header,
+                &serde_json::json!({
+                    "iss": AUTHORITY, "sub": SPACE, "cnf": { "kid": key.key_id() },
+                    "iat": iat, "exp": exp, "jti": "lifetime",
+                }),
+            )
+        };
+        // Exactly the cap verifies; a minute over it, an iat from the future, or an inverted
+        // pair does not.
+        assert!(verify_space_credential(
+            &state,
+            &with(now, now + SPACE_CREDENTIAL_MAX_TTL_SECS),
+            now
+        )
+        .await
+        .is_ok());
+        for (iat, exp) in [
+            (now, now + SPACE_CREDENTIAL_MAX_TTL_SECS + 60),
+            (now + 60, now + 120),
+            (now + 1, now + 1),
+        ] {
+            assert_eq!(
+                *verify_space_credential(&state, &with(iat, exp), now)
+                    .await
+                    .unwrap_err()
+                    .code(),
+                ErrorCode::InvalidToken,
+                "iat={iat} exp={exp}"
+            );
+        }
+        // Expired is its own code.
+        assert_eq!(
+            *verify_space_credential(&state, &with(now - 120, now - 60), now)
+                .await
+                .unwrap_err()
+                .code(),
+            ErrorCode::TokenExpired
         );
-        let proof = key.proof("GET", &htu, &cred);
-        assert_eq!(seam(cred, proof).await.unwrap_err().status_code(), 401);
     }
 
     #[tokio::test]
     async fn credential_kid_selects_the_key_and_honors_key_separation() {
         let state = state_with_master_key().await;
-        let key = DpopProofKey::generate();
+        let key = SpaceSigKey::generate();
         let now = unix_now().unwrap();
         let with_kid = |signer: &repo_engine::CommitSigner, kid: &str, claims: &Value| {
             let header =
@@ -1577,15 +1535,15 @@ mod tests {
             |b| authority.sign(b),
             AUTHORITY,
             &space(),
-            &key.thumbprint(),
+            key.key_id(),
             now,
         );
         assert_eq!(
             verify_space_credential(&state, &cred, now)
                 .await
                 .unwrap()
-                .jkt,
-            key.thumbprint()
+                .kid,
+            key.key_id()
         );
         let claims = payload(&cred);
         assert!(
@@ -1622,7 +1580,7 @@ mod tests {
             |b| space_signer.sign(b),
             separated,
             &sep_space,
-            &key.thumbprint(),
+            key.key_id(),
             now,
         ));
         assert!(
@@ -1658,28 +1616,19 @@ mod tests {
         let state = state_with_master_key().await;
         let ghost = crypto::generate_p256_keypair().unwrap();
         let ghost = repo_engine::CommitSigner::from_bytes(&ghost.private_key_bytes).unwrap();
-        let key = DpopProofKey::generate();
+        let key = SpaceSigKey::generate();
         let now = unix_now().unwrap();
         let other = parse_space_ref("at://did:plc:nobodyhere/space/org.example.bucket/x").unwrap();
         let cred = mint_space_credential(
             |b| ghost.sign(b),
             "did:plc:nobodyhere",
             &other,
-            &key.thumbprint(),
+            key.key_id(),
             now,
         );
-        let path = "/xrpc/com.atproto.space.getRecord";
-        let proof = key.proof("GET", &format!("{PUBLIC_URL}{path}"), &cred);
-        let err = authenticate_space_read(
-            &state,
-            &headers("DPoP", &cred, Some(&proof)),
-            &Method::GET,
-            &get_uri(path),
-            &space(),
-            ALICE,
-        )
-        .await
-        .unwrap_err();
+        let err = read(&state, &key.credential_headers(&cred, ALICE), ALICE)
+            .await
+            .unwrap_err();
         assert_eq!(*err.code(), ErrorCode::InvalidToken);
     }
 
@@ -1688,7 +1637,6 @@ mod tests {
         let state = state_with_master_key().await;
         // The seam gates on the caller's account lifecycle, so the caller needs an account row.
         seed_account_with_repo(&state.db, ALICE).await;
-        let path = "/xrpc/com.atproto.space.getRecord";
         // Alice's own space (authority = self).
         let own = parse_space_ref("at://did:plc:alice/space/org.example.bucket/self").unwrap();
 
@@ -1697,9 +1645,9 @@ mod tests {
             async move {
                 authenticate_space_read(
                     &state,
-                    &headers("Bearer", &token, None),
+                    &headers("Bearer", &token),
                     &Method::GET,
-                    &get_uri(path),
+                    &get_uri(GET_RECORD),
                     &space,
                     repo,
                 )

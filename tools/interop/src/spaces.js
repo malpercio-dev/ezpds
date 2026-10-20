@@ -6,7 +6,7 @@
 //                       sync reads, tear the space down again.
 //   crossHostRoundTrip  the shape a foreign implementation judges us on: a repo
 //                       host and a space host that need not be the same server.
-//                       Delegation token from the member's own PDS → DPoP-bound
+//                       Delegation token from the member's own PDS → signature-bound
 //                       credential from the authority → credential-authed reads
 //                       on both sides.
 //   allowListRefusal    an `allowList` space must refuse a credential request
@@ -22,7 +22,7 @@ import { xrpc, HttpError } from './http.js';
 import { ensureSession } from './account.js';
 import { randomSuffix } from './crypto.js';
 import { accountHost, loadState, getAccount } from './state.js';
-import { newDpopKey } from './dpop.js';
+import { newSpaceKey } from './space-signature.js';
 import { parseCar, decodeBlock } from './car.js';
 import { resolveDidDoc, spaceEndpointFromDoc } from './identity.js';
 
@@ -174,12 +174,12 @@ export async function resolveSpaceHost(spaceUri, override) {
 }
 
 /**
- * Exchange a delegation token for a DPoP-bound space credential.
+ * Exchange a delegation token for a space credential bound to a fresh key (`cnf.kid`).
  *
- * Two hosts, two proof shapes: the member's own PDS mints the delegation token (it need
- * not know the space at all), and the authority spends it for a credential bound to the
- * mint-time proof's key. Every later read presents that credential under the `DPoP`
- * scheme with a per-request proof carrying `ath`.
+ * Two hosts, two signature shapes: the member's own PDS mints the delegation token (it
+ * need not know the space at all), and the authority spends it — signed by the key — for a
+ * credential bound to that key. Every later read presents the credential under the
+ * `Atproto-Space` scheme, signed together with the DID the read is addressed to.
  */
 export async function acquireSpaceCredential({ memberName, spaceUri, spaceHost, clientAttestation }) {
   const member = await ensureSession(memberName);
@@ -191,24 +191,13 @@ export async function acquireSpaceCredential({ memberName, spaceUri, spaceHost, 
     params: { space: spaceUri },
   });
 
-  const key = await newDpopKey();
-  let credential;
-  try {
-    ({ credential } = await xrpc(host, 'com.atproto.space.getSpaceCredential', {
-      method: 'POST',
-      token: delegation,
-      body: { space: spaceUri, clientAttestation },
-      dpop: { key }, // no `bind`: the delegation token is the Bearer grant, not the bound token
-    }));
-  } catch (err) {
-    // `htu` is checked against the authority's *configured* public URL, so calling a host
-    // by an address it does not publish fails here and nowhere else. Worth naming: the
-    // symptom (InvalidToken on a proof that is otherwise correct) points nowhere useful.
-    if (err instanceof HttpError && err.status === 401) {
-      throw new Error(`${err.message}\n  hint: the DPoP htu must match the authority's own public URL — check that ${host} is what it publishes`);
-    }
-    throw err;
-  }
+  const key = await newSpaceKey();
+  const { credential } = await xrpc(host, 'com.atproto.space.getSpaceCredential', {
+    method: 'POST',
+    token: delegation,
+    body: { space: spaceUri, clientAttestation },
+    spaceSig: { key }, // no `credential`: the delegation token is the Bearer grant being signed
+  });
   return { key, credential, delegation, repoHost, spaceHost: host, member };
 }
 
@@ -242,7 +231,9 @@ export async function crossHostRoundTrip({ member: memberName, authority: author
     const { key, credential, spaceHost: authorityHost } = await acquireSpaceCredential({
       memberName, spaceUri, spaceHost,
     });
-    const dpop = { key, bind: credential };
+    // A repo read is addressed to the repo's owner; a space-level read to the authority.
+    const toRepo = { key, credential, audience: member.did };
+    const toAuthority = { key, credential, audience: authority };
 
     // The credential must not be usable as a plain Bearer token: that is the whole point of
     // binding it, and a host that accepts it unbound is the interop failure worth catching.
@@ -250,26 +241,26 @@ export async function crossHostRoundTrip({ member: memberName, authority: author
       token: credential,
       params: { space: spaceUri, repo: member.did, collection: COLLECTION, rkey },
     }).then(() => null, (err) => err);
-    if (unbound === null) throw new Error('space credential was accepted without a DPoP proof');
+    if (unbound === null) throw new Error('space credential was accepted without its signature');
     if (!(unbound instanceof HttpError)) throw unbound;
 
     // Credential-authed reads on the repo host — the side that holds the records.
     const record = await xrpc(repoHost, 'com.atproto.space.getRecord', {
       params: { space: spaceUri, repo: member.did, collection: COLLECTION, rkey },
-      dpop,
+      spaceSig: toRepo,
     });
     if (record.value.text !== text) throw new Error('credential-authed getRecord returned different text than written');
 
     const ops = await xrpc(repoHost, 'com.atproto.space.listRepoOps', {
       params: { space: spaceUri, repo: member.did },
-      dpop,
+      spaceSig: toRepo,
     });
     if (!ops.ops.some((op) => op.rkey === rkey)) throw new Error('write missing from credential-authed listRepoOps');
 
     const car = await xrpc(repoHost, 'com.atproto.space.getRepo', {
       params: { space: spaceUri, repo: member.did },
       raw: true,
-      dpop,
+      spaceSig: toRepo,
     });
     const exported = await assertSpaceCar(new Uint8Array(await car.arrayBuffer()), `${COLLECTION}/${rkey}`);
 
@@ -277,13 +268,13 @@ export async function crossHostRoundTrip({ member: memberName, authority: author
     // set the authority tracks, so the member's repo must show up here after the write.
     const config = await xrpc(authorityHost, 'com.atproto.simplespace.getSpace', {
       params: { space: spaceUri },
-      dpop,
+      spaceSig: toAuthority,
     });
     if (config.uri !== spaceUri) throw new Error(`getSpace answered for ${config.uri}, not ${spaceUri}`);
 
     const repos = await xrpc(authorityHost, 'com.atproto.space.listRepos', {
       params: { space: spaceUri },
-      dpop,
+      spaceSig: toAuthority,
     });
     const listed = (repos.repos ?? []).some((r) => r.did === member.did);
     // The writer row is durable with the commit only when the authority IS the repo host;

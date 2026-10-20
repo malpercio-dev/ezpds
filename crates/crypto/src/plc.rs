@@ -1070,6 +1070,27 @@ pub fn verify_p256_signature(
         .map_err(CryptoError::SignatureVerification)
 }
 
+/// [`verify_p256_signature`] without the low-S rule, for RFC 9421 HTTP message signatures
+/// (Atproto Spaces), which accept either `s`. A high-S signature is normalized first:
+/// `(r, s)` and `(r, n − s)` verify against the same key and message.
+pub fn verify_p256_signature_any_s(
+    public_key: &DidKeyUri,
+    message: &[u8],
+    signature: &[u8; 64],
+) -> Result<(), CryptoError> {
+    let parsed = Signature::try_from(&signature[..]).map_err(|e| {
+        CryptoError::SignatureVerification(format!("invalid ECDSA signature bytes: {e}"))
+    })?;
+    let low_s: [u8; 64] = parsed
+        .normalize_s()
+        .unwrap_or(parsed)
+        .to_bytes()
+        .as_slice()
+        .try_into()
+        .expect("a P-256 signature is 64 bytes");
+    verify_p256_signature(public_key, message, &low_s)
+}
+
 /// The elliptic curve of a `did:key:` URI, derived from its multicodec prefix.
 ///
 /// Returned by [`did_key_curve`] so callers that must bind an external

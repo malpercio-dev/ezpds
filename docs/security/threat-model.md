@@ -158,11 +158,14 @@ revocation — not expiry — as the actual kill switch ([ADR-0036](../architect
 
 Every `com.atproto.space.*` read/sync route authenticates through
 `auth::space::authenticate_space_read` (`crates/pds/src/auth/space.rs`), the
-one seam accepting a covering OAuth grant *or* a DPoP-bound space credential —
-never a bearer credential — with full RFC 9449 proof validation and per-host
-`jti` replay tracking (the proposal's one MUST-track case, unlike the
-resource-endpoint posture above). `just space-auth-seam-check` confines
-`verify_space_credential`/`validate_dpop` calls to that seam.
+one seam accepting a covering OAuth grant *or* a space credential — never a
+bearer credential. A credential is bound to a P-256 key (`cnf.kid`) and every
+use carries an RFC 9421 `atproto-space` signature over `Authorization` and
+`Atproto-Space-Audience`; the audience must be the DID the request is for, so a
+credential captured at one host cannot be replayed at another. Replay against
+the same audience is allowed until the 10-minute credential expires, by spec.
+`just space-auth-seam-check` confines `verify_space_credential` and
+`verify_space_signature` to that seam and the mint route.
 
 ### Supply chain
 

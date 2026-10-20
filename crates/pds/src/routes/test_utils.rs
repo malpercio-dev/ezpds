@@ -500,6 +500,63 @@ pub(crate) fn ec_jwk(signing_key: &p256::ecdsa::SigningKey) -> serde_json::Value
     })
 }
 
+/// A P-256 key a space client binds its credential to, plus the RFC 9421 `atproto-space`
+/// signatures it attaches: [`SpaceSigKey::delegation_headers`] for the `getSpaceCredential`
+/// exchange (whose `keyid` becomes the credential's `cnf.kid`), and
+/// [`SpaceSigKey::credential_headers`] for each credential-authed request. Both return the full
+/// header set, so a request builder takes them with `headers_mut().extend(..)`.
+pub(crate) struct SpaceSigKey {
+    signer: repo_engine::CommitSigner,
+    key_id: String,
+}
+
+impl SpaceSigKey {
+    pub(crate) fn generate() -> Self {
+        let kp = crypto::generate_p256_keypair().unwrap();
+        Self {
+            signer: repo_engine::CommitSigner::from_bytes(&kp.private_key_bytes).unwrap(),
+            key_id: kp.key_id.0,
+        }
+    }
+
+    /// The key's `did:key` — what a credential minted for it carries as `cnf.kid`.
+    pub(crate) fn key_id(&self) -> &str {
+        &self.key_id
+    }
+
+    fn signed(&self, authorization: &str, audience: Option<&str>) -> axum::http::HeaderMap {
+        use crate::auth::http_signature::{sign_space_request, AUDIENCE_HEADER};
+        let (input, signature) = sign_space_request(
+            |b| self.signer.sign(b),
+            &self.key_id,
+            authorization,
+            audience,
+        );
+        let mut h = axum::http::HeaderMap::new();
+        h.insert("authorization", authorization.parse().unwrap());
+        h.insert("signature-input", input.parse().unwrap());
+        h.insert("signature", signature.parse().unwrap());
+        if let Some(audience) = audience {
+            h.insert(AUDIENCE_HEADER, audience.parse().unwrap());
+        }
+        h
+    }
+
+    /// `Authorization: Bearer <delegation token>` signed for the credential exchange.
+    pub(crate) fn delegation_headers(&self, delegation_token: &str) -> axum::http::HeaderMap {
+        self.signed(&format!("Bearer {delegation_token}"), None)
+    }
+
+    /// `Authorization: Atproto-Space <credential>` addressed to `audience` and signed.
+    pub(crate) fn credential_headers(
+        &self,
+        credential: &str,
+        audience: &str,
+    ) -> axum::http::HeaderMap {
+        self.signed(&format!("Atproto-Space {credential}"), Some(audience))
+    }
+}
+
 /// A P-256 DPoP proof-of-possession key for tests, plus proof construction. Mirrors the DPoP
 /// machinery a real OAuth client holds: the key's RFC 7638 thumbprint goes in the access token's
 /// `cnf.jkt` (via [`cnf_bound_access_jwt`]), and [`DpopProofKey::proof`] builds the per-request
@@ -531,12 +588,6 @@ impl DpopProofKey {
     /// (`{public_url}{path}`), matching how the extractor reconstructs the expected value.
     pub(crate) fn proof(&self, htm: &str, htu: &str, access_token: &str) -> String {
         self.proof_full(htm, htu, Some(access_token), None, None)
-    }
-
-    /// A proof with no `ath` — the mint-time shape a `getSpaceCredential` (or PAR) request
-    /// carries, where there is no bound token yet.
-    pub(crate) fn proof_no_ath(&self, htm: &str, htu: &str) -> String {
-        self.proof_full(htm, htu, None, None, None)
     }
 
     /// A proof with no `ath` but an explicit `nonce` and/or `iat` override — the knobs the OAuth

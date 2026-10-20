@@ -627,7 +627,7 @@ pub struct RateLimitConfig {
     #[serde(default = "default_waitlist_per_5min")]
     pub waitlist_per_5min: u64,
     /// Credential-authed space read/sync requests per space-credential holder per 5 minutes,
-    /// keyed by the credential's bound DPoP key thumbprint (`cnf.jkt`) — re-minting a credential
+    /// keyed by the credential's bound key (`cnf.kid`) — re-minting a credential
     /// does not reset the budget, and the key works across IPs where the global cap cannot.
     /// Default 3000 (in line with the global per-IP cap): these requests hit the per-serve
     /// commit-signing path, so a single hot holder must not be able to monopolize it. `0`

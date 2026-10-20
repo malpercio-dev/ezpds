@@ -304,7 +304,7 @@ a space route means the flag is unset rather than a defect.
 | Record CRUD (`com.atproto.space.*`) | `createRecord`, `putRecord`, `deleteRecord`, `applyWrites`, `getRecord`, `listRecords`, `listSpaces` | proposal 0016 |
 | Sync surface | `getLatestCommit`, `listRepoOps` oplog, two-root CAR `getRepo`, `getBlob`, `listBlobs` | proposal 0016 |
 | Space-host role | `listRepos` writer set, `registerNotify`/`unregisterNotify`, `notifyWrite` fan-out | proposal 0016 |
-| Delegation + space credentials | Single-use delegation token → DPoP-bound space credential (`cnf.jkt`), per-host `jti` replay | proposal 0016 |
+| Delegation + space credentials | Single-use delegation token → space credential bound to a key (`cnf.kid`) by RFC 9421 HTTP message signatures, audience-pinned per request | proposal 0016 |
 | `space:` OAuth scope | Sixth resource type in the granular scope grammar, with consent-page rendering | proposal 0016 |
 | Management surface (`simplespace.*`) | `createSpace`/`updateSpace`/`deleteSpace`/`getSpace`, member list | proposal 0016 |
 | Space repo migration | `space.getRepo` → `POST /v1/space/import-repo` (Custos-native; the alpha defines no import) | this repo |
@@ -371,7 +371,7 @@ v1.0 Critical Path:
 Wave 10 (Spaces) — off the phase critical path entirely; gated by [spaces] enabled:
   v0.1 complete → Permissioned repo store (rev CAS + LtHash) → Record CRUD
                                                              → Sync surface → Space-host fan-out
-                → space: scope grammar → Delegation token → DPoP space credential → Read auth seam
+                → space: scope grammar → Delegation token → signed space credential → Read auth seam
                 → simplespace management → Member-list policy
                 → Sync surface + import route → Space repo migration
 ```

@@ -5,8 +5,8 @@
 //! The `(scope, jti)` primary key is the replay defense; each row's
 //! `expires_at` was stamped by its writer with the token's own acceptance
 //! horizon, so this best-effort task only reclaims rows no token could still
-//! ride. The sync-path DPoP scope is the high-volume class, hence the
-//! shorter-than-hourly cadence.
+//! ride. Delegation tokens turn over at credential-renewal rate (one per
+//! ten-minute credential per syncer), hence the shorter-than-hourly cadence.
 
 use std::time::Duration;
 
@@ -15,9 +15,9 @@ use tokio::task::JoinHandle;
 use crate::app::AppState;
 use crate::db::space_jti::sweep_expired_jtis;
 
-/// Sweep every ten minutes: the DPoP-proof scope turns rows over at request
-/// rate with ~minutes-long horizons, so an hourly cadence would let the
-/// table's working set grow well past its live window.
+/// Sweep every ten minutes: delegation and attestation rows carry horizons of
+/// at most five minutes, so an hourly cadence would let the table's working
+/// set grow well past its live window.
 pub const SWEEP_INTERVAL: Duration = Duration::from_secs(10 * 60);
 
 /// Tally of what one sweep pass did, for logging and tests.

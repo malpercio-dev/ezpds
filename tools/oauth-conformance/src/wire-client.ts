@@ -20,9 +20,8 @@ import {
 /**
  * A DPoP keypair plus the RFC 7638 thumbprint the server binds tokens to.
  *
- * Proof construction is `ezpds-interop/src/dpop.js`'s — the Atproto Spaces client needs the
- * identical RFC 9449 wire format, so there is one builder rather than two independently
- * hand-rolled ones. What stays local to this suite is the wire client *around* it (no nonce
+ * Proof construction is `ezpds-interop/src/dpop.js`'s, so there is one RFC 9449 builder in the
+ * repo rather than two independently hand-rolled ones. What stays local to this suite is the wire client *around* it (no nonce
  * retry, no error normalization — see the module comment above).
  */
 export type DpopKey = InteropDpopKey;

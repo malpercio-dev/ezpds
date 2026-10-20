@@ -38,9 +38,10 @@ pub use plc::{
     build_did_plc_genesis_op_multi_rotation_with_external_signer,
     build_did_plc_genesis_op_with_external_signer, build_did_plc_rotation_op,
     build_did_plc_tombstone_op, compute_cid, did_key_curve, diff_audit_logs, parse_audit_log,
-    verify_did_key_signature, verify_genesis_op, verify_p256_signature, verify_plc_operation,
-    verify_plc_tombstone_op, AuditEntry, DidKeyCurve, PlcGenesisOp, PlcService, SignedPlcOperation,
-    VerifiedGenesisOp, VerifiedPlcOp, VerifiedTombstoneOp,
+    verify_did_key_signature, verify_genesis_op, verify_p256_signature,
+    verify_p256_signature_any_s, verify_plc_operation, verify_plc_tombstone_op, AuditEntry,
+    DidKeyCurve, PlcGenesisOp, PlcService, SignedPlcOperation, VerifiedGenesisOp, VerifiedPlcOp,
+    VerifiedTombstoneOp,
 };
 pub use service_auth::mint_service_auth_jwt;
 pub use shamir::{

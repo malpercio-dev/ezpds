@@ -165,27 +165,6 @@ pub enum DpopTokenEndpointError {
     UseNonce(String),
 }
 
-impl DpopTokenEndpointError {
-    /// Render as the resource-endpoint error vocabulary. For the one proof validator that is
-    /// reused outside the OAuth token/PAR endpoints — `getSpaceCredential`'s mint-time proof,
-    /// which shares [`validate_dpop_for_par`]'s no-nonce, no-`ath` rules — where the RFC 6749
-    /// `{error, error_description}` shape does not apply.
-    pub fn into_api_error(self) -> ApiError {
-        match self {
-            DpopTokenEndpointError::MissingHeader => {
-                ApiError::new(ErrorCode::InvalidToken, "DPoP proof header required")
-            }
-            DpopTokenEndpointError::InvalidProof(msg) => {
-                ApiError::new(ErrorCode::InvalidToken, msg)
-            }
-            // Unreachable for the nonce-free validator; keep the mapping total.
-            DpopTokenEndpointError::UseNonce(_) => {
-                ApiError::new(ErrorCode::InvalidToken, "DPoP nonce required")
-            }
-        }
-    }
-}
-
 /// A DPoP proof whose header and signature have passed the shared prologue.
 ///
 /// Returned by [`verify_dpop_proof_prologue`]; the endpoint-specific tail reads
@@ -454,9 +433,9 @@ pub fn validate_dpop_for_token_endpoint(
 /// Validate the DPoP proof JWT (RFC 9449) presented with a DPoP-bound token at a resource
 /// endpoint, and return the proof's `jti`.
 ///
-/// The bound token is an OAuth access token (`auth/extractors.rs`) or an Atproto Spaces space
-/// credential (`auth/space.rs`); `bound_jkt` is its `cnf.jkt` and `bound_token_str` its exact
-/// wire form (the `ath` input).
+/// The bound token is an OAuth access token (`auth/extractors.rs`); `bound_jkt` is its `cnf.jkt`
+/// and `bound_token_str` its exact wire form (the `ath` input). Atproto Spaces credentials are not
+/// DPoP-bound — they use RFC 9421 signatures (`auth/http_signature.rs`).
 ///
 /// Checks:
 /// - `typ` header is `"dpop+jwt"`
@@ -476,8 +455,7 @@ pub fn validate_dpop_for_token_endpoint(
 /// replayable against the same method+URI until the proof goes stale (~60s). This is safe only
 /// while every endpoint behind `AuthenticatedUser` stays idempotent / content-addressed; if one
 /// ever authorizes a non-idempotent side effect, add `jti` (or nonce) tracking there first. Same
-/// posture as `service_auth::require_service_auth`. The space-credential seam, whose spec makes
-/// per-host `jti` tracking a MUST, spends the returned `jti` in `space_jti_replay` itself.
+/// posture as `service_auth::require_service_auth`.
 pub fn validate_dpop(
     dpop_token: &str,
     method: &Method,
