@@ -429,11 +429,9 @@ mod tests {
         );
 
         // The load-bearing check: the issued token is accepted by the resource-server verifier.
-        let claims = crate::auth::jwt::verify_access_token(at, &state).unwrap();
-        assert_eq!(claims.sub, did);
-        assert!(crate::auth::jwt::parse_scope(&claims.scope)
-            .unwrap()
-            .is_access());
+        let user = crate::auth::extractors::authenticate_bearer(at, &state).unwrap();
+        assert_eq!(user.did, did);
+        assert!(user.scope.is_access());
     }
 
     #[tokio::test]

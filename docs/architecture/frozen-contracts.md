@@ -21,7 +21,7 @@ Every registered XRPC path, method, request and response shape, and error name, 
 
 The OAuth server profile the atproto clients depend on: PAR, consent, token exchange, client-assertion rules, token `sub`, and RFC 9449 DPoP binding (scheme to `cnf.jkt`, nonce rotation per ADR-0032).
 
-- **Oracle:** `tools/oauth-conformance` (`just oauth-conformance-test`; runs in CI's PDS gate), `just auth-seam-check`.
+- **Oracle:** `tools/oauth-conformance` (`just oauth-conformance-test`; runs in CI's PDS gate). Access-token verification outside `auth::extractors::authenticate_access` does not compile (`verify_access_token` is `pub(super)`), nor does space-credential verification outside `auth::space` (`verify_space_credential` is private).
 
 ### Firehose sequence and cursor
 

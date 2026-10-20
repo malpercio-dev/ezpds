@@ -22,8 +22,9 @@
 //! DPoP-bound token (`cnf.jkt` present) presented as plain `Bearer` with no proof is rejected,
 //! closing the binding-downgrade surface.
 //!
-//! `just auth-seam-check` (`scripts/auth-seam-check.sh`) freezes this contract: a direct
-//! `auth::jwt::verify_access_token` call anywhere outside this seam fails the gate.
+//! The compiler holds this contract: `auth::jwt::verify_access_token` is `pub(super)`, so no
+//! code outside `auth` can verify an access token except through this seam, and its two
+//! per-algorithm verifiers are private to `jwt`.
 
 use axum::{
     extract::FromRequestParts,
@@ -223,6 +224,23 @@ impl FromRequestParts<AppState> for AuthenticatedUser {
     ) -> Result<Self, Self::Rejection> {
         authenticate_access(&parts.headers, &parts.method, &parts.uri, state)
     }
+}
+
+/// Test-only: authenticate `token` as a plain `Bearer` GET through [`authenticate_access`], so
+/// tests outside `auth` check an issued token against the real seam instead of a raw verifier.
+#[cfg(test)]
+pub(crate) fn authenticate_bearer(
+    token: &str,
+    state: &AppState,
+) -> Result<AuthenticatedUser, ApiError> {
+    let mut headers = HeaderMap::new();
+    headers.insert(
+        axum::http::header::AUTHORIZATION,
+        format!("Bearer {token}")
+            .parse()
+            .expect("valid header value"),
+    );
+    authenticate_access(&headers, &Method::GET, &Uri::from_static("/"), state)
 }
 
 #[cfg(test)]

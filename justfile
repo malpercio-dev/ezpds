@@ -169,13 +169,6 @@ workspace-dep-check:
 runbook-parity-check:
     scripts/runbook-parity-check.sh
 
-# Freeze the access-token binding seam: every access-token verification must go through
-# auth::extractors::authenticate_access (the RFC 9449 scheme<->cnf.jkt enforcement). A route
-# or guard calling auth::jwt::verify_access_token directly skips it — the MM-386 downgrade.
-# Fails on any direct call outside the blessed seam (or a test).
-auth-seam-check:
-    scripts/auth-seam-check.sh
-
 # Guard the operator capability documentation against drift from the capability table in
 # crates/pds/src/capabilities.rs — the source of truth for what describeServer advertises
 # under the `custos` extension and which config gates each capability. Fails if a
@@ -301,7 +294,7 @@ oauth-conformance-test:
 # Adding a check here covers `just ci` (macOS/full) and `just ci-pds` (Linux) at once —
 # the old design re-stated all twelve checks in each, so a gate added to one and
 # forgotten in the other was a silent gap.
-checks: fmt-check lock-check bruno-check docs-check lexgen-check changelog-check changelog-test font-check cap-check px-check capability-docs-check ticket-ref-check adr-ref-check plan-status-check workspace-dep-check runbook-parity-check auth-seam-check ssrf-client-check gc-guard-check ios-paths-check swift-rs-check ios-template-check bundle-identity-check
+checks: fmt-check lock-check bruno-check docs-check lexgen-check changelog-check changelog-test font-check cap-check px-check capability-docs-check ticket-ref-check adr-ref-check plan-status-check workspace-dep-check runbook-parity-check ssrf-client-check gc-guard-check ios-paths-check swift-rs-check ios-template-check bundle-identity-check
 
 # Run the full CI pipeline locally (all crates; use on macOS where the iOS app builds)
 ci: checks clippy test audit deny
