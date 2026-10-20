@@ -1,6 +1,8 @@
-//! `custos-client`: the DPoP/OAuth/XRPC HTTP client shared by the identity-wallet and (in
-//! future PRs) admin-companion Tauri apps. Tauri-free by design — it depends on nothing from
-//! either app's `src-tauri`, so it can be reused by a platform-agnostic wallet core.
+//! `custos-client`: identity-wallet's DPoP/OAuth/XRPC HTTP client, extracted from the wallet's
+//! `src-tauri`. Tauri-free by design — it depends on nothing from that `src-tauri`, so it can
+//! be reused by a platform-agnostic wallet core. It is *not* shared with admin-companion, whose
+//! request signing is a different scheme (ADR-0018's device-signed envelope, no OAuth/XRPC)
+//! with nothing to share here — see this crate's `AGENTS.md` scope note.
 //!
 //! - [`dpop`]: RFC 9449 DPoP proof construction/signing ([`DpopKeypair`]).
 //! - [`error`]: the shared XRPC failure shape ([`PdsClientError`]) and the classification tail
