@@ -164,8 +164,9 @@ use carries an RFC 9421 `atproto-space` signature over `Authorization` and
 `Atproto-Space-Audience`; the audience must be the DID the request is for, so a
 credential captured at one host cannot be replayed at another. Replay against
 the same audience is allowed until the 10-minute credential expires, by spec.
-`just space-auth-seam-check` confines `verify_space_credential` and
-`verify_space_signature` to that seam and the mint route.
+The compiler confines `verify_space_credential` (private to `auth::space`) and
+`verify_space_signature` (`pub(super)` in `auth`) to that seam; the mint route
+can only reach `verify_delegation_signature`, which checks the exchange shape.
 
 ### Supply chain
 
@@ -216,7 +217,7 @@ allowlists, with `core:default` and `withGlobalTauri` both refused. Full spec:
 ## Keeping this current
 
 The gates that hold specific rows above are `just auth-seam-check`,
-`just space-auth-seam-check`, `just ssrf-client-check`, `just cap-check`,
+`just ssrf-client-check`, `just cap-check`,
 `just capability-docs-check`, `just runbook-parity-check`,
 `just bundle-identity-check`, `just audit`, and `just deny` — all part of
 `just ci` / `just ci-pds`, listed with what each one freezes in the root

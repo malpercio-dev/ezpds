@@ -21,7 +21,7 @@ Every registered XRPC path, method, request and response shape, and error name, 
 
 The OAuth server profile the atproto clients depend on: PAR, consent, token exchange, client-assertion rules, token `sub`, and RFC 9449 DPoP binding (scheme to `cnf.jkt`, nonce rotation per ADR-0032).
 
-- **Oracle:** `tools/oauth-conformance` (`just oauth-conformance-test`; runs in CI's PDS gate), `just auth-seam-check`, `just space-auth-seam-check`.
+- **Oracle:** `tools/oauth-conformance` (`just oauth-conformance-test`; runs in CI's PDS gate), `just auth-seam-check`.
 
 ### Firehose sequence and cursor
 
