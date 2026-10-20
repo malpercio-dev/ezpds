@@ -283,8 +283,9 @@ Full setup and gotchas: **[docs/ios-cicd.md](../../docs/ios-cicd.md)**.
   OAuth token can drive identity ops: `source_login.rs`'s module doc.
 - **One situation question as entry point**, and **`server_gone` is routing, not a flow** —
   rationale on `AddIdentityScreen` / `ServerGoneScreen`.
-- **Native SwiftUI migration is deferred, trigger-gated** — ADR-0013; port the shell, never
-  the crypto.
+- **The Rust is a platform-free core; a native shell is deferred, trigger-gated** — ADR-0039
+  (no `cfg(target_os)` or Apple crate in the core) and ADR-0013 (the shell triggers); port the
+  shell, never the crypto.
 
 ## Invariants
 
