@@ -44,7 +44,7 @@ export async function createSpace(name, skey, { appAccess = OPEN_APP_ACCESS, pol
   await xrpc(accountHost(account), 'com.atproto.simplespace.createSpace', {
     method: 'POST',
     token: account.accessJwt,
-    body: { type: SPACE_TYPE, skey, policy, appAccess },
+    body: { spaceType: SPACE_TYPE, skey, readPolicy: policy, writePolicy: policy, appAccess },
   });
   return `at://${account.did}/space/${SPACE_TYPE}/${skey}`;
 }
@@ -307,7 +307,8 @@ export async function crossHostRoundTrip({ member: memberName, authority: author
       authority,
       member: member.did,
       credentialUnboundRejected: unbound.status,
-      policy: config.policy?.$type ?? null,
+      readPolicy: config.readPolicy?.$type ?? null,
+      writePolicy: config.writePolicy?.$type ?? null,
       appAccess: config.appAccess?.$type ?? null,
       memberInAuthorityListRepos: listed,
       car: exported,

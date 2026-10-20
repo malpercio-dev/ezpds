@@ -560,9 +560,10 @@ test('spaces: the agent tool surface drives a permissioned space end-to-end', as
       authorization: `Bearer ${account.accessJwt}`,
     },
     body: JSON.stringify({
-      type: 'org.example.bucket',
+      spaceType: 'org.example.bucket',
       skey: 'main',
-      policy: { $type: 'com.atproto.simplespace.defs#publicPolicy' },
+      readPolicy: { $type: 'com.atproto.simplespace.defs#publicPolicy' },
+      writePolicy: { $type: 'com.atproto.simplespace.defs#publicPolicy' },
       appAccess: { $type: 'com.atproto.simplespace.defs#open' },
     }),
   });
