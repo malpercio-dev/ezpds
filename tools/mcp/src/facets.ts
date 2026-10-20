@@ -9,15 +9,9 @@
 // Offsets are byte offsets into the UTF-8 encoding of the text, per
 // app.bsky.richtext.facet#byteSlice — not JavaScript's UTF-16 indices.
 
-export interface ByteSlice {
-  byteStart: number;
-  byteEnd: number;
-}
+import type { Facet, FacetByteSlice as ByteSlice } from '../../lexgen/types/app.bsky.richtext.js';
 
-export interface Facet {
-  index: ByteSlice;
-  features: Record<string, unknown>[];
-}
+export type { Facet, ByteSlice };
 
 export interface MentionSpan {
   handle: string;

@@ -26,6 +26,9 @@ on:
       - "tools/mcp-sidecar/**"
       # The sidecar image links tools/interop as a runtime dependency.
       - "tools/interop/**"
+      # tools/mcp types its XRPC calls from these; a lexicon bump must re-type-check it.
+      - "tools/lexgen/**"
+      - "crates/pds/lexicons/**"
       - ".github/actions/setup-pnpm/**"
       - ".github/workflows/mcp-check.yml"
   push:
@@ -35,6 +38,9 @@ on:
       - "tools/mcp-sidecar/**"
       # The sidecar image links tools/interop as a runtime dependency.
       - "tools/interop/**"
+      # tools/mcp types its XRPC calls from these; a lexicon bump must re-type-check it.
+      - "tools/lexgen/**"
+      - "crates/pds/lexicons/**"
       - ".github/actions/setup-pnpm/**"
       - ".github/workflows/mcp-check.yml"
   workflow_dispatch:

@@ -11,6 +11,7 @@ import {
   sleep,
   xrpc as interopXrpc,
 } from 'ezpds-interop/src/http.js';
+import type { XrpcMethods } from '../../lexgen/types/index.js';
 import { MIN_REQUEST_INTERVAL_MS, MAX_RATE_LIMIT_RETRIES } from './config.ts';
 
 export { HttpError, sleep };
@@ -35,12 +36,26 @@ export function request(url: string, options: RequestOptions = {}): Promise<any>
   });
 }
 
+type Known = keyof XrpcMethods;
+
+/**
+ * Options for one XRPC call. A vendored NSID (see tools/lexgen) gets its lexicon's params and
+ * input types, so a renamed lexicon field fails the type-check; an NSID Custos only proxies
+ * (app.bsky.feed.*, uploadBlob, …) has no vendored schema and stays loosely typed.
+ */
+export type XrpcOptions<N extends string> = Omit<RequestOptions, 'body'> &
+  (N extends Known
+    ? { params?: XrpcMethods[N]['params']; body?: XrpcMethods[N]['input'] }
+    : { params?: Record<string, unknown>; body?: unknown });
+
+export type XrpcResult<N extends string> = N extends Known ? XrpcMethods[N]['output'] : any;
+
 /** Convenience: XRPC query/procedure against an arbitrary service base URL. */
-export function xrpc(
+export function xrpc<N extends string>(
   serviceUrl: string,
-  nsid: string,
-  options: RequestOptions & { params?: Record<string, unknown> } = {},
-): Promise<any> {
+  nsid: N,
+  options: XrpcOptions<N> = {} as XrpcOptions<N>,
+): Promise<XrpcResult<N>> {
   return interopXrpc(serviceUrl, nsid, {
     ...options,
     minIntervalMs: MIN_REQUEST_INTERVAL_MS,

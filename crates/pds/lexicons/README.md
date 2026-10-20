@@ -87,7 +87,10 @@ layer, MM-398 for the response-output layer, MM-399 for the `validate`-flag reco
 3. `cargo test -p pds --bins lexicon` — the registry parser rejects any construct the validator
    doesn't implement (unknown keys, def types, string formats) and any dangling ref, so an
    unsupported document fails loudly here instead of validating laxer than the reference.
-4. When updating the pin, update the tag — or, for `com.atproto.{space,simplespace}.*`, the
+4. `just lexgen` — regenerates the TypeScript types the Node tools import
+   (`tools/lexgen/types/`); `just lexgen-check` fails CI if you skip it, and a renamed field
+   then fails `pnpm check` in `tools/mcp` at every call site that used it.
+5. When updating the pin, update the tag — or, for `com.atproto.{space,simplespace}.*`, the
    `permissioned-data` commit SHA — in this README and in the `curl` example.
 
 Do not hand-edit the JSON files: they must stay byte-identical to upstream so validation parity

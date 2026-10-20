@@ -83,6 +83,15 @@ docs-generate:
 docs-check:
     scripts/docs-check.sh
 
+# Regenerate the TypeScript types the Node tools import from the vendored lexicons
+# (crates/pds/lexicons → tools/lexgen/types). Run after any lexicon bump.
+lexgen:
+    node tools/lexgen/generate.mjs
+
+# Fail if the committed tools/lexgen/types drift from the vendored lexicons.
+lexgen-check:
+    node tools/lexgen/generate.mjs --check
+
 # Regenerate the docs sites' app imagery by Playwright-driving each mobile app's browser
 # harness (VITE_HARNESS=fake) across its named scenarios — happy paths plus error/rare states
 # (migration-in-flight, degraded-health, failNext-injected failures) — into
@@ -300,7 +309,7 @@ oauth-conformance-test:
 # Adding a check here covers `just ci` (macOS/full) and `just ci-pds` (Linux) at once —
 # the old design re-stated all twelve checks in each, so a gate added to one and
 # forgotten in the other was a silent gap.
-checks: fmt-check lock-check bruno-check docs-check changelog-check changelog-test font-check cap-check px-check capability-docs-check ticket-ref-check adr-ref-check plan-status-check workspace-dep-check runbook-parity-check auth-seam-check space-auth-seam-check ssrf-client-check gc-guard-check ios-paths-check swift-rs-check ios-template-check bundle-identity-check
+checks: fmt-check lock-check bruno-check docs-check lexgen-check changelog-check changelog-test font-check cap-check px-check capability-docs-check ticket-ref-check adr-ref-check plan-status-check workspace-dep-check runbook-parity-check auth-seam-check space-auth-seam-check ssrf-client-check gc-guard-check ios-paths-check swift-rs-check ios-template-check bundle-identity-check
 
 # Run the full CI pipeline locally (all crates; use on macOS where the iOS app builds)
 ci: checks clippy test audit deny
