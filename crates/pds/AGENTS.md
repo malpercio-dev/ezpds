@@ -47,7 +47,7 @@ src/
   account_reaper.rs— periodic sweep permanently deleting deactivated accounts past `deleteAfter` (template: firehose_gc.rs)
   agent_claim_sweep.rs— periodic sweep flipping lapsed agent claim attempts to `expired` (template: account_reaper.rs) — see module doc
   agent_child_core.rs— the verify → provision → publish → finalize core behind sovereign child accounts, shared by every route that provisions one; resumable rather than atomic, because the plc.directory publish can't join a SQLite transaction — see module doc
-  labeler_watch.rs — periodic labeler watcher reconciling `account_labels` (V051) to the labels currently in force; first pass runs at boot — see module doc
+  labeler_watch.rs — periodic labeler watcher reconciling `account_labels` (V051) to the labels currently in force; first pass runs at boot; genuinely new flags fire ONE batched operator push per pass, seeding-suppressed via `labels_seeded` (V072) — see module doc
   label_state.rs   — Functional Core for the watcher: reduce raw label events to the in-force set and diff against persisted rows
   admin_nonce_sweep.rs— periodic stale `admin_nonces` sweep (pure storage reclamation; retention stays above the replay-acceptance window) — see module doc
   sovereign_session_nonce_sweep.rs— hourly `sovereign_session_nonces` sweep; a compile-time assertion keeps retention above the replay window

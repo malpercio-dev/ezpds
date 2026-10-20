@@ -5,13 +5,15 @@ Last verified: 2026-08-19
 ## Purpose
 
 Swift that belongs to the iOS apps but to neither app's Rust crate. Today that is exactly one
-thing: the wallet's **Notification Service Extension**, which unseals encrypted push
-notifications on arrival.
+thing: the **Notification Service Extension**, which unseals encrypted push notifications on
+arrival — compiled into BOTH apps' projects (the wallet's user notifications and the operator
+console's ops alerts) from this one source tree.
 
 It sits at the repo root rather than under `apps/identity-wallet/` for the same reason
 `scripts/ios/` does — the XcodeGen template that compiles it is shared by both apps, so its
-inputs are shared too. The operator console will grow an extension from these same sources when it
-adopts notifications.
+inputs are shared too. Which app's keychain items an extension reads is decided at render
+time: the template sets the per-app service name in the extension's Info.plist
+(`EzpdsKeychainService`), which `NotifyKeychain.swift` resolves at runtime.
 
 ## Contracts
 
@@ -37,12 +39,17 @@ instantiates via `NSExtensionPrincipalClass` when a push carries `mutable-conten
   not take a diagnostic never costs the user the notice itself.
 
 **Expects:**
-- `keychain-access-groups` listing `$(AppIdentifierPrefix)org.obsign.shared` **first**
-  (`apps/identity-wallet/src-tauri/Entitlements.NSE.plist`). Nothing here names an access group
-  in a query — naming one would mean discovering `AppIdentifierPrefix` at runtime, on the one
-  code path that must work on a locked screen — so the entitlement's *order* is the mechanism.
-- The wallet having registered: `notification-key-priv` and `notification-sender-keys`, both
-  under `kSecAttrAccessibleAfterFirstUnlock`, written by `notifications.rs`.
+- `keychain-access-groups` listing the host app's stable group **first** (wallet:
+  `$(AppIdentifierPrefix)org.obsign.shared` in its `Entitlements.NSE.plist`; console:
+  `$(AppIdentifierPrefix)org.obsign.admin.shared` in its own — the groups are deliberately
+  distinct so neither extension can read the other app's keys). Nothing here names an access
+  group in a query — naming one would mean discovering `AppIdentifierPrefix` at runtime, on
+  the one code path that must work on a locked screen — so the entitlement's *order* is the
+  mechanism.
+- The host app having registered: `notification-key-priv` and `notification-sender-keys`,
+  both under `kSecAttrAccessibleAfterFirstUnlock`, written by that app's `notifications.rs`
+  under its own keychain service (named by the extension's `EzpdsKeychainService` Info key;
+  absent, the wallet's service — so a pre-key wallet extension behaves identically).
 - iOS 17. `HPKE.Recipient`'s auth-mode initializer does not exist before it.
 
 | File | What it holds |
@@ -79,17 +86,18 @@ process that runs on a locked screen.
   entitlement on both bundles. The cost is that a push arriving before the first unlock after a
   reboot leaves no breadcrumb — the one failure that repairs itself, and the least worth
   recording.
-- **The extension is gated to the wallet's bundle id** in `scripts/ios/project.yml`. An app
-  extension is a separate bundle needing its own App ID, profile, and signing secret; rendering
-  one for admin-companion would cost a second set of those for an extension that cannot decrypt
-  anything until the console has a shared keychain group and registered notification keys of its own.
+- **The extension is gated to an explicit two-app allowlist** in `scripts/ios/project.yml`
+  (both bundle ids since the console's notification adoption). An app extension is a separate
+  bundle needing its own App ID, profile, and signing secret per app — a third app would be
+  added deliberately, together with its keychain group and those artifacts.
 
 ## Invariants
 
-- The Keychain service name, account names, and both JSON document shapes in
-  `NotifyKeychain.swift` / `NotifyBreadcrumbs.swift` are **copies** of constants in
-  `apps/identity-wallet/src-tauri/src/{keychain,notifications}.rs`. Two separate bundles can
-  only agree by both spelling the same strings; a rename on one side is silent on the other.
+- The Keychain account names and both JSON document shapes in `NotifyKeychain.swift` /
+  `NotifyBreadcrumbs.swift` are **copies** of constants in each app's
+  `src-tauri/src/{keychain,notifications}.rs` (both apps spell the same account names; the
+  per-app *service* name arrives via `EzpdsKeychainService`). Separate bundles can only
+  agree by both spelling the same strings; a rename on one side is silent on the other.
 - `PRODUCT_MODULE_NAME` is pinned to `NotificationService` in the template. It is half of
   `NSExtensionPrincipalClass`, so a drift leaves iOS unable to instantiate the extension — a
   failure indistinguishable from a push that never arrived. `just ios-check` greps the pbxproj

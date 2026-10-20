@@ -289,6 +289,21 @@ impl NotifySender {
     pub fn depth(&self) -> i64 {
         self.depth.count.load(std::sync::atomic::Ordering::Relaxed)
     }
+
+    /// A sender whose "worker" is the returned receiver, so a trigger test can assert exactly
+    /// which jobs a code path enqueued without any relay or worker task.
+    #[cfg(test)]
+    pub(crate) fn capturing() -> (Self, tokio::sync::mpsc::UnboundedReceiver<NotifyJob>) {
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+        let sender = NotifySender {
+            tx,
+            depth: Arc::new(QueueDepth {
+                count: std::sync::atomic::AtomicI64::new(0),
+                metrics: Arc::new(crate::metrics::Metrics::disabled()),
+            }),
+        };
+        (sender, rx)
+    }
 }
 
 /// Spawn the worker that drains the queue against `client`.
