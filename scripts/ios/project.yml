@@ -214,7 +214,7 @@ targets:
       # they all work. (Nor may a comment quote a block tag: handlebars parses this whole file
       # as text, so a written-out closing tag is an unmatched tag and a render error. A plain
       # variable reference in a comment is fine — it just substitutes.)
-      {{#if (eq app.identifier "dev.malpercio.identitywallet")}}
+      {{#if (or (eq app.identifier "dev.malpercio.identitywallet") (eq app.identifier "dev.malpercio.admincompanion"))}}
       - target: {{app.name}}_NSE
         embed: true
       {{/if}}
@@ -306,22 +306,23 @@ targets:
 
   # ezpds change 5: the Notification Service Extension, and its logic-test bundle.
   #
-  # GATED TO THE WALLET'S BUNDLE ID, deliberately. This template is shared by both
-  # apps, but an app extension is a SEPARATE BUNDLE — it needs its own explicit App
-  # ID, its own distribution profile, and its own IOS_MOBILE_PROVISION_* secret before
-  # a signed build that embeds it can be archived (docs/ios-cicd.md, "Push
-  # notifications: three artifacts"). Rendering it for admin-companion too would cost a
-  # second set of those artifacts for an extension that cannot decrypt anything: the
-  # console declares no keychain-access-groups and registers no notification keys, so
-  # its extension would read an empty shared group and render the unverified notice for
-  # every push. The console's own notification adoption is where that changes — and where this gate
-  # widens, in the same change that adds the console's shared group and registration.
+  # GATED TO THE TWO APPS' BUNDLE IDS, explicitly — an allowlist, not a default. An app
+  # extension is a SEPARATE BUNDLE: each app's extension needs its own explicit App ID,
+  # its own distribution profile, and its own IOS_MOBILE_PROVISION_* secret before a
+  # signed build that embeds it can be archived (docs/ios-cicd.md, "Push notifications:
+  # three artifacts"). Both apps now carry the shared-keychain entitlement and register
+  # notification keys, so both render the extension; a hypothetical third app would have
+  # to be added here deliberately, together with its entitlements and portal artifacts.
   #
-  # `eq` is a handlebars-rust built-in (registered in `Registry::setup_builtins`), not a
-  # cargo-mobile2 helper, so it survives a tauri-cli bump that changes the helper set.
-  # The literal is the same bundle id `just bundle-identity-check` pins; a rename has to
-  # move both, which is why that script's rename checklist names this file.
-  {{#if (eq app.identifier "dev.malpercio.identitywallet")}}
+  # The extension reads ITS OWN app's keychain items: the per-app service name reaches
+  # the shared Swift sources through the Info.plist key `EzpdsKeychainService` below
+  # (NotifyKeychain resolves it, defaulting to the wallet's service).
+  #
+  # `eq`/`or` are handlebars-rust built-ins (registered in `Registry::setup_builtins`),
+  # not cargo-mobile2 helpers, so they survive a tauri-cli bump that changes the helper
+  # set. The literals are the same bundle ids `just bundle-identity-check` pins; a rename
+  # has to move both, which is why that script's rename checklist names this file.
+  {{#if (or (eq app.identifier "dev.malpercio.identitywallet") (eq app.identifier "dev.malpercio.admincompanion"))}}
   {{app.name}}_NSE:
     type: app-extension
     platform: iOS
@@ -336,6 +337,12 @@ targets:
         CFBundleDisplayName: {{app.stylized-name}} Notifications
         CFBundleShortVersionString: {{apple.bundle-version-short}}
         CFBundleVersion: "{{apple.bundle-version}}"
+        # Which app's keychain items this extension reads: the ONE shared Swift
+        # implementation serves both apps, and their items live under different keychain
+        # services — so the per-app service name rides the extension's Info.plist and
+        # NotifyKeychain resolves it at runtime (defaulting to the wallet's when absent,
+        # which keeps an already-shipped wallet extension behaving identically).
+        EzpdsKeychainService: {{#if (eq app.identifier "dev.malpercio.admincompanion")}}ezpds-admin-companion{{else}}ezpds-identity-wallet{{/if}}
         NSExtension:
           NSExtensionPointIdentifier: com.apple.usernotifications.service
           NSExtensionPrincipalClass: $(PRODUCT_MODULE_NAME).NotificationService
@@ -402,7 +409,7 @@ targets:
 # whole Rust staticlib, the frontend bundle, and the JSON-RPC dance with a running
 # `cargo tauri ios dev`. Attaching them to the app's scheme instead would have made the
 # fixture cross-check cost a full app build every time.
-{{#if (eq app.identifier "dev.malpercio.identitywallet")}}
+{{#if (or (eq app.identifier "dev.malpercio.identitywallet") (eq app.identifier "dev.malpercio.admincompanion"))}}
 schemes:
   {{app.name}}_NSETests:
     build:

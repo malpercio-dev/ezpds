@@ -72,7 +72,11 @@ key_path = "AuthKey_ABC1234567.p8"
 key_id = "ABC1234567"
 team_id = "DEF7654321"
 # Bundle ids this relay is willing to push to. An empty list means "any topic" — fine when
-# you own every app that could register, a footgun when you do not.
+# you own every app that could register, a footgun when you do not. To serve the official
+# apps, list both: the wallet (dev.malpercio.identitywallet) for user notifications and the
+# admin companion (dev.malpercio.admincompanion) for operator alerts — a topic left off the
+# list means the relay refuses to mint push handles for that app, which surfaces as
+# notifications that simply never arrive.
 topics = ["dev.example.myapp"]
 # Apple's sandbox host. Development builds get sandbox device tokens; a sandbox token sent
 # to production (or the reverse) fails with BadDeviceToken, which is the single most

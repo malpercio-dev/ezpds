@@ -4,12 +4,57 @@
 <dict>
   <!--
     The operator console's iOS code-signing entitlements. Referenced by the shared
-    XcodeGen template (scripts/ios/project.yml, `entitlements > path`), so both
-    apps carry a tracked entitlements file; `just ios-template-check` guards the
-    wiring. Deliberately empty: the console requests no special capabilities —
-    in particular no cloud-container storage (that entitlement belongs only to
-    the wallet's media backup; the console's Secure-Enclave key and keychain
-    items need none). The template-check gate enforces this stays empty.
+    XcodeGen template (scripts/ios/project.yml, `entitlements > path`) and installed
+    into the generated project by ios-postinit's Patch H; `just ios-template-check`
+    guards the wiring.
+
+    Deliberately ABSENT: any cloud-container entitlement. That capability belongs only
+    to the wallet's media backup; the console's Secure-Enclave key and keychain items
+    need none, and the template-check gate enforces this stays true.
+
+    Keychain access groups — same design as the wallet's (ADR-0030), console-scoped.
+
+    Without this key every console Keychain item lands in the IMPLICIT group
+    `$(AppIdentifierPrefix)dev.malpercio.admincompanion`, i.e. the access group IS the
+    bundle id — and, more immediately, the Notification Service Extension (a separate
+    bundle) could never read the notification key and pinned sender keys the app writes.
+
+    ORDER IS LOAD-BEARING. iOS files a new item into the FIRST entry when the caller
+    does not name a group, and searches EVERY entitled group on an unqualified read. So:
+
+      [0] org.obsign.admin.shared — the stable group, decoupled from the bundle id.
+                                    New items are written here; the NSE is entitled to
+                                    exactly this group and nothing else.
+      [1] dev.malpercio.…         — the legacy (implicit-until-now) group. Every item a
+                                    pre-notification install wrote — the device admin
+                                    key, the pairing document, the biometric pref —
+                                    lives here, so it must stay listed indefinitely or
+                                    those installs come up looking factory-reset.
+
+    Deliberately its OWN stable group, not the wallet's `org.obsign.shared`: the two
+    apps' items never need to see each other, and one shared group would let either
+    app's extension read the other app's notification private key.
+
+    No Apple Developer portal work for this key — a provisioning profile authorizes the
+    whole team prefix via a <TeamID>.* wildcard.
   -->
+  <key>keychain-access-groups</key>
+  <array>
+    <string>$(AppIdentifierPrefix)org.obsign.admin.shared</string>
+    <string>$(AppIdentifierPrefix)dev.malpercio.admincompanion</string>
+  </array>
+
+  <!--
+    Push notifications — the operator alert channel (flagged accounts, storage warnings).
+    Without this key `registerForRemoteNotifications` never yields a device token and the
+    console half of the notification relay is inert. `development` is correct for debug
+    builds and TestFlight; Xcode's App Store export rewrites it to `production`.
+
+    PORTAL WORK, same as the wallet's: enable the Push Notifications capability on this
+    App ID and regenerate the provisioning profile, or signing fails with an entitlements
+    mismatch. The official relay must also serve this bundle id as an APNs topic.
+  -->
+  <key>aps-environment</key>
+  <string>development</string>
 </dict>
 </plist>

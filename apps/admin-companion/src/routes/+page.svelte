@@ -6,6 +6,7 @@
     setActivePairing,
     generateClaimCode,
     getServerHealth,
+    registerForNotifications,
     unpair,
     type PairingsState,
   } from '$lib/ipc';
@@ -56,8 +57,22 @@
       const loaded = await listPairings();
       pairingsView = loaded;
       void refreshFlagged(loaded.active);
+      void syncNotifications(loaded.active);
     } catch {
       pairingsView = 'error';
+    }
+  }
+
+  // Push registration + sender-key re-pin for the active relay, on every Home load and
+  // server switch — the "on contact" cadence that bounds a compromised sender key's
+  // window. Fire-and-forget: every outcome (no APNs token yet, an older relay, a network
+  // failure) is an ordinary state the next contact retries, and alerts are a courtesy.
+  async function syncNotifications(pairingId: string | null) {
+    if (!pairingId) return;
+    try {
+      await registerForNotifications(pairingId);
+    } catch {
+      // Quietly unregistered until the next contact.
     }
   }
 

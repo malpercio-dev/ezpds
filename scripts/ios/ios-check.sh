@@ -202,9 +202,10 @@ if [ -d "${APP_DIR}/AppIcon.icon" ]; then
   fi
 fi
 
-# The Notification Service Extension. Rendered by the template only for the app whose bundle
-# id matches the gate there (the wallet today — see that file, and MM-421 for the console), so
-# this reads the same source of truth rather than restating which app is which.
+# The Notification Service Extension. Rendered by the template only for the apps whose bundle
+# ids match the allowlist gate there (both apps since the console's notification adoption), so
+# this reads the same source of truth — the app dir's Entitlements.NSE.plist — rather than
+# restating which app is which.
 #
 # Everything here fails SILENTLY if the template did not apply: the app installs, launches, and
 # behaves normally, and every sealed notification renders "couldn't verify" forever with nothing

@@ -106,11 +106,8 @@ pub async fn notify_device(state: &AppState, did: &str, payload: NotificationPay
 
 /// Notify every *active* admin-companion device — the operator alert channel.
 ///
-/// The registration and key-pinning halves ship here; the operator *triggers* that call this
-/// (labeler flags, health alerts) land with admin-companion adoption, so nothing in-tree
-/// invokes it yet. Kept rather than deferred because the admin registration route it serves
-/// is already live — a stored registration nothing can ever send to would be the odder state.
-#[allow(dead_code)]
+/// Callers are the server-side ops triggers: the labeler watcher's batched new-flag alert
+/// (`labeler_watch.rs`) and the storage-cap-approaching alert (`routes/upload_blob.rs`).
 pub async fn notify_admin_devices(state: &AppState, payload: NotificationPayload) {
     let Some(sender) = state.notify_sender.as_ref() else {
         return;
