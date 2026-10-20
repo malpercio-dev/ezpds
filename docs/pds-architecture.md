@@ -409,7 +409,7 @@ Not a subscription tier — an alternative deployment model. Operators run their
 
 **Includes:**
 - Full PDS functionality (identical binary to managed PDS)
-- SQLite or PostgreSQL backend (operator's choice)
+- SQLite backend (Litestream-backed)
 - Local or S3-compatible blob storage
 - No subscription fees — operator provides their own infrastructure
 - No managed monitoring or support
@@ -478,7 +478,6 @@ PDS is a full PDS. No desktop involved.
 **Tier pricing:** Free/Pro/Business
 **BYO PDS binary:** Nix/Docker
 **S3 blob backend:** + CDN
-**PostgreSQL option:** for scale
 **L2 oracle suite + L3 canary**
 **XRPC hardening:** + rate limiting
 

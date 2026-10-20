@@ -121,7 +121,7 @@ For validating blob content types, use the `infer` crate (https://crates.io/crat
 
 ### 4.1 PDS Storage
 
-Blob data lives in S3-compatible object storage. Blob metadata lives in the PDS's database (SQLite for single-node, PostgreSQL for production).
+Blob data lives in S3-compatible object storage. Blob metadata lives in the PDS's database (SQLite).
 
 **Blob metadata table:**
 

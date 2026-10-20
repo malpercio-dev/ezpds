@@ -86,7 +86,7 @@ Use this if the PDS uses a different HTTP framework (e.g., actix-web) or needs m
 A complete standalone OAuth 2.1 authorization server with native ATProto integration. Useful as:
 - Reference for how a production ATProto OAuth server works
 - Potential deployment as a separate sidecar service (vs. embedding in the PDS)
-- Storage backend patterns (SQLite, PostgreSQL)
+- Storage backend patterns (SQLite)
 
 ---
 
@@ -368,7 +368,6 @@ Self-hosted PDS operators run their own OAuth provider. The BYO PDS binary (Nix/
 
 ### v1.0 — Production OAuth
 
-- PostgreSQL storage backend option
 - Client metadata caching with TTL
 - Rate limiting on OAuth endpoints
 - Customizable authorization UI for BYO PDS operators
@@ -406,6 +405,6 @@ Before the PDS can accept third-party app logins:
 | Decision | Rationale | Alternatives Considered |
 |----------|-----------|------------------------|
 | Embed `atproto-oauth-axum` in PDS process | Simplest deployment for solo dev. One process, one DB. | Sidecar (graze-social/aip) — more complex ops. |
-| SQLite for OAuth storage in v1.0 | Matches PDS's existing storage. No additional infra. | PostgreSQL from day one — overkill for early users. |
+| SQLite for OAuth storage in v1.0 | Matches PDS's existing storage. No additional infra. | PostgreSQL — closed as a product direction 2026-09-06 ([ADR-0011](architecture/decisions/0011-sqlite-via-sqlx.md)). |
 | Minimal server-rendered auth UI | OAuth authorization screen is visited rarely. No SPA needed. | Full React SPA — unnecessary complexity. |
 | Use existing crates, don't build OAuth | ATProto OAuth is complex (DPoP, PAR, PKCE, dynamic registration). Building from scratch is months of work. | Build custom — slower, more bugs, no community fixes. |

@@ -37,5 +37,6 @@ single DB file.
 
 - **PostgreSQL.** Better concurrency and horizontal scale, but it's a separate
   service to run, secure, and back up — overkill for a single-tenant sovereign
-  PDS, and it forfeits the single-file simplicity Litestream leans on. Rejected
-  for this phase.
+  PDS, and it forfeits the single-file simplicity Litestream leans on. Rejected,
+  and closed on 2026-09-06: SQLite with Litestream is the storage engine, not a
+  phase choice, so no Postgres backend is planned.
