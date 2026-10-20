@@ -252,7 +252,8 @@ mod tests {
 
     use super::*;
     use crate::app::{app, test_state_with_plc_url, AppState};
-    use crate::auth::jwt::{parse_scope, verify_hs256_access_token, AuthScope};
+    use crate::auth::extractors::authenticate_bearer;
+    use crate::auth::jwt::AuthScope;
     use crate::routes::test_utils::{
         body_json, mount_owner_audit_log as mount_audit_log, seed_owner_account_with_handle,
     };
@@ -355,9 +356,8 @@ mod tests {
         assert_eq!(body["handle"], "owner.example.com");
         assert_eq!(body["email"], "owner@example.com");
         assert!(body["refreshJwt"].is_string());
-        let claims =
-            verify_hs256_access_token(body["accessJwt"].as_str().unwrap(), &state).unwrap();
-        assert_eq!(parse_scope(&claims.scope).unwrap(), AuthScope::Access);
+        let user = authenticate_bearer(body["accessJwt"].as_str().unwrap(), &state).unwrap();
+        assert_eq!(user.scope, AuthScope::Access);
     }
 
     #[tokio::test]

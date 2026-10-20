@@ -7,7 +7,7 @@
 //! - `GET /v1/notifications/sender-keys` — the set of keys to pin
 //!
 //! Auth is `auth::extractors::authenticate_access` (the DPoP-binding seam every access-token
-//! verification must route through — `just auth-seam-check` enforces it), so these live on
+//! verification must route through; the raw verifier is not visible outside `auth`), so these live on
 //! the same-origin `/v1/*` surface alongside the other wallet endpoints.
 //!
 //! Registration keys on `(did, device_uuid)` rather than the `devices` table: `devices` rows

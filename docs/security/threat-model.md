@@ -59,8 +59,9 @@ Boundaries and their primary control:
 Every access-token check funnels through `auth::extractors::authenticate_access`
 (`crates/pds/src/auth/extractors.rs`), which refuses a refresh-scoped token
 outright (commit `73505e01`) and enforces the DPoP scheme ↔ `cnf.jkt` binding in
-both directions. `just auth-seam-check` fails the build on any new direct
-`verify_access_token` call outside that seam. Resource-endpoint DPoP proofs keep
+both directions. The compiler holds the seam: `auth::jwt::verify_access_token`
+is `pub(super)` and its per-algorithm verifiers are private, so code outside
+`auth` cannot verify an access token any other way. Resource-endpoint DPoP proofs keep
 no `jti` replay store by design — see the documented tradeoff in
 `crates/pds/src/auth/dpop.rs` (`validate_dpop`'s doc comment: RFC 9449 §11.1
 makes `jti` tracking a SHOULD, replay is bounded by the 60s `iat` window plus the
@@ -220,7 +221,7 @@ allowlists, with `core:default` and `withGlobalTauri` both refused. Full spec:
 
 ## Keeping this current
 
-The gates that hold specific rows above are `just auth-seam-check`,
+The gates that hold specific rows above are
 `just space-auth-seam-check`, `just cap-check`,
 `just capability-docs-check`, `just runbook-parity-check`,
 `just bundle-identity-check`, `just audit`, and `just deny` — all part of
